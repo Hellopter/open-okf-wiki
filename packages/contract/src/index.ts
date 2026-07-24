@@ -94,10 +94,14 @@ export {
   WikiProduceChildItemSchema,
   type WikiProduceChildSpan,
   WikiProduceChildSpanSchema,
+  type WikiProduceDurableDetails,
+  WikiProduceDurableDetailsSchema,
   type WikiProduceToolDetails,
   WikiProduceToolDetailsSchema,
   type WikiProduceToolStatus,
   WikiProduceToolStatusSchema,
+  projectWikiProduceDetailsForHistory,
+  toDurableWikiProduceDetails,
 } from "./wiki-produce.js";
 export {
   type GitProbe,

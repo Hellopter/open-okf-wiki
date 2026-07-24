@@ -10,12 +10,15 @@ import { cn } from "@/lib/utils";
 import type { StoredRunRecord, WorkspaceConfig } from "../../api";
 import { useI18n } from "../../i18n";
 import { workspaceHref } from "../../lib/workspace-path";
+import { PaneCollapseButton } from "../components/PaneCollapseButton";
 
 export type ContextPanelsProps = {
   workspaceId: string;
   rootPath?: string;
   workspace: WorkspaceConfig | null;
   recentRuns?: StoredRunRecord[];
+  /** Desktop: collapse the context pane to a rail. */
+  onCollapse?: () => void;
   className?: string;
 };
 
@@ -41,6 +44,7 @@ export function ContextPanels({
   rootPath,
   workspace,
   recentRuns = [],
+  onCollapse,
   className,
 }: ContextPanelsProps) {
   const { t } = useI18n();
@@ -52,8 +56,11 @@ export function ContextPanels({
       className={cn("flex h-full min-h-0 flex-col", className)}
     >
       <Tabs defaultValue="sources" className="flex min-h-0 flex-1 flex-col gap-0">
-        <div className="shrink-0 border-b border-border px-2 pt-2 pb-0">
-          <TabsList variant="line" className="h-8 w-full justify-start gap-0 overflow-x-auto">
+        <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 pt-2 pb-0">
+          <TabsList
+            variant="line"
+            className="h-8 min-w-0 flex-1 justify-start gap-0 overflow-x-auto"
+          >
             <TabsTrigger value="sources" className="text-xs">
               {t.agentWorkspace.panelSources}
             </TabsTrigger>
@@ -64,6 +71,13 @@ export function ContextPanels({
               {t.agentWorkspace.panelWiki}
             </TabsTrigger>
           </TabsList>
+          {onCollapse ? (
+            <PaneCollapseButton
+              side="right"
+              onCollapse={onCollapse}
+              label={t.agentWorkspace.collapsePanels}
+            />
+          ) : null}
         </div>
 
         <TabsContent

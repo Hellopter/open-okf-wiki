@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { analysisReceiptsDir, analysisScratchDir } from "@okf-wiki/core";
-import { buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
+import { attachResearchReceipt, buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
 
 test("persistResearchReceipt writes once under analysis/receipts via Core", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-agent-receipt-"));
@@ -59,4 +59,26 @@ test("buildReceiptIndex lists Core receipts for the writer prompt", async () => 
   assert.match(index, /analysis\/receipts\/leaf-a\.json/);
   assert.match(index, /leaf findings/);
   assert.match(index, /\[complete\]/);
+});
+
+test("attachResearchReceipt path-first control return", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-agent-attach-"));
+  const child = {
+    role: "leaf" as const,
+    mode: "fixture" as const,
+    summary: "short control summary only",
+  };
+  const attached = await attachResearchReceipt(child, {
+    workspaceRoot: root,
+    runId: "run-a",
+    nodeId: "leaf-1",
+    parentId: "domain-1",
+    scope: "q1",
+    status: "complete",
+  });
+  assert.equal(attached.receiptPath, "analysis/receipts/leaf-1.json");
+  assert.equal(attached.summary, "short control summary only");
+  assert.ok(attached.absoluteReceiptPath.endsWith("leaf-1.json"));
+  const raw = await readFile(attached.absoluteReceiptPath, "utf8");
+  assert.match(raw, /short control summary only/);
 });

@@ -55,6 +55,8 @@ function WikiProduceDetailsPanel({
   onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
 }) {
   const { t } = useI18n();
+  // Live updates may include full spec/children; durable toolResult (JSONL) is lean
+  // (status/runId/summary/pages only). Gate UI requires live activeTool details.
   const gate =
     details.status === "awaiting_plan"
       ? ("plan" as const)

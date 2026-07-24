@@ -1,6 +1,9 @@
 /**
  * Produce-owned Analysis Receipt content builder for Domain/Leaf research.
  * Persistence is Core-only: one write to analysis/receipts/ via writeAnalysisReceipt.
+ *
+ * Path-first handoff (ADR 0011): parent keeps receiptPath + short summary;
+ * full findings live on disk under analysis/receipts/.
  */
 
 import {
@@ -9,6 +12,7 @@ import {
   type ReceiptStatus,
 } from "@okf-wiki/contract";
 import { listAnalysisReceipts, safeReceiptNodeId, writeAnalysisReceipt } from "@okf-wiki/core";
+import type { RunChildSessionResult } from "./children.js";
 
 const SUMMARY_CAP = 4_000;
 const FINDINGS_CAP = 24;
@@ -64,6 +68,44 @@ export async function persistResearchReceipt(input: {
   const absPath = await writeAnalysisReceipt(input.workspaceRoot, receipt);
   const relativePath = `analysis/receipts/${safeReceiptNodeId(receipt.nodeId)}.json`;
   return { receiptPath: absPath, relativePath, receipt };
+}
+
+/**
+ * Persist a child research result and attach the relative receipt path as the
+ * control-plane handle (path-first). Does not put receipt body on the child result.
+ */
+export async function attachResearchReceipt(
+  child: RunChildSessionResult,
+  input: {
+    workspaceRoot: string;
+    runId: string;
+    nodeId: string;
+    parentId: string | null;
+    scope: string;
+    status?: ReceiptStatus;
+    childReceipts?: string[];
+    openQuestions?: string[];
+    /** Override summary (e.g. FAILED: …); defaults to child.summary. */
+    summary?: string;
+  },
+): Promise<RunChildSessionResult & { receiptPath: string; absoluteReceiptPath: string }> {
+  const persisted = await persistResearchReceipt({
+    workspaceRoot: input.workspaceRoot,
+    runId: input.runId,
+    nodeId: input.nodeId,
+    parentId: input.parentId,
+    scope: input.scope,
+    summary: input.summary ?? child.summary,
+    status: input.status,
+    childReceipts: input.childReceipts,
+    openQuestions: input.openQuestions,
+  });
+  return {
+    ...child,
+    summary: (input.summary ?? child.summary).slice(0, SUMMARY_CAP),
+    receiptPath: persisted.relativePath,
+    absoluteReceiptPath: persisted.receiptPath,
+  };
 }
 
 /**

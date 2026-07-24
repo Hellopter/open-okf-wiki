@@ -2,13 +2,22 @@
  * Agent Workspace 3-pane shell (ADR 0032).
  *
  * left: session list · center: transcript + composer · right: context panels
+ *
+ * Desktop: both side panes collapse to a thin rail (localStorage), so the
+ * transcript can claim width for code / mermaid / math. Mobile: sheets.
  */
 
 import type { AgentResumeGateCommand } from "@okf-wiki/contract";
-import { LayoutListIcon, PanelRightIcon } from "lucide-react";
-import { useState } from "react";
+import {
+  LayoutListIcon,
+  PanelLeftOpenIcon,
+  PanelRightIcon,
+  PanelRightOpenIcon,
+} from "lucide-react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import type { PiSessionSummary, StoredRunRecord, WorkspaceConfig } from "../api";
@@ -19,6 +28,28 @@ import type { AgentMessage, AgentStatus } from "./hooks/useSessionAgent";
 import { ContextPanels } from "./panels/ContextPanels";
 import { SessionList } from "./session-list/SessionList";
 import { Transcript } from "./transcript/Transcript";
+
+/** localStorage: "1" = collapsed, "0" / missing = expanded. */
+const LEFT_STORAGE_KEY = "okf-wiki.agent.left-collapsed";
+const RIGHT_STORAGE_KEY = "okf-wiki.agent.right-collapsed";
+
+function readCollapsed(key: string, defaultCollapsed = false): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    if (v === null) return defaultCollapsed;
+    return v === "1";
+  } catch {
+    return defaultCollapsed;
+  }
+}
+
+function writeCollapsed(key: string, collapsed: boolean) {
+  try {
+    localStorage.setItem(key, collapsed ? "1" : "0");
+  } catch {
+    // ignore quota / private mode
+  }
+}
 
 export type AgentWorkspaceShellProps = {
   workspaceId: string;
@@ -71,8 +102,30 @@ export function AgentWorkspaceShell({
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
-  const [leftOpen, setLeftOpen] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
+  const [leftSheetOpen, setLeftSheetOpen] = useState(false);
+  const [rightSheetOpen, setRightSheetOpen] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(() =>
+    readCollapsed(LEFT_STORAGE_KEY, false),
+  );
+  const [rightCollapsed, setRightCollapsed] = useState(() =>
+    readCollapsed(RIGHT_STORAGE_KEY, false),
+  );
+
+  const toggleLeft = useCallback(() => {
+    setLeftCollapsed((prev) => {
+      const next = !prev;
+      writeCollapsed(LEFT_STORAGE_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const toggleRight = useCallback(() => {
+    setRightCollapsed((prev) => {
+      const next = !prev;
+      writeCollapsed(RIGHT_STORAGE_KEY, next);
+      return next;
+    });
+  }, []);
 
   const sessionList = (
     <SessionList
@@ -80,12 +133,13 @@ export function AgentWorkspaceShell({
       activeSessionId={activeSessionId}
       onSelect={(id) => {
         onSelectSession(id);
-        setLeftOpen(false);
+        setLeftSheetOpen(false);
       }}
       onCreate={onCreateSession}
       onDelete={onDeleteSession}
       creating={creatingSession}
       deletingId={deletingSessionId}
+      onCollapse={!isMobile ? toggleLeft : undefined}
     />
   );
 
@@ -95,6 +149,7 @@ export function AgentWorkspaceShell({
       rootPath={rootPath}
       workspace={workspace}
       recentRuns={recentRuns}
+      onCollapse={!isMobile ? toggleRight : undefined}
     />
   );
 
@@ -110,7 +165,7 @@ export function AgentWorkspaceShell({
             size="icon-sm"
             variant="ghost"
             aria-label={t.agentWorkspace.sessions}
-            onClick={() => setLeftOpen(true)}
+            onClick={() => setLeftSheetOpen(true)}
           >
             <LayoutListIcon />
           </Button>
@@ -122,7 +177,7 @@ export function AgentWorkspaceShell({
             size="icon-sm"
             variant="ghost"
             aria-label={t.agentWorkspace.panels}
-            onClick={() => setRightOpen(true)}
+            onClick={() => setRightSheetOpen(true)}
           >
             <PanelRightIcon />
           </Button>
@@ -137,9 +192,42 @@ export function AgentWorkspaceShell({
 
       <div className="flex min-h-0 flex-1">
         {!isMobile ? (
-          <aside className="flex w-52 shrink-0 flex-col border-r border-border md:w-56">
-            {sessionList}
-          </aside>
+          leftCollapsed ? (
+            <aside
+              data-testid="agent-left-rail"
+              data-collapsed="true"
+              className="flex w-10 shrink-0 flex-col items-center gap-1 border-r border-border bg-muted/20 py-2"
+            >
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={t.agentWorkspace.expandSessions}
+                      aria-expanded={false}
+                      data-testid="agent-left-expand"
+                      onClick={toggleLeft}
+                    />
+                  }
+                >
+                  <PanelLeftOpenIcon />
+                </TooltipTrigger>
+                <TooltipContent side="right">{t.agentWorkspace.expandSessions}</TooltipContent>
+              </Tooltip>
+              <LayoutListIcon className="mt-1 size-3.5 text-muted-foreground" aria-hidden />
+              <span className="sr-only">{t.agentWorkspace.sessions}</span>
+            </aside>
+          ) : (
+            <aside
+              data-testid="agent-left-pane"
+              data-collapsed="false"
+              className="flex w-52 shrink-0 flex-col border-r border-border md:w-56"
+            >
+              {sessionList}
+            </aside>
+          )
         ) : null}
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -155,15 +243,48 @@ export function AgentWorkspaceShell({
         </main>
 
         {!isMobile ? (
-          <aside className="flex w-60 shrink-0 flex-col border-l border-border lg:w-64">
-            {contextPanels}
-          </aside>
+          rightCollapsed ? (
+            <aside
+              data-testid="agent-right-rail"
+              data-collapsed="true"
+              className="flex w-10 shrink-0 flex-col items-center gap-1 border-l border-border bg-muted/20 py-2"
+            >
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={t.agentWorkspace.expandPanels}
+                      aria-expanded={false}
+                      data-testid="agent-right-expand"
+                      onClick={toggleRight}
+                    />
+                  }
+                >
+                  <PanelRightOpenIcon />
+                </TooltipTrigger>
+                <TooltipContent side="left">{t.agentWorkspace.expandPanels}</TooltipContent>
+              </Tooltip>
+              <PanelRightIcon className="mt-1 size-3.5 text-muted-foreground" aria-hidden />
+              <span className="sr-only">{t.agentWorkspace.panels}</span>
+            </aside>
+          ) : (
+            <aside
+              data-testid="agent-right-pane"
+              data-collapsed="false"
+              className="flex w-60 shrink-0 flex-col border-l border-border lg:w-64"
+            >
+              {contextPanels}
+            </aside>
+          )
         ) : null}
       </div>
 
       {isMobile ? (
         <>
-          <Sheet open={leftOpen} onOpenChange={setLeftOpen}>
+          <Sheet open={leftSheetOpen} onOpenChange={setLeftSheetOpen}>
             <SheetContent side="left" className="w-[min(100%,18rem)] p-0">
               <SheetHeader className="sr-only">
                 <SheetTitle>{t.agentWorkspace.sessions}</SheetTitle>
@@ -171,7 +292,7 @@ export function AgentWorkspaceShell({
               {sessionList}
             </SheetContent>
           </Sheet>
-          <Sheet open={rightOpen} onOpenChange={setRightOpen}>
+          <Sheet open={rightSheetOpen} onOpenChange={setRightSheetOpen}>
             <SheetContent side="right" className="w-[min(100%,20rem)] p-0">
               <SheetHeader className="sr-only">
                 <SheetTitle>{t.agentWorkspace.panels}</SheetTitle>

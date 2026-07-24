@@ -28,6 +28,12 @@ test.describe("agent workspace operator surface (ADR 0032)", () => {
     await expect(page.getByTestId("agent-composer")).toBeVisible();
     await expect(page.getByTestId("agent-start-wiki-run")).toHaveCount(0);
     await expect(page.getByTestId("agent-composer-mode")).toHaveCount(0);
+    // Desktop: context pane expanded by default; collapse rail available.
+    await expect(page.getByTestId("agent-context-panels")).toBeVisible();
+    await expect(page.getByTestId("agent-right-collapse")).toBeVisible();
+    await page.getByTestId("agent-right-collapse").click();
+    await expect(page.getByTestId("agent-right-rail")).toBeVisible();
+    await page.getByTestId("agent-right-expand").click();
     await expect(page.getByTestId("agent-context-panels")).toBeVisible();
     await expect(page.getByTestId("agent-workspace-page")).toContainText(name);
 

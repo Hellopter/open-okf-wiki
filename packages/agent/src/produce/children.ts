@@ -51,9 +51,21 @@ export type RunChildSessionInput = {
 
 export type RunChildSessionResult = {
   role: ChildRole;
+  /** Short control summary (capped). Full evidence lives under analysis/ when receiptPath is set. */
   summary: string;
   mode: "fixture" | "live";
+  /**
+   * Relative path under the Run workdir after Host persist (e.g. analysis/receipts/…).
+   * Set by orchestration via attachResearchReceipt — not by the child agent itself.
+   */
+  receiptPath?: string;
 };
+
+const SUMMARY_RETURN_CAP = 4_000;
+
+function controlSummary(text: string): string {
+  return truncate(text.trim(), SUMMARY_RETURN_CAP);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -122,7 +134,7 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
 
   // Explicit fixture only (arg or non-production OKF_WIKI_AGENT_MODE=fixture).
   if (shouldUsePiFixtureMode({ fixture: input.fixture })) {
-    const summary = `[fixture ${input.role}] ${input.task.slice(0, 200)}`;
+    const summary = controlSummary(`[fixture ${input.role}] ${input.task.slice(0, 200)}`);
     emitProgress(input.onProgress, {
       id: spanId,
       role,
@@ -312,11 +324,12 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
       );
     }
 
-    emitProgress(input.onProgress, snapshot("done", resolved.summary));
+    const summary = controlSummary(resolved.summary);
+    emitProgress(input.onProgress, snapshot("done", summary));
     return {
       role: input.role,
       mode: "live",
-      summary: resolved.summary,
+      summary,
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw err;

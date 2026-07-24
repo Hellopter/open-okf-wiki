@@ -15,10 +15,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   type WikiProduceChildSpan,
+  type WikiProduceDurableDetails,
   type WikiProduceToolDetails,
   type WikiRunSpec,
   WikiRunSpecSchema,
   type WorkspaceConfig,
+  toDurableWikiProduceDetails,
 } from "@okf-wiki/contract";
 import { freezeWikiRun, publishStagingToPublication, updateRunRecord } from "@okf-wiki/core";
 import { runWorkdirLayout } from "../pi/run-workdir.js";
@@ -144,15 +146,21 @@ async function resolveModels(
   return { writer, planner, worker, reviewer };
 }
 
+/**
+ * Final toolResult only — Pi appends this to Operator Session JSONL.
+ * Live progress stays on onUpdate (not persisted). Strip Run mirrors so
+ * durable history stays path/control-sized (spec/children/defects live on Run).
+ */
 function toolResult(details: WikiProduceToolDetails) {
+  const durable: WikiProduceDurableDetails = toDurableWikiProduceDetails(details);
   const text =
-    details.summary?.trim() ||
-    (details.runId
-      ? `Wiki Run ${details.runId}: ${details.status}`
-      : `wiki_produce: ${details.status}`);
+    durable.summary?.trim() ||
+    (durable.runId
+      ? `Wiki Run ${durable.runId}: ${durable.status}`
+      : `wiki_produce: ${durable.status}`);
   return {
     content: [{ type: "text" as const, text }],
-    details,
+    details: durable,
   };
 }
 

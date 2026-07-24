@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import App from "./App.tsx";
 import { I18nProvider } from "./i18n";
+import "katex/dist/katex.min.css";
 import "./index.css";
 
 createRoot(document.getElementById("root")!).render(

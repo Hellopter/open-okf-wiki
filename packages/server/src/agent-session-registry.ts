@@ -7,6 +7,7 @@ import {
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
   openOperatorSession,
+  projectOperatorHistoryFromManager,
   redactErrorMessage,
   redactSensitiveValue,
   resolveModelSelection,
@@ -33,6 +34,8 @@ export type RegisteredAgentSession = {
   handle: OperatorSessionHandle;
   workspaceId: string;
   busy: boolean;
+  /** Wall-clock ms of last product touch (prompt, gate, open, live event). */
+  lastActivityAt: number;
   unsubscribe: () => void;
   activeTool?: AgentSseActiveTool;
   queueFixtureTurn?: (text: string, canProduce: boolean) => void;
@@ -60,6 +63,10 @@ type PendingGate = {
 const DELETE_SETTLE_TIMEOUT_MS = 5_000;
 const DELETE_SETTLE_POLL_MS = 25;
 
+/** Default idle before disposeLive; disk JSONL is kept (Pi SessionManager.open on next use). */
+const DEFAULT_LIVE_IDLE_TTL_MS = 30 * 60 * 1000;
+let liveIdleTtlMs = DEFAULT_LIVE_IDLE_TTL_MS;
+
 const liveSessions = new Map<string, RegisteredAgentSession>();
 const pendingGates = new Map<string, PendingGate>();
 /** Single-flight open for cold ensureRegistered (one SessionManager per JSONL). */
@@ -70,6 +77,37 @@ const openingSessions = new Map<string, Promise<RegisteredAgentSession>>();
  * a cascade is in progress. Cleared only when that flight finishes.
  */
 const deletingSessions = new Map<string, Promise<{ sessionId: string; removed: number }>>();
+
+/** Test helper: set idle TTL (ms). Pass null to restore default. */
+export function setLiveSessionIdleTtlForTests(ms: number | null): void {
+  liveIdleTtlMs = ms === null || ms <= 0 ? DEFAULT_LIVE_IDLE_TTL_MS : ms;
+}
+
+function touchLive(entry: RegisteredAgentSession): void {
+  entry.lastActivityAt = Date.now();
+}
+
+/**
+ * Drop idle live handles only (product cache). Never deletes JSONL or Run data.
+ * Skips busy sessions, pending gates, and non-idle AgentSession turns.
+ */
+export function sweepIdleLiveSessions(now = Date.now()): number {
+  let removed = 0;
+  for (const [key, entry] of liveSessions) {
+    if (entry.busy) continue;
+    if (pendingGates.has(key)) continue;
+    try {
+      if (!entry.handle.session.isIdle) continue;
+    } catch {
+      // Treat broken handles as evictable.
+    }
+    if (now - entry.lastActivityAt < liveIdleTtlMs) continue;
+    disposeLive(entry);
+    liveSessions.delete(key);
+    removed += 1;
+  }
+  return removed;
+}
 
 function sessionKey(workspaceId: string, sessionId: string): string {
   return `${workspaceId}::${sessionId}`;
@@ -144,10 +182,12 @@ function registerLive(
     handle,
     workspaceId,
     busy: false,
+    lastActivityAt: Date.now(),
     unsubscribe: () => undefined,
     ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
   };
   entry.unsubscribe = handle.session.subscribe((event) => {
+    touchLive(entry);
     const activeTool = activeToolUpdate(event);
     if (activeTool === null) delete entry.activeTool;
     else if (activeTool) entry.activeTool = activeTool;
@@ -345,8 +385,13 @@ export async function ensureRegistered(
   if (deletingSessions.has(key)) {
     throw new Error(`Operator Session is being deleted: ${sessionId}`);
   }
+  // Opportunistic product-cache GC (does not touch disk JSONL).
+  sweepIdleLiveSessions();
   const existing = liveSessions.get(key);
-  if (existing) return existing;
+  if (existing) {
+    touchLive(existing);
+    return existing;
+  }
 
   const inFlight = openingSessions.get(key);
   if (inFlight) return inFlight;
@@ -399,6 +444,7 @@ export function getActiveAgentSessionTool(
 
 /** Public projections for live-only Sessions that Pi has not persisted yet. */
 export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSessionSummary[] {
+  sweepIdleLiveSessions();
   return [...liveSessions.values()]
     .filter((entry) => entry.workspaceId === workspaceId)
     .map(projectLiveSession);
@@ -522,20 +568,19 @@ async function waitForSessionQuiet(
   });
 }
 
-/** Read the active SessionManager branch, including a not-yet-flushed Session. */
+/** Read compaction-aware operator history (Pi context path + durable details strip). */
 export async function loadAgentSessionHistory(
   workspace: WorkspaceConfig,
   sessionId: string,
 ): Promise<OperatorSessionHistory | null> {
+  sweepIdleLiveSessions();
   const live = liveSessions.get(sessionKey(workspace.id, sessionId));
   if (live) {
-    const manager = live.handle.session.sessionManager;
-    const messages = manager
-      .getBranch()
-      .filter((entry) => entry.type === "message")
-      .map((entry) => entry.message as OperatorSessionHistory["messages"][number]);
+    touchLive(live);
+    // Compaction-aware projection (Pi TUI path); strip fat wiki_produce details.
+    const messages = projectOperatorHistoryFromManager(live.handle.session.sessionManager);
     return {
-      sessionId: manager.getSessionId(),
+      sessionId: live.handle.session.sessionManager.getSessionId(),
       // Operator snapshot only — do not mutate Pi-owned message objects.
       messages: redactSensitiveValue(messages),
     };
@@ -568,6 +613,7 @@ export function resetAgentSessionRegistryForTests(): void {
   deletingSessions.clear();
   for (const pending of pendingGates.values()) pending.reject(new Error("test reset"));
   pendingGates.clear();
+  setLiveSessionIdleTtlForTests(null);
 }
 
 function providerFailure(messages: readonly unknown[]): string | null {

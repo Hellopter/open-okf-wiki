@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "./run.js";
-import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
+import {
+  projectWikiProduceDetailsForHistory,
+  toDurableWikiProduceDetails,
+  WikiProduceDurableDetailsSchema,
+  WikiProduceToolDetailsSchema,
+} from "./wiki-produce.js";
 
 test("WikiProduceToolDetailsSchema exposes only stable Run and gate facts", () => {
   const details = WikiProduceToolDetailsSchema.parse({
@@ -54,4 +59,57 @@ test("WikiProduceToolDetailsSchema rejects duplicate Pi framing and phase", () =
     }).success,
     false,
   );
+});
+
+test("toDurableWikiProduceDetails strips live-only Run mirrors", () => {
+  const live = WikiProduceToolDetailsSchema.parse({
+    status: "published",
+    runId: "run-1",
+    spec: defaultWikiRunSpec("demo"),
+    pages: ["overview.md", "architecture.md"],
+    summary: "Published",
+    defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
+    children: [
+      {
+        id: "plan",
+        role: "plan",
+        status: "done",
+        summary: "done",
+      },
+    ],
+  });
+  const durable = toDurableWikiProduceDetails(live);
+  assert.deepEqual(durable, {
+    status: "published",
+    runId: "run-1",
+    pages: ["overview.md", "architecture.md"],
+    summary: "Published",
+  });
+  assert.equal("spec" in durable, false);
+  assert.equal("children" in durable, false);
+  assert.equal("defects" in durable, false);
+  WikiProduceDurableDetailsSchema.parse(durable);
+  // Live schema still accepts durable rows (history / mixed clients).
+  WikiProduceToolDetailsSchema.parse(durable);
+});
+
+test("projectWikiProduceDetailsForHistory strips fat fields without rewriting non-wiki details", () => {
+  const fat = {
+    status: "published",
+    runId: "run-1",
+    summary: "ok",
+    pages: ["overview.md"],
+    spec: defaultWikiRunSpec("demo"),
+    children: [{ id: "plan", role: "plan", status: "done" }],
+    defects: null,
+  };
+  const projected = projectWikiProduceDetailsForHistory(fat) as Record<string, unknown>;
+  assert.equal(projected.status, "published");
+  assert.equal(projected.runId, "run-1");
+  assert.equal("spec" in projected, false);
+  assert.equal("children" in projected, false);
+  assert.equal("defects" in projected, false);
+  // Non-wiki tool details left alone.
+  const other = { path: "/tmp/x", bytes: 12 };
+  assert.equal(projectWikiProduceDetailsForHistory(other), other);
 });

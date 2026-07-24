@@ -34,7 +34,8 @@ export type WikiProduceChildItem = z.infer<typeof WikiProduceChildItemSchema>;
 
 /**
  * Projection of one plan/domain/leaf/reviewer/root child for operator UI.
- * Lives only inside parent `wiki_produce` tool details (ADR 0032).
+ * Live-only: parent `wiki_produce` onUpdate / activeTool (ADR 0032).
+ * Must not be required on durable toolResult.details written to Operator JSONL.
  */
 export const WikiProduceChildSpanSchema = z.object({
   id: z.string().trim().min(1).max(200),
@@ -53,11 +54,13 @@ export const WikiProduceChildSpanSchema = z.object({
 export type WikiProduceChildSpan = z.infer<typeof WikiProduceChildSpanSchema>;
 
 /**
- * Stable product details carried inside Pi's real `wiki_produce` tool result.
+ * Full product details for **live** Pi tool updates (`onUpdate` / SSE activeTool).
  *
- * Pi's event owns toolCallId and lifecycle framing. `status` plus `summary`
- * express progress. Optional `children` is a parent-tool projection of
- * in-process child sessions — not Session messages and not a second SSE source.
+ * May carry gate `spec`, progressive `children`, and `defects` for the operator UI.
+ * Pi does not append onUpdate payloads to Session JSONL — only the final toolResult.
+ *
+ * Job-authoritative copies of spec/pages/defects live under the Run Boundary
+ * (Run Record v2, analysis/, wiki/), not in Operator Session history.
  */
 export const WikiProduceToolDetailsSchema = z
   .object({
@@ -72,3 +75,51 @@ export const WikiProduceToolDetailsSchema = z
   .strict();
 
 export type WikiProduceToolDetails = z.infer<typeof WikiProduceToolDetailsSchema>;
+
+/**
+ * Lean details for the **durable** final `toolResult` (Operator Session JSONL).
+ *
+ * Path-first control return: status + runId + short summary + optional page paths.
+ * Omits live-only mirrors of Run artifacts (`spec`, `children`, `defects`).
+ * Older JSONL rows may still contain those fields; readers should treat Run Record
+ * as authority for job facts after the tool settles.
+ */
+export const WikiProduceDurableDetailsSchema = z
+  .object({
+    status: WikiProduceToolStatusSchema,
+    runId: z.string().trim().min(1).optional(),
+    pages: z.array(z.string().trim().min(1).max(200)).optional(),
+    summary: z.string().max(4000).optional(),
+  })
+  .strict();
+
+export type WikiProduceDurableDetails = z.infer<typeof WikiProduceDurableDetailsSchema>;
+
+/** Project live details into the durable toolResult shape (never mutates input). */
+export function toDurableWikiProduceDetails(
+  details: WikiProduceToolDetails,
+): WikiProduceDurableDetails {
+  const summary = details.summary?.trim().slice(0, 4000);
+  return WikiProduceDurableDetailsSchema.parse({
+    status: details.status,
+    ...(details.runId ? { runId: details.runId } : {}),
+    ...(details.pages?.length ? { pages: details.pages } : {}),
+    ...(summary ? { summary } : {}),
+  });
+}
+
+/**
+ * Read-side projection for Operator history / SSE snapshot.
+ * Strips live-only fields from wiki_produce toolResult.details without mutating
+ * Pi SessionManager storage. Safe on already-lean durable rows and non-wiki tools.
+ */
+export function projectWikiProduceDetailsForHistory(details: unknown): unknown {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return details;
+  const row = details as Record<string, unknown>;
+  if (typeof row.status !== "string") return details;
+  // Only strip known live mirrors; leave unknown keys for forward compatibility
+  // after validating status looks like a wiki_produce status.
+  if (!WikiProduceToolStatusSchema.safeParse(row.status).success) return details;
+  const { spec: _spec, children: _children, defects: _defects, ...rest } = row;
+  return rest;
+}

@@ -185,8 +185,14 @@ describe("real Pi wiki_produce tool", () => {
     assert.equal("phase" in result.details, false);
     assert.ok(result.details.runId);
     assert.ok(result.details.pages?.includes("overview.md"));
+    // Durable final toolResult: no live Run mirrors (JSONL stays lean).
+    assert.equal("spec" in result.details, false);
+    assert.equal("children" in result.details, false);
+    assert.equal("defects" in result.details, false);
+    // Live onUpdate still carries gate/spec for operator UI.
     assert.ok(updates.some((update) => update.status === "awaiting_plan"));
     assert.ok(updates.some((update) => update.status === "awaiting_publication"));
+    assert.ok(updates.some((update) => update.status === "awaiting_plan" && update.spec));
     for (const update of updates) WikiProduceToolDetailsSchema.parse(update);
     assert.equal((revisedPlanGate.spec.notes?.match(/Focus on runtime\./g) ?? []).length, 1);
 
@@ -219,6 +225,7 @@ describe("real Pi wiki_produce tool", () => {
     const planResult = await planResultPromise;
     assert.equal(planResult.details.status, "cancelled");
     assert.equal(planResult.isError, undefined);
+    assert.equal("spec" in planResult.details, false);
 
     const publicationWorkspace = await makeWorkspace();
     const publicationGates = gateHarness();
@@ -239,5 +246,7 @@ describe("real Pi wiki_produce tool", () => {
     const publicationResult = await publicationResultPromise;
     assert.equal(publicationResult.details.status, "publication_declined");
     assert.equal(publicationResult.isError, undefined);
+    assert.equal("spec" in publicationResult.details, false);
+    assert.equal("children" in publicationResult.details, false);
   });
 });

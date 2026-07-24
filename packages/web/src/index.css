@@ -2,9 +2,12 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
-/* Streamdown + code plugin (Shiki shells) — keep Tailwind scanning package sources */
+/* Streamdown + plugins — Tailwind must scan every installed plugin package */
 @source "../node_modules/streamdown/dist/*.js";
 @source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/math/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+@source "../node_modules/@streamdown/cjk/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -430,10 +433,13 @@ code.mono {
 }
 
 /* ------------------------------------------------------------------ */
-/* Streamdown code / mermaid — single outer chrome (no nested borders) */
+/* Streamdown code / mermaid / math — single outer chrome               */
 /* Structure: [code-block] > header + [code-block-body] > pre > code   */
 /* Streamdown paints border on BOTH outer + body; we keep only outer.  */
-/* Best practice: style container once; reset inner pre/code.          */
+/*                                                                    */
+/* CRITICAL: with lineNumbers=false, Shiki line wrappers are bare      */
+/* <span>s (no `block` class). Without display:block they collapse to  */
+/* one inline run — "代码全挤在一起". Force one line per direct child. */
 /* ------------------------------------------------------------------ */
 
 .wiki-markdown [data-streamdown="code-block"],
@@ -466,8 +472,22 @@ code.mono {
 
 /* Fenced code: keep horizontal scroll for unbreakable tokens inside bubbles. */
 .session-markdown [data-streamdown="code-block"] pre,
-.agent-markdown [data-streamdown="code-block"] pre {
-  @apply overflow-x-auto whitespace-pre;
+.agent-markdown [data-streamdown="code-block"] pre,
+.wiki-markdown [data-streamdown="code-block"] pre {
+  @apply overflow-x-auto whitespace-pre font-mono;
+}
+
+/*
+ * One source line = one direct child span of <code>.
+ * Token spans nested inside a line stay inline.
+ * min-height preserves blank lines.
+ */
+.wiki-markdown [data-streamdown="code-block-body"] code > span,
+.session-markdown [data-streamdown="code-block-body"] code > span,
+.agent-markdown [data-streamdown="code-block-body"] code > span {
+  display: block;
+  min-height: 1.35em;
+  line-height: 1.55;
 }
 
 /* Inline code only (not fenced blocks) */
@@ -493,18 +513,85 @@ code.mono {
   @apply border-0 bg-transparent p-0;
 }
 
-/* Streamdown Mermaid diagrams (```mermaid fences) */
+/* Streamdown Mermaid — prefer natural size + horizontal scroll over crushing SVG */
 .wiki-markdown [data-streamdown="mermaid-block"],
 .session-markdown [data-streamdown="mermaid-block"],
 .agent-markdown [data-streamdown="mermaid-block"] {
-  @apply my-4 overflow-hidden rounded-lg border border-border;
+  @apply my-4 min-w-0 max-w-full overflow-x-auto rounded-lg border border-border bg-muted/20;
+}
+
+.wiki-markdown [data-streamdown="mermaid-block"] > div:last-child,
+.session-markdown [data-streamdown="mermaid-block"] > div:last-child,
+.agent-markdown [data-streamdown="mermaid-block"] > div:last-child {
+  @apply relative min-w-0 overflow-x-auto border-0 bg-transparent p-2;
 }
 
 .wiki-markdown [data-streamdown="mermaid"],
 .wiki-markdown .mermaid,
 .session-markdown [data-streamdown="mermaid"],
 .agent-markdown [data-streamdown="mermaid"] {
-  @apply my-0 overflow-x-auto;
+  @apply relative my-0 min-h-28 min-w-0 overflow-hidden;
+}
+
+/*
+ * Diagram SVG only — Streamdown pan/zoom + header actions also use <svg>
+ * icons inside mermaid-block. Never apply min-height / height:auto to those.
+ * Structure: [data-streamdown=mermaid] > pan-zoom > [role=img] > svg
+ */
+.wiki-markdown [data-streamdown="mermaid"] [role="img"] > svg,
+.session-markdown [data-streamdown="mermaid"] [role="img"] > svg,
+.agent-markdown [data-streamdown="mermaid"] [role="img"] > svg {
+  display: block;
+  max-width: none;
+  height: auto;
+  min-height: 10rem;
+  shape-rendering: geometricPrecision;
+}
+
+/* Zoom / reset / header action icons stay 16px controls */
+.wiki-markdown [data-streamdown="mermaid-block"] button svg,
+.session-markdown [data-streamdown="mermaid-block"] button svg,
+.agent-markdown [data-streamdown="mermaid-block"] button svg,
+.wiki-markdown [data-streamdown="mermaid"] button svg,
+.session-markdown [data-streamdown="mermaid"] button svg,
+.agent-markdown [data-streamdown="mermaid"] button svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  min-width: 1rem;
+  min-height: 1rem;
+  max-width: 1rem;
+  max-height: 1rem;
+  flex-shrink: 0;
+}
+
+/* Pan-zoom control stack (bottom-left): keep pill chrome readable in chat */
+.wiki-markdown [data-streamdown="mermaid"] > div > div.absolute,
+.session-markdown [data-streamdown="mermaid"] > div > div.absolute,
+.agent-markdown [data-streamdown="mermaid"] > div > div.absolute {
+  @apply z-10 gap-0.5 rounded-md border border-border bg-background/90 p-0.5 shadow-sm backdrop-blur-sm;
+}
+
+.wiki-markdown [data-streamdown="mermaid"] > div > div.absolute > button,
+.session-markdown [data-streamdown="mermaid"] > div > div.absolute > button,
+.agent-markdown [data-streamdown="mermaid"] > div > div.absolute > button {
+  @apply flex size-7 items-center justify-center rounded-sm text-muted-foreground transition-colors;
+  @apply hover:bg-muted hover:text-foreground;
+  @apply disabled:cursor-not-allowed disabled:opacity-40;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50;
+}
+
+/* KaTeX (formulas) — block display + readable size inside chat bubbles */
+.wiki-markdown .katex-display,
+.session-markdown .katex-display,
+.agent-markdown .katex-display {
+  @apply my-3 max-w-full overflow-x-auto overflow-y-hidden py-1;
+}
+
+.wiki-markdown .katex,
+.session-markdown .katex,
+.agent-markdown .katex {
+  font-size: 1.05em;
 }
 
 .session-markdown,

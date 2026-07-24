@@ -14,6 +14,8 @@ export {
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
   openOperatorSession,
+  projectOperatorHistoryFromManager,
+  projectOperatorHistoryMessage,
 } from "./pi/operator-session.js";
 export {
   resolveWorkspacePiModel,

@@ -1,7 +1,7 @@
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
+import { createMathPlugin } from "@streamdown/math";
+import { createMermaidPlugin } from "@streamdown/mermaid";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { type Components, Streamdown } from "streamdown";
@@ -28,6 +28,28 @@ import { LoadingState } from "../components/LoadingState";
 import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
 import { agentWorkspaceHref } from "../lib/workspace-path";
+
+const math = createMathPlugin({
+  singleDollarTextMath: true,
+  errorColor: "var(--color-muted-foreground)",
+});
+
+const mermaid = createMermaidPlugin({
+  config: {
+    startOnLoad: false,
+    securityLevel: "strict",
+    suppressErrorRendering: true,
+    theme: "neutral",
+    fontFamily: "var(--font-sans), ui-sans-serif, system-ui, sans-serif",
+    fontSize: 16,
+    flowchart: { useMaxWidth: false, htmlLabels: true, curve: "basis" },
+    sequence: { useMaxWidth: false },
+    gantt: { useMaxWidth: false },
+    class: { useMaxWidth: false },
+    state: { useMaxWidth: false },
+    er: { useMaxWidth: false },
+  },
+});
 
 const streamdownPlugins = { cjk, code, math, mermaid };
 
@@ -367,6 +389,12 @@ export function WorkspaceWikiPage() {
                       mode="static"
                       components={markdownComponents}
                       plugins={streamdownPlugins}
+                      lineNumbers={false}
+                      controls={{
+                        code: { copy: true, download: false },
+                        table: true,
+                        mermaid: { fullscreen: true, download: true, copy: true, panZoom: true },
+                      }}
                       className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
                     >
                       {bodyMarkdown}

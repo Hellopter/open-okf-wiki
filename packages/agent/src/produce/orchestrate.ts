@@ -28,7 +28,7 @@ import {
   shouldUsePiFixtureMode,
 } from "./live-pi.js";
 import { domainResearchPrompt, leafResearchPrompt, reviewerPrompt } from "./prompts.js";
-import { buildReceiptIndex, persistResearchReceipt } from "./receipts.js";
+import { attachResearchReceipt, buildReceiptIndex } from "./receipts.js";
 
 /** Coarse progress into the owning wiki_produce tool (Pi onUpdate details). */
 export type ProduceUpdatePatch = Partial<WikiProduceToolDetails>;
@@ -188,16 +188,16 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         for (let i = 0; i < leafResults.length; i++) {
           const leafNodeId = leafTasks[i]!.leafNodeId;
           const lr = leafResults[i]!;
-          const persisted = await persistResearchReceipt({
+          // Path-first: disk holds full receipt; parent only keeps relative path.
+          const withPath = await attachResearchReceipt(lr, {
             workspaceRoot: input.workspace.rootPath,
             runId: input.runId,
             nodeId: leafNodeId,
             parentId: domainNodeId,
             scope: `${d.id}: ${leafQuestions[i]}`,
-            summary: lr.summary,
             status: "complete",
           });
-          childReceiptPaths.push(persisted.relativePath);
+          childReceiptPaths.push(withPath.receiptPath);
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -228,13 +228,12 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         abortSignal: input.abortSignal,
         onProgress: onChild,
       });
-      await persistResearchReceipt({
+      await attachResearchReceipt(domainResult, {
         workspaceRoot: input.workspace.rootPath,
         runId: input.runId,
         nodeId: domainNodeId,
         parentId: "root",
         scope: d.scope ?? d.title ?? d.id,
-        summary: domainResult.summary,
         status: "complete",
         childReceipts: childReceiptPaths,
       });
@@ -243,16 +242,19 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
         return cancelledResult(spec, fixture, metrics, layout);
       }
       const msg = err instanceof Error ? err.message : String(err);
-      await persistResearchReceipt({
-        workspaceRoot: input.workspace.rootPath,
-        runId: input.runId,
-        nodeId: domainNodeId,
-        parentId: "root",
-        scope: d.scope ?? d.title ?? d.id,
-        summary: `FAILED: ${msg}`,
-        status: "failed",
-        childReceipts: childReceiptPaths,
-      });
+      await attachResearchReceipt(
+        { role: "domain", mode: fixture ? "fixture" : "live", summary: `FAILED: ${msg}` },
+        {
+          workspaceRoot: input.workspace.rootPath,
+          runId: input.runId,
+          nodeId: domainNodeId,
+          parentId: "root",
+          scope: d.scope ?? d.title ?? d.id,
+          status: "failed",
+          childReceipts: childReceiptPaths,
+          summary: `FAILED: ${msg}`,
+        },
+      );
       if (d.critical !== false) {
         criticalDomainFailures.push(`${d.id}: ${msg}`);
       }

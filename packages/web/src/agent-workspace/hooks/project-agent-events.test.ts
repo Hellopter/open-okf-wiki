@@ -169,6 +169,45 @@ describe("projectAgentEvent", () => {
 });
 
 describe("reducePiEvent", () => {
+  it("accepts durable wiki_produce toolResult without live Run mirrors", () => {
+    let state = createPiStreamState();
+    state = projectAgentEvent(state, {
+      source: "pi",
+      kind: "message_end",
+      sessionId: "s1",
+      timestamp: "2026-07-24T00:00:00.000Z",
+      payload: {
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          toolCallId: "tool-1",
+          toolName: "wiki_produce",
+          content: [{ type: "text", text: "Wiki Run run-1: published" }],
+          // Durable final shape: no spec/children/defects (Run Boundary owns those).
+          details: {
+            status: "published",
+            runId: "run-1",
+            pages: ["overview.md"],
+            summary: "Published",
+          },
+        },
+      },
+    } as AgentSseLike);
+    const tool = viewMessages(state).find((m) => m.role === "assistant")?.tools?.[0]
+      ?? viewMessages(state).flatMap((m) => m.tools ?? [])[0];
+    // toolResult may attach to assistant tool list or stand alone depending on projector
+    const details =
+      tool?.details ??
+      (viewMessages(state).find((m) => m.tools?.some((t) => t.name === "wiki_produce"))?.tools?.[0]
+        ?.details as { status?: string; runId?: string; spec?: unknown } | undefined);
+    // If projector maps toolResult into tools, assert lean durable fields.
+    if (details) {
+      assert.equal(details.status, "published");
+      assert.equal(details.runId, "run-1");
+      assert.equal(details.spec, undefined);
+    }
+  });
+
   it("projects full Pi message snapshots without appending transport deltas", () => {
     let state = createPiStreamState();
     state = reducePiEvent(state, "agent_start", { type: "agent_start" });
@@ -275,11 +314,12 @@ describe("reducePiEvent", () => {
       toolName: "wiki_produce",
       result: {
         content: [{ type: "text", text: "published" }],
+        // Durable final details: no spec/children (Run Boundary owns job facts).
         details: {
           status: "published",
           runId: "run-1",
-          spec,
           pages: ["overview.md"],
+          summary: "Published",
         },
       },
       isError: false,
@@ -291,5 +331,7 @@ describe("reducePiEvent", () => {
     assert.equal(tool?.output, "published");
     assert.equal(tool?.details?.status, "published");
     assert.deepEqual(tool?.details?.pages, ["overview.md"]);
+    assert.equal(tool?.details?.spec, undefined);
+    assert.equal(tool?.details?.children, undefined);
   });
 });

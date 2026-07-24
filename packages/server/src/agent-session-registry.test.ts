@@ -16,6 +16,8 @@ import {
   loadAgentSessionHistory,
   registerAgentSession,
   resetAgentSessionRegistryForTests,
+  setLiveSessionIdleTtlForTests,
+  sweepIdleLiveSessions,
 } from "./agent-session-registry.ts";
 
 function git(cwd: string, ...args: string[]): void {
@@ -116,6 +118,25 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
     timestamp: Date.now(),
   } as never);
 
+  // Fat wiki_produce details in Pi storage: snapshot must strip live mirrors.
+  entry.handle.session.sessionManager.appendMessage({
+    role: "toolResult",
+    toolCallId: "tool-hist-1",
+    toolName: "wiki_produce",
+    content: [{ type: "text", text: "published" }],
+    details: {
+      status: "published",
+      runId: "run-hist",
+      summary: "Published",
+      pages: ["overview.md"],
+      spec: { version: 1, summary: "Should not leave snapshot", pages: [] },
+      children: [{ id: "plan", role: "plan", status: "done" }],
+      defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
+    },
+    isError: false,
+    timestamp: Date.now(),
+  } as never);
+
   const history = await loadAgentSessionHistory(workspace, sessionId);
   assert.ok(history);
   const serialized = JSON.stringify(history.messages);
@@ -126,6 +147,8 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
     serialized,
     /\[redacted-key\]|Bearer \[redacted\]|api_key=\[redacted\]|\[redacted-path\]/,
   );
+  assert.equal(serialized.includes("Should not leave snapshot"), false);
+  assert.equal(serialized.includes('"children"'), false);
 
   // Pi-owned durable messages must not be mutated by the operator snapshot.
   const liveSerialized = JSON.stringify(
@@ -134,6 +157,7 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
       .filter((row) => row.type === "message")
       .map((row) => row.message),
   );
+  assert.ok(liveSerialized.includes("Should not leave snapshot"));
   assert.equal(liveSerialized.includes("sk-live-abcdefghijklmnopqrstuvwxyz"), true);
 });
 
@@ -574,4 +598,65 @@ test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => 
   await new Promise((r) => setTimeout(r, 200));
   const remainingAfter = await listRuns(workspace.rootPath);
   assert.equal(remainingAfter.filter((run) => run.sessionId === sessionId).length, 0);
+});
+
+test("idle sweep disposes live handle without deleting Session JSONL", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-idle-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Idle Sweep",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "idle-sweep";
+
+  await registerAgentSession({ workspace, sessionId });
+  const warm = await ensureRegistered(workspace, sessionId);
+  // Persist so cold reopen can find the SessionManager file.
+  warm.handle.session.sessionManager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "hello" }],
+    timestamp: Date.now(),
+  } as never);
+  warm.handle.session.sessionManager.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "hi" }],
+    api: "openai-completions",
+    provider: "fixture",
+    model: "fixture",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  } as never);
+
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
+
+  setLiveSessionIdleTtlForTests(1);
+  // Age the entry past TTL without waiting wall clock.
+  (warm as { lastActivityAt: number }).lastActivityAt = Date.now() - 10_000;
+  const removed = sweepIdleLiveSessions();
+  assert.equal(removed, 1);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+
+  // Disk JSONL still there; cold ensureRegistered reopens.
+  const reopened = await ensureRegistered(workspace, sessionId);
+  assert.ok(reopened.handle.sessionId === sessionId);
+  assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
 });

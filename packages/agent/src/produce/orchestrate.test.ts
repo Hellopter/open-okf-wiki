@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
@@ -86,5 +86,13 @@ describe("produceWiki fixture", () => {
     // Default Spec domain has questions → Produce leaf fan-out runs.
     assert.ok(result.metrics.leafStarts >= 1);
     assert.ok(result.pages.includes("index.md"));
+
+    // Path-first handoff: research receipts on disk; parent uses path index only.
+    const receiptDir = path.join(root, ".okf-wiki", "runs", "run-1", "analysis", "receipts");
+    const receiptFiles = await readdir(receiptDir).catch(() => [] as string[]);
+    assert.ok(
+      receiptFiles.some((f) => f.endsWith(".json")),
+      `expected analysis/receipts/*.json, got ${receiptFiles.join(",")}`,
+    );
   });
 });

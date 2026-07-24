@@ -8,8 +8,9 @@ import {
   type ModelRuntime,
   type SessionInfo,
   SessionManager,
+  sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import { projectWikiProduceDetailsForHistory, type WorkspaceConfig } from "@okf-wiki/contract";
 import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 import {
   type CreateWikiProduceToolInput,
@@ -158,7 +159,39 @@ export async function openOperatorSession(
   return buildOperatorSession(input, manager);
 }
 
-/** Read the complete active branch, not Pi's compaction-aware LLM context. */
+/**
+ * Operator-facing history projection of one Pi message.
+ * Clones wiki_produce toolResult.details to a durable (lean) shape; does not
+ * mutate SessionManager-owned objects.
+ */
+export function projectOperatorHistoryMessage(message: Message): Message {
+  if (!message || typeof message !== "object") return message;
+  const row = message as Message & {
+    role?: string;
+    toolName?: string;
+    details?: unknown;
+  };
+  if (row.role !== "toolResult") return message;
+  // Always project: projectWikiProduceDetailsForHistory no-ops unless status is a wiki_produce status.
+  if (!("details" in row) || row.details == null) return message;
+  const projected = projectWikiProduceDetailsForHistory(row.details);
+  if (projected === row.details) return message;
+  return { ...row, details: projected } as Message;
+}
+
+/**
+ * Operator UI history from a SessionManager: Pi compaction-aware context path
+ * (same idea as TUI `buildContextEntries` + `sessionEntryToContextMessages`),
+ * then product-side durable details strip. Does not rewrite JSONL.
+ */
+export function projectOperatorHistoryFromManager(manager: SessionManager): Message[] {
+  return manager
+    .buildContextEntries()
+    .flatMap((entry) => sessionEntryToContextMessages(entry) as Message[])
+    .map((message) => projectOperatorHistoryMessage(message));
+}
+
+/** Read compaction-aware operator history (not the full unsummarized branch). */
 export async function loadOperatorSessionHistory(
   workspaceRootInput: string,
   sessionId: string,
@@ -167,13 +200,9 @@ export async function loadOperatorSessionHistory(
   const info = await findSessionInfo(root, sessionId);
   if (!info) return null;
   const manager = SessionManager.open(info.path, piSessionsDir(root), root);
-  const messages = manager
-    .getBranch()
-    .filter((entry) => entry.type === "message")
-    .map((entry) => entry.message as Message);
   return {
     sessionId: manager.getSessionId(),
-    messages,
+    messages: projectOperatorHistoryFromManager(manager),
   };
 }
 
