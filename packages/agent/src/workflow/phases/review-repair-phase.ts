@@ -5,14 +5,14 @@
 import type { MergedDefectReport } from "@okf-wiki/contract";
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { emitProduceProgress } from "../../produce/progress.js";
-import { reviewerPrompt } from "../../produce/prompts.js";
+import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import {
   type PublishabilityResult,
   scorePublishable,
   sourcesFromMounts,
 } from "../../produce/publishability.js";
-import { buildReceiptIndex } from "../../produce/receipts.js";
 import { runReviewCouncil } from "../../produce/review.js";
+import { reviewerPrompt } from "../../prompts/index.js";
 import { decideNodeRetry } from "../retry-policy.js";
 import { runRepairWrite } from "./write-phase.js";
 import {
@@ -46,7 +46,10 @@ export async function runReviewRepairPhase(
   const maxRepair = Math.max(0, spec.acceptance?.maxRepairRounds ?? 2);
   const councilSize = Math.max(1, orch.reviewCouncilSize ?? 1);
   const lenses = ["grounding", "coverage", "consistency", "general"] as const;
-  const receiptIndex = await buildReceiptIndex(input.workspace.rootPath, input.runId);
+  const receiptIndex = await defaultReceiptStore.buildIndex(
+    input.workspace.rootPath,
+    input.runId,
+  );
 
   for (let round = 1; round <= maxRepair + 1; round++) {
     throwIfAborted(input.abortSignal);

@@ -12,12 +12,13 @@ import {
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { createToolDetailsAccumulator } from "../produce/progress.js";
+import { createSubmitWikiRunSpecTool } from "./submit-wiki-run-spec.js";
 import {
   type RunWikiInput,
   runWiki,
   type WikiProduceGateCoordinator,
   type WikiProduceModelFactory,
-} from "../produce/run-wiki.js";
+} from "../workflow/run-wiki.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 
@@ -27,7 +28,7 @@ export type {
   WikiProduceGateRequest,
   WikiProduceModelFactory,
   WikiProduceModelRole,
-} from "../produce/run-wiki.js";
+} from "../workflow/run-wiki.js";
 
 export type CreateWikiProduceToolInput = {
   workspace: WorkspaceConfig;
@@ -106,6 +107,8 @@ export function createWikiProduceTool(
         resolveModel: input.resolveModel,
         fixture: input.fixture,
         abortSignal: signal,
+        // Tool edge owns Pi tools; workflow injects them as opaque customTools.
+        createPlanTools: (runWorkDir) => [createSubmitWikiRunSpecTool({ runWorkDir })],
         onProgress: (progress) => {
           acc.apply(progress);
           push();

@@ -4,9 +4,10 @@
 
 import type { WorkspaceOrchestration } from "@okf-wiki/contract";
 import type { ScopedRunnerProgress } from "../../ports/agent-runner.js";
+import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
+import type { ReceiptStore } from "../../ports/receipt-store.js";
 import { emitProduceProgress } from "../../produce/progress.js";
-import { domainResearchPrompt, leafResearchPrompt } from "../../produce/prompts.js";
-import { attachResearchReceipt } from "../../produce/receipts.js";
+import { domainResearchPrompt, leafResearchPrompt } from "../../prompts/index.js";
 import { decideNodeRetry, isCriticalDomainFailure } from "../retry-policy.js";
 import {
   cancelledResult,
@@ -23,6 +24,7 @@ export type ResearchPhaseResult =
 export async function runResearchPhase(
   ctx: PhaseContext,
   orch: WorkspaceOrchestration,
+  receipts: ReceiptStore = defaultReceiptStore,
 ): Promise<ResearchPhaseResult> {
   const { input, onProgress, runtime, metrics, layout, spec, mode } = ctx;
   const criticalDomainFailures: string[] = [];
@@ -81,7 +83,7 @@ export async function runResearchPhase(
         for (let i = 0; i < leafResults.length; i++) {
           const leafNodeId = leafTasks[i]!.leafNodeId;
           const lr = leafResults[i]!;
-          const withPath = await attachResearchReceipt(
+          const withPath = await receipts.attach(
             {
               role: lr.role,
               mode: lr.mode,
@@ -131,7 +133,7 @@ export async function runResearchPhase(
         onProgress: (span: ScopedRunnerProgress) =>
           emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
       });
-      await attachResearchReceipt(
+      await receipts.attach(
         {
           role: domainResult.role,
           mode: domainResult.mode,
@@ -163,7 +165,7 @@ export async function runResearchPhase(
         message: msg,
       });
       void retry;
-      await attachResearchReceipt(
+      await receipts.attach(
         { role: "domain", mode, summary: `FAILED: ${msg}` },
         {
           workspaceRoot: input.workspace.rootPath,

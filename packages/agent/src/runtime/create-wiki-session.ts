@@ -3,7 +3,7 @@
  *
  * Always passes a role allowlist from tool-policy (never bash).
  * Registers Operations-wrapped Pi tools via `customTools` so write scope and
- * Source Ignores are enforced at the FS layer (see tool-operations.ts).
+ * Source Ignores are enforced at the FS layer (see fs-operations.ts).
  * Model is optional so offline/fixture tests work without API keys.
  *
  * Product Settings integration:
@@ -28,7 +28,7 @@ import {
   compactionSettingsFromBudget,
   resolveContextBudget,
 } from "./context-budget.js";
-import { buildWikiScopedToolDefinitions, type SourceIgnoreInput } from "./tool-operations.js";
+import { buildWikiScopedToolDefinitions, type SourceIgnoreInput } from "./fs-operations.js";
 import {
   assertSafeWikiToolList,
   type PiFsToolName,

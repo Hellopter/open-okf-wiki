@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { PLAN_DRAFT_REL_PATH, planDraftPathFromRunWorkDir, writePlanDraft } from "./living-spec.js";
-import { resolvePlanSpecFromAgentResult } from "./plan.js";
+import {
+  PLAN_DRAFT_REL_PATH,
+  planDraftPathFromRunWorkDir,
+  writePlanDraft,
+} from "../../produce/living-spec.js";
+import { resolvePlanSpecFromAgentResult } from "./plan-phase.js";
 
 const temps: string[] = [];
 after(async () => {

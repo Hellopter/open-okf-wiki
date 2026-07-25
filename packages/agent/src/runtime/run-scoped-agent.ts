@@ -6,23 +6,23 @@
  * noExtensions, no bash, children never write Operator Session JSONL.
  *
  * Live only. Fixture short-circuits belong on ProduceRuntime adapters.
- * Event → attempt projection lives in pi/attempt-projector (pure).
+ * Event → attempt projection lives in runtime/projectors/attempt-projector (pure).
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { NodeAttempt } from "@okf-wiki/contract";
-import { resolveAssistantSummary } from "./assistant-outcome.js";
+import { listWikiMarkdown } from "../produce/wiki-pages.js";
+import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "../tools/submit-wiki-run-spec.js";
+import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
+import type { SourceIgnoreInput } from "./fs-operations.js";
 import {
   applyAttemptSessionEvent,
   attemptItemsSnapshot,
   createAttemptProjectorState,
-} from "./attempt-projector.js";
-import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
-import type { SourceIgnoreInput } from "./tool-operations.js";
+} from "./projectors/attempt-projector.js";
+import { resolveAssistantSummary } from "./projectors/assistant-outcome.js";
 import type { WikiAgentRole } from "./tool-policy.js";
-import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "../tools/submit-wiki-run-spec.js";
-import { listWikiMarkdown } from "../produce/wiki-pages.js";
 
 export type ScopedAgentRole = Extract<
   WikiAgentRole,

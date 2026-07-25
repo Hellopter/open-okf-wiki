@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { type FrozenRunBoundary, loadRunGraph } from "@okf-wiki/core";
-import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "./living-spec.js";
+import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "../produce/living-spec.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,

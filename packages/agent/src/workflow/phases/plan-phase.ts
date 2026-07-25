@@ -2,24 +2,26 @@
  * Planner: living WikiRunSpec via AgentRunner (or default Spec for fixture).
  * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
  * fail-closed when draft is missing — no invented thin plans / chat JSON spill.
+ *
+ * Workflow stays free of Pi SDK and tools/: live callers inject customTools
+ * (submit_wiki_run_spec) via PlanWikiSpecInput.customTools.
  */
 
-import type { Model } from "@earendil-works/pi-ai/compat";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   defaultWikiRunSpec,
   type NodeAttempt,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
-import type { RunWorkdirLayout } from "../runtime/run-workdir.js";
-import type { SourceIgnoreInput } from "../runtime/tool-operations.js";
-import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "./living-spec.js";
-import type { AgentRunner } from "../ports/agent-runner.js";
-import { plannerPrompt } from "./prompts.js";
-import {
-  createSubmitWikiRunSpecTool,
-  SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
-} from "../tools/submit-wiki-run-spec.js";
+import type {
+  AgentRunner,
+  RunWorkdirLayoutPaths,
+  SourceIgnoreInput,
+} from "../../ports/agent-runner.js";
+import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "../../produce/living-spec.js";
+import { plannerPrompt } from "../../prompts/plan.js";
+
+/** Tool name constant (string only — no tools/ import). */
+export const SUBMIT_WIKI_RUN_SPEC_TOOL_NAME = "submit_wiki_run_spec" as const;
 
 function snippet(text: string, max = 240): string {
   const t = text.replace(/\s+/g, " ").trim();
@@ -61,12 +63,14 @@ export async function resolvePlanSpecFromAgentResult(input: {
 }
 
 export type PlanWikiSpecInput = {
-  layout: RunWorkdirLayout;
+  layout: RunWorkdirLayoutPaths;
   workspaceName: string;
   runtime: AgentRunner;
   wikiLanguage?: "en" | "zh";
-  model?: Model<any>;
-  modelRuntime?: ModelRuntime;
+  /** Opaque model handle — runtime adapters cast to Pi Model. */
+  model?: unknown;
+  /** Opaque model runtime — runtime adapters cast to Pi ModelRuntime. */
+  modelRuntime?: unknown;
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
@@ -75,6 +79,11 @@ export type PlanWikiSpecInput = {
   priorSpec?: WikiRunSpec;
   revisionFeedback?: string;
   onProgress?: (attempt: NodeAttempt) => void;
+  /**
+   * Opaque custom tools (e.g. submit_wiki_run_spec). Injected by tool edge
+   * so workflow/ never imports tools/ or Pi SDK.
+   */
+  customTools?: readonly unknown[];
 };
 
 export type PlanWikiSpecResult = {
@@ -139,8 +148,8 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     runWorkDir: input.layout.runWorkDir,
     task: [basePrompt, revisionPrompt].filter(Boolean).join("\n\n"),
     systemPrompt,
-    // Official Pi customTools slot — runner no longer injects by role.
-    customTools: [createSubmitWikiRunSpecTool({ runWorkDir: input.layout.runWorkDir })],
+    // Official Pi customTools slot — injected by tool edge (no tools/ import here).
+    customTools: input.customTools,
     model: input.model,
     modelRuntime: input.modelRuntime,
     sourceIgnores: input.sourceIgnores,

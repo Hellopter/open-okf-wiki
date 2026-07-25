@@ -5,9 +5,9 @@ import {
   redactSensitiveText,
   redactSensitiveValue,
   sanitizeSummary,
-} from "./run-redact.js";
+} from "./index.js";
 
-describe("run-redact", () => {
+describe("redact", () => {
   it("redacts API keys, bearer tokens, URL credentials, and absolute paths", () => {
     const raw =
       "HTTP 401 Authorization: Bearer tokensecret123 " +

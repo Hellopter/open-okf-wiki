@@ -18,7 +18,7 @@ import {
 } from "../runtime/produce-runtime.js";
 import { createToolDetailsAccumulator } from "../produce/progress.js";
 import { listWikiMarkdown } from "../produce/wiki-pages.js";
-import type { WikiProduceModelFactory } from "../produce/run-wiki.js";
+import type { WikiProduceModelFactory } from "../workflow/run-wiki.js";
 import { repairWiki } from "../workflow/produce.js";
 
 export const WIKI_REPAIR_TOOL_NAME = "wiki_repair" as const;

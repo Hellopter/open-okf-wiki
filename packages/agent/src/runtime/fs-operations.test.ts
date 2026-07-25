@@ -14,7 +14,7 @@ import {
   normalizeRelPath,
   parseSourceMountPath,
   WRITE_SCOPE_PREFIXES,
-} from "./tool-operations.js";
+} from "./fs-operations.js";
 
 const runWorkDir = path.resolve("/tmp/okf-wiki-run-workdir");
 

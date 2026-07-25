@@ -26,7 +26,7 @@ import type {
 import type { GraphStore } from "../ports/graph-store.js";
 import { progressSinkFromCallback } from "../ports/progress-sink.js";
 import type { ProduceProgress } from "../produce/progress.js";
-import { runWiki } from "../produce/run-wiki.js";
+import { runWiki } from "./run-wiki.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
 import { AttemptJournal } from "./journal.js";
 import { produceWiki } from "./produce.js";

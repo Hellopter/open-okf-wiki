@@ -6,7 +6,8 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 
 | ADR | Role |
 |---|---|
-| [0032](0032-pi-tool-owned-wiki-runs.md) | **Current:** real `wiki_produce` tool; Pi-only Session/events; immutable snapshots and Run Record v2; one Agent Workspace |
+| [0033](0033-run-graph-and-agent-layering.md) | **Current layout:** Run Graph observation; Run Workflow orchestration; ports DIP; session/runtime/tools/workflow split |
+| [0032](0032-pi-tool-owned-wiki-runs.md) | Real `wiki_produce` tool; Pi-only Session/events; immutable snapshots and Run Record v2; one Agent Workspace |
 | [0031](0031-unidirectional-framework-first-operator-surface.md) | Unidirectional layers and framework-first surface; product-inject clauses superseded by 0032 |
 | [0030](0030-pi-agent-harness-for-semantic-workflow.md) | Pi agent harness and built-in tools; WikiRunShell clauses superseded by 0032 |
 | [0021](0021-retire-python-primary-path.md) | Python primary path **removed** |
@@ -49,7 +50,7 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0032 + 0031 + 0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0032 wins on Run execution, Session authority, events, and operator interfaces; 0031 wins on dependency direction; 0030 wins on Pi/tool stack; 0029 wins on no-compat culture).
+2. Prefer **0033 + 0032 + 0031 + 0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0033 wins on agent package layering and ports DIP; 0032 wins on Run execution, Session authority, events, and operator interfaces; 0031 wins on dependency direction; 0030 wins on Pi/tool stack; 0029 wins on no-compat culture).
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
 5. Pre-0030 ADRs may assume **Mastra / AI SDK / UIMessage / list_source tools** → map to **Pi AgentSession / JSONL / built-in tools** (0030).

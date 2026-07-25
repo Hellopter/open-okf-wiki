@@ -8,17 +8,22 @@ import {
   type ModelRuntime,
   type SessionInfo,
   SessionManager,
-  sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { projectWikiProduceDetailsForHistory, type WorkspaceConfig } from "@okf-wiki/contract";
+import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
+import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
 import {
   type CreateWikiProduceToolInput,
   createWikiProduceTool,
 } from "../tools/wiki-produce.js";
 import { createWikiRepairTool } from "../tools/wiki-repair.js";
-import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
 import { createSessionStatusTool } from "../tools/session-status.js";
+import { projectOperatorHistoryFromManager } from "./history.js";
+
+export {
+  projectOperatorHistoryFromManager,
+  projectOperatorHistoryMessage,
+} from "./history.js";
 
 /** Pi JSONL session tree root for a workspace. */
 export function piSessionsDir(workspaceRoot: string): string {
@@ -165,38 +170,6 @@ export async function openOperatorSession(
   if (!info) throw new Error(`Operator Session not found: ${input.sessionId}`);
   const manager = SessionManager.open(info.path, piSessionsDir(root), root);
   return buildOperatorSession(input, manager);
-}
-
-/**
- * Operator-facing history projection of one Pi message.
- * Clones wiki_produce toolResult.details to a durable (lean) shape; does not
- * mutate SessionManager-owned objects.
- */
-export function projectOperatorHistoryMessage(message: Message): Message {
-  if (!message || typeof message !== "object") return message;
-  const row = message as Message & {
-    role?: string;
-    toolName?: string;
-    details?: unknown;
-  };
-  if (row.role !== "toolResult") return message;
-  // Always project: projectWikiProduceDetailsForHistory no-ops unless status is a wiki_produce status.
-  if (!("details" in row) || row.details == null) return message;
-  const projected = projectWikiProduceDetailsForHistory(row.details);
-  if (projected === row.details) return message;
-  return { ...row, details: projected } as Message;
-}
-
-/**
- * Operator UI history from a SessionManager: Pi compaction-aware context path
- * (same idea as TUI `buildContextEntries` + `sessionEntryToContextMessages`),
- * then product-side durable details strip. Does not rewrite JSONL.
- */
-export function projectOperatorHistoryFromManager(manager: SessionManager): Message[] {
-  return manager
-    .buildContextEntries()
-    .flatMap((entry) => sessionEntryToContextMessages(entry) as Message[])
-    .map((message) => projectOperatorHistoryMessage(message));
 }
 
 /** Read compaction-aware operator history (not the full unsummarized branch). */

@@ -3,10 +3,10 @@
  */
 
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
+import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import { emitProduceProgress } from "../../produce/progress.js";
-import { rootWritePrompt, rootWriteSystemPrompt } from "../../produce/prompts.js";
-import { buildReceiptIndex } from "../../produce/receipts.js";
 import { listWikiMarkdown } from "../../produce/wiki-pages.js";
+import { rootWritePrompt, rootWriteSystemPrompt } from "../../prompts/index.js";
 import {
   cancelledResult,
   type PhaseContext,
@@ -51,7 +51,10 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
     summary: "root_write",
   });
 
-  const receiptIndex = await buildReceiptIndex(input.workspace.rootPath, input.runId);
+  const receiptIndex = await defaultReceiptStore.buildIndex(
+    input.workspace.rootPath,
+    input.runId,
+  );
   let produced: WikiWriteResult;
   try {
     produced = await runtime.writeWiki({

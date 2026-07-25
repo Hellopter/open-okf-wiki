@@ -1,16 +1,17 @@
 /**
- * Deep Wiki Run shell (ADR 0032): freeze → plan → gates → produce → publish.
+ * Deep Wiki Run shell (ADR 0032 / 0033): freeze → plan → gates → produce → publish.
  *
  * wiki_produce tool is a thin Pi adapter over this module.
  * Inject freeze/publish/runtime for tests — not compatibility shims.
+ *
+ * Workflow stays free of Pi SDK and tools/: model handles are opaque;
+ * plan customTools are injected from the tool edge.
  *
  * Canonical job phase is WikiRunPhase; Run Record status and tool details
  * status are projections via recordStatusFromPhase / toolStatusFromPhase.
  */
 
 import path from "node:path";
-import type { Model } from "@earendil-works/pi-ai/compat";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   recordStatusFromPhase,
   toolStatusFromPhase,
@@ -27,21 +28,34 @@ import {
   updateRunRecord,
 } from "@okf-wiki/core";
 import { createCoreGraphStore } from "../ports/core-graph-store.js";
+import type {
+  GatePort,
+  WikiProduceGateCoordinator,
+  WikiProduceGateDecision,
+  WikiProduceGateRequest,
+} from "../ports/gate-port.js";
 import type { GraphStore } from "../ports/graph-store.js";
 import {
+  type ProduceProgress,
   type ProgressSink,
   progressSinkFromCallback,
 } from "../ports/progress-sink.js";
-import { layoutFromFrozen } from "../runtime/run-workdir.js";
-import { redactErrorMessage } from "../run-redact.js";
-import { AttemptJournal } from "../workflow/journal.js";
-import { topologyFromSpec } from "../workflow/topology.js";
+import { commitSpec } from "../produce/living-spec.js";
+import { redactErrorMessage } from "../redact/index.js";
 import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
-import { commitSpec } from "./living-spec.js";
-import { planWikiSpec } from "./plan.js";
 import { type ProduceRuntime, resolveProduceRuntime } from "../runtime/produce-runtime.js";
-import { produceWiki } from "../workflow/produce.js";
-import type { ProduceProgress } from "../ports/progress-sink.js";
+import { layoutFromFrozen } from "../runtime/run-workdir.js";
+import { AttemptJournal } from "./journal.js";
+import { planWikiSpec } from "./phases/plan-phase.js";
+import { produceWiki } from "./produce.js";
+import { topologyFromSpec } from "./topology.js";
+
+export type {
+  GatePort,
+  WikiProduceGateCoordinator,
+  WikiProduceGateDecision,
+  WikiProduceGateRequest,
+} from "../ports/gate-port.js";
 
 export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 
@@ -49,31 +63,12 @@ export type WikiProduceModelFactory = (
   role: WikiProduceModelRole,
   workspace: WorkspaceConfig,
 ) => Promise<{
-  model: Model<any>;
-  modelRuntime?: ModelRuntime;
+  /** Opaque model handle — runtime adapters cast to Pi Model. */
+  model: unknown;
+  /** Opaque model runtime — runtime adapters cast to Pi ModelRuntime. */
+  modelRuntime?: unknown;
   maxContextTokens?: number;
 }>;
-
-export type WikiProduceGateDecision = {
-  action: "approve" | "deny" | "revise";
-  feedback?: string;
-  spec?: WikiRunSpec;
-};
-
-export type WikiProduceGateRequest = {
-  toolCallId: string;
-  runId: string;
-  gate: "plan" | "publication";
-  spec: WikiRunSpec;
-  pages: string[];
-};
-
-export type WikiProduceGateCoordinator = {
-  waitForDecision(
-    request: WikiProduceGateRequest,
-    signal?: AbortSignal,
-  ): Promise<WikiProduceGateDecision>;
-};
 
 export type RunWikiInput = {
   workspace: WorkspaceConfig;
@@ -83,7 +78,7 @@ export type RunWikiInput = {
   toolCallId: string;
   notes?: string;
   autoApprove?: boolean;
-  gateCoordinator: WikiProduceGateCoordinator;
+  gateCoordinator: GatePort;
   resolveModel?: WikiProduceModelFactory;
   /** Explicit fixture path for tests. */
   fixture?: boolean;
@@ -109,29 +104,34 @@ export type RunWikiInput = {
   graphStore?: GraphStore;
   /** Low-level status patches for gate/record (tool maps to details). */
   onDetails?: (patch: Partial<WikiProduceToolDetails>) => void;
+  /**
+   * Opaque plan-phase custom tools (submit_wiki_run_spec). Injected by the
+   * tool edge so workflow never imports tools/ or Pi SDK.
+   */
+  createPlanTools?: (runWorkDir: string) => readonly unknown[];
 };
 
 export type RunWikiResult = WikiProduceToolDetails;
 
 export type ResolvedProduceModels = {
   writer?: {
-    model: Model<any>;
-    modelRuntime?: ModelRuntime;
+    model: unknown;
+    modelRuntime?: unknown;
     maxContextTokens?: number;
   };
   planner?: {
-    model: Model<any>;
-    modelRuntime?: ModelRuntime;
+    model: unknown;
+    modelRuntime?: unknown;
     maxContextTokens?: number;
   };
   worker?: {
-    model: Model<any>;
-    modelRuntime?: ModelRuntime;
+    model: unknown;
+    modelRuntime?: unknown;
     maxContextTokens?: number;
   };
   reviewer?: {
-    model: Model<any>;
-    modelRuntime?: ModelRuntime;
+    model: unknown;
+    modelRuntime?: unknown;
     maxContextTokens?: number;
   };
 };
@@ -147,7 +147,7 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 async function awaitGate(
-  coordinator: WikiProduceGateCoordinator,
+  coordinator: GatePort,
   request: WikiProduceGateRequest,
   signal?: AbortSignal,
 ): Promise<WikiProduceGateDecision> {
@@ -372,6 +372,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         operatorNotes,
         priorSpec,
         revisionFeedback,
+        customTools: input.createPlanTools?.(layout.runWorkDir),
         onProgress: (attempt) => handleProgress({ kind: "attempt", attempt }),
       });
       const feedback = revisionFeedback?.trim();
@@ -617,3 +618,6 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     };
   }
 }
+
+/** Alias: GatePort is the DIP name; coordinator kept for tool/server call sites. */
+export type { WikiProduceGateCoordinator as GateCoordinator };

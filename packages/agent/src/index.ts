@@ -27,11 +27,11 @@ export {
   type WikiProduceGateCoordinator,
   type WikiProduceGateDecision,
   type WikiProduceGateRequest,
-} from "./produce/run-wiki.js";
+} from "./workflow/run-wiki.js";
 /** Operator-facing redaction for server HTTP/SSE surfaces. */
 export {
   redactErrorMessage,
   redactSensitiveText,
   redactSensitiveValue,
   sanitizeSummary,
-} from "./run-redact.js";
+} from "./redact/index.js";
