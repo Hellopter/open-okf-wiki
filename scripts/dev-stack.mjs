@@ -1,18 +1,17 @@
 #!/usr/bin/env node
 /**
- * Ordered monorepo dev stack:
- *   0) ensure API + Vite ports are free (clear stale listeners from prior runs)
- *   1) contract/core/agent tsc --watch
- *   2) server (node --watch)
- *   3) wait for GET /api/health
- *   4) web (vite)
+ * Ordered monorepo dev stack (no Turbo).
  *
- * Avoids:
- * - Vite proxy 502 before API listens
- * - "Port 5173 is already in use" from orphaned Vite after a previous crash
- * - Health succeeding against a *stale* API while the new server never binds
+ * Profiles:
+ *   full   (default) — libs tsc -b -w + server → health → vite
+ *   server           — libs tsc -b -w + server → health (no Vite)
+ *   web              — vite only (expects contract dist or Vite src alias)
+ *
+ * Process count (full): 3 = libs-watch + server + vite
+ * (was 5: contract/core/agent tsc-w + server + vite)
  */
 import { execFileSync, spawn } from "node:child_process";
+import { access } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,8 +25,13 @@ const healthTimeoutMs = Number(process.env.OKF_DEV_HEALTH_TIMEOUT_MS ?? "90000")
 /** Default true: free stale listeners so re-running `pnpm dev` is reliable. Set 0 to refuse. */
 const killBusyPorts = process.env.OKF_DEV_KILL_PORTS !== "0";
 
+const agentDistEntry = path.join(monorepoRoot, "packages/agent/dist/index.js");
+const contractDistEntry = path.join(monorepoRoot, "packages/contract/dist/index.js");
+
 const children = [];
 let shuttingDown = false;
+
+/** @typedef {'full' | 'server' | 'web'} DevProfile */
 
 /** Kill pid and descendants (pnpm → node grandchildren). Linux/macOS via pgrep. */
 export function killTree(pid, signal = "SIGTERM") {
@@ -106,7 +110,7 @@ export async function ensurePortFree(
   if (!kill) {
     throw new Error(
       `${label} port ${port} is already in use (pid ${pidLabel}). ` +
-        `Stop it, or re-run with OKF_DEV_KILL_PORTS=1 (default) after setting OKF_DEV_KILL_PORTS=0 was used.`,
+        `Stop it, or re-run with OKF_DEV_KILL_PORTS=1 (default).`,
     );
   }
 
@@ -116,7 +120,6 @@ export async function ensurePortFree(
   for (const pid of pids) {
     killTree(pid, "SIGTERM");
   }
-  // Brief wait for TIME_WAIT / graceful exit
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 100));
     const still = pidsListeningOnPort(port);
@@ -135,8 +138,8 @@ export async function ensurePortFree(
   }
 }
 
-function spawnPnpm(args, env = {}) {
-  const child = spawn("pnpm", args, {
+function spawnCmd(command, args, env = {}) {
+  const child = spawn(command, args, {
     cwd: monorepoRoot,
     env: { ...process.env, ...env },
     stdio: "inherit",
@@ -150,13 +153,33 @@ function spawnPnpm(args, env = {}) {
     for (const other of children) {
       if (other !== child) killChild(other, "SIGTERM");
     }
-    // Give grandchildren a moment, then hard-kill trees
     setTimeout(() => {
       for (const other of children) killChild(other, "SIGKILL");
       process.exit(exitCode);
     }, 300).unref?.();
   });
   return child;
+}
+
+function spawnPnpm(args, env = {}) {
+  return spawnCmd("pnpm", args, env);
+}
+
+/** One-shot command; rejects on non-zero exit. */
+export function runOnce(command, args, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: monorepoRoot,
+      env: { ...process.env, ...env },
+      stdio: "inherit",
+      shell: false,
+    });
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} ${args.join(" ")} exited ${code ?? signal}`));
+    });
+  });
 }
 
 function shutdown(code = 0) {
@@ -188,43 +211,138 @@ export async function waitForUrl(url, timeoutMs = 90_000) {
   throw new Error(`Timed out waiting for ${url} (${lastError || "unreachable"})`);
 }
 
-async function main() {
-  process.stdout.write(
-    `[dev-stack] preparing ports api=${apiPort} vite=${vitePort}; health gate ${healthUrl}\n`,
-  );
+export async function pathExists(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-  await ensurePortFree(apiPort, "API", { host: apiHost === "0.0.0.0" ? "127.0.0.1" : apiHost });
-  await ensurePortFree(vitePort, "Vite", { host: "127.0.0.1" });
+/** Parse --profile=full|server|web or first positional arg. */
+export function parseProfile(argv = process.argv.slice(2)) {
+  for (const arg of argv) {
+    if (arg.startsWith("--profile=")) {
+      const value = arg.slice("--profile=".length).trim();
+      if (value === "full" || value === "server" || value === "web") return value;
+      throw new Error(`Unknown profile "${value}" (use full|server|web)`);
+    }
+    if (arg === "--profile") {
+      throw new Error("Use --profile=full|server|web");
+    }
+    if (arg === "full" || arg === "server" || arg === "web") return arg;
+    if (arg === "--help" || arg === "-h") return "help";
+  }
+  const fromEnv = (process.env.OKF_DEV_PROFILE ?? "full").trim();
+  if (fromEnv === "full" || fromEnv === "server" || fromEnv === "web") return fromEnv;
+  throw new Error(`Unknown OKF_DEV_PROFILE="${fromEnv}" (use full|server|web)`);
+}
 
-  process.stdout.write(
-    `[dev-stack] starting lib watches + server; will wait for ${healthUrl} before Vite\n`,
-  );
+async function buildLibsOnce() {
+  process.stdout.write(`[dev-stack] building libs (tsc -b tsconfig.libs.json)…\n`);
+  await runOnce("pnpm", ["exec", "tsc", "-b", "tsconfig.libs.json", "--pretty", "false"]);
+  if (!(await pathExists(agentDistEntry))) {
+    throw new Error(`libs build finished but missing ${agentDistEntry}`);
+  }
+}
 
-  spawnPnpm(["--filter", "@okf-wiki/contract", "dev"]);
-  spawnPnpm(["--filter", "@okf-wiki/core", "dev"]);
-  spawnPnpm(["--filter", "@okf-wiki/agent", "dev"]);
-  spawnPnpm(["--filter", "@okf-wiki/server", "dev"]);
+function startLibsWatch() {
+  process.stdout.write(`[dev-stack] watching libs (tsc -b tsconfig.libs.json --watch)\n`);
+  // Single composite watch for contract → core → agent (replaces 3× package tsc -w).
+  return spawnCmd("pnpm", [
+    "exec",
+    "tsc",
+    "-b",
+    "tsconfig.libs.json",
+    "--watch",
+    "--preserveWatchOutput",
+    "--pretty",
+    "false",
+  ]);
+}
 
+function startServer() {
+  process.stdout.write(`[dev-stack] starting server\n`);
+  return spawnPnpm(["--filter", "@okf-wiki/server", "dev"]);
+}
+
+function startVite() {
+  process.stdout.write(`[dev-stack] starting Vite\n`);
+  return spawnPnpm(["--filter", "@okf-wiki/web", "dev"]);
+}
+
+async function waitApiHealthy() {
+  process.stdout.write(`[dev-stack] waiting for ${healthUrl}\n`);
   try {
     await waitForUrl(healthUrl, Number.isFinite(healthTimeoutMs) ? healthTimeoutMs : 90_000);
   } catch (err) {
-    process.stderr.write(
-      `[dev-stack] ${err instanceof Error ? err.message : String(err)}\n` +
-        `[dev-stack] Is the API free on ${apiHost}:${apiPort}? Check OKF_WIKI_PORT / EADDRINUSE.\n`,
+    throw new Error(
+      `${err instanceof Error ? err.message : String(err)}\n` +
+        `[dev-stack] Is the API free on ${apiHost}:${apiPort}? Check OKF_WIKI_PORT / EADDRINUSE.`,
     );
-    shutdown(1);
+  }
+  process.stdout.write(`[dev-stack] API healthy\n`);
+}
+
+async function main() {
+  const profile = parseProfile();
+  if (profile === "help") {
+    process.stdout.write(
+      `Usage: node scripts/dev-stack.mjs [--profile=full|server|web]\n` +
+        `  full   (default) libs watch + server + vite after /api/health\n` +
+        `  server           libs watch + server (no vite)\n` +
+        `  web              vite only\n` +
+        `Env: OKF_DEV_PROFILE, OKF_DEV_KILL_PORTS=0, OKF_WIKI_PORT, VITE_DEV_PORT\n`,
+    );
+    process.exit(0);
+  }
+
+  const apiProbeHost = apiHost === "0.0.0.0" ? "127.0.0.1" : apiHost;
+
+  process.stdout.write(
+    `[dev-stack] profile=${profile} api=${apiPort} vite=${vitePort} health=${healthUrl}\n`,
+  );
+
+  if (profile === "web") {
+    await ensurePortFree(vitePort, "Vite", { host: "127.0.0.1" });
+    // Vite aliases contract to src; dist optional but helpful for types outside Vite.
+    if (!(await pathExists(contractDistEntry))) {
+      process.stdout.write(
+        `[dev-stack] contract dist missing — running one-shot libs build for types/tooling\n`,
+      );
+      await buildLibsOnce();
+    }
+    startVite();
     return;
   }
 
-  process.stdout.write(`[dev-stack] API healthy — starting Vite\n`);
-  spawnPnpm(["--filter", "@okf-wiki/web", "dev"]);
+  // full | server
+  await ensurePortFree(apiPort, "API", { host: apiProbeHost });
+  if (profile === "full") {
+    await ensurePortFree(vitePort, "Vite", { host: "127.0.0.1" });
+  }
+
+  // One composite build so server never boots against empty/partial dist, then one watch.
+  await buildLibsOnce();
+  startLibsWatch();
+  startServer();
+  await waitApiHealthy();
+
+  if (profile === "full") {
+    startVite();
+  } else {
+    process.stdout.write(
+      `[dev-stack] server-only profile — open API at http://${apiProbeHost}:${apiPort}\n`,
+    );
+  }
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
   main().catch((err) => {
-    console.error(err);
+    console.error(err instanceof Error ? err.message : err);
     shutdown(1);
   });
 }

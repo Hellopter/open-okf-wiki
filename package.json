@@ -9,7 +9,8 @@
   },
   "scripts": {
     "build": "pnpm -r run build",
-    "build:libs": "pnpm --filter @okf-wiki/agent... build",
+    "build:libs": "tsc -b tsconfig.libs.json --pretty false",
+    "dev:libs": "tsc -b tsconfig.libs.json --watch --preserveWatchOutput --pretty false",
     "test": "pnpm -r run test",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint .",
@@ -19,11 +20,12 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run check:architecture",
     "check:architecture": "node scripts/check-architecture.mjs",
     "test:e2e": "pnpm --filter @okf-wiki/web test:e2e",
-    "dev": "pnpm run build:libs && pnpm run dev:stack",
-    "dev:stack": "node scripts/dev-stack.mjs",
-    "dev:stack:parallel": "concurrently -k -n contract,core,agent,server,web -c blue,cyan,magenta,green,yellow \"pnpm --filter @okf-wiki/contract dev\" \"pnpm --filter @okf-wiki/core dev\" \"pnpm --filter @okf-wiki/agent dev\" \"pnpm --filter @okf-wiki/server dev\" \"pnpm --filter @okf-wiki/web dev\"",
-    "dev:web": "pnpm --filter @okf-wiki/web dev",
-    "dev:server": "pnpm --filter @okf-wiki/server dev"
+    "dev": "node scripts/dev-stack.mjs --profile=full",
+    "dev:full": "node scripts/dev-stack.mjs --profile=full",
+    "dev:stack": "node scripts/dev-stack.mjs --profile=full",
+    "dev:web": "node scripts/dev-stack.mjs --profile=web",
+    "dev:server": "node scripts/dev-stack.mjs --profile=server",
+    "dev:stack:parallel": "concurrently -k -n libs,server,web -c cyan,green,yellow \"pnpm run dev:libs\" \"pnpm --filter @okf-wiki/server dev\" \"pnpm --filter @okf-wiki/web dev\""
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",

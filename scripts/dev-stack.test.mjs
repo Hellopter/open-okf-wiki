@@ -1,11 +1,11 @@
 /**
- * Unit tests for dev-stack wait helper + port free logic (no full stack boot).
+ * Unit tests for dev-stack helpers (no full stack boot).
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
-import { ensurePortFree, isPortOpen, waitForUrl } from "./dev-stack.mjs";
+import { ensurePortFree, isPortOpen, parseProfile, waitForUrl } from "./dev-stack.mjs";
 
 describe("dev-stack waitForUrl", () => {
   it("resolves when the URL becomes healthy", async () => {
@@ -64,7 +64,6 @@ describe("dev-stack ensurePortFree", () => {
   });
 
   it("frees a busy port when kill is enabled (separate process)", async () => {
-    // Hold the port in a child process so killTree does not kill this test runner.
     const holder = spawn(
       process.execPath,
       [
@@ -98,5 +97,27 @@ describe("dev-stack ensurePortFree", () => {
         // already gone
       }
     }
+  });
+});
+
+describe("dev-stack parseProfile", () => {
+  it("defaults to full", () => {
+    const prev = process.env.OKF_DEV_PROFILE;
+    delete process.env.OKF_DEV_PROFILE;
+    try {
+      assert.equal(parseProfile([]), "full");
+    } finally {
+      if (prev === undefined) delete process.env.OKF_DEV_PROFILE;
+      else process.env.OKF_DEV_PROFILE = prev;
+    }
+  });
+
+  it("accepts --profile=server and positional web", () => {
+    assert.equal(parseProfile(["--profile=server"]), "server");
+    assert.equal(parseProfile(["web"]), "web");
+  });
+
+  it("rejects unknown profiles", () => {
+    assert.throws(() => parseProfile(["--profile=turbo"]), /Unknown profile/);
   });
 });

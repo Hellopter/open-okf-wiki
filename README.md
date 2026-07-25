@@ -72,21 +72,34 @@ pnpm dev
 
 For **no-LLM pipeline smoke** only (tests, e2e, path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture`. That is not the normal operator path.
 
-`pnpm dev` builds shared packages once, then starts an **ordered** watch stack
-(`scripts/dev-stack.mjs`): free stale API/Vite ports if needed, start lib
-`tsc --watch` + API server, **wait for** `GET /api/health`, then Vite. That
-avoids (1) browser 502 before the API listens and (2) `Port 5173 is already in
-use` from orphaned processes after a previous crash.
+`pnpm dev` runs an **ordered** watch stack (`scripts/dev-stack.mjs`, no Turbo):
 
-| Process | Hot reload |
+1. Free stale API/Vite ports if needed  
+2. **One** `tsc -b tsconfig.libs.json` (contract → core → agent), then `--watch`  
+3. Start API (`node --watch`)  
+4. Wait for `GET /api/health`  
+5. Start Vite  
+
+That keeps the process count at **3** (libs watch + server + web) instead of five
+parallel package watches, avoids browser 502 before the API listens, and clears
+orphaned `5173`/`8787` listeners from a previous crash.
+
+| Command | What starts |
 |---|---|
-| `@okf-wiki/web` | Vite HMR (starts only after API health) |
-| `@okf-wiki/server` | `node --watch` |
-| `contract` / `core` / `agent` | `tsc --watch` → dist changes may restart the server |
+| `pnpm dev` / `dev:full` | libs watch + server + Vite (after health) |
+| `pnpm dev:server` | libs watch + server only |
+| `pnpm dev:web` | Vite only (contract sources via Vite alias) |
+| `pnpm build:libs` | one-shot `tsc -b tsconfig.libs.json` |
 
-Env: `OKF_DEV_KILL_PORTS=0` refuses to start when 8787/5173 are busy (default is
-to free them). Split terminals: `pnpm dev:server` and `pnpm dev:web`.
-Legacy all-parallel stack (no health gate): `pnpm dev:stack:parallel`.
+| Process (full profile) | Hot reload |
+|---|---|
+| `@okf-wiki/web` | Vite HMR; `@okf-wiki/contract` resolves to **src** in dev |
+| `@okf-wiki/server` | `node --watch` on server src; imports **lib dist** |
+| libs | single `tsc -b --watch` → `packages/{contract,core,agent}/dist` |
+
+Env: `OKF_DEV_KILL_PORTS=0` refuses busy ports (default frees them);
+`OKF_DEV_PROFILE=server|web|full` overrides the profile. Escape hatch without
+health gate: `pnpm dev:stack:parallel`.
 
 ### Operator flow (browser)
 
@@ -116,7 +129,7 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 
 | Command | What it does | When |
 |---|---|---|
-| `pnpm dev` | Build libs once + API/Web/lib watch | Day-to-day development |
+| `pnpm dev` | Ordered stack: libs `tsc -b -w` + API + Vite | Day-to-day development |
 | `pnpm build` | Build all packages | Release / packaging |
 | `pnpm typecheck` | Root solution `tsc -b` (project references) | Local before PR; **CI** |
 | `pnpm lint` / `pnpm lint:fix` | ESLint flat config (`eslint.config.mjs`) | Local; staged pre-commit; **CI** |
