@@ -1,5 +1,5 @@
 /**
- * Planner: living WikiRunSpec via ProduceRuntime (or default Spec for fixture).
+ * Planner: living WikiRunSpec via AgentRunner (or default Spec for fixture).
  * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
  * fail-closed when draft is missing — no invented thin plans / chat JSON spill.
  */
@@ -14,7 +14,7 @@ import {
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "./living-spec.js";
-import type { ProduceRuntime } from "./produce-runtime.js";
+import type { AgentRunner } from "../ports/agent-runner.js";
 import { plannerPrompt } from "./prompts.js";
 import {
   createSubmitWikiRunSpecTool,
@@ -63,7 +63,7 @@ export async function resolvePlanSpecFromAgentResult(input: {
 export type PlanWikiSpecInput = {
   layout: RunWorkdirLayout;
   workspaceName: string;
-  runtime: ProduceRuntime;
+  runtime: AgentRunner;
   wikiLanguage?: "en" | "zh";
   model?: Model<any>;
   modelRuntime?: ModelRuntime;

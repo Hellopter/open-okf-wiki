@@ -1,75 +1,53 @@
 /**
- * ProduceRuntime seam: Live Pi vs Fixture adapters.
+ * Live Pi / Fixture adapters for ports.AgentRunner.
  *
- * produceWiki depends only on this interface — no scattered fixture flags.
+ * produceWiki depends on AgentRunner — this module only implements the port.
  */
 
 import { mkdir } from "node:fs/promises";
-import type { Model } from "@earendil-works/pi-ai/compat";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { WikiRunSpec } from "@okf-wiki/contract";
-import type { RunWorkdirLayout } from "../pi/run-workdir.js";
-import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentRunRequest,
+  AgentRunResult,
+  AgentRunner,
+  WikiWriteRequest,
+  WikiWriteResult,
+} from "../ports/agent-runner.js";
 import { shouldUsePiFixtureMode } from "./fixture-mode.js";
 import {
   type RunScopedAgentInput,
-  type RunScopedAgentResult,
   runScopedAgent,
   runScopedAgentsParallel,
 } from "./run-scoped-agent.js";
 import { writeFixtureWiki } from "./wiki-pages.js";
 
-export type ProduceAgentRequest = RunScopedAgentInput;
+/** @deprecated Prefer AgentRunner from ports — alias for call-site migration. */
+export type ProduceRuntime = AgentRunner;
+export type ProduceAgentRequest = AgentRunRequest;
+export type ProduceAgentResult = AgentRunResult;
+export type ProduceWriteRequest = WikiWriteRequest;
+export type ProduceWriteResult = WikiWriteResult;
 
-export type ProduceAgentResult = Omit<RunScopedAgentResult, "mode"> & {
-  mode: "live" | "fixture";
-  /** Path-first plan handoff when role=plan wrote analysis/plan-draft.json. */
-  specPath?: string;
-};
-
-export type ProduceWriteRequest = {
-  layout: RunWorkdirLayout;
-  spec: WikiRunSpec;
-  workspaceName: string;
-  model?: Model<any>;
-  modelRuntime?: ModelRuntime;
-  maxContextTokens?: number;
-  contextTargetTokens?: number;
-  additionalSkillPaths?: readonly string[];
-  sourceIgnores?: SourceIgnoreInput;
-  abortSignal?: AbortSignal;
-  onProgress?: RunScopedAgentInput["onProgress"];
-  systemPrompt?: string;
-  task: string;
-};
-
-export type ProduceWriteResult = {
-  mode: "live" | "fixture";
-  layout: RunWorkdirLayout;
-  pages: string[];
-  summary: string;
-};
-
-export interface ProduceRuntime {
-  readonly kind: "live" | "fixture";
-  runAgent(input: ProduceAgentRequest): Promise<ProduceAgentResult>;
-  runAgentsParallel(
-    tasks: ProduceAgentRequest[],
-    opts?: { concurrency?: number },
-  ): Promise<ProduceAgentResult[]>;
-  writeWiki(input: ProduceWriteRequest): Promise<ProduceWriteResult>;
+function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
+  return {
+    ...input,
+    customTools: input.customTools as ToolDefinition<any, any>[] | undefined,
+  };
 }
 
 /** Live adapter: real in-process Pi sessions. */
-export function createLiveProduceRuntime(): ProduceRuntime {
+export function createLiveProduceRuntime(): AgentRunner {
   return {
     kind: "live",
     async runAgent(input) {
-      const result = await runScopedAgent(input);
+      const result = await runScopedAgent(toScopedInput(input));
       return { ...result, mode: "live" };
     },
     async runAgentsParallel(tasks, opts) {
-      const results = await runScopedAgentsParallel(tasks, opts);
+      const results = await runScopedAgentsParallel(
+        tasks.map(toScopedInput),
+        opts,
+      );
       return results.map((r) => ({ ...r, mode: "live" as const }));
     },
     async writeWiki(input) {

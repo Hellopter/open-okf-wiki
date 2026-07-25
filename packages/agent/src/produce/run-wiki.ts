@@ -12,10 +12,8 @@ import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
-  emptyRunGraphSnapshot,
   recordStatusFromPhase,
   toolStatusFromPhase,
-  type RunGraphSnapshot,
   type WikiProduceToolDetails,
   type WikiRunPhase,
   type WikiRunSpec,
@@ -27,17 +25,23 @@ import {
   freezeWikiRun,
   publishStagingToPublication,
   updateRunRecord,
-  writeRunGraph,
 } from "@okf-wiki/core";
+import { createCoreGraphStore } from "../ports/core-graph-store.js";
+import type { GraphStore } from "../ports/graph-store.js";
+import {
+  type ProgressSink,
+  progressSinkFromCallback,
+} from "../ports/progress-sink.js";
 import { layoutFromFrozen } from "../pi/run-workdir.js";
 import { redactErrorMessage } from "../run-redact.js";
+import { AttemptJournal } from "../workflow/journal.js";
+import { topologyFromSpec } from "../workflow/topology.js";
 import { shouldUsePiFixtureMode } from "./fixture-mode.js";
 import { commitSpec } from "./living-spec.js";
 import { planWikiSpec } from "./plan.js";
 import { type ProduceRuntime, resolveProduceRuntime } from "./produce-runtime.js";
 import { produceWiki } from "./produce-wiki.js";
-import { type ProduceProgress, upsertAttempt } from "./progress.js";
-import { topologyFromSpec } from "./topology.js";
+import type { ProduceProgress } from "./progress.js";
 
 export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 
@@ -92,6 +96,17 @@ export type RunWikiInput = {
   publish?: typeof publishStagingToPublication;
   abortSignal?: AbortSignal;
   onProgress?: (progress: ProduceProgress) => void;
+  /**
+   * Optional progress port. When omitted, wraps `onProgress` via
+   * progressSinkFromCallback so orchestration always emits through ProgressSink.
+   */
+  progressSink?: ProgressSink;
+  /**
+   * Optional durable Run Graph store. When omitted, defaults to
+   * createCoreGraphStore(workspaceRoot) at first topology publish.
+   * Tests inject a memory store to assert save/load without disk.
+   */
+  graphStore?: GraphStore;
   /** Low-level status patches for gate/record (tool maps to details). */
   onDetails?: (patch: Partial<WikiProduceToolDetails>) => void;
 };
@@ -244,54 +259,65 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   };
 
   /**
-   * Live Run Graph (topology + attempts). SSE/tool details and durable
-   * analysis/run-graph.json share this accumulator — never write empty attempts
-   * after agents have already run.
+   * Live Run Graph via pure AttemptJournal + GraphStore port.
+   * SSE/tool details and durable analysis/run-graph.json share journal.snapshot().
    */
-  let liveGraph: RunGraphSnapshot = emptyRunGraphSnapshot(0);
-  let graphWorkspaceRoot: string | undefined;
+  const journal = new AttemptJournal();
+  /** Injected store wins; otherwise created on first topology publish. */
+  let graphStore: GraphStore | undefined = input.graphStore;
   let graphRunId: string | undefined;
 
+  /**
+   * Orchestration always emits through ProgressSink.
+   * Tool edge keeps onProgress; we adapt it here (or accept an explicit sink).
+   */
+  const progressSink: ProgressSink =
+    input.progressSink ?? progressSinkFromCallback(input.onProgress);
+
   const persistLiveGraph = async (): Promise<void> => {
-    if (!graphWorkspaceRoot || !graphRunId) return;
+    if (!graphStore || !graphRunId) return;
     try {
-      await writeRunGraph(graphWorkspaceRoot, graphRunId, liveGraph);
+      await graphStore.save(graphRunId, journal.snapshot());
     } catch {
       // Durable graph is best-effort; live projection already emitted.
     }
   };
 
-  /** Fold progress into liveGraph, then fan out to tool/SSE subscribers. */
+  /** Fold progress into journal, then fan out to tool/SSE subscribers via ProgressSink. */
   const handleProgress = (progress: ProduceProgress): void => {
     switch (progress.kind) {
       case "attempt":
-        liveGraph = upsertAttempt(liveGraph, progress.attempt);
+        journal.upsert(progress.attempt);
         break;
       case "topology":
-        liveGraph = {
-          topologyVersion:
-            progress.topologyVersion ?? Math.max(1, liveGraph.topologyVersion + 1),
-          topology: progress.topology,
-          attempts: liveGraph.attempts,
-          ...(liveGraph.playhead ? { playhead: liveGraph.playhead } : {}),
-        };
+        journal.setTopology(
+          progress.topology,
+          progress.topologyVersion ?? Math.max(1, journal.snapshot().topologyVersion + 1),
+        );
         break;
       case "graph":
-        liveGraph = progress.graph;
+        for (const a of progress.graph.attempts) journal.upsert(a);
+        if (progress.graph.topology.length > 0) {
+          journal.setTopology(progress.graph.topology, progress.graph.topologyVersion);
+        }
         break;
       default:
         break;
     }
-    try {
-      input.onProgress?.(progress);
-    } catch {
-      // display must not break the run
+    // Always re-emit graph snapshot for live details after journal updates.
+    if (
+      progress.kind === "attempt" ||
+      progress.kind === "topology" ||
+      progress.kind === "graph"
+    ) {
+      progressSink.emit({ kind: "graph", graph: journal.snapshot() });
     }
+    progressSink.emit(progress);
   };
 
-  /** Emit Spec topology into live graph and persist under analysis/run-graph.json. */
+  /** Emit Spec topology into journal and persist via GraphStore. */
   const publishTopology = async (committed: WikiRunSpec, rid: string, root: string) => {
-    graphWorkspaceRoot = root;
+    graphStore = graphStore ?? createCoreGraphStore(root);
     graphRunId = rid;
     const topology = topologyFromSpec(committed);
     handleProgress({ kind: "topology", topology, topologyVersion: 1 });

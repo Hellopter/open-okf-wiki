@@ -4,7 +4,7 @@
  * Approved Spec (already committed) → Domain/Leaf research + receipts →
  * root_write → review council → repair* → scorePublishable.
  *
- * Requires ProduceRuntime. Does not write Spec (living-spec / runWiki owns that).
+ * Requires AgentRunner port. Does not write Spec (living-spec / runWiki owns that).
  * Emits ProduceProgress only — tool edge projects to WikiProduceToolDetails.
  */
 
@@ -12,9 +12,13 @@ import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { MergedDefectReport, WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
 import { resolveOrchestration } from "../limits.js";
+import type {
+  AgentRunner,
+  ScopedRunnerProgress,
+  WikiWriteResult,
+} from "../ports/agent-runner.js";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import { type ProduceRuntime, type ProduceWriteResult } from "./produce-runtime.js";
 import { emitProduceProgress, type ProduceProgress } from "./progress.js";
 import {
   domainResearchPrompt,
@@ -30,8 +34,10 @@ import {
 } from "./publishability.js";
 import { attachResearchReceipt, buildReceiptIndex } from "./receipts.js";
 import { runReviewCouncil } from "./review.js";
-import type { ScopedAgentProgress } from "./run-scoped-agent.js";
 import { listWikiMarkdown } from "./wiki-pages.js";
+
+type ProduceWriteResult = WikiWriteResult;
+type ScopedAgentProgress = ScopedRunnerProgress;
 
 export type ProduceWikiModels = {
   writer?: {
@@ -57,8 +63,11 @@ export type ProduceWikiInput = {
   layout: RunWorkdirLayout;
   /** Already-approved and committed living Spec. */
   spec: WikiRunSpec;
-  /** Required: selected once at runWiki / test harness. */
-  runtime: ProduceRuntime;
+  /**
+   * Injectable runner (fixture or live Pi). Prefer ports.AgentRunner —
+   * produce must not call Pi session helpers directly.
+   */
+  runtime: AgentRunner;
   models?: ProduceWikiModels;
   abortSignal?: AbortSignal;
   additionalSkillPaths?: readonly string[];
@@ -153,7 +162,7 @@ async function produceWikiBody(ctx: {
   input: ProduceWikiInput;
   onProgress: ProduceWikiInput["onProgress"];
   orch: ReturnType<typeof resolveOrchestration>;
-  runtime: ProduceRuntime;
+  runtime: AgentRunner;
   metrics: ProduceWikiResult["metrics"];
   multiSource: boolean;
   wikiLanguage: "en" | "zh";

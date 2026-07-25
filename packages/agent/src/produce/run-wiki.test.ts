@@ -200,6 +200,60 @@ describe("runWiki core flows", () => {
     );
   });
 
+  it("accepts injected memory GraphStore and ProgressSink (save/load without core disk)", async () => {
+    const workspace = await makeWorkspace();
+    const snapshots = new Map<string, import("@okf-wiki/contract").RunGraphSnapshot>();
+    let saveCalls = 0;
+    const graphStore = {
+      async save(runId: string, snapshot: import("@okf-wiki/contract").RunGraphSnapshot) {
+        saveCalls += 1;
+        snapshots.set(runId, {
+          topologyVersion: snapshot.topologyVersion,
+          topology: [...snapshot.topology],
+          attempts: [...snapshot.attempts],
+          ...(snapshot.playhead ? { playhead: { ...snapshot.playhead } } : {}),
+        });
+      },
+      async load(runId: string) {
+        return snapshots.get(runId) ?? null;
+      },
+    };
+    let sinkEmits = 0;
+    const progressSink = {
+      emit() {
+        sinkEmits += 1;
+      },
+    };
+
+    const result = await runWiki({
+      workspace,
+      sessionId: "s-inject",
+      toolCallId: "t-inject",
+      autoApprove: true,
+      gateCoordinator: {
+        waitForDecision: async () => ({ action: "approve" as const }),
+      },
+      fixture: true,
+      runtime: createFixtureProduceRuntime(),
+      freeze: async ({ sessionId }) => fakeFreeze(workspace, sessionId),
+      publish: async () => ({
+        publicationPath: workspace.publicationPath!,
+        pageCount: 2,
+      }),
+      graphStore,
+      progressSink,
+    });
+
+    assert.equal(result.status, "published");
+    assert.ok(result.runId);
+    assert.ok(saveCalls >= 1, `expected memory GraphStore.save, got ${saveCalls}`);
+    assert.ok(sinkEmits >= 1, `expected ProgressSink.emit, got ${sinkEmits}`);
+    const loaded = await graphStore.load(result.runId!);
+    assert.ok(loaded);
+    assert.ok(loaded!.topology.length >= 1);
+    assert.ok(loaded!.attempts.length >= 1);
+  });
+
   it("plan deny → cancelled, no publish", async () => {
     const workspace = await makeWorkspace();
     const gates = gateHarness();
