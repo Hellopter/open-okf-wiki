@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { PLAN_DRAFT_REL_PATH, planDraftPathFromRunWorkDir, writePlanDraft } from "./living-spec.js";
-import { parsePlanFromAgentText, resolvePlanSpecFromAgentResult } from "./plan.js";
+import { resolvePlanSpecFromAgentResult } from "./plan.js";
 
 const temps: string[] = [];
 after(async () => {
@@ -42,69 +42,6 @@ function largeSpec(name: string) {
   };
 }
 
-test("parsePlanFromAgentText accepts a complete fenced WikiRunSpec", () => {
-  const expected = defaultWikiRunSpec("Demo");
-  const plan = parsePlanFromAgentText(
-    ["Here is the plan:", "```json", JSON.stringify(expected), "```"].join("\n"),
-  );
-  assert.deepEqual(plan, expected);
-});
-
-test("parsePlanFromAgentText accepts a complete raw WikiRunSpec", () => {
-  const expected = defaultWikiRunSpec("Raw");
-  assert.deepEqual(parsePlanFromAgentText(JSON.stringify(expected)), expected);
-});
-
-test("parsePlanFromAgentText accepts a large complete Spec (>4k)", () => {
-  const expected = largeSpec("Big");
-  const text = ["narration…", "```json", JSON.stringify(expected, null, 2), "```"].join("\n");
-  assert.ok(text.length > 4000, `fixture should exceed 4k (got ${text.length})`);
-  const plan = parsePlanFromAgentText(text);
-  assert.equal(plan.pages.length, 10);
-  assert.equal(plan.domains.length, 6);
-});
-
-test("parsePlanFromAgentText rejects head-truncated large Spec (historical control bug)", () => {
-  const expected = largeSpec("Trunc");
-  const full = ["```json", JSON.stringify(expected, null, 2), "```"].join("\n");
-  const truncated = `${full.slice(0, 3999)}…`;
-  assert.throws(() => parsePlanFromAgentText(truncated), /complete JSON WikiRunSpec/);
-});
-
-test("parsePlanFromAgentText prefers the last fenced JSON block", () => {
-  const expected = defaultWikiRunSpec("LastFence");
-  const text = [
-    "```json",
-    JSON.stringify({ summary: "thin", pages: [{ path: "x.md", purpose: "x" }] }),
-    "```",
-    "Final plan:",
-    "```json",
-    JSON.stringify(expected),
-    "```",
-  ].join("\n");
-  assert.deepEqual(parsePlanFromAgentText(text), expected);
-});
-
-test("parsePlanFromAgentText rejects Markdown page-list compatibility", () => {
-  assert.throws(
-    () =>
-      parsePlanFromAgentText(
-        ["### Pages", "- `overview.md` — Project purpose and navigation"].join("\n"),
-      ),
-    /complete JSON WikiRunSpec/,
-  );
-});
-
-test("parsePlanFromAgentText rejects a thin legacy JSON plan", () => {
-  assert.throws(
-    () =>
-      parsePlanFromAgentText(
-        `\`\`\`json\n${JSON.stringify({ summary: "Thin", pages: [{ path: "x.md", purpose: "x" }] })}\n\`\`\``,
-      ),
-    /complete JSON WikiRunSpec/,
-  );
-});
-
 test("resolvePlanSpecFromAgentResult reads only on-disk plan-draft (not summary text)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-draft-"));
   temps.push(dir);
@@ -133,5 +70,18 @@ test("resolvePlanSpecFromAgentResult fails closed when draft is missing (no text
         summary: text,
       }),
     /submit_wiki_run_spec|plan-draft\.json/,
+  );
+});
+
+test("resolvePlanSpecFromAgentResult rejects unexpected draft path", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-badpath-"));
+  temps.push(dir);
+  await assert.rejects(
+    () =>
+      resolvePlanSpecFromAgentResult({
+        runWorkDir: dir,
+        specPath: "analysis/other.json",
+      }),
+    /unexpected path/,
   );
 });

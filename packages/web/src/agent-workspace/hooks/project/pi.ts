@@ -1,9 +1,13 @@
-/** Pi-native Operator Session projector (ADR 0032). */
+/**
+ * Pi-native Operator Session projector (ADR 0031 / 0032).
+ *
+ * Snapshot authority: server snapshots fully replace local state (including
+ * client-only optimistic user rows). Live Pi `user` role events are ignored —
+ * durable user turns arrive via snapshot, not live stream.
+ */
 
 import { type WikiProduceToolDetails, WikiProduceToolDetailsSchema } from "@okf-wiki/contract";
-import { toast } from "sonner";
 import {
-  compactToolInput,
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
@@ -78,7 +82,7 @@ function extractToolCallsFromMessage(
     tools.push({
       id,
       name,
-      input: compactToolInput(args) ?? prev?.input,
+      args: args !== undefined ? args : prev?.args,
       output: prev?.output,
       ...(prev?.details ? { details: prev.details } : {}),
       status: prev?.status ?? "pending",
@@ -202,14 +206,11 @@ function assistantFromSnapshot(
     thinkingStatus = thinkingStatus === "streaming" ? "done" : thinkingStatus;
   }
 
-  // Accessible toast channel co-located with errorText (UI also uses role=alert).
-  void toast.error;
   return {
     id: opts.id,
     role: "assistant",
     content:
-      text ||
-      (isError ? (err.errorText ?? opts.prev?.content ?? "") : (opts.prev?.content ?? "")),
+      text || (isError ? (err.errorText ?? opts.prev?.content ?? "") : (opts.prev?.content ?? "")),
     thinking: thinking || opts.prev?.thinking,
     thinkingStatus: thinking ? thinkingStatus : opts.prev?.thinkingStatus,
     createdAt: opts.prev?.createdAt ?? opts.ts,
@@ -233,7 +234,7 @@ function patchToolsOnAssistant(
     tools.push({
       id: toolCallId,
       name: patch.name ?? "tool",
-      input: patch.input,
+      args: patch.args,
       output: patch.output,
       status: patch.status ?? "running",
     });
@@ -279,7 +280,7 @@ function updateToolInState(
       {
         id: toolCallId,
         name: patch.name ?? "tool",
-        input: patch.input,
+        args: patch.args,
         output: patch.output,
         status: patch.status ?? "running",
       },
@@ -297,8 +298,6 @@ function updateToolInState(
  * Pure: returns a new state object (streamingMessage may share tool arrays).
  */
 export function reducePiEvent(state: PiStreamState, kind: string, payload: unknown): PiStreamState {
-  // Accessible toast channel co-located with errorText fields in this reducer.
-  void toast.error;
   const body = isRecord(payload) ? payload : {};
   const message = "message" in body ? body.message : undefined;
   const role = messageRole(message);
@@ -338,6 +337,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
 
   // --- message_start --------------------------------------------------------
   if (kind === "message_start") {
+    // Live user events ignored — optimistic Composer rows + snapshot authority.
     if (role === "user") return state;
     if (role === "toolResult" || role === "tool") return state;
 
@@ -370,6 +370,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
 
   // --- message_end ----------------------------------------------------------
   if (kind === "message_end") {
+    // Live user events ignored — durable user turns come from snapshot only.
     if (role === "user") return state;
     if (role === "toolResult" || role === "tool") {
       // Attach tool result text onto last assistant tool row when present.
@@ -443,10 +444,11 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   if (kind === "tool_execution_start") {
     const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : makeId("tool");
     const toolName = typeof body.toolName === "string" ? body.toolName : "tool";
-    const input = compactToolInput(body.args);
+    // Keep structured args (Pi pattern) — no string round-trip.
+    const args = "args" in body ? body.args : undefined;
     return updateToolInState(state, toolCallId, {
       name: toolName,
-      input,
+      args,
       status: "running",
     });
   }
@@ -557,7 +559,6 @@ function historyTimestamp(row: unknown): string {
 
 /** Project the durable branch returned by Pi SessionManager (opaque Pi messages). */
 export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
-  void toast.error;
   const messages: AgentMessage[] = [];
 
   for (let index = 0; index < rows.length; index += 1) {
@@ -615,10 +616,14 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
 /**
  * Fold the only three accepted transport shapes:
  * current server snapshot, genuine Pi event, and heartbeat.
+ *
+ * Server snapshots fully replace local state — client-only optimistic user
+ * rows never survive projection.
  */
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
     const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
+    // Full replace: optimistic and other client-only rows do not carry over.
     const snapshot = createPiStreamState(projectPiHistory(rows));
     const activeTool = event.payload.activeTool;
     if (!activeTool) return snapshot;

@@ -7,6 +7,7 @@ import {
   reducePiEvent,
   viewMessages,
 } from "./project/pi.ts";
+import type { AgentSseLike } from "./project/types.ts";
 
 describe("projectAgentEvent", () => {
   it("uses the server snapshot as the complete durable SessionManager view", () => {
@@ -59,7 +60,7 @@ describe("projectAgentEvent", () => {
       {
         id: "wiki-1",
         name: "wiki_produce",
-        input: '{"audience":"maintainers"}',
+        args: { audience: "maintainers" },
         output: "published 4 pages",
         status: "done",
       },
@@ -99,6 +100,50 @@ describe("projectAgentEvent", () => {
       viewMessages(next).map((message) => message.content),
       ["durable truth"],
     );
+  });
+
+  it("clears optimistic client rows when a server snapshot arrives", () => {
+    const withOptimistic = createPiStreamState([
+      {
+        id: "opt_user",
+        role: "user",
+        content: "pending local send",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        status: "done",
+        optimistic: true,
+      },
+    ]);
+
+    const next = projectAgentEvent(withOptimistic, {
+      source: "server",
+      kind: "snapshot",
+      sessionId: "session-1",
+      timestamp: "2026-07-24T00:00:01.000Z",
+      payload: {
+        session: { id: "session-1", workspaceId: "workspace-1" },
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "pending local send" }],
+            timestamp: 1,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "ok" }],
+            stopReason: "stop",
+            timestamp: 2,
+          },
+        ],
+      },
+    });
+
+    const messages = viewMessages(next);
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0]!.role, "user");
+    assert.equal(messages[0]!.content, "pending local send");
+    assert.equal(messages[0]!.optimistic, undefined);
+    assert.ok(!messages.some((m) => m.optimistic === true));
+    assert.equal(messages[0]!.id, "hist_user_1");
   });
 
   it("restores the genuine live wiki_produce gate from a reconnect snapshot", () => {
@@ -169,6 +214,93 @@ describe("projectAgentEvent", () => {
 });
 
 describe("reducePiEvent", () => {
+  it("keeps structured tool args as objects (no string round-trip)", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tool-1",
+            name: "read",
+            arguments: { path: "src/main.ts", offset: 10 },
+          },
+        ],
+      },
+    });
+    state = reducePiEvent(state, "tool_execution_start", {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "read",
+      args: { path: "src/main.ts", offset: 10 },
+    });
+
+    const tool = viewMessages(state)[0]!.tools?.[0];
+    assert.deepEqual(tool?.args, { path: "src/main.ts", offset: 10 });
+    assert.equal(typeof tool?.args, "object");
+    assert.equal(tool?.status, "running");
+  });
+
+  it("does not invent thinking chrome on empty message_update without open stream", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    const next = reducePiEvent(state, "message_update", {
+      type: "message_update",
+      message: { role: "assistant", content: [] },
+      assistantMessageEvent: { type: "text_delta", delta: "" },
+    });
+
+    assert.equal(next, state);
+    assert.equal(next.streamingMessage, null);
+    assert.equal(viewMessages(next).length, 0);
+  });
+
+  it("dedupes error events when assistant already carries the same errorText", () => {
+    let state = createPiStreamState([
+      {
+        id: "asst_err",
+        role: "assistant",
+        content: "provider failed",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        status: "error",
+        errorText: "provider failed",
+      },
+    ]);
+    state = { ...state, lastAssistantId: "asst_err" };
+
+    const next = reducePiEvent(state, "error", {
+      type: "error",
+      message: "provider failed",
+    });
+
+    assert.equal(next, state);
+    assert.equal(viewMessages(next).length, 1);
+    assert.equal(viewMessages(next)[0]!.role, "assistant");
+  });
+
+  it("clears lastAssistantId on agent_start so a new turn does not reuse prior assistant", () => {
+    let state = createPiStreamState([
+      {
+        id: "prior_asst",
+        role: "assistant",
+        content: "previous turn",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        status: "done",
+      },
+    ]);
+    state = { ...state, lastAssistantId: "prior_asst", turnActive: false };
+
+    const next = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    assert.equal(next.lastAssistantId, null);
+    assert.equal(next.turnActive, true);
+    assert.equal(next.streamingMessage, null);
+    // Prior durable messages remain until snapshot replaces them.
+    assert.equal(viewMessages(next).length, 1);
+  });
+
   it("accepts durable wiki_produce toolResult without live Run mirrors", () => {
     let state = createPiStreamState();
     state = projectAgentEvent(state, {
@@ -193,8 +325,9 @@ describe("reducePiEvent", () => {
         },
       },
     } as AgentSseLike);
-    const tool = viewMessages(state).find((m) => m.role === "assistant")?.tools?.[0]
-      ?? viewMessages(state).flatMap((m) => m.tools ?? [])[0];
+    const tool =
+      viewMessages(state).find((m) => m.role === "assistant")?.tools?.[0] ??
+      viewMessages(state).flatMap((m) => m.tools ?? [])[0];
     // toolResult may attach to assistant tool list or stand alone depending on projector
     const details =
       tool?.details ??
@@ -308,6 +441,7 @@ describe("reducePiEvent", () => {
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.status, "awaiting_plan");
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.spec?.pages[0]?.path, "overview.md");
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.children?.[0]?.role, "plan");
+    assert.deepEqual(viewMessages(state)[0]!.tools?.[0]?.args, { audience: "users" });
     state = reducePiEvent(state, "tool_execution_end", {
       type: "tool_execution_end",
       toolCallId: "tool-1",
@@ -329,6 +463,7 @@ describe("reducePiEvent", () => {
     assert.equal(tool?.name, "wiki_produce");
     assert.equal(tool?.status, "done");
     assert.equal(tool?.output, "published");
+    assert.deepEqual(tool?.args, { audience: "users" });
     assert.equal(tool?.details?.status, "published");
     assert.deepEqual(tool?.details?.pages, ["overview.md"]);
     assert.equal(tool?.details?.spec, undefined);

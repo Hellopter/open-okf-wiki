@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  SourceAddSchema,
+  SourceCloneSchema,
+  WorkspaceCreateSchema,
+  WorkspacePatchSchema,
+} from "./intake.js";
+
+test("WorkspaceCreateSchema requires name and rootPath", () => {
+  assert.equal(WorkspaceCreateSchema.safeParse({}).success, false);
+  assert.equal(WorkspaceCreateSchema.safeParse({ name: "w", rootPath: "/tmp/ws" }).success, true);
+});
+
+test("WorkspacePatchSchema rejects unknown keys", () => {
+  assert.equal(WorkspacePatchSchema.safeParse({ name: "x" }).success, true);
+  assert.equal(WorkspacePatchSchema.safeParse({ rootPath: "/nope" }).success, false);
+});
+
+test("SourceAddSchema requires path", () => {
+  assert.equal(SourceAddSchema.safeParse({}).success, false);
+  assert.equal(SourceAddSchema.safeParse({ path: "/repo" }).success, true);
+});
+
+test("SourceCloneSchema requires remoteUrl", () => {
+  assert.equal(SourceCloneSchema.safeParse({}).success, false);
+  assert.equal(
+    SourceCloneSchema.safeParse({ remoteUrl: "https://example.com/r.git" }).success,
+    true,
+  );
+});

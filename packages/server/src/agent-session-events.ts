@@ -6,15 +6,12 @@
  * event channel.
  */
 import type { AgentSseEvent } from "@okf-wiki/contract";
+import { sessionKey } from "./session-key.ts";
 
 export type PiAgentSessionEvent = Extract<AgentSseEvent, { source: "pi" }>;
 export type AgentSessionEventListener = (event: PiAgentSessionEvent) => void;
 
 const listeners = new Map<string, Set<AgentSessionEventListener>>();
-
-function sessionKey(workspaceId: string, sessionId: string): string {
-  return workspaceId + "::" + sessionId;
-}
 
 /** Forward one event emitted by the live parent AgentSession. */
 export function emitAgentSessionEvent(

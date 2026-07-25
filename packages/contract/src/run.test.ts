@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { StoredRunRecordSchema } from "./run.js";
+import { AnalysisReceiptSchema } from "./receipt.js";
+import { MergedDefectReportSchema, StoredRunRecordSchema, WikiRunSpecSchema } from "./run.js";
 
 test("Wiki Run Record ignores pre-v2 records instead of accepting legacy shape", () => {
   const legacy = {
@@ -49,4 +50,113 @@ test("Wiki Run Record v2 requires every frozen input and outcome field", () => {
       `expected missing ${field} to be rejected`,
     );
   }
+});
+
+test("WikiRunSpec rejects page domainIds not present in domains", () => {
+  const bad = {
+    summary: "s",
+    domains: [{ id: "core", title: "Core", scope: "x" }],
+    pages: [{ path: "a.md", purpose: "p", domainIds: ["missing"] }],
+  };
+  assert.equal(WikiRunSpecSchema.safeParse(bad).success, false);
+
+  const good = {
+    summary: "s",
+    domains: [{ id: "core", title: "Core", scope: "x" }],
+    pages: [{ path: "a.md", purpose: "p", domainIds: ["core"] }],
+  };
+  assert.equal(WikiRunSpecSchema.safeParse(good).success, true);
+});
+
+test("MergedDefectReport enforces clean ↔ defects.length", () => {
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: true,
+      defects: [{ severity: "blocking", code: "x", issue: "bad" }],
+    }).success,
+    false,
+  );
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: false,
+      defects: [],
+    }).success,
+    false,
+  );
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: true,
+      defects: [],
+    }).success,
+    true,
+  );
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: false,
+      defects: [{ severity: "blocking", code: "x", issue: "bad", reviewerId: "r1" }],
+      reviewerIds: ["r1"],
+    }).success,
+    true,
+  );
+});
+
+test("AnalysisReceipt evidence enforces SHA and line order", () => {
+  assert.equal(
+    AnalysisReceiptSchema.safeParse({
+      runId: "r",
+      nodeId: "n",
+      parentId: null,
+      attempt: 1,
+      status: "complete",
+      scope: "s",
+      evidence: [
+        {
+          repositoryId: "main",
+          path: "a.ts",
+          startLine: 10,
+          endLine: 5,
+        },
+      ],
+    }).success,
+    false,
+  );
+  assert.equal(
+    AnalysisReceiptSchema.safeParse({
+      runId: "r",
+      nodeId: "n",
+      parentId: null,
+      attempt: 1,
+      status: "complete",
+      scope: "s",
+      evidence: [
+        {
+          repositoryId: "main",
+          path: "a.ts",
+          contentSha256: "not-a-sha",
+        },
+      ],
+    }).success,
+    false,
+  );
+  assert.equal(
+    AnalysisReceiptSchema.safeParse({
+      runId: "r",
+      nodeId: "n",
+      parentId: null,
+      attempt: 1,
+      status: "complete",
+      scope: "s",
+      sourceRevision: "a".repeat(40),
+      evidence: [
+        {
+          repositoryId: "main",
+          path: "a.ts",
+          startLine: 1,
+          endLine: 2,
+          contentSha256: "b".repeat(64),
+        },
+      ],
+    }).success,
+    true,
+  );
 });

@@ -18,10 +18,11 @@ export type { WorkspaceSummary };
 
 import { probeLocalGit } from "./git.js";
 import { assertAbsolutePath, isPathInside, resolveExistingDir } from "./paths.js";
+import { WORKSPACE_DIR_NAME } from "./run-layout.js";
+import { WorkspaceIntakeError } from "./workspace-errors.js";
 
 export { isPathInside };
 
-export const WORKSPACE_DIR_NAME = ".okf-wiki";
 export const WORKSPACE_FILE_NAME = "workspace.json";
 export const APP_STATE_FILE_NAME = "app.json";
 export const DEFAULT_MODEL_ID = "openai/default";
@@ -68,7 +69,7 @@ export type CreateWorkspaceOptions = {
  */
 export async function createWorkspace(options: CreateWorkspaceOptions): Promise<WorkspaceConfig> {
   if (typeof options.name !== "string" || options.name.trim() === "") {
-    throw new Error("name must be a non-empty string");
+    throw new WorkspaceIntakeError("invalid_name", "name must be a non-empty string");
   }
 
   const rootPath = path.resolve(assertAbsolutePath(options.rootPath, "rootPath"));
@@ -80,9 +81,9 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
   // Reject if a workspace.json already exists at this root.
   try {
     await access(workspaceConfigPath(rootPath));
-    throw new Error(`workspace already exists at ${rootPath}`);
+    throw new WorkspaceIntakeError("workspace_exists", `workspace already exists at ${rootPath}`);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("workspace already exists")) {
+    if (error instanceof WorkspaceIntakeError) {
       throw error;
     }
     // Only missing config is OK; re-throw EACCES/EPERM/etc.
@@ -130,14 +131,17 @@ export async function loadWorkspace(rootPath: string): Promise<WorkspaceConfig> 
 
   // Path containment: only ever read workspace.json under <root>/.okf-wiki/
   if (!isPathInside(resolvedRoot, filePath)) {
-    throw new Error("workspace config path escapes root");
+    throw new WorkspaceIntakeError("path_escape", "workspace config path escapes root");
   }
 
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
   } catch {
-    throw new Error(`workspace config not found: ${filePath}`);
+    throw new WorkspaceIntakeError(
+      "workspace_not_found",
+      `workspace config not found: ${filePath}`,
+    );
   }
 
   let data: unknown;
@@ -145,12 +149,17 @@ export async function loadWorkspace(rootPath: string): Promise<WorkspaceConfig> 
     data = JSON.parse(raw) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`invalid workspace JSON at ${filePath}: ${message}`);
+    throw new WorkspaceIntakeError("io", `invalid workspace JSON at ${filePath}: ${message}`, {
+      cause: error,
+    });
   }
 
   const parsed = WorkspaceConfigSchema.safeParse(data);
   if (!parsed.success) {
-    throw new Error(`invalid workspace config at ${filePath}: ${parsed.error.message}`);
+    throw new WorkspaceIntakeError(
+      "io",
+      `invalid workspace config at ${filePath}: ${parsed.error.message}`,
+    );
   }
 
   // Prefer the requested rootPath (resolved) over a stale on-disk value.
@@ -213,17 +222,23 @@ export async function addSource(
 
   if (!probe.isGit) {
     const detail = probe.error ? `: ${probe.error}` : "";
-    throw new Error(`not a git working tree: ${sourcePath}${detail}`);
+    throw new WorkspaceIntakeError(
+      "source_not_git",
+      `not a git working tree: ${sourcePath}${detail}`,
+    );
   }
   if (requireClean && probe.dirty) {
-    throw new Error(`git working tree is dirty: ${sourcePath}`);
+    throw new WorkspaceIntakeError("source_not_git", `git working tree is dirty: ${sourcePath}`);
   }
 
   if (config.sources.some((source) => source.id === input.id)) {
-    throw new Error(`source id already exists: ${input.id}`);
+    throw new WorkspaceIntakeError("source_exists", `source id already exists: ${input.id}`);
   }
   if (config.sources.some((source) => path.resolve(source.path) === sourcePath)) {
-    throw new Error(`source path already registered: ${sourcePath}`);
+    throw new WorkspaceIntakeError(
+      "source_exists",
+      `source path already registered: ${sourcePath}`,
+    );
   }
 
   const source = WorkspaceSourceSchema.parse({
@@ -248,7 +263,7 @@ export async function addSource(
 export function removeSource(config: WorkspaceConfig, sourceId: string): WorkspaceConfig {
   const sources = config.sources.filter((source) => source.id !== sourceId);
   if (sources.length === config.sources.length) {
-    throw new Error(`source not found: ${sourceId}`);
+    throw new WorkspaceIntakeError("source_not_found", `source not found: ${sourceId}`);
   }
   return { ...config, sources };
 }
@@ -268,7 +283,7 @@ export function updateSource(
 ): WorkspaceConfig {
   const index = config.sources.findIndex((source) => source.id === sourceId);
   if (index < 0) {
-    throw new Error(`source not found: ${sourceId}`);
+    throw new WorkspaceIntakeError("source_not_found", `source not found: ${sourceId}`);
   }
   const current = config.sources[index]!;
   const nextSource = WorkspaceSourceSchema.parse({

@@ -2,13 +2,7 @@ import { BookOpenIcon, BotIcon, FolderGit2Icon, MenuIcon, SettingsIcon } from "l
 import { useState } from "react";
 import { NavLink, useLocation, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../i18n";
 import { agentWorkspaceHref, workspaceHref } from "../lib/workspace-path";

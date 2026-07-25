@@ -6,19 +6,22 @@
  * noExtensions, no bash, children never write Operator Session JSONL.
  *
  * Live only. Fixture short-circuits belong on ProduceRuntime adapters.
+ * Event → span projection lives in pi/child-span-projector (pure).
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type { WikiProduceChildItem, WikiProduceChildSpan } from "@okf-wiki/contract";
+import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { WikiProduceChildSpan } from "@okf-wiki/contract";
 import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
+import {
+  applyChildSessionEvent,
+  childSpanItemsSnapshot,
+  createChildSpanProjectorState,
+} from "../pi/child-span-projector.js";
 import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
-import {
-  createSubmitWikiRunSpecTool,
-  SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
-} from "./submit-wiki-run-spec-tool.js";
+import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "./submit-wiki-run-spec-tool.js";
 import { listWikiMarkdown } from "./wiki-pages.js";
 
 export type ScopedAgentRole = Extract<
@@ -32,6 +35,7 @@ export type RunScopedAgentInput = {
   role: ScopedAgentRole;
   runWorkDir: string;
   task: string;
+  /** Caller-supplied system prompt; minimal role default used only when omitted. */
   systemPrompt?: string;
   model?: Model<any>;
   modelRuntime?: ModelRuntime;
@@ -44,6 +48,11 @@ export type RunScopedAgentInput = {
   spanId?: string;
   /** When set (root_write), list pages under this wiki dir after success. */
   wikiDir?: string;
+  /**
+   * Extra Pi customTools (merged by name over Operations-scoped tools).
+   * Plan role must pass submit_wiki_run_spec here — runner does not inject by role.
+   */
+  customTools?: ToolDefinition<any, any>[];
   onProgress?: (span: ScopedAgentProgress) => void;
 };
 
@@ -57,9 +66,6 @@ export type RunScopedAgentResult = {
   specPath?: string;
 };
 
-const MAX_ITEMS = 20;
-const MAX_TEXT_CHUNK = 2000;
-const MAX_ARGS_SUMMARY = 500;
 /** Control-plane summaries stay short (UI + parent handle). Full Spec lives on disk. */
 const SUMMARY_RETURN_CAP = 4_000;
 
@@ -81,31 +87,6 @@ function truncate(text: string, max: number): string {
   return `${text.slice(0, max - 1)}…`;
 }
 
-function argsSummary(args: unknown): string | undefined {
-  if (args == null) return undefined;
-  try {
-    const raw = typeof args === "string" ? args : JSON.stringify(args);
-    return truncate(raw, MAX_ARGS_SUMMARY);
-  } catch {
-    return undefined;
-  }
-}
-
-function pushItem(items: WikiProduceChildItem[], item: WikiProduceChildItem): void {
-  if (item.type === "text" && items.length > 0) {
-    const last = items[items.length - 1];
-    if (last?.type === "text") {
-      items[items.length - 1] = {
-        type: "text",
-        text: truncate(last.text + item.text, MAX_TEXT_CHUNK * 2),
-      };
-      return;
-    }
-  }
-  items.push(item);
-  while (items.length > MAX_ITEMS) items.shift();
-}
-
 function emitProgress(
   onProgress: RunScopedAgentInput["onProgress"],
   span: ScopedAgentProgress,
@@ -121,6 +102,20 @@ function abortError(): Error {
   const err = new Error("Wiki Run cancelled");
   err.name = "AbortError";
   return err;
+}
+
+function defaultSystemPrompt(role: ScopedAgentRole): string | undefined {
+  if (role === "root_write") return undefined;
+  if (role === "plan") {
+    return (
+      `You are the Wiki planner. Use read tools only, then call ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} ` +
+      "with a complete WikiRunSpec."
+    );
+  }
+  if (role === "reviewer") {
+    return "You are a wiki reviewer. Return a concise DefectReport JSON (or NO_DEFECTS).";
+  }
+  return `You are a ${role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`;
 }
 
 /**
@@ -158,50 +153,44 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     }
   };
 
-  const items: WikiProduceChildItem[] = [];
-  let turns = 0;
-  let contextTokens: number | undefined;
+  const projector = createChildSpanProjectorState();
   let submittedSpecPath: string | undefined;
 
   const snapshot = (
     status: ScopedAgentProgress["status"],
     summary?: string,
-  ): ScopedAgentProgress => ({
-    id: spanId,
-    role,
-    status,
-    ...(summary ? { summary: truncate(summary, 4000) } : {}),
-    ...(items.length > 0 ? { items: items.slice(-MAX_ITEMS) } : {}),
-    usage: {
-      turns,
-      ...(contextTokens !== undefined ? { contextTokens } : {}),
-    },
-  });
+  ): ScopedAgentProgress => {
+    const items = childSpanItemsSnapshot(projector);
+    return {
+      id: spanId,
+      role,
+      status,
+      ...(summary ? { summary: truncate(summary, 4000) } : {}),
+      ...(items ? { items } : {}),
+      usage: {
+        turns: projector.turns,
+        ...(projector.contextTokens !== undefined
+          ? { contextTokens: projector.contextTokens }
+          : {}),
+      },
+    };
+  };
 
   try {
     emitProgress(input.onProgress, snapshot("running", `${input.role} started`));
-
-    const planTools =
-      role === "plan" ? [createSubmitWikiRunSpecTool({ runWorkDir: input.runWorkDir })] : [];
 
     handle = await createWikiSession({
       role: sessionRole,
       runWorkDir: input.runWorkDir,
       model: input.model,
       modelRuntime: input.modelRuntime,
-      systemPrompt:
-        input.systemPrompt ??
-        (role === "root_write"
-          ? undefined
-          : role === "plan"
-            ? `You are the Wiki planner. Use read tools only, then call ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} with a complete WikiRunSpec.`
-            : `You are a ${input.role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`),
+      systemPrompt: input.systemPrompt ?? defaultSystemPrompt(role),
       sourceIgnores: input.sourceIgnores,
       maxContextTokens: input.maxContextTokens,
       contextTargetTokens: input.contextTargetTokens,
       additionalSkillPaths: input.additionalSkillPaths,
       scopedTools: true,
-      customTools: planTools,
+      customTools: input.customTools,
     });
 
     if (input.abortSignal) {
@@ -216,83 +205,22 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       timeoutId = setTimeout(onAbort, input.timeoutMs);
     }
 
-    let text = "";
     const unsub = handle.session.subscribe((event) => {
-      const kind =
-        event && typeof event === "object" && "type" in event
-          ? String((event as { type: unknown }).type)
-          : "event";
-      const raw = event as unknown;
-      if (!isRecord(raw)) return;
+      applyChildSessionEvent(projector, event);
 
-      if (kind === "message_update") {
-        const ame = isRecord(raw.assistantMessageEvent) ? raw.assistantMessageEvent : null;
-        if (!ame) return;
-        if (ame.type === "text_delta" && typeof ame.delta === "string") {
-          text += ame.delta;
-          pushItem(items, { type: "text", text: truncate(ame.delta, MAX_TEXT_CHUNK) });
-          emitProgress(input.onProgress, snapshot("running"));
-        }
-        return;
-      }
-
-      if (kind === "message_end") {
-        const message = isRecord(raw.message) ? raw.message : null;
-        if (message && message.role === "assistant") {
-          turns += 1;
-          if (isRecord(message.usage)) {
-            const total = message.usage.totalTokens;
-            if (typeof total === "number" && total >= 0) contextTokens = total;
-          }
-          if (Array.isArray(message.content)) {
-            for (const block of message.content) {
-              if (!isRecord(block) || block.type !== "toolCall") continue;
-              const name = typeof block.name === "string" ? block.name : "tool";
-              const args = "arguments" in block ? block.arguments : block.args;
-              pushItem(items, {
-                type: "toolCall",
-                name,
-                argsSummary: argsSummary(args),
-                status: "running",
-              });
-            }
-          }
-          emitProgress(input.onProgress, snapshot("running"));
-        }
-        return;
-      }
-
-      if (kind === "tool_execution_start") {
-        const name = typeof raw.toolName === "string" ? raw.toolName : "tool";
-        pushItem(items, {
-          type: "toolCall",
-          name,
-          argsSummary: argsSummary(raw.args ?? raw.input),
-          status: "running",
-        });
-        emitProgress(input.onProgress, snapshot("running"));
-        return;
-      }
-
-      if (kind === "tool_execution_end") {
-        const name = typeof raw.toolName === "string" ? raw.toolName : "tool";
-        const isError = raw.isError === true;
-        for (let i = items.length - 1; i >= 0; i--) {
-          const it = items[i];
-          if (it?.type === "toolCall" && it.name === name && it.status === "running") {
-            items[i] = { ...it, status: isError ? "error" : "done" };
-            break;
-          }
-        }
-        if (!isError && name === SUBMIT_WIKI_RUN_SPEC_TOOL_NAME) {
-          const result = isRecord(raw.result) ? raw.result : null;
+      // Path-first plan handoff: capture specPath from successful submit tool end.
+      if (isRecord(event) && event.type === "tool_execution_end" && event.isError !== true) {
+        const name = typeof event.toolName === "string" ? event.toolName : "";
+        if (name === SUBMIT_WIKI_RUN_SPEC_TOOL_NAME) {
+          const result = isRecord(event.result) ? event.result : null;
           const details = result && isRecord(result.details) ? result.details : null;
           const pathFromDetails =
             details && typeof details.specPath === "string" ? details.specPath.trim() : "";
           if (pathFromDetails) submittedSpecPath = pathFromDetails;
         }
-        emitProgress(input.onProgress, snapshot("running"));
       }
+
+      emitProgress(input.onProgress, snapshot("running"));
     });
 
     try {
@@ -307,7 +235,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     }
 
     const resolved = resolveAssistantSummary({
-      streamedText: text,
+      streamedText: projector.streamedText,
       messages: handle.session.messages,
       roleLabel: input.role,
       preferFinalMessage: isStructuredReturnRole(role),

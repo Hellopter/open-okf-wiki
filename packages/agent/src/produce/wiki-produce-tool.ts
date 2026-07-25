@@ -6,18 +6,18 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+  toDurableWikiProduceDetails,
   type WikiProduceDurableDetails,
   type WikiProduceToolDetails,
   type WorkspaceConfig,
-  toDurableWikiProduceDetails,
 } from "@okf-wiki/contract";
+import { createToolDetailsAccumulator } from "./progress.js";
 import {
   type RunWikiInput,
   runWiki,
   type WikiProduceGateCoordinator,
   type WikiProduceModelFactory,
 } from "./run-wiki.js";
-import { createToolDetailsAccumulator } from "./progress.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 

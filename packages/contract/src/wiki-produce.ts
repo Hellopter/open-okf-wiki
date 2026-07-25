@@ -1,20 +1,9 @@
 import { z } from "zod";
 import { MergedDefectReportSchema, WikiRunSpecSchema } from "./run.js";
+import { type WikiProduceToolStatus, WikiProduceToolStatusSchema } from "./run-phase.js";
 
-/** States exposed by the real Pi `wiki_produce` tool. */
-export const WikiProduceToolStatusSchema = z.enum([
-  "freezing",
-  "planning",
-  "awaiting_plan",
-  "producing",
-  "awaiting_publication",
-  "published",
-  "publication_declined",
-  "failed",
-  "cancelled",
-]);
-
-export type WikiProduceToolStatus = z.infer<typeof WikiProduceToolStatusSchema>;
+export type { WikiProduceToolStatus };
+export { WikiProduceToolStatusSchema };
 
 /** Bounded display item from an in-process child session (not Operator Session history). */
 export const WikiProduceChildItemSchema = z.discriminatedUnion("type", [

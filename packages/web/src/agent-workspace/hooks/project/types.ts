@@ -7,7 +7,8 @@ export type AgentMessageRole = "user" | "assistant" | "tool" | "system";
 export type AgentToolCall = {
   id: string;
   name: string;
-  input?: string;
+  /** Structured tool arguments from Pi toolCall / tool_execution_start (not stringified). */
+  args?: unknown;
   output?: string;
   /** Structured details emitted by the real Pi wiki_produce tool. */
   details?: WikiProduceToolDetails;
@@ -31,6 +32,12 @@ export type AgentMessage = {
   parts?: AgentContentPart[];
   status?: "streaming" | "done" | "error" | "aborted";
   errorText?: string;
+  /**
+   * Client-only optimistic user row (Composer send).
+   * Snapshot projection is authority: optimistic rows do not survive a server
+   * snapshot. Live Pi `user` message events are ignored (prefer snapshot).
+   */
+  optimistic?: true;
 };
 
 /** Shared transport interface. Pi still owns event payload internals. */

@@ -1,14 +1,25 @@
 import { z } from "zod";
+import { GitObjectIdSchema, Sha256HexSchema } from "./primitives.js";
 
 export const ReceiptStatusSchema = z.enum(["complete", "partial", "failed", "cancelled"]);
 
-export const ReceiptEvidenceSchema = z.object({
-  repositoryId: z.string().min(1),
-  path: z.string().min(1),
-  startLine: z.number().int().positive().optional(),
-  endLine: z.number().int().positive().optional(),
-  contentSha256: z.string().optional(),
-});
+export const ReceiptEvidenceSchema = z
+  .object({
+    repositoryId: z.string().min(1),
+    path: z.string().min(1),
+    startLine: z.number().int().positive().optional(),
+    endLine: z.number().int().positive().optional(),
+    contentSha256: Sha256HexSchema.optional(),
+  })
+  .superRefine((ev, ctx) => {
+    if (ev.startLine !== undefined && ev.endLine !== undefined && ev.startLine > ev.endLine) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "startLine must be <= endLine",
+        path: ["startLine"],
+      });
+    }
+  });
 
 /**
  * Bounded analysis receipt (control plane returns a short handoff; body on disk).
@@ -22,7 +33,7 @@ export const AnalysisReceiptSchema = z.object({
   attempt: z.number().int().positive(),
   status: ReceiptStatusSchema,
   scope: z.string(),
-  sourceRevision: z.string().nullable().optional(),
+  sourceRevision: GitObjectIdSchema.nullable().optional(),
   summary: z.string().default(""),
   findings: z.array(z.string()).default([]),
   evidence: z.array(ReceiptEvidenceSchema).default([]),

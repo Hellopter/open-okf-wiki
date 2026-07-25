@@ -2,7 +2,11 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { type AnalysisReceipt, AnalysisReceiptSchema } from "@okf-wiki/contract";
 import { atomicWriteJson } from "./atomic-write.js";
-import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
+import { isPathInside } from "./paths.js";
+import {
+  analysisDir as layoutAnalysisDir,
+  analysisReceiptsDir as layoutAnalysisReceiptsDir,
+} from "./run-layout.js";
 
 /**
  * Analysis dir for one Wiki Run under the run workdir (ADR 0030):
@@ -13,7 +17,7 @@ import { isPathInside, WORKSPACE_DIR_NAME } from "./workspace-store.js";
  */
 export function analysisScratchDir(workspaceRoot: string, runId: string): string {
   const safe = runId.replace(/[/\\]/g, "_");
-  return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "runs", safe, "analysis");
+  return layoutAnalysisDir(workspaceRoot, safe);
 }
 
 /**
@@ -22,7 +26,8 @@ export function analysisScratchDir(workspaceRoot: string, runId: string): string
  * (= `{runWorkDir}/analysis/receipts` when the run lives under `.okf-wiki/runs/`).
  */
 export function analysisReceiptsDir(workspaceRoot: string, runId: string): string {
-  return path.join(analysisScratchDir(workspaceRoot, runId), "receipts");
+  const safe = runId.replace(/[/\\]/g, "_");
+  return layoutAnalysisReceiptsDir(workspaceRoot, safe);
 }
 
 export function safeReceiptNodeId(nodeId: string): string {

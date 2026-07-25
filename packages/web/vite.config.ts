@@ -16,9 +16,12 @@ export default defineConfig({
       // Internal contract imports use ".js" extensions — map them to ".ts".
       "@okf-wiki/contract": contractSrc,
     },
-    extensionAlias: {
-      ".js": [".ts", ".js"],
-    },
+    // Vite runtime supports extensionAlias; @types/vite may lag behind.
+    ...({
+      extensionAlias: {
+        ".js": [".ts", ".js"],
+      },
+    } as Record<string, unknown>),
   },
   optimizeDeps: {
     // Keep workspace contract out of the dep optimizer so source edits invalidate cleanly.

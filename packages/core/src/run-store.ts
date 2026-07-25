@@ -10,9 +10,7 @@ import {
 import { atomicCreateJson, atomicWriteJson } from "./atomic-write.js";
 import { makeTreeWritable } from "./immutable-tree.js";
 import { isPathInside } from "./paths.js";
-import { WORKSPACE_DIR_NAME } from "./workspace-store.js";
-
-const RUNS_DIR_NAME = "runs";
+import { runRecordPath, runSkillDir, runsDir } from "./run-layout.js";
 
 /**
  * In-process per-path mutex for single-server Node RMW on run records.
@@ -35,16 +33,6 @@ function withRunRecordUpdateLock<T>(absolutePath: string, fn: () => Promise<T>):
     }
   });
   return run;
-}
-
-/** Absolute path to `{root}/.okf-wiki/runs`. */
-function runsDir(rootPath: string): string {
-  return path.join(path.resolve(rootPath), WORKSPACE_DIR_NAME, RUNS_DIR_NAME);
-}
-
-/** Absolute path to `{root}/.okf-wiki/runs/{runId}.json`. */
-function runRecordPath(rootPath: string, runId: string): string {
-  return path.join(runsDir(rootPath), `${runId}.json`);
 }
 
 export type RegisterRunOptions = {
@@ -81,13 +69,7 @@ export async function registerRunRecord(
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(options.runId) || options.runId.includes("..")) {
     throw new Error("invalid runId");
   }
-  const expectedSkillPath = path.join(
-    resolvedRoot,
-    WORKSPACE_DIR_NAME,
-    RUNS_DIR_NAME,
-    options.runId,
-    "skill",
-  );
+  const expectedSkillPath = runSkillDir(resolvedRoot, options.runId);
   if (path.resolve(options.skillPath) !== expectedSkillPath) {
     throw new Error(`skillPath must be the run-owned Skill path: ${expectedSkillPath}`);
   }

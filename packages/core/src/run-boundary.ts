@@ -8,10 +8,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { RepositorySnapshot, WorkspaceConfig } from "@okf-wiki/contract";
+import {
+  type RepositorySnapshot,
+  recordStatusFromPhase,
+  type WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { probeLocalGit } from "./git.js";
 import { makeTreeWritable } from "./immutable-tree.js";
 import { materializeRepositorySnapshot } from "./repository-snapshot.js";
+import { analysisDir as runAnalysisDir, runSkillDir, runsDir, runWorkDir } from "./run-layout.js";
 import { registerRunRecord } from "./run-store.js";
 import { materializeSkillVersion, skillDigest } from "./skill-digest.js";
 import { resolveSkillPath } from "./skill-path.js";
@@ -163,11 +168,11 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
   const { skillPath: sourceSkillPath, skillDigest: digest } = await freezeSkill(workspace);
 
   const runId = createRunId();
-  const runsRoot = path.join(workspaceRoot, ".okf-wiki", "runs");
-  const runDir = path.join(runsRoot, runId);
+  const runsRoot = runsDir(workspaceRoot);
+  const runDir = runWorkDir(workspaceRoot, runId);
   const sourcePathMap = new Map<string, string>();
   const frozenSources: FrozenSourceSnapshot[] = [];
-  const skillPath = path.join(runDir, "skill");
+  const skillPath = runSkillDir(workspaceRoot, runId);
   let ownsRunDir = false;
 
   try {
@@ -220,7 +225,8 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
       sessionId: input.sessionId,
       sources: sources.map(({ repositoryPath: _repositoryPath, ...source }) => source),
       runId,
-      status: "running",
+      // Freezing is in-flight; record projection folds to running.
+      status: recordStatusFromPhase("freezing"),
     });
   } catch (error) {
     if (ownsRunDir) {
@@ -238,7 +244,7 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
     runId,
     runWorkDir: runDir,
     wikiDir: path.join(runDir, "wiki"),
-    analysisDir: path.join(runDir, "analysis"),
+    analysisDir: runAnalysisDir(workspaceRoot, runId),
     skillPath,
     skillDigest: digest,
     sources: frozenSources,

@@ -7,16 +7,10 @@ import type {
 } from "@okf-wiki/contract";
 import { AgentSseEventSchema } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
 import { agentSessionCommand, agentSessionEventsUrl } from "../../api";
 import { isRecord, makeId } from "./project/format";
 import { createPiStreamState, projectAgentEvent, viewMessages } from "./project/pi";
-import type {
-  AgentMessage,
-  AgentSseLike,
-  AgentToolCall,
-  PiStreamState,
-} from "./project/types";
+import type { AgentMessage, AgentSseLike, AgentToolCall, PiStreamState } from "./project/types";
 
 /** Unified command failure check (server uses ok/status, not string heuristics). */
 export function isCommandFailed(res: AgentCommandResponse | null | undefined): boolean {
@@ -56,8 +50,6 @@ function nowIso(): string {
 }
 
 function eventError(event: AgentSseLike): string | null {
-  // Accessible toast channel co-located with provider errorText fields.
-  void toast.error;
   if (event.source !== "pi") return null;
   if (event.kind === "error" && isRecord(event.payload)) {
     return typeof event.payload.message === "string" ? event.payload.message : "Agent error";
@@ -83,8 +75,7 @@ export function useSessionAgent({
   sessionId,
   rootPath,
 }: UseSessionAgentArgs): UseSessionAgentResult {
-  // setStatus updates are announced via Composer role=status and sonner toasts.
-  void toast.error;
+  // setStatus updates are announced via Composer role=status.
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [status, setStatus] = useState<AgentStatus>("idle");
@@ -190,12 +181,15 @@ export function useSessionAgent({
       setError(null);
       setStatus("sending");
 
+      // Client-only optimistic row. Snapshot projection is authority — optimistic
+      // rows do not survive a server snapshot. Live Pi user events are ignored.
       const optimistic: AgentMessage = {
         id: makeId("user"),
         role: "user",
         content: value,
         createdAt: nowIso(),
         status: "done",
+        optimistic: true,
       };
       const next = {
         ...streamStateRef.current,

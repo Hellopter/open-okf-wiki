@@ -26,6 +26,11 @@ export {
   WORKSPACE_SOURCES_DIR_NAME,
 } from "./git.js";
 export {
+  createDefaultGitRunner,
+  type GitRunner,
+  type GitRunResult,
+} from "./git-runner.js";
+export {
   assertAbsolutePath,
   assertContainedPathSafe,
   assertNoSymlinkComponents,
@@ -93,6 +98,15 @@ export {
   freezeWikiRun,
 } from "./run-boundary.js";
 export {
+  analysisDir,
+  RUNS_DIR_NAME,
+  runRecordPath,
+  runSkillDir,
+  runsDir,
+  runWorkDir,
+  WORKSPACE_DIR_NAME,
+} from "./run-layout.js";
+export {
   deleteSessionRuns,
   listRuns,
   loadRun,
@@ -159,6 +173,10 @@ export {
   type WikiTreeScan,
 } from "./wiki-tree.js";
 export {
+  ProviderStoreError,
+  WorkspaceIntakeError,
+} from "./workspace-errors.js";
+export {
   type AddSourceInput,
   type AddSourceOptions,
   APP_STATE_FILE_NAME,
@@ -186,7 +204,6 @@ export {
   type UpdateSourceInput,
   uniqueSourceId,
   updateSource,
-  WORKSPACE_DIR_NAME,
   WORKSPACE_FILE_NAME,
   type WorkspaceSummary,
   workspaceConfigPath,

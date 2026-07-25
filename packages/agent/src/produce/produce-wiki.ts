@@ -10,19 +10,12 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import type {
-  MergedDefectReport,
-  WikiRunSpec,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { MergedDefectReport, WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
 import { resolveOrchestration } from "../limits.js";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import {
-  type ProduceRuntime,
-  type ProduceWriteResult,
-} from "./produce-runtime.js";
-import { type ProduceProgress, emitProduceProgress } from "./progress.js";
+import { type ProduceRuntime, type ProduceWriteResult } from "./produce-runtime.js";
+import { emitProduceProgress, type ProduceProgress } from "./progress.js";
 import {
   domainResearchPrompt,
   leafResearchPrompt,
@@ -408,20 +401,25 @@ async function produceWikiBody(ctx: {
 
     if (runtime.kind === "live" && !input.models?.reviewer?.model) {
       // Fail closed: do not pretend the council is clean without a reviewer model.
+      // Fence the DefectReport JSON so parseDefectReportFromText preserves code.
       const msg = "Live Produce requires a reviewer model (or use fixture runtime)";
       reviewers.push({
         id: "reviewer-1",
-        text: JSON.stringify({
-          clean: false,
-          defects: [
-            {
-              severity: "blocking",
-              code: "reviewer_missing",
-              issue: msg,
-            },
-          ],
-          summary: msg,
-        }),
+        text: [
+          "```json",
+          JSON.stringify({
+            clean: false,
+            defects: [
+              {
+                severity: "blocking",
+                code: "reviewer_missing",
+                issue: msg,
+              },
+            ],
+            summary: msg,
+          }),
+          "```",
+        ].join("\n"),
       });
     } else {
       for (let i = 0; i < councilSize; i++) {
@@ -475,9 +473,7 @@ async function produceWikiBody(ctx: {
     emit(onProgress, {
       kind: "defects",
       defects,
-      summary:
-        defects.summary ??
-        `Review round ${round}: ${defects.defects.length} defect(s)`,
+      summary: defects.summary ?? `Review round ${round}: ${defects.defects.length} defect(s)`,
     });
 
     const blocking = (spec.acceptance?.blockingSeverities ?? ["blocking"]) as string[];

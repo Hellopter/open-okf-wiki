@@ -32,6 +32,9 @@ describe("role-model", () => {
     const ws = baseWorkspace();
     assert.equal(modelRefForRole(ws, "writer").profileId, "default");
     assert.equal(modelRefForRole(ws, "worker").id, "openai/default");
+    // Empty reviewers list → workspace default model (not missing).
+    assert.equal(modelRefForRole(ws, "reviewer").profileId, "default");
+    assert.equal(modelRefForRole(ws, "reviewer").id, "openai/default");
   });
 
   it("uses roleModels.writer then planner for writer role", () => {

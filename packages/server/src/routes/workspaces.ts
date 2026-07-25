@@ -31,6 +31,7 @@ import {
   updateSource,
   writeSkillFile,
 } from "@okf-wiki/core";
+import { trySendCoreDomainError } from "../core-http-error.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { resolveWorkspaceModelSelection } from "./provider.ts";
 
@@ -76,16 +77,8 @@ export async function handleCreateWorkspace(
     await registerWorkspaceInAppIndex(workspace.rootPath);
     sendJson(res, 201, { workspace });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("workspace already exists")) {
-      sendError(res, 409, message);
-      return;
-    }
-    if (message.startsWith("model profile not found")) {
-      sendError(res, 400, message);
-      return;
-    }
-    // Absolute-path validation and other client errors → 400
     sendError(res, 400, message);
   }
 }
@@ -526,11 +519,8 @@ export async function handleCloneSource(
       probe: result.probe,
     });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (/already (exists|registered)/i.test(message)) {
-      sendError(res, 409, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }

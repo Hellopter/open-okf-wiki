@@ -18,7 +18,8 @@ import {
   type ProviderEntryWrite,
   type ProviderPublic,
 } from "@okf-wiki/contract";
-import { WORKSPACE_DIR_NAME } from "./workspace-store.js";
+import { WORKSPACE_DIR_NAME } from "./run-layout.js";
+import { ProviderStoreError } from "./workspace-errors.js";
 
 export const PROVIDER_FILE_NAME = "provider.json";
 
@@ -147,7 +148,11 @@ export async function loadProviderConfig(
       return emptyProvider();
     }
     if (error instanceof SyntaxError) {
-      throw new Error(`provider config is not valid JSON: ${providerPath}`);
+      throw new ProviderStoreError(
+        "invalid_config",
+        `provider config is not valid JSON: ${providerPath}`,
+        { cause: error },
+      );
     }
     throw error;
   }
@@ -342,7 +347,7 @@ export async function updateProviderEntry(
   const current = await loadProviderConfig(providerPath);
   const index = findProviderIndex(current, providerId);
   if (index < 0) {
-    throw new Error(`provider not found: ${providerId}`);
+    throw new ProviderStoreError("provider_not_found", `provider not found: ${providerId}`);
   }
   const existing = current.providers[index]!;
   let apiKey = existing.apiKey;
@@ -395,7 +400,7 @@ export async function deleteProviderEntry(
   const current = await loadProviderConfig(providerPath);
   const providers = (current.providers ?? []).filter((p) => p.id !== providerId);
   if (providers.length === current.providers.length) {
-    throw new Error(`provider not found: ${providerId}`);
+    throw new ProviderStoreError("provider_not_found", `provider not found: ${providerId}`);
   }
   const remainingIds = new Set(providers.flatMap((p) => p.models.map((m) => m.id)));
   let defaultModelProfileId = current.defaultModelProfileId;
@@ -434,7 +439,7 @@ export async function createModelProfile(
     supportsDeveloperRole: input.supportsDeveloperRole,
   };
   if (!write.name || !write.modelId) {
-    throw new Error("name and modelId are required");
+    throw new ProviderStoreError("invalid_config", "name and modelId are required");
   }
 
   const current = await loadProviderConfig(providerPath);
@@ -458,7 +463,7 @@ export async function createModelProfile(
   if (write.providerId) {
     targetIndex = findProviderIndex(current, write.providerId);
     if (targetIndex < 0) {
-      throw new Error(`provider not found: ${write.providerId}`);
+      throw new ProviderStoreError("provider_not_found", `provider not found: ${write.providerId}`);
     }
   } else {
     // Merge into existing endpoint if baseUrl+shape+key match.
@@ -530,7 +535,10 @@ export async function updateModelProfile(
   const current = await loadProviderConfig(providerPath);
   const loc = findModelLocation(current, profileId);
   if (!loc) {
-    throw new Error(`model profile not found: ${profileId}`);
+    throw new ProviderStoreError(
+      "model_profile_not_found",
+      `model profile not found: ${profileId}`,
+    );
   }
   const provider = current.providers[loc.providerIndex]!;
   const existingModel = provider.models[loc.modelIndex]!;
@@ -606,7 +614,10 @@ export async function deleteModelProfile(
   const current = await loadProviderConfig(providerPath);
   const loc = findModelLocation(current, profileId);
   if (!loc) {
-    throw new Error(`model profile not found: ${profileId}`);
+    throw new ProviderStoreError(
+      "model_profile_not_found",
+      `model profile not found: ${profileId}`,
+    );
   }
   const provider = current.providers[loc.providerIndex]!;
   const models = provider.models.filter((m) => m.id !== profileId);
@@ -642,7 +653,10 @@ export async function setDefaultModelProfile(
   const current = await loadProviderConfig(providerPath);
   if (profileId) {
     if (!flattenModels(current).some((m) => m.id === profileId)) {
-      throw new Error(`model profile not found: ${profileId}`);
+      throw new ProviderStoreError(
+        "model_profile_not_found",
+        `model profile not found: ${profileId}`,
+      );
     }
     return saveProviderConfig(
       {
@@ -763,7 +777,10 @@ export function resolveProviderRuntime(
 export function getModelProfile(config: ProviderConfig, profileId: string): ModelProfile {
   const profile = flattenModels(config).find((m) => m.id === profileId);
   if (!profile) {
-    throw new Error(`model profile not found: ${profileId}`);
+    throw new ProviderStoreError(
+      "model_profile_not_found",
+      `model profile not found: ${profileId}`,
+    );
   }
   return profile;
 }

@@ -10,8 +10,8 @@ import {
   parseDefectReportFromText,
   writeMergedDefects,
 } from "./defects.js";
-import { commitSpec } from "./produce/living-spec.js";
-import { scorePublishable } from "./produce/publishability.js";
+import { commitSpec } from "./living-spec.js";
+import { scorePublishable } from "./publishability.js";
 
 test("parseDefectReportFromText recognizes NO_DEFECTS", () => {
   const r = parseDefectReportFromText("All good.\nNO_DEFECTS\n", "r1");

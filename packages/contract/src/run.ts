@@ -1,17 +1,10 @@
 import { z } from "zod";
+import { GitObjectIdSchema, Sha256HexSchema } from "./primitives.js";
+import { type WikiRunRecordStatus, WikiRunRecordStatusSchema } from "./run-phase.js";
 import { IgnorePatternSchema, SourceIdSchema } from "./workspace.js";
 
-export const WikiRunRecordStatusSchema = z.enum([
-  "running",
-  "published",
-  "failed",
-  "cancelled",
-  "awaiting_plan",
-  "awaiting_publication",
-  "publication_declined",
-]);
-
-export type WikiRunRecordStatus = z.infer<typeof WikiRunRecordStatusSchema>;
+export type { WikiRunRecordStatus };
+export { WikiRunRecordStatusSchema };
 
 /** Page template hints from the Producer Skill. */
 export const WikiPageTemplateSchema = z.enum([
@@ -59,19 +52,39 @@ export type WikiRunSpecAcceptance = z.infer<typeof WikiRunSpecAcceptanceSchema>;
  * Living, executable Wiki Run specification (operator-facing + agent-facing).
  * Replaces the thin path/purpose plan: domains, questions, acceptance, replan trail.
  */
-export const WikiRunSpecSchema = z.object({
-  version: z.literal(1).default(1),
-  summary: z.string().min(1).max(4000),
-  audience: z.string().min(1).max(1000).default("Engineers and operators reading this repository"),
-  domains: z.array(WikiRunSpecDomainSchema).default([]),
-  pages: z.array(WikiRunSpecPageSchema).min(1),
-  openQuestions: z.array(z.string().max(500)).default([]),
-  acceptance: WikiRunSpecAcceptanceSchema.default(() => WikiRunSpecAcceptanceSchema.parse({})),
-  /** Operator revision feedback and agent replan notes. */
-  notes: z.string().max(4000).optional(),
-  /** Chronological replan / discovery trail (stigmergy-lite). */
-  changelog: z.array(z.string().max(500)).default([]),
-});
+export const WikiRunSpecSchema = z
+  .object({
+    version: z.literal(1).default(1),
+    summary: z.string().min(1).max(4000),
+    audience: z
+      .string()
+      .min(1)
+      .max(1000)
+      .default("Engineers and operators reading this repository"),
+    domains: z.array(WikiRunSpecDomainSchema).default([]),
+    pages: z.array(WikiRunSpecPageSchema).min(1),
+    openQuestions: z.array(z.string().max(500)).default([]),
+    acceptance: WikiRunSpecAcceptanceSchema.default(() => WikiRunSpecAcceptanceSchema.parse({})),
+    /** Operator revision feedback and agent replan notes. */
+    notes: z.string().max(4000).optional(),
+    /** Chronological replan / discovery trail (stigmergy-lite). */
+    changelog: z.array(z.string().max(500)).default([]),
+  })
+  .superRefine((spec, ctx) => {
+    const domainIds = new Set(spec.domains.map((d) => d.id));
+    for (let i = 0; i < spec.pages.length; i++) {
+      const page = spec.pages[i];
+      for (const domainId of page.domainIds) {
+        if (!domainIds.has(domainId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `page domainId "${domainId}" is not in domains`,
+            path: ["pages", i, "domainIds"],
+          });
+        }
+      }
+    }
+  });
 
 export type WikiRunSpec = z.infer<typeof WikiRunSpecSchema>;
 
@@ -84,6 +97,8 @@ export const DefectItemSchema = z.object({
   path: z.string().trim().min(1).max(200).optional(),
   issue: z.string().trim().min(1).max(2000),
   suggestedFix: z.string().trim().max(2000).optional(),
+  /** Reviewer that reported this item (required after merge for provenance). */
+  reviewerId: z.string().trim().min(1).optional(),
 });
 
 export type DefectItem = z.infer<typeof DefectItemSchema>;
@@ -98,13 +113,30 @@ export const DefectReportSchema = z.object({
 
 export type DefectReport = z.infer<typeof DefectReportSchema>;
 
-export const MergedDefectReportSchema = z.object({
-  version: z.literal(1).default(1),
-  clean: z.boolean(),
-  defects: z.array(DefectItemSchema).default([]),
-  reviewerIds: z.array(z.string()).default([]),
-  summary: z.string().max(4000).optional(),
-});
+export const MergedDefectReportSchema = z
+  .object({
+    version: z.literal(1).default(1),
+    clean: z.boolean(),
+    defects: z.array(DefectItemSchema).default([]),
+    reviewerIds: z.array(z.string()).default([]),
+    summary: z.string().max(4000).optional(),
+  })
+  .superRefine((report, ctx) => {
+    if (report.clean && report.defects.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "clean requires empty defects",
+        path: ["clean"],
+      });
+    }
+    if (!report.clean && report.defects.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "non-clean requires at least one defect",
+        path: ["defects"],
+      });
+    }
+  });
 
 export type MergedDefectReport = z.infer<typeof MergedDefectReportSchema>;
 
@@ -113,7 +145,7 @@ export const RepositorySnapshotSchema = z
   .object({
     id: SourceIdSchema,
     /** Exact Git object id materialised for the Wiki Run (SHA-1 or SHA-256). */
-    revision: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+    revision: GitObjectIdSchema,
     /** Frozen patterns already applied to the materialised ordinary-file tree. */
     effectiveIgnores: z.array(IgnorePatternSchema),
   })
@@ -140,7 +172,7 @@ export const StoredRunRecordSchema = z
     /** Absolute path to the immutable, run-owned Producer Skill copy. */
     skillPath: z.string().trim().min(1),
     /** SHA-256 content digest reverified after copying the Producer Skill. */
-    skillDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    skillDigest: Sha256HexSchema,
     sources: z.array(RepositorySnapshotSchema).min(1),
     spec: WikiRunSpecSchema.nullable(),
     /** Wiki-relative page paths produced under staging. */

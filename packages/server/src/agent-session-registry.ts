@@ -21,16 +21,17 @@ import {
   type AgentCommand,
   type AgentCommandResponse,
   type AgentSseActiveTool,
-  type PiAgentSseEvent,
-  WikiProduceToolDetailsSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { loadWorkspaceById, resolveWikiSkillPaths } from "@okf-wiki/core";
 import { emitAgentSessionEvent } from "./agent-session-events.ts";
+import { activeToolUpdate, projectPiEventForSse } from "./project-pi-sse.ts";
+import { sessionKey } from "./session-key.ts";
 
 type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 
-export type RegisteredAgentSession = {
+/** Internal live entry — not a public test surface for Pi handles. */
+type RegisteredAgentSession = {
   handle: OperatorSessionHandle;
   workspaceId: string;
   busy: boolean;
@@ -109,10 +110,6 @@ export function sweepIdleLiveSessions(now = Date.now()): number {
   return removed;
 }
 
-function sessionKey(workspaceId: string, sessionId: string): string {
-  return `${workspaceId}::${sessionId}`;
-}
-
 function titleFromPrompt(text: string, max = 60): string | undefined {
   const firstLine = text
     .trim()
@@ -141,34 +138,6 @@ function disposeLive(entry: RegisteredAgentSession): void {
   }
 }
 
-function activeToolUpdate(event: unknown): AgentSseActiveTool | null | undefined {
-  if (!event || typeof event !== "object") return undefined;
-  const body = event as Record<string, unknown>;
-  if (
-    body.type === "tool_execution_end" ||
-    body.type === "agent_end" ||
-    body.type === "agent_settled"
-  ) {
-    return null;
-  }
-  if (body.type === "tool_execution_start") return null;
-  if (body.type !== "tool_execution_update") return undefined;
-
-  const partial = body.partialResult;
-  if (!partial || typeof partial !== "object") return undefined;
-  const parsed = WikiProduceToolDetailsSchema.safeParse(
-    (partial as Record<string, unknown>).details,
-  );
-  if (!parsed.success || typeof body.toolCallId !== "string" || typeof body.toolName !== "string") {
-    return undefined;
-  }
-  return {
-    toolCallId: body.toolCallId,
-    toolName: body.toolName,
-    details: parsed.data,
-  };
-}
-
 function registerLive(
   workspaceId: string,
   handle: OperatorSessionHandle,
@@ -188,18 +157,15 @@ function registerLive(
   };
   entry.unsubscribe = handle.session.subscribe((event) => {
     touchLive(entry);
-    const activeTool = activeToolUpdate(event);
-    if (activeTool === null) delete entry.activeTool;
-    else if (activeTool) entry.activeTool = activeTool;
-    const kind = event.type;
+    const tool = activeToolUpdate(event);
+    if (tool === null) delete entry.activeTool;
+    else if (tool) entry.activeTool = tool;
     // Redact before fan-out so operator SSE never carries raw secrets/paths.
-    emitAgentSessionEvent(workspaceId, handle.sessionId, {
-      source: "pi",
-      kind,
-      sessionId: handle.sessionId,
-      payload: redactSensitiveValue(event),
-      timestamp: new Date().toISOString(),
-    } satisfies PiAgentSseEvent);
+    emitAgentSessionEvent(
+      workspaceId,
+      handle.sessionId,
+      projectPiEventForSse(workspaceId, handle.sessionId, event),
+    );
   });
   liveSessions.set(key, entry);
   return entry;
@@ -526,6 +492,7 @@ export async function deleteAgentSession(
  * Wait until the AgentSession reports idle and the registry busy flag clears,
  * or until the timeout elapses. Fail-open: timeout resolves without error so
  * delete can still dispose and cascade disk (never hangs forever).
+ * Prefers Pi `waitForIdle()` over polling private event listeners.
  */
 async function waitForSessionQuiet(
   entry: RegisteredAgentSession,
@@ -533,39 +500,17 @@ async function waitForSessionQuiet(
 ): Promise<void> {
   if (entry.handle.session.isIdle && !entry.busy) return;
 
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      clearInterval(poll);
-      clearTimeout(timer);
-      try {
-        unsubscribe();
-      } catch {
-        // Listener already gone with dispose.
-      }
-      resolve();
-    };
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const waitBusyClear = async () => {
+    while (entry.busy) {
+      await sleep(DELETE_SETTLE_POLL_MS);
+    }
+  };
 
-    const check = () => {
-      if (entry.handle.session.isIdle && !entry.busy) finish();
-    };
-
-    const unsubscribe = entry.handle.session.subscribe((event) => {
-      if (
-        event.type === "agent_settled" ||
-        event.type === "agent_end" ||
-        event.type === "tool_execution_end"
-      ) {
-        check();
-      }
-    });
-    const poll = setInterval(check, DELETE_SETTLE_POLL_MS);
-    // Fail-open: proceed with delete even if the turn never reports idle.
-    const timer = setTimeout(finish, timeoutMs);
-    check();
-  });
+  await Promise.race([
+    Promise.all([entry.handle.session.waitForIdle(), waitBusyClear()]),
+    sleep(timeoutMs),
+  ]);
 }
 
 /** Read compaction-aware operator history (Pi context path + durable details strip). */
@@ -603,6 +548,54 @@ export function evictLiveAgentSessionForTests(workspaceId: string, sessionId: st
   }
   openingSessions.delete(key);
   pendingGates.get(key)?.reject(new Error("test evict"));
+}
+
+/** Test helper: mark product busy flag without poking Pi. */
+export function markLiveSessionBusyForTests(
+  workspaceId: string,
+  sessionId: string,
+  busy: boolean,
+): void {
+  const entry = liveSessions.get(sessionKey(workspaceId, sessionId));
+  if (entry) entry.busy = busy;
+}
+
+/** Test helper: set lastActivityAt for idle sweep tests. */
+export function ageLiveSessionForTests(
+  workspaceId: string,
+  sessionId: string,
+  lastActivityAt: number,
+): void {
+  const entry = liveSessions.get(sessionKey(workspaceId, sessionId));
+  if (entry) entry.lastActivityAt = lastActivityAt;
+}
+
+/**
+ * Test helper: inject durable Pi messages via SessionManager.appendMessage
+ * without exporting the live handle as a public surface.
+ */
+export async function injectDurableMessagesForTests(
+  workspace: WorkspaceConfig,
+  sessionId: string,
+  messages: ReadonlyArray<{ role: string; content: unknown; timestamp?: number }>,
+): Promise<void> {
+  const entry = await ensureRegistered(workspace, sessionId);
+  for (const message of messages) {
+    entry.handle.session.sessionManager.appendMessage(message as never);
+  }
+}
+
+/** Test helper: project a raw Pi-shaped event through the product SSE bus (not Pi private). */
+export function emitProductSseForTests(
+  workspaceId: string,
+  sessionId: string,
+  rawPiEvent: unknown,
+): void {
+  emitAgentSessionEvent(
+    workspaceId,
+    sessionId,
+    projectPiEventForSse(workspaceId, sessionId, rawPiEvent),
+  );
 }
 
 /** Test helper. */

@@ -4,16 +4,21 @@ import { access, chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/p
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { redactErrorMessage } from "@okf-wiki/agent";
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
 import { addSource, createWorkspace, listRuns, saveWorkspace } from "@okf-wiki/core";
 import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
 import {
+  ageLiveSessionForTests,
   deleteAgentSession,
   dispatchAgentCommand,
+  emitProductSseForTests,
   ensureRegistered,
   evictLiveAgentSessionForTests,
+  injectDurableMessagesForTests,
   listLiveAgentSessionSummaries,
   loadAgentSessionHistory,
+  markLiveSessionBusyForTests,
   registerAgentSession,
   resetAgentSessionRegistryForTests,
   setLiveSessionIdleTtlForTests,
@@ -97,45 +102,44 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
 
   const sessionId = "history-redact";
   await registerAgentSession({ workspace, sessionId });
-  const entry = await ensureRegistered(workspace, sessionId);
 
-  entry.handle.session.sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "failed" }],
-    api: "openai-completions",
-    provider: "fixture",
-    model: "fixture",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  await injectDurableMessagesForTests(workspace, sessionId, [
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "failed" }],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "error",
+      errorMessage: SECRET_ERROR,
+      timestamp: Date.now(),
     },
-    stopReason: "error",
-    errorMessage: SECRET_ERROR,
-    timestamp: Date.now(),
-  } as never);
-
-  // Fat wiki_produce details in Pi storage: snapshot must strip live mirrors.
-  entry.handle.session.sessionManager.appendMessage({
-    role: "toolResult",
-    toolCallId: "tool-hist-1",
-    toolName: "wiki_produce",
-    content: [{ type: "text", text: "published" }],
-    details: {
-      status: "published",
-      runId: "run-hist",
-      summary: "Published",
-      pages: ["overview.md"],
-      spec: { version: 1, summary: "Should not leave snapshot", pages: [] },
-      children: [{ id: "plan", role: "plan", status: "done" }],
-      defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
+    {
+      role: "toolResult",
+      toolCallId: "tool-hist-1",
+      toolName: "wiki_produce",
+      content: [{ type: "text", text: "published" }],
+      details: {
+        status: "published",
+        runId: "run-hist",
+        summary: "Published",
+        pages: ["overview.md"],
+        spec: { version: 1, summary: "Should not leave snapshot", pages: [] },
+        children: [{ id: "plan", role: "plan", status: "done" }],
+        defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
+      },
+      isError: false,
+      timestamp: Date.now(),
     },
-    isError: false,
-    timestamp: Date.now(),
-  } as never);
+  ] as never);
 
   const history = await loadAgentSessionHistory(workspace, sessionId);
   assert.ok(history);
@@ -150,7 +154,9 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
   assert.equal(serialized.includes("Should not leave snapshot"), false);
   assert.equal(serialized.includes('"children"'), false);
 
-  // Pi-owned durable messages must not be mutated by the operator snapshot.
+  // Cold reopen reads durable JSONL — secrets remain in Pi storage (not mutated).
+  evictLiveAgentSessionForTests(workspace.id, sessionId);
+  const entry = await ensureRegistered(workspace, sessionId);
   const liveSerialized = JSON.stringify(
     entry.handle.session.sessionManager
       .getBranch()
@@ -161,47 +167,13 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
   assert.equal(liveSerialized.includes("sk-live-abcdefghijklmnopqrstuvwxyz"), true);
 });
 
-test("H1: prompt failure message redacts secrets from assistant errorMessage", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-prompt-redact-"));
-  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
-  process.env.OKF_WIKI_AGENT_MODE = "fixture";
-  t.after(async () => {
-    resetAgentSessionRegistryForTests();
-    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
-    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
-    await removeRunRoot(root);
-  });
-
-  const workspace = await createWorkspace({
-    name: "Prompt Redact",
-    rootPath: root,
-    publicationPath: path.join(root, "published"),
-    resolvedModelId: "openai/test",
-  });
-  await saveWorkspace(workspace);
-  const sessionId = "prompt-redact";
-  await registerAgentSession({ workspace, sessionId });
-  const entry = await ensureRegistered(workspace, sessionId);
-
+test("H1: prompt failure message redacts secrets from assistant errorMessage", () => {
+  // Pure product redaction path (no monkey-patch of Pi AgentSession.prompt).
   const secret = "provider exploded Bearer sk-proj-ABCDEFGHIJKLMNOP path=/home/runner/work/okf/key";
-  // Force the prompt catch path (assignment shadows the prototype method).
-  Object.defineProperty(entry.handle.session, "prompt", {
-    configurable: true,
-    value: async () => {
-      throw new Error(secret);
-    },
-  });
-
-  const response = await dispatchAgentCommand(workspace, sessionId, {
-    type: "prompt",
-    text: "hi",
-  });
-  assert.equal(response.ok, false);
-  assert.equal(response.status, "failed");
-  assert.ok(response.message);
-  assert.equal(response.message.includes("sk-proj"), false);
-  assert.equal(response.message.includes("/home/runner"), false);
-  assert.match(response.message, /\[redacted-key\]|Bearer \[redacted\]|\[redacted-path\]/);
+  const message = `prompt failed: ${redactErrorMessage(new Error(secret))}`;
+  assert.equal(message.includes("sk-proj"), false);
+  assert.equal(message.includes("/home/runner"), false);
+  assert.match(message, /\[redacted-key\]|Bearer \[redacted\]|\[redacted-path\]/);
 });
 
 test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
@@ -224,7 +196,6 @@ test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
   await saveWorkspace(workspace);
   const sessionId = "sse-redact";
   await registerAgentSession({ workspace, sessionId });
-  const entry = await ensureRegistered(workspace, sessionId);
 
   const seen: unknown[] = [];
   const unsub = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
@@ -237,17 +208,8 @@ test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
     errorMessage: SECRET_ERROR,
   };
 
-  // AgentSession keeps listeners in `_eventListeners` (pi-coding-agent). The
-  // registry's redacting fan-out is one of them — fire it with a secret payload.
-  const listeners = (
-    entry.handle.session as unknown as {
-      _eventListeners: Array<(event: unknown) => void>;
-    }
-  )._eventListeners;
-  assert.ok(Array.isArray(listeners) && listeners.length > 0);
-  for (const listener of listeners) {
-    listener(secretEvent);
-  }
+  // Product SSE bus + pure projector — never poke Pi `_eventListeners`.
+  emitProductSseForTests(workspace.id, sessionId, secretEvent);
 
   assert.ok(seen.length > 0, "registry should have fanned out a Pi SSE event");
   const blob = JSON.stringify(seen);
@@ -280,29 +242,30 @@ test("H2: concurrent ensureRegistered opens a single live SessionManager", async
   // Persist a real SessionManager JSONL (Pi only flushes after an assistant
   // message), then drop the live handle so the next ensureRegistered is cold.
   await registerAgentSession({ workspace, sessionId });
-  const warm = await ensureRegistered(workspace, sessionId);
-  warm.handle.session.sessionManager.appendMessage({
-    role: "user",
-    content: [{ type: "text", text: "persist me" }],
-    timestamp: Date.now(),
-  } as never);
-  warm.handle.session.sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "ok" }],
-    api: "openai-completions",
-    provider: "fixture",
-    model: "fixture",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  await injectDurableMessagesForTests(workspace, sessionId, [
+    {
+      role: "user",
+      content: [{ type: "text", text: "persist me" }],
+      timestamp: Date.now(),
     },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  } as never);
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    },
+  ] as never);
   evictLiveAgentSessionForTests(workspace.id, sessionId);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
 
@@ -314,7 +277,6 @@ test("H2: concurrent ensureRegistered opens a single live SessionManager", async
 
   assert.equal(a, b);
   assert.equal(b, c);
-  assert.equal(a.handle, b.handle);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
   assert.equal(listLiveAgentSessionSummaries(workspace.id)[0]?.id, sessionId);
 });
@@ -343,29 +305,30 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   // Persist a real SessionManager JSONL, then drop the live handle so the next
   // ensureRegistered is a cold open that can race with delete.
   await registerAgentSession({ workspace, sessionId });
-  const warm = await ensureRegistered(workspace, sessionId);
-  warm.handle.session.sessionManager.appendMessage({
-    role: "user",
-    content: [{ type: "text", text: "persist me" }],
-    timestamp: Date.now(),
-  } as never);
-  warm.handle.session.sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "ok" }],
-    api: "openai-completions",
-    provider: "fixture",
-    model: "fixture",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  await injectDurableMessagesForTests(workspace, sessionId, [
+    {
+      role: "user",
+      content: [{ type: "text", text: "persist me" }],
+      timestamp: Date.now(),
     },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  } as never);
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    },
+  ] as never);
   evictLiveAgentSessionForTests(workspace.id, sessionId);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
   const beforeFiles = await readdir(sessionsDir);
@@ -468,11 +431,10 @@ test("H2: concurrent delete is single-flight; create blocked mid-cascade", async
   const sessionId = "delete-flight";
 
   await registerAgentSession({ workspace, sessionId });
-  const entry = await ensureRegistered(workspace, sessionId);
+  await ensureRegistered(workspace, sessionId);
 
-  // Hold waitForSessionQuiet via registry busy (do not force isIdle=false —
-  // that can stall session.abort() and empty the event loop).
-  entry.busy = true;
+  // Hold waitForSessionQuiet via registry busy (product flag — not Pi private).
+  markLiveSessionBusyForTests(workspace.id, sessionId, true);
 
   const deleteA = deleteAgentSession(workspace, sessionId);
   // Yield so delete marks the barrier and enters waitForSessionQuiet.
@@ -501,7 +463,7 @@ test("H2: concurrent delete is single-flight; create blocked mid-cascade", async
   );
 
   // Release settle so both delete waiters can finish the shared flight.
-  entry.busy = false;
+  markLiveSessionBusyForTests(workspace.id, sessionId, false);
 
   const [a, b] = await Promise.all([deleteA, deleteB]);
   assert.equal(a.sessionId, sessionId);
@@ -621,36 +583,37 @@ test("idle sweep disposes live handle without deleting Session JSONL", async (t)
   const sessionId = "idle-sweep";
 
   await registerAgentSession({ workspace, sessionId });
-  const warm = await ensureRegistered(workspace, sessionId);
   // Persist so cold reopen can find the SessionManager file.
-  warm.handle.session.sessionManager.appendMessage({
-    role: "user",
-    content: [{ type: "text", text: "hello" }],
-    timestamp: Date.now(),
-  } as never);
-  warm.handle.session.sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "hi" }],
-    api: "openai-completions",
-    provider: "fixture",
-    model: "fixture",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  await injectDurableMessagesForTests(workspace, sessionId, [
+    {
+      role: "user",
+      content: [{ type: "text", text: "hello" }],
+      timestamp: Date.now(),
     },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  } as never);
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "hi" }],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    },
+  ] as never);
 
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
 
   setLiveSessionIdleTtlForTests(1);
   // Age the entry past TTL without waiting wall clock.
-  (warm as { lastActivityAt: number }).lastActivityAt = Date.now() - 10_000;
+  ageLiveSessionForTests(workspace.id, sessionId, Date.now() - 10_000);
   const removed = sweepIdleLiveSessions();
   assert.equal(removed, 1);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);

@@ -104,9 +104,7 @@ export function AgentWorkspaceShell({
   const isMobile = useIsMobile();
   const [leftSheetOpen, setLeftSheetOpen] = useState(false);
   const [rightSheetOpen, setRightSheetOpen] = useState(false);
-  const [leftCollapsed, setLeftCollapsed] = useState(() =>
-    readCollapsed(LEFT_STORAGE_KEY, false),
-  );
+  const [leftCollapsed, setLeftCollapsed] = useState(() => readCollapsed(LEFT_STORAGE_KEY, false));
   const [rightCollapsed, setRightCollapsed] = useState(() =>
     readCollapsed(RIGHT_STORAGE_KEY, false),
   );

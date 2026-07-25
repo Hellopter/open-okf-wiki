@@ -3,20 +3,26 @@
  *
  * wiki_produce tool is a thin Pi adapter over this module.
  * Inject freeze/publish/runtime for tests — not compatibility shims.
+ *
+ * Canonical job phase is WikiRunPhase; Run Record status and tool details
+ * status are projections via recordStatusFromPhase / toolStatusFromPhase.
  */
 
 import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
+  recordStatusFromPhase,
+  toolStatusFromPhase,
   type WikiProduceToolDetails,
+  type WikiRunPhase,
   type WikiRunSpec,
   WikiRunSpecSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
-  freezeWikiRun,
   type FrozenRunBoundary,
+  freezeWikiRun,
   publishStagingToPublication,
   updateRunRecord,
 } from "@okf-wiki/core";
@@ -25,12 +31,9 @@ import { redactErrorMessage } from "../run-redact.js";
 import { shouldUsePiFixtureMode } from "./fixture-mode.js";
 import { commitSpec } from "./living-spec.js";
 import { planWikiSpec } from "./plan.js";
-import type { ProduceProgress } from "./progress.js";
-import {
-  type ProduceRuntime,
-  resolveProduceRuntime,
-} from "./produce-runtime.js";
+import { type ProduceRuntime, resolveProduceRuntime } from "./produce-runtime.js";
 import { produceWiki } from "./produce-wiki.js";
+import type { ProduceProgress } from "./progress.js";
 
 export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 
@@ -91,6 +94,29 @@ export type RunWikiInput = {
 
 export type RunWikiResult = WikiProduceToolDetails;
 
+export type ResolvedProduceModels = {
+  writer?: {
+    model: Model<any>;
+    modelRuntime?: ModelRuntime;
+    maxContextTokens?: number;
+  };
+  planner?: {
+    model: Model<any>;
+    modelRuntime?: ModelRuntime;
+    maxContextTokens?: number;
+  };
+  worker?: {
+    model: Model<any>;
+    modelRuntime?: ModelRuntime;
+    maxContextTokens?: number;
+  };
+  reviewer?: {
+    model: Model<any>;
+    modelRuntime?: ModelRuntime;
+    maxContextTokens?: number;
+  };
+};
+
 function abortError(): Error {
   const error = new Error("Wiki Run cancelled");
   error.name = "AbortError";
@@ -124,22 +150,43 @@ async function awaitGate(
   });
 }
 
-async function resolveModels(
+/**
+ * Resolve role models for a live Wiki Run.
+ *
+ * - planner / worker: may fall back to writer when their factory throws
+ *   (tolerated hybrid economics — cheaper roles share the writer profile).
+ * - reviewer: **fail-closed** — factory throw leaves reviewer undefined so
+ *   produceWiki can emit `reviewer_missing` rather than silently reviewing
+ *   with the writer model (ADR 0032).
+ * - empty roleModels + successful factory(workspace.model) is fine; that is
+ *   not a resolution failure.
+ */
+export async function resolveModels(
   factory: WikiProduceModelFactory | undefined,
   fixture: boolean,
   workspace: WorkspaceConfig,
-) {
+): Promise<ResolvedProduceModels> {
   if (fixture) return {};
   if (!factory) {
     throw new Error("Live wiki_produce requires a model resolver");
   }
   const writer = await factory("writer", workspace);
   const [planner, worker, reviewer] = await Promise.all([
+    // Tolerated: planner/worker may share the writer profile on factory failure.
     factory("planner", workspace).catch(() => writer),
     factory("worker", workspace).catch(() => writer),
-    factory("reviewer", workspace).catch(() => writer),
+    // Fail-closed: do NOT catch to writer — missing reviewer must stay missing.
+    factory("reviewer", workspace).then(
+      (resolved) => resolved,
+      () => undefined,
+    ),
   ]);
-  return { writer, planner, worker, reviewer };
+  return {
+    writer,
+    planner,
+    worker,
+    ...(reviewer ? { reviewer } : {}),
+  };
 }
 
 function mergeNotes(...parts: Array<string | undefined>): string | undefined {
@@ -169,17 +216,34 @@ function emitDetails(
 export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   let runId: string | undefined;
   let workspace = input.workspace;
-  let details: WikiProduceToolDetails = { status: "freezing" };
+  /** Single source of truth for job phase; record/tool statuses are projections. */
+  let phase: WikiRunPhase = "freezing";
+  let details: WikiProduceToolDetails = {
+    status: toolStatusFromPhase(phase),
+  };
+
   const patch = (p: Partial<WikiProduceToolDetails>) => {
     details = { ...details, ...p };
     emitDetails(input.onDetails, p);
   };
+
+  /** Advance phase and project tool status from the phase enum only. */
+  const setPhase = (
+    next: WikiRunPhase,
+    extra?: Omit<Partial<WikiProduceToolDetails>, "status">,
+  ) => {
+    phase = next;
+    patch({
+      ...extra,
+      status: toolStatusFromPhase(phase),
+    });
+  };
+
   const onChild = (span: NonNullable<WikiProduceToolDetails["children"]>[number]) => {
     input.onProgress?.({ kind: "child", span });
   };
 
-  patch({
-    status: "freezing",
+  setPhase("freezing", {
     summary: "Freezing Repository Snapshot Set and Producer Skill",
   });
 
@@ -207,9 +271,8 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       priorSpec?: WikiRunSpec,
       revisionFeedback?: string,
     ): Promise<WikiRunSpec> => {
-      patch({
+      setPhase("planning", {
         runId,
-        status: "planning",
         summary: priorSpec
           ? "Re-planning WikiRunSpec from frozen sources"
           : "Planning WikiRunSpec from frozen sources",
@@ -252,17 +315,9 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     const requirePlanGate = input.autoApprove !== true && workspace.planConfirm !== false;
     if (requirePlanGate) {
       for (;;) {
-        await updateRunRecord(workspace.rootPath, runId, {
-          status: "awaiting_plan",
-          spec,
-          summary: "Awaiting WikiRunSpec approval",
-        });
-        patch({
-          status: "awaiting_plan",
-          spec,
-          summary: "Awaiting WikiRunSpec approval",
-        });
-        const decision = await awaitGate(
+        // Register the pending gate BEFORE publishing awaiting_plan so operator
+        // resume_gate never races an empty pendingGates map.
+        const decisionPromise = awaitGate(
           input.gateCoordinator,
           {
             toolCallId: input.toolCallId,
@@ -273,15 +328,32 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
           },
           input.abortSignal,
         );
+        // Abort may land while we write the Run Record — keep the promise
+        // "handled" so Node does not emit unhandledRejection before we await.
+        void decisionPromise.catch(() => undefined);
+        setPhase("awaiting_plan", {
+          runId,
+          spec,
+          summary: "Awaiting WikiRunSpec approval",
+        });
+        await updateRunRecord(workspace.rootPath, runId, {
+          status: recordStatusFromPhase(phase),
+          spec,
+          summary: "Awaiting WikiRunSpec approval",
+        });
+        const decision = await decisionPromise;
         if (decision.action === "deny") {
+          setPhase("cancelled", {
+            summary: "WikiRunSpec declined by operator",
+          });
           await updateRunRecord(workspace.rootPath, runId, {
-            status: "cancelled",
+            status: recordStatusFromPhase(phase),
             spec,
             summary: "WikiRunSpec declined by operator",
           });
           return {
             ...details,
-            status: "cancelled",
+            status: toolStatusFromPhase(phase),
             summary: "WikiRunSpec declined by operator",
           };
         }
@@ -302,15 +374,15 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       }
     }
 
-    await updateRunRecord(workspace.rootPath, runId, {
-      status: "running",
-      spec,
-      summary: "Producing Wiki",
-    });
-    patch({
-      status: "producing",
+    setPhase("producing", {
+      runId,
       spec,
       summary: "Producing and reviewing Wiki",
+    });
+    await updateRunRecord(workspace.rootPath, runId, {
+      status: recordStatusFromPhase(phase),
+      spec,
+      summary: "Producing Wiki",
     });
 
     const produced = await produceWiki({
@@ -331,8 +403,14 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     if (produced.status === "cancelled") throw abortError();
     if (produced.status === "failed" || !produced.publishability.publishable) {
       const summary = produced.summary || produced.publishability.reasons.join("; ");
+      setPhase("failed", {
+        spec: produced.spec,
+        pages: produced.pages,
+        summary,
+        defects: produced.defects,
+      });
       await updateRunRecord(workspace.rootPath, runId, {
-        status: "failed",
+        status: recordStatusFromPhase(phase),
         spec: produced.spec,
         pages: produced.pages,
         summary,
@@ -340,7 +418,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       });
       return {
         ...details,
-        status: "failed",
+        status: toolStatusFromPhase(phase),
         spec: produced.spec,
         pages: produced.pages,
         summary,
@@ -351,20 +429,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     const pages = produced.pages;
     spec = produced.spec;
     if (input.autoApprove !== true) {
-      await updateRunRecord(workspace.rootPath, runId, {
-        status: "awaiting_publication",
-        spec,
-        pages,
-        summary: produced.summary,
-      });
-      patch({
-        status: "awaiting_publication",
-        spec,
-        pages,
-        summary: "Awaiting publication approval",
-        defects: produced.defects ?? undefined,
-      });
-      const decision = await awaitGate(
+      const decisionPromise = awaitGate(
         input.gateCoordinator,
         {
           toolCallId: input.toolCallId,
@@ -375,16 +440,33 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         },
         input.abortSignal,
       );
+      void decisionPromise.catch(() => undefined);
+      setPhase("awaiting_publication", {
+        spec,
+        pages,
+        summary: "Awaiting publication approval",
+        defects: produced.defects ?? undefined,
+      });
+      await updateRunRecord(workspace.rootPath, runId, {
+        status: recordStatusFromPhase(phase),
+        spec,
+        pages,
+        summary: produced.summary,
+      });
+      const decision = await decisionPromise;
       if (decision.action !== "approve") {
+        setPhase("publication_declined", {
+          summary: "Publication declined; Staging Wiki retained",
+        });
         await updateRunRecord(workspace.rootPath, runId, {
-          status: "publication_declined",
+          status: recordStatusFromPhase(phase),
           spec,
           pages,
           summary: "Publication declined; Staging Wiki retained",
         });
         return {
           ...details,
-          status: "publication_declined",
+          status: toolStatusFromPhase(phase),
           summary: "Publication declined; Staging Wiki retained",
         };
       }
@@ -398,8 +480,15 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       runId,
       sources: frozen.sources.map((source) => ({ id: source.id, path: source.path })),
     });
+    setPhase("published", {
+      runId,
+      spec,
+      pages,
+      summary: produced.summary,
+      defects: produced.defects,
+    });
     await updateRunRecord(workspace.rootPath, runId, {
-      status: "published",
+      status: recordStatusFromPhase(phase),
       spec,
       pages,
       summary: produced.summary,
@@ -407,7 +496,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     });
     return {
       ...details,
-      status: "published",
+      status: toolStatusFromPhase(phase),
       runId,
       spec,
       pages,
@@ -417,14 +506,14 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   } catch (error) {
     const cancelled =
       input.abortSignal?.aborted === true ||
-      (error instanceof Error &&
-        (error.name === "AbortError" || /cancel/i.test(error.message)));
+      (error instanceof Error && (error.name === "AbortError" || /cancel/i.test(error.message)));
     const message = cancelled
       ? "Wiki Run cancelled"
       : redactErrorMessage(error instanceof Error ? error.message : String(error));
+    setPhase(cancelled ? "cancelled" : "failed", { summary: message });
     if (runId) {
       await updateRunRecord(workspace.rootPath, runId, {
-        status: cancelled ? "cancelled" : "failed",
+        status: recordStatusFromPhase(phase),
         summary: message,
         error: cancelled ? null : message,
       }).catch(() => undefined);
@@ -432,7 +521,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     return {
       ...details,
       ...(runId ? { runId } : {}),
-      status: cancelled ? "cancelled" : "failed",
+      status: toolStatusFromPhase(phase),
       summary: message,
     };
   }

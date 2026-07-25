@@ -20,6 +20,7 @@ import {
   updateModelProfile,
   updateProviderEntry,
 } from "@okf-wiki/core";
+import { trySendCoreDomainError } from "../core-http-error.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 
 export async function handleGetProvider(_req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -69,11 +70,8 @@ export async function handleUpdateProvider(
       entry: pub.providers.find((p) => p.id === provider.id),
     });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("provider not found")) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }
@@ -87,11 +85,8 @@ export async function handleDeleteProvider(
     const config = await deleteProviderEntry(providerId);
     sendJson(res, 200, { provider: toProviderPublic(config) });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("provider not found")) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }
@@ -133,11 +128,8 @@ export async function handleUpdateModel(
       model: toProviderPublic(config).models.find((m) => m.id === profile.id),
     });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("model profile not found")) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }
@@ -151,11 +143,8 @@ export async function handleDeleteModel(
     const config = await deleteModelProfile(profileId);
     sendJson(res, 200, { provider: toProviderPublic(config) });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("model profile not found")) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }
@@ -179,11 +168,8 @@ export async function handleSetDefaultModel(
     const config = await setDefaultModelProfile(id || null);
     sendJson(res, 200, { provider: toProviderPublic(config) });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("model profile not found")) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }

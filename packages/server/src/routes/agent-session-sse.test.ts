@@ -78,28 +78,32 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
     },
   });
   handle.session.setSessionName("Durable Pi Session");
-  handle.session.sessionManager.appendMessage({
-    role: "user",
-    content: [{ type: "text", text: "hello from durable JSONL" }],
-    timestamp: Date.now(),
-  });
-  handle.session.sessionManager.appendMessage({
-    role: "assistant",
-    content: [{ type: "text", text: "durable reply" }],
-    api: "openai-completions",
-    provider: "fixture",
-    model: "fixture",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  // Public Pi SessionManager API (agent-owned handle in this unit test setup).
+  const { injectDurableOperatorMessagesForTests } = await import("@okf-wiki/agent");
+  injectDurableOperatorMessagesForTests(handle, [
+    {
+      role: "user",
+      content: [{ type: "text", text: "hello from durable JSONL" }],
+      timestamp: Date.now(),
     },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  });
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "durable reply" }],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    },
+  ] as never);
   handle.dispose();
 
   const server = createServer((req, res) => void dispatch(req, res));

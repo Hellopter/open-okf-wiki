@@ -1,7 +1,7 @@
 /**
  * Planner: living WikiRunSpec via ProduceRuntime (or default Spec for fixture).
  * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
- * fail-closed JSON parse only as Host spill fallback — no invented thin plans.
+ * fail-closed when draft is missing — no invented thin plans / chat JSON spill.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -10,90 +10,21 @@ import {
   defaultWikiRunSpec,
   type WikiProduceChildSpan,
   type WikiRunSpec,
-  WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "./living-spec.js";
 import type { ProduceRuntime } from "./produce-runtime.js";
 import { plannerPrompt } from "./prompts.js";
-import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "./submit-wiki-run-spec-tool.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isCompleteSpec(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  const required = [
-    "version",
-    "summary",
-    "audience",
-    "domains",
-    "pages",
-    "openQuestions",
-    "acceptance",
-    "changelog",
-  ];
-  if (!required.every((key) => key in value)) return false;
-  if (!Array.isArray(value.domains) || !Array.isArray(value.pages)) return false;
-  if (
-    !value.domains.every(
-      (domain) =>
-        isRecord(domain) &&
-        ["id", "title", "scope", "critical", "questions"].every((key) => key in domain),
-    )
-  ) {
-    return false;
-  }
-  if (
-    !value.pages.every(
-      (page) =>
-        isRecord(page) &&
-        ["path", "purpose", "domainIds", "questions", "critical"].every((key) => key in page),
-    )
-  ) {
-    return false;
-  }
-  const acceptance = value.acceptance;
-  return (
-    isRecord(acceptance) &&
-    ["reviewRequired", "maxRepairRounds", "blockingSeverities"].every((key) => key in acceptance)
-  );
-}
+import {
+  createSubmitWikiRunSpecTool,
+  SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
+} from "./submit-wiki-run-spec-tool.js";
 
 function snippet(text: string, max = 240): string {
   const t = text.replace(/\s+/g, " ").trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max - 1)}…`;
-}
-
-export function parsePlanFromAgentText(text: string): WikiRunSpec {
-  const raw = text?.trim() ?? "";
-  // Prefer the last fenced JSON block (models often narrate then fence the Spec).
-  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]?.trim() ?? "");
-  const candidates = [...fences.reverse(), raw].filter(
-    (candidate, index, values): candidate is string =>
-      Boolean(candidate) && values.indexOf(candidate) === index,
-  );
-
-  for (const candidate of candidates) {
-    try {
-      const start = candidate.indexOf("{");
-      const end = candidate.lastIndexOf("}");
-      if (start < 0 || end <= start) continue;
-      const value = JSON.parse(candidate.slice(start, end + 1)) as unknown;
-      if (!isCompleteSpec(value)) continue;
-      const parsed = WikiRunSpecSchema.safeParse(value);
-      if (parsed.success) return parsed.data;
-    } catch {
-      // next candidate
-    }
-  }
-
-  throw new Error(
-    `Planner did not return a complete JSON WikiRunSpec (len=${raw.length}, head=${JSON.stringify(snippet(raw))})`,
-  );
 }
 
 /**
@@ -193,17 +124,21 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
       ].join("\n\n")
     : "";
 
+  const systemPrompt = [
+    "You are the Wiki planner.",
+    "Use read-only tools (ls, find, grep, read) to inspect sources/.",
+    `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Host writes ${PLAN_DRAFT_REL_PATH}).`,
+    "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
+  ].join(" ");
+
   const child = await input.runtime.runAgent({
     role: "plan",
     spanId: "plan",
     runWorkDir: input.layout.runWorkDir,
     task: [basePrompt, revisionPrompt].filter(Boolean).join("\n\n"),
-    systemPrompt: [
-      "You are the Wiki planner.",
-      "Use read-only tools (ls, find, grep, read) to inspect sources/.",
-      `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Host writes ${PLAN_DRAFT_REL_PATH}).`,
-      "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
-    ].join(" "),
+    systemPrompt,
+    // Official Pi customTools slot — runner no longer injects by role.
+    customTools: [createSubmitWikiRunSpecTool({ runWorkDir: input.layout.runWorkDir })],
     model: input.model,
     modelRuntime: input.modelRuntime,
     sourceIgnores: input.sourceIgnores,

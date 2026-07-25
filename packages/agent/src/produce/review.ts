@@ -4,11 +4,7 @@
 
 import type { MergedDefectReport } from "@okf-wiki/contract";
 import { writeAnalysisReceipt } from "@okf-wiki/core";
-import {
-  mergeDefectReports,
-  parseDefectReportFromText,
-  writeMergedDefects,
-} from "../defects.js";
+import { mergeDefectReports, parseDefectReportFromText, writeMergedDefects } from "./defects.js";
 
 export type ReviewerOutput = {
   id: string;

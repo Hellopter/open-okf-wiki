@@ -78,6 +78,10 @@ _Avoid_: Semantic Workflow body, Run starter, second progress author, free-text 
 The executable specification for one Wiki Run: audience, domains, intended pages with reader questions, acceptance (review rounds / blocking severities), open questions, and replan changelog. Persisted under the run analysis scratch (`spec.json`) and revised when discovery demands it.
 _Avoid_: Thin path-only checklist, Todo transcript, Operator Session history as the only plan store
 
+**WikiRunPhase** (also: canonical job phase):
+The single product truth for where one Wiki Run job is in its lifecycle (`freezing` → `planning` → optional `awaiting_plan` → `producing` → optional `awaiting_publication` → terminal). Durable Run Record status and live `wiki_produce` tool details status are **projections** of this phase (`recordStatusFromPhase` / `toolStatusFromPhase`), not independent enums. Orthogonal to Pi `tool_execution_*` lifecycle and to child-span item status.
+_Avoid_: Dual status enums, inventing job phase from Pi isError alone, second progress author
+
 **Run Plan** (legacy synonym):
 Older ADRs/skills may say “Run Plan”; map to **WikiRunSpec** / living Spec.
 _Avoid_: Treating Run Plan as a separate durable product object

@@ -3,13 +3,9 @@
  * Single policy surface used by Produce hard-score.
  */
 
-import {
-  type DefectSeverity,
-  type MergedDefectReport,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
+import { type DefectSeverity, type MergedDefectReport, type WikiRunSpec } from "@okf-wiki/contract";
 import { scanWikiTree, validateWikiTree } from "@okf-wiki/core";
-import { hasBlockingDefects, readMergedDefects } from "../defects.js";
+import { hasBlockingDefects, readMergedDefects } from "./defects.js";
 
 export type PublishabilityResult = {
   publishable: boolean;
@@ -21,9 +17,7 @@ export type PublishabilityResult = {
 /** Frozen snapshot roots for citation validation. */
 export type PublishSourceRoot = { id: string; path: string };
 
-export function sourcesFromMounts(
-  sourceMounts: ReadonlyMap<string, string>,
-): PublishSourceRoot[] {
+export function sourcesFromMounts(sourceMounts: ReadonlyMap<string, string>): PublishSourceRoot[] {
   return [...sourceMounts].map(([id, sourcePath]) => ({ id, path: sourcePath }));
 }
 

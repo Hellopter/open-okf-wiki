@@ -1,6 +1,6 @@
 /**
  * Structured defect reports and merge. Fail-closed: blocking defects prevent publish.
- * Publishability scoring lives in produce/publishability.ts.
+ * Publishability scoring lives in publishability.ts.
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -13,7 +13,7 @@ import {
   type MergedDefectReport,
   MergedDefectReportSchema,
 } from "@okf-wiki/contract";
-import { defectsPath } from "./produce/living-spec.js";
+import { defectsPath } from "./living-spec.js";
 
 const SEVERITY_RANK: Record<DefectSeverity, number> = {
   blocking: 3,
@@ -152,13 +152,16 @@ export function mergeDefectReports(reports: DefectReport[]): MergedDefectReport 
   for (const r of reports) {
     reviewerIds.push(r.reviewerId);
     for (const d of r.defects) {
-      defects.push(d);
+      defects.push({
+        ...d,
+        reviewerId: d.reviewerId ?? r.reviewerId,
+      });
     }
   }
-  // Dedupe by severity+path+issue prefix
+  // Dedupe by reviewer+severity+path+issue prefix (preserve provenance)
   const seen = new Set<string>();
   const unique = defects.filter((d) => {
-    const key = `${d.severity}|${d.path ?? ""}|${d.issue.slice(0, 80)}`;
+    const key = `${d.reviewerId ?? ""}|${d.severity}|${d.path ?? ""}|${d.issue.slice(0, 80)}`;
     if (seen.has(key)) {
       return false;
     }

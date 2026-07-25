@@ -3,18 +3,14 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import {
-  defaultWikiRunSpec,
-  type WikiRunSpec,
-  WorkspaceConfigSchema,
-} from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type WikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { runWorkdirLayout } from "../pi/run-workdir.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,
 } from "./produce-runtime.js";
-import type { ProduceProgress } from "./progress.js";
 import { produceWiki } from "./produce-wiki.js";
+import type { ProduceProgress } from "./progress.js";
 
 const temps: string[] = [];
 
@@ -143,7 +139,9 @@ describe("produceWiki fixture core flows", () => {
 
     assert.equal(result.status, "ready_for_publish");
     assert.equal(result.metrics.repairRounds, 1);
-    assert.ok(result.defects?.clean || !result.defects?.defects.some((d) => d.severity === "blocking"));
+    assert.ok(
+      result.defects?.clean || !result.defects?.defects.some((d) => d.severity === "blocking"),
+    );
   });
 
   it("blocking defects exhaust maxRepair → failed", async () => {

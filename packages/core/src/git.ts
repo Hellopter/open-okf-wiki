@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { GitProbe } from "@okf-wiki/contract";
+import { createDefaultGitRunner, type GitRunner } from "./git-runner.js";
 import { isPathInside } from "./paths.js";
 
 /** Dest must be strictly inside parent (not equal). */
@@ -12,58 +12,13 @@ function isStrictlyInside(parent: string, child: string): boolean {
   return isPathInside(parent, child);
 }
 
-function runGit(
-  cwd: string,
-  args: string[],
-  options?: { timeoutMs?: number },
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn("git", args, {
-      cwd,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timeoutMs = options?.timeoutMs;
-    const timer =
-      typeof timeoutMs === "number" && timeoutMs > 0
-        ? setTimeout(() => {
-            if (!settled) {
-              child.kill("SIGTERM");
-            }
-          }, timeoutMs)
-        : null;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on("error", (error) => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      settled = true;
-      resolve({ code: 127, stdout: "", stderr: error.message });
-    });
-    child.on("close", (code) => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-      settled = true;
-      resolve({ code: code ?? 1, stdout: stdout.trim(), stderr: stderr.trim() });
-    });
-  });
-}
-
 /**
  * Inspect a local path with the host `git` binary. No network operations.
  */
-export async function probeLocalGit(rawPath: string): Promise<GitProbe> {
+export async function probeLocalGit(
+  rawPath: string,
+  runner: GitRunner = createDefaultGitRunner(),
+): Promise<GitProbe> {
   const resolved = path.resolve(rawPath);
   try {
     await access(resolved);
@@ -78,7 +33,7 @@ export async function probeLocalGit(rawPath: string): Promise<GitProbe> {
     };
   }
 
-  const inside = await runGit(resolved, ["rev-parse", "--is-inside-work-tree"]);
+  const inside = await runner(resolved, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.code !== 0 || inside.stdout !== "true") {
     return {
       path: resolved,
@@ -90,9 +45,9 @@ export async function probeLocalGit(rawPath: string): Promise<GitProbe> {
     };
   }
 
-  const head = await runGit(resolved, ["rev-parse", "HEAD"]);
-  const branch = await runGit(resolved, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const status = await runGit(resolved, ["status", "--porcelain"]);
+  const head = await runner(resolved, ["rev-parse", "HEAD"]);
+  const branch = await runner(resolved, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const status = await runner(resolved, ["status", "--porcelain"]);
 
   if (head.code !== 0) {
     return {
@@ -149,6 +104,7 @@ export type CloneIntoWorkspaceResult = {
  */
 export async function cloneIntoWorkspace(
   input: CloneIntoWorkspaceInput,
+  runner: GitRunner = createDefaultGitRunner(),
 ): Promise<CloneIntoWorkspaceResult> {
   const workspaceRoot = path.resolve(input.workspaceRoot);
   const remoteUrl = input.remoteUrl.trim();
@@ -195,7 +151,7 @@ export async function cloneIntoWorkspace(
   await mkdir(path.dirname(dest), { recursive: true });
 
   const timeoutMs = input.timeoutMs ?? 120_000;
-  const clone = await runGit(workspaceRoot, ["clone", "--", remoteUrl, dest], { timeoutMs });
+  const clone = await runner(workspaceRoot, ["clone", "--", remoteUrl, dest], { timeoutMs });
   if (clone.code !== 0) {
     const detail = clone.stderr || clone.stdout || `exit ${clone.code}`;
     throw new Error(`git clone failed: ${detail}`);
@@ -206,7 +162,7 @@ export async function cloneIntoWorkspace(
     if (/[\r\n\0]/.test(ref)) {
       throw new Error("ref contains invalid characters");
     }
-    const checkout = await runGit(dest, ["checkout", ref], { timeoutMs: 60_000 });
+    const checkout = await runner(dest, ["checkout", ref], { timeoutMs: 60_000 });
     if (checkout.code !== 0) {
       const detail = checkout.stderr || checkout.stdout || "checkout failed";
       throw new Error(`git checkout ref failed: ${detail}`);
@@ -219,7 +175,7 @@ export async function cloneIntoWorkspace(
     throw new Error(`clone did not produce a directory: ${dest}`);
   }
 
-  const probe = await probeLocalGit(dest);
+  const probe = await probeLocalGit(dest, runner);
   if (!probe.isGit) {
     throw new Error(`cloned path is not a git working tree: ${dest}`);
   }

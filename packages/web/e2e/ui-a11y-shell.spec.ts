@@ -43,7 +43,10 @@ test.describe("UI shell a11y and polish", () => {
     const afterToggle = await page.evaluate(() =>
       document.documentElement.classList.contains("dark"),
     );
-    await page.getByRole("button", { name: /^create( workspace)?$/i }).first().click();
+    await page
+      .getByRole("button", { name: /^create( workspace)?$/i })
+      .first()
+      .click();
     const nameInput = page.getByTestId("workspace-name-input");
     await nameInput.focus();
     await page.keyboard.press("d");

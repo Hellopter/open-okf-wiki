@@ -3,17 +3,19 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import type { FrozenRunBoundary } from "@okf-wiki/core";
+import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "./living-spec.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,
 } from "./produce-runtime.js";
 import {
+  resolveModels,
+  runWiki,
   type WikiProduceGateCoordinator,
   type WikiProduceGateDecision,
   type WikiProduceGateRequest,
-  runWiki,
 } from "./run-wiki.js";
 
 const temps: string[] = [];
@@ -240,5 +242,107 @@ describe("runWiki core flows", () => {
     assert.equal(result.status, "failed");
     assert.equal(published, 0);
   });
+
+  it("factory reviewer throw → reviewer_missing fail-closed", async () => {
+    const workspace = await makeWorkspace();
+    let published = 0;
+    const fixture = createFixtureProduceRuntime({
+      onAgent: async (req) => {
+        if (req.role !== "plan") return undefined;
+        const spec = defaultWikiRunSpec(workspace.name);
+        await writePlanDraft(req.runWorkDir, spec);
+        return {
+          role: "plan",
+          mode: "fixture",
+          summary: `Plan submitted → ${PLAN_DRAFT_REL_PATH}`,
+          specPath: PLAN_DRAFT_REL_PATH,
+        };
+      },
+    });
+    // Live-shaped runtime so produceWiki hits the reviewer_missing branch;
+    // agents themselves stay fixture (no LLM).
+    const hybrid = {
+      kind: "live" as const,
+      runAgent: fixture.runAgent.bind(fixture),
+      runAgentsParallel: fixture.runAgentsParallel.bind(fixture),
+      writeWiki: fixture.writeWiki.bind(fixture),
+    };
+    const stubModel = {
+      id: "stub",
+      name: "stub",
+      api: "openai-completions",
+      provider: "test",
+      baseUrl: "http://localhost",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 4096,
+    };
+
+    const result = await runWiki({
+      workspace,
+      sessionId: "s-rev-miss",
+      toolCallId: "t-rev",
+      autoApprove: true,
+      gateCoordinator: {
+        waitForDecision: async () => ({ action: "approve" as const }),
+      },
+      fixture: false,
+      runtime: hybrid,
+      resolveModel: async (role) => {
+        if (role === "reviewer") throw new Error("reviewer profile missing");
+        return { model: stubModel as never };
+      },
+      freeze: async ({ sessionId }) => fakeFreeze(workspace, sessionId),
+      publish: async () => {
+        published += 1;
+        return { publicationPath: workspace.publicationPath!, pageCount: 0 };
+      },
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(published, 0);
+    assert.ok(
+      result.defects?.defects.some((d) => d.code === "reviewer_missing"),
+      `expected reviewer_missing defect, got: ${JSON.stringify(result.defects)}`,
+    );
+  });
 });
 
+describe("resolveModels fail-closed reviewer", () => {
+  it("leaves reviewer undefined when factory throws; planner falls back to writer", async () => {
+    const workspace = await makeWorkspace();
+    const writer = { model: { id: "writer" } as never };
+    const models = await resolveModels(
+      async (role) => {
+        if (role === "writer") return writer;
+        if (role === "planner") throw new Error("no planner");
+        if (role === "worker") throw new Error("no worker");
+        if (role === "reviewer") throw new Error("no reviewer");
+        throw new Error(`unexpected role ${role}`);
+      },
+      false,
+      workspace,
+    );
+    assert.equal(models.writer, writer);
+    assert.equal(models.planner, writer);
+    assert.equal(models.worker, writer);
+    assert.equal(models.reviewer, undefined);
+  });
+
+  it("keeps reviewer when factory succeeds", async () => {
+    const workspace = await makeWorkspace();
+    const writer = { model: { id: "writer" } as never };
+    const reviewer = { model: { id: "reviewer" } as never };
+    const models = await resolveModels(
+      async (role) => {
+        if (role === "reviewer") return reviewer;
+        return writer;
+      },
+      false,
+      workspace,
+    );
+    assert.equal(models.reviewer, reviewer);
+  });
+});

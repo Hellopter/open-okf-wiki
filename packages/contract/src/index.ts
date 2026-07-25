@@ -23,6 +23,28 @@ export {
   safeParseAgentCommand,
 } from "./agent-protocol.js";
 export {
+  PROVIDER_STORE_ERROR_CODES,
+  type ProviderStoreErrorCode,
+  WORKSPACE_INTAKE_ERROR_CODES,
+  type WorkspaceIntakeErrorCode,
+} from "./errors.js";
+export {
+  type SourceAdd,
+  SourceAddSchema,
+  type SourceClone,
+  SourceCloneSchema,
+  type WorkspaceCreate,
+  WorkspaceCreateSchema,
+  type WorkspacePatch,
+  WorkspacePatchSchema,
+} from "./intake.js";
+export {
+  type GitObjectId,
+  GitObjectIdSchema,
+  type Sha256Hex,
+  Sha256HexSchema,
+} from "./primitives.js";
+export {
   type CatalogModel,
   CatalogModelSchema,
   type ModelProfile,
@@ -82,6 +104,18 @@ export {
   WikiRunSpecSchema,
 } from "./run.js";
 export {
+  assertPhaseTransition,
+  isPhaseTransitionAllowed,
+  phaseAllowsCancel,
+  phaseGate,
+  recordStatusFromPhase,
+  toolStatusFromPhase,
+  type WikiProduceToolStatus,
+  WikiProduceToolStatusSchema,
+  type WikiRunPhase,
+  WikiRunPhaseSchema,
+} from "./run-phase.js";
+export {
   type SkillFileContent,
   type SkillFileEntry,
   type SkillInfo,
@@ -90,6 +124,8 @@ export {
   SkillSourceKindSchema,
 } from "./skill.js";
 export {
+  projectWikiProduceDetailsForHistory,
+  toDurableWikiProduceDetails,
   type WikiProduceChildItem,
   WikiProduceChildItemSchema,
   type WikiProduceChildSpan,
@@ -98,10 +134,6 @@ export {
   WikiProduceDurableDetailsSchema,
   type WikiProduceToolDetails,
   WikiProduceToolDetailsSchema,
-  type WikiProduceToolStatus,
-  WikiProduceToolStatusSchema,
-  projectWikiProduceDetailsForHistory,
-  toDurableWikiProduceDetails,
 } from "./wiki-produce.js";
 export {
   type GitProbe,

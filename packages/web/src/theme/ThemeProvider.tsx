@@ -1,15 +1,5 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import {
-  ThemeContext,
-  type ResolvedTheme,
-  type Theme,
-} from "./theme-context";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ResolvedTheme, type Theme, ThemeContext } from "./theme-context";
 
 const STORAGE_KEY = "okf-wiki.theme";
 
