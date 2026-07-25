@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { commitSpec, readCommittedSpec, specPath } from "./living-spec.js";
+import {
+  commitSpec,
+  planDraftPathFromRunWorkDir,
+  readCommittedSpec,
+  readPlanDraft,
+  specPath,
+  writePlanDraft,
+} from "./living-spec.js";
 
 const temps: string[] = [];
 after(async () => {
@@ -22,5 +29,17 @@ describe("living-spec", () => {
     assert.match(raw, /overview\.md/);
     const loaded = await readCommittedSpec(root, "run-1");
     assert.equal(loaded?.pages[0]?.path, "overview.md");
+  });
+
+  it("writePlanDraft / readPlanDraft are path-first candidate Spec handoff", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "okf-plan-draft-"));
+    temps.push(root);
+    const spec = defaultWikiRunSpec("Draft");
+    const file = await writePlanDraft(root, spec);
+    assert.equal(file, planDraftPathFromRunWorkDir(root));
+    const loaded = await readPlanDraft(root);
+    assert.equal(loaded?.summary, spec.summary);
+    const raw = await readFile(file, "utf8");
+    assert.match(raw, /overview\.md/);
   });
 });

@@ -64,14 +64,22 @@ export function lastAssistantOutcome(messages: readonly unknown[]): AssistantOut
   return null;
 }
 
-/** Prefer streamed text, then final content text, never invent success. */
+/**
+ * Prefer streamed text, then final content text, never invent success.
+ * For structured roles (plan/reviewer), prefer the last assistant message so
+ * intermediate tool-turn narration does not bury the final payload.
+ */
 export function resolveAssistantSummary(input: {
   streamedText: string;
   messages: readonly unknown[];
   roleLabel: string;
+  /** Prefer last assistant content over accumulated stream (plan/reviewer). */
+  preferFinalMessage?: boolean;
 }): { summary: string; isError: boolean; errorMessage?: string } {
   const outcome = lastAssistantOutcome(input.messages);
-  const text = input.streamedText.trim() || outcome?.text.trim() || "";
+  const streamed = input.streamedText.trim();
+  const finalText = outcome?.text.trim() ?? "";
+  const text = input.preferFinalMessage ? finalText || streamed : streamed || finalText;
   if (outcome?.isError) {
     const errorMessage =
       outcome.errorMessage || `assistant stopReason=${outcome.stopReason ?? "error"}`;

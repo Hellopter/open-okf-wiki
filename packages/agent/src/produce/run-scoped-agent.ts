@@ -15,6 +15,10 @@ import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
+import {
+  createSubmitWikiRunSpecTool,
+  SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
+} from "./submit-wiki-run-spec-tool.js";
 import { listWikiMarkdown } from "./wiki-pages.js";
 
 export type ScopedAgentRole = Extract<
@@ -49,15 +53,28 @@ export type RunScopedAgentResult = {
   mode: "live";
   pages?: string[];
   receiptPath?: string;
+  /** Path-first plan handoff (relative under run workdir). */
+  specPath?: string;
 };
 
 const MAX_ITEMS = 20;
 const MAX_TEXT_CHUNK = 2000;
 const MAX_ARGS_SUMMARY = 500;
+/** Progress / generic control summaries stay short for UI. */
 const SUMMARY_RETURN_CAP = 4_000;
+/**
+ * Structured plan spill may exceed UI caps. Progress still uses SUMMARY_RETURN_CAP;
+ * the returned summary for role=plan is not head-truncated so Host parse can succeed.
+ */
+const STRUCTURED_RETURN_CAP = 256_000;
 
-function controlSummary(text: string): string {
-  return truncate(text.trim(), SUMMARY_RETURN_CAP);
+function controlSummary(text: string, max = SUMMARY_RETURN_CAP): string {
+  return truncate(text.trim(), max);
+}
+
+/** Roles whose final text may carry structured JSON for Host parse. */
+function isStructuredReturnRole(role: ScopedAgentRole): boolean {
+  return role === "plan" || role === "reviewer";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,6 +166,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
   const items: WikiProduceChildItem[] = [];
   let turns = 0;
   let contextTokens: number | undefined;
+  let submittedSpecPath: string | undefined;
 
   const snapshot = (
     status: ScopedAgentProgress["status"],
@@ -168,6 +186,9 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
   try {
     emitProgress(input.onProgress, snapshot("running", `${input.role} started`));
 
+    const planTools =
+      role === "plan" ? [createSubmitWikiRunSpecTool({ runWorkDir: input.runWorkDir })] : [];
+
     handle = await createWikiSession({
       role: sessionRole,
       runWorkDir: input.runWorkDir,
@@ -177,12 +198,15 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
         input.systemPrompt ??
         (role === "root_write"
           ? undefined
-          : `You are a ${input.role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`),
+          : role === "plan"
+            ? `You are the Wiki planner. Use read tools only, then call ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} with a complete WikiRunSpec.`
+            : `You are a ${input.role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`),
       sourceIgnores: input.sourceIgnores,
       maxContextTokens: input.maxContextTokens,
       contextTargetTokens: input.contextTargetTokens,
       additionalSkillPaths: input.additionalSkillPaths,
       scopedTools: true,
+      customTools: planTools,
     });
 
     if (input.abortSignal) {
@@ -265,6 +289,13 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
             break;
           }
         }
+        if (!isError && name === SUBMIT_WIKI_RUN_SPEC_TOOL_NAME) {
+          const result = isRecord(raw.result) ? raw.result : null;
+          const details = result && isRecord(result.details) ? result.details : null;
+          const pathFromDetails =
+            details && typeof details.specPath === "string" ? details.specPath.trim() : "";
+          if (pathFromDetails) submittedSpecPath = pathFromDetails;
+        }
         emitProgress(input.onProgress, snapshot("running"));
       }
     });
@@ -284,6 +315,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       streamedText: text,
       messages: handle.session.messages,
       roleLabel: input.role,
+      preferFinalMessage: isStructuredReturnRole(role),
     });
     if (resolved.isError) {
       emitProgress(input.onProgress, snapshot("error", resolved.errorMessage ?? resolved.summary));
@@ -301,15 +333,22 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       }
     }
 
+    const returnCap = role === "plan" ? STRUCTURED_RETURN_CAP : SUMMARY_RETURN_CAP;
     const summary = controlSummary(
       pages ? `Pi live produce wrote ${pages.length} page(s)` : resolved.summary,
+      returnCap,
     );
-    emitProgress(input.onProgress, snapshot("done", summary));
+    const progressSummary =
+      role === "plan" && submittedSpecPath
+        ? controlSummary(`Plan submitted → ${submittedSpecPath}`, SUMMARY_RETURN_CAP)
+        : summary;
+    emitProgress(input.onProgress, snapshot("done", progressSummary));
     return {
       role: input.role,
       mode: "live",
       summary,
       ...(pages ? { pages } : {}),
+      ...(submittedSpecPath ? { specPath: submittedSpecPath } : {}),
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw err;

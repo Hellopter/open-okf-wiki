@@ -68,4 +68,21 @@ describe("resolveAssistantSummary", () => {
     assert.equal(r.isError, false);
     assert.equal(r.summary, "from stream");
   });
+
+  it("preferFinalMessage uses last assistant content over stream", () => {
+    const r = resolveAssistantSummary({
+      streamedText: "intermediate narration that is long",
+      roleLabel: "plan",
+      preferFinalMessage: true,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: '{"version":1,"summary":"final"}' }],
+          stopReason: "stop",
+        },
+      ],
+    });
+    assert.equal(r.isError, false);
+    assert.equal(r.summary, '{"version":1,"summary":"final"}');
+  });
 });

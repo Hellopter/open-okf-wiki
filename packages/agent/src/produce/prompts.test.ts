@@ -22,4 +22,10 @@ describe("planner prompt", () => {
 
     assert.match(prompt, /Operator-requested focus:\nFocus on the runtime boundary\./);
   });
+
+  it("requires submit_wiki_run_spec path-first handoff", () => {
+    const prompt = plannerPrompt({ layout, workspaceName: "Demo" });
+    assert.match(prompt, /submit_wiki_run_spec/);
+    assert.match(prompt, /plan-draft\.json/);
+  });
 });

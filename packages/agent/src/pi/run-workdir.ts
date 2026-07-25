@@ -61,6 +61,6 @@ export function runWorkdirPromptPaths(layout: RunWorkdirLayout): string {
     sourceLines || "  - (no sources)",
     "  - skill/          Producer Skill (read-only)",
     "  - wiki/           Staging Wiki (writable only in write roles)",
-    "  - analysis/       Run analysis (spec.json, receipts)",
+    "  - analysis/       Run analysis (plan-draft.json, spec.json, receipts)",
   ].join("\n");
 }

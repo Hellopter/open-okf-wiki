@@ -23,6 +23,8 @@ export type ProduceAgentRequest = RunScopedAgentInput;
 
 export type ProduceAgentResult = Omit<RunScopedAgentResult, "mode"> & {
   mode: "live" | "fixture";
+  /** Path-first plan handoff when role=plan wrote analysis/plan-draft.json. */
+  specPath?: string;
 };
 
 export type ProduceWriteRequest = {

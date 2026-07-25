@@ -72,15 +72,19 @@ pnpm dev
 
 For **no-LLM pipeline smoke** only (tests, e2e, path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture`. That is not the normal operator path.
 
-`pnpm dev` builds shared packages once, then runs in parallel:
+`pnpm dev` builds shared packages once, then starts an **ordered** watch stack
+(`scripts/dev-stack.mjs`): lib `tsc --watch` + API server, **waits for**
+`GET /api/health`, then Vite. That avoids the common startup race where the
+browser hits the Vite `/api` proxy before the Node server is listening (502).
 
 | Process | Hot reload |
 |---|---|
-| `@okf-wiki/web` | Vite HMR |
+| `@okf-wiki/web` | Vite HMR (starts only after API health) |
 | `@okf-wiki/server` | `node --watch` |
-| `contract` / `core` / `agent` | `tsc --watch` → dist changes restart the server |
+| `contract` / `core` / `agent` | `tsc --watch` → dist changes may restart the server |
 
 Split terminals if you prefer: `pnpm dev:server` and `pnpm dev:web`.
+Legacy all-parallel stack (no health gate): `pnpm dev:stack:parallel`.
 
 ### Operator flow (browser)
 

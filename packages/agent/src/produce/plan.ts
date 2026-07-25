@@ -1,6 +1,7 @@
 /**
  * Planner: living WikiRunSpec via ProduceRuntime (or default Spec for fixture).
- * Fail-closed JSON parse — no invented thin plans.
+ * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
+ * fail-closed JSON parse only as Host spill fallback — no invented thin plans.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -13,8 +14,10 @@ import {
 } from "@okf-wiki/contract";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "./living-spec.js";
 import type { ProduceRuntime } from "./produce-runtime.js";
 import { plannerPrompt } from "./prompts.js";
+import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "./submit-wiki-run-spec-tool.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -59,10 +62,17 @@ function isCompleteSpec(value: unknown): boolean {
   );
 }
 
+function snippet(text: string, max = 240): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
 export function parsePlanFromAgentText(text: string): WikiRunSpec {
   const raw = text?.trim() ?? "";
-  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
-  const candidates = [fence?.[1]?.trim(), raw].filter(
+  // Prefer the last fenced JSON block (models often narrate then fence the Spec).
+  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]?.trim() ?? "");
+  const candidates = [...fences.reverse(), raw].filter(
     (candidate, index, values): candidate is string =>
       Boolean(candidate) && values.indexOf(candidate) === index,
   );
@@ -81,7 +91,44 @@ export function parsePlanFromAgentText(text: string): WikiRunSpec {
     }
   }
 
-  throw new Error("Planner did not return a complete JSON WikiRunSpec");
+  throw new Error(
+    `Planner did not return a complete JSON WikiRunSpec (len=${raw.length}, head=${JSON.stringify(snippet(raw))})`,
+  );
+}
+
+/**
+ * Resolve Spec from path-first draft, else Host spill parse of agent text.
+ * Always leaves a validated plan-draft.json when successful.
+ */
+export async function resolvePlanSpecFromAgentResult(input: {
+  runWorkDir: string;
+  /** Relative path from submit tool (e.g. analysis/plan-draft.json). */
+  specPath?: string;
+  /** Untruncated assistant / control text for spill fallback. */
+  summary: string;
+}): Promise<{ spec: WikiRunSpec; source: "draft" | "text"; draftPath: string }> {
+  const fromDisk = await readPlanDraft(input.runWorkDir);
+  if (fromDisk) {
+    const draftPath = await writePlanDraft(input.runWorkDir, fromDisk);
+    return { spec: fromDisk, source: "draft", draftPath };
+  }
+
+  if (input.specPath && input.specPath !== PLAN_DRAFT_REL_PATH) {
+    throw new Error(
+      `Planner submitted unexpected path ${input.specPath}; expected ${PLAN_DRAFT_REL_PATH}`,
+    );
+  }
+
+  try {
+    const spec = parsePlanFromAgentText(input.summary);
+    const draftPath = await writePlanDraft(input.runWorkDir, spec);
+    return { spec, source: "text", draftPath };
+  } catch (err) {
+    const base = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${base}. Prefer calling ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} so the Host can write ${PLAN_DRAFT_REL_PATH}.`,
+    );
+  }
 }
 
 export type PlanWikiSpecInput = {
@@ -105,23 +152,27 @@ export type PlanWikiSpecResult = {
   spec: WikiRunSpec;
   mode: "fixture" | "live";
   rawSummary?: string;
+  /** How the Spec was obtained for live mode. */
+  source?: "draft" | "text" | "fixture";
+  draftPath?: string;
 };
 
 /**
- * Plan a WikiRunSpec. Fixture runtime → default Spec; live → planner agent + parse.
- * Does not commit Spec to disk — caller (runWiki) owns commitSpec.
+ * Plan a WikiRunSpec. Fixture runtime → default Spec; live → planner agent + path-first resolve.
+ * Does not commit Spec to living analysis/spec.json — caller (runWiki) owns commitSpec.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
   if (input.runtime.kind === "fixture") {
     const spec = input.priorSpec ?? defaultWikiRunSpec(input.workspaceName);
+    const draftPath = await writePlanDraft(input.layout.runWorkDir, spec);
     input.onProgress?.({
       id: "plan",
       role: "plan",
       status: "done",
       summary: "Fixture default WikiRunSpec",
-      items: [{ type: "text", text: `pages=${spec.pages.length}` }],
+      items: [{ type: "text", text: `pages=${spec.pages.length} draft=${PLAN_DRAFT_REL_PATH}` }],
     });
-    return { spec, mode: "fixture" };
+    return { spec, mode: "fixture", source: "fixture", draftPath };
   }
 
   if (!input.model) {
@@ -148,8 +199,12 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     spanId: "plan",
     runWorkDir: input.layout.runWorkDir,
     task: [basePrompt, revisionPrompt].filter(Boolean).join("\n\n"),
-    systemPrompt:
-      "You are the Wiki planner. Read-only tools only. Return JSON WikiRunSpec. Never write files.",
+    systemPrompt: [
+      "You are the Wiki planner.",
+      "Use read-only tools (ls, find, grep, read) to inspect sources/.",
+      `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Host writes ${PLAN_DRAFT_REL_PATH}).`,
+      "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
+    ].join(" "),
     model: input.model,
     modelRuntime: input.modelRuntime,
     sourceIgnores: input.sourceIgnores,
@@ -159,9 +214,17 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     onProgress: input.onProgress,
   });
 
+  const resolved = await resolvePlanSpecFromAgentResult({
+    runWorkDir: input.layout.runWorkDir,
+    specPath: child.specPath,
+    summary: child.summary,
+  });
+
   return {
-    spec: parsePlanFromAgentText(child.summary),
+    spec: resolved.spec,
     mode: "live",
     rawSummary: child.summary,
+    source: resolved.source,
+    draftPath: resolved.draftPath,
   };
 }
