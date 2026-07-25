@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createOperatorFixtureModel } from "./operator-fixture-model.js";
+import { createOperatorFixtureModel } from "./fixture-model.js";
 
 const context = {
   systemPrompt: "fixture",

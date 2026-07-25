@@ -15,15 +15,15 @@ import type {
   WikiWriteRequest,
   WikiWriteResult,
 } from "../ports/agent-runner.js";
-import type { RunWorkdirLayout } from "../pi/run-workdir.js";
-import type { SourceIgnoreInput as PiSourceIgnoreInput } from "../pi/tool-operations.js";
+import type { RunWorkdirLayout } from "./run-workdir.js";
+import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./tool-operations.js";
 import { shouldUsePiFixtureMode } from "./fixture-mode.js";
 import {
   type RunScopedAgentInput,
   runScopedAgent,
   runScopedAgentsParallel,
 } from "./run-scoped-agent.js";
-import { writeFixtureWiki } from "./wiki-pages.js";
+import { writeFixtureWiki } from "../produce/wiki-pages.js";
 
 /** @deprecated Prefer AgentRunner from ports — alias for call-site migration. */
 export type ProduceRuntime = AgentRunner;

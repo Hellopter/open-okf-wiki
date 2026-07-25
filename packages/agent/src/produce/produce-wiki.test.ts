@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, type WikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
-import { runWorkdirLayout } from "../pi/run-workdir.js";
+import { runWorkdirLayout } from "../runtime/run-workdir.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,
-} from "./produce-runtime.js";
+} from "../runtime/produce-runtime.js";
 import { produceWiki } from "../workflow/produce.js";
 import type { ProduceProgress } from "./progress.js";
 

@@ -9,7 +9,7 @@ import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "./living-spec.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,
-} from "./produce-runtime.js";
+} from "../runtime/produce-runtime.js";
 import {
   resolveModels,
   runWiki,

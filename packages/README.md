@@ -6,7 +6,7 @@ Primary product implementation for OKF Wiki. Current stack ADR: [0032](../docs/a
 |---------|------|
 | `@okf-wiki/contract` | Shared schemas (workspace, run, agent protocol) |
 | `@okf-wiki/core` | Run Boundary: immutable snapshots, Run Record v2, validation, publication (no Pi) |
-| `@okf-wiki/agent` | Pi Operator Sessions, real `wiki_produce` tool, Semantic Workflow, tool policy |
+| `@okf-wiki/agent` | Operator Session (`session/`), Pi runtime adapters (`runtime/`), tools (`wiki_produce` / `wiki_repair` / …), Run Workflow (`workflow/`) |
 | `@okf-wiki/server` | Localhost HTTP: Agent Session commands/SSE, read-only Run projection, workspaces |
 | `@okf-wiki/web` | Operator Web UI (Vite + React + shadcn Agent Workspace) |
 | `@okf-wiki/skill` | Embedded Producer Skill |

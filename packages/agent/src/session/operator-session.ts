@@ -15,10 +15,10 @@ import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/c
 import {
   type CreateWikiProduceToolInput,
   createWikiProduceTool,
-} from "../produce/wiki-produce-tool.js";
+} from "../tools/wiki-produce.js";
 import { createWikiRepairTool } from "../tools/wiki-repair.js";
-import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
-import { createSessionStatusTool } from "./session-status-tool.js";
+import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
+import { createSessionStatusTool } from "../tools/session-status.js";
 
 /** Pi JSONL session tree root for a workspace. */
 export function piSessionsDir(workspaceRoot: string): string {

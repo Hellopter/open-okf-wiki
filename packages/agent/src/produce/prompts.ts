@@ -3,8 +3,8 @@
  */
 
 import type { WikiRunSpec } from "@okf-wiki/contract";
-import type { RunWorkdirLayout } from "../pi/run-workdir.js";
-import { runWorkdirPromptPaths } from "../pi/run-workdir.js";
+import type { RunWorkdirLayout } from "../runtime/run-workdir.js";
+import { runWorkdirPromptPaths } from "../runtime/run-workdir.js";
 
 export type WikiLanguage = "en" | "zh";
 

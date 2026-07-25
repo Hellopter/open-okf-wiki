@@ -32,14 +32,14 @@ import {
   type ProgressSink,
   progressSinkFromCallback,
 } from "../ports/progress-sink.js";
-import { layoutFromFrozen } from "../pi/run-workdir.js";
+import { layoutFromFrozen } from "../runtime/run-workdir.js";
 import { redactErrorMessage } from "../run-redact.js";
 import { AttemptJournal } from "../workflow/journal.js";
 import { topologyFromSpec } from "../workflow/topology.js";
-import { shouldUsePiFixtureMode } from "./fixture-mode.js";
+import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
 import { commitSpec } from "./living-spec.js";
 import { planWikiSpec } from "./plan.js";
-import { type ProduceRuntime, resolveProduceRuntime } from "./produce-runtime.js";
+import { type ProduceRuntime, resolveProduceRuntime } from "../runtime/produce-runtime.js";
 import { produceWiki } from "../workflow/produce.js";
 import type { ProduceProgress } from "../ports/progress-sink.js";
 

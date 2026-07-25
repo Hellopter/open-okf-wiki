@@ -11,13 +11,13 @@ import {
   type WikiProduceToolDetails,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { createToolDetailsAccumulator } from "./progress.js";
+import { createToolDetailsAccumulator } from "../produce/progress.js";
 import {
   type RunWikiInput,
   runWiki,
   type WikiProduceGateCoordinator,
   type WikiProduceModelFactory,
-} from "./run-wiki.js";
+} from "../produce/run-wiki.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 
@@ -27,7 +27,7 @@ export type {
   WikiProduceGateRequest,
   WikiProduceModelFactory,
   WikiProduceModelRole,
-} from "./run-wiki.js";
+} from "../produce/run-wiki.js";
 
 export type CreateWikiProduceToolInput = {
   workspace: WorkspaceConfig;

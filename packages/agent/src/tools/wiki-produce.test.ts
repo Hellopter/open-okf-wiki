@@ -14,7 +14,7 @@ import {
   createWikiProduceTool,
   type WikiProduceGateDecision,
   type WikiProduceGateRequest,
-} from "./wiki-produce-tool.js";
+} from "./wiki-produce.js";
 
 type ExecuteWikiProduce = (
   toolCallId: string,

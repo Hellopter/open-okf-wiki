@@ -11,15 +11,15 @@ import {
   type NodeAttempt,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
-import type { RunWorkdirLayout } from "../pi/run-workdir.js";
-import type { SourceIgnoreInput } from "../pi/tool-operations.js";
+import type { RunWorkdirLayout } from "../runtime/run-workdir.js";
+import type { SourceIgnoreInput } from "../runtime/tool-operations.js";
 import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "./living-spec.js";
 import type { AgentRunner } from "../ports/agent-runner.js";
 import { plannerPrompt } from "./prompts.js";
 import {
   createSubmitWikiRunSpecTool,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
-} from "./submit-wiki-run-spec-tool.js";
+} from "../tools/submit-wiki-run-spec.js";
 
 function snippet(text: string, max = 240): string {
   const t = text.replace(/\s+/g, " ").trim();

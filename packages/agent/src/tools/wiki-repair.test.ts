@@ -6,9 +6,9 @@ import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { registerRunRecord, runWorkDir } from "@okf-wiki/core";
 import { commitSpec } from "../produce/living-spec.js";
-import { createFixtureProduceRuntime } from "../produce/produce-runtime.js";
+import { createFixtureProduceRuntime } from "../runtime/produce-runtime.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
-import { runWorkdirLayout } from "../pi/run-workdir.js";
+import { runWorkdirLayout } from "../runtime/run-workdir.js";
 import {
   createWikiRepairTool,
   layoutForExistingRun,

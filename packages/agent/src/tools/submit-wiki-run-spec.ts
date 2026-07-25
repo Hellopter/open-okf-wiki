@@ -6,7 +6,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
-import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "./living-spec.js";
+import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "../produce/living-spec.js";
 
 export const SUBMIT_WIKI_RUN_SPEC_TOOL_NAME = "submit_wiki_run_spec" as const;
 

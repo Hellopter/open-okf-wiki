@@ -23,8 +23,8 @@ import {
   type ResolvedProviderRuntime,
   resolveProviderRuntime,
 } from "@okf-wiki/core";
-import { redactSensitiveText } from "../run-redact.js";
-import { resolveContextBudget } from "./context-budget.js";
+import { redactSensitiveText } from "../../run-redact.js";
+import { resolveContextBudget } from "../context-budget.js";
 
 /** Sole product provider kind (wire/docs; not a multi-provider switch). */
 export type OkfProviderKind = typeof OPENAI_COMPATIBLE_PROVIDER_KIND;

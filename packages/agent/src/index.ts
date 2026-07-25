@@ -6,7 +6,7 @@
 
 /** Re-export Core skill roots helper (single resolution algorithm lives in Core). */
 export { resolveWikiSkillPaths } from "@okf-wiki/core";
-export { createOperatorFixtureModel } from "./pi/operator-fixture-model.js";
+export { createOperatorFixtureModel } from "./runtime/model/fixture-model.js";
 export {
   createOperatorSession,
   deleteOperatorSession,
@@ -16,13 +16,13 @@ export {
   openOperatorSession,
   projectOperatorHistoryFromManager,
   projectOperatorHistoryMessage,
-} from "./pi/operator-session.js";
+} from "./session/operator-session.js";
 export {
   resolveWorkspacePiModel,
   testProviderConnection,
-} from "./pi/provider-model.js";
-export { resolveModelSelection } from "./pi/role-model.js";
-export { shouldUsePiFixtureMode } from "./produce/fixture-mode.js";
+} from "./runtime/model/provider-model.js";
+export { resolveModelSelection } from "./runtime/model/role-model.js";
+export { shouldUsePiFixtureMode } from "./runtime/fixture-mode.js";
 export {
   type WikiProduceGateCoordinator,
   type WikiProduceGateDecision,

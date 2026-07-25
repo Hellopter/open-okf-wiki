@@ -12,17 +12,17 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { NodeAttempt } from "@okf-wiki/contract";
-import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
+import { resolveAssistantSummary } from "./assistant-outcome.js";
 import {
   applyAttemptSessionEvent,
   attemptItemsSnapshot,
   createAttemptProjectorState,
-} from "../pi/attempt-projector.js";
-import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
-import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import type { WikiAgentRole } from "../pi/tool-policy.js";
-import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "./submit-wiki-run-spec-tool.js";
-import { listWikiMarkdown } from "./wiki-pages.js";
+} from "./attempt-projector.js";
+import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
+import type { SourceIgnoreInput } from "./tool-operations.js";
+import type { WikiAgentRole } from "./tool-policy.js";
+import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "../tools/submit-wiki-run-spec.js";
+import { listWikiMarkdown } from "../produce/wiki-pages.js";
 
 export type ScopedAgentRole = Extract<
   WikiAgentRole,
