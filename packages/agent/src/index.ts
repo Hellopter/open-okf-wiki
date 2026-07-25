@@ -22,12 +22,12 @@ export {
   testProviderConnection,
 } from "./pi/provider-model.js";
 export { resolveModelSelection } from "./pi/role-model.js";
-export { shouldUsePiFixtureMode } from "./produce/live-pi.js";
+export { shouldUsePiFixtureMode } from "./produce/fixture-mode.js";
 export {
   type WikiProduceGateCoordinator,
   type WikiProduceGateDecision,
   type WikiProduceGateRequest,
-} from "./produce/wiki-produce-tool.js";
+} from "./produce/run-wiki.js";
 /** Operator-facing redaction for server HTTP/SSE surfaces. */
 export {
   redactErrorMessage,

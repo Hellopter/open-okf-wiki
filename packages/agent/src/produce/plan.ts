@@ -1,6 +1,6 @@
 /**
- * Planner phase: build a living WikiRunSpec from sources (or fixture default).
- * Includes fail-closed JSON Spec parsing (formerly plan-parse.ts).
+ * Planner: living WikiRunSpec via ProduceRuntime (or default Spec for fixture).
+ * Fail-closed JSON parse — no invented thin plans.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -13,7 +13,7 @@ import {
 } from "@okf-wiki/contract";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
-import { runChildSession } from "./children.js";
+import type { ProduceRuntime } from "./produce-runtime.js";
 import { plannerPrompt } from "./prompts.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,13 +59,6 @@ function isCompleteSpec(value: unknown): boolean {
   );
 }
 
-/**
- * Accept a complete WikiRunSpec as raw or fenced JSON.
- *
- * Markdown page lists and thin `{ summary, pages }` plans are intentionally
- * rejected: accepting them made the live Planner silently succeed with an
- * invented default Spec instead of failing closed.
- */
 export function parsePlanFromAgentText(text: string): WikiRunSpec {
   const raw = text?.trim() ?? "";
   const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
@@ -84,7 +77,7 @@ export function parsePlanFromAgentText(text: string): WikiRunSpec {
       const parsed = WikiRunSpecSchema.safeParse(value);
       if (parsed.success) return parsed.data;
     } catch {
-      // Try the next representation before failing closed.
+      // next candidate
     }
   }
 
@@ -94,52 +87,45 @@ export function parsePlanFromAgentText(text: string): WikiRunSpec {
 export type PlanWikiSpecInput = {
   layout: RunWorkdirLayout;
   workspaceName: string;
+  runtime: ProduceRuntime;
   wikiLanguage?: "en" | "zh";
-  fixture?: boolean;
   model?: Model<any>;
   modelRuntime?: ModelRuntime;
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
   abortSignal?: AbortSignal;
-  /** When true, skip LLM and return defaultWikiRunSpec. */
-  useDefaultSpec?: boolean;
-  /** Existing Spec and feedback when the operator requests a real re-plan. */
   operatorNotes?: string;
   priorSpec?: WikiRunSpec;
   revisionFeedback?: string;
-  /** Parent wiki_produce details.children projection. */
   onProgress?: (span: WikiProduceChildSpan) => void;
 };
 
 export type PlanWikiSpecResult = {
   spec: WikiRunSpec;
-  mode: "fixture" | "live" | "default";
+  mode: "fixture" | "live";
   rawSummary?: string;
 };
 
 /**
- * Produce a WikiRunSpec via Planner child session (RO tools).
- * Fail-closed on live parse failure unless useDefaultSpec is set.
+ * Plan a WikiRunSpec. Fixture runtime → default Spec; live → planner agent + parse.
+ * Does not commit Spec to disk — caller (runWiki) owns commitSpec.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
-  if (input.useDefaultSpec || input.fixture) {
+  if (input.runtime.kind === "fixture") {
     const spec = input.priorSpec ?? defaultWikiRunSpec(input.workspaceName);
     input.onProgress?.({
       id: "plan",
       role: "plan",
       status: "done",
-      summary: input.fixture ? "Fixture default WikiRunSpec" : "Default WikiRunSpec",
+      summary: "Fixture default WikiRunSpec",
       items: [{ type: "text", text: `pages=${spec.pages.length}` }],
     });
-    return {
-      spec,
-      mode: input.fixture ? "fixture" : "default",
-    };
+    return { spec, mode: "fixture" };
   }
 
   if (!input.model) {
-    throw new Error("Live plan phase requires a model, or pass fixture/useDefaultSpec");
+    throw new Error("Live plan phase requires a model");
   }
 
   const basePrompt = plannerPrompt({
@@ -156,7 +142,8 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
         JSON.stringify(input.priorSpec),
       ].join("\n\n")
     : "";
-  const child = await runChildSession({
+
+  const child = await input.runtime.runAgent({
     role: "plan",
     spanId: "plan",
     runWorkDir: input.layout.runWorkDir,
@@ -171,6 +158,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     abortSignal: input.abortSignal,
     onProgress: input.onProgress,
   });
+
   return {
     spec: parsePlanFromAgentText(child.summary),
     mode: "live",

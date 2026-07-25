@@ -1,13 +1,11 @@
 /**
- * In-process Pi child sessions for Domain / Leaf / Reviewer / Plan (ADR 0030).
- * Prefer SDK embedding over spawning the `pi` CLI.
+ * Unified in-process Pi child runner (SDK embed — not pi CLI spawn).
  *
- * Provider failures often complete session.prompt() without throwing
- * (stopReason "error"). We fail closed instead of inventing empty success.
+ * Aligns with Pi's subagent *pattern* (parent tool details projection, isolated
+ * context) while keeping ADR 0030/0032 product constraints: SessionManager.inMemory,
+ * noExtensions, no bash, children never write Operator Session JSONL.
  *
- * Child events stay inside the child Session. Operator visibility is only via
- * parent wiki_produce tool details (`onProgress` → details.children), never
- * as Operator Session messages (ADR 0032).
+ * Live only. Fixture short-circuits belong on ProduceRuntime adapters.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -17,19 +15,17 @@ import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
-import { shouldUsePiFixtureMode } from "./live-pi.js";
+import { listWikiMarkdown } from "./wiki-pages.js";
 
-export type ChildRole = Extract<
+export type ScopedAgentRole = Extract<
   WikiAgentRole,
   "domain" | "leaf" | "reviewer" | "root_research" | "plan" | "root_write"
 >;
 
-const MAX_ITEMS = 20;
-const MAX_TEXT_CHUNK = 2000;
-const MAX_ARGS_SUMMARY = 500;
+export type ScopedAgentProgress = WikiProduceChildSpan;
 
-export type RunChildSessionInput = {
-  role: ChildRole;
+export type RunScopedAgentInput = {
+  role: ScopedAgentRole;
   runWorkDir: string;
   task: string;
   systemPrompt?: string;
@@ -38,29 +34,26 @@ export type RunChildSessionInput = {
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
-  /** When true, skip LLM and return a fixture summary. */
-  fixture?: boolean;
+  additionalSkillPaths?: readonly string[];
   abortSignal?: AbortSignal;
-  /** Soft timeout in ms (host abort via session.abort). */
   timeoutMs?: number;
-  /** Stable id for parent tool details.children (defaults to role). */
   spanId?: string;
-  /** Progressive projection for parent wiki_produce onUpdate (not Session JSONL). */
-  onProgress?: (span: WikiProduceChildSpan) => void;
+  /** When set (root_write), list pages under this wiki dir after success. */
+  wikiDir?: string;
+  onProgress?: (span: ScopedAgentProgress) => void;
 };
 
-export type RunChildSessionResult = {
-  role: ChildRole;
-  /** Short control summary (capped). Full evidence lives under analysis/ when receiptPath is set. */
+export type RunScopedAgentResult = {
+  role: ScopedAgentRole;
   summary: string;
-  mode: "fixture" | "live";
-  /**
-   * Relative path under the Run workdir after Host persist (e.g. analysis/receipts/…).
-   * Set by orchestration via attachResearchReceipt — not by the child agent itself.
-   */
+  mode: "live";
+  pages?: string[];
   receiptPath?: string;
 };
 
+const MAX_ITEMS = 20;
+const MAX_TEXT_CHUNK = 2000;
+const MAX_ARGS_SUMMARY = 500;
 const SUMMARY_RETURN_CAP = 4_000;
 
 function controlSummary(text: string): string {
@@ -102,8 +95,8 @@ function pushItem(items: WikiProduceChildItem[], item: WikiProduceChildItem): vo
 }
 
 function emitProgress(
-  onProgress: RunChildSessionInput["onProgress"],
-  span: WikiProduceChildSpan,
+  onProgress: RunScopedAgentInput["onProgress"],
+  span: ScopedAgentProgress,
 ): void {
   try {
     onProgress?.(span);
@@ -112,53 +105,37 @@ function emitProgress(
   }
 }
 
+function abortError(): Error {
+  const err = new Error("Wiki Run cancelled");
+  err.name = "AbortError";
+  return err;
+}
+
 /**
- * Run a child agent (usually read-only research/review/plan).
- * Always uses role allowlist (no bash).
+ * Run one role-scoped in-process Pi AgentSession.
+ * Always uses role allowlist (no bash). Never attaches parent SessionManager.
  */
-export async function runChildSession(input: RunChildSessionInput): Promise<RunChildSessionResult> {
+export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunScopedAgentResult> {
   const spanId = input.spanId?.trim() || input.role;
-  const role = input.role === "root_write" ? "root_write" : input.role;
+  const role = input.role;
 
   if (input.abortSignal?.aborted) {
-    const err = new Error("Wiki Run cancelled");
-    err.name = "AbortError";
     emitProgress(input.onProgress, {
       id: spanId,
       role,
       status: "cancelled",
       summary: "Wiki Run cancelled",
     });
-    throw err;
-  }
-
-  // Explicit fixture only (arg or non-production OKF_WIKI_AGENT_MODE=fixture).
-  if (shouldUsePiFixtureMode({ fixture: input.fixture })) {
-    const summary = controlSummary(`[fixture ${input.role}] ${input.task.slice(0, 200)}`);
-    emitProgress(input.onProgress, {
-      id: spanId,
-      role,
-      status: "done",
-      summary,
-      items: [{ type: "text", text: summary }],
-    });
-    return {
-      role: input.role,
-      mode: "fixture",
-      summary,
-    };
+    throw abortError();
   }
 
   if (!input.model) {
     throw new Error(
-      `Child session (${input.role}) live mode requires a model, or pass fixture: true / OKF_WIKI_AGENT_MODE=fixture for smoke only (ignored when NODE_ENV=production)`,
+      `Scoped agent (${input.role}) live mode requires a model, or use FixtureProduceRuntime / fixture: true for smoke only`,
     );
   }
 
-  // createWikiSession roles exclude root_write in some paths — map for session factory.
-  const sessionRole: WikiAgentRole =
-    input.role === "root_write" ? "root_write" : input.role === "plan" ? "plan" : input.role;
-
+  const sessionRole: WikiAgentRole = role;
   let handle: WikiSessionHandle | undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const onAbort = () => {
@@ -172,9 +149,11 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
   const items: WikiProduceChildItem[] = [];
   let turns = 0;
   let contextTokens: number | undefined;
-  const toolStatus = new Map<string, "running" | "done" | "error">();
 
-  const snapshot = (status: WikiProduceChildSpan["status"], summary?: string): WikiProduceChildSpan => ({
+  const snapshot = (
+    status: ScopedAgentProgress["status"],
+    summary?: string,
+  ): ScopedAgentProgress => ({
     id: spanId,
     role,
     status,
@@ -196,20 +175,21 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
       modelRuntime: input.modelRuntime,
       systemPrompt:
         input.systemPrompt ??
-        `You are a ${input.role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`,
+        (role === "root_write"
+          ? undefined
+          : `You are a ${input.role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`),
       sourceIgnores: input.sourceIgnores,
       maxContextTokens: input.maxContextTokens,
       contextTargetTokens: input.contextTargetTokens,
+      additionalSkillPaths: input.additionalSkillPaths,
       scopedTools: true,
     });
 
     if (input.abortSignal) {
       if (input.abortSignal.aborted) {
         onAbort();
-        const err = new Error("Wiki Run cancelled");
-        err.name = "AbortError";
         emitProgress(input.onProgress, snapshot("cancelled", "Wiki Run cancelled"));
-        throw err;
+        throw abortError();
       }
       input.abortSignal.addEventListener("abort", onAbort, { once: true });
     }
@@ -249,9 +229,7 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
             for (const block of message.content) {
               if (!isRecord(block) || block.type !== "toolCall") continue;
               const name = typeof block.name === "string" ? block.name : "tool";
-              const id = typeof block.id === "string" ? block.id : name;
               const args = "arguments" in block ? block.arguments : block.args;
-              toolStatus.set(id, "running");
               pushItem(items, {
                 type: "toolCall",
                 name,
@@ -267,8 +245,6 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
 
       if (kind === "tool_execution_start") {
         const name = typeof raw.toolName === "string" ? raw.toolName : "tool";
-        const id = typeof raw.toolCallId === "string" ? raw.toolCallId : name;
-        toolStatus.set(id, "running");
         pushItem(items, {
           type: "toolCall",
           name,
@@ -281,10 +257,7 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
 
       if (kind === "tool_execution_end") {
         const name = typeof raw.toolName === "string" ? raw.toolName : "tool";
-        const id = typeof raw.toolCallId === "string" ? raw.toolCallId : name;
         const isError = raw.isError === true;
-        toolStatus.set(id, isError ? "error" : "done");
-        // Update last matching running toolCall if present
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
           if (it?.type === "toolCall" && it.name === name && it.status === "running") {
@@ -303,10 +276,8 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
     }
 
     if (input.abortSignal?.aborted) {
-      const err = new Error("Wiki Run cancelled");
-      err.name = "AbortError";
       emitProgress(input.onProgress, snapshot("cancelled", "Wiki Run cancelled"));
-      throw err;
+      throw abortError();
     }
 
     const resolved = resolveAssistantSummary({
@@ -315,21 +286,30 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
       roleLabel: input.role,
     });
     if (resolved.isError) {
-      emitProgress(
-        input.onProgress,
-        snapshot("error", resolved.errorMessage ?? resolved.summary),
-      );
+      emitProgress(input.onProgress, snapshot("error", resolved.errorMessage ?? resolved.summary));
       throw new Error(
-        `Child session (${input.role}) failed: ${resolved.errorMessage ?? resolved.summary}`,
+        `Scoped agent (${input.role}) failed: ${resolved.errorMessage ?? resolved.summary}`,
       );
     }
 
-    const summary = controlSummary(resolved.summary);
+    let pages: string[] | undefined;
+    if (role === "root_write" && input.wikiDir) {
+      pages = await listWikiMarkdown(input.wikiDir);
+      if (pages.length === 0) {
+        emitProgress(input.onProgress, snapshot("error", "No wiki markdown pages written"));
+        throw new Error("Pi live produce finished without writing any wiki markdown pages");
+      }
+    }
+
+    const summary = controlSummary(
+      pages ? `Pi live produce wrote ${pages.length} page(s)` : resolved.summary,
+    );
     emitProgress(input.onProgress, snapshot("done", summary));
     return {
       role: input.role,
       mode: "live",
       summary,
+      ...(pages ? { pages } : {}),
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw err;
@@ -345,22 +325,20 @@ export async function runChildSession(input: RunChildSessionInput): Promise<RunC
   }
 }
 
-/**
- * Fan-out helper with concurrency cap (product delegation limits).
- */
-export async function runChildrenParallel(
-  tasks: RunChildSessionInput[],
+/** Fan-out helper with concurrency cap (product delegation limits). */
+export async function runScopedAgentsParallel(
+  tasks: RunScopedAgentInput[],
   opts?: { concurrency?: number },
-): Promise<RunChildSessionResult[]> {
+): Promise<RunScopedAgentResult[]> {
   const concurrency = Math.max(1, opts?.concurrency ?? 2);
-  const results: RunChildSessionResult[] = new Array(tasks.length);
+  const results: RunScopedAgentResult[] = new Array(tasks.length);
   let next = 0;
 
   async function worker(): Promise<void> {
     for (;;) {
       const i = next++;
       if (i >= tasks.length) return;
-      results[i] = await runChildSession(tasks[i]!);
+      results[i] = await runScopedAgent(tasks[i]!);
     }
   }
 

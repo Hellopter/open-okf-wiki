@@ -1,6 +1,6 @@
 /**
- * Structured defect reports, merge, and deterministic publishability scoring.
- * Fail-closed: blocking defects prevent publish.
+ * Structured defect reports and merge. Fail-closed: blocking defects prevent publish.
+ * Publishability scoring lives in produce/publishability.ts.
  */
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -12,10 +12,8 @@ import {
   type DefectSeverity,
   type MergedDefectReport,
   MergedDefectReportSchema,
-  type WikiRunSpec,
 } from "@okf-wiki/contract";
-import { scanWikiTree, validateWikiTree } from "@okf-wiki/core";
-import { defectsPath } from "./spec-store.js";
+import { defectsPath } from "./produce/living-spec.js";
 
 const SEVERITY_RANK: Record<DefectSeverity, number> = {
   blocking: 3,
@@ -211,80 +209,4 @@ export async function readMergedDefects(
   } catch {
     return null;
   }
-}
-
-export type PublishabilityResult = {
-  publishable: boolean;
-  reasons: string[];
-  pages: string[];
-  defects: MergedDefectReport | null;
-};
-
-/**
- * Deterministic scorer: critical pages exist, mechanical validate ok,
- * no blocking defects when review is required.
- */
-export async function evaluateWikiPublishable(input: {
-  wikiRoot: string;
-  workspaceRoot: string;
-  runId: string;
-  sources: Array<{ id: string; path: string }>;
-  spec?: WikiRunSpec | null;
-  /** When true (default), missing defects file fails if reviewRequired. */
-  requireReviewReceipt?: boolean;
-}): Promise<PublishabilityResult> {
-  const reasons: string[] = [];
-  const pages = (await scanWikiTree(input.wikiRoot)).files
-    .map((file) => file.relativePath)
-    .filter((relativePath) => relativePath.toLowerCase().endsWith(".md"));
-  if (pages.length === 0) {
-    reasons.push("no staged wiki pages");
-  }
-
-  const spec = input.spec;
-  if (spec?.pages?.length) {
-    const pageSet = new Set(pages.map((p) => p.replace(/^\.?\//, "")));
-    for (const p of spec.pages) {
-      if (p.critical === false) {
-        continue;
-      }
-      const norm = p.path.replace(/^\.?\//, "");
-      if (!pageSet.has(norm)) {
-        reasons.push(`missing critical page: ${norm}`);
-      }
-    }
-  }
-
-  const validation = await validateWikiTree(input.wikiRoot, {
-    sources: input.sources,
-  });
-  if (!validation.ok) {
-    reasons.push(`validation: ${validation.errors.slice(0, 10).join("; ")}`);
-  }
-
-  const defects = await readMergedDefects(input.workspaceRoot, input.runId);
-  const reviewRequired = spec?.acceptance?.reviewRequired !== false;
-  const requireReceipt = input.requireReviewReceipt !== false;
-
-  if (reviewRequired) {
-    if (!defects && requireReceipt) {
-      reasons.push("review required but defects.json missing");
-    } else if (defects) {
-      const blocking = spec?.acceptance?.blockingSeverities ?? ["blocking"];
-      if (hasBlockingDefects(defects, blocking as DefectSeverity[])) {
-        reasons.push(
-          `blocking defects remain (${defects.defects.filter((d) => (blocking as string[]).includes(d.severity)).length})`,
-        );
-      } else if (!defects.clean && blocking.includes("major" as DefectSeverity)) {
-        // already covered by hasBlockingDefects when major is blocking
-      }
-    }
-  }
-
-  return {
-    publishable: reasons.length === 0,
-    reasons,
-    pages,
-    defects,
-  };
 }

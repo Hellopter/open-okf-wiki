@@ -5,13 +5,13 @@ import path from "node:path";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
-  evaluateWikiPublishable,
   hasBlockingDefects,
   mergeDefectReports,
   parseDefectReportFromText,
   writeMergedDefects,
 } from "./defects.js";
-import { writeWikiRunSpec } from "./spec-store.js";
+import { commitSpec } from "./produce/living-spec.js";
+import { scorePublishable } from "./produce/publishability.js";
 
 test("parseDefectReportFromText recognizes NO_DEFECTS", () => {
   const r = parseDefectReportFromText("All good.\nNO_DEFECTS\n", "r1");
@@ -52,11 +52,11 @@ test("mergeDefectReports dedupes and ranks", () => {
   assert.equal(hasBlockingDefects(m), true);
 });
 
-test("evaluateWikiPublishable fails without pages", async () => {
+test("scorePublishable fails without pages", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-score-"));
   const wikiRoot = path.join(root, "wiki");
   await mkdir(wikiRoot, { recursive: true });
-  const scored = await evaluateWikiPublishable({
+  const scored = await scorePublishable({
     wikiRoot,
     workspaceRoot: root,
     runId: "run-1",
@@ -67,7 +67,7 @@ test("evaluateWikiPublishable fails without pages", async () => {
   assert.ok(scored.reasons.some((r) => /no staged/i.test(r)));
 });
 
-test("evaluateWikiPublishable passes with page + clean defects", async () => {
+test("scorePublishable passes with page + clean defects", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-score-ok-"));
   const wikiRoot = path.join(root, "wiki");
   await mkdir(wikiRoot, { recursive: true });
@@ -81,7 +81,7 @@ test("evaluateWikiPublishable passes with page + clean defects", async () => {
   await writeFile(path.join(sourcePath, "README.md"), "# hi\n", "utf8");
 
   const spec = defaultWikiRunSpec("Demo");
-  await writeWikiRunSpec(root, "run-ok", spec);
+  await commitSpec(root, "run-ok", spec);
   await writeMergedDefects(root, "run-ok", {
     version: 1,
     clean: true,
@@ -90,7 +90,7 @@ test("evaluateWikiPublishable passes with page + clean defects", async () => {
     summary: "NO_DEFECTS",
   });
 
-  const scored = await evaluateWikiPublishable({
+  const scored = await scorePublishable({
     wikiRoot,
     workspaceRoot: root,
     runId: "run-ok",

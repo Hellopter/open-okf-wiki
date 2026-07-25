@@ -1,21 +1,20 @@
 /**
- * Produce-owned review council → MergedDefectReport.
- * Pi path: pure merge of pre-generated reviewer texts (no Mastra Agent).
+ * Review council merge + defects.json persist (Produce-internal).
  */
 
 import type { MergedDefectReport } from "@okf-wiki/contract";
 import { writeAnalysisReceipt } from "@okf-wiki/core";
-import { mergeDefectReports, parseDefectReportFromText, writeMergedDefects } from "./defects.js";
+import {
+  mergeDefectReports,
+  parseDefectReportFromText,
+  writeMergedDefects,
+} from "../defects.js";
 
 export type ReviewerOutput = {
   id: string;
   text: string;
 };
 
-/**
- * Merge independent reviewer outputs into a MergedDefectReport and persist.
- * Callers (Pi sessions later) supply raw reviewer text; this host owns merge + receipts.
- */
 export async function runReviewCouncil(input: {
   reviewers: ReviewerOutput[];
   pages: string[];
@@ -48,7 +47,7 @@ export async function runReviewCouncil(input: {
           openQuestions: [],
         });
       } catch {
-        // best-effort
+        // best-effort receipt
       }
       return report;
     }),

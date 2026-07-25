@@ -1,12 +1,12 @@
 /**
- * Living WikiRunSpec on disk under the run analysis scratch.
- * Root may replan during Produce; mechanical scorers read the same file.
+ * Living WikiRunSpec — single writer for analysis/spec.json.
+ * Run Record mirror is optional and only via commitSpec.
  */
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
-import { analysisScratchDir, atomicWriteJson } from "@okf-wiki/core";
+import { analysisScratchDir, atomicWriteJson, updateRunRecord } from "@okf-wiki/core";
 
 export const SPEC_FILE_NAME = "spec.json";
 export const DEFECTS_FILE_NAME = "defects.json";
@@ -23,43 +23,41 @@ export function defectsPath(workspaceRoot: string, runId: string): string {
   return path.join(runAnalysisDir(workspaceRoot, runId), DEFECTS_FILE_NAME);
 }
 
-export async function writeWikiRunSpec(
+export type CommitSpecOptions = {
+  /** Also patch Run Record.spec (same Spec object). */
+  mirrorRunRecord?: boolean;
+  summary?: string;
+};
+
+/**
+ * Sole Spec write path: disk analysis/spec.json (+ optional Run Record).
+ */
+export async function commitSpec(
   workspaceRoot: string,
   runId: string,
   spec: WikiRunSpec,
+  opts?: CommitSpecOptions,
 ): Promise<string> {
   const parsed = WikiRunSpecSchema.parse(spec);
   const filePath = specPath(workspaceRoot, runId);
   await atomicWriteJson(filePath, parsed);
+  if (opts?.mirrorRunRecord) {
+    await updateRunRecord(workspaceRoot, runId, {
+      spec: parsed,
+      ...(opts.summary !== undefined ? { summary: opts.summary } : {}),
+    });
+  }
   return filePath;
 }
 
-export async function readWikiRunSpec(
+export async function readCommittedSpec(
   workspaceRoot: string,
   runId: string,
 ): Promise<WikiRunSpec | null> {
-  const filePath = specPath(workspaceRoot, runId);
   try {
-    const raw = await readFile(filePath, "utf8");
+    const raw = await readFile(specPath(workspaceRoot, runId), "utf8");
     return WikiRunSpecSchema.parse(JSON.parse(raw));
   } catch {
     return null;
   }
-}
-
-export async function appendSpecChangelog(
-  workspaceRoot: string,
-  runId: string,
-  entry: string,
-): Promise<WikiRunSpec | null> {
-  const current = await readWikiRunSpec(workspaceRoot, runId);
-  if (!current) {
-    return null;
-  }
-  const next = WikiRunSpecSchema.parse({
-    ...current,
-    changelog: [...(current.changelog ?? []), entry.slice(0, 500)].slice(-40),
-  });
-  await writeWikiRunSpec(workspaceRoot, runId, next);
-  return next;
 }

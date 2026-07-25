@@ -81,6 +81,9 @@ test("freezeWikiRun creates record with skillDigest and clean sources", async ()
   });
 
   assert.ok(frozen.runId);
+  assert.equal(frozen.runWorkDir, path.join(root, ".okf-wiki", "runs", frozen.runId));
+  assert.equal(frozen.wikiDir, path.join(frozen.runWorkDir, "wiki"));
+  assert.equal(frozen.analysisDir, path.join(frozen.runWorkDir, "analysis"));
   assert.equal(frozen.skillPath, path.join(root, ".okf-wiki", "runs", frozen.runId, "skill"));
   assert.ok(frozen.skillDigest && frozen.skillDigest.length > 8);
   assert.equal(frozen.sources.length, 1);

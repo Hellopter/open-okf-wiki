@@ -4,7 +4,7 @@
  * Product Settings store OpenAI-compatible gateways as model profiles
  * (baseUrl, apiKey, apiShape, modelId). Pi speaks providers; this module
  * registers one in-memory provider per selected profile and returns the
- * Model that createWikiSession / produceWithPi need.
+ * Model that createWikiSession / ProduceRuntime need.
  *
  * Product only supports OpenAI-compatible (completions | responses).
  */

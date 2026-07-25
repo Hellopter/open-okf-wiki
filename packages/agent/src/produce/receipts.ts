@@ -12,7 +12,13 @@ import {
   type ReceiptStatus,
 } from "@okf-wiki/contract";
 import { listAnalysisReceipts, safeReceiptNodeId, writeAnalysisReceipt } from "@okf-wiki/core";
-import type { RunChildSessionResult } from "./children.js";
+/** Minimal child result needed to attach a path-first receipt. */
+export type ResearchChildResult = {
+  role: string;
+  summary: string;
+  mode: "fixture" | "live";
+  receiptPath?: string;
+};
 
 const SUMMARY_CAP = 4_000;
 const FINDINGS_CAP = 24;
@@ -75,7 +81,7 @@ export async function persistResearchReceipt(input: {
  * control-plane handle (path-first). Does not put receipt body on the child result.
  */
 export async function attachResearchReceipt(
-  child: RunChildSessionResult,
+  child: ResearchChildResult,
   input: {
     workspaceRoot: string;
     runId: string;
@@ -88,7 +94,7 @@ export async function attachResearchReceipt(
     /** Override summary (e.g. FAILED: …); defaults to child.summary. */
     summary?: string;
   },
-): Promise<RunChildSessionResult & { receiptPath: string; absoluteReceiptPath: string }> {
+): Promise<ResearchChildResult & { receiptPath: string; absoluteReceiptPath: string }> {
   const persisted = await persistResearchReceipt({
     workspaceRoot: input.workspaceRoot,
     runId: input.runId,

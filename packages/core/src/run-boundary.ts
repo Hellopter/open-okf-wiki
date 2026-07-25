@@ -68,10 +68,17 @@ export type FreezeWikiRunInput = {
 
 export type FrozenRunBoundary = {
   runId: string;
+  /** Absolute run workdir: …/runs/<runId>/ */
+  runWorkDir: string;
+  /** Staging Wiki directory under the run workdir. */
+  wikiDir: string;
+  /** Analysis scratch (spec, receipts, defects). */
+  analysisDir: string;
+  /** Materialized Producer Skill directory (read-only). */
   skillPath: string;
   skillDigest: string;
   sources: FrozenSourceSnapshot[];
-  /** sourceId → absolute path (for materialize). */
+  /** sourceId → absolute path under sources/. */
   sourcePathMap: Map<string, string>;
   /** Effective Source Ignores for Operations wrappers. */
   sourceIgnores: Map<string, readonly string[]>;
@@ -229,6 +236,9 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
 
   return {
     runId,
+    runWorkDir: runDir,
+    wikiDir: path.join(runDir, "wiki"),
+    analysisDir: path.join(runDir, "analysis"),
     skillPath,
     skillDigest: digest,
     sources: frozenSources,

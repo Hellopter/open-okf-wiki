@@ -1,14 +1,12 @@
 /**
- * Describe the immutable Run Boundary layout used by Pi (ADR 0032).
+ * Run workdir layout projection for Pi cwd (ADR 0032 / freeze).
  *
- * {runWorkDir}/
- *   sources/<id>/  → run-owned ordinary snapshot trees
- *   skill/         → run-owned Producer Skill copy
- *   wiki/          → Staging Wiki (directory)
- *   analysis/      → spec + receipts
+ * Prefer layoutFromFrozen(FrozenRunBoundary). runWorkdirLayout remains for tests
+ * that hand-build trees without freeze.
  */
 
 import path from "node:path";
+import type { FrozenRunBoundary } from "@okf-wiki/core";
 
 export type RunWorkdirLayout = {
   runWorkDir: string;
@@ -20,7 +18,12 @@ export type RunWorkdirLayout = {
   sourceMounts: Map<string, string>;
 };
 
-/** Validate and project an already-frozen Run Boundary layout. Performs no I/O or copying. */
+/** Project freeze output into the layout Produce/plan use. */
+export function layoutFromFrozen(frozen: FrozenRunBoundary): RunWorkdirLayout {
+  return runWorkdirLayout(frozen.runWorkDir, frozen.sourcePathMap);
+}
+
+/** Validate and project an already-frozen Run Boundary layout. Performs no I/O. */
 export function runWorkdirLayout(
   runWorkDirInput: string,
   sourceMountsInput: ReadonlyMap<string, string>,
