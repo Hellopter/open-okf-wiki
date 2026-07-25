@@ -10,7 +10,7 @@ import {
   createScriptedReviewFixtureRuntime,
 } from "../runtime/produce-runtime.js";
 import { produceWiki } from "../workflow/produce.js";
-import type { ProduceProgress } from "./progress.js";
+import type { ProduceProgress } from "../produce/progress.js";
 
 const temps: string[] = [];
 
