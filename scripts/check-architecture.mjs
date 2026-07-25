@@ -105,6 +105,46 @@ for (const file of productSourceFiles) {
   }
 }
 
+/**
+ * Test-only hooks may live next to module-private state, but production
+ * call sites must not import them. Definitions are allowlisted; imports of
+ * *ForTests / @okf-wiki/agent/testing are forbidden outside tests.
+ */
+const forTestsDefinitionAllowlist = [
+  /\/agent-session-registry\.ts$/,
+  /\/agent-session-events\.ts$/,
+  /\/run-boundary\.ts$/,
+  /\/operator-session-test-seams\.ts$/,
+  /\/agent\/src\/testing\.ts$/,
+];
+
+const forTestsImportExempt = [/\/agent\/src\/testing\.ts$/, /\/operator-session-test-seams\.ts$/];
+
+for (const file of productSourceFiles) {
+  if (forTestsImportExempt.some((pattern) => pattern.test(file))) continue;
+  const content = readFileSync(path.join(root, file), "utf8");
+  const importMatch =
+    /\bfrom\s*["']@okf-wiki\/agent\/testing["']|\bfrom\s*["'][^"']*operator-session-test-seams[^"']*["']|\bimport\s*\{[^}]*\b\w+ForTests\b/.exec(
+      content,
+    );
+  if (importMatch) {
+    const line = content.slice(0, importMatch.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: production code must not import test-only hooks (*ForTests / agent/testing)`,
+    );
+  }
+  if (
+    /\b(?:export\s+)?(?:async\s+)?function\s+\w+ForTests\b|\bas\s+\w+ForTests\b/.test(content) &&
+    !forTestsDefinitionAllowlist.some((pattern) => pattern.test(file))
+  ) {
+    const match = /\b\w+ForTests\b/.exec(content);
+    const line = match ? content.slice(0, match.index).split("\n").length : 1;
+    failures.push(
+      `${file}:${line}: *ForTests definitions only allowed on allowlisted modules (or use @okf-wiki/agent/testing)`,
+    );
+  }
+}
+
 for (const file of filesUnder("packages/core/src").filter(
   (file) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file),
 )) {

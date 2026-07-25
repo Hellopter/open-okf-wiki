@@ -2,7 +2,8 @@
  * Test-only seams over Pi public SessionManager APIs.
  *
  * Prefer these over poking AgentSession private fields (_eventListeners, etc.).
- * Production code should not import this module.
+ * Production code must not import this module — use `@okf-wiki/agent/testing`
+ * from tests only (enforced by check-architecture).
  */
 
 import type { Message } from "@earendil-works/pi-ai";

@@ -79,7 +79,7 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
   });
   handle.session.setSessionName("Durable Pi Session");
   // Public Pi SessionManager API (agent-owned handle in this unit test setup).
-  const { injectDurableOperatorMessagesForTests } = await import("@okf-wiki/agent");
+  const { injectDurableOperatorMessagesForTests } = await import("@okf-wiki/agent/testing");
   injectDurableOperatorMessagesForTests(handle, [
     {
       role: "user",

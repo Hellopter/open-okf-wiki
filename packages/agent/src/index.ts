@@ -17,11 +17,6 @@ export {
   projectOperatorHistoryFromManager,
   projectOperatorHistoryMessage,
 } from "./pi/operator-session.js";
-/** Test seams: wrap Pi public SessionManager.appendMessage / history projection. */
-export {
-  injectDurableOperatorMessages as injectDurableOperatorMessagesForTests,
-  readDurableOperatorBranchMessages as readDurableOperatorBranchMessagesForTests,
-} from "./pi/operator-session-test-seams.js";
 export {
   resolveWorkspacePiModel,
   testProviderConnection,
