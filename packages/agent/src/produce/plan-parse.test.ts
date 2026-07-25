@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -105,33 +105,33 @@ test("parsePlanFromAgentText rejects a thin legacy JSON plan", () => {
   );
 });
 
-test("resolvePlanSpecFromAgentResult prefers on-disk plan-draft", async () => {
+test("resolvePlanSpecFromAgentResult reads only on-disk plan-draft (not summary text)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-draft-"));
   temps.push(dir);
   const expected = defaultWikiRunSpec("FromDisk");
   await writePlanDraft(dir, expected);
   const resolved = await resolvePlanSpecFromAgentResult({
     runWorkDir: dir,
-    summary: "garbage that is not a Spec",
+    specPath: PLAN_DRAFT_REL_PATH,
+    summary: "Plan submitted → analysis/plan-draft.json",
   });
   assert.equal(resolved.source, "draft");
   assert.equal(resolved.spec.summary, expected.summary);
   assert.equal(resolved.draftPath, planDraftPathFromRunWorkDir(dir));
 });
 
-test("resolvePlanSpecFromAgentResult spills text parse into plan-draft", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-spill-"));
+test("resolvePlanSpecFromAgentResult fails closed when draft is missing (no text spill)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-nodraft-"));
   temps.push(dir);
-  const expected = largeSpec("Spill");
+  const expected = largeSpec("NoSpill");
   const text = JSON.stringify(expected);
   assert.ok(text.length > 4000);
-  const resolved = await resolvePlanSpecFromAgentResult({
-    runWorkDir: dir,
-    summary: text,
-  });
-  assert.equal(resolved.source, "text");
-  assert.equal(resolved.spec.pages.length, 10);
-  const raw = await readFile(planDraftPathFromRunWorkDir(dir), "utf8");
-  assert.match(raw, /overview\.md/);
-  assert.match(PLAN_DRAFT_REL_PATH, /plan-draft\.json/);
+  await assert.rejects(
+    () =>
+      resolvePlanSpecFromAgentResult({
+        runWorkDir: dir,
+        summary: text,
+      }),
+    /submit_wiki_run_spec|plan-draft\.json/,
+  );
 });

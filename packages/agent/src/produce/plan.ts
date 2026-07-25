@@ -97,38 +97,36 @@ export function parsePlanFromAgentText(text: string): WikiRunSpec {
 }
 
 /**
- * Resolve Spec from path-first draft, else Host spill parse of agent text.
- * Always leaves a validated plan-draft.json when successful.
+ * Resolve Spec from path-first draft only.
+ * Control plane is short summary + path; full Spec is never required in summary.
  */
 export async function resolvePlanSpecFromAgentResult(input: {
   runWorkDir: string;
   /** Relative path from submit tool (e.g. analysis/plan-draft.json). */
   specPath?: string;
-  /** Untruncated assistant / control text for spill fallback. */
-  summary: string;
-}): Promise<{ spec: WikiRunSpec; source: "draft" | "text"; draftPath: string }> {
-  const fromDisk = await readPlanDraft(input.runWorkDir);
-  if (fromDisk) {
-    const draftPath = await writePlanDraft(input.runWorkDir, fromDisk);
-    return { spec: fromDisk, source: "draft", draftPath };
-  }
-
+  /** Short control summary only (never the full Spec payload). */
+  summary?: string;
+}): Promise<{ spec: WikiRunSpec; source: "draft"; draftPath: string }> {
   if (input.specPath && input.specPath !== PLAN_DRAFT_REL_PATH) {
     throw new Error(
       `Planner submitted unexpected path ${input.specPath}; expected ${PLAN_DRAFT_REL_PATH}`,
     );
   }
 
-  try {
-    const spec = parsePlanFromAgentText(input.summary);
-    const draftPath = await writePlanDraft(input.runWorkDir, spec);
-    return { spec, source: "text", draftPath };
-  } catch (err) {
-    const base = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `${base}. Prefer calling ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} so the Host can write ${PLAN_DRAFT_REL_PATH}.`,
-    );
+  const fromDisk = await readPlanDraft(input.runWorkDir);
+  if (fromDisk) {
+    // Re-write normalizes / re-validates; path stays plan-draft.json.
+    const draftPath = await writePlanDraft(input.runWorkDir, fromDisk);
+    return { spec: fromDisk, source: "draft", draftPath };
   }
+
+  const hint = input.summary?.trim()
+    ? ` control summary was: ${JSON.stringify(snippet(input.summary, 160))}`
+    : "";
+  throw new Error(
+    `Planner did not submit a complete WikiRunSpec via ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} ` +
+      `(missing ${PLAN_DRAFT_REL_PATH}).${hint}`,
+  );
 }
 
 export type PlanWikiSpecInput = {
@@ -151,9 +149,10 @@ export type PlanWikiSpecInput = {
 export type PlanWikiSpecResult = {
   spec: WikiRunSpec;
   mode: "fixture" | "live";
+  /** Short control summary only (never full Spec JSON). */
   rawSummary?: string;
-  /** How the Spec was obtained for live mode. */
-  source?: "draft" | "text" | "fixture";
+  /** How the Spec was obtained. */
+  source?: "draft" | "fixture";
   draftPath?: string;
 };
 

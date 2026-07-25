@@ -60,19 +60,14 @@ export type RunScopedAgentResult = {
 const MAX_ITEMS = 20;
 const MAX_TEXT_CHUNK = 2000;
 const MAX_ARGS_SUMMARY = 500;
-/** Progress / generic control summaries stay short for UI. */
+/** Control-plane summaries stay short (UI + parent handle). Full Spec lives on disk. */
 const SUMMARY_RETURN_CAP = 4_000;
-/**
- * Structured plan spill may exceed UI caps. Progress still uses SUMMARY_RETURN_CAP;
- * the returned summary for role=plan is not head-truncated so Host parse can succeed.
- */
-const STRUCTURED_RETURN_CAP = 256_000;
 
 function controlSummary(text: string, max = SUMMARY_RETURN_CAP): string {
   return truncate(text.trim(), max);
 }
 
-/** Roles whose final text may carry structured JSON for Host parse. */
+/** Prefer last assistant message for roles that may still spill structured text. */
 function isStructuredReturnRole(role: ScopedAgentRole): boolean {
   return role === "plan" || role === "reviewer";
 }
@@ -333,16 +328,16 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       }
     }
 
-    const returnCap = role === "plan" ? STRUCTURED_RETURN_CAP : SUMMARY_RETURN_CAP;
+    // Path-first: when plan draft was submitted, control summary is a short ACK only.
+    // Full WikiRunSpec lives in analysis/plan-draft.json — never re-embed it here.
     const summary = controlSummary(
-      pages ? `Pi live produce wrote ${pages.length} page(s)` : resolved.summary,
-      returnCap,
+      pages
+        ? `Pi live produce wrote ${pages.length} page(s)`
+        : role === "plan" && submittedSpecPath
+          ? `Plan submitted → ${submittedSpecPath}`
+          : resolved.summary,
     );
-    const progressSummary =
-      role === "plan" && submittedSpecPath
-        ? controlSummary(`Plan submitted → ${submittedSpecPath}`, SUMMARY_RETURN_CAP)
-        : summary;
-    emitProgress(input.onProgress, snapshot("done", progressSummary));
+    emitProgress(input.onProgress, snapshot("done", summary));
     return {
       role: input.role,
       mode: "live",
