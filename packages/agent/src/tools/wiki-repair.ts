@@ -9,7 +9,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
 import { loadRun, runWorkDir } from "@okf-wiki/core";
-import { runWorkdirLayout } from "../runtime/run-workdir.js";
+import { runWorkdirLayout } from "../runtime/workdir.js";
 import type { AgentRunner } from "../ports/agent-runner.js";
 import { readCommittedSpec } from "../produce/living-spec.js";
 import {

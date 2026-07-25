@@ -2,8 +2,8 @@
  * Planner prompt for WikiRunSpec path-first handoff.
  */
 
-import type { RunWorkdirLayout } from "../runtime/run-workdir.js";
-import { runWorkdirPromptPaths } from "../runtime/run-workdir.js";
+import type { RunWorkdirLayout } from "../runtime/workdir.js";
+import { runWorkdirPromptPaths } from "../runtime/workdir.js";
 import type { WikiLanguage } from "./system.js";
 
 export function plannerPrompt(input: {

@@ -44,7 +44,7 @@ import { commitSpec } from "../produce/living-spec.js";
 import { redactErrorMessage } from "../redact/index.js";
 import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
 import { type ProduceRuntime, resolveProduceRuntime } from "../runtime/produce-runtime.js";
-import { layoutFromFrozen } from "../runtime/run-workdir.js";
+import { layoutFromFrozen } from "../runtime/workdir.js";
 import { AttemptJournal } from "./journal.js";
 import { planWikiSpec } from "./phases/plan-phase.js";
 import { produceWiki } from "./produce.js";

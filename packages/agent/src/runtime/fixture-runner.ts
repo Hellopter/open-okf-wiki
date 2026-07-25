@@ -11,7 +11,7 @@ import type {
   WikiWriteResult,
 } from "../ports/agent-runner.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
-import type { RunWorkdirLayout } from "./run-workdir.js";
+import type { RunWorkdirLayout } from "./workdir.js";
 
 /** @deprecated Prefer AgentRunner from ports — alias for call-site migration. */
 export type ProduceRuntime = AgentRunner;

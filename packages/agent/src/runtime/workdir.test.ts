@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { runWorkdirLayout, runWorkdirPromptPaths } from "./run-workdir.js";
+import { runWorkdirLayout, runWorkdirPromptPaths } from "./workdir.js";
 
-describe("run-workdir", () => {
+describe("workdir", () => {
   it("projects only run-owned frozen source mounts", () => {
     const runWorkDir = path.resolve("/workspace/.okf-wiki/runs/run-1");
     const layout = runWorkdirLayout(

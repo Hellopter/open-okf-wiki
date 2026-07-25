@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, type WikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
-import { runWorkdirLayout } from "../runtime/run-workdir.js";
+import { runWorkdirLayout } from "../runtime/workdir.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,

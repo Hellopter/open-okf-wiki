@@ -13,7 +13,7 @@ import type {
   WikiWriteResult,
 } from "../ports/agent-runner.js";
 import type { ProduceProgress } from "../ports/progress-sink.js";
-import { resolveOrchestration } from "../limits.js";
+import { resolveOrchestration } from "./budgets.js";
 import { defaultReceiptStore } from "../ports/core-receipt-store.js";
 import { emitProduceProgress } from "../produce/progress.js";
 import { listWikiMarkdown } from "../produce/wiki-pages.js";

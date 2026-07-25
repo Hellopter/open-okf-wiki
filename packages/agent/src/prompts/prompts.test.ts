@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { RunWorkdirLayout } from "../runtime/run-workdir.js";
+import type { RunWorkdirLayout } from "../runtime/workdir.js";
 import { plannerPrompt } from "./plan.js";
 
 const layout: RunWorkdirLayout = {

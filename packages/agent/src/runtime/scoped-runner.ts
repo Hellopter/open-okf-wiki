@@ -13,7 +13,7 @@ import type {
   WikiWriteRequest,
 } from "../ports/agent-runner.js";
 import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./fs-operations.js";
-import type { RunWorkdirLayout } from "./run-workdir.js";
+import type { RunWorkdirLayout } from "./workdir.js";
 import {
   type RunScopedAgentInput,
   runScopedAgent,
