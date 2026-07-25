@@ -73,9 +73,10 @@ pnpm dev
 For **no-LLM pipeline smoke** only (tests, e2e, path/publish checks), set `OKF_WIKI_AGENT_MODE=fixture`. That is not the normal operator path.
 
 `pnpm dev` builds shared packages once, then starts an **ordered** watch stack
-(`scripts/dev-stack.mjs`): lib `tsc --watch` + API server, **waits for**
-`GET /api/health`, then Vite. That avoids the common startup race where the
-browser hits the Vite `/api` proxy before the Node server is listening (502).
+(`scripts/dev-stack.mjs`): free stale API/Vite ports if needed, start lib
+`tsc --watch` + API server, **wait for** `GET /api/health`, then Vite. That
+avoids (1) browser 502 before the API listens and (2) `Port 5173 is already in
+use` from orphaned processes after a previous crash.
 
 | Process | Hot reload |
 |---|---|
@@ -83,7 +84,8 @@ browser hits the Vite `/api` proxy before the Node server is listening (502).
 | `@okf-wiki/server` | `node --watch` |
 | `contract` / `core` / `agent` | `tsc --watch` → dist changes may restart the server |
 
-Split terminals if you prefer: `pnpm dev:server` and `pnpm dev:web`.
+Env: `OKF_DEV_KILL_PORTS=0` refuses to start when 8787/5173 are busy (default is
+to free them). Split terminals: `pnpm dev:server` and `pnpm dev:web`.
 Legacy all-parallel stack (no health gate): `pnpm dev:stack:parallel`.
 
 ### Operator flow (browser)
