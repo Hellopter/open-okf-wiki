@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
-import type { FrozenRunBoundary } from "@okf-wiki/core";
+import { type FrozenRunBoundary, loadRunGraph } from "@okf-wiki/core";
 import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "./living-spec.js";
 import {
   createFixtureProduceRuntime,
@@ -164,6 +164,40 @@ describe("runWiki core flows", () => {
     assert.equal(published, 1);
     assert.ok(details.some((d) => d.status === "awaiting_plan"));
     assert.ok(details.some((d) => d.status === "awaiting_publication"));
+  });
+
+  it("persists final live graph with attempts to analysis/run-graph.json", async () => {
+    const workspace = await makeWorkspace();
+    const result = await runWiki({
+      workspace,
+      sessionId: "s-graph",
+      toolCallId: "t-graph",
+      autoApprove: true,
+      gateCoordinator: {
+        waitForDecision: async () => ({ action: "approve" as const }),
+      },
+      fixture: true,
+      runtime: createFixtureProduceRuntime(),
+      freeze: async ({ sessionId }) => fakeFreeze(workspace, sessionId),
+      publish: async () => ({
+        publicationPath: workspace.publicationPath!,
+        pageCount: 2,
+      }),
+    });
+
+    assert.equal(result.status, "published");
+    assert.ok(result.runId);
+    const graph = await loadRunGraph(workspace.rootPath, result.runId!);
+    assert.ok(graph, "expected durable run-graph.json");
+    assert.ok(graph!.topology.length >= 1, "expected topology nodes");
+    assert.ok(
+      graph!.attempts.length >= 1,
+      `expected attempts after fixture agents ran, got ${graph!.attempts.length}`,
+    );
+    assert.ok(
+      graph!.attempts.some((a) => a.role === "plan" || a.nodeKey === "plan"),
+      "expected plan attempt in durable graph",
+    );
   });
 
   it("plan deny → cancelled, no publish", async () => {

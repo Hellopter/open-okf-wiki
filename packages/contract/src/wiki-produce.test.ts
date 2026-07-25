@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "./run.js";
+import { emptyRunGraphSnapshot } from "./run-graph.js";
 import {
   projectWikiProduceDetailsForHistory,
   toDurableWikiProduceDetails,
@@ -21,27 +22,44 @@ test("WikiProduceToolDetailsSchema exposes only stable Run and gate facts", () =
   assert.equal(details.spec?.pages.length, 1);
 });
 
-test("WikiProduceToolDetailsSchema accepts optional children projection", () => {
+test("WikiProduceToolDetailsSchema accepts optional graph projection", () => {
   const details = WikiProduceToolDetailsSchema.parse({
     status: "planning",
     runId: "run-1",
     summary: "Planning WikiRunSpec",
-    children: [
-      {
-        id: "plan",
-        role: "plan",
-        status: "running",
-        summary: "Inspecting sources…",
-        items: [
-          { type: "text", text: "Looking at sources/main" },
-          { type: "toolCall", name: "ls", argsSummary: "sources/", status: "done" },
-        ],
-        usage: { turns: 1, contextTokens: 1200 },
-      },
-    ],
+    graph: {
+      topologyVersion: 1,
+      topology: [{ nodeKey: "plan", kind: "plan", label: "Plan" }],
+      attempts: [
+        {
+          attemptId: "plan-0",
+          nodeKey: "plan",
+          runIndex: 0,
+          role: "plan",
+          status: "running",
+          summary: "Inspecting sources…",
+          items: [
+            { type: "text", text: "Looking at sources/main" },
+            { type: "toolCall", name: "ls", argsSummary: "sources/", status: "done" },
+          ],
+          usage: { turns: 1, contextTokens: 1200 },
+        },
+      ],
+      playhead: { nodeKey: "plan", attemptId: "plan-0" },
+    },
   });
-  assert.equal(details.children?.[0]?.role, "plan");
-  assert.equal(details.children?.[0]?.items?.length, 2);
+  assert.equal(details.graph?.attempts[0]?.role, "plan");
+  assert.equal(details.graph?.attempts[0]?.items?.length, 2);
+});
+
+test("WikiProduceToolDetailsSchema rejects children (removed live field)", () => {
+  assert.equal(
+    WikiProduceToolDetailsSchema.safeParse({
+      status: "planning",
+      children: [{ id: "plan", role: "plan", status: "done" }],
+    }).success,
+    false,
+  );
 });
 
 test("WikiProduceToolDetailsSchema rejects duplicate Pi framing and phase", () => {
@@ -69,14 +87,20 @@ test("toDurableWikiProduceDetails strips live-only Run mirrors", () => {
     pages: ["overview.md", "architecture.md"],
     summary: "Published",
     defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
-    children: [
-      {
-        id: "plan",
-        role: "plan",
-        status: "done",
-        summary: "done",
-      },
-    ],
+    graph: {
+      ...emptyRunGraphSnapshot(1),
+      topology: [{ nodeKey: "plan", kind: "plan", label: "Plan" }],
+      attempts: [
+        {
+          attemptId: "plan-0",
+          nodeKey: "plan",
+          runIndex: 0,
+          role: "plan",
+          status: "done",
+          summary: "done",
+        },
+      ],
+    },
   });
   const durable = toDurableWikiProduceDetails(live);
   assert.deepEqual(durable, {
@@ -86,10 +110,9 @@ test("toDurableWikiProduceDetails strips live-only Run mirrors", () => {
     summary: "Published",
   });
   assert.equal("spec" in durable, false);
-  assert.equal("children" in durable, false);
+  assert.equal("graph" in durable, false);
   assert.equal("defects" in durable, false);
   WikiProduceDurableDetailsSchema.parse(durable);
-  // Live schema still accepts durable rows (history / mixed clients).
   WikiProduceToolDetailsSchema.parse(durable);
 });
 
@@ -100,6 +123,7 @@ test("projectWikiProduceDetailsForHistory strips fat fields without rewriting no
     summary: "ok",
     pages: ["overview.md"],
     spec: defaultWikiRunSpec("demo"),
+    graph: emptyRunGraphSnapshot(1),
     children: [{ id: "plan", role: "plan", status: "done" }],
     defects: null,
   };
@@ -107,9 +131,9 @@ test("projectWikiProduceDetailsForHistory strips fat fields without rewriting no
   assert.equal(projected.status, "published");
   assert.equal(projected.runId, "run-1");
   assert.equal("spec" in projected, false);
+  assert.equal("graph" in projected, false);
   assert.equal("children" in projected, false);
   assert.equal("defects" in projected, false);
-  // Non-wiki tool details left alone.
   const other = { path: "/tmp/x", bytes: 12 };
   assert.equal(projectWikiProduceDetailsForHistory(other), other);
 });

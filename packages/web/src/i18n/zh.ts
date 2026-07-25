@@ -431,5 +431,7 @@ export const zh: MessageTree = {
     waitingForEvents: "等待事件…",
     jumpToLatest: "跳到最新",
     childAgents: "子智能体",
+    /** Run Graph attempts 区（wiki_produce 门闸面板）。 */
+    runGraph: "运行图",
   },
 };

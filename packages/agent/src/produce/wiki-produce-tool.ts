@@ -116,10 +116,8 @@ export function createWikiProduceTool(
           if (patch.spec) acc.details.spec = patch.spec;
           if (patch.pages) acc.details.pages = patch.pages;
           if (patch.defects !== undefined) acc.details.defects = patch.defects;
-          if (patch.children?.length) {
-            for (const span of patch.children) {
-              acc.apply({ kind: "child", span });
-            }
+          if (patch.graph) {
+            acc.apply({ kind: "graph", graph: patch.graph });
           }
           push();
         },

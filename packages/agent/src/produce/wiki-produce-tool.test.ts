@@ -147,8 +147,8 @@ describe("real Pi wiki_produce tool", () => {
     assert.equal(planGate.gate, "plan");
     assert.ok(planGate.spec.pages.length > 0);
     assert.ok(
-      updates.some((u) => u.children?.some((c) => c.role === "plan")),
-      "fixture planner should project a plan child span",
+      updates.some((u) => u.graph?.attempts.some((a) => a.role === "plan")),
+      "fixture planner should project a plan attempt on the run graph",
     );
     gates.resolve({ action: "revise", feedback: "Emphasize the runtime seam." });
 
@@ -187,6 +187,7 @@ describe("real Pi wiki_produce tool", () => {
     assert.ok(result.details.pages?.includes("overview.md"));
     // Durable final toolResult: no live Run mirrors (JSONL stays lean).
     assert.equal("spec" in result.details, false);
+    assert.equal("graph" in result.details, false);
     assert.equal("children" in result.details, false);
     assert.equal("defects" in result.details, false);
     // Live onUpdate still carries gate/spec for operator UI.
@@ -247,6 +248,7 @@ describe("real Pi wiki_produce tool", () => {
     assert.equal(publicationResult.details.status, "publication_declined");
     assert.equal(publicationResult.isError, undefined);
     assert.equal("spec" in publicationResult.details, false);
+    assert.equal("graph" in publicationResult.details, false);
     assert.equal("children" in publicationResult.details, false);
   });
 });

@@ -84,6 +84,10 @@ const forbiddenSourceRules = [
     "hand-rolled legacy agent protocol",
     /\b(?:toAISdkStream|SessionMessageSchema|SessionMessagePart|appendSessionMessages)\b|["'](?:list_source|read_source|write_wiki)["']/,
   ],
+  [
+    "removed Run Graph predecessor (children spans)",
+    /\b(?:WikiProduceChildSpan|WikiProduceChildItem|WikiProduceChildSpanSchema|WikiProduceChildItemSchema)\b/,
+  ],
 ];
 
 const allowedProductDependencies = {

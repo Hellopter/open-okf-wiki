@@ -49,7 +49,7 @@ describe("submit_wiki_run_spec tool", () => {
     assert.match(raw, /overview\.md/);
   });
 
-  it("rejects incomplete Spec at the Host boundary", async () => {
+  it("rejects incomplete Spec at the Run Boundary", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-bad-"));
     temps.push(dir);
     const tool = createSubmitWikiRunSpecTool({ runWorkDir: dir });

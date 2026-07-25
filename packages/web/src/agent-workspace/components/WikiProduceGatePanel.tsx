@@ -5,7 +5,7 @@
 
 import type {
   AgentResumeGateCommand,
-  WikiProduceChildSpan,
+  NodeAttempt,
   WikiProduceToolDetails,
 } from "@okf-wiki/contract";
 import { ChevronRightIcon } from "lucide-react";
@@ -24,7 +24,7 @@ export type WikiProduceGatePanelProps = {
 
 export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGatePanelProps) {
   const { t } = useI18n();
-  // Live updates may include full spec/children; durable toolResult (JSONL) is lean
+  // Live updates may include full spec/graph; durable toolResult (JSONL) is lean
   // (status/runId/summary/pages only). Gate UI requires live activeTool details.
   const gate =
     details.status === "awaiting_plan"
@@ -33,6 +33,7 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
         ? ("publication" as const)
         : null;
   const pages = details.spec?.pages.map((page) => page.path) ?? details.pages ?? [];
+  const attempts = details.graph?.attempts ?? [];
   const [submitting, setSubmitting] = useState(false);
   const [revising, setRevising] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -108,17 +109,17 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
         </div>
       ) : null}
 
-      {details.children && details.children.length > 0 ? (
+      {attempts.length > 0 ? (
         <div
           className="space-y-1 border-t border-border/60 pt-2"
-          data-testid="wiki-produce-children"
+          data-testid="wiki-produce-graph"
         >
           <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            {t.agentWorkspace.childAgents} · {details.children.length}
+            {t.agentWorkspace.runGraph} · {attempts.length}
           </p>
           <ul className="space-y-1">
-            {details.children.map((child) => (
-              <WikiProduceChildRow key={child.id} child={child} />
+            {attempts.map((attempt) => (
+              <WikiProduceAttemptRow key={attempt.attemptId} attempt={attempt} />
             ))}
           </ul>
         </div>
@@ -192,26 +193,35 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
   );
 }
 
-function WikiProduceChildRow({ child }: { child: WikiProduceChildSpan }) {
-  const running = child.status === "running";
-  const items = child.items ?? [];
+function WikiProduceAttemptRow({ attempt }: { attempt: NodeAttempt }) {
+  const running = attempt.status === "running";
+  const items = attempt.items ?? [];
+  const label = attempt.role ?? attempt.nodeKey;
   return (
     <Collapsible
       defaultOpen={running}
       className="rounded border border-border/50 bg-background/40"
-      data-testid="wiki-produce-child"
-      data-child-id={child.id}
-      data-child-role={child.role}
-      data-child-status={child.status}
+      data-testid="wiki-produce-attempt"
+      data-attempt-id={attempt.attemptId}
+      data-node-key={attempt.nodeKey}
+      data-attempt-role={attempt.role}
+      data-attempt-status={attempt.status}
     >
       <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-muted/40">
         <ChevronRightIcon className="size-3 shrink-0 transition-transform motion-reduce:transition-none group-data-panel-open:rotate-90" />
         {running ? <Spinner className="size-3 shrink-0" /> : null}
-        <span className="font-medium">{child.role}</span>
-        <span className="truncate text-muted-foreground">{child.summary ?? child.status}</span>
-        {child.usage?.contextTokens != null ? (
+        <span className="font-medium">{label}</span>
+        {attempt.runIndex > 0 ? (
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            r{attempt.runIndex + 1}
+          </span>
+        ) : null}
+        <span className="truncate text-muted-foreground">
+          {attempt.summary ?? attempt.status}
+        </span>
+        {attempt.usage?.contextTokens != null ? (
           <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
-            ctx:{child.usage.contextTokens}
+            ctx:{attempt.usage.contextTokens}
           </span>
         ) : null}
       </CollapsibleTrigger>
@@ -220,7 +230,7 @@ function WikiProduceChildRow({ child }: { child: WikiProduceChildSpan }) {
           <ul className="space-y-1">
             {items.map((item, index) => (
               <li
-                key={`${child.id}-${index}`}
+                key={`${attempt.attemptId}-${index}`}
                 className="font-mono text-[10px] leading-relaxed text-muted-foreground"
               >
                 {item.type === "text" ? (

@@ -6,18 +6,18 @@
  * noExtensions, no bash, children never write Operator Session JSONL.
  *
  * Live only. Fixture short-circuits belong on ProduceRuntime adapters.
- * Event → span projection lives in pi/child-span-projector (pure).
+ * Event → attempt projection lives in pi/attempt-projector (pure).
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { WikiProduceChildSpan } from "@okf-wiki/contract";
+import type { NodeAttempt } from "@okf-wiki/contract";
 import { resolveAssistantSummary } from "../pi/assistant-outcome.js";
 import {
-  applyChildSessionEvent,
-  childSpanItemsSnapshot,
-  createChildSpanProjectorState,
-} from "../pi/child-span-projector.js";
+  applyAttemptSessionEvent,
+  attemptItemsSnapshot,
+  createAttemptProjectorState,
+} from "../pi/attempt-projector.js";
 import { createWikiSession, type WikiSessionHandle } from "../pi/create-wiki-session.js";
 import type { SourceIgnoreInput } from "../pi/tool-operations.js";
 import type { WikiAgentRole } from "../pi/tool-policy.js";
@@ -29,7 +29,8 @@ export type ScopedAgentRole = Extract<
   "domain" | "leaf" | "reviewer" | "root_research" | "plan" | "root_write"
 >;
 
-export type ScopedAgentProgress = WikiProduceChildSpan;
+/** Live progress for one scoped loop — maps 1:1 to a NodeAttempt on the Run Graph. */
+export type ScopedAgentProgress = NodeAttempt;
 
 export type RunScopedAgentInput = {
   role: ScopedAgentRole;
@@ -128,7 +129,9 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
   if (input.abortSignal?.aborted) {
     emitProgress(input.onProgress, {
-      id: spanId,
+      attemptId: spanId,
+      nodeKey: spanId,
+      runIndex: 0,
       role,
       status: "cancelled",
       summary: "Wiki Run cancelled",
@@ -153,16 +156,18 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     }
   };
 
-  const projector = createChildSpanProjectorState();
+  const projector = createAttemptProjectorState();
   let submittedSpecPath: string | undefined;
 
   const snapshot = (
     status: ScopedAgentProgress["status"],
     summary?: string,
   ): ScopedAgentProgress => {
-    const items = childSpanItemsSnapshot(projector);
+    const items = attemptItemsSnapshot(projector);
     return {
-      id: spanId,
+      attemptId: spanId,
+      nodeKey: spanId,
+      runIndex: 0,
       role,
       status,
       ...(summary ? { summary: truncate(summary, 4000) } : {}),
@@ -206,7 +211,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     }
 
     const unsub = handle.session.subscribe((event) => {
-      applyChildSessionEvent(projector, event);
+      applyAttemptSessionEvent(projector, event);
 
       // Path-first plan handoff: capture specPath from successful submit tool end.
       if (isRecord(event) && event.type === "tool_execution_end" && event.isError !== true) {

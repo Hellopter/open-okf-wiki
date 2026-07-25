@@ -12,8 +12,10 @@ import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
+  emptyRunGraphSnapshot,
   recordStatusFromPhase,
   toolStatusFromPhase,
+  type RunGraphSnapshot,
   type WikiProduceToolDetails,
   type WikiRunPhase,
   type WikiRunSpec,
@@ -25,6 +27,7 @@ import {
   freezeWikiRun,
   publishStagingToPublication,
   updateRunRecord,
+  writeRunGraph,
 } from "@okf-wiki/core";
 import { layoutFromFrozen } from "../pi/run-workdir.js";
 import { redactErrorMessage } from "../run-redact.js";
@@ -33,7 +36,8 @@ import { commitSpec } from "./living-spec.js";
 import { planWikiSpec } from "./plan.js";
 import { type ProduceRuntime, resolveProduceRuntime } from "./produce-runtime.js";
 import { produceWiki } from "./produce-wiki.js";
-import type { ProduceProgress } from "./progress.js";
+import { type ProduceProgress, upsertAttempt } from "./progress.js";
+import { topologyFromSpec } from "./topology.js";
 
 export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 
@@ -239,8 +243,59 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     });
   };
 
-  const onChild = (span: NonNullable<WikiProduceToolDetails["children"]>[number]) => {
-    input.onProgress?.({ kind: "child", span });
+  /**
+   * Live Run Graph (topology + attempts). SSE/tool details and durable
+   * analysis/run-graph.json share this accumulator — never write empty attempts
+   * after agents have already run.
+   */
+  let liveGraph: RunGraphSnapshot = emptyRunGraphSnapshot(0);
+  let graphWorkspaceRoot: string | undefined;
+  let graphRunId: string | undefined;
+
+  const persistLiveGraph = async (): Promise<void> => {
+    if (!graphWorkspaceRoot || !graphRunId) return;
+    try {
+      await writeRunGraph(graphWorkspaceRoot, graphRunId, liveGraph);
+    } catch {
+      // Durable graph is best-effort; live projection already emitted.
+    }
+  };
+
+  /** Fold progress into liveGraph, then fan out to tool/SSE subscribers. */
+  const handleProgress = (progress: ProduceProgress): void => {
+    switch (progress.kind) {
+      case "attempt":
+        liveGraph = upsertAttempt(liveGraph, progress.attempt);
+        break;
+      case "topology":
+        liveGraph = {
+          topologyVersion:
+            progress.topologyVersion ?? Math.max(1, liveGraph.topologyVersion + 1),
+          topology: progress.topology,
+          attempts: liveGraph.attempts,
+          ...(liveGraph.playhead ? { playhead: liveGraph.playhead } : {}),
+        };
+        break;
+      case "graph":
+        liveGraph = progress.graph;
+        break;
+      default:
+        break;
+    }
+    try {
+      input.onProgress?.(progress);
+    } catch {
+      // display must not break the run
+    }
+  };
+
+  /** Emit Spec topology into live graph and persist under analysis/run-graph.json. */
+  const publishTopology = async (committed: WikiRunSpec, rid: string, root: string) => {
+    graphWorkspaceRoot = root;
+    graphRunId = rid;
+    const topology = topologyFromSpec(committed);
+    handleProgress({ kind: "topology", topology, topologyVersion: 1 });
+    await persistLiveGraph();
   };
 
   setPhase("freezing", {
@@ -291,7 +346,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         operatorNotes,
         priorSpec,
         revisionFeedback,
-        onProgress: onChild,
+        onProgress: (attempt) => handleProgress({ kind: "attempt", attempt }),
       });
       const feedback = revisionFeedback?.trim();
       return WikiRunSpecSchema.parse({
@@ -311,6 +366,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
 
     let spec = await runPlanner();
     await commitSpec(workspace.rootPath, runId, spec);
+    await publishTopology(spec, runId, workspace.rootPath);
 
     const requirePlanGate = input.autoApprove !== true && workspace.planConfirm !== false;
     if (requirePlanGate) {
@@ -351,6 +407,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
             spec,
             summary: "WikiRunSpec declined by operator",
           });
+          await persistLiveGraph();
           return {
             ...details,
             status: toolStatusFromPhase(phase),
@@ -364,11 +421,13 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
             decision.feedback?.trim() || "Re-evaluate the WikiRunSpec against frozen sources.",
           );
           await commitSpec(workspace.rootPath, runId, spec);
+          await publishTopology(spec, runId, workspace.rootPath);
           continue;
         }
         if (decision.spec) {
           spec = WikiRunSpecSchema.parse(decision.spec);
           await commitSpec(workspace.rootPath, runId, spec);
+          await publishTopology(spec, runId, workspace.rootPath);
         }
         break;
       }
@@ -397,8 +456,10 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       contextTargetTokens: workspace.limits?.contextTargetTokens,
       additionalSkillPaths: [frozen.skillPath],
       sourceIgnores: frozen.sourceIgnores,
-      onProgress: input.onProgress,
+      onProgress: handleProgress,
     });
+    // Phase boundary: durable graph after produce body (topology + all attempts).
+    await persistLiveGraph();
 
     if (produced.status === "cancelled") throw abortError();
     if (produced.status === "failed" || !produced.publishability.publishable) {
@@ -416,6 +477,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         summary,
         error: summary,
       });
+      await persistLiveGraph();
       return {
         ...details,
         status: toolStatusFromPhase(phase),
@@ -464,6 +526,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
           pages,
           summary: "Publication declined; Staging Wiki retained",
         });
+        await persistLiveGraph();
         return {
           ...details,
           status: toolStatusFromPhase(phase),
@@ -494,6 +557,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       summary: produced.summary,
       error: null,
     });
+    await persistLiveGraph();
     return {
       ...details,
       status: toolStatusFromPhase(phase),
@@ -518,6 +582,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         error: cancelled ? null : message,
       }).catch(() => undefined);
     }
+    await persistLiveGraph();
     return {
       ...details,
       ...(runId ? { runId } : {}),

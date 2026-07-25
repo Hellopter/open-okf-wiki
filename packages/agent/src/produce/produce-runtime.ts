@@ -146,8 +146,11 @@ export function createFixtureProduceRuntime(
     const fail = options.failAgent?.(input);
     if (fail) {
       const err = typeof fail === "string" ? new Error(fail) : fail;
+      const id = input.spanId?.trim() || input.role;
       input.onProgress?.({
-        id: input.spanId?.trim() || input.role,
+        attemptId: id,
+        nodeKey: id,
+        runIndex: 0,
         role: input.role,
         status: "error",
         summary: err.message,
@@ -160,8 +163,11 @@ export function createFixtureProduceRuntime(
         ? DEFAULT_CLEAN_REVIEW
         : `[fixture ${input.role}] ${input.task.slice(0, 200)}`;
 
+    const id = input.spanId?.trim() || input.role;
     input.onProgress?.({
-      id: input.spanId?.trim() || input.role,
+      attemptId: id,
+      nodeKey: id,
+      runIndex: 0,
       role: input.role,
       status: "done",
       summary: summary.slice(0, 4000),
@@ -204,7 +210,9 @@ export function createFixtureProduceRuntime(
       const title =
         input.spec.summary?.trim() || input.workspaceName.trim() || "Repository overview";
       input.onProgress?.({
-        id: "root_write",
+        attemptId: "root_write",
+        nodeKey: "root_write",
+        runIndex: 0,
         role: "root_write",
         status: "running",
         summary: "Fixture root_write",
@@ -212,7 +220,9 @@ export function createFixtureProduceRuntime(
       const pages = await writeFixtureWiki(input.layout, title);
       const summary = "Pi fixture mode wrote overview.md + listing index.md";
       input.onProgress?.({
-        id: "root_write",
+        attemptId: "root_write",
+        nodeKey: "root_write",
+        runIndex: 0,
         role: "root_write",
         status: "done",
         summary,
@@ -265,8 +275,11 @@ export function createScriptedReviewFixtureRuntime(input: {
             summary: `blocking call ${reviewerCalls}`,
           })
         : DEFAULT_CLEAN_REVIEW;
+      const id = req.spanId?.trim() || req.role;
       req.onProgress?.({
-        id: req.spanId?.trim() || req.role,
+        attemptId: id,
+        nodeKey: id,
+        runIndex: 0,
         role: "reviewer",
         status: "done",
         summary: text.slice(0, 4000),

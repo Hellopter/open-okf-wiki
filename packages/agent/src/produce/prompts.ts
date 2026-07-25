@@ -147,7 +147,7 @@ export function plannerPrompt(input: {
     "Do not write wiki pages. Do not use bash.",
     "",
     "When ready, call the submit_wiki_run_spec tool with a complete WikiRunSpec",
-    "(Host validates and writes analysis/plan-draft.json). That tool is the handoff —",
+    "(product validates and writes analysis/plan-draft.json under the Run Boundary). That tool is the handoff —",
     "do not paste the full Spec as chat text as the primary delivery.",
     "",
     "WikiRunSpec fields:",

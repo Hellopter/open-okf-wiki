@@ -3,7 +3,7 @@
  * Run Record mirror is optional and only via commitSpec.
  *
  * Planner handoff (path-first): analysis/plan-draft.json is the candidate Spec
- * written by submit_wiki_run_spec or Host spill; commitSpec promotes to spec.json.
+ * written by submit_wiki_run_spec or workflow spill; commitSpec promotes to spec.json.
  */
 
 import { readFile } from "node:fs/promises";

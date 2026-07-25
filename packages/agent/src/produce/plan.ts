@@ -8,7 +8,7 @@ import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   defaultWikiRunSpec,
-  type WikiProduceChildSpan,
+  type NodeAttempt,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
 import type { RunWorkdirLayout } from "../pi/run-workdir.js";
@@ -74,7 +74,7 @@ export type PlanWikiSpecInput = {
   operatorNotes?: string;
   priorSpec?: WikiRunSpec;
   revisionFeedback?: string;
-  onProgress?: (span: WikiProduceChildSpan) => void;
+  onProgress?: (attempt: NodeAttempt) => void;
 };
 
 export type PlanWikiSpecResult = {
@@ -96,7 +96,9 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     const spec = input.priorSpec ?? defaultWikiRunSpec(input.workspaceName);
     const draftPath = await writePlanDraft(input.layout.runWorkDir, spec);
     input.onProgress?.({
-      id: "plan",
+      attemptId: "plan",
+      nodeKey: "plan",
+      runIndex: 0,
       role: "plan",
       status: "done",
       summary: "Fixture default WikiRunSpec",
@@ -127,7 +129,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
   const systemPrompt = [
     "You are the Wiki planner.",
     "Use read-only tools (ls, find, grep, read) to inspect sources/.",
-    `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Host writes ${PLAN_DRAFT_REL_PATH}).`,
+    `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Run Boundary writes ${PLAN_DRAFT_REL_PATH}).`,
     "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
   ].join(" ");
 

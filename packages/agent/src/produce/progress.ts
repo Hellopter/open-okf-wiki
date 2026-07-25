@@ -1,21 +1,27 @@
 /**
- * Domain progress from Produce — never WikiProduceToolDetails.
- * The wiki_produce tool edge projects this into Pi onUpdate details.
+ * Domain progress from Produce / Run Workflow — never a second protocol.
+ * The wiki_produce tool edge projects this into Pi onUpdate details.graph.
  */
 
 import type {
+  GraphNodeDef,
   MergedDefectReport,
-  WikiProduceChildSpan,
+  NodeAttempt,
+  RunGraphSnapshot,
   WikiProduceToolDetails,
   WikiRunSpec,
 } from "@okf-wiki/contract";
+import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
 
 export type ProduceProgress =
   | { kind: "status"; status: WikiProduceToolDetails["status"]; summary?: string }
   | { kind: "phase"; summary: string }
   | { kind: "pages"; pages: string[] }
   | { kind: "spec"; spec: WikiRunSpec }
-  | { kind: "child"; span: WikiProduceChildSpan }
+  | { kind: "attempt"; attempt: NodeAttempt }
+  | { kind: "graph"; graph: RunGraphSnapshot }
+  /** Set/replace topology without wiping append-only attempts. */
+  | { kind: "topology"; topology: GraphNodeDef[]; topologyVersion?: number }
   | { kind: "defects"; defects: MergedDefectReport; summary?: string }
   | { kind: "runId"; runId: string };
 
@@ -27,14 +33,36 @@ export type ToolDetailsAccumulator = {
   toPartial(): { content: Array<{ type: "text"; text: string }>; details: WikiProduceToolDetails };
 };
 
-function mergeChildren(
-  existing: WikiProduceChildSpan[] | undefined,
-  incoming: WikiProduceChildSpan | undefined,
-): WikiProduceChildSpan[] | undefined {
-  if (!incoming) return existing;
-  const byId = new Map((existing ?? []).map((c) => [c.id, c]));
-  byId.set(incoming.id, incoming);
-  return [...byId.values()].slice(-32);
+const MAX_LIVE_ATTEMPTS = 256;
+
+/**
+ * Upsert by attemptId (streaming updates to the same attempt).
+ * New attemptIds append — never wipe prior rounds for the same nodeKey.
+ */
+export function upsertAttempt(
+  graph: RunGraphSnapshot,
+  attempt: NodeAttempt,
+): RunGraphSnapshot {
+  const attempts = [...graph.attempts];
+  const idx = attempts.findIndex((a) => a.attemptId === attempt.attemptId);
+  if (idx >= 0) attempts[idx] = attempt;
+  else attempts.push(attempt);
+  return {
+    topologyVersion: graph.topologyVersion,
+    topology: graph.topology,
+    attempts: attempts.slice(-MAX_LIVE_ATTEMPTS),
+    playhead: { nodeKey: attempt.nodeKey, attemptId: attempt.attemptId },
+  };
+}
+
+function snapshotGraph(graph: RunGraphSnapshot | undefined): RunGraphSnapshot | undefined {
+  if (!graph) return undefined;
+  return {
+    topologyVersion: graph.topologyVersion,
+    topology: [...graph.topology],
+    attempts: [...graph.attempts],
+    ...(graph.playhead ? { playhead: { ...graph.playhead } } : {}),
+  };
 }
 
 export function createToolDetailsAccumulator(
@@ -47,7 +75,7 @@ export function createToolDetailsAccumulator(
     ...(initial?.spec ? { spec: initial.spec } : {}),
     ...(initial?.pages ? { pages: initial.pages } : {}),
     ...(initial?.defects !== undefined ? { defects: initial.defects } : {}),
-    ...(initial?.children ? { children: initial.children } : {}),
+    ...(initial?.graph ? { graph: initial.graph } : {}),
   };
 
   return {
@@ -67,9 +95,25 @@ export function createToolDetailsAccumulator(
         case "spec":
           details.spec = progress.spec;
           break;
-        case "child":
-          details.children = mergeChildren(details.children, progress.span);
+        case "attempt": {
+          const base = details.graph ?? emptyRunGraphSnapshot(0);
+          details.graph = upsertAttempt(base, progress.attempt);
           break;
+        }
+        case "graph":
+          details.graph = progress.graph;
+          break;
+        case "topology": {
+          const base = details.graph ?? emptyRunGraphSnapshot(0);
+          details.graph = {
+            topologyVersion:
+              progress.topologyVersion ?? Math.max(1, base.topologyVersion + 1),
+            topology: progress.topology,
+            attempts: base.attempts,
+            ...(base.playhead ? { playhead: base.playhead } : {}),
+          };
+          break;
+        }
         case "defects":
           details.defects = progress.defects;
           if (progress.summary !== undefined) details.summary = progress.summary;
@@ -84,7 +128,6 @@ export function createToolDetailsAccumulator(
       }
     },
     toPartial() {
-      // Snapshot: Pi onUpdate subscribers and tests must not see later mutations.
       const snapshot: WikiProduceToolDetails = {
         status: details.status,
         ...(details.runId ? { runId: details.runId } : {}),
@@ -92,7 +135,7 @@ export function createToolDetailsAccumulator(
         ...(details.spec ? { spec: details.spec } : {}),
         ...(details.pages ? { pages: [...details.pages] } : {}),
         ...(details.defects !== undefined ? { defects: details.defects } : {}),
-        ...(details.children ? { children: [...details.children] } : {}),
+        ...(details.graph ? { graph: snapshotGraph(details.graph) } : {}),
       };
       return {
         content: [

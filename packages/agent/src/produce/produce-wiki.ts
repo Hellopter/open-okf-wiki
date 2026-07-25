@@ -219,7 +219,8 @@ async function produceWikiBody(ctx: {
             contextTargetTokens,
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
-            onProgress: (span: ScopedAgentProgress) => emit(onProgress, { kind: "child", span }),
+            onProgress: (span: ScopedAgentProgress) =>
+              emit(onProgress, { kind: "attempt", attempt: span }),
           },
         };
       });
@@ -275,7 +276,7 @@ async function produceWikiBody(ctx: {
         contextTargetTokens,
         sourceIgnores: input.sourceIgnores,
         abortSignal: input.abortSignal,
-        onProgress: (span) => emit(onProgress, { kind: "child", span }),
+        onProgress: (span) => emit(onProgress, { kind: "attempt", attempt: span }),
       });
       await attachResearchReceipt(
         {
@@ -366,7 +367,7 @@ async function produceWikiBody(ctx: {
         multiSource,
         receiptIndex,
       }),
-      onProgress: (span) => emit(onProgress, { kind: "child", span }),
+      onProgress: (span) => emit(onProgress, { kind: "attempt", attempt: span }),
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -437,7 +438,7 @@ async function produceWikiBody(ctx: {
             contextTargetTokens,
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
-            onProgress: (span) => emit(onProgress, { kind: "child", span }),
+            onProgress: (span) => emit(onProgress, { kind: "attempt", attempt: span }),
           });
           reviewers.push({ id: reviewerId, text: child.summary });
         } catch (err) {
@@ -515,7 +516,7 @@ async function produceWikiBody(ctx: {
           receiptIndex,
           repairDefects: defectText,
         }),
-        onProgress: (span) => emit(onProgress, { kind: "child", span }),
+        onProgress: (span) => emit(onProgress, { kind: "attempt", attempt: span }),
       });
       await emitPagesFromDisk(onProgress, produced.layout.wikiDir, spec);
     } catch (err) {

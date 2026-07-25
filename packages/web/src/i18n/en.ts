@@ -446,6 +446,8 @@ export const en = {
     waitingForEvents: "Waiting for events…",
     jumpToLatest: "Jump to latest",
     childAgents: "Child agents",
+    /** Run Graph attempts section in wiki_produce gate panel. */
+    runGraph: "Run graph",
   },
 } as const;
 

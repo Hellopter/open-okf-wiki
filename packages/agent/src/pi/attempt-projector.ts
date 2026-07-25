@@ -1,30 +1,30 @@
 /**
- * Pure Pi AgentSession event → child-span item projector.
+ * Pure Pi AgentSession event → attempt item projector.
  *
  * Correlates tool rows by toolCallId when present (Pi tool_execution_* shape).
  * Caps item/text size for operator UI projection. No I/O, no session handles.
  */
 
-import type { WikiProduceChildItem } from "@okf-wiki/contract";
+import type { AttemptItem } from "@okf-wiki/contract";
 
 export const MAX_ITEMS = 20;
 export const MAX_TEXT_CHUNK = 2000;
 export const MAX_ARGS_SUMMARY = 500;
 
-export type ChildSpanProjectorState = {
-  items: WikiProduceChildItem[];
+export type AttemptProjectorState = {
+  items: AttemptItem[];
   turns: number;
   contextTokens?: number;
   /** Accumulated assistant text_delta stream (for summary resolution). */
   streamedText: string;
   /**
    * toolCallId → index in items (running toolCall rows).
-   * Not part of the public WikiProduceChildItem schema.
+   * Not part of the public AttemptItem schema.
    */
   toolIndexByCallId: Map<string, number>;
 };
 
-export function createChildSpanProjectorState(): ChildSpanProjectorState {
+export function createAttemptProjectorState(): AttemptProjectorState {
   return {
     items: [],
     turns: 0,
@@ -53,7 +53,7 @@ function argsSummary(args: unknown): string | undefined {
 }
 
 /** Push/coalesce a display item, enforcing MAX_ITEMS. Mutates state.items. */
-export function pushChildItem(state: ChildSpanProjectorState, item: WikiProduceChildItem): void {
+export function pushAttemptItem(state: AttemptProjectorState, item: AttemptItem): void {
   if (item.type === "text" && state.items.length > 0) {
     const last = state.items[state.items.length - 1];
     if (last?.type === "text") {
@@ -79,10 +79,10 @@ export function pushChildItem(state: ChildSpanProjectorState, item: WikiProduceC
  * Apply one Pi AgentSession event to projector state (mutates and returns state).
  * Unknown / irrelevant event types are ignored.
  */
-export function applyChildSessionEvent(
-  state: ChildSpanProjectorState,
+export function applyAttemptSessionEvent(
+  state: AttemptProjectorState,
   event: unknown,
-): ChildSpanProjectorState {
+): AttemptProjectorState {
   if (!isRecord(event) || typeof event.type !== "string") return state;
   const kind = event.type;
 
@@ -90,7 +90,7 @@ export function applyChildSessionEvent(
     const ame = isRecord(event.assistantMessageEvent) ? event.assistantMessageEvent : null;
     if (ame?.type === "text_delta" && typeof ame.delta === "string") {
       state.streamedText += ame.delta;
-      pushChildItem(state, { type: "text", text: truncate(ame.delta, MAX_TEXT_CHUNK) });
+      pushAttemptItem(state, { type: "text", text: truncate(ame.delta, MAX_TEXT_CHUNK) });
     }
     return state;
   }
@@ -110,13 +110,13 @@ export function applyChildSessionEvent(
   if (kind === "tool_execution_start") {
     const name = typeof event.toolName === "string" ? event.toolName : "tool";
     const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
-    const item: WikiProduceChildItem = {
+    const item: AttemptItem = {
       type: "toolCall",
       name,
       argsSummary: argsSummary(event.args ?? event.input),
       status: "running",
     };
-    pushChildItem(state, item);
+    pushAttemptItem(state, item);
     if (toolCallId) {
       state.toolIndexByCallId.set(toolCallId, state.items.length - 1);
     }
@@ -156,9 +156,9 @@ export function applyChildSessionEvent(
 }
 
 /** Snapshot items for progress emission (last MAX_ITEMS). */
-export function childSpanItemsSnapshot(
-  state: ChildSpanProjectorState,
-): WikiProduceChildItem[] | undefined {
+export function attemptItemsSnapshot(
+  state: AttemptProjectorState,
+): AttemptItem[] | undefined {
   if (state.items.length === 0) return undefined;
   return state.items.slice(-MAX_ITEMS);
 }

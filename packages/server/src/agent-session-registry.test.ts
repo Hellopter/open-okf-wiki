@@ -153,6 +153,7 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
   );
   assert.equal(serialized.includes("Should not leave snapshot"), false);
   assert.equal(serialized.includes('"children"'), false);
+  assert.equal(serialized.includes('"graph"'), false);
 
   // Cold reopen reads durable JSONL — secrets remain in Pi storage (not mutated).
   evictLiveAgentSessionForTests(workspace.id, sessionId);

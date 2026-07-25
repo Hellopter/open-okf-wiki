@@ -15,7 +15,7 @@ describe("ProduceRuntime fixture agent", () => {
       spanId: "domain-auth",
       runWorkDir: dir,
       task: "Investigate auth module",
-      onProgress: (span) => spans.push({ id: span.id, status: span.status }),
+      onProgress: (span) => spans.push({ id: span.attemptId, status: span.status }),
     });
     assert.equal(r.mode, "fixture");
     assert.match(r.summary, /domain/);

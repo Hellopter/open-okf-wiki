@@ -1,5 +1,5 @@
 /**
- * Host-owned planner tool: validate WikiRunSpec and atomically write plan-draft.json.
+ * Run Boundary planner tool: validate WikiRunSpec and atomically write plan-draft.json.
  * Path-first handoff (ADR 0011) — control returns a short ACK + path, not the full Spec.
  */
 
@@ -93,7 +93,7 @@ export function createSubmitWikiRunSpecTool(
     label: "Submit WikiRunSpec",
     description: [
       "Submit the complete living WikiRunSpec after inspecting frozen sources.",
-      "Host validates the Spec and writes analysis/plan-draft.json.",
+      "Product validates the Spec and writes analysis/plan-draft.json under the Run Boundary.",
       "Call exactly once when the plan is ready. Do not write wiki pages.",
     ].join(" "),
     promptSnippet: "Submit complete WikiRunSpec (writes analysis/plan-draft.json)",

@@ -9,6 +9,13 @@ export {
 } from "./analysis-scratch.js";
 export { atomicWriteJson } from "./atomic-write.js";
 export {
+  loadRunGraph,
+  RUN_GRAPH_FILE_NAME,
+  RUN_GRAPH_REL_PATH,
+  runGraphPath,
+  writeRunGraph,
+} from "./run-graph.js";
+export {
   parseSourceCitations,
   resolveCitationFile,
   SOURCE_CITATION_RE,

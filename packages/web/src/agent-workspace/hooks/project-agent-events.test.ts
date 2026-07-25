@@ -426,21 +426,27 @@ describe("reducePiEvent", () => {
           status: "awaiting_plan",
           runId: "run-1",
           spec,
-          children: [
-            {
-              id: "plan",
-              role: "plan",
-              status: "done",
-              summary: "Fixture default WikiRunSpec",
-              items: [{ type: "text", text: "pages=1" }],
-            },
-          ],
+          graph: {
+            topologyVersion: 1,
+            topology: [{ nodeKey: "plan", kind: "plan", label: "Plan" }],
+            attempts: [
+              {
+                attemptId: "plan",
+                nodeKey: "plan",
+                runIndex: 0,
+                role: "plan",
+                status: "done",
+                summary: "Fixture default WikiRunSpec",
+                items: [{ type: "text", text: "pages=1" }],
+              },
+            ],
+          },
         },
       },
     });
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.status, "awaiting_plan");
     assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.spec?.pages[0]?.path, "overview.md");
-    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.children?.[0]?.role, "plan");
+    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.graph?.attempts[0]?.role, "plan");
     assert.deepEqual(viewMessages(state)[0]!.tools?.[0]?.args, { audience: "users" });
     state = reducePiEvent(state, "tool_execution_end", {
       type: "tool_execution_end",
@@ -448,7 +454,7 @@ describe("reducePiEvent", () => {
       toolName: "wiki_produce",
       result: {
         content: [{ type: "text", text: "published" }],
-        // Durable final details: no spec/children (Run Boundary owns job facts).
+        // Durable final details: no spec/graph (Run Boundary owns job facts).
         details: {
           status: "published",
           runId: "run-1",
@@ -467,6 +473,6 @@ describe("reducePiEvent", () => {
     assert.equal(tool?.details?.status, "published");
     assert.deepEqual(tool?.details?.pages, ["overview.md"]);
     assert.equal(tool?.details?.spec, undefined);
-    assert.equal(tool?.details?.children, undefined);
+    assert.equal(tool?.details?.graph, undefined);
   });
 });
