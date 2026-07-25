@@ -16,6 +16,9 @@ import { FieldLabel } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "../../i18n";
+import { NodeAttemptInspector } from "../run-graph/NodeAttemptInspector";
+import { RunGraphCanvas } from "../run-graph/RunGraphCanvas";
+import { RunGraphTimeline } from "../run-graph/Timeline";
 
 export type WikiProduceGatePanelProps = {
   details: WikiProduceToolDetails;
@@ -37,12 +40,35 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
   const [submitting, setSubmitting] = useState(false);
   const [revising, setRevising] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
 
   useEffect(() => {
     setSubmitting(false);
     setRevising(false);
     setFeedback("");
+    setSelectedAttemptId(null);
   }, [details.runId, details.status]);
+
+  const selectedAttempt =
+    (selectedAttemptId
+      ? attempts.find((a) => a.attemptId === selectedAttemptId)
+      : undefined) ??
+    (attempts.length > 0
+      ? attempts.find((a) => a.attemptId === details.graph?.playhead?.attemptId) ??
+        attempts[attempts.length - 1]
+      : undefined);
+
+  const selectNode = (nodeKey: string) => {
+    const forNode = attempts.filter((a) => a.nodeKey === nodeKey);
+    if (forNode.length === 0) {
+      setSelectedAttemptId(null);
+      return;
+    }
+    const latest = forNode.reduce((best, cur) =>
+      cur.runIndex >= best.runIndex ? cur : best,
+    );
+    setSelectedAttemptId(latest.attemptId);
+  };
 
   const decide = async (action: "approve" | "deny" | "revise") => {
     if (!gate || !details.runId || submitting) return;
@@ -109,7 +135,36 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
         </div>
       ) : null}
 
-      {attempts.length > 0 ? (
+      {details.graph &&
+      (details.graph.topology.length > 0 || details.graph.attempts.length > 0) ? (
+        <div
+          className="space-y-2 border-t border-border/60 pt-2"
+          data-testid="wiki-produce-graph"
+        >
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {t.agentWorkspace.runGraph}
+            {attempts.length > 0 ? ` · ${attempts.length}` : null}
+          </p>
+          <RunGraphCanvas
+            graph={details.graph}
+            selectedNodeKey={selectedAttempt?.nodeKey}
+            onSelectNode={selectNode}
+          />
+          <RunGraphTimeline
+            graph={details.graph}
+            selectedAttemptId={selectedAttempt?.attemptId}
+            onSelectAttempt={setSelectedAttemptId}
+          />
+          <NodeAttemptInspector attempt={selectedAttempt} />
+          {attempts.length > 0 ? (
+            <ul className="space-y-1">
+              {attempts.map((attempt) => (
+                <WikiProduceAttemptRow key={attempt.attemptId} attempt={attempt} />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : attempts.length > 0 ? (
         <div
           className="space-y-1 border-t border-border/60 pt-2"
           data-testid="wiki-produce-graph"

@@ -2,10 +2,12 @@
  * Live Pi / Fixture adapters for ports.AgentRunner.
  *
  * produceWiki depends on AgentRunner — this module only implements the port.
+ * Casts opaque port model handles to concrete Pi types at the boundary.
  */
 
 import { mkdir } from "node:fs/promises";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai/compat";
+import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type {
   AgentRunRequest,
   AgentRunResult,
@@ -13,6 +15,8 @@ import type {
   WikiWriteRequest,
   WikiWriteResult,
 } from "../ports/agent-runner.js";
+import type { RunWorkdirLayout } from "../pi/run-workdir.js";
+import type { SourceIgnoreInput as PiSourceIgnoreInput } from "../pi/tool-operations.js";
 import { shouldUsePiFixtureMode } from "./fixture-mode.js";
 import {
   type RunScopedAgentInput,
@@ -28,10 +32,40 @@ export type ProduceAgentResult = AgentRunResult;
 export type ProduceWriteRequest = WikiWriteRequest;
 export type ProduceWriteResult = WikiWriteResult;
 
+function asModel(model: unknown): Model<any> | undefined {
+  return model as Model<any> | undefined;
+}
+
+function asModelRuntime(runtime: unknown): ModelRuntime | undefined {
+  return runtime as ModelRuntime | undefined;
+}
+
+function asSourceIgnores(input: AgentRunRequest["sourceIgnores"]): PiSourceIgnoreInput | undefined {
+  return input as PiSourceIgnoreInput | undefined;
+}
+
+function asLayout(layout: WikiWriteRequest["layout"]): RunWorkdirLayout {
+  return layout as RunWorkdirLayout;
+}
+
 function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
   return {
-    ...input,
+    role: input.role,
+    runWorkDir: input.runWorkDir,
+    task: input.task,
+    systemPrompt: input.systemPrompt,
+    model: asModel(input.model),
+    modelRuntime: asModelRuntime(input.modelRuntime),
+    sourceIgnores: asSourceIgnores(input.sourceIgnores),
+    maxContextTokens: input.maxContextTokens,
+    contextTargetTokens: input.contextTargetTokens,
+    additionalSkillPaths: input.additionalSkillPaths,
+    abortSignal: input.abortSignal,
+    timeoutMs: input.timeoutMs,
+    spanId: input.spanId,
+    wikiDir: input.wikiDir,
     customTools: input.customTools as ToolDefinition<any, any>[] | undefined,
+    onProgress: input.onProgress,
   };
 }
 
@@ -51,22 +85,23 @@ export function createLiveProduceRuntime(): AgentRunner {
       return results.map((r) => ({ ...r, mode: "live" as const }));
     },
     async writeWiki(input) {
-      await mkdir(input.layout.wikiDir, { recursive: true });
-      await mkdir(input.layout.analysisDir, { recursive: true });
+      const layout = asLayout(input.layout);
+      await mkdir(layout.wikiDir, { recursive: true });
+      await mkdir(layout.analysisDir, { recursive: true });
       const result = await runScopedAgent({
         role: "root_write",
         spanId: "root_write",
-        runWorkDir: input.layout.runWorkDir,
+        runWorkDir: layout.runWorkDir,
         task: input.task,
         systemPrompt: input.systemPrompt,
-        model: input.model,
-        modelRuntime: input.modelRuntime,
+        model: asModel(input.model),
+        modelRuntime: asModelRuntime(input.modelRuntime),
         maxContextTokens: input.maxContextTokens,
         contextTargetTokens: input.contextTargetTokens,
         additionalSkillPaths: input.additionalSkillPaths,
-        sourceIgnores: input.sourceIgnores,
+        sourceIgnores: asSourceIgnores(input.sourceIgnores),
         abortSignal: input.abortSignal,
-        wikiDir: input.layout.wikiDir,
+        wikiDir: layout.wikiDir,
         onProgress: input.onProgress,
       });
       return {
@@ -183,8 +218,9 @@ export function createFixtureProduceRuntime(
       if (hooked) return hooked;
 
       if (input.abortSignal?.aborted) throw abortError();
-      await mkdir(input.layout.wikiDir, { recursive: true });
-      await mkdir(input.layout.analysisDir, { recursive: true });
+      const layout = asLayout(input.layout);
+      await mkdir(layout.wikiDir, { recursive: true });
+      await mkdir(layout.analysisDir, { recursive: true });
       const title =
         input.spec.summary?.trim() || input.workspaceName.trim() || "Repository overview";
       input.onProgress?.({
@@ -195,7 +231,7 @@ export function createFixtureProduceRuntime(
         status: "running",
         summary: "Fixture root_write",
       });
-      const pages = await writeFixtureWiki(input.layout, title);
+      const pages = await writeFixtureWiki(layout, title);
       const summary = "Pi fixture mode wrote overview.md + listing index.md";
       input.onProgress?.({
         attemptId: "root_write",

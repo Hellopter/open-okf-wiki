@@ -80,6 +80,7 @@ export function createWikiProduceTool(
     promptGuidelines: [
       "Call wiki_produce only on explicit Wiki produce/refresh intent.",
       "For questions about context window, tokens, session status, or configuration: answer in text or use session_status if available — never wiki_produce.",
+      "To fix or repair an existing Wiki Run staging, call wiki_repair (never bash).",
       "Pass operator focus via notes; do not invent a run for exploratory chat.",
     ],
     parameters: wikiProduceParameters,

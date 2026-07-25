@@ -1,9 +1,30 @@
 /**
  * Live progress emission port (wiki_produce onUpdate / tests).
- * Event shape stays in produce/progress to avoid a second progress protocol.
+ *
+ * Event shape uses contract types only — no produce/ or pi/ imports.
  */
 
-import type { ProduceProgress } from "../produce/progress.js";
+import type {
+  GraphNodeDef,
+  MergedDefectReport,
+  NodeAttempt,
+  RunGraphSnapshot,
+  WikiProduceToolDetails,
+  WikiRunSpec,
+} from "@okf-wiki/contract";
+
+/** Domain progress from Run Workflow — single protocol for tool edge + sink. */
+export type ProduceProgress =
+  | { kind: "status"; status: WikiProduceToolDetails["status"]; summary?: string }
+  | { kind: "phase"; summary: string }
+  | { kind: "pages"; pages: string[] }
+  | { kind: "spec"; spec: WikiRunSpec }
+  | { kind: "attempt"; attempt: NodeAttempt }
+  | { kind: "graph"; graph: RunGraphSnapshot }
+  /** Set/replace topology without wiping append-only attempts. */
+  | { kind: "topology"; topology: GraphNodeDef[]; topologyVersion?: number }
+  | { kind: "defects"; defects: MergedDefectReport; summary?: string }
+  | { kind: "runId"; runId: string };
 
 export interface ProgressSink {
   emit(progress: ProduceProgress): void;

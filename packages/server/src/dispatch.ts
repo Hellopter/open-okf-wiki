@@ -30,7 +30,7 @@ import {
   handleUpdateModel,
   handleUpdateProvider,
 } from "./routes/provider.ts";
-import { handleListRuns } from "./routes/runs.ts";
+import { handleGetRunGraph, handleListRuns } from "./routes/runs.ts";
 import { handleListWiki, handleReadWiki, matchWikiApiRoute } from "./routes/wiki.ts";
 import {
   handleAddSource,
@@ -243,6 +243,13 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
       if (params && method === "POST") {
         await handleCreateAgentSession(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/graph");
+      if (params && method === "GET") {
+        await handleGetRunGraph(req, res, params.id!, params.runId!, url);
         return;
       }
     }

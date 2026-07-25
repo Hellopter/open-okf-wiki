@@ -1,29 +1,17 @@
 /**
- * Domain progress from Produce / Run Workflow — never a second protocol.
- * The wiki_produce tool edge projects this into Pi onUpdate details.graph.
+ * Tool-edge accumulator for ProduceProgress → WikiProduceToolDetails.
+ * Event type lives on ports (DIP); this module only projects at the tool boundary.
  */
 
 import type {
-  GraphNodeDef,
-  MergedDefectReport,
   NodeAttempt,
   RunGraphSnapshot,
   WikiProduceToolDetails,
-  WikiRunSpec,
 } from "@okf-wiki/contract";
 import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
+import type { ProduceProgress } from "../ports/progress-sink.js";
 
-export type ProduceProgress =
-  | { kind: "status"; status: WikiProduceToolDetails["status"]; summary?: string }
-  | { kind: "phase"; summary: string }
-  | { kind: "pages"; pages: string[] }
-  | { kind: "spec"; spec: WikiRunSpec }
-  | { kind: "attempt"; attempt: NodeAttempt }
-  | { kind: "graph"; graph: RunGraphSnapshot }
-  /** Set/replace topology without wiping append-only attempts. */
-  | { kind: "topology"; topology: GraphNodeDef[]; topologyVersion?: number }
-  | { kind: "defects"; defects: MergedDefectReport; summary?: string }
-  | { kind: "runId"; runId: string };
+export type { ProduceProgress };
 
 /** Mutable accumulator used only at the wiki_produce tool edge. */
 export type ToolDetailsAccumulator = {

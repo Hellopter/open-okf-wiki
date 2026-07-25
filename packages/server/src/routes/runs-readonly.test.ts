@@ -4,7 +4,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
+import {
+  createWorkspace,
+  saveWorkspace,
+  writeRunGraph,
+} from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 
 test("Run HTTP surface exposes only the Agent Workspace read model", async () => {
@@ -29,6 +34,25 @@ test("Run HTTP surface exposes only the Agent Workspace read model", async () =>
     const list = await fetch(`${runs}?${query}`);
     assert.equal(list.status, 200);
     assert.deepEqual(await list.json(), { workspaceId: workspace.id, runs: [] });
+
+    // Durable Run Graph GET (read-only observation)
+    const missingGraph = await fetch(`${runs}/run-missing/graph?${query}`);
+    assert.equal(missingGraph.status, 404);
+
+    const graph = emptyRunGraphSnapshot(1);
+    graph.topology = [{ nodeKey: "plan", kind: "plan", label: "Plan" }];
+    await writeRunGraph(root, "run-1", graph);
+    const got = await fetch(`${runs}/run-1/graph?${query}`);
+    assert.equal(got.status, 200);
+    const body = (await got.json()) as {
+      workspaceId: string;
+      runId: string;
+      graph: { topologyVersion: number; topology: unknown[] };
+    };
+    assert.equal(body.workspaceId, workspace.id);
+    assert.equal(body.runId, "run-1");
+    assert.equal(body.graph.topologyVersion, 1);
+    assert.equal(body.graph.topology.length, 1);
 
     const removedRoutes: Array<[method: string, pathname: string]> = [
       ["POST", ""],

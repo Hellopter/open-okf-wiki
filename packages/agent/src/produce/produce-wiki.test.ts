@@ -9,7 +9,7 @@ import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,
 } from "./produce-runtime.js";
-import { produceWiki } from "./produce-wiki.js";
+import { produceWiki } from "../workflow/produce.js";
 import type { ProduceProgress } from "./progress.js";
 
 const temps: string[] = [];

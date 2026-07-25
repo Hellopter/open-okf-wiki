@@ -16,6 +16,7 @@ import {
   type CreateWikiProduceToolInput,
   createWikiProduceTool,
 } from "../produce/wiki-produce-tool.js";
+import { createWikiRepairTool } from "../tools/wiki-repair.js";
 import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
 import { createSessionStatusTool } from "./session-status-tool.js";
 
@@ -111,6 +112,13 @@ async function buildOperatorSession(
     workspace: input.workspace,
     sessionId,
   });
+  const wikiRepair = createWikiRepairTool({
+    workspace: input.workspace,
+    resolveWorkspace: input.wikiProduce.resolveWorkspace,
+    sessionId,
+    resolveModel: input.wikiProduce.resolveModel,
+    fixture: input.wikiProduce.fixture,
+  });
   const handle = await createWikiSession({
     role: "operator_chat",
     runWorkDir: root,
@@ -123,8 +131,8 @@ async function buildOperatorSession(
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens: input.contextTargetTokens,
     scopedTools: false,
-    // status first so meta questions prefer it over wiki_produce
-    customTools: [sessionStatus, wikiProduce],
+    // status first so meta questions prefer it over wiki_produce / wiki_repair
+    customTools: [sessionStatus, wikiProduce, wikiRepair],
   });
   return { ...handle, sessionId };
 }

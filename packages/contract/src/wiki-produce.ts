@@ -74,7 +74,7 @@ export function projectWikiProduceDetailsForHistory(details: unknown): unknown {
     spec: _spec,
     graph: _graph,
     defects: _defects,
-    // Legacy live mirrors (pre-Run-Graph) — strip if present on old JSONL.
+    // Tombstone: legacy pre-graph `children` only — strip old JSONL; never dual-write.
     children: _children,
     ...rest
   } = row;

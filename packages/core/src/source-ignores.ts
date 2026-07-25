@@ -1,5 +1,5 @@
 /**
- * Host-owned Default Source Ignores and effective ignore expansion.
+ * Run Boundary-owned Default Source Ignores and effective ignore expansion.
  * Patterns are repository-relative POSIX globs (product contract, not OS paths).
  *
  * Semantics (ADR 0015):

@@ -125,7 +125,7 @@ export const en = {
     contextTargetDerived: "Currently derived from model max: {n} tokens (85%).",
     orchestrationTitle: "Supervisor tree budgets",
     orchestrationHint:
-      "Host-enforced fan-out for Domain/Leaf research and review council size. Leave defaults for small repos.",
+      "Run Boundary fan-out budgets for Domain/Leaf research and review council size. Leave defaults for small repos.",
     maxDomainFanOut: "Max domains",
     maxLeafFanOut: "Max leaves / domain",
     reviewCouncilSize: "Review council size",
@@ -448,6 +448,21 @@ export const en = {
     childAgents: "Child agents",
     /** Run Graph attempts section in wiki_produce gate panel. */
     runGraph: "Run graph",
+    runGraphEmpty: "No topology or attempts yet.",
+    runGraphTimeline: "Timeline",
+    runGraphPlayhead: "Playhead",
+    runGraphAttempt: "Selected attempt",
+    runGraphAttemptEmpty: "Select a node or timeline row to inspect an attempt.",
+    runGraphLayers: {
+      plan: "Plan",
+      research: "Research",
+      write: "Write",
+      review: "Review",
+      repair: "Repair",
+      validate: "Validate",
+      publish: "Publish",
+      other: "Other",
+    },
   },
 } as const;
 

@@ -40,8 +40,8 @@ import { shouldUsePiFixtureMode } from "./fixture-mode.js";
 import { commitSpec } from "./living-spec.js";
 import { planWikiSpec } from "./plan.js";
 import { type ProduceRuntime, resolveProduceRuntime } from "./produce-runtime.js";
-import { produceWiki } from "./produce-wiki.js";
-import type { ProduceProgress } from "./progress.js";
+import { produceWiki } from "../workflow/produce.js";
+import type { ProduceProgress } from "../ports/progress-sink.js";
 
 export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 

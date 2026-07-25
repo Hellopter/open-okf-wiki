@@ -159,6 +159,46 @@ for (const file of filesUnder("packages/core/src").filter(
   failures.push(`${file}:${line}: provider transport belongs to Agent, not Core`);
 }
 
+/**
+ * agent/ports must stay free of Pi SDK and agent runtime/pi modules.
+ * Adapters under produce/pi cast opaque port types to concrete Pi types.
+ */
+for (const file of filesUnder("packages/agent/src/ports").filter(
+  (file) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file),
+)) {
+  const content = readFileSync(path.join(root, file), "utf8");
+  const piImport =
+    /from\s*["']@earendil-works\/[^"']+["']|from\s*["']\.\.\/pi\/[^"']+["']|from\s*["']\.\.\/produce\/[^"']+["']/.exec(
+      content,
+    );
+  if (piImport) {
+    const line = content.slice(0, piImport.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: ports must not import Pi SDK, pi/, or produce/ (DIP): ${JSON.stringify(piImport[0])}`,
+    );
+  }
+}
+
+/**
+ * workflow/** must not import tools/ or session/ (orchestration vs tool edge).
+ * Pi SDK value imports are also banned under workflow.
+ */
+for (const file of filesUnder("packages/agent/src/workflow").filter(
+  (file) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file),
+)) {
+  const content = readFileSync(path.join(root, file), "utf8");
+  const bad =
+    /from\s*["']@earendil-works\/[^"']+["']|from\s*["'][^"']*\/(?:tools|session)\/[^"']+["']/.exec(
+      content,
+    );
+  if (bad) {
+    const line = content.slice(0, bad.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: workflow must not import Pi SDK, tools/, or session/: ${JSON.stringify(bad[0])}`,
+    );
+  }
+}
+
 for (const file of packageFiles.filter((file) => file.endsWith("/package.json"))) {
   const manifest = JSON.parse(readFileSync(path.join(root, file), "utf8"));
   const dependencies = {

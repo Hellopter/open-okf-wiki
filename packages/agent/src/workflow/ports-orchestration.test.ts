@@ -1,5 +1,6 @@
 /**
  * Produce orchestration with a fake AgentRunner — no Pi, no live model.
+ * Lives under workflow/ so ports/ stays free of pi imports (including tests).
  * Proves AgentRunner + GraphStore + ProgressSink inject together.
  */
 
@@ -14,27 +15,42 @@ import {
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import { loadRunGraph, registerRunRecord, writeRunGraph } from "@okf-wiki/core";
-import { runWorkdirLayout } from "../pi/run-workdir.js";
-import type { ProduceProgress } from "../produce/progress.js";
-import { produceWiki } from "../produce/produce-wiki.js";
-import { runWiki } from "../produce/run-wiki.js";
-import { writeFixtureWiki } from "../produce/wiki-pages.js";
-import { AttemptJournal } from "../workflow/journal.js";
-import { topologyFromSpec } from "../workflow/topology.js";
 import type {
   AgentRunRequest,
   AgentRunResult,
   AgentRunner,
+  RunWorkdirLayoutPaths,
   WikiWriteRequest,
   WikiWriteResult,
-} from "./agent-runner.js";
-import type { GraphStore } from "./graph-store.js";
-import { progressSinkFromCallback } from "./progress-sink.js";
+} from "../ports/agent-runner.js";
+import type { GraphStore } from "../ports/graph-store.js";
+import { progressSinkFromCallback } from "../ports/progress-sink.js";
+import type { ProduceProgress } from "../produce/progress.js";
+import { runWiki } from "../produce/run-wiki.js";
+import { writeFixtureWiki } from "../produce/wiki-pages.js";
+import { AttemptJournal } from "./journal.js";
+import { produceWiki } from "./produce.js";
+import { topologyFromSpec } from "./topology.js";
 
 const temps: string[] = [];
 after(async () => {
   for (const t of temps) await rm(t, { recursive: true, force: true });
 });
+
+/** Tiny layout builder — path joins only; no pi/ import. */
+function testLayout(
+  runWorkDir: string,
+  sourceMounts: Map<string, string>,
+): RunWorkdirLayoutPaths {
+  return {
+    runWorkDir,
+    sourcesDir: path.join(runWorkDir, "sources"),
+    skillDir: path.join(runWorkDir, "skill"),
+    wikiDir: path.join(runWorkDir, "wiki"),
+    analysisDir: path.join(runWorkDir, "analysis"),
+    sourceMounts,
+  };
+}
 
 /** Fake runner: records calls, writes fixture wiki, no LLM. */
 function createFakeRunner(opts?: {
@@ -158,7 +174,7 @@ describe("injectable AgentRunner + GraphStore + journal (no LLM)", () => {
     await mkdir(source, { recursive: true });
     await writeFile(path.join(source, "README.md"), "# f\n", "utf8");
     await writeFile(path.join(runWorkDir, "skill", "SKILL.md"), "# s\n", "utf8");
-    const layout = runWorkdirLayout(runWorkDir, new Map([["main", source]]));
+    const layout = testLayout(runWorkDir, new Map([["main", source]]));
 
     const roles: string[] = [];
     const progress: ProduceProgress[] = [];

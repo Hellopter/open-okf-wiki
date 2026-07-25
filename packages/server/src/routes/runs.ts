@@ -5,7 +5,7 @@
  * tool. The server intentionally exposes no independent Run command surface.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listRuns, loadWorkspaceById } from "@okf-wiki/core";
+import { listRuns, loadRunGraph, loadWorkspaceById } from "@okf-wiki/core";
 import { sendError, sendJson } from "../http-util.ts";
 
 async function loadWorkspaceOr404(res: ServerResponse, id: string, url: URL) {
@@ -30,4 +30,34 @@ export async function handleListRuns(
   if (!workspace) return;
   const runs = await listRuns(workspace.rootPath);
   sendJson(res, 200, { workspaceId: workspace.id, runs });
+}
+
+/**
+ * GET durable Run Graph for one run (analysis/run-graph.json).
+ * Read-only observation model — not a command surface.
+ */
+export async function handleGetRunGraph(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  workspaceId: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, workspaceId, url);
+  if (!workspace) return;
+  const safeRunId = runId.trim();
+  if (!safeRunId) {
+    sendError(res, 400, "runId is required");
+    return;
+  }
+  const graph = await loadRunGraph(workspace.rootPath, safeRunId);
+  if (!graph) {
+    sendError(res, 404, "run graph not found: " + safeRunId);
+    return;
+  }
+  sendJson(res, 200, {
+    workspaceId: workspace.id,
+    runId: safeRunId,
+    graph,
+  });
 }

@@ -125,7 +125,7 @@ export const WorkspaceOrchestrationSchema = z.object({
   maxDomainFanOut: z.number().int().min(1).max(16).default(4),
   maxLeafFanOut: z.number().int().min(1).max(16).default(6),
   /**
-   * Independent review council size (Host-owned).
+   * Independent review council size (Run Boundary-owned).
    * Default 1 for cost/latency; set 2+ for decorrelated multi-lens review
    * (pad with same model + different prompts when only one reviewer model).
    */
@@ -144,7 +144,7 @@ export type WikiLanguage = z.infer<typeof WikiLanguageSchema>;
 
 /**
  * Optional operator ignore presets (never applied automatically).
- * Host expands these into additive user `ignore` patterns when selected in the UI.
+ * The product expands these into additive user `ignore` patterns when selected in the UI.
  */
 export const IGNORE_PRESETS: Readonly<
   Record<string, { label: string; patterns: readonly string[] }>
