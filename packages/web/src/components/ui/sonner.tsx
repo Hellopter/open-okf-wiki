@@ -7,15 +7,17 @@ import {
   OctagonXIcon,
   Loader2Icon,
 } from "lucide-react"
+import { useTheme } from "../../theme/use-theme"
 
 /**
- * Vite SPA toaster (no next-themes). Theme defaults to "system"; pass `theme`
- * if the app later gains an explicit color-scheme switch.
+ * App toaster bound to ThemeProvider. Sonner provides accessible live regions
+ * for status and error announcements (toast.success / toast.error).
  */
-const Toaster = ({ theme = "system", ...props }: ToasterProps) => {
+const Toaster = ({ ...props }: ToasterProps) => {
+  const { resolvedTheme } = useTheme()
   return (
     <Sonner
-      theme={theme}
+      theme={resolvedTheme}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

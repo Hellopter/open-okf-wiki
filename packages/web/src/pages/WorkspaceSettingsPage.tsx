@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -56,7 +57,7 @@ export function WorkspaceSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [saved, setSaved] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteMeta, setDeleteMeta] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -167,7 +168,7 @@ export function WorkspaceSettingsPage() {
     if (!id) {
       return;
     }
-    setSubmitting(true);
+    setIsSubmitting(true);
     setError(null);
     setSaved(false);
     try {
@@ -177,7 +178,7 @@ export function WorkspaceSettingsPage() {
         const parsed = Number(contextRaw);
         if (!Number.isInteger(parsed) || parsed <= 0) {
           setError(new Error("contextTargetTokens must be a positive integer"));
-          setSubmitting(false);
+          setIsSubmitting(false);
           return;
         }
         nextContextTarget = parsed;
@@ -227,7 +228,7 @@ export function WorkspaceSettingsPage() {
     } catch (err) {
       setError(err);
     } finally {
-      setSubmitting(false);
+      setIsSubmitting(false);
     }
   }
 
@@ -386,8 +387,10 @@ export function WorkspaceSettingsPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="en">{t.settings.langEn}</SelectItem>
-                          <SelectItem value="zh">{t.settings.langZh}</SelectItem>
+                          <SelectGroup>
+                            <SelectItem value="en">{t.settings.langEn}</SelectItem>
+                            <SelectItem value="zh">{t.settings.langZh}</SelectItem>
+                          </SelectGroup>
                         </SelectContent>
                       </Select>
                       <FieldDescription>{t.settings.wikiLanguageHint}</FieldDescription>
@@ -447,10 +450,14 @@ export function WorkspaceSettingsPage() {
                       <FieldDescription>{t.settings.orchestrationHint}</FieldDescription>
                       <div className="mt-2 flex flex-wrap gap-3">
                         <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">
+                          <FieldLabel
+                            htmlFor="settings-max-domain-fanout"
+                            className="text-xs text-muted-foreground"
+                          >
                             {t.settings.maxDomainFanOut}
-                          </span>
+                          </FieldLabel>
                           <Input
+                            id="settings-max-domain-fanout"
                             type="number"
                             min={1}
                             max={16}
@@ -464,10 +471,14 @@ export function WorkspaceSettingsPage() {
                           />
                         </div>
                         <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">
+                          <FieldLabel
+                            htmlFor="settings-max-leaf-fanout"
+                            className="text-xs text-muted-foreground"
+                          >
                             {t.settings.maxLeafFanOut}
-                          </span>
+                          </FieldLabel>
                           <Input
+                            id="settings-max-leaf-fanout"
                             type="number"
                             min={1}
                             max={16}
@@ -481,10 +492,14 @@ export function WorkspaceSettingsPage() {
                           />
                         </div>
                         <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">
+                          <FieldLabel
+                            htmlFor="settings-review-council-size"
+                            className="text-xs text-muted-foreground"
+                          >
                             {t.settings.reviewCouncilSize}
-                          </span>
+                          </FieldLabel>
                           <Input
+                            id="settings-review-council-size"
                             type="number"
                             min={1}
                             max={4}
@@ -556,15 +571,15 @@ export function WorkspaceSettingsPage() {
                       <Button
                         type="submit"
                         disabled={
-                          submitting ||
+                          isSubmitting ||
                           !name.trim() ||
                           !publicationPath.trim() ||
                           (models.length > 0 && !modelProfileId)
                         }
                         data-testid="settings-save"
                       >
-                        {submitting ? <Spinner data-icon="inline-start" /> : null}
-                        {submitting ? t.settings.saving : t.settings.save}
+                        {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
+                        {isSubmitting ? t.settings.saving : t.settings.save}
                       </Button>
                       {saved ? (
                         <span className="text-sm font-medium text-primary" role="status">
@@ -785,7 +800,11 @@ export function WorkspaceSettingsPage() {
                         />
                       </Field>
                       <Field>
+                        <FieldLabel htmlFor="settings-skill-file-editor">
+                          {t.settings.skillFileContentLabel}
+                        </FieldLabel>
                         <Textarea
+                          id="settings-skill-file-editor"
                           className="min-h-48 font-mono text-sm"
                           value={skillFileContent}
                           onChange={(e) => {

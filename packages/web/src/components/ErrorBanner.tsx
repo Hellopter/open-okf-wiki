@@ -39,15 +39,11 @@ export function ErrorBanner({ error, onDismiss }: Props) {
 
   return (
     <Alert variant="destructive" data-testid="error-banner">
-      <div>
-        <AlertTitle>
-          {t.errorBanner.title}
-          {status ? ` (${status})` : ""}
-        </AlertTitle>
-        <AlertDescription>
-          <p className="whitespace-pre-wrap break-words">{message}</p>
-        </AlertDescription>
-      </div>
+      <AlertTitle>
+        {t.errorBanner.title}
+        {status ? ` (${status})` : ""}
+      </AlertTitle>
+      <AlertDescription className="whitespace-pre-wrap break-words">{message}</AlertDescription>
       {onDismiss ? (
         <AlertAction>
           <Button type="button" variant="ghost" size="sm" onClick={onDismiss}>

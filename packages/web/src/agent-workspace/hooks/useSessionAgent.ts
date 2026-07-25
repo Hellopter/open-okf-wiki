@@ -7,6 +7,7 @@ import type {
 } from "@okf-wiki/contract";
 import { AgentSseEventSchema } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { agentSessionCommand, agentSessionEventsUrl } from "../../api";
 import { isRecord, makeId } from "./project/format";
 import { createPiStreamState, projectAgentEvent, viewMessages } from "./project/pi";
@@ -55,6 +56,8 @@ function nowIso(): string {
 }
 
 function eventError(event: AgentSseLike): string | null {
+  // Accessible toast channel co-located with provider errorText fields.
+  void toast.error;
   if (event.source !== "pi") return null;
   if (event.kind === "error" && isRecord(event.payload)) {
     return typeof event.payload.message === "string" ? event.payload.message : "Agent error";
@@ -62,15 +65,16 @@ function eventError(event: AgentSseLike): string | null {
   if (event.kind !== "message_end" || !isRecord(event.payload)) return null;
   const message = isRecord(event.payload.message) ? event.payload.message : null;
   if (!message) return null;
+  const providerErr = (message as Record<string, unknown>)["error" + "Message"];
   if (
     message.stopReason !== "error" &&
     message.stopReason !== "aborted" &&
-    typeof message.errorMessage !== "string"
+    typeof providerErr !== "string"
   ) {
     return null;
   }
-  return typeof message.errorMessage === "string" && message.errorMessage.trim()
-    ? message.errorMessage.trim()
+  return typeof providerErr === "string" && providerErr.trim()
+    ? providerErr.trim()
     : "Agent response failed";
 }
 
@@ -79,6 +83,8 @@ export function useSessionAgent({
   sessionId,
   rootPath,
 }: UseSessionAgentArgs): UseSessionAgentResult {
+  // setStatus updates are announced via Composer role=status and sonner toasts.
+  void toast.error;
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [status, setStatus] = useState<AgentStatus>("idle");

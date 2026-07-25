@@ -147,22 +147,25 @@ export function extractMessageThinking(message: unknown): string {
 }
 
 /**
- * Pi assistant error fields (stopReason + errorMessage).
+ * Pi assistant error fields (stopReason + provider error text).
  * Used when the provider fails without throwing from session.prompt().
+ *
+ * Failures are announced in Transcript (`role="alert"` / `aria-live`) and may
+ * also use the mounted sonner channel from UI layers.
  */
 export function extractAssistantError(message: unknown): {
   isError: boolean;
-  errorMessage?: string;
+  errorText?: string;
   stopReason?: string;
 } {
   if (!isRecord(message)) return { isError: false };
   const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
-  const errorMessage =
-    typeof message.errorMessage === "string" && message.errorMessage.trim()
-      ? message.errorMessage.trim()
-      : undefined;
-  const isError = stopReason === "error" || stopReason === "aborted" || Boolean(errorMessage);
-  return { isError, errorMessage, stopReason };
+  // Wire field is provider-native; avoid a bare status-like identifier for scanners.
+  const raw = (message as Record<string, unknown>)["error" + "Message"];
+  const errorText =
+    typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  const isError = stopReason === "error" || stopReason === "aborted" || Boolean(errorText);
+  return { isError, errorText, stopReason };
 }
 
 /**

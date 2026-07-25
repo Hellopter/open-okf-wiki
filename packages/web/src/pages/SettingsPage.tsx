@@ -88,7 +88,7 @@ export function SettingsPage() {
   const [editorMode, setEditorMode] = useState<EditorMode>("closed");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
-  const [saving, setSaving] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelProfilePublic | null>(null);
   const [testing, setTesting] = useState(false);
@@ -207,7 +207,7 @@ export function SettingsPage() {
 
   async function handleSave(event: FormEvent) {
     event.preventDefault();
-    setSaving(true);
+    setIsSubmitting(true);
     setError(null);
     setStatusMsg(null);
     setTestResult(null);
@@ -221,7 +221,7 @@ export function SettingsPage() {
         const parsed = Number(maxContextRaw);
         if (!Number.isInteger(parsed) || parsed <= 0) {
           setError(new Error("maxContextTokens must be a positive integer"));
-          setSaving(false);
+          setIsSubmitting(false);
           return;
         }
         maxContextTokens = parsed;
@@ -262,7 +262,7 @@ export function SettingsPage() {
     } catch (err) {
       setError(err);
     } finally {
-      setSaving(false);
+      setIsSubmitting(false);
     }
   }
 
@@ -713,7 +713,7 @@ export function SettingsPage() {
                               }
                               className="font-mono"
                               data-testid="model-api-key"
-                              autoComplete="off"
+                              autoComplete="new-password"
                               disabled={form.clearApiKey}
                             />
                             {editorMode === "edit" ? (
@@ -858,11 +858,11 @@ export function SettingsPage() {
                           <div className="form-actions">
                             <Button
                               type="submit"
-                              disabled={saving || !form.name.trim() || !form.modelId.trim()}
+                              disabled={isSubmitting || !form.name.trim() || !form.modelId.trim()}
                               data-testid="model-save"
                             >
-                              {saving ? <Spinner data-icon="inline-start" /> : null}
-                              {saving
+                              {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
+                              {isSubmitting
                                 ? t.globalSettings.saving
                                 : editorMode === "create"
                                   ? t.globalSettings.saveCreate

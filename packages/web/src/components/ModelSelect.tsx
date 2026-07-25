@@ -4,6 +4,7 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -64,8 +65,8 @@ export function ModelSelect({
         <FieldLabel htmlFor={id}>{t.modelSelect.label}</FieldLabel>
         <FieldDescription>
           {t.modelSelect.emptyBefore}
-          <Link to="/settings" className="inline-link ml-0">
-            {t.modelSelect.emptyLink}
+          <Link to="/settings" className="inline-link ml-0" aria-label={t.modelSelect.emptyLink}>
+            Settings
           </Link>
           {t.modelSelect.emptyAfter}
         </FieldDescription>
@@ -97,16 +98,20 @@ export function ModelSelect({
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>
         <SelectContent>
-          {models.map((m) => (
-            <SelectItem key={m.id} value={m.id}>
-              {modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix)}
-            </SelectItem>
-          ))}
+          <SelectGroup>
+            {models.map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                {modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix)}
+              </SelectItem>
+            ))}
+          </SelectGroup>
         </SelectContent>
       </Select>
       <FieldDescription>
         {t.modelSelect.hintBefore}
-        <Link to="/settings">{t.modelSelect.hintLink}</Link>
+        <Link to="/settings" aria-label={t.modelSelect.hintLink}>
+          Settings
+        </Link>
         {t.modelSelect.hintAfter}
       </FieldDescription>
     </Field>

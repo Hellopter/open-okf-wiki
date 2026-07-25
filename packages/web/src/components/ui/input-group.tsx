@@ -51,22 +51,14 @@ function InputGroupAddon({
   align = "inline-start",
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
+  // No click-to-focus handler: a non-semantic onClick makes this look like an
+  // interactive control without keyboard support. Labels/htmlFor handle focus.
   return (
     <div
       role="group"
       data-slot="input-group-addon"
       data-align={align}
       className={cn(inputGroupAddonVariants({ align }), className)}
-      onClick={(e) => {
-        if ((e.target as HTMLElement).closest("button")) {
-          return
-        }
-        const group = e.currentTarget.parentElement
-        const control = group?.querySelector<HTMLElement>(
-          "[data-slot=input-group-control], textarea, input",
-        )
-        control?.focus()
-      }}
       {...props}
     />
   )

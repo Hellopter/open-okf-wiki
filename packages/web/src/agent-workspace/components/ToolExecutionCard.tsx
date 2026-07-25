@@ -28,6 +28,7 @@ import {
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { FieldLabel } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -158,15 +159,21 @@ function WikiProduceDetailsPanel({
           data-testid={`agent-${gate}-gate`}
         >
           {revising && gate === "plan" ? (
-            <Textarea
-              data-testid="agent-gate-feedback"
-              value={feedback}
-              onChange={(event) => setFeedback(event.target.value)}
-              placeholder={t.planConfirm.revisePlaceholder}
-              disabled={submitting}
-              rows={2}
-              className="min-h-16 text-xs"
-            />
+            <div className="flex flex-col gap-1">
+              <FieldLabel htmlFor="agent-gate-feedback" className="text-xs">
+                {t.planConfirm.reviseLabel}
+              </FieldLabel>
+              <Textarea
+                id="agent-gate-feedback"
+                data-testid="agent-gate-feedback"
+                value={feedback}
+                onChange={(event) => setFeedback(event.target.value)}
+                placeholder={t.planConfirm.revisePlaceholder}
+                disabled={submitting}
+                rows={2}
+                className="min-h-16 text-xs"
+              />
+            </div>
           ) : null}
           <div className="flex flex-wrap gap-1.5">
             <Button
@@ -227,7 +234,7 @@ function WikiProduceChildRow({ child }: { child: WikiProduceChildSpan }) {
       data-child-status={child.status}
     >
       <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-1.5 px-2 py-1 text-left text-[11px] hover:bg-muted/40">
-        <ChevronRightIcon className="size-3 shrink-0 transition-transform group-data-panel-open:rotate-90" />
+        <ChevronRightIcon className="size-3 shrink-0 transition-transform motion-reduce:transition-none group-data-panel-open:rotate-90" />
         {running ? <Spinner className="size-3 shrink-0" /> : null}
         <span className="font-medium">{child.role}</span>
         <span className="truncate text-muted-foreground">{child.summary ?? child.status}</span>

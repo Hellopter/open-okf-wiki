@@ -64,7 +64,7 @@ function ChatMessage({
 }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
-  const isError = message.status === "error" || Boolean(message.errorMessage);
+  const isError = message.status === "error" || Boolean(message.errorText);
   const isStreaming = message.status === "streaming";
   const toolsById = new Map((message.tools ?? []).map((tool) => [tool.id, tool]));
   const useParts = !isUser && Boolean(message.parts?.length);
@@ -123,7 +123,11 @@ function ChatMessage({
           <span>{isUser ? t.agentWorkspace.roleUser : t.agentWorkspace.roleAssistant}</span>
           {isStreaming ? <Spinner className="size-3 text-muted-foreground" /> : null}
           {isError ? (
-            <span className="inline-flex items-center gap-1 text-destructive">
+            <span
+              role="status"
+              aria-live="assertive"
+              className="inline-flex items-center gap-1 text-destructive"
+            >
               <CircleAlertIcon className="size-3" />
               {t.agentWorkspace.statusError}
             </span>
@@ -187,8 +191,13 @@ function ChatMessage({
                   <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
                 </div>
               ) : isError ? (
-                <div className="whitespace-pre-wrap">
-                  {message.errorMessage ?? t.agentWorkspace.statusError}
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  className="whitespace-pre-wrap"
+                  data-testid="agent-message-error"
+                >
+                  {message.errorText ?? t.agentWorkspace.statusError}
                 </div>
               ) : null}
 

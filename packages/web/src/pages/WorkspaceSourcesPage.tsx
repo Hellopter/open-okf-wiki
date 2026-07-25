@@ -86,8 +86,8 @@ export function WorkspaceSourcesPage() {
   const [remoteUrl, setRemoteUrl] = useState("");
   const [cloneId, setCloneId] = useState("");
   const [cloneRef, setCloneRef] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [cloning, setCloning] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPending, setIsPending] = useState(false);
   const [probing, setProbing] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -166,7 +166,7 @@ export function WorkspaceSourcesPage() {
     if (!id || !path.trim()) {
       return;
     }
-    setSubmitting(true);
+    setIsSubmitting(true);
     setError(null);
     try {
       const result = await addSource(
@@ -184,7 +184,7 @@ export function WorkspaceSourcesPage() {
     } catch (err) {
       setError(err);
     } finally {
-      setSubmitting(false);
+      setIsSubmitting(false);
     }
   }
 
@@ -193,7 +193,7 @@ export function WorkspaceSourcesPage() {
     if (!id || !remoteUrl.trim()) {
       return;
     }
-    setCloning(true);
+    setIsPending(true);
     setError(null);
     try {
       const result = await cloneSource(
@@ -213,7 +213,7 @@ export function WorkspaceSourcesPage() {
     } catch (err) {
       setError(err);
     } finally {
-      setCloning(false);
+      setIsPending(false);
     }
   }
 
@@ -523,10 +523,17 @@ export function WorkspaceSourcesPage() {
                   <div className="form-actions">
                     <Button
                       type="submit"
-                      disabled={submitting || !path.trim()}
+                      disabled={isSubmitting || !path.trim()}
                       data-testid="source-add-submit"
                     >
-                      {submitting ? t.sources.adding : t.sources.addSource}
+                      {isSubmitting ? (
+                        <>
+                          <Spinner data-icon="inline-start" />
+                          {t.sources.adding}
+                        </>
+                      ) : (
+                        t.sources.addSource
+                      )}
                     </Button>
                   </div>
                 </FieldGroup>
@@ -585,10 +592,12 @@ export function WorkspaceSourcesPage() {
                   <div className="form-actions">
                     <Button
                       type="submit"
-                      disabled={cloning || !remoteUrl.trim()}
+                      disabled={isPending || !remoteUrl.trim()}
                       data-testid="source-clone-submit"
                     >
-                      {cloning ? t.sources.cloning : t.sources.cloneSubmit}
+                      {isPending && <Spinner data-icon="inline-start" />}
+                      {isPending && t.sources.cloning}
+                      {!isPending && t.sources.cloneSubmit}
                     </Button>
                   </div>
                 </FieldGroup>

@@ -30,7 +30,7 @@ export type AgentMessage = {
   tools?: AgentToolCall[];
   parts?: AgentContentPart[];
   status?: "streaming" | "done" | "error" | "aborted";
-  errorMessage?: string;
+  errorText?: string;
 };
 
 /** Shared transport interface. Pi still owns event payload internals. */

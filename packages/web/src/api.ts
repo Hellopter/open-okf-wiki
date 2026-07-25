@@ -166,7 +166,7 @@ export class ApiError extends Error {
   }
 }
 
-function errorMessageFromBody(body: unknown, fallback: string): string {
+function messageFromErrorBody(body: unknown, fallback: string): string {
   if (body && typeof body === "object") {
     const record = body as Record<string, unknown>;
     if (typeof record.error === "string" && record.error.trim()) {
@@ -218,7 +218,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new ApiError(
       response.status,
-      errorMessageFromBody(body, `Request failed (${response.status})`),
+      messageFromErrorBody(body, `Request failed (${response.status})`),
       body,
     );
   }

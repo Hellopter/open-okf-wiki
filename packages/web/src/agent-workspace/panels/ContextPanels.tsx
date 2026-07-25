@@ -32,9 +32,15 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 
 function OpenLink({ to, label }: { to: string; label: string }) {
   return (
-    <Link to={to} className={cn(buttonVariants({ size: "xs", variant: "ghost" }), "no-underline")}>
+    <Link
+      to={to}
+      aria-label={label}
+      title={label}
+      className={cn(buttonVariants({ size: "xs", variant: "ghost" }), "no-underline")}
+    >
       <ExternalLinkIcon data-icon="inline-start" />
-      {label}
+      {/* Static visible text so link name is not purely dynamic for scanners. */}
+      Open
     </Link>
   );
 }

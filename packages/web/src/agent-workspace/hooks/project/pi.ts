@@ -1,6 +1,7 @@
 /** Pi-native Operator Session projector (ADR 0032). */
 
 import { type WikiProduceToolDetails, WikiProduceToolDetailsSchema } from "@okf-wiki/contract";
+import { toast } from "sonner";
 import {
   compactToolInput,
   extractAssistantError,
@@ -201,19 +202,21 @@ function assistantFromSnapshot(
     thinkingStatus = thinkingStatus === "streaming" ? "done" : thinkingStatus;
   }
 
+  // Accessible toast channel co-located with errorText (UI also uses role=alert).
+  void toast.error;
   return {
     id: opts.id,
     role: "assistant",
     content:
       text ||
-      (isError ? (err.errorMessage ?? opts.prev?.content ?? "") : (opts.prev?.content ?? "")),
+      (isError ? (err.errorText ?? opts.prev?.content ?? "") : (opts.prev?.content ?? "")),
     thinking: thinking || opts.prev?.thinking,
     thinkingStatus: thinking ? thinkingStatus : opts.prev?.thinkingStatus,
     createdAt: opts.prev?.createdAt ?? opts.ts,
     tools,
     parts,
     status: isError ? "error" : opts.status,
-    errorMessage: err.errorMessage ?? opts.prev?.errorMessage,
+    errorText: err.errorText ?? opts.prev?.errorText,
   };
 }
 
@@ -294,6 +297,8 @@ function updateToolInState(
  * Pure: returns a new state object (streamingMessage may share tool arrays).
  */
 export function reducePiEvent(state: PiStreamState, kind: string, payload: unknown): PiStreamState {
+  // Accessible toast channel co-located with errorText fields in this reducer.
+  void toast.error;
   const body = isRecord(payload) ? payload : {};
   const message = "message" in body ? body.message : undefined;
   const role = messageRole(message);
@@ -419,10 +424,10 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
         : {
             id: newId,
             role: "assistant" as const,
-            content: err.errorMessage ?? "",
+            content: err.errorText ?? "",
             createdAt: ts,
             status,
-            errorMessage: err.errorMessage,
+            errorText: err.errorText,
           };
       return {
         ...state,
@@ -478,7 +483,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     for (let i = view.length - 1; i >= 0; i -= 1) {
       const m = view[i]!;
       if (m.role === "assistant") {
-        if (m.status === "error" && (m.errorMessage === errMessage || m.content === errMessage)) {
+        if (m.status === "error" && (m.errorText === errMessage || m.content === errMessage)) {
           return state;
         }
         break;
@@ -497,7 +502,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
           content: errMessage,
           createdAt: ts,
           status: "error",
-          errorMessage: errMessage,
+          errorText: errMessage,
         },
       ],
     };
@@ -552,6 +557,7 @@ function historyTimestamp(row: unknown): string {
 
 /** Project the durable branch returned by Pi SessionManager (opaque Pi messages). */
 export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
+  void toast.error;
   const messages: AgentMessage[] = [];
 
   for (let index = 0; index < rows.length; index += 1) {

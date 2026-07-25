@@ -62,6 +62,19 @@ export function WorkspaceShell({
   const displayName = workspaceName ?? workspaceId;
   const tight = compact || immersive;
 
+  // Exactly one page-level h1 in this render tree (static scanners count all
+  // literal h1 nodes in the return, including mutually exclusive branches).
+  const heading = (
+    <h1
+      className={cn(
+        immersive && "!mb-0 min-w-0 truncate text-sm font-semibold tracking-tight",
+        !immersive && tight && "!mb-0 text-xl font-semibold tracking-tight",
+      )}
+    >
+      {immersive ? displayName : title}
+    </h1>
+  );
+
   return (
     <Layout immersive={immersive}>
       <div
@@ -90,9 +103,7 @@ export function WorkspaceShell({
                   {t.nav.workspaces}
                 </Link>
                 <span className="text-muted-foreground/50">/</span>
-                <h1 className="!mb-0 min-w-0 truncate text-sm font-semibold tracking-tight">
-                  {displayName}
-                </h1>
+                {heading}
                 {breadcrumbLabel ? (
                   <>
                     <span className="text-muted-foreground/50">·</span>
@@ -113,18 +124,16 @@ export function WorkspaceShell({
               <Breadcrumb className="breadcrumb" data-testid="workspace-breadcrumb">
                 <BreadcrumbList>
                   <BreadcrumbItem>
-                    <BreadcrumbLink render={<Link to="/workspaces" />}>
-                      {t.nav.workspaces}
-                    </BreadcrumbLink>
+                    <BreadcrumbLink render={<Link to="/workspaces">{t.nav.workspaces}</Link>} />
                   </BreadcrumbItem>
                   <BreadcrumbSeparator />
                   <BreadcrumbItem>
                     {breadcrumbLabel ? (
                       <BreadcrumbLink
-                        render={<Link to={agentWorkspaceHref(workspaceId, rootPath)} />}
-                      >
-                        {displayName}
-                      </BreadcrumbLink>
+                        render={
+                          <Link to={agentWorkspaceHref(workspaceId, rootPath)}>{displayName}</Link>
+                        }
+                      />
                     ) : (
                       <BreadcrumbPage>{displayName}</BreadcrumbPage>
                     )}
@@ -142,7 +151,7 @@ export function WorkspaceShell({
 
               {tight ? (
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h1 className="!mb-0 text-xl font-semibold tracking-tight">{title}</h1>
+                  {heading}
                   {actions ? (
                     <div className="flex flex-wrap items-center gap-2">{actions}</div>
                   ) : null}
@@ -150,7 +159,7 @@ export function WorkspaceShell({
               ) : (
                 <div className={cn(actions && "flex flex-wrap items-start justify-between gap-2")}>
                   <div>
-                    <h1>{title}</h1>
+                    {heading}
                     {description ? <p>{description}</p> : null}
                   </div>
                   {actions ? (

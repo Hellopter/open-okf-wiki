@@ -55,7 +55,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar
       collapsible="icon"
-      aria-label={t.app.sidebarAria}
+      aria-label="Primary"
       data-testid="app-sidebar"
       data-collapsed={collapsed ? "true" : "false"}
       {...props}

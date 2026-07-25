@@ -64,7 +64,7 @@ export function ConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent data-testid={dataTestId}>
+      <AlertDialogContent data-testid={dataTestId} aria-label="Confirm dialog">
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description != null ? (

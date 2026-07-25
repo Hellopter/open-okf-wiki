@@ -55,7 +55,7 @@ export function WorkspacesPage() {
   const [name, setName] = useState("");
   const [rootPath, setRootPath] = useState("");
   const [modelProfileId, setModelProfileId] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
   const [deleteMeta, setDeleteMeta] = useState(false);
@@ -101,7 +101,7 @@ export function WorkspacesPage() {
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
-    setSubmitting(true);
+    setIsSubmitting(true);
     setError(null);
     try {
       const root = rootPath.trim();
@@ -119,7 +119,7 @@ export function WorkspacesPage() {
     } catch (err) {
       setError(err);
     } finally {
-      setSubmitting(false);
+      setIsSubmitting(false);
     }
   }
 
@@ -225,15 +225,15 @@ export function WorkspacesPage() {
                 <Button
                   type="submit"
                   disabled={
-                    submitting ||
+                    isSubmitting ||
                     !name.trim() ||
                     !rootPath.trim() ||
                     (models.length > 0 && !modelProfileId)
                   }
                   data-testid="workspace-create-submit"
                 >
-                  {submitting ? <Spinner data-icon="inline-start" /> : null}
-                  {submitting ? t.workspaces.creating : t.workspaces.createSubmit}
+                  {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
+                  {isSubmitting ? t.workspaces.creating : t.workspaces.createSubmit}
                 </Button>
               </DialogFooter>
             </form>

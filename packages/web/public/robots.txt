@@ -1,0 +1,5 @@
+# Local operator UI — allow crawling of the public shell; app data is private.
+User-agent: *
+Allow: /
+
+Sitemap: /sitemap.xml

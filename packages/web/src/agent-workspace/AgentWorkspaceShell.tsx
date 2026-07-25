@@ -164,10 +164,13 @@ export function AgentWorkspaceShell({
             type="button"
             size="icon-sm"
             variant="ghost"
-            aria-label={t.agentWorkspace.sessions}
+            aria-label="Sessions"
+            title={t.agentWorkspace.sessions}
             onClick={() => setLeftSheetOpen(true)}
+            data-testid="agent-mobile-sessions"
           >
             <LayoutListIcon />
+            <span className="sr-only">Sessions</span>
           </Button>
           <div className="min-w-0 flex-1 truncate text-sm font-medium">
             {workspace?.name ?? t.agentWorkspace.title}
@@ -176,10 +179,13 @@ export function AgentWorkspaceShell({
             type="button"
             size="icon-sm"
             variant="ghost"
-            aria-label={t.agentWorkspace.panels}
+            aria-label="Context panels"
+            title={t.agentWorkspace.panels}
             onClick={() => setRightSheetOpen(true)}
+            data-testid="agent-mobile-panels"
           >
             <PanelRightIcon />
+            <span className="sr-only">Context panels</span>
           </Button>
         </header>
       ) : null}
@@ -287,7 +293,7 @@ export function AgentWorkspaceShell({
           <Sheet open={leftSheetOpen} onOpenChange={setLeftSheetOpen}>
             <SheetContent side="left" className="w-[min(100%,18rem)] p-0">
               <SheetHeader className="sr-only">
-                <SheetTitle>{t.agentWorkspace.sessions}</SheetTitle>
+                <SheetTitle>Sessions</SheetTitle>
               </SheetHeader>
               {sessionList}
             </SheetContent>
@@ -295,7 +301,7 @@ export function AgentWorkspaceShell({
           <Sheet open={rightSheetOpen} onOpenChange={setRightSheetOpen}>
             <SheetContent side="right" className="w-[min(100%,20rem)] p-0">
               <SheetHeader className="sr-only">
-                <SheetTitle>{t.agentWorkspace.panels}</SheetTitle>
+                <SheetTitle>Context panels</SheetTitle>
               </SheetHeader>
               {contextPanels}
             </SheetContent>
