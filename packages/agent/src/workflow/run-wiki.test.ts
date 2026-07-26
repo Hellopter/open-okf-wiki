@@ -11,11 +11,11 @@ import {
   createScriptedReviewFixtureRuntime,
 } from "../runtime/produce-runtime.js";
 import {
+  type GateDecision,
+  type GatePort,
+  type GateRequest,
   resolveModels,
   runWiki,
-  type WikiProduceGateCoordinator,
-  type WikiProduceGateDecision,
-  type WikiProduceGateRequest,
 } from "./run-wiki.js";
 
 const temps: string[] = [];
@@ -103,26 +103,26 @@ async function fakeFreeze(
 }
 
 function gateHarness() {
-  const requests: WikiProduceGateRequest[] = [];
-  const decisions: Array<(d: WikiProduceGateDecision) => void> = [];
+  const requests: GateRequest[] = [];
+  const decisions: Array<(d: GateDecision) => void> = [];
   const arrivals: Array<() => void> = [];
   let consumed = 0;
   return {
     requests,
     gateCoordinator: {
-      waitForDecision(request: WikiProduceGateRequest): Promise<WikiProduceGateDecision> {
+      waitForDecision(request: GateRequest): Promise<GateDecision> {
         requests.push(request);
         arrivals.shift()?.();
         return new Promise((resolve) => decisions.push(resolve));
       },
-    } satisfies WikiProduceGateCoordinator,
-    async nextRequest(): Promise<WikiProduceGateRequest> {
+    } satisfies GatePort,
+    async nextRequest(): Promise<GateRequest> {
       if (consumed >= requests.length) {
         await new Promise<void>((resolve) => arrivals.push(resolve));
       }
       return requests[consumed++]!;
     },
-    resolve(decision: WikiProduceGateDecision): void {
+    resolve(decision: GateDecision): void {
       const r = decisions.shift();
       assert.ok(r);
       r(decision);
@@ -135,6 +135,7 @@ describe("runWiki core flows", () => {
     const workspace = await makeWorkspace();
     const gates = gateHarness();
     let published = 0;
+    let publishStamp: { generatedBy: string; generatedAt: string } | undefined;
     const details: Array<{ status?: string }> = [];
 
     const done = runWiki({
@@ -145,8 +146,9 @@ describe("runWiki core flows", () => {
       fixture: true,
       runtime: createFixtureProduceRuntime(),
       freeze: async ({ sessionId }) => fakeFreeze(workspace, sessionId),
-      publish: async () => {
+      publish: async (input) => {
         published += 1;
+        publishStamp = input.stamp;
         return { publicationPath: workspace.publicationPath!, pageCount: 2 };
       },
       onDetails: (p) => details.push(p),
@@ -162,6 +164,10 @@ describe("runWiki core flows", () => {
     const result = await done;
     assert.equal(result.status, "published");
     assert.equal(published, 1);
+    // OKF provenance stamp is Run Boundary-owned and derived from the workspace model.
+    assert.ok(publishStamp, "expected publish to receive an OKF stamp");
+    assert.equal(publishStamp!.generatedBy, `okf-wiki/${workspace.model.id}`);
+    assert.ok(!Number.isNaN(Date.parse(publishStamp!.generatedAt)));
     assert.ok(details.some((d) => d.status === "awaiting_plan"));
     assert.ok(details.some((d) => d.status === "awaiting_publication"));
   });
@@ -276,6 +282,42 @@ describe("runWiki core flows", () => {
     const result = await done;
     assert.equal(result.status, "cancelled");
     assert.equal(published, 0);
+  });
+
+  it("plan revise → re-plan → approve → publication approve → published", async () => {
+    const workspace = await makeWorkspace();
+    const gates = gateHarness();
+    let published = 0;
+    const done = runWiki({
+      workspace,
+      sessionId: "s-revise",
+      toolCallId: "t-revise",
+      notes: "Focus on runtime.",
+      gateCoordinator: gates.gateCoordinator,
+      fixture: true,
+      runtime: createFixtureProduceRuntime(),
+      freeze: async ({ sessionId }) => fakeFreeze(workspace, sessionId),
+      publish: async () => {
+        published += 1;
+        return { publicationPath: workspace.publicationPath!, pageCount: 2 };
+      },
+    });
+
+    const planReq = await gates.nextRequest();
+    assert.equal(planReq.gate, "plan");
+    gates.resolve({ action: "revise", feedback: "Emphasize the runtime seam." });
+    const revisedPlanGate = await gates.nextRequest();
+    assert.equal(revisedPlanGate.gate, "plan");
+    assert.match(revisedPlanGate.spec.notes ?? "", /runtime seam/i);
+    assert.ok(revisedPlanGate.spec.changelog.some((entry) => /planner re-ran/i.test(entry)));
+    gates.resolve({ action: "approve" });
+    const pubReq = await gates.nextRequest();
+    assert.equal(pubReq.gate, "publication");
+    gates.resolve({ action: "approve" });
+
+    const result = await done;
+    assert.equal(result.status, "published");
+    assert.equal(published, 1);
   });
 
   it("publication deny → publication_declined", async () => {

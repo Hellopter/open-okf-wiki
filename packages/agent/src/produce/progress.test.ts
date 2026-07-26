@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createToolDetailsAccumulator, upsertAttempt } from "./progress.js";
 import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
+import { createToolDetailsAccumulator, upsertAttempt } from "./progress.js";
 
 test("createToolDetailsAccumulator applies status and attempt patches", () => {
   const acc = createToolDetailsAccumulator({ status: "freezing", runId: "r1" });

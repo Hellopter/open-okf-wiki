@@ -41,4 +41,29 @@ describe("session_status tool", () => {
     assert.equal(result.details.sourceCount, 1);
     assert.equal(result.details.planConfirm, true);
   });
+
+  it("reports planConfirm ON by default, matching the run gate default", async () => {
+    const workspace = WorkspaceConfigSchema.parse({
+      version: 1,
+      id: "ws-status-default",
+      name: "Status WS",
+      rootPath: "/tmp/ws",
+      sources: [],
+      model: { id: "openai/gpt-test" },
+      publicationPath: "/tmp/wiki",
+      createdAt: new Date().toISOString(),
+    });
+    // planConfirm omitted on input: the schema defaults it to true (HITL by
+    // default), the run gate (requirePlanGate) engages, and session_status
+    // reports the same.
+    assert.equal(workspace.planConfirm, true);
+    const tool = createSessionStatusTool({ workspace, maxContextTokens: 100_000 });
+    const result = await (
+      tool.execute as unknown as (
+        id: string,
+        args: Record<string, never>,
+      ) => Promise<{ details: Record<string, unknown> }>
+    )("call-2", {});
+    assert.equal(result.details.planConfirm, true);
+  });
 });

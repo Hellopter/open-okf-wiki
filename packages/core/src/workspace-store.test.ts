@@ -5,16 +5,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { assertAbsolutePath, resolveExistingDir } from "./paths.js";
+import { listRecentWorkspaces, registerWorkspaceInAppIndex } from "./workspace-app-state.js";
 import {
-  addSource,
   createWorkspace,
-  listRecentWorkspaces,
   loadWorkspace,
-  registerWorkspaceInAppIndex,
   saveWorkspace,
-  updateSource,
   workspaceConfigPath,
-} from "./workspace-store.js";
+} from "./workspace-config.js";
+import { addSource, updateSource } from "./workspace-source.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));

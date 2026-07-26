@@ -51,10 +51,7 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
     summary: "root_write",
   });
 
-  const receiptIndex = await defaultReceiptStore.buildIndex(
-    input.workspace.rootPath,
-    input.runId,
-  );
+  const receiptIndex = await defaultReceiptStore.buildIndex(input.workspace.rootPath, input.runId);
   let produced: WikiWriteResult;
   try {
     produced = await runtime.writeWiki({
@@ -76,8 +73,7 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
         multiSource,
         receiptIndex,
       }),
-      onProgress: (span) =>
-        emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+      onProgress: (span) => emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -100,7 +96,13 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
   return { kind: "ok", produced };
 }
 
-/** Operator-driven repair write on existing staging (wiki_repair tool). */
+/**
+ * Repair write on existing staging (council loop or operator wiki_repair).
+ *
+ * Topology has a single `repair` node; each repair round is a new attempt
+ * (`repair@{runIndex}`) so multi-round history appends rather than overwriting
+ * `root_write`.
+ */
 export async function runRepairWrite(input: {
   ctx: PhaseContext;
   produced: WikiWriteResult;
@@ -122,6 +124,10 @@ export async function runRepairWrite(input: {
   } = ctx;
   let produced = input.produced;
 
+  // metrics.repairRounds is 1-based and already incremented by the caller.
+  const runIndex = Math.max(0, (metrics.repairRounds || 1) - 1);
+  const attemptId = `repair@${runIndex}`;
+
   try {
     produced = await runtime.writeWiki({
       layout,
@@ -129,8 +135,7 @@ export async function runRepairWrite(input: {
       workspaceName: wikiInput.workspace.name,
       model: wikiInput.models?.writer?.model,
       modelRuntime: wikiInput.models?.writer?.modelRuntime,
-      maxContextTokens:
-        wikiInput.maxContextTokens ?? wikiInput.models?.writer?.maxContextTokens,
+      maxContextTokens: wikiInput.maxContextTokens ?? wikiInput.models?.writer?.maxContextTokens,
       contextTargetTokens,
       additionalSkillPaths: wikiInput.additionalSkillPaths,
       sourceIgnores: wikiInput.sourceIgnores,
@@ -144,8 +149,11 @@ export async function runRepairWrite(input: {
         receiptIndex,
         repairDefects: defectText,
       }),
-      onProgress: (span) =>
-        emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+      spanId: attemptId,
+      nodeKey: "repair",
+      runIndex,
+      graphRole: "repair",
+      onProgress: (span) => emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
     });
     await emitPagesFromDisk(onProgress, produced.layout.wikiDir, spec);
     return { kind: "ok", produced };

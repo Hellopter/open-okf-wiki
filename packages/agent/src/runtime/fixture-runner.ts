@@ -4,36 +4,37 @@
 
 import { mkdir } from "node:fs/promises";
 import type {
+  AgentRunner,
   AgentRunRequest,
   AgentRunResult,
-  AgentRunner,
   WikiWriteRequest,
   WikiWriteResult,
 } from "../ports/agent-runner.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
 import type { RunWorkdirLayout } from "./workdir.js";
 
-/** @deprecated Prefer AgentRunner from ports — alias for call-site migration. */
-export type ProduceRuntime = AgentRunner;
-export type ProduceAgentRequest = AgentRunRequest;
-export type ProduceAgentResult = AgentRunResult;
-export type ProduceWriteRequest = WikiWriteRequest;
-export type ProduceWriteResult = WikiWriteResult;
+export type {
+  AgentRunner,
+  AgentRunRequest,
+  AgentRunResult,
+  WikiWriteRequest,
+  WikiWriteResult,
+} from "../ports/agent-runner.js";
 
 export type FixtureAgentHook = (
-  input: ProduceAgentRequest,
-) => Promise<ProduceAgentResult | undefined> | ProduceAgentResult | undefined;
+  input: AgentRunRequest,
+) => Promise<AgentRunResult | undefined> | AgentRunResult | undefined;
 
 export type FixtureWriteHook = (
-  input: ProduceWriteRequest,
+  input: WikiWriteRequest,
   writeOrdinal: number,
-) => Promise<ProduceWriteResult | undefined> | ProduceWriteResult | undefined;
+) => Promise<WikiWriteResult | undefined> | WikiWriteResult | undefined;
 
 export type FixtureProduceRuntimeOptions = {
   onAgent?: FixtureAgentHook;
   onWrite?: FixtureWriteHook;
   /** When set, domain/leaf/etc. matching this predicate throw. */
-  failAgent?: (input: ProduceAgentRequest) => Error | string | undefined;
+  failAgent?: (input: AgentRunRequest) => Error | string | undefined;
 };
 
 const DEFAULT_CLEAN_REVIEW = JSON.stringify({
@@ -57,10 +58,10 @@ function asLayout(layout: WikiWriteRequest["layout"]): RunWorkdirLayout {
  */
 export function createFixtureProduceRuntime(
   options: FixtureProduceRuntimeOptions = {},
-): ProduceRuntime {
+): AgentRunner {
   let writeOrdinal = 0;
 
-  async function runOne(input: ProduceAgentRequest): Promise<ProduceAgentResult> {
+  async function runOne(input: AgentRunRequest): Promise<AgentRunResult> {
     if (input.abortSignal?.aborted) throw abortError();
 
     const hooked = await options.onAgent?.(input);
@@ -69,11 +70,11 @@ export function createFixtureProduceRuntime(
     const fail = options.failAgent?.(input);
     if (fail) {
       const err = typeof fail === "string" ? new Error(fail) : fail;
-      const id = input.spanId?.trim() || input.role;
+      const attemptId = input.spanId?.trim() || input.role;
       input.onProgress?.({
-        attemptId: id,
-        nodeKey: id,
-        runIndex: 0,
+        attemptId,
+        nodeKey: input.nodeKey?.trim() || attemptId,
+        runIndex: input.runIndex ?? 0,
         role: input.role,
         status: "error",
         summary: err.message,
@@ -86,11 +87,11 @@ export function createFixtureProduceRuntime(
         ? DEFAULT_CLEAN_REVIEW
         : `[fixture ${input.role}] ${input.task.slice(0, 200)}`;
 
-    const id = input.spanId?.trim() || input.role;
+    const attemptId = input.spanId?.trim() || input.role;
     input.onProgress?.({
-      attemptId: id,
-      nodeKey: id,
-      runIndex: 0,
+      attemptId,
+      nodeKey: input.nodeKey?.trim() || attemptId,
+      runIndex: input.runIndex ?? 0,
       role: input.role,
       status: "done",
       summary: summary.slice(0, 4000),
@@ -108,7 +109,7 @@ export function createFixtureProduceRuntime(
     runAgent: runOne,
     async runAgentsParallel(tasks, opts) {
       const concurrency = Math.max(1, opts?.concurrency ?? 2);
-      const results: ProduceAgentResult[] = new Array(tasks.length);
+      const results: AgentRunResult[] = new Array(tasks.length);
       let next = 0;
       async function worker(): Promise<void> {
         for (;;) {
@@ -133,21 +134,28 @@ export function createFixtureProduceRuntime(
       await mkdir(layout.analysisDir, { recursive: true });
       const title =
         input.spec.summary?.trim() || input.workspaceName.trim() || "Repository overview";
+      const attemptId = input.spanId?.trim() || "root_write";
+      const nodeKey = input.nodeKey?.trim() || attemptId;
+      const runIndex = input.runIndex ?? 0;
+      const graphRole = input.graphRole ?? "root_write";
       input.onProgress?.({
-        attemptId: "root_write",
-        nodeKey: "root_write",
-        runIndex: 0,
-        role: "root_write",
+        attemptId,
+        nodeKey,
+        runIndex,
+        role: graphRole,
         status: "running",
-        summary: "Fixture root_write",
+        summary: graphRole === "repair" ? "Fixture repair write" : "Fixture root_write",
       });
       const pages = await writeFixtureWiki(layout, title);
-      const summary = "Pi fixture mode wrote overview.md + listing index.md";
+      const summary =
+        graphRole === "repair"
+          ? "Pi fixture mode repaired overview.md + listing index.md"
+          : "Pi fixture mode wrote overview.md + listing index.md";
       input.onProgress?.({
-        attemptId: "root_write",
-        nodeKey: "root_write",
-        runIndex: 0,
-        role: "root_write",
+        attemptId,
+        nodeKey,
+        runIndex,
+        role: graphRole,
         status: "done",
         summary,
         items: [{ type: "text", text: `wrote ${pages.join(", ")}` }],
@@ -171,12 +179,15 @@ export function createScriptedReviewFixtureRuntime(input: {
   blockingRounds: number;
   failDomainId?: string;
   failDomainMessage?: string;
-}): ProduceRuntime {
+}): AgentRunner {
   let reviewerCalls = 0;
   return createFixtureProduceRuntime({
     failAgent: (req) => {
       if (!input.failDomainId || req.role !== "domain") return undefined;
-      if (req.spanId === `domain-${input.failDomainId}`) {
+      // Match retry attempts too (`domain-x@retry1`) — the scripted failure is
+      // persistent, otherwise wired retries would defeat critical-fail tests.
+      const nodeId = `domain-${input.failDomainId}`;
+      if (req.spanId === nodeId || req.spanId?.startsWith(`${nodeId}@`)) {
         return input.failDomainMessage ?? `critical domain ${input.failDomainId} failed`;
       }
       return undefined;
@@ -199,11 +210,11 @@ export function createScriptedReviewFixtureRuntime(input: {
             summary: `blocking call ${reviewerCalls}`,
           })
         : DEFAULT_CLEAN_REVIEW;
-      const id = req.spanId?.trim() || req.role;
+      const attemptId = req.spanId?.trim() || req.role;
       req.onProgress?.({
-        attemptId: id,
-        nodeKey: id,
-        runIndex: 0,
+        attemptId,
+        nodeKey: req.nodeKey?.trim() || attemptId,
+        runIndex: req.runIndex ?? 0,
         role: "reviewer",
         status: "done",
         summary: text.slice(0, 4000),

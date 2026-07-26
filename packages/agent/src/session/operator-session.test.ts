@@ -56,7 +56,12 @@ describe("SessionManager-owned Operator Sessions", () => {
     try {
       assert.equal(created.sessionId, "operator-1");
       assert.equal(created.session.sessionManager.getCwd(), path.resolve(workspace.rootPath));
+      // Read-only Workspace exploration + product tools (never write/edit/bash).
       assert.deepEqual(created.session.getActiveToolNames(), [
+        "read",
+        "grep",
+        "find",
+        "ls",
         "session_status",
         "wiki_produce",
         "wiki_repair",
@@ -97,6 +102,10 @@ describe("SessionManager-owned Operator Sessions", () => {
     try {
       assert.equal(opened.sessionId, "operator-1");
       assert.deepEqual(opened.session.getActiveToolNames(), [
+        "read",
+        "grep",
+        "find",
+        "ls",
         "session_status",
         "wiki_produce",
         "wiki_repair",

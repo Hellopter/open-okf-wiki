@@ -23,6 +23,22 @@
       content="Local Web operator UI for open-okf-wiki: manage workspaces, sources, models, and wiki generation on this machine."
     />
     <meta name="twitter:image" content="/og-image.svg" />
+    <script>
+      // Pre-hydration theme: set .dark/.light before first paint so tokens and
+      // `dark:` variants agree. Mirrors ThemeProvider (storage key + matchMedia).
+      (function () {
+        var theme;
+        try {
+          theme = localStorage.getItem("okf-wiki.theme");
+        } catch (e) {}
+        if (theme !== "light" && theme !== "dark") {
+          theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        var root = document.documentElement;
+        root.classList.add(theme);
+        root.style.colorScheme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

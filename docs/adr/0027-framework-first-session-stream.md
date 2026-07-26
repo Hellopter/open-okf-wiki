@@ -1,18 +1,21 @@
 # Framework-first Session stream and HITL
 
-**Status:** accepted  
+**Status:** superseded / historical  
 **Date:** 2026-07-22  
-**Related:** ADR 0020 (Mastra + Web), ADR 0024 (Session conversational workspace), ADR 0025 (wiki workflow + AI SDK bridge), ADR 0026 (Session-centric agent)  
-**Refines:** [ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) Session stream entry — framework path is the only conversion; product shell is thin  
+**Superseded by:** [ADR 0030](0030-pi-agent-harness-for-semantic-workflow.md) (framework is **Pi**, not Mastra / AI SDK); operator surface further refined by [ADR 0031](0031-unidirectional-framework-first-operator-surface.md) and [ADR 0032](0032-pi-tool-owned-wiki-runs.md)  
+**Related (historical):** ADR 0020 (Mastra + Web), ADR 0024 (Session conversational workspace), ADR 0025 (wiki workflow + AI SDK bridge), ADR 0026 (Session-centric agent)  
+**Historically refined:** [ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) Session stream entry — framework path was the only conversion; product shell was thin  
 **Index:** [docs/adr/README.md](README.md)
+
+> **Do not implement as written.** Mastra `suspend`/`resumeStream`, `toAISdkStream`, UIMessage/`useChat`, and `$OKF_WIKI_HOME/mastra` LibSQL snapshots are **not** current product ops. The durable intent is **framework-first Session streaming** (now Pi AgentSession events + JSONL) and a thin product shell — re-read under 0030/0032.
 
 ## Context
 
-ADR 0025 established a single wiki-run write path and Session streaming via `@mastra/ai-sdk` `toAISdkStream`. Implementation still accumulated product-owned parallel stream semantics (`openWikiWorkflowUiStream` as a second converter story, hand-built gate/progress parts in `session-stream`, dual lifecycle projections). Mastra and the AI SDK already own workflow HITL, workflow→UI conversion, and chat persistence patterns. Product code must not re-invent those layers.
+ADR 0025 established a single wiki-run write path and Session streaming via `@mastra/ai-sdk` `toAISdkStream`. Implementation still accumulated product-owned parallel stream semantics (`openWikiWorkflowUiStream` as a second converter story, hand-built gate/progress parts in `session-stream`, dual lifecycle projections). At the time, Mastra and the AI SDK owned workflow HITL, workflow→UI conversion, and chat persistence patterns; product code was not to re-invent those layers. That framework choice is **historical** — product Session transport is now Pi.
 
-## Decision
+## Historical decision (do not implement)
 
-### 1. Stream / HITL / UI parts: Mastra + AI SDK only
+### 1. Stream / HITL / UI parts: Mastra + AI SDK only (historical)
 
 | Concern | Implementation path |
 |---|---|
@@ -67,20 +70,20 @@ HTTP APIs surface this as **410** with the wipe path in the message. Delete of a
 - `handleChatStream` as the wiki production main path (wiki production is **workflow**, ADR 0025).
 - Parallel `openWikiWorkflowUiStream` **semantics** as a second converter story (use `openWikiRunUiProjection` only).
 
-## Consequences
+## Historical consequences (superseded ops)
 
-- Session and headless open the same orchestrated workflow path; only the projection (UIMessage vs job events) differs.
-- `session-stream` shrinks over subsequent phases toward param assembly + persist hooks; it must not invent new stream part types at the HTTP/stream layer (progress belongs in workflow steps).
-- ADR 0025 streaming clause remains correct (`toAISdkStream`); this ADR pins **how** the product may call it (framework-first shell only).
-- Core stays free of Mastra; Operator Session remains a product entity (ADR 0026).
+- Session and headless opened the same orchestrated Mastra workflow path; only the projection (UIMessage vs job events) differed.
+- `session-stream` was expected to shrink toward param assembly + persist hooks without inventing new stream part types at the HTTP/stream layer.
+- ADR 0025 streaming clause (`toAISdkStream`) was correct **for the Mastra era**; this ADR pinned **how** the product could call it (framework-first shell only). Both are **superseded by Pi** ([0030](0030-pi-agent-harness-for-semantic-workflow.md)).
+- Core stayed free of Mastra; Operator Session remained a product entity (ADR 0026). Core still must not depend on agent frameworks (Mastra or Pi).
 
-## Invariants (checklist)
+## Historical invariants (checklist; map to Pi under 0030)
 
-| Id | Invariant |
-|----|-----------|
-| F1 | One Mastra→UI conversion: `toAISdkStream` (via thin shell, not a parallel protocol) |
-| F2 | HITL contract = workflow `resumeSchema` / structured `resumeData` |
-| F3 | Product shell does not reimplement stream conversion |
-| F4 | core has no `@mastra/*` |
-| F5 | Session is product-owned; not Mastra Memory |
-| F6 | Headless and Session share the same open + terminal map path |
+| Id | Historical invariant | Current reading |
+|----|-----------|---|
+| F1 | One Mastra→UI conversion: `toAISdkStream` (via thin shell, not a parallel protocol) | One Pi event → UI projection; no dual Session protocol ([0030](0030-pi-agent-harness-for-semantic-workflow.md)/[0032](0032-pi-tool-owned-wiki-runs.md)) |
+| F2 | HITL contract = workflow `resumeSchema` / structured `resumeData` | Pi tool-owned gates via real `wiki_produce` lifecycle ([0032](0032-pi-tool-owned-wiki-runs.md)) |
+| F3 | Product shell does not reimplement stream conversion | Product shell does not invent a second event author ([0031](0031-unidirectional-framework-first-operator-surface.md)/[0032](0032-pi-tool-owned-wiki-runs.md)) |
+| F4 | core has no `@mastra/*` | core has no `@mastra/*` / Pi SDK; Run Boundary only |
+| F5 | Session is product-owned; not Mastra Memory | Session is Pi JSONL under product SessionManager; not a second history store |
+| F6 | Headless and Session share the same open + terminal map path | Produce path is the real `wiki_produce` tool from the Operator Session |

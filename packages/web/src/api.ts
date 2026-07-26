@@ -21,6 +21,7 @@ import type {
   SkillInfo,
   SourceOrigin,
   StoredRunRecord,
+  RunGraphSnapshot,
   WikiLanguage,
   WikiRunRecordStatus,
   WorkspaceConfig,
@@ -53,7 +54,11 @@ export type {
 };
 
 /** Alias kept for existing call sites (create/update model profile body). */
-export type ModelProfileWriteInput = ModelProfileWrite;
+export type ModelProfileWriteInput = Omit<ModelProfileWrite, "baseUrl" | "apiShape"> & {
+  /** Optional under provider-first flow — contract defaults apply. */
+  baseUrl?: string;
+  apiShape?: ProviderApiShape;
+};
 
 /**
  * API origin for fetch / EventSource.
@@ -135,6 +140,8 @@ export type PatchWorkspaceInput = {
   roleModels?: WorkspaceConfig["roleModels"];
   /** Supervisor tree budgets. */
   orchestration?: WorkspaceConfig["orchestration"];
+  /** Operator Session tool selection (read/grep/find/ls/bash subset). */
+  operatorTools?: WorkspaceConfig["operatorTools"];
 };
 
 export type UpdateSourceInput = {
@@ -243,6 +250,17 @@ export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/api/health");
 }
 
+export type OperatorCommandInfo = {
+  name: string;
+  description: string;
+  argumentHint?: string;
+};
+
+/** Operator slash-command registry for composer autocomplete. */
+export function listOperatorCommands(): Promise<{ commands: OperatorCommandInfo[] }> {
+  return request<{ commands: OperatorCommandInfo[] }>("/api/agent/commands");
+}
+
 export function getDoctor(): Promise<DoctorResponse> {
   return request<DoctorResponse>("/api/doctor");
 }
@@ -305,6 +323,41 @@ export function setDefaultModelProfile(
     method: "PUT",
     body: JSON.stringify({ defaultModelProfileId }),
   });
+}
+
+export type ProviderEntryWriteInput = {
+  name: string;
+  baseUrl?: string;
+  apiKey?: string | null;
+  apiShape?: ProviderApiShape;
+  headers?: Record<string, string> | null;
+  supportsDeveloperRole?: boolean;
+};
+
+export function createProvider(
+  input: ProviderEntryWriteInput,
+): Promise<{ provider: ProviderPublic }> {
+  return request<{ provider: ProviderPublic }>("/api/provider/providers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateProvider(
+  providerId: string,
+  input: ProviderEntryWriteInput,
+): Promise<{ provider: ProviderPublic }> {
+  return request<{ provider: ProviderPublic }>(
+    `/api/provider/providers/${encodeURIComponent(providerId)}`,
+    { method: "PUT", body: JSON.stringify(input) },
+  );
+}
+
+export function deleteProvider(providerId: string): Promise<{ provider: ProviderPublic }> {
+  return request<{ provider: ProviderPublic }>(
+    `/api/provider/providers/${encodeURIComponent(providerId)}`,
+    { method: "DELETE" },
+  );
 }
 
 export function testProvider(input?: {
@@ -541,10 +594,51 @@ export function listRuns(
   );
 }
 
+/** Durable per-run graph snapshot (analysis/run-graph.json) — survives reloads. */
+export function getRunGraph(
+  workspaceId: string,
+  runId: string,
+  rootPath?: string,
+): Promise<{ workspaceId: string; runId: string; graph: RunGraphSnapshot }> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/graph`,
+      rootPath,
+    ),
+  );
+}
+
+export type WikiPageSummary = {
+  path: string;
+  type?: string;
+  title?: string;
+  description?: string;
+};
+
 export type WikiPageListResponse = {
   workspaceId: string;
   publicationPath: string;
   pages: string[];
+  /** Frontmatter metadata per page (concept pages carry type/title/description). */
+  summaries?: WikiPageSummary[];
+};
+
+export type WikiGraphNode = {
+  path: string;
+  type?: string;
+  title?: string;
+  description?: string;
+  tags?: string[];
+  generatedBy?: string;
+  generatedAt?: string;
+  trustTier: "unverified" | "machine-confirmed" | "human-reviewed";
+};
+
+export type WikiGraphResponse = {
+  workspaceId: string;
+  nodes: WikiGraphNode[];
+  edges: Array<{ from: string; to: string }>;
+  brokenLinks: Array<{ from: string; target: string; resolved?: string }>;
 };
 
 export type WikiPageResponse = {
@@ -560,6 +654,13 @@ export function listWikiPages(
 ): Promise<WikiPageListResponse> {
   return request(
     withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki`, rootPath),
+  );
+}
+
+/** Derived cross-link graph of the Published Wiki (Wiki Visualization data). */
+export function getWikiGraph(workspaceId: string, rootPath?: string): Promise<WikiGraphResponse> {
+  return request(
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki-graph`, rootPath),
   );
 }
 

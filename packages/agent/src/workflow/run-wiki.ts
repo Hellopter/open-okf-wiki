@@ -28,12 +28,7 @@ import {
   updateRunRecord,
 } from "@okf-wiki/core";
 import { createCoreGraphStore } from "../ports/core-graph-store.js";
-import type {
-  GatePort,
-  WikiProduceGateCoordinator,
-  WikiProduceGateDecision,
-  WikiProduceGateRequest,
-} from "../ports/gate-port.js";
+import type { GatePort } from "../ports/gate-port.js";
 import type { GraphStore } from "../ports/graph-store.js";
 import {
   type ProduceProgress,
@@ -43,19 +38,16 @@ import {
 import { commitSpec } from "../produce/living-spec.js";
 import { redactErrorMessage } from "../redact/index.js";
 import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
-import { type ProduceRuntime, resolveProduceRuntime } from "../runtime/produce-runtime.js";
+import { type AgentRunner, resolveProduceRuntime } from "../runtime/produce-runtime.js";
 import { layoutFromFrozen } from "../runtime/workdir.js";
+import { requestTimeoutMs } from "./budgets.js";
+import { runPlanGateLoop, runPublicationGateLoop } from "./gate-protocol.js";
 import { AttemptJournal } from "./journal.js";
 import { planWikiSpec } from "./phases/plan-phase.js";
 import { produceWiki } from "./produce.js";
 import { topologyFromSpec } from "./topology.js";
 
-export type {
-  GatePort,
-  WikiProduceGateCoordinator,
-  WikiProduceGateDecision,
-  WikiProduceGateRequest,
-} from "../ports/gate-port.js";
+export type { GateDecision, GatePort, GateRequest } from "../ports/gate-port.js";
 
 export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 
@@ -82,7 +74,7 @@ export type RunWikiInput = {
   resolveModel?: WikiProduceModelFactory;
   /** Explicit fixture path for tests. */
   fixture?: boolean;
-  runtime?: ProduceRuntime;
+  runtime?: AgentRunner;
   freeze?: (input: {
     workspace: WorkspaceConfig;
     sessionId: string;
@@ -144,29 +136,6 @@ function abortError(): Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw abortError();
-}
-
-async function awaitGate(
-  coordinator: GatePort,
-  request: WikiProduceGateRequest,
-  signal?: AbortSignal,
-): Promise<WikiProduceGateDecision> {
-  throwIfAborted(signal);
-  if (!signal) return coordinator.waitForDecision(request);
-  return new Promise<WikiProduceGateDecision>((resolve, reject) => {
-    const onAbort = () => reject(abortError());
-    signal.addEventListener("abort", onAbort, { once: true });
-    void coordinator.waitForDecision(request, signal).then(
-      (decision) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(decision);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
 }
 
 /**
@@ -305,11 +274,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         break;
     }
     // Always re-emit graph snapshot for live details after journal updates.
-    if (
-      progress.kind === "attempt" ||
-      progress.kind === "topology" ||
-      progress.kind === "graph"
-    ) {
+    if (progress.kind === "attempt" || progress.kind === "topology" || progress.kind === "graph") {
       progressSink.emit({ kind: "graph", graph: journal.snapshot() });
     }
     progressSink.emit(progress);
@@ -320,7 +285,9 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     graphStore = graphStore ?? createCoreGraphStore(root);
     graphRunId = rid;
     const topology = topologyFromSpec(committed);
-    handleProgress({ kind: "topology", topology, topologyVersion: 1 });
+    // No explicit version: handleProgress bumps from the journal snapshot, so
+    // a replanned topology publishes as v2, v3, … instead of re-stamping v1.
+    handleProgress({ kind: "topology", topology });
     await persistLiveGraph();
   };
 
@@ -334,7 +301,11 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     throwIfAborted(input.abortSignal);
 
     const fixture = input.fixture ?? shouldUsePiFixtureMode({});
-    const runtime = resolveProduceRuntime({ fixture, runtime: input.runtime });
+    const runtime = resolveProduceRuntime({
+      fixture,
+      runtime: input.runtime,
+      defaults: { timeoutMs: requestTimeoutMs(workspace) },
+    });
     const freezeFn = input.freeze ?? freezeWikiRun;
     const publishFn = input.publish ?? publishStagingToPublication;
 
@@ -395,68 +366,34 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     await commitSpec(workspace.rootPath, runId, spec);
     await publishTopology(spec, runId, workspace.rootPath);
 
-    const requirePlanGate = input.autoApprove !== true && workspace.planConfirm !== false;
+    const patchRunRecord = (patch: Parameters<typeof updateRunRecord>[2]) =>
+      updateRunRecord(workspace.rootPath, runId!, patch);
+
+    // planConfirm defaults ON (schema default true — HITL plan approval);
+    // `=== true` keeps this consistent with session_status even for unparsed
+    // workspace objects.
+    const requirePlanGate = input.autoApprove !== true && workspace.planConfirm === true;
     if (requirePlanGate) {
-      for (;;) {
-        // Register the pending gate BEFORE publishing awaiting_plan so operator
-        // resume_gate never races an empty pendingGates map.
-        const decisionPromise = awaitGate(
-          input.gateCoordinator,
-          {
-            toolCallId: input.toolCallId,
-            runId,
-            gate: "plan",
-            spec,
-            pages: [],
-          },
-          input.abortSignal,
-        );
-        // Abort may land while we write the Run Record — keep the promise
-        // "handled" so Node does not emit unhandledRejection before we await.
-        void decisionPromise.catch(() => undefined);
-        setPhase("awaiting_plan", {
-          runId,
-          spec,
-          summary: "Awaiting WikiRunSpec approval",
-        });
-        await updateRunRecord(workspace.rootPath, runId, {
-          status: recordStatusFromPhase(phase),
-          spec,
-          summary: "Awaiting WikiRunSpec approval",
-        });
-        const decision = await decisionPromise;
-        if (decision.action === "deny") {
-          setPhase("cancelled", {
-            summary: "WikiRunSpec declined by operator",
-          });
-          await updateRunRecord(workspace.rootPath, runId, {
-            status: recordStatusFromPhase(phase),
-            spec,
-            summary: "WikiRunSpec declined by operator",
-          });
-          await persistLiveGraph();
-          return {
-            ...details,
-            status: toolStatusFromPhase(phase),
-            summary: "WikiRunSpec declined by operator",
-          };
-        }
-        if (decision.action === "revise") {
-          const prior = decision.spec ? WikiRunSpecSchema.parse(decision.spec) : spec;
-          spec = await runPlanner(
-            prior,
-            decision.feedback?.trim() || "Re-evaluate the WikiRunSpec against frozen sources.",
-          );
-          await commitSpec(workspace.rootPath, runId, spec);
-          await publishTopology(spec, runId, workspace.rootPath);
-          continue;
-        }
-        if (decision.spec) {
-          spec = WikiRunSpecSchema.parse(decision.spec);
-          await commitSpec(workspace.rootPath, runId, spec);
-          await publishTopology(spec, runId, workspace.rootPath);
-        }
-        break;
+      const planGate = await runPlanGateLoop({
+        coordinator: input.gateCoordinator,
+        toolCallId: input.toolCallId,
+        runId,
+        signal: input.abortSignal,
+        initialSpec: spec,
+        runPlanner,
+        commitSpec: (next) => commitSpec(workspace.rootPath, runId!, next),
+        publishTopology: (next) => publishTopology(next, runId!, workspace.rootPath),
+        setPhase,
+        updateRunRecord: patchRunRecord,
+      });
+      spec = planGate.spec;
+      if (planGate.action === "declined") {
+        await persistLiveGraph();
+        return {
+          ...details,
+          status: toolStatusFromPhase(phase),
+          summary: "WikiRunSpec declined by operator",
+        };
       }
     }
 
@@ -518,41 +455,19 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     const pages = produced.pages;
     spec = produced.spec;
     if (input.autoApprove !== true) {
-      const decisionPromise = awaitGate(
-        input.gateCoordinator,
-        {
-          toolCallId: input.toolCallId,
-          runId,
-          gate: "publication",
-          spec,
-          pages,
-        },
-        input.abortSignal,
-      );
-      void decisionPromise.catch(() => undefined);
-      setPhase("awaiting_publication", {
+      const pubGate = await runPublicationGateLoop({
+        coordinator: input.gateCoordinator,
+        toolCallId: input.toolCallId,
+        runId,
+        signal: input.abortSignal,
         spec,
         pages,
-        summary: "Awaiting publication approval",
+        recordSummary: produced.summary,
         defects: produced.defects ?? undefined,
+        setPhase,
+        updateRunRecord: patchRunRecord,
       });
-      await updateRunRecord(workspace.rootPath, runId, {
-        status: recordStatusFromPhase(phase),
-        spec,
-        pages,
-        summary: produced.summary,
-      });
-      const decision = await decisionPromise;
-      if (decision.action !== "approve") {
-        setPhase("publication_declined", {
-          summary: "Publication declined; Staging Wiki retained",
-        });
-        await updateRunRecord(workspace.rootPath, runId, {
-          status: recordStatusFromPhase(phase),
-          spec,
-          pages,
-          summary: "Publication declined; Staging Wiki retained",
-        });
+      if (pubGate.action === "declined") {
         await persistLiveGraph();
         return {
           ...details,
@@ -564,11 +479,22 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
 
     throwIfAborted(input.abortSignal);
     const publicationPath = workspace.publicationPath ?? path.join(workspace.rootPath, "wiki");
+    // OKF v0.2 provenance is Run Boundary-owned: actor from the writer model,
+    // timestamps from publish time, verified only for a clean review council.
+    const writerModelId = workspace.roleModels?.writer?.id ?? workspace.model.id;
+    const publishedAt = new Date().toISOString();
     await publishFn({
       stagingDir: produced.layout.wikiDir,
       publicationPath,
       runId,
       sources: frozen.sources.map((source) => ({ id: source.id, path: source.path })),
+      stamp: {
+        generatedBy: `okf-wiki/${writerModelId}`,
+        generatedAt: publishedAt,
+        ...(produced.defects?.clean === true
+          ? { verified: [{ by: "process:review-council", at: publishedAt }] }
+          : {}),
+      },
     });
     setPhase("published", {
       runId,
@@ -595,9 +521,12 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       defects: produced.defects,
     };
   } catch (error) {
+    // Only explicit signals count as cancellation (abort signal or AbortError
+    // from our own gate/abort paths). Matching message text would misfile real
+    // provider failures that merely mention "cancel".
     const cancelled =
       input.abortSignal?.aborted === true ||
-      (error instanceof Error && (error.name === "AbortError" || /cancel/i.test(error.message)));
+      (error instanceof Error && error.name === "AbortError");
     const message = cancelled
       ? "Wiki Run cancelled"
       : redactErrorMessage(error instanceof Error ? error.message : String(error));
@@ -620,4 +549,3 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
 }
 
 /** Alias: GatePort is the DIP name; coordinator kept for tool/server call sites. */
-export type { WikiProduceGateCoordinator as GateCoordinator };

@@ -8,15 +8,17 @@ import {
   createProviderEntry,
   defaultProviderPath,
   deleteModelProfile,
-  flattenModels,
-  hasProviderCredentials,
   loadProviderConfig,
   maskSecret,
-  resolveProviderRuntime,
   setDefaultModelProfile,
   toProviderPublic,
   updateModelProfile,
-} from "./provider-store.js";
+} from "./provider-catalog.js";
+import {
+  flattenModels,
+  hasProviderCredentials,
+  resolveProviderRuntime,
+} from "./provider-runtime.js";
 
 async function tempHome(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "okf-provider-"));
@@ -141,6 +143,16 @@ test("legacy v2 file is rejected (empty catalog)", async () => {
   const loaded = await loadProviderConfig(file);
   assert.equal(loaded.version, 3);
   assert.equal(loaded.providers.length, 0);
+
+  // The legacy file held a secret: it must be preserved as a .bak, not left in
+  // place for the next save to overwrite.
+  const { readdir, readFile } = await import("node:fs/promises");
+  const entries = await readdir(home);
+  const backup = entries.find((name) => name.startsWith("provider.json.bak."));
+  assert.ok(backup, "expected legacy provider.json to be backed up");
+  assert.ok(!entries.includes("provider.json"), "legacy file should be moved, not copied");
+  const preserved = await readFile(path.join(home, backup!), "utf8");
+  assert.match(preserved, /"apiKey":\s*"k"/);
 });
 
 test("resolveProviderRuntime includes headers default and developer role off", async () => {

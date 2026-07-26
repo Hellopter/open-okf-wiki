@@ -1,6 +1,6 @@
 # Flow template
 
-Frontmatter: `type: Flow` plus non-empty `title`.
+Frontmatter: `type: Flow` plus non-empty `title` and one-sentence `description`.
 
 Use for an important runtime, request, build, or data sequence:
 

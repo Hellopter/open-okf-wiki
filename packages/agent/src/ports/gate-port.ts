@@ -28,10 +28,3 @@ export type GateRequest = {
 export interface GatePort {
   waitForDecision(request: GateRequest, signal?: AbortSignal): Promise<GateDecision>;
 }
-
-/** @deprecated Prefer GateDecision — alias for call-site migration. */
-export type WikiProduceGateDecision = GateDecision;
-/** @deprecated Prefer GateRequest — alias for call-site migration. */
-export type WikiProduceGateRequest = GateRequest;
-/** @deprecated Prefer GatePort — alias for call-site migration. */
-export type WikiProduceGateCoordinator = GatePort;

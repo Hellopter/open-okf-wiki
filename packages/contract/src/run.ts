@@ -72,14 +72,37 @@ export const WikiRunSpecSchema = z
   })
   .superRefine((spec, ctx) => {
     const domainIds = new Set(spec.domains.map((d) => d.id));
+    const referencedDomainIds = new Set<string>();
+
     for (let i = 0; i < spec.pages.length; i++) {
       const page = spec.pages[i];
+      if (spec.domains.length > 0 && page.domainIds.length < 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "page must reference at least one domain when domains are non-empty",
+          path: ["pages", i, "domainIds"],
+        });
+      }
       for (const domainId of page.domainIds) {
+        referencedDomainIds.add(domainId);
         if (!domainIds.has(domainId)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `page domainId "${domainId}" is not in domains`,
             path: ["pages", i, "domainIds"],
+          });
+        }
+      }
+    }
+
+    if (spec.domains.length > 0) {
+      for (let i = 0; i < spec.domains.length; i++) {
+        const domain = spec.domains[i]!;
+        if (!referencedDomainIds.has(domain.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `domain "${domain.id}" is not referenced by any page`,
+            path: ["domains", i, "id"],
           });
         }
       }
@@ -135,6 +158,17 @@ export const MergedDefectReportSchema = z
         message: "non-clean requires at least one defect",
         path: ["defects"],
       });
+    }
+    const reviewerIdSet = new Set(report.reviewerIds);
+    for (let i = 0; i < report.defects.length; i++) {
+      const defect = report.defects[i]!;
+      if (defect.reviewerId !== undefined && !reviewerIdSet.has(defect.reviewerId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `defect reviewerId "${defect.reviewerId}" is not in reviewerIds`,
+          path: ["defects", i, "reviewerId"],
+        });
+      }
     }
   });
 
@@ -219,3 +253,10 @@ export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
     changelog: [],
   });
 }
+
+/**
+ * Wire name of the planner's Spec submission tool (path-first plan handoff).
+ * Single source for tools/, workflow/, and runtime/ so the constant cannot
+ * drift between layers.
+ */
+export const SUBMIT_WIKI_RUN_SPEC_TOOL_NAME = "submit_wiki_run_spec" as const;

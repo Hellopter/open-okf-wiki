@@ -5,11 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
-import {
-  createWorkspace,
-  saveWorkspace,
-  writeRunGraph,
-} from "@okf-wiki/core";
+import { createWorkspace, saveWorkspace, writeRunGraph } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 
 test("Run HTTP surface exposes only the Agent Workspace read model", async () => {

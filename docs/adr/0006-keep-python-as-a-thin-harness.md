@@ -10,4 +10,4 @@ Python owns only non-negotiable execution boundaries: Repository Snapshot Set an
 
 ## Current reading
 
-Those **Run Boundary** duties live in TypeScript `@okf-wiki/core` ([ADR 0020](0020-typescript-mastra-web-workspace.md) §3, [ADR 0019](0019-prefer-run-boundary-over-host.md)). Semantic Workflow is Mastra in `@okf-wiki/agent` ([ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md)). Do not revive a Python product harness.
+Those **Run Boundary** duties live in TypeScript `@okf-wiki/core` ([ADR 0020](0020-typescript-mastra-web-workspace.md) §3, [ADR 0019](0019-prefer-run-boundary-over-host.md)). Semantic Workflow is the **Pi** harness in `@okf-wiki/agent` ([ADR 0030](0030-pi-agent-harness-for-semantic-workflow.md), [ADR 0032](0032-pi-tool-owned-wiki-runs.md)) — not Python and not the historical Mastra path in [ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md). Do not revive a Python product harness.

@@ -93,20 +93,17 @@ test.describe("UI shell a11y and polish", () => {
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
 
     const url = new URL(page.url());
-    const idMatch =
-      url.pathname.match(/\/w\/([^/]+)/) ?? url.pathname.match(/\/workspaces\/([^/]+)/);
+    const idMatch = url.pathname.match(/\/w\/([^/]+)/);
     expect(idMatch?.[1]).toBeTruthy();
     const workspaceId = idMatch![1]!;
-    const rootPath = url.searchParams.get("rootPath");
-    const qs = rootPath ? `?rootPath=${encodeURIComponent(rootPath)}` : "";
-    await page.goto(`/workspaces/${workspaceId}/settings${qs}`);
+    // Id-only configure route (no rootPath query).
+    await page.goto(`/w/${encodeURIComponent(workspaceId)}/configure`);
+    await expect(page.getByTestId("configure-page")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId("settings-page")).toBeVisible({ timeout: 15_000 });
 
-    const menu = page.getByTestId("workspace-subnav-menu");
-    await expect(menu).toBeVisible();
-    await menu.click();
-    await expect(page.getByTestId("workspace-subnav-sources").last()).toBeVisible();
-    await page.getByTestId("workspace-subnav-sources").last().click();
+    // Configure tabs (sources / workspace settings) — no legacy subnav menu.
+    await expect(page.getByTestId("workspace-subnav-sources")).toBeVisible();
+    await page.getByTestId("workspace-subnav-sources").click();
     await expect(page.getByTestId("sources-page")).toBeVisible({ timeout: 15_000 });
   });
 

@@ -7,18 +7,14 @@
 import { mkdir } from "node:fs/promises";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type {
-  AgentRunRequest,
-  AgentRunner,
-  WikiWriteRequest,
-} from "../ports/agent-runner.js";
+import type { AgentRunner, AgentRunRequest, WikiWriteRequest } from "../ports/agent-runner.js";
 import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./fs-operations.js";
-import type { RunWorkdirLayout } from "./workdir.js";
 import {
   type RunScopedAgentInput,
   runScopedAgent,
   runScopedAgentsParallel,
 } from "./run-scoped-agent.js";
+import type { RunWorkdirLayout } from "./workdir.js";
 
 function asModel(model: unknown): Model<any> | undefined {
   return model as Model<any> | undefined;
@@ -51,31 +47,49 @@ function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
     abortSignal: input.abortSignal,
     timeoutMs: input.timeoutMs,
     spanId: input.spanId,
+    nodeKey: input.nodeKey,
+    runIndex: input.runIndex,
     wikiDir: input.wikiDir,
     customTools: input.customTools as ToolDefinition<any, any>[] | undefined,
     onProgress: input.onProgress,
   };
 }
 
+export type LiveProduceRuntimeDefaults = {
+  /** Wall-clock budget per child session (workspace limits.requestTimeoutSeconds). */
+  timeoutMs?: number;
+};
+
 /** Live adapter: real in-process Pi sessions. */
-export function createLiveProduceRuntime(): AgentRunner {
+export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults): AgentRunner {
+  const scoped = (input: AgentRunRequest): RunScopedAgentInput => ({
+    ...toScopedInput(input),
+    timeoutMs: input.timeoutMs ?? defaults?.timeoutMs,
+  });
   return {
     kind: "live",
     async runAgent(input) {
-      const result = await runScopedAgent(toScopedInput(input));
+      const result = await runScopedAgent(scoped(input));
       return { ...result, mode: "live" };
     },
     async runAgentsParallel(tasks, opts) {
-      const results = await runScopedAgentsParallel(tasks.map(toScopedInput), opts);
+      const results = await runScopedAgentsParallel(tasks.map(scoped), opts);
       return results.map((r) => ({ ...r, mode: "live" as const }));
     },
     async writeWiki(input) {
       const layout = asLayout(input.layout);
       await mkdir(layout.wikiDir, { recursive: true });
       await mkdir(layout.analysisDir, { recursive: true });
+      // Session tools stay root_write; graph identity may be repair@{n}.
+      const attemptId = input.spanId?.trim() || "root_write";
+      const nodeKey = input.nodeKey?.trim() || attemptId;
+      const runIndex = input.runIndex ?? 0;
+      const graphRole = input.graphRole ?? "root_write";
       const result = await runScopedAgent({
         role: "root_write",
-        spanId: "root_write",
+        spanId: attemptId,
+        nodeKey,
+        runIndex,
         runWorkDir: layout.runWorkDir,
         task: input.task,
         systemPrompt: input.systemPrompt,
@@ -86,8 +100,18 @@ export function createLiveProduceRuntime(): AgentRunner {
         additionalSkillPaths: input.additionalSkillPaths,
         sourceIgnores: asSourceIgnores(input.sourceIgnores),
         abortSignal: input.abortSignal,
+        timeoutMs: input.timeoutMs ?? defaults?.timeoutMs,
         wikiDir: layout.wikiDir,
-        onProgress: input.onProgress,
+        onProgress: input.onProgress
+          ? (span) =>
+              input.onProgress!({
+                ...span,
+                attemptId,
+                nodeKey,
+                runIndex,
+                role: graphRole,
+              })
+          : undefined,
       });
       return {
         mode: "live",

@@ -1,7 +1,8 @@
 /**
  * Factory for wiki Semantic Workflow Pi sessions (ADR 0030).
  *
- * Always passes a role allowlist from tool-policy (never bash).
+ * Always passes a role allowlist from tool-policy (bash only via explicit
+ * operator toolSelection opt-in; never for Semantic Workflow roles).
  * Registers Operations-wrapped Pi tools via `customTools` so write scope and
  * Source Ignores are enforced at the FS layer (see fs-operations.ts).
  * Model is optional so offline/fixture tests work without API keys.
@@ -32,6 +33,7 @@ import { buildWikiScopedToolDefinitions, type SourceIgnoreInput } from "./fs-ope
 import {
   assertSafeWikiToolList,
   type PiFsToolName,
+  resolveOperatorToolNames,
   roleMayWrite,
   toolNamesForRole,
   type WikiAgentRole,
@@ -59,6 +61,18 @@ export type CreateWikiSessionInput = {
    * (sourceId → repo-relative globs, or a flat pattern list).
    */
   sourceIgnores?: SourceIgnoreInput;
+  /**
+   * Workdir-relative trees denied for all Operations access modes.
+   * Operator Sessions pass `.okf-wiki` so product meta (Pi settings/auth,
+   * session JSONL, run scratch) stays unreadable from chat.
+   */
+  denyPrefixes?: readonly string[];
+  /**
+   * Operator tool selection (workspace.operatorTools) — operator_chat only.
+   * Subset of read/grep/find/ls/bash; bash is an explicit trust opt-in and
+   * bypasses Operations scoping. Semantic Workflow roles never accept this.
+   */
+  toolSelection?: readonly string[];
   /**
    * When true (default), pass Operations-wrapped tools as `customTools`
    * (write → wiki/ + analysis/ only; reads honor sourceIgnores).
@@ -112,11 +126,13 @@ export function buildWikiSessionCustomTools(input: {
   role: WikiAgentRole;
   runWorkDir: string;
   sourceIgnores?: SourceIgnoreInput;
+  denyPrefixes?: readonly string[];
 }): ToolDefinition<any, any>[] {
   return buildWikiScopedToolDefinitions({
     runWorkDir: input.runWorkDir,
     mayWrite: roleMayWrite(input.role),
     sourceIgnores: input.sourceIgnores,
+    denyPrefixes: input.denyPrefixes,
   });
 }
 
@@ -125,8 +141,15 @@ export function buildWikiSessionCustomTools(input: {
  * Does not call prompt — safe offline when model is omitted.
  */
 export async function createWikiSession(input: CreateWikiSessionInput): Promise<WikiSessionHandle> {
-  const tools = resolveWikiSessionTools(input.role);
-  assertSafeWikiToolList(tools);
+  if (input.toolSelection !== undefined && input.role !== "operator_chat") {
+    throw new Error("toolSelection is only valid for operator_chat sessions");
+  }
+  const selection =
+    input.role === "operator_chat" && input.toolSelection !== undefined
+      ? resolveOperatorToolNames(input.toolSelection)
+      : undefined;
+  const tools: readonly string[] = selection ?? resolveWikiSessionTools(input.role);
+  if (!selection) assertSafeWikiToolList(tools);
 
   const runWorkDir = path.resolve(input.runWorkDir);
   await mkdir(runWorkDir, { recursive: true });
@@ -145,10 +168,19 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
     contextTargetTokens: input.contextTargetTokens,
   });
 
-  // Align model.contextWindow with product max when we own a mutable copy.
-  // Pi Model is typically a plain object from registerProvider.
-  if (input.model && input.model.contextWindow !== budget.contextWindow) {
-    (input.model as { contextWindow: number }).contextWindow = budget.contextWindow;
+  // Align model.contextWindow with the product budget on a session-local copy.
+  // The resolved Pi Model handle is shared across the plan session, parallel
+  // leaf/domain sessions, and the long-lived Operator Session — mutating it
+  // would race concurrent sessions with different budgets.
+  let sessionModel = input.model;
+  if (sessionModel && sessionModel.contextWindow !== budget.contextWindow) {
+    const proto = Object.getPrototypeOf(sessionModel) as object | null;
+    sessionModel =
+      proto === Object.prototype || proto === null
+        ? { ...sessionModel, contextWindow: budget.contextWindow }
+        : Object.assign(Object.create(proto), sessionModel, {
+            contextWindow: budget.contextWindow,
+          });
   }
 
   const settingsManager = SettingsManager.inMemory({
@@ -173,13 +205,19 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
   await resourceLoader.reload();
 
   const useScoped = input.scopedTools !== false;
-  const scopedTools = useScoped
+  const scopedAll = useScoped
     ? buildWikiSessionCustomTools({
         role: input.role,
         runWorkDir,
         sourceIgnores: input.sourceIgnores,
+        denyPrefixes: input.denyPrefixes,
       })
     : [];
+  // With an operator selection, only build scoped defs for selected fs tools;
+  // `bash` (if selected) flows through the allowlist to the stock Pi tool.
+  const scopedTools = selection
+    ? scopedAll.filter((definition) => tools.includes(definition.name))
+    : scopedAll;
   const customTools = [...scopedTools, ...(input.customTools ?? [])];
   const toolList = [...new Set([...tools, ...customTools.map((definition) => definition.name)])];
 
@@ -191,7 +229,7 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
     sessionManager,
     settingsManager,
     resourceLoader,
-    model: input.model,
+    model: sessionModel,
     modelRuntime: input.modelRuntime,
   });
 

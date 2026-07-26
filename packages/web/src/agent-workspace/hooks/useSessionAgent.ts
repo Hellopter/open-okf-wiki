@@ -23,6 +23,9 @@ export type { AgentMessage, AgentToolCall };
 export type AgentMessageRole = AgentMessage["role"];
 export type AgentStatus = "idle" | "sending" | "streaming" | "error";
 
+/** SSE lifecycle for the session event stream. */
+export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "offline";
+
 export type UseSessionAgentArgs = {
   workspaceId: string;
   sessionId: string | null;
@@ -34,12 +37,16 @@ export type UseSessionAgentResult = {
   streamingMessage: AgentMessage | null;
   status: AgentStatus;
   ready: boolean;
+  /** EventSource connection lifecycle (independent of agent turn status). */
+  connectionStatus: ConnectionStatus;
   error: string | null;
   input: string;
   setInput: (value: string) => void;
   send: (text?: string) => Promise<void>;
   abort: () => Promise<void>;
   resumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+  /** Switch this Session's chat model to a Settings profile; true on success. */
+  setModel: (profileId: string) => Promise<boolean>;
   clearError: () => void;
   eventsUrl: string | null;
   lastCommandResponse: AgentCommandResponse | null;
@@ -58,11 +65,11 @@ function eventError(event: AgentSseLike): string | null {
   const message = isRecord(event.payload.message) ? event.payload.message : null;
   if (!message) return null;
   const providerErr = (message as Record<string, unknown>)["error" + "Message"];
-  if (
-    message.stopReason !== "error" &&
-    message.stopReason !== "aborted" &&
-    typeof providerErr !== "string"
-  ) {
+  // Operator abort without a provider error is a neutral outcome, not a failure.
+  if (message.stopReason === "aborted" && typeof providerErr !== "string") {
+    return null;
+  }
+  if (message.stopReason !== "error" && typeof providerErr !== "string") {
     return null;
   }
   return typeof providerErr === "string" && providerErr.trim()
@@ -80,6 +87,7 @@ export function useSessionAgent({
   const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [status, setStatus] = useState<AgentStatus>("idle");
   const [ready, setReady] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("offline");
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [lastCommandResponse, setLastCommandResponse] = useState<AgentCommandResponse | null>(null);
@@ -87,6 +95,7 @@ export function useSessionAgent({
   const streamStateRef = useRef<PiStreamState>(createPiStreamState());
   const eventSourceRef = useRef<EventSource | null>(null);
   const sendInFlightRef = useRef(false);
+  const readyRef = useRef(false);
 
   const eventsUrl = useMemo(
     () => (sessionId ? agentSessionEventsUrl(workspaceId, sessionId, rootPath) : null),
@@ -107,14 +116,30 @@ export function useSessionAgent({
     setStreamingMessage(null);
     setStatus("idle");
     setReady(false);
+    readyRef.current = false;
     setError(null);
     setLastCommandResponse(null);
     sendInFlightRef.current = false;
 
-    if (!eventsUrl || typeof EventSource === "undefined") return;
+    if (!eventsUrl || typeof EventSource === "undefined") {
+      setConnectionStatus("offline");
+      return;
+    }
+
+    // sessionId set, stream opening — waiting for first snapshot
+    setConnectionStatus("connecting");
 
     const source = new EventSource(eventsUrl);
     eventSourceRef.current = source;
+
+    source.onopen = () => {
+      // OPEN but not ready until snapshot arrives (or after reconnect until next snapshot)
+      if (readyRef.current) {
+        setConnectionStatus("live");
+      } else {
+        setConnectionStatus("connecting");
+      }
+    };
 
     source.onmessage = (message) => {
       let event: AgentSseLike;
@@ -131,6 +156,14 @@ export function useSessionAgent({
 
       if (event.source === "server" && event.kind === "snapshot") {
         setReady(true);
+        readyRef.current = true;
+        setConnectionStatus("live");
+        // Restore turn status from the snapshot: a genuine active tool means
+        // the agent is still mid-turn after a reconnect.
+        setStatus((current) => {
+          if (next.turnActive) return "streaming";
+          return current === "error" ? current : "idle";
+        });
       }
 
       const failure = eventError(event);
@@ -151,8 +184,13 @@ export function useSessionAgent({
     source.onerror = () => {
       if (source.readyState === EventSource.CLOSED) {
         setReady(false);
+        readyRef.current = false;
+        setConnectionStatus("offline");
         setStatus((current) => (current === "error" ? current : "idle"));
+        return;
       }
+      // CONNECTING (or transient error): browser is reconnecting
+      setConnectionStatus("reconnecting");
     };
 
     return () => {
@@ -197,15 +235,27 @@ export function useSessionAgent({
       };
       publish(next);
 
+      // Command failure produces no server snapshot — roll the optimistic row
+      // back explicitly so a rejected message never looks sent.
+      const rollbackOptimistic = () => {
+        const current = streamStateRef.current;
+        publish({
+          ...current,
+          messages: current.messages.filter((m) => m.id !== optimistic.id),
+        });
+      };
+
       try {
         const response = await runCommand({ type: "prompt", text: value });
         if (isCommandFailed(response)) {
+          rollbackOptimistic();
           setError(response?.message ?? "Agent command failed");
           setStatus("error");
         } else if (!streamStateRef.current.turnActive) {
           setStatus("idle");
         }
       } catch (caught) {
+        rollbackOptimistic();
         setError(caught instanceof Error ? caught.message : String(caught));
         setStatus("error");
       } finally {
@@ -229,15 +279,28 @@ export function useSessionAgent({
       setStatus("error");
       return;
     }
+    // Projector-only surface: do not synthesize local state here. Pi's own
+    // message_end(aborted) / agent_end events finalize the partial stream
+    // (neutral aborted marker) and settle status back to idle.
+  }, [sessionId, runCommand]);
 
-    const current = streamStateRef.current;
-    publish({
-      ...current,
-      streamingMessage: null,
-      turnActive: false,
-    });
-    setStatus("idle");
-  }, [sessionId, publish, runCommand]);
+  const setModel = useCallback(
+    async (profileId: string): Promise<boolean> => {
+      setError(null);
+      try {
+        const response = await runCommand({ type: "set_model", profileId });
+        if (isCommandFailed(response)) {
+          setError(response?.message ?? "Model switch failed");
+          return false;
+        }
+        return true;
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        return false;
+      }
+    },
+    [runCommand],
+  );
 
   const resumeGate = useCallback(
     async (command: AgentResumeGateCommand) => {
@@ -262,12 +325,14 @@ export function useSessionAgent({
     streamingMessage,
     status,
     ready,
+    connectionStatus,
     error,
     input,
     setInput,
     send,
     abort,
     resumeGate,
+    setModel,
     clearError: () => setError(null),
     eventsUrl,
     lastCommandResponse,

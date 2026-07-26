@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { createWikiSession, resolveWikiSessionTools } from "./create-wiki-session.js";
 import { piSessionsDir } from "../session/operator-session.js";
+import { createWikiSession, resolveWikiSessionTools } from "./create-wiki-session.js";
 import { assertSafeWikiToolList, toolNamesForRole } from "./tool-policy.js";
 
 const temps: string[] = [];
@@ -32,8 +32,8 @@ describe("create-wiki-session tool list safety", () => {
     }
   });
 
-  it("operator chat has no built-in file tools", () => {
-    assert.deepEqual([...resolveWikiSessionTools("operator_chat")], []);
+  it("operator chat resolves read-only Pi tools", () => {
+    assert.deepEqual([...resolveWikiSessionTools("operator_chat")], ["read", "grep", "find", "ls"]);
   });
 
   it("root_write allowlist is read+write Pi tools only", () => {
@@ -80,6 +80,54 @@ describe("create-wiki-session tool list safety", () => {
     } finally {
       handle.dispose();
     }
+  });
+
+  it("operator toolSelection supports partial sets and the bash opt-in", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-sess-sel-"));
+    temps.push(tmp);
+
+    const handle = await createWikiSession({
+      role: "operator_chat",
+      runWorkDir: path.join(tmp, "run"),
+      toolSelection: ["read", "grep", "bash"],
+    });
+    try {
+      assert.deepEqual([...handle.tools], ["read", "grep", "bash"]);
+      // Selected fs tools keep Operations scoping; bash is the stock Pi tool.
+      const active = handle.session.getActiveToolNames();
+      assert.ok(active.includes("read"));
+      assert.ok(active.includes("bash"));
+      assert.ok(!active.includes("find"));
+      assert.ok(!active.includes("write"));
+    } finally {
+      handle.dispose();
+    }
+  });
+
+  it("toolSelection is rejected for Semantic Workflow roles", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-sess-selrole-"));
+    temps.push(tmp);
+    await assert.rejects(
+      createWikiSession({
+        role: "domain",
+        runWorkDir: path.join(tmp, "run"),
+        toolSelection: ["read"],
+      }),
+      /only valid for operator_chat/,
+    );
+  });
+
+  it("unknown operator tool names are rejected", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-sess-selbad-"));
+    temps.push(tmp);
+    await assert.rejects(
+      createWikiSession({
+        role: "operator_chat",
+        runWorkDir: path.join(tmp, "run"),
+        toolSelection: ["write"],
+      }),
+      /unknown operator tool/,
+    );
   });
 });
 

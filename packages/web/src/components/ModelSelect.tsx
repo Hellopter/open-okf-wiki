@@ -65,8 +65,8 @@ export function ModelSelect({
         <FieldLabel htmlFor={id}>{t.modelSelect.label}</FieldLabel>
         <FieldDescription>
           {t.modelSelect.emptyBefore}
-          <Link to="/settings" className="inline-link ml-0" aria-label={t.modelSelect.emptyLink}>
-            Settings
+          <Link to="/settings" className="inline-link ml-0">
+            {t.modelSelect.emptyLink}
           </Link>
           {t.modelSelect.emptyAfter}
         </FieldDescription>
@@ -109,9 +109,7 @@ export function ModelSelect({
       </Select>
       <FieldDescription>
         {t.modelSelect.hintBefore}
-        <Link to="/settings" aria-label={t.modelSelect.hintLink}>
-          Settings
-        </Link>
+        <Link to="/settings">{t.modelSelect.hintLink}</Link>
         {t.modelSelect.hintAfter}
       </FieldDescription>
     </Field>

@@ -7,6 +7,7 @@ import {
   BodyTooLargeError,
   InvalidJsonError,
   matchRoute,
+  rejectUntrustedRequest,
   sendError,
 } from "./http-util.ts";
 import {
@@ -15,6 +16,7 @@ import {
   handleCreateAgentSession,
   handleDeleteAgentSession,
   handleListAgentSessions,
+  handleListOperatorCommands,
 } from "./routes/agent-sessions.ts";
 import { handleGetAppSettings, handlePatchAppSettings } from "./routes/app-settings.ts";
 import { handleDoctor, handleHealth } from "./routes/health.ts";
@@ -24,14 +26,18 @@ import {
   handleDeleteModel,
   handleDeleteProvider,
   handleGetProvider,
-  handleGitProbe,
   handleSetDefaultModel,
   handleTestProvider,
   handleUpdateModel,
   handleUpdateProvider,
 } from "./routes/provider.ts";
 import { handleGetRunGraph, handleListRuns } from "./routes/runs.ts";
-import { handleListWiki, handleReadWiki, matchWikiApiRoute } from "./routes/wiki.ts";
+import {
+  handleListWiki,
+  handleReadWiki,
+  handleWikiGraph,
+  matchWikiApiRoute,
+} from "./routes/wiki.ts";
 import {
   handleAddSource,
   handleCloneSource,
@@ -54,6 +60,9 @@ import { host, port } from "./server-config.ts";
 
 export async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   applyCors(req, res);
+  if (rejectUntrustedRequest(req, res)) {
+    return;
+  }
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -72,6 +81,10 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     }
     if (method === "GET" && pathname === "/api/doctor") {
       await handleDoctor(req, res);
+      return;
+    }
+    if (method === "GET" && pathname === "/api/agent/commands") {
+      handleListOperatorCommands(req, res);
       return;
     }
     if (method === "GET" && pathname === "/api/app-settings") {
@@ -127,10 +140,6 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
           return;
         }
       }
-    }
-    if (method === "POST" && pathname === "/api/git/probe") {
-      await handleGitProbe(req, res);
-      return;
     }
     if (method === "GET" && pathname === "/api/workspaces") {
       await handleListWorkspaces(req, res);
@@ -261,6 +270,13 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
     }
     // Published Wiki browse: list and read under publicationPath
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/wiki-graph");
+      if (params && method === "GET") {
+        await handleWikiGraph(req, res, params.id!, url);
+        return;
+      }
+    }
     {
       const wikiMatch = matchWikiApiRoute(pathname);
       if (wikiMatch && method === "GET") {

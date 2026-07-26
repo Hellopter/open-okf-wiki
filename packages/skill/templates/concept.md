@@ -1,6 +1,6 @@
 # Concept template
 
-Frontmatter: `type: Concept` plus non-empty `title`.
+Frontmatter: `type: Concept` plus non-empty `title` and one-sentence `description`.
 
 Use when repository-specific language or an invariant needs explanation:
 

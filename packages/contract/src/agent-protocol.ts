@@ -48,6 +48,16 @@ export const AgentResumeGateCommandSchema = z.object({
   runId: z.string().min(1).optional(),
 });
 
+/**
+ * Switch this Operator Session's chat model to a Settings model profile.
+ * Session-scoped and non-durable: workspace.model stays the default for
+ * new Sessions; role models for Wiki Runs are unaffected.
+ */
+export const AgentSetModelCommandSchema = z.object({
+  type: z.literal("set_model"),
+  profileId: z.string().min(1).max(200),
+});
+
 export const AgentCommandSchema = z
   .discriminatedUnion("type", [
     AgentPromptCommandSchema,
@@ -55,6 +65,7 @@ export const AgentCommandSchema = z
     AgentAbortCommandSchema,
     AgentCompactCommandSchema,
     AgentResumeGateCommandSchema,
+    AgentSetModelCommandSchema,
   ])
   .superRefine((cmd, ctx) => {
     if (cmd.type === "resume_gate" && cmd.action === "revise") {
@@ -80,6 +91,7 @@ export type AgentSteerCommand = z.infer<typeof AgentSteerCommandSchema>;
 export type AgentAbortCommand = z.infer<typeof AgentAbortCommandSchema>;
 export type AgentCompactCommand = z.infer<typeof AgentCompactCommandSchema>;
 export type AgentResumeGateCommand = z.infer<typeof AgentResumeGateCommandSchema>;
+export type AgentSetModelCommand = z.infer<typeof AgentSetModelCommandSchema>;
 export type AgentCommand = z.infer<typeof AgentCommandSchema>;
 
 /** Parse and validate an agent command body. Throws ZodError on failure. */
@@ -211,8 +223,10 @@ export type CreatePiAgentSessionResponse = {
 export type AgentCommandResponse = {
   ok: boolean;
   sessionId: string;
-  command: "prompt" | "steer" | "abort" | "compact" | "resume_gate";
+  command: "prompt" | "steer" | "abort" | "compact" | "resume_gate" | "set_model";
   status: "accepted" | "failed";
   message?: string;
   runId?: string;
+  /** Resolved model id after a successful set_model. */
+  modelId?: string;
 };

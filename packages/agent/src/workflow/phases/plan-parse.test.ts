@@ -5,8 +5,10 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
+  clearPlanDraft,
   PLAN_DRAFT_REL_PATH,
   planDraftPathFromRunWorkDir,
+  readPlanDraft,
   writePlanDraft,
 } from "../../produce/living-spec.js";
 import { resolvePlanSpecFromAgentResult } from "./plan-phase.js";
@@ -88,4 +90,22 @@ test("resolvePlanSpecFromAgentResult rejects unexpected draft path", async () =>
       }),
     /unexpected path/,
   );
+});
+
+test("clearPlanDraft removes a stale draft so a failed replan cannot re-resolve it", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-stale-"));
+  temps.push(dir);
+  await writePlanDraft(dir, defaultWikiRunSpec("Round1"));
+  assert.ok(await readPlanDraft(dir), "draft exists after round 1");
+
+  // Round 2 starts: the previous round's draft must not survive into resolve.
+  await clearPlanDraft(dir);
+  assert.equal(await readPlanDraft(dir), null);
+  await assert.rejects(
+    () => resolvePlanSpecFromAgentResult({ runWorkDir: dir, summary: "revise failed" }),
+    /submit_wiki_run_spec|plan-draft\.json/,
+  );
+
+  // Clearing a non-existent draft is a no-op.
+  await clearPlanDraft(dir);
 });

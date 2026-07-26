@@ -8,6 +8,7 @@ import {
   validateCitationResolve,
 } from "./citations.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
+import { deriveWikiGraph, type WikiGraphInputPage } from "./wiki-links.js";
 import { isReservedWikiPath, parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
 
 /** Soft caps for mechanical publication validation. */
@@ -29,6 +30,11 @@ export type ValidateWikiOptions = {
 export type ValidateWikiResult = {
   ok: boolean;
   errors: string[];
+  /**
+   * Non-blocking quality notes (OKF SHOULDs, e.g. missing `description`).
+   * Never affect `ok` — OKF consumers must not reject on optional fields.
+   */
+  warnings: string[];
   /** Count of `.md` pages found when walk succeeded far enough. */
   pageCount?: number;
   /** Total files walked (md + non-md), when available. */
@@ -54,6 +60,7 @@ export async function validateWikiTree(
   options: ValidateWikiOptions = {},
 ): Promise<ValidateWikiResult> {
   const errors: string[] = [];
+  const warnings: string[] = [];
   // Citations required when Snapshot sources are supplied (publish path) unless
   // explicitly disabled. Pure frontmatter/caps checks omit sources.
   // Reserved OKF files (index.md / log.md) never require citations.
@@ -70,6 +77,7 @@ export async function validateWikiTree(
     return {
       ok: false,
       errors: [error instanceof Error ? error.message : String(error)],
+      warnings,
     };
   }
 
@@ -79,19 +87,20 @@ export async function validateWikiTree(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
-      return { ok: false, errors: [`wiki directory does not exist: ${resolved}`] };
+      return { ok: false, errors: [`wiki directory does not exist: ${resolved}`], warnings };
     }
     return {
       ok: false,
       errors: [error instanceof Error ? error.message : String(error)],
+      warnings,
     };
   }
 
   if (rootInfo.isSymbolicLink()) {
-    return { ok: false, errors: [`wikiDir is a symlink: ${resolved}`] };
+    return { ok: false, errors: [`wikiDir is a symlink: ${resolved}`], warnings };
   }
   if (!rootInfo.isDirectory()) {
-    return { ok: false, errors: [`wikiDir is not a directory: ${resolved}`] };
+    return { ok: false, errors: [`wikiDir is not a directory: ${resolved}`], warnings };
   }
 
   try {
@@ -100,6 +109,7 @@ export async function validateWikiTree(
     return {
       ok: false,
       errors: [error instanceof Error ? error.message : String(error)],
+      warnings,
     };
   }
 
@@ -119,6 +129,7 @@ export async function validateWikiTree(
     errors.push(`wiki tree has no markdown pages: ${resolved}`);
   }
 
+  const readPages: WikiGraphInputPage[] = [];
   for (const md of mdFiles) {
     let size: number;
     try {
@@ -154,6 +165,7 @@ export async function validateWikiTree(
       );
       continue;
     }
+    readPages.push({ path: md.relPath.replace(/\\/g, "/"), content });
     const reserved = isReservedWikiPath(md.relPath);
     if (reserved) {
       // OKF reserved listing/history files: no concept frontmatter or citations.
@@ -171,6 +183,10 @@ export async function validateWikiTree(
         errors.push(`${md.relPath}: missing YAML frontmatter with non-empty title`);
       }
     }
+    // OKF v0.2 SHOULD: description feeds index generation, search, and previews.
+    if (frontmatter && !frontmatter.values.description) {
+      warnings.push(`${md.relPath}: missing frontmatter description (OKF v0.2 recommended)`);
+    }
     const citations = parseSourceCitations(content);
     citationCount += citations.length;
     if (requireCitations && citations.length === 0) {
@@ -182,9 +198,16 @@ export async function validateWikiTree(
     }
   }
 
+  // Broken internal links are quality notes, never rejection (OKF §6.1: a
+  // missing target may be not-yet-written knowledge).
+  for (const broken of deriveWikiGraph(readPages).brokenLinks) {
+    warnings.push(`${broken.from}: broken internal link (${broken.target})`);
+  }
+
   return {
     ok: errors.length === 0,
     errors,
+    warnings,
     pageCount,
     fileCount,
     citationCount,

@@ -7,10 +7,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type RunGraphSnapshot,
-  RunGraphSnapshotSchema,
-} from "@okf-wiki/contract";
+import { type RunGraphSnapshot, RunGraphSnapshotSchema } from "@okf-wiki/contract";
 import { atomicWriteJson } from "./atomic-write.js";
 import { isPathInside } from "./paths.js";
 import { analysisDir as layoutAnalysisDir } from "./run-layout.js";

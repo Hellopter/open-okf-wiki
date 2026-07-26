@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { createFixtureProduceRuntime } from "./produce-runtime.js";
 
-describe("ProduceRuntime fixture agent", () => {
+describe("AgentRunner fixture agent", () => {
   it("emits progress and summary", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-rsa-"));
     const spans: Array<{ id: string; status: string }> = [];

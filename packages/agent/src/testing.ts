@@ -8,4 +8,5 @@
 export {
   injectDurableOperatorMessages as injectDurableOperatorMessagesForTests,
   readDurableOperatorBranchMessages as readDurableOperatorBranchMessagesForTests,
+  readRawOperatorBranchMessages as readRawOperatorBranchMessagesForTests,
 } from "./session/operator-session-test-seams.js";

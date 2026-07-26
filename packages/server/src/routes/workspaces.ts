@@ -2,11 +2,11 @@ import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import {
-  WikiLanguageSchema,
+  SourceAddSchema,
+  SourceCloneSchema,
   type WorkspaceConfig,
-  WorkspaceLimitsSchema,
-  WorkspaceOrchestrationSchema,
-  WorkspaceRoleModelsSchema,
+  WorkspaceCreateSchema,
+  WorkspacePatchSchema,
 } from "@okf-wiki/contract";
 import {
   addSource,
@@ -17,7 +17,6 @@ import {
   getSkillInfo,
   listSkillDir,
   listWorkspaceSummaries,
-  loadWorkspaceById,
   probeLocalGit,
   readSkillFile,
   registerWorkspaceInAppIndex,
@@ -29,10 +28,13 @@ import {
   slugFromPath,
   uniqueSourceId,
   updateSource,
+  WorkspaceIntakeError,
   writeSkillFile,
 } from "@okf-wiki/core";
 import { trySendCoreDomainError } from "../core-http-error.ts";
+import { httpStatusForWorkspaceCode } from "../http-status.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { resolveWorkspaceModelSelection } from "./provider.ts";
 
 export async function handleListWorkspaces(
@@ -47,29 +49,20 @@ export async function handleCreateWorkspace(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  const body = (await readJsonBody(req)) as {
-    name?: unknown;
-    rootPath?: unknown;
-    publicationPath?: unknown;
-    modelProfileId?: unknown;
-  };
-  if (typeof body.name !== "string" || !body.name.trim()) {
-    sendError(res, 400, "name is required");
+  const parsed = WorkspaceCreateSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid workspace create body", parsed.error.flatten());
     return;
   }
-  if (typeof body.rootPath !== "string" || !body.rootPath.trim()) {
-    sendError(res, 400, "rootPath is required");
-    return;
-  }
+  const body = parsed.data;
   try {
     const model = await resolveWorkspaceModelSelection({
-      modelProfileId:
-        typeof body.modelProfileId === "string" ? body.modelProfileId.trim() : undefined,
+      modelProfileId: body.modelProfileId,
     });
     const workspace = await createWorkspace({
       name: body.name,
       rootPath: body.rootPath,
-      publicationPath: typeof body.publicationPath === "string" ? body.publicationPath : undefined,
+      publicationPath: body.publicationPath,
       modelProfileId: model.profileId,
       resolvedModelId: model.id,
     });
@@ -89,12 +82,8 @@ export async function handleGetWorkspace(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   // Do not rewrite workspace.json for lastOpenedAt — only bump recents index.
   await registerWorkspaceInAppIndex(workspace.rootPath);
   sendJson(res, 200, { workspace });
@@ -106,37 +95,25 @@ export async function handlePatchWorkspace(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  // Contract boundary: strict schema — unknown keys are rejected, not ignored.
+  const parsed = WorkspacePatchSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid workspace patch body", parsed.error.flatten());
     return;
   }
-
-  const body = (await readJsonBody(req)) as Record<string, unknown>;
+  const body = parsed.data;
   const next: WorkspaceConfig = { ...workspace };
 
   if (body.name !== undefined) {
-    if (typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 120) {
-      sendError(res, 400, "name must be a non-empty string ≤ 120 chars");
-      return;
-    }
-    next.name = body.name.trim();
+    next.name = body.name;
   }
 
   if (body.modelProfileId !== undefined || body.model !== undefined) {
     try {
-      let profileId: string | undefined;
-      if (typeof body.modelProfileId === "string" && body.modelProfileId.trim()) {
-        profileId = body.modelProfileId.trim();
-      } else if (
-        body.model &&
-        typeof body.model === "object" &&
-        typeof (body.model as { profileId?: unknown }).profileId === "string" &&
-        (body.model as { profileId: string }).profileId.trim()
-      ) {
-        profileId = (body.model as { profileId: string }).profileId.trim();
-      }
+      const profileId = body.modelProfileId ?? body.model?.profileId;
       if (!profileId) {
         sendError(res, 400, "modelProfileId is required (catalog profile selection)");
         return;
@@ -147,6 +124,7 @@ export async function handlePatchWorkspace(
         ...(model.profileId ? { profileId: model.profileId } : {}),
       };
     } catch (error) {
+      if (trySendCoreDomainError(res, error)) return;
       const message = error instanceof Error ? error.message : String(error);
       sendError(res, 400, message);
       return;
@@ -154,76 +132,39 @@ export async function handlePatchWorkspace(
   }
 
   if (body.publicationPath !== undefined) {
-    if (typeof body.publicationPath !== "string" || !body.publicationPath.trim()) {
-      sendError(res, 400, "publicationPath must be a non-empty string");
-      return;
-    }
-    next.publicationPath = path.resolve(body.publicationPath.trim());
+    next.publicationPath = path.resolve(body.publicationPath);
   }
 
   if (body.limits !== undefined) {
-    try {
-      next.limits = WorkspaceLimitsSchema.parse(body.limits);
-    } catch (error) {
-      sendError(res, 400, "invalid limits", error instanceof Error ? error.message : String(error));
-      return;
-    }
+    next.limits = body.limits;
   }
 
   if (body.skillPath !== undefined) {
     if (body.skillPath === null) {
       delete next.skillPath;
-    } else if (typeof body.skillPath === "string" && body.skillPath.trim()) {
-      next.skillPath = path.resolve(body.skillPath.trim());
     } else {
-      sendError(res, 400, "skillPath must be a non-empty string or null");
-      return;
+      next.skillPath = path.resolve(body.skillPath);
     }
   }
 
   if (body.planConfirm !== undefined) {
-    if (typeof body.planConfirm !== "boolean") {
-      sendError(res, 400, "planConfirm must be a boolean");
-      return;
-    }
     next.planConfirm = body.planConfirm;
   }
 
   if (body.wikiLanguage !== undefined) {
-    const parsed = WikiLanguageSchema.safeParse(body.wikiLanguage);
-    if (!parsed.success) {
-      sendError(res, 400, "wikiLanguage must be 'en' or 'zh'");
-      return;
-    }
-    next.wikiLanguage = parsed.data;
+    next.wikiLanguage = body.wikiLanguage;
   }
 
   if (body.roleModels !== undefined) {
-    try {
-      next.roleModels = WorkspaceRoleModelsSchema.parse(body.roleModels);
-    } catch (error) {
-      sendError(
-        res,
-        400,
-        "invalid roleModels",
-        error instanceof Error ? error.message : String(error),
-      );
-      return;
-    }
+    next.roleModels = body.roleModels;
   }
 
   if (body.orchestration !== undefined) {
-    try {
-      next.orchestration = WorkspaceOrchestrationSchema.parse(body.orchestration);
-    } catch (error) {
-      sendError(
-        res,
-        400,
-        "invalid orchestration",
-        error instanceof Error ? error.message : String(error),
-      );
-      return;
-    }
+    next.orchestration = body.orchestration;
+  }
+
+  if (body.operatorTools !== undefined) {
+    next.operatorTools = body.operatorTools;
   }
 
   // rootPath and id are immutable via PATCH
@@ -238,12 +179,8 @@ export async function handleDeleteWorkspace(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPathQuery = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPathQuery ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
 
   await removeWorkspaceFromAppIndex(workspace.rootPath);
 
@@ -279,28 +216,18 @@ export async function handleAddSource(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  const raw = await readJsonBody(req);
+  const parsed = SourceAddSchema.safeParse(raw);
+  if (!parsed.success) {
+    sendError(res, 400, "invalid add source body", parsed.error.flatten());
     return;
   }
 
-  const body = (await readJsonBody(req)) as {
-    path?: unknown;
-    id?: unknown;
-    applyDefaultIgnores?: unknown;
-    ignore?: unknown;
-  };
-
-  if (typeof body.path !== "string" || !body.path.trim()) {
-    sendError(res, 400, "path is required");
-    return;
-  }
-
-  const sourcePath = path.resolve(body.path.trim());
-  const desiredId =
-    typeof body.id === "string" && body.id.trim() ? body.id.trim() : slugFromPath(sourcePath);
+  const sourcePath = path.resolve(parsed.data.path);
+  const desiredId = parsed.data.id?.trim() || slugFromPath(sourcePath);
   const sourceId = uniqueSourceId(desiredId, workspace.sources);
 
   try {
@@ -310,9 +237,8 @@ export async function handleAddSource(
       {
         id: sourceId,
         path: sourcePath,
-        applyDefaultIgnores:
-          typeof body.applyDefaultIgnores === "boolean" ? body.applyDefaultIgnores : undefined,
-        ignore: Array.isArray(body.ignore) ? (body.ignore as string[]) : undefined,
+        applyDefaultIgnores: parsed.data.applyDefaultIgnores,
+        ignore: parsed.data.ignore,
       },
       { requireClean: false },
     );
@@ -323,16 +249,14 @@ export async function handleAddSource(
       probe: result.probe,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/not a git/i.test(message)) {
+    // Attach probe for non-git so the client can show git status details.
+    if (error instanceof WorkspaceIntakeError && error.code === "source_not_git") {
       const probe = await probeLocalGit(sourcePath);
-      sendError(res, 400, message, { probe });
+      sendError(res, httpStatusForWorkspaceCode(error.code), error.message, { probe });
       return;
     }
-    if (/already (exists|registered)/i.test(message)) {
-      sendError(res, 409, message);
-      return;
-    }
+    if (trySendCoreDomainError(res, error)) return;
+    const message = error instanceof Error ? error.message : String(error);
     sendError(res, 400, message);
   }
 }
@@ -344,23 +268,16 @@ export async function handleDeleteSource(
   sourceId: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
 
   try {
     const next = removeSource(workspace, sourceId);
     await saveWorkspace(next);
     sendJson(res, 200, { workspace: next });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (/source not found/i.test(message)) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }
@@ -372,12 +289,8 @@ export async function handleUpdateSource(
   sourceId: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
 
   const body = (await readJsonBody(req)) as {
     applyDefaultIgnores?: unknown;
@@ -410,11 +323,8 @@ export async function handleUpdateSource(
     const source = next.sources.find((s) => s.id === sourceId);
     sendJson(res, 200, { workspace: next, source });
   } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
     const message = error instanceof Error ? error.message : String(error);
-    if (/source not found/i.test(message)) {
-      sendError(res, 404, message);
-      return;
-    }
     sendError(res, 400, message);
   }
 }
@@ -425,12 +335,8 @@ export async function handleProbeSources(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
 
   const probes = await Promise.all(
     workspace.sources.map(async (source) => ({
@@ -454,38 +360,25 @@ export async function handleCloneSource(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  const raw = (await readJsonBody(req)) as Record<string, unknown>;
+  const parsed = SourceCloneSchema.safeParse(raw);
+  if (!parsed.success) {
+    sendError(res, 400, "invalid clone source body", parsed.error.flatten());
     return;
   }
 
-  const body = (await readJsonBody(req)) as {
-    remoteUrl?: unknown;
-    id?: unknown;
-    relativeDir?: unknown;
-    ref?: unknown;
-    applyDefaultIgnores?: unknown;
-    ignore?: unknown;
-  };
-
-  if (typeof body.remoteUrl !== "string" || !body.remoteUrl.trim()) {
-    sendError(res, 400, "remoteUrl is required");
-    return;
-  }
-
-  const remoteUrl = body.remoteUrl.trim();
-  const desiredId =
-    typeof body.id === "string" && body.id.trim()
-      ? body.id.trim()
-      : slugFromPath(remoteUrl.replace(/\.git$/i, ""));
+  const remoteUrl = parsed.data.remoteUrl;
+  const desiredId = parsed.data.id?.trim() || slugFromPath(remoteUrl.replace(/\.git$/i, ""));
   const sourceId = uniqueSourceId(desiredId, workspace.sources);
+  // relativeDir is server-side layout, not part of SourceCloneSchema.
   const relativeDir =
-    typeof body.relativeDir === "string" && body.relativeDir.trim()
-      ? body.relativeDir.trim()
+    typeof raw.relativeDir === "string" && raw.relativeDir.trim()
+      ? raw.relativeDir.trim()
       : undefined;
-  const ref = typeof body.ref === "string" && body.ref.trim() ? body.ref.trim() : undefined;
+  const ref = parsed.data.ref;
 
   try {
     const cloned = await cloneIntoWorkspace({
@@ -500,9 +393,8 @@ export async function handleCloneSource(
       {
         id: sourceId,
         path: cloned.path,
-        applyDefaultIgnores:
-          typeof body.applyDefaultIgnores === "boolean" ? body.applyDefaultIgnores : undefined,
-        ignore: Array.isArray(body.ignore) ? (body.ignore as string[]) : undefined,
+        applyDefaultIgnores: parsed.data.applyDefaultIgnores,
+        ignore: parsed.data.ignore,
         origin: {
           type: "clone",
           remoteUrl,
@@ -531,12 +423,8 @@ export async function handleGetSkill(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   try {
     const active = await resolveSkillSource({
       skillPath: workspace.skillPath,
@@ -555,12 +443,8 @@ export async function handleCreateSkillFork(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   try {
     // Fork from home/package default — not from an existing project skill.
     const fallback = await resolveSkillSource({});
@@ -583,12 +467,8 @@ export async function handleResetSkill(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   const next = { ...workspace };
   delete next.skillPath;
   await saveWorkspace(next);
@@ -617,12 +497,8 @@ export async function handleListSkillFiles(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   const dir = url.searchParams.get("path") ?? "";
   try {
     const active = await resolveSkillSource({
@@ -647,12 +523,8 @@ export async function handleReadSkillFile(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   const filePath = url.searchParams.get("path") ?? "";
   if (!filePath.trim()) {
     sendError(res, 400, "path query is required");
@@ -679,12 +551,8 @@ export async function handleWriteSkillFile(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
   if (!workspace.skillPath) {
     sendError(res, 400, "create a skill fork before editing skill files");
     return;

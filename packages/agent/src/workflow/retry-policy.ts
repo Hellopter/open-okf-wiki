@@ -67,3 +67,32 @@ export function decideNodeRetry(input: {
 export function isCriticalDomainFailure(critical: boolean | undefined): boolean {
   return critical !== false;
 }
+
+const TRANSIENT_PATTERNS: readonly RegExp[] = [
+  /rate.?limit/i,
+  /\b(?:429|500|502|503|529)\b/,
+  /\btimed?.?out\b/i,
+  /\bETIMEDOUT\b|\bECONNRESET\b|\bECONNREFUSED\b|\bEAI_AGAIN\b|\bENOTFOUND\b|\bEPIPE\b/,
+  /socket hang up/i,
+  /fetch failed/i,
+  /network error/i,
+  /\boverloaded\b/i,
+  /service unavailable/i,
+  /bad gateway/i,
+  /internal server error/i,
+  /connection (?:closed|reset|refused|error)/i,
+];
+
+/**
+ * Best-effort error-message → ErrorClass mapping for failed node attempts.
+ * Only claims classes it can recognize; undefined = unknown (decideNodeRetry
+ * still allows one retry for unknown, per the transient-or-unknown branch).
+ * Pure: no I/O, no Pi.
+ */
+export function classifyAgentFailure(message: string | undefined): ErrorClass | undefined {
+  const msg = message?.trim();
+  if (!msg) return undefined;
+  if (/budget exhausted|token budget/i.test(msg)) return "budget";
+  if (TRANSIENT_PATTERNS.some((p) => p.test(msg))) return "transient";
+  return undefined;
+}

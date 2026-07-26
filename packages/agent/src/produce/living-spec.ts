@@ -6,10 +6,11 @@
  * written by submit_wiki_run_spec; commitSpec promotes to spec.json.
  */
 
+import { rm } from "node:fs/promises";
 import type { WikiRunSpec } from "@okf-wiki/contract";
 import {
-  defaultSpecStore,
   DEFECTS_FILE_NAME,
+  defaultSpecStore,
   defectsPath,
   PLAN_DRAFT_FILE_NAME,
   PLAN_DRAFT_REL_PATH,
@@ -20,6 +21,7 @@ import {
 } from "../ports/core-spec-store.js";
 import type { CommitSpecOptions, SpecStore } from "../ports/spec-store.js";
 
+export type { CommitSpecOptions } from "../ports/spec-store.js";
 export {
   DEFECTS_FILE_NAME,
   defectsPath,
@@ -31,10 +33,15 @@ export {
   specPath,
 };
 
-export type { CommitSpecOptions } from "../ports/spec-store.js";
-
-/** @deprecated Prefer inject SpecStore — default Core-backed store. */
-export const specStore: SpecStore = defaultSpecStore;
+/**
+ * Remove a stale planner candidate Spec before a (re)plan round.
+ * Without this, a revision planner that fails to call submit_wiki_run_spec
+ * would silently re-resolve the previous round's draft as if replanning
+ * succeeded, dropping operator feedback.
+ */
+export async function clearPlanDraft(runWorkDir: string): Promise<void> {
+  await rm(planDraftPathFromRunWorkDir(runWorkDir), { force: true });
+}
 
 /**
  * Persist a candidate WikiRunSpec for path-first plan handoff.

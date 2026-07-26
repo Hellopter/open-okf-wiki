@@ -1,5 +1,7 @@
 # PydanticAI greenfield：从 repo 到 wiki 的最薄 Harness 与动态 Loop
 
+> Historical research only. Not product path.
+
 > 研究日期：2026-07-15
 >
 > 目标：忽略当前仓库实现，从零判断哪些能力直接交给 PydanticAI / Pydantic AI Harness，哪些语义放进产品自带的 Producer Skill。

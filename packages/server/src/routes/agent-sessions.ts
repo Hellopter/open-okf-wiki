@@ -1,14 +1,13 @@
 /** Thin HTTP adapter over Pi-native Operator Sessions (ADR 0032). */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listOperatorSessions, redactErrorMessage } from "@okf-wiki/agent";
+import { listOperatorCommands, listOperatorSessions, redactErrorMessage } from "@okf-wiki/agent";
 import {
   type AgentSseEvent,
   type AgentSseSnapshot,
   CreatePiAgentSessionBodySchema,
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
-import { loadWorkspaceById } from "@okf-wiki/core";
 import { subscribeAgentSessionEvents } from "../agent-session-events.ts";
 import {
   deleteAgentSession,
@@ -19,8 +18,20 @@ import {
   registerAgentSession,
 } from "../agent-session-registry.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 
 const HEARTBEAT_MS = 15_000;
+
+/** GET the operator slash-command registry (autocomplete metadata only). */
+export function handleListOperatorCommands(_req: IncomingMessage, res: ServerResponse): void {
+  sendJson(res, 200, {
+    commands: listOperatorCommands().map((command) => ({
+      name: command.name,
+      description: command.description,
+      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+    })),
+  });
+}
 
 export type AgentSessionSseDependencies = {
   getActiveTool?: typeof getActiveAgentSessionTool;
@@ -28,17 +39,6 @@ export type AgentSessionSseDependencies = {
   subscribe?: typeof subscribeAgentSessionEvents;
   heartbeatMs?: number;
 };
-
-async function loadWorkspaceOr404(res: ServerResponse, id: string, url: URL) {
-  const workspace = await loadWorkspaceById(id, {
-    rootPath: url.searchParams.get("rootPath") ?? undefined,
-  });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return null;
-  }
-  return workspace;
-}
 
 /** GET SessionManager's workspace-scoped index. */
 export async function handleListAgentSessions(

@@ -9,9 +9,7 @@ import type { GraphNodeDef, WikiRunSpec } from "@okf-wiki/contract";
  * Node keys match produce-wiki spanIds (domain-{id}, leaf-{id}-{n}, …).
  */
 export function topologyFromSpec(spec: WikiRunSpec): GraphNodeDef[] {
-  const nodes: GraphNodeDef[] = [
-    { nodeKey: "plan", kind: "plan", label: "Plan" },
-  ];
+  const nodes: GraphNodeDef[] = [{ nodeKey: "plan", kind: "plan", label: "Plan" }];
 
   const domains = spec.domains ?? [];
   for (const d of domains) {

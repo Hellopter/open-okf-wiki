@@ -8,13 +8,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import type { StoredRunRecord, WorkspaceConfig } from "../../api";
+import { useState } from "react";
 import { useI18n } from "../../i18n";
-import { workspaceHref } from "../../lib/workspace-path";
+import { configureHref, wikiHref } from "../../lib/workspace-path";
+import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 import { PaneCollapseButton } from "../components/PaneCollapseButton";
 
 export type ContextPanelsProps = {
   workspaceId: string;
-  rootPath?: string;
   workspace: WorkspaceConfig | null;
   recentRuns?: StoredRunRecord[];
   /** Desktop: collapse the context pane to a rail. */
@@ -31,6 +32,7 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 }
 
 function OpenLink({ to, label }: { to: string; label: string }) {
+  const { t } = useI18n();
   return (
     <Link
       to={to}
@@ -39,15 +41,13 @@ function OpenLink({ to, label }: { to: string; label: string }) {
       className={cn(buttonVariants({ size: "xs", variant: "ghost" }), "no-underline")}
     >
       <ExternalLinkIcon data-icon="inline-start" />
-      {/* Static visible text so link name is not purely dynamic for scanners. */}
-      Open
+      {t.agentWorkspace.openFull}
     </Link>
   );
 }
 
 export function ContextPanels({
   workspaceId,
-  rootPath,
   workspace,
   recentRuns = [],
   onCollapse,
@@ -55,6 +55,7 @@ export function ContextPanels({
 }: ContextPanelsProps) {
   const { t } = useI18n();
   const sources = workspace?.sources ?? [];
+  const [inspectorRun, setInspectorRun] = useState<StoredRunRecord | null>(null);
 
   return (
     <div
@@ -97,7 +98,7 @@ export function ContextPanels({
                 {t.agentWorkspace.panelSources}
               </span>
               <OpenLink
-                to={workspaceHref(workspaceId, "/sources", rootPath)}
+                to={configureHref(workspaceId, "sources")}
                 label={t.agentWorkspace.openFull}
               />
             </div>
@@ -108,7 +109,7 @@ export function ContextPanels({
                 {sources.map((source) => (
                   <li key={source.id} className="rounded border border-border/60 px-2 py-1.5">
                     <div className="truncate font-mono text-xs font-medium">{source.id}</div>
-                    <div className="mt-0.5 break-all text-[10px] text-muted-foreground">
+                    <div className="mt-0.5 break-all text-2xs text-muted-foreground">
                       {source.path}
                     </div>
                   </li>
@@ -126,14 +127,19 @@ export function ContextPanels({
             ) : (
               <ul className="flex flex-col gap-1.5" data-testid="agent-readonly-runs">
                 {recentRuns.slice(0, 12).map((run) => (
-                  <li
-                    key={run.runId}
-                    className="flex items-center justify-between gap-2 rounded border border-border/60 px-2 py-1.5 text-[11px]"
-                  >
-                    <span className="min-w-0 truncate font-mono" title={run.runId}>
-                      {run.runId}
-                    </span>
-                    <Badge variant="outline">{run.status}</Badge>
+                  <li key={run.runId}>
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1.5 text-left text-2xs transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      data-testid="agent-run-open"
+                      data-run-id={run.runId}
+                      onClick={() => setInspectorRun(run)}
+                    >
+                      <span className="min-w-0 truncate font-mono" title={run.runId}>
+                        {run.runId}
+                      </span>
+                      <Badge variant="outline">{run.status}</Badge>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -148,18 +154,26 @@ export function ContextPanels({
                 <BookOpenIcon className="size-3.5" />
                 {t.agentWorkspace.panelWiki}
               </span>
-              <OpenLink
-                to={workspaceHref(workspaceId, "/wiki", rootPath)}
-                label={t.agentWorkspace.openFull}
-              />
+              <OpenLink to={wikiHref(workspaceId)} label={t.agentWorkspace.openFull} />
             </div>
             <p className="text-xs text-muted-foreground">{t.wiki.description}</p>
-            <p className="break-all font-mono text-[10px] text-muted-foreground">
+            <p className="break-all font-mono text-2xs text-muted-foreground">
               {workspace?.publicationPath ?? "—"}
             </p>
           </PanelShell>
         </TabsContent>
       </Tabs>
+
+      <RunInspectorDialog
+        workspaceId={workspaceId}
+        rootPath={workspace?.rootPath}
+        runId={inspectorRun?.runId ?? null}
+        record={inspectorRun}
+        open={inspectorRun != null}
+        onOpenChange={(open) => {
+          if (!open) setInspectorRun(null);
+        }}
+      />
     </div>
   );
 }

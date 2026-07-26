@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import {
   Field,
   FieldContent,
@@ -29,6 +30,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type AppSettingsPublic,
   createModelProfile,
+  createProvider,
+  deleteProvider,
   type DoctorResponse,
   deleteModelProfile,
   getApiBase,
@@ -39,29 +42,39 @@ import {
   type HealthResponse,
   type ModelProfilePublic,
   type ProviderApiShape,
+  type ProviderEntryPublic,
   type ProviderPublic,
   type ProviderTestResult,
   patchAppSettings,
   setDefaultModelProfile,
   testProvider,
   updateModelProfile,
+  updateProvider,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { formatMessage, useI18n } from "../i18n";
+import { AppShell } from "../shells/AppShell";
 
 type EditorMode = "closed" | "create" | "edit";
 
+/** Model editor: model-level fields only — connection lives on the provider. */
 const emptyForm = {
   name: "",
   modelId: "",
+  /** Empty string means unset; digits-only string when set. */
+  maxContextTokens: "",
+  /** Owning provider (provider-first flow). */
+  providerId: "",
+};
+
+/** Provider editor: gateway connection (one provider hosts many models). */
+const emptyProviderForm = {
+  name: "",
   baseUrl: "",
   apiKey: "",
   apiShape: "completions" as ProviderApiShape,
-  /** Empty string means unset; digits-only string when set. */
-  maxContextTokens: "",
   /** Provider-level User-Agent (default node for gateway WAF). */
   userAgent: "node",
   /**
@@ -69,8 +82,6 @@ const emptyForm = {
    * Default false — third-party gateways often reject it.
    */
   supportsDeveloperRole: false,
-  /** When adding under an existing provider. */
-  providerId: "",
   clearApiKey: false,
 };
 
@@ -88,15 +99,18 @@ export function SettingsPage() {
   const [editorMode, setEditorMode] = useState<EditorMode>("closed");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [providerEditorMode, setProviderEditorMode] = useState<EditorMode>("closed");
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [providerForm, setProviderForm] = useState(emptyProviderForm);
+  const [providerDeleteTarget, setProviderDeleteTarget] = useState<ProviderEntryPublic | null>(
+    null,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ModelProfilePublic | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
-
   function setStatus(message: string) {
-    setStatusMsg(message);
     toast.success(message);
   }
 
@@ -125,7 +139,6 @@ export function SettingsPage() {
   async function handleToggleHomeSkills(next: boolean) {
     setSkillsSaving(true);
     setError(null);
-    setStatusMsg(null);
     try {
       const result = await patchAppSettings({ loadHomeSkills: next });
       setAppSettings(result.settings);
@@ -141,54 +154,55 @@ export function SettingsPage() {
     void loadAll();
   }, [loadAll]);
 
-  function openCreate() {
-    setEditorMode("create");
-    setEditingId(null);
-    setForm(emptyForm);
-    setTestResult(null);
-    setStatusMsg(null);
-  }
-
   function openEdit(model: ModelProfilePublic) {
     setEditorMode("edit");
     setEditingId(model.id);
     setForm({
       name: model.name,
       modelId: model.modelId,
-      baseUrl: model.baseUrl,
-      apiKey: "",
-      apiShape: model.apiShape,
       maxContextTokens: model.maxContextTokens !== undefined ? String(model.maxContextTokens) : "",
-      userAgent: model.headers?.["User-Agent"] ?? model.headers?.["user-agent"] ?? "node",
-      supportsDeveloperRole: model.supportsDeveloperRole === true,
       providerId: model.providerId ?? "",
-      clearApiKey: false,
     });
-    setTestResult(null);
-    setStatusMsg(null);
   }
 
-  function openCreateUnderProvider(
-    providerId: string,
-    baseUrl: string,
-    apiShape: ProviderApiShape,
-  ) {
+  function openCreateUnderProvider(providerId: string) {
     setEditorMode("create");
     setEditingId(null);
-    setForm({
-      ...emptyForm,
-      providerId,
-      baseUrl,
-      apiShape,
-    });
-    setTestResult(null);
-    setStatusMsg(null);
+    setForm({ ...emptyForm, providerId });
   }
 
   function closeEditor() {
     setEditorMode("closed");
     setEditingId(null);
     setForm(emptyForm);
+  }
+
+  function openProviderCreate() {
+    setProviderEditorMode("create");
+    setEditingProviderId(null);
+    setProviderForm(emptyProviderForm);
+    setTestResult(null);
+  }
+
+  function openProviderEdit(entry: ProviderEntryPublic) {
+    setProviderEditorMode("edit");
+    setEditingProviderId(entry.id);
+    setProviderForm({
+      name: entry.name,
+      baseUrl: entry.baseUrl,
+      apiKey: "",
+      apiShape: entry.apiShape,
+      userAgent: entry.headers?.["User-Agent"] ?? entry.headers?.["user-agent"] ?? "node",
+      supportsDeveloperRole: entry.supportsDeveloperRole === true,
+      clearApiKey: false,
+    });
+    setTestResult(null);
+  }
+
+  function closeProviderEditor() {
+    setProviderEditorMode("closed");
+    setEditingProviderId(null);
+    setProviderForm(emptyProviderForm);
     setTestResult(null);
   }
 
@@ -209,7 +223,6 @@ export function SettingsPage() {
     event.preventDefault();
     setIsSubmitting(true);
     setError(null);
-    setStatusMsg(null);
     setTestResult(null);
     try {
       const maxContextRaw = form.maxContextTokens.trim();
@@ -226,22 +239,18 @@ export function SettingsPage() {
         }
         maxContextTokens = parsed;
       }
-      const ua = form.userAgent.trim();
-      const headers = ua ? { "User-Agent": ua } : null;
+      // Provider-first: connection fields belong to the provider entry.
+      // For legacy flat models (no providerId) keep the stored connection as-is.
+      const editingModel = editingId ? models.find((m) => m.id === editingId) : undefined;
       const payload = {
         name: form.name.trim(),
         modelId: form.modelId.trim(),
-        baseUrl: form.baseUrl.trim(),
-        apiShape: form.apiShape,
-        ...(form.providerId.trim() ? { providerId: form.providerId.trim() } : {}),
-        ...(form.clearApiKey
-          ? { apiKey: null as null }
-          : form.apiKey.trim()
-            ? { apiKey: form.apiKey.trim() }
+        ...(form.providerId.trim()
+          ? { providerId: form.providerId.trim() }
+          : editingModel
+            ? { baseUrl: editingModel.baseUrl, apiShape: editingModel.apiShape }
             : {}),
         ...(maxContextTokens !== undefined ? { maxContextTokens } : {}),
-        headers,
-        supportsDeveloperRole: form.supportsDeveloperRole,
       };
       const result =
         editorMode === "edit" && editingId
@@ -273,7 +282,6 @@ export function SettingsPage() {
     const model = deleteTarget;
     setDeletingId(model.id);
     setError(null);
-    setStatusMsg(null);
     try {
       const result = await deleteModelProfile(model.id);
       setProvider(result.provider);
@@ -290,7 +298,6 @@ export function SettingsPage() {
 
   async function handleSetDefault(model: ModelProfilePublic) {
     setError(null);
-    setStatusMsg(null);
     try {
       const result = await setDefaultModelProfile(model.id);
       setProvider(result.provider);
@@ -305,13 +312,19 @@ export function SettingsPage() {
     setError(null);
     setTestResult(null);
     try {
-      const ua = form.userAgent.trim();
+      const ua = providerForm.userAgent.trim();
+      const existing = editingProviderId
+        ? provider?.providers.find((p) => p.id === editingProviderId)
+        : undefined;
+      const existingModelId = existing?.models[0]?.id;
       const result = await testProvider({
-        modelProfileId: editingId ?? undefined,
-        baseUrl: form.baseUrl.trim() || undefined,
-        apiKey: form.clearApiKey ? "" : form.apiKey.trim() || undefined,
-        apiShape: form.apiShape,
-        modelId: form.modelId.trim() || undefined,
+        // Reuse a stored key via profile when editing and no new key typed.
+        ...(existingModelId && !providerForm.apiKey.trim() && !providerForm.clearApiKey
+          ? { modelProfileId: existingModelId }
+          : {}),
+        baseUrl: providerForm.baseUrl.trim() || undefined,
+        apiKey: providerForm.clearApiKey ? "" : providerForm.apiKey.trim() || undefined,
+        apiShape: providerForm.apiShape,
         ...(ua ? { headers: { "User-Agent": ua } } : {}),
       });
       setTestResult(result.result);
@@ -322,10 +335,62 @@ export function SettingsPage() {
     }
   }
 
+  async function handleProviderSave(event: FormEvent) {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      const ua = providerForm.userAgent.trim();
+      const payload = {
+        name: providerForm.name.trim(),
+        baseUrl: providerForm.baseUrl.trim(),
+        apiShape: providerForm.apiShape,
+        ...(providerForm.clearApiKey
+          ? { apiKey: null }
+          : providerForm.apiKey.trim()
+            ? { apiKey: providerForm.apiKey.trim() }
+            : {}),
+        headers: ua ? { "User-Agent": ua } : null,
+        supportsDeveloperRole: providerForm.supportsDeveloperRole,
+      };
+      const result =
+        providerEditorMode === "edit" && editingProviderId
+          ? await updateProvider(editingProviderId, payload)
+          : await createProvider(payload);
+      setProvider(result.provider);
+      setStatus(
+        providerEditorMode === "edit"
+          ? t.globalSettings.statusProviderUpdated
+          : t.globalSettings.statusProviderAdded,
+      );
+      closeProviderEditor();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleProviderDeleteConfirm() {
+    if (!providerDeleteTarget) return;
+    const entry = providerDeleteTarget;
+    setError(null);
+    try {
+      const result = await deleteProvider(entry.id);
+      setProvider(result.provider);
+      setProviderDeleteTarget(null);
+      if (editingProviderId === entry.id) closeProviderEditor();
+      setStatus(t.globalSettings.statusProviderDeleted);
+    } catch (err) {
+      setError(err);
+      setProviderDeleteTarget(null);
+    }
+  }
+
   const models = provider?.models ?? [];
 
   return (
-    <Layout>
+    <AppShell>
       <div data-testid="global-settings-page" className="flex flex-col gap-5">
         <header className="page-header row-between">
           <div>
@@ -343,25 +408,16 @@ export function SettingsPage() {
             </Button>
             <Button
               type="button"
-              onClick={openCreate}
-              disabled={loading || editorMode !== "closed"}
-              data-testid="model-add"
+              onClick={openProviderCreate}
+              disabled={loading || providerEditorMode !== "closed"}
+              data-testid="provider-add"
             >
-              {t.globalSettings.addModel}
+              {t.globalSettings.addProvider}
             </Button>
           </div>
         </header>
 
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
-        {statusMsg ? (
-          <p
-            className="text-sm font-medium text-primary"
-            role="status"
-            data-testid="settings-status"
-          >
-            {statusMsg}
-          </p>
-        ) : null}
 
         {loading ? (
           <LoadingState label={t.globalSettings.loading} />
@@ -451,9 +507,13 @@ export function SettingsPage() {
                   </CardHeader>
                   <CardContent className="flex flex-col gap-4">
                     {models.length === 0 ? (
-                      <p className="muted" data-testid="models-empty">
-                        {t.globalSettings.modelsEmpty}
-                      </p>
+                      <Empty className="border-0 p-6" data-testid="models-empty">
+                        <EmptyHeader>
+                          <EmptyTitle className="text-base">
+                            {t.globalSettings.modelsEmpty}
+                          </EmptyTitle>
+                        </EmptyHeader>
+                      </Empty>
                     ) : (
                       <div className="flex flex-col gap-4" data-testid="providers-list">
                         {(provider?.providers?.length ? provider.providers : []).map((entry) => (
@@ -481,17 +541,36 @@ export function SettingsPage() {
                                     : ""}
                                 </p>
                               </div>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  openCreateUnderProvider(entry.id, entry.baseUrl, entry.apiShape)
-                                }
-                                data-testid="provider-add-model"
-                              >
-                                {t.globalSettings.addModelUnderProvider}
-                              </Button>
+                              <div className="row-actions shrink-0">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openCreateUnderProvider(entry.id)}
+                                  data-testid="provider-add-model"
+                                >
+                                  {t.globalSettings.addModelUnderProvider}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => openProviderEdit(entry)}
+                                  data-testid="provider-edit"
+                                >
+                                  {t.globalSettings.edit}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-destructive hover:text-destructive"
+                                  onClick={() => setProviderDeleteTarget(entry)}
+                                  data-testid="provider-delete"
+                                >
+                                  {t.globalSettings.delete}
+                                </Button>
+                              </div>
                             </CardHeader>
                             <CardContent className="pt-0">
                               <Table>
@@ -566,7 +645,7 @@ export function SettingsPage() {
                                                 <Spinner data-icon="inline-start" />
                                               ) : null}
                                               {deletingId === model.id
-                                                ? "…"
+                                                ? t.globalSettings.deleting
                                                 : t.globalSettings.delete}
                                             </Button>
                                           </div>
@@ -644,7 +723,7 @@ export function SettingsPage() {
                       </Button>
                     </CardHeader>
                     <CardContent>
-                      <form className="form form-wide" onSubmit={(e) => void handleSave(e)}>
+                      <form className="max-w-2xl" onSubmit={(e) => void handleSave(e)}>
                         <FieldGroup>
                           <Field>
                             <FieldLabel htmlFor="model-name">
@@ -677,113 +756,6 @@ export function SettingsPage() {
                             <FieldDescription>{t.globalSettings.modelIdHint}</FieldDescription>
                           </Field>
                           <Field>
-                            <FieldLabel htmlFor="model-base-url">
-                              {t.globalSettings.baseUrl}
-                            </FieldLabel>
-                            <Input
-                              id="model-base-url"
-                              type="url"
-                              value={form.baseUrl}
-                              onChange={(e) => setForm((f) => ({ ...f, baseUrl: e.target.value }))}
-                              placeholder={t.globalSettings.baseUrlPlaceholder}
-                              className="font-mono"
-                              data-testid="model-base-url"
-                              autoComplete="off"
-                            />
-                          </Field>
-                          <Field>
-                            <FieldLabel htmlFor="model-api-key">
-                              {t.globalSettings.apiKey}
-                            </FieldLabel>
-                            <Input
-                              id="model-api-key"
-                              type="password"
-                              value={form.apiKey}
-                              onChange={(e) =>
-                                setForm((f) => ({
-                                  ...f,
-                                  apiKey: e.target.value,
-                                  clearApiKey: false,
-                                }))
-                              }
-                              placeholder={
-                                editorMode === "edit" && editingId
-                                  ? t.globalSettings.apiKeyKeepPlaceholder
-                                  : t.globalSettings.apiKeyPlaceholder
-                              }
-                              className="font-mono"
-                              data-testid="model-api-key"
-                              autoComplete="new-password"
-                              disabled={form.clearApiKey}
-                            />
-                            {editorMode === "edit" ? (
-                              <Field orientation="horizontal" className="mt-1">
-                                <Checkbox
-                                  id="model-clear-key"
-                                  checked={form.clearApiKey}
-                                  onCheckedChange={(checked) =>
-                                    setForm((f) => ({
-                                      ...f,
-                                      clearApiKey: checked === true,
-                                      apiKey: checked === true ? "" : f.apiKey,
-                                    }))
-                                  }
-                                  data-testid="model-clear-key"
-                                />
-                                <FieldLabel htmlFor="model-clear-key" className="font-normal">
-                                  {t.globalSettings.clearApiKey}
-                                </FieldLabel>
-                              </Field>
-                            ) : null}
-                          </Field>
-                          <FieldSet>
-                            <FieldLegend variant="label">{t.globalSettings.apiShape}</FieldLegend>
-                            <RadioGroup
-                              value={form.apiShape}
-                              onValueChange={(next) => {
-                                if (next === "completions" || next === "responses") {
-                                  setForm((f) => ({
-                                    ...f,
-                                    apiShape: next as ProviderApiShape,
-                                  }));
-                                }
-                              }}
-                              aria-label={t.globalSettings.apiShape}
-                              className="gap-3"
-                            >
-                              <Field orientation="horizontal">
-                                <RadioGroupItem
-                                  value="completions"
-                                  id="model-shape-completions"
-                                  data-testid="model-shape-completions"
-                                />
-                                <FieldContent>
-                                  <FieldLabel htmlFor="model-shape-completions">
-                                    {t.globalSettings.shapeCompletions}
-                                  </FieldLabel>
-                                  <FieldDescription>
-                                    <code>POST …/v1/chat/completions</code>
-                                  </FieldDescription>
-                                </FieldContent>
-                              </Field>
-                              <Field orientation="horizontal">
-                                <RadioGroupItem
-                                  value="responses"
-                                  id="model-shape-responses"
-                                  data-testid="model-shape-responses"
-                                />
-                                <FieldContent>
-                                  <FieldLabel htmlFor="model-shape-responses">
-                                    {t.globalSettings.shapeResponses}
-                                  </FieldLabel>
-                                  <FieldDescription>
-                                    <code>POST …/v1/responses</code>
-                                  </FieldDescription>
-                                </FieldContent>
-                              </Field>
-                            </RadioGroup>
-                          </FieldSet>
-                          <Field>
                             <FieldLabel htmlFor="model-max-context">
                               {t.globalSettings.maxContextTokens}
                             </FieldLabel>
@@ -807,47 +779,6 @@ export function SettingsPage() {
                               {t.globalSettings.maxContextTokensHint}
                             </FieldDescription>
                           </Field>
-                          <Field>
-                            <FieldLabel htmlFor="model-user-agent">
-                              {t.globalSettings.userAgent}
-                            </FieldLabel>
-                            <Input
-                              id="model-user-agent"
-                              value={form.userAgent}
-                              onChange={(e) =>
-                                setForm((f) => ({
-                                  ...f,
-                                  userAgent: e.target.value,
-                                }))
-                              }
-                              placeholder="node"
-                              className="font-mono"
-                              data-testid="model-user-agent"
-                              autoComplete="off"
-                            />
-                            <FieldDescription>{t.globalSettings.userAgentHint}</FieldDescription>
-                          </Field>
-                          <Field orientation="horizontal">
-                            <Checkbox
-                              id="model-developer-role"
-                              checked={form.supportsDeveloperRole}
-                              onCheckedChange={(checked) =>
-                                setForm((f) => ({
-                                  ...f,
-                                  supportsDeveloperRole: checked === true,
-                                }))
-                              }
-                              data-testid="model-developer-role"
-                            />
-                            <FieldContent>
-                              <FieldLabel htmlFor="model-developer-role" className="font-normal">
-                                {t.globalSettings.supportsDeveloperRole}
-                              </FieldLabel>
-                              <FieldDescription>
-                                {t.globalSettings.supportsDeveloperRoleHint}
-                              </FieldDescription>
-                            </FieldContent>
-                          </Field>
                           {form.providerId ? (
                             <p className="muted small" data-testid="model-provider-hint">
                               {formatMessage(t.globalSettings.addingUnderProvider, {
@@ -868,12 +799,214 @@ export function SettingsPage() {
                                   ? t.globalSettings.saveCreate
                                   : t.globalSettings.saveEdit}
                             </Button>
+                          </div>
+                        </FieldGroup>
+                      </form>
+                    </CardContent>
+                  </Card>
+                ) : null}
+
+                {providerEditorMode !== "closed" ? (
+                  <Card data-testid="provider-editor">
+                    <CardHeader className="row-between items-center">
+                      <CardTitle>
+                        {providerEditorMode === "create"
+                          ? t.globalSettings.providerCreateTitle
+                          : t.globalSettings.providerEditTitle}
+                      </CardTitle>
+                      <Button type="button" variant="ghost" size="sm" onClick={closeProviderEditor}>
+                        {t.common.cancel}
+                      </Button>
+                    </CardHeader>
+                    <CardContent>
+                      <form className="max-w-2xl" onSubmit={(e) => void handleProviderSave(e)}>
+                        <FieldGroup>
+                          <Field>
+                            <FieldLabel htmlFor="provider-name">
+                              {t.globalSettings.providerName}
+                            </FieldLabel>
+                            <Input
+                              id="provider-name"
+                              value={providerForm.name}
+                              onChange={(e) =>
+                                setProviderForm((f) => ({ ...f, name: e.target.value }))
+                              }
+                              placeholder={t.globalSettings.providerNamePlaceholder}
+                              required
+                              maxLength={120}
+                              data-testid="provider-name-input"
+                              autoFocus
+                            />
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="provider-base-url">
+                              {t.globalSettings.baseUrl}
+                            </FieldLabel>
+                            <Input
+                              id="provider-base-url"
+                              type="url"
+                              value={providerForm.baseUrl}
+                              onChange={(e) =>
+                                setProviderForm((f) => ({ ...f, baseUrl: e.target.value }))
+                              }
+                              placeholder={t.globalSettings.baseUrlPlaceholder}
+                              className="font-mono"
+                              data-testid="provider-base-url"
+                              autoComplete="off"
+                            />
+                          </Field>
+                          <Field>
+                            <FieldLabel htmlFor="provider-api-key">
+                              {t.globalSettings.apiKey}
+                            </FieldLabel>
+                            <Input
+                              id="provider-api-key"
+                              type="password"
+                              value={providerForm.apiKey}
+                              onChange={(e) =>
+                                setProviderForm((f) => ({
+                                  ...f,
+                                  apiKey: e.target.value,
+                                  clearApiKey: false,
+                                }))
+                              }
+                              placeholder={
+                                providerEditorMode === "edit"
+                                  ? t.globalSettings.apiKeyKeepPlaceholder
+                                  : t.globalSettings.apiKeyPlaceholder
+                              }
+                              className="font-mono"
+                              data-testid="provider-api-key"
+                              autoComplete="new-password"
+                              disabled={providerForm.clearApiKey}
+                            />
+                            {providerEditorMode === "edit" ? (
+                              <Field orientation="horizontal" className="mt-1">
+                                <Checkbox
+                                  id="provider-clear-key"
+                                  checked={providerForm.clearApiKey}
+                                  onCheckedChange={(checked) =>
+                                    setProviderForm((f) => ({
+                                      ...f,
+                                      clearApiKey: checked === true,
+                                      apiKey: checked === true ? "" : f.apiKey,
+                                    }))
+                                  }
+                                  data-testid="provider-clear-key"
+                                />
+                                <FieldLabel htmlFor="provider-clear-key" className="font-normal">
+                                  {t.globalSettings.clearApiKey}
+                                </FieldLabel>
+                              </Field>
+                            ) : null}
+                          </Field>
+                          <FieldSet>
+                            <FieldLegend variant="label">{t.globalSettings.apiShape}</FieldLegend>
+                            <RadioGroup
+                              value={providerForm.apiShape}
+                              onValueChange={(next) => {
+                                if (next === "completions" || next === "responses") {
+                                  setProviderForm((f) => ({
+                                    ...f,
+                                    apiShape: next as ProviderApiShape,
+                                  }));
+                                }
+                              }}
+                              aria-label={t.globalSettings.apiShape}
+                              className="gap-3"
+                            >
+                              <Field orientation="horizontal">
+                                <RadioGroupItem
+                                  value="completions"
+                                  id="provider-shape-completions"
+                                  data-testid="provider-shape-completions"
+                                />
+                                <FieldContent>
+                                  <FieldLabel htmlFor="provider-shape-completions">
+                                    {t.globalSettings.shapeCompletions}
+                                  </FieldLabel>
+                                  <FieldDescription>
+                                    <code>POST …/v1/chat/completions</code>
+                                  </FieldDescription>
+                                </FieldContent>
+                              </Field>
+                              <Field orientation="horizontal">
+                                <RadioGroupItem
+                                  value="responses"
+                                  id="provider-shape-responses"
+                                  data-testid="provider-shape-responses"
+                                />
+                                <FieldContent>
+                                  <FieldLabel htmlFor="provider-shape-responses">
+                                    {t.globalSettings.shapeResponses}
+                                  </FieldLabel>
+                                  <FieldDescription>
+                                    <code>POST …/v1/responses</code>
+                                  </FieldDescription>
+                                </FieldContent>
+                              </Field>
+                            </RadioGroup>
+                          </FieldSet>
+                          <Field>
+                            <FieldLabel htmlFor="provider-user-agent">
+                              {t.globalSettings.userAgent}
+                            </FieldLabel>
+                            <Input
+                              id="provider-user-agent"
+                              value={providerForm.userAgent}
+                              onChange={(e) =>
+                                setProviderForm((f) => ({
+                                  ...f,
+                                  userAgent: e.target.value,
+                                }))
+                              }
+                              placeholder="node"
+                              className="font-mono"
+                              data-testid="provider-user-agent"
+                              autoComplete="off"
+                            />
+                            <FieldDescription>{t.globalSettings.userAgentHint}</FieldDescription>
+                          </Field>
+                          <Field orientation="horizontal">
+                            <Checkbox
+                              id="provider-developer-role"
+                              checked={providerForm.supportsDeveloperRole}
+                              onCheckedChange={(checked) =>
+                                setProviderForm((f) => ({
+                                  ...f,
+                                  supportsDeveloperRole: checked === true,
+                                }))
+                              }
+                              data-testid="provider-developer-role"
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor="provider-developer-role" className="font-normal">
+                                {t.globalSettings.supportsDeveloperRole}
+                              </FieldLabel>
+                              <FieldDescription>
+                                {t.globalSettings.supportsDeveloperRoleHint}
+                              </FieldDescription>
+                            </FieldContent>
+                          </Field>
+                          <div className="form-actions">
+                            <Button
+                              type="submit"
+                              disabled={isSubmitting || !providerForm.name.trim()}
+                              data-testid="provider-save"
+                            >
+                              {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
+                              {isSubmitting
+                                ? t.globalSettings.saving
+                                : providerEditorMode === "create"
+                                  ? t.globalSettings.saveCreate
+                                  : t.globalSettings.saveEdit}
+                            </Button>
                             <Button
                               type="button"
                               variant="outline"
-                              disabled={testing || !form.baseUrl.trim()}
+                              disabled={testing || !providerForm.baseUrl.trim()}
                               onClick={() => void handleTest()}
-                              data-testid="model-test"
+                              data-testid="provider-test"
                             >
                               {testing ? <Spinner data-icon="inline-start" /> : null}
                               {testing ? t.globalSettings.testing : t.globalSettings.testConnection}
@@ -1026,6 +1159,26 @@ export function SettingsPage() {
             </Tabs>
 
             <ConfirmDialog
+              open={providerDeleteTarget != null}
+              onOpenChange={(open) => {
+                if (!open) setProviderDeleteTarget(null);
+              }}
+              title={t.globalSettings.providerDeleteConfirmTitle}
+              description={
+                providerDeleteTarget
+                  ? formatMessage(t.globalSettings.providerDeleteConfirmBody, {
+                      name: providerDeleteTarget.name,
+                    })
+                  : undefined
+              }
+              confirmLabel={t.globalSettings.deleteSubmit}
+              cancelLabel={t.common.cancel}
+              onConfirm={() => void handleProviderDeleteConfirm()}
+              data-testid="provider-delete-dialog"
+              confirmTestId="provider-delete-confirm"
+            />
+
+            <ConfirmDialog
               open={deleteTarget != null}
               onOpenChange={(open) => {
                 if (!open) {
@@ -1052,6 +1205,6 @@ export function SettingsPage() {
           </>
         )}
       </div>
-    </Layout>
+    </AppShell>
   );
 }

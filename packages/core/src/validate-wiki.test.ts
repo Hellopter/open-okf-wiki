@@ -67,6 +67,24 @@ test("validateWikiTree accepts a minimal valid tree", async () => {
   assert.equal(result.pageCount, 3);
 });
 
+test("validateWikiTree warns (non-blocking) on missing description", async () => {
+  const root = await tempDir("okf-val-desc-");
+  await writeMd(root, "overview.md", goodPage("Overview", "Hello.", "Overview"));
+  await writeMd(
+    root,
+    "modules/core.md",
+    "---\ntype: Module\ntitle: Core\ndescription: One line.\n---\n\nBody.\n",
+  );
+  await writeMd(root, "index.md", listingIndex);
+  const result = await validateWikiTree(root);
+  // Missing description never blocks (OKF permissive conformance)…
+  assert.equal(result.ok, true, result.errors.join("; "));
+  // …but is surfaced for exactly the pages lacking it (index.md exempt).
+  assert.deepEqual(result.warnings, [
+    "overview.md: missing frontmatter description (OKF v0.2 recommended)",
+  ]);
+});
+
 test("validateWikiTree rejects concept page without type", async () => {
   const root = await tempDir("okf-val-type-");
   await writeMd(root, "overview.md", "---\ntitle: Overview\n---\n\n# Overview\n\nBody.\n");

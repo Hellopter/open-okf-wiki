@@ -1,46 +1,53 @@
 /**
- * Workspace-scoped paths.
- * Agent Workspace (primary operate surface) lives at `/w/:id`.
- * Secondary config/audit pages stay under `/workspaces/:id/...`.
+ * Workspace-scoped paths (id-only URLs; no rootPath query).
+ *
+ *   /w/:id              Operate
+ *   /w/:id/wiki[/*]     Wiki reader
+ *   /w/:id/configure    Configure (sources · models · skill · danger)
  */
 
-function withQuery(
-  base: string,
-  rootPath?: string | null,
-  extraQuery?: Record<string, string>,
-): string {
+function withQuery(base: string, extraQuery?: Record<string, string>): string {
+  if (!extraQuery) return base;
   const params = new URLSearchParams();
-  if (rootPath) {
-    params.set("rootPath", rootPath);
-  }
-  if (extraQuery) {
-    for (const [k, v] of Object.entries(extraQuery)) {
-      if (v !== undefined && v !== "") {
-        params.set(k, v);
-      }
+  for (const [k, v] of Object.entries(extraQuery)) {
+    if (v !== undefined && v !== "") {
+      params.set(k, v);
     }
   }
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
 }
 
-/** Primary operate surface — Agent Workspace (`/w/:id`). */
-export function agentWorkspaceHref(
-  workspaceId: string,
-  rootPath?: string | null,
-  extraQuery?: Record<string, string>,
-): string {
-  return withQuery(`/w/${encodeURIComponent(workspaceId)}`, rootPath, extraQuery);
+/** Operate surface — Agent Workspace (`/w/:id`). */
+export function operateHref(workspaceId: string, extraQuery?: Record<string, string>): string {
+  return withQuery(`/w/${encodeURIComponent(workspaceId)}`, extraQuery);
 }
 
-/**
- * Secondary workspace pages under `/workspaces/:id{suffix}`.
- */
-export function workspaceHref(
+/** Wiki reader (`/w/:id/wiki` or `/w/:id/wiki/{page…}`). */
+export function wikiHref(
   workspaceId: string,
-  suffix: "/sources" | "/wiki" | "/settings",
-  rootPath?: string | null,
+  pagePath?: string | null,
   extraQuery?: Record<string, string>,
 ): string {
-  return withQuery(`/workspaces/${encodeURIComponent(workspaceId)}${suffix}`, rootPath, extraQuery);
+  const base = `/w/${encodeURIComponent(workspaceId)}/wiki`;
+  if (!pagePath) {
+    return withQuery(base, extraQuery);
+  }
+  const segments = pagePath
+    .replace(/^\/+/, "")
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/");
+  return withQuery(`${base}/${segments}`, extraQuery);
+}
+
+/** Configure surface (`/w/:id/configure`). Optional hash: sources|models|skill|danger */
+export function configureHref(
+  workspaceId: string,
+  section?: "sources" | "models" | "skill" | "danger",
+  extraQuery?: Record<string, string>,
+): string {
+  const base = withQuery(`/w/${encodeURIComponent(workspaceId)}/configure`, extraQuery);
+  return section ? `${base}#${section}` : base;
 }

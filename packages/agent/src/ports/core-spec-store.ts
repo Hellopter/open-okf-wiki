@@ -56,10 +56,7 @@ export function createCoreSpecStore(): SpecStore {
       return filePath;
     },
 
-    async readCommittedSpec(
-      workspaceRoot: string,
-      runId: string,
-    ): Promise<WikiRunSpec | null> {
+    async readCommittedSpec(workspaceRoot: string, runId: string): Promise<WikiRunSpec | null> {
       try {
         const raw = await readFile(specPath(workspaceRoot, runId), "utf8");
         return WikiRunSpecSchema.parse(JSON.parse(raw));

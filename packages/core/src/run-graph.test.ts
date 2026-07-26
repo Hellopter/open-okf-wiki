@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
-import { analysisDir } from "./run-layout.js";
 import { loadRunGraph, runGraphPath, writeRunGraph } from "./run-graph.js";
+import { analysisDir } from "./run-layout.js";
 
 test("writeRunGraph / loadRunGraph round-trip under analysis/run-graph.json", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-run-graph-"));
@@ -49,11 +49,10 @@ test("loadRunGraph returns null when missing", async () => {
 
 test("writeRunGraph rejects invalid snapshot", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-run-graph-bad-"));
-  await assert.rejects(
-    () =>
-      writeRunGraph(root, "run-x", {
-        ...emptyRunGraphSnapshot(),
-        attempts: [{ attemptId: "", nodeKey: "x", runIndex: 0, status: "done" }],
-      } as never),
+  await assert.rejects(() =>
+    writeRunGraph(root, "run-x", {
+      ...emptyRunGraphSnapshot(),
+      attempts: [{ attemptId: "", nodeKey: "x", runIndex: 0, status: "done" }],
+    } as never),
   );
 });

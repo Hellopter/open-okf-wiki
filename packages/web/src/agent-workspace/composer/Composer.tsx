@@ -1,7 +1,15 @@
 /** One Pi prompt surface. Wiki Runs begin only when the agent calls wiki_produce. */
 
 import { SendIcon, SquareIcon } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, useCallback, useId, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { Button } from "@/components/ui/button";
 import {
   InputGroup,
@@ -9,8 +17,22 @@ import {
   InputGroupButton,
   InputGroupTextarea,
 } from "@/components/ui/input-group";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import {
+  getProvider,
+  listOperatorCommands,
+  type ModelProfilePublic,
+  type OperatorCommandInfo,
+} from "../../api";
 import { useI18n } from "../../i18n";
 import type { AgentStatus } from "../hooks/useSessionAgent";
 
@@ -22,7 +44,17 @@ export type ComposerProps = {
   status: AgentStatus;
   disabled?: boolean;
   className?: string;
+  /** Workspace default model profile (initial dropdown selection). */
+  modelProfileId?: string;
+  /** Session-scoped model switch; resolves false when the server rejects it. */
+  onSetModel?: (profileId: string) => Promise<boolean>;
 };
+
+/** Menu shows only while typing the command name (`/wi`), not after a space. */
+function slashQueryOf(input: string): string | null {
+  const match = /^\/([a-zA-Z0-9_-]*)$/.exec(input);
+  return match ? match[1]!.toLowerCase() : null;
+}
 
 export function Composer({
   input,
@@ -32,14 +64,85 @@ export function Composer({
   status,
   disabled = false,
   className,
+  modelProfileId,
+  onSetModel,
 }: ComposerProps) {
   const { t } = useI18n();
   const inputId = useId();
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const [commands, setCommands] = useState<OperatorCommandInfo[]>([]);
+  const [highlighted, setHighlighted] = useState(0);
+  const [menuDismissed, setMenuDismissed] = useState(false);
+  const [models, setModels] = useState<ModelProfilePublic[]>([]);
+  const [modelChoice, setModelChoice] = useState<string>("");
+  const [modelSwitching, setModelSwitching] = useState(false);
   const isPending = status === "sending" || status === "streaming";
   const trimmed = input.trim();
   const canSend = !disabled && !isPending && trimmed.length > 0;
   const invalid = validationMessage !== null && !canSend && !isPending;
+  // Only session-level disable greys the group. During streaming we must NOT
+  // set control disabled / data-disabled — that applies opacity-50 to Stop too
+  // (InputGroup: has-[[data-slot=input-group-control]:disabled]:opacity-50).
+  const groupDisabled = disabled;
+
+  useEffect(() => {
+    let alive = true;
+    listOperatorCommands()
+      .then((result) => {
+        if (alive) setCommands(result.commands);
+      })
+      .catch(() => {
+        // Autocomplete is best-effort; commands still work when typed fully.
+      });
+    if (onSetModel) {
+      getProvider()
+        .then((result) => {
+          if (alive) setModels(result.provider.models ?? []);
+        })
+        .catch(() => {
+          // Model switching is best-effort UI; chat works on the default model.
+        });
+    }
+    return () => {
+      alive = false;
+    };
+    // onSetModel identity is stable enough per session; fetch once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const selectedModelId = modelChoice || modelProfileId || "";
+
+  const changeModel = useCallback(
+    async (nextProfileId: string) => {
+      if (!onSetModel || !nextProfileId || nextProfileId === selectedModelId) return;
+      const previous = selectedModelId;
+      setModelChoice(nextProfileId);
+      setModelSwitching(true);
+      try {
+        const ok = await onSetModel(nextProfileId);
+        if (!ok) setModelChoice(previous);
+      } finally {
+        setModelSwitching(false);
+      }
+    },
+    [onSetModel, selectedModelId],
+  );
+
+  const slashQuery = slashQueryOf(input);
+  const menuItems = useMemo(() => {
+    if (slashQuery === null || menuDismissed) return [];
+    return commands.filter((command) => command.name.startsWith(slashQuery));
+  }, [commands, menuDismissed, slashQuery]);
+  const menuOpen = menuItems.length > 0;
+  const activeIndex = Math.min(highlighted, Math.max(0, menuItems.length - 1));
+
+  const selectCommand = useCallback(
+    (command: OperatorCommandInfo) => {
+      onInputChange(`/${command.name} `);
+      setHighlighted(0);
+    },
+    [onInputChange],
+  );
 
   const submit = useCallback(
     (event: FormEvent) => {
@@ -57,6 +160,28 @@ export function Composer({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (menuOpen) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setHighlighted((index) => (index + 1) % menuItems.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setHighlighted((index) => (index - 1 + menuItems.length) % menuItems.length);
+          return;
+        }
+        if (event.key === "Tab" || event.key === "Enter") {
+          event.preventDefault();
+          selectCommand(menuItems[activeIndex]!);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setMenuDismissed(true);
+          return;
+        }
+      }
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       if (disabled || isPending) return;
@@ -67,7 +192,17 @@ export function Composer({
       setValidationMessage(null);
       onSend();
     },
-    [disabled, isPending, onSend, t.agentWorkspace.composerRequired, trimmed],
+    [
+      activeIndex,
+      disabled,
+      isPending,
+      menuItems,
+      menuOpen,
+      onSend,
+      selectCommand,
+      t.agentWorkspace.composerRequired,
+      trimmed,
+    ],
   );
 
   return (
@@ -76,14 +211,49 @@ export function Composer({
       onSubmit={submit}
       aria-busy={isPending || undefined}
       className={cn(
-        "shrink-0 border-t border-border bg-background/95 px-3 py-2.5 md:px-4",
+        "relative shrink-0 border-t border-border bg-background/95 px-3 py-2.5 md:px-4",
         className,
       )}
     >
+      {menuOpen ? (
+        <div
+          role="listbox"
+          data-testid="agent-command-menu"
+          className="absolute bottom-full left-3 right-3 z-10 mb-1 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md md:left-4 md:right-4"
+        >
+          {menuItems.map((command, index) => (
+            <button
+              key={command.name}
+              type="button"
+              role="option"
+              aria-selected={index === activeIndex}
+              data-testid={`agent-command-${command.name}`}
+              className={cn(
+                "flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sm",
+                index === activeIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+              )}
+              onMouseEnter={() => setHighlighted(index)}
+              onMouseDown={(event) => {
+                // mousedown keeps textarea focus; click would blur first
+                event.preventDefault();
+                selectCommand(command);
+              }}
+            >
+              <span className="font-medium">/{command.name}</span>
+              {command.argumentHint ? (
+                <span className="text-2xs text-muted-foreground">{command.argumentHint}</span>
+              ) : null}
+              <span className="ml-auto truncate text-2xs text-muted-foreground">
+                {command.description}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <label htmlFor={inputId} className="sr-only">
         {t.agentWorkspace.composerLabel}
       </label>
-      <InputGroup data-disabled={disabled || isPending ? true : undefined}>
+      <InputGroup data-disabled={groupDisabled ? true : undefined}>
         <InputGroupTextarea
           id={inputId}
           name="message"
@@ -91,13 +261,14 @@ export function Composer({
           value={input}
           onChange={(event) => {
             onInputChange(event.target.value);
+            setMenuDismissed(false);
             if (validationMessage && event.target.value.trim()) {
               setValidationMessage(null);
             }
           }}
           onKeyDown={handleKeyDown}
           placeholder={t.agentWorkspace.placeholder}
-          disabled={disabled || isPending}
+          disabled={groupDisabled}
           required={true}
           minLength={1}
           aria-invalid={invalid || undefined}
@@ -113,20 +284,51 @@ export function Composer({
                 size="sm"
                 variant="outline"
                 data-testid="agent-abort"
-                aria-label="Stop"
-                onClick={onAbort}
+                aria-label={t.agentWorkspace.stop}
+                disabled={false}
+                className="opacity-100"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onAbort();
+                }}
               >
                 <SquareIcon data-icon="inline-start" />
-                Stop
+                {t.agentWorkspace.stop}
               </Button>
             ) : null}
           </div>
           <div className="flex items-center gap-2">
+            {onSetModel && models.length > 0 ? (
+              <Select
+                value={selectedModelId || undefined}
+                onValueChange={(value) => void changeModel(value ?? "")}
+                disabled={disabled || isPending || modelSwitching}
+              >
+                <SelectTrigger
+                  data-testid="agent-model-select"
+                  aria-label={t.agentWorkspace.modelSelectLabel}
+                  className="max-w-44 border-transparent text-xs text-muted-foreground shadow-none hover:border-input data-[popup-open]:border-input"
+                >
+                  {modelSwitching ? <Spinner className="size-3" /> : null}
+                  <SelectValue placeholder={t.agentWorkspace.modelSelectPlaceholder} />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectGroup>
+                    {models.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name || model.modelId}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            ) : null}
             <span
               role="status"
               aria-live="polite"
               className={cn(
-                "text-[11px] text-muted-foreground",
+                "text-2xs text-muted-foreground",
                 status === "error" && "text-destructive",
                 isPending && "inline-flex items-center gap-1",
               )}
@@ -143,15 +345,11 @@ export function Composer({
               size="sm"
               variant="default"
               data-testid="agent-send"
-              disabled={isPending || !canSend}
-              aria-disabled={isPending || !canSend}
+              disabled={!canSend}
+              aria-disabled={!canSend}
             >
-              {isPending ? (
-                <Spinner data-icon="inline-start" className="size-3.5" />
-              ) : (
-                <SendIcon data-icon="inline-start" />
-              )}
-              {isPending ? t.agentWorkspace.statusBusy : t.agentWorkspace.send}
+              <SendIcon data-icon="inline-start" />
+              {t.agentWorkspace.send}
             </InputGroupButton>
           </div>
         </InputGroupAddon>

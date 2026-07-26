@@ -52,6 +52,76 @@ test("publishStagingToPublication copies staging into empty publication path", a
   assert.match(nested, /Core/);
 });
 
+test("publishStagingToPublication rewrites repo: citations to relative sources/ paths", async () => {
+  const root = await tempDir("okf-pub-cite-");
+  const staging = path.join(root, "staging");
+  const publication = path.join(root, "wiki");
+  const sourceRoot = path.join(root, "checkout");
+  await mkdir(staging, { recursive: true });
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(path.join(sourceRoot, "README.md"), "line1\n", "utf8");
+  await writeMd(staging, "overview.md", page("Overview", "Note [Source](repo:README.md#L1)."));
+  await writeMd(staging, "modules/core.md", page("Core", "Detail [Source](repo:README.md#L1)."));
+
+  const result = await publishStagingToPublication({
+    stagingDir: staging,
+    publicationPath: publication,
+    sources: [{ id: "app", path: sourceRoot }],
+  });
+
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.rewrittenCitationPages, 2);
+
+  // Staging keeps Skill-form repo: citations.
+  const stagingBody = await readFile(path.join(staging, "overview.md"), "utf8");
+  assert.match(stagingBody, /\[Source\]\(repo:README\.md#L1\)/);
+
+  const overview = await readFile(path.join(publication, "overview.md"), "utf8");
+  assert.match(overview, /\[Source\]\(sources\/app\/README\.md#L1\)/);
+  assert.doesNotMatch(overview, /repo:README/);
+
+  const nested = await readFile(path.join(publication, "modules", "core.md"), "utf8");
+  assert.match(nested, /\[Source\]\(\.\.\/sources\/app\/README\.md#L1\)/);
+});
+
+test("publishStagingToPublication stamps OKF provenance on the candidate only", async () => {
+  const root = await tempDir("okf-pub-stamp-");
+  const staging = path.join(root, "staging");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await writeMd(staging, "index.md", "# Wiki\n\n* [Overview](overview.md) - intro\n");
+
+  const result = await publishStagingToPublication({
+    stagingDir: staging,
+    publicationPath: publication,
+    stamp: {
+      generatedBy: "okf-wiki/test-model",
+      generatedAt: "2026-07-26T12:00:00.000Z",
+      verified: [{ by: "process:review-council", at: "2026-07-26T12:30:00.000Z" }],
+    },
+  });
+  assert.equal(result.stampedPages, 1);
+  assert.equal(result.logChanges, 1);
+
+  const published = await readFile(path.join(publication, "overview.md"), "utf8");
+  assert.match(published, /generated: \{ by: "okf-wiki\/test-model"/);
+  assert.match(published, /verified: \{ by: "process:review-council"/);
+  const index = await readFile(path.join(publication, "index.md"), "utf8");
+  assert.match(index, /^---\nokf_version: "0\.2"\n---\n/);
+
+  // Deterministic log.md records the first publish (date from generatedAt).
+  const log = await readFile(path.join(publication, "log.md"), "utf8");
+  assert.match(
+    log,
+    /^# Wiki Update Log\n\n## 2026-07-26\n\* \*\*Creation\*\*: Added \[Overview\]\(\/overview\.md\)\./,
+  );
+
+  // Staging Wiki stays exactly what the model wrote.
+  const stagingBody = await readFile(path.join(staging, "overview.md"), "utf8");
+  assert.doesNotMatch(stagingBody, /generated:/);
+});
+
 test("publishStagingToPublication renames existing publication aside then replaces", async () => {
   const root = await tempDir("okf-pub-replace-");
   const staging = path.join(root, "staging");
@@ -70,12 +140,74 @@ test("publishStagingToPublication renames existing publication aside then replac
   const published = await readFile(path.join(publication, "new.md"), "utf8");
   assert.match(published, /New/);
 
-  // Aside directory should exist with previous content.
+  // Old content is replaced; no aside / candidate / lock residue accumulates
+  // (retention is not a product feature — ADR 0017).
+  await assert.rejects(() => readFile(path.join(publication, "old.md"), "utf8"));
   const siblings = await readdir(root);
-  const aside = siblings.find((name) => name.startsWith("wiki.prev."));
-  assert.ok(aside, "expected aside directory wiki.prev.*");
-  const old = await readFile(path.join(root, aside!, "old.md"), "utf8");
-  assert.match(old, /Old/);
+  assert.ok(
+    !siblings.some(
+      (name) =>
+        name.startsWith("wiki.prev.") ||
+        name.startsWith("wiki.next.") ||
+        name === "wiki.publish-lock",
+    ),
+    `expected no publish residue, got: ${siblings.join(", ")}`,
+  );
+});
+
+test("publishStagingToPublication sweeps residue from a crashed publish", async () => {
+  const root = await tempDir("okf-pub-sweep-");
+  const staging = path.join(root, "staging");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "page.md", page("Page"));
+  await mkdir(path.join(root, "wiki.next.123"), { recursive: true });
+  await mkdir(path.join(root, "wiki.prev.456"), { recursive: true });
+
+  await publishStagingToPublication({ stagingDir: staging, publicationPath: publication });
+
+  const siblings = await readdir(root);
+  assert.ok(!siblings.includes("wiki.next.123"), "stale candidate should be swept");
+  assert.ok(!siblings.includes("wiki.prev.456"), "stale aside should be swept");
+});
+
+test("publishStagingToPublication rejects overlapping staging and publication paths", async () => {
+  const root = await tempDir("okf-pub-overlap-");
+  const staging = path.join(root, "staging");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "page.md", page("Page"));
+
+  await assert.rejects(
+    () =>
+      publishStagingToPublication({
+        stagingDir: staging,
+        publicationPath: path.join(staging, "wiki"),
+      }),
+    /must not overlap/,
+  );
+  await assert.rejects(
+    () =>
+      publishStagingToPublication({
+        stagingDir: staging,
+        publicationPath: staging,
+      }),
+    /must not overlap/,
+  );
+});
+
+test("publishStagingToPublication fails closed when another publisher holds the lock", async () => {
+  const root = await tempDir("okf-pub-lock-");
+  const staging = path.join(root, "staging");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "page.md", page("Page"));
+  // Simulate a concurrent publisher in another process holding the lock.
+  await mkdir(`${publication}.publish-lock`, { recursive: true });
+
+  await assert.rejects(
+    () => publishStagingToPublication({ stagingDir: staging, publicationPath: publication }),
+    /another publish is in progress/,
+  );
 });
 
 test("publishStagingToPublication rejects relative stagingDir", async () => {

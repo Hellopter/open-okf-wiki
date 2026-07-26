@@ -7,6 +7,7 @@ import {
   resolveContainedPath,
   toPosixRelative,
 } from "./paths.js";
+import { deriveWikiGraph, type WikiGraph, type WikiGraphInputPage } from "./wiki-links.js";
 import { parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
 
 /** Soft cap on listed / readable published wiki pages. */
@@ -174,6 +175,67 @@ export async function listPublishedWikiPages(publicationPath: string): Promise<s
 
   pages.sort((a, b) => a.localeCompare(b));
   return pages;
+}
+
+export type PublishedWikiPageSummary = {
+  /** Relative POSIX path under the publication root. */
+  path: string;
+  /** Frontmatter metadata when present (concept pages). */
+  type?: string;
+  title?: string;
+  description?: string;
+};
+
+/** Read all published pages once (list rules + per-file size cap applied). */
+async function readAllPublishedPages(
+  publicationPath: string,
+): Promise<Array<WikiGraphInputPage & { summary: PublishedWikiPageSummary }>> {
+  const root = await assertPublicationRoot(publicationPath);
+  const relPaths = await listPublishedWikiPages(root);
+  const out: Array<WikiGraphInputPage & { summary: PublishedWikiPageSummary }> = [];
+  for (const rel of relPaths) {
+    const abs = resolvePublishedWikiPath(root, rel);
+    let info;
+    try {
+      info = await lstat(abs);
+    } catch {
+      continue; // page vanished between scan and read
+    }
+    if (!info.isFile() || info.isSymbolicLink() || info.size > PUBLISHED_WIKI_MAX_FILE_BYTES) {
+      continue;
+    }
+    let content: string;
+    try {
+      content = await readFile(abs, "utf8");
+    } catch {
+      continue;
+    }
+    const values = parseWikiFrontmatter(content)?.values;
+    const summary: PublishedWikiPageSummary = { path: rel };
+    if (values?.type) summary.type = values.type;
+    if (values?.title) summary.title = values.title;
+    if (values?.description) summary.description = values.description;
+    out.push({ path: rel, content, summary });
+  }
+  return out;
+}
+
+/**
+ * List published pages with their frontmatter metadata (type/title/description)
+ * so browsers can label navigation without fetching every page.
+ */
+export async function listPublishedWikiPageSummaries(
+  publicationPath: string,
+): Promise<PublishedWikiPageSummary[]> {
+  return (await readAllPublishedPages(publicationPath)).map((page) => page.summary);
+}
+
+/**
+ * Derive the published Wiki cross-link graph (Wiki Visualization source data):
+ * concept nodes with metadata, directed edges from internal links, broken links.
+ */
+export async function derivePublishedWikiGraph(publicationPath: string): Promise<WikiGraph> {
+  return deriveWikiGraph(await readAllPublishedPages(publicationPath));
 }
 
 /**

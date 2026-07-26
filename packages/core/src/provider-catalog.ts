@@ -6,10 +6,7 @@ import {
   CatalogModelSchema,
   type ModelProfile,
   type ModelProfilePublic,
-  ModelProfileSchema,
   type ModelProfileWrite,
-  OPENAI_COMPATIBLE_PROVIDER_KIND,
-  type ProviderApiShape,
   type ProviderConfig,
   ProviderConfigSchema,
   type ProviderEntry,
@@ -18,13 +15,11 @@ import {
   type ProviderEntryWrite,
   type ProviderPublic,
 } from "@okf-wiki/contract";
+import { flattenModels, PROVIDER_KIND } from "./provider-runtime.js";
 import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 import { ProviderStoreError } from "./workspace-errors.js";
 
 export const PROVIDER_FILE_NAME = "provider.json";
-
-/** Sole supported product provider kind (not a multi-provider switch). */
-const PROVIDER_KIND = OPENAI_COMPATIBLE_PROVIDER_KIND;
 
 /**
  * User-level provider config path.
@@ -75,40 +70,6 @@ function normalizeHeaders(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Merge provider + model headers (model wins on key conflict, case-sensitive). */
-export function mergeHeaders(
-  provider?: Record<string, string>,
-  model?: Record<string, string>,
-): Record<string, string> | undefined {
-  const merged = { ...(provider ?? {}), ...(model ?? {}) };
-  return Object.keys(merged).length > 0 ? merged : undefined;
-}
-
-/** Flatten provider tree → selectable model profiles (runtime view). */
-export function flattenModels(config: ProviderConfig): ModelProfile[] {
-  const out: ModelProfile[] = [];
-  for (const p of config.providers ?? []) {
-    for (const m of p.models ?? []) {
-      out.push(
-        ModelProfileSchema.parse({
-          id: m.id,
-          name: m.name,
-          providerKind: PROVIDER_KIND,
-          providerId: p.id,
-          modelId: m.modelId,
-          baseUrl: p.baseUrl ?? "",
-          apiKey: p.apiKey ?? "",
-          apiShape: p.apiShape ?? "completions",
-          ...(m.maxContextTokens !== undefined ? { maxContextTokens: m.maxContextTokens } : {}),
-          headers: mergeHeaders(p.headers, m.headers),
-          supportsDeveloperRole: p.supportsDeveloperRole === true,
-        }),
-      );
-    }
-  }
-  return out;
-}
-
 /** All model selection ids across providers. */
 function allModelIds(config: ProviderConfig): Set<string> {
   return new Set(flattenModels(config).map((m) => m.id));
@@ -118,11 +79,11 @@ function allProviderIds(config: ProviderConfig): Set<string> {
   return new Set((config.providers ?? []).map((p) => p.id));
 }
 
-/** Parse on-disk catalog (v3 only). Invalid/legacy files yield empty catalog. */
-function normalizeLoaded(data: unknown): ProviderConfig {
+/** Parse on-disk catalog (v3 only). Returns null for invalid/legacy files. */
+function normalizeLoaded(data: unknown): ProviderConfig | null {
   const parsed = ProviderConfigSchema.safeParse(data);
   if (!parsed.success) {
-    return emptyProvider();
+    return null;
   }
   const config = parsed.data;
   if (
@@ -141,7 +102,23 @@ export async function loadProviderConfig(
   try {
     const raw = await readFile(providerPath, "utf8");
     const data = JSON.parse(raw) as unknown;
-    return normalizeLoaded(data);
+    const normalized = normalizeLoaded(data);
+    if (normalized) {
+      return normalized;
+    }
+    // Legacy / invalid catalog: it may hold API keys, and the next save would
+    // overwrite it. Preserve the original as a .bak before starting empty.
+    const backupPath = `${providerPath}.bak.${Date.now()}`;
+    try {
+      await rename(providerPath, backupPath);
+      process.stderr.write(
+        `provider config at ${providerPath} is not a v3 catalog; ` +
+          `moved it to ${backupPath} and starting with an empty catalog\n`,
+      );
+    } catch {
+      // Best-effort: never block loading on backup failure.
+    }
+    return emptyProvider();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
@@ -188,7 +165,9 @@ export async function saveProviderConfig(
   await mkdir(dir, { recursive: true });
   const tempPath = `${providerPath}.${process.pid}.${Date.now()}.tmp`;
   const body = `${JSON.stringify(toWrite, null, 2)}\n`;
-  await writeFile(tempPath, body, "utf8");
+  // mode at open(2) is masked by umask (bits can only be removed), so the
+  // secrets file is never readable beyond the owner, even before the chmod.
+  await writeFile(tempPath, body, { encoding: "utf8", mode: 0o600 });
   try {
     await chmod(tempPath, 0o600);
   } catch {
@@ -674,124 +653,4 @@ export async function setDefaultModelProfile(
     },
     providerPath,
   );
-}
-
-export type ResolvedProviderRuntime = {
-  baseUrl: string | undefined;
-  apiKey: string;
-  apiShape: ProviderApiShape;
-  providerKind: typeof OPENAI_COMPATIBLE_PROVIDER_KIND;
-  modelId: string | undefined;
-  profileId: string | undefined;
-  profileName: string | undefined;
-  maxContextTokens: number | undefined;
-  /** Effective HTTP headers for Pi / probe. */
-  headers: Record<string, string> | undefined;
-  /**
-   * When true, Pi may emit role "developer" for system prompts.
-   * Default false for third-party OpenAI-compatible gateways.
-   */
-  supportsDeveloperRole: boolean;
-  source: {
-    baseUrl: "stored" | "env" | "none";
-    apiKey: "stored" | "env" | "none";
-  };
-};
-
-/**
- * Resolve credentials for a workspace model selection.
- * Prefers profileId, then matching modelId, then default profile, then env-only.
- */
-export function resolveProviderRuntime(
-  config: ProviderConfig,
-  options: {
-    profileId?: string;
-    modelId?: string;
-    env?: NodeJS.ProcessEnv;
-  } = {},
-): ResolvedProviderRuntime {
-  const env = options.env ?? process.env;
-  const envUrl = env.OPENAI_BASE_URL?.trim() ?? "";
-  const envKey = env.OPENAI_API_KEY?.trim() ?? "";
-  const flat = flattenModels(config);
-
-  let profile: ModelProfile | undefined;
-  if (options.profileId) {
-    profile = flat.find((m) => m.id === options.profileId);
-  }
-  if (!profile && options.modelId) {
-    profile = flat.find((m) => m.modelId === options.modelId);
-  }
-  if (!profile && config.defaultModelProfileId) {
-    profile = flat.find((m) => m.id === config.defaultModelProfileId);
-  }
-  if (!profile && flat.length === 1) {
-    profile = flat[0];
-  }
-
-  const storedUrl = profile?.baseUrl?.trim() ?? "";
-  const storedKey = profile?.apiKey?.trim() ?? "";
-
-  let baseUrl: string | undefined;
-  let baseUrlSource: ResolvedProviderRuntime["source"]["baseUrl"] = "none";
-  if (storedUrl) {
-    baseUrl = storedUrl.replace(/\/$/, "");
-    baseUrlSource = "stored";
-  } else if (envUrl) {
-    baseUrl = envUrl.replace(/\/$/, "");
-    baseUrlSource = "env";
-  }
-
-  let apiKey = "";
-  let apiKeySource: ResolvedProviderRuntime["source"]["apiKey"] = "none";
-  if (storedKey) {
-    apiKey = storedKey;
-    apiKeySource = "stored";
-  } else if (envKey) {
-    apiKey = envKey;
-    apiKeySource = "env";
-  }
-
-  // Default User-Agent for WAF-sensitive gateways when nothing configured.
-  const headers =
-    profile?.headers && Object.keys(profile.headers).length > 0
-      ? profile.headers
-      : { "User-Agent": "node" };
-
-  return {
-    baseUrl,
-    apiKey: apiKey || "local",
-    apiShape: profile?.apiShape ?? "completions",
-    providerKind: PROVIDER_KIND,
-    modelId: profile?.modelId ?? options.modelId,
-    profileId: profile?.id,
-    profileName: profile?.name,
-    maxContextTokens: profile?.maxContextTokens,
-    headers,
-    supportsDeveloperRole: profile?.supportsDeveloperRole === true,
-    source: { baseUrl: baseUrlSource, apiKey: apiKeySource },
-  };
-}
-
-/** Look up a profile by id (throws if missing). */
-export function getModelProfile(config: ProviderConfig, profileId: string): ModelProfile {
-  const profile = flattenModels(config).find((m) => m.id === profileId);
-  if (!profile) {
-    throw new ProviderStoreError(
-      "model_profile_not_found",
-      `model profile not found: ${profileId}`,
-    );
-  }
-  return profile;
-}
-
-/** True when any model or env can drive a live call. */
-export function hasProviderCredentials(
-  config: ProviderConfig,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (env.OPENAI_BASE_URL?.trim() || env.OPENAI_API_KEY?.trim()) {
-    return true;
-  }
-  return flattenModels(config).some((m) => Boolean(m.baseUrl?.trim()) || Boolean(m.apiKey?.trim()));
 }

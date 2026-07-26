@@ -171,3 +171,11 @@ test("AgentSseEventSchema: rejects sequence/replay framing", () => {
     false,
   );
 });
+
+test("parseAgentCommand: set_model requires profileId", () => {
+  const cmd = parseAgentCommand({ type: "set_model", profileId: "profile-1" });
+  assert.equal(cmd.type, "set_model");
+  if (cmd.type === "set_model") assert.equal(cmd.profileId, "profile-1");
+  assert.equal(safeParseAgentCommand({ type: "set_model" }).success, false);
+  assert.equal(safeParseAgentCommand({ type: "set_model", profileId: "" }).success, false);
+});

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   assertSafeWikiToolList,
   isReadOnlyToolList,
+  resolveOperatorToolNames,
   roleMayWrite,
   toolNamesForRole,
 } from "./tool-policy.js";
@@ -18,8 +19,11 @@ describe("tool-policy", () => {
     }
   });
 
-  it("operator chat exposes no file tools", () => {
-    assert.deepEqual([...toolNamesForRole("operator_chat")], []);
+  it("operator chat is read-only Pi tools (never write/edit/bash)", () => {
+    const tools = toolNamesForRole("operator_chat");
+    assert.deepEqual([...tools], ["read", "grep", "find", "ls"]);
+    assert.equal(roleMayWrite("operator_chat"), false);
+    assert.equal(isReadOnlyToolList(tools), true);
   });
 
   it("root_write adds write and edit only", () => {
@@ -32,5 +36,21 @@ describe("tool-policy", () => {
   it("rejects bash and unknown tools", () => {
     assert.throws(() => assertSafeWikiToolList(["bash"]), /forbidden/);
     assert.throws(() => assertSafeWikiToolList(["list_source"]), /unknown/);
+  });
+});
+
+describe("resolveOperatorToolNames", () => {
+  it("defaults to read-only when no selection is stored", () => {
+    assert.deepEqual([...resolveOperatorToolNames(undefined)], ["read", "grep", "find", "ls"]);
+  });
+
+  it("accepts partial selections, dedupes, and allows the bash opt-in", () => {
+    assert.deepEqual([...resolveOperatorToolNames(["read", "read", "bash"])], ["read", "bash"]);
+    assert.deepEqual([...resolveOperatorToolNames([])], []);
+  });
+
+  it("rejects unknown or workflow-only tool names", () => {
+    assert.throws(() => resolveOperatorToolNames(["write"]), /unknown operator tool/);
+    assert.throws(() => resolveOperatorToolNames(["docker"]), /unknown operator tool/);
   });
 });

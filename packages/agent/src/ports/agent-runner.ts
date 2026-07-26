@@ -54,7 +54,19 @@ export type AgentRunRequest = {
   additionalSkillPaths?: readonly string[];
   abortSignal?: AbortSignal;
   timeoutMs?: number;
+  /**
+   * Unique attempt id for this scoped loop (streaming upserts share the same id).
+   * Defaults to role when omitted. Prefer topology-aligned ids (`plan`, `domain-x`,
+   * `review@0:reviewer-1`) so multi-round work appends rather than orphans.
+   */
   spanId?: string;
+  /**
+   * Topology node this attempt belongs to. Defaults to spanId/role when omitted.
+   * Review council members share `review`; only attemptId differs per member/round.
+   */
+  nodeKey?: string;
+  /** Round / retry index for the topology node (0-based). Defaults to 0. */
+  runIndex?: number;
   wikiDir?: string;
   /** Opaque custom tools (plan submit, etc.) — typed loosely to avoid Pi coupling. */
   customTools?: readonly unknown[];
@@ -68,6 +80,12 @@ export type AgentRunResult = {
   pages?: string[];
   receiptPath?: string;
   specPath?: string;
+  /**
+   * Per-task settle marker for runAgentsParallel: true when this task failed
+   * (summary carries the error). Sibling results are still returned; only
+   * AbortError rejects the whole batch.
+   */
+  failed?: boolean;
 };
 
 export type WikiWriteRequest = {
@@ -81,9 +99,28 @@ export type WikiWriteRequest = {
   additionalSkillPaths?: readonly string[];
   sourceIgnores?: SourceIgnoreInput;
   abortSignal?: AbortSignal;
+  /** Wall-clock budget for the write session (workspace limits). */
+  timeoutMs?: number;
   onProgress?: (attempt: ScopedRunnerProgress) => void;
   systemPrompt?: string;
   task: string;
+  /**
+   * Unique attempt id for this write (defaults to `root_write`).
+   * Repair rounds should use `repair@{runIndex}` so history appends.
+   */
+  spanId?: string;
+  /**
+   * Topology node for the attempt (defaults to spanId / `root_write`).
+   * Initial produce write → `root_write`; repair loop → `repair`.
+   */
+  nodeKey?: string;
+  /** Round / retry index for the topology node (0-based). Defaults to 0. */
+  runIndex?: number;
+  /**
+   * Graph attempt role. Session always uses root_write tools; progress may
+   * report `repair` so the Run Graph attaches to the repair topology node.
+   */
+  graphRole?: "root_write" | "repair";
 };
 
 export type WikiWriteResult = {

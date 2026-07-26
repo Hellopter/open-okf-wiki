@@ -61,6 +61,40 @@ describe("assertPathAllowed read", () => {
     assert.equal(abs, path.join(runWorkDir, "sources", "repo", "src", "Main.java"));
   });
 
+  it("denies product-reserved trees via denyPrefixes for read and write", () => {
+    const denyPrefixes = [".okf-wiki"];
+    assert.throws(
+      () =>
+        assertPathAllowed(runWorkDir, ".okf-wiki/settings/auth.json", {
+          mode: "read",
+          denyPrefixes,
+        }),
+      /product-reserved/,
+    );
+    assert.throws(
+      () => assertPathAllowed(runWorkDir, ".okf-wiki", { mode: "read", denyPrefixes }),
+      /product-reserved/,
+    );
+    assert.throws(
+      () =>
+        assertPathAllowed(runWorkDir, ".okf-wiki/runs/r1/wiki/x.md", {
+          mode: "write",
+          denyPrefixes,
+        }),
+      /product-reserved/,
+    );
+    // Non-reserved sibling paths stay readable.
+    assert.equal(
+      assertPathAllowed(runWorkDir, "src/index.ts", { mode: "read", denyPrefixes }),
+      path.join(runWorkDir, "src", "index.ts"),
+    );
+    // Prefix must match a whole segment, not a name prefix.
+    assert.equal(
+      assertPathAllowed(runWorkDir, ".okf-wiki-notes.md", { mode: "read", denyPrefixes }),
+      path.join(runWorkDir, ".okf-wiki-notes.md"),
+    );
+  });
+
   it("allows empty / . as workdir root for read", () => {
     assert.equal(assertPathAllowed(runWorkDir, "", { mode: "read" }), runWorkDir);
     assert.equal(assertPathAllowed(runWorkDir, ".", { mode: "read" }), runWorkDir);

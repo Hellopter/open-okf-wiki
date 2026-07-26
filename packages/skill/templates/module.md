@@ -1,6 +1,6 @@
 # Module template
 
-Frontmatter: `type: Module` plus non-empty `title`.
+Frontmatter: `type: Module` plus non-empty `title` and one-sentence `description`.
 
 Use for a cohesive implementation area that deserves its own navigation target:
 

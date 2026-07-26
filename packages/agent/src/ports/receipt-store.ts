@@ -63,10 +63,7 @@ export type ReceiptListItem = {
  */
 export interface ReceiptStore {
   write(input: PersistReceiptInput): Promise<PersistReceiptResult>;
-  attach(
-    child: ResearchChildResult,
-    input: AttachReceiptInput,
-  ): Promise<AttachReceiptResult>;
+  attach(child: ResearchChildResult, input: AttachReceiptInput): Promise<AttachReceiptResult>;
   buildIndex(workspaceRoot: string, runId: string): Promise<string>;
   list(workspaceRoot: string, runId: string): Promise<ReceiptListItem[]>;
 }

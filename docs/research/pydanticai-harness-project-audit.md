@@ -1,5 +1,7 @@
 # Pydantic AI Harness：大仓库上下文、递归委派与 repo→wiki 架构复审
 
+> Historical research only. Not product path.
+
 > 研究日期：2026-07-16
 >
 > 结论基于当前项目源码、三个本地 refs 的固定快照，以及 Pydantic AI Harness v0.7.0、Pydantic AI v2.10.0 和 OpenWiki 所用 DeepAgents 1.10.8 的一手源码。没有修改运行代码。

@@ -4,7 +4,7 @@
  * Product Settings store OpenAI-compatible gateways as model profiles
  * (baseUrl, apiKey, apiShape, modelId). Pi speaks providers; this module
  * registers one in-memory provider per selected profile and returns the
- * Model that createWikiSession / ProduceRuntime need.
+ * Model that createWikiSession / AgentRunner need.
  *
  * Product only supports OpenAI-compatible (completions | responses).
  */
@@ -219,9 +219,11 @@ export async function resolvePiModelFromProvider(
   };
 
   // Synthetic runtime snapshot for callers that log source (not from store).
+  // Secret-free: the credential lives on the registered ModelRuntime; callers
+  // only need `source.apiKey` to know one exists.
   const runtime: ResolvedProviderRuntime = {
     baseUrl,
-    apiKey: apiKey || "local",
+    apiKey: "",
     apiShape: input.apiShape,
     providerKind,
     modelId,

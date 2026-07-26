@@ -41,7 +41,7 @@ test("resolvePackageSkillPath finds @okf-wiki/skill package assets", async () =>
 
 test("ensureHomeProducerSkill skips package resolve when home skill exists", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-existing-home-"));
@@ -77,7 +77,7 @@ test("resolveSkillSource prefers explicit skillPath", async () => {
 test("resolveSkillSource prefers workspace .agents/skills over home", async () => {
   const appHome = await isolateAppState();
   // Enable home skills via app.json
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-user-home-"));
@@ -98,7 +98,7 @@ test("resolveSkillSource prefers workspace .agents/skills over home", async () =
 
 test("resolveSkillSource uses ~/.agents/skills when enabled and seeds from package", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-seed-home-"));
@@ -118,7 +118,7 @@ test("resolveSkillSource uses ~/.agents/skills when enabled and seeds from packa
 
 test("resolveSkillSource uses package when home skills disabled in Settings", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   await setLoadHomeSkills(false, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-home-off-"));
@@ -132,7 +132,7 @@ test("resolveSkillSource uses package when home skills disabled in Settings", as
 
 test("resolveSkillSource honors loadHomeSkills override", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   // Settings say home is on, but caller overrides to package.
   await setLoadHomeSkills(true, path.join(appHome, "app.json"));
 
@@ -147,7 +147,7 @@ test("resolveSkillSource honors loadHomeSkills override", async () => {
 
 test("resolveWikiSkillPaths prefers workspace skills root and skips nested producer", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   await setLoadHomeSkills(false, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-wiki-paths-home-"));
@@ -167,7 +167,7 @@ test("resolveWikiSkillPaths prefers workspace skills root and skips nested produ
 
 test("resolveWikiSkillPaths adds package producer when outside skills roots", async () => {
   const appHome = await isolateAppState();
-  const { setLoadHomeSkills } = await import("./workspace-store.js");
+  const { setLoadHomeSkills } = await import("./workspace-app-state.js");
   await setLoadHomeSkills(false, path.join(appHome, "app.json"));
 
   const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-wiki-paths-pkg-"));

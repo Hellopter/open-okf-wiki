@@ -7,9 +7,9 @@ import type {
   SkillSourceKind,
 } from "@okf-wiki/contract";
 import { SkillInfoSchema } from "@okf-wiki/contract";
+import { isPathInside } from "./paths.js";
 import { isUnderWorkspaceSkills, workspaceProducerSkillPath } from "./product-home.js";
 import { listSkillFiles, readSkillFrontmatter, skillDigest } from "./skill-digest.js";
-import { isPathInside } from "./workspace-store.js";
 
 /**
  * Default workspace Producer Skill directory

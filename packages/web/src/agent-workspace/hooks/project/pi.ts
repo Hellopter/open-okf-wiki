@@ -390,6 +390,44 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     }
 
     const err = extractAssistantError(message);
+
+    // Operator abort (no provider error): neutral outcome, not a failure.
+    // Finalize any partial stream as done and add the system aborted marker
+    // the Transcript renders as a separator (never a destructive bubble).
+    if (err.aborted) {
+      const marker: AgentMessage = {
+        id: makeId("sys"),
+        role: "system",
+        content: "Stopped",
+        createdAt: ts,
+        status: "aborted",
+      };
+      if (state.streamingMessage) {
+        const finalized = {
+          ...state.streamingMessage,
+          status: "done" as const,
+          thinkingStatus: state.streamingMessage.thinking
+            ? ("done" as const)
+            : state.streamingMessage.thinkingStatus,
+        };
+        const hasBody =
+          finalized.content.trim() !== "" ||
+          Boolean(finalized.thinking) ||
+          (finalized.tools?.length ?? 0) > 0;
+        return {
+          ...state,
+          messages: hasBody ? [...state.messages, finalized, marker] : [...state.messages, marker],
+          streamingMessage: null,
+          ...(hasBody ? { lastAssistantId: finalized.id } : {}),
+        };
+      }
+      return {
+        ...state,
+        messages: [...state.messages, marker],
+        streamingMessage: null,
+      };
+    }
+
     const isError = err.isError;
     const status = isError ? ("error" as const) : ("done" as const);
 
@@ -430,6 +468,19 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
             status,
             errorText: err.errorText,
           };
+      // Idempotence across the snapshot/live cut: the server may replay a
+      // message_end that the just-received snapshot already contains. Without
+      // a wire-level message id, an identical trailing assistant card is the
+      // replay signature — skip the duplicate.
+      const lastAssistant = [...state.messages].reverse().find((m) => m.role === "assistant");
+      if (
+        lastAssistant &&
+        lastAssistant.content === card.content &&
+        (lastAssistant.tools?.length ?? 0) === (card.tools?.length ?? 0) &&
+        lastAssistant.status === card.status
+      ) {
+        return { ...state, streamingMessage: null };
+      }
       return {
         ...state,
         messages: [...state.messages, card],
@@ -627,12 +678,18 @@ export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): Pi
     const snapshot = createPiStreamState(projectPiHistory(rows));
     const activeTool = event.payload.activeTool;
     if (!activeTool) return snapshot;
-    return updateToolInState(snapshot, activeTool.toolCallId, {
-      name: activeTool.toolName,
-      details: activeTool.details,
-      output: activeTool.details.summary,
-      status: "running",
-    });
+    // A genuine active tool in the snapshot means the agent turn is still
+    // running — restore turnActive so a reconnect mid-turn keeps Stop/streaming
+    // UI instead of showing "Ready".
+    return {
+      ...updateToolInState(snapshot, activeTool.toolCallId, {
+        name: activeTool.toolName,
+        details: activeTool.details,
+        output: activeTool.details.summary,
+        status: "running",
+      }),
+      turnActive: true,
+    };
   }
   if (event.source === "pi" && typeof event.kind === "string") {
     return reducePiEvent(state, event.kind, event.payload);

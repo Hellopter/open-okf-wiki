@@ -22,12 +22,9 @@ test.describe("create workspace", () => {
       timeout: 20_000,
     });
     await expect(page.getByTestId("agent-workspace-page")).toContainText(name);
-    // Immersive chrome no longer paints rootPath on the page; it stays in the URL.
-    await expect
-      .poll(() => new URL(page.url()).searchParams.get("rootPath"), {
-        timeout: 10_000,
-      })
-      .toBe(rootPath);
+    // Id-only navigation: land on /w/:id (rootPath is form input only, not URL).
+    await expect(page).toHaveURL(/\/w\/[^/?]+/);
+    expect(new URL(page.url()).searchParams.get("rootPath")).toBeNull();
     await expect(page.getByTestId("workspace-subnav-agent")).toBeVisible();
   });
 });

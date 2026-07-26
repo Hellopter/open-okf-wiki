@@ -5,11 +5,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  defaultWikiRunSpec,
   type AnalysisReceipt,
+  defaultWikiRunSpec,
   type RunGraphSnapshot,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
+import type { WikiWriteRequest, WikiWriteResult } from "./agent-runner.js";
 import type { GatePort } from "./gate-port.js";
 import type { GraphStore } from "./graph-store.js";
 import type {
@@ -21,7 +22,6 @@ import type {
 } from "./receipt-store.js";
 import type { SpecStore } from "./spec-store.js";
 import type { WikiWriter } from "./wiki-writer.js";
-import type { WikiWriteRequest, WikiWriteResult } from "./agent-runner.js";
 
 function memoryReceiptStore(): ReceiptStore {
   const byKey = new Map<string, AnalysisReceipt>();

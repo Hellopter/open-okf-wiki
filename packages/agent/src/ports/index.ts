@@ -1,7 +1,7 @@
 export type {
+  AgentRunner,
   AgentRunRequest,
   AgentRunResult,
-  AgentRunner,
   RunWorkdirLayoutPaths,
   ScopedRunnerProgress,
   ScopedRunnerRole,
@@ -26,14 +26,7 @@ export {
   SPEC_FILE_NAME,
   specPath,
 } from "./core-spec-store.js";
-export type {
-  GateDecision,
-  GatePort,
-  GateRequest,
-  WikiProduceGateCoordinator,
-  WikiProduceGateDecision,
-  WikiProduceGateRequest,
-} from "./gate-port.js";
+export type { GateDecision, GatePort, GateRequest } from "./gate-port.js";
 export type { GraphStore } from "./graph-store.js";
 export {
   type ProduceProgress,

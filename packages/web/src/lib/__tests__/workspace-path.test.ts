@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentWorkspaceHref, workspaceHref } from "../workspace-path.ts";
+import { configureHref, operateHref, wikiHref } from "../workspace-path.ts";
 
-test("workspace links separate the Agent Workspace from secondary pages", () => {
-  assert.equal(agentWorkspaceHref("team/wiki", "/repo"), "/w/team%2Fwiki?rootPath=%2Frepo");
-  assert.equal(
-    workspaceHref("team/wiki", "/sources", "/repo", { view: "tracked" }),
-    "/workspaces/team%2Fwiki/sources?rootPath=%2Frepo&view=tracked",
-  );
+test("operate href is id-only (no rootPath query)", () => {
+  assert.equal(operateHref("team/wiki"), "/w/team%2Fwiki");
+  assert.equal(operateHref("team/wiki", { sessionId: "s1" }), "/w/team%2Fwiki?sessionId=s1");
+});
+
+test("wiki and configure hrefs live under /w/:id", () => {
+  assert.equal(wikiHref("ws1"), "/w/ws1/wiki");
+  assert.equal(wikiHref("ws1", "overview.md"), "/w/ws1/wiki/overview.md");
+  assert.equal(wikiHref("ws1", "a/b.md"), "/w/ws1/wiki/a/b.md");
+  assert.equal(configureHref("ws1"), "/w/ws1/configure");
+  assert.equal(configureHref("ws1", "sources"), "/w/ws1/configure#sources");
 });

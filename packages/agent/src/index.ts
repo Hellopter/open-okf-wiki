@@ -6,7 +6,26 @@
 
 /** Re-export Core skill roots helper (single resolution algorithm lives in Core). */
 export { resolveWikiSkillPaths } from "@okf-wiki/core";
+/** Operator-facing redaction for server HTTP/SSE surfaces. */
+export {
+  redactErrorMessage,
+  redactSensitiveText,
+  redactSensitiveValue,
+  sanitizeSummary,
+} from "./redact/index.js";
+export { shouldUsePiFixtureMode } from "./runtime/fixture-mode.js";
 export { createOperatorFixtureModel } from "./runtime/model/fixture-model.js";
+export {
+  resolveWorkspacePiModel,
+  testProviderConnection,
+} from "./runtime/model/provider-model.js";
+export { resolveModelSelection } from "./runtime/model/role-model.js";
+export {
+  type ExpandOperatorCommandResult,
+  expandOperatorCommand,
+  listOperatorCommands,
+  type OperatorCommand,
+} from "./session/operator-commands.js";
 export {
   createOperatorSession,
   deleteOperatorSession,
@@ -18,20 +37,7 @@ export {
   projectOperatorHistoryMessage,
 } from "./session/operator-session.js";
 export {
-  resolveWorkspacePiModel,
-  testProviderConnection,
-} from "./runtime/model/provider-model.js";
-export { resolveModelSelection } from "./runtime/model/role-model.js";
-export { shouldUsePiFixtureMode } from "./runtime/fixture-mode.js";
-export {
-  type WikiProduceGateCoordinator,
-  type WikiProduceGateDecision,
-  type WikiProduceGateRequest,
+  type GateDecision,
+  type GatePort,
+  type GateRequest,
 } from "./workflow/run-wiki.js";
-/** Operator-facing redaction for server HTTP/SSE surfaces. */
-export {
-  redactErrorMessage,
-  redactSensitiveText,
-  redactSensitiveValue,
-  sanitizeSummary,
-} from "./redact/index.js";

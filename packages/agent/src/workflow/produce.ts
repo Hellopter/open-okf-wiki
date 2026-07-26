@@ -12,11 +12,11 @@ import type {
   SourceIgnoreInput,
   WikiWriteResult,
 } from "../ports/agent-runner.js";
-import type { ProduceProgress } from "../ports/progress-sink.js";
-import { resolveOrchestration } from "./budgets.js";
 import { defaultReceiptStore } from "../ports/core-receipt-store.js";
+import type { ProduceProgress } from "../ports/progress-sink.js";
 import { emitProduceProgress } from "../produce/progress.js";
 import { listWikiMarkdown } from "../produce/wiki-pages.js";
+import { resolveOrchestration } from "./budgets.js";
 import { runResearchPhase } from "./phases/research-phase.js";
 import { runReviewRepairPhase } from "./phases/review-repair-phase.js";
 import {
@@ -164,10 +164,7 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
     summary: "existing staging",
   };
 
-  const receiptIndex = await defaultReceiptStore.buildIndex(
-    input.workspace.rootPath,
-    input.runId,
-  );
+  const receiptIndex = await defaultReceiptStore.buildIndex(input.workspace.rootPath, input.runId);
   emitProduceProgress(input.onProgress, {
     kind: "status",
     status: "producing",
@@ -194,7 +191,8 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
   return {
     status: "repaired",
     pages: result.produced.pages,
-    summary: result.produced.summary || `Repaired Staging Wiki (${result.produced.pages.length} pages)`,
+    summary:
+      result.produced.summary || `Repaired Staging Wiki (${result.produced.pages.length} pages)`,
     layout: result.produced.layout,
     mode: result.produced.mode,
   };

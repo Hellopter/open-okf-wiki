@@ -1,5 +1,11 @@
 /**
  * Domain + leaf research fan-out (Run Workflow phase).
+ *
+ * Domain units (leaf fan-out + domain reduce) have independent scopes and run
+ * under bounded parallelism (orchestration.domainConcurrency). Domain reduce
+ * failures get one policy-driven retry (runAttemptWithRetry + retry-policy);
+ * retry attempts append to the Run Graph as `domain-x@retryN` under nodeKey
+ * `domain-x` with runIndex = attempt index.
  */
 
 import type { WorkspaceOrchestration } from "@okf-wiki/contract";
@@ -8,7 +14,8 @@ import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import type { ReceiptStore } from "../../ports/receipt-store.js";
 import { emitProduceProgress } from "../../produce/progress.js";
 import { domainResearchPrompt, leafResearchPrompt } from "../../prompts/index.js";
-import { decideNodeRetry, isCriticalDomainFailure } from "../retry-policy.js";
+import { runAttemptWithRetry } from "../attempt-retry.js";
+import { isCriticalDomainFailure } from "../retry-policy.js";
 import {
   cancelledResult,
   type PhaseContext,
@@ -21,13 +28,39 @@ export type ResearchPhaseResult =
   | { kind: "cancelled"; result: ProduceWikiResult }
   | { kind: "failed"; result: ProduceWikiResult };
 
+type DomainUnitOutcome =
+  | { kind: "ok" }
+  | { kind: "cancelled" }
+  | { kind: "failed"; message: string; critical: boolean };
+
+/** Bounded-parallel map preserving item order; stops launching after abort. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  signal: AbortSignal | undefined,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<Array<R | undefined>> {
+  const results: Array<R | undefined> = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      if (signal?.aborted) return;
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]!, i);
+    }
+  }
+  const width = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: width }, () => worker()));
+  return results;
+}
+
 export async function runResearchPhase(
   ctx: PhaseContext,
   orch: WorkspaceOrchestration,
   receipts: ReceiptStore = defaultReceiptStore,
 ): Promise<ResearchPhaseResult> {
   const { input, onProgress, runtime, metrics, layout, spec, mode } = ctx;
-  const criticalDomainFailures: string[] = [];
 
   emitProduceProgress(onProgress, {
     kind: "status",
@@ -38,8 +71,7 @@ export async function runResearchPhase(
   const domains = (spec.domains ?? []).slice(0, orch.maxDomainFanOut);
   const workerModel = input.models?.worker ?? input.models?.writer;
 
-  for (const d of domains) {
-    throwIfAborted(input.abortSignal);
+  const runDomainUnit = async (d: (typeof domains)[number]): Promise<DomainUnitOutcome> => {
     metrics.domainStarts += 1;
     const domainNodeId = `domain-${d.id}`;
 
@@ -76,6 +108,8 @@ export async function runResearchPhase(
       });
 
       try {
+        // Per-task settle: a failed leaf comes back with `failed: true` while
+        // sibling leaves keep their results (never discard the whole batch).
         const leafResults = await runtime.runAgentsParallel(
           leafTasks.map((t) => t.input),
           { concurrency: Math.min(2, leafTasks.length) },
@@ -95,43 +129,51 @@ export async function runResearchPhase(
               nodeId: leafNodeId,
               parentId: domainNodeId,
               scope: `${d.id}: ${leafQuestions[i]}`,
-              status: "complete",
+              status: lr.failed ? "failed" : "complete",
+              ...(lr.failed ? { summary: lr.summary } : {}),
             },
           );
           childReceiptPaths.push(withPath.receiptPath);
         }
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
-          return {
-            kind: "cancelled",
-            result: cancelledResult(spec, mode, metrics, layout),
-          };
+          return { kind: "cancelled" };
         }
-        // Leaf fan-out is best-effort; domain still runs.
+        // Leaf fan-out infrastructure failure is best-effort; domain still runs.
       }
     }
 
+    // Retry policy (T1): failed domain attempts get one policy-driven retry
+    // (transient/unknown classes); then the failure is recorded and critical
+    // domains fail the run.
     try {
-      const domainResult = await runtime.runAgent({
-        role: "domain",
-        spanId: domainNodeId,
-        runWorkDir: layout.runWorkDir,
-        task: domainResearchPrompt({
-          domainId: d.id,
-          title: d.title ?? d.id,
-          scope: d.scope ?? "",
-          questions: d.questions ?? [],
-          nodeId: domainNodeId,
-          runId: input.runId,
-        }),
-        model: workerModel?.model,
-        modelRuntime: workerModel?.modelRuntime,
-        maxContextTokens: workerModel?.maxContextTokens,
-        contextTargetTokens: ctx.contextTargetTokens,
-        sourceIgnores: input.sourceIgnores,
+      const domainResult = await runAttemptWithRetry({
+        maxAttempts: 2,
         abortSignal: input.abortSignal,
-        onProgress: (span: ScopedRunnerProgress) =>
-          emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+        run: (attempt) =>
+          runtime.runAgent({
+            role: "domain",
+            spanId: attempt === 0 ? domainNodeId : `${domainNodeId}@retry${attempt}`,
+            nodeKey: domainNodeId,
+            runIndex: attempt,
+            runWorkDir: layout.runWorkDir,
+            task: domainResearchPrompt({
+              domainId: d.id,
+              title: d.title ?? d.id,
+              scope: d.scope ?? "",
+              questions: d.questions ?? [],
+              nodeId: domainNodeId,
+              runId: input.runId,
+            }),
+            model: workerModel?.model,
+            modelRuntime: workerModel?.modelRuntime,
+            maxContextTokens: workerModel?.maxContextTokens,
+            contextTargetTokens: ctx.contextTargetTokens,
+            sourceIgnores: input.sourceIgnores,
+            abortSignal: input.abortSignal,
+            onProgress: (span: ScopedRunnerProgress) =>
+              emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+          }),
       });
       await receipts.attach(
         {
@@ -149,24 +191,14 @@ export async function runResearchPhase(
           childReceipts: childReceiptPaths,
         },
       );
+      return { kind: "ok" };
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        return {
-          kind: "cancelled",
-          result: cancelledResult(spec, mode, metrics, layout),
-        };
+        return { kind: "cancelled" };
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      // Policy consult (T1): critical domains fail the run; non-critical may skip.
-      const retry = decideNodeRetry({
-        errorClass: "quality",
-        attemptIndex: 0,
-        maxAttempts: 1,
-        message: msg,
-      });
-      void retry;
+      const lastFailure = err instanceof Error ? err.message : String(err);
       await receipts.attach(
-        { role: "domain", mode, summary: `FAILED: ${msg}` },
+        { role: "domain", mode, summary: `FAILED: ${lastFailure}` },
         {
           workspaceRoot: input.workspace.rootPath,
           runId: input.runId,
@@ -175,14 +207,35 @@ export async function runResearchPhase(
           scope: d.scope ?? d.title ?? d.id,
           status: "failed",
           childReceipts: childReceiptPaths,
-          summary: `FAILED: ${msg}`,
+          summary: `FAILED: ${lastFailure}`,
         },
       );
-      if (isCriticalDomainFailure(d.critical)) {
-        criticalDomainFailures.push(`${d.id}: ${msg}`);
-      }
+      return {
+        kind: "failed",
+        message: `${d.id}: ${lastFailure}`,
+        critical: isCriticalDomainFailure(d.critical),
+      };
     }
+  };
+
+  throwIfAborted(input.abortSignal);
+  const outcomes = await mapWithConcurrency(
+    domains,
+    orch.domainConcurrency ?? 2,
+    input.abortSignal,
+    (d) => runDomainUnit(d),
+  );
+
+  if (input.abortSignal?.aborted || outcomes.some((o) => o?.kind === "cancelled")) {
+    return {
+      kind: "cancelled",
+      result: cancelledResult(spec, mode, metrics, layout),
+    };
   }
+
+  const criticalDomainFailures = outcomes.flatMap((o) =>
+    o?.kind === "failed" && o.critical ? [o.message] : [],
+  );
 
   if (criticalDomainFailures.length > 0) {
     emitProduceProgress(onProgress, {

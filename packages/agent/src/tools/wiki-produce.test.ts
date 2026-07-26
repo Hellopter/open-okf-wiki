@@ -10,11 +10,7 @@ import {
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import { loadRun } from "@okf-wiki/core";
-import {
-  createWikiProduceTool,
-  type WikiProduceGateDecision,
-  type WikiProduceGateRequest,
-} from "./wiki-produce.js";
+import { createWikiProduceTool, type GateDecision, type GateRequest } from "./wiki-produce.js";
 
 type ExecuteWikiProduce = (
   toolCallId: string,
@@ -79,26 +75,26 @@ async function makeWorkspace() {
 }
 
 function gateHarness() {
-  const requests: WikiProduceGateRequest[] = [];
-  const decisions: Array<(decision: WikiProduceGateDecision) => void> = [];
+  const requests: GateRequest[] = [];
+  const decisions: Array<(decision: GateDecision) => void> = [];
   const arrivals: Array<() => void> = [];
   let consumed = 0;
   return {
     requests,
     gateCoordinator: {
-      waitForDecision(request: WikiProduceGateRequest): Promise<WikiProduceGateDecision> {
+      waitForDecision(request: GateRequest): Promise<GateDecision> {
         requests.push(request);
         arrivals.shift()?.();
         return new Promise((resolve) => decisions.push(resolve));
       },
     },
-    async nextRequest(): Promise<WikiProduceGateRequest> {
+    async nextRequest(): Promise<GateRequest> {
       if (consumed >= requests.length) {
         await new Promise<void>((resolve) => arrivals.push(resolve));
       }
       return requests[consumed++]!;
     },
-    resolve(decision: WikiProduceGateDecision): void {
+    resolve(decision: GateDecision): void {
       const resolve = decisions.shift();
       assert.ok(resolve, "no pending gate");
       resolve(decision);

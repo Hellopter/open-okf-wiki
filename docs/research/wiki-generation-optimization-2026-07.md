@@ -1,8 +1,10 @@
 # Wiki 生成优化方案：Agent Swarm 经济学 × Pi × OKF
 
+> Historical research only. Not product path.
+
 **Date:** 2026-07-23  
-**Status:** research synthesis (not an ADR)  
-**Sources:** Cursor [Agent Swarms & Model Economics](https://cursor.com/blog/agent-swarm-model-economics) (zh-Hant: [同文](https://cursor.com/zh-Hant/blog/agent-swarm-model-economics)); Google OKF SPEC (`refs/knowledge-catalog/okf/SPEC.md`); local ADRs 0010/0014/0028/0030; live code under `packages/agent`, `packages/core`, `packages/skill`.
+**Status:** research synthesis (not an ADR); WikiRunShell clauses are superseded by ADR 0032  
+**Sources:** Cursor [Agent Swarms & Model Economics](https://cursor.com/blog/agent-swarm-model-economics) (zh-Hant: [同文](https://cursor.com/zh-Hant/blog/agent-swarm-model-economics)); Google OKF SPEC (`refs/knowledge-catalog/okf/SPEC.md`); local ADRs 0010/0014/0028/0030; code under `packages/agent`, `packages/core`, `packages/skill` at research time.
 
 ---
 

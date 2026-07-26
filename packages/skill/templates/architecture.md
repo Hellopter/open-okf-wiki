@@ -1,6 +1,6 @@
 # Architecture template
 
-Frontmatter: `type: Architecture` plus non-empty `title`.
+Frontmatter: `type: Architecture` plus non-empty `title` and one-sentence `description`.
 
 Use when readers need a system-level map. Adapt or omit any prompt:
 

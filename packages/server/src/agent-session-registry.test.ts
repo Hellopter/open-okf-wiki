@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { redactErrorMessage } from "@okf-wiki/agent";
+import {
+  readDurableOperatorBranchMessagesForTests,
+  readRawOperatorBranchMessagesForTests,
+} from "@okf-wiki/agent/testing";
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
 import { addSource, createWorkspace, listRuns, saveWorkspace } from "@okf-wiki/core";
 import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
@@ -156,16 +160,14 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
   assert.equal(serialized.includes('"graph"'), false);
 
   // Cold reopen reads durable JSONL — secrets remain in Pi storage (not mutated).
+  // Product projection strips fat wiki details; raw branch still has them.
   evictLiveAgentSessionForTests(workspace.id, sessionId);
   const entry = await ensureRegistered(workspace, sessionId);
-  const liveSerialized = JSON.stringify(
-    entry.handle.session.sessionManager
-      .getBranch()
-      .filter((row) => row.type === "message")
-      .map((row) => row.message),
-  );
-  assert.ok(liveSerialized.includes("Should not leave snapshot"));
-  assert.equal(liveSerialized.includes("sk-live-abcdefghijklmnopqrstuvwxyz"), true);
+  const projected = JSON.stringify(readDurableOperatorBranchMessagesForTests(entry.handle));
+  assert.equal(projected.includes("Should not leave snapshot"), false);
+  const rawSerialized = JSON.stringify(readRawOperatorBranchMessagesForTests(entry.handle));
+  assert.ok(rawSerialized.includes("Should not leave snapshot"));
+  assert.equal(rawSerialized.includes("sk-live-abcdefghijklmnopqrstuvwxyz"), true);
 });
 
 test("H1: prompt failure message redacts secrets from assistant errorMessage", () => {
@@ -618,6 +620,11 @@ test("idle sweep disposes live handle without deleting Session JSONL", async (t)
   const removed = sweepIdleLiveSessions();
   assert.equal(removed, 1);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+
+  // Restore default TTL before reopen: listLiveAgentSessionSummaries /
+  // ensureRegistered both call sweepIdleLiveSessions(), and a 1ms TTL would
+  // immediately re-evict a just-registered live handle.
+  setLiveSessionIdleTtlForTests(null);
 
   // Disk JSONL still there; cold ensureRegistered reopens.
   const reopened = await ensureRegistered(workspace, sessionId);

@@ -2,6 +2,11 @@
  * OKF Wiki localhost server entry.
  */
 import { createServer } from "node:http";
+import {
+  disposeLive,
+  liveSessions,
+  sweepIdleLiveSessions,
+} from "./agent-session/live-session-registry.ts";
 import { dispatch } from "./dispatch.ts";
 import { allowLan, assertBindPolicy, host, port } from "./server-config.ts";
 
@@ -32,3 +37,30 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   }
   process.exit(1);
 });
+
+// Idle live-session TTL is otherwise only swept opportunistically on registry
+// calls; a quiescent server would retain idle Pi handles forever.
+const idleSweep = setInterval(() => {
+  sweepIdleLiveSessions();
+}, 60_000);
+idleSweep.unref();
+
+// Graceful shutdown: dispose live Pi handles (flush session state) and stop
+// accepting connections before exiting.
+let shuttingDown = false;
+function shutdown(signal: NodeJS.Signals): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  process.stdout.write(`received ${signal}, shutting down…\n`);
+  clearInterval(idleSweep);
+  server.close();
+  for (const [key, entry] of liveSessions) {
+    disposeLive(entry);
+    liveSessions.delete(key);
+  }
+  // SSE keep-alive sockets would otherwise hold the process open.
+  server.closeAllConnections?.();
+  process.exit(0);
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

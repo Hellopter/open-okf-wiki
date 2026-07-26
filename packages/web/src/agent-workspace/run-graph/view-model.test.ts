@@ -45,16 +45,18 @@ describe("runGraphToViewModel", () => {
     assert.equal(vm.topologyVersion, 1);
     assert.ok(vm.layers.some((l) => l.id === "research"));
     assert.ok(vm.layers.some((l) => l.id === "write"));
-    const domain = vm.layers
-      .flatMap((l) => l.nodes)
-      .find((n) => n.nodeKey === "domain-core");
+    const domain = vm.layers.flatMap((l) => l.nodes).find((n) => n.nodeKey === "domain-core");
     assert.ok(domain);
     assert.equal(domain.status, "running");
     assert.equal(domain.attemptCount, 2);
     assert.equal(domain.latestAttempt?.summary, "retry");
+    // Multi-node graphs must expose edges for the canvas to draw.
+    assert.ok(vm.edges.length > 0, "expected edges for multi-node topology");
     assert.ok(vm.edges.some((e) => e.kind === "parent" && e.to === "domain-core"));
     assert.ok(vm.edges.some((e) => e.kind === "depends" && e.to === "write"));
     assert.equal(vm.playhead?.attemptId, "domain-core@1");
+    // parent + two depends edges in this fixture
+    assert.equal(vm.edges.length, 3);
   });
 
   it("handles empty snapshot", () => {

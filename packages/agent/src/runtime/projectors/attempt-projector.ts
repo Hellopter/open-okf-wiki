@@ -156,9 +156,7 @@ export function applyAttemptSessionEvent(
 }
 
 /** Snapshot items for progress emission (last MAX_ITEMS). */
-export function attemptItemsSnapshot(
-  state: AttemptProjectorState,
-): AttemptItem[] | undefined {
+export function attemptItemsSnapshot(state: AttemptProjectorState): AttemptItem[] | undefined {
   if (state.items.length === 0) return undefined;
   return state.items.slice(-MAX_ITEMS);
 }

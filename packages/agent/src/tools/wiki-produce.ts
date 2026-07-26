@@ -12,20 +12,20 @@ import {
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { createToolDetailsAccumulator } from "../produce/progress.js";
-import { createSubmitWikiRunSpecTool } from "./submit-wiki-run-spec.js";
 import {
+  type GatePort,
   type RunWikiInput,
   runWiki,
-  type WikiProduceGateCoordinator,
   type WikiProduceModelFactory,
 } from "../workflow/run-wiki.js";
+import { createSubmitWikiRunSpecTool } from "./submit-wiki-run-spec.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 
 export type {
-  WikiProduceGateCoordinator,
-  WikiProduceGateDecision,
-  WikiProduceGateRequest,
+  GateDecision,
+  GatePort,
+  GateRequest,
   WikiProduceModelFactory,
   WikiProduceModelRole,
 } from "../workflow/run-wiki.js";
@@ -34,7 +34,7 @@ export type CreateWikiProduceToolInput = {
   workspace: WorkspaceConfig;
   resolveWorkspace?: () => Promise<WorkspaceConfig>;
   sessionId: string;
-  gateCoordinator: WikiProduceGateCoordinator;
+  gateCoordinator: GatePort;
   resolveModel?: WikiProduceModelFactory;
   fixture?: boolean;
   autoApprove?: boolean;
@@ -54,11 +54,19 @@ const wikiProduceParameters = Type.Object(
 
 function toolResult(details: WikiProduceToolDetails) {
   const durable: WikiProduceDurableDetails = toDurableWikiProduceDetails(details);
-  const text =
+  let text =
     durable.summary?.trim() ||
     (durable.runId
       ? `Wiki Run ${durable.runId}: ${durable.status}`
       : `wiki_produce: ${durable.status}`);
+  // Surface runId in text so the Operator can call wiki_repair without digging into details.
+  if (
+    durable.runId &&
+    (durable.status === "failed" || durable.status === "publication_declined") &&
+    !text.includes(durable.runId)
+  ) {
+    text = `${text} (runId=${durable.runId}; repair staging with wiki_repair)`;
+  }
   return {
     content: [{ type: "text" as const, text }],
     details: durable,

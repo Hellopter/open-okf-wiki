@@ -119,6 +119,7 @@ for (const file of productSourceFiles) {
  */
 const forTestsDefinitionAllowlist = [
   /\/agent-session-registry\.ts$/,
+  /\/agent-session\/test-seams\.ts$/,
   /\/agent-session-events\.ts$/,
   /\/run-boundary\.ts$/,
   /\/operator-session-test-seams\.ts$/,
@@ -163,42 +164,72 @@ for (const file of filesUnder("packages/core/src").filter(
 }
 
 /**
- * agent/ports must stay free of Pi SDK and agent runtime/pi modules.
- * Adapters under produce/pi cast opaque port types to concrete Pi types.
+ * agent/ports must stay free of Pi SDK and agent pi/produce/runtime modules
+ * (ADR 0033 §3). Adapters under runtime cast opaque port types to Pi types.
+ * Matches static `from`, bare side-effect imports, and dynamic `import(...)`,
+ * including barrel imports of the directory itself.
  */
+const portForbidden =
+  /(?:from\s*|import\s*\(\s*|import\s+)["'](?:@earendil-works\/[^"']+|[^"']*\/(?:pi|produce|runtime)(?:\/[^"']*)?)["']/;
 for (const file of filesUnder("packages/agent/src/ports").filter(
   (file) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file),
 )) {
   const content = readFileSync(path.join(root, file), "utf8");
-  const piImport =
-    /from\s*["']@earendil-works\/[^"']+["']|from\s*["']\.\.\/pi\/[^"']+["']|from\s*["']\.\.\/produce\/[^"']+["']/.exec(
-      content,
-    );
+  const piImport = portForbidden.exec(content);
   if (piImport) {
     const line = content.slice(0, piImport.index).split("\n").length;
     failures.push(
-      `${file}:${line}: ports must not import Pi SDK, pi/, or produce/ (DIP): ${JSON.stringify(piImport[0])}`,
+      `${file}:${line}: ports must not import Pi SDK, pi/, produce/, or runtime/ (DIP): ${JSON.stringify(piImport[0])}`,
     );
   }
 }
 
 /**
  * workflow/** must not import tools/ or session/ (orchestration vs tool edge).
- * Pi SDK value imports are also banned under workflow.
+ * Pi SDK value imports are also banned under workflow. Matches barrel imports
+ * (`from "../tools"`) and dynamic `import(...)` too.
  */
+const workflowForbidden =
+  /(?:from\s*|import\s*\(\s*|import\s+)["'](?:@earendil-works\/[^"']+|[^"']*\/(?:tools|session)(?:\/[^"']*)?)["']/;
 for (const file of filesUnder("packages/agent/src/workflow").filter(
   (file) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file),
 )) {
   const content = readFileSync(path.join(root, file), "utf8");
-  const bad =
-    /from\s*["']@earendil-works\/[^"']+["']|from\s*["'][^"']*\/(?:tools|session)\/[^"']+["']/.exec(
-      content,
-    );
+  const bad = workflowForbidden.exec(content);
   if (bad) {
     const line = content.slice(0, bad.index).split("\n").length;
     failures.push(
       `${file}:${line}: workflow must not import Pi SDK, tools/, or session/: ${JSON.stringify(bad[0])}`,
     );
+  }
+}
+
+/**
+ * Cross-package dependency edges enforced at the source level too, so an
+ * import cannot bypass package.json (e.g. via workspace hoisting).
+ */
+const packageDirToName = {
+  "packages/contract": "@okf-wiki/contract",
+  "packages/core": "@okf-wiki/core",
+  "packages/agent": "@okf-wiki/agent",
+  "packages/server": "@okf-wiki/server",
+  "packages/web": "@okf-wiki/web",
+  "packages/skill": "@okf-wiki/skill",
+};
+const importSpecifierRe = /(?:from\s*|import\s*\(\s*|import\s+)["'](@okf-wiki\/[a-z-]+)/g;
+for (const file of productSourceFiles) {
+  const dir = Object.keys(packageDirToName).find((d) => file.startsWith(`${d}/`));
+  if (!dir) continue;
+  const selfName = packageDirToName[dir];
+  const allowed = allowedProductDependencies[selfName];
+  const content = readFileSync(path.join(root, file), "utf8");
+  for (const match of content.matchAll(importSpecifierRe)) {
+    const target = match[1].replace(/\/(?:testing)$/, "");
+    if (target === selfName) continue;
+    if (!allowed?.has(target)) {
+      const line = content.slice(0, match.index).split("\n").length;
+      failures.push(`${file}:${line}: forbidden source import edge ${selfName} -> ${target}`);
+    }
   }
 }
 

@@ -20,7 +20,7 @@ import {
   resolveLoadHomeSkills,
   setLoadHomeSkills,
   writeAppState,
-} from "./workspace-store.js";
+} from "./workspace-app-state.js";
 
 const prevHome = process.env.HOME;
 

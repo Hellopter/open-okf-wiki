@@ -32,3 +32,18 @@ export function injectDurableOperatorMessages(
 export function readDurableOperatorBranchMessages(handle: OperatorSessionHandle): Message[] {
   return projectOperatorHistoryFromManager(handle.session.sessionManager);
 }
+
+/**
+ * Read raw SessionManager branch messages without product history projection.
+ * Prefer this when tests must assert Pi storage was not mutated (secrets, fat details).
+ * Encapsulates SessionManager.getBranch() so tests never deep-chain Pi APIs.
+ */
+export function readRawOperatorBranchMessages(handle: OperatorSessionHandle): Message[] {
+  const messages: Message[] = [];
+  for (const row of handle.session.sessionManager.getBranch()) {
+    if (row.type === "message") {
+      messages.push(row.message as Message);
+    }
+  }
+  return messages;
+}

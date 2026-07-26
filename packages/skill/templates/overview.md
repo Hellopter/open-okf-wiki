@@ -6,6 +6,7 @@ Adapt this into **`overview.md`** (concept page). Frontmatter example:
 ---
 type: Overview
 title: Repository name
+description: One sentence on what the repository does and for whom.
 ---
 ```
 

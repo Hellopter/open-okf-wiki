@@ -1,10 +1,12 @@
 # TUI：当前项目与 DeepAgents/OpenWiki 的对照
 
+> Historical research only. Not product path.
+
 研究日期：2026-07-16
 
 ## 结论
 
-有可参考的 TUI；产品路径现已用 **Textual** 全屏 Operator Session 实现（对齐 Textual 官方 `mother.py` 聊天布局 + pydantic-ai `event_stream_handler` 流式事件），而不是自研布局协议。
+有可参考的 TUI；历史产品路径曾用 **Textual** 全屏 Operator Session 实现（对齐 Textual 官方 `mother.py` 聊天布局 + pydantic-ai `event_stream_handler` 流式事件），而不是自研布局协议。当前产品路径是 **Pi + local Web UI**（见 ADR 0030–0033），不是 Python/Textual。
 
 `refs/openwiki` 的终端界面是 OpenWiki 自己的 React/Ink 应用，不是 DeepAgents 提供的通用 TUI。非交互路径仍是 `wiki-run` JSON CLI；交互路径为 `okf-wiki` / `okf-wiki tui`（实现模块 `okf_wiki.session.app`）。
 

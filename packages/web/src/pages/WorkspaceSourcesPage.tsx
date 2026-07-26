@@ -3,6 +3,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import {
   Field,
   FieldContent,
@@ -43,21 +44,25 @@ import {
   type WorkspaceSource,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
-import { WorkspaceShell } from "../components/WorkspaceShell";
 import { formatMessage, useI18n } from "../i18n";
 
-function probeLabel(probe: GitProbe | undefined): string {
+type SourcesMessages = ReturnType<typeof useI18n>["t"]["sources"];
+
+function probeLabel(probe: GitProbe | undefined, messages: SourcesMessages): string {
   if (!probe) {
     return "—";
   }
   if (!probe.isGit) {
-    return probe.error ? `Not git: ${probe.error}` : "Not a git checkout";
+    return probe.error
+      ? formatMessage(messages.probeNotGitError, { error: probe.error })
+      : messages.probeNotGit;
   }
   const parts = [
-    probe.branch ?? "detached",
+    probe.branch ?? messages.probeDetached,
     probe.head ? probe.head.slice(0, 8) : null,
-    probe.dirty ? "dirty" : "clean",
+    probe.dirty ? messages.probeDirty : messages.probeClean,
   ].filter(Boolean);
   return parts.join(" · ");
 }
@@ -272,16 +277,8 @@ export function WorkspaceSourcesPage() {
   }
 
   return (
-    <WorkspaceShell
-      workspaceId={id}
-      workspaceName={workspace?.name}
-      breadcrumbLabel={t.sources.breadcrumbSources}
-      title={t.sources.title}
-      description={t.sources.description}
-      error={error}
-      onDismissError={() => setError(null)}
-      testId="sources-page"
-    >
+    <div data-testid="sources-page" className="flex flex-col gap-5">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
       <ConfirmDialog
         open={deleteTargetId != null}
         onOpenChange={(open) => {
@@ -322,9 +319,11 @@ export function WorkspaceSourcesPage() {
             </CardHeader>
             <CardContent>
               {workspace.sources.length === 0 ? (
-                <div className="py-1">
-                  <p className="muted">{t.sources.empty}</p>
-                </div>
+                <Empty className="border-0 p-6">
+                  <EmptyHeader>
+                    <EmptyTitle className="text-base">{t.sources.empty}</EmptyTitle>
+                  </EmptyHeader>
+                </Empty>
               ) : (
                 <Table data-testid="source-list">
                   <TableHeader>
@@ -350,7 +349,7 @@ export function WorkspaceSourcesPage() {
                         </TableCell>
                         <TableCell className="mono whitespace-normal">{source.path}</TableCell>
                         <TableCell className="muted small whitespace-normal">
-                          {probeLabel(probes[source.id])}
+                          {probeLabel(probes[source.id], t.sources)}
                         </TableCell>
                         <TableCell className="muted small whitespace-normal">
                           {ignoreSummary(source)}
@@ -488,7 +487,7 @@ export function WorkspaceSourcesPage() {
               <CardTitle>{t.sources.linkTitle}</CardTitle>
             </CardHeader>
             <CardContent>
-              <form className="form" onSubmit={(e) => void handleAdd(e)}>
+              <form className="max-w-xl" onSubmit={(e) => void handleAdd(e)}>
                 <FieldGroup>
                   <Field>
                     <FieldLabel htmlFor="source-path">{t.sources.pathLabel}</FieldLabel>
@@ -549,7 +548,7 @@ export function WorkspaceSourcesPage() {
               <p className="muted small mb-4">
                 {formatMessage(t.sources.cloneHint, { root: workspace.rootPath })}
               </p>
-              <form className="form" onSubmit={(e) => void handleClone(e)}>
+              <form className="max-w-xl" onSubmit={(e) => void handleClone(e)}>
                 <FieldGroup>
                   <Field>
                     <FieldLabel htmlFor="source-remote">{t.sources.remoteUrl}</FieldLabel>
@@ -606,6 +605,6 @@ export function WorkspaceSourcesPage() {
           </Card>
         </>
       ) : null}
-    </WorkspaceShell>
+    </div>
   );
 }

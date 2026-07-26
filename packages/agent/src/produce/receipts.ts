@@ -10,9 +10,6 @@ import type { ReceiptStore, ResearchChildResult } from "../ports/receipt-store.j
 
 export type { ResearchChildResult } from "../ports/receipt-store.js";
 
-/** @deprecated Prefer inject ReceiptStore — default Core-backed store. */
-export const receiptStore: ReceiptStore = defaultReceiptStore;
-
 /**
  * Build research receipt fields and persist once through Core.
  * Canonical path: `{runWorkDir}/analysis/receipts/{nodeId}.json`

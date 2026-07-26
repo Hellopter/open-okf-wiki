@@ -61,7 +61,8 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
     await expect(page.getByTestId("workspace-list")).toContainText(name);
 
     const row = page.locator('[data-testid="workspace-row"]').filter({ hasText: name });
-    await row.getByTestId("workspace-delete").click();
+    await row.getByTestId("workspace-menu").click();
+    await page.getByTestId("workspace-delete").click();
     await expect(page.getByTestId("workspace-delete-dialog")).toBeVisible();
     // Meta uses shadcn Checkbox (role=checkbox), not native input.
     await setChecked(page, "workspace-delete-meta", true);

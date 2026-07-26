@@ -12,25 +12,18 @@
  */
 
 import type { AgentResumeGateCommand } from "@okf-wiki/contract";
-import {
-  CheckIcon,
-  ChevronRightIcon,
-  CircleAlertIcon,
-  FileIcon,
-  LayersIcon,
-  SearchIcon,
-  WrenchIcon,
-} from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronRightIcon } from "lucide-react";
+import { memo, useEffect, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { formatMessage, useI18n } from "../../i18n";
 import { formatToolResultText } from "../hooks/project/format";
 import type { AgentToolCall } from "../hooks/project/types";
+import { DiffPreview } from "./tool-display/DiffPreview";
+import { ToolStatusGlyph } from "./tool-display/glyphs";
+import { toolIcon, WIKI_PRODUCE_TOOL_NAME } from "./tool-display/icons";
 import { formatToolDisplay } from "./tool-display/summary";
 import { WikiProduceGatePanel } from "./WikiProduceGatePanel";
-
-const WIKI_PRODUCE_TOOL_NAME = "wiki_produce";
 
 export type ToolExecutionCardProps = {
   tool: AgentToolCall;
@@ -41,33 +34,6 @@ export type ToolExecutionCardProps = {
    */
   settled?: boolean;
 };
-
-function toolIcon(name: string) {
-  const lower = name.toLowerCase();
-  if (lower === WIKI_PRODUCE_TOOL_NAME) {
-    return LayersIcon;
-  }
-  if (lower === "read" || lower === "write" || lower === "edit" || lower === "ls") {
-    return FileIcon;
-  }
-  if (lower === "grep" || lower === "find") {
-    return SearchIcon;
-  }
-  return WrenchIcon;
-}
-
-function StatusGlyph({ status }: { status: AgentToolCall["status"] }) {
-  if (status === "running" || status === "pending") {
-    return <Spinner className="size-3 shrink-0 text-muted-foreground" />;
-  }
-  if (status === "error") {
-    return <CircleAlertIcon className="size-3.5 shrink-0 text-destructive" />;
-  }
-  if (status === "done") {
-    return <CheckIcon className="size-3.5 shrink-0 text-success" />;
-  }
-  return null;
-}
 
 /**
  * Build expand body text.
@@ -96,7 +62,15 @@ function expandBody(
   return output;
 }
 
-export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecutionCardProps) {
+// Memoized: settled tool rows keep object identity across stream ticks, so
+// only the actively-updating tool re-renders (formatToolResultText can walk
+// multi-KB outputs on every tick otherwise).
+export const ToolExecutionCard = memo(function ToolExecutionCard({
+  tool,
+  onResumeGate,
+  settled,
+}: ToolExecutionCardProps) {
+  const { t } = useI18n();
   const display = formatToolDisplay(tool.name, tool.args);
   const output = formatToolResultText(tool.output) ?? "";
   const isError = tool.status === "error";
@@ -114,7 +88,8 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
     (!display.headerOnly &&
       (Boolean(body.trim()) ||
         isError ||
-        (display.kind === "write-body" && Boolean(display.writePreview))));
+        (display.kind === "write-body" &&
+          Boolean(display.writePreview || display.diff))));
 
   const autoOpen =
     isRunning || isError || (settled === false && tool.status !== "done" && canExpand);
@@ -125,6 +100,12 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
   }, [autoOpen]);
 
   const Icon = toolIcon(tool.name);
+
+  // Claude-style result summary on the trigger line ("· 42 lines").
+  const resultLineCount =
+    tool.status === "done" && display.kind === "output-only" && output.trim()
+      ? output.replace(/\n$/, "").split("\n").length
+      : 0;
 
   const trigger = (
     <div
@@ -138,7 +119,7 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
       ) : (
         <span className="size-3.5 shrink-0" aria-hidden />
       )}
-      <StatusGlyph status={tool.status} />
+      <ToolStatusGlyph status={tool.status} />
       <Icon
         className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")}
       />
@@ -153,13 +134,25 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
           {isWikiProduce ? "wiki_produce" : display.title}
         </span>
         {display.subtitle ? (
-          <span className="ml-1.5 text-muted-foreground">{display.subtitle}</span>
+          <span
+            className={cn(
+              "ml-1.5 text-muted-foreground",
+              display.subtitleMono && "font-mono text-2xs",
+            )}
+          >
+            {display.subtitle}
+          </span>
         ) : null}
         {display.args?.map((arg) => (
-          <span key={arg} className="ml-1.5 font-mono text-[10px] text-muted-foreground/80">
+          <span key={arg} className="ml-1.5 font-mono text-2xs text-muted-foreground/80">
             {arg}
           </span>
         ))}
+        {resultLineCount > 0 ? (
+          <span className="ml-1.5 text-2xs text-muted-foreground/70">
+            {formatMessage(t.agentWorkspace.toolResultLines, { n: resultLineCount })}
+          </span>
+        ) : null}
       </span>
     </div>
   );
@@ -187,30 +180,26 @@ export function ToolExecutionCard({ tool, onResumeGate, settled }: ToolExecution
       data-tool-name={tool.name}
       data-tool-status={tool.status}
     >
-      <CollapsibleTrigger className="w-full min-w-0 rounded-md text-left">
+      <CollapsibleTrigger className="w-full min-w-0 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
         {trigger}
       </CollapsibleTrigger>
       <CollapsibleContent className="min-w-0 overflow-hidden pl-4 pr-1 pb-1.5 sm:pl-6">
-        {body.trim() && !isWikiProduce ? (
-          <pre
-            className={cn(
-              "okf-code-snippet max-h-64 overflow-auto text-[11px] leading-relaxed",
-              isError && "text-destructive",
-            )}
-          >
-            {body}
-          </pre>
-        ) : null}
-        {body.trim() && isWikiProduce ? (
-          <pre className="okf-code-snippet max-h-32 overflow-auto text-[11px] leading-relaxed text-muted-foreground">
-            {body}
-          </pre>
-        ) : null}
+        {/* wiki_produce: structured panel only — never dump body pre + details twice. */}
         {wikiDetails ? (
           <WikiProduceGatePanel details={wikiDetails} onResumeGate={onResumeGate} />
+        ) : display.diff ? (
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <DiffPreview removed={display.diff.removed} added={display.diff.added} />
+            {output.trim() ? (
+              <pre className={cn("okf-code-snippet", isError && "text-destructive")}>{output}</pre>
+            ) : null}
+          </div>
+        ) : body.trim() ? (
+          <pre className={cn("okf-code-snippet", isError && "text-destructive")}>{body}</pre>
+        ) : isRunning ? (
+          <p className="text-2xs text-muted-foreground">…</p>
         ) : null}
-        {isRunning && !body.trim() ? <p className="text-[11px] text-muted-foreground">…</p> : null}
       </CollapsibleContent>
     </Collapsible>
   );
-}
+});

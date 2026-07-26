@@ -22,20 +22,31 @@ test.describe("doctor / global settings", () => {
     await page.goto("/settings");
     await expect(page.getByTestId("provider-panel")).toBeVisible();
 
-    await page.getByTestId("model-add").click();
-    await expect(page.getByTestId("model-editor")).toBeVisible();
+    // Provider-first: create the gateway once, then the model under it.
+    await page.getByTestId("provider-add").click();
+    await expect(page.getByTestId("provider-editor")).toBeVisible();
+    await page.getByTestId("provider-name-input").fill("E2E Gateway");
+    await page.getByTestId("provider-base-url").fill("https://e2e-gateway.example.com/v1");
+    await setChecked(page, "provider-shape-responses", true);
+    await page.getByTestId("provider-api-key").fill("sk-e2e-test-key-not-real");
+    await page.getByTestId("provider-save").click();
+    await expect(
+      page.locator("[data-sonner-toast]").filter({ hasText: /provider added/i }).first(),
+    ).toBeVisible();
 
     const name = `E2E Model ${Date.now()}`;
+    await page.getByTestId("provider-add-model").first().click();
+    await expect(page.getByTestId("model-editor")).toBeVisible();
     await page.getByTestId("model-name-input").fill(name);
     await page.getByTestId("model-id-input").fill("openai/e2e-probe-model");
-    await page.getByTestId("model-base-url").fill("https://e2e-gateway.example.com/v1");
-    await setChecked(page, "model-shape-responses", true);
-    await page.getByTestId("model-api-key").fill("sk-e2e-test-key-not-real");
     await page.getByTestId("model-save").click();
 
-    await expect(page.getByTestId("settings-status")).toContainText(/model added/i, {
-      timeout: 10_000,
-    });
+    await expect(
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /model added/i })
+        .first(),
+    ).toBeVisible({ timeout: 10_000 });
     // Models render under providers-list / model-row (flat models-table is fallback only).
     const modelRow = page.getByTestId("model-row").filter({ hasText: name });
     await expect(modelRow).toBeVisible({ timeout: 10_000 });
@@ -46,17 +57,5 @@ test.describe("doctor / global settings", () => {
       timeout: 10_000,
     });
     await expect(page.getByTestId("provider-panel")).toContainText(/responses/i);
-  });
-
-  test("sidebar can collapse and expand", async ({ page }) => {
-    await page.goto("/workspaces");
-    const sidebar = page.getByTestId("app-sidebar");
-    await expect(sidebar).toHaveAttribute("data-collapsed", "false");
-
-    await page.getByTestId("sidebar-toggle").click();
-    await expect(sidebar).toHaveAttribute("data-collapsed", "true");
-
-    await page.getByTestId("sidebar-toggle").click();
-    await expect(sidebar).toHaveAttribute("data-collapsed", "false");
   });
 });

@@ -10,14 +10,24 @@ test.describe("workspace settings", () => {
     await page.getByTestId("model-id-input").fill("openai/alpha-model");
     await page.getByTestId("model-base-url").fill("https://alpha.example/v1");
     await page.getByTestId("model-save").click();
-    await expect(page.getByTestId("settings-status")).toContainText(/model added/i);
+    await expect(
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /model added/i })
+        .first(),
+    ).toBeVisible();
 
     await page.getByTestId("model-add").click();
     await page.getByTestId("model-name-input").fill("Beta Model");
     await page.getByTestId("model-id-input").fill("openai/beta-model");
     await page.getByTestId("model-base-url").fill("https://beta.example/v1");
     await page.getByTestId("model-save").click();
-    await expect(page.getByTestId("settings-status")).toContainText(/model added/i);
+    await expect(
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /model added/i })
+        .first(),
+    ).toBeVisible();
 
     // 2. Create workspace selecting Beta
     const rootPath = uniqueWorkspaceRoot();
@@ -43,7 +53,9 @@ test.describe("workspace settings", () => {
     await page.getByTestId("settings-name-input").fill(updatedName);
     await chooseOption(page, "settings-model-select", /Alpha Model/);
     await page.getByTestId("settings-save").click();
-    await expect(page.getByRole("status")).toContainText(/saved/i);
+    await expect(
+      page.locator("[data-sonner-toast]").filter({ hasText: /saved/i }).first(),
+    ).toBeVisible();
 
     await page.reload();
     await expect(page.getByTestId("settings-page")).toBeVisible();

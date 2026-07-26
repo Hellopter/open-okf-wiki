@@ -60,7 +60,24 @@ export type AssertPathAllowedOptions = {
    * - Array: same patterns for every source mount
    */
   sourceIgnores?: SourceIgnoreInput;
+  /**
+   * Workdir-relative trees denied for every access mode (e.g. `.okf-wiki`
+   * for Operator Sessions, whose scope root is the Workspace rootPath —
+   * product meta holds Pi agentDir settings/auth and must stay unreadable).
+   */
+  denyPrefixes?: readonly string[];
 };
+
+/** True when a workdir-relative path is inside any denied tree. */
+export function isDeniedRel(relPath: string, denyPrefixes: readonly string[] | undefined): boolean {
+  if (!denyPrefixes || denyPrefixes.length === 0) return false;
+  const n = normalizeRelPath(relPath);
+  if (!n) return false;
+  return denyPrefixes.some((prefix) => {
+    const p = normalizeRelPath(prefix);
+    return p !== "" && (n === p || n.startsWith(`${p}/`));
+  });
+}
 
 /**
  * True if `candidate` is `dir` or a path strictly inside it
@@ -189,6 +206,10 @@ export function assertPathAllowed(
   const rel = path.relative(root, abs).replace(/\\/g, "/");
   const norm = rel === "" ? "" : normalizeRelPath(rel);
 
+  if (norm && isDeniedRel(norm, options.denyPrefixes)) {
+    throw new Error(`${options.mode} denied: path is product-reserved (${norm})`);
+  }
+
   if (options.mode === "write") {
     if (!norm) {
       throw new Error("write path must be under wiki/ or analysis/");
@@ -232,6 +253,8 @@ export function assertAbsolutePathAllowed(
 export type WikiToolOperationsOptions = {
   runWorkDir: string;
   sourceIgnores?: SourceIgnoreInput;
+  /** Workdir-relative trees denied for all modes (see AssertPathAllowedOptions). */
+  denyPrefixes?: readonly string[];
 };
 
 function assertRelativeToolPath(inputPath: unknown): void {
@@ -370,10 +393,12 @@ async function guardAbs(
   absolutePath: string,
   mode: PathAccessMode,
   sourceIgnores?: SourceIgnoreInput,
+  denyPrefixes?: readonly string[],
 ): Promise<string> {
   const logicalPath = assertAbsolutePathAllowed(runWorkDir, absolutePath, {
     mode,
     sourceIgnores,
+    denyPrefixes,
   });
   const canonicalRoot = await realpath(path.resolve(runWorkDir));
   const canonicalPath =
@@ -382,8 +407,11 @@ async function guardAbs(
     throw new Error(`path escapes run workdir through symlink: ${absolutePath}`);
   }
 
+  const canonicalRel = path.relative(canonicalRoot, canonicalPath).replace(/\\/g, "/");
+  if (canonicalRel && isDeniedRel(canonicalRel, denyPrefixes)) {
+    throw new Error(`${mode} denied: symlink target is product-reserved (${canonicalRel})`);
+  }
   if (mode === "read") {
-    const canonicalRel = path.relative(canonicalRoot, canonicalPath).replace(/\\/g, "/");
     if (canonicalRel && isIgnoredSourceRel(canonicalRel, sourceIgnores)) {
       throw new Error(`read denied: symlink target is ignored by Source Ignores (${canonicalRel})`);
     }
@@ -393,14 +421,26 @@ async function guardAbs(
 
 /** Read Operations: contain to runWorkDir + optional source ignores. */
 export function createWikiReadOperations(options: WikiToolOperationsOptions): ReadOperations {
-  const { runWorkDir, sourceIgnores } = options;
+  const { runWorkDir, sourceIgnores, denyPrefixes } = options;
   return {
     async readFile(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const safePath = await guardAbs(
+        runWorkDir,
+        absolutePath,
+        "read",
+        sourceIgnores,
+        denyPrefixes,
+      );
       return readFile(safePath);
     },
     async access(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const safePath = await guardAbs(
+        runWorkDir,
+        absolutePath,
+        "read",
+        sourceIgnores,
+        denyPrefixes,
+      );
       await access(safePath, constants.R_OK);
     },
   };
@@ -408,14 +448,14 @@ export function createWikiReadOperations(options: WikiToolOperationsOptions): Re
 
 /** Write Operations: only wiki/ + analysis/. */
 export function createWikiWriteOperations(options: WikiToolOperationsOptions): WriteOperations {
-  const { runWorkDir } = options;
+  const { runWorkDir, denyPrefixes } = options;
   return {
     async writeFile(absolutePath, content) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write", undefined, denyPrefixes);
       await writeFile(safePath, content, "utf8");
     },
     async mkdir(dir) {
-      const safePath = await guardAbs(runWorkDir, dir, "write");
+      const safePath = await guardAbs(runWorkDir, dir, "write", undefined, denyPrefixes);
       await mkdir(safePath, { recursive: true });
     },
   };
@@ -423,19 +463,19 @@ export function createWikiWriteOperations(options: WikiToolOperationsOptions): W
 
 /** Edit Operations: read+write under write scope only. */
 export function createWikiEditOperations(options: WikiToolOperationsOptions): EditOperations {
-  const { runWorkDir } = options;
+  const { runWorkDir, denyPrefixes } = options;
   return {
     async readFile(absolutePath) {
       // edit only targets files that may be written
-      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write", undefined, denyPrefixes);
       return readFile(safePath);
     },
     async writeFile(absolutePath, content) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write", undefined, denyPrefixes);
       await writeFile(safePath, content, "utf8");
     },
     async access(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "write");
+      const safePath = await guardAbs(runWorkDir, absolutePath, "write", undefined, denyPrefixes);
       await access(safePath, constants.R_OK | constants.W_OK);
     },
   };
@@ -443,12 +483,18 @@ export function createWikiEditOperations(options: WikiToolOperationsOptions): Ed
 
 /** Ls Operations: contain + hide ignored source entries when listing. */
 export function createWikiLsOperations(options: WikiToolOperationsOptions): LsOperations {
-  const { runWorkDir, sourceIgnores } = options;
+  const { runWorkDir, sourceIgnores, denyPrefixes } = options;
   const root = path.resolve(runWorkDir);
   return {
     async exists(absolutePath) {
       try {
-        const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+        const safePath = await guardAbs(
+          runWorkDir,
+          absolutePath,
+          "read",
+          sourceIgnores,
+          denyPrefixes,
+        );
         await access(safePath, constants.R_OK);
         return true;
       } catch {
@@ -456,19 +502,32 @@ export function createWikiLsOperations(options: WikiToolOperationsOptions): LsOp
       }
     },
     async stat(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const safePath = await guardAbs(
+        runWorkDir,
+        absolutePath,
+        "read",
+        sourceIgnores,
+        denyPrefixes,
+      );
       const info = await stat(safePath);
       return { isDirectory: () => info.isDirectory() };
     },
     async readdir(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const safePath = await guardAbs(
+        runWorkDir,
+        absolutePath,
+        "read",
+        sourceIgnores,
+        denyPrefixes,
+      );
       const names = await readdir(safePath);
-      if (!sourceIgnores) {
+      if (!sourceIgnores && (!denyPrefixes || denyPrefixes.length === 0)) {
         return names;
       }
       const parentRel = path.relative(root, absolutePath).replace(/\\/g, "/");
       return names.filter((name) => {
         const childRel = parentRel ? `${parentRel}/${name}` : name;
+        if (isDeniedRel(childRel, denyPrefixes)) return false;
         return !isIgnoredSourceRel(childRel, sourceIgnores);
       });
     },
@@ -477,15 +536,27 @@ export function createWikiLsOperations(options: WikiToolOperationsOptions): LsOp
 
 /** Grep Operations: path containment + ignore on readFile. */
 export function createWikiGrepOperations(options: WikiToolOperationsOptions): GrepOperations {
-  const { runWorkDir, sourceIgnores } = options;
+  const { runWorkDir, sourceIgnores, denyPrefixes } = options;
   return {
     async isDirectory(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const safePath = await guardAbs(
+        runWorkDir,
+        absolutePath,
+        "read",
+        sourceIgnores,
+        denyPrefixes,
+      );
       const info = await stat(safePath);
       return info.isDirectory();
     },
     async readFile(absolutePath) {
-      const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+      const safePath = await guardAbs(
+        runWorkDir,
+        absolutePath,
+        "read",
+        sourceIgnores,
+        denyPrefixes,
+      );
       return readFile(safePath, "utf8");
     },
   };
@@ -493,11 +564,17 @@ export function createWikiGrepOperations(options: WikiToolOperationsOptions): Gr
 
 /** Find Operations: native glob with the same containment and ignore policy. */
 export function createWikiFindOperations(options: WikiToolOperationsOptions): FindOperations {
-  const { runWorkDir, sourceIgnores } = options;
+  const { runWorkDir, sourceIgnores, denyPrefixes } = options;
   return {
     async exists(absolutePath) {
       try {
-        const safePath = await guardAbs(runWorkDir, absolutePath, "read", sourceIgnores);
+        const safePath = await guardAbs(
+          runWorkDir,
+          absolutePath,
+          "read",
+          sourceIgnores,
+          denyPrefixes,
+        );
         await access(safePath, constants.R_OK);
         return true;
       } catch {
@@ -505,7 +582,7 @@ export function createWikiFindOperations(options: WikiToolOperationsOptions): Fi
       }
     },
     async glob(pattern, cwd, { ignore, limit }) {
-      const safeCwd = await guardAbs(runWorkDir, cwd, "read", sourceIgnores);
+      const safeCwd = await guardAbs(runWorkDir, cwd, "read", sourceIgnores, denyPrefixes);
       const matches: string[] = [];
       for await (const candidate of fsGlob(pattern, {
         cwd: safeCwd,
@@ -520,6 +597,7 @@ export function createWikiFindOperations(options: WikiToolOperationsOptions): Fi
             absoluteCandidate,
             "read",
             sourceIgnores,
+            denyPrefixes,
           );
           matches.push(safeCandidate);
         } catch {
@@ -539,6 +617,8 @@ export type BuildWikiScopedToolsInput = {
   /** When true, include write + edit tool definitions. */
   mayWrite: boolean;
   sourceIgnores?: SourceIgnoreInput;
+  /** Workdir-relative trees denied for all modes (see AssertPathAllowedOptions). */
+  denyPrefixes?: readonly string[];
 };
 
 /**
@@ -546,8 +626,8 @@ export type BuildWikiScopedToolsInput = {
  * Names match the allowlist from tool-policy (`read`, `ls`, `grep`, `find`,
  * and optionally `write` / `edit`).
  *
- * `find` uses stock Pi implementation (fd) — full ignore filtering for recursive
- * name search is optional and applied on direct path guards for read/ls/grep.
+ * `find` is a custom implementation (createWikiFindOperations) with glob
+ * containment and Source-Ignore filtering, same as read/ls/grep path guards.
  * Return type is loose so heterogeneous ToolDefinition generics can share an array
  * (same pattern as createAgentSession `customTools`).
  */
@@ -558,6 +638,7 @@ export function buildWikiScopedToolDefinitions(
   const opsOpts: WikiToolOperationsOptions = {
     runWorkDir,
     sourceIgnores: input.sourceIgnores,
+    denyPrefixes: input.denyPrefixes,
   };
 
   const defs: ToolDefinition<any, any>[] = [

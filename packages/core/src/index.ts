@@ -9,12 +9,12 @@ export {
 } from "./analysis-scratch.js";
 export { atomicWriteJson } from "./atomic-write.js";
 export {
-  loadRunGraph,
-  RUN_GRAPH_FILE_NAME,
-  RUN_GRAPH_REL_PATH,
-  runGraphPath,
-  writeRunGraph,
-} from "./run-graph.js";
+  type CitationRewriteSources,
+  type RewriteRepoCitationsOptions,
+  relativeSourceHref,
+  rewriteOneRepoCitation,
+  rewriteRepoCitationsToRelative,
+} from "./citation-rewrite.js";
 export {
   parseSourceCitations,
   resolveCitationFile,
@@ -25,6 +25,7 @@ export {
   validateCitationFormat,
   validateCitationResolve,
 } from "./citations.js";
+// publish exports rewriteWikiTreeCitationsForPublish via publish module below
 export {
   type CloneIntoWorkspaceInput,
   type CloneIntoWorkspaceResult,
@@ -37,6 +38,15 @@ export {
   type GitRunner,
   type GitRunResult,
 } from "./git-runner.js";
+export {
+  OKF_VERSION,
+  type OkfStamp,
+  type OkfStampTreeResult,
+  type OkfVerification,
+  stampConceptPage,
+  stampRootIndex,
+  stampWikiTreeForPublish,
+} from "./okf-stamp.js";
 export {
   assertAbsolutePath,
   assertContainedPathSafe,
@@ -63,15 +73,9 @@ export {
   defaultProviderPath,
   deleteModelProfile,
   deleteProviderEntry,
-  flattenModels,
-  getModelProfile,
-  hasProviderCredentials,
   loadProviderConfig,
   maskSecret,
-  mergeHeaders,
   PROVIDER_FILE_NAME,
-  type ResolvedProviderRuntime,
-  resolveProviderRuntime,
   saveProviderConfig,
   setDefaultModelProfile,
   toModelProfilePublic,
@@ -79,19 +83,31 @@ export {
   toProviderPublic,
   updateModelProfile,
   updateProviderEntry,
-} from "./provider-store.js";
+} from "./provider-catalog.js";
+export {
+  flattenModels,
+  getModelProfile,
+  hasProviderCredentials,
+  mergeHeaders,
+  type ResolvedProviderRuntime,
+  resolveProviderRuntime,
+} from "./provider-runtime.js";
 export {
   type PublishStagingInput,
   type PublishStagingResult,
   publishStagingToPublication,
+  rewriteWikiTreeCitationsForPublish,
 } from "./publish.js";
 export {
+  derivePublishedWikiGraph,
+  listPublishedWikiPageSummaries,
   listPublishedWikiPages,
   PUBLISHED_WIKI_MAX_FILE_BYTES,
   PUBLISHED_WIKI_MAX_PAGES,
   PublishedWikiError,
   type PublishedWikiErrorCode,
   type PublishedWikiPage,
+  type PublishedWikiPageSummary,
   readPublishedWikiPage,
   resolvePublishedWikiPath,
   toPublishedWikiPosixRelative,
@@ -104,6 +120,13 @@ export {
   type FrozenSourceSnapshot,
   freezeWikiRun,
 } from "./run-boundary.js";
+export {
+  loadRunGraph,
+  RUN_GRAPH_FILE_NAME,
+  RUN_GRAPH_REL_PATH,
+  runGraphPath,
+  writeRunGraph,
+} from "./run-graph.js";
 export {
   analysisDir,
   RUNS_DIR_NAME,
@@ -168,6 +191,28 @@ export {
   WIKI_VALIDATE_MAX_FILE_BYTES,
   WIKI_VALIDATE_MAX_FILES,
 } from "./validate-wiki.js";
+export { generateRootIndexIfMissing, renderRootIndex } from "./wiki-index.js";
+export {
+  deriveWikiGraph,
+  deriveWikiGraphFromTree,
+  extractInternalLinkTargets,
+  resolveWikiLinkTarget,
+  trustTierFromFrontmatter,
+  type WikiBrokenLink,
+  type WikiGraph,
+  type WikiGraphEdge,
+  type WikiGraphInputPage,
+  type WikiGraphNode,
+  type WikiTrustTier,
+} from "./wiki-links.js";
+export {
+  diffWikiPages,
+  renderWikiLog,
+  stripProvenanceForDiff,
+  updateWikiLogForPublish,
+  WIKI_LOG_HEADING,
+  type WikiLogChange,
+} from "./wiki-log.js";
 export {
   countMarkdownFiles,
   isReservedWikiPath,
@@ -180,40 +225,46 @@ export {
   type WikiTreeScan,
 } from "./wiki-tree.js";
 export {
+  APP_STATE_FILE_NAME,
+  type AppState,
+  DEFAULT_LOAD_HOME_SKILLS,
+  defaultAppStatePath,
+  getLoadHomeSkills,
+  listRecentWorkspaces,
+  readAppState,
+  registerWorkspaceInAppIndex,
+  removeWorkspaceFromAppIndex,
+  resolveLoadHomeSkills,
+  setLoadHomeSkills,
+  writeAppState,
+} from "./workspace-app-state.js";
+export {
+  type CreateWorkspaceOptions,
+  createWorkspace,
+  DEFAULT_MODEL_ID,
+  deleteWorkspaceMeta,
+  loadWorkspace,
+  saveWorkspace,
+  WORKSPACE_FILE_NAME,
+  workspaceConfigPath,
+  workspaceMetaDir,
+} from "./workspace-config.js";
+export {
   ProviderStoreError,
   WorkspaceIntakeError,
 } from "./workspace-errors.js";
 export {
   type AddSourceInput,
   type AddSourceOptions,
-  APP_STATE_FILE_NAME,
-  type AppState,
   addSource,
-  type CreateWorkspaceOptions,
-  createWorkspace,
-  DEFAULT_LOAD_HOME_SKILLS,
-  DEFAULT_MODEL_ID,
-  defaultAppStatePath,
-  deleteWorkspaceMeta,
-  getLoadHomeSkills,
-  listRecentWorkspaces,
-  listWorkspaceSummaries,
-  loadWorkspace,
-  loadWorkspaceById,
-  readAppState,
-  registerWorkspaceInAppIndex,
   removeSource,
-  removeWorkspaceFromAppIndex,
-  resolveLoadHomeSkills,
-  saveWorkspace,
-  setLoadHomeSkills,
   slugFromPath,
   type UpdateSourceInput,
   uniqueSourceId,
   updateSource,
-  WORKSPACE_FILE_NAME,
+} from "./workspace-source.js";
+export {
+  listWorkspaceSummaries,
+  loadWorkspaceById,
   type WorkspaceSummary,
-  workspaceConfigPath,
-  workspaceMetaDir,
-  writeAppState,
 } from "./workspace-store.js";

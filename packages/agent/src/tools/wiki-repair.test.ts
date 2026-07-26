@@ -6,14 +6,14 @@ import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { registerRunRecord, runWorkDir } from "@okf-wiki/core";
 import { commitSpec } from "../produce/living-spec.js";
-import { createFixtureProduceRuntime } from "../runtime/produce-runtime.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
+import { createFixtureProduceRuntime } from "../runtime/produce-runtime.js";
 import { runWorkdirLayout } from "../runtime/workdir.js";
 import {
   createWikiRepairTool,
   layoutForExistingRun,
-  type WikiRepairToolDetails,
   WIKI_REPAIR_TOOL_NAME,
+  type WikiRepairToolDetails,
 } from "./wiki-repair.js";
 
 const temps: string[] = [];
@@ -21,7 +21,11 @@ after(async () => {
   for (const t of temps) await rm(t, { recursive: true, force: true });
 });
 
-async function seedRun(root: string, runId: string) {
+async function seedRun(
+  root: string,
+  runId: string,
+  recordStatus: "running" | "failed" | "published" = "failed",
+) {
   const source = path.join(root, "source");
   const skill = path.join(root, "skill");
   await mkdir(source, { recursive: true });
@@ -60,7 +64,7 @@ async function seedRun(root: string, runId: string) {
     skillPath: path.join(work, "skill"),
     skillDigest: "a".repeat(64),
     sources: [{ id: "main", revision: "b".repeat(40), effectiveIgnores: [] }],
-    status: "running",
+    status: recordStatus,
   });
   const spec = defaultWikiRunSpec(workspace.name);
   await commitSpec(root, runId, spec);
@@ -145,6 +149,52 @@ describe("wiki_repair tool", () => {
     const result = await execute("tc-2", { runId: "no-such-run" });
     assert.equal(result.details.status, "failed");
     assert.match(String(result.details.summary), /not found/i);
+  });
+
+  it("execute rejects a run owned by another Operator Session", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-owner-"));
+    temps.push(root);
+    const runId = "run-owned";
+    const { workspace } = await seedRun(root, runId);
+
+    const tool = createWikiRepairTool({
+      workspace,
+      sessionId: "sess-other",
+      fixture: true,
+      runtime: createFixtureProduceRuntime(),
+    });
+
+    type ExecuteRepair = (
+      toolCallId: string,
+      input: { runId: string; notes?: string },
+    ) => Promise<{ details: WikiRepairToolDetails }>;
+    const execute = tool.execute as unknown as ExecuteRepair;
+    const result = await execute("tc-owner", { runId });
+    assert.equal(result.details.status, "failed");
+    assert.match(String(result.details.summary), /belongs to Operator Session/i);
+  });
+
+  it("execute rejects a still-active run (pending gates own the staging tree)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-active-"));
+    temps.push(root);
+    const runId = "run-active";
+    const { workspace } = await seedRun(root, runId, "running");
+
+    const tool = createWikiRepairTool({
+      workspace,
+      sessionId: "sess-1",
+      fixture: true,
+      runtime: createFixtureProduceRuntime(),
+    });
+
+    type ExecuteRepair = (
+      toolCallId: string,
+      input: { runId: string; notes?: string },
+    ) => Promise<{ details: WikiRepairToolDetails }>;
+    const execute = tool.execute as unknown as ExecuteRepair;
+    const result = await execute("tc-active", { runId });
+    assert.equal(result.details.status, "failed");
+    assert.match(String(result.details.summary), /still active/i);
   });
 
   it("layoutForExistingRun rebuilds mounts", async () => {

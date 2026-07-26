@@ -1,8 +1,9 @@
 /** Transcript projected exclusively from Pi messages and tool lifecycle events. */
 
 import type { AgentResumeGateCommand } from "@okf-wiki/contract";
-import { BotIcon, ChevronRightIcon, CircleAlertIcon, UserIcon } from "lucide-react";
-import { Bubble, BubbleContent, BubbleGroup } from "@/components/ui/bubble";
+import { BotIcon, ChevronRightIcon, CircleAlertIcon } from "lucide-react";
+import { memo } from "react";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Empty,
@@ -12,7 +13,6 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -37,25 +37,26 @@ export type TranscriptProps = {
 function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: boolean }) {
   const { t } = useI18n();
   return (
-    <Collapsible
-      defaultOpen={streaming}
-      className="w-full min-w-0 rounded-md border border-border/60 bg-muted/15"
-    >
-      <CollapsibleTrigger className="group flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
+    <Collapsible defaultOpen={streaming} className="w-full min-w-0">
+      <CollapsibleTrigger className="group flex min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
-        <span className="min-w-0 flex-1 font-medium">
+        <span className="min-w-0 truncate">
           {streaming ? t.agentWorkspace.thinkingStreaming : t.agentWorkspace.thinking}
         </span>
         {streaming ? <Spinner className="size-3" /> : null}
       </CollapsibleTrigger>
-      <CollapsibleContent className="min-w-0 border-t border-border/40 px-2.5 py-2">
-        <pre className="okf-code-snippet text-muted-foreground">{thinking}</pre>
+      <CollapsibleContent className="mt-1 ml-[7px] min-w-0 border-l-2 border-border/60 pl-3">
+        <pre className="m-0 max-h-64 min-w-0 overflow-y-auto font-sans text-xs leading-relaxed break-words whitespace-pre-wrap text-muted-foreground">
+          {thinking}
+        </pre>
       </CollapsibleContent>
     </Collapsible>
   );
 }
 
-function ChatMessage({
+// Memoized: every streaming tick produces a new messages array, but finalized
+// rows keep their object identity — memo stops full-transcript re-renders.
+const ChatMessage = memo(function ChatMessage({
   message,
   onResumeGate,
 }: {
@@ -99,9 +100,7 @@ function ChatMessage({
         data-role={message.role}
         className="flex w-full justify-center"
       >
-        <p className="max-w-[min(100%,42rem)] text-center text-xs text-muted-foreground">
-          {message.content}
-        </p>
+        <p className="w-full text-center text-xs text-muted-foreground">{message.content}</p>
       </div>
     );
   }
@@ -109,110 +108,108 @@ function ChatMessage({
   const waiting =
     isStreaming && !message.content.trim() && !message.thinking?.trim() && !message.tools?.length;
 
+  // User turns keep a right-aligned bubble; the bubble alone encodes the role.
+  if (isUser) {
+    return (
+      <div
+        data-testid="agent-message"
+        data-role="user"
+        data-status={message.status}
+        className="flex w-full min-w-0 justify-end"
+      >
+        <Bubble variant="default" align="end" className="max-w-[85%]">
+          <BubbleContent>
+            <div className="break-words whitespace-pre-wrap">{message.content}</div>
+          </BubbleContent>
+        </Bubble>
+      </div>
+    );
+  }
+
+  // Assistant turns render directly on the canvas — no bubble, no role header.
   return (
-    <Message
+    <div
       data-testid="agent-message"
       data-role={message.role}
       data-status={message.status}
-      align={isUser ? "end" : "start"}
-      className="max-w-full min-w-0"
+      className="flex w-full min-w-0 flex-col gap-2"
     >
-      <MessageContent className="max-w-[min(100%,42rem)] min-w-0">
-        <MessageHeader className="gap-2">
-          {isUser ? <UserIcon className="size-3.5" /> : <BotIcon className="size-3.5" />}
-          <span>{isUser ? t.agentWorkspace.roleUser : t.agentWorkspace.roleAssistant}</span>
-          {isStreaming ? <Spinner className="size-3 text-muted-foreground" /> : null}
-          {isError ? (
-            <span
-              role="status"
-              aria-live="assertive"
-              className="inline-flex items-center gap-1 text-destructive"
-            >
-              <CircleAlertIcon className="size-3" />
-              {t.agentWorkspace.statusError}
-            </span>
-          ) : null}
-        </MessageHeader>
+      {isError ? (
+        <span
+          role="status"
+          aria-live="assertive"
+          className="inline-flex items-center gap-1 text-xs text-destructive"
+        >
+          <CircleAlertIcon className="size-3.5" />
+          {t.agentWorkspace.statusError}
+        </span>
+      ) : null}
 
-        <BubbleGroup className="min-w-0 w-full">
-          {!useParts && message.thinking ? (
-            <ThinkingBlock
-              thinking={message.thinking}
-              streaming={message.thinkingStatus === "streaming"}
-            />
-          ) : null}
-          <Bubble
-            variant={isUser ? "default" : isError ? "destructive" : "outline"}
-            align={isUser ? "end" : "start"}
-            className={cn(!isUser && "w-full max-w-full min-w-0")}
-          >
-            <BubbleContent className={cn(!isUser && "w-full max-w-full min-w-0")}>
-              {useParts ? (
-                <div className="flex min-w-0 w-full flex-col gap-2" data-testid="message-parts">
-                  {message.parts!.map((part, index) => {
-                    if (part.type === "thinking") {
-                      return (
-                        <ThinkingBlock
-                          key={`thinking-${index}`}
-                          thinking={part.thinking}
-                          streaming={
-                            isStreaming &&
-                            message.thinkingStatus === "streaming" &&
-                            index === message.parts!.length - 1
-                          }
-                        />
-                      );
-                    }
-                    if (part.type === "text") {
-                      return part.text.trim() ? (
-                        <AgentMarkdown
-                          key={`text-${index}`}
-                          content={part.text}
-                          streaming={isStreaming && index === message.parts!.length - 1}
-                        />
-                      ) : null;
-                    }
-                    const tool = toolsById.get(part.toolId);
-                    return tool ? renderTool(tool) : null;
-                  })}
-                </div>
-              ) : message.content ? (
-                isUser ? (
-                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
-                ) : (
-                  <AgentMarkdown content={message.content} streaming={isStreaming} />
-                )
-              ) : waiting ? (
-                <div
-                  className="flex items-center gap-2 text-muted-foreground"
-                  data-testid="waiting-for-events"
-                >
-                  <Spinner className="size-3.5" />
-                  <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
-                </div>
-              ) : isError ? (
-                <div
-                  role="alert"
-                  aria-live="assertive"
-                  className="whitespace-pre-wrap"
-                  data-testid="agent-message-error"
-                >
-                  {message.errorText ?? t.agentWorkspace.statusError}
-                </div>
-              ) : null}
+      {!useParts && message.thinking ? (
+        <ThinkingBlock
+          thinking={message.thinking}
+          streaming={message.thinkingStatus === "streaming"}
+        />
+      ) : null}
 
-              {!useParts && message.tools?.length ? (
-                <div className="mt-2 flex min-w-0 w-full flex-col gap-1">
-                  {message.tools.map(renderTool)}
-                </div>
-              ) : null}
-            </BubbleContent>
-          </Bubble>
-        </BubbleGroup>
-      </MessageContent>
-    </Message>
+      {useParts ? (
+        <div className="flex w-full min-w-0 flex-col gap-2" data-testid="message-parts">
+          {message.parts!.map((part, index) => {
+            if (part.type === "thinking") {
+              return (
+                <ThinkingBlock
+                  key={`thinking-${index}`}
+                  thinking={part.thinking}
+                  streaming={
+                    isStreaming &&
+                    message.thinkingStatus === "streaming" &&
+                    index === message.parts!.length - 1
+                  }
+                />
+              );
+            }
+            if (part.type === "text") {
+              return part.text.trim() ? (
+                <AgentMarkdown
+                  key={`text-${index}`}
+                  content={part.text}
+                  streaming={isStreaming && index === message.parts!.length - 1}
+                />
+              ) : null;
+            }
+            const tool = toolsById.get(part.toolId);
+            return tool ? renderTool(tool) : null;
+          })}
+        </div>
+      ) : message.content ? (
+        <AgentMarkdown content={message.content} streaming={isStreaming} />
+      ) : waiting ? (
+        <div
+          className="flex items-center gap-2 text-muted-foreground"
+          data-testid="waiting-for-events"
+        >
+          <Spinner className="size-3.5" />
+          <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
+        </div>
+      ) : null}
+
+      {isError && (message.errorText || !message.content) ? (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="rounded-md bg-destructive/10 px-3 py-2 text-xs break-words whitespace-pre-wrap text-destructive"
+          data-testid="agent-message-error"
+        >
+          {message.errorText ?? t.agentWorkspace.statusError}
+        </div>
+      ) : null}
+
+      {!useParts && message.tools?.length ? (
+        <div className="flex w-full min-w-0 flex-col gap-1">{message.tools.map(renderTool)}</div>
+      ) : null}
+    </div>
   );
-}
+});
 
 export function Transcript({ messages, onResumeGate, className }: TranscriptProps) {
   const { t } = useI18n();
@@ -241,7 +238,7 @@ export function Transcript({ messages, onResumeGate, className }: TranscriptProp
       <MessageScrollerProvider autoScroll>
         <MessageScroller data-testid="agent-transcript" className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="gap-3 px-3 py-3 md:px-4">
+            <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 px-3 py-4 md:px-4">
               {messages.map((message) => (
                 <MessageScrollerItem
                   key={message.id}

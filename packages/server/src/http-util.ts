@@ -25,12 +25,53 @@ export function isAllowedCorsOrigin(origin: string, env: NodeJS.ProcessEnv = pro
   return false;
 }
 
+/** Host header naming this machine on loopback (any port). */
+const LOOPBACK_HOST_RE = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/** Host header naming a private / link-local address (LAN mode only). */
+const PRIVATE_LAN_HOST_RE =
+  /^((10\.\d{1,3}\.\d{1,3}\.\d{1,3})|(192\.168\.\d{1,3}\.\d{1,3})|(172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})|(\[[0-9a-fA-F:]+\]))(:\d+)?$/;
+
+export function isTrustedHostHeader(
+  hostHeader: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = (hostHeader ?? "").trim().toLowerCase();
+  if (!value) return false;
+  if (LOOPBACK_HOST_RE.test(value)) return true;
+  return isLanAccessEnabled(env) && PRIVATE_LAN_HOST_RE.test(value);
+}
+
+/**
+ * DNS-rebinding / cross-site request guard for the unauthenticated local API.
+ * The Host header must name this machine (loopback, or a private address in
+ * LAN mode) and any browser Origin must be an allowed origin. Non-browser
+ * clients (no Origin header) pass on the Host check alone. Returns true when
+ * the request was rejected (403 already sent).
+ */
+export function rejectUntrustedRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isTrustedHostHeader(req.headers.host, env)) {
+    sendError(res, 403, `untrusted Host header "${req.headers.host ?? ""}"`);
+    return true;
+  }
+  const origin = req.headers.origin;
+  if (origin && !isAllowedCorsOrigin(origin, env)) {
+    sendError(res, 403, `untrusted Origin "${origin}"`);
+    return true;
+  }
+  return false;
+}
+
 export function applyCors(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin;
   if (origin && isAllowedCorsOrigin(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
     res.setHeader("Access-Control-Max-Age", "86400");
   }

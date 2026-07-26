@@ -12,12 +12,9 @@ import {
 import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
-import {
-  type CreateWikiProduceToolInput,
-  createWikiProduceTool,
-} from "../tools/wiki-produce.js";
-import { createWikiRepairTool } from "../tools/wiki-repair.js";
 import { createSessionStatusTool } from "../tools/session-status.js";
+import { type CreateWikiProduceToolInput, createWikiProduceTool } from "../tools/wiki-produce.js";
+import { createWikiRepairTool } from "../tools/wiki-repair.js";
 import { projectOperatorHistoryFromManager } from "./history.js";
 
 export {
@@ -135,7 +132,12 @@ async function buildOperatorSession(
     additionalSkillPaths: input.additionalSkillPaths,
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens: input.contextTargetTokens,
-    scopedTools: false,
+    // Workspace-selected operator tools (default read-only, bash opt-in);
+    // Operations deny `.okf-wiki/` (Pi settings/auth, session JSONL, scratch)
+    // on fs tools. Stock bash is NOT Operations-scoped — opt-in trust only.
+    scopedTools: true,
+    denyPrefixes: [WORKSPACE_DIR_NAME],
+    toolSelection: input.workspace.operatorTools,
     // status first so meta questions prefer it over wiki_produce / wiki_repair
     customTools: [sessionStatus, wikiProduce, wikiRepair],
   });

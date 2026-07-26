@@ -126,12 +126,7 @@ export const RunGraphSnapshotSchema = z.object({
 
 export type RunGraphSnapshot = z.infer<typeof RunGraphSnapshotSchema>;
 
-export const ControlReturnStatusSchema = z.enum([
-  "complete",
-  "partial",
-  "failed",
-  "cancelled",
-]);
+export const ControlReturnStatusSchema = z.enum(["complete", "partial", "failed", "cancelled"]);
 
 export type ControlReturnStatus = z.infer<typeof ControlReturnStatusSchema>;
 

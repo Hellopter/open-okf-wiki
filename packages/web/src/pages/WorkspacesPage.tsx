@@ -1,3 +1,4 @@
+import { EllipsisVertical } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -21,13 +22,11 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   createWorkspace,
   deleteWorkspace,
@@ -38,10 +37,11 @@ import {
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { Layout } from "../components/Layout";
 import { LoadingState } from "../components/LoadingState";
 import { ModelSelect } from "../components/ModelSelect";
 import { formatMessage, useI18n } from "../i18n";
+import { operateHref } from "../lib/workspace-path";
+import { AppShell } from "../shells/AppShell";
 
 export function WorkspacesPage() {
   const { t } = useI18n();
@@ -113,9 +113,7 @@ export function WorkspacesPage() {
       setName("");
       setRootPath("");
       setShowForm(false);
-      // Keep rootPath in the URL so Agent Workspace can load without a second lookup race.
-      const params = new URLSearchParams({ rootPath: root });
-      navigate(`/w/${encodeURIComponent(workspace.id)}?${params.toString()}`);
+      navigate(operateHref(workspace.id));
     } catch (err) {
       setError(err);
     } finally {
@@ -146,7 +144,7 @@ export function WorkspacesPage() {
   }
 
   return (
-    <Layout>
+    <AppShell>
       <div data-testid="workspaces-page" className="flex flex-col gap-5">
         <header className="page-header row-between">
           <div>
@@ -179,7 +177,7 @@ export function WorkspacesPage() {
               <DialogTitle>{t.workspaces.createTitle}</DialogTitle>
               <DialogDescription>{t.workspaces.rootHint}</DialogDescription>
             </DialogHeader>
-            <form className="form" onSubmit={(e) => void handleCreate(e)}>
+            <form onSubmit={(e) => void handleCreate(e)}>
               <FieldGroup>
                 <Field>
                   <FieldLabel htmlFor="workspace-name">{t.workspaces.nameLabel}</FieldLabel>
@@ -295,82 +293,80 @@ export function WorkspacesPage() {
             </CardContent>
           </Card>
         ) : (
-          <Card className="py-0" data-testid="workspace-list">
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t.workspaces.colName}</TableHead>
-                    <TableHead>{t.workspaces.colRoot}</TableHead>
-                    <TableHead>{t.workspaces.colSources}</TableHead>
-                    <TableHead>{t.workspaces.colLastOpened}</TableHead>
-                    <TableHead>
-                      <span className="sr-only">{t.workspaces.colActions}</span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {workspaces.map((ws) => {
-                    const params = new URLSearchParams({ rootPath: ws.rootPath });
-                    const href = `/w/${encodeURIComponent(ws.id)}?${params.toString()}`;
-                    return (
-                      <TableRow
-                        key={ws.id}
-                        className="cursor-pointer"
-                        tabIndex={0}
-                        role="link"
-                        data-testid="workspace-row"
+          <div
+            className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
+            data-testid="workspace-list"
+          >
+            {workspaces.map((ws) => {
+              const href = operateHref(ws.id);
+              return (
+                <Card
+                  key={ws.id}
+                  size="sm"
+                  data-testid="workspace-row"
+                  data-workspace-id={ws.id}
+                  className="group relative transition-colors hover:ring-ring/40"
+                >
+                  <CardContent className="flex min-w-0 flex-col gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      {/* Stretched link: the whole card navigates; menu stays above it. */}
+                      <Link
+                        to={href}
+                        className="row-link truncate text-sm after:absolute after:inset-0"
                         data-workspace-id={ws.id}
-                        onClick={() => navigate(href)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            navigate(href);
-                          }
-                        }}
                       >
-                        <TableCell>
-                          <Link
-                            to={href}
-                            className="row-link"
-                            data-workspace-id={ws.id}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            {ws.name}
-                          </Link>
-                        </TableCell>
-                        <TableCell className="mono muted whitespace-normal">
-                          {ws.rootPath}
-                        </TableCell>
-                        <TableCell>{ws.sourceCount}</TableCell>
-                        <TableCell className="muted">
-                          {ws.lastOpenedAt ? new Date(ws.lastOpenedAt).toLocaleString() : "—"}
-                        </TableCell>
-                        <TableCell className="actions-cell">
-                          <Button
-                            type="button"
+                        {ws.name}
+                      </Link>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              className="relative z-10 -mt-1 -mr-1 shrink-0"
+                              aria-label={t.workspaces.rowMenu}
+                              data-testid="workspace-menu"
+                            />
+                          }
+                        >
+                          <EllipsisVertical />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
                             variant="destructive"
-                            size="sm"
                             data-testid="workspace-delete"
                             disabled={deletingId === ws.id}
-                            onClick={(event) => {
-                              event.stopPropagation();
+                            onClick={() => {
                               setDeleteTarget(ws);
                               setDeleteMeta(false);
                             }}
                           >
                             {t.workspaces.delete}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <p
+                      className="truncate font-mono text-xs text-muted-foreground"
+                      title={ws.rootPath}
+                    >
+                      {ws.rootPath}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatMessage(t.workspaces.sourceCountLabel, { n: ws.sourceCount })}
+                      {" · "}
+                      {ws.lastOpenedAt
+                        ? new Date(ws.lastOpenedAt).toLocaleDateString()
+                        : "—"}
+                    </p>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         )}
       </div>
-    </Layout>
+    </AppShell>
   );
 }

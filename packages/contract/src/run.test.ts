@@ -52,20 +52,56 @@ test("Wiki Run Record v2 requires every frozen input and outcome field", () => {
   }
 });
 
-test("WikiRunSpec rejects page domainIds not present in domains", () => {
-  const bad = {
-    summary: "s",
-    domains: [{ id: "core", title: "Core", scope: "x" }],
-    pages: [{ path: "a.md", purpose: "p", domainIds: ["missing"] }],
-  };
-  assert.equal(WikiRunSpecSchema.safeParse(bad).success, false);
-
+test("WikiRunSpec bidirectional domain↔page (ok / orphan / empty / unknown)", () => {
   const good = {
     summary: "s",
     domains: [{ id: "core", title: "Core", scope: "x" }],
     pages: [{ path: "a.md", purpose: "p", domainIds: ["core"] }],
   };
   assert.equal(WikiRunSpecSchema.safeParse(good).success, true);
+
+  // Empty domains: pages may omit domainIds (default []).
+  assert.equal(
+    WikiRunSpecSchema.safeParse({
+      summary: "s",
+      domains: [],
+      pages: [{ path: "a.md", purpose: "p" }],
+    }).success,
+    true,
+  );
+
+  // Unknown domainId on a page.
+  assert.equal(
+    WikiRunSpecSchema.safeParse({
+      summary: "s",
+      domains: [{ id: "core", title: "Core", scope: "x" }],
+      pages: [{ path: "a.md", purpose: "p", domainIds: ["missing"] }],
+    }).success,
+    false,
+  );
+
+  // Orphan domain: defined but never referenced by any page.
+  assert.equal(
+    WikiRunSpecSchema.safeParse({
+      summary: "s",
+      domains: [
+        { id: "core", title: "Core", scope: "x" },
+        { id: "orphan", title: "Orphan", scope: "y" },
+      ],
+      pages: [{ path: "a.md", purpose: "p", domainIds: ["core"] }],
+    }).success,
+    false,
+  );
+
+  // Non-empty domains require every page to list at least one domainId.
+  assert.equal(
+    WikiRunSpecSchema.safeParse({
+      summary: "s",
+      domains: [{ id: "core", title: "Core", scope: "x" }],
+      pages: [{ path: "a.md", purpose: "p", domainIds: [] }],
+    }).success,
+    false,
+  );
 });
 
 test("MergedDefectReport enforces clean ↔ defects.length", () => {
@@ -97,6 +133,34 @@ test("MergedDefectReport enforces clean ↔ defects.length", () => {
       reviewerIds: ["r1"],
     }).success,
     true,
+  );
+});
+
+test("MergedDefectReport requires defect reviewerId ∈ reviewerIds when present", () => {
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: false,
+      defects: [{ severity: "blocking", code: "x", issue: "bad", reviewerId: "r1" }],
+      reviewerIds: ["r1"],
+    }).success,
+    true,
+  );
+  // reviewerId optional — omit is ok even when reviewerIds is non-empty.
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: false,
+      defects: [{ severity: "blocking", code: "x", issue: "bad" }],
+      reviewerIds: ["r1"],
+    }).success,
+    true,
+  );
+  assert.equal(
+    MergedDefectReportSchema.safeParse({
+      clean: false,
+      defects: [{ severity: "blocking", code: "x", issue: "bad", reviewerId: "unknown" }],
+      reviewerIds: ["r1"],
+    }).success,
+    false,
   );
 });
 

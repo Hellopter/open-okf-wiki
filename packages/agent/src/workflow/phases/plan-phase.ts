@@ -10,6 +10,7 @@
 import {
   defaultWikiRunSpec,
   type NodeAttempt,
+  SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
 import type {
@@ -17,11 +18,16 @@ import type {
   RunWorkdirLayoutPaths,
   SourceIgnoreInput,
 } from "../../ports/agent-runner.js";
-import { PLAN_DRAFT_REL_PATH, readPlanDraft, writePlanDraft } from "../../produce/living-spec.js";
+import {
+  clearPlanDraft,
+  PLAN_DRAFT_REL_PATH,
+  readPlanDraft,
+  writePlanDraft,
+} from "../../produce/living-spec.js";
 import { plannerPrompt } from "../../prompts/plan.js";
 
-/** Tool name constant (string only — no tools/ import). */
-export const SUBMIT_WIKI_RUN_SPEC_TOOL_NAME = "submit_wiki_run_spec" as const;
+/** Tool name constant (contract-owned — no tools/ import). */
+export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
 
 function snippet(text: string, max = 240): string {
   const t = text.replace(/\s+/g, " ").trim();
@@ -134,6 +140,10 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
         JSON.stringify(input.priorSpec),
       ].join("\n\n")
     : "";
+
+  // Fail-closed across (re)plan rounds: a draft left by a previous round must
+  // never be re-resolved as this round's submission.
+  await clearPlanDraft(input.layout.runWorkDir);
 
   const systemPrompt = [
     "You are the Wiki planner.",

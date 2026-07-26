@@ -42,7 +42,8 @@ describe("formatToolDisplay", () => {
     assert.equal(display.subtitle, "main.tsx");
     assert.deepEqual(display.args, ["offset=10", "limit=40"]);
     assert.equal(display.kind, "output-only");
-    assert.equal(display.headerOnly, true);
+    // read must be expandable when tool.output exists (never header-only)
+    assert.notEqual(display.headerOnly, true);
   });
 
   it("formats write tools with content preview from object args", () => {
@@ -79,5 +80,6 @@ describe("formatToolDisplay", () => {
     const display = formatToolDisplay("read", '{"path":"foo/bar.ts"}');
     assert.equal(display.title, "read");
     assert.equal(display.subtitle, "bar.ts");
+    assert.notEqual(display.headerOnly, true);
   });
 });

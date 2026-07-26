@@ -13,6 +13,8 @@ export type ToolDisplaySummary = {
   title: string;
   /** Key target on the same line (filename, pattern, command…). */
   subtitle?: string;
+  /** Render the subtitle in mono (paths, patterns, commands — Claude style). */
+  subtitleMono?: boolean;
   /** Secondary chips after subtitle (OpenCode args: offset=…, pattern=…). */
   args?: string[];
   /**
@@ -24,6 +26,8 @@ export type ToolDisplaySummary = {
   kind: "output-only" | "write-body" | "raw";
   /** For write/edit: content preview in expand (not labeled "Input"). */
   writePreview?: string;
+  /** For edit: old/new strings rendered as a red/green diff in the expand. */
+  diff?: { removed?: string; added?: string };
   /** True when this tool is fully described by the header (no expand needed). */
   headerOnly?: boolean;
 };
@@ -97,7 +101,8 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
         title: name,
         subtitle: raw,
         kind: "output-only",
-        headerOnly: true,
+        // Never header-only for read — expansion is useful when tool.output exists.
+        ...(lower === "read" ? {} : { headerOnly: true }),
       };
     }
     return {
@@ -107,7 +112,7 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
     };
   }
 
-  // ---- read / ls — OpenCode: header only (filename + offset/limit) ----
+  // ---- read / ls — header shows filename + offset/limit; expand shows result ----
   if (lower === "read" || lower === "ls") {
     const path =
       asString(params.path) ??
@@ -120,25 +125,46 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
     return {
       title: lower,
       subtitle: path ? toolPathLabel(path) : undefined,
+      subtitleMono: Boolean(path),
       args: chips.length ? chips : undefined,
       kind: "output-only",
-      // read rarely needs expand; ls may show directory listing as output
-      headerOnly: lower === "read",
+      // Never headerOnly for read — ToolExecutionCard expands when tool.output exists.
+      // ls also expands for directory listing output.
     };
   }
 
-  // ---- write / edit — subtitle = path; expand = content preview + result ----
+  // ---- write / edit — subtitle = path; expand = diff (edit) or content + result ----
   if (lower === "write" || lower === "edit") {
     const path =
       asString(params.path) ??
       asString(params.file_path) ??
       asString(params.filePath) ??
       asString(params.target);
-    const content =
-      asString(params.content) ?? asString(params.new_string) ?? asString(params.newString);
+    const oldString = asString(params.old_string) ?? asString(params.oldString);
+    const newString = asString(params.new_string) ?? asString(params.newString);
+    const content = asString(params.content) ?? newString;
+    if (lower === "edit" && (oldString || newString)) {
+      // Claude-style red/green diff: old_string removed, new_string added.
+      return {
+        title: lower,
+        subtitle: path ? toolPathLabel(path) : undefined,
+        subtitleMono: Boolean(path),
+        kind: "write-body",
+        diff: {
+          removed: oldString ? formatPayloadText(oldString, 4_000) : undefined,
+          added: newString ? formatPayloadText(newString, 4_000) : undefined,
+        },
+      };
+    }
+    const lineChips: string[] = [];
+    if (lower === "write" && content) {
+      lineChips.push(`${content.split(/\r?\n/).length} lines`);
+    }
     return {
       title: lower,
       subtitle: path ? toolPathLabel(path) : undefined,
+      subtitleMono: Boolean(path),
+      args: lineChips.length ? lineChips : undefined,
       kind: "write-body",
       writePreview: content ? formatPayloadText(content, 4_000) : undefined,
     };
@@ -158,6 +184,7 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
       return {
         title: lower,
         subtitle: toolPathLabel(path),
+        subtitleMono: true,
         args: chips.length ? chips : undefined,
         kind: "output-only",
       };
@@ -165,6 +192,7 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
     return {
       title: lower,
       subtitle: pattern ? truncateOneLine(pattern, 56) : include,
+      subtitleMono: true,
       kind: "output-only",
     };
   }
@@ -184,12 +212,14 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
     "message",
     "prompt",
   ];
+  const monoKeys = new Set(["path", "file_path", "filePath", "command", "pattern", "url"]);
   for (const key of primaryKeys) {
     const v = asString(params[key]);
     if (v) {
       return {
         title: name,
         subtitle: truncateOneLine(v, 64),
+        subtitleMono: monoKeys.has(key),
         kind: "output-only",
       };
     }

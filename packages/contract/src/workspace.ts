@@ -130,9 +130,37 @@ export const WorkspaceOrchestrationSchema = z.object({
    * (pad with same model + different prompts when only one reviewer model).
    */
   reviewCouncilSize: z.number().int().min(1).max(4).default(1),
+  /**
+   * How many domain research units may run concurrently (each unit is
+   * leaf fan-out + domain reduce). Domains have independent scopes, so
+   * this bounds wall-clock, not correctness.
+   */
+  domainConcurrency: z.number().int().min(1).max(8).default(2),
 });
 
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
+
+/**
+ * Tools selectable for the Operator Session (chat agent). The fs tools are
+ * Operations-scoped read-only; `bash` is an explicit trust opt-in — it is a
+ * stock Pi tool with no Operations wrapper, so it can reach `.okf-wiki/`.
+ * Wiki Run child sessions keep their fixed role policies regardless.
+ */
+export const OperatorToolNameSchema = z.enum(["read", "grep", "find", "ls", "bash"]);
+
+export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
+
+export const DEFAULT_OPERATOR_TOOLS: readonly OperatorToolName[] = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+];
+
+export const OperatorToolsSchema = z
+  .array(OperatorToolNameSchema)
+  .max(8)
+  .transform((tools) => [...new Set(tools)]);
 
 /**
  * Language for generated Wiki page content (not the operator UI locale).
@@ -213,7 +241,14 @@ export const WorkspaceConfigSchema = z.object({
    * When true, interactive Wiki Runs pause for operator Spec confirmation
    * before produce. Headless/autoApprove skips this gate.
    */
-  planConfirm: z.boolean().default(false),
+  // HITL by default: interactive runs pause for operator plan approval.
+  planConfirm: z.boolean().default(true),
+  /**
+   * Operator Session tool selection (all, partial, or none of the selectable
+   * tools). Defaults to the Operations-scoped read-only set; `bash` only via
+   * explicit opt-in.
+   */
+  operatorTools: OperatorToolsSchema.default([...DEFAULT_OPERATOR_TOOLS]),
   /**
    * Output language for Wiki page body and titles produced by Wiki Runs.
    * Independent of the operator UI locale.

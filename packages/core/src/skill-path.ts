@@ -28,7 +28,7 @@ import {
   workspaceSkillsDir,
 } from "./product-home.js";
 import { copySkillTree } from "./skill-fork.js";
-import { getLoadHomeSkills } from "./workspace-store.js";
+import { getLoadHomeSkills } from "./workspace-app-state.js";
 
 export type ResolveSkillSourceOptions = {
   /** Explicit skill root from workspace.skillPath. */

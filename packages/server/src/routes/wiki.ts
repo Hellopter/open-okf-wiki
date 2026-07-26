@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  listPublishedWikiPages,
-  loadWorkspaceById,
+  derivePublishedWikiGraph,
+  listPublishedWikiPageSummaries,
   PublishedWikiError,
   readPublishedWikiPage,
 } from "@okf-wiki/core";
 import { sendError, sendJson } from "../http-util.ts";
+import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 
 export function publishedWikiHttpStatus(code: PublishedWikiError["code"]): number {
   switch (code) {
@@ -33,20 +34,44 @@ export async function handleListWiki(
   id: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
 
   try {
-    const pages = await listPublishedWikiPages(workspace.publicationPath);
+    const summaries = await listPublishedWikiPageSummaries(workspace.publicationPath);
     sendJson(res, 200, {
       workspaceId: workspace.id,
       publicationPath: workspace.publicationPath,
-      pages,
+      pages: summaries.map((summary) => summary.path),
+      summaries,
     });
+  } catch (error) {
+    if (error instanceof PublishedWikiError) {
+      sendError(res, publishedWikiHttpStatus(error.code), error.message, {
+        code: error.code,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Derived cross-link graph of the Published Wiki (Wiki Visualization data).
+ * GET /api/workspaces/:id/wiki-graph?rootPath=
+ */
+export async function handleWikiGraph(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  try {
+    const graph = await derivePublishedWikiGraph(workspace.publicationPath);
+    sendJson(res, 200, { workspaceId: workspace.id, ...graph });
   } catch (error) {
     if (error instanceof PublishedWikiError) {
       sendError(res, publishedWikiHttpStatus(error.code), error.message, {
@@ -70,12 +95,8 @@ export async function handleReadWiki(
   pagePath: string,
   url: URL,
 ): Promise<void> {
-  const rootPath = url.searchParams.get("rootPath") ?? undefined;
-  const workspace = await loadWorkspaceById(id, { rootPath: rootPath ?? undefined });
-  if (!workspace) {
-    sendError(res, 404, `workspace not found: ${id}`);
-    return;
-  }
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
 
   const trimmed = pagePath.trim();
   if (!trimmed) {

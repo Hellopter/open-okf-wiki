@@ -16,9 +16,9 @@ import {
 } from "@okf-wiki/contract";
 import { loadRunGraph, registerRunRecord, writeRunGraph } from "@okf-wiki/core";
 import type {
+  AgentRunner,
   AgentRunRequest,
   AgentRunResult,
-  AgentRunner,
   RunWorkdirLayoutPaths,
   WikiWriteRequest,
   WikiWriteResult,
@@ -26,10 +26,10 @@ import type {
 import type { GraphStore } from "../ports/graph-store.js";
 import { progressSinkFromCallback } from "../ports/progress-sink.js";
 import type { ProduceProgress } from "../produce/progress.js";
-import { runWiki } from "./run-wiki.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
 import { AttemptJournal } from "./journal.js";
 import { produceWiki } from "./produce.js";
+import { runWiki } from "./run-wiki.js";
 import { topologyFromSpec } from "./topology.js";
 
 const temps: string[] = [];
@@ -38,10 +38,7 @@ after(async () => {
 });
 
 /** Tiny layout builder — path joins only; no pi/ import. */
-function testLayout(
-  runWorkDir: string,
-  sourceMounts: Map<string, string>,
-): RunWorkdirLayoutPaths {
+function testLayout(runWorkDir: string, sourceMounts: Map<string, string>): RunWorkdirLayoutPaths {
   return {
     runWorkDir,
     sourcesDir: path.join(runWorkDir, "sources"),
@@ -53,18 +50,16 @@ function testLayout(
 }
 
 /** Fake runner: records calls, writes fixture wiki, no LLM. */
-function createFakeRunner(opts?: {
-  onRun?: (req: AgentRunRequest) => void;
-}): AgentRunner {
+function createFakeRunner(opts?: { onRun?: (req: AgentRunRequest) => void }): AgentRunner {
   return {
     kind: "fixture",
     async runAgent(input): Promise<AgentRunResult> {
       opts?.onRun?.(input);
-      const id = input.spanId?.trim() || input.role;
+      const attemptId = input.spanId?.trim() || input.role;
       input.onProgress?.({
-        attemptId: id,
-        nodeKey: id,
-        runIndex: 0,
+        attemptId,
+        nodeKey: input.nodeKey?.trim() || attemptId,
+        runIndex: input.runIndex ?? 0,
         role: input.role,
         status: "done",
         summary: `fake ${input.role}`,
@@ -88,11 +83,15 @@ function createFakeRunner(opts?: {
     async writeWiki(input: WikiWriteRequest): Promise<WikiWriteResult> {
       await mkdir(input.layout.wikiDir, { recursive: true });
       await mkdir(input.layout.analysisDir, { recursive: true });
+      const attemptId = input.spanId?.trim() || "root_write";
+      const nodeKey = input.nodeKey?.trim() || attemptId;
+      const runIndex = input.runIndex ?? 0;
+      const graphRole = input.graphRole ?? "root_write";
       input.onProgress?.({
-        attemptId: "root_write",
-        nodeKey: "root_write",
-        runIndex: 0,
-        role: "root_write",
+        attemptId,
+        nodeKey,
+        runIndex,
+        role: graphRole,
         status: "running",
       });
       const pages = await writeFixtureWiki(
@@ -100,10 +99,10 @@ function createFakeRunner(opts?: {
         input.spec.summary?.trim() || input.workspaceName,
       );
       input.onProgress?.({
-        attemptId: "root_write",
-        nodeKey: "root_write",
-        runIndex: 0,
-        role: "root_write",
+        attemptId,
+        nodeKey,
+        runIndex,
+        role: graphRole,
         status: "done",
         summary: "fake write",
       });
@@ -226,6 +225,20 @@ describe("injectable AgentRunner + GraphStore + journal (no LLM)", () => {
       snap.attempts.length > seedCount,
       `expected new attempts appended, seed=${seedCount} got=${snap.attempts.length}`,
     );
+    const reviewAttempts = snap.attempts.filter((a) => a.role === "reviewer");
+    assert.ok(reviewAttempts.length >= 1, "expected at least one reviewer attempt");
+    for (const a of reviewAttempts) {
+      assert.equal(a.nodeKey, "review", "reviewer attempts must attach to topology node review");
+      assert.match(a.attemptId, /^review@\d+:reviewer-\d+$/);
+    }
+    // Happy-path fake runner has clean review → no repair rounds; root_write only.
+    const rootWrites = snap.attempts.filter((a) => a.nodeKey === "root_write");
+    assert.ok(rootWrites.length >= 1, "expected root_write attempt");
+    assert.equal(
+      snap.attempts.some((a) => a.nodeKey === "repair"),
+      false,
+      "clean path should not emit repair attempts",
+    );
 
     await store.save(runId, snap);
     assert.equal(store.saveCalls, 1);
@@ -332,7 +345,9 @@ describe("injectable AgentRunner + GraphStore + journal (no LLM)", () => {
     assert.ok(result.runId);
     // ProgressSink was the orchestration fan-out (not dead code).
     assert.ok(sinkEmits >= 1, "ProgressSink.emit must run via runWiki");
-    assert.ok(progress.some((p) => p.kind === "topology" || p.kind === "graph" || p.kind === "attempt"));
+    assert.ok(
+      progress.some((p) => p.kind === "topology" || p.kind === "graph" || p.kind === "attempt"),
+    );
     // GraphStore.save called by runWiki orchestration (not test-side).
     assert.ok(store.saveCalls >= 1, `expected store.save from runWiki, got ${store.saveCalls}`);
     const loaded = await store.load(result.runId!);
@@ -344,8 +359,7 @@ describe("injectable AgentRunner + GraphStore + journal (no LLM)", () => {
     );
     // Fake runner was used (no LLM roles still recorded by produce path).
     assert.ok(
-      roles.length >= 1 ||
-        loaded!.attempts.some((a) => a.role === "plan" || a.nodeKey === "plan"),
+      roles.length >= 1 || loaded!.attempts.some((a) => a.role === "plan" || a.nodeKey === "plan"),
       "expected plan or produce roles without LLM",
     );
   });

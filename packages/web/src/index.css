@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 /* Streamdown + plugins — Tailwind must scan every installed plugin package */
 @source "../node_modules/streamdown/dist/*.js";
 @source "../node_modules/@streamdown/code/dist/*.js";
@@ -14,6 +15,10 @@
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Micro type tier for dense operator chrome (badges, timestamps, section labels) */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -80,11 +85,12 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* Categorical palette (wiki graph node types) — chromatic on purpose */
+  --chart-1: oklch(0.606 0.25 292.7);
+  --chart-2: oklch(0.623 0.214 259.8);
+  --chart-3: oklch(0.696 0.17 162.5);
+  --chart-4: oklch(0.769 0.188 70.1);
+  --chart-5: oklch(0.656 0.241 354.3);
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -118,11 +124,11 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --chart-1: oklch(0.702 0.183 293.5);
+  --chart-2: oklch(0.707 0.165 254.6);
+  --chart-3: oklch(0.765 0.177 163.2);
+  --chart-4: oklch(0.828 0.189 84.4);
+  --chart-5: oklch(0.718 0.202 349.8);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.922 0 0);
@@ -133,45 +139,7 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
-/* Prefer system dark mode when no explicit .dark / .light class is set */
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --success: oklch(0.72 0.14 155);
-    --warning: oklch(0.78 0.14 85);
-    --info: oklch(0.72 0.12 240);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.922 0 0);
-    --sidebar-primary-foreground: oklch(0.205 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
-  }
-}
+/* Dark tokens come from the .dark class only; index.html sets it pre-paint. */
 
 @layer base {
   * {
@@ -202,26 +170,6 @@
   @apply flex items-start justify-between gap-4;
 }
 
-.breadcrumb {
-  @apply mb-2 text-sm text-muted-foreground;
-}
-
-.breadcrumb a {
-  @apply text-muted-foreground no-underline hover:text-foreground hover:underline;
-}
-
-.subnav {
-  @apply flex flex-wrap gap-1 border-b border-border pb-2;
-}
-
-.subnav-link {
-  @apply rounded-lg px-3 py-1.5 text-sm text-muted-foreground no-underline transition-colors hover:bg-muted hover:text-foreground;
-}
-
-.subnav-link.active {
-  @apply bg-muted font-semibold text-foreground;
-}
-
 /**
  * Shared mono payload surface (tool I/O, thinking, sheet peeks).
  * Matches Streamdown code density without nested borders.
@@ -234,12 +182,9 @@
   @apply m-0 block max-h-64 min-w-0 w-full max-w-full overflow-x-auto overflow-y-auto rounded-md border border-border/70 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere];
 }
 
-.form {
-  @apply flex max-w-xl flex-col gap-4;
-}
-
-.form-wide {
-  @apply max-w-2xl;
+/* Micro section label for dense panels (run graph, gate panel, dialogs) */
+.okf-section-label {
+  @apply text-2xs font-medium uppercase tracking-wide text-muted-foreground;
 }
 
 .provider-test-result {
@@ -302,14 +247,6 @@ code.mono {
   @apply flex flex-wrap items-center gap-2;
 }
 
-.page-list {
-  @apply m-0 list-disc pl-4;
-}
-
-.page-list li {
-  @apply my-0.5;
-}
-
 .row-link {
   @apply font-semibold text-foreground no-underline hover:underline;
 }
@@ -326,32 +263,9 @@ code.mono {
   @apply mt-4 flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted-foreground;
 }
 
-.run-event-log {
-  @apply mt-4 border-t border-border pt-3;
-}
-
-.event-log {
-  @apply m-0 max-h-40 list-disc overflow-auto pl-4 text-muted-foreground;
-}
-
+/* Two-pane reader: TOC tree | article (full height, no sticky card stack). */
 .wiki-layout {
-  @apply grid gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] lg:items-start;
-}
-
-.wiki-layout > :first-child {
-  @apply lg:sticky lg:top-4;
-}
-
-.wiki-page-list {
-  @apply m-0 flex list-none flex-col gap-0.5 p-0;
-}
-
-.wiki-page-link {
-  @apply w-full rounded-lg px-2.5 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground;
-}
-
-.wiki-page-link.active {
-  @apply bg-muted font-semibold text-foreground;
+  @apply flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:flex-row;
 }
 
 .wiki-page-title {
@@ -408,7 +322,7 @@ code.mono {
 
 .wiki-markdown ul,
 .wiki-markdown ol {
-  @apply my-3 pl-5;
+  @apply my-3 flex flex-col gap-1.5 pl-5;
 }
 
 .wiki-markdown ul {
@@ -419,13 +333,27 @@ code.mono {
   @apply list-decimal;
 }
 
+.wiki-markdown li {
+  @apply leading-relaxed;
+}
+
+.wiki-markdown li strong,
+.wiki-markdown p strong {
+  @apply font-semibold text-foreground;
+}
+
 .wiki-markdown table {
   @apply my-3 w-full border-collapse text-sm;
 }
 
+/* Document tables: horizontal rules only — full grids read as spreadsheet */
 .wiki-markdown th,
 .wiki-markdown td {
-  @apply border border-border px-2 py-1 text-left;
+  @apply border-0 border-b border-border px-2 py-1.5 text-left align-top;
+}
+
+.wiki-markdown th {
+  @apply font-medium text-muted-foreground;
 }
 
 .wiki-markdown blockquote {
@@ -443,35 +371,29 @@ code.mono {
 /* ------------------------------------------------------------------ */
 
 .wiki-markdown [data-streamdown="code-block"],
-.session-markdown [data-streamdown="code-block"],
 .agent-markdown [data-streamdown="code-block"] {
   @apply my-3 min-w-0 max-w-full gap-0 overflow-hidden rounded-lg border border-border bg-muted/30 p-0;
 }
 
 .wiki-markdown [data-streamdown="code-block-header"],
-.session-markdown [data-streamdown="code-block-header"],
 .agent-markdown [data-streamdown="code-block-header"] {
   @apply rounded-none border-b border-border bg-muted/50 px-3 py-1.5;
 }
 
 .wiki-markdown [data-streamdown="code-block-body"],
-.session-markdown [data-streamdown="code-block-body"],
 .agent-markdown [data-streamdown="code-block-body"] {
   /* Kill Streamdown's second border/radius on the body shell */
   @apply min-w-0 max-w-full overflow-x-auto rounded-none border-0 bg-transparent p-3 text-[0.8125rem] leading-relaxed shadow-none;
 }
 
 .wiki-markdown [data-streamdown="code-block"] pre,
-.session-markdown [data-streamdown="code-block"] pre,
 .agent-markdown [data-streamdown="code-block"] pre,
 .wiki-markdown [data-streamdown="code-block"] code,
-.session-markdown [data-streamdown="code-block"] code,
 .agent-markdown [data-streamdown="code-block"] code {
   @apply m-0 max-w-full min-w-0 border-0 bg-transparent p-0 shadow-none;
 }
 
 /* Fenced code: keep horizontal scroll for unbreakable tokens inside bubbles. */
-.session-markdown [data-streamdown="code-block"] pre,
 .agent-markdown [data-streamdown="code-block"] pre,
 .wiki-markdown [data-streamdown="code-block"] pre {
   @apply overflow-x-auto whitespace-pre font-mono;
@@ -483,8 +405,8 @@ code.mono {
  * min-height preserves blank lines.
  */
 .wiki-markdown [data-streamdown="code-block-body"] code > span,
-.session-markdown [data-streamdown="code-block-body"] code > span,
-.agent-markdown [data-streamdown="code-block-body"] code > span {
+.agent-markdown [data-streamdown="code-block-body"] code > span,
+.okf-md [data-streamdown="code-block-body"] code > span {
   display: block;
   min-height: 1.35em;
   line-height: 1.55;
@@ -493,8 +415,6 @@ code.mono {
 /* Inline code only (not fenced blocks) */
 .wiki-markdown [data-streamdown="inline-code"],
 .wiki-markdown :not(pre) > code,
-.session-markdown [data-streamdown="inline-code"],
-.session-markdown :not(pre) > code,
 .agent-markdown [data-streamdown="inline-code"],
 .agent-markdown :not(pre) > code {
   @apply rounded-md border-0 bg-muted px-1.5 py-0.5 font-mono text-[0.85em];
@@ -502,33 +422,28 @@ code.mono {
 
 /* Bare <pre> fallbacks — overridden inside Streamdown code-block (more specific). */
 .wiki-markdown pre,
-.session-markdown pre,
 .agent-markdown pre {
   @apply my-3 max-w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.85em];
 }
 
 .wiki-markdown pre code,
-.session-markdown pre code,
 .agent-markdown pre code {
   @apply border-0 bg-transparent p-0;
 }
 
 /* Streamdown Mermaid — prefer natural size + horizontal scroll over crushing SVG */
 .wiki-markdown [data-streamdown="mermaid-block"],
-.session-markdown [data-streamdown="mermaid-block"],
 .agent-markdown [data-streamdown="mermaid-block"] {
   @apply my-4 min-w-0 max-w-full overflow-x-auto rounded-lg border border-border bg-muted/20;
 }
 
 .wiki-markdown [data-streamdown="mermaid-block"] > div:last-child,
-.session-markdown [data-streamdown="mermaid-block"] > div:last-child,
 .agent-markdown [data-streamdown="mermaid-block"] > div:last-child {
   @apply relative min-w-0 overflow-x-auto border-0 bg-transparent p-2;
 }
 
 .wiki-markdown [data-streamdown="mermaid"],
 .wiki-markdown .mermaid,
-.session-markdown [data-streamdown="mermaid"],
 .agent-markdown [data-streamdown="mermaid"] {
   @apply relative my-0 min-h-28 min-w-0 overflow-hidden;
 }
@@ -539,7 +454,6 @@ code.mono {
  * Structure: [data-streamdown=mermaid] > pan-zoom > [role=img] > svg
  */
 .wiki-markdown [data-streamdown="mermaid"] [role="img"] > svg,
-.session-markdown [data-streamdown="mermaid"] [role="img"] > svg,
 .agent-markdown [data-streamdown="mermaid"] [role="img"] > svg {
   display: block;
   max-width: none;
@@ -550,10 +464,8 @@ code.mono {
 
 /* Zoom / reset / header action icons stay 16px controls */
 .wiki-markdown [data-streamdown="mermaid-block"] button svg,
-.session-markdown [data-streamdown="mermaid-block"] button svg,
 .agent-markdown [data-streamdown="mermaid-block"] button svg,
 .wiki-markdown [data-streamdown="mermaid"] button svg,
-.session-markdown [data-streamdown="mermaid"] button svg,
 .agent-markdown [data-streamdown="mermaid"] button svg {
   display: block;
   width: 1rem;
@@ -567,13 +479,11 @@ code.mono {
 
 /* Pan-zoom control stack (bottom-left): keep pill chrome readable in chat */
 .wiki-markdown [data-streamdown="mermaid"] > div > div.absolute,
-.session-markdown [data-streamdown="mermaid"] > div > div.absolute,
 .agent-markdown [data-streamdown="mermaid"] > div > div.absolute {
   @apply z-10 gap-0.5 rounded-md border border-border bg-background/90 p-0.5 shadow-sm backdrop-blur-sm;
 }
 
 .wiki-markdown [data-streamdown="mermaid"] > div > div.absolute > button,
-.session-markdown [data-streamdown="mermaid"] > div > div.absolute > button,
 .agent-markdown [data-streamdown="mermaid"] > div > div.absolute > button {
   @apply flex size-7 items-center justify-center rounded-sm text-muted-foreground transition-colors;
   @apply hover:bg-muted hover:text-foreground;
@@ -583,26 +493,19 @@ code.mono {
 
 /* KaTeX (formulas) — block display + readable size inside chat bubbles */
 .wiki-markdown .katex-display,
-.session-markdown .katex-display,
 .agent-markdown .katex-display {
   @apply my-3 max-w-full overflow-x-auto overflow-y-hidden py-1;
 }
 
 .wiki-markdown .katex,
-.session-markdown .katex,
 .agent-markdown .katex {
   font-size: 1.05em;
 }
 
-.session-markdown,
 .agent-markdown {
   @apply min-w-0 max-w-full break-words text-sm leading-relaxed;
 }
 
-.session-markdown h1,
-.session-markdown h2,
-.session-markdown h3,
-.session-markdown h4,
 .agent-markdown h1,
 .agent-markdown h2,
 .agent-markdown h3,
@@ -610,76 +513,92 @@ code.mono {
   @apply mt-2 mb-1 font-semibold tracking-tight;
 }
 
-.session-markdown h1,
 .agent-markdown h1 {
   @apply text-lg;
 }
 
-.session-markdown h2,
 .agent-markdown h2 {
   @apply text-base;
 }
 
-.session-markdown h3,
 .agent-markdown h3 {
   @apply text-sm;
 }
 
-.session-markdown p,
 .agent-markdown p {
   @apply mb-2;
 }
 
-.session-markdown ul,
-.session-markdown ol,
 .agent-markdown ul,
 .agent-markdown ol {
   @apply my-2 pl-5;
 }
 
-.session-markdown ul,
 .agent-markdown ul {
   @apply list-disc;
 }
 
-.session-markdown ol,
 .agent-markdown ol {
   @apply list-decimal;
 }
 
-.session-markdown a,
 .agent-markdown a {
   @apply text-primary underline underline-offset-2;
 }
 
-.session-markdown blockquote,
 .agent-markdown blockquote {
   @apply my-2 border-l-2 border-border pl-3 text-muted-foreground;
 }
 
-.session-markdown table,
 .agent-markdown table {
   @apply my-2 w-full border-collapse text-xs;
 }
 
-.session-markdown th,
-.session-markdown td,
 .agent-markdown th,
 .agent-markdown td {
-  @apply border border-border px-2 py-1 text-left;
+  @apply border-0 border-b border-border px-2 py-1 text-left align-top;
 }
 
-/* Skill settings editor: keep fork tooling usable on narrow layouts */
-#settings-skill-file-editor,
-[data-testid="settings-skill-file-editor"] {
-  @apply max-w-full;
+.agent-markdown th {
+  @apply font-medium text-muted-foreground;
+}
+
+/* ------------------------------------------------------------------ */
+/* Streamdown tables — flatten the boxed wrapper chrome.               */
+/* Structure: [table-wrapper] > toolbar div + scroll div > table       */
+/* Streamdown paints wrapper border + bg-sidebar + table border +      */
+/* cell borders; keep horizontal rules only, toolbar on hover.         */
+/* ------------------------------------------------------------------ */
+
+.wiki-markdown [data-streamdown="table-wrapper"],
+.agent-markdown [data-streamdown="table-wrapper"] {
+  @apply my-3 min-w-0 max-w-full space-y-0 rounded-none border-0 bg-transparent p-0;
+}
+
+/* Toolbar (copy/download): hidden until the table is hovered or focused */
+.wiki-markdown [data-streamdown="table-wrapper"] > div:has(button):first-child,
+.agent-markdown [data-streamdown="table-wrapper"] > div:has(button):first-child {
+  @apply justify-end opacity-0 transition-opacity;
+}
+
+.wiki-markdown [data-streamdown="table-wrapper"]:hover > div:has(button):first-child,
+.wiki-markdown [data-streamdown="table-wrapper"]:focus-within > div:has(button):first-child,
+.agent-markdown [data-streamdown="table-wrapper"]:hover > div:has(button):first-child,
+.agent-markdown [data-streamdown="table-wrapper"]:focus-within > div:has(button):first-child {
+  @apply opacity-100;
+}
+
+.wiki-markdown [data-streamdown="table"],
+.agent-markdown [data-streamdown="table"] {
+  @apply my-0 w-full border-0 bg-transparent;
+}
+
+.wiki-markdown [data-streamdown="table"] thead,
+.agent-markdown [data-streamdown="table"] thead {
+  @apply bg-transparent;
 }
 
 @media (max-width: 720px) {
-  [data-testid="run-page"] .row-actions {
-    @apply w-full;
-  }
-
   .row-between {
     @apply flex-col;
   }

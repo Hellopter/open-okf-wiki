@@ -1,12 +1,7 @@
-import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { createMathPlugin } from "@streamdown/math";
-import { createMermaidPlugin } from "@streamdown/mermaid";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { type Components, Streamdown } from "streamdown";
+import type { Components } from "streamdown";
 import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Empty,
   EmptyContent,
@@ -14,46 +9,40 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
   ApiError,
+  getWikiGraph,
   getWikiPage,
   getWorkspace,
   listWikiPages,
+  type WikiGraphResponse,
   type WikiPageResponse,
+  type WikiPageSummary,
   type WorkspaceConfig,
 } from "../api";
 import { LoadingState } from "../components/LoadingState";
-import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
-import { agentWorkspaceHref } from "../lib/workspace-path";
-
-const math = createMathPlugin({
-  singleDollarTextMath: true,
-  errorColor: "var(--color-muted-foreground)",
-});
-
-const mermaid = createMermaidPlugin({
-  config: {
-    startOnLoad: false,
-    securityLevel: "strict",
-    suppressErrorRendering: true,
-    theme: "neutral",
-    fontFamily: "var(--font-sans), ui-sans-serif, system-ui, sans-serif",
-    fontSize: 16,
-    flowchart: { useMaxWidth: false, htmlLabels: true, curve: "basis" },
-    sequence: { useMaxWidth: false },
-    gantt: { useMaxWidth: false },
-    class: { useMaxWidth: false },
-    state: { useMaxWidth: false },
-    er: { useMaxWidth: false },
-  },
-});
-
-const streamdownPlugins = { cjk, code, math, mermaid };
+import { operateHref, wikiHref } from "../lib/workspace-path";
+import { MarkdownDocument } from "../shared/MarkdownDocument";
+import { WikiReaderShell } from "../shells/WikiReaderShell";
+import { WikiGraphView } from "../wiki/WikiGraphView";
+import { WikiPageTree } from "../wiki/WikiPageTree";
 
 /** Strip YAML frontmatter so the body renders without the --- block. */
+/**
+ * The page header already renders the title — drop a leading `# Title` that
+ * duplicates it so the article does not open with the same line twice.
+ */
+function stripLeadingTitle(markdown: string, title: string | undefined | null): string {
+  if (!title) return markdown;
+  const match = markdown.match(/^\s*#\s+(.+?)\s*\n+/);
+  if (match && match[1]?.trim() === title.trim()) {
+    return markdown.slice(match[0].length);
+  }
+  return markdown;
+}
+
 function stripFrontmatter(content: string): string {
   const trimmed = content.replace(/^\uFEFF/, "");
   if (!trimmed.startsWith("---")) {
@@ -77,15 +66,17 @@ function stripFrontmatter(content: string): string {
 /**
  * Resolve a relative markdown href against the current page path.
  * Returns a wiki-relative `.md` path, or null if the link should stay external.
+ * Bundle-absolute links (`/overview.md`, OKF §6.1) resolve from the wiki root.
  */
 function resolveWikiMdHref(href: string, currentPage: string): string | null {
   if (!href || href.startsWith("#")) {
     return null;
   }
-  // Protocol / absolute URL / absolute site path → leave alone
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) || href.startsWith("//") || href.startsWith("/")) {
+  // Protocol / protocol-relative URL → leave alone
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) || href.startsWith("//")) {
     return null;
   }
+  const bundleAbsolute = href.startsWith("/");
   const hashIndex = href.indexOf("#");
   const pathPart = hashIndex >= 0 ? href.slice(0, hashIndex) : href;
   if (!pathPart) {
@@ -97,6 +88,11 @@ function resolveWikiMdHref(href: string, currentPage: string): string | null {
   if (pathPart.includes("..")) {
     // Reject escape attempts in content links.
     return null;
+  }
+
+  if (bundleAbsolute) {
+    const segments = pathPart.split("/").filter((s) => s.length > 0 && s !== ".");
+    return segments.length > 0 ? segments.join("/") : null;
   }
 
   const currentDir = currentPage.includes("/")
@@ -117,48 +113,61 @@ function defaultPage(pages: string[]): string | undefined {
   return pages[0];
 }
 
+/**
+ * Parse citation hrefs for chip UI:
+ * - Skill form: repo:path#L… (staging / historical)
+ * - Publish form: ../sources/<id>/path#L… or /sources/<id>/path#L… (harden may normalize)
+ */
+function parseSourceCitationHref(href: string): { display: string } | null {
+  if (!href) return null;
+  if (/^repo:/i.test(href)) {
+    return { display: href.replace(/^repo:/i, "") };
+  }
+  // Portable publish paths (and harden-normalized absolute /sources/…).
+  const m = href.match(/(?:^|\/)sources\/([^/#?]+)\/([^?#]*)((?:#L\d+(?:-L\d+)?)?)$/i);
+  if (m) {
+    const sourceId = m[1]!;
+    const rel = m[2] ?? "";
+    const frag = m[3] ?? "";
+    return { display: `${sourceId}/${rel}${frag}`.replace(/\/+/g, "/").replace(/^\//, "") };
+  }
+  return null;
+}
+
 export function WorkspaceWikiPage() {
   const { t } = useI18n();
   const { id = "", "*": splat = "" } = useParams<{ id: string; "*": string }>();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const rootPathHint = searchParams.get("rootPath") ?? undefined;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const graphMode = searchParams.get("view") === "graph";
 
-  const pageFromRoute = useMemo(() => {
-    const fromSplat = splat.replace(/^\/+/, "").trim();
-    if (fromSplat) {
-      return fromSplat;
-    }
-    const fromQuery = searchParams.get("page")?.trim();
-    return fromQuery || "";
-  }, [splat, searchParams]);
+  const pageFromRoute = useMemo(() => splat.replace(/^\/+/, "").trim(), [splat]);
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [pages, setPages] = useState<string[]>([]);
+  const [summaries, setSummaries] = useState<WikiPageSummary[]>([]);
+  const [graph, setGraph] = useState<WikiGraphResponse | null>(null);
   const [page, setPage] = useState<WikiPageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [pageLoading, setPageLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [empty, setEmpty] = useState(false);
 
-  const baseWikiPath = `/workspaces/${encodeURIComponent(id)}/wiki`;
-
   const selectPage = useCallback(
     (nextPath: string) => {
-      const params = new URLSearchParams();
-      if (rootPathHint) {
-        params.set("rootPath", rootPathHint);
-      }
-      // Prefer path segment for nested pages; keep rootPath as query.
-      const query = params.toString();
-      navigate(
-        `${baseWikiPath}/${nextPath.split("/").map(encodeURIComponent).join("/")}${query ? `?${query}` : ""}`,
-      );
+      navigate(wikiHref(id, nextPath));
     },
-    [baseWikiPath, navigate, rootPathHint],
+    [id, navigate],
   );
 
-  // Load workspace + page list
+  const setGraphMode = useCallback(
+    (next: boolean) => {
+      setSearchParams(next ? { view: "graph" } : {}, { replace: true });
+    },
+    [setSearchParams],
+  );
+
+  // Load workspace + page list (id-only; rootPath comes from workspace config).
   useEffect(() => {
     if (!id) {
       return;
@@ -169,25 +178,34 @@ export function WorkspaceWikiPage() {
       setError(null);
       setEmpty(false);
       try {
-        const data = await getWorkspace(id, rootPathHint);
+        const data = await getWorkspace(id);
         if (cancelled) {
           return;
         }
         setWorkspace(data.workspace);
-        const root = data.workspace.rootPath ?? rootPathHint;
+        const root = data.workspace.rootPath;
         try {
           const list = await listWikiPages(id, root);
           if (cancelled) {
             return;
           }
           setPages(list.pages);
+          setSummaries(list.summaries ?? []);
           setEmpty(false);
+          // Cross-link graph is optional presentation data; failures stay silent.
+          getWikiGraph(id, root)
+            .then((data) => {
+              if (!cancelled) setGraph(data);
+            })
+            .catch(() => undefined);
         } catch (listErr) {
           if (cancelled) {
             return;
           }
           if (listErr instanceof ApiError && listErr.status === 404) {
             setPages([]);
+            setSummaries([]);
+            setGraph(null);
             setEmpty(true);
             setPage(null);
           } else {
@@ -199,6 +217,8 @@ export function WorkspaceWikiPage() {
           setError(err);
           setWorkspace(null);
           setPages([]);
+          setSummaries([]);
+          setGraph(null);
         }
       } finally {
         if (!cancelled) {
@@ -209,11 +229,11 @@ export function WorkspaceWikiPage() {
     return () => {
       cancelled = true;
     };
-  }, [id, rootPathHint]);
+  }, [id]);
 
   // When list is ready and no page selected, open default
   useEffect(() => {
-    if (loading || empty || pages.length === 0) {
+    if (loading || empty || pages.length === 0 || graphMode) {
       return;
     }
     if (!pageFromRoute) {
@@ -222,7 +242,7 @@ export function WorkspaceWikiPage() {
         selectPage(fallback);
       }
     }
-  }, [loading, empty, pages, pageFromRoute, selectPage]);
+  }, [loading, empty, pages, pageFromRoute, selectPage, graphMode]);
 
   // Load selected page content
   useEffect(() => {
@@ -234,8 +254,7 @@ export function WorkspaceWikiPage() {
       setPageLoading(true);
       setError(null);
       try {
-        const root = workspace.rootPath ?? rootPathHint;
-        const data = await getWikiPage(id, pageFromRoute, root);
+        const data = await getWikiPage(id, pageFromRoute, workspace.rootPath);
         if (!cancelled) {
           setPage(data);
         }
@@ -253,7 +272,7 @@ export function WorkspaceWikiPage() {
     return () => {
       cancelled = true;
     };
-  }, [id, workspace, pageFromRoute, rootPathHint, empty]);
+  }, [id, workspace, pageFromRoute, empty]);
 
   const markdownComponents = useMemo<Components>(() => {
     return {
@@ -265,17 +284,33 @@ export function WorkspaceWikiPage() {
             </a>
           );
         }
-        // Source Citations: [Source](repo:…#L…) — render as chips, not plain links.
-        if (/^repo:/i.test(href) || (typeof children === "string" && children === "Source")) {
+        // Source Citations — Skill form (repo:) or publish-portable (…/sources/<id>/…).
+        const cite = parseSourceCitationHref(href);
+        if (
+          cite ||
+          (typeof children === "string" && children === "Source" && href.includes("sources/"))
+        ) {
           const label =
             typeof children === "string" || typeof children === "number"
               ? String(children)
               : "Source";
-          const target = href.replace(/^repo:/i, "");
+          const target = cite?.display ?? href.replace(/^repo:/i, "");
+          // "a/b/c/spec.md#L13-L29" → "spec.md#L13-L29"; full path in tooltip.
+          const [targetPath, targetAnchor] = target.split("#");
+          const shortTarget =
+            (targetPath?.split("/").filter(Boolean).pop() ?? target) +
+            (targetAnchor ? `#${targetAnchor}` : "");
           return (
-            <span className="wiki-source-cite" title={href} data-testid="wiki-source-cite">
-              <span className="wiki-source-cite__label">{label}</span>
-              <span className="wiki-source-cite__target">{target}</span>
+            <span
+              className="wiki-source-cite"
+              title={target}
+              data-testid="wiki-source-cite"
+              data-cite-href={href}
+            >
+              {label !== "Source" ? (
+                <span className="wiki-source-cite__label">{label}</span>
+              ) : null}
+              <span className="wiki-source-cite__target">{shortTarget}</span>
             </span>
           );
         }
@@ -283,7 +318,7 @@ export function WorkspaceWikiPage() {
         if (wikiTarget) {
           return (
             <a
-              href={`${baseWikiPath}/${wikiTarget.split("/").map(encodeURIComponent).join("/")}`}
+              href={wikiHref(id, wikiTarget)}
               {...rest}
               onClick={(event) => {
                 event.preventDefault();
@@ -301,113 +336,214 @@ export function WorkspaceWikiPage() {
         );
       },
     };
-  }, [baseWikiPath, pageFromRoute, selectPage]);
+  }, [id, pageFromRoute, selectPage]);
 
-  const bodyMarkdown = page ? stripFrontmatter(page.content) : "";
+  const bodyMarkdown = page
+    ? stripLeadingTitle(stripFrontmatter(page.content), page.title)
+    : "";
+  const pageLabel = page?.title ?? (pageFromRoute || undefined);
+
+  const treeTitles = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const summary of summaries) {
+      if (summary.title) map[summary.path] = summary.title;
+    }
+    return map;
+  }, [summaries]);
+
+  const pageNode = useMemo(
+    () => graph?.nodes.find((node) => node.path === pageFromRoute) ?? null,
+    [graph, pageFromRoute],
+  );
+
+  const backlinks = useMemo(() => {
+    if (!graph || !pageFromRoute) return [];
+    return graph.edges
+      .filter((edge) => edge.to === pageFromRoute)
+      .map((edge) => edge.from)
+      .sort((a, b) => a.localeCompare(b));
+  }, [graph, pageFromRoute]);
+
+  const trustTierLabel =
+    pageNode?.trustTier === "human-reviewed"
+      ? t.wiki.trustTier.humanReviewed
+      : pageNode?.trustTier === "machine-confirmed"
+        ? t.wiki.trustTier.machineConfirmed
+        : t.wiki.trustTier.unverified;
 
   return (
-    <WorkspaceShell
+    <WikiReaderShell
       workspaceId={id}
       workspaceName={workspace?.name}
-      breadcrumbLabel={t.wiki.breadcrumb}
-      title={t.wiki.title}
-      description={t.wiki.description}
+      pageLabel={pageLabel}
       error={error}
       onDismissError={() => setError(null)}
       testId="wiki-page"
     >
       {loading ? (
-        <LoadingState label={t.wiki.loading} />
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+          <LoadingState label={t.wiki.loading} />
+        </div>
       ) : empty ? (
-        <Card data-testid="wiki-empty">
-          <CardContent className="pt-0">
-            <Empty className="border-0 p-6">
-              <EmptyHeader>
-                <EmptyTitle className="text-base">{t.wiki.emptyTitle}</EmptyTitle>
-                <EmptyDescription>{t.wiki.emptyDescription}</EmptyDescription>
-              </EmptyHeader>
-              <EmptyContent>
-                <Link
-                  to={agentWorkspaceHref(id, rootPathHint)}
-                  className={cn(buttonVariants())}
-                  data-testid="wiki-open-agent"
-                >
-                  {t.wiki.goToAgent}
-                </Link>
-              </EmptyContent>
-            </Empty>
-          </CardContent>
-        </Card>
+        <div
+          className="flex min-h-0 flex-1 items-center justify-center p-6"
+          data-testid="wiki-empty"
+        >
+          <Empty className="border-0 p-6">
+            <EmptyHeader>
+              <EmptyTitle className="text-base">{t.wiki.emptyTitle}</EmptyTitle>
+              <EmptyDescription>{t.wiki.emptyDescription}</EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Link
+                to={operateHref(id)}
+                className={cn(buttonVariants())}
+                data-testid="wiki-open-agent"
+              >
+                {t.wiki.goToAgent}
+              </Link>
+            </EmptyContent>
+          </Empty>
+        </div>
       ) : (
         <div className="wiki-layout">
-          <Card className="h-fit" aria-label={t.wiki.pagesAria}>
-            <CardHeader>
-              <CardTitle>{t.wiki.pages}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="max-h-[28rem]">
-                <ul className="wiki-page-list" data-testid="wiki-page-list">
-                  {pages.map((p) => {
-                    const active = p === pageFromRoute;
-                    return (
-                      <li key={p}>
-                        <button
-                          type="button"
-                          className={active ? "wiki-page-link active" : "wiki-page-link"}
-                          data-testid="wiki-page-link"
-                          data-page={p}
-                          aria-current={active ? "page" : undefined}
-                          onClick={() => selectPage(p)}
-                        >
-                          {p}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </ScrollArea>
-            </CardContent>
-          </Card>
+          <nav
+            aria-label={t.wiki.pagesAria}
+            className="flex min-h-0 w-full flex-col border-b border-border bg-muted/15 lg:w-60 lg:shrink-0 lg:border-b-0 lg:border-r"
+          >
+            <div className="flex shrink-0 items-center gap-1 px-3 py-2 text-xs font-medium text-muted-foreground">
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-1.5 py-0.5 transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                  !graphMode ? "bg-muted text-foreground" : "hover:text-foreground",
+                )}
+                data-testid="wiki-view-pages"
+                aria-pressed={!graphMode}
+                onClick={() => setGraphMode(false)}
+              >
+                {t.wiki.listView}
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "rounded-md px-1.5 py-0.5 transition-colors",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                  graphMode ? "bg-muted text-foreground" : "hover:text-foreground",
+                )}
+                data-testid="wiki-view-graph"
+                aria-pressed={graphMode}
+                onClick={() => setGraphMode(true)}
+              >
+                {t.wiki.graphView}
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
+              <WikiPageTree
+                pages={pages}
+                activePath={pageFromRoute}
+                titles={treeTitles}
+                onSelect={selectPage}
+              />
+            </div>
+          </nav>
 
-          <Card data-testid="wiki-page-content">
-            <CardContent>
+          {graphMode && graph ? (
+            <WikiGraphView
+              graph={graph}
+              activePath={pageFromRoute || undefined}
+              onSelect={selectPage}
+              ariaLabel={t.wiki.graphAria}
+              emptyLabel={t.wiki.graphEmpty}
+            />
+          ) : (
+            <div
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 md:p-6 lg:p-8"
+              data-testid="wiki-page-content"
+            >
               {pageLoading && !page ? (
                 <LoadingState label={t.wiki.loadingPage} />
               ) : page ? (
-                <>
+                <article className="mx-auto max-w-3xl">
                   {page.title ? (
-                    <h2 className="wiki-page-title" data-testid="wiki-page-title">
+                    <h1 className="wiki-page-title" data-testid="wiki-page-title">
                       {page.title}
-                    </h2>
+                    </h1>
                   ) : (
-                    <h2 className="wiki-page-title muted">{page.path}</h2>
+                    <h1 className="wiki-page-title muted">{page.path}</h1>
                   )}
-                  <p className="muted small mono wiki-page-path">{page.path}</p>
-                  <div className="wiki-markdown" data-testid="wiki-markdown">
-                    <Streamdown
-                      key={page.path}
-                      mode="static"
-                      components={markdownComponents}
-                      plugins={streamdownPlugins}
-                      lineNumbers={false}
-                      controls={{
-                        code: { copy: true, download: false },
-                        table: true,
-                        mermaid: { fullscreen: true, download: true, copy: true, panZoom: true },
-                      }}
-                      className="size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                    >
-                      {bodyMarkdown}
-                    </Streamdown>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="wiki-page-path font-mono">{page.path}</span>
+                    {pageNode?.type ? (
+                      <span
+                        className="rounded-full border border-border px-2 py-0.5"
+                        data-testid="wiki-page-type"
+                      >
+                        {pageNode.type}
+                      </span>
+                    ) : null}
+                    {pageNode ? (
+                      <span
+                        className={cn(
+                          "rounded-full border px-2 py-0.5",
+                          pageNode.trustTier === "unverified"
+                            ? "border-border"
+                            : "border-success/40 text-success",
+                        )}
+                        data-testid="wiki-page-trust"
+                      >
+                        {trustTierLabel}
+                      </span>
+                    ) : null}
+                    {pageNode?.generatedAt ? (
+                      <span title={pageNode.generatedBy}>
+                        {t.wiki.generatedAt} {pageNode.generatedAt.slice(0, 10)}
+                      </span>
+                    ) : null}
                   </div>
-                </>
+                  <MarkdownDocument
+                    key={page.path}
+                    content={bodyMarkdown}
+                    surface="wiki"
+                    mode="static"
+                    components={markdownComponents}
+                  />
+                  {backlinks.length > 0 ? (
+                    <footer
+                      className="mt-8 border-t border-border pt-3 text-sm"
+                      data-testid="wiki-backlinks"
+                    >
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {t.wiki.backlinks}
+                      </span>
+                      <ul className="mt-1.5 flex flex-wrap gap-2">
+                        {backlinks.map((from) => (
+                          <li key={from}>
+                            <a
+                              href={wikiHref(id, from)}
+                              className="text-primary hover:underline"
+                              data-testid="wiki-backlink"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                selectPage(from);
+                              }}
+                            >
+                              {treeTitles[from] ?? from}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </footer>
+                  ) : null}
+                </article>
               ) : (
                 <p className="muted">{t.wiki.selectPage}</p>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          )}
         </div>
       )}
-    </WorkspaceShell>
+    </WikiReaderShell>
   );
 }

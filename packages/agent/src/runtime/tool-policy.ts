@@ -43,9 +43,10 @@ export function toolNamesForRole(role: WikiAgentRole): readonly PiFsToolName[] {
     case "reviewer":
       return READ_ONLY;
     case "operator_chat":
-      // Operator conversation only selects product tools such as wiki_produce.
-      // Source exploration happens inside run-owned child Sessions.
-      return [];
+      // Operator conversation may explore the Workspace read-only (Operations
+      // deny `.okf-wiki/` product meta); writes still happen only inside
+      // run-owned child Sessions via wiki_produce / wiki_repair.
+      return READ_ONLY;
     case "root_write":
       return READ_WRITE;
     default: {
@@ -58,6 +59,36 @@ export function toolNamesForRole(role: WikiAgentRole): readonly PiFsToolName[] {
 /** True when the role may use write/edit (still scoped by Operations wrappers). */
 export function roleMayWrite(role: WikiAgentRole): boolean {
   return role === "root_write";
+}
+
+/**
+ * Tools an operator may select for the chat Session (workspace.operatorTools).
+ * `bash` is a stock Pi tool with no Operations wrapper — explicit trust opt-in
+ * only, never available to Semantic Workflow roles.
+ */
+export const OPERATOR_SELECTABLE_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
+
+export type OperatorSelectableTool = (typeof OPERATOR_SELECTABLE_TOOLS)[number];
+
+/**
+ * Resolve the operator tool list from a workspace selection.
+ * undefined → read-only default; empty array → product tools only.
+ * Unknown names throw rather than being silently dropped.
+ */
+export function resolveOperatorToolNames(
+  selection: readonly string[] | undefined,
+): readonly OperatorSelectableTool[] {
+  if (selection === undefined) return READ_ONLY as readonly OperatorSelectableTool[];
+  const out: OperatorSelectableTool[] = [];
+  for (const name of selection) {
+    if (!(OPERATOR_SELECTABLE_TOOLS as readonly string[]).includes(name)) {
+      throw new Error(`unknown operator tool: ${name}`);
+    }
+    if (!out.includes(name as OperatorSelectableTool)) {
+      out.push(name as OperatorSelectableTool);
+    }
+  }
+  return out;
 }
 
 /** Runtime safety check for factory tests and guards. */

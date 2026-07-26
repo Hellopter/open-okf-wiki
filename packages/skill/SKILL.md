@@ -96,9 +96,23 @@ review. Return to an earlier step whenever later evidence breaks its gate. Revie
 
 ### Concept pages (all `.md` except reserved names)
 
-Begin every **concept** page with YAML frontmatter containing non-empty **`type`** and **`title`**
-(OKF v0.1 + product UI). Suggested `type` values: `Overview`, `Architecture`, `Module`, `Flow`,
-`Concept`. Keep internal Wiki links relative and ending in `.md`.
+Begin every **concept** page with YAML frontmatter containing non-empty **`type`**, **`title`**, and
+a one-sentence **`description`** (OKF v0.2 + product UI). Optional `tags` (short lowercase strings)
+help cross-cutting navigation. Suggested `type` values: `Overview`, `Architecture`, `Module`,
+`Flow`, `Concept`. Keep internal Wiki links relative and ending in `.md`.
+
+```yaml
+---
+type: Module
+title: Session runtime
+description: How operator sessions are created, resumed, and streamed.
+tags: [session, runtime]
+---
+```
+
+Do **not** write `generated`, `verified`, `stale_after`, or `okf_version` frontmatter — the Run
+Boundary stamps these provenance fields mechanically at publication; model-authored timestamps or
+verification claims would be fabrications.
 
 For one repository, write Source Citations as
 `[Source](repo:path/to/file.py#L10-L20)`. For multiple repositories, prefix the path with the
@@ -110,7 +124,7 @@ never invent or estimate ranges.
 
 | File | Role |
 |------|------|
-| `index.md` | Directory listing only (progressive disclosure). No concept frontmatter; no Source Citations required. Link to concept pages with short descriptions. |
+| `index.md` | Directory listing only (progressive disclosure). No concept frontmatter; no Source Citations required. Link to concept pages with their frontmatter `description` as the entry text. |
 | `log.md` | Optional change history (newest first). |
 
 Do **not** put the narrative overview only in `index.md` — use `overview.md` (or the Spec path) for prose.

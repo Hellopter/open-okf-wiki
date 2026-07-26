@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { topologyFromSpec } from "./topology.js";
-import { AttemptJournal } from "./journal.js";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { AttemptJournal } from "./journal.js";
+import { topologyFromSpec } from "./topology.js";
 
 describe("AttemptJournal (pure, no model)", () => {
   it("setTopology preserves prior attempts", () => {

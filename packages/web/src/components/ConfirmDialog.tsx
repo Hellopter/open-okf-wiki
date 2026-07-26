@@ -10,6 +10,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useI18n } from "../i18n";
 
 export type ConfirmDialogProps = {
   open: boolean;
@@ -49,7 +50,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
-  cancelLabel = "Cancel",
+  cancelLabel,
   onConfirm,
   destructive = true,
   confirmDisabled = false,
@@ -60,11 +61,13 @@ export function ConfirmDialog({
   metaLabel,
   metaTestId,
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
+  const resolvedCancelLabel = cancelLabel ?? t.common.cancel;
   const showMeta = metaLabel != null && onMetaCheckedChange != null;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent data-testid={dataTestId} aria-label="Confirm dialog">
+      <AlertDialogContent data-testid={dataTestId}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description != null ? (
@@ -85,7 +88,7 @@ export function ConfirmDialog({
         ) : null}
 
         <AlertDialogFooter>
-          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
+          <AlertDialogCancel>{resolvedCancelLabel}</AlertDialogCancel>
           <AlertDialogAction
             variant={destructive ? "destructive" : "default"}
             disabled={confirmDisabled}

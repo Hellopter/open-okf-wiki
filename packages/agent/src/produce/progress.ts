@@ -3,11 +3,7 @@
  * Event type lives on ports (DIP); this module only projects at the tool boundary.
  */
 
-import type {
-  NodeAttempt,
-  RunGraphSnapshot,
-  WikiProduceToolDetails,
-} from "@okf-wiki/contract";
+import type { NodeAttempt, RunGraphSnapshot, WikiProduceToolDetails } from "@okf-wiki/contract";
 import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
 import type { ProduceProgress } from "../ports/progress-sink.js";
 
@@ -27,10 +23,7 @@ const MAX_LIVE_ATTEMPTS = 256;
  * Upsert by attemptId (streaming updates to the same attempt).
  * New attemptIds append — never wipe prior rounds for the same nodeKey.
  */
-export function upsertAttempt(
-  graph: RunGraphSnapshot,
-  attempt: NodeAttempt,
-): RunGraphSnapshot {
+export function upsertAttempt(graph: RunGraphSnapshot, attempt: NodeAttempt): RunGraphSnapshot {
   const attempts = [...graph.attempts];
   const idx = attempts.findIndex((a) => a.attemptId === attempt.attemptId);
   if (idx >= 0) attempts[idx] = attempt;
@@ -94,8 +87,7 @@ export function createToolDetailsAccumulator(
         case "topology": {
           const base = details.graph ?? emptyRunGraphSnapshot(0);
           details.graph = {
-            topologyVersion:
-              progress.topologyVersion ?? Math.max(1, base.topologyVersion + 1),
+            topologyVersion: progress.topologyVersion ?? Math.max(1, base.topologyVersion + 1),
             topology: progress.topology,
             attempts: base.attempts,
             ...(base.playhead ? { playhead: base.playhead } : {}),

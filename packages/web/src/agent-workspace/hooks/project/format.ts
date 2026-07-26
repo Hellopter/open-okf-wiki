@@ -135,16 +135,19 @@ export function extractMessageThinking(message: unknown): string {
  */
 export function extractAssistantError(message: unknown): {
   isError: boolean;
+  /** Operator/user abort without a provider error — neutral, not a failure. */
+  aborted: boolean;
   errorText?: string;
   stopReason?: string;
 } {
-  if (!isRecord(message)) return { isError: false };
+  if (!isRecord(message)) return { isError: false, aborted: false };
   const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
   // Wire field is provider-native; avoid a bare status-like identifier for scanners.
   const raw = (message as Record<string, unknown>)["error" + "Message"];
   const errorText = typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
-  const isError = stopReason === "error" || stopReason === "aborted" || Boolean(errorText);
-  return { isError, errorText, stopReason };
+  const aborted = stopReason === "aborted" && !errorText;
+  const isError = !aborted && (stopReason === "error" || Boolean(errorText));
+  return { isError, aborted, errorText, stopReason };
 }
 
 /**

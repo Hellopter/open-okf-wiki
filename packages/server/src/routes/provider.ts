@@ -13,7 +13,6 @@ import {
   flattenModels,
   getModelProfile,
   loadProviderConfig,
-  probeLocalGit,
   resolveProviderRuntime,
   setDefaultModelProfile,
   toProviderPublic,
@@ -174,6 +173,16 @@ export async function handleSetDefaultModel(
   }
 }
 
+/** Compare base URLs ignoring trailing slashes and case of scheme/host. */
+function normalizeBaseUrl(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  try {
+    return new URL(trimmed).toString().replace(/\/+$/, "");
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
 export async function handleTestProvider(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = (await readJsonBody(req)) as {
     modelProfileId?: unknown;
@@ -203,6 +212,17 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
     apiKey = body.apiKey;
   } else {
     apiKey = runtime.source.apiKey !== "none" ? runtime.apiKey : "";
+    // Exfiltration guard: the stored credential may only be sent to the base
+    // URL it was stored for. Testing a different endpoint requires re-entering
+    // the API key explicitly.
+    if (apiKey && normalizeBaseUrl(baseUrl) !== normalizeBaseUrl(runtime.baseUrl ?? "")) {
+      sendError(
+        res,
+        400,
+        "testing a custom base URL with the stored API key is not allowed — re-enter the API key",
+      );
+      return;
+    }
   }
 
   let apiShape = runtime.apiShape;
@@ -278,14 +298,4 @@ export async function resolveWorkspaceModelSelection(input: {
 
   // Empty catalog: denormalized placeholder only (operator must configure Settings later).
   return { id: "openai/default" };
-}
-
-export async function handleGitProbe(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = (await readJsonBody(req)) as { path?: unknown };
-  if (typeof body.path !== "string" || !body.path.trim()) {
-    sendError(res, 400, "path is required");
-    return;
-  }
-  const probe = await probeLocalGit(body.path);
-  sendJson(res, 200, probe);
 }

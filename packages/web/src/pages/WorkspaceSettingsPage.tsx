@@ -21,8 +21,8 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { DEFAULT_OPERATOR_TOOLS, type OperatorToolName } from "@okf-wiki/contract";
 import {
   createWorkspaceSkillFork,
   deleteWorkspace,
@@ -40,12 +40,14 @@ import {
   writeWorkspaceSkillFile,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { ModelSelect } from "../components/ModelSelect";
-import { WorkspaceShell } from "../components/WorkspaceShell";
 import { formatMessage, useI18n } from "../i18n";
 
-export function WorkspaceSettingsPage() {
+export type SettingsSection = "general" | "skill" | "danger";
+
+export function WorkspaceSettingsPage({ section = "general" }: { section?: SettingsSection }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const { id = "" } = useParams<{ id: string }>();
@@ -56,7 +58,6 @@ export function WorkspaceSettingsPage() {
   const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
-  const [saved, setSaved] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteMeta, setDeleteMeta] = useState(false);
@@ -75,6 +76,9 @@ export function WorkspaceSettingsPage() {
   const [plannerProfileId, setPlannerProfileId] = useState("");
   const [workerProfileId, setWorkerProfileId] = useState("");
   const [writerProfileId, setWriterProfileId] = useState("");
+  const [operatorTools, setOperatorTools] = useState<OperatorToolName[]>([
+    ...DEFAULT_OPERATOR_TOOLS,
+  ]);
   const [skill, setSkill] = useState<SkillInfo | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillFilePath, setSkillFilePath] = useState("SKILL.md");
@@ -96,6 +100,7 @@ export function WorkspaceSettingsPage() {
     setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
     setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
     setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
+    setOperatorTools([...(ws.operatorTools ?? DEFAULT_OPERATOR_TOOLS)] as OperatorToolName[]);
 
     // Prefer profileId; else match denormalized model id; else keep empty.
     if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
@@ -139,7 +144,6 @@ export function WorkspaceSettingsPage() {
     }
     setLoading(true);
     setError(null);
-    setSaved(false);
     try {
       const [wsData, providerData] = await Promise.all([
         getWorkspace(id, rootPathHint),
@@ -170,7 +174,6 @@ export function WorkspaceSettingsPage() {
     }
     setIsSubmitting(true);
     setError(null);
-    setSaved(false);
     try {
       const contextRaw = contextTargetTokens.trim();
       let nextContextTarget: number | undefined;
@@ -207,6 +210,8 @@ export function WorkspaceSettingsPage() {
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
         reviewCouncilSize: Math.min(4, Math.max(1, Number(reviewCouncilSize) || 1)),
+        // Not yet operator-editable; carry the stored value through the patch.
+        domainConcurrency: baseOrch?.domainConcurrency ?? 2,
       };
       const result = await patchWorkspace(
         id,
@@ -219,11 +224,11 @@ export function WorkspaceSettingsPage() {
           limits: nextLimits,
           roleModels,
           orchestration,
+          operatorTools,
         },
         workspace?.rootPath ?? rootPathHint,
       );
       applyWorkspace(result.workspace, models);
-      setSaved(true);
       toast.success(t.settings.saved);
     } catch (err) {
       setError(err);
@@ -267,40 +272,21 @@ export function WorkspaceSettingsPage() {
   }
 
   return (
-    <WorkspaceShell
-      workspaceId={id}
-      workspaceName={workspace?.name}
-      breadcrumbLabel={t.settings.breadcrumbSettings}
-      title={t.settings.title}
-      description={
-        <>
-          {t.settings.descriptionPrefix} <Link to="/settings">{t.settings.descriptionLink}</Link>
-          {t.settings.descriptionSuffix}
-        </>
-      }
-      error={error}
-      onDismissError={() => setError(null)}
-      testId="settings-page"
-    >
+    <div data-testid="settings-page" className="flex flex-col gap-5">
+      <p className="text-sm text-muted-foreground">
+        {t.settings.descriptionPrefix} <Link to="/settings">{t.settings.descriptionLink}</Link>
+        {t.settings.descriptionSuffix}
+      </p>
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
       {loading ? (
         <LoadingState label={t.settings.loading} />
       ) : workspace ? (
-        <Tabs defaultValue="general" className="w-full">
-          <TabsList variant="line" className="mb-2 w-full justify-start">
-            <TabsTrigger value="general" data-testid="settings-tab-general">
-              {t.settings.tabGeneral}
-            </TabsTrigger>
-            <TabsTrigger value="skill" data-testid="settings-tab-skill">
-              {t.settings.tabSkill}
-            </TabsTrigger>
-            <TabsTrigger value="danger" data-testid="settings-tab-danger">
-              {t.settings.tabDanger}
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value="general" className="flex flex-col gap-6 outline-none">
+        <div className="w-full max-w-3xl">
+          {section === "general" ? (
+            <div className="flex flex-col gap-6">
             <Card>
               <CardContent className="flex flex-col gap-6">
-                <form className="form" onSubmit={(e) => void handleSubmit(e)}>
+                <form className="max-w-xl" onSubmit={(e) => void handleSubmit(e)}>
                   <FieldGroup>
                     <Field>
                       <FieldLabel htmlFor="settings-name">{t.settings.name}</FieldLabel>
@@ -310,7 +296,6 @@ export function WorkspaceSettingsPage() {
                         value={name}
                         onChange={(e) => {
                           setName(e.target.value);
-                          setSaved(false);
                         }}
                         required
                         maxLength={120}
@@ -323,7 +308,6 @@ export function WorkspaceSettingsPage() {
                       value={modelProfileId}
                       onChange={(next) => {
                         setModelProfileId(next);
-                        setSaved(false);
                       }}
                       defaultModelProfileId={defaultModelProfileId}
                       required={models.length > 0}
@@ -338,8 +322,7 @@ export function WorkspaceSettingsPage() {
                     />
                     {orphanModelId ? (
                       <p className="muted small" data-testid="settings-model-orphan">
-                        Previous model id <code className="mono">{orphanModelId}</code> is no longer
-                        in Settings. Pick a configured model above.
+                        {formatMessage(t.settings.orphanModel, { id: orphanModelId })}
                       </p>
                     ) : null}
 
@@ -353,7 +336,6 @@ export function WorkspaceSettingsPage() {
                         value={publicationPath}
                         onChange={(e) => {
                           setPublicationPath(e.target.value);
-                          setSaved(false);
                         }}
                         placeholder="D:/src/app/wiki"
                         required
@@ -370,7 +352,6 @@ export function WorkspaceSettingsPage() {
                         onValueChange={(next) => {
                           if (next === "en" || next === "zh") {
                             setWikiLanguage(next);
-                            setSaved(false);
                           }
                         }}
                         items={[
@@ -408,10 +389,44 @@ export function WorkspaceSettingsPage() {
                         checked={planConfirm}
                         onCheckedChange={(checked) => {
                           setPlanConfirm(checked);
-                          setSaved(false);
                         }}
                         data-testid="settings-plan-confirm"
                       />
+                    </Field>
+
+                    <Field>
+                      <FieldLabel>Operator tools</FieldLabel>
+                      <FieldDescription>
+                        Tools available to the chat agent. File tools are read-only and cannot
+                        touch product meta; bash runs unrestricted shell commands in the
+                        workspace — enable it only for workspaces you fully trust.
+                      </FieldDescription>
+                      <div className="flex flex-wrap gap-4" data-testid="settings-operator-tools">
+                        {(["read", "grep", "find", "ls", "bash"] as OperatorToolName[]).map(
+                          (tool) => (
+                            <label
+                              key={tool}
+                              className="flex items-center gap-1.5 text-sm"
+                              data-testid={`settings-operator-tool-${tool}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={operatorTools.includes(tool)}
+                                onChange={(e) => {
+                                  setOperatorTools((current) =>
+                                    e.target.checked
+                                      ? [...current, tool]
+                                      : current.filter((name) => name !== tool),
+                                  );
+                                }}
+                              />
+                              <span className={tool === "bash" ? "text-destructive" : undefined}>
+                                {tool}
+                              </span>
+                            </label>
+                          ),
+                        )}
+                      </div>
                     </Field>
 
                     <Field>
@@ -426,7 +441,6 @@ export function WorkspaceSettingsPage() {
                         value={contextTargetTokens}
                         onChange={(e) => {
                           setContextTargetTokens(e.target.value);
-                          setSaved(false);
                         }}
                         placeholder={t.settings.contextTargetTokensPlaceholder}
                         className="font-mono max-w-xs"
@@ -464,7 +478,6 @@ export function WorkspaceSettingsPage() {
                             value={maxDomainFanOut}
                             onChange={(e) => {
                               setMaxDomainFanOut(e.target.value);
-                              setSaved(false);
                             }}
                             className="font-mono w-24"
                             data-testid="settings-max-domain-fanout"
@@ -485,7 +498,6 @@ export function WorkspaceSettingsPage() {
                             value={maxLeafFanOut}
                             onChange={(e) => {
                               setMaxLeafFanOut(e.target.value);
-                              setSaved(false);
                             }}
                             className="font-mono w-24"
                             data-testid="settings-max-leaf-fanout"
@@ -506,7 +518,6 @@ export function WorkspaceSettingsPage() {
                             value={reviewCouncilSize}
                             onChange={(e) => {
                               setReviewCouncilSize(e.target.value);
-                              setSaved(false);
                             }}
                             className="font-mono w-24"
                             data-testid="settings-review-council-size"
@@ -528,7 +539,6 @@ export function WorkspaceSettingsPage() {
                             value={plannerProfileId}
                             onChange={(next) => {
                               setPlannerProfileId(next);
-                              setSaved(false);
                             }}
                             defaultModelProfileId={defaultModelProfileId}
                             data-testid="settings-role-planner"
@@ -543,7 +553,6 @@ export function WorkspaceSettingsPage() {
                             value={workerProfileId}
                             onChange={(next) => {
                               setWorkerProfileId(next);
-                              setSaved(false);
                             }}
                             defaultModelProfileId={defaultModelProfileId}
                             data-testid="settings-role-worker"
@@ -558,7 +567,6 @@ export function WorkspaceSettingsPage() {
                             value={writerProfileId}
                             onChange={(next) => {
                               setWriterProfileId(next);
-                              setSaved(false);
                             }}
                             defaultModelProfileId={defaultModelProfileId}
                             data-testid="settings-role-writer"
@@ -581,11 +589,6 @@ export function WorkspaceSettingsPage() {
                         {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
                         {isSubmitting ? t.settings.saving : t.settings.save}
                       </Button>
-                      {saved ? (
-                        <span className="text-sm font-medium text-primary" role="status">
-                          {t.settings.saved}
-                        </span>
-                      ) : null}
                     </div>
                   </FieldGroup>
                 </form>
@@ -611,8 +614,9 @@ export function WorkspaceSettingsPage() {
                 </dl>
               </CardContent>
             </Card>
-          </TabsContent>
-          <TabsContent value="skill" className="outline-none">
+            </div>
+          ) : null}
+          {section === "skill" ? (
             <Card>
               <CardContent className="flex flex-col gap-6">
                 <section className="flex flex-col gap-3" data-testid="settings-skill-panel">
@@ -805,7 +809,7 @@ export function WorkspaceSettingsPage() {
                         </FieldLabel>
                         <Textarea
                           id="settings-skill-file-editor"
-                          className="min-h-48 font-mono text-sm"
+                          className="min-h-48 max-w-full font-mono text-sm"
                           value={skillFileContent}
                           onChange={(e) => {
                             setSkillFileContent(e.target.value);
@@ -819,7 +823,7 @@ export function WorkspaceSettingsPage() {
                         {t.settings.skillFiles}{" "}
                         <button
                           type="button"
-                          className="underline"
+                          className="rounded-sm underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                           onClick={() => {
                             void (async () => {
                               if (!id) {
@@ -854,8 +858,8 @@ export function WorkspaceSettingsPage() {
                 </section>
               </CardContent>
             </Card>
-          </TabsContent>
-          <TabsContent value="danger" className="outline-none">
+          ) : null}
+          {section === "danger" ? (
             <Card>
               <CardContent className="flex flex-col gap-6">
                 <section
@@ -884,8 +888,8 @@ export function WorkspaceSettingsPage() {
                 </section>
               </CardContent>
             </Card>
-          </TabsContent>
-        </Tabs>
+          ) : null}
+        </div>
       ) : null}
 
       <ConfirmDialog
@@ -915,6 +919,6 @@ export function WorkspaceSettingsPage() {
         metaLabel={t.settings.deleteMeta}
         metaTestId="settings-delete-meta"
       />
-    </WorkspaceShell>
+    </div>
   );
 }

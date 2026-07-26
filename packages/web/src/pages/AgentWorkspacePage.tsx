@@ -5,9 +5,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
 import {
+  patchWorkspace,
   createAgentSession,
   deleteAgentSession,
   getWorkspace,
@@ -18,14 +22,13 @@ import {
   type WorkspaceConfig,
 } from "../api";
 import { LoadingState } from "../components/LoadingState";
-import { WorkspaceShell } from "../components/WorkspaceShell";
 import { useI18n } from "../i18n";
+import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 export function AgentWorkspacePage() {
   const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
-  const rootPathHint = searchParams.get("rootPath") ?? undefined;
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [sessions, setSessions] = useState<PiSessionSummary[]>([]);
@@ -47,7 +50,8 @@ export function AgentWorkspacePage() {
     };
   }, []);
 
-  const rootPath = workspace?.rootPath ?? rootPathHint;
+  // rootPath is for API optional args only — never required in the URL.
+  const rootPath = workspace?.rootPath;
 
   const agent = useSessionAgent({
     workspaceId: id,
@@ -64,6 +68,8 @@ export function AgentWorkspacePage() {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
+          // Drop legacy rootPath query if present; navigation is id-only.
+          next.delete("rootPath");
           next.set("sessionId", sessionId);
           return next;
         },
@@ -78,10 +84,10 @@ export function AgentWorkspacePage() {
     setLoading(true);
     setBootError(null);
     try {
-      const wsRes = await getWorkspace(id, rootPathHint);
+      const wsRes = await getWorkspace(id);
       const ws = wsRes.workspace;
       setWorkspace(ws);
-      const root = ws.rootPath ?? rootPathHint;
+      const root = ws.rootPath;
 
       const [sessRes, runsRes] = await Promise.all([
         listAgentSessions(id, root),
@@ -120,16 +126,15 @@ export function AgentWorkspacePage() {
     } finally {
       setLoading(false);
     }
-  }, [id, rootPathHint, searchParams, syncSessionIdInUrl]);
+  }, [id, searchParams, syncSessionIdInUrl]);
 
   useEffect(() => {
-    const key = `${id}::${rootPathHint ?? ""}`;
-    if (bootKeyRef.current === key) return;
-    bootKeyRef.current = key;
+    if (bootKeyRef.current === id) return;
+    bootKeyRef.current = id;
     void boot();
-    // Boot once per workspace id / rootPath hint (not on every sessionId write).
+    // Boot once per workspace id (not on every sessionId write).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot boot
-  }, [id, rootPathHint]);
+  }, [id]);
 
   const handleSelectSession = useCallback(
     (sessionId: string) => {
@@ -224,15 +229,60 @@ export function AgentWorkspacePage() {
     };
   }, [id, activeSessionId, rootPath, userMessageCount, activeTitleLooksDefault]);
 
+  const [savingPlanConfirm, setSavingPlanConfirm] = useState(false);
+  const planConfirmOn = workspace?.planConfirm === true;
+  const handleTogglePlanConfirm = useCallback(
+    async (next: boolean) => {
+      if (!workspace || savingPlanConfirm) return;
+      setSavingPlanConfirm(true);
+      try {
+        const result = await patchWorkspace(id, { planConfirm: next }, workspace.rootPath);
+        setWorkspace(result.workspace);
+        toast.success(
+          next ? t.agentWorkspace.planConfirmOn : t.agentWorkspace.planConfirmOff,
+        );
+      } catch (err) {
+        setBootError(err);
+      } finally {
+        setSavingPlanConfirm(false);
+      }
+    },
+    [id, workspace, savingPlanConfirm, t],
+  );
+
   return (
-    <WorkspaceShell
+    <WorkbenchShell
       workspaceId={id}
       workspaceName={workspace?.name}
-      title={t.agentWorkspace.title}
+      mode="operate"
       error={bootError}
       onDismissError={() => setBootError(null)}
       immersive
       testId="agent-workspace-page"
+      statusSlot={
+        workspace ? (
+          <div
+            className="flex items-center gap-1.5"
+            title={t.settings.planConfirmHint}
+            data-testid="agent-plan-confirm"
+          >
+            <Label
+              htmlFor="agent-plan-confirm-switch"
+              className="text-xs font-normal text-muted-foreground"
+            >
+              {t.settings.planConfirm}
+            </Label>
+            <Switch
+              id="agent-plan-confirm-switch"
+              size="sm"
+              checked={planConfirmOn}
+              disabled={savingPlanConfirm}
+              onCheckedChange={(checked) => void handleTogglePlanConfirm(checked === true)}
+              data-testid="agent-plan-confirm-switch"
+            />
+          </div>
+        ) : undefined
+      }
     >
       {loading || !workspace ? (
         <div className="flex min-h-0 flex-1 items-center justify-center">
@@ -242,7 +292,6 @@ export function AgentWorkspacePage() {
         <AgentWorkspaceShell
           workspaceId={id}
           workspace={workspace}
-          rootPath={rootPath}
           sessions={sessions}
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
@@ -256,13 +305,15 @@ export function AgentWorkspacePage() {
           onSend={() => void agent.send()}
           onAbort={() => void agent.abort()}
           onResumeGate={agent.resumeGate}
+          onSetModel={agent.setModel}
           agentStatus={agent.status}
           agentReady={agent.ready}
+          connectionStatus={agent.connectionStatus}
           agentError={agent.error}
           onDismissAgentError={agent.clearError}
           recentRuns={recentRuns}
         />
       )}
-    </WorkspaceShell>
+    </WorkbenchShell>
   );
 }
