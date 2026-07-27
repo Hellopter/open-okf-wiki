@@ -3,12 +3,22 @@ import { chooseOption, uniqueWorkspaceRoot } from "./helpers";
 
 test.describe("workspace settings", () => {
   test("selects configured model from dropdown and persists", async ({ page }) => {
-    // 1. Create two models in Settings
+    // 1. Provider-first: one gateway, two models under it
     await page.goto("/settings");
-    await page.getByTestId("model-add").click();
+    await page.getByTestId("provider-add").click();
+    await expect(page.getByTestId("provider-editor")).toBeVisible();
+    await page.getByTestId("provider-name-input").fill("E2E Settings Gateway");
+    await page.getByTestId("provider-base-url").fill("https://settings-gateway.example.com/v1");
+    await page.getByTestId("provider-api-key").fill("sk-e2e-settings-not-real");
+    await page.getByTestId("provider-save").click();
+    await expect(
+      page.locator("[data-sonner-toast]").filter({ hasText: /provider added/i }).first(),
+    ).toBeVisible();
+    await expect(page.getByTestId("provider-card").first()).toBeVisible();
+
+    await page.getByTestId("provider-add-model").first().click();
     await page.getByTestId("model-name-input").fill("Alpha Model");
     await page.getByTestId("model-id-input").fill("openai/alpha-model");
-    await page.getByTestId("model-base-url").fill("https://alpha.example/v1");
     await page.getByTestId("model-save").click();
     await expect(
       page
@@ -17,10 +27,9 @@ test.describe("workspace settings", () => {
         .first(),
     ).toBeVisible();
 
-    await page.getByTestId("model-add").click();
+    await page.getByTestId("provider-add-model").first().click();
     await page.getByTestId("model-name-input").fill("Beta Model");
     await page.getByTestId("model-id-input").fill("openai/beta-model");
-    await page.getByTestId("model-base-url").fill("https://beta.example/v1");
     await page.getByTestId("model-save").click();
     await expect(
       page

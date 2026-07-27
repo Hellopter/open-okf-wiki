@@ -388,6 +388,11 @@ export function SettingsPage() {
   }
 
   const models = provider?.models ?? [];
+  const providers = provider?.providers ?? [];
+  // Provider-first: an empty-model gateway must still render so operators can
+  // add models under it. Only hide the list when both providers and models
+  // are absent (legacy flat catalog uses models without providers).
+  const catalogEmpty = providers.length === 0 && models.length === 0;
 
   return (
     <AppShell>
@@ -506,7 +511,7 @@ export function SettingsPage() {
                     </span>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-4">
-                    {models.length === 0 ? (
+                    {catalogEmpty ? (
                       <Empty className="border-0 p-6" data-testid="models-empty">
                         <EmptyHeader>
                           <EmptyTitle className="text-base">
@@ -516,7 +521,7 @@ export function SettingsPage() {
                       </Empty>
                     ) : (
                       <div className="flex flex-col gap-4" data-testid="providers-list">
-                        {(provider?.providers?.length ? provider.providers : []).map((entry) => (
+                        {providers.map((entry) => (
                           <Card
                             key={entry.id}
                             className="border-border/80"
@@ -573,93 +578,103 @@ export function SettingsPage() {
                               </div>
                             </CardHeader>
                             <CardContent className="pt-0">
-                              <Table>
-                                <TableHeader>
-                                  <TableRow>
-                                    <TableHead>{t.globalSettings.colName}</TableHead>
-                                    <TableHead>{t.globalSettings.colModelId}</TableHead>
-                                    <TableHead>{t.globalSettings.colMaxContext}</TableHead>
-                                    <TableHead className="text-right">
-                                      {t.globalSettings.colActions}
-                                    </TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {entry.models.map((m) => {
-                                    const model = models.find((x) => x.id === m.id);
-                                    if (!model) return null;
-                                    const isDefault = provider?.defaultModelProfileId === model.id;
-                                    return (
-                                      <TableRow
-                                        key={model.id}
-                                        data-testid="model-row"
-                                        data-model-id={model.id}
-                                      >
-                                        <TableCell>
-                                          <span className="font-medium">{model.name}</span>
-                                          {isDefault ? (
-                                            <Badge variant="secondary" className="ml-2">
-                                              {t.globalSettings.defaultBadge}
-                                            </Badge>
-                                          ) : null}
-                                        </TableCell>
-                                        <TableCell className="mono small">
-                                          {model.modelId}
-                                        </TableCell>
-                                        <TableCell className="mono small">
-                                          {model.maxContextTokens !== undefined
-                                            ? model.maxContextTokens.toLocaleString()
-                                            : "—"}
-                                        </TableCell>
-                                        <TableCell className="actions-cell">
-                                          <div className="row-actions justify-end">
-                                            {!isDefault ? (
+                              {entry.models.length === 0 ? (
+                                <p
+                                  className="muted small py-2"
+                                  data-testid="provider-models-empty"
+                                >
+                                  {t.globalSettings.providerModelsEmpty}
+                                </p>
+                              ) : (
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead>{t.globalSettings.colName}</TableHead>
+                                      <TableHead>{t.globalSettings.colModelId}</TableHead>
+                                      <TableHead>{t.globalSettings.colMaxContext}</TableHead>
+                                      <TableHead className="text-right">
+                                        {t.globalSettings.colActions}
+                                      </TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {entry.models.map((m) => {
+                                      const model = models.find((x) => x.id === m.id);
+                                      if (!model) return null;
+                                      const isDefault =
+                                        provider?.defaultModelProfileId === model.id;
+                                      return (
+                                        <TableRow
+                                          key={model.id}
+                                          data-testid="model-row"
+                                          data-model-id={model.id}
+                                        >
+                                          <TableCell>
+                                            <span className="font-medium">{model.name}</span>
+                                            {isDefault ? (
+                                              <Badge variant="secondary" className="ml-2">
+                                                {t.globalSettings.defaultBadge}
+                                              </Badge>
+                                            ) : null}
+                                          </TableCell>
+                                          <TableCell className="mono small">
+                                            {model.modelId}
+                                          </TableCell>
+                                          <TableCell className="mono small">
+                                            {model.maxContextTokens !== undefined
+                                              ? model.maxContextTokens.toLocaleString()
+                                              : "—"}
+                                          </TableCell>
+                                          <TableCell className="actions-cell">
+                                            <div className="row-actions justify-end">
+                                              {!isDefault ? (
+                                                <Button
+                                                  type="button"
+                                                  size="sm"
+                                                  variant="ghost"
+                                                  onClick={() => void handleSetDefault(model)}
+                                                  data-testid="model-set-default"
+                                                >
+                                                  {t.globalSettings.setDefault}
+                                                </Button>
+                                              ) : null}
                                               <Button
                                                 type="button"
                                                 size="sm"
-                                                variant="ghost"
-                                                onClick={() => void handleSetDefault(model)}
-                                                data-testid="model-set-default"
+                                                variant="outline"
+                                                onClick={() => openEdit(model)}
+                                                data-testid="model-edit"
                                               >
-                                                {t.globalSettings.setDefault}
+                                                {t.globalSettings.edit}
                                               </Button>
-                                            ) : null}
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant="outline"
-                                              onClick={() => openEdit(model)}
-                                              data-testid="model-edit"
-                                            >
-                                              {t.globalSettings.edit}
-                                            </Button>
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant="destructive"
-                                              disabled={deletingId === model.id}
-                                              onClick={() => setDeleteTarget(model)}
-                                              data-testid="model-delete"
-                                            >
-                                              {deletingId === model.id ? (
-                                                <Spinner data-icon="inline-start" />
-                                              ) : null}
-                                              {deletingId === model.id
-                                                ? t.globalSettings.deleting
-                                                : t.globalSettings.delete}
-                                            </Button>
-                                          </div>
-                                        </TableCell>
-                                      </TableRow>
-                                    );
-                                  })}
-                                </TableBody>
-                              </Table>
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="destructive"
+                                                disabled={deletingId === model.id}
+                                                onClick={() => setDeleteTarget(model)}
+                                                data-testid="model-delete"
+                                              >
+                                                {deletingId === model.id ? (
+                                                  <Spinner data-icon="inline-start" />
+                                                ) : null}
+                                                {deletingId === model.id
+                                                  ? t.globalSettings.deleting
+                                                  : t.globalSettings.delete}
+                                              </Button>
+                                            </div>
+                                          </TableCell>
+                                        </TableRow>
+                                      );
+                                    })}
+                                  </TableBody>
+                                </Table>
+                              )}
                             </CardContent>
                           </Card>
                         ))}
                         {/* Fallback flat table if providers empty but models exist */}
-                        {!provider?.providers?.length && models.length > 0 ? (
+                        {providers.length === 0 && models.length > 0 ? (
                           <Table data-testid="models-table">
                             <TableHeader>
                               <TableRow>

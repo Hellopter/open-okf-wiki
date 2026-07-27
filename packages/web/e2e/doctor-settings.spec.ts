@@ -7,7 +7,7 @@ test.describe("doctor / global settings", () => {
 
     await expect(page.getByTestId("global-settings-page")).toBeVisible();
     await expect(page.getByTestId("provider-panel")).toBeVisible();
-    await expect(page.getByTestId("model-add")).toBeVisible();
+    await expect(page.getByTestId("provider-add")).toBeVisible();
 
     await page.getByTestId("settings-tab-diagnostics").click();
     await expect(page.getByTestId("doctor-panel")).toBeVisible();
@@ -33,6 +33,11 @@ test.describe("doctor / global settings", () => {
     await expect(
       page.locator("[data-sonner-toast]").filter({ hasText: /provider added/i }).first(),
     ).toBeVisible();
+    // Provider-first: zero-model gateways must still show (not models-empty).
+    await expect(page.getByTestId("provider-card").filter({ hasText: "E2E Gateway" })).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByTestId("provider-models-empty").first()).toBeVisible();
 
     const name = `E2E Model ${Date.now()}`;
     await page.getByTestId("provider-add-model").first().click();
