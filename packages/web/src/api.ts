@@ -615,12 +615,25 @@ export type WikiPageSummary = {
   description?: string;
 };
 
+/** Reader TOC node from the list endpoint (index-aware order). */
+export type WikiNavNode =
+  | { kind: "page"; path: string; title?: string }
+  | { kind: "dir"; path: string; title: string; children: WikiNavNode[] }
+  | {
+      kind: "group";
+      title: string;
+      children: WikiNavNode[];
+      source?: "index" | "unlisted" | "fallback";
+    };
+
 export type WikiPageListResponse = {
   workspaceId: string;
   publicationPath: string;
   pages: string[];
   /** Frontmatter metadata per page (concept pages carry type/title/description). */
   summaries?: WikiPageSummary[];
+  /** Index-ordered navigation tree (concept pages only). */
+  nav?: WikiNavNode[];
 };
 
 export type WikiGraphNode = {

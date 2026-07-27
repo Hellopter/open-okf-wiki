@@ -52,6 +52,7 @@ test("wiki list returns page summaries and wiki-graph returns the link graph", a
     const listBody = (await list.json()) as {
       pages: string[];
       summaries: Array<{ path: string; type?: string; title?: string; description?: string }>;
+      nav: Array<{ kind: string; path?: string; title?: string; children?: unknown[] }>;
     };
     assert.deepEqual(listBody.pages, ["index.md", "modules/core.md", "overview.md"]);
     const overviewSummary = listBody.summaries.find((s) => s.path === "overview.md");
@@ -66,6 +67,22 @@ test("wiki list returns page summaries and wiki-graph returns the link graph", a
       listBody.summaries.find((s) => s.path === "index.md"),
       { path: "index.md" },
     );
+    // Nav follows index.md order; reserved index is not a leaf; orphan core is Unlisted.
+    assert.ok(Array.isArray(listBody.nav) && listBody.nav.length >= 1);
+    const firstPage = listBody.nav.find((n) => n.kind === "page" || n.kind === "group");
+    assert.ok(firstPage);
+    // Flatten page paths from nav
+    const navPaths: string[] = [];
+    const walk = (nodes: typeof listBody.nav) => {
+      for (const n of nodes) {
+        if (n.kind === "page" && n.path) navPaths.push(n.path);
+        if (Array.isArray(n.children)) walk(n.children as typeof listBody.nav);
+      }
+    };
+    walk(listBody.nav);
+    assert.ok(navPaths.includes("overview.md"));
+    assert.ok(navPaths.includes("modules/core.md"));
+    assert.ok(!navPaths.includes("index.md"));
 
     const graphRes = await fetch(`${base}/api/workspaces/${workspace.id}/wiki-graph?${query}`);
     assert.equal(graphRes.status, 200);

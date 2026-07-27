@@ -17,6 +17,7 @@ import {
   getWorkspace,
   listWikiPages,
   type WikiGraphResponse,
+  type WikiNavNode,
   type WikiPageResponse,
   type WikiPageSummary,
   type WorkspaceConfig,
@@ -106,11 +107,28 @@ function resolveWikiMdHref(href: string, currentPage: string): string | null {
   return segments.join("/");
 }
 
-function defaultPage(pages: string[]): string | undefined {
-  if (pages.includes("overview.md")) {
-    return "overview.md";
+/** First concept page in the nav tree (depth-first). */
+function firstNavPage(nodes: readonly WikiNavNode[]): string | undefined {
+  for (const node of nodes) {
+    if (node.kind === "page") return node.path;
+    if (node.kind === "dir" || node.kind === "group") {
+      const found = firstNavPage(node.children);
+      if (found) return found;
+    }
   }
-  return pages[0];
+  return undefined;
+}
+
+function defaultPage(pages: string[], nav?: WikiNavNode[]): string | undefined {
+  const fromNav = nav && nav.length > 0 ? firstNavPage(nav) : undefined;
+  if (fromNav) return fromNav;
+  if (pages.includes("overview.md")) return "overview.md";
+  // Skip reserved listings when picking a flat fallback.
+  const concept = pages.find((p) => {
+    const base = p.split("/").pop()?.toLowerCase() ?? "";
+    return base !== "index.md" && base !== "log.md";
+  });
+  return concept ?? pages[0];
 }
 
 /**
@@ -146,6 +164,7 @@ export function WorkspaceWikiPage() {
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [pages, setPages] = useState<string[]>([]);
   const [summaries, setSummaries] = useState<WikiPageSummary[]>([]);
+  const [nav, setNav] = useState<WikiNavNode[]>([]);
   const [graph, setGraph] = useState<WikiGraphResponse | null>(null);
   const [page, setPage] = useState<WikiPageResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -191,6 +210,7 @@ export function WorkspaceWikiPage() {
           }
           setPages(list.pages);
           setSummaries(list.summaries ?? []);
+          setNav(list.nav ?? []);
           setEmpty(false);
           // Cross-link graph is optional presentation data; failures stay silent.
           getWikiGraph(id, root)
@@ -205,6 +225,7 @@ export function WorkspaceWikiPage() {
           if (listErr instanceof ApiError && listErr.status === 404) {
             setPages([]);
             setSummaries([]);
+            setNav([]);
             setGraph(null);
             setEmpty(true);
             setPage(null);
@@ -218,6 +239,7 @@ export function WorkspaceWikiPage() {
           setWorkspace(null);
           setPages([]);
           setSummaries([]);
+          setNav([]);
           setGraph(null);
         }
       } finally {
@@ -237,12 +259,12 @@ export function WorkspaceWikiPage() {
       return;
     }
     if (!pageFromRoute) {
-      const fallback = defaultPage(pages);
+      const fallback = defaultPage(pages, nav);
       if (fallback) {
         selectPage(fallback);
       }
     }
-  }, [loading, empty, pages, pageFromRoute, selectPage, graphMode]);
+  }, [loading, empty, pages, nav, pageFromRoute, selectPage, graphMode]);
 
   // Load selected page content
   useEffect(() => {
@@ -442,8 +464,10 @@ export function WorkspaceWikiPage() {
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
               <WikiPageTree
                 pages={pages}
+                nav={nav}
                 activePath={pageFromRoute}
                 titles={treeTitles}
+                unlistedLabel={t.wiki.unlisted}
                 onSelect={selectPage}
               />
             </div>

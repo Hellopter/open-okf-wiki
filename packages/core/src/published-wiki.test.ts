@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  listPublishedWikiBrowse,
   listPublishedWikiPages,
   PublishedWikiError,
   readPublishedWikiPage,
@@ -41,6 +42,33 @@ test("listPublishedWikiPages returns sorted posix relative paths", async () => {
 
   const pages = await listPublishedWikiPages(root);
   assert.deepEqual(pages, ["modules/core.md", "overview.md"]);
+});
+
+test("listPublishedWikiBrowse returns index-ordered nav without reserved leaves", async () => {
+  const root = await tempDir("okf-pubwiki-browse-");
+  await writeMd(root, "architecture.md", page("Architecture", "Body.", "Architecture"));
+  await writeMd(root, "overview.md", page("Overview", "Body.", "Overview"));
+  await writeMd(root, "modules/core.md", page("Core", "Body.", "Module"));
+  await writeMd(
+    root,
+    "index.md",
+    "# Start\n\n* [Overview](overview.md)\n* [Architecture](architecture.md)\n* [Core](modules/core.md)\n",
+  );
+
+  const browse = await listPublishedWikiBrowse(root);
+  assert.ok(browse.pages.includes("index.md"));
+  assert.ok(browse.summaries.some((s) => s.path === "overview.md" && s.title === "Overview"));
+
+  const navPaths: string[] = [];
+  const walk = (nodes: typeof browse.nav) => {
+    for (const n of nodes) {
+      if (n.kind === "page") navPaths.push(n.path);
+      else walk(n.children);
+    }
+  };
+  walk(browse.nav);
+  assert.deepEqual(navPaths, ["overview.md", "architecture.md", "modules/core.md"]);
+  assert.ok(!navPaths.includes("index.md"));
 });
 
 test("listPublishedWikiPages throws empty when no markdown", async () => {

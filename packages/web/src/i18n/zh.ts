@@ -398,6 +398,8 @@ export const zh: MessageTree = {
     graphEmpty: "页面之间还没有交叉链接。",
     backlinks: "被以下页面引用",
     generatedAt: "生成于",
+    /** 未出现在任何 index.md 中的页面（追加在目录末尾）。 */
+    unlisted: "未编入目录",
     trustTier: {
       unverified: "未验证",
       machineConfirmed: "机器确认",

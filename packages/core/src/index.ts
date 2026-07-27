@@ -100,18 +100,34 @@ export {
 } from "./publish.js";
 export {
   derivePublishedWikiGraph,
+  listPublishedWikiBrowse,
   listPublishedWikiPageSummaries,
   listPublishedWikiPages,
   PUBLISHED_WIKI_MAX_FILE_BYTES,
   PUBLISHED_WIKI_MAX_PAGES,
   PublishedWikiError,
   type PublishedWikiErrorCode,
+  type PublishedWikiBrowse,
   type PublishedWikiPage,
   type PublishedWikiPageSummary,
   readPublishedWikiPage,
   resolvePublishedWikiPath,
   toPublishedWikiPosixRelative,
 } from "./published-wiki.js";
+export {
+  buildWikiNav,
+  buildWikiNavPathTree,
+  defaultWikiBrowsePage,
+  firstWikiNavPage,
+  parseWikiIndexListing,
+  WIKI_NAV_UNLISTED_TITLE,
+  type WikiIndexEntry,
+  type WikiNavDirNode,
+  type WikiNavGroupNode,
+  type WikiNavNode,
+  type WikiNavPageInput,
+  type WikiNavPageNode,
+} from "./wiki-nav.js";
 export {
   FreezeWikiRunError,
   type FreezeWikiRunErrorCode,

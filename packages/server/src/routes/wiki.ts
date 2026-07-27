@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   derivePublishedWikiGraph,
-  listPublishedWikiPageSummaries,
+  listPublishedWikiBrowse,
   PublishedWikiError,
   readPublishedWikiPage,
 } from "@okf-wiki/core";
@@ -27,6 +27,8 @@ export function publishedWikiHttpStatus(code: PublishedWikiError["code"]): numbe
 /**
  * List published wiki pages under workspace.publicationPath.
  * GET /api/workspaces/:id/wiki?rootPath=
+ *
+ * Includes index-aware `nav` for the reader TOC (concept pages only).
  */
 export async function handleListWiki(
   _req: IncomingMessage,
@@ -38,12 +40,13 @@ export async function handleListWiki(
   if (!workspace) return;
 
   try {
-    const summaries = await listPublishedWikiPageSummaries(workspace.publicationPath);
+    const browse = await listPublishedWikiBrowse(workspace.publicationPath);
     sendJson(res, 200, {
       workspaceId: workspace.id,
       publicationPath: workspace.publicationPath,
-      pages: summaries.map((summary) => summary.path),
-      summaries,
+      pages: browse.pages,
+      summaries: browse.summaries,
+      nav: browse.nav,
     });
   } catch (error) {
     if (error instanceof PublishedWikiError) {

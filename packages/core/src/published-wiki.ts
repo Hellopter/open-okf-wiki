@@ -8,6 +8,7 @@ import {
   toPosixRelative,
 } from "./paths.js";
 import { deriveWikiGraph, type WikiGraph, type WikiGraphInputPage } from "./wiki-links.js";
+import { buildWikiNav, type WikiNavNode } from "./wiki-nav.js";
 import { parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
 
 /** Soft cap on listed / readable published wiki pages. */
@@ -228,6 +229,38 @@ export async function listPublishedWikiPageSummaries(
   publicationPath: string,
 ): Promise<PublishedWikiPageSummary[]> {
   return (await readAllPublishedPages(publicationPath)).map((page) => page.summary);
+}
+
+export type PublishedWikiBrowse = {
+  /** Relative POSIX paths (lexicographic), including reserved files. */
+  pages: string[];
+  summaries: PublishedWikiPageSummary[];
+  /** Index-ordered reader TOC (concept pages only). */
+  nav: WikiNavNode[];
+};
+
+/**
+ * One-shot browse payload: summaries + index-aware navigation tree.
+ * Prefer this over separate list + client-side path trees.
+ */
+export async function listPublishedWikiBrowse(
+  publicationPath: string,
+): Promise<PublishedWikiBrowse> {
+  const loaded = await readAllPublishedPages(publicationPath);
+  const summaries = loaded.map((page) => page.summary);
+  const nav = buildWikiNav(
+    loaded.map((page) => ({
+      path: page.path,
+      content: page.content,
+      ...(page.summary.title ? { title: page.summary.title } : {}),
+      ...(page.summary.type ? { type: page.summary.type } : {}),
+    })),
+  );
+  return {
+    pages: summaries.map((s) => s.path),
+    summaries,
+    nav,
+  };
 }
 
 /**

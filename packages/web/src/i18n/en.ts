@@ -409,6 +409,8 @@ export const en = {
     graphEmpty: "No cross-links between pages yet.",
     backlinks: "Referenced by",
     generatedAt: "Generated",
+    /** Pages not listed in any index.md (appended at the end of the TOC). */
+    unlisted: "Unlisted",
     trustTier: {
       unverified: "Unverified",
       machineConfirmed: "Machine-confirmed",
