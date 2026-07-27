@@ -149,6 +149,10 @@ export const en = {
       "Operational budget for Wiki Run context compaction (Observational Memory + hard token limit). Leave blank to use 85% of the selected model’s max context when that is configured.",
     contextTargetTokensPlaceholder: "e.g. 100000",
     contextTargetDerived: "Currently derived from model max: {n} tokens (85%).",
+    requestTimeoutSeconds: "Agent session timeout (seconds)",
+    requestTimeoutSecondsHint:
+      "Wall-clock budget for each child agent session (plan, research, write, review). Long plans often need 600–1800s. Too low aborts with “workspace request timeout” while the model is still working.",
+    requestTimeoutSecondsPlaceholder: "e.g. 600",
     orchestrationTitle: "Supervisor tree budgets",
     orchestrationHint:
       "Run Boundary fan-out budgets for Domain/Leaf research and review council size. Leave defaults for small repos.",
@@ -301,6 +305,7 @@ export const en = {
     noDefault: "no default",
     modelsEmpty:
       "No providers yet. Add an OpenAI-compatible gateway + model, then select it when creating a workspace.",
+    providerModelsEmpty: "No models under this provider yet. Use Add model to attach one.",
     addModelUnderProvider: "Add model",
     colName: "Name",
     colModelId: "Model id",

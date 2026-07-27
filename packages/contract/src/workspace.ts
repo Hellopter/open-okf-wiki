@@ -79,7 +79,14 @@ export const ModelRefSchema = z.object({
 export type ModelRef = z.infer<typeof ModelRefSchema>;
 
 export const WorkspaceLimitsSchema = z.object({
-  requestTimeoutSeconds: z.number().positive().default(120),
+  /**
+   * Wall-clock budget (seconds) for one child agent session
+   * (plan / domain / leaf / write / review). Applied as timeoutMs in the
+   * live produce runtime. Default 600s — short enough to bound stuck runs,
+   * long enough for typical plan turns. Operators can raise this in workspace
+   * settings when large repos need more time.
+   */
+  requestTimeoutSeconds: z.number().positive().max(86_400).default(600),
   /**
    * Operational context budget for Wiki Run message compaction (tokens).
    * Not the provider hard window — that lives on the model profile as

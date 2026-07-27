@@ -70,6 +70,8 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
   const [wikiLanguage, setWikiLanguage] = useState<WikiLanguage>("en");
   /** Empty string means unset (derive from model max context). */
   const [contextTargetTokens, setContextTargetTokens] = useState("");
+  /** Per child-agent wall-clock budget (workspace.limits.requestTimeoutSeconds). */
+  const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState("600");
   const [maxDomainFanOut, setMaxDomainFanOut] = useState("4");
   const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
   const [reviewCouncilSize, setReviewCouncilSize] = useState("1");
@@ -94,6 +96,7 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
     setContextTargetTokens(
       ws.limits?.contextTargetTokens !== undefined ? String(ws.limits.contextTargetTokens) : "",
     );
+    setRequestTimeoutSeconds(String(ws.limits?.requestTimeoutSeconds ?? 600));
     setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
     setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
     setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 1));
@@ -186,11 +189,23 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         }
         nextContextTarget = parsed;
       }
-      const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 120 };
+      const timeoutRaw = requestTimeoutSeconds.trim();
+      const nextTimeoutSeconds = Number(timeoutRaw);
+      if (
+        !Number.isFinite(nextTimeoutSeconds) ||
+        nextTimeoutSeconds <= 0 ||
+        nextTimeoutSeconds > 86_400
+      ) {
+        setError(new Error("requestTimeoutSeconds must be between 1 and 86400"));
+        setIsSubmitting(false);
+        return;
+      }
+      const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 600 };
       const { contextTargetTokens: _drop, ...limitsWithoutContext } = baseLimits;
       void _drop;
       const nextLimits = {
         ...limitsWithoutContext,
+        requestTimeoutSeconds: nextTimeoutSeconds,
         ...(nextContextTarget !== undefined ? { contextTargetTokens: nextContextTarget } : {}),
       };
       const profileToRef = (profileId: string) => {
@@ -457,6 +472,28 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
                           </>
                         ) : null}
                       </FieldDescription>
+                    </Field>
+
+                    <Field>
+                      <FieldLabel htmlFor="settings-request-timeout">
+                        {t.settings.requestTimeoutSeconds}
+                      </FieldLabel>
+                      <Input
+                        id="settings-request-timeout"
+                        type="number"
+                        min={1}
+                        max={86400}
+                        step={1}
+                        value={requestTimeoutSeconds}
+                        onChange={(e) => {
+                          setRequestTimeoutSeconds(e.target.value);
+                        }}
+                        placeholder={t.settings.requestTimeoutSecondsPlaceholder}
+                        className="font-mono max-w-xs"
+                        data-testid="settings-request-timeout"
+                        required
+                      />
+                      <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
                     </Field>
 
                     <Field>

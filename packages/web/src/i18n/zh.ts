@@ -142,6 +142,10 @@ export const zh: MessageTree = {
       "Wiki 生成时的上下文压缩预算（Observational Memory + 硬 token 上限）。留空则在模型配置了最大上下文时使用其 85%。",
     contextTargetTokensPlaceholder: "例如 100000",
     contextTargetDerived: "当前由模型最大上下文推导：{n} tokens（85%）。",
+    requestTimeoutSeconds: "智能体会话超时（秒）",
+    requestTimeoutSecondsHint:
+      "每个子智能体会话的墙钟预算（规划 / 研究 / 写作 / 审查）。长规划常见需要 600–1800 秒。过短会在模型仍在工作时以 “workspace request timeout” 中止。",
+    requestTimeoutSecondsPlaceholder: "例如 600",
     orchestrationTitle: "监督树预算",
     orchestrationHint:
       "运行边界（Run Boundary）的 Domain/Leaf 扇出与审查委员会规模预算。小仓库可保持默认。",
@@ -291,6 +295,7 @@ export const zh: MessageTree = {
     defaultSet: "已设默认",
     noDefault: "无默认",
     modelsEmpty: "还没有 Provider。请添加 OpenAI 兼容网关与模型，创建工作区时再选择。",
+    providerModelsEmpty: "该 Provider 下还没有模型。点击「添加模型」挂载一个。",
     addModelUnderProvider: "添加模型",
     colName: "名称",
     colModelId: "模型 ID",
