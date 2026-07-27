@@ -9,12 +9,19 @@
  *
  * Process count (full): 3 = libs-watch + server + vite
  * (was 5: contract/core/agent tsc-w + server + vite)
+ *
+ * Windows-compatible: pnpm.cmd, taskkill, netstat (see process-compat.mjs).
  */
-import { execFileSync, spawn } from "node:child_process";
-import { access } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import {
+  killTree,
+  pidsListeningOnPort,
+  portKillHint,
+  spawnResolved,
+} from "./process-compat.mjs";
 
 const monorepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiPort = Number(process.env.OKF_WIKI_PORT ?? "8787");
@@ -33,48 +40,11 @@ let shuttingDown = false;
 
 /** @typedef {'full' | 'server' | 'web'} DevProfile */
 
-/** Kill pid and descendants (pnpm → node grandchildren). Linux/macOS via pgrep. */
-export function killTree(pid, signal = "SIGTERM") {
-  if (!pid) return;
-  try {
-    const out = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8" }).trim();
-    for (const line of out.split("\n")) {
-      const childPid = Number(line);
-      if (childPid) killTree(childPid, signal);
-    }
-  } catch {
-    // no children
-  }
-  try {
-    process.kill(pid, signal);
-  } catch {
-    // already gone
-  }
-}
+export { killTree, pidsListeningOnPort };
 
 function killChild(child, signal = "SIGTERM") {
   if (child.killed || !child.pid) return;
   killTree(child.pid, signal);
-}
-
-/** PIDs listening on a TCP port (Linux lsof). Empty if none / lsof missing. */
-export function pidsListeningOnPort(port) {
-  try {
-    const out = execFileSync("lsof", ["-tiTCP:" + String(port), "-sTCP:LISTEN"], {
-      encoding: "utf8",
-    }).trim();
-    if (!out) return [];
-    return [
-      ...new Set(
-        out
-          .split(/\s+/)
-          .map((s) => Number(s))
-          .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid),
-      ),
-    ];
-  } catch {
-    return [];
-  }
 }
 
 /** True if something accepts TCP on host:port. */
@@ -133,17 +103,16 @@ export async function ensurePortFree(
   if (left.length > 0 || (await isPortOpen(port, host))) {
     throw new Error(
       `${label} port ${port} still in use after free attempt (pid ${left.join(", ") || "unknown"}). ` +
-        `Kill manually: lsof -tiTCP:${port} -sTCP:LISTEN | xargs -r kill -9`,
+        `Kill manually: ${portKillHint(port)}`,
     );
   }
 }
 
 function spawnCmd(command, args, env = {}) {
-  const child = spawn(command, args, {
+  const child = spawnResolved(command, args, {
     cwd: monorepoRoot,
     env: { ...process.env, ...env },
     stdio: "inherit",
-    shell: false,
   });
   children.push(child);
   child.on("exit", (code, signal) => {
@@ -158,6 +127,18 @@ function spawnCmd(command, args, env = {}) {
       process.exit(exitCode);
     }, 300).unref?.();
   });
+  child.on("error", (err) => {
+    if (shuttingDown) return;
+    console.error(`[dev-stack] failed to start ${command}: ${err.message}`);
+    shuttingDown = true;
+    for (const other of children) {
+      if (other !== child) killChild(other, "SIGTERM");
+    }
+    setTimeout(() => {
+      for (const other of children) killChild(other, "SIGKILL");
+      process.exit(1);
+    }, 300).unref?.();
+  });
   return child;
 }
 
@@ -168,11 +149,10 @@ function spawnPnpm(args, env = {}) {
 /** One-shot command; rejects on non-zero exit. */
 export function runOnce(command, args, env = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawnResolved(command, args, {
       cwd: monorepoRoot,
       env: { ...process.env, ...env },
       stdio: "inherit",
-      shell: false,
     });
     child.on("error", reject);
     child.on("exit", (code, signal) => {
@@ -338,7 +318,9 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain =
+  Boolean(process.argv[1]) &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
 if (isMain) {
   main().catch((err) => {

@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
 import { ensurePortFree, isPortOpen, parseProfile, waitForUrl } from "./dev-stack.mjs";
+import { isWin, resolveCommand } from "./process-compat.mjs";
 
 describe("dev-stack waitForUrl", () => {
   it("resolves when the URL becomes healthy", async () => {
@@ -119,5 +120,16 @@ describe("dev-stack parseProfile", () => {
 
   it("rejects unknown profiles", () => {
     assert.throws(() => parseProfile(["--profile=turbo"]), /Unknown profile/);
+  });
+});
+
+describe("process-compat resolveCommand", () => {
+  it("maps pnpm to pnpm.cmd only on Windows", () => {
+    if (isWin) {
+      assert.equal(resolveCommand("pnpm"), "pnpm.cmd");
+      assert.equal(resolveCommand("git"), "git");
+    } else {
+      assert.equal(resolveCommand("pnpm"), "pnpm");
+    }
   });
 });
