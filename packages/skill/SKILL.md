@@ -119,8 +119,9 @@ verification claims would be fabrications.
 For one repository, write Source Citations as
 `[Source](repo:path/to/file.py#L10-L20)`. For multiple repositories, prefix the path with the
 repository ID: `[Source](repo:repository-id/path/to/file.py#L10-L20)`. Use repository-relative POSIX
-paths and one-based inclusive line ranges. Line numbers must come from `read` or `grep` results —
-never invent or estimate ranges.
+paths and one-based inclusive line ranges. **Tool path → cite form:** transform `sources/<id>/rest`
+to single `repo:rest` or multi `repo:<id>/rest` — never leave a `sources/` prefix inside `repo:`.
+Line numbers must come from `read` or `grep` results — never invent or estimate ranges.
 
 ### Reserved files (OKF)
 

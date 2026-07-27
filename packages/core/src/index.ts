@@ -16,6 +16,13 @@ export {
   rewriteRepoCitationsToRelative,
 } from "./citation-rewrite.js";
 export {
+  type CanonicalizeCitationOptions,
+  type CanonicalizeCitationResult,
+  type CanonicalizeWikiTreeResult,
+  canonicalizeCitationInContent,
+  canonicalizeCitationTarget,
+  canonicalizeWikiTreeCitations,
+  formatRepoCitation,
   parseSourceCitations,
   resolveCitationFile,
   SOURCE_CITATION_RE,

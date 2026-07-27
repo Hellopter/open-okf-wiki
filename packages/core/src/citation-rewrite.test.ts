@@ -49,3 +49,24 @@ test("rewriteRepoCitationsToRelative leaves unresolvable multi bare path", () =>
   });
   assert.equal(out, md);
 });
+
+test("rewriteRepoCitationsToRelative does not double-prefix mount-form targets", () => {
+  // Producer wrote run-mount path inside repo: — canonicalize then rewrite once.
+  const md = "A [Source](repo:sources/app/README.md#L1-L2).";
+  const out = rewriteRepoCitationsToRelative(md, {
+    pageRelPath: "overview.md",
+    sources: [{ id: "app" }],
+  });
+  assert.equal(out, "A [Source](sources/app/README.md#L1-L2).");
+  assert.ok(!out.includes("sources/app/sources/"));
+});
+
+test("rewriteRepoCitationsToRelative multi mount-form does not double-prefix", () => {
+  const md = "A [Source](repo:sources/lib/src/a.go#L1).";
+  const out = rewriteRepoCitationsToRelative(md, {
+    pageRelPath: "modules/foo.md",
+    sources: [{ id: "app" }, { id: "lib" }],
+  });
+  assert.equal(out, "A [Source](../sources/lib/src/a.go#L1).");
+  assert.ok(!out.includes("sources/lib/sources/"));
+});

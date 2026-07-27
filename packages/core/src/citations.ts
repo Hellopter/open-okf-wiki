@@ -3,10 +3,14 @@
  * Format from Producer Skill:
  *   single repo:  [Source](repo:path/to/file.py#L10-L20)
  *   multi repo:   [Source](repo:repository-id/path/to/file.py#L10-L20)
+ *
+ * Run-mount tool paths (`sources/<id>/…`) are not citation targets; canonicalize
+ * them to the repo-relative contract before resolve / rewrite / staging write-back.
  */
 
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { scanWikiTree } from "./wiki-tree.js";
 
 /** One parsed Source Citation. */
 export type SourceCitation = {
@@ -53,6 +57,196 @@ export function parseSourceCitations(content: string): SourceCitation[] {
   return out;
 }
 
+export type CanonicalizeCitationOptions = {
+  sourceIds: readonly string[];
+  /** true when more than one source */
+  multiSource: boolean;
+};
+
+export type CanonicalizeCitationResult =
+  | { ok: true; target: string }
+  | { ok: false; error: string };
+
+/**
+ * Canonicalize a citation target to the Skill contract:
+ * - single source: bare repository-relative path
+ * - multi source: `<sourceId>/<repo-relative path>`
+ *
+ * Strips run-mount `sources/<registeredId>/…` prefixes. Does not strip a leading
+ * `sources/` segment when the next segment is not a registered source id
+ * (that path may be a real file under the repository).
+ */
+export function canonicalizeCitationTarget(
+  target: string,
+  options: CanonicalizeCitationOptions,
+): CanonicalizeCitationResult {
+  const raw = target.trim();
+  if (!raw) {
+    return { ok: false, error: "empty citation path" };
+  }
+  // Absolute or parent-escape paths are never repository-relative.
+  if (raw.startsWith("/") || raw.includes("..")) {
+    return {
+      ok: false,
+      error: `citation path must be repository-relative POSIX (got ${raw})`,
+    };
+  }
+
+  const normalized = raw.replace(/\\/g, "/");
+  if (normalized.startsWith("/") || normalized.includes("..")) {
+    return {
+      ok: false,
+      error: `citation path must be repository-relative POSIX (got ${raw})`,
+    };
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    return { ok: false, error: "empty citation path" };
+  }
+
+  const ids = new Set(options.sourceIds);
+
+  // Run-mount form: sources/<registeredId>/rest → strip the mount prefix.
+  if (segments[0] === "sources" && segments.length >= 2 && ids.has(segments[1]!)) {
+    const id = segments[1]!;
+    const rest = segments.slice(2).join("/");
+    if (!rest) {
+      return {
+        ok: false,
+        error: `empty citation path after stripping sources/${id}/`,
+      };
+    }
+    return {
+      ok: true,
+      target: options.multiSource ? `${id}/${rest}` : rest,
+    };
+  }
+
+  // Explicit source-id prefix with a non-empty rest.
+  if (segments.length >= 2 && ids.has(segments[0]!)) {
+    const id = segments[0]!;
+    const rest = segments.slice(1).join("/");
+    if (!rest) {
+      return { ok: false, error: `empty citation path after source id ${id}` };
+    }
+    // Single-source canonical form is bare path (no source-id prefix).
+    return {
+      ok: true,
+      target: options.multiSource ? `${id}/${rest}` : rest,
+    };
+  }
+
+  // Multi-source requires a registered source-id prefix.
+  if (options.multiSource) {
+    return {
+      ok: false,
+      error: `multi-source citation must start with a source id (got ${segments.join("/")})`,
+    };
+  }
+
+  // Single-source bare path (including real repo paths that start with "sources/"
+  // when the next segment is not a registered mount id).
+  return { ok: true, target: segments.join("/") };
+}
+
+/**
+ * Build a Skill-form Source Citation link from a canonical target + optional lines.
+ */
+export function formatRepoCitation(
+  target: string,
+  lineStart?: number,
+  lineEnd?: number,
+): string {
+  let fragment = "";
+  if (lineStart !== undefined) {
+    if (lineEnd !== undefined && lineEnd !== lineStart) {
+      fragment = `#L${lineStart}-L${lineEnd}`;
+    } else {
+      fragment = `#L${lineStart}`;
+    }
+  }
+  return `[Source](repo:${target}${fragment})`;
+}
+
+/**
+ * Rewrite all `[Source](repo:…)` citations in page content to canonical targets.
+ * Processes matches from end to start so indices stay valid.
+ */
+export function canonicalizeCitationInContent(
+  content: string,
+  options: CanonicalizeCitationOptions,
+): { content: string; changed: boolean; errors: string[] } {
+  const citations = parseSourceCitations(content);
+  if (citations.length === 0) {
+    return { content, changed: false, errors: [] };
+  }
+
+  const ordered = [...citations].sort((a, b) => b.index - a.index);
+  let out = content;
+  let changed = false;
+  const errors: string[] = [];
+
+  for (const c of ordered) {
+    const result = canonicalizeCitationTarget(c.target, options);
+    if (!result.ok) {
+      errors.push(`${result.error} (${c.raw})`);
+      continue;
+    }
+    if (result.target === c.target) {
+      continue;
+    }
+    const next = formatRepoCitation(result.target, c.lineStart, c.lineEnd);
+    out = out.slice(0, c.index) + next + out.slice(c.index + c.raw.length);
+    changed = true;
+  }
+
+  return { content: out, changed, errors };
+}
+
+export type CanonicalizeWikiTreeResult = {
+  rewrittenPages: number;
+  errors: string[];
+};
+
+/**
+ * Scan a staging wiki tree and rewrite run-mount citation targets on disk.
+ * Successful rewrites are written even when some citations fail; failures are
+ * collected for the caller (hard-validate will surface remaining bad targets).
+ */
+export async function canonicalizeWikiTreeCitations(
+  wikiRoot: string,
+  options: CanonicalizeCitationOptions,
+): Promise<CanonicalizeWikiTreeResult> {
+  const scan = await scanWikiTree(wikiRoot);
+  let rewrittenPages = 0;
+  const errors: string[] = [];
+
+  for (const file of scan.files) {
+    if (!file.relativePath.toLowerCase().endsWith(".md")) {
+      continue;
+    }
+    let raw: string;
+    try {
+      raw = await readFile(file.absolutePath, "utf8");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${file.relativePath}: cannot read page: ${message}`);
+      continue;
+    }
+    const result = canonicalizeCitationInContent(raw, options);
+    for (const e of result.errors) {
+      errors.push(`${file.relativePath}: ${e}`);
+    }
+    if (result.changed) {
+      await writeFile(file.absolutePath, result.content, "utf8");
+      rewrittenPages += 1;
+    }
+  }
+
+  return { rewrittenPages, errors };
+}
+
 /**
  * Format-only validation (no filesystem). Returns error strings.
  */
@@ -90,6 +284,9 @@ export type SourceRootMap = {
 /**
  * Resolve citation target to absolute file path under a pinned source root.
  * Returns null when the map is empty (caller should skip resolve).
+ *
+ * Canonicalizes run-mount / source-id forms before resolve so producers that
+ * wrote `sources/<id>/…` still validate against Snapshot roots.
  */
 export function resolveCitationFile(
   citation: SourceCitation,
@@ -99,7 +296,23 @@ export function resolveCitationFile(
     return null;
   }
 
-  const target = citation.target.replace(/\\/g, "/");
+  const sourceIds =
+    sources.roots.size > 0
+      ? [...sources.roots.keys()]
+      : sources.singleRoot
+        ? [sources.singleRoot.id]
+        : [];
+  const multiSource = sources.roots.size > 1;
+  const canon = canonicalizeCitationTarget(citation.target, { sourceIds, multiSource });
+  if (!canon.ok) {
+    return {
+      error:
+        `${canon.error} (${citation.raw}); ` +
+        "use repo-relative citation targets (not run-mount paths like sources/<id>/…)",
+    };
+  }
+
+  const target = canon.target;
   const segments = target.split("/").filter(Boolean);
   if (segments.length === 0) {
     return { error: `empty citation path: ${citation.raw}` };
@@ -125,7 +338,7 @@ export function resolveCitationFile(
     };
   }
 
-  // Multi-source without matching id prefix.
+  // Multi-source without matching id prefix (should already fail canonicalize).
   if (sources.roots.size > 1) {
     return {
       error: `multi-source citation must start with a source id: ${citation.raw}`,

@@ -10,6 +10,7 @@
  */
 
 import type { DefectSeverity, MergedDefectReport, WorkspaceOrchestration } from "@okf-wiki/contract";
+import { canonicalizeWikiTreeCitations } from "@okf-wiki/core";
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import { applyStickyBlockingDefects, hasBlockingDefects } from "../../produce/defects.js";
@@ -345,6 +346,14 @@ export async function runReviewRepairPhase(
     pages: await listWikiMarkdown(produced.layout.wikiDir),
   };
 
+  // Host path identity: strip run-mount `sources/<id>/…` to Skill repo-relative form.
+  // Re-run on every hard-validate score (including after repair writes) so staging
+  // stays contract-clean; resolve also canonicalizes as a second line of defense.
+  const citationCanon = {
+    sourceIds: [...layout.sourceMounts.keys()],
+    multiSource: layout.sourceMounts.size > 1,
+  };
+
   let publishability: PublishabilityResult = {
     publishable: false,
     reasons: [],
@@ -356,6 +365,7 @@ export async function runReviewRepairPhase(
     maxRepair,
     metrics,
     score: async () => {
+      await canonicalizeWikiTreeCitations(produced.layout.wikiDir, citationCanon);
       publishability = await scorePublishable({
         wikiRoot: produced.layout.wikiDir,
         workspaceRoot: input.workspace.rootPath,

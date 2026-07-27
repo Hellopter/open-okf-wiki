@@ -13,7 +13,11 @@
  */
 
 import path from "node:path";
-import { parseSourceCitations, type SourceCitation } from "./citations.js";
+import {
+  canonicalizeCitationTarget,
+  parseSourceCitations,
+  type SourceCitation,
+} from "./citations.js";
 
 export type CitationRewriteSources = Array<{ id: string }>;
 
@@ -31,9 +35,13 @@ function splitCitationTarget(
   target: string,
   sources: CitationRewriteSources,
 ): { sourceId: string; relPath: string } | null {
-  const normalized = target.replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!normalized || normalized.includes("..")) return null;
-  const segments = normalized.split("/").filter(Boolean);
+  const canon = canonicalizeCitationTarget(target, {
+    sourceIds: sources.map((s) => s.id),
+    multiSource: sources.length > 1,
+  });
+  if (!canon.ok) return null;
+
+  const segments = canon.target.split("/").filter(Boolean);
   if (segments.length === 0) return null;
 
   const ids = new Set(sources.map((s) => s.id));
@@ -41,7 +49,7 @@ function splitCitationTarget(
     return { sourceId: segments[0]!, relPath: segments.slice(1).join("/") };
   }
   if (sources.length === 1) {
-    return { sourceId: sources[0]!.id, relPath: normalized };
+    return { sourceId: sources[0]!.id, relPath: canon.target };
   }
   // Multi-source bare path — cannot rewrite safely.
   return null;
