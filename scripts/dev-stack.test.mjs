@@ -123,13 +123,14 @@ describe("dev-stack parseProfile", () => {
   });
 });
 
-describe("process-compat resolveCommand", () => {
-  it("maps pnpm to pnpm.cmd only on Windows", () => {
-    if (isWin) {
-      assert.equal(resolveCommand("pnpm"), "pnpm.cmd");
-      assert.equal(resolveCommand("git"), "git");
-    } else {
-      assert.equal(resolveCommand("pnpm"), "pnpm");
-    }
+describe("process-compat spawn defaults", () => {
+  it("keeps bare command names (shell handles .cmd on Windows)", () => {
+    assert.equal(resolveCommand("pnpm"), "pnpm");
+    assert.equal(resolveCommand("git"), "git");
+  });
+
+  it("defaults shell to true only on Windows", () => {
+    // Documented contract for CVE-2024-27980 / spawn EINVAL on .cmd shims.
+    assert.equal(isWin, process.platform === "win32");
   });
 });

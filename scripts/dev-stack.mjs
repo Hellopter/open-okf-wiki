@@ -10,7 +10,7 @@
  * Process count (full): 3 = libs-watch + server + vite
  * (was 5: contract/core/agent tsc-w + server + vite)
  *
- * Windows-compatible: pnpm.cmd, taskkill, netstat (see process-compat.mjs).
+ * Windows-compatible: shell spawn for pnpm.cmd, taskkill, netstat (process-compat.mjs).
  */
 import net from "node:net";
 import path from "node:path";

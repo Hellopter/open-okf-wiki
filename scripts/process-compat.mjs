@@ -1,20 +1,22 @@
 /**
  * Cross-platform process helpers for monorepo scripts.
- * Windows: pnpm is pnpm.cmd; process trees via taskkill; listeners via netstat.
- * Unix: pgrep / lsof / process.kill.
+ *
+ * Windows notes (Node ≥18.20.2 / 20.12.2 / 22+, CVE-2024-27980):
+ *   - `pnpm` is a `.cmd` shim. CreateProcess cannot run .cmd/.bat directly.
+ *   - spawn(..., { shell: false }) of a .cmd file throws `Error: spawn EINVAL`.
+ *   - Use shell: true on Windows (trusted fixed args only), or spawn cmd.exe /c.
+ *   - Port free: netstat + taskkill; Unix: lsof + pgrep.
  */
 import { execFileSync, spawn } from "node:child_process";
 
 export const isWin = process.platform === "win32";
 
 /**
- * Resolve a CLI name so spawn works without a shell.
- * On Windows, bare `pnpm` is not found (needs `pnpm.cmd`).
+ * Resolve a CLI name for display / logging.
+ * Actual spawn uses bare names + shell on Windows (see spawnResolved).
  * @param {string} command
  */
 export function resolveCommand(command) {
-  if (!isWin) return command;
-  if (command === "pnpm") return "pnpm.cmd";
   return command;
 }
 
@@ -26,7 +28,7 @@ export function resolveCommand(command) {
 export function killTree(pid, signal = "SIGTERM") {
   if (!pid) return;
   if (isWin) {
-    // /T = tree; /F for SIGKILL (and soft taskkill often fails on node).
+    // /T = tree; /F for SIGKILL (soft taskkill often fails on node).
     const args =
       signal === "SIGKILL" || signal === 9
         ? ["/pid", String(pid), "/T", "/F"]
@@ -129,15 +131,22 @@ export function portKillHint(port) {
 }
 
 /**
- * spawn with resolved command (Windows pnpm.cmd) and stdio inherit defaults.
+ * spawn that works for package-manager CLIs on Windows.
+ *
+ * Why shell on win32: after CVE-2024-27980, Node refuses CreateProcess on
+ * `.cmd`/`.bat` without a shell (`spawn EINVAL`). `pnpm` is a `.cmd` shim.
+ * Args here are fixed monorepo script args (not user input).
+ *
  * @param {string} command
  * @param {string[]} args
  * @param {import("node:child_process").SpawnOptions} [options]
  */
 export function spawnResolved(command, args, options = {}) {
-  return spawn(resolveCommand(command), args, {
-    shell: false,
+  const { shell: shellOpt, ...rest } = options;
+  return spawn(command, args, {
     windowsHide: true,
-    ...options,
+    ...rest,
+    // Default: shell only on Windows. Callers may override.
+    shell: shellOpt ?? isWin,
   });
 }

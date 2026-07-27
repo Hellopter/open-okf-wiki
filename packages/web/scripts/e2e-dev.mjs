@@ -4,7 +4,7 @@
  * Builds core (+ contract via filter ...), starts the API, waits for /api/health,
  * then starts Vite with --strictPort. Exits when either child exits (or on signal).
  *
- * Windows-compatible via scripts/process-compat.mjs (pnpm.cmd, taskkill).
+ * Windows-compatible via scripts/process-compat.mjs (shell for .cmd, taskkill).
  */
 import os from "node:os";
 import path from "node:path";
