@@ -70,6 +70,28 @@ test("stampConceptPage leaves pages without frontmatter untouched", () => {
   assert.equal(stampConceptPage("# No frontmatter\n", STAMP), "# No frontmatter\n");
 });
 
+test("stampConceptPage preserves BOM and accepts spaced closing fence", () => {
+  const bom = String.fromCharCode(0xfeff);
+  const page = `${bom}---\ntype: Concept\ntitle: T\n---  \n\nBody.\n`;
+  const out = stampConceptPage(page, STAMP);
+  assert.ok(out.startsWith(bom));
+  assert.match(out, /generated: \{ by: "okf-wiki\/openai\/gpt-test"/);
+  assert.ok(out.endsWith("\n\nBody.\n"));
+});
+
+test("stampConceptPage preserves CRLF body rest and empty frontmatter blocks", () => {
+  const crlf = "---\r\ntype: Concept\r\ntitle: T\r\n---\r\n\r\nBody\r\n";
+  const stamped = stampConceptPage(crlf, STAMP);
+  assert.match(stamped, /generated: \{ by: "okf-wiki\/openai\/gpt-test"/);
+  // Close-fence match leaves the CRLF line ending in `rest`; body bytes survive.
+  assert.ok(stamped.endsWith("\r\n\r\nBody\r\n"), JSON.stringify(stamped.slice(-20)));
+
+  const emptyFm = "---\n---\nBody only\n";
+  const outEmpty = stampConceptPage(emptyFm, STAMP);
+  assert.match(outEmpty, /^---\n[\s\S]*\n---\nBody only\n$/);
+  assert.match(outEmpty, /generated: \{ by: "okf-wiki\/openai\/gpt-test"/);
+});
+
 test("stampRootIndex creates frontmatter when the listing has none", () => {
   const out = stampRootIndex("# Wiki\n\n* [Overview](overview.md) - intro\n", "0.2");
   assert.ok(out.startsWith('---\nokf_version: "0.2"\n---\n\n# Wiki\n'));

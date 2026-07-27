@@ -1,4 +1,4 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 import {
   parseSourceCitations,
@@ -8,12 +8,16 @@ import {
   validateCitationResolve,
 } from "./citations.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
-import { deriveWikiGraph, type WikiGraphInputPage } from "./wiki-links.js";
-import { isReservedWikiPath, parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
+import { deriveWikiGraph } from "./wiki-links.js";
+import {
+  isReservedWikiPath,
+  loadWikiPageRecords,
+  WIKI_MAX_FILE_BYTES,
+} from "./wiki-tree.js";
 
 /** Soft caps for mechanical publication validation. */
 export const WIKI_VALIDATE_MAX_FILES = 500;
-export const WIKI_VALIDATE_MAX_FILE_BYTES = 1_000_000;
+export const WIKI_VALIDATE_MAX_FILE_BYTES = WIKI_MAX_FILE_BYTES;
 
 export type ValidateWikiOptions = {
   /**
@@ -113,13 +117,16 @@ export async function validateWikiTree(
     };
   }
 
-  const scan = await scanWikiTree(resolved);
+  const { pages, scan, loadIssues } = await loadWikiPageRecords(resolved, {
+    maxFileBytes: WIKI_VALIDATE_MAX_FILE_BYTES,
+  });
   errors.push(...scan.issues.map((issue) => issue.message));
+  errors.push(...loadIssues.map((issue) => issue.message));
+
   const fileCount = scan.files.length;
-  const mdFiles = scan.files
-    .filter((file) => file.relativePath.toLowerCase().endsWith(".md"))
-    .map((file) => ({ absPath: file.absolutePath, relPath: file.relativePath }));
-  const pageCount = mdFiles.length;
+  const pageCount = scan.files.filter((file) =>
+    file.relativePath.toLowerCase().endsWith(".md"),
+  ).length;
 
   if (fileCount > WIKI_VALIDATE_MAX_FILES) {
     errors.push(`wiki tree has ${fileCount} files (max ${WIKI_VALIDATE_MAX_FILES})`);
@@ -129,78 +136,45 @@ export async function validateWikiTree(
     errors.push(`wiki tree has no markdown pages: ${resolved}`);
   }
 
-  const readPages: WikiGraphInputPage[] = [];
-  for (const md of mdFiles) {
-    let size: number;
-    try {
-      // lstat: never follow a symlink swapped in after the walk (path escape).
-      const info = await lstat(md.absPath);
-      if (info.isSymbolicLink()) {
-        errors.push(`symlink not allowed in wiki tree: ${md.relPath}`);
-        continue;
-      }
-      if (!info.isFile()) {
-        errors.push(`not a regular file: ${md.relPath}`);
-        continue;
-      }
-      size = info.size;
-    } catch (error) {
-      errors.push(
-        `cannot stat ${md.relPath}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      continue;
-    }
-    if (size > WIKI_VALIDATE_MAX_FILE_BYTES) {
-      errors.push(
-        `${md.relPath} exceeds max file size (${size} > ${WIKI_VALIDATE_MAX_FILE_BYTES} bytes)`,
-      );
-      continue;
-    }
-    let content: string;
-    try {
-      content = await readFile(md.absPath, "utf8");
-    } catch (error) {
-      errors.push(
-        `cannot read ${md.relPath}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      continue;
-    }
-    readPages.push({ path: md.relPath.replace(/\\/g, "/"), content });
-    const reserved = isReservedWikiPath(md.relPath);
+  for (const page of pages) {
+    const reserved = isReservedWikiPath(page.relativePath);
     if (reserved) {
       // OKF reserved listing/history files: no concept frontmatter or citations.
       continue;
     }
-    const frontmatter = parseWikiFrontmatter(content);
-    const hasType = Boolean(frontmatter?.values.type);
-    const hasTitle = Boolean(frontmatter?.values.title);
+    const hasType = Boolean(page.values.type);
+    const hasTitle = Boolean(page.values.title);
     if (!hasType || !hasTitle) {
       if (!hasType && !hasTitle) {
-        errors.push(`${md.relPath}: missing YAML frontmatter with non-empty type and title`);
+        errors.push(
+          `${page.relativePath}: missing YAML frontmatter with non-empty type and title`,
+        );
       } else if (!hasType) {
-        errors.push(`${md.relPath}: missing YAML frontmatter with non-empty type`);
+        errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty type`);
       } else {
-        errors.push(`${md.relPath}: missing YAML frontmatter with non-empty title`);
+        errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty title`);
       }
     }
     // OKF v0.2 SHOULD: description feeds index generation, search, and previews.
-    if (frontmatter && !frontmatter.values.description) {
-      warnings.push(`${md.relPath}: missing frontmatter description (OKF v0.2 recommended)`);
+    if (page.hasFrontmatter && !page.values.description) {
+      warnings.push(`${page.relativePath}: missing frontmatter description (OKF v0.2 recommended)`);
     }
-    const citations = parseSourceCitations(content);
+    const citations = parseSourceCitations(page.content);
     citationCount += citations.length;
     if (requireCitations && citations.length === 0) {
-      errors.push(`${md.relPath}: missing Source Citation ([Source](repo:…#L…))`);
+      errors.push(`${page.relativePath}: missing Source Citation ([Source](repo:…#L…))`);
     }
-    errors.push(...validateCitationFormat(citations, md.relPath));
+    errors.push(...validateCitationFormat(citations, page.relativePath));
     if (sourceMap) {
-      errors.push(...(await validateCitationResolve(citations, md.relPath, sourceMap)));
+      errors.push(...(await validateCitationResolve(citations, page.relativePath, sourceMap)));
     }
   }
 
   // Broken internal links are quality notes, never rejection (OKF §6.1: a
   // missing target may be not-yet-written knowledge).
-  for (const broken of deriveWikiGraph(readPages).brokenLinks) {
+  for (const broken of deriveWikiGraph(
+    pages.map((page) => ({ path: page.relativePath, content: page.content })),
+  ).brokenLinks) {
     warnings.push(`${broken.from}: broken internal link (${broken.target})`);
   }
 

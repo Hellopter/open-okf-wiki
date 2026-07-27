@@ -202,3 +202,228 @@ test("buildWikiNav skips log.md and duplicate links", () => {
   ]);
   assert.deepEqual(pathsOf(nav), ["overview.md"]);
 });
+
+// ---------------------------------------------------------------------------
+// Edge cases (audit lock-in)
+// ---------------------------------------------------------------------------
+
+test("buildWikiNav A→B→A cross-index cycle does not hang; back-edge omitted", () => {
+  // buildingIndexes prevents infinite recursion: the back-edge yields no children.
+  const nav = buildWikiNav([
+    concept("a/page.md", "A Page"),
+    concept("b/page.md", "B Page"),
+    {
+      path: "index.md",
+      content: "* [A](a/index.md)\n",
+    },
+    {
+      path: "a/index.md",
+      content: "* [Page A](page.md)\n* [B](../b/index.md)\n",
+    },
+    {
+      path: "b/index.md",
+      content: "* [Page B](page.md)\n* [Back to A](../a/index.md)\n",
+    },
+  ]);
+  assert.deepEqual(pathsOf(nav), ["a/page.md", "b/page.md"]);
+  // A dir is present; B is nested under A; cycle back-edge does not re-enter A.
+  const aDir = nav.find((n) => n.kind === "dir" && n.path === "a")
+    ?? (nav[0]?.kind === "group"
+      ? nav[0].children.find((n) => n.kind === "dir" && n.path === "a")
+      : undefined);
+  assert.ok(aDir && aDir.kind === "dir");
+  const bDir = aDir.children.find((n) => n.kind === "dir" && n.path === "b");
+  assert.ok(bDir && bDir.kind === "dir");
+  assert.equal(
+    bDir.children.some((n) => n.kind === "dir" && n.path === "a"),
+    false,
+  );
+});
+
+test("buildWikiNav empty children after covered omit dir; empty heading groups drop", () => {
+  const nav = buildWikiNav([
+    concept("modules/core.md", "Core", "Module"),
+    {
+      path: "index.md",
+      content: [
+        "# Empty",
+        "",
+        "# Listed first",
+        "",
+        "* [Core](modules/core.md)",
+        "",
+        "# Nested",
+        "",
+        "* [Modules](modules/)",
+      ].join("\n"),
+    },
+    {
+      path: "modules/index.md",
+      // Sole child already covered at root → empty children → Modules dir omitted.
+      content: "* [Core](core.md)\n",
+    },
+  ]);
+  assert.deepEqual(pathsOf(nav), ["modules/core.md"]);
+  assert.equal(
+    nav.some((n) => n.kind === "group" && n.title === "Empty"),
+    false,
+  );
+  assert.equal(
+    pathsOf(nav).includes("modules/core.md") &&
+      !nav.some(
+        (n) =>
+          n.kind === "dir" ||
+          (n.kind === "group" && n.children.some((c) => c.kind === "dir")),
+      ),
+    true,
+  );
+});
+
+test("buildWikiNav multi-index same page: first index wins", () => {
+  const nav = buildWikiNav([
+    concept("shared.md", "Shared"),
+    concept("other.md", "Other"),
+    {
+      path: "index.md",
+      content: "* [Alpha](a/index.md)\n* [Beta](b/index.md)\n",
+    },
+    {
+      path: "a/index.md",
+      content: "* [Shared first](../shared.md)\n",
+    },
+    {
+      path: "b/index.md",
+      content: "* [Shared again](../shared.md)\n* [Other](../other.md)\n",
+    },
+  ]);
+  assert.deepEqual(pathsOf(nav), ["shared.md", "other.md"]);
+  // Title comes from the first listing (entry title / meta), not the second.
+  const shared = (() => {
+    const walk = (nodes: WikiNavNode[]): WikiNavNode | undefined => {
+      for (const n of nodes) {
+        if (n.kind === "page" && n.path === "shared.md") return n;
+        if (n.kind === "dir" || n.kind === "group") {
+          const found = walk(n.children);
+          if (found) return found;
+        }
+      }
+      return undefined;
+    };
+    return walk(nav);
+  })();
+  assert.ok(shared && shared.kind === "page");
+  assert.equal(shared.title, "Shared");
+  // shared appears only once
+  assert.equal(pathsOf(nav).filter((p) => p === "shared.md").length, 1);
+});
+
+test("parseWikiIndexListing skips empty / whitespace-only title links", () => {
+  const entries = parseWikiIndexListing(
+    [
+      "* [ ](overview.md)",
+      "* [](architecture.md)",
+      "* [Real](real.md)",
+    ].join("\n"),
+  );
+  assert.deepEqual(entries, [{ kind: "link", title: "Real", href: "real.md" }]);
+});
+
+test("parseWikiIndexListing treats fragment-only href carefully (skipped)", () => {
+  const entries = parseWikiIndexListing(
+    [
+      "* [Section](#section)",
+      "* [Page with fragment](overview.md#intro)",
+      "* [Bare hash](#)",
+    ].join("\n"),
+  );
+  // Fragment-only → empty path after strip → skipped.
+  // Page + fragment → page target kept, fragment dropped.
+  assert.deepEqual(entries, [
+    { kind: "link", title: "Page with fragment", href: "overview.md" },
+  ]);
+});
+
+test("buildWikiNav never lists reserved index.md / log.md as concept leaves", () => {
+  const nav = buildWikiNav([
+    concept("overview.md", "Overview", "Overview"),
+    concept("modules/core.md", "Core", "Module"),
+    {
+      path: "index.md",
+      content: "* [Overview](overview.md)\n* [Modules](modules/)\n* [Log](log.md)\n",
+    },
+    {
+      path: "modules/index.md",
+      content: "* [Core](core.md)\n",
+    },
+    { path: "log.md", content: "# Changelog\n" },
+  ]);
+  const all = pathsOf(nav);
+  assert.deepEqual(all, ["overview.md", "modules/core.md"]);
+  assert.equal(all.some((p) => p.endsWith("index.md") || p.endsWith("log.md")), false);
+});
+
+test("buildWikiNavPathTree dir→file promotion: longer path promotes leaf to dir", () => {
+  // When a segment was first a file leaf, a deeper path promotes it to a dir.
+  // The original leaf path is no longer emitted (dir wins).
+  const meta = new Map<string, { title?: string; type?: string }>([
+    ["foo.md", { title: "Foo" }],
+    ["foo.md/nested.md", { title: "Nested" }],
+  ]);
+  const fileFirst = buildWikiNavPathTree(["foo.md", "foo.md/nested.md"], meta);
+  assert.equal(fileFirst.length, 1);
+  assert.equal(fileFirst[0]?.kind, "dir");
+  assert.equal(fileFirst[0]?.kind === "dir" && fileFirst[0].path, "foo.md");
+  assert.deepEqual(pathsOf(fileFirst), ["foo.md/nested.md"]);
+
+  // Dir-first order: same structural outcome (file leaf under promoted segment
+  // is not re-added when the segment is already a directory).
+  const dirFirst = buildWikiNavPathTree(["foo.md/nested.md", "foo.md"], meta);
+  assert.equal(dirFirst.length, 1);
+  assert.equal(dirFirst[0]?.kind, "dir");
+  assert.deepEqual(pathsOf(dirFirst), ["foo.md/nested.md"]);
+});
+
+test("buildWikiNav unwrapSoleGroup expands a single nested group unconditionally", () => {
+  const nav = buildWikiNav([
+    concept("modules/a.md", "A", "Module"),
+    concept("modules/b.md", "B", "Module"),
+    {
+      path: "index.md",
+      content: "* [Modules](modules/index.md)\n",
+    },
+    {
+      path: "modules/index.md",
+      // Sole group under nested index is unwrapped into the dir's children.
+      content: "# modules/\n\n* [A](a.md)\n* [B](b.md)\n",
+    },
+  ]);
+  const modules = nav.find((n) => n.kind === "dir")
+    ?? (nav[0]?.kind === "group"
+      ? nav[0].children.find((n) => n.kind === "dir")
+      : undefined);
+  assert.ok(modules && modules.kind === "dir");
+  assert.equal(modules.children.every((c) => c.kind === "page"), true);
+  assert.equal(modules.children.some((c) => c.kind === "group"), false);
+  assert.deepEqual(pathsOf([modules]), ["modules/a.md", "modules/b.md"]);
+
+  // Multiple groups: not a sole group → keep group structure (no unwrap).
+  const multi = buildWikiNav([
+    concept("modules/a.md", "A", "Module"),
+    concept("modules/b.md", "B", "Module"),
+    {
+      path: "index.md",
+      content: "* [Modules](modules/index.md)\n",
+    },
+    {
+      path: "modules/index.md",
+      content: "# One\n\n* [A](a.md)\n\n# Two\n\n* [B](b.md)\n",
+    },
+  ]);
+  const modulesMulti = multi.find((n) => n.kind === "dir")
+    ?? (multi[0]?.kind === "group"
+      ? multi[0].children.find((n) => n.kind === "dir")
+      : undefined);
+  assert.ok(modulesMulti && modulesMulti.kind === "dir");
+  assert.equal(modulesMulti.children.length, 2);
+  assert.equal(modulesMulti.children.every((c) => c.kind === "group"), true);
+});

@@ -5,9 +5,14 @@
  * (OKF §8). Filesystem paths fill structure when an index is missing; concept
  * pages never listed in any consumed index appear under a trailing Unlisted
  * group. Reserved `index.md` / `log.md` are never concept leaves.
+ *
+ * Layout:
+ * - Pure parse: {@link parseWikiIndexListing}
+ * - Recursive build: {@link buildWikiNav} / buildFromIndex
+ * - Path-tree fallback (module-internal helper, not a public barrel export)
  */
 
-import { isReservedWikiPath, parseWikiFrontmatter } from "./wiki-tree.js";
+import { isReservedWikiPath, parseWikiFrontmatter, wikiMarkdownBody } from "./wiki-tree.js";
 import { resolveWikiLinkTarget } from "./wiki-links.js";
 
 /** Stable group marker for pages missing from every consumed index. */
@@ -65,21 +70,13 @@ function posixPath(raw: string): string {
   return raw.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
-function stripFrontmatterBody(content: string): string {
-  const withoutBom = content.replace(/^\uFEFF/, "");
-  const firstNewline = withoutBom.indexOf("\n");
-  if (firstNewline < 0 || withoutBom.slice(0, firstNewline).trim() !== "---") {
-    return withoutBom;
-  }
-  const rest = withoutBom.slice(firstNewline + 1);
-  const close = rest.search(/^---\s*$/m);
-  if (close < 0) return withoutBom;
-  return rest.slice(close).replace(/^---\s*\n?/, "");
-}
+// ---------------------------------------------------------------------------
+// Pure parse
+// ---------------------------------------------------------------------------
 
 /** Parse an OKF-style directory listing into ordered headings and links. */
 export function parseWikiIndexListing(content: string): WikiIndexEntry[] {
-  const body = stripFrontmatterBody(content);
+  const body = wikiMarkdownBody(content);
   const entries: WikiIndexEntry[] = [];
   for (const rawLine of body.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -95,6 +92,7 @@ export function parseWikiIndexListing(content: string): WikiIndexEntry[] {
       const title = link[1]!.trim();
       let href = link[2]!.trim();
       // Drop fragment; navigation targets whole pages.
+      // Fragment-only hrefs (`#section`) become empty and are skipped below.
       const hash = href.indexOf("#");
       if (hash >= 0) href = href.slice(0, hash);
       if (!title || !href) continue;
@@ -109,6 +107,10 @@ export function parseWikiIndexListing(content: string): WikiIndexEntry[] {
   }
   return entries;
 }
+
+// ---------------------------------------------------------------------------
+// Path-tree fallback (module helper; not a public barrel export)
+// ---------------------------------------------------------------------------
 
 function typeRank(type: string | undefined): number {
   if (!type) return 50;
@@ -134,6 +136,25 @@ function sortPagePaths(
     const tb = meta.get(b)?.title || b;
     return ta.localeCompare(tb) || a.localeCompare(b);
   });
+}
+
+/**
+ * Build the set of directory prefixes that contain at least one concept page.
+ * Answers "any concept under path?" in O(1) via Set membership.
+ */
+function buildConceptDirPrefixes(conceptPaths: ReadonlySet<string>): ReadonlySet<string> {
+  const prefixes = new Set<string>();
+  for (const raw of conceptPaths) {
+    const path = posixPath(raw);
+    const parts = path.split("/").filter(Boolean);
+    let prefix = "";
+    // All ancestors of the leaf file are directory prefixes.
+    for (let i = 0; i < parts.length - 1; i++) {
+      prefix = prefix ? `${prefix}/${parts[i]}` : parts[i]!;
+      prefixes.add(prefix);
+    }
+  }
+  return prefixes;
 }
 
 /** Path-segment tree for concept pages only; type-aware leaf order. */
@@ -171,6 +192,7 @@ export function buildWikiNavPathTree(
         };
         cursor.set(part, node);
       } else if (!isFile && node.kind === "file") {
+        // dir→file promotion: a longer path reuses a segment that was a leaf.
         node.kind = "dir";
         node.children = node.children ?? new Map();
       }
@@ -201,11 +223,16 @@ export function buildWikiNavPathTree(
       const title = pageLabel(p, meta);
       return title ? { kind: "page", path: p, title } : { kind: "page", path: p };
     });
+    // Dirs before pages at each level.
     return [...dirs, ...pages];
   }
 
   return toList(root);
 }
+
+// ---------------------------------------------------------------------------
+// Recursive build
+// ---------------------------------------------------------------------------
 
 function indexPathForDirectory(dirPrefix: string): string {
   return dirPrefix ? `${dirPrefix}/index.md` : "index.md";
@@ -225,6 +252,7 @@ function resolveIndexTarget(
   fromIndexPath: string,
   conceptPaths: ReadonlySet<string>,
   indexContents: ReadonlyMap<string, string>,
+  conceptDirPrefixes: ReadonlySet<string>,
 ): { kind: "page"; path: string } | { kind: "dir"; path: string; indexPath: string } | null {
   let target = href.trim();
   if (!target) return null;
@@ -254,7 +282,7 @@ function resolveIndexTarget(
   // Link to a directory name without trailing slash / index: modules → modules/index.md
   if (!path.toLowerCase().endsWith(".md")) {
     const indexPath = indexPathForDirectory(path);
-    if (indexContents.has(indexPath) || [...conceptPaths].some((p) => p.startsWith(`${path}/`))) {
+    if (indexContents.has(indexPath) || conceptDirPrefixes.has(path)) {
       return { kind: "dir", path, indexPath };
     }
   }
@@ -264,9 +292,15 @@ function resolveIndexTarget(
 
 type NavBuildContext = {
   conceptPaths: ReadonlySet<string>;
+  /** Directory prefixes with ≥1 concept descendant; O(1) "any under path?" */
+  conceptDirPrefixes: ReadonlySet<string>;
   meta: ReadonlyMap<string, { title?: string; type?: string }>;
   indexContents: ReadonlyMap<string, string>;
   covered: Set<string>;
+  /**
+   * Indexes currently on the recursive build stack.
+   * A→B→A cross-index cycles return empty children for the back-edge (no hang).
+   */
   buildingIndexes: Set<string>;
 };
 
@@ -287,6 +321,7 @@ function flushGroup(
 /**
  * Nested dir nodes already carry a title; a sole section heading from the child
  * index is usually redundant (`Modules` → `# modules/` → pages).
+ * Always expands when the child result is exactly one group.
  */
 function unwrapSoleGroup(nodes: WikiNavNode[]): WikiNavNode[] {
   if (nodes.length === 1 && nodes[0]!.kind === "group") {
@@ -298,6 +333,7 @@ function unwrapSoleGroup(nodes: WikiNavNode[]): WikiNavNode[] {
 function buildFromIndex(indexPath: string, ctx: NavBuildContext): WikiNavNode[] {
   const content = ctx.indexContents.get(indexPath);
   if (!content) return [];
+  // Cycle guard: re-entering an index already on the stack yields nothing.
   if (ctx.buildingIndexes.has(indexPath)) return [];
   ctx.buildingIndexes.add(indexPath);
 
@@ -325,10 +361,12 @@ function buildFromIndex(indexPath: string, ctx: NavBuildContext): WikiNavNode[] 
         indexPath,
         ctx.conceptPaths,
         ctx.indexContents,
+        ctx.conceptDirPrefixes,
       );
       if (!resolved) continue;
 
       if (resolved.kind === "page") {
+        // First listing wins: later indexes / links skip already-covered pages.
         if (ctx.covered.has(resolved.path)) continue;
         ctx.covered.add(resolved.path);
         const title = pageLabel(resolved.path, ctx.meta, entry.title);
@@ -340,7 +378,7 @@ function buildFromIndex(indexPath: string, ctx: NavBuildContext): WikiNavNode[] 
         continue;
       }
 
-      // Directory / nested index
+      // Directory / nested index — skip if that index is already on the stack.
       if (ctx.buildingIndexes.has(resolved.indexPath)) continue;
       let children: WikiNavNode[];
       if (ctx.indexContents.has(resolved.indexPath)) {
@@ -353,6 +391,7 @@ function buildFromIndex(indexPath: string, ctx: NavBuildContext): WikiNavNode[] 
         for (const p of under) ctx.covered.add(p);
         children = buildWikiNavPathTree(under, ctx.meta);
       }
+      // Empty after covered filtering: omit the dir node entirely.
       if (children.length === 0) continue;
       pushNode({
         kind: "dir",
@@ -389,6 +428,7 @@ export function buildWikiNav(pages: ReadonlyArray<WikiNavPageInput>): WikiNavNod
       if (base === "index.md") {
         indexContents.set(path, page.content);
       }
+      // Reserved basenames (index.md / log.md) are never concept leaves.
       continue;
     }
 
@@ -405,6 +445,7 @@ export function buildWikiNav(pages: ReadonlyArray<WikiNavPageInput>): WikiNavNod
   const covered = new Set<string>();
   const ctx: NavBuildContext = {
     conceptPaths,
+    conceptDirPrefixes: buildConceptDirPrefixes(conceptPaths),
     meta,
     indexContents,
     covered,

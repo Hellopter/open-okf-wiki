@@ -217,7 +217,7 @@ test("publishStagingToPublication fails closed when another publisher holds the 
 
   await assert.rejects(
     () => publishStagingToPublication({ stagingDir: staging, publicationPath: publication }),
-    /another publish is in progress/,
+    /lock directory is busy and not stale/,
   );
 });
 

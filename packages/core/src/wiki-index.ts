@@ -9,7 +9,12 @@
 
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isReservedWikiPath, parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
+import {
+  isReservedWikiPath,
+  loadWikiPageRecords,
+  scanWikiTree,
+  wikiMarkdownBody,
+} from "./wiki-tree.js";
 
 export type WikiIndexListEntry =
   | { kind: "page"; title: string; href: string; description?: string; type?: string }
@@ -147,19 +152,17 @@ function directConceptPages(all: ReadonlyArray<ConceptMeta>, dirRel: string): Co
 }
 
 async function loadConcepts(wikiRoot: string): Promise<ConceptMeta[]> {
-  const scan = await scanWikiTree(wikiRoot);
+  const { pages } = await loadWikiPageRecords(wikiRoot);
   const concepts: ConceptMeta[] = [];
-  for (const file of scan.files) {
-    const rel = posixRel(file.relativePath);
-    if (!rel.toLowerCase().endsWith(".md") || isReservedWikiPath(rel)) continue;
-    const raw = await readFile(file.absolutePath, "utf8");
-    const values = parseWikiFrontmatter(raw)?.values;
+  for (const page of pages) {
+    const rel = page.relativePath;
+    if (isReservedWikiPath(rel)) continue;
     const stem = basename(rel).replace(/\.md$/i, "");
     concepts.push({
       path: rel,
-      title: values?.title || stem,
-      ...(values?.description ? { description: values.description } : {}),
-      ...(values?.type ? { type: values.type } : {}),
+      title: page.values.title || stem,
+      ...(page.values.description ? { description: page.values.description } : {}),
+      ...(page.values.type ? { type: page.values.type } : {}),
     });
   }
   return concepts;
@@ -293,21 +296,9 @@ export async function regenerateWikiIndexes(
 const LIST_LINK_RE =
   /^[*+-]\s+\[([^\]]+)\]\(([^)\s]+)\)(?:\s*[-–—:]\s*(.+?))?\s*$/;
 
-function stripFrontmatterBody(content: string): string {
-  const withoutBom = content.replace(/^\uFEFF/, "");
-  const firstNewline = withoutBom.indexOf("\n");
-  if (firstNewline < 0 || withoutBom.slice(0, firstNewline).trim() !== "---") {
-    return withoutBom;
-  }
-  const rest = withoutBom.slice(firstNewline + 1);
-  const close = rest.search(/^---\s*$/m);
-  if (close < 0) return withoutBom;
-  return rest.slice(close).replace(/^---\s*\n?/, "");
-}
-
 function parseIndexHrefs(content: string): string[] {
   const hrefs: string[] = [];
-  for (const rawLine of stripFrontmatterBody(content).split(/\r?\n/)) {
+  for (const rawLine of wikiMarkdownBody(content).split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
     const m = LIST_LINK_RE.exec(line);

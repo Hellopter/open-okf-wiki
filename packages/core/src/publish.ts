@@ -1,5 +1,6 @@
 import { cp, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { withLockedDir, withPerKeyMutex } from "./atomicity.js";
 import { rewriteRepoCitationsToRelative } from "./citation-rewrite.js";
 import { type OkfStamp, stampWikiTreeForPublish } from "./okf-stamp.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
@@ -65,50 +66,15 @@ const publishTails = new Map<string, Promise<unknown>>();
 /** A held lock dir older than this is treated as crash residue. */
 const PUBLISH_LOCK_STALE_MS = 10 * 60 * 1000;
 
-async function acquirePublishLockDir(lockDir: string): Promise<void> {
-  try {
-    await mkdir(lockDir); // non-recursive: EEXIST when another publisher holds it
-    return;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
-      throw error;
-    }
-  }
-  const info = await stat(lockDir).catch(() => null);
-  if (info && Date.now() - info.mtimeMs > PUBLISH_LOCK_STALE_MS) {
-    await rm(lockDir, { recursive: true, force: true });
-    await mkdir(lockDir);
-    return;
-  }
-  throw new Error(`another publish is in progress for this publication path (lock: ${lockDir})`);
-}
-
 /**
  * Exclusive publication lock (ADR 0017): in-process queue + on-disk lock dir
  * so concurrent Wiki Runs targeting the same Published Wiki path fail closed
  * instead of interleaving renames.
  */
-async function withPublicationLock<T>(publicationPath: string, fn: () => Promise<T>): Promise<T> {
-  const previous = publishTails.get(publicationPath) ?? Promise.resolve();
-  const run = previous
-    .catch(() => undefined)
-    .then(async () => {
-      const lockDir = `${publicationPath}.publish-lock`;
-      await acquirePublishLockDir(lockDir);
-      try {
-        return await fn();
-      } finally {
-        await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    });
-  publishTails.set(publicationPath, run);
-  try {
-    return await run;
-  } finally {
-    if (publishTails.get(publicationPath) === run) {
-      publishTails.delete(publicationPath);
-    }
-  }
+function withPublicationLock<T>(publicationPath: string, fn: () => Promise<T>): Promise<T> {
+  return withPerKeyMutex(publishTails, publicationPath, () =>
+    withLockedDir(`${publicationPath}.publish-lock`, { staleMs: PUBLISH_LOCK_STALE_MS }, fn),
+  );
 }
 
 /** Remove `.next.*` / `.prev.*` residue of a previously crashed publish. */

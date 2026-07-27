@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { withPerKeyMutex } from "./atomicity.js";
 import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 
 export const APP_STATE_FILE_NAME = "app.json";
@@ -12,19 +13,6 @@ const RECENT_WORKSPACE_LIMIT = 32;
  * each other's updates (last-write-wins on the whole file otherwise).
  */
 const appStateQueues = new Map<string, Promise<unknown>>();
-
-async function withAppStateQueue<T>(appStatePath: string, fn: () => Promise<T>): Promise<T> {
-  const previous = appStateQueues.get(appStatePath) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(fn);
-  appStateQueues.set(appStatePath, run);
-  try {
-    return await run;
-  } finally {
-    if (appStateQueues.get(appStatePath) === run) {
-      appStateQueues.delete(appStatePath);
-    }
-  }
-}
 
 /**
  * User-level app state file.
@@ -130,7 +118,7 @@ export async function setLoadHomeSkills(
   loadHomeSkills: boolean,
   appStatePath: string = defaultAppStatePath(),
 ): Promise<{ state: AppState; effective: boolean }> {
-  return withAppStateQueue(appStatePath, async () => {
+  return withPerKeyMutex(appStateQueues, appStatePath, async () => {
     const prev = await readAppState(appStatePath);
     const state: AppState = {
       version: 1,
@@ -152,7 +140,7 @@ export async function registerWorkspaceInAppIndex(
     throw new Error("rootPath must be a non-empty string");
   }
 
-  await withAppStateQueue(appStatePath, async () => {
+  await withPerKeyMutex(appStateQueues, appStatePath, async () => {
     const state = await readAppState(appStatePath);
     const recentRootPaths = [
       resolved,
@@ -175,7 +163,7 @@ export async function removeWorkspaceFromAppIndex(
   appStatePath: string = defaultAppStatePath(),
 ): Promise<boolean> {
   const resolved = path.resolve(rootPath.trim());
-  return withAppStateQueue(appStatePath, async () => {
+  return withPerKeyMutex(appStateQueues, appStatePath, async () => {
     const state = await readAppState(appStatePath);
     const next = state.recentRootPaths.filter((entry) => path.resolve(entry) !== resolved);
     if (next.length === state.recentRootPaths.length) {

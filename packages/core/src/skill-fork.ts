@@ -5,11 +5,13 @@ import type {
   SkillFileEntry,
   SkillInfo,
   SkillSourceKind,
+  WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { SkillInfoSchema } from "@okf-wiki/contract";
 import { isPathInside } from "./paths.js";
 import { isUnderWorkspaceSkills, workspaceProducerSkillPath } from "./product-home.js";
 import { listSkillFiles, readSkillFrontmatter, skillDigest } from "./skill-digest.js";
+import { WorkspaceIntakeError } from "./workspace-errors.js";
 
 /**
  * Default workspace Producer Skill directory
@@ -223,6 +225,33 @@ export async function writeSkillFile(
   await mkdir(path.dirname(abs), { recursive: true });
   await writeFile(abs, buf);
   return { path: rel, content, bytes: buf.byteLength };
+}
+
+/**
+ * Write a skill file for a workspace: only the canonical project skill fork is writable.
+ * Enforces `skillPath === skillForkDir(rootPath)` before delegating to {@link writeSkillFile}.
+ */
+export async function writeWorkspaceSkillFile(
+  workspace: Pick<WorkspaceConfig, "rootPath" | "skillPath">,
+  relativePath: string,
+  content: string,
+): Promise<{ file: SkillFileContent; skillRoot: string }> {
+  if (!workspace.skillPath) {
+    throw new WorkspaceIntakeError(
+      "invalid_root",
+      "create a skill fork before editing skill files",
+    );
+  }
+  const forkPath = path.resolve(workspace.skillPath);
+  const expectedFork = skillForkDir(workspace.rootPath);
+  if (path.resolve(forkPath) !== path.resolve(expectedFork)) {
+    throw new WorkspaceIntakeError(
+      "path_escape",
+      `skill writes must target the project skill at ${expectedFork}`,
+    );
+  }
+  const file = await writeSkillFile(forkPath, relativePath, content);
+  return { file, skillRoot: forkPath };
 }
 
 /** Reject empty, absolute, or `..` skill-relative paths; return POSIX form. */

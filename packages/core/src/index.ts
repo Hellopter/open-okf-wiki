@@ -74,16 +74,20 @@ export {
   deleteModelProfile,
   deleteProviderEntry,
   loadProviderConfig,
-  maskSecret,
+  mutateProviderCatalog,
+  PROVIDER_CONFIG_VERSION,
   PROVIDER_FILE_NAME,
   saveProviderConfig,
   setDefaultModelProfile,
-  toModelProfilePublic,
-  toProviderEntryPublic,
-  toProviderPublic,
   updateModelProfile,
   updateProviderEntry,
 } from "./provider-catalog.js";
+export {
+  maskSecret,
+  toModelProfilePublic,
+  toProviderEntryPublic,
+  toProviderPublic,
+} from "./provider-public.js";
 export {
   flattenModels,
   getModelProfile,
@@ -101,8 +105,6 @@ export {
 export {
   derivePublishedWikiGraph,
   listPublishedWikiBrowse,
-  listPublishedWikiPageSummaries,
-  listPublishedWikiPages,
   PUBLISHED_WIKI_MAX_FILE_BYTES,
   PUBLISHED_WIKI_MAX_PAGES,
   PublishedWikiError,
@@ -111,14 +113,9 @@ export {
   type PublishedWikiPage,
   type PublishedWikiPageSummary,
   readPublishedWikiPage,
-  resolvePublishedWikiPath,
-  toPublishedWikiPosixRelative,
 } from "./published-wiki.js";
 export {
   buildWikiNav,
-  buildWikiNavPathTree,
-  defaultWikiBrowsePage,
-  firstWikiNavPage,
   parseWikiIndexListing,
   WIKI_NAV_UNLISTED_TITLE,
   type WikiIndexEntry,
@@ -178,6 +175,7 @@ export {
   readSkillFile,
   skillForkDir,
   writeSkillFile,
+  writeWorkspaceSkillFile,
 } from "./skill-fork.js";
 export {
   ensureHomeProducerSkill,
@@ -237,10 +235,19 @@ export {
 export {
   countMarkdownFiles,
   isReservedWikiPath,
+  loadWikiPageRecords,
   parseWikiFrontmatter,
   RESERVED_WIKI_BASENAMES,
   scanWikiTree,
+  splitWikiFrontmatter,
+  wikiMarkdownBody,
+  WIKI_MAX_FILE_BYTES,
+  type LoadWikiPageRecordsOptions,
+  type LoadWikiPageRecordsResult,
   type WikiFrontmatter,
+  type WikiFrontmatterSplit,
+  type WikiPageLoadIssue,
+  type WikiPageRecord,
   type WikiTreeFile,
   type WikiTreeIssue,
   type WikiTreeScan,
@@ -274,6 +281,14 @@ export {
   ProviderStoreError,
   WorkspaceIntakeError,
 } from "./workspace-errors.js";
+export {
+  resolveWorkspaceModelSelection,
+} from "./workspace-model.js";
+export {
+  type ResolveModelSelection,
+  type WorkspacePatchDeps,
+  applyWorkspacePatch,
+} from "./workspace-patch.js";
 export {
   type AddSourceInput,
   type AddSourceOptions,

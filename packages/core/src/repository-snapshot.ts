@@ -1,8 +1,9 @@
 import { lstat, mkdir, mkdtemp, readdir, rm, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { cleanupWritableTree } from "./atomicity.js";
 import { createDefaultGitRunner, type GitRunner } from "./git-runner.js";
-import { assertOrdinaryTree, makeTreeReadOnly, makeTreeWritable } from "./immutable-tree.js";
+import { assertOrdinaryTree, makeTreeReadOnly } from "./immutable-tree.js";
 import { entryMatchesIgnore } from "./source-ignores.js";
 
 /**
@@ -50,8 +51,7 @@ export async function materializeRepositorySnapshot(
     await assertOrdinaryTree(destination, "snapshot");
     await makeTreeReadOnly(destination);
   } catch (error) {
-    await makeTreeWritable(destination).catch(() => undefined);
-    await rm(destination, { recursive: true, force: true });
+    await cleanupWritableTree(destination);
     throw error;
   } finally {
     if (indexDir) {

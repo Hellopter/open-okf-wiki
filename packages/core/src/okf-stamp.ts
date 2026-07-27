@@ -7,8 +7,8 @@
  * authoring them and publish stamps them here on the candidate tree only.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
-import { isReservedWikiPath, scanWikiTree } from "./wiki-tree.js";
+import { writeFile } from "node:fs/promises";
+import { isReservedWikiPath, loadWikiPageRecords, splitWikiFrontmatter } from "./wiki-tree.js";
 
 export const OKF_VERSION = "0.2";
 
@@ -51,33 +51,8 @@ function verificationYaml(verified: OkfVerification[]): string {
   return ["verified:", ...entries].join("\n");
 }
 
-type FrontmatterSplit = {
-  /** Frontmatter inner lines (no delimiters), original line endings dropped. */
-  inner: string;
-  /** Body after the closing delimiter line (leading newline preserved). */
-  rest: string;
-  /** BOM prefix when present, re-emitted verbatim. */
-  bom: string;
-};
-
 /** UTF-8 BOM, kept out of string literals so the file has no invisible chars. */
 const BOM = String.fromCharCode(0xfeff);
-
-function splitFrontmatter(content: string): FrontmatterSplit | null {
-  const bom = content.startsWith(BOM) ? BOM : "";
-  const withoutBom = bom ? content.slice(1) : content;
-  const firstNewline = withoutBom.indexOf("\n");
-  if (firstNewline < 0 || withoutBom.slice(0, firstNewline).trim() !== "---") {
-    return null;
-  }
-  const rest = withoutBom.slice(firstNewline + 1);
-  const closeMatch = /^---[ \t]*$/m.exec(rest);
-  if (!closeMatch) {
-    return null;
-  }
-  const inner = rest.slice(0, closeMatch.index).replace(/\n$/, "");
-  return { inner, rest: rest.slice(closeMatch.index + closeMatch[0].length), bom };
-}
 
 function hasTopLevelKey(frontmatterInner: string, key: string): boolean {
   const re = new RegExp(`^${key}\\s*:`, "m");
@@ -90,7 +65,7 @@ function hasTopLevelKey(frontmatterInner: string, key: string): boolean {
  * left byte-identical. Returns the (possibly unchanged) content.
  */
 export function stampConceptPage(content: string, stamp: OkfStamp): string {
-  const split = splitFrontmatter(content);
+  const split = splitWikiFrontmatter(content);
   if (!split) return content;
 
   const additions: string[] = [];
@@ -114,7 +89,7 @@ export function stampConceptPage(content: string, stamp: OkfStamp): string {
  * listing has none; never touches an existing `okf_version`.
  */
 export function stampRootIndex(content: string, okfVersion: string): string {
-  const split = splitFrontmatter(content);
+  const split = splitWikiFrontmatter(content);
   if (!split) {
     const body = content.startsWith(BOM) ? content.slice(1) : content;
     return `---\nokf_version: ${yamlQuote(okfVersion)}\n---\n\n${body}`;
@@ -135,30 +110,27 @@ export async function stampWikiTreeForPublish(
   wikiRoot: string,
   stamp: OkfStamp,
 ): Promise<OkfStampTreeResult> {
-  const scan = await scanWikiTree(wikiRoot);
+  const { pages } = await loadWikiPageRecords(wikiRoot);
   const okfVersion = stamp.okfVersion ?? OKF_VERSION;
   let stampedPages = 0;
   let rootIndexStamped = false;
 
-  for (const file of scan.files) {
-    const rel = file.relativePath.replace(/\\/g, "/");
-    if (!rel.toLowerCase().endsWith(".md")) continue;
+  for (const page of pages) {
+    const rel = page.relativePath;
 
     if (rel.toLowerCase() === "index.md") {
-      const raw = await readFile(file.absolutePath, "utf8");
-      const next = stampRootIndex(raw, okfVersion);
-      if (next !== raw) {
-        await writeFile(file.absolutePath, next, "utf8");
+      const next = stampRootIndex(page.content, okfVersion);
+      if (next !== page.content) {
+        await writeFile(page.absolutePath, next, "utf8");
       }
       rootIndexStamped = true;
       continue;
     }
     if (isReservedWikiPath(rel)) continue;
 
-    const raw = await readFile(file.absolutePath, "utf8");
-    const next = stampConceptPage(raw, stamp);
-    if (next !== raw) {
-      await writeFile(file.absolutePath, next, "utf8");
+    const next = stampConceptPage(page.content, stamp);
+    if (next !== page.content) {
+      await writeFile(page.absolutePath, next, "utf8");
       stampedPages += 1;
     }
   }

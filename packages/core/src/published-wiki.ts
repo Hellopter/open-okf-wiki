@@ -5,16 +5,22 @@ import {
   assertContainedPathSafe,
   assertNoSymlinkComponents,
   resolveContainedPath,
+  resolveExistingDir,
   toPosixRelative,
 } from "./paths.js";
 import { deriveWikiGraph, type WikiGraph, type WikiGraphInputPage } from "./wiki-links.js";
 import { buildWikiNav, type WikiNavNode } from "./wiki-nav.js";
-import { parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
+import {
+  loadWikiPageRecords,
+  parseWikiFrontmatter,
+  scanWikiTree,
+  WIKI_MAX_FILE_BYTES,
+} from "./wiki-tree.js";
 
 /** Soft cap on listed / readable published wiki pages. */
 export const PUBLISHED_WIKI_MAX_PAGES = 500;
 /** Soft cap on a single published page size (bytes). */
-export const PUBLISHED_WIKI_MAX_FILE_BYTES = 1_000_000;
+export const PUBLISHED_WIKI_MAX_FILE_BYTES = WIKI_MAX_FILE_BYTES;
 
 export type PublishedWikiPage = {
   /** Relative POSIX path under the publication root (e.g. `overview.md`). */
@@ -108,10 +114,11 @@ async function assertPublishedPathSafe(root: string, absolutePath: string): Prom
   }
 }
 
+/** Absolute existing directory with no symlink components (published wiki root). */
 async function assertPublicationRoot(publicationPath: string): Promise<string> {
-  let resolved: string;
+  let absolute: string;
   try {
-    resolved = path.resolve(assertAbsolutePath(publicationPath, "publicationPath"));
+    absolute = path.resolve(assertAbsolutePath(publicationPath, "publicationPath"));
   } catch (error) {
     throw new PublishedWikiError(
       "invalid_path",
@@ -119,22 +126,21 @@ async function assertPublicationRoot(publicationPath: string): Promise<string> {
     );
   }
 
-  let rootInfo;
+  let resolved: string;
   try {
-    rootInfo = await lstat(resolved);
+    resolved = await resolveExistingDir(absolute);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "ENOENT") {
-      throw new PublishedWikiError("not_found", `publication path does not exist: ${resolved}`);
+    const message = error instanceof Error ? error.message : String(error);
+    if (/does not exist/i.test(message)) {
+      throw new PublishedWikiError("not_found", `publication path does not exist: ${absolute}`);
     }
-    throw new PublishedWikiError("io", error instanceof Error ? error.message : String(error));
-  }
-
-  if (rootInfo.isSymbolicLink()) {
-    throw new PublishedWikiError("symlink", `publicationPath is a symlink: ${resolved}`);
-  }
-  if (!rootInfo.isDirectory()) {
-    throw new PublishedWikiError("invalid_path", `publicationPath is not a directory: ${resolved}`);
+    if (/not a directory/i.test(message)) {
+      throw new PublishedWikiError(
+        "invalid_path",
+        `publicationPath is not a directory: ${absolute}`,
+      );
+    }
+    throw new PublishedWikiError("io", message);
   }
 
   try {
@@ -192,33 +198,35 @@ async function readAllPublishedPages(
   publicationPath: string,
 ): Promise<Array<WikiGraphInputPage & { summary: PublishedWikiPageSummary }>> {
   const root = await assertPublicationRoot(publicationPath);
-  const relPaths = await listPublishedWikiPages(root);
-  const out: Array<WikiGraphInputPage & { summary: PublishedWikiPageSummary }> = [];
-  for (const rel of relPaths) {
-    const abs = resolvePublishedWikiPath(root, rel);
-    let info;
-    try {
-      info = await lstat(abs);
-    } catch {
-      continue; // page vanished between scan and read
-    }
-    if (!info.isFile() || info.isSymbolicLink() || info.size > PUBLISHED_WIKI_MAX_FILE_BYTES) {
-      continue;
-    }
-    let content: string;
-    try {
-      content = await readFile(abs, "utf8");
-    } catch {
-      continue;
-    }
-    const values = parseWikiFrontmatter(content)?.values;
-    const summary: PublishedWikiPageSummary = { path: rel };
-    if (values?.type) summary.type = values.type;
-    if (values?.title) summary.title = values.title;
-    if (values?.description) summary.description = values.description;
-    out.push({ path: rel, content, summary });
+  const { pages, scan } = await loadWikiPageRecords(root, {
+    maxFileBytes: PUBLISHED_WIKI_MAX_FILE_BYTES,
+  });
+  const ioIssue = scan.issues.find((issue) => issue.kind === "io");
+  if (ioIssue) {
+    throw new PublishedWikiError("io", ioIssue.message);
   }
-  return out;
+
+  const mdCount = scan.files.filter((file) =>
+    file.relativePath.toLowerCase().endsWith(".md"),
+  ).length;
+  if (mdCount > PUBLISHED_WIKI_MAX_PAGES) {
+    throw new PublishedWikiError(
+      "too_large",
+      `published wiki has more than ${PUBLISHED_WIKI_MAX_PAGES} pages`,
+    );
+  }
+  if (mdCount === 0) {
+    throw new PublishedWikiError("empty", `published wiki has no markdown pages: ${root}`);
+  }
+
+  // Oversized / unreadable files are omitted (same as prior silent skip).
+  return pages.map((page) => {
+    const summary: PublishedWikiPageSummary = { path: page.relativePath };
+    if (page.values.type) summary.type = page.values.type;
+    if (page.values.title) summary.title = page.values.title;
+    if (page.values.description) summary.description = page.values.description;
+    return { path: page.relativePath, content: page.content, summary };
+  });
 }
 
 /**

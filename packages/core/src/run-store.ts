@@ -7,6 +7,7 @@ import {
   type WikiRunRecordStatus,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
+import { withPerKeyMutex } from "./atomicity.js";
 import { atomicCreateJson, atomicWriteJson } from "./atomic-write.js";
 import { makeTreeWritable } from "./immutable-tree.js";
 import { isPathInside } from "./paths.js";
@@ -17,23 +18,7 @@ import { runRecordPath, runSkillDir, runsDir } from "./run-layout.js";
  * Concurrent `updateRunRecord` callers for the same path serialize so
  * cancel-wins and frozen-field rules are evaluated on the latest disk state.
  */
-const runRecordUpdateTails = new Map<string, Promise<void>>();
-
-function withRunRecordUpdateLock<T>(absolutePath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = runRecordUpdateTails.get(absolutePath) ?? Promise.resolve();
-  const run = prev.catch(() => undefined).then(fn);
-  const tail = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  runRecordUpdateTails.set(absolutePath, tail);
-  void tail.finally(() => {
-    if (runRecordUpdateTails.get(absolutePath) === tail) {
-      runRecordUpdateTails.delete(absolutePath);
-    }
-  });
-  return run;
-}
+const runRecordUpdateTails = new Map<string, Promise<unknown>>();
 
 export type RegisterRunOptions = {
   runId: string;
@@ -142,7 +127,7 @@ export async function updateRunRecord(
   const resolvedRoot = path.resolve(rootPath);
   const recordPath = runRecordPath(resolvedRoot, runId);
 
-  return withRunRecordUpdateLock(recordPath, async () => {
+  return withPerKeyMutex(runRecordUpdateTails, recordPath, async () => {
     const existing = await loadRun(resolvedRoot, runId);
     if (!existing) {
       throw new Error(`run not found: ${runId}`);

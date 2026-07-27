@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { assertOrdinaryTree, makeTreeReadOnly, makeTreeWritable } from "./immutable-tree.js";
+import { cleanupWritableTree } from "./atomicity.js";
+import { assertOrdinaryTree, makeTreeReadOnly } from "./immutable-tree.js";
 
 /** Max single skill file size included in the digest (1 MiB). */
 export const SKILL_DIGEST_MAX_FILE_BYTES = 1_048_576;
@@ -161,8 +162,7 @@ export async function materializeSkillVersion(input: {
     await makeTreeReadOnly(destination);
     return { path: destination, digest };
   } catch (error) {
-    await makeTreeWritable(destination).catch(() => undefined);
-    await rm(destination, { recursive: true, force: true });
+    await cleanupWritableTree(destination);
     throw error;
   }
 }

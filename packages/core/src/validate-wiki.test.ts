@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { validateWikiTree, WIKI_VALIDATE_MAX_FILE_BYTES } from "./validate-wiki.js";
-import { isReservedWikiPath, parseWikiFrontmatter } from "./wiki-tree.js";
+import {
+  isReservedWikiPath,
+  parseWikiFrontmatter,
+  splitWikiFrontmatter,
+  wikiMarkdownBody,
+} from "./wiki-tree.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -54,6 +59,66 @@ test("parseWikiFrontmatter exposes concept type and title once", () => {
   assert.equal(isReservedWikiPath("modules/index.md"), true);
   assert.equal(isReservedWikiPath("log.md"), true);
   assert.equal(isReservedWikiPath("overview.md"), false);
+});
+
+test("splitWikiFrontmatter returns null without a frontmatter block", () => {
+  assert.equal(splitWikiFrontmatter("# No frontmatter\n"), null);
+  assert.equal(splitWikiFrontmatter("---\nno closing fence\n"), null);
+  assert.equal(wikiMarkdownBody("# Body only\n"), "# Body only\n");
+});
+
+test("splitWikiFrontmatter handles BOM, CRLF, and spaced closing fences", () => {
+  const bom = String.fromCharCode(0xfeff);
+  const withBom = `${bom}---\ntitle: BomPage\n---\n\n# H\n`;
+  const bomSplit = splitWikiFrontmatter(withBom);
+  assert.equal(bomSplit?.bom, bom);
+  assert.equal(bomSplit?.values.title, "BomPage");
+  assert.equal(bomSplit?.inner, "title: BomPage");
+  assert.equal(bomSplit?.rest, "\n\n# H\n");
+  assert.equal(wikiMarkdownBody(withBom), "\n# H\n");
+
+  const crlf = "---\r\ntitle: Crlf\r\n---\r\n\r\nBody\r\n";
+  const crlfSplit = splitWikiFrontmatter(crlf);
+  assert.equal(crlfSplit?.values.title, "Crlf");
+  assert.equal(crlfSplit?.inner, "title: Crlf");
+  assert.equal(wikiMarkdownBody(crlf), "\r\nBody\r\n");
+
+  const spacedClose = "---\ntitle: Spaced\n---  \n\nAfter\n";
+  const spaced = splitWikiFrontmatter(spacedClose);
+  assert.equal(spaced?.values.title, "Spaced");
+  assert.equal(wikiMarkdownBody(spacedClose), "\nAfter\n");
+
+  const tabClose = "---\ntitle: Tabbed\n---\t\nBody\n";
+  assert.equal(splitWikiFrontmatter(tabClose)?.values.title, "Tabbed");
+  assert.equal(wikiMarkdownBody(tabClose), "Body\n");
+
+  // Close fence must be alone on its line; `---Body` is not a fence.
+  assert.equal(splitWikiFrontmatter("---\ntitle: Tight\n---Body\n"), null);
+
+  // Close fence at EOF (no trailing newline) still parses; rest may be empty.
+  const eofClose = "---\ntitle: Eof\n---";
+  assert.equal(splitWikiFrontmatter(eofClose)?.values.title, "Eof");
+  assert.equal(splitWikiFrontmatter(eofClose)?.rest, "");
+  assert.equal(wikiMarkdownBody(eofClose), "");
+
+  // Body immediately after the close line's newline (no blank line).
+  const noBlank = "---\ntitle: Tight\n---\nBody\n";
+  assert.equal(splitWikiFrontmatter(noBlank)?.rest, "\nBody\n");
+  assert.equal(wikiMarkdownBody(noBlank), "Body\n");
+
+  // Empty frontmatter block.
+  const empty = "---\n---\n# H\n";
+  assert.equal(splitWikiFrontmatter(empty)?.inner, "");
+  assert.equal(splitWikiFrontmatter(empty)?.rest, "\n# H\n");
+  assert.equal(wikiMarkdownBody(empty), "# H\n");
+});
+
+test("parseWikiFrontmatter is a projection of splitWikiFrontmatter", () => {
+  const content = "---\ntype: Overview\ntitle: X\n---\n\n# X\n";
+  const split = splitWikiFrontmatter(content)!;
+  const parsed = parseWikiFrontmatter(content)!;
+  assert.equal(parsed.body, split.inner);
+  assert.deepEqual(parsed.values, split.values);
 });
 
 test("validateWikiTree accepts a minimal valid tree", async () => {

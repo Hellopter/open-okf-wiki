@@ -6,15 +6,15 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   type RepositorySnapshot,
   recordStatusFromPhase,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
+import { cleanupWritableTree } from "./atomicity.js";
 import { probeLocalGit } from "./git.js";
-import { makeTreeWritable } from "./immutable-tree.js";
 import { materializeRepositorySnapshot } from "./repository-snapshot.js";
 import { analysisDir as runAnalysisDir, runSkillDir, runsDir, runWorkDir } from "./run-layout.js";
 import { registerRunRecord } from "./run-store.js";
@@ -230,8 +230,7 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
     });
   } catch (error) {
     if (ownsRunDir) {
-      await makeTreeWritable(runDir).catch(() => undefined);
-      await rm(runDir, { recursive: true, force: true });
+      await cleanupWritableTree(runDir);
     }
     throw error;
   }

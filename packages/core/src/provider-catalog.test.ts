@@ -9,11 +9,10 @@ import {
   defaultProviderPath,
   deleteModelProfile,
   loadProviderConfig,
-  maskSecret,
   setDefaultModelProfile,
-  toProviderPublic,
   updateModelProfile,
 } from "./provider-catalog.js";
+import { maskSecret, toProviderPublic } from "./provider-public.js";
 import {
   flattenModels,
   hasProviderCredentials,

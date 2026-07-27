@@ -8,9 +8,9 @@
  * concept pages appear as entries.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isReservedWikiPath, parseWikiFrontmatter, scanWikiTree } from "./wiki-tree.js";
+import { isReservedWikiPath, loadWikiPageRecords, parseWikiFrontmatter } from "./wiki-tree.js";
 
 export const WIKI_LOG_HEADING = "# Wiki Update Log";
 
@@ -130,20 +130,13 @@ export function renderWikiLog(input: {
 async function readTreePages(root: string | undefined): Promise<Map<string, string>> {
   const pages = new Map<string, string>();
   if (!root) return pages;
-  let scan;
   try {
-    scan = await scanWikiTree(root);
-  } catch {
-    return pages;
-  }
-  for (const file of scan.files) {
-    const rel = file.relativePath.replace(/\\/g, "/");
-    if (!rel.toLowerCase().endsWith(".md")) continue;
-    try {
-      pages.set(rel, await readFile(file.absolutePath, "utf8"));
-    } catch {
-      // Unreadable previous pages simply drop out of the diff.
+    const loaded = await loadWikiPageRecords(root);
+    for (const page of loaded.pages) {
+      pages.set(page.relativePath, page.content);
     }
+  } catch {
+    // Unreadable trees simply contribute no pages to the diff.
   }
   return pages;
 }

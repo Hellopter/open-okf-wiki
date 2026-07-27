@@ -12,7 +12,9 @@ import {
   readSkillFile,
   skillForkDir,
   writeSkillFile,
+  writeWorkspaceSkillFile,
 } from "./skill-fork.js";
+import { WorkspaceIntakeError } from "./workspace-errors.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -80,4 +82,42 @@ test("writeSkillFile refuses path escape", async () => {
     sourceSkillPath: source,
   });
   await assert.rejects(() => writeSkillFile(forkPath, "../outside.md", "x"), /\.\./);
+});
+
+test("writeWorkspaceSkillFile writes under canonical project fork", async () => {
+  const workspaceRoot = await tempDir("okf-ws-wskill-");
+  const source = await makeSourceSkill();
+  const forkPath = await createSkillFork({
+    workspaceRoot,
+    sourceSkillPath: source,
+  });
+  const { file, skillRoot } = await writeWorkspaceSkillFile(
+    { rootPath: workspaceRoot, skillPath: forkPath },
+    "templates/overview.md",
+    "# Via workspace\n",
+  );
+  assert.equal(skillRoot, forkPath);
+  assert.equal(file.content, "# Via workspace\n");
+});
+
+test("writeWorkspaceSkillFile refuses non-project skillPath", async () => {
+  const workspaceRoot = await tempDir("okf-ws-badskill-");
+  await assert.rejects(
+    () =>
+      writeWorkspaceSkillFile(
+        { rootPath: workspaceRoot, skillPath: "/tmp/other-skill" },
+        "SKILL.md",
+        "x",
+      ),
+    (error: unknown) =>
+      error instanceof WorkspaceIntakeError && error.code === "path_escape",
+  );
+});
+
+test("writeWorkspaceSkillFile requires skillPath", async () => {
+  await assert.rejects(
+    () => writeWorkspaceSkillFile({ rootPath: "/tmp/ws" }, "SKILL.md", "x"),
+    (error: unknown) =>
+      error instanceof WorkspaceIntakeError && error.code === "invalid_root",
+  );
 });
