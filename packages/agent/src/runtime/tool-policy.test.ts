@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  DEFAULT_OPERATOR_TOOLS,
+  OperatorToolNameSchema,
+} from "@okf-wiki/contract";
+import {
   assertSafeWikiToolList,
   isReadOnlyToolList,
+  OPERATOR_SELECTABLE_TOOLS,
   resolveOperatorToolNames,
   roleMayWrite,
   toolNamesForRole,
@@ -40,8 +45,13 @@ describe("tool-policy", () => {
 });
 
 describe("resolveOperatorToolNames", () => {
-  it("defaults to read-only when no selection is stored", () => {
-    assert.deepEqual([...resolveOperatorToolNames(undefined)], ["read", "grep", "find", "ls"]);
+  it("selectable set matches contract OperatorToolNameSchema", () => {
+    assert.deepEqual([...OPERATOR_SELECTABLE_TOOLS], [...OperatorToolNameSchema.options]);
+  });
+
+  it("defaults to contract DEFAULT_OPERATOR_TOOLS when no selection is stored", () => {
+    assert.deepEqual([...resolveOperatorToolNames(undefined)], [...DEFAULT_OPERATOR_TOOLS]);
+    assert.deepEqual([...DEFAULT_OPERATOR_TOOLS], ["read", "grep", "find", "ls"]);
   });
 
   it("accepts partial selections, dedupes, and allows the bash opt-in", () => {

@@ -7,27 +7,14 @@
  */
 
 import {
-  recordStatusFromPhase,
   type WikiProduceToolDetails,
-  type WikiRunPhase,
   type WikiRunSpec,
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import type { GateDecision, GatePort, GateRequest } from "../ports/gate-port.js";
+import type { AdvancePhase } from "./run-phase-writer.js";
 
-export type GateSetPhase = (
-  next: WikiRunPhase,
-  extra?: Omit<Partial<WikiProduceToolDetails>, "status">,
-) => void;
-
-/** Bound Run Record patcher (rootPath + runId closed over by the caller). */
-export type GateUpdateRunRecord = (patch: {
-  status?: ReturnType<typeof recordStatusFromPhase>;
-  spec?: WikiRunSpec;
-  pages?: string[];
-  summary?: string;
-  error?: string | null;
-}) => Promise<unknown>;
+export type { AdvancePhase, AdvancePhaseOptions } from "./run-phase-writer.js";
 
 export type PlanGateLoopInput = {
   coordinator: GatePort;
@@ -39,8 +26,8 @@ export type PlanGateLoopInput = {
   /** Commit living Spec; return value ignored (may be path string from commitSpec). */
   commitSpec: (spec: WikiRunSpec) => Promise<unknown>;
   publishTopology: (spec: WikiRunSpec) => Promise<unknown>;
-  setPhase: GateSetPhase;
-  updateRunRecord: GateUpdateRunRecord;
+  /** Unified phase + record write (persist stays with the shell). */
+  advancePhase: AdvancePhase;
 };
 
 export type PlanGateLoopResult =
@@ -57,8 +44,8 @@ export type PublicationGateLoopInput = {
   /** Summary written to the Run Record while awaiting publication. */
   recordSummary?: string;
   defects?: WikiProduceToolDetails["defects"];
-  setPhase: GateSetPhase;
-  updateRunRecord: GateUpdateRunRecord;
+  /** Unified phase + record write (persist stays with the shell). */
+  advancePhase: AdvancePhase;
 };
 
 export type PublicationGateLoopResult = { action: "approve" } | { action: "declined" };
@@ -140,15 +127,16 @@ export async function runPlanGateLoop(input: PlanGateLoopInput): Promise<PlanGat
     void decisionPromise.catch(() => undefined);
 
     try {
-      input.setPhase("awaiting_plan", {
-        runId: input.runId,
-        spec,
-        summary: "Awaiting WikiRunSpec approval",
-      });
-      await input.updateRunRecord({
-        status: recordStatusFromPhase("awaiting_plan"),
-        spec,
-        summary: "Awaiting WikiRunSpec approval",
+      await input.advancePhase("awaiting_plan", {
+        extra: {
+          runId: input.runId,
+          spec,
+          summary: "Awaiting WikiRunSpec approval",
+        },
+        record: {
+          spec,
+          summary: "Awaiting WikiRunSpec approval",
+        },
       });
     } catch (error) {
       // Withdraw the pending gate so the coordinator is not left with a
@@ -160,13 +148,14 @@ export async function runPlanGateLoop(input: PlanGateLoopInput): Promise<PlanGat
     const decision = await decisionPromise;
 
     if (decision.action === "deny") {
-      input.setPhase("cancelled", {
-        summary: "WikiRunSpec declined by operator",
-      });
-      await input.updateRunRecord({
-        status: recordStatusFromPhase("cancelled"),
-        spec,
-        summary: "WikiRunSpec declined by operator",
+      await input.advancePhase("cancelled", {
+        extra: {
+          summary: "WikiRunSpec declined by operator",
+        },
+        record: {
+          spec,
+          summary: "WikiRunSpec declined by operator",
+        },
       });
       return { action: "declined", spec };
     }
@@ -220,17 +209,18 @@ export async function runPublicationGateLoop(
   void decisionPromise.catch(() => undefined);
 
   try {
-    input.setPhase("awaiting_publication", {
-      spec: input.spec,
-      pages: input.pages,
-      summary: "Awaiting publication approval",
-      defects: input.defects ?? undefined,
-    });
-    await input.updateRunRecord({
-      status: recordStatusFromPhase("awaiting_publication"),
-      spec: input.spec,
-      pages: input.pages,
-      summary: input.recordSummary,
+    await input.advancePhase("awaiting_publication", {
+      extra: {
+        spec: input.spec,
+        pages: input.pages,
+        summary: "Awaiting publication approval",
+        defects: input.defects ?? undefined,
+      },
+      record: {
+        spec: input.spec,
+        pages: input.pages,
+        summary: input.recordSummary,
+      },
     });
   } catch (error) {
     // Withdraw the pending gate so the coordinator is not left with a
@@ -244,14 +234,15 @@ export async function runPublicationGateLoop(
     return { action: "approve" };
   }
 
-  input.setPhase("publication_declined", {
-    summary: "Publication declined; Staging Wiki retained",
-  });
-  await input.updateRunRecord({
-    status: recordStatusFromPhase("publication_declined"),
-    spec: input.spec,
-    pages: input.pages,
-    summary: "Publication declined; Staging Wiki retained",
+  await input.advancePhase("publication_declined", {
+    extra: {
+      summary: "Publication declined; Staging Wiki retained",
+    },
+    record: {
+      spec: input.spec,
+      pages: input.pages,
+      summary: "Publication declined; Staging Wiki retained",
+    },
   });
   return { action: "declined" };
 }

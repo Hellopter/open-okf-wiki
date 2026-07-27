@@ -7,13 +7,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   defaultWikiRunSpec,
-  type WikiProduceToolDetails,
+  recordStatusFromPhase,
   type WikiRunPhase,
   type WikiRunSpec,
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import type { GateDecision, GatePort, GateRequest } from "../ports/gate-port.js";
 import { awaitGate, runPlanGateLoop, runPublicationGateLoop } from "./gate-protocol.js";
+import type { AdvancePhase, AdvancePhaseOptions } from "./run-phase-writer.js";
 
 function baseSpec(summary = "base"): WikiRunSpec {
   return WikiRunSpecSchema.parse({
@@ -52,13 +53,17 @@ function gateHarness() {
 
 function trackPhases() {
   const phases: WikiRunPhase[] = [];
-  const setPhase = (
-    next: WikiRunPhase,
-    _extra?: Omit<Partial<WikiProduceToolDetails>, "status">,
-  ) => {
+  const records: Array<Record<string, unknown>> = [];
+  const advancePhase: AdvancePhase = async (next, opts?: AdvancePhaseOptions) => {
     phases.push(next);
+    if (opts?.record !== false) {
+      records.push({
+        status: recordStatusFromPhase(next),
+        ...(typeof opts?.record === "object" ? opts.record : {}),
+      });
+    }
   };
-  return { phases, setPhase };
+  return { phases, records, advancePhase };
 }
 
 describe("awaitGate", () => {
@@ -100,8 +105,7 @@ describe("awaitGate", () => {
 describe("runPlanGateLoop", () => {
   it("approve without override returns approved with initialSpec", async () => {
     const gates = gateHarness();
-    const { phases, setPhase } = trackPhases();
-    const records: Array<Record<string, unknown>> = [];
+    const { phases, records, advancePhase } = trackPhases();
     const initial = baseSpec("initial");
     let commits = 0;
     let topologies = 0;
@@ -122,10 +126,7 @@ describe("runPlanGateLoop", () => {
       publishTopology: async () => {
         topologies += 1;
       },
-      setPhase,
-      updateRunRecord: async (patch) => {
-        records.push(patch);
-      },
+      advancePhase,
     });
 
     const req = await gates.nextRequest();
@@ -145,7 +146,7 @@ describe("runPlanGateLoop", () => {
 
   it("deny returns declined and sets cancelled", async () => {
     const gates = gateHarness();
-    const { phases, setPhase } = trackPhases();
+    const { phases, advancePhase } = trackPhases();
     const initial = baseSpec();
 
     const done = runPlanGateLoop({
@@ -160,8 +161,7 @@ describe("runPlanGateLoop", () => {
       publishTopology: async () => {
         throw new Error("topology should not run on deny");
       },
-      setPhase,
-      updateRunRecord: async () => undefined,
+      advancePhase,
     });
 
     await gates.nextRequest();
@@ -174,7 +174,7 @@ describe("runPlanGateLoop", () => {
 
   it("revise re-plans once then approve; parses decision.spec once per decision", async () => {
     const gates = gateHarness();
-    const { phases, setPhase } = trackPhases();
+    const { phases, advancePhase } = trackPhases();
     const committed: string[] = [];
     const planPriors: Array<string | undefined> = [];
     const initial = baseSpec("initial");
@@ -199,8 +199,7 @@ describe("runPlanGateLoop", () => {
       publishTopology: async (spec) => {
         committed.push(`topo:${spec.summary}`);
       },
-      setPhase,
-      updateRunRecord: async () => undefined,
+      advancePhase,
     });
 
     await gates.nextRequest();
@@ -225,7 +224,7 @@ describe("runPlanGateLoop", () => {
 
   it("approve with spec override commits and publishes once", async () => {
     const gates = gateHarness();
-    const { setPhase } = trackPhases();
+    const { advancePhase } = trackPhases();
     const initial = baseSpec("initial");
     const override = baseSpec("approved-override");
     const committed: string[] = [];
@@ -244,8 +243,7 @@ describe("runPlanGateLoop", () => {
       publishTopology: async (spec) => {
         committed.push(`topo:${spec.summary}`);
       },
-      setPhase,
-      updateRunRecord: async () => undefined,
+      advancePhase,
     });
 
     await gates.nextRequest();
@@ -255,12 +253,32 @@ describe("runPlanGateLoop", () => {
     assert.equal(result.spec.summary, "approved-override");
     assert.deepEqual(committed, ["approved-override", "topo:approved-override"]);
   });
+
+  it("aborts pending gate when advancePhase (record write) fails", async () => {
+    const gates = gateHarness();
+    const advancePhase: AdvancePhase = async () => {
+      throw new Error("record write failed");
+    };
+
+    const done = runPlanGateLoop({
+      coordinator: gates.coordinator,
+      toolCallId: "t-fail",
+      runId: "run-fail",
+      initialSpec: baseSpec(),
+      runPlanner: async () => baseSpec(),
+      commitSpec: async () => undefined,
+      publishTopology: async () => undefined,
+      advancePhase,
+    });
+
+    await assert.rejects(done, /record write failed/);
+  });
 });
 
 describe("runPublicationGateLoop", () => {
   it("approve returns approve without declined phase", async () => {
     const gates = gateHarness();
-    const { phases, setPhase } = trackPhases();
+    const { phases, advancePhase } = trackPhases();
     const spec = baseSpec();
 
     const done = runPublicationGateLoop({
@@ -270,8 +288,7 @@ describe("runPublicationGateLoop", () => {
       spec,
       pages: ["Home.md"],
       recordSummary: "ready",
-      setPhase,
-      updateRunRecord: async () => undefined,
+      advancePhase,
     });
 
     const req = await gates.nextRequest();
@@ -286,8 +303,7 @@ describe("runPublicationGateLoop", () => {
 
   it("deny returns declined and sets publication_declined", async () => {
     const gates = gateHarness();
-    const { phases, setPhase } = trackPhases();
-    const records: Array<Record<string, unknown>> = [];
+    const { phases, records, advancePhase } = trackPhases();
 
     const done = runPublicationGateLoop({
       coordinator: gates.coordinator,
@@ -296,10 +312,7 @@ describe("runPublicationGateLoop", () => {
       spec: baseSpec(),
       pages: ["A.md"],
       recordSummary: "produced",
-      setPhase,
-      updateRunRecord: async (patch) => {
-        records.push(patch);
-      },
+      advancePhase,
     });
 
     await gates.nextRequest();

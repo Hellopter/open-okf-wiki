@@ -8,13 +8,13 @@ import { regenerateWikiIndexes } from "@okf-wiki/core";
 import {
   applyStickyBlockingDefects,
   defectFingerprint,
-  formatDefectsForRepair,
   hasBlockingDefects,
   mergeDefectReports,
   parseDefectReportFromText,
-  writeMergedDefects,
 } from "./defects.js";
+import { writeMergedDefects } from "./defects-io.js";
 import { defaultSpecStore } from "../ports/core-spec-store.js";
+import { formatDefectsForRepair } from "../workflow/phases/repair-prompt.js";
 import { scorePublishable } from "./publishability.js";
 
 test("parseDefectReportFromText recognizes NO_DEFECTS", () => {

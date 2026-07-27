@@ -13,7 +13,6 @@
 
 import path from "node:path";
 import {
-  recordStatusFromPhase,
   toolStatusFromPhase,
   type WikiProduceToolDetails,
   type WikiRunPhase,
@@ -39,13 +38,13 @@ import {
 import { defaultSpecStore } from "../ports/core-spec-store.js";
 import { redactErrorMessage } from "../redact/index.js";
 import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
-import { resolveProduceRuntime } from "../runtime/produce-runtime.js";
-import { layoutFromFrozen } from "../runtime/workdir.js";
-import { requestTimeoutMs, resolveOrchestration } from "./budgets.js";
+import { resolveOrchestration } from "./budgets.js";
 import { runPlanGateLoop, runPublicationGateLoop } from "./gate-protocol.js";
+import { layoutFromFrozen } from "./layout.js";
 import { planWikiSpec } from "./phases/plan-phase.js";
 import { produceWiki } from "./produce.js";
-import { createRunGraphOwner } from "./run-graph-owner.js";
+import { applyGraphProgress, createRunGraphOwner } from "./run-graph-owner.js";
+import { createRunPhaseController } from "./run-phase-writer.js";
 import { topologyFromSpec } from "./topology.js";
 
 export type { GateDecision, GatePort, GateRequest } from "../ports/gate-port.js";
@@ -75,9 +74,10 @@ export type RunWikiInput = {
   autoApprove?: boolean;
   gateCoordinator: GatePort;
   resolveModel?: WikiProduceModelFactory;
-  /** Explicit fixture path for tests. */
+  /** Explicit fixture path for tests / tool edge. */
   fixture?: boolean;
-  runtime?: AgentRunner;
+  /** Injected AgentRunner — tool edge resolves live vs fixture before call. */
+  runtime: AgentRunner;
   freeze?: (input: {
     workspace: WorkspaceConfig;
     sessionId: string;
@@ -97,8 +97,6 @@ export type RunWikiInput = {
    * Tests inject a memory store to assert save/load without disk.
    */
   graphStore?: GraphStore;
-  /** Low-level status patches for gate/record (tool maps to details). */
-  onDetails?: (patch: Partial<WikiProduceToolDetails>) => void;
   /**
    * Opaque plan-phase custom tools (submit_wiki_run_spec). Injected by the
    * tool edge so workflow never imports tools/ or Pi SDK.
@@ -198,19 +196,32 @@ function mergeNotes(...parts: Array<string | undefined>): string | undefined {
   return merged.slice(0, 4000) || undefined;
 }
 
-function emitDetails(
-  onDetails: RunWikiInput["onDetails"],
-  patch: Partial<WikiProduceToolDetails>,
+/**
+ * Emit setPhase extras as ProduceProgress kinds (single channel for the tool edge).
+ */
+function emitDetailsProgress(
+  sink: ProgressSink,
+  status: WikiProduceToolDetails["status"],
+  extra?: Omit<Partial<WikiProduceToolDetails>, "status">,
 ): void {
-  try {
-    onDetails?.(patch);
-  } catch {
-    // display must not break the run
+  sink.emit({
+    kind: "status",
+    status,
+    ...(extra?.summary !== undefined ? { summary: extra.summary } : {}),
+  });
+  if (extra?.runId) sink.emit({ kind: "runId", runId: extra.runId });
+  if (extra?.spec) sink.emit({ kind: "spec", spec: extra.spec });
+  if (extra?.pages) sink.emit({ kind: "pages", pages: extra.pages });
+  if (extra?.defects != null) {
+    sink.emit({
+      kind: "defects",
+      defects: extra.defects,
+    });
   }
 }
 
 /**
- * One complete Wiki Run. Tool adapter maps progress/details to Pi onUpdate.
+ * One complete Wiki Run. Tool adapter maps progress to Pi onUpdate.
  */
 export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   let runId: string | undefined;
@@ -219,23 +230,6 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   let phase: WikiRunPhase = "freezing";
   let details: WikiProduceToolDetails = {
     status: toolStatusFromPhase(phase),
-  };
-
-  const patch = (p: Partial<WikiProduceToolDetails>) => {
-    details = { ...details, ...p };
-    emitDetails(input.onDetails, p);
-  };
-
-  /** Advance phase and project tool status from the phase enum only. */
-  const setPhase = (
-    next: WikiRunPhase,
-    extra?: Omit<Partial<WikiProduceToolDetails>, "status">,
-  ) => {
-    phase = next;
-    patch({
-      ...extra,
-      status: toolStatusFromPhase(phase),
-    });
   };
 
   /**
@@ -253,15 +247,27 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   const progressSink: ProgressSink =
     input.progressSink ?? progressSinkFromCallback(input.onProgress);
 
+  /** Advance phase and project tool status from the phase enum only. */
+  const setPhase = (
+    next: WikiRunPhase,
+    extra?: Omit<Partial<WikiProduceToolDetails>, "status">,
+  ) => {
+    phase = next;
+    const status = toolStatusFromPhase(phase);
+    details = { ...details, ...extra, status };
+    emitDetailsProgress(progressSink, status, extra);
+  };
+
   /**
    * Graph kinds fold into owner and emit only a graph snapshot for display.
    * Meta kinds (status/pages/…) pass through unchanged.
    */
   const handleProgress = (progress: ProduceProgress): void => {
-    if (progress.kind === "attempt" || progress.kind === "topology" || progress.kind === "graph") {
-      graphOwner.apply(progress);
-      void graphOwner.persist();
-      progressSink.emit({ kind: "graph", graph: graphOwner.snapshot() });
+    if (
+      applyGraphProgress(graphOwner, progress, (graph) => {
+        progressSink.emit({ kind: "graph", graph });
+      })
+    ) {
       return;
     }
     progressSink.emit(progress);
@@ -278,8 +284,21 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     await graphOwner.persist();
   };
 
-  setPhase("freezing", {
-    summary: "Freezing Repository Snapshot Set and Producer Skill",
+  const { advancePhase } = createRunPhaseController({
+    setPhase,
+    updateRunRecord: async (patch) => {
+      if (!runId) return;
+      await updateRunRecord(workspace.rootPath, runId, patch);
+    },
+    persist: () => graphOwner.persist(),
+    canWriteRecord: () => Boolean(runId),
+  });
+
+  await advancePhase("freezing", {
+    extra: {
+      summary: "Freezing Repository Snapshot Set and Producer Skill",
+    },
+    record: false,
   });
 
   try {
@@ -288,11 +307,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     throwIfAborted(input.abortSignal);
 
     const fixture = input.fixture ?? shouldUsePiFixtureMode({});
-    const runtime = resolveProduceRuntime({
-      fixture,
-      runtime: input.runtime,
-      defaults: { timeoutMs: requestTimeoutMs(workspace) },
-    });
+    const runtime = input.runtime;
     const freezeFn = input.freeze ?? freezeWikiRun;
     const publishFn = input.publish ?? publishStagingToPublication;
 
@@ -310,11 +325,15 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       priorSpec?: WikiRunSpec,
       revisionFeedback?: string,
     ): Promise<WikiRunSpec> => {
-      setPhase("planning", {
-        runId,
-        summary: priorSpec
-          ? "Re-planning WikiRunSpec from frozen sources"
-          : "Planning WikiRunSpec from frozen sources",
+      // runId exists but record status stays coarse "running"; no mid-plan write.
+      await advancePhase("planning", {
+        extra: {
+          runId,
+          summary: priorSpec
+            ? "Re-planning WikiRunSpec from frozen sources"
+            : "Planning WikiRunSpec from frozen sources",
+        },
+        record: false,
       });
       const planned = await planWikiSpec({
         layout,
@@ -364,9 +383,6 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     await defaultSpecStore.commitSpec(workspace.rootPath, runId, spec);
     await publishTopology(spec, runId, workspace.rootPath);
 
-    const patchRunRecord = (patch: Parameters<typeof updateRunRecord>[2]) =>
-      updateRunRecord(workspace.rootPath, runId!, patch);
-
     // planConfirm defaults ON (schema default true — HITL plan approval);
     // `=== true` keeps this consistent with session_status even for unparsed
     // workspace objects.
@@ -381,11 +397,11 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         runPlanner,
         commitSpec: (next) => defaultSpecStore.commitSpec(workspace.rootPath, runId!, next),
         publishTopology: (next) => publishTopology(next, runId!, workspace.rootPath),
-        setPhase,
-        updateRunRecord: patchRunRecord,
+        advancePhase,
       });
       spec = planGate.spec;
       if (planGate.action === "declined") {
+        // Phase + record already advanced inside the gate.
         await graphOwner.persist();
         return {
           ...details,
@@ -395,15 +411,16 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       }
     }
 
-    setPhase("producing", {
-      runId,
-      spec,
-      summary: "Producing and reviewing Wiki",
-    });
-    await updateRunRecord(workspace.rootPath, runId, {
-      status: recordStatusFromPhase(phase),
-      spec,
-      summary: "Producing Wiki",
+    await advancePhase("producing", {
+      extra: {
+        runId,
+        spec,
+        summary: "Producing and reviewing Wiki",
+      },
+      record: {
+        spec,
+        summary: "Producing Wiki",
+      },
     });
 
     const produced = await produceWiki({
@@ -426,20 +443,21 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     if (produced.status === "cancelled") throw abortError();
     if (produced.status === "failed" || !produced.publishability.publishable) {
       const summary = produced.summary || produced.publishability.reasons.join("; ");
-      setPhase("failed", {
-        spec: produced.spec,
-        pages: produced.pages,
-        summary,
-        defects: produced.defects,
+      await advancePhase("failed", {
+        extra: {
+          spec: produced.spec,
+          pages: produced.pages,
+          summary,
+          defects: produced.defects,
+        },
+        record: {
+          spec: produced.spec,
+          pages: produced.pages,
+          summary,
+          error: summary,
+        },
+        persist: true,
       });
-      await updateRunRecord(workspace.rootPath, runId, {
-        status: recordStatusFromPhase(phase),
-        spec: produced.spec,
-        pages: produced.pages,
-        summary,
-        error: summary,
-      });
-      await graphOwner.persist();
       return {
         ...details,
         status: toolStatusFromPhase(phase),
@@ -462,10 +480,10 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         pages,
         recordSummary: produced.summary,
         defects: produced.defects ?? undefined,
-        setPhase,
-        updateRunRecord: patchRunRecord,
+        advancePhase,
       });
       if (pubGate.action === "declined") {
+        // Phase + record already advanced inside the gate.
         await graphOwner.persist();
         return {
           ...details,
@@ -494,21 +512,22 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
           : {}),
       },
     });
-    setPhase("published", {
-      runId,
-      spec,
-      pages,
-      summary: produced.summary,
-      defects: produced.defects,
+    await advancePhase("published", {
+      extra: {
+        runId,
+        spec,
+        pages,
+        summary: produced.summary,
+        defects: produced.defects,
+      },
+      record: {
+        spec,
+        pages,
+        summary: produced.summary,
+        error: null,
+      },
+      persist: true,
     });
-    await updateRunRecord(workspace.rootPath, runId, {
-      status: recordStatusFromPhase(phase),
-      spec,
-      pages,
-      summary: produced.summary,
-      error: null,
-    });
-    await graphOwner.persist();
     return {
       ...details,
       status: toolStatusFromPhase(phase),
@@ -528,15 +547,21 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     const message = cancelled
       ? "Wiki Run cancelled"
       : redactErrorMessage(error instanceof Error ? error.message : String(error));
-    setPhase(cancelled ? "cancelled" : "failed", { summary: message });
-    if (runId) {
-      await updateRunRecord(workspace.rootPath, runId, {
-        status: recordStatusFromPhase(phase),
-        summary: message,
-        error: cancelled ? null : message,
-      }).catch(() => undefined);
+    // Soft-fail record write (same as prior catch path); always persist graph.
+    try {
+      await advancePhase(cancelled ? "cancelled" : "failed", {
+        extra: { summary: message },
+        record: runId
+          ? {
+              summary: message,
+              error: cancelled ? null : message,
+            }
+          : false,
+        persist: true,
+      });
+    } catch {
+      await graphOwner.persist();
     }
-    await graphOwner.persist();
     return {
       ...details,
       ...(runId ? { runId } : {}),

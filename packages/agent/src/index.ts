@@ -33,6 +33,8 @@ export {
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
   openOperatorSession,
+  projectOperatorAgentMessages,
+  projectOperatorAgentMessagesFromManager,
   projectOperatorHistoryFromManager,
   projectOperatorHistoryMessage,
 } from "./session/operator-session.js";

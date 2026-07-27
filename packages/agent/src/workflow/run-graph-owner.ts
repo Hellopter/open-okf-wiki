@@ -8,6 +8,7 @@ import type {
   NodeAttempt,
   RunGraphSnapshot,
 } from "@okf-wiki/contract";
+import type { ProduceProgress } from "../ports/progress-sink.js";
 import type { GraphStore } from "../ports/graph-store.js";
 import { AttemptJournal } from "./journal.js";
 
@@ -22,6 +23,29 @@ export type RunGraphOwner = {
   persist(): Promise<void>;
   bind(runId: string, store: GraphStore): void;
 };
+
+/**
+ * Fold graph-shaped ProduceProgress into the owner, best-effort persist, and
+ * project a snapshot via onGraph. Returns true when progress was graph-shaped
+ * (caller should not re-emit the raw event).
+ */
+export function applyGraphProgress(
+  owner: RunGraphOwner,
+  progress: ProduceProgress,
+  onGraph: (graph: RunGraphSnapshot) => void,
+): boolean {
+  if (
+    progress.kind !== "attempt" &&
+    progress.kind !== "topology" &&
+    progress.kind !== "graph"
+  ) {
+    return false;
+  }
+  owner.apply(progress);
+  void owner.persist();
+  onGraph(owner.snapshot());
+  return true;
+}
 
 /** Create the sole mutator of live Run Graph state for a Wiki Run. */
 export function createRunGraphOwner(initial?: RunGraphSnapshot): RunGraphOwner {

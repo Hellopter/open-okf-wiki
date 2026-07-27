@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { RunGraphSnapshot } from "@okf-wiki/contract";
-import { createRunGraphOwner } from "./run-graph-owner.js";
+import { applyGraphProgress, createRunGraphOwner } from "./run-graph-owner.js";
 
 describe("RunGraphOwner (pure + bind)", () => {
   it("attempt upsert streams same attemptId and appends new ids", () => {
@@ -126,5 +126,39 @@ describe("RunGraphOwner (pure + bind)", () => {
     await owner.persist();
     assert.equal(saved.length, 1);
     assert.equal(saved[0]?.attempts[0]?.attemptId, "a");
+  });
+
+  it("applyGraphProgress folds graph kinds and ignores meta", () => {
+    const owner = createRunGraphOwner();
+    const graphs: RunGraphSnapshot[] = [];
+    assert.equal(
+      applyGraphProgress(
+        owner,
+        { kind: "status", status: "producing", summary: "x" },
+        (g) => graphs.push(g),
+      ),
+      false,
+    );
+    assert.equal(graphs.length, 0);
+
+    assert.equal(
+      applyGraphProgress(
+        owner,
+        {
+          kind: "attempt",
+          attempt: {
+            attemptId: "n1",
+            nodeKey: "n1",
+            runIndex: 0,
+            role: "domain",
+            status: "running",
+          },
+        },
+        (g) => graphs.push(g),
+      ),
+      true,
+    );
+    assert.equal(graphs.length, 1);
+    assert.equal(graphs[0]?.attempts[0]?.attemptId, "n1");
   });
 });

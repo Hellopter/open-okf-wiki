@@ -151,7 +151,9 @@ describe("runWiki core flows", () => {
         publishStamp = input.stamp;
         return { publicationPath: workspace.publicationPath!, pageCount: 2 };
       },
-      onDetails: (p) => details.push(p),
+      onProgress: (p) => {
+        if (p.kind === "status") details.push({ status: p.status });
+      },
     });
 
     const planReq = await gates.nextRequest();

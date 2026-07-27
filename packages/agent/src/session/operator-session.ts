@@ -2,22 +2,23 @@
 
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { Message } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import {
   type ModelRuntime,
   type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { AgentMessage, WorkspaceConfig } from "@okf-wiki/contract";
 import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
 import { createSessionStatusTool } from "../tools/session-status.js";
 import { type CreateWikiProduceToolInput, createWikiProduceTool } from "../tools/wiki-produce.js";
 import { createWikiRepairTool } from "../tools/wiki-repair.js";
-import { projectOperatorHistoryFromManager } from "./history.js";
+import { projectOperatorAgentMessagesFromManager } from "./history.js";
 
 export {
+  projectOperatorAgentMessages,
+  projectOperatorAgentMessagesFromManager,
   projectOperatorHistoryFromManager,
   projectOperatorHistoryMessage,
 } from "./history.js";
@@ -27,10 +28,13 @@ export function piSessionsDir(workspaceRoot: string): string {
   return path.join(path.resolve(workspaceRoot), WORKSPACE_DIR_NAME, "pi-sessions");
 }
 
-/** Durable SessionManager branch — Pi owns the message shape. */
+/**
+ * Operator-facing durable history: AgentMessage wire shape (contract).
+ * Pi Message[] is projected at the load boundary — not re-projected by web.
+ */
 export type OperatorSessionHistory = {
   sessionId: string;
-  messages: Message[];
+  messages: AgentMessage[];
 };
 
 export type OperatorSessionSummary = {
@@ -185,7 +189,7 @@ export async function loadOperatorSessionHistory(
   const manager = SessionManager.open(info.path, piSessionsDir(root), root);
   return {
     sessionId: manager.getSessionId(),
-    messages: projectOperatorHistoryFromManager(manager),
+    messages: projectOperatorAgentMessagesFromManager(manager),
   };
 }
 

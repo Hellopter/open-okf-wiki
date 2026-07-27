@@ -6,15 +6,15 @@
  * Pi AgentSession has no maxSteps API — turn limits use abort/timeout only.
  */
 
-import type { WorkspaceConfig, WorkspaceOrchestration } from "@okf-wiki/contract";
+import {
+  DEFAULT_ORCHESTRATION as CONTRACT_DEFAULT_ORCHESTRATION,
+  type WorkspaceConfig,
+  type WorkspaceOrchestration,
+} from "@okf-wiki/contract";
 
+/** Schema defaults from `@okf-wiki/contract` are the sole authority. */
 export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = {
-  maxDepth: 2,
-  maxDomainFanOut: 4,
-  maxLeafFanOut: 6,
-  reviewCouncilSize: 3,
-  planScoutCount: 2,
-  domainConcurrency: 2,
+  ...CONTRACT_DEFAULT_ORCHESTRATION,
 };
 
 /**

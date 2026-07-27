@@ -110,3 +110,27 @@ export function cancelledResult(
     metrics,
   };
 }
+
+/** Shared failed ProduceWikiResult shape (hard-validate, research, …). */
+export function failedProduceResult(input: {
+  summary: string;
+  pages?: string[];
+  spec: WikiRunSpec;
+  defects?: MergedDefectReport | null;
+  publishability: PublishabilityResult;
+  layout: RunWorkdirLayoutPaths;
+  mode: "fixture" | "live";
+  metrics: ProduceMetrics;
+}): ProduceWikiResult {
+  return {
+    status: "failed",
+    pages: input.pages ?? input.publishability.pages ?? [],
+    summary: input.summary,
+    spec: input.spec,
+    defects: input.defects ?? null,
+    publishability: input.publishability,
+    layout: input.layout,
+    mode: input.mode,
+    metrics: input.metrics,
+  };
+}

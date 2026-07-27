@@ -1,12 +1,11 @@
 /**
  * Run workdir layout projection for Pi cwd (ADR 0032 / freeze).
  *
- * Prefer layoutFromFrozen(FrozenRunBoundary). runWorkdirLayout remains for tests
- * that hand-build trees without freeze.
+ * Prefer workflow/layout.layoutFromFrozen(FrozenRunBoundary) at the Run shell.
+ * runWorkdirLayout remains for tests and tools that hand-build trees without freeze.
  */
 
 import path from "node:path";
-import type { FrozenRunBoundary } from "@okf-wiki/core";
 
 export type RunWorkdirLayout = {
   runWorkDir: string;
@@ -17,11 +16,6 @@ export type RunWorkdirLayout = {
   /** sourceId → absolute path under sources/ */
   sourceMounts: Map<string, string>;
 };
-
-/** Project freeze output into the layout Produce/plan use. */
-export function layoutFromFrozen(frozen: FrozenRunBoundary): RunWorkdirLayout {
-  return runWorkdirLayout(frozen.runWorkDir, frozen.sourcePathMap);
-}
 
 /** Validate and project an already-frozen Run Boundary layout. Performs no I/O. */
 export function runWorkdirLayout(

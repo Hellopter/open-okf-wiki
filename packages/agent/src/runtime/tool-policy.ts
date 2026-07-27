@@ -1,7 +1,17 @@
 /**
  * Pi built-in tool allowlists by wiki agent role / phase (ADR 0030).
  * Prefer Pi tools; never enable bash for Semantic Workflow roles.
+ *
+ * Operator tool names and defaults come from `@okf-wiki/contract`
+ * (`OperatorToolNameSchema`, `DEFAULT_OPERATOR_TOOLS`) so WorkspaceConfig
+ * wire shape and runtime policy stay one list.
  */
+
+import {
+  DEFAULT_OPERATOR_TOOLS,
+  OperatorToolNameSchema,
+  type OperatorToolName,
+} from "@okf-wiki/contract";
 
 /** Pi coding-agent built-in tool names we may enable. */
 export type PiFsToolName = "read" | "grep" | "find" | "ls" | "write" | "edit";
@@ -63,22 +73,23 @@ export function roleMayWrite(role: WikiAgentRole): boolean {
 
 /**
  * Tools an operator may select for the chat Session (workspace.operatorTools).
- * `bash` is a stock Pi tool with no Operations wrapper — explicit trust opt-in
- * only, never available to Semantic Workflow roles.
+ * Source of truth: contract `OperatorToolNameSchema` (includes bash opt-in).
+ * Default selection when unset: contract `DEFAULT_OPERATOR_TOOLS` (no bash).
  */
-export const OPERATOR_SELECTABLE_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
+export const OPERATOR_SELECTABLE_TOOLS: readonly OperatorToolName[] =
+  OperatorToolNameSchema.options;
 
-export type OperatorSelectableTool = (typeof OPERATOR_SELECTABLE_TOOLS)[number];
+export type OperatorSelectableTool = OperatorToolName;
 
 /**
  * Resolve the operator tool list from a workspace selection.
- * undefined → read-only default; empty array → product tools only.
+ * undefined → contract DEFAULT_OPERATOR_TOOLS; empty array → product tools only.
  * Unknown names throw rather than being silently dropped.
  */
 export function resolveOperatorToolNames(
   selection: readonly string[] | undefined,
 ): readonly OperatorSelectableTool[] {
-  if (selection === undefined) return READ_ONLY as readonly OperatorSelectableTool[];
+  if (selection === undefined) return [...DEFAULT_OPERATOR_TOOLS];
   const out: OperatorSelectableTool[] = [];
   for (const name of selection) {
     if (!(OPERATOR_SELECTABLE_TOOLS as readonly string[]).includes(name)) {

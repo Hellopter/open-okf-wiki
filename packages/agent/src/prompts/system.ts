@@ -2,9 +2,9 @@
  * Shared prompt helpers (language, page/domain lists, template types).
  */
 
-import type { WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiLanguage, WikiRunSpec } from "@okf-wiki/contract";
 
-export type WikiLanguage = "en" | "zh";
+export type { WikiLanguage };
 
 export function pageList(spec: WikiRunSpec): string {
   const pages = spec.pages ?? [];

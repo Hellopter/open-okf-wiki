@@ -11,6 +11,9 @@ import {
   type WikiProduceToolDetails,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
+import type { AgentRunner } from "../ports/agent-runner.js";
+import { resolveProduceRuntime } from "../runtime/produce-runtime.js";
+import { requestTimeoutMs } from "../workflow/budgets.js";
 import {
   type GatePort,
   type RunWikiInput,
@@ -38,6 +41,8 @@ export type CreateWikiProduceToolInput = {
   resolveModel?: WikiProduceModelFactory;
   fixture?: boolean;
   autoApprove?: boolean;
+  /** Inject runtime for tests; otherwise resolved from fixture/live at execute. */
+  runtime?: AgentRunner;
 };
 
 const wikiProduceParameters = Type.Object(
@@ -104,6 +109,12 @@ export function createWikiProduceTool(
         }
       };
 
+      const runtime = resolveProduceRuntime({
+        fixture: input.fixture,
+        runtime: input.runtime,
+        defaults: { timeoutMs: requestTimeoutMs(input.workspace) },
+      });
+
       const runInput: RunWikiInput = {
         workspace: input.workspace,
         resolveWorkspace: input.resolveWorkspace,
@@ -114,21 +125,13 @@ export function createWikiProduceTool(
         gateCoordinator: input.gateCoordinator,
         resolveModel: input.resolveModel,
         fixture: input.fixture,
+        runtime,
         abortSignal: signal,
         // Tool edge owns Pi tools; workflow injects them as opaque customTools.
         createPlanTools: (runWorkDir) => [createSubmitWikiRunSpecTool({ runWorkDir })],
+        // Single channel: phase/meta + graph all arrive as ProduceProgress.
         onProgress: (progress) => {
           acc.apply(progress);
-          push();
-        },
-        onDetails: (patch) => {
-          if (patch.status) acc.details.status = patch.status;
-          if (patch.summary !== undefined) acc.details.summary = patch.summary;
-          if (patch.runId) acc.details.runId = patch.runId;
-          if (patch.spec) acc.details.spec = patch.spec;
-          if (patch.pages) acc.details.pages = patch.pages;
-          if (patch.defects !== undefined) acc.details.defects = patch.defects;
-          // Graph is owned by RunGraphOwner via onProgress kind "graph" only.
           push();
         },
       };

@@ -3,6 +3,11 @@
  *
  * Extracted from operator-session so projection stays independent of
  * session open/create/delete lifecycle.
+ *
+ * Two layers:
+ * 1. Pi Message[] with lean wiki_produce details (durable JSONL-facing strip)
+ * 2. Optional AgentMessage[] via contract projectAgentMessagesFromPiHistory
+ *    (same wire shape as web SSE snapshot projection)
  */
 
 import type { Message } from "@earendil-works/pi-ai";
@@ -10,7 +15,11 @@ import {
   type SessionManager,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { projectWikiProduceDetailsForHistory } from "@okf-wiki/contract";
+import {
+  type AgentMessage,
+  projectAgentMessagesFromPiHistory,
+  projectWikiProduceDetailsForHistory,
+} from "@okf-wiki/contract";
 
 /**
  * Operator-facing history projection of one Pi message.
@@ -42,4 +51,17 @@ export function projectOperatorHistoryFromManager(manager: SessionManager): Mess
     .buildContextEntries()
     .flatMap((entry) => sessionEntryToContextMessages(entry) as Message[])
     .map((message) => projectOperatorHistoryMessage(message));
+}
+
+/**
+ * Same durable Pi branch as {@link projectOperatorHistoryFromManager}, projected
+ * into the shared AgentMessage wire shape (contract parsers).
+ */
+export function projectOperatorAgentMessagesFromManager(manager: SessionManager): AgentMessage[] {
+  return projectAgentMessagesFromPiHistory(projectOperatorHistoryFromManager(manager));
+}
+
+/** Project already-stripped Pi history rows into AgentMessage[]. */
+export function projectOperatorAgentMessages(rows: readonly unknown[]): AgentMessage[] {
+  return projectAgentMessagesFromPiHistory(rows);
 }

@@ -1,10 +1,9 @@
 /**
- * Structured defect reports and merge. Fail-closed: blocking defects prevent publish.
- * Publishability scoring lives in publishability.ts.
+ * Structured defect reports and merge (council domain).
+ * Fail-closed: blocking defects prevent publish.
+ * Persist I/O: defects-io.ts. Repair prompt text: workflow/phases/repair-prompt.ts.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
 import {
   type DefectItem,
   type DefectReport,
@@ -13,13 +12,20 @@ import {
   type MergedDefectReport,
   MergedDefectReportSchema,
 } from "@okf-wiki/contract";
-import { defectsPath } from "../ports/core-spec-store.js";
 
 const SEVERITY_RANK: Record<DefectSeverity, number> = {
   blocking: 3,
   major: 2,
   minor: 1,
 };
+
+/** System/infrastructure defects that must never be demoted by voting. */
+const FORCE_KEEP_CODES = new Set([
+  "empty_review",
+  "unparsed_review",
+  "reviewer_missing",
+  "reviewer_error",
+]);
 
 export function parseDefectReportFromText(text: string, reviewerId: string): DefectReport {
   const raw = text?.trim() ?? "";
@@ -166,14 +172,6 @@ export function defectFingerprint(d: {
   return `${code}|${pathKey}|${issue}`;
 }
 
-/** System/infrastructure defects that must never be demoted by voting. */
-const FORCE_KEEP_CODES = new Set([
-  "empty_review",
-  "unparsed_review",
-  "reviewer_missing",
-  "reviewer_error",
-]);
-
 export type MergeDefectReportsOptions = {
   /**
    * When council size ≥ 2, demote `major` findings reported by only one
@@ -222,8 +220,7 @@ export function mergeDefectReports(
   }
 
   const councilSize = reports.length;
-  const demoteSingletonMajor =
-    options.demoteSingletonMajor ?? councilSize >= 2;
+  const demoteSingletonMajor = options.demoteSingletonMajor ?? councilSize >= 2;
 
   const unique: DefectItem[] = [];
   for (const bucket of buckets.values()) {
@@ -298,48 +295,10 @@ export function applyStickyBlockingDefects(
   });
 }
 
-/** Format defects for writer repair prompts (blocking-only by default). */
-export function formatDefectsForRepair(
-  defects: readonly DefectItem[],
-  options?: { severities?: DefectSeverity[] },
-): string {
-  const allowed = new Set(options?.severities ?? (["blocking"] as DefectSeverity[]));
-  const lines = defects
-    .filter((d) => allowed.has(d.severity))
-    .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`);
-  return lines.join("\n");
-}
-
 export function hasBlockingDefects(
   merged: MergedDefectReport,
   blockingSeverities: DefectSeverity[] = ["blocking"],
 ): boolean {
   const set = new Set(blockingSeverities);
   return merged.defects.some((d) => set.has(d.severity));
-}
-
-export async function writeMergedDefects(
-  workspaceRoot: string,
-  runId: string,
-  report: MergedDefectReport,
-): Promise<string> {
-  const parsed = MergedDefectReportSchema.parse(report);
-  const filePath = defectsPath(workspaceRoot, runId);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-  await rename(tempPath, filePath);
-  return filePath;
-}
-
-export async function readMergedDefects(
-  workspaceRoot: string,
-  runId: string,
-): Promise<MergedDefectReport | null> {
-  try {
-    const raw = await readFile(defectsPath(workspaceRoot, runId), "utf8");
-    return MergedDefectReportSchema.parse(JSON.parse(raw));
-  } catch {
-    return null;
-  }
 }

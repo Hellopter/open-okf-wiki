@@ -15,7 +15,7 @@ import { listWikiMarkdown } from "../produce/wiki-pages.js";
 import { resolveProduceRuntime } from "../runtime/produce-runtime.js";
 import { runWorkdirLayout } from "../runtime/workdir.js";
 import { repairWiki } from "../workflow/produce.js";
-import { createRunGraphOwner } from "../workflow/run-graph-owner.js";
+import { applyGraphProgress, createRunGraphOwner } from "../workflow/run-graph-owner.js";
 import type { WikiProduceModelFactory } from "../workflow/run-wiki.js";
 import { createToolDetailsAccumulator } from "./wiki-produce-details.js";
 
@@ -62,6 +62,22 @@ export type WikiRepairToolDetails = {
    */
   graph?: WikiProduceToolDetails["graph"];
 };
+
+/** Normalize repair tool early/final returns (content + details [+ isError]). */
+export function toRepairToolResult(
+  details: WikiRepairToolDetails,
+  opts?: { isError?: boolean },
+): {
+  content: Array<{ type: "text"; text: string }>;
+  details: WikiRepairToolDetails;
+  isError?: boolean;
+} {
+  return {
+    content: [{ type: "text" as const, text: details.summary ?? details.status }],
+    details,
+    ...(opts?.isError ? { isError: true as const } : {}),
+  };
+}
 
 /**
  * Reconstruct RunWorkdirLayout from an existing frozen run on disk.
@@ -135,57 +151,43 @@ export function createWikiRepairTool(
       const runId = args.runId.trim();
       let repairLockKey: string | null = null;
       if (!runId) {
-        const failed: WikiRepairToolDetails = {
+        return toRepairToolResult({
           status: "failed",
           summary: "runId is required",
-        };
-        return {
-          content: [{ type: "text" as const, text: failed.summary! }],
-          details: failed,
-        };
+        });
       }
 
       try {
         if (signal?.aborted) {
-          const cancelled: WikiRepairToolDetails = {
+          return toRepairToolResult({
             status: "cancelled",
             runId,
             summary: "Wiki repair cancelled",
-          };
-          return {
-            content: [{ type: "text" as const, text: cancelled.summary! }],
-            details: cancelled,
-          };
+          });
         }
 
         const workspace = input.resolveWorkspace ? await input.resolveWorkspace() : input.workspace;
         const record = await loadRun(workspace.rootPath, runId);
         if (!record) {
-          const failed: WikiRepairToolDetails = {
+          return toRepairToolResult({
             status: "failed",
             runId,
             summary: `Wiki Run not found: ${runId}`,
-          };
-          return {
-            content: [{ type: "text" as const, text: failed.summary! }],
-            details: failed,
-          };
+          });
         }
 
         // A Wiki Run is linked to its Operator Session (ADR 0032): only that
         // session may repair its staging. executionMode "sequential" only
         // serializes tools within one session, so this is the cross-session gate.
         if (record.sessionId !== input.sessionId) {
-          const failed: WikiRepairToolDetails = {
-            status: "failed",
-            runId,
-            summary: `Wiki Run ${runId} belongs to Operator Session ${record.sessionId}; repair it from that session.`,
-          };
-          return {
-            content: [{ type: "text" as const, text: failed.summary! }],
-            details: failed,
-            isError: true,
-          };
+          return toRepairToolResult(
+            {
+              status: "failed",
+              runId,
+              summary: `Wiki Run ${runId} belongs to Operator Session ${record.sessionId}; repair it from that session.`,
+            },
+            { isError: true },
+          );
         }
 
         // Never write staging under an active run: a pending plan/publication
@@ -195,30 +197,26 @@ export function createWikiRepairTool(
           record.status === "awaiting_plan" ||
           record.status === "awaiting_publication"
         ) {
-          const failed: WikiRepairToolDetails = {
-            status: "failed",
-            runId,
-            summary: `Wiki Run ${runId} is still active (${record.status}); wait for it to finish before repairing.`,
-          };
-          return {
-            content: [{ type: "text" as const, text: failed.summary! }],
-            details: failed,
-            isError: true,
-          };
+          return toRepairToolResult(
+            {
+              status: "failed",
+              runId,
+              summary: `Wiki Run ${runId} is still active (${record.status}); wait for it to finish before repairing.`,
+            },
+            { isError: true },
+          );
         }
 
         const lockKey = `${workspace.rootPath}\0${runId}`;
         if (activeRepairs.has(lockKey)) {
-          const failed: WikiRepairToolDetails = {
-            status: "failed",
-            runId,
-            summary: `A repair for Wiki Run ${runId} is already in progress.`,
-          };
-          return {
-            content: [{ type: "text" as const, text: failed.summary! }],
-            details: failed,
-            isError: true,
-          };
+          return toRepairToolResult(
+            {
+              status: "failed",
+              runId,
+              summary: `A repair for Wiki Run ${runId} is already in progress.`,
+            },
+            { isError: true },
+          );
         }
         activeRepairs.add(lockKey);
         repairLockKey = lockKey;
@@ -228,15 +226,11 @@ export function createWikiRepairTool(
           runId,
         );
         if (!spec) {
-          const failed: WikiRepairToolDetails = {
+          return toRepairToolResult({
             status: "failed",
             runId,
             summary: `No committed Spec for run ${runId}`,
-          };
-          return {
-            content: [{ type: "text" as const, text: failed.summary! }],
-            details: failed,
-          };
+          });
         }
 
         const layout = await layoutForExistingRun(workspace.rootPath, runId);
@@ -287,69 +281,53 @@ export function createWikiRepairTool(
           additionalSkillPaths: [layout.skillDir],
           contextTargetTokens: workspace.limits?.contextTargetTokens,
           onProgress: (progress) => {
-            if (progress.kind === "attempt") {
-              graphOwner.apply({ kind: "attempt", attempt: progress.attempt });
-              const graph = graphOwner.snapshot();
+            // Graph authority is local owner; live details keep repair status enum.
+            applyGraphProgress(graphOwner, progress, (graph) => {
               acc.apply({ kind: "graph", graph });
-              // Live details keep the repair status enum (never "producing").
               push({
                 status: "repairing",
                 runId,
                 summary: "root_write repair",
                 graph,
               });
-            }
+            });
           },
         });
 
         if (produced.status === "cancelled") {
-          const cancelled: WikiRepairToolDetails = {
+          return toRepairToolResult({
             status: "cancelled",
             runId,
             summary: produced.summary || "Wiki repair cancelled",
-          };
-          return {
-            content: [{ type: "text" as const, text: cancelled.summary! }],
-            details: cancelled,
-          };
+          });
         }
 
         const pages =
           produced.pages.length > 0 ? produced.pages : await listWikiMarkdown(layout.wikiDir);
 
-        const details: WikiRepairToolDetails = {
+        return toRepairToolResult({
           status: "repaired",
           runId,
           pages,
           summary: produced.summary || `Repaired Staging Wiki (${pages.length} pages)`,
-        };
-        return {
-          content: [{ type: "text" as const, text: details.summary! }],
-          details,
-        };
+        });
       } catch (err) {
         if (err instanceof Error && (err.name === "AbortError" || signal?.aborted)) {
-          const cancelled: WikiRepairToolDetails = {
+          return toRepairToolResult({
             status: "cancelled",
             runId,
             summary: "Wiki repair cancelled",
-          };
-          return {
-            content: [{ type: "text" as const, text: cancelled.summary! }],
-            details: cancelled,
-          };
+          });
         }
         const message = err instanceof Error ? err.message : String(err);
-        const failed: WikiRepairToolDetails = {
-          status: "failed",
-          runId,
-          summary: message.slice(0, 4000),
-        };
-        return {
-          content: [{ type: "text" as const, text: failed.summary! }],
-          details: failed,
-          isError: true,
-        };
+        return toRepairToolResult(
+          {
+            status: "failed",
+            runId,
+            summary: message.slice(0, 4000),
+          },
+          { isError: true },
+        );
       } finally {
         if (repairLockKey) activeRepairs.delete(repairLockKey);
       }

@@ -5,7 +5,8 @@
 
 import { type DefectSeverity, type MergedDefectReport, type WikiRunSpec } from "@okf-wiki/contract";
 import { scanWikiTree, validateWikiIndexes, validateWikiTree } from "@okf-wiki/core";
-import { hasBlockingDefects, readMergedDefects } from "./defects.js";
+import { hasBlockingDefects } from "./defects.js";
+import { readMergedDefects } from "./defects-io.js";
 
 export type PublishabilityResult = {
   publishable: boolean;
