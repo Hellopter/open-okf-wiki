@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { regenerateWikiIndexes } from "@okf-wiki/core";
 import {
   applyStickyBlockingDefects,
   defectFingerprint,
@@ -222,6 +223,7 @@ test("scorePublishable passes with page + clean defects", async () => {
     "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\nHello ([Source](repo:README.md#L1-L1)).\n",
     "utf8",
   );
+  await regenerateWikiIndexes(wikiRoot);
   const sourcePath = path.join(root, "src");
   await mkdir(sourcePath, { recursive: true });
   await writeFile(path.join(sourcePath, "README.md"), "# hi\n", "utf8");

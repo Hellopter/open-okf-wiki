@@ -42,8 +42,10 @@ export function plannerPrompt(input: {
     "Rules:",
     "- Prefer few domains that isolate independent evidence.",
     "- Always include a critical overview.md (or Spec equivalent) with template overview.",
-    "- index.md is a listing file generated/written later — do not list it as a concept page.",
-    "- Page paths are relative under wiki/, end with .md.",
+    "- Prefer directory paths when multiple related pages share a theme: modules/*.md, flows/*.md, deeper as needed.",
+    "- index.md is not a concept page and is not written by the planner. The product regenerates every directory's index.md mechanically as a progressive-disclosure listing.",
+    "- Spec pages MUST NOT include index.md or log.md.",
+    "- Page paths are relative under wiki/, end with .md, and name concept pages only.",
     "- If plan scout receipts are present, synthesize them into one coherent Spec;",
     "  do not ignore concrete paths they cited without reason.",
     input.wikiLanguage === "zh"

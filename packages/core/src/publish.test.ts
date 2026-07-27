@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { assertNoSymlinkComponents } from "./paths.js";
 import { publishStagingToPublication } from "./publish.js";
+import { validateWikiIndexes } from "./wiki-index.js";
 import { countMarkdownFiles } from "./wiki-tree.js";
 
 async function tempDir(prefix: string): Promise<string> {
@@ -46,10 +47,20 @@ test("publishStagingToPublication copies staging into empty publication path", a
 
   assert.equal(result.publicationPath, path.resolve(publication));
   assert.equal(result.pageCount, 2);
+  // Always regenerates multi-level indexes on the candidate (even without stamp).
+  assert.ok((result.regeneratedIndexes ?? 0) >= 2);
   const body = await readFile(path.join(publication, "overview.md"), "utf8");
   assert.match(body, /Overview/);
   const nested = await readFile(path.join(publication, "modules", "core.md"), "utf8");
   assert.match(nested, /Core/);
+  const rootIndex = await readFile(path.join(publication, "index.md"), "utf8");
+  assert.match(rootIndex, /modules\/index\.md/);
+  const modulesIndex = await readFile(path.join(publication, "modules", "index.md"), "utf8");
+  assert.match(modulesIndex, /core\.md/);
+
+  // Defense in depth: post-regenerate validate must pass on the published tree.
+  const indexCheck = await validateWikiIndexes(publication);
+  assert.equal(indexCheck.ok, true, indexCheck.errors.join("; "));
 });
 
 test("publishStagingToPublication rewrites repo: citations to relative sources/ paths", async () => {

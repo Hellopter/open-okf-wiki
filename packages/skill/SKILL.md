@@ -75,11 +75,13 @@ review. Return to an earlier step whenever later evidence breaks its gate. Revie
    to write, and further inspection would not materially improve the intended Wiki.
 3. **Write the Wiki.** Select only relevant files from
    `skill/templates/{overview,architecture,module,flow,concept}.md`, read them in full, and adapt
-   them while writing final Markdown directly under `wiki/` with `write` / `edit`. Place verified
-   Source Citations beside the facts they support, cross-link related pages, and use reader-oriented
-   prose and source-consistent diagrams. **Completion gate:** every intended page exists, answers
-   its reader question, links to related pages where useful, and is grounded by nearby verified
-   Source Citations.
+   them while writing final Markdown concept pages directly under `wiki/` with `write` / `edit`
+   (prefer directories such as `modules/`, `flows/` for related pages). Do not treat `index.md` as
+   writer work — the product regenerates directory listings mechanically. Place verified Source
+   Citations beside the facts they support, cross-link related concept pages, and use reader-oriented
+   prose and source-consistent diagrams. **Completion gate:** every intended concept page exists,
+   answers its reader question, links to related pages where useful, and is grounded by nearby
+   verified Source Citations.
 4. **Review and finish.** An independent Reviewer always runs (and may run a review council). Read
    `skill/references/review.md` and treat Reviewer defects as blocking work: repair each issue,
    returning to earlier steps when page scope or evidence changes. Reopen load-bearing source spans
@@ -124,10 +126,10 @@ never invent or estimate ranges.
 
 | File | Role |
 |------|------|
-| `index.md` | Directory listing only (progressive disclosure). No concept frontmatter; no Source Citations required. Link to concept pages with their frontmatter `description` as the entry text. |
+| `index.md` (every directory) | Progressive-disclosure **listing only** for that directory's concept pages and child directories. No concept frontmatter; no Source Citations required. **The product mechanically regenerates every directory `index.md` after write/repair and again on the publish candidate.** Agents must **not** treat hand-written TOC as durable authority and must not treat writing indexes as a completion criterion. |
 | `log.md` | Optional change history (newest first). |
 
-Do **not** put the narrative overview only in `index.md` — use `overview.md` (or the Spec path) for prose.
+Narrative entry is **`overview.md`** (or the Spec path) — **not** `index.md`. Organize related concepts in directories (`modules/`, `flows/`, deeper as needed) so hierarchy lives in the directory layout Spec/Writer owns. Spec pages must **not** include `index.md` or `log.md`.
 
 ### Research receipts
 

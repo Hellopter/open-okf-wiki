@@ -28,6 +28,7 @@ export function reviewerPrompt(input: {
     coverage: [
       "Lens: COVERAGE.",
       "Focus only on Spec questions unanswered, missing critical pages, and thin overviews.",
+      "Reachability is via narrative overview + directory hierarchy + mechanical multi-level indexes — not model-owned TOC.",
       "severity blocking for missing critical pages or unanswered critical domain questions;",
       "major for material gaps; minor for optional depth.",
     ].join(" "),
@@ -39,6 +40,8 @@ export function reviewerPrompt(input: {
     general: [
       "Lens: GENERAL.",
       "Review Staging Wiki under wiki/ against sources/ and skill/references/review.md.",
+      "Navigation uses multi-level mechanical indexes (parent → subdir index → concept pages); do not fail solely because the model did not hand-craft index.md.",
+      "Still flag unreachable concepts, broken cross-links, and missing critical pages.",
       "Prefer issues other lenses miss; do not restate pure grounding/coverage/consistency noise.",
     ].join(" "),
   }[input.lens];

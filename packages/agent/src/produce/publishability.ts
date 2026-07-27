@@ -4,7 +4,7 @@
  */
 
 import { type DefectSeverity, type MergedDefectReport, type WikiRunSpec } from "@okf-wiki/contract";
-import { scanWikiTree, validateWikiTree } from "@okf-wiki/core";
+import { scanWikiTree, validateWikiIndexes, validateWikiTree } from "@okf-wiki/core";
 import { hasBlockingDefects, readMergedDefects } from "./defects.js";
 
 export type PublishabilityResult = {
@@ -54,6 +54,11 @@ export async function scorePublishable(input: {
   });
   if (!validation.ok) {
     reasons.push(`validation: ${validation.errors.slice(0, 10).join("; ")}`);
+  }
+
+  const indexes = await validateWikiIndexes(input.wikiRoot);
+  if (!indexes.ok) {
+    reasons.push(`indexes: ${indexes.errors.slice(0, 10).join("; ")}`);
   }
 
   const defects = await readMergedDefects(input.workspaceRoot, input.runId);

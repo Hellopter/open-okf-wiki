@@ -10,7 +10,7 @@ description: One sentence on what the repository does and for whom.
 ---
 ```
 
-`index.md` is a reserved listing only — not this narrative.
+`index.md` is a reserved mechanical listing (product-regenerated) — not this narrative.
 
 - What the repository does and for whom
 - The smallest useful mental model

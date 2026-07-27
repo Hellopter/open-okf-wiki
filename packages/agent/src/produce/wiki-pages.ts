@@ -4,7 +4,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { scanWikiTree } from "@okf-wiki/core";
+import { regenerateWikiIndexes, scanWikiTree } from "@okf-wiki/core";
 import type { RunWorkdirLayout } from "../runtime/workdir.js";
 
 export async function listWikiMarkdown(wikiDir: string): Promise<string[]> {
@@ -19,7 +19,21 @@ export async function listWikiMarkdown(wikiDir: string): Promise<string[]> {
     .filter((relativePath) => relativePath.toLowerCase().endsWith(".md"));
 }
 
-/** Fixture wiki: concept overview with type+title+citation; listing-only index.md. */
+/**
+ * Materialize multi-level directory indexes after write/repair (fail closed).
+ * Always overwrites every directory's index.md from concept frontmatter and
+ * removes stale index.md files that no longer match the concept set.
+ */
+export async function materializeWikiIndexes(
+  wikiDir: string,
+): Promise<{ written: string[]; removed: string[] }> {
+  return regenerateWikiIndexes(wikiDir);
+}
+
+/**
+ * Fixture wiki: concept overview with type+title+citation, then mechanical indexes
+ * (same materialize path as production write/repair).
+ */
 export async function writeFixtureWiki(layout: RunWorkdirLayout, title: string): Promise<string[]> {
   await mkdir(layout.wikiDir, { recursive: true });
   const overview = [
@@ -44,14 +58,8 @@ export async function writeFixtureWiki(layout: RunWorkdirLayout, title: string):
     "",
   ].join("\n");
 
-  const index = [
-    `# ${title}`,
-    "",
-    "* [Overview](overview.md) - Repository overview (fixture)",
-    "",
-  ].join("\n");
-
   await writeFile(path.join(layout.wikiDir, "overview.md"), overview, "utf8");
-  await writeFile(path.join(layout.wikiDir, "index.md"), index, "utf8");
-  return ["index.md", "overview.md"];
+  // Product-owned progressive-disclosure listings (overwrite any hand-written TOC).
+  await materializeWikiIndexes(layout.wikiDir);
+  return listWikiMarkdown(layout.wikiDir);
 }

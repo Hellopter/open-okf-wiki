@@ -4,7 +4,7 @@ import { rewriteRepoCitationsToRelative } from "./citation-rewrite.js";
 import { type OkfStamp, stampWikiTreeForPublish } from "./okf-stamp.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { validateWikiTree } from "./validate-wiki.js";
-import { generateRootIndexIfMissing } from "./wiki-index.js";
+import { regenerateWikiIndexes, validateWikiIndexes } from "./wiki-index.js";
 import { updateWikiLogForPublish } from "./wiki-log.js";
 import { countMarkdownFiles, scanWikiTree } from "./wiki-tree.js";
 
@@ -35,8 +35,8 @@ export type PublishStagingResult = {
   stampedPages?: number;
   /** log.md change entries recorded for this publish. */
   logChanges?: number;
-  /** True when a missing root index.md was synthesized from frontmatter. */
-  generatedRootIndex?: boolean;
+  /** Number of directory index.md files regenerated on the candidate. */
+  regeneratedIndexes?: number;
 };
 
 /**
@@ -256,13 +256,14 @@ export async function publishStagingToPublication(
 
     // OKF publish enrichment on the candidate only (staging keeps the model's
     // output). Order matters: the log diff runs before stamping so per-publish
-    // timestamps do not churn every page into an Update entry, and a synthesized
-    // root index.md exists before stamping so it receives okf_version.
+    // timestamps do not churn every page into an Update entry; multi-level
+    // index.md regeneration always runs so progressive-disclosure listings exist
+    // before stamping (root index receives okf_version).
     let stampedPages = 0;
     let logChanges = 0;
-    let generatedRootIndex = false;
-    if (input.stamp) {
-      try {
+    let regeneratedIndexes = 0;
+    try {
+      if (input.stamp) {
         let previousDir: string | undefined;
         try {
           const info = await stat(publicationPath);
@@ -276,13 +277,24 @@ export async function publishStagingToPublication(
           date: input.stamp.generatedAt.slice(0, 10),
         });
         logChanges = log.changes;
-        generatedRootIndex = await generateRootIndexIfMissing(candidate);
+      }
+      // Always regenerate multi-level indexes on the candidate (overwrite),
+      // then fail closed if structural index invariants still do not hold.
+      const indexes = await regenerateWikiIndexes(candidate);
+      regeneratedIndexes = indexes.written.length;
+      const indexValidation = await validateWikiIndexes(candidate);
+      if (!indexValidation.ok) {
+        throw new Error(
+          `candidate failed wiki index validation: ${indexValidation.errors.join("; ")}`,
+        );
+      }
+      if (input.stamp) {
         const stamped = await stampWikiTreeForPublish(candidate, input.stamp);
         stampedPages = stamped.stampedPages;
-      } catch (error) {
-        await rm(candidate, { recursive: true, force: true }).catch(() => undefined);
-        throw error;
       }
+    } catch (error) {
+      await rm(candidate, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
     }
 
     let movedAside = false;
@@ -333,7 +345,7 @@ export async function publishStagingToPublication(
       ...(rewrittenCitationPages > 0 ? { rewrittenCitationPages } : {}),
       ...(stampedPages > 0 ? { stampedPages } : {}),
       ...(logChanges > 0 ? { logChanges } : {}),
-      ...(generatedRootIndex ? { generatedRootIndex } : {}),
+      ...(regeneratedIndexes > 0 ? { regeneratedIndexes } : {}),
     };
   });
 }

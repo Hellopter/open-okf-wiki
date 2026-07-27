@@ -5,7 +5,7 @@
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import { emitProgress } from "../../ports/progress-sink.js";
-import { listWikiMarkdown } from "../../produce/wiki-pages.js";
+import { listWikiMarkdown, materializeWikiIndexes } from "../../produce/wiki-pages.js";
 import { rootWritePrompt, rootWriteSystemPrompt } from "../../prompts/index.js";
 import {
   cancelledResult,
@@ -28,6 +28,19 @@ export async function emitPagesFromDisk(
     .map((p) => p.path)
     .filter((pagePath) => existing.has(pagePath.replace(/^\.?\//, "")));
   emitProgress(onProgress, { kind: "pages", pages: done });
+}
+
+/** Fail-closed: regenerate multi-level indexes after a successful staging write. */
+async function materializeStagingIndexes(
+  onProgress: PhaseContext["onProgress"],
+  wikiDir: string,
+): Promise<void> {
+  const indexes = await materializeWikiIndexes(wikiDir);
+  emitProgress(onProgress, {
+    kind: "status",
+    status: "producing",
+    summary: `materialize indexes (${indexes.written.length})`,
+  });
 }
 
 export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult> {
@@ -85,6 +98,10 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
     throw err;
   }
 
+  await materializeStagingIndexes(onProgress, produced.layout.wikiDir);
+  // Indexes are product-owned; refresh the returned page list after materialize.
+  const pages = await listWikiMarkdown(produced.layout.wikiDir);
+  produced = { ...produced, pages };
   await emitPagesFromDisk(onProgress, produced.layout.wikiDir, spec);
   emitProgress(onProgress, {
     kind: "status",
@@ -155,7 +172,17 @@ export async function runRepairWrite(input: {
       graphRole: "repair",
       onProgress: (span) => emitProgress(onProgress, { kind: "attempt", attempt: span }),
     });
+    await materializeStagingIndexes(onProgress, produced.layout.wikiDir);
+    // Indexes are product-owned; refresh the returned page list after materialize.
+    const pages = await listWikiMarkdown(produced.layout.wikiDir);
+    produced = { ...produced, pages };
     await emitPagesFromDisk(onProgress, produced.layout.wikiDir, spec);
+    emitProgress(onProgress, {
+      kind: "status",
+      status: "producing",
+      summary: `repair complete (${produced.pages.length} pages)`,
+    });
+    emitProgress(onProgress, { kind: "pages", pages: produced.pages });
     return { kind: "ok", produced };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {

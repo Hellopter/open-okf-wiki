@@ -207,7 +207,12 @@ export {
   WIKI_VALIDATE_MAX_FILE_BYTES,
   WIKI_VALIDATE_MAX_FILES,
 } from "./validate-wiki.js";
-export { generateRootIndexIfMissing, renderRootIndex } from "./wiki-index.js";
+export {
+  regenerateWikiIndexes,
+  renderDirectoryIndex,
+  validateWikiIndexes,
+  type WikiIndexListEntry,
+} from "./wiki-index.js";
 export {
   deriveWikiGraph,
   deriveWikiGraphFromTree,

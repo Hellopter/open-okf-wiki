@@ -11,7 +11,10 @@ import {
 } from "../runtime/produce-runtime.js";
 import { runWorkdirLayout } from "../runtime/workdir.js";
 import { produceWiki } from "../workflow/produce.js";
-import { hardValidateRepairText } from "./phases/review-repair-phase.js";
+import {
+  hardValidateRepairText,
+  partitionHardValidateReasons,
+} from "./phases/review-repair-phase.js";
 
 const temps: string[] = [];
 
@@ -69,6 +72,33 @@ describe("hardValidateRepairText", () => {
     assert.match(text, /Hard-validate/);
     assert.match(text, /out of bounds/);
     assert.match(text, /read\/grep/);
+  });
+
+  it("strips indexes: reasons so models are not told to edit index.md", () => {
+    const text = hardValidateRepairText([
+      "indexes: missing index.md for directory with concepts: modules",
+      "validation: overview.md: citation line range out of bounds (x; file has 10 lines)",
+    ]);
+    assert.doesNotMatch(text, /indexes:/);
+    assert.match(text, /out of bounds/);
+    assert.match(text, /Do not edit index\.md/);
+  });
+});
+
+describe("partitionHardValidateReasons", () => {
+  it("separates product-owned index failures from writer reasons", () => {
+    const { indexReasons, writerReasons } = partitionHardValidateReasons([
+      "indexes: concept not reachable from root index chain: modules/core.md",
+      "missing critical page: overview.md",
+      "validation: bad citation",
+    ]);
+    assert.deepEqual(indexReasons, [
+      "indexes: concept not reachable from root index chain: modules/core.md",
+    ]);
+    assert.deepEqual(writerReasons, [
+      "missing critical page: overview.md",
+      "validation: bad citation",
+    ]);
   });
 });
 

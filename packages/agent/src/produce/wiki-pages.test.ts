@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { runWorkdirLayout } from "../runtime/workdir.js";
-import { listWikiMarkdown, writeFixtureWiki } from "./wiki-pages.js";
+import { listWikiMarkdown, materializeWikiIndexes, writeFixtureWiki } from "./wiki-pages.js";
 
 test("listWikiMarkdown: empty when wiki dir missing", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-pages-miss-"));
@@ -31,4 +31,41 @@ test("writeFixtureWiki + listWikiMarkdown: happy fixture pages", async () => {
   assert.match(overview, /type: Overview/);
   assert.match(overview, /Fixture Title/);
   assert.match(overview, /repo:README\.md/);
+
+  // Mechanical materialize: root index lists overview as progressive disclosure.
+  const index = await readFile(path.join(layout.wikiDir, "index.md"), "utf8");
+  assert.match(index, /overview\.md/);
+});
+
+test("materializeWikiIndexes: pages list includes nested index after materialize", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-pages-nested-"));
+  const wikiDir = path.join(root, "wiki");
+  await mkdir(path.join(wikiDir, "modules"), { recursive: true });
+  await writeFile(
+    path.join(wikiDir, "overview.md"),
+    "---\ntype: Overview\ntitle: Overview\ndescription: Intro.\n---\n\n# Overview\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(wikiDir, "modules/core.md"),
+    "---\ntype: Module\ntitle: Core\ndescription: Core module.\n---\n\n# Core\n",
+    "utf8",
+  );
+
+  // Before materialize: only concept pages.
+  assert.deepEqual((await listWikiMarkdown(wikiDir)).sort(), [
+    "modules/core.md",
+    "overview.md",
+  ]);
+
+  const indexes = await materializeWikiIndexes(wikiDir);
+  assert.ok(indexes.written.includes("index.md"));
+  assert.ok(indexes.written.includes("modules/index.md"));
+
+  // After materialize: nested index appears in the page list (write-phase refresh contract).
+  const pages = await listWikiMarkdown(wikiDir);
+  assert.ok(pages.includes("index.md"));
+  assert.ok(pages.includes("modules/index.md"));
+  assert.ok(pages.includes("modules/core.md"));
+  assert.ok(pages.includes("overview.md"));
 });
