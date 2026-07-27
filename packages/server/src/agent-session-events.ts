@@ -1,24 +1,24 @@
 /**
- * Ephemeral fan-out for genuine live Pi events.
+ * Ephemeral fan-out for live Operator Session SSE frames.
  *
  * Durable history comes from SessionManager and is sent as the first SSE
- * snapshot. This module deliberately has no replay, sequence, or product
- * event channel.
+ * snapshot. Live frames are server-projected stream patches (not raw Pi).
+ * This module deliberately has no replay, sequence, or product event channel.
  */
 import type { AgentSseEvent } from "@okf-wiki/contract";
 import { sessionKey } from "./session-key.ts";
 
-export type PiAgentSessionEvent = Extract<AgentSseEvent, { source: "pi" }>;
-export type AgentSessionEventListener = (event: PiAgentSessionEvent) => void;
+/** Live bus carries stream patches (and any AgentSseEvent for tests). */
+export type AgentSessionEventListener = (event: AgentSseEvent) => void;
 
 const listeners = new Map<string, Set<AgentSessionEventListener>>();
 
-/** Forward one event emitted by the live parent AgentSession. */
+/** Forward one event emitted by the live parent AgentSession path. */
 export function emitAgentSessionEvent(
   workspaceId: string,
   sessionId: string,
-  event: PiAgentSessionEvent,
-): PiAgentSessionEvent {
+  event: AgentSseEvent,
+): AgentSseEvent {
   const current = listeners.get(sessionKey(workspaceId, sessionId));
   if (!current) return event;
   for (const listener of current) {

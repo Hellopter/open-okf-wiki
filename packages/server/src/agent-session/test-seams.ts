@@ -5,7 +5,7 @@
 
 import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { emitAgentSessionEvent } from "../agent-session-events.ts";
-import { projectPiEventForSse } from "../project-pi-sse.ts";
+import { projectLiveStreamEvent, projectPiEventForSse } from "../project-pi-sse.ts";
 import { sessionKey } from "../session-key.ts";
 import {
   deletingSessions,
@@ -69,12 +69,22 @@ export async function injectDurableMessagesForTests(
   }
 }
 
-/** Test helper: project a raw Pi-shaped event through the product SSE bus (not Pi private). */
+/**
+ * Test helper: project a raw Pi-shaped event through the product SSE bus.
+ * Prefer the live entry's stream state when registered (matches production).
+ */
 export function emitProductSseForTests(
   workspaceId: string,
   sessionId: string,
   rawPiEvent: unknown,
 ): void {
+  const entry = liveSessions.get(sessionKey(workspaceId, sessionId));
+  if (entry) {
+    const advanced = projectLiveStreamEvent(sessionId, entry.streamState, rawPiEvent);
+    entry.streamState = advanced.state;
+    emitAgentSessionEvent(workspaceId, sessionId, advanced.frame);
+    return;
+  }
   emitAgentSessionEvent(
     workspaceId,
     sessionId,

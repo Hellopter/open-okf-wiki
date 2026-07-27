@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { toolOutputFromResult } from "./project/format.ts";
+import { diffStreamState } from "@okf-wiki/contract";
 import {
   createPiStreamState,
   projectAgentEvent,
@@ -9,7 +10,25 @@ import {
   reducePiEvent,
   viewMessages,
 } from "./project/pi.ts";
-import type { AgentSseLike } from "./project/types.ts";
+import type { AgentSseLike, PiStreamState } from "./project/types.ts";
+
+/** Simulate server live path: reduce Pi → stream patch → web apply. */
+function applyLive(
+  state: PiStreamState,
+  kind: string,
+  payload: unknown,
+  sessionId = "s1",
+): PiStreamState {
+  const next = reducePiEvent(state, kind, payload);
+  const patch = diffStreamState(state, next);
+  return projectAgentEvent(state, {
+    source: "server",
+    kind: "stream",
+    sessionId,
+    timestamp: "2026-07-24T00:00:00.000Z",
+    payload: patch,
+  });
+}
 
 describe("projectAgentEvent", () => {
   it("uses the server snapshot as the complete durable AgentMessage view", () => {
@@ -436,28 +455,22 @@ describe("reducePiEvent", () => {
 
   it("accepts durable wiki_produce toolResult without live Run mirrors", () => {
     let state = createPiStreamState();
-    state = projectAgentEvent(state, {
-      source: "pi",
-      kind: "message_end",
-      sessionId: "s1",
-      timestamp: "2026-07-24T00:00:00.000Z",
-      payload: {
-        type: "message_end",
-        message: {
-          role: "toolResult",
-          toolCallId: "tool-1",
-          toolName: "wiki_produce",
-          content: [{ type: "text", text: "Wiki Run run-1: published" }],
-          // Durable final shape: no spec/children/defects (Run Boundary owns those).
-          details: {
-            status: "published",
-            runId: "run-1",
-            pages: ["overview.md"],
-            summary: "Published",
-          },
+    state = applyLive(state, "message_end", {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "wiki_produce",
+        content: [{ type: "text", text: "Wiki Run run-1: published" }],
+        // Durable final shape: no spec/children/defects (Run Boundary owns those).
+        details: {
+          status: "published",
+          runId: "run-1",
+          pages: ["overview.md"],
+          summary: "Published",
         },
       },
-    } as AgentSseLike);
+    });
     const tool =
       viewMessages(state).find((m) => m.role === "assistant")?.tools?.[0] ??
       viewMessages(state).flatMap((m) => m.tools ?? [])[0];

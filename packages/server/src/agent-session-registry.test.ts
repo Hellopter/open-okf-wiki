@@ -48,7 +48,29 @@ async function removeRunRoot(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
 }
 
-function detailsFromEvent(event: { payload?: unknown }): WikiProduceToolDetails | undefined {
+function detailsFromEvent(event: {
+  source?: string;
+  kind?: string;
+  payload?: unknown;
+}): WikiProduceToolDetails | undefined {
+  if (event.source === "server" && event.kind === "stream" && event.payload) {
+    const patch = event.payload as {
+      streamingMessage?: { tools?: Array<{ details?: WikiProduceToolDetails }> } | null;
+      appended?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
+      updated?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
+    };
+    const messages = [
+      patch.streamingMessage,
+      ...(patch.appended ?? []),
+      ...(patch.updated ?? []),
+    ];
+    for (const message of messages) {
+      for (const tool of message?.tools ?? []) {
+        if (tool.details) return tool.details;
+      }
+    }
+    return undefined;
+  }
   const payload = event.payload as {
     partialResult?: { details?: WikiProduceToolDetails };
     result?: { details?: WikiProduceToolDetails };
@@ -202,19 +224,20 @@ test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
 
   const seen: unknown[] = [];
   const unsub = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
-    seen.push(event.payload);
+    seen.push(event);
   });
   t.after(unsub);
 
+  // Stream projection surfaces secrets on error events as errorText (redacted).
   const secretEvent = {
-    type: "auto_retry_start",
-    errorMessage: SECRET_ERROR,
+    type: "error",
+    message: SECRET_ERROR,
   };
 
   // Product SSE bus + pure projector — never poke Pi `_eventListeners`.
   emitProductSseForTests(workspace.id, sessionId, secretEvent);
 
-  assert.ok(seen.length > 0, "registry should have fanned out a Pi SSE event");
+  assert.ok(seen.length > 0, "registry should have fanned out a stream SSE event");
   const blob = JSON.stringify(seen);
   assert.equal(blob.includes("sk-live"), false);
   assert.equal(blob.includes("super-secret-value"), false);

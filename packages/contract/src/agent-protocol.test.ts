@@ -109,7 +109,7 @@ test("parseAgentCommand: rejects unknown type and empty prompt", () => {
   assert.equal(safeParseAgentCommand({}).success, false);
 });
 
-test("AgentSseEventSchema: accepts snapshot, opaque Pi events, and heartbeat only", () => {
+test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only", () => {
   const snapshot = AgentSseEventSchema.parse({
     source: "server",
     kind: "snapshot",
@@ -142,13 +142,41 @@ test("AgentSseEventSchema: accepts snapshot, opaque Pi events, and heartbeat onl
     assert.equal(snapshot.payload.activeTool?.details.status, "awaiting_plan");
   }
 
-  const pi = AgentSseEventSchema.parse({
-    source: "pi",
-    kind: "message_update",
+  const stream = AgentSseEventSchema.parse({
+    source: "server",
+    kind: "stream",
     sessionId: "s1",
-    payload: { event: { type: "text_delta", delta: "hello" } },
+    timestamp: "2026-07-24T00:00:00.000Z",
+    payload: {
+      agentStatus: "streaming",
+      errorText: null,
+      turnActive: true,
+      lastAssistantId: "asst-1",
+      streamingMessage: {
+        id: "asst-1",
+        role: "assistant",
+        content: "hello",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        status: "streaming",
+      },
+      appended: [],
+      updated: [],
+    },
   });
-  assert.equal(pi.source, "pi");
+  assert.equal(stream.kind, "stream");
+  if (stream.source === "server" && stream.kind === "stream") {
+    assert.equal(stream.payload.streamingMessage?.content, "hello");
+  }
+
+  assert.equal(
+    AgentSseEventSchema.safeParse({
+      source: "pi",
+      kind: "message_update",
+      sessionId: "s1",
+      payload: {},
+    }).success,
+    false,
+  );
 
   const heartbeat = AgentSseEventSchema.parse({
     source: "server",
@@ -171,10 +199,20 @@ test("AgentSseEventSchema: accepts snapshot, opaque Pi events, and heartbeat onl
 test("AgentSseEventSchema: rejects sequence/replay framing", () => {
   assert.equal(
     AgentSseEventSchema.safeParse({
-      source: "pi",
-      kind: "message_update",
+      source: "server",
+      kind: "stream",
       sessionId: "s1",
+      timestamp: "2026-07-24T00:00:00.000Z",
       sequence: 1,
+      payload: {
+        agentStatus: "idle",
+        errorText: null,
+        turnActive: false,
+        lastAssistantId: null,
+        streamingMessage: null,
+        appended: [],
+        updated: [],
+      },
     }).success,
     false,
   );

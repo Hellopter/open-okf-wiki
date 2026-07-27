@@ -31,6 +31,20 @@ export {
   toolOutputFromResult,
   wikiProduceDetails,
 } from "./agent-message.js";
+/** Live stream reduce + view patches (server-owned projection). */
+export {
+  type AgentStreamViewPatch,
+  AgentStreamViewPatchSchema,
+  type PiAgentStatus,
+  PiAgentStatusSchema,
+  type PiStreamState,
+  applyStreamPatch,
+  createPiStreamState,
+  diffStreamState,
+  reducePiEvent,
+  updateToolInState,
+  viewMessages,
+} from "./agent-stream.js";
 /** Pi Operator Session commands and genuine-event SSE envelope (ADR 0032). */
 export {
   type AgentAbortCommand,
@@ -46,12 +60,15 @@ export {
   AgentSseEventSchema,
   type AgentSseHeartbeat,
   type AgentSseSnapshot,
+  type AgentSseStream,
+  AgentSseStreamSchema,
   type AgentSteerCommand,
   type CreatePiAgentSessionBody,
   CreatePiAgentSessionBodySchema,
   type CreatePiAgentSessionResponse,
   PI_SESSIONS_DIR,
   type PiAgentSseEvent,
+  PiAgentSseEventSchema,
   type PiSessionSummary,
   parseAgentCommand,
   safeParseAgentCommand,

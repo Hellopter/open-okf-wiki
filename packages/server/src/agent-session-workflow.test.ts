@@ -33,7 +33,29 @@ async function removeRunRoot(root: string): Promise<void> {
   await rm(root, { recursive: true, force: true });
 }
 
-function detailsFromEvent(event: { payload?: unknown }): WikiProduceToolDetails | undefined {
+function detailsFromEvent(event: {
+  source?: string;
+  kind?: string;
+  payload?: unknown;
+}): WikiProduceToolDetails | undefined {
+  if (event.source === "server" && event.kind === "stream" && event.payload) {
+    const patch = event.payload as {
+      streamingMessage?: { tools?: Array<{ details?: WikiProduceToolDetails }> } | null;
+      appended?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
+      updated?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
+    };
+    const messages = [
+      patch.streamingMessage,
+      ...(patch.appended ?? []),
+      ...(patch.updated ?? []),
+    ];
+    for (const message of messages) {
+      for (const tool of message?.tools ?? []) {
+        if (tool.details) return tool.details;
+      }
+    }
+    return undefined;
+  }
   const payload = event.payload as {
     partialResult?: { details?: WikiProduceToolDetails };
     result?: { details?: WikiProduceToolDetails };
@@ -162,6 +184,7 @@ test("fixture prompt emits genuine wiki_produce gate updates through Pi", async 
   assert.equal((await prompt).ok, true);
   await waitForStatus("published");
   assert.equal(getActiveAgentSessionTool(workspace.id, sessionId), undefined);
-  assert.ok(events.some((event) => event.kind === "tool_execution_start"));
-  assert.ok(events.some((event) => event.kind === "tool_execution_end"));
+  // Live bus is server stream patches (not raw Pi kinds).
+  assert.ok(events.every((event) => event.source === "server" && event.kind === "stream"));
+  assert.ok(events.some((event) => detailsFromEvent(event)?.status === "published"));
 });

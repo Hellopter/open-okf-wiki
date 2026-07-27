@@ -1,32 +1,73 @@
 /**
- * Pure projection: Pi event → operator SSE envelope (after redaction).
- * No AgentSession access — product bus only.
+ * Pure projection: Pi event → operator SSE stream patch (after redaction).
+ * Server owns reduce; web only applies stream/snapshot views (ADR 0031).
  */
 import { redactSensitiveValue } from "@okf-wiki/agent";
 import type {
   AgentSseActiveTool,
-  PiAgentSseEvent,
+  AgentSseStream,
+  PiStreamState,
   WikiProduceToolDetails,
 } from "@okf-wiki/contract";
-import { WikiProduceToolDetailsSchema } from "@okf-wiki/contract";
+import {
+  createPiStreamState,
+  diffStreamState,
+  reducePiEvent,
+  WikiProduceToolDetailsSchema,
+} from "@okf-wiki/contract";
 
+export type { PiStreamState };
+
+/**
+ * Advance live stream state with one redacted Pi event and build the SSE frame.
+ */
+export function projectLiveStreamEvent(
+  sessionId: string,
+  state: PiStreamState,
+  event: unknown,
+  timestamp = new Date().toISOString(),
+): { state: PiStreamState; frame: AgentSseStream } {
+  const kind =
+    event && typeof event === "object" && "type" in event
+      ? String((event as { type: unknown }).type)
+      : "event";
+  const redacted = redactSensitiveValue(event);
+  const next = reducePiEvent(state, kind, redacted);
+  const patch = diffStreamState(state, next);
+  return {
+    state: next,
+    frame: {
+      source: "server",
+      kind: "stream",
+      sessionId,
+      timestamp,
+      payload: patch,
+    },
+  };
+}
+
+/** Empty stream state for a newly registered live session. */
+export function initialLiveStreamState(): PiStreamState {
+  return createPiStreamState();
+}
+
+/**
+ * @deprecated Prefer {@link projectLiveStreamEvent}. Kept for tests that only
+ * assert redaction of a single event envelope.
+ */
 export function projectPiEventForSse(
   _workspaceId: string,
   sessionId: string,
   event: unknown,
   timestamp = new Date().toISOString(),
-): PiAgentSseEvent {
-  const kind =
-    event && typeof event === "object" && "type" in event
-      ? String((event as { type: unknown }).type)
-      : "event";
-  return {
-    source: "pi",
-    kind,
+): AgentSseStream {
+  const { frame } = projectLiveStreamEvent(
     sessionId,
-    payload: redactSensitiveValue(event),
+    createPiStreamState(),
+    event,
     timestamp,
-  };
+  );
+  return frame;
 }
 
 /**

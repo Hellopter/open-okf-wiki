@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import { AgentMessageSchema } from "./agent-message.js";
+import { AgentStreamViewPatchSchema } from "./agent-stream.js";
 import { WikiRunSpecSchema } from "./run.js";
 import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
 
@@ -168,10 +169,24 @@ export const AgentSseSnapshotSchema = z
 export type AgentSseSnapshot = z.infer<typeof AgentSseSnapshotSchema>;
 
 /**
- * Opaque genuine parent AgentSession event.
- *
- * `kind` and `payload` remain Pi-owned. The product does not re-type Pi event
- * bodies or add an independent replay/sequence protocol around them.
+ * Live stream view patch (server-reduced Pi events → AgentMessage ops).
+ * Web applies patches; it does not parse Pi content blocks on the live path.
+ */
+export const AgentSseStreamSchema = z
+  .object({
+    source: z.literal("server"),
+    kind: z.literal("stream"),
+    sessionId: z.string().min(1),
+    timestamp: z.string().datetime(),
+    payload: AgentStreamViewPatchSchema,
+  })
+  .strict();
+
+export type AgentSseStream = z.infer<typeof AgentSseStreamSchema>;
+
+/**
+ * @deprecated Live path emits {@link AgentSseStreamSchema} instead. Kept only
+ * for typing transitional fixtures; not part of AgentSseEventSchema.
  */
 export const PiAgentSseEventSchema = z
   .object({
@@ -187,7 +202,7 @@ export type PiAgentSseEvent = z.infer<typeof PiAgentSseEventSchema>;
 
 export const AgentSseEventSchema = z.union([
   AgentSseSnapshotSchema,
-  PiAgentSseEventSchema,
+  AgentSseStreamSchema,
   AgentSseHeartbeatSchema,
 ]);
 

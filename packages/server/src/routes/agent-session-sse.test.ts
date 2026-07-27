@@ -138,24 +138,34 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
     assert.equal(first.sequence, undefined);
     assert.equal(first.payload?.messages?.[0]?.role, "user");
 
-    const piEvent = {
-      source: "pi" as const,
-      kind: "message_end",
+    const streamEvent = {
+      source: "server" as const,
+      kind: "stream" as const,
       sessionId,
       timestamp: new Date().toISOString(),
       payload: {
-        type: "message_end",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "real Pi event" }],
-        },
+        agentStatus: "idle" as const,
+        errorText: null,
+        turnActive: false,
+        lastAssistantId: "asst-1",
+        streamingMessage: null,
+        appended: [
+          {
+            id: "asst-1",
+            role: "assistant" as const,
+            content: "real stream patch",
+            createdAt: new Date().toISOString(),
+            status: "done" as const,
+          },
+        ],
+        updated: [],
       },
     };
-    emitAgentSessionEvent(workspace.id, sessionId, piEvent);
+    emitAgentSessionEvent(workspace.id, sessionId, streamEvent);
 
     const second = (await nextSseData(reader, state)) as Record<string, unknown>;
     assert.equal(second.sequence, undefined);
-    assert.deepEqual(second, piEvent);
+    assert.deepEqual(second, streamEvent);
   } finally {
     abort.abort();
     await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
@@ -262,27 +272,45 @@ test("SSE snapshots precede queued live events and include the genuine active to
     await within(historyStarted.promise, "history loader");
 
     activeStatus = "awaiting_publication";
-    const piEvent = {
-      source: "pi" as const,
-      kind: "tool_execution_update",
+    const streamEvent = {
+      source: "server" as const,
+      kind: "stream" as const,
       sessionId,
       timestamp: new Date().toISOString(),
       payload: {
-        type: "tool_execution_update",
-        toolCallId: "tool-live-1",
-        toolName: "wiki_produce",
-        partialResult: {
-          details: {
-            status: activeStatus,
-            runId: "run-live-1",
-            spec,
-            pages: ["overview.md"],
-            summary: "Awaiting publication approval",
+        agentStatus: "streaming" as const,
+        errorText: null,
+        turnActive: true,
+        lastAssistantId: "asst-live-1",
+        streamingMessage: null,
+        appended: [],
+        updated: [
+          {
+            id: "asst-live-1",
+            role: "assistant" as const,
+            content: "",
+            createdAt: new Date().toISOString(),
+            status: "done" as const,
+            tools: [
+              {
+                id: "tool-live-1",
+                name: "wiki_produce",
+                args: {},
+                status: "running" as const,
+                details: {
+                  status: activeStatus,
+                  runId: "run-live-1",
+                  spec,
+                  pages: ["overview.md"],
+                  summary: "Awaiting publication approval",
+                },
+              },
+            ],
           },
-        },
+        ],
       },
     };
-    emitAgentSessionEvent(workspace.id, sessionId, piEvent);
+    emitAgentSessionEvent(workspace.id, sessionId, streamEvent);
     history.resolve({
       sessionId,
       // Server snapshot carries AgentMessage[] (view projection).
@@ -317,7 +345,7 @@ test("SSE snapshots precede queued live events and include the genuine active to
     assert.equal(snapshot.kind, "snapshot");
     assert.equal(snapshot.payload?.activeTool?.toolCallId, "tool-live-1");
     assert.equal(snapshot.payload?.activeTool?.details?.status, "awaiting_plan");
-    assert.deepEqual(await nextSseData(reader, state), piEvent);
+    assert.deepEqual(await nextSseData(reader, state), streamEvent);
     await reader.cancel();
   } finally {
     abort.abort();

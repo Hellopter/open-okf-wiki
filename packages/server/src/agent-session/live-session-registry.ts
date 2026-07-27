@@ -4,9 +4,13 @@
  */
 
 import { createOperatorSession, openOperatorSession } from "@okf-wiki/agent";
-import type { AgentSseActiveTool, WorkspaceConfig } from "@okf-wiki/contract";
+import type { AgentSseActiveTool, PiStreamState, WorkspaceConfig } from "@okf-wiki/contract";
 import { emitAgentSessionEvent } from "../agent-session-events.ts";
-import { activeToolUpdate, projectPiEventForSse } from "../project-pi-sse.ts";
+import {
+  activeToolUpdate,
+  initialLiveStreamState,
+  projectLiveStreamEvent,
+} from "../project-pi-sse.ts";
 import { sessionKey } from "../session-key.ts";
 import { runtimeInput } from "./runtime-input.ts";
 import { hasPendingGate } from "./wiki-produce-gate-coordinator.ts";
@@ -22,6 +26,8 @@ export type RegisteredAgentSession = {
   lastActivityAt: number;
   unsubscribe: () => void;
   activeTool?: AgentSseActiveTool;
+  /** Server-owned live stream reduce state (view projection). */
+  streamState: PiStreamState;
   queueFixtureTurn?: (text: string, canProduce: boolean) => void;
 };
 
@@ -83,6 +89,7 @@ export function registerLive(
     busy: false,
     lastActivityAt: Date.now(),
     unsubscribe: () => undefined,
+    streamState: initialLiveStreamState(),
     ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
   };
   entry.unsubscribe = handle.session.subscribe((event) => {
@@ -90,12 +97,14 @@ export function registerLive(
     const tool = activeToolUpdate(event);
     if (tool === null) delete entry.activeTool;
     else if (tool) entry.activeTool = tool;
-    // Redact before fan-out so operator SSE never carries raw secrets/paths.
-    emitAgentSessionEvent(
-      workspaceId,
+    // Server reduces Pi → stream view patch (redacted); web only applies.
+    const advanced = projectLiveStreamEvent(
       handle.sessionId,
-      projectPiEventForSse(workspaceId, handle.sessionId, event),
+      entry.streamState,
+      event,
     );
+    entry.streamState = advanced.state;
+    emitAgentSessionEvent(workspaceId, handle.sessionId, advanced.frame);
   });
   liveSessions.set(key, entry);
   return entry;

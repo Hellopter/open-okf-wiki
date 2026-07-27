@@ -140,10 +140,12 @@ export function useSessionAgent({
         setConnectionStatus("live");
       }
 
-      // Status/error come from the Pi projector. Optimistic `sending` is
-      // hook-only — keep it until the stream confirms (streaming/error) or
-      // send() settles the command without a live turn.
-      if (event.source === "pi" || (event.source === "server" && event.kind === "snapshot")) {
+      // Status/error come from server-projected stream/snapshot views.
+      // Optimistic `sending` is hook-only — keep it until the stream confirms.
+      if (
+        event.source === "server" &&
+        (event.kind === "snapshot" || event.kind === "stream")
+      ) {
         setStatus((current) => {
           if (current === "sending" && next.agentStatus === "idle") return "sending";
           return next.agentStatus;
