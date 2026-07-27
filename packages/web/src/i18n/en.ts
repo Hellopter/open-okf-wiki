@@ -529,10 +529,7 @@ export const en = {
     childAgents: "Child agents",
     /** Run Graph attempts section in wiki_produce gate panel. */
     runGraph: "Run graph",
-    runGraphClickHint: "click a node to open details",
     runGraphEmpty: "No topology or attempts yet.",
-    runGraphTimeline: "Timeline",
-    runGraphPlayhead: "Playhead",
     runGraphAttempt: "Summary",
     runGraphAttemptEmpty: "No attempt data for this node.",
     runGraphLayers: {

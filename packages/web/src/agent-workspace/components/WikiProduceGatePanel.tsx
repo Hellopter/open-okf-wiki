@@ -1,5 +1,5 @@
 /**
- * wiki_produce panel — compact status + page chips + graph chips only.
+ * wiki_produce panel — status + page chips + layered run-graph chips.
  * Node run detail opens in a Dialog (never stacked under the graph in-chat).
  */
 
@@ -202,7 +202,6 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
             graph={details.graph}
             selectedNodeKey={dialogNodeKey}
             onSelectNode={openNode}
-            compact
           />
         </div>
       ) : orphanNodeKeys.length > 0 ? (

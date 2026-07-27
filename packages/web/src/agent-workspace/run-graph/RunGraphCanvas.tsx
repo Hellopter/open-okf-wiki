@@ -1,6 +1,10 @@
 /**
  * Read-only layered Run Graph canvas (CSS grid — no xyflow).
  * Pure presentation of view-model from contract snapshot.
+ *
+ * Topology edges stay on the view-model for tests / future drawing; this canvas
+ * does not dump them as a redundant text list. Contract `playhead` is a journal
+ * cursor (latest upserted attempt) and is shown as a chip highlight, not AV chrome.
  */
 
 import type { RunGraphSnapshot } from "@okf-wiki/contract";
@@ -10,7 +14,6 @@ import { useI18n } from "../../i18n";
 import { StatusBadge } from "../components/StatusBadge";
 import {
   type RunGraphLayerId,
-  type RunGraphViewEdge,
   type RunGraphViewNode,
   runGraphToViewModel,
 } from "./view-model";
@@ -22,11 +25,6 @@ export type RunGraphCanvasProps = {
   selectedNodeKey?: string | null;
   /** Click a node — parent should open a dialog, not expand inline. */
   onSelectNode?: (nodeKey: string) => void;
-  /**
-   * Transcript embed: chips only (no edge list / playhead scroll stack).
-   * Edges remain on the view-model for tests; compact UI hides the list.
-   */
-  compact?: boolean;
 };
 
 function statusClass(status: RunGraphViewNode["status"]): string {
@@ -44,21 +42,6 @@ function statusClass(status: RunGraphViewNode["status"]): string {
     case "idle":
     default:
       return "border-border/50 bg-muted/30 text-muted-foreground";
-  }
-}
-
-function edgeStatusClass(status: RunGraphViewNode["status"] | undefined): string {
-  switch (status) {
-    case "running":
-    case "awaiting":
-      return "border-primary/40 text-foreground";
-    case "done":
-      return "border-border/60 text-muted-foreground";
-    case "error":
-    case "cancelled":
-      return "border-destructive/40 text-destructive";
-    default:
-      return "border-border/40 text-muted-foreground";
   }
 }
 
@@ -84,49 +67,9 @@ function layerLabel(id: RunGraphLayerId, t: ReturnType<typeof useI18n>["t"]): st
   }
 }
 
-/** Compact edge row under layers (no wall of SVG + duplicate list). */
-function RunGraphEdges({
-  edges,
-  nodesByKey,
-}: {
-  edges: RunGraphViewEdge[];
-  nodesByKey: Map<string, RunGraphViewNode>;
-}) {
-  if (edges.length === 0) return null;
-
-  return (
-    <ul
-      className="flex max-h-28 flex-col gap-0.5 overflow-y-auto border-t border-border/50 pt-1.5"
-      data-testid="run-graph-edges"
-    >
-      {edges.map((edge) => {
-        const toNode = nodesByKey.get(edge.to);
-        const fromNode = nodesByKey.get(edge.from);
-        const status = toNode?.status ?? fromNode?.status;
-        const fromLabel = fromNode?.label ?? edge.from;
-        const toLabel = toNode?.label ?? edge.to;
-        return (
-          <li
-            key={edge.id}
-            className={`truncate rounded border px-1.5 py-0.5 text-2xs leading-snug ${edgeStatusClass(status)}`}
-            data-testid="run-graph-edge"
-            data-edge-id={edge.id}
-            data-edge-kind={edge.kind}
-            data-edge-from={edge.from}
-            data-edge-to={edge.to}
-            title={`${edge.from} → ${edge.to}`}
-          >
-            <span className="text-muted-foreground">{edge.kind}</span>{" "}
-            <span className="font-medium">{fromLabel}</span>
-            <span className="mx-0.5 text-muted-foreground" aria-hidden>
-              →
-            </span>
-            <span className="font-medium">{toLabel}</span>
-          </li>
-        );
-      })}
-    </ul>
-  );
+function nodeTitle(node: RunGraphViewNode): string {
+  if (node.parentKey) return `${node.label} ← ${node.parentKey}`;
+  return node.label;
 }
 
 export function RunGraphCanvas({
@@ -134,17 +77,10 @@ export function RunGraphCanvas({
   className,
   selectedNodeKey,
   onSelectNode,
-  compact = false,
 }: RunGraphCanvasProps) {
   const { t } = useI18n();
   const vm = useMemo(() => runGraphToViewModel(graph), [graph]);
-  const nodesByKey = useMemo(() => {
-    const map = new Map<string, RunGraphViewNode>();
-    for (const layer of vm.layers) {
-      for (const node of layer.nodes) map.set(node.nodeKey, node);
-    }
-    return map;
-  }, [vm.layers]);
+  const playheadKey = vm.playhead?.nodeKey;
 
   if (vm.layers.length === 0 && vm.attempts.length === 0) {
     return (
@@ -159,7 +95,8 @@ export function RunGraphCanvas({
       className={className ?? "flex flex-col gap-2"}
       data-testid="run-graph-canvas"
       data-topology-version={vm.topologyVersion}
-      data-compact={compact ? "true" : undefined}
+      data-playhead-node={playheadKey}
+      data-playhead-attempt={vm.playhead?.attemptId}
     >
       <div className="flex flex-col gap-2">
         {vm.layers.map((layer) => (
@@ -173,7 +110,10 @@ export function RunGraphCanvas({
             <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
               {layer.nodes.map((node) => {
                 const selected = selectedNodeKey === node.nodeKey;
+                const atPlayhead = playheadKey === node.nodeKey;
                 const interactive = Boolean(onSelectNode);
+                const active =
+                  atPlayhead && (node.status === "running" || node.status === "awaiting");
                 return (
                   <button
                     key={node.nodeKey}
@@ -183,6 +123,8 @@ export function RunGraphCanvas({
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                       statusClass(node.status),
                       selected && "ring-1 ring-primary/60",
+                      atPlayhead && !selected && "ring-2 ring-primary/35",
+                      active && "animate-pulse",
                       interactive ? "cursor-pointer hover:bg-muted/40" : "cursor-default",
                     )}
                     data-testid="run-graph-node"
@@ -190,9 +132,10 @@ export function RunGraphCanvas({
                     data-node-status={node.status}
                     data-node-kind={node.kind}
                     data-selected={selected ? "true" : undefined}
+                    data-playhead={atPlayhead ? "true" : undefined}
                     onClick={() => onSelectNode?.(node.nodeKey)}
                     disabled={!interactive}
-                    title={node.label}
+                    title={nodeTitle(node)}
                   >
                     <span className="min-w-0 truncate font-medium">{node.label}</span>
                     <span className="flex shrink-0 items-center gap-1">
@@ -208,30 +151,6 @@ export function RunGraphCanvas({
           </div>
         ))}
       </div>
-      {/* Compact embed: keep edge test hooks without a scrolling wall under chips. */}
-      {compact ? (
-        vm.edges.length > 0 ? (
-          <div className="sr-only" data-testid="run-graph-edges" aria-hidden>
-            {vm.edges.map((edge) => (
-              <span
-                key={edge.id}
-                data-testid="run-graph-edge"
-                data-edge-id={edge.id}
-                data-edge-kind={edge.kind}
-                data-edge-from={edge.from}
-                data-edge-to={edge.to}
-              />
-            ))}
-          </div>
-        ) : null
-      ) : (
-        <RunGraphEdges edges={vm.edges} nodesByKey={nodesByKey} />
-      )}
-      {!compact && vm.playhead ? (
-        <p className="font-mono text-2xs text-muted-foreground" data-testid="run-graph-playhead">
-          {t.agentWorkspace.runGraphPlayhead}: {vm.playhead.nodeKey}
-        </p>
-      ) : null}
     </div>
   );
 }

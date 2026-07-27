@@ -515,10 +515,7 @@ export const zh: MessageTree = {
     childAgents: "子智能体",
     /** Run Graph attempts 区（wiki_produce 门闸面板）。 */
     runGraph: "运行图",
-    runGraphClickHint: "点击节点打开详情",
     runGraphEmpty: "尚无拓扑或尝试记录。",
-    runGraphTimeline: "时间线",
-    runGraphPlayhead: "播放头",
     runGraphAttempt: "摘要",
     runGraphAttemptEmpty: "该节点暂无尝试数据。",
     runGraphLayers: {
