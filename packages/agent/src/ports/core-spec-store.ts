@@ -1,11 +1,11 @@
 /**
  * SpecStore adapter over Core analysis scratch + Run Record mirror.
  *
- * Uses @okf-wiki/core only (ports ban produce/). produce/living-spec re-exports
- * path helpers and convenience functions that call this adapter.
+ * Uses @okf-wiki/core only (ports ban produce/). Path constants and the
+ * default singleton live here — call sites import this module or SpecStore.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
 import { analysisScratchDir, atomicWriteJson, updateRunRecord } from "@okf-wiki/core";
@@ -79,6 +79,10 @@ export function createCoreSpecStore(): SpecStore {
       } catch {
         return null;
       }
+    },
+
+    async clearPlanDraft(runWorkDir: string): Promise<void> {
+      await rm(planDraftPathFromRunWorkDir(runWorkDir), { force: true });
     },
   };
 }

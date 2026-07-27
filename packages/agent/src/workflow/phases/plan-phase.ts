@@ -23,11 +23,10 @@ import type {
   SourceIgnoreInput,
 } from "../../ports/agent-runner.js";
 import {
-  clearPlanDraft,
+  defaultSpecStore,
   PLAN_DRAFT_REL_PATH,
-  readPlanDraft,
-  writePlanDraft,
-} from "../../produce/living-spec.js";
+} from "../../ports/core-spec-store.js";
+import type { SpecStore } from "../../ports/spec-store.js";
 import { plannerPrompt } from "../../prompts/plan.js";
 import { DEFAULT_ORCHESTRATION } from "../budgets.js";
 import { runPlanScouts } from "./plan-scouts.js";
@@ -42,26 +41,20 @@ function snippet(text: string, max = 240): string {
 }
 
 /**
- * Resolve Spec from path-first draft only.
+ * Resolve Spec from path-first draft only (disk).
  * Control plane is short summary + path; full Spec is never required in summary.
  */
 export async function resolvePlanSpecFromAgentResult(input: {
   runWorkDir: string;
-  /** Relative path from submit tool (e.g. analysis/plan-draft.json). */
-  specPath?: string;
   /** Short control summary only (never the full Spec payload). */
   summary?: string;
+  store?: SpecStore;
 }): Promise<{ spec: WikiRunSpec; source: "draft"; draftPath: string }> {
-  if (input.specPath && input.specPath !== PLAN_DRAFT_REL_PATH) {
-    throw new Error(
-      `Planner submitted unexpected path ${input.specPath}; expected ${PLAN_DRAFT_REL_PATH}`,
-    );
-  }
-
-  const fromDisk = await readPlanDraft(input.runWorkDir);
+  const store = input.store ?? defaultSpecStore;
+  const fromDisk = await store.readPlanDraft(input.runWorkDir);
   if (fromDisk) {
     // Re-write normalizes / re-validates; path stays plan-draft.json.
-    const draftPath = await writePlanDraft(input.runWorkDir, fromDisk);
+    const draftPath = await store.writePlanDraft(input.runWorkDir, fromDisk);
     return { spec: fromDisk, source: "draft", draftPath };
   }
 
@@ -104,6 +97,7 @@ export type PlanWikiSpecInput = {
    * so workflow/ never imports tools/ or Pi SDK.
    */
   customTools?: readonly unknown[];
+  store?: SpecStore;
 };
 
 export type PlanWikiSpecResult = {
@@ -123,9 +117,11 @@ export type PlanWikiSpecResult = {
  * Does not commit Spec to living analysis/spec.json — caller (runWiki) owns commitSpec.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
+  const store = input.store ?? defaultSpecStore;
+
   if (input.runtime.kind === "fixture") {
     const spec = input.priorSpec ?? defaultWikiRunSpec(input.workspaceName);
-    const draftPath = await writePlanDraft(input.layout.runWorkDir, spec);
+    const draftPath = await store.writePlanDraft(input.layout.runWorkDir, spec);
     input.onProgress?.({
       attemptId: "plan",
       nodeKey: "plan",
@@ -144,9 +140,10 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
 
   const orch = input.orchestration ?? { ...DEFAULT_ORCHESTRATION };
 
-  // Fail-closed across (re)plan rounds: a draft left by a previous round must
-  // never be re-resolved as this round's submission.
-  await clearPlanDraft(input.layout.runWorkDir);
+  // Fail-closed across (re)plan rounds: clear stale draft BEFORE scouts so a
+  // previous round's plan-draft.json cannot be re-resolved if this round fails
+  // to call submit_wiki_run_spec.
+  await store.clearPlanDraft(input.layout.runWorkDir);
 
   const scouts = await runPlanScouts({
     layout: input.layout,
@@ -194,6 +191,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     runWorkDir: input.layout.runWorkDir,
     task: [basePrompt, scouts.plannerContext, revisionPrompt].filter(Boolean).join("\n\n"),
     systemPrompt,
+    preferFinalMessage: true,
     // Official Pi customTools slot — injected by tool edge (no tools/ import here).
     customTools: input.customTools,
     model: input.model,
@@ -207,8 +205,8 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
 
   const resolved = await resolvePlanSpecFromAgentResult({
     runWorkDir: input.layout.runWorkDir,
-    specPath: child.specPath,
     summary: child.summary,
+    store,
   });
 
   return {

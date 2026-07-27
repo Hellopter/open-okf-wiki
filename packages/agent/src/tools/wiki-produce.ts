@@ -11,7 +11,6 @@ import {
   type WikiProduceToolDetails,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { createToolDetailsAccumulator } from "../produce/progress.js";
 import {
   type GatePort,
   type RunWikiInput,
@@ -19,6 +18,7 @@ import {
   type WikiProduceModelFactory,
 } from "../workflow/run-wiki.js";
 import { createSubmitWikiRunSpecTool } from "./submit-wiki-run-spec.js";
+import { createToolDetailsAccumulator } from "./wiki-produce-details.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 
@@ -128,9 +128,7 @@ export function createWikiProduceTool(
           if (patch.spec) acc.details.spec = patch.spec;
           if (patch.pages) acc.details.pages = patch.pages;
           if (patch.defects !== undefined) acc.details.defects = patch.defects;
-          if (patch.graph) {
-            acc.apply({ kind: "graph", graph: patch.graph });
-          }
+          // Graph is owned by RunGraphOwner via onProgress kind "graph" only.
           push();
         },
       };

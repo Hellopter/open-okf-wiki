@@ -14,6 +14,33 @@ export function makeId(prefix: string): string {
 }
 
 /**
+ * Single derivation path for tool *output* display text.
+ *
+ * Prefer `details.summary` (wiki_produce live + snapshot activeTool), peeling
+ * `result.details.summary` when the caller omits a separate details arg. Fall
+ * back to {@link formatToolResultText} so snapshot / live / history stay aligned.
+ */
+export function toolOutputFromResult(
+  result: unknown,
+  details?: { summary?: string } | null,
+): string | undefined {
+  if (details && typeof details.summary === "string" && details.summary.trim()) {
+    return formatToolResultText(details.summary);
+  }
+  // Peel nested details.summary when details arg is omitted (common for raw Pi rows).
+  if (
+    details == null &&
+    isRecord(result) &&
+    isRecord(result.details) &&
+    typeof result.details.summary === "string" &&
+    result.details.summary.trim()
+  ) {
+    return formatToolResultText(result.details.summary);
+  }
+  return formatToolResultText(result);
+}
+
+/**
  * Extract human-readable tool *result* text (OpenCode / pi-web style).
  * Prefer content[].text from Pi AgentToolResult; never dump full JSON envelopes.
  */

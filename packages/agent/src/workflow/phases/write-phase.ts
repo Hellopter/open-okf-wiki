@@ -4,7 +4,7 @@
 
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
-import { emitProduceProgress } from "../../produce/progress.js";
+import { emitProgress } from "../../ports/progress-sink.js";
 import { listWikiMarkdown } from "../../produce/wiki-pages.js";
 import { rootWritePrompt, rootWriteSystemPrompt } from "../../prompts/index.js";
 import {
@@ -27,7 +27,7 @@ export async function emitPagesFromDisk(
   const done = (spec.pages ?? [])
     .map((p) => p.path)
     .filter((pagePath) => existing.has(pagePath.replace(/^\.?\//, "")));
-  emitProduceProgress(onProgress, { kind: "pages", pages: done });
+  emitProgress(onProgress, { kind: "pages", pages: done });
 }
 
 export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult> {
@@ -45,7 +45,7 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
   } = ctx;
 
   throwIfAborted(input.abortSignal);
-  emitProduceProgress(onProgress, {
+  emitProgress(onProgress, {
     kind: "status",
     status: "producing",
     summary: "root_write",
@@ -73,7 +73,7 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
         multiSource,
         receiptIndex,
       }),
-      onProgress: (span) => emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+      onProgress: (span) => emitProgress(onProgress, { kind: "attempt", attempt: span }),
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -86,12 +86,12 @@ export async function runWritePhase(ctx: PhaseContext): Promise<WritePhaseResult
   }
 
   await emitPagesFromDisk(onProgress, produced.layout.wikiDir, spec);
-  emitProduceProgress(onProgress, {
+  emitProgress(onProgress, {
     kind: "status",
     status: "producing",
     summary: `root_write complete (${produced.pages.length} pages)`,
   });
-  emitProduceProgress(onProgress, { kind: "pages", pages: produced.pages });
+  emitProgress(onProgress, { kind: "pages", pages: produced.pages });
 
   return { kind: "ok", produced };
 }
@@ -153,7 +153,7 @@ export async function runRepairWrite(input: {
       nodeKey: "repair",
       runIndex,
       graphRole: "repair",
-      onProgress: (span) => emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+      onProgress: (span) => emitProgress(onProgress, { kind: "attempt", attempt: span }),
     });
     await emitPagesFromDisk(onProgress, produced.layout.wikiDir, spec);
     return { kind: "ok", produced };

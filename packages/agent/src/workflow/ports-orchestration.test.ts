@@ -25,7 +25,7 @@ import type {
 } from "../ports/agent-runner.js";
 import type { GraphStore } from "../ports/graph-store.js";
 import { progressSinkFromCallback } from "../ports/progress-sink.js";
-import type { ProduceProgress } from "../produce/progress.js";
+import type { ProduceProgress } from "../ports/progress-sink.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
 import { AttemptJournal } from "./journal.js";
 import { produceWiki } from "./produce.js";

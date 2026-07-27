@@ -17,7 +17,7 @@ import {
   formatDefectsForRepair,
   writeMergedDefects,
 } from "../../produce/defects.js";
-import { emitProduceProgress } from "../../produce/progress.js";
+import { emitProgress } from "../../ports/progress-sink.js";
 import {
   type PublishabilityResult,
   scorePublishable,
@@ -25,7 +25,8 @@ import {
 } from "../../produce/publishability.js";
 import { runReviewCouncil } from "../../produce/review.js";
 import { reviewerPrompt, type ReviewLens } from "../../prompts/reviewer.js";
-import { classifyAgentFailure, decideNodeRetry } from "../retry-policy.js";
+import { mapWithConcurrency } from "../map-with-concurrency.js";
+import { runNodeAttempt } from "../run-node-attempt.js";
 import {
   cancelledResult,
   type PhaseContext,
@@ -104,28 +105,6 @@ function failedHardValidateResult(input: {
   };
 }
 
-/** Bounded-parallel map preserving item order (same pattern as research-phase). */
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  signal: AbortSignal | undefined,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    for (;;) {
-      if (signal?.aborted) return;
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!, i);
-    }
-  }
-  const width = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(Array.from({ length: width }, () => worker()));
-  return results;
-}
-
 function seatModel(
   models: PhaseContext["input"]["models"],
   seatIndex: number,
@@ -153,10 +132,14 @@ async function runOneReviewer(input: {
   const model = seatModel(ctx.input.models, seatIndex);
   const attemptId = `review@${runIndex}:${reviewerId}`;
   const maxReviewerAttempts = 2;
-  let lastFailure = "";
 
-  for (let attempt = 0; attempt < maxReviewerAttempts; attempt++) {
-    try {
+  const text = await runNodeAttempt({
+    abortSignal: ctx.input.abortSignal,
+    maxAttempts: maxReviewerAttempts,
+    nodeKey: "review",
+    role: "reviewer",
+    attemptId: (attempt) => (attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`),
+    run: async (attempt) => {
       const child = await runtime.runAgent({
         role: "reviewer",
         spanId: attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`,
@@ -176,39 +159,28 @@ async function runOneReviewer(input: {
               }
             : {}),
         }),
+        systemPrompt:
+          "You are a wiki reviewer. Return a concise DefectReport JSON (or NO_DEFECTS).",
+        preferFinalMessage: true,
         model: model?.model,
         modelRuntime: model?.modelRuntime,
         maxContextTokens: model?.maxContextTokens,
         contextTargetTokens: ctx.contextTargetTokens,
         sourceIgnores: ctx.input.sourceIgnores,
         abortSignal: ctx.input.abortSignal,
-        onProgress: (span) => emitProduceProgress(ctx.onProgress, { kind: "attempt", attempt: span }),
+        onProgress: (span) => emitProgress(ctx.onProgress, { kind: "attempt", attempt: span }),
       });
-      return { id: reviewerId, text: child.summary };
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") throw err;
-      lastFailure = err instanceof Error ? err.message : String(err);
-      const retry = decideNodeRetry({
-        errorClass: classifyAgentFailure(lastFailure),
-        attemptIndex: attempt,
-        maxAttempts: maxReviewerAttempts,
-        message: lastFailure,
-      });
-      if (retry.action !== "retry") break;
-      if (retry.delayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
-      }
-    }
-  }
+      return child.summary;
+    },
+    onExhausted: (_err, { message }) =>
+      reviewerBlockingDefectText({
+        code: "reviewer_error",
+        issue: `Reviewer failed: ${message}`,
+        summary: `reviewer error: ${message}`,
+      }),
+  });
 
-  return {
-    id: reviewerId,
-    text: reviewerBlockingDefectText({
-      code: "reviewer_error",
-      issue: `Reviewer failed: ${lastFailure}`,
-      summary: `reviewer error: ${lastFailure}`,
-    }),
-  };
+  return { id: reviewerId, text };
 }
 
 export async function runReviewRepairPhase(
@@ -230,7 +202,7 @@ export async function runReviewRepairPhase(
 
   for (let round = 1; round <= maxRepair + 1; round++) {
     throwIfAborted(input.abortSignal);
-    emitProduceProgress(onProgress, {
+    emitProgress(onProgress, {
       kind: "status",
       status: "producing",
       summary: `review council round ${round} (${councilSize} seats, concurrency ${reviewConcurrency})`,
@@ -304,7 +276,7 @@ export async function runReviewRepairPhase(
     }
     defects = merged;
 
-    emitProduceProgress(onProgress, {
+    emitProgress(onProgress, {
       kind: "defects",
       defects,
       summary: defects.summary ?? `Review round ${round}: ${defects.defects.length} defect(s)`,
@@ -320,7 +292,7 @@ export async function runReviewRepairPhase(
     }
 
     metrics.repairRounds += 1;
-    emitProduceProgress(onProgress, {
+    emitProgress(onProgress, {
       kind: "status",
       status: "producing",
       summary: `repair round ${metrics.repairRounds} (${defects.defects.length} defects)`,
@@ -357,13 +329,13 @@ export async function runReviewRepairPhase(
 
   while (!publishability.publishable) {
     if (metrics.repairRounds >= maxRepair) {
-      emitProduceProgress(onProgress, {
+      emitProgress(onProgress, {
         kind: "status",
         status: "producing",
         summary: publishability.reasons.slice(0, 3).join("; "),
       });
       if (defects) {
-        emitProduceProgress(onProgress, { kind: "defects", defects });
+        emitProgress(onProgress, { kind: "defects", defects });
       }
       return {
         result: failedHardValidateResult({
@@ -379,7 +351,7 @@ export async function runReviewRepairPhase(
     throwIfAborted(input.abortSignal);
     metrics.repairRounds += 1;
     const reasonPreview = publishability.reasons.slice(0, 3).join("; ");
-    emitProduceProgress(onProgress, {
+    emitProgress(onProgress, {
       kind: "status",
       status: "producing",
       summary: `hard-validate repair round ${metrics.repairRounds}: ${reasonPreview}`,
@@ -406,12 +378,12 @@ export async function runReviewRepairPhase(
     });
   }
 
-  emitProduceProgress(onProgress, {
+  emitProgress(onProgress, {
     kind: "status",
     status: "producing",
     summary: produced.summary,
   });
-  emitProduceProgress(onProgress, { kind: "pages", pages: produced.pages });
+  emitProgress(onProgress, { kind: "pages", pages: produced.pages });
 
   return {
     result: {

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { toolOutputFromResult } from "./project/format.ts";
 import {
   createPiStreamState,
   projectAgentEvent,
+  projectPiHistory,
   reducePiEvent,
   viewMessages,
 } from "./project/pi.ts";
@@ -188,6 +190,122 @@ describe("projectAgentEvent", () => {
     assert.equal(tool?.status, "running");
     assert.equal(tool?.details?.status, "awaiting_plan");
     assert.equal(tool?.details?.spec?.summary, spec.summary);
+    // Snapshot activeTool uses the same toolOutputFromResult path as live updates.
+    assert.equal(tool?.output, "Awaiting WikiRunSpec approval");
+  });
+
+  it("snapshot activeTool and live tool_execution_update share details.summary output", () => {
+    const summary = "Awaiting WikiRunSpec approval";
+    const spec = defaultWikiRunSpec("Parity");
+    const details = {
+      status: "awaiting_plan" as const,
+      runId: "run-parity",
+      spec,
+      summary,
+    };
+
+    const fromSnapshot = projectAgentEvent(createPiStreamState(), {
+      source: "server",
+      kind: "snapshot",
+      sessionId: "session-1",
+      timestamp: "2026-07-24T00:00:00.000Z",
+      payload: {
+        session: { id: "session-1", workspaceId: "workspace-1" },
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "wiki-parity",
+                name: "wiki_produce",
+                arguments: {},
+              },
+            ],
+            stopReason: "toolUse",
+            timestamp: 2,
+          },
+        ],
+        activeTool: {
+          toolCallId: "wiki-parity",
+          toolName: "wiki_produce",
+          details,
+        },
+      },
+    });
+
+    let fromLive = createPiStreamState();
+    fromLive = reducePiEvent(fromLive, "agent_start", { type: "agent_start" });
+    fromLive = reducePiEvent(fromLive, "message_start", {
+      type: "message_start",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "wiki-parity",
+            name: "wiki_produce",
+            arguments: {},
+          },
+        ],
+      },
+    });
+    fromLive = reducePiEvent(fromLive, "tool_execution_start", {
+      type: "tool_execution_start",
+      toolCallId: "wiki-parity",
+      toolName: "wiki_produce",
+      args: {},
+    });
+    // Content text deliberately differs from summary — single derivation prefers summary.
+    fromLive = reducePiEvent(fromLive, "tool_execution_update", {
+      type: "tool_execution_update",
+      toolCallId: "wiki-parity",
+      partialResult: {
+        content: [{ type: "text", text: "different content text" }],
+        details,
+      },
+    });
+
+    const snapshotOut = viewMessages(fromSnapshot)[0]!.tools?.[0]?.output;
+    const liveOut = viewMessages(fromLive)[0]!.tools?.[0]?.output;
+    assert.equal(snapshotOut, summary);
+    assert.equal(liveOut, summary);
+    assert.equal(snapshotOut, liveOut);
+    assert.equal(toolOutputFromResult(undefined, details), summary);
+    assert.equal(
+      toolOutputFromResult({ content: [{ type: "text", text: "different content text" }], details }),
+      summary,
+    );
+  });
+
+  it("uses Pi message id in history when present", () => {
+    const state = projectAgentEvent(createPiStreamState(), {
+      source: "server",
+      kind: "snapshot",
+      sessionId: "session-1",
+      timestamp: "2026-07-24T00:00:00.000Z",
+      payload: {
+        session: { id: "session-1", workspaceId: "workspace-1" },
+        messages: [
+          {
+            id: "pi-user-42",
+            role: "user",
+            content: [{ type: "text", text: "hello" }],
+            timestamp: 1,
+          },
+          {
+            id: "pi-asst-99",
+            role: "assistant",
+            content: [{ type: "text", text: "hi" }],
+            stopReason: "stop",
+            timestamp: 2,
+          },
+        ],
+      },
+    });
+    const messages = viewMessages(state);
+    assert.equal(messages[0]!.id, "pi-user-42");
+    assert.equal(messages[1]!.id, "pi-asst-99");
   });
 
   it("ignores heartbeat", () => {
@@ -468,11 +586,154 @@ describe("reducePiEvent", () => {
     const tool = viewMessages(state)[0]!.tools?.[0];
     assert.equal(tool?.name, "wiki_produce");
     assert.equal(tool?.status, "done");
-    assert.equal(tool?.output, "published");
+    // Prefer details.summary over content[].text (single derivation).
+    assert.equal(tool?.output, "Published");
     assert.deepEqual(tool?.args, { audience: "users" });
     assert.equal(tool?.details?.status, "published");
     assert.deepEqual(tool?.details?.pages, ["overview.md"]);
     assert.equal(tool?.details?.spec, undefined);
     assert.equal(tool?.details?.graph, undefined);
+  });
+
+  it("dedupes message_end with the same Pi id (no double-append)", () => {
+    let state = createPiStreamState([
+      {
+        id: "pi-asst-stable",
+        role: "assistant",
+        content: "already from snapshot",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        status: "done",
+      },
+    ]);
+    state = { ...state, lastAssistantId: "pi-asst-stable" };
+
+    const next = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        id: "pi-asst-stable",
+        role: "assistant",
+        content: [{ type: "text", text: "replayed different body" }],
+        stopReason: "stop",
+      },
+    });
+
+    assert.equal(viewMessages(next).length, 1);
+    assert.equal(viewMessages(next)[0]!.id, "pi-asst-stable");
+    // Id match wins over content inequality — do not append a second card.
+    assert.equal(viewMessages(next)[0]!.content, "already from snapshot");
+  });
+
+  it("prefers Pi message id on live message_start when present", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: {
+        id: "pi-live-1",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
+      },
+    });
+    assert.equal(state.streamingMessage?.id, "pi-live-1");
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        id: "pi-live-1",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
+        stopReason: "stop",
+      },
+    });
+    assert.equal(viewMessages(state)[0]!.id, "pi-live-1");
+  });
+});
+
+describe("toolOutputFromResult", () => {
+  it("prefers details.summary over content text", () => {
+    assert.equal(
+      toolOutputFromResult(
+        { content: [{ type: "text", text: "content path" }], details: { summary: "summary path" } },
+        { summary: "summary path" },
+      ),
+      "summary path",
+    );
+  });
+
+  it("peels result.details.summary when details arg is omitted", () => {
+    assert.equal(
+      toolOutputFromResult({
+        content: [{ type: "text", text: "content path" }],
+        details: { summary: "nested summary" },
+      }),
+      "nested summary",
+    );
+  });
+
+  it("falls back to formatToolResultText when no summary", () => {
+    assert.equal(
+      toolOutputFromResult({ content: [{ type: "text", text: "only content" }] }),
+      "only content",
+    );
+  });
+});
+
+describe("projectPiHistory", () => {
+  it("uses Pi id for assistant rows when present", () => {
+    const messages = projectPiHistory([
+      {
+        id: "hist-pi-1",
+        role: "assistant",
+        content: [{ type: "text", text: "durable" }],
+        stopReason: "stop",
+        timestamp: 10,
+      },
+    ]);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]!.id, "hist-pi-1");
+  });
+
+  it("falls back to hist_asst_N without Pi id", () => {
+    const messages = projectPiHistory([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "no id" }],
+        stopReason: "stop",
+        timestamp: 10,
+      },
+    ]);
+    assert.equal(messages[0]!.id, "hist_asst_1");
+  });
+
+  it("attaches toolResult output via toolOutputFromResult (summary preferred)", () => {
+    const messages = projectPiHistory([
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "t1",
+            name: "wiki_produce",
+            arguments: {},
+          },
+        ],
+        stopReason: "toolUse",
+        timestamp: 1,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "t1",
+        toolName: "wiki_produce",
+        content: [{ type: "text", text: "content body" }],
+        details: {
+          status: "published",
+          runId: "run-1",
+          pages: ["overview.md"],
+          summary: "Published summary",
+        },
+        isError: false,
+        timestamp: 2,
+      },
+    ]);
+    assert.equal(messages[0]!.tools?.[0]?.output, "Published summary");
   });
 });

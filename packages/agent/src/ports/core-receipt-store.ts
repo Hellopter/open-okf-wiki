@@ -1,8 +1,8 @@
 /**
  * ReceiptStore adapter over Core analysis receipts + product findings shaping.
  *
- * Uses @okf-wiki/core only (ports ban produce/ and Pi). produce/receipts re-exports
- * convenience functions that call this adapter for backward-compatible call sites.
+ * Uses @okf-wiki/core only (ports ban produce/ and Pi). Call sites inject
+ * ReceiptStore or use defaultReceiptStore — no produce/ pass-through wrappers.
  */
 
 import {

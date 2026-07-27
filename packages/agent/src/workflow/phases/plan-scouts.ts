@@ -19,6 +19,7 @@ import {
   type PlanScoutKind,
   planScoutPrompt,
 } from "../../prompts/plan-scout.js";
+import { mapWithConcurrency } from "../map-with-concurrency.js";
 
 export type PlanScoutReceipt = {
   kind: PlanScoutKind;
@@ -51,27 +52,6 @@ export type RunPlanScoutsResult = {
   /** Text block injected into the planner task. */
   plannerContext: string;
 };
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  signal: AbortSignal | undefined,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    for (;;) {
-      if (signal?.aborted) return;
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!, i);
-    }
-  }
-  const width = Math.max(1, Math.min(concurrency, Math.max(items.length, 1)));
-  await Promise.all(Array.from({ length: width }, () => worker()));
-  return results;
-}
 
 function selectScoutKinds(count: number): PlanScoutKind[] {
   const n = Math.max(0, Math.min(count, PLAN_SCOUT_KINDS.length));
@@ -118,6 +98,7 @@ export async function runPlanScouts(input: RunPlanScoutsInput): Promise<RunPlanS
           }),
           systemPrompt:
             "You are a read-only plan scout. Inspect sources/ and return a compact structured report. Do not write wiki pages.",
+          preferFinalMessage: false,
           model: input.model,
           modelRuntime: input.modelRuntime,
           maxContextTokens: input.maxContextTokens,

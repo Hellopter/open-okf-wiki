@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { registerRunRecord, runWorkDir } from "@okf-wiki/core";
-import { commitSpec } from "../produce/living-spec.js";
+import { defaultSpecStore } from "../ports/core-spec-store.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
 import { createFixtureProduceRuntime } from "../runtime/produce-runtime.js";
 import { runWorkdirLayout } from "../runtime/workdir.js";
@@ -67,7 +67,7 @@ async function seedRun(
     status: recordStatus,
   });
   const spec = defaultWikiRunSpec(workspace.name);
-  await commitSpec(root, runId, spec);
+  await defaultSpecStore.commitSpec(root, runId, spec);
   const layout = runWorkdirLayout(work, new Map([["main", mount]]));
   await writeFixtureWiki(layout, "Repair WS");
 

@@ -3,7 +3,7 @@
  *
  * Domain units (leaf fan-out + domain reduce) have independent scopes and run
  * under bounded parallelism (orchestration.domainConcurrency). Domain reduce
- * failures get one policy-driven retry (runAttemptWithRetry + retry-policy);
+ * failures get one policy-driven retry (runNodeAttempt + retry-policy);
  * retry attempts append to the Run Graph as `domain-x@retryN` under nodeKey
  * `domain-x` with runIndex = attempt index.
  */
@@ -12,10 +12,11 @@ import type { WorkspaceOrchestration } from "@okf-wiki/contract";
 import type { ScopedRunnerProgress } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import type { ReceiptStore } from "../../ports/receipt-store.js";
-import { emitProduceProgress } from "../../produce/progress.js";
+import { emitProgress } from "../../ports/progress-sink.js";
 import { domainResearchPrompt, leafResearchPrompt } from "../../prompts/index.js";
-import { runAttemptWithRetry } from "../attempt-retry.js";
+import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { isCriticalDomainFailure } from "../retry-policy.js";
+import { runNodeAttempt } from "../run-node-attempt.js";
 import {
   cancelledResult,
   type PhaseContext,
@@ -33,28 +34,6 @@ type DomainUnitOutcome =
   | { kind: "cancelled" }
   | { kind: "failed"; message: string; critical: boolean };
 
-/** Bounded-parallel map preserving item order; stops launching after abort. */
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  signal: AbortSignal | undefined,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<Array<R | undefined>> {
-  const results: Array<R | undefined> = new Array(items.length);
-  let next = 0;
-  async function worker(): Promise<void> {
-    for (;;) {
-      if (signal?.aborted) return;
-      const i = next++;
-      if (i >= items.length) return;
-      results[i] = await fn(items[i]!, i);
-    }
-  }
-  const width = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(Array.from({ length: width }, () => worker()));
-  return results;
-}
-
 export async function runResearchPhase(
   ctx: PhaseContext,
   orch: WorkspaceOrchestration,
@@ -62,7 +41,7 @@ export async function runResearchPhase(
 ): Promise<ResearchPhaseResult> {
   const { input, onProgress, runtime, metrics, layout, spec, mode } = ctx;
 
-  emitProduceProgress(onProgress, {
+  emitProgress(onProgress, {
     kind: "status",
     status: "producing",
     summary: "domain + leaf research",
@@ -95,6 +74,9 @@ export async function runResearchPhase(
               nodeId: leafNodeId,
               runId: input.runId,
             }),
+            systemPrompt:
+              "You are a leaf researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.",
+            preferFinalMessage: false,
             model: workerModel?.model,
             modelRuntime: workerModel?.modelRuntime,
             maxContextTokens: workerModel?.maxContextTokens,
@@ -102,7 +84,7 @@ export async function runResearchPhase(
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
             onProgress: (span: ScopedRunnerProgress) =>
-              emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+              emitProgress(onProgress, { kind: "attempt", attempt: span }),
           },
         };
       });
@@ -147,9 +129,14 @@ export async function runResearchPhase(
     // (transient/unknown classes); then the failure is recorded and critical
     // domains fail the run.
     try {
-      const domainResult = await runAttemptWithRetry({
+      const domainResult = await runNodeAttempt({
         maxAttempts: 2,
         abortSignal: input.abortSignal,
+        nodeKey: domainNodeId,
+        role: "domain",
+        attemptId: (attempt) =>
+          attempt === 0 ? domainNodeId : `${domainNodeId}@retry${attempt}`,
+        onExhausted: "throw",
         run: (attempt) =>
           runtime.runAgent({
             role: "domain",
@@ -165,6 +152,9 @@ export async function runResearchPhase(
               nodeId: domainNodeId,
               runId: input.runId,
             }),
+            systemPrompt:
+              "You are a domain researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.",
+            preferFinalMessage: false,
             model: workerModel?.model,
             modelRuntime: workerModel?.modelRuntime,
             maxContextTokens: workerModel?.maxContextTokens,
@@ -172,7 +162,7 @@ export async function runResearchPhase(
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
             onProgress: (span: ScopedRunnerProgress) =>
-              emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+              emitProgress(onProgress, { kind: "attempt", attempt: span }),
           }),
       });
       await receipts.attach(
@@ -238,7 +228,7 @@ export async function runResearchPhase(
   );
 
   if (criticalDomainFailures.length > 0) {
-    emitProduceProgress(onProgress, {
+    emitProgress(onProgress, {
       kind: "status",
       status: "producing",
       summary: `critical domain research failed: ${criticalDomainFailures[0]}`,

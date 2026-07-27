@@ -2,13 +2,15 @@
  * Live AgentRunner adapter: real in-process Pi sessions.
  *
  * Casts opaque port model handles to concrete Pi types at the boundary.
+ * Empty-pages fail-closed lives here (writeWiki), not in runScopedAgent.
  */
 
 import { mkdir } from "node:fs/promises";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentRunner, AgentRunRequest, WikiWriteRequest } from "../ports/agent-runner.js";
-import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./fs-operations.js";
+import { listWikiMarkdown } from "../produce/wiki-pages.js";
+import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./path-policy.js";
 import {
   type RunScopedAgentInput,
   runScopedAgent,
@@ -38,6 +40,7 @@ function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
     runWorkDir: input.runWorkDir,
     task: input.task,
     systemPrompt: input.systemPrompt,
+    preferFinalMessage: input.preferFinalMessage,
     model: asModel(input.model),
     modelRuntime: asModelRuntime(input.modelRuntime),
     sourceIgnores: asSourceIgnores(input.sourceIgnores),
@@ -49,7 +52,6 @@ function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
     spanId: input.spanId,
     nodeKey: input.nodeKey,
     runIndex: input.runIndex,
-    wikiDir: input.wikiDir,
     customTools: input.customTools as ToolDefinition<any, any>[] | undefined,
     onProgress: input.onProgress,
   };
@@ -93,6 +95,7 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
         runWorkDir: layout.runWorkDir,
         task: input.task,
         systemPrompt: input.systemPrompt,
+        preferFinalMessage: false,
         model: asModel(input.model),
         modelRuntime: asModelRuntime(input.modelRuntime),
         maxContextTokens: input.maxContextTokens,
@@ -101,7 +104,6 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
         sourceIgnores: asSourceIgnores(input.sourceIgnores),
         abortSignal: input.abortSignal,
         timeoutMs: input.timeoutMs ?? defaults?.timeoutMs,
-        wikiDir: layout.wikiDir,
         onProgress: input.onProgress
           ? (span) =>
               input.onProgress!({
@@ -113,11 +115,16 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
               })
           : undefined,
       });
+      // Fail-closed: empty wiki is a write failure for every live writer.
+      const pages = await listWikiMarkdown(layout.wikiDir);
+      if (pages.length === 0) {
+        throw new Error("Pi live produce finished without writing any wiki markdown pages");
+      }
       return {
         mode: "live",
         layout: input.layout,
-        pages: result.pages ?? [],
-        summary: result.summary,
+        pages,
+        summary: result.summary?.trim() || `Pi live produce wrote ${pages.length} page(s)`,
       };
     },
   };

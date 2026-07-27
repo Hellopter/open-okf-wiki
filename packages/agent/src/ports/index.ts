@@ -29,6 +29,7 @@ export {
 export type { GateDecision, GatePort, GateRequest } from "./gate-port.js";
 export type { GraphStore } from "./graph-store.js";
 export {
+  emitProgress,
   type ProduceProgress,
   type ProgressSink,
   progressSinkFromCallback,

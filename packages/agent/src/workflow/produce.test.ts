@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, type WikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
-import type { ProduceProgress } from "../produce/progress.js";
+import type { ProduceProgress } from "../ports/progress-sink.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,

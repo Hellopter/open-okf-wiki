@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { type FrozenRunBoundary, loadRunGraph } from "@okf-wiki/core";
-import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "../produce/living-spec.js";
+import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../ports/core-spec-store.js";
 import {
   createFixtureProduceRuntime,
   createScriptedReviewFixtureRuntime,
@@ -380,12 +380,11 @@ describe("runWiki core flows", () => {
       onAgent: async (req) => {
         if (req.role !== "plan") return undefined;
         const spec = defaultWikiRunSpec(workspace.name);
-        await writePlanDraft(req.runWorkDir, spec);
+        await defaultSpecStore.writePlanDraft(req.runWorkDir, spec);
         return {
           role: "plan",
           mode: "fixture",
           summary: `Plan submitted → ${PLAN_DRAFT_REL_PATH}`,
-          specPath: PLAN_DRAFT_REL_PATH,
         };
       },
     });

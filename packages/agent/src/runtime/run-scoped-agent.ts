@@ -7,15 +7,17 @@
  *
  * Live only. Fixture short-circuits belong on AgentRunner adapters.
  * Event → attempt projection lives in runtime/projectors/attempt-projector (pure).
+ *
+ * Boundary: callers must supply systemPrompt (no role defaults) and preferFinalMessage.
+ * Pages listing / empty-write fail-closed lives on writeWiki adapters, not here.
+ * Plan Spec handoff is disk-only (analysis/plan-draft.json) — no tool-result scrape.
  */
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { NodeAttempt } from "@okf-wiki/contract";
-import { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME } from "@okf-wiki/contract";
-import { listWikiMarkdown } from "../produce/wiki-pages.js";
 import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
-import type { SourceIgnoreInput } from "./fs-operations.js";
+import type { SourceIgnoreInput } from "./path-policy.js";
 import { resolveAssistantSummary } from "./projectors/assistant-outcome.js";
 import {
   applyAttemptSessionEvent,
@@ -36,8 +38,13 @@ export type RunScopedAgentInput = {
   role: ScopedAgentRole;
   runWorkDir: string;
   task: string;
-  /** Caller-supplied system prompt; minimal role default used only when omitted. */
+  /** Required for live sessions — no role-based runtime defaults. */
   systemPrompt?: string;
+  /**
+   * Prefer last assistant message over streamed text for the control summary.
+   * Required to match AgentRunRequest: plan/reviewer true; research/scouts false.
+   */
+  preferFinalMessage: boolean;
   model?: Model<any>;
   modelRuntime?: ModelRuntime;
   sourceIgnores?: SourceIgnoreInput;
@@ -58,8 +65,6 @@ export type RunScopedAgentInput = {
   nodeKey?: string;
   /** Round / retry index for the topology node (0-based). Defaults to 0. */
   runIndex?: number;
-  /** When set (root_write), list pages under this wiki dir after success. */
-  wikiDir?: string;
   /**
    * Extra Pi customTools (merged by name over Operations-scoped tools).
    * Plan role must pass submit_wiki_run_spec here — runner does not inject by role.
@@ -72,10 +77,7 @@ export type RunScopedAgentResult = {
   role: ScopedAgentRole;
   summary: string;
   mode: "live";
-  pages?: string[];
   receiptPath?: string;
-  /** Path-first plan handoff (relative under run workdir). */
-  specPath?: string;
   /** Set by runScopedAgentsParallel when this task failed (summary holds the error). */
   failed?: boolean;
 };
@@ -85,15 +87,6 @@ const SUMMARY_RETURN_CAP = 4_000;
 
 function controlSummary(text: string, max = SUMMARY_RETURN_CAP): string {
   return truncate(text.trim(), max);
-}
-
-/** Prefer last assistant message for roles that may still spill structured text. */
-function isStructuredReturnRole(role: ScopedAgentRole): boolean {
-  return role === "plan" || role === "reviewer";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function truncate(text: string, max: number): string {
@@ -116,20 +109,6 @@ function abortError(): Error {
   const err = new Error("Wiki Run cancelled");
   err.name = "AbortError";
   return err;
-}
-
-function defaultSystemPrompt(role: ScopedAgentRole): string | undefined {
-  if (role === "root_write") return undefined;
-  if (role === "plan") {
-    return (
-      `You are the Wiki planner. Use read tools only, then call ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} ` +
-      "with a complete WikiRunSpec."
-    );
-  }
-  if (role === "reviewer") {
-    return "You are a wiki reviewer. Return a concise DefectReport JSON (or NO_DEFECTS).";
-  }
-  return `You are a ${role} researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.`;
 }
 
 /**
@@ -160,6 +139,13 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     );
   }
 
+  const systemPrompt = input.systemPrompt?.trim();
+  if (!systemPrompt) {
+    throw new Error(
+      `Scoped agent (${input.role}) requires systemPrompt — no runtime role defaults (callers must pass an explicit prompt)`,
+    );
+  }
+
   const sessionRole: WikiAgentRole = role;
   let handle: WikiSessionHandle | undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -177,7 +163,6 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
   };
 
   const projector = createAttemptProjectorState();
-  let submittedSpecPath: string | undefined;
 
   const snapshot = (
     status: ScopedAgentProgress["status"],
@@ -209,7 +194,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       runWorkDir: input.runWorkDir,
       model: input.model,
       modelRuntime: input.modelRuntime,
-      systemPrompt: input.systemPrompt ?? defaultSystemPrompt(role),
+      systemPrompt,
       sourceIgnores: input.sourceIgnores,
       maxContextTokens: input.maxContextTokens,
       contextTargetTokens: input.contextTargetTokens,
@@ -232,19 +217,6 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
     const unsub = handle.session.subscribe((event) => {
       applyAttemptSessionEvent(projector, event);
-
-      // Path-first plan handoff: capture specPath from successful submit tool end.
-      if (isRecord(event) && event.type === "tool_execution_end" && event.isError !== true) {
-        const name = typeof event.toolName === "string" ? event.toolName : "";
-        if (name === SUBMIT_WIKI_RUN_SPEC_TOOL_NAME) {
-          const result = isRecord(event.result) ? event.result : null;
-          const details = result && isRecord(result.details) ? result.details : null;
-          const pathFromDetails =
-            details && typeof details.specPath === "string" ? details.specPath.trim() : "";
-          if (pathFromDetails) submittedSpecPath = pathFromDetails;
-        }
-      }
-
       emitProgress(input.onProgress, snapshot("running"));
     });
 
@@ -271,7 +243,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       streamedText: projector.streamedText,
       messages: handle.session.messages,
       roleLabel: input.role,
-      preferFinalMessage: isStructuredReturnRole(role),
+      preferFinalMessage: input.preferFinalMessage,
     });
     if (resolved.isError) {
       emitProgress(input.onProgress, snapshot("error", resolved.errorMessage ?? resolved.summary));
@@ -280,31 +252,12 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       );
     }
 
-    let pages: string[] | undefined;
-    if (role === "root_write" && input.wikiDir) {
-      pages = await listWikiMarkdown(input.wikiDir);
-      if (pages.length === 0) {
-        emitProgress(input.onProgress, snapshot("error", "No wiki markdown pages written"));
-        throw new Error("Pi live produce finished without writing any wiki markdown pages");
-      }
-    }
-
-    // Path-first: when plan draft was submitted, control summary is a short ACK only.
-    // Full WikiRunSpec lives in analysis/plan-draft.json — never re-embed it here.
-    const summary = controlSummary(
-      pages
-        ? `Pi live produce wrote ${pages.length} page(s)`
-        : role === "plan" && submittedSpecPath
-          ? `Plan submitted → ${submittedSpecPath}`
-          : resolved.summary,
-    );
+    const summary = controlSummary(resolved.summary);
     emitProgress(input.onProgress, snapshot("done", summary));
     return {
       role: input.role,
       mode: "live",
       summary,
-      ...(pages ? { pages } : {}),
-      ...(submittedSpecPath ? { specPath: submittedSpecPath } : {}),
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw err;

@@ -10,7 +10,7 @@ import {
   type WikiRunSpec,
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
-import { PLAN_DRAFT_REL_PATH, writePlanDraft } from "../produce/living-spec.js";
+import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../ports/core-spec-store.js";
 
 export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
 
@@ -84,14 +84,15 @@ export type SubmitWikiRunSpecDetails = {
 
 export type CreateSubmitWikiRunSpecToolInput = {
   runWorkDir: string;
-  /** Optional test hook; defaults to writePlanDraft. */
+  /** Optional test hook; defaults to defaultSpecStore.writePlanDraft. */
   writeDraft?: (runWorkDir: string, spec: WikiRunSpec) => Promise<string>;
 };
 
 export function createSubmitWikiRunSpecTool(
   input: CreateSubmitWikiRunSpecToolInput,
 ): ToolDefinition<typeof submitWikiRunSpecParameters, SubmitWikiRunSpecDetails> {
-  const writeDraft = input.writeDraft ?? writePlanDraft;
+  const writeDraft =
+    input.writeDraft ?? ((dir, spec) => defaultSpecStore.writePlanDraft(dir, spec));
   return defineTool({
     name: SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
     label: "Submit WikiRunSpec",

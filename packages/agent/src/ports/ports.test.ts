@@ -110,6 +110,9 @@ function memorySpecStore(): SpecStore {
     async readPlanDraft(runWorkDir) {
       return drafts.get(runWorkDir) ?? null;
     },
+    async clearPlanDraft(runWorkDir) {
+      drafts.delete(runWorkDir);
+    },
   };
 }
 

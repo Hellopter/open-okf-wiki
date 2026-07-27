@@ -1,11 +1,11 @@
 /**
- * Classifier + retry executor tests (pure; no Pi, no FS).
+ * Classifier + runNodeAttempt tests (pure; no Pi, no FS).
  */
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { runAttemptWithRetry } from "./attempt-retry.js";
 import { classifyAgentFailure } from "./retry-policy.js";
+import { runNodeAttempt } from "./run-node-attempt.js";
 
 describe("classifyAgentFailure", () => {
   it("recognizes transient transport failures", () => {
@@ -29,12 +29,15 @@ describe("classifyAgentFailure", () => {
   });
 });
 
-describe("runAttemptWithRetry", () => {
+describe("runNodeAttempt", () => {
   it("retries a transient failure once then succeeds", async () => {
     let calls = 0;
     const retries: number[] = [];
-    const result = await runAttemptWithRetry({
+    const result = await runNodeAttempt({
       maxAttempts: 2,
+      nodeKey: "domain-a",
+      attemptId: (i) => (i === 0 ? "domain-a" : `domain-a@retry${i}`),
+      onExhausted: "throw",
       onRetry: ({ attemptIndex }) => retries.push(attemptIndex),
       run: async (attemptIndex) => {
         calls += 1;
@@ -47,11 +50,14 @@ describe("runAttemptWithRetry", () => {
     assert.deepEqual(retries, [0]);
   });
 
-  it("throws the last error when attempts are exhausted", async () => {
+  it("throws the last error when attempts are exhausted (onExhausted: throw)", async () => {
     let calls = 0;
     await assert.rejects(
-      runAttemptWithRetry({
+      runNodeAttempt({
         maxAttempts: 2,
+        nodeKey: "domain-b",
+        attemptId: (i) => `domain-b@${i}`,
+        onExhausted: "throw",
         run: async () => {
           calls += 1;
           throw new Error("boom domain");
@@ -63,11 +69,31 @@ describe("runAttemptWithRetry", () => {
     assert.equal(calls, 2);
   });
 
-  it("does not retry budget failures", async () => {
+  it("returns onExhausted fallback instead of throwing", async () => {
+    let calls = 0;
+    const result = await runNodeAttempt({
+      maxAttempts: 2,
+      nodeKey: "review",
+      role: "reviewer",
+      attemptId: (i) => (i === 0 ? "review@0:r1" : `review@0:r1~retry${i}`),
+      onExhausted: (_err, { message }) => `fallback:${message}`,
+      run: async () => {
+        calls += 1;
+        throw new Error("provider overloaded");
+      },
+    });
+    assert.equal(calls, 2);
+    assert.equal(result, "fallback:provider overloaded");
+  });
+
+  it("does not retry budget failures and throws when onExhausted is throw", async () => {
     let calls = 0;
     await assert.rejects(
-      runAttemptWithRetry({
+      runNodeAttempt({
         maxAttempts: 3,
+        nodeKey: "domain-c",
+        attemptId: (i) => `domain-c@${i}`,
+        onExhausted: "throw",
         run: async () => {
           calls += 1;
           throw new Error("token budget exhausted");
@@ -78,11 +104,30 @@ describe("runAttemptWithRetry", () => {
     assert.equal(calls, 1);
   });
 
+  it("does not retry budget failures and returns onExhausted fallback", async () => {
+    let calls = 0;
+    const result = await runNodeAttempt({
+      maxAttempts: 3,
+      nodeKey: "review",
+      attemptId: (i) => `review@${i}`,
+      onExhausted: (_err, { message }) => `closed:${message}`,
+      run: async () => {
+        calls += 1;
+        throw new Error("token budget exhausted");
+      },
+    });
+    assert.equal(calls, 1);
+    assert.match(result, /^closed:token budget/);
+  });
+
   it("rethrows AbortError immediately without retry", async () => {
     let calls = 0;
     await assert.rejects(
-      runAttemptWithRetry({
+      runNodeAttempt({
         maxAttempts: 3,
+        nodeKey: "domain-d",
+        attemptId: (i) => `domain-d@${i}`,
+        onExhausted: "throw",
         run: async () => {
           calls += 1;
           const err = new Error("Wiki Run cancelled");

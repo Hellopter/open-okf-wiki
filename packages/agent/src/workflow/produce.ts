@@ -13,8 +13,7 @@ import type {
   WikiWriteResult,
 } from "../ports/agent-runner.js";
 import { defaultReceiptStore } from "../ports/core-receipt-store.js";
-import type { ProduceProgress } from "../ports/progress-sink.js";
-import { emitProduceProgress } from "../produce/progress.js";
+import { emitProgress, type ProduceProgress } from "../ports/progress-sink.js";
 import { listWikiMarkdown } from "../produce/wiki-pages.js";
 import { resolveOrchestration } from "./budgets.js";
 import { runResearchPhase } from "./phases/research-phase.js";
@@ -67,7 +66,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
   };
 
   try {
-    // Spec must already be committed by runWiki (living-spec). Produce only reads it.
+    // Spec must already be committed by runWiki (defaultSpecStore). Produce only reads it.
     await emitPagesFromDisk(onProgress, layout.wikiDir, spec);
 
     const research = await runResearchPhase(ctx, orch);
@@ -165,7 +164,7 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
   };
 
   const receiptIndex = await defaultReceiptStore.buildIndex(input.workspace.rootPath, input.runId);
-  emitProduceProgress(input.onProgress, {
+  emitProgress(input.onProgress, {
     kind: "status",
     status: "producing",
     summary: "root_write repair",
@@ -198,5 +197,3 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
   };
 }
 
-/** Re-export emit helper for callers that only need status fan-out. */
-export { emitProduceProgress };

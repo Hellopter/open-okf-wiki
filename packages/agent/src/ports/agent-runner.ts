@@ -43,7 +43,16 @@ export type AgentRunRequest = {
   role: ScopedRunnerRole;
   runWorkDir: string;
   task: string;
+  /**
+   * Role system prompt. Live adapters throw if omitted — no runtime defaults.
+   * Fixture adapters may ignore it.
+   */
   systemPrompt?: string;
+  /**
+   * Prefer last assistant message over streamed text for the control summary.
+   * Plan and reviewer phases must pass true; research/scouts typically false.
+   */
+  preferFinalMessage: boolean;
   /** Opaque model handle — runtime adapters cast to Pi Model. */
   model?: unknown;
   /** Opaque model runtime — runtime adapters cast to Pi ModelRuntime. */
@@ -67,7 +76,6 @@ export type AgentRunRequest = {
   nodeKey?: string;
   /** Round / retry index for the topology node (0-based). Defaults to 0. */
   runIndex?: number;
-  wikiDir?: string;
   /** Opaque custom tools (plan submit, etc.) — typed loosely to avoid Pi coupling. */
   customTools?: readonly unknown[];
   onProgress?: (attempt: ScopedRunnerProgress) => void;
@@ -77,9 +85,7 @@ export type AgentRunResult = {
   role: ScopedRunnerRole;
   summary: string;
   mode: "live" | "fixture";
-  pages?: string[];
   receiptPath?: string;
-  specPath?: string;
   /**
    * Per-task settle marker for runAgentsParallel: true when this task failed
    * (summary carries the error). Sibling results are still returned; only

@@ -4,25 +4,27 @@
  * Snapshot authority: server snapshots fully replace local state (including
  * client-only optimistic user rows). Live Pi `user` role events are ignored —
  * durable user turns arrive via snapshot, not live stream.
+ *
+ * Content-block parsing lives in `pi-message.ts`; this module is reduce-only.
  */
 
-import { type WikiProduceToolDetails, WikiProduceToolDetailsSchema } from "@okf-wiki/contract";
 import {
   extractAssistantError,
   extractMessageText,
   extractMessageThinking,
-  formatToolResultText,
   isRecord,
   makeId,
   nowIso,
+  toolOutputFromResult,
 } from "./format.ts";
-import type {
-  AgentContentPart,
-  AgentMessage,
-  AgentSseLike,
-  AgentToolCall,
-  PiStreamState,
-} from "./types.ts";
+import {
+  assistantFromSnapshot,
+  messageRole,
+  patchToolsOnAssistant,
+  piMessageId,
+  wikiProduceDetails,
+} from "./pi-message.ts";
+import type { AgentMessage, AgentSseLike, AgentToolCall, PiStreamState } from "./types.ts";
 
 export function createPiStreamState(seed: AgentMessage[] = []): PiStreamState {
   let lastAssistantId: string | null = null;
@@ -46,208 +48,9 @@ export function viewMessages(state: PiStreamState): AgentMessage[] {
   return [...state.messages, state.streamingMessage];
 }
 
-function messageRole(message: unknown): string | null {
-  if (!isRecord(message) || typeof message.role !== "string") return null;
-  return message.role;
-}
-
-function wikiProduceDetails(value: unknown): WikiProduceToolDetails | undefined {
-  if (!isRecord(value) || !isRecord(value.details)) return undefined;
-  const parsed = WikiProduceToolDetailsSchema.safeParse(value.details);
-  return parsed.success ? parsed.data : undefined;
-}
-
 function findMessageIndex(messages: AgentMessage[], id: string | null): number {
   if (!id) return -1;
   return messages.findIndex((m) => m.id === id);
-}
-
-/** toolCall blocks from a Pi assistant content array. */
-function extractToolCallsFromMessage(
-  message: unknown,
-  prevTools?: AgentToolCall[],
-): AgentToolCall[] | undefined {
-  if (!isRecord(message) || !Array.isArray(message.content)) {
-    return prevTools;
-  }
-  const prevById = new Map((prevTools ?? []).map((t) => [t.id, t]));
-  const tools: AgentToolCall[] = [];
-  const seen = new Set<string>();
-  for (const block of message.content) {
-    if (!isRecord(block) || block.type !== "toolCall") continue;
-    const id = typeof block.id === "string" ? block.id : makeId("tool");
-    const name = typeof block.name === "string" ? block.name : "tool";
-    const prev = prevById.get(id);
-    const args = "arguments" in block ? block.arguments : "args" in block ? block.args : undefined;
-    tools.push({
-      id,
-      name,
-      args: args !== undefined ? args : prev?.args,
-      output: prev?.output,
-      ...(prev?.details ? { details: prev.details } : {}),
-      status: prev?.status ?? "pending",
-    });
-    seen.add(id);
-  }
-  // Keep tools that only arrived via tool_execution_* (not yet in content).
-  for (const t of prevTools ?? []) {
-    if (!seen.has(t.id)) tools.push(t);
-  }
-  return tools.length > 0 ? tools : prevTools;
-}
-
-/**
- * Build chronological parts from Pi content[] (text / thinking / toolCall order).
- * Tools that only exist via tool_execution_* (not yet in content) append at end.
- */
-function extractPartsFromMessage(
-  message: unknown,
-  tools: AgentToolCall[] | undefined,
-  prevParts?: AgentContentPart[],
-): AgentContentPart[] | undefined {
-  const parts: AgentContentPart[] = [];
-  if (isRecord(message) && Array.isArray(message.content)) {
-    let textBuf = "";
-    let thinkingBuf = "";
-    const flushText = () => {
-      if (textBuf) {
-        parts.push({ type: "text", text: textBuf });
-        textBuf = "";
-      }
-    };
-    const flushThinking = () => {
-      if (thinkingBuf) {
-        parts.push({ type: "thinking", thinking: thinkingBuf });
-        thinkingBuf = "";
-      }
-    };
-    for (const block of message.content) {
-      if (!isRecord(block)) continue;
-      if (block.type === "thinking" && typeof block.thinking === "string") {
-        flushText();
-        thinkingBuf += block.thinking;
-        continue;
-      }
-      if (block.type === "text" && typeof block.text === "string") {
-        flushThinking();
-        textBuf += block.text;
-        continue;
-      }
-      if (block.type === "toolCall") {
-        flushText();
-        flushThinking();
-        const id = typeof block.id === "string" ? block.id : makeId("tool");
-        parts.push({ type: "tool", toolId: id });
-      }
-    }
-    flushText();
-    flushThinking();
-  }
-
-  // Preserve tools that only arrived via tool_execution_* (append if missing).
-  const seenTool = new Set(
-    parts
-      .filter((p): p is { type: "tool"; toolId: string } => p.type === "tool")
-      .map((p) => p.toolId),
-  );
-  for (const t of tools ?? []) {
-    if (!seenTool.has(t.id)) {
-      parts.push({ type: "tool", toolId: t.id });
-      seenTool.add(t.id);
-    }
-  }
-
-  // If snapshot had no content array but we had prior parts, keep prior structure
-  // and merge new tool ids (tool_execution before content toolCall block).
-  if (parts.length === 0 && prevParts?.length) {
-    const merged = prevParts.slice();
-    const priorToolIds = new Set(
-      merged
-        .filter((p): p is { type: "tool"; toolId: string } => p.type === "tool")
-        .map((p) => p.toolId),
-    );
-    for (const t of tools ?? []) {
-      if (!priorToolIds.has(t.id)) {
-        merged.push({ type: "tool", toolId: t.id });
-        priorToolIds.add(t.id);
-      }
-    }
-    return merged;
-  }
-
-  return parts.length > 0 ? parts : undefined;
-}
-
-/**
- * Build thin AgentMessage from a Pi assistant message snapshot.
- * Snapshot is authority for text/thinking/toolCall list; prior tools keep
- * execution status/output. `parts` preserves content[] interleaving.
- */
-function assistantFromSnapshot(
-  message: unknown,
-  opts: {
-    id: string;
-    prev?: AgentMessage | null;
-    status: "streaming" | "done" | "error";
-    ts: string;
-  },
-): AgentMessage {
-  const text = extractMessageText(message);
-  const thinking = extractMessageThinking(message);
-  const err = extractAssistantError(message);
-  const isError = err.isError || opts.status === "error";
-  const tools = extractToolCallsFromMessage(message, opts.prev?.tools);
-  const parts = extractPartsFromMessage(message, tools, opts.prev?.parts);
-
-  let thinkingStatus = opts.prev?.thinkingStatus;
-  if (thinking) {
-    thinkingStatus = opts.status === "streaming" ? "streaming" : "done";
-  } else if (opts.status !== "streaming") {
-    thinkingStatus = thinkingStatus === "streaming" ? "done" : thinkingStatus;
-  }
-
-  return {
-    id: opts.id,
-    role: "assistant",
-    content:
-      text || (isError ? (err.errorText ?? opts.prev?.content ?? "") : (opts.prev?.content ?? "")),
-    thinking: thinking || opts.prev?.thinking,
-    thinkingStatus: thinking ? thinkingStatus : opts.prev?.thinkingStatus,
-    createdAt: opts.prev?.createdAt ?? opts.ts,
-    tools,
-    parts,
-    status: isError ? "error" : opts.status,
-    errorText: err.errorText ?? opts.prev?.errorText,
-  };
-}
-
-function patchToolsOnAssistant(
-  msg: AgentMessage,
-  toolCallId: string,
-  patch: Partial<AgentToolCall> & { name?: string },
-): AgentMessage {
-  const tools = [...(msg.tools ?? [])];
-  const idx = tools.findIndex((t) => t.id === toolCallId);
-  if (idx >= 0) {
-    tools[idx] = { ...tools[idx]!, ...patch, id: toolCallId };
-  } else {
-    tools.push({
-      id: toolCallId,
-      name: patch.name ?? "tool",
-      args: patch.args,
-      output: patch.output,
-      status: patch.status ?? "running",
-    });
-  }
-  // Keep parts in chronological order: add tool part if missing.
-  let parts = msg.parts?.slice();
-  if (parts) {
-    const has = parts.some((p) => p.type === "tool" && p.toolId === toolCallId);
-    if (!has) parts = [...parts, { type: "tool", toolId: toolCallId }];
-  } else {
-    parts = [{ type: "tool", toolId: toolCallId }];
-  }
-  return { ...msg, tools, parts };
 }
 
 function updateToolInState(
@@ -321,7 +124,8 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       return state;
     }
 
-    const id = state.streamingMessage?.id ?? makeId("asst");
+    // Prefer open stream id for continuity; else Pi wire id; else makeId.
+    const id = state.streamingMessage?.id ?? piMessageId(message) ?? makeId("asst");
     const next = assistantFromSnapshot(message, {
       id,
       prev: state.streamingMessage,
@@ -354,7 +158,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     }
 
     const err = extractAssistantError(message);
-    const id = makeId("asst");
+    const id = piMessageId(message) ?? makeId("asst");
     const next = assistantFromSnapshot(message ?? { role: "assistant", content: [] }, {
       id,
       prev: null,
@@ -376,8 +180,8 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       // Attach tool result text onto last assistant tool row when present.
       if (isRecord(message) && typeof message.toolCallId === "string") {
         const toolCallId = message.toolCallId;
-        const output = formatToolResultText(message.content) ?? formatToolResultText(message);
         const details = wikiProduceDetails(message);
+        const output = toolOutputFromResult(message, details);
         const isError = message.isError === true;
         return updateToolInState(state, toolCallId, {
           output: output,
@@ -457,7 +261,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
 
     // No streaming shell: open from final snapshot if meaningful.
     if (message || isError) {
-      const newId = makeId("asst");
+      const newId = piMessageId(message) ?? makeId("asst");
       const card = message
         ? assistantFromSnapshot(message, { id: newId, prev: null, status, ts })
         : {
@@ -469,9 +273,11 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
             errorText: err.errorText,
           };
       // Idempotence across the snapshot/live cut: the server may replay a
-      // message_end that the just-received snapshot already contains. Without
-      // a wire-level message id, an identical trailing assistant card is the
-      // replay signature — skip the duplicate.
+      // message_end that the just-received snapshot already contains.
+      // Prefer stable Pi id match; content equality is secondary fallback.
+      if (state.messages.some((m) => m.id === card.id)) {
+        return { ...state, streamingMessage: null };
+      }
       const lastAssistant = [...state.messages].reverse().find((m) => m.role === "assistant");
       if (
         lastAssistant &&
@@ -507,8 +313,8 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   if (kind === "tool_execution_update") {
     const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return state;
-    const partial = formatToolResultText(body.partialResult);
     const details = wikiProduceDetails(body.partialResult);
+    const partial = toolOutputFromResult(body.partialResult, details);
     return updateToolInState(state, toolCallId, {
       output: partial,
       ...(details ? { details } : {}),
@@ -519,8 +325,8 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   if (kind === "tool_execution_end") {
     const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : null;
     if (!toolCallId) return state;
-    const output = formatToolResultText(body.result);
     const details = wikiProduceDetails(body.result);
+    const output = toolOutputFromResult(body.result, details);
     const isError = body.isError === true;
     return updateToolInState(state, toolCallId, {
       output: output,
@@ -620,7 +426,7 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
 
     if (role === "user") {
       messages.push({
-        id: `hist_user_${index + 1}`,
+        id: piMessageId(row) ?? `hist_user_${index + 1}`,
         role: "user",
         content: extractMessageText(row),
         createdAt,
@@ -633,7 +439,7 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
       const error = extractAssistantError(row);
       messages.push(
         assistantFromSnapshot(row, {
-          id: `hist_asst_${index + 1}`,
+          id: piMessageId(row) ?? `hist_asst_${index + 1}`,
           status: error.isError ? "error" : "done",
           ts: createdAt,
         }),
@@ -642,8 +448,8 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
     }
 
     if (role !== "toolResult" || typeof row.toolCallId !== "string") continue;
-    const output = formatToolResultText(row.content) ?? formatToolResultText(row);
     const details = wikiProduceDetails(row);
+    const output = toolOutputFromResult(row, details);
     const toolCallId = row.toolCallId;
     const toolName = typeof row.toolName === "string" ? row.toolName : undefined;
     const isError = row.isError === true;
@@ -681,11 +487,12 @@ export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): Pi
     // A genuine active tool in the snapshot means the agent turn is still
     // running — restore turnActive so a reconnect mid-turn keeps Stop/streaming
     // UI instead of showing "Ready".
+    // Single derivation: same path as tool_execution_update for details.summary.
     return {
       ...updateToolInState(snapshot, activeTool.toolCallId, {
         name: activeTool.toolName,
         details: activeTool.details,
-        output: activeTool.details.summary,
+        output: toolOutputFromResult(undefined, activeTool.details),
         status: "running",
       }),
       turnActive: true,

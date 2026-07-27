@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { writeMergedDefects } from "./defects.js";
-import { commitSpec } from "./living-spec.js";
+import { defaultSpecStore } from "../ports/core-spec-store.js";
 import { scorePublishable } from "./publishability.js";
 
 test("scorePublishable: happy path with page + clean defects", async () => {
@@ -22,7 +22,7 @@ test("scorePublishable: happy path with page + clean defects", async () => {
   await writeFile(path.join(sourcePath, "README.md"), "# hi\n", "utf8");
 
   const spec = defaultWikiRunSpec("Publish Ok");
-  await commitSpec(root, "run-pub-ok", spec);
+  await defaultSpecStore.commitSpec(root, "run-pub-ok", spec);
   await writeMergedDefects(root, "run-pub-ok", {
     version: 1,
     clean: true,

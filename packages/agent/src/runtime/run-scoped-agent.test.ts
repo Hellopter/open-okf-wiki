@@ -15,6 +15,8 @@ describe("AgentRunner fixture agent", () => {
       spanId: "domain-auth",
       runWorkDir: dir,
       task: "Investigate auth module",
+      systemPrompt: "You are a domain researcher.",
+      preferFinalMessage: false,
       onProgress: (span) => spans.push({ id: span.attemptId, status: span.status }),
     });
     assert.equal(r.mode, "fixture");
@@ -27,9 +29,27 @@ describe("AgentRunner fixture agent", () => {
     const runtime = createFixtureProduceRuntime();
     const out = await runtime.runAgentsParallel(
       [
-        { role: "leaf", runWorkDir: dir, task: "A" },
-        { role: "leaf", runWorkDir: dir, task: "B" },
-        { role: "reviewer", runWorkDir: dir, task: "C" },
+        {
+          role: "leaf",
+          runWorkDir: dir,
+          task: "A",
+          systemPrompt: "leaf",
+          preferFinalMessage: false,
+        },
+        {
+          role: "leaf",
+          runWorkDir: dir,
+          task: "B",
+          systemPrompt: "leaf",
+          preferFinalMessage: false,
+        },
+        {
+          role: "reviewer",
+          runWorkDir: dir,
+          task: "C",
+          systemPrompt: "reviewer",
+          preferFinalMessage: true,
+        },
       ],
       { concurrency: 2 },
     );
@@ -49,6 +69,8 @@ describe("AgentRunner fixture agent", () => {
           role: "domain",
           runWorkDir: dir,
           task: "x",
+          systemPrompt: "domain",
+          preferFinalMessage: false,
           abortSignal: ac.signal,
         }),
       (err: unknown) => err instanceof Error && err.name === "AbortError",

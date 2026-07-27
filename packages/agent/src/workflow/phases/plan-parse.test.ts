@@ -5,12 +5,9 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
-  clearPlanDraft,
-  PLAN_DRAFT_REL_PATH,
+  defaultSpecStore,
   planDraftPathFromRunWorkDir,
-  readPlanDraft,
-  writePlanDraft,
-} from "../../produce/living-spec.js";
+} from "../../ports/core-spec-store.js";
 import { resolvePlanSpecFromAgentResult } from "./plan-phase.js";
 
 const temps: string[] = [];
@@ -52,10 +49,9 @@ test("resolvePlanSpecFromAgentResult reads only on-disk plan-draft (not summary 
   const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-draft-"));
   temps.push(dir);
   const expected = defaultWikiRunSpec("FromDisk");
-  await writePlanDraft(dir, expected);
+  await defaultSpecStore.writePlanDraft(dir, expected);
   const resolved = await resolvePlanSpecFromAgentResult({
     runWorkDir: dir,
-    specPath: PLAN_DRAFT_REL_PATH,
     summary: "Plan submitted → analysis/plan-draft.json",
   });
   assert.equal(resolved.source, "draft");
@@ -79,33 +75,20 @@ test("resolvePlanSpecFromAgentResult fails closed when draft is missing (no text
   );
 });
 
-test("resolvePlanSpecFromAgentResult rejects unexpected draft path", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-badpath-"));
-  temps.push(dir);
-  await assert.rejects(
-    () =>
-      resolvePlanSpecFromAgentResult({
-        runWorkDir: dir,
-        specPath: "analysis/other.json",
-      }),
-    /unexpected path/,
-  );
-});
-
 test("clearPlanDraft removes a stale draft so a failed replan cannot re-resolve it", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-stale-"));
   temps.push(dir);
-  await writePlanDraft(dir, defaultWikiRunSpec("Round1"));
-  assert.ok(await readPlanDraft(dir), "draft exists after round 1");
+  await defaultSpecStore.writePlanDraft(dir, defaultWikiRunSpec("Round1"));
+  assert.ok(await defaultSpecStore.readPlanDraft(dir), "draft exists after round 1");
 
   // Round 2 starts: the previous round's draft must not survive into resolve.
-  await clearPlanDraft(dir);
-  assert.equal(await readPlanDraft(dir), null);
+  await defaultSpecStore.clearPlanDraft(dir);
+  assert.equal(await defaultSpecStore.readPlanDraft(dir), null);
   await assert.rejects(
     () => resolvePlanSpecFromAgentResult({ runWorkDir: dir, summary: "revise failed" }),
     /submit_wiki_run_spec|plan-draft\.json/,
   );
 
   // Clearing a non-existent draft is a no-op.
-  await clearPlanDraft(dir);
+  await defaultSpecStore.clearPlanDraft(dir);
 });

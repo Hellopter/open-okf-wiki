@@ -1,15 +1,13 @@
 /**
  * Tool-edge accumulator for ProduceProgress → WikiProduceToolDetails.
- * Event type lives on ports (DIP); this module only projects at the tool boundary.
+ * Graph authority lives in workflow RunGraphOwner; this only projects
+ * status/meta fields and whole-graph replacements (kind "graph").
  */
 
-import type { NodeAttempt, RunGraphSnapshot, WikiProduceToolDetails } from "@okf-wiki/contract";
-import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
+import type { RunGraphSnapshot, WikiProduceToolDetails } from "@okf-wiki/contract";
 import type { ProduceProgress } from "../ports/progress-sink.js";
 
-export type { ProduceProgress };
-
-/** Mutable accumulator used only at the wiki_produce tool edge. */
+/** Mutable accumulator used only at the wiki_produce / wiki_repair tool edge. */
 export type ToolDetailsAccumulator = {
   /** Live details object (mutated in place for gate/status patches). */
   details: WikiProduceToolDetails;
@@ -17,27 +15,7 @@ export type ToolDetailsAccumulator = {
   toPartial(): { content: Array<{ type: "text"; text: string }>; details: WikiProduceToolDetails };
 };
 
-const MAX_LIVE_ATTEMPTS = 256;
-
-/**
- * Upsert by attemptId (streaming updates to the same attempt).
- * New attemptIds append — never wipe prior rounds for the same nodeKey.
- */
-export function upsertAttempt(graph: RunGraphSnapshot, attempt: NodeAttempt): RunGraphSnapshot {
-  const attempts = [...graph.attempts];
-  const idx = attempts.findIndex((a) => a.attemptId === attempt.attemptId);
-  if (idx >= 0) attempts[idx] = attempt;
-  else attempts.push(attempt);
-  return {
-    topologyVersion: graph.topologyVersion,
-    topology: graph.topology,
-    attempts: attempts.slice(-MAX_LIVE_ATTEMPTS),
-    playhead: { nodeKey: attempt.nodeKey, attemptId: attempt.attemptId },
-  };
-}
-
-function snapshotGraph(graph: RunGraphSnapshot | undefined): RunGraphSnapshot | undefined {
-  if (!graph) return undefined;
+function cloneGraph(graph: RunGraphSnapshot): RunGraphSnapshot {
   return {
     topologyVersion: graph.topologyVersion,
     topology: [...graph.topology],
@@ -76,24 +54,13 @@ export function createToolDetailsAccumulator(
         case "spec":
           details.spec = progress.spec;
           break;
-        case "attempt": {
-          const base = details.graph ?? emptyRunGraphSnapshot(0);
-          details.graph = upsertAttempt(base, progress.attempt);
+        case "attempt":
+        case "topology":
+          // Graph authority is RunGraphOwner; tool edge only accepts kind "graph".
           break;
-        }
         case "graph":
-          details.graph = progress.graph;
+          details.graph = cloneGraph(progress.graph);
           break;
-        case "topology": {
-          const base = details.graph ?? emptyRunGraphSnapshot(0);
-          details.graph = {
-            topologyVersion: progress.topologyVersion ?? Math.max(1, base.topologyVersion + 1),
-            topology: progress.topology,
-            attempts: base.attempts,
-            ...(base.playhead ? { playhead: base.playhead } : {}),
-          };
-          break;
-        }
         case "defects":
           details.defects = progress.defects;
           if (progress.summary !== undefined) details.summary = progress.summary;
@@ -115,7 +82,7 @@ export function createToolDetailsAccumulator(
         ...(details.spec ? { spec: details.spec } : {}),
         ...(details.pages ? { pages: [...details.pages] } : {}),
         ...(details.defects !== undefined ? { defects: details.defects } : {}),
-        ...(details.graph ? { graph: snapshotGraph(details.graph) } : {}),
+        ...(details.graph ? { graph: cloneGraph(details.graph) } : {}),
       };
       return {
         content: [
@@ -128,15 +95,4 @@ export function createToolDetailsAccumulator(
       };
     },
   };
-}
-
-export function emitProduceProgress(
-  onProgress: ((p: ProduceProgress) => void) | undefined,
-  progress: ProduceProgress,
-): void {
-  try {
-    onProgress?.(progress);
-  } catch {
-    // Display subscribers must not break the Wiki Run.
-  }
 }

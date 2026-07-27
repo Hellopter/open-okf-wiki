@@ -29,7 +29,8 @@ import {
   compactionSettingsFromBudget,
   resolveContextBudget,
 } from "./context-budget.js";
-import { buildWikiScopedToolDefinitions, type SourceIgnoreInput } from "./fs-operations.js";
+import { buildWikiScopedToolDefinitions } from "./fs-operations.js";
+import type { SourceIgnoreInput } from "./path-policy.js";
 import {
   assertSafeWikiToolList,
   type PiFsToolName,

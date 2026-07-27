@@ -147,6 +147,10 @@ export function createFixtureProduceRuntime(
         summary: graphRole === "repair" ? "Fixture repair write" : "Fixture root_write",
       });
       const pages = await writeFixtureWiki(layout, title);
+      // Fail-closed: empty wiki is a write failure for every writer path.
+      if (pages.length === 0) {
+        throw new Error("Pi fixture produce finished without writing any wiki markdown pages");
+      }
       const summary =
         graphRole === "repair"
           ? "Pi fixture mode repaired overview.md + listing index.md"

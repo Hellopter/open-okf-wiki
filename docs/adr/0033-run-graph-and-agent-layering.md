@@ -57,8 +57,8 @@ Core-backed adapters (`createCoreGraphStore`, `createCoreReceiptStore`, `createC
 ```
 agent/src/
   ports/       # DIP interfaces + core adapters
-  workflow/    # Run shell + phases + journal (no Pi)
-  produce/     # Domain helpers still used by workflow (defects, review, living-spec re-exports, …)
+  workflow/    # Run shell + phases + journal + topology + run-graph-owner + run-node-attempt (no Pi)
+  produce/     # Domain helpers: defects, review, publishability, wiki-pages only
   prompts/     # plan / domain / leaf / writer / reviewer / system
   runtime/     # Pi adapters: scoped-runner, fixture-runner, fs-operations, projectors/
   tools/       # Pi tool definitions (wiki_produce, wiki_repair, submit_wiki_run_spec, …)

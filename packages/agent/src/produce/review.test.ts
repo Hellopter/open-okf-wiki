@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { defectsPath } from "./living-spec.js";
+import { defectsPath } from "../ports/core-spec-store.js";
 import { runReviewCouncil } from "./review.js";
 
 test("runReviewCouncil: clean reviewers write NO_DEFECTS merge", async () => {

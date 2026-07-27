@@ -13,7 +13,7 @@ import {
   type MergedDefectReport,
   MergedDefectReportSchema,
 } from "@okf-wiki/contract";
-import { defectsPath } from "./living-spec.js";
+import { defectsPath } from "../ports/core-spec-store.js";
 
 const SEVERITY_RANK: Record<DefectSeverity, number> = {
   blocking: 3,

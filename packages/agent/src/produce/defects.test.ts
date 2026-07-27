@@ -13,7 +13,7 @@ import {
   parseDefectReportFromText,
   writeMergedDefects,
 } from "./defects.js";
-import { commitSpec } from "./living-spec.js";
+import { defaultSpecStore } from "../ports/core-spec-store.js";
 import { scorePublishable } from "./publishability.js";
 
 test("parseDefectReportFromText recognizes NO_DEFECTS", () => {
@@ -227,7 +227,7 @@ test("scorePublishable passes with page + clean defects", async () => {
   await writeFile(path.join(sourcePath, "README.md"), "# hi\n", "utf8");
 
   const spec = defaultWikiRunSpec("Demo");
-  await commitSpec(root, "run-ok", spec);
+  await defaultSpecStore.commitSpec(root, "run-ok", spec);
   await writeMergedDefects(root, "run-ok", {
     version: 1,
     clean: true,

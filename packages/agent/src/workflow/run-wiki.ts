@@ -27,6 +27,7 @@ import {
   publishStagingToPublication,
   updateRunRecord,
 } from "@okf-wiki/core";
+import type { AgentRunner } from "../ports/agent-runner.js";
 import { createCoreGraphStore } from "../ports/core-graph-store.js";
 import type { GatePort } from "../ports/gate-port.js";
 import type { GraphStore } from "../ports/graph-store.js";
@@ -35,16 +36,16 @@ import {
   type ProgressSink,
   progressSinkFromCallback,
 } from "../ports/progress-sink.js";
-import { commitSpec } from "../produce/living-spec.js";
+import { defaultSpecStore } from "../ports/core-spec-store.js";
 import { redactErrorMessage } from "../redact/index.js";
 import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
-import { type AgentRunner, resolveProduceRuntime } from "../runtime/produce-runtime.js";
+import { resolveProduceRuntime } from "../runtime/produce-runtime.js";
 import { layoutFromFrozen } from "../runtime/workdir.js";
 import { requestTimeoutMs, resolveOrchestration } from "./budgets.js";
 import { runPlanGateLoop, runPublicationGateLoop } from "./gate-protocol.js";
-import { AttemptJournal } from "./journal.js";
 import { planWikiSpec } from "./phases/plan-phase.js";
 import { produceWiki } from "./produce.js";
+import { createRunGraphOwner } from "./run-graph-owner.js";
 import { topologyFromSpec } from "./topology.js";
 
 export type { GateDecision, GatePort, GateRequest } from "../ports/gate-port.js";
@@ -238,13 +239,12 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   };
 
   /**
-   * Live Run Graph via pure AttemptJournal + GraphStore port.
-   * SSE/tool details and durable analysis/run-graph.json share journal.snapshot().
+   * Single graph authority: AttemptJournal + optional GraphStore via RunGraphOwner.
+   * SSE/tool details and durable analysis/run-graph.json share owner.snapshot().
    */
-  const journal = new AttemptJournal();
+  const graphOwner = createRunGraphOwner();
   /** Injected store wins; otherwise created on first topology publish. */
   let graphStore: GraphStore | undefined = input.graphStore;
-  let graphRunId: string | undefined;
 
   /**
    * Orchestration always emits through ProgressSink.
@@ -253,52 +253,29 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
   const progressSink: ProgressSink =
     input.progressSink ?? progressSinkFromCallback(input.onProgress);
 
-  const persistLiveGraph = async (): Promise<void> => {
-    if (!graphStore || !graphRunId) return;
-    try {
-      await graphStore.save(graphRunId, journal.snapshot());
-    } catch {
-      // Durable graph is best-effort; live projection already emitted.
-    }
-  };
-
-  /** Fold progress into journal, then fan out to tool/SSE subscribers via ProgressSink. */
+  /**
+   * Graph kinds fold into owner and emit only a graph snapshot for display.
+   * Meta kinds (status/pages/…) pass through unchanged.
+   */
   const handleProgress = (progress: ProduceProgress): void => {
-    switch (progress.kind) {
-      case "attempt":
-        journal.upsert(progress.attempt);
-        break;
-      case "topology":
-        journal.setTopology(
-          progress.topology,
-          progress.topologyVersion ?? Math.max(1, journal.snapshot().topologyVersion + 1),
-        );
-        break;
-      case "graph":
-        for (const a of progress.graph.attempts) journal.upsert(a);
-        if (progress.graph.topology.length > 0) {
-          journal.setTopology(progress.graph.topology, progress.graph.topologyVersion);
-        }
-        break;
-      default:
-        break;
-    }
-    // Always re-emit graph snapshot for live details after journal updates.
     if (progress.kind === "attempt" || progress.kind === "topology" || progress.kind === "graph") {
-      progressSink.emit({ kind: "graph", graph: journal.snapshot() });
+      graphOwner.apply(progress);
+      void graphOwner.persist();
+      progressSink.emit({ kind: "graph", graph: graphOwner.snapshot() });
+      return;
     }
     progressSink.emit(progress);
   };
 
-  /** Emit Spec topology into journal and persist via GraphStore. */
+  /** Emit Spec topology into owner and persist via GraphStore. */
   const publishTopology = async (committed: WikiRunSpec, rid: string, root: string) => {
     graphStore = graphStore ?? createCoreGraphStore(root);
-    graphRunId = rid;
+    graphOwner.bind(rid, graphStore);
     const topology = topologyFromSpec(committed);
-    // No explicit version: handleProgress bumps from the journal snapshot, so
-    // a replanned topology publishes as v2, v3, … instead of re-stamping v1.
+    // No explicit version: owner bumps from snapshot, so a replanned topology
+    // publishes as v2, v3, … instead of re-stamping v1.
     handleProgress({ kind: "topology", topology });
-    await persistLiveGraph();
+    await graphOwner.persist();
   };
 
   setPhase("freezing", {
@@ -384,7 +361,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
     };
 
     let spec = await runPlanner();
-    await commitSpec(workspace.rootPath, runId, spec);
+    await defaultSpecStore.commitSpec(workspace.rootPath, runId, spec);
     await publishTopology(spec, runId, workspace.rootPath);
 
     const patchRunRecord = (patch: Parameters<typeof updateRunRecord>[2]) =>
@@ -402,14 +379,14 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         signal: input.abortSignal,
         initialSpec: spec,
         runPlanner,
-        commitSpec: (next) => commitSpec(workspace.rootPath, runId!, next),
+        commitSpec: (next) => defaultSpecStore.commitSpec(workspace.rootPath, runId!, next),
         publishTopology: (next) => publishTopology(next, runId!, workspace.rootPath),
         setPhase,
         updateRunRecord: patchRunRecord,
       });
       spec = planGate.spec;
       if (planGate.action === "declined") {
-        await persistLiveGraph();
+        await graphOwner.persist();
         return {
           ...details,
           status: toolStatusFromPhase(phase),
@@ -444,7 +421,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       onProgress: handleProgress,
     });
     // Phase boundary: durable graph after produce body (topology + all attempts).
-    await persistLiveGraph();
+    await graphOwner.persist();
 
     if (produced.status === "cancelled") throw abortError();
     if (produced.status === "failed" || !produced.publishability.publishable) {
@@ -462,7 +439,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         summary,
         error: summary,
       });
-      await persistLiveGraph();
+      await graphOwner.persist();
       return {
         ...details,
         status: toolStatusFromPhase(phase),
@@ -489,7 +466,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         updateRunRecord: patchRunRecord,
       });
       if (pubGate.action === "declined") {
-        await persistLiveGraph();
+        await graphOwner.persist();
         return {
           ...details,
           status: toolStatusFromPhase(phase),
@@ -531,7 +508,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       summary: produced.summary,
       error: null,
     });
-    await persistLiveGraph();
+    await graphOwner.persist();
     return {
       ...details,
       status: toolStatusFromPhase(phase),
@@ -559,7 +536,7 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         error: cancelled ? null : message,
       }).catch(() => undefined);
     }
-    await persistLiveGraph();
+    await graphOwner.persist();
     return {
       ...details,
       ...(runId ? { runId } : {}),

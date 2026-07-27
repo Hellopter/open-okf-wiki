@@ -36,11 +36,19 @@ export function progressSinkFromCallback(
 ): ProgressSink {
   return {
     emit(progress) {
-      try {
-        onProgress?.(progress);
-      } catch {
-        // Display must not break the Wiki Run.
-      }
+      emitProgress(onProgress, progress);
     },
   };
+}
+
+/** Safe fan-out for optional onProgress callbacks (display must not break the run). */
+export function emitProgress(
+  onProgress: ((p: ProduceProgress) => void) | undefined,
+  progress: ProduceProgress,
+): void {
+  try {
+    onProgress?.(progress);
+  } catch {
+    // Display subscribers must not break the Wiki Run.
+  }
 }
