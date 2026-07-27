@@ -8,7 +8,7 @@ import type {
 import { AgentSseEventSchema } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl } from "../../api";
-import { isRecord, makeId } from "./project/format";
+import { makeId } from "./project/format";
 import { createPiStreamState, projectAgentEvent, viewMessages } from "./project/pi";
 import type { AgentMessage, AgentSseLike, AgentToolCall, PiStreamState } from "./project/types";
 
@@ -21,6 +21,7 @@ export function isCommandFailed(res: AgentCommandResponse | null | undefined): b
 export type { AgentMessage, AgentToolCall };
 
 export type AgentMessageRole = AgentMessage["role"];
+/** UI status: stream-projected idle/streaming/error plus hook-only optimistic `sending`. */
 export type AgentStatus = "idle" | "sending" | "streaming" | "error";
 
 /** SSE lifecycle for the session event stream. */
@@ -54,27 +55,6 @@ export type UseSessionAgentResult = {
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function eventError(event: AgentSseLike): string | null {
-  if (event.source !== "pi") return null;
-  if (event.kind === "error" && isRecord(event.payload)) {
-    return typeof event.payload.message === "string" ? event.payload.message : "Agent error";
-  }
-  if (event.kind !== "message_end" || !isRecord(event.payload)) return null;
-  const message = isRecord(event.payload.message) ? event.payload.message : null;
-  if (!message) return null;
-  const providerErr = (message as Record<string, unknown>)["error" + "Message"];
-  // Operator abort without a provider error is a neutral outcome, not a failure.
-  if (message.stopReason === "aborted" && typeof providerErr !== "string") {
-    return null;
-  }
-  if (message.stopReason !== "error" && typeof providerErr !== "string") {
-    return null;
-  }
-  return typeof providerErr === "string" && providerErr.trim()
-    ? providerErr.trim()
-    : "Agent response failed";
 }
 
 export function useSessionAgent({
@@ -158,24 +138,17 @@ export function useSessionAgent({
         setReady(true);
         readyRef.current = true;
         setConnectionStatus("live");
-        // Restore turn status from the snapshot: a genuine active tool means
-        // the agent is still mid-turn after a reconnect.
-        setStatus((current) => {
-          if (next.turnActive) return "streaming";
-          return current === "error" ? current : "idle";
-        });
       }
 
-      const failure = eventError(event);
-      if (failure) {
-        setError(failure);
-        setStatus("error");
-        return;
-      }
-      if (event.source !== "pi") return;
-      if (event.kind === "agent_start") setStatus("streaming");
-      if (event.kind === "agent_end" || event.kind === "agent_settled") {
-        setStatus((current) => (current === "error" ? current : "idle"));
+      // Status/error come from the Pi projector. Optimistic `sending` is
+      // hook-only — keep it until the stream confirms (streaming/error) or
+      // send() settles the command without a live turn.
+      if (event.source === "pi" || (event.source === "server" && event.kind === "snapshot")) {
+        setStatus((current) => {
+          if (current === "sending" && next.agentStatus === "idle") return "sending";
+          return next.agentStatus;
+        });
+        setError(next.errorText);
       }
     };
 
@@ -221,6 +194,7 @@ export function useSessionAgent({
 
       // Client-only optimistic row. Snapshot projection is authority — optimistic
       // rows do not survive a server snapshot. Live Pi user events are ignored.
+      // Clear projector stream error so a later event cannot re-apply it.
       const optimistic: AgentMessage = {
         id: makeId("user"),
         role: "user",
@@ -232,6 +206,7 @@ export function useSessionAgent({
       const next = {
         ...streamStateRef.current,
         messages: [...streamStateRef.current.messages, optimistic],
+        errorText: null,
       };
       publish(next);
 
@@ -333,7 +308,13 @@ export function useSessionAgent({
     abort,
     resumeGate,
     setModel,
-    clearError: () => setError(null),
+    clearError: () => {
+      setError(null);
+      const current = streamStateRef.current;
+      if (current.errorText != null) {
+        streamStateRef.current = { ...current, errorText: null };
+      }
+    },
     eventsUrl,
     lastCommandResponse,
   };

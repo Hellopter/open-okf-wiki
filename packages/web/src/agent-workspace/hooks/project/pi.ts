@@ -8,6 +8,7 @@
  * Content-block parsing lives in `pi-message.ts`; this module is reduce-only.
  */
 
+import { AgentMessageSchema, projectAgentMessagesFromPiHistory } from "@okf-wiki/contract";
 import {
   extractAssistantError,
   extractMessageText,
@@ -26,6 +27,19 @@ import {
 } from "./pi-message.ts";
 import type { AgentMessage, AgentSseLike, AgentToolCall, PiStreamState } from "./types.ts";
 
+/**
+ * Snapshot messages are AgentMessage[] from the server (ADR 0031).
+ * Invalid rows are dropped rather than re-projected from Pi shapes.
+ */
+function snapshotMessages(rows: readonly unknown[]): AgentMessage[] {
+  const out: AgentMessage[] = [];
+  for (const row of rows) {
+    const parsed = AgentMessageSchema.safeParse(row);
+    if (parsed.success) out.push(parsed.data);
+  }
+  return out;
+}
+
 export function createPiStreamState(seed: AgentMessage[] = []): PiStreamState {
   let lastAssistantId: string | null = null;
   for (let i = seed.length - 1; i >= 0; i -= 1) {
@@ -39,7 +53,27 @@ export function createPiStreamState(seed: AgentMessage[] = []): PiStreamState {
     streamingMessage: null,
     lastAssistantId,
     turnActive: false,
+    agentStatus: "idle",
+    errorText: null,
   };
+}
+
+/** Attach stream-level agent error (status + text) onto projected state. */
+function withAgentError(state: PiStreamState, errorText: string): PiStreamState {
+  return {
+    ...state,
+    agentStatus: "error",
+    errorText,
+  };
+}
+
+/**
+ * Human-facing stream error text from {@link extractAssistantError}.
+ * Matches prior hook `eventError` fallback when stopReason is error without text.
+ */
+function assistantErrorText(err: ReturnType<typeof extractAssistantError>): string | null {
+  if (!err.isError) return null;
+  return err.errorText ?? "Agent response failed";
 }
 
 /** Finalized rows + optional streaming tail (UI timeline). */
@@ -234,6 +268,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
 
     const isError = err.isError;
     const status = isError ? ("error" as const) : ("done" as const);
+    const streamError = assistantErrorText(err);
 
     if (state.streamingMessage) {
       const finalized = message
@@ -251,12 +286,13 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
               : state.streamingMessage.thinkingStatus,
           };
 
-      return {
+      const next: PiStreamState = {
         ...state,
         messages: [...state.messages, finalized],
         streamingMessage: null,
         lastAssistantId: finalized.id,
       };
+      return streamError ? withAgentError(next, streamError) : next;
     }
 
     // No streaming shell: open from final snapshot if meaningful.
@@ -276,7 +312,8 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       // message_end that the just-received snapshot already contains.
       // Prefer stable Pi id match; content equality is secondary fallback.
       if (state.messages.some((m) => m.id === card.id)) {
-        return { ...state, streamingMessage: null };
+        const next = { ...state, streamingMessage: null };
+        return streamError ? withAgentError(next, streamError) : next;
       }
       const lastAssistant = [...state.messages].reverse().find((m) => m.role === "assistant");
       if (
@@ -285,16 +322,18 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
         (lastAssistant.tools?.length ?? 0) === (card.tools?.length ?? 0) &&
         lastAssistant.status === card.status
       ) {
-        return { ...state, streamingMessage: null };
+        const next = { ...state, streamingMessage: null };
+        return streamError ? withAgentError(next, streamError) : next;
       }
-      return {
+      const next: PiStreamState = {
         ...state,
         messages: [...state.messages, card],
         streamingMessage: null,
         lastAssistantId: newId,
       };
+      return streamError ? withAgentError(next, streamError) : next;
     }
-    return state;
+    return streamError ? withAgentError(state, streamError) : state;
   }
 
   // --- tool_execution_* -----------------------------------------------------
@@ -343,28 +382,34 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       const m = view[i]!;
       if (m.role === "assistant") {
         if (m.status === "error" && (m.errorText === errMessage || m.content === errMessage)) {
-          return state;
+          // Still surface agentStatus/errorText for the Session UI.
+          if (state.agentStatus === "error" && state.errorText === errMessage) return state;
+          return withAgentError(state, errMessage);
         }
         break;
       }
       if (m.role === "system" && m.status === "error" && m.content === errMessage) {
-        return state;
+        if (state.agentStatus === "error" && state.errorText === errMessage) return state;
+        return withAgentError(state, errMessage);
       }
     }
-    return {
-      ...state,
-      messages: [
-        ...state.messages,
-        {
-          id: makeId("sys"),
-          role: "system",
-          content: errMessage,
-          createdAt: ts,
-          status: "error",
-          errorText: errMessage,
-        },
-      ],
-    };
+    return withAgentError(
+      {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: makeId("sys"),
+            role: "system",
+            content: errMessage,
+            createdAt: ts,
+            status: "error",
+            errorText: errMessage,
+          },
+        ],
+      },
+      errMessage,
+    );
   }
 
   if (kind === "agent_end" || kind === "agent_settled") {
@@ -386,21 +431,28 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
         m.status === "streaming" ? { ...m, status: "done" as const } : m,
       );
     }
+    // Preserve error status/text when the turn failed; otherwise settle idle.
+    const failed = state.agentStatus === "error";
     return {
       messages,
       streamingMessage: null,
       lastAssistantId,
       turnActive: false,
+      agentStatus: failed ? "error" : "idle",
+      errorText: failed ? state.errorText : null,
     };
   }
 
   if (kind === "agent_start") {
     // New parent turn: do not reuse prior assistant as streaming target.
+    // Clear prior stream error so a fresh turn does not re-surface it.
     return {
       ...state,
       turnActive: true,
       streamingMessage: null,
       lastAssistantId: null,
+      agentStatus: "streaming",
+      errorText: null,
     };
   }
 
@@ -408,66 +460,12 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   return state;
 }
 
-function historyTimestamp(row: unknown): string {
-  if (!isRecord(row) || typeof row.timestamp !== "number") return nowIso();
-  const date = new Date(row.timestamp);
-  return Number.isNaN(date.getTime()) ? nowIso() : date.toISOString();
-}
-
-/** Project the durable branch returned by Pi SessionManager (opaque Pi messages). */
+/**
+ * Project opaque Pi history rows into AgentMessage[] (tests / offline fixtures).
+ * Live SSE snapshots already carry AgentMessage[] from the server.
+ */
 export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
-  const messages: AgentMessage[] = [];
-
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]!;
-    if (!isRecord(row)) continue;
-    const createdAt = historyTimestamp(row);
-    const role = typeof row.role === "string" ? row.role : null;
-
-    if (role === "user") {
-      messages.push({
-        id: piMessageId(row) ?? `hist_user_${index + 1}`,
-        role: "user",
-        content: extractMessageText(row),
-        createdAt,
-        status: "done",
-      });
-      continue;
-    }
-
-    if (role === "assistant") {
-      const error = extractAssistantError(row);
-      messages.push(
-        assistantFromSnapshot(row, {
-          id: piMessageId(row) ?? `hist_asst_${index + 1}`,
-          status: error.isError ? "error" : "done",
-          ts: createdAt,
-        }),
-      );
-      continue;
-    }
-
-    if (role !== "toolResult" || typeof row.toolCallId !== "string") continue;
-    const details = wikiProduceDetails(row);
-    const output = toolOutputFromResult(row, details);
-    const toolCallId = row.toolCallId;
-    const toolName = typeof row.toolName === "string" ? row.toolName : undefined;
-    const isError = row.isError === true;
-    for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
-      const message = messages[messageIndex]!;
-      if (message.role !== "assistant") continue;
-      if (!message.tools?.some((tool) => tool.id === toolCallId)) continue;
-      messages[messageIndex] = patchToolsOnAssistant(message, toolCallId, {
-        name: toolName,
-        output,
-        ...(details ? { details } : {}),
-        status: isError ? "error" : "done",
-      });
-      break;
-    }
-  }
-
-  return messages;
+  return projectAgentMessagesFromPiHistory(rows);
 }
 
 /**
@@ -475,18 +473,18 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
  * current server snapshot, genuine Pi event, and heartbeat.
  *
  * Server snapshots fully replace local state — client-only optimistic user
- * rows never survive projection.
+ * rows never survive projection. Snapshot messages are AgentMessage[] (server view).
  */
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
     const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
     // Full replace: optimistic and other client-only rows do not carry over.
-    const snapshot = createPiStreamState(projectPiHistory(rows));
+    const snapshot = createPiStreamState(snapshotMessages(rows));
     const activeTool = event.payload.activeTool;
     if (!activeTool) return snapshot;
     // A genuine active tool in the snapshot means the agent turn is still
-    // running — restore turnActive so a reconnect mid-turn keeps Stop/streaming
-    // UI instead of showing "Ready".
+    // running — restore turnActive + agentStatus so a reconnect mid-turn keeps
+    // Stop/streaming UI instead of showing "Ready".
     // Single derivation: same path as tool_execution_update for details.summary.
     return {
       ...updateToolInState(snapshot, activeTool.toolCallId, {
@@ -496,6 +494,7 @@ export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): Pi
         status: "running",
       }),
       turnActive: true,
+      agentStatus: "streaming",
     };
   }
   if (event.source === "pi" && typeof event.kind === "string") {

@@ -12,7 +12,7 @@ import {
 import type { AgentSseLike } from "./project/types.ts";
 
 describe("projectAgentEvent", () => {
-  it("uses the server snapshot as the complete durable SessionManager view", () => {
+  it("uses the server snapshot as the complete durable AgentMessage view", () => {
     const state = projectAgentEvent(createPiStreamState(), {
       source: "server",
       kind: "snapshot",
@@ -22,31 +22,27 @@ describe("projectAgentEvent", () => {
         session: { id: "session-1", workspaceId: "workspace-1" },
         messages: [
           {
+            id: "user-1",
             role: "user",
-            content: [{ type: "text", text: "Produce the wiki" }],
-            timestamp: 1,
+            content: "Produce the wiki",
+            createdAt: "2026-07-24T00:00:00.001Z",
+            status: "done",
           },
           {
+            id: "asst-1",
             role: "assistant",
-            content: [
-              { type: "text", text: "Starting " },
+            content: "Starting ",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
+            tools: [
               {
-                type: "toolCall",
                 id: "wiki-1",
                 name: "wiki_produce",
-                arguments: { audience: "maintainers" },
+                args: { audience: "maintainers" },
+                output: "published 4 pages",
+                status: "done",
               },
             ],
-            stopReason: "stop",
-            timestamp: 2,
-          },
-          {
-            role: "toolResult",
-            toolCallId: "wiki-1",
-            toolName: "wiki_produce",
-            content: [{ type: "text", text: "published 4 pages" }],
-            isError: false,
-            timestamp: 3,
           },
         ],
       },
@@ -89,10 +85,11 @@ describe("projectAgentEvent", () => {
         session: { id: "session-1", workspaceId: "workspace-1" },
         messages: [
           {
+            id: "asst-durable",
             role: "assistant",
-            content: [{ type: "text", text: "durable truth" }],
-            stopReason: "stop",
-            timestamp: 4,
+            content: "durable truth",
+            createdAt: "2026-07-24T00:00:00.004Z",
+            status: "done",
           },
         ],
       },
@@ -125,15 +122,18 @@ describe("projectAgentEvent", () => {
         session: { id: "session-1", workspaceId: "workspace-1" },
         messages: [
           {
+            id: "user-1",
             role: "user",
-            content: [{ type: "text", text: "pending local send" }],
-            timestamp: 1,
+            content: "pending local send",
+            createdAt: "2026-07-24T00:00:00.001Z",
+            status: "done",
           },
           {
+            id: "asst-1",
             role: "assistant",
-            content: [{ type: "text", text: "ok" }],
-            stopReason: "stop",
-            timestamp: 2,
+            content: "ok",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
           },
         ],
       },
@@ -145,7 +145,7 @@ describe("projectAgentEvent", () => {
     assert.equal(messages[0]!.content, "pending local send");
     assert.equal(messages[0]!.optimistic, undefined);
     assert.ok(!messages.some((m) => m.optimistic === true));
-    assert.equal(messages[0]!.id, "hist_user_1");
+    assert.equal(messages[0]!.id, "user-1");
   });
 
   it("restores the genuine live wiki_produce gate from a reconnect snapshot", () => {
@@ -159,17 +159,19 @@ describe("projectAgentEvent", () => {
         session: { id: "session-1", workspaceId: "workspace-1" },
         messages: [
           {
+            id: "asst-1",
             role: "assistant",
-            content: [
+            content: "",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
+            tools: [
               {
-                type: "toolCall",
                 id: "wiki-1",
                 name: "wiki_produce",
-                arguments: {},
+                args: {},
+                status: "running",
               },
             ],
-            stopReason: "toolUse",
-            timestamp: 2,
           },
         ],
         activeTool: {
@@ -213,17 +215,19 @@ describe("projectAgentEvent", () => {
         session: { id: "session-1", workspaceId: "workspace-1" },
         messages: [
           {
+            id: "asst-parity",
             role: "assistant",
-            content: [
+            content: "",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
+            tools: [
               {
-                type: "toolCall",
                 id: "wiki-parity",
                 name: "wiki_produce",
-                arguments: {},
+                args: {},
+                status: "running",
               },
             ],
-            stopReason: "toolUse",
-            timestamp: 2,
           },
         ],
         activeTool: {
@@ -278,7 +282,7 @@ describe("projectAgentEvent", () => {
     );
   });
 
-  it("uses Pi message id in history when present", () => {
+  it("preserves server-projected message ids from snapshot", () => {
     const state = projectAgentEvent(createPiStreamState(), {
       source: "server",
       kind: "snapshot",
@@ -290,15 +294,16 @@ describe("projectAgentEvent", () => {
           {
             id: "pi-user-42",
             role: "user",
-            content: [{ type: "text", text: "hello" }],
-            timestamp: 1,
+            content: "hello",
+            createdAt: "2026-07-24T00:00:00.001Z",
+            status: "done",
           },
           {
             id: "pi-asst-99",
             role: "assistant",
-            content: [{ type: "text", text: "hi" }],
-            stopReason: "stop",
-            timestamp: 2,
+            content: "hi",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
           },
         ],
       },
@@ -394,9 +399,19 @@ describe("reducePiEvent", () => {
       message: "provider failed",
     });
 
-    assert.equal(next, state);
+    // No second system/assistant row — only agentStatus/errorText projection.
+    assert.equal(next.messages, state.messages);
     assert.equal(viewMessages(next).length, 1);
     assert.equal(viewMessages(next)[0]!.role, "assistant");
+    assert.equal(next.agentStatus, "error");
+    assert.equal(next.errorText, "provider failed");
+
+    // Already projected: further identical error events are referentially stable.
+    const again = reducePiEvent(next, "error", {
+      type: "error",
+      message: "provider failed",
+    });
+    assert.equal(again, next);
   });
 
   it("clears lastAssistantId on agent_start so a new turn does not reuse prior assistant", () => {
@@ -645,6 +660,185 @@ describe("reducePiEvent", () => {
       },
     });
     assert.equal(viewMessages(state)[0]!.id, "pi-live-1");
+  });
+
+  it("projects agentStatus streaming on agent_start and idle on agent_end", () => {
+    let state = createPiStreamState();
+    assert.equal(state.agentStatus, "idle");
+    assert.equal(state.errorText, null);
+
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    assert.equal(state.agentStatus, "streaming");
+    assert.equal(state.turnActive, true);
+    assert.equal(state.errorText, null);
+
+    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    assert.equal(state.agentStatus, "idle");
+    assert.equal(state.turnActive, false);
+    assert.equal(state.errorText, null);
+  });
+
+  it("projects agentStatus error + errorText from message_end provider failure", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: { role: "assistant", content: [] },
+    });
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: "  rate limited  ",
+      },
+    });
+
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.errorText, "rate limited");
+    assert.equal(viewMessages(state)[0]!.status, "error");
+
+    // agent_end preserves error status (matches prior hook behavior).
+    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.errorText, "rate limited");
+    assert.equal(state.turnActive, false);
+  });
+
+  it("projects errorText fallback when stopReason is error without provider text", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+      },
+    });
+
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.errorText, "Agent response failed");
+  });
+
+  it("does not project error on operator abort (neutral outcome)", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: { role: "assistant", content: [{ type: "text", text: "partial" }] },
+    });
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "partial" }],
+        stopReason: "aborted",
+      },
+    });
+
+    assert.equal(state.agentStatus, "streaming");
+    assert.equal(state.errorText, null);
+    assert.ok(viewMessages(state).some((m) => m.status === "aborted"));
+
+    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    assert.equal(state.agentStatus, "idle");
+    assert.equal(state.errorText, null);
+  });
+
+  it("projects agentStatus error from pi error events", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "error", {
+      type: "error",
+      message: "transport failed",
+    });
+
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.errorText, "transport failed");
+    assert.equal(viewMessages(state).at(-1)?.role, "system");
+  });
+
+  it("clears prior stream error on a new agent_start", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "error", {
+      type: "error",
+      message: "old failure",
+    });
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.errorText, "old failure");
+
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    assert.equal(state.agentStatus, "streaming");
+    assert.equal(state.errorText, null);
+  });
+
+  it("snapshot with activeTool projects agentStatus streaming", () => {
+    const state = projectAgentEvent(createPiStreamState(), {
+      source: "server",
+      kind: "snapshot",
+      sessionId: "session-1",
+      timestamp: "2026-07-24T00:00:00.000Z",
+      payload: {
+        session: { id: "session-1", workspaceId: "workspace-1" },
+        messages: [
+          {
+            id: "asst-1",
+            role: "assistant",
+            content: "",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
+            tools: [
+              {
+                id: "wiki-1",
+                name: "wiki_produce",
+                args: {},
+                status: "running",
+              },
+            ],
+          },
+        ],
+        activeTool: {
+          toolCallId: "wiki-1",
+          toolName: "wiki_produce",
+          details: {
+            status: "running",
+            runId: "run-1",
+            summary: "Working",
+          },
+        },
+      },
+    });
+
+    assert.equal(state.turnActive, true);
+    assert.equal(state.agentStatus, "streaming");
+    assert.equal(state.errorText, null);
+  });
+
+  it("idle snapshot projects agentStatus idle", () => {
+    const state = projectAgentEvent(createPiStreamState(), {
+      source: "server",
+      kind: "snapshot",
+      sessionId: "session-1",
+      timestamp: "2026-07-24T00:00:00.000Z",
+      payload: {
+        session: { id: "session-1", workspaceId: "workspace-1" },
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            content: "hi",
+            createdAt: "2026-07-24T00:00:00.001Z",
+            status: "done",
+          },
+        ],
+      },
+    });
+
+    assert.equal(state.turnActive, false);
+    assert.equal(state.agentStatus, "idle");
+    assert.equal(state.errorText, null);
   });
 });
 

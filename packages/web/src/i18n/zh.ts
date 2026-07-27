@@ -381,7 +381,7 @@ export const zh: MessageTree = {
     deleteConfirmBody: "删除模型「{name}」？已选择该模型的工作区会保留最后已知的模型 ID。",
     deleteSubmit: "删除模型",
     deleting: "删除中…",
-    statusModelAdded: "Model added",
+    statusModelAdded: "模型已添加",
     statusModelUpdated: "模型已更新",
     statusModelDeleted: "模型已删除",
     statusDefault: "默认：{name}",
