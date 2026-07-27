@@ -103,7 +103,7 @@ test("fixture prompt emits genuine wiki_produce gate updates through Pi", async 
   };
   await saveWorkspace(workspace);
 
-  const events: Array<{ kind: string; payload?: unknown }> = [];
+  const events: Array<{ source?: string; kind: string; payload?: unknown }> = [];
   const waiters = new Map<string, () => void>();
   const unsubscribe = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
     events.push(event);
