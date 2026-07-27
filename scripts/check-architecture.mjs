@@ -164,6 +164,37 @@ for (const file of filesUnder("packages/core/src").filter(
 }
 
 /**
+ * HTTP routes must not leak raw unknown errors. Use sendCaughtError (or
+ * trySendCoreDomainError then sendCaughtError). Static-string sendError and
+ * typed domain error.message (after instanceof + status map) remain allowed.
+ */
+const routeErrorLeakRules = [
+  [
+    "raw unknown error ternary (use sendCaughtError)",
+    /error\s+instanceof\s+Error\s*\?\s*error\.message\s*:\s*String\s*\(\s*error\s*\)/,
+  ],
+  [
+    "raw String(error) in sendError (use sendCaughtError)",
+    /sendError\s*\([^;]*\bString\s*\(\s*error\s*\)/,
+  ],
+  [
+    "raw error.message with literal status (use sendCaughtError or typed status map)",
+    /sendError\s*\(\s*\w+\s*,\s*\d+\s*,\s*error\.message\b/,
+  ],
+];
+for (const file of productSourceFiles.filter((file) =>
+  file.startsWith("packages/server/src/routes/"),
+)) {
+  const content = readFileSync(path.join(root, file), "utf8");
+  for (const [label, pattern] of routeErrorLeakRules) {
+    const match = pattern.exec(content);
+    if (!match) continue;
+    const line = content.slice(0, match.index).split("\n").length;
+    failures.push(`${file}:${line}: ${label}: ${JSON.stringify(match[0])}`);
+  }
+}
+
+/**
  * agent/ports must stay free of Pi SDK and agent pi/produce/runtime modules
  * (ADR 0033 §3). Adapters under runtime cast opaque port types to Pi types.
  * Matches static `from`, bare side-effect imports, and dynamic `import(...)`,

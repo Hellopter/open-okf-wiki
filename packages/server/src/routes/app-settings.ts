@@ -9,7 +9,7 @@ import {
   setLoadHomeSkills,
   skillLayoutPaths,
 } from "@okf-wiki/core";
-import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
 
 export type AppSettingsPublic = {
   loadHomeSkills: boolean;
@@ -41,7 +41,7 @@ export async function handleGetAppSettings(
   try {
     sendJson(res, 200, { settings: await buildPublic() });
   } catch (error) {
-    sendError(res, 500, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 500, error);
   }
 }
 
@@ -63,6 +63,6 @@ export async function handlePatchAppSettings(
     await setLoadHomeSkills(body.loadHomeSkills);
     sendJson(res, 200, { settings: await buildPublic() });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 400, error);
   }
 }

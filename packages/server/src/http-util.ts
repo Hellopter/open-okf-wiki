@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { redactErrorMessage } from "@okf-wiki/agent";
+import { ProviderStoreError, WorkspaceIntakeError } from "@okf-wiki/core";
 
 /** Vite (and similar) on loopback. */
 const LOOPBACK_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
@@ -99,6 +101,24 @@ export function sendError(
   details?: unknown,
 ): void {
   sendJson(res, status, details === undefined ? { error } : { error, details });
+}
+
+/**
+ * Send a caught unknown error at the HTTP boundary.
+ * Typed core domain errors keep their operator-safe `.message`; everything else is redacted.
+ * Prefer `trySendCoreDomainError` first when status should follow domain error codes.
+ */
+export function sendCaughtError(
+  res: ServerResponse,
+  status: number,
+  error: unknown,
+  details?: unknown,
+): void {
+  if (error instanceof WorkspaceIntakeError || error instanceof ProviderStoreError) {
+    sendError(res, status, error.message, details);
+    return;
+  }
+  sendError(res, status, redactErrorMessage(error), details);
 }
 
 export async function readJsonBody(req: IncomingMessage, limitBytes = 1_000_000): Promise<unknown> {

@@ -8,6 +8,7 @@ import {
   type GatePort,
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
+  projectOperatorAgentMessages,
   projectOperatorHistoryFromManager,
   redactSensitiveValue,
 } from "@okf-wiki/agent";
@@ -209,16 +210,19 @@ export async function loadAgentSessionHistory(
   const live = liveSessions.get(sessionKey(workspace.id, sessionId));
   if (live) {
     touchLive(live);
-    // Compaction-aware projection (Pi TUI path); strip fat wiki_produce details.
-    const messages = projectOperatorHistoryFromManager(live.handle.session.sessionManager);
+    // Compaction-aware Pi projection → AgentMessage[] (server owns view).
+    const piRows = projectOperatorHistoryFromManager(live.handle.session.sessionManager);
+    const messages = projectOperatorAgentMessages(
+      redactSensitiveValue(piRows) as readonly unknown[],
+    );
     return {
       sessionId: live.handle.session.sessionManager.getSessionId(),
-      // Operator snapshot only — do not mutate Pi-owned message objects.
-      messages: redactSensitiveValue(messages),
+      messages,
     };
   }
   const history = await loadOperatorSessionHistory(workspace.rootPath, sessionId);
   if (!history) return null;
+  // Cold path already projected; redact string leaves on the wire shape.
   return {
     sessionId: history.sessionId,
     messages: redactSensitiveValue(history.messages),

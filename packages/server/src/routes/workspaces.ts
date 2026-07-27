@@ -4,12 +4,14 @@ import path from "node:path";
 import {
   SourceAddSchema,
   SourceCloneSchema,
-  type WorkspaceConfig,
+  SourceUpdateSchema,
   WorkspaceCreateSchema,
   WorkspacePatchSchema,
 } from "@okf-wiki/contract";
+import { redactErrorMessage } from "@okf-wiki/agent";
 import {
   addSource,
+  applyWorkspacePatch,
   cloneIntoWorkspace,
   createSkillFork,
   createWorkspace,
@@ -23,19 +25,19 @@ import {
   removeSource,
   removeWorkspaceFromAppIndex,
   resolveSkillSource,
+  resolveWorkspaceModelSelection,
   saveWorkspace,
   skillForkDir,
   slugFromPath,
   uniqueSourceId,
   updateSource,
   WorkspaceIntakeError,
-  writeSkillFile,
+  writeWorkspaceSkillFile,
 } from "@okf-wiki/core";
 import { trySendCoreDomainError } from "../core-http-error.ts";
 import { httpStatusForWorkspaceCode } from "../http-status.ts";
-import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
-import { resolveWorkspaceModelSelection } from "./provider.ts";
 
 export async function handleListWorkspaces(
   _req: IncomingMessage,
@@ -71,8 +73,7 @@ export async function handleCreateWorkspace(
     sendJson(res, 201, { workspace });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -104,73 +105,19 @@ export async function handlePatchWorkspace(
     sendError(res, 400, "invalid workspace patch body", parsed.error.flatten());
     return;
   }
-  const body = parsed.data;
-  const next: WorkspaceConfig = { ...workspace };
 
-  if (body.name !== undefined) {
-    next.name = body.name;
+  try {
+    const next = await applyWorkspacePatch(workspace, parsed.data, {
+      resolveModelSelection: async (profileId) =>
+        resolveWorkspaceModelSelection({ modelProfileId: profileId }),
+    });
+    await saveWorkspace(next);
+    await registerWorkspaceInAppIndex(next.rootPath);
+    sendJson(res, 200, { workspace: next });
+  } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
+    sendCaughtError(res, 400, error);
   }
-
-  if (body.modelProfileId !== undefined || body.model !== undefined) {
-    try {
-      const profileId = body.modelProfileId ?? body.model?.profileId;
-      if (!profileId) {
-        sendError(res, 400, "modelProfileId is required (catalog profile selection)");
-        return;
-      }
-      const model = await resolveWorkspaceModelSelection({ modelProfileId: profileId });
-      next.model = {
-        id: model.id,
-        ...(model.profileId ? { profileId: model.profileId } : {}),
-      };
-    } catch (error) {
-      if (trySendCoreDomainError(res, error)) return;
-      const message = error instanceof Error ? error.message : String(error);
-      sendError(res, 400, message);
-      return;
-    }
-  }
-
-  if (body.publicationPath !== undefined) {
-    next.publicationPath = path.resolve(body.publicationPath);
-  }
-
-  if (body.limits !== undefined) {
-    next.limits = body.limits;
-  }
-
-  if (body.skillPath !== undefined) {
-    if (body.skillPath === null) {
-      delete next.skillPath;
-    } else {
-      next.skillPath = path.resolve(body.skillPath);
-    }
-  }
-
-  if (body.planConfirm !== undefined) {
-    next.planConfirm = body.planConfirm;
-  }
-
-  if (body.wikiLanguage !== undefined) {
-    next.wikiLanguage = body.wikiLanguage;
-  }
-
-  if (body.roleModels !== undefined) {
-    next.roleModels = body.roleModels;
-  }
-
-  if (body.orchestration !== undefined) {
-    next.orchestration = body.orchestration;
-  }
-
-  if (body.operatorTools !== undefined) {
-    next.operatorTools = body.operatorTools;
-  }
-
-  // rootPath and id are immutable via PATCH
-  await saveWorkspace(next);
-  await registerWorkspaceInAppIndex(next.rootPath);
-  sendJson(res, 200, { workspace: next });
 }
 
 export async function handleDeleteWorkspace(
@@ -195,7 +142,7 @@ export async function handleDeleteWorkspace(
         res,
         500,
         "removed from index but failed to delete .okf-wiki",
-        error instanceof Error ? error.message : String(error),
+        redactErrorMessage(error),
       );
       return;
     }
@@ -256,8 +203,7 @@ export async function handleAddSource(
       return;
     }
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -277,8 +223,7 @@ export async function handleDeleteSource(
     sendJson(res, 200, { workspace: next });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -292,40 +237,20 @@ export async function handleUpdateSource(
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
 
-  const body = (await readJsonBody(req)) as {
-    applyDefaultIgnores?: unknown;
-    ignore?: unknown;
-  };
-
-  const patch: { applyDefaultIgnores?: boolean; ignore?: string[] } = {};
-  if (body.applyDefaultIgnores !== undefined) {
-    if (typeof body.applyDefaultIgnores !== "boolean") {
-      sendError(res, 400, "applyDefaultIgnores must be a boolean");
-      return;
-    }
-    patch.applyDefaultIgnores = body.applyDefaultIgnores;
-  }
-  if (body.ignore !== undefined) {
-    if (!Array.isArray(body.ignore) || !body.ignore.every((p) => typeof p === "string")) {
-      sendError(res, 400, "ignore must be an array of strings");
-      return;
-    }
-    patch.ignore = body.ignore as string[];
-  }
-  if (patch.applyDefaultIgnores === undefined && patch.ignore === undefined) {
-    sendError(res, 400, "provide applyDefaultIgnores and/or ignore");
+  const parsed = SourceUpdateSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid update source body", parsed.error.flatten());
     return;
   }
 
   try {
-    const next = updateSource(workspace, sourceId, patch);
+    const next = updateSource(workspace, sourceId, parsed.data);
     await saveWorkspace(next);
     const source = next.sources.find((s) => s.id === sourceId);
     sendJson(res, 200, { workspace: next, source });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -412,8 +337,7 @@ export async function handleCloneSource(
     });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -433,7 +357,7 @@ export async function handleGetSkill(
     const skill = await getSkillInfo(active);
     sendJson(res, 200, { skill });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -457,7 +381,7 @@ export async function handleCreateSkillFork(
     const skill = await getSkillInfo({ path: forkPath, kind: "fork" });
     sendJson(res, 201, { workspace: next, skill });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -487,7 +411,7 @@ export async function handleResetSkill(
     const skill = await getSkillInfo(active);
     sendJson(res, 200, { workspace: next, skill });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -513,7 +437,7 @@ export async function handleListSkillFiles(
       writable: active.kind === "fork",
     });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -541,7 +465,7 @@ export async function handleReadSkillFile(
       writable: active.kind === "fork",
     });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -553,10 +477,6 @@ export async function handleWriteSkillFile(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-  if (!workspace.skillPath) {
-    sendError(res, 400, "create a skill fork before editing skill files");
-    return;
-  }
   const body = (await readJsonBody(req)) as { path?: unknown; content?: unknown };
   if (typeof body.path !== "string" || !body.path.trim()) {
     sendError(res, 400, "path is required");
@@ -567,18 +487,15 @@ export async function handleWriteSkillFile(
     return;
   }
   try {
-    // Only write under the workspace `.agents/skills` producer path.
-    const forkPath = path.resolve(workspace.skillPath);
-    const expectedFork = skillForkDir(workspace.rootPath);
-    if (path.resolve(forkPath) !== path.resolve(expectedFork)) {
-      // Allow writing only into the canonical project skill directory.
-      sendError(res, 400, `skill writes must target the project skill at ${expectedFork}`);
-      return;
-    }
-    const file = await writeSkillFile(forkPath, body.path.trim(), body.content);
-    const skill = await getSkillInfo({ path: forkPath, kind: "fork" });
-    sendJson(res, 200, { file, skill, expectedFork });
+    const { file, skillRoot } = await writeWorkspaceSkillFile(
+      workspace,
+      body.path.trim(),
+      body.content,
+    );
+    const skill = await getSkillInfo({ path: skillRoot, kind: "fork" });
+    sendJson(res, 200, { file, skill, expectedFork: skillForkDir(workspace.rootPath) });
   } catch (error) {
-    sendError(res, 400, error instanceof Error ? error.message : String(error));
+    if (trySendCoreDomainError(res, error)) return;
+    sendCaughtError(res, 400, error);
   }
 }

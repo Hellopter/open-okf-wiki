@@ -10,8 +10,6 @@ import {
   createProviderEntry,
   deleteModelProfile,
   deleteProviderEntry,
-  flattenModels,
-  getModelProfile,
   loadProviderConfig,
   resolveProviderRuntime,
   setDefaultModelProfile,
@@ -20,7 +18,7 @@ import {
   updateProviderEntry,
 } from "@okf-wiki/core";
 import { trySendCoreDomainError } from "../core-http-error.ts";
-import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
 
 export async function handleGetProvider(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = await loadProviderConfig();
@@ -45,8 +43,7 @@ export async function handleCreateProvider(
       entry: pub.providers.find((p) => p.id === provider.id),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -70,8 +67,7 @@ export async function handleUpdateProvider(
     });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -85,8 +81,7 @@ export async function handleDeleteProvider(
     sendJson(res, 200, { provider: toProviderPublic(config) });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -104,8 +99,7 @@ export async function handleCreateModel(req: IncomingMessage, res: ServerRespons
       model: toProviderPublic(config).models.find((m) => m.id === profile.id),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -128,8 +122,7 @@ export async function handleUpdateModel(
     });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -143,8 +136,7 @@ export async function handleDeleteModel(
     sendJson(res, 200, { provider: toProviderPublic(config) });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -168,8 +160,7 @@ export async function handleSetDefaultModel(
     sendJson(res, 200, { provider: toProviderPublic(config) });
   } catch (error) {
     if (trySendCoreDomainError(res, error)) return;
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(res, 400, message);
+    sendCaughtError(res, 400, error);
   }
 }
 
@@ -268,34 +259,4 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * Resolve catalog profile → denormalized model ref for workspace create/patch.
- * Free-text modelId is not accepted; selection must come from the provider catalog.
- * When modelProfileId is omitted on create, fall back to default / sole catalog profile.
- */
-export async function resolveWorkspaceModelSelection(input: {
-  modelProfileId?: string;
-}): Promise<{ id: string; profileId?: string }> {
-  const catalog = await loadProviderConfig();
-
-  if (input.modelProfileId) {
-    const profile = getModelProfile(catalog, input.modelProfileId);
-    return { id: profile.modelId, profileId: profile.id };
-  }
-
-  // Default profile when available (create with empty form / sole catalog entry).
-  if (catalog.defaultModelProfileId) {
-    const profile = getModelProfile(catalog, catalog.defaultModelProfileId);
-    return { id: profile.modelId, profileId: profile.id };
-  }
-  const flat = flattenModels(catalog);
-  if (flat.length === 1) {
-    const profile = flat[0]!;
-    return { id: profile.modelId, profileId: profile.id };
-  }
-
-  // Empty catalog: denormalized placeholder only (operator must configure Settings later).
-  return { id: "openai/default" };
 }

@@ -285,20 +285,23 @@ test("SSE snapshots precede queued live events and include the genuine active to
     emitAgentSessionEvent(workspace.id, sessionId, piEvent);
     history.resolve({
       sessionId,
-      // Partial Pi assistant row for projector coverage; product does not re-type messages.
+      // Server snapshot carries AgentMessage[] (view projection).
       messages: [
         {
+          id: "asst-live-1",
           role: "assistant",
-          content: [
+          content: "",
+          createdAt: new Date().toISOString(),
+          status: "done",
+          tools: [
             {
-              type: "toolCall",
               id: "tool-live-1",
               name: "wiki_produce",
-              arguments: {},
+              args: {},
+              status: "running",
             },
           ],
-          timestamp: Date.now(),
-        } as OperatorSessionHistory["messages"][number],
+        } satisfies OperatorSessionHistory["messages"][number],
       ],
     });
 
