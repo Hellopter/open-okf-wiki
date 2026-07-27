@@ -163,11 +163,18 @@ export const WorkspaceOrchestrationSchema = z.object({
 
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
 
+/** Schema defaults are the sole authority for orchestration budgets. */
+export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration =
+  WorkspaceOrchestrationSchema.parse({});
+
 /**
  * Tools selectable for the Operator Session (chat agent). The fs tools are
  * Operations-scoped read-only; `bash` is an explicit trust opt-in — it is a
  * stock Pi tool with no Operations wrapper, so it can reach `.okf-wiki/`.
  * Wiki Run child sessions keep their fixed role policies regardless.
+ *
+ * Default selection omits `bash` (trust opt-in). Agent `tool-policy` imports
+ * this list and `OperatorToolNameSchema` so the wire config and runtime stay aligned.
  */
 export const OperatorToolNameSchema = z.enum(["read", "grep", "find", "ls", "bash"]);
 
@@ -259,7 +266,7 @@ export const WorkspaceConfigSchema = z.object({
    */
   roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
   /** Supervisor tree fan-out, depth, and review council size. */
-  orchestration: WorkspaceOrchestrationSchema.default(() => WorkspaceOrchestrationSchema.parse({})),
+  orchestration: WorkspaceOrchestrationSchema.default(() => ({ ...DEFAULT_ORCHESTRATION })),
   /**
    * When true, interactive Wiki Runs pause for operator Spec confirmation
    * before produce. Headless/autoApprove skips this gate.

@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { AgentMessageSchema } from "./agent-message.js";
 import { WikiRunSpecSchema } from "./run.js";
 import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
 
@@ -152,8 +153,11 @@ export const AgentSseSnapshotSchema = z
             workspaceId: z.string().min(1),
           })
           .strict(),
-        /** Pi owns the durable message shape; Web projects it without re-persisting it. */
-        messages: z.array(z.unknown()),
+        /**
+         * Durable SessionManager branch, already projected to AgentMessage[]
+         * (ADR 0031: view = project(...); server owns the projection).
+         */
+        messages: z.array(AgentMessageSchema),
         /** Latest genuine Pi tool update; absent when no tool is live. */
         activeTool: AgentSseActiveToolSchema.optional(),
       })

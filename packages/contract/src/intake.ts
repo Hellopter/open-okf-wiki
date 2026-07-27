@@ -68,5 +68,18 @@ export const SourceCloneSchema = z.object({
 
 export type SourceClone = z.infer<typeof SourceCloneSchema>;
 
+/** HTTP body: update source ignore policy (path and id are immutable). */
+export const SourceUpdateSchema = z
+  .object({
+    applyDefaultIgnores: z.boolean().optional(),
+    ignore: z.array(z.string()).optional(),
+  })
+  .strict()
+  .refine((body) => body.applyDefaultIgnores !== undefined || body.ignore !== undefined, {
+    message: "provide applyDefaultIgnores and/or ignore",
+  });
+
+export type SourceUpdate = z.infer<typeof SourceUpdateSchema>;
+
 /** Re-export source shape for intake consumers. */
 export { WorkspaceSourceSchema };

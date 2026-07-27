@@ -1,3 +1,36 @@
+/** Operator AgentMessage wire shape + pure Pi content parsers (W1). */
+export {
+  type AgentContentPart,
+  AgentContentPartSchema,
+  type AgentMessage,
+  type AgentMessageRole,
+  AgentMessageRoleSchema,
+  AgentMessageSchema,
+  type AgentMessageStatus,
+  AgentMessageStatusSchema,
+  type AgentThinkingStatus,
+  AgentThinkingStatusSchema,
+  type AgentToolCall,
+  AgentToolCallSchema,
+  type AgentToolCallStatus,
+  AgentToolCallStatusSchema,
+  PAYLOAD_TEXT_MAX,
+  assistantFromSnapshot,
+  extractAssistantError,
+  extractMessageText,
+  extractMessageThinking,
+  extractPartsFromMessage,
+  extractToolCallsFromMessage,
+  formatToolResultText,
+  isRecord,
+  makeId,
+  messageRole,
+  patchToolsOnAssistant,
+  piMessageId,
+  projectAgentMessagesFromPiHistory,
+  toolOutputFromResult,
+  wikiProduceDetails,
+} from "./agent-message.js";
 /** Pi Operator Session commands and genuine-event SSE envelope (ADR 0032). */
 export {
   type AgentAbortCommand,
@@ -34,6 +67,8 @@ export {
   SourceAddSchema,
   type SourceClone,
   SourceCloneSchema,
+  type SourceUpdate,
+  SourceUpdateSchema,
   type WorkspaceCreate,
   WorkspaceCreateSchema,
   type WorkspacePatch,
@@ -158,6 +193,7 @@ export {
 } from "./wiki-produce.js";
 export {
   DEFAULT_OPERATOR_TOOLS,
+  DEFAULT_ORCHESTRATION,
   type GitProbe,
   IGNORE_PRESETS,
   IgnorePatternSchema,

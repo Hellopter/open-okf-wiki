@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   SourceAddSchema,
   SourceCloneSchema,
+  SourceUpdateSchema,
   WorkspaceCreateSchema,
   WorkspacePatchSchema,
 } from "./intake.js";
@@ -28,4 +29,13 @@ test("SourceCloneSchema requires remoteUrl", () => {
     SourceCloneSchema.safeParse({ remoteUrl: "https://example.com/r.git" }).success,
     true,
   );
+});
+
+test("SourceUpdateSchema requires at least one field", () => {
+  assert.equal(SourceUpdateSchema.safeParse({}).success, false);
+  assert.equal(SourceUpdateSchema.safeParse({ applyDefaultIgnores: true }).success, true);
+  assert.equal(SourceUpdateSchema.safeParse({ ignore: ["node_modules"] }).success, true);
+  assert.equal(SourceUpdateSchema.safeParse({ applyDefaultIgnores: "yes" }).success, false);
+  assert.equal(SourceUpdateSchema.safeParse({ ignore: [1] }).success, false);
+  assert.equal(SourceUpdateSchema.safeParse({ path: "/nope" }).success, false);
 });

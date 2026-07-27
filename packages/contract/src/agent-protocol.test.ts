@@ -117,7 +117,15 @@ test("AgentSseEventSchema: accepts snapshot, opaque Pi events, and heartbeat onl
     timestamp: "2026-07-24T00:00:00.000Z",
     payload: {
       session: { id: "s1", workspaceId: "w1" },
-      messages: [{ role: "user", content: "hello" }],
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          content: "hello",
+          createdAt: "2026-07-24T00:00:00.000Z",
+          status: "done",
+        },
+      ],
       activeTool: {
         toolCallId: "tool-1",
         toolName: "wiki_produce",
