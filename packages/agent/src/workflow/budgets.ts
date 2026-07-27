@@ -12,7 +12,8 @@ export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = {
   maxDepth: 2,
   maxDomainFanOut: 4,
   maxLeafFanOut: 6,
-  reviewCouncilSize: 1,
+  reviewCouncilSize: 3,
+  planScoutCount: 2,
   domainConcurrency: 2,
 };
 
@@ -31,11 +32,18 @@ export function resolveOrchestration(workspace?: WorkspaceConfig | null): Worksp
   if (!o) {
     return { ...DEFAULT_ORCHESTRATION };
   }
+  const reviewCouncilSize = o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize;
+  const planScoutCount = o.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount;
   return {
     maxDepth: o.maxDepth ?? DEFAULT_ORCHESTRATION.maxDepth,
     maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
     maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
-    reviewCouncilSize: o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize,
+    reviewCouncilSize,
+    ...(o.reviewConcurrency !== undefined ? { reviewConcurrency: o.reviewConcurrency } : {}),
+    planScoutCount,
+    ...(o.planScoutConcurrency !== undefined
+      ? { planScoutConcurrency: o.planScoutConcurrency }
+      : {}),
     domainConcurrency: o.domainConcurrency ?? DEFAULT_ORCHESTRATION.domainConcurrency,
   };
 }

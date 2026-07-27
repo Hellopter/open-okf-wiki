@@ -5,14 +5,18 @@
  * 1. Review-council blocking defects
  * 2. Mechanical hard-validate failures (citation OOB, missing critical pages, …)
  *
- * Hard-validate used to be terminal after the review loop; citation line-range
- * errors then failed the run with no in-run fix path. They now re-enter
- * root_write repair while budget remains.
+ * Council members run in parallel (reviewConcurrency), use orthogonal lenses,
+ * and merge with fingerprint dedupe + sticky prior blocking (ensemble pattern).
  */
 
-import type { MergedDefectReport } from "@okf-wiki/contract";
+import type { MergedDefectReport, WorkspaceOrchestration } from "@okf-wiki/contract";
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
+import {
+  applyStickyBlockingDefects,
+  formatDefectsForRepair,
+  writeMergedDefects,
+} from "../../produce/defects.js";
 import { emitProduceProgress } from "../../produce/progress.js";
 import {
   type PublishabilityResult,
@@ -20,11 +24,12 @@ import {
   sourcesFromMounts,
 } from "../../produce/publishability.js";
 import { runReviewCouncil } from "../../produce/review.js";
-import { reviewerPrompt } from "../../prompts/index.js";
+import { reviewerPrompt, type ReviewLens } from "../../prompts/reviewer.js";
 import { classifyAgentFailure, decideNodeRetry } from "../retry-policy.js";
 import {
   cancelledResult,
   type PhaseContext,
+  type ProduceWikiModelHandle,
   type ProduceWikiResult,
   throwIfAborted,
 } from "./types.js";
@@ -33,6 +38,13 @@ import { runRepairWrite } from "./write-phase.js";
 export type ReviewRepairPhaseResult = {
   result: ProduceWikiResult;
 };
+
+const REVIEW_LENSES: readonly ReviewLens[] = [
+  "grounding",
+  "coverage",
+  "consistency",
+  "general",
+];
 
 /** Format mechanical hard-validate reasons as repair instructions for root_write. */
 export function hardValidateRepairText(reasons: readonly string[]): string {
@@ -92,18 +104,128 @@ function failedHardValidateResult(input: {
   };
 }
 
+/** Bounded-parallel map preserving item order (same pattern as research-phase). */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  signal: AbortSignal | undefined,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      if (signal?.aborted) return;
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]!, i);
+    }
+  }
+  const width = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: width }, () => worker()));
+  return results;
+}
+
+function seatModel(
+  models: PhaseContext["input"]["models"],
+  seatIndex: number,
+): ProduceWikiModelHandle | undefined {
+  const seats = models?.reviewers;
+  if (seats && seats.length > 0) {
+    return seats[seatIndex % seats.length] ?? models?.reviewer;
+  }
+  return models?.reviewer;
+}
+
+type CouncilMember = { id: string; text: string };
+
+async function runOneReviewer(input: {
+  ctx: PhaseContext;
+  produced: WikiWriteResult;
+  reviewerId: string;
+  lens: ReviewLens;
+  seatIndex: number;
+  runIndex: number;
+  priorBlocking: MergedDefectReport["defects"];
+}): Promise<CouncilMember> {
+  const { ctx, produced, reviewerId, lens, seatIndex, runIndex, priorBlocking } = input;
+  const { runtime, layout } = ctx;
+  const model = seatModel(ctx.input.models, seatIndex);
+  const attemptId = `review@${runIndex}:${reviewerId}`;
+  const maxReviewerAttempts = 2;
+  let lastFailure = "";
+
+  for (let attempt = 0; attempt < maxReviewerAttempts; attempt++) {
+    try {
+      const child = await runtime.runAgent({
+        role: "reviewer",
+        spanId: attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`,
+        nodeKey: "review",
+        runIndex,
+        runWorkDir: layout.runWorkDir,
+        task: reviewerPrompt({
+          pages: produced.pages,
+          lens,
+          ...(priorBlocking.length > 0
+            ? {
+                priorBlocking: priorBlocking.map((d) => ({
+                  path: d.path,
+                  code: d.code,
+                  issue: d.issue,
+                })),
+              }
+            : {}),
+        }),
+        model: model?.model,
+        modelRuntime: model?.modelRuntime,
+        maxContextTokens: model?.maxContextTokens,
+        contextTargetTokens: ctx.contextTargetTokens,
+        sourceIgnores: ctx.input.sourceIgnores,
+        abortSignal: ctx.input.abortSignal,
+        onProgress: (span) => emitProduceProgress(ctx.onProgress, { kind: "attempt", attempt: span }),
+      });
+      return { id: reviewerId, text: child.summary };
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw err;
+      lastFailure = err instanceof Error ? err.message : String(err);
+      const retry = decideNodeRetry({
+        errorClass: classifyAgentFailure(lastFailure),
+        attemptIndex: attempt,
+        maxAttempts: maxReviewerAttempts,
+        message: lastFailure,
+      });
+      if (retry.action !== "retry") break;
+      if (retry.delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
+      }
+    }
+  }
+
+  return {
+    id: reviewerId,
+    text: reviewerBlockingDefectText({
+      code: "reviewer_error",
+      issue: `Reviewer failed: ${lastFailure}`,
+      summary: `reviewer error: ${lastFailure}`,
+    }),
+  };
+}
+
 export async function runReviewRepairPhase(
   ctx: PhaseContext,
   producedIn: WikiWriteResult,
-  orch: { reviewCouncilSize?: number },
+  orch: WorkspaceOrchestration,
 ): Promise<ReviewRepairPhaseResult> {
   const { input, onProgress, runtime, metrics, layout, spec, mode } = ctx;
 
   let produced = producedIn;
   let defects: MergedDefectReport | null = null;
   const maxRepair = Math.max(0, spec.acceptance?.maxRepairRounds ?? 2);
-  const councilSize = Math.max(1, orch.reviewCouncilSize ?? 1);
-  const lenses = ["grounding", "coverage", "consistency", "general"] as const;
+  const councilSize = Math.max(1, orch.reviewCouncilSize ?? 3);
+  const reviewConcurrency = Math.max(
+    1,
+    Math.min(councilSize, orch.reviewConcurrency ?? councilSize),
+  );
   const receiptIndex = await defaultReceiptStore.buildIndex(input.workspace.rootPath, input.runId);
 
   for (let round = 1; round <= maxRepair + 1; round++) {
@@ -111,96 +233,77 @@ export async function runReviewRepairPhase(
     emitProduceProgress(onProgress, {
       kind: "status",
       status: "producing",
-      summary: `review council round ${round}`,
+      summary: `review council round ${round} (${councilSize} seats, concurrency ${reviewConcurrency})`,
     });
 
-    const reviewers: Array<{ id: string; text: string }> = [];
+    const priorBlocking =
+      defects?.defects.filter((d) => d.severity === "blocking") ?? [];
+    const priorMerged = defects;
+    let reviewers: CouncilMember[] = [];
 
-    if (runtime.kind === "live" && !input.models?.reviewer?.model) {
+    if (runtime.kind === "live" && !input.models?.reviewer?.model && !input.models?.reviewers?.length) {
       // Fail closed: do not pretend the council is clean without a reviewer model.
       const msg = "Live Produce requires a reviewer model (or use fixture runtime)";
-      reviewers.push({
-        id: "reviewer-1",
-        text: reviewerBlockingDefectText({
-          code: "reviewer_missing",
-          issue: msg,
-          summary: msg,
-          fenced: true,
-        }),
-      });
+      reviewers = [
+        {
+          id: "reviewer-1",
+          text: reviewerBlockingDefectText({
+            code: "reviewer_missing",
+            issue: msg,
+            summary: msg,
+            fenced: true,
+          }),
+        },
+      ];
     } else {
-      // Topology has a single `review` node; council members + rounds are attempts.
-      // attemptId must be unique per member/round so append-only graph keeps history.
       const runIndex = round - 1;
-      for (let i = 0; i < councilSize; i++) {
-        const reviewerId = `reviewer-${i + 1}`;
-        const lens = lenses[i % lenses.length]!;
-        const attemptId = `review@${runIndex}:${reviewerId}`;
-        // Retry policy (T1): a failed council member gets one policy-driven
-        // retry (transient/unknown); if it still fails, its slot becomes a
-        // blocking reviewer_error defect (fail closed, never a silent pass).
-        const maxReviewerAttempts = 2;
-        let reviewed = false;
-        let lastFailure = "";
-        for (let attempt = 0; attempt < maxReviewerAttempts && !reviewed; attempt++) {
-          try {
-            const child = await runtime.runAgent({
-              role: "reviewer",
-              spanId: attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`,
-              nodeKey: "review",
+      const seats = Array.from({ length: councilSize }, (_, i) => i);
+      try {
+        reviewers = await mapWithConcurrency(
+          seats,
+          reviewConcurrency,
+          input.abortSignal,
+          async (seatIndex) => {
+            const reviewerId = `reviewer-${seatIndex + 1}`;
+            const lens = REVIEW_LENSES[seatIndex % REVIEW_LENSES.length]!;
+            return runOneReviewer({
+              ctx,
+              produced,
+              reviewerId,
+              lens,
+              seatIndex,
               runIndex,
-              runWorkDir: layout.runWorkDir,
-              task: reviewerPrompt({ pages: produced.pages, lens }),
-              model: input.models?.reviewer?.model,
-              modelRuntime: input.models?.reviewer?.modelRuntime,
-              maxContextTokens: input.models?.reviewer?.maxContextTokens,
-              contextTargetTokens: ctx.contextTargetTokens,
-              sourceIgnores: input.sourceIgnores,
-              abortSignal: input.abortSignal,
-              onProgress: (span) =>
-                emitProduceProgress(onProgress, { kind: "attempt", attempt: span }),
+              priorBlocking,
             });
-            reviewers.push({ id: reviewerId, text: child.summary });
-            reviewed = true;
-          } catch (err) {
-            if (err instanceof Error && err.name === "AbortError") {
-              return {
-                result: cancelledResult(spec, mode, metrics, layout, produced),
-              };
-            }
-            lastFailure = err instanceof Error ? err.message : String(err);
-            const retry = decideNodeRetry({
-              errorClass: classifyAgentFailure(lastFailure),
-              attemptIndex: attempt,
-              maxAttempts: maxReviewerAttempts,
-              message: lastFailure,
-            });
-            if (retry.action !== "retry") break;
-            if (retry.delayMs > 0) {
-              await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
-            }
-          }
+          },
+        );
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return {
+            result: cancelledResult(spec, mode, metrics, layout, produced),
+          };
         }
-        if (!reviewed) {
-          reviewers.push({
-            id: reviewerId,
-            text: reviewerBlockingDefectText({
-              code: "reviewer_error",
-              issue: `Reviewer failed: ${lastFailure}`,
-              summary: `reviewer error: ${lastFailure}`,
-            }),
-          });
-        }
+        throw err;
       }
     }
 
-    defects = await runReviewCouncil({
+    let merged = await runReviewCouncil({
       reviewers,
       pages: produced.pages,
       workspaceRoot: input.workspace.rootPath,
       runId: input.runId,
       round,
     });
+    // Sticky prior blocking when this round is not fully clean (ensemble stability).
+    if (round > 1) {
+      const withSticky = applyStickyBlockingDefects(merged, priorMerged);
+      if (withSticky !== merged && withSticky.defects.length !== merged.defects.length) {
+        await writeMergedDefects(input.workspace.rootPath, input.runId, withSticky);
+        merged = withSticky;
+      }
+    }
+    defects = merged;
+
     emitProduceProgress(onProgress, {
       kind: "defects",
       defects,
@@ -222,14 +325,17 @@ export async function runReviewRepairPhase(
       status: "producing",
       summary: `repair round ${metrics.repairRounds} (${defects.defects.length} defects)`,
     });
-    const defectText = defects.defects
-      .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`)
-      .join("\n");
+    // Repair targets blocking only — majors stay advisory to reduce thrash.
+    const defectText = formatDefectsForRepair(defects.defects, {
+      severities: blocking as ("blocking" | "major" | "minor")[],
+    });
 
     const repair = await runRepairWrite({
       ctx,
       produced,
-      defectText,
+      defectText:
+        defectText ||
+        formatDefectsForRepair(defects.defects, { severities: ["blocking"] }),
       receiptIndex,
     });
     if (repair.kind === "cancelled") {

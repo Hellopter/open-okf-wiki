@@ -12,22 +12,22 @@ import type {
 import type { ProduceProgress } from "../../ports/progress-sink.js";
 import type { PublishabilityResult } from "../../produce/publishability.js";
 
+export type ProduceWikiModelHandle = {
+  model: unknown;
+  modelRuntime?: unknown;
+  maxContextTokens?: number;
+};
+
 export type ProduceWikiModels = {
-  writer?: {
-    model: unknown;
-    modelRuntime?: unknown;
-    maxContextTokens?: number;
-  };
-  worker?: {
-    model: unknown;
-    modelRuntime?: unknown;
-    maxContextTokens?: number;
-  };
-  reviewer?: {
-    model: unknown;
-    modelRuntime?: unknown;
-    maxContextTokens?: number;
-  };
+  writer?: ProduceWikiModelHandle;
+  worker?: ProduceWikiModelHandle;
+  /** Primary reviewer (seat 0); kept for backward-compatible resolve. */
+  reviewer?: ProduceWikiModelHandle;
+  /**
+   * Per-council-seat reviewer models (decorrelated profiles when configured).
+   * Seat i uses reviewers[i] ?? reviewer.
+   */
+  reviewers?: ProduceWikiModelHandle[];
 };
 
 export type ProduceWikiInput = {

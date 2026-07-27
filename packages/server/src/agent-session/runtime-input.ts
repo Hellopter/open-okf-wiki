@@ -22,8 +22,13 @@ export type RuntimeInputResult = {
 async function resolveRoleModel(
   workspace: WorkspaceConfig,
   role: "default" | "planner" | "worker" | "writer" | "reviewer",
+  opts?: { seatIndex?: number },
 ) {
-  const selected = resolveModelSelection({ workspace, role });
+  const selected = resolveModelSelection({
+    workspace,
+    role,
+    ...(opts?.seatIndex !== undefined ? { seatIndex: opts.seatIndex } : {}),
+  });
   return resolveWorkspacePiModel({
     profileId: selected.profileId,
     modelId: selected.id,
@@ -71,8 +76,9 @@ export async function runtimeInput(
           : async (
               role: "planner" | "worker" | "writer" | "reviewer",
               currentWorkspace: WorkspaceConfig,
+              opts?: { seatIndex?: number },
             ) => {
-              const resolved = await resolveRoleModel(currentWorkspace, role);
+              const resolved = await resolveRoleModel(currentWorkspace, role, opts);
               return {
                 model: resolved.model,
                 modelRuntime: resolved.modelRuntime,

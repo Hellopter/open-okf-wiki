@@ -74,7 +74,10 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
   const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState("600");
   const [maxDomainFanOut, setMaxDomainFanOut] = useState("4");
   const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
-  const [reviewCouncilSize, setReviewCouncilSize] = useState("1");
+  const [planScoutCount, setPlanScoutCount] = useState("2");
+  const [reviewCouncilSize, setReviewCouncilSize] = useState("3");
+  const [reviewConcurrency, setReviewConcurrency] = useState("");
+  const [domainConcurrency, setDomainConcurrency] = useState("2");
   const [plannerProfileId, setPlannerProfileId] = useState("");
   const [workerProfileId, setWorkerProfileId] = useState("");
   const [writerProfileId, setWriterProfileId] = useState("");
@@ -99,7 +102,14 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
     setRequestTimeoutSeconds(String(ws.limits?.requestTimeoutSeconds ?? 600));
     setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
     setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
-    setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 1));
+    setPlanScoutCount(String(ws.orchestration?.planScoutCount ?? 2));
+    setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 3));
+    setReviewConcurrency(
+      ws.orchestration?.reviewConcurrency !== undefined
+        ? String(ws.orchestration.reviewConcurrency)
+        : "",
+    );
+    setDomainConcurrency(String(ws.orchestration?.domainConcurrency ?? 2));
     setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
     setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
     setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
@@ -220,13 +230,19 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         reviewers: workspace?.roleModels?.reviewers ?? [],
       };
       const baseOrch = workspace?.orchestration;
+      const council = Math.min(4, Math.max(1, Number(reviewCouncilSize) || 3));
+      const reviewConcRaw = reviewConcurrency.trim();
+      const reviewConc = reviewConcRaw
+        ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
+        : undefined;
       const orchestration = {
         maxDepth: baseOrch?.maxDepth ?? 2,
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
-        reviewCouncilSize: Math.min(4, Math.max(1, Number(reviewCouncilSize) || 1)),
-        // Not yet operator-editable; carry the stored value through the patch.
-        domainConcurrency: baseOrch?.domainConcurrency ?? 2,
+        planScoutCount: Math.min(4, Math.max(0, Number(planScoutCount) || 0)),
+        reviewCouncilSize: council,
+        ...(reviewConc !== undefined ? { reviewConcurrency: reviewConc } : {}),
+        domainConcurrency: Math.min(8, Math.max(1, Number(domainConcurrency) || 2)),
       };
       const result = await patchWorkspace(
         id,
@@ -542,6 +558,27 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
                         </div>
                         <div className="flex flex-col gap-1">
                           <FieldLabel
+                            htmlFor="settings-plan-scout-count"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t.settings.planScoutCount}
+                          </FieldLabel>
+                          <Input
+                            id="settings-plan-scout-count"
+                            type="number"
+                            min={0}
+                            max={4}
+                            value={planScoutCount}
+                            onChange={(e) => {
+                              setPlanScoutCount(e.target.value);
+                            }}
+                            className="font-mono w-24"
+                            data-testid="settings-plan-scout-count"
+                            title={t.settings.planScoutCountHint}
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <FieldLabel
                             htmlFor="settings-review-council-size"
                             className="text-xs text-muted-foreground"
                           >
@@ -558,9 +595,55 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
                             }}
                             className="font-mono w-24"
                             data-testid="settings-review-council-size"
+                            title={t.settings.reviewCouncilSizeHint}
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <FieldLabel
+                            htmlFor="settings-review-concurrency"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t.settings.reviewConcurrency}
+                          </FieldLabel>
+                          <Input
+                            id="settings-review-concurrency"
+                            type="number"
+                            min={1}
+                            max={4}
+                            placeholder={reviewCouncilSize || "3"}
+                            value={reviewConcurrency}
+                            onChange={(e) => {
+                              setReviewConcurrency(e.target.value);
+                            }}
+                            className="font-mono w-24"
+                            data-testid="settings-review-concurrency"
+                            title={t.settings.reviewConcurrencyHint}
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <FieldLabel
+                            htmlFor="settings-domain-concurrency"
+                            className="text-xs text-muted-foreground"
+                          >
+                            {t.settings.domainConcurrency}
+                          </FieldLabel>
+                          <Input
+                            id="settings-domain-concurrency"
+                            type="number"
+                            min={1}
+                            max={8}
+                            value={domainConcurrency}
+                            onChange={(e) => {
+                              setDomainConcurrency(e.target.value);
+                            }}
+                            className="font-mono w-24"
+                            data-testid="settings-domain-concurrency"
                           />
                         </div>
                       </div>
+                      <FieldDescription className="mt-2 text-xs">
+                        {t.settings.planScoutCountHint} {t.settings.reviewCouncilSizeHint}
+                      </FieldDescription>
                     </Field>
 
                     <Field>

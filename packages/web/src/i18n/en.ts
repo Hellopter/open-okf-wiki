@@ -155,15 +155,23 @@ export const en = {
     requestTimeoutSecondsPlaceholder: "e.g. 600",
     orchestrationTitle: "Supervisor tree budgets",
     orchestrationHint:
-      "Run Boundary fan-out budgets for Domain/Leaf research and review council size. Leave defaults for small repos.",
+      "Run Boundary budgets for plan scouts, Domain/Leaf research, and multi-lens review. Defaults suit medium repos; lower for cost, raise for large codebases.",
     maxDomainFanOut: "Max domains",
     maxLeafFanOut: "Max leaves / domain",
+    planScoutCount: "Plan scouts",
+    planScoutCountHint:
+      "Parallel read-only scouts (entry / layout / tests / risks) before the Spec synthesizer. 0 = single planner only.",
     reviewCouncilSize: "Review council size",
+    reviewCouncilSizeHint:
+      "Independent review lenses (grounding, coverage, consistency, …). 3 is the multi-lens default; 1 is cheapest.",
+    reviewConcurrency: "Review concurrency",
+    reviewConcurrencyHint: "How many council members run at once (defaults to council size).",
+    domainConcurrency: "Domain concurrency",
     roleModelsTitle: "Role models (hybrid economics)",
     roleModelsHint:
-      "Optional: frontier planner + cheaper workers. Empty roles fall back to the workspace default model above. Pi auto-compacts each role session near the context target.",
-    rolePlanner: "Planner",
-    roleWorker: "Worker (research)",
+      "Optional: frontier planner + cheaper workers/scouts + separate reviewers. Empty roles fall back to the workspace default model above. Pi auto-compacts each role session near the context target.",
+    rolePlanner: "Planner (Spec synthesizer)",
+    roleWorker: "Worker (research / scouts)",
     roleWriter: "Writer",
     langEn: "English",
     langZh: "Chinese (Simplified)",

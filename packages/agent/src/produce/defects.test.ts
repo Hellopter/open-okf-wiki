@@ -5,6 +5,9 @@ import path from "node:path";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
+  applyStickyBlockingDefects,
+  defectFingerprint,
+  formatDefectsForRepair,
   hasBlockingDefects,
   mergeDefectReports,
   parseDefectReportFromText,
@@ -50,6 +53,149 @@ test("mergeDefectReports dedupes and ranks", () => {
   assert.equal(m.reviewerIds.length, 2);
   assert.ok(m.defects.length >= 1);
   assert.equal(hasBlockingDefects(m), true);
+});
+
+test("mergeDefectReports collapses same finding across reviewers", () => {
+  const shared = {
+    clean: false as const,
+    defects: [
+      {
+        severity: "major" as const,
+        code: "thin_page",
+        path: "overview.md",
+        issue: "Overview is too thin on runtime.",
+      },
+    ],
+  };
+  const a = parseDefectReportFromText(`\`\`\`json\n${JSON.stringify(shared)}\n\`\`\``, "r1");
+  const b = parseDefectReportFromText(
+    `\`\`\`json\n${JSON.stringify({
+      ...shared,
+      defects: [
+        {
+          severity: "blocking" as const,
+          code: "thin_page",
+          path: "overview.md",
+          issue: "Overview is too thin on runtime.",
+        },
+      ],
+    })}\n\`\`\``,
+    "r2",
+  );
+  const m = mergeDefectReports([a, b]);
+  assert.equal(m.defects.length, 1);
+  assert.equal(m.defects[0]!.severity, "blocking");
+  assert.equal(
+    defectFingerprint(m.defects[0]!),
+    defectFingerprint({
+      code: "thin_page",
+      path: "overview.md",
+      issue: "Overview is too thin on runtime.",
+    }),
+  );
+});
+
+test("mergeDefectReports demotes singleton major when council ≥ 2", () => {
+  const a = parseDefectReportFromText(
+    `\`\`\`json\n${JSON.stringify({
+      clean: false,
+      defects: [
+        {
+          severity: "major",
+          code: "style_nit",
+          path: "overview.md",
+          issue: "Prefer shorter sentences",
+        },
+      ],
+    })}\n\`\`\``,
+    "r1",
+  );
+  const b = parseDefectReportFromText("NO_DEFECTS", "r2");
+  const m = mergeDefectReports([a, b]);
+  assert.equal(m.defects.length, 1);
+  assert.equal(m.defects[0]!.severity, "minor");
+});
+
+test("applyStickyBlockingDefects keeps prior blocking when round still dirty", () => {
+  const prior = {
+    version: 1 as const,
+    clean: false,
+    reviewerIds: ["r1"],
+    defects: [
+      {
+        severity: "blocking" as const,
+        code: "thin_page",
+        path: "overview.md",
+        issue: "Missing overview purpose",
+        reviewerId: "r1",
+      },
+    ],
+    summary: "1 defect",
+  };
+  const current = {
+    version: 1 as const,
+    clean: false,
+    reviewerIds: ["r2"],
+    defects: [
+      {
+        severity: "major" as const,
+        code: "other",
+        path: "modules/a.md",
+        issue: "Something else",
+        reviewerId: "r2",
+      },
+    ],
+    summary: "1 defect",
+  };
+  const sticky = applyStickyBlockingDefects(current, prior);
+  assert.equal(sticky.defects.length, 2);
+  assert.ok(sticky.defects.some((d) => d.code?.startsWith("sticky_")));
+});
+
+test("applyStickyBlockingDefects drops sticky when current is clean", () => {
+  const prior = {
+    version: 1 as const,
+    clean: false,
+    reviewerIds: ["r1"],
+    defects: [
+      {
+        severity: "blocking" as const,
+        code: "thin_page",
+        path: "overview.md",
+        issue: "Missing overview purpose",
+        reviewerId: "r1",
+      },
+    ],
+  };
+  const current = {
+    version: 1 as const,
+    clean: true,
+    reviewerIds: ["r1", "r2"],
+    defects: [] as [],
+    summary: "NO_DEFECTS",
+  };
+  const next = applyStickyBlockingDefects(current, prior);
+  assert.equal(next.clean, true);
+  assert.equal(next.defects.length, 0);
+});
+
+test("formatDefectsForRepair defaults to blocking only", () => {
+  const text = formatDefectsForRepair([
+    {
+      severity: "blocking",
+      code: "a",
+      path: "overview.md",
+      issue: "bad",
+    },
+    {
+      severity: "major",
+      code: "b",
+      path: "x.md",
+      issue: "meh",
+    },
+  ]);
+  assert.match(text, /overview\.md/);
+  assert.doesNotMatch(text, /meh/);
 });
 
 test("scorePublishable fails without pages", async () => {

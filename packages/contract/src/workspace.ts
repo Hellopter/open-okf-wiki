@@ -133,10 +133,26 @@ export const WorkspaceOrchestrationSchema = z.object({
   maxLeafFanOut: z.number().int().min(1).max(16).default(6),
   /**
    * Independent review council size (Run Boundary-owned).
-   * Default 1 for cost/latency; set 2+ for decorrelated multi-lens review
-   * (pad with same model + different prompts when only one reviewer model).
+   * Default 3 for multi-lens ensemble (grounding/coverage/consistency);
+   * set 1 for cheapest runs. Pad with same model + different prompts when
+   * only one reviewer profile is configured.
    */
-  reviewCouncilSize: z.number().int().min(1).max(4).default(1),
+  reviewCouncilSize: z.number().int().min(1).max(4).default(3),
+  /**
+   * How many review council members may run concurrently.
+   * Defaults to `reviewCouncilSize` when omitted.
+   */
+  reviewConcurrency: z.number().int().min(1).max(4).optional(),
+  /**
+   * Parallel plan scouts before the Spec synthesizer (entry / layout / tests).
+   * 0 disables scouts (single planner only). Default 2 for multi-angle coverage.
+   */
+  planScoutCount: z.number().int().min(0).max(4).default(2),
+  /**
+   * How many plan scouts may run concurrently.
+   * Defaults to `planScoutCount` when omitted.
+   */
+  planScoutConcurrency: z.number().int().min(1).max(4).optional(),
   /**
    * How many domain research units may run concurrently (each unit is
    * leaf fan-out + domain reduce). Domains have independent scopes, so

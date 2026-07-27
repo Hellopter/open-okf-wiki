@@ -20,7 +20,7 @@ export function plannerPrompt(input: {
     `Workspace name: ${input.workspaceName}`,
     ...(operatorNotes ? [`Operator-requested focus:\n${operatorNotes}`] : []),
     "Using only read tools (ls, find, grep, read), inspect sources/ entry points",
-    "(README, package manifests, top-level layout).",
+    "(README, package manifests, top-level layout) and any analysis/plan-scouts/* receipts.",
     "Do not write wiki pages. Do not use bash.",
     "",
     "When ready, call the submit_wiki_run_spec tool with a complete WikiRunSpec",
@@ -44,6 +44,8 @@ export function plannerPrompt(input: {
     "- Always include a critical overview.md (or Spec equivalent) with template overview.",
     "- index.md is a listing file generated/written later — do not list it as a concept page.",
     "- Page paths are relative under wiki/, end with .md.",
+    "- If plan scout receipts are present, synthesize them into one coherent Spec;",
+    "  do not ignore concrete paths they cited without reason.",
     input.wikiLanguage === "zh"
       ? "- Spec summary/purpose/questions may be Chinese; paths stay English filenames."
       : "- Spec prose in English.",

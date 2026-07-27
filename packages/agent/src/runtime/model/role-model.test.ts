@@ -18,7 +18,8 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
       maxDepth: 2,
       maxDomainFanOut: 4,
       maxLeafFanOut: 6,
-      reviewCouncilSize: 1,
+      reviewCouncilSize: 3,
+      planScoutCount: 2,
       domainConcurrency: 2,
     },
     planConfirm: false,
@@ -76,5 +77,20 @@ describe("role-model", () => {
     assert.equal(sel.profileId, "fast-local");
     assert.equal(sel.overridden, true);
     assert.equal(sel.role, "writer");
+  });
+
+  it("rotates roleModels.reviewers by seatIndex", () => {
+    const ws = baseWorkspace({
+      roleModels: {
+        reviewers: [
+          { id: "openai/r1", profileId: "r1" },
+          { id: "openai/r2", profileId: "r2" },
+        ],
+      },
+    });
+    assert.equal(modelRefForRole(ws, "reviewer", { seatIndex: 0 }).profileId, "r1");
+    assert.equal(modelRefForRole(ws, "reviewer", { seatIndex: 1 }).profileId, "r2");
+    assert.equal(modelRefForRole(ws, "reviewer", { seatIndex: 2 }).profileId, "r1");
+    assert.equal(resolveModelSelection({ workspace: ws, role: "reviewer", seatIndex: 1 }).profileId, "r2");
   });
 });

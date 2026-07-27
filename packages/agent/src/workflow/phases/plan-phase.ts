@@ -3,6 +3,9 @@
  * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
  * fail-closed when draft is missing — no invented thin plans / chat JSON spill.
  *
+ * Optional plan scouts (orchestration.planScoutCount) run first as MoA proposers;
+ * only this synthesizer may submit the Spec.
+ *
  * Workflow stays free of Pi SDK and tools/: live callers inject customTools
  * (submit_wiki_run_spec) via PlanWikiSpecInput.customTools.
  */
@@ -12,6 +15,7 @@ import {
   type NodeAttempt,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
+  type WorkspaceOrchestration,
 } from "@okf-wiki/contract";
 import type {
   AgentRunner,
@@ -25,6 +29,8 @@ import {
   writePlanDraft,
 } from "../../produce/living-spec.js";
 import { plannerPrompt } from "../../prompts/plan.js";
+import { DEFAULT_ORCHESTRATION } from "../budgets.js";
+import { runPlanScouts } from "./plan-scouts.js";
 
 /** Tool name constant (contract-owned — no tools/ import). */
 export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
@@ -77,6 +83,12 @@ export type PlanWikiSpecInput = {
   model?: unknown;
   /** Opaque model runtime — runtime adapters cast to Pi ModelRuntime. */
   modelRuntime?: unknown;
+  /**
+   * Cheaper scout model (worker). Falls back to planner model when omitted.
+   */
+  scoutModel?: unknown;
+  scoutModelRuntime?: unknown;
+  scoutMaxContextTokens?: number;
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
@@ -84,6 +96,8 @@ export type PlanWikiSpecInput = {
   operatorNotes?: string;
   priorSpec?: WikiRunSpec;
   revisionFeedback?: string;
+  /** Orchestration budgets (planScoutCount, …). */
+  orchestration?: WorkspaceOrchestration;
   onProgress?: (attempt: NodeAttempt) => void;
   /**
    * Opaque custom tools (e.g. submit_wiki_run_spec). Injected by tool edge
@@ -100,10 +114,12 @@ export type PlanWikiSpecResult = {
   /** How the Spec was obtained. */
   source?: "draft" | "fixture";
   draftPath?: string;
+  /** Scout kinds that produced receipts (empty when scouts disabled). */
+  scoutKinds?: string[];
 };
 
 /**
- * Plan a WikiRunSpec. Fixture runtime → default Spec; live → planner agent + path-first resolve.
+ * Plan a WikiRunSpec. Fixture runtime → default Spec; live → optional scouts + planner.
  * Does not commit Spec to living analysis/spec.json — caller (runWiki) owns commitSpec.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
@@ -119,12 +135,34 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
       summary: "Fixture default WikiRunSpec",
       items: [{ type: "text", text: `pages=${spec.pages.length} draft=${PLAN_DRAFT_REL_PATH}` }],
     });
-    return { spec, mode: "fixture", source: "fixture", draftPath };
+    return { spec, mode: "fixture", source: "fixture", draftPath, scoutKinds: [] };
   }
 
   if (!input.model) {
     throw new Error("Live plan phase requires a model");
   }
+
+  const orch = input.orchestration ?? { ...DEFAULT_ORCHESTRATION };
+
+  // Fail-closed across (re)plan rounds: a draft left by a previous round must
+  // never be re-resolved as this round's submission.
+  await clearPlanDraft(input.layout.runWorkDir);
+
+  const scouts = await runPlanScouts({
+    layout: input.layout,
+    workspaceName: input.workspaceName,
+    runtime: input.runtime,
+    orch,
+    operatorNotes: input.operatorNotes,
+    model: input.scoutModel ?? input.model,
+    modelRuntime: input.scoutModelRuntime ?? input.modelRuntime,
+    maxContextTokens: input.scoutMaxContextTokens ?? input.maxContextTokens,
+    contextTargetTokens: input.contextTargetTokens,
+    sourceIgnores: input.sourceIgnores,
+    abortSignal: input.abortSignal,
+    onProgress: input.onProgress,
+    runIndex: 0,
+  });
 
   const basePrompt = plannerPrompt({
     layout: input.layout,
@@ -141,13 +179,9 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
       ].join("\n\n")
     : "";
 
-  // Fail-closed across (re)plan rounds: a draft left by a previous round must
-  // never be re-resolved as this round's submission.
-  await clearPlanDraft(input.layout.runWorkDir);
-
   const systemPrompt = [
-    "You are the Wiki planner.",
-    "Use read-only tools (ls, find, grep, read) to inspect sources/.",
+    "You are the Wiki planner (Spec synthesizer).",
+    "Use read-only tools (ls, find, grep, read) to inspect sources/ and any plan scout receipts.",
     `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Run Boundary writes ${PLAN_DRAFT_REL_PATH}).`,
     "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
   ].join(" ");
@@ -155,8 +189,10 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
   const child = await input.runtime.runAgent({
     role: "plan",
     spanId: "plan",
+    nodeKey: "plan",
+    runIndex: 0,
     runWorkDir: input.layout.runWorkDir,
-    task: [basePrompt, revisionPrompt].filter(Boolean).join("\n\n"),
+    task: [basePrompt, scouts.plannerContext, revisionPrompt].filter(Boolean).join("\n\n"),
     systemPrompt,
     // Official Pi customTools slot — injected by tool edge (no tools/ import here).
     customTools: input.customTools,
@@ -181,5 +217,6 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     rawSummary: child.summary,
     source: resolved.source,
     draftPath: resolved.draftPath,
+    scoutKinds: scouts.receipts.map((r) => r.kind),
   };
 }

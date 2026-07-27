@@ -146,28 +146,104 @@ function normalizeDefectItems(items: unknown[]): DefectItem[] {
   return out;
 }
 
-export function mergeDefectReports(reports: DefectReport[]): MergedDefectReport {
-  const defects: DefectItem[] = [];
+/**
+ * Cross-reviewer fingerprint for ensemble merge (code + path + normalized issue).
+ * Ignores reviewer id and severity so the same finding from two lenses collapses.
+ */
+export function defectFingerprint(d: {
+  code?: string;
+  path?: string;
+  issue: string;
+}): string {
+  const code = (d.code ?? "review_finding").trim().toLowerCase();
+  const pathKey = (d.path ?? "").trim().toLowerCase().replace(/\\/g, "/");
+  const issue = d.issue
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9./:_ -]+/g, "")
+    .trim()
+    .slice(0, 120);
+  return `${code}|${pathKey}|${issue}`;
+}
+
+/** System/infrastructure defects that must never be demoted by voting. */
+const FORCE_KEEP_CODES = new Set([
+  "empty_review",
+  "unparsed_review",
+  "reviewer_missing",
+  "reviewer_error",
+]);
+
+export type MergeDefectReportsOptions = {
+  /**
+   * When council size ≥ 2, demote `major` findings reported by only one
+   * reviewer to `minor` (reduces single-lens noise). Blocking never demotes.
+   * Default true when ≥2 reports are merged.
+   */
+  demoteSingletonMajor?: boolean;
+};
+
+/**
+ * Merge independent reviewer reports into one council result.
+ *
+ * - Cross-reviewer fingerprint dedupe (max severity wins)
+ * - Optional demotion of singleton major when multiple reviewers ran
+ * - Sort by severity descending
+ */
+export function mergeDefectReports(
+  reports: DefectReport[],
+  options: MergeDefectReportsOptions = {},
+): MergedDefectReport {
   const reviewerIds: string[] = [];
+  type Bucket = {
+    defect: DefectItem;
+    reporters: Set<string>;
+  };
+  const buckets = new Map<string, Bucket>();
+
   for (const r of reports) {
     reviewerIds.push(r.reviewerId);
     for (const d of r.defects) {
-      defects.push({
-        ...d,
-        reviewerId: d.reviewerId ?? r.reviewerId,
-      });
+      const reviewerId = d.reviewerId ?? r.reviewerId;
+      const fp = defectFingerprint(d);
+      const existing = buckets.get(fp);
+      if (!existing) {
+        buckets.set(fp, {
+          defect: { ...d, reviewerId },
+          reporters: new Set([reviewerId]),
+        });
+        continue;
+      }
+      existing.reporters.add(reviewerId);
+      if (SEVERITY_RANK[d.severity] > SEVERITY_RANK[existing.defect.severity]) {
+        existing.defect = { ...d, reviewerId };
+      }
     }
   }
-  // Dedupe by reviewer+severity+path+issue prefix (preserve provenance)
-  const seen = new Set<string>();
-  const unique = defects.filter((d) => {
-    const key = `${d.reviewerId ?? ""}|${d.severity}|${d.path ?? ""}|${d.issue.slice(0, 80)}`;
-    if (seen.has(key)) {
-      return false;
+
+  const councilSize = reports.length;
+  const demoteSingletonMajor =
+    options.demoteSingletonMajor ?? councilSize >= 2;
+
+  const unique: DefectItem[] = [];
+  for (const bucket of buckets.values()) {
+    let severity = bucket.defect.severity;
+    const code = bucket.defect.code ?? "review_finding";
+    if (
+      demoteSingletonMajor &&
+      severity === "major" &&
+      bucket.reporters.size === 1 &&
+      !FORCE_KEEP_CODES.has(code)
+    ) {
+      severity = "minor";
     }
-    seen.add(key);
-    return true;
-  });
+    unique.push({
+      ...bucket.defect,
+      severity,
+      reviewerId: bucket.defect.reviewerId,
+    });
+  }
+
   unique.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
   return MergedDefectReportSchema.parse({
     clean: unique.length === 0,
@@ -178,6 +254,60 @@ export function mergeDefectReports(reports: DefectReport[]): MergedDefectReport 
         ? "NO_DEFECTS"
         : `${unique.length} defect(s) from ${reviewerIds.length} reviewer(s)`,
   });
+}
+
+/**
+ * Re-attach prior blocking defects that no reviewer re-reported (sticky open),
+ * unless the new merge is fully clean (all lenses said NO_DEFECTS).
+ */
+export function applyStickyBlockingDefects(
+  current: MergedDefectReport,
+  prior: MergedDefectReport | null | undefined,
+): MergedDefectReport {
+  if (!prior || prior.clean) return current;
+  if (current.clean) return current;
+
+  const priorBlocking = prior.defects.filter((d) => d.severity === "blocking");
+  if (priorBlocking.length === 0) return current;
+
+  const seen = new Set(current.defects.map((d) => defectFingerprint(d)));
+  const sticky: DefectItem[] = [];
+  for (const d of priorBlocking) {
+    const fp = defectFingerprint(d);
+    if (seen.has(fp)) continue;
+    seen.add(fp);
+    sticky.push({
+      ...d,
+      code: d.code?.startsWith("sticky_") ? d.code : `sticky_${d.code ?? "blocking"}`.slice(0, 80),
+      issue: d.issue.startsWith("[sticky]")
+        ? d.issue
+        : `[sticky] ${d.issue}`.slice(0, 2000),
+    });
+  }
+  if (sticky.length === 0) return current;
+
+  const reviewerIds = [...new Set([...current.reviewerIds, ...prior.reviewerIds])];
+  const defects = [...current.defects, ...sticky].sort(
+    (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
+  );
+  return MergedDefectReportSchema.parse({
+    clean: false,
+    defects,
+    reviewerIds,
+    summary: `${defects.length} defect(s) (${sticky.length} sticky) from ${reviewerIds.length} reviewer(s)`,
+  });
+}
+
+/** Format defects for writer repair prompts (blocking-only by default). */
+export function formatDefectsForRepair(
+  defects: readonly DefectItem[],
+  options?: { severities?: DefectSeverity[] },
+): string {
+  const allowed = new Set(options?.severities ?? (["blocking"] as DefectSeverity[]));
+  const lines = defects
+    .filter((d) => allowed.has(d.severity))
+    .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`);
+  return lines.join("\n");
 }
 
 export function hasBlockingDefects(

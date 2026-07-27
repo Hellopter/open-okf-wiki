@@ -40,7 +40,7 @@ import { redactErrorMessage } from "../redact/index.js";
 import { shouldUsePiFixtureMode } from "../runtime/fixture-mode.js";
 import { type AgentRunner, resolveProduceRuntime } from "../runtime/produce-runtime.js";
 import { layoutFromFrozen } from "../runtime/workdir.js";
-import { requestTimeoutMs } from "./budgets.js";
+import { requestTimeoutMs, resolveOrchestration } from "./budgets.js";
 import { runPlanGateLoop, runPublicationGateLoop } from "./gate-protocol.js";
 import { AttemptJournal } from "./journal.js";
 import { planWikiSpec } from "./phases/plan-phase.js";
@@ -54,6 +54,8 @@ export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
 export type WikiProduceModelFactory = (
   role: WikiProduceModelRole,
   workspace: WorkspaceConfig,
+  /** Optional seat for multi-reviewer council (roleModels.reviewers[i]). */
+  opts?: { seatIndex?: number },
 ) => Promise<{
   /** Opaque model handle — runtime adapters cast to Pi Model. */
   model: unknown;
@@ -159,21 +161,29 @@ export async function resolveModels(
     throw new Error("Live wiki_produce requires a model resolver");
   }
   const writer = await factory("writer", workspace);
-  const [planner, worker, reviewer] = await Promise.all([
+  const councilSize = Math.max(1, workspace.orchestration?.reviewCouncilSize ?? 3);
+  const [planner, worker, ...reviewerSeats] = await Promise.all([
     // Tolerated: planner/worker may share the writer profile on factory failure.
     factory("planner", workspace).catch(() => writer),
     factory("worker", workspace).catch(() => writer),
-    // Fail-closed: do NOT catch to writer — missing reviewer must stay missing.
-    factory("reviewer", workspace).then(
-      (resolved) => resolved,
-      () => undefined,
+    // Fail-closed per seat: do NOT fall back to writer.
+    ...Array.from({ length: councilSize }, (_, seatIndex) =>
+      factory("reviewer", workspace, { seatIndex }).then(
+        (resolved) => resolved,
+        () => undefined,
+      ),
     ),
   ]);
+  const reviewers = reviewerSeats.filter(
+    (r): r is NonNullable<(typeof reviewerSeats)[number]> => r !== undefined,
+  );
+  // If seat 0 failed but a later seat succeeded, still expose a primary reviewer.
+  const reviewer = reviewers[0];
   return {
     writer,
     planner,
     worker,
-    ...(reviewer ? { reviewer } : {}),
+    ...(reviewer ? { reviewer, reviewers } : {}),
   };
 }
 
@@ -337,12 +347,23 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
         model: models.planner?.model ?? models.writer?.model,
         modelRuntime: models.planner?.modelRuntime ?? models.writer?.modelRuntime,
         maxContextTokens: models.planner?.maxContextTokens ?? models.writer?.maxContextTokens,
+        // Scouts prefer worker economics when configured.
+        scoutModel: models.worker?.model ?? models.planner?.model ?? models.writer?.model,
+        scoutModelRuntime:
+          models.worker?.modelRuntime ??
+          models.planner?.modelRuntime ??
+          models.writer?.modelRuntime,
+        scoutMaxContextTokens:
+          models.worker?.maxContextTokens ??
+          models.planner?.maxContextTokens ??
+          models.writer?.maxContextTokens,
         contextTargetTokens: workspace.limits?.contextTargetTokens,
         sourceIgnores: frozen.sourceIgnores,
         abortSignal: input.abortSignal,
         operatorNotes,
         priorSpec,
         revisionFeedback,
+        orchestration: resolveOrchestration(workspace),
         customTools: input.createPlanTools?.(layout.runWorkDir),
         onProgress: (attempt) => handleProgress({ kind: "attempt", attempt }),
       });

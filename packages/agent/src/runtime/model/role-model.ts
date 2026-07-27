@@ -23,10 +23,12 @@ export type ResolvedModelRef = {
 
 /**
  * Pick the ModelRef for a role, falling back to workspace.model.
+ * For reviewers, `seatIndex` rotates through `roleModels.reviewers[]`.
  */
 export function modelRefForRole(
   workspace: WorkspaceConfig,
   role: WikiModelRole = "default",
+  opts?: { seatIndex?: number },
 ): ModelRef {
   const roles = workspace.roleModels;
   if (role === "planner" && roles?.planner) {
@@ -40,8 +42,11 @@ export function modelRefForRole(
     if (roles?.planner) return roles.planner;
   }
   if (role === "reviewer") {
-    const first = roles?.reviewers?.[0];
-    if (first) return first;
+    const list = roles?.reviewers ?? [];
+    if (list.length > 0) {
+      const seat = Math.max(0, opts?.seatIndex ?? 0);
+      return list[seat % list.length]!;
+    }
   }
   return workspace.model;
 }
@@ -54,6 +59,8 @@ export function modelRefForRole(
 export function resolveModelSelection(input: {
   workspace: WorkspaceConfig;
   role?: WikiModelRole;
+  /** Council seat for reviewer role (maps to roleModels.reviewers[i]). */
+  seatIndex?: number;
   /** Explicit catalog profile id selected for the Operator Session. */
   overrideProfileId?: string;
   /** Denormalized served model id from the selected profile (not free-text alone). */
@@ -70,7 +77,7 @@ export function resolveModelSelection(input: {
     };
   }
 
-  const ref = modelRefForRole(input.workspace, role);
+  const ref = modelRefForRole(input.workspace, role, { seatIndex: input.seatIndex });
   return {
     id: ref.id,
     profileId: ref.profileId,
