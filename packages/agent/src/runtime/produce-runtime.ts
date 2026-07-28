@@ -5,6 +5,7 @@
  * Re-exports keep existing call sites stable.
  */
 
+import type { RetryLimits } from "@okf-wiki/contract";
 import type {
   AgentRunner,
   AgentRunRequest,
@@ -20,7 +21,7 @@ import {
   type FixtureProduceRuntimeOptions,
   type FixtureWriteHook,
 } from "./fixture-runner.js";
-import { createLiveProduceRuntime } from "./scoped-runner.js";
+import { createLiveProduceRuntime, type LiveProduceRuntimeDefaults } from "./scoped-runner.js";
 
 export type {
   AgentRunner,
@@ -29,6 +30,7 @@ export type {
   FixtureAgentHook,
   FixtureProduceRuntimeOptions,
   FixtureWriteHook,
+  LiveProduceRuntimeDefaults,
   WikiWriteRequest,
   WikiWriteResult,
 };
@@ -41,8 +43,12 @@ export {
 export function resolveProduceRuntime(input: {
   fixture?: boolean;
   runtime?: AgentRunner;
-  /** Live-runtime defaults (per-session wall-clock budget from workspace limits). */
-  defaults?: { timeoutMs?: number };
+  /**
+   * Live-runtime defaults from workspace limits:
+   * - timeoutMs ← requestTimeoutSeconds
+   * - retry ← limits.retry (Pi settings.retry)
+   */
+  defaults?: { timeoutMs?: number; retry?: RetryLimits };
 }): AgentRunner {
   if (input.runtime) return input.runtime;
   if (shouldUsePiFixtureMode({ fixture: input.fixture })) {

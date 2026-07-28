@@ -243,6 +243,7 @@ export function createWikiRepairTool(
               workspace.limits.requestTimeoutSeconds > 0
                 ? workspace.limits.requestTimeoutSeconds * 1000
                 : undefined,
+            retry: workspace.limits?.retry,
           },
         });
 

@@ -442,7 +442,7 @@ describe("produceWiki fixture core flows", () => {
 });
 
 describe("produceWiki research orchestration", () => {
-  it("transient domain failure retries once then succeeds", async () => {
+  it("transient domain failure does not L2-retry (L0 already retried)", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "okf-produce-retry-"));
     temps.push(root);
     const { workspace } = await makeWorkspace(root);
@@ -455,7 +455,7 @@ describe("produceWiki research orchestration", () => {
         if (req.role !== "domain") return undefined;
         domainCalls += 1;
         if (req.spanId?.includes("@retry")) retrySpanIds.push(req.spanId);
-        return domainCalls === 1 ? "429 rate limit exceeded" : undefined;
+        return "429 rate limit exceeded";
       },
     });
 
@@ -467,12 +467,13 @@ describe("produceWiki research orchestration", () => {
       runtime,
     });
 
-    assert.equal(result.status, "ready_for_publish", result.summary);
-    assert.equal(domainCalls, 2, "expected initial attempt + one retry");
-    assert.deepEqual(retrySpanIds, ["domain-core@retry1"]);
+    assert.equal(result.status, "failed");
+    assert.match(result.summary, /429 rate limit/);
+    assert.equal(domainCalls, 1, "L2 must not open a new session for transient");
+    assert.deepEqual(retrySpanIds, []);
   });
 
-  it("persistent domain failure still fails after the retry budget", async () => {
+  it("unknown domain failure fails without L2 default-retry", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "okf-produce-retry-fail-"));
     temps.push(root);
     const { workspace } = await makeWorkspace(root);
@@ -483,7 +484,7 @@ describe("produceWiki research orchestration", () => {
       failAgent: (req) => {
         if (req.role !== "domain") return undefined;
         domainCalls += 1;
-        return "503 service unavailable";
+        return "boom domain reduce";
       },
     });
 
@@ -496,8 +497,8 @@ describe("produceWiki research orchestration", () => {
     });
 
     assert.equal(result.status, "failed");
-    assert.match(result.summary, /503 service unavailable/);
-    assert.equal(domainCalls, 2, "transient failure gets exactly one retry");
+    assert.match(result.summary, /boom domain reduce/);
+    assert.equal(domainCalls, 1, "unknown class fails closed with no L2 retry");
   });
 
   it("domain units run in parallel bounded by domainConcurrency", async () => {

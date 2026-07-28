@@ -19,12 +19,14 @@ const SEVERITY_RANK: Record<DefectSeverity, number> = {
   minor: 1,
 };
 
-/** System/infrastructure defects that must never be demoted by voting. */
+/**
+ * System/protocol defects that must never be demoted by voting.
+ * Transport/capacity failures must NOT become defect codes (no reviewer_error).
+ */
 const FORCE_KEEP_CODES = new Set([
   "empty_review",
   "unparsed_review",
   "reviewer_missing",
-  "reviewer_error",
 ]);
 
 export function parseDefectReportFromText(text: string, reviewerId: string): DefectReport {

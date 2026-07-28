@@ -9,7 +9,12 @@
  * and merge with fingerprint dedupe + sticky prior blocking (ensemble pattern).
  */
 
-import type { DefectSeverity, MergedDefectReport, WorkspaceOrchestration } from "@okf-wiki/contract";
+import type {
+  DefectSeverity,
+  ErrorClass,
+  MergedDefectReport,
+  WorkspaceOrchestration,
+} from "@okf-wiki/contract";
 import { canonicalizeWikiTreeCitations } from "@okf-wiki/core";
 import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
@@ -25,6 +30,7 @@ import { listWikiMarkdown, materializeWikiIndexes } from "../../produce/wiki-pag
 import { runReviewCouncil } from "../../produce/review.js";
 import { reviewerPrompt, type ReviewLens } from "../../prompts/reviewer.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
+import { classifyError } from "../retry-policy.js";
 import { runNodeAttempt } from "../run-node-attempt.js";
 import { runBoundedRepairLoop } from "./bounded-repair-loop.js";
 import {
@@ -62,11 +68,10 @@ const REVIEW_LENSES: readonly ReviewLens[] = [
 ];
 
 /**
- * Shared fail-closed reviewer defect payload (reviewer_missing / reviewer_error).
- * `fenced` matches the live missing-model path which emits a markdown JSON fence.
+ * Config-missing fail-closed defect only (`reviewer_missing`).
+ * Transport/capacity/infra must not become DefectItems — they fail the seat or run.
  */
-function reviewerBlockingDefectText(input: {
-  code: "reviewer_missing" | "reviewer_error";
+function reviewerMissingDefectText(input: {
   issue: string;
   summary: string;
   fenced?: boolean;
@@ -76,7 +81,7 @@ function reviewerBlockingDefectText(input: {
     defects: [
       {
         severity: "blocking",
-        code: input.code,
+        code: "reviewer_missing",
         issue: input.issue,
       },
     ],
@@ -98,6 +103,10 @@ function seatModel(
 
 type CouncilMember = { id: string; text: string };
 
+type ReviewerSeatOutcome =
+  | { kind: "ok"; member: CouncilMember }
+  | { kind: "failed"; id: string; message: string; errorClass?: ErrorClass };
+
 async function runOneReviewer(input: {
   ctx: PhaseContext;
   produced: WikiWriteResult;
@@ -106,61 +115,69 @@ async function runOneReviewer(input: {
   seatIndex: number;
   runIndex: number;
   priorBlocking: MergedDefectReport["defects"];
-}): Promise<CouncilMember> {
+}): Promise<ReviewerSeatOutcome> {
   const { ctx, produced, reviewerId, lens, seatIndex, runIndex, priorBlocking } = input;
   const { runtime, layout } = ctx;
   const model = seatModel(ctx.input.models, seatIndex);
   const attemptId = `review@${runIndex}:${reviewerId}`;
+  // L2 maxAttempts only helps schema/quality; transient/capacity fail on first L2 attempt.
   const maxReviewerAttempts = 2;
 
-  const text = await runNodeAttempt({
-    abortSignal: ctx.input.abortSignal,
-    maxAttempts: maxReviewerAttempts,
-    nodeKey: "review",
-    role: "reviewer",
-    attemptId: (attempt) => (attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`),
-    run: async (attempt) => {
-      const child = await runtime.runAgent({
-        role: "reviewer",
-        spanId: attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`,
-        nodeKey: "review",
-        runIndex,
-        runWorkDir: layout.runWorkDir,
-        task: reviewerPrompt({
-          pages: produced.pages,
-          lens,
-          ...(priorBlocking.length > 0
-            ? {
-                priorBlocking: priorBlocking.map((d) => ({
-                  path: d.path,
-                  code: d.code,
-                  issue: d.issue,
-                })),
-              }
-            : {}),
-        }),
-        systemPrompt:
-          "You are a wiki reviewer. Return a concise DefectReport JSON (or NO_DEFECTS).",
-        preferFinalMessage: true,
-        model: model?.model,
-        modelRuntime: model?.modelRuntime,
-        maxContextTokens: model?.maxContextTokens,
-        contextTargetTokens: ctx.contextTargetTokens,
-        sourceIgnores: ctx.input.sourceIgnores,
-        abortSignal: ctx.input.abortSignal,
-        onProgress: (span) => emitProgress(ctx.onProgress, { kind: "attempt", attempt: span }),
-      });
-      return child.summary;
-    },
-    onExhausted: (_err, { message }) =>
-      reviewerBlockingDefectText({
-        code: "reviewer_error",
-        issue: `Reviewer failed: ${message}`,
-        summary: `reviewer error: ${message}`,
-      }),
-  });
-
-  return { id: reviewerId, text };
+  try {
+    const text = await runNodeAttempt({
+      abortSignal: ctx.input.abortSignal,
+      maxAttempts: maxReviewerAttempts,
+      nodeKey: "review",
+      role: "reviewer",
+      attemptId: (attempt) => (attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`),
+      run: async (attempt) => {
+        const child = await runtime.runAgent({
+          role: "reviewer",
+          spanId: attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`,
+          nodeKey: "review",
+          runIndex,
+          runWorkDir: layout.runWorkDir,
+          task: reviewerPrompt({
+            pages: produced.pages,
+            lens,
+            ...(priorBlocking.length > 0
+              ? {
+                  priorBlocking: priorBlocking.map((d) => ({
+                    path: d.path,
+                    code: d.code,
+                    issue: d.issue,
+                  })),
+                }
+              : {}),
+          }),
+          systemPrompt:
+            "You are a wiki reviewer. Return a concise DefectReport JSON (or NO_DEFECTS).",
+          preferFinalMessage: true,
+          model: model?.model,
+          modelRuntime: model?.modelRuntime,
+          maxContextTokens: model?.maxContextTokens,
+          contextTargetTokens: ctx.contextTargetTokens,
+          sourceIgnores: ctx.input.sourceIgnores,
+          abortSignal: ctx.input.abortSignal,
+          onProgress: (span) => emitProgress(ctx.onProgress, { kind: "attempt", attempt: span }),
+        });
+        return child.summary;
+      },
+      // Never synthesize reviewer_error defects for infra/transport — rethrow to seat outcome.
+      onExhausted: "throw",
+    });
+    return { kind: "ok", member: { id: reviewerId, text } };
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    const errorClass = classifyError(err);
+    return {
+      kind: "failed",
+      id: reviewerId,
+      message,
+      ...(errorClass !== undefined ? { errorClass } : {}),
+    };
+  }
 }
 
 function hardValidateFailedResult(input: {
@@ -230,8 +247,7 @@ export async function runReviewRepairPhase(
         reviewers = [
           {
             id: "reviewer-1",
-            text: reviewerBlockingDefectText({
-              code: "reviewer_missing",
+            text: reviewerMissingDefectText({
               issue: msg,
               summary: msg,
               fenced: true,
@@ -241,8 +257,9 @@ export async function runReviewRepairPhase(
       } else {
         const runIndex = round - 1;
         const seats = Array.from({ length: councilSize }, (_, i) => i);
+        let seatOutcomes: ReviewerSeatOutcome[] = [];
         try {
-          reviewers = await mapWithConcurrency(
+          seatOutcomes = await mapWithConcurrency(
             seats,
             reviewConcurrency,
             input.abortSignal,
@@ -269,6 +286,54 @@ export async function runReviewRepairPhase(
           }
           throw err;
         }
+
+        const okSeats = seatOutcomes.filter(
+          (o): o is Extract<ReviewerSeatOutcome, { kind: "ok" }> => o.kind === "ok",
+        );
+        const failedSeats = seatOutcomes.filter(
+          (o): o is Extract<ReviewerSeatOutcome, { kind: "failed" }> => o.kind === "failed",
+        );
+        if (failedSeats.length > 0) {
+          emitProgress(onProgress, {
+            kind: "status",
+            status: "producing",
+            summary: `review seats failed: ${failedSeats
+              .map((s) => `${s.id}${s.errorClass ? `(${s.errorClass})` : ""}`)
+              .join(", ")}`,
+          });
+        }
+        // All seats failed on transport/capacity/infra — fail produce, do not invent defects or repair.
+        if (okSeats.length === 0) {
+          const first = failedSeats[0];
+          const reason =
+            first?.message?.trim() ||
+            "all review council seats failed (no successful reviewer output)";
+          const cls = first?.errorClass ?? "infrastructure";
+          return {
+            kind: "fail_closed" as const,
+            result: failedProduceResult({
+              summary: `Review council failed (${cls}): ${reason}`,
+              pages: produced.pages,
+              spec,
+              defects: null,
+              publishability: {
+                publishable: false,
+                reasons: [
+                  `review_council: ${cls}: ${reason}`,
+                  ...failedSeats.slice(0, 4).map(
+                    (s) => `${s.id}: ${s.errorClass ?? "error"}: ${s.message.slice(0, 200)}`,
+                  ),
+                ],
+                pages: produced.pages,
+                defects: null,
+              },
+              layout: produced.layout,
+              mode: produced.mode,
+              metrics,
+            }),
+          };
+        }
+        reviewers = okSeats.map((o) => o.member);
       }
 
       let merged = await runReviewCouncil({
@@ -329,8 +394,11 @@ export async function runReviewRepairPhase(
   if (councilOutcome.kind === "cancelled") {
     return { result: councilOutcome.result };
   }
-  // passed | exhausted | failed — council does not fail_closed; exhausted falls through
-  // to hard-validate which fails closed if still unpublishable.
+  // All seats failed (infra/capacity/transient) → fail_closed from score.
+  if (councilOutcome.kind === "failed") {
+    return { result: councilOutcome.result };
+  }
+  // passed | exhausted — exhausted falls through to hard-validate.
 
   // Mechanical hard-validate with remaining shared repair budget (citation OOB, etc.).
   // Re-materialize indexes once first — cheap drift fix that must not burn model repair rounds.

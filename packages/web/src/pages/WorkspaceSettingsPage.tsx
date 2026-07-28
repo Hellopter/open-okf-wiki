@@ -72,6 +72,12 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
   const [contextTargetTokens, setContextTargetTokens] = useState("");
   /** Per child-agent wall-clock budget (workspace.limits.requestTimeoutSeconds). */
   const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState("600");
+  /** Pi settings.retry — agent-level transport retries (workspace.limits.retry). */
+  const [retryEnabled, setRetryEnabled] = useState(true);
+  const [retryMaxRetries, setRetryMaxRetries] = useState("2");
+  const [retryBaseDelayMs, setRetryBaseDelayMs] = useState("2000");
+  const [providerMaxRetries, setProviderMaxRetries] = useState("0");
+  const [providerMaxRetryDelayMs, setProviderMaxRetryDelayMs] = useState("60000");
   const [maxDomainFanOut, setMaxDomainFanOut] = useState("4");
   const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
   const [planScoutCount, setPlanScoutCount] = useState("2");
@@ -100,6 +106,11 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
       ws.limits?.contextTargetTokens !== undefined ? String(ws.limits.contextTargetTokens) : "",
     );
     setRequestTimeoutSeconds(String(ws.limits?.requestTimeoutSeconds ?? 600));
+    setRetryEnabled(ws.limits?.retry?.enabled !== false);
+    setRetryMaxRetries(String(ws.limits?.retry?.maxRetries ?? 2));
+    setRetryBaseDelayMs(String(ws.limits?.retry?.baseDelayMs ?? 2000));
+    setProviderMaxRetries(String(ws.limits?.retry?.provider?.maxRetries ?? 0));
+    setProviderMaxRetryDelayMs(String(ws.limits?.retry?.provider?.maxRetryDelayMs ?? 60_000));
     setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
     setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
     setPlanScoutCount(String(ws.orchestration?.planScoutCount ?? 2));
@@ -210,6 +221,38 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         setIsSubmitting(false);
         return;
       }
+      const nextMaxRetries = Number(retryMaxRetries.trim());
+      if (!Number.isInteger(nextMaxRetries) || nextMaxRetries < 0 || nextMaxRetries > 10) {
+        setError(new Error("retry.maxRetries must be an integer from 0 to 10"));
+        setIsSubmitting(false);
+        return;
+      }
+      const nextBaseDelay = Number(retryBaseDelayMs.trim());
+      if (!Number.isInteger(nextBaseDelay) || nextBaseDelay < 100 || nextBaseDelay > 60_000) {
+        setError(new Error("retry.baseDelayMs must be an integer from 100 to 60000"));
+        setIsSubmitting(false);
+        return;
+      }
+      const nextProviderMaxRetries = Number(providerMaxRetries.trim());
+      if (
+        !Number.isInteger(nextProviderMaxRetries) ||
+        nextProviderMaxRetries < 0 ||
+        nextProviderMaxRetries > 5
+      ) {
+        setError(new Error("retry.provider.maxRetries must be an integer from 0 to 5"));
+        setIsSubmitting(false);
+        return;
+      }
+      const nextProviderMaxDelay = Number(providerMaxRetryDelayMs.trim());
+      if (
+        !Number.isInteger(nextProviderMaxDelay) ||
+        nextProviderMaxDelay < 0 ||
+        nextProviderMaxDelay > 600_000
+      ) {
+        setError(new Error("retry.provider.maxRetryDelayMs must be an integer from 0 to 600000"));
+        setIsSubmitting(false);
+        return;
+      }
       const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 600 };
       const { contextTargetTokens: _drop, ...limitsWithoutContext } = baseLimits;
       void _drop;
@@ -217,6 +260,15 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         ...limitsWithoutContext,
         requestTimeoutSeconds: nextTimeoutSeconds,
         ...(nextContextTarget !== undefined ? { contextTargetTokens: nextContextTarget } : {}),
+        retry: {
+          enabled: retryEnabled,
+          maxRetries: nextMaxRetries,
+          baseDelayMs: nextBaseDelay,
+          provider: {
+            maxRetries: nextProviderMaxRetries,
+            maxRetryDelayMs: nextProviderMaxDelay,
+          },
+        },
       };
       const profileToRef = (profileId: string) => {
         const m = models.find((x) => x.id === profileId);
@@ -510,6 +562,116 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
                         required
                       />
                       <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
+                    </Field>
+
+                    <Field>
+                      <FieldLabel>{t.settings.retryTitle}</FieldLabel>
+                      <FieldDescription>{t.settings.retryHint}</FieldDescription>
+                      <div className="mt-2 flex flex-col gap-3">
+                        <div className="flex items-center gap-3">
+                          <Switch
+                            id="settings-retry-enabled"
+                            checked={retryEnabled}
+                            onCheckedChange={setRetryEnabled}
+                            data-testid="settings-retry-enabled"
+                          />
+                          <FieldLabel htmlFor="settings-retry-enabled" className="font-normal">
+                            {t.settings.retryEnabled}
+                          </FieldLabel>
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-retry-max"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.retryMaxRetries}
+                            </FieldLabel>
+                            <Input
+                              id="settings-retry-max"
+                              type="number"
+                              min={0}
+                              max={10}
+                              value={retryMaxRetries}
+                              onChange={(e) => {
+                                setRetryMaxRetries(e.target.value);
+                              }}
+                              className="font-mono w-24"
+                              data-testid="settings-retry-max"
+                              disabled={!retryEnabled}
+                              title={t.settings.retryMaxRetriesHint}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-retry-base-delay"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.retryBaseDelayMs}
+                            </FieldLabel>
+                            <Input
+                              id="settings-retry-base-delay"
+                              type="number"
+                              min={100}
+                              max={60000}
+                              step={100}
+                              value={retryBaseDelayMs}
+                              onChange={(e) => {
+                                setRetryBaseDelayMs(e.target.value);
+                              }}
+                              className="font-mono w-28"
+                              data-testid="settings-retry-base-delay"
+                              disabled={!retryEnabled}
+                              title={t.settings.retryBaseDelayMsHint}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-provider-max-retries"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.providerMaxRetries}
+                            </FieldLabel>
+                            <Input
+                              id="settings-provider-max-retries"
+                              type="number"
+                              min={0}
+                              max={5}
+                              value={providerMaxRetries}
+                              onChange={(e) => {
+                                setProviderMaxRetries(e.target.value);
+                              }}
+                              className="font-mono w-24"
+                              data-testid="settings-provider-max-retries"
+                              disabled={!retryEnabled}
+                              title={t.settings.providerMaxRetriesHint}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-provider-max-retry-delay"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.providerMaxRetryDelayMs}
+                            </FieldLabel>
+                            <Input
+                              id="settings-provider-max-retry-delay"
+                              type="number"
+                              min={0}
+                              max={600000}
+                              step={1000}
+                              value={providerMaxRetryDelayMs}
+                              onChange={(e) => {
+                                setProviderMaxRetryDelayMs(e.target.value);
+                              }}
+                              className="font-mono w-28"
+                              data-testid="settings-provider-max-retry-delay"
+                              disabled={!retryEnabled}
+                              title={t.settings.providerMaxRetryDelayMsHint}
+                            />
+                          </div>
+                        </div>
+                      </div>
                     </Field>
 
                     <Field>

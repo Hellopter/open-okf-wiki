@@ -1,5 +1,9 @@
 import path from "node:path";
-import type { WorkspaceConfig, WorkspacePatch } from "@okf-wiki/contract";
+import {
+  type WorkspaceConfig,
+  type WorkspacePatch,
+  WorkspaceLimitsSchema,
+} from "@okf-wiki/contract";
 import { WorkspaceIntakeError } from "./workspace-errors.js";
 
 export type ResolveModelSelection = (
@@ -46,7 +50,22 @@ export async function applyWorkspacePatch(
   }
 
   if (patch.limits !== undefined) {
-    next.limits = patch.limits;
+    // Deep-merge so a partial PATCH (e.g. only requestTimeoutSeconds) does not
+    // wipe retry / contextTargetTokens. Re-parse for defaults + validation.
+    const prev = workspace.limits;
+    const incoming = patch.limits;
+    next.limits = WorkspaceLimitsSchema.parse({
+      ...prev,
+      ...incoming,
+      retry: {
+        ...prev.retry,
+        ...(incoming.retry ?? {}),
+        provider: {
+          ...prev.retry?.provider,
+          ...(incoming.retry?.provider ?? {}),
+        },
+      },
+    });
   }
 
   if (patch.skillPath !== undefined) {

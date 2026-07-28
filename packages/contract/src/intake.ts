@@ -3,7 +3,7 @@ import {
   OperatorToolsSchema,
   SourceIdSchema,
   WikiLanguageSchema,
-  WorkspaceLimitsSchema,
+  WorkspaceLimitsPatchSchema,
   WorkspaceOrchestrationSchema,
   WorkspaceRoleModelsSchema,
   WorkspaceSourceSchema,
@@ -37,7 +37,8 @@ export const WorkspacePatchSchema = z
     publicationPath: z.string().trim().min(1).optional(),
     planConfirm: z.boolean().optional(),
     wikiLanguage: WikiLanguageSchema.optional(),
-    limits: WorkspaceLimitsSchema.optional(),
+    /** Partial limits; server deep-merges onto existing then re-parses. */
+    limits: WorkspaceLimitsPatchSchema.optional(),
     roleModels: WorkspaceRoleModelsSchema.optional(),
     orchestration: WorkspaceOrchestrationSchema.optional(),
     operatorTools: OperatorToolsSchema.optional(),

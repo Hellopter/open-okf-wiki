@@ -1,6 +1,10 @@
 /**
- * Pure retry policy for Run Workflow node failures (T1).
- * Maps errorClass → action; research/review phases decide how to apply.
+ * Pure retry policy for Run Workflow node failures.
+ *
+ * Maps errorClass → action; runNodeAttempt applies the decision.
+ * L2 (workflow) never retries transient or capacity failures — L0 Pi
+ * already handles transport retries, and capacity needs a new strategy
+ * (not a blind session reopen). Unknown classes fail closed (no default retry).
  */
 
 import type { ErrorClass } from "@okf-wiki/contract";
@@ -33,12 +37,19 @@ export function decideNodeRetry(input: {
   if (cls === "needs_input") {
     return { action: "needs_input", delayMs: 0, reason: "operator input required" };
   }
-  if (cls === "policy" || cls === "budget") {
-    return {
-      action: "fail",
-      delayMs: 0,
-      reason: cls === "budget" ? "budget exhausted" : "policy violation",
+  if (
+    cls === "policy" ||
+    cls === "budget" ||
+    cls === "capacity" ||
+    cls === "infrastructure"
+  ) {
+    const reasons: Record<string, string> = {
+      budget: "budget exhausted",
+      policy: "policy violation",
+      capacity: "context capacity exhausted",
+      infrastructure: "infrastructure failure",
     };
+    return { action: "fail", delayMs: 0, reason: reasons[cls] ?? `${cls}: no retry` };
   }
   if (cls === "schema" || cls === "quality") {
     // Quality/schema: one repair-style retry at most, then fail closed.
@@ -47,19 +58,15 @@ export function decideNodeRetry(input: {
     }
     return { action: "fail", delayMs: 0, reason: `${cls}: retries exhausted` };
   }
-  // transient or unknown → retry with small backoff until cap
-  if (attemptIndex + 1 < maxAttempts) {
-    const delayMs = Math.min(2000, 200 * (attemptIndex + 1));
-    return {
-      action: "retry",
-      delayMs,
-      reason: cls === "transient" ? "transient transport" : "unknown error class",
-    };
+  if (cls === "transient") {
+    // L0 Pi already retried transport; L2 must not open a new session.
+    return { action: "fail", delayMs: 0, reason: "transient: L0 already retried" };
   }
+  // unknown (undefined class) → fail closed; do not default-retry
   return {
     action: "fail",
     delayMs: 0,
-    reason: input.message?.trim() || "retries exhausted",
+    reason: input.message?.trim() || "unknown error class: no retry",
   };
 }
 
@@ -85,14 +92,67 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
 
 /**
  * Best-effort error-message → ErrorClass mapping for failed node attempts.
- * Only claims classes it can recognize; undefined = unknown (decideNodeRetry
- * still allows one retry for unknown, per the transient-or-unknown branch).
+ * Priority: empty → capacity → budget → policy → transient → undefined.
  * Pure: no I/O, no Pi.
  */
 export function classifyAgentFailure(message: string | undefined): ErrorClass | undefined {
   const msg = message?.trim();
   if (!msg) return undefined;
-  if (/budget exhausted|token budget/i.test(msg)) return "budget";
+  // capacity (context window) — before budget so "context length" is not misread
+  if (
+    /context overflow/i.test(msg) ||
+    /compact-and-retry/i.test(msg) ||
+    /context.?length/i.test(msg) ||
+    /maximum context/i.test(msg) ||
+    /prompt is too long/i.test(msg) ||
+    /too many tokens/i.test(msg) ||
+    /token limit exceeded/i.test(msg) ||
+    /input is too long/i.test(msg) ||
+    /exceeds capacity gate/i.test(msg)
+  ) {
+    return "capacity";
+  }
+  // budget: token budget + wall-clock "timed out after N" / workspace request timeout
+  if (
+    /budget exhausted|token budget/i.test(msg) ||
+    /timed out after \d+/i.test(msg) ||
+    /workspace request timeout/i.test(msg)
+  ) {
+    return "budget";
+  }
+  // policy: align with Pi non-retryable billing/quota failures
+  if (/insufficient_quota|out of budget|quota exceeded|billing/i.test(msg)) {
+    return "policy";
+  }
   if (TRANSIENT_PATTERNS.some((p) => p.test(msg))) return "transient";
   return undefined;
+}
+
+/**
+ * Classify a thrown value: structured errorClass / named types first, then message patterns.
+ */
+export function classifyError(err: unknown): ErrorClass | undefined {
+  if (err && typeof err === "object" && "errorClass" in err) {
+    const cls = (err as { errorClass?: unknown }).errorClass;
+    if (
+      cls === "transient" ||
+      cls === "schema" ||
+      cls === "quality" ||
+      cls === "policy" ||
+      cls === "budget" ||
+      cls === "needs_input" ||
+      cls === "capacity" ||
+      cls === "infrastructure"
+    ) {
+      return cls;
+    }
+  }
+  if (err instanceof Error) {
+    const name = err.name;
+    if (name === "CapacityError") return "capacity";
+    if (name === "BudgetError") return "budget";
+    if (name === "InfrastructureError") return "infrastructure";
+  }
+  const message = err instanceof Error ? err.message : err != null ? String(err) : undefined;
+  return classifyAgentFailure(message);
 }

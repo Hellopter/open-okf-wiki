@@ -153,6 +153,21 @@ export const en = {
     requestTimeoutSecondsHint:
       "Wall-clock budget for each child agent session (plan, research, write, review). Long plans often need 600–1800s. Too low aborts with “workspace request timeout” while the model is still working.",
     requestTimeoutSecondsPlaceholder: "e.g. 600",
+    retryTitle: "Provider transport retry",
+    retryHint:
+      "Pi auto-retries transient provider errors (429/5xx/network) inside the same child session. Does not reopen sessions or retry context overflow. Waits count against the session timeout above.",
+    retryEnabled: "Enable auto-retry",
+    retryMaxRetries: "Max retries",
+    retryMaxRetriesHint:
+      "Extra attempts after the first call (default 2 → 3 total). Same-session only.",
+    retryBaseDelayMs: "Base delay (ms)",
+    retryBaseDelayMsHint: "Exponential backoff base (2s → 4s → 8s when default 2000).",
+    providerMaxRetries: "SDK retries",
+    providerMaxRetriesHint:
+      "Nested provider/SDK retries. Keep 0 unless a gateway needs it (can stack with auto-retry).",
+    providerMaxRetryDelayMs: "Max Retry-After (ms)",
+    providerMaxRetryDelayMsHint:
+      "If the server asks to wait longer than this, fail immediately instead of sleeping.",
     orchestrationTitle: "Supervisor tree budgets",
     orchestrationHint:
       "Run Boundary budgets for plan scouts, Domain/Leaf research, and multi-lens review. Defaults suit medium repos; lower for cost, raise for large codebases.",

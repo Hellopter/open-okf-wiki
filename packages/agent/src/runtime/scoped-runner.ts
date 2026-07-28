@@ -8,6 +8,7 @@
 import { mkdir } from "node:fs/promises";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { RetryLimits } from "@okf-wiki/contract";
 import type { AgentRunner, AgentRunRequest, WikiWriteRequest } from "../ports/agent-runner.js";
 import { listWikiMarkdown } from "../produce/wiki-pages.js";
 import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./path-policy.js";
@@ -46,6 +47,7 @@ function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
     sourceIgnores: asSourceIgnores(input.sourceIgnores),
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens: input.contextTargetTokens,
+    retry: input.retry,
     additionalSkillPaths: input.additionalSkillPaths,
     abortSignal: input.abortSignal,
     timeoutMs: input.timeoutMs,
@@ -60,6 +62,8 @@ function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
 export type LiveProduceRuntimeDefaults = {
   /** Wall-clock budget per child session (workspace limits.requestTimeoutSeconds). */
   timeoutMs?: number;
+  /** Default Pi retry policy (workspace.limits.retry) when request omits retry. */
+  retry?: RetryLimits;
 };
 
 /** Live adapter: real in-process Pi sessions. */
@@ -67,6 +71,7 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
   const scoped = (input: AgentRunRequest): RunScopedAgentInput => ({
     ...toScopedInput(input),
     timeoutMs: input.timeoutMs ?? defaults?.timeoutMs,
+    retry: input.retry ?? defaults?.retry,
   });
   return {
     kind: "live",
@@ -100,6 +105,7 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
         modelRuntime: asModelRuntime(input.modelRuntime),
         maxContextTokens: input.maxContextTokens,
         contextTargetTokens: input.contextTargetTokens,
+        retry: input.retry ?? defaults?.retry,
         additionalSkillPaths: input.additionalSkillPaths,
         sourceIgnores: asSourceIgnores(input.sourceIgnores),
         abortSignal: input.abortSignal,

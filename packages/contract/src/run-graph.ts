@@ -65,6 +65,8 @@ export const ErrorClassSchema = z.enum([
   "policy",
   "budget",
   "needs_input",
+  "capacity",
+  "infrastructure",
 ]);
 
 export type ErrorClass = z.infer<typeof ErrorClassSchema>;

@@ -9,6 +9,7 @@
  *
  * Product Settings integration:
  * - compaction from maxContextTokens + contextTargetTokens
+ * - retry from workspace.limits.retry (Pi settings.retry shape)
  * - skills via additionalSkillPaths (producer / workspace / home)
  */
 
@@ -24,10 +25,11 @@ import {
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { RetryLimits } from "@okf-wiki/contract";
 import {
   type ContextBudget,
   compactionSettingsFromBudget,
-  resolveContextBudget,
+  resolveSeatContextBudget,
 } from "./context-budget.js";
 import { buildWikiScopedToolDefinitions } from "./fs-operations.js";
 import type { SourceIgnoreInput } from "./path-policy.js";
@@ -39,6 +41,18 @@ import {
   toolNamesForRole,
   type WikiAgentRole,
 } from "./tool-policy.js";
+
+/** Pi settings.retry input (mirrors contract RetryLimits / Pi RetrySettings). */
+export type WikiSessionRetryInput = {
+  enabled?: boolean;
+  maxRetries?: number;
+  baseDelayMs?: number;
+  provider?: {
+    maxRetries?: number;
+    maxRetryDelayMs?: number;
+    timeoutMs?: number;
+  };
+};
 
 export type CreateWikiSessionInput = {
   role: WikiAgentRole;
@@ -82,13 +96,18 @@ export type CreateWikiSessionInput = {
   scopedTools?: boolean;
   /**
    * Provider hard context window (tokens). Used with contextTargetTokens
-   * to configure Pi auto-compaction. Falls back to model.contextWindow.
+   * to configure Pi auto-compaction. Clamped to model.contextWindow when set.
    */
   maxContextTokens?: number;
   /**
    * Workspace operational context budget. When unset, 85% of maxContextTokens.
    */
   contextTargetTokens?: number;
+  /**
+   * Pi auto-retry policy (workspace.limits.retry). Defaults match contract
+   * RetryLimits: enabled, maxRetries=2, baseDelayMs=2000, provider.maxRetries=0.
+   */
+  retry?: WikiSessionRetryInput | RetryLimits;
   /**
    * Product skill directories for Pi (producer / workspace / home).
    * Injected as additionalSkillPaths with noSkills:true (skip Pi defaults).
@@ -164,8 +183,9 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
     typeof input.model?.contextWindow === "number" && input.model.contextWindow > 0
       ? input.model.contextWindow
       : undefined;
-  const budget = resolveContextBudget({
-    maxContextTokens: input.maxContextTokens ?? maxFromModel,
+  const budget = resolveSeatContextBudget({
+    maxContextTokens: input.maxContextTokens,
+    modelContextWindow: maxFromModel,
     contextTargetTokens: input.contextTargetTokens,
   });
 
@@ -184,8 +204,21 @@ export async function createWikiSession(input: CreateWikiSessionInput): Promise<
           });
   }
 
+  const retry = {
+    enabled: input.retry?.enabled ?? true,
+    maxRetries: input.retry?.maxRetries ?? 2,
+    baseDelayMs: input.retry?.baseDelayMs ?? 2000,
+    provider: {
+      maxRetries: input.retry?.provider?.maxRetries ?? 0,
+      maxRetryDelayMs: input.retry?.provider?.maxRetryDelayMs ?? 60_000,
+      ...(input.retry?.provider?.timeoutMs != null
+        ? { timeoutMs: input.retry.provider.timeoutMs }
+        : {}),
+    },
+  };
   const settingsManager = SettingsManager.inMemory({
     compaction: compactionSettingsFromBudget(budget),
+    retry,
   });
 
   const skillPaths = (input.additionalSkillPaths ?? []).map((p) => p.trim()).filter(Boolean);

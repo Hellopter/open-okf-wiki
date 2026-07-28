@@ -146,6 +146,18 @@ export const zh: MessageTree = {
     requestTimeoutSecondsHint:
       "每个子智能体会话的墙钟预算（规划 / 研究 / 写作 / 审查）。长规划常见需要 600–1800 秒。过短会在模型仍在工作时以 “workspace request timeout” 中止。",
     requestTimeoutSecondsPlaceholder: "例如 600",
+    retryTitle: "传输层自动重试",
+    retryHint:
+      "Pi 在同一子会话内对瞬态错误（429/5xx/网络）自动重试。不会新开 session，也不会对上下文溢出重试。等待时间计入上方会话超时。",
+    retryEnabled: "启用自动重试",
+    retryMaxRetries: "最大重试次数",
+    retryMaxRetriesHint: "首次调用之后的额外次数（默认 2 → 共 3 次）。仅同 session。",
+    retryBaseDelayMs: "退避基数（ms）",
+    retryBaseDelayMsHint: "指数退避底数（默认 2000 → 2s / 4s / 8s）。",
+    providerMaxRetries: "SDK 底层重试",
+    providerMaxRetriesHint: "嵌套的 provider/SDK 重试。默认保持 0，以免与上层重试叠乘。",
+    providerMaxRetryDelayMs: "Retry-After 上限（ms）",
+    providerMaxRetryDelayMsHint: "服务器要求等待超过此值时立即失败，而不是长时间睡眠。",
     orchestrationTitle: "监督树预算",
     orchestrationHint:
       "运行边界的 Plan Scout、Domain/Leaf 研究与多视角审查预算。中等仓库可用默认；省成本可调低，大仓可调高。",

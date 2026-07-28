@@ -78,6 +78,38 @@ export function resolveContextBudget(input: ContextBudgetInput = {}): ContextBud
   };
 }
 
+/**
+ * Seat-level budget: clamp profile max against the live model window.
+ * Never advertise a window larger than the model when the model window is known.
+ */
+export function resolveSeatContextBudget(input: {
+  maxContextTokens?: number;
+  modelContextWindow?: number;
+  contextTargetTokens?: number;
+  defaultWindow?: number;
+}): ContextBudget {
+  const modelWin =
+    typeof input.modelContextWindow === "number" && input.modelContextWindow > 0
+      ? input.modelContextWindow
+      : undefined;
+  const profileMax =
+    typeof input.maxContextTokens === "number" && input.maxContextTokens > 0
+      ? input.maxContextTokens
+      : undefined;
+  // effectiveWindow = min(profile, model) when both set; never > model window when model known
+  let maxContextTokens: number | undefined;
+  if (profileMax !== undefined && modelWin !== undefined) {
+    maxContextTokens = Math.min(profileMax, modelWin);
+  } else {
+    maxContextTokens = profileMax ?? modelWin;
+  }
+  return resolveContextBudget({
+    maxContextTokens,
+    contextTargetTokens: input.contextTargetTokens,
+    defaultWindow: input.defaultWindow,
+  });
+}
+
 /** Pi Settings.compaction slice from a budget. */
 export function compactionSettingsFromBudget(budget: ContextBudget): {
   enabled: true;

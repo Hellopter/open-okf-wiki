@@ -12,7 +12,15 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
     sources: [],
     model: { id: "openai/default", profileId: "default" },
     publicationPath: "/tmp/wiki",
-    limits: { requestTimeoutSeconds: 120 },
+    limits: {
+      requestTimeoutSeconds: 120,
+      retry: {
+        enabled: true,
+        maxRetries: 2,
+        baseDelayMs: 2000,
+        provider: { maxRetries: 0, maxRetryDelayMs: 60_000 },
+      },
+    },
     roleModels: { reviewers: [] },
     orchestration: {
       maxDepth: 2,

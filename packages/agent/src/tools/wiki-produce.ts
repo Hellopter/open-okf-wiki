@@ -112,7 +112,10 @@ export function createWikiProduceTool(
       const runtime = resolveProduceRuntime({
         fixture: input.fixture,
         runtime: input.runtime,
-        defaults: { timeoutMs: requestTimeoutMs(input.workspace) },
+        defaults: {
+          timeoutMs: requestTimeoutMs(input.workspace),
+          retry: input.workspace?.limits?.retry,
+        },
       });
 
       const runInput: RunWikiInput = {

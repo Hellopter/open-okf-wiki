@@ -19,6 +19,7 @@ import {
   type PlanScoutKind,
   planScoutPrompt,
 } from "../../prompts/plan-scout.js";
+import { runBestEffortChild } from "../best-effort-child.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 
 export type PlanScoutReceipt = {
@@ -84,29 +85,34 @@ export async function runPlanScouts(input: RunPlanScoutsInput): Promise<RunPlanS
     async (kind) => {
       const attemptId = `plan@${runIndex}:scout-${kind}`;
       const relPath = `analysis/plan-scouts/${kind}.md`;
-      try {
-        const child = await input.runtime.runAgent({
-          role: "root_research",
-          spanId: attemptId,
-          nodeKey: "plan",
-          runIndex,
-          runWorkDir: input.layout.runWorkDir,
-          task: planScoutPrompt({
-            kind,
-            workspaceName: input.workspaceName,
-            operatorNotes: input.operatorNotes,
+      const outcome = await runBestEffortChild({
+        abortSignal: input.abortSignal,
+        run: () =>
+          input.runtime.runAgent({
+            role: "root_research",
+            spanId: attemptId,
+            nodeKey: "plan",
+            runIndex,
+            runWorkDir: input.layout.runWorkDir,
+            task: planScoutPrompt({
+              kind,
+              workspaceName: input.workspaceName,
+              operatorNotes: input.operatorNotes,
+            }),
+            systemPrompt:
+              "You are a read-only plan scout. Inspect sources/ and return a compact structured report. Do not write wiki pages.",
+            preferFinalMessage: false,
+            model: input.model,
+            modelRuntime: input.modelRuntime,
+            maxContextTokens: input.maxContextTokens,
+            contextTargetTokens: input.contextTargetTokens,
+            sourceIgnores: input.sourceIgnores,
+            abortSignal: input.abortSignal,
+            onProgress: input.onProgress,
           }),
-          systemPrompt:
-            "You are a read-only plan scout. Inspect sources/ and return a compact structured report. Do not write wiki pages.",
-          preferFinalMessage: false,
-          model: input.model,
-          modelRuntime: input.modelRuntime,
-          maxContextTokens: input.maxContextTokens,
-          contextTargetTokens: input.contextTargetTokens,
-          sourceIgnores: input.sourceIgnores,
-          abortSignal: input.abortSignal,
-          onProgress: input.onProgress,
-        });
+      });
+      if (outcome.ok) {
+        const child = outcome.value;
         const body = [
           `# Plan scout: ${kind}`,
           "",
@@ -120,26 +126,28 @@ export async function runPlanScouts(input: RunPlanScoutsInput): Promise<RunPlanS
           summary: (child.summary ?? "").slice(0, 4000),
           ok: true,
         } satisfies PlanScoutReceipt;
-      } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        const body = [`# Plan scout: ${kind}`, "", `Scout failed: ${message}`, ""].join("\n");
-        await writeFile(path.join(input.layout.runWorkDir, relPath), body, "utf8");
-        input.onProgress?.({
-          attemptId,
-          nodeKey: "plan",
-          runIndex,
-          role: "root_research",
-          status: "error",
-          summary: `scout ${kind} failed: ${message}`.slice(0, 4000),
-        });
-        return {
-          kind,
-          relPath,
-          summary: message.slice(0, 4000),
-          ok: false,
-        } satisfies PlanScoutReceipt;
       }
+      const message = outcome.message;
+      const cls = outcome.errorClass ? ` (${outcome.errorClass})` : "";
+      const body = [`# Plan scout: ${kind}`, "", `Scout failed${cls}: ${message}`, ""].join(
+        "\n",
+      );
+      await writeFile(path.join(input.layout.runWorkDir, relPath), body, "utf8");
+      input.onProgress?.({
+        attemptId,
+        nodeKey: "plan",
+        runIndex,
+        role: "root_research",
+        status: "error",
+        summary: `scout ${kind} failed${cls}: ${message}`.slice(0, 4000),
+        ...(outcome.errorClass !== undefined ? { errorClass: outcome.errorClass } : {}),
+      });
+      return {
+        kind,
+        relPath,
+        summary: message.slice(0, 4000),
+        ok: false,
+      } satisfies PlanScoutReceipt;
     },
   );
 

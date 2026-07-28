@@ -9,7 +9,7 @@
  */
 
 import type { AttemptRole, NodeAttempt } from "@okf-wiki/contract";
-import { classifyAgentFailure, decideNodeRetry, type RetryDecision } from "./retry-policy.js";
+import { classifyError, decideNodeRetry, type RetryDecision } from "./retry-policy.js";
 
 export type RunNodeAttemptOptions<T> = {
   abortSignal?: AbortSignal;
@@ -81,6 +81,7 @@ export async function runNodeAttempt<T>(opts: RunNodeAttemptOptions<T>): Promise
     } catch (err) {
       if (isAbortError(err, opts.abortSignal)) throw err;
       const message = err instanceof Error ? err.message : String(err);
+      const errorClass = classifyError(err);
       emitAttempt(opts.onAttempt, {
         attemptId: id,
         nodeKey: opts.nodeKey,
@@ -88,10 +89,10 @@ export async function runNodeAttempt<T>(opts: RunNodeAttemptOptions<T>): Promise
         ...(opts.role !== undefined ? { role: opts.role } : {}),
         status: "error",
         summary: message.slice(0, 4000),
-        errorClass: classifyAgentFailure(message),
+        errorClass,
       });
       const decision = decideNodeRetry({
-        errorClass: classifyAgentFailure(message),
+        errorClass,
         attemptIndex,
         maxAttempts,
         message,

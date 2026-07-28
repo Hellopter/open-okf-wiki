@@ -50,6 +50,7 @@ describe("create-wiki-session tool list safety", () => {
       role: "root_research",
       runWorkDir,
       systemPrompt: "test offline session",
+      retry: { enabled: true, maxRetries: 1, baseDelayMs: 500 },
     });
 
     try {
@@ -60,6 +61,8 @@ describe("create-wiki-session tool list safety", () => {
       assert.ok(handle.session);
       assert.equal(handle.runWorkDir, path.resolve(runWorkDir));
       assert.equal(handle.scopedTools, true);
+      assert.ok(handle.contextBudget);
+      assert.ok(handle.contextBudget.contextWindow >= 4096);
     } finally {
       handle.dispose();
     }

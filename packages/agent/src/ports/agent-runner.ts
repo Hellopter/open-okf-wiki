@@ -6,7 +6,7 @@
  * Live/fixture adapters cast to concrete Pi types at the boundary.
  */
 
-import type { NodeAttempt, WikiRunSpec } from "@okf-wiki/contract";
+import type { NodeAttempt, RetryLimits, WikiRunSpec } from "@okf-wiki/contract";
 
 /** Roles that may run through AgentRunner (subset of operator/scoped roles). */
 export type ScopedRunnerRole =
@@ -60,6 +60,8 @@ export type AgentRunRequest = {
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
+  /** Pi auto-retry policy (workspace.limits.retry). Live adapter injects into session settings. */
+  retry?: RetryLimits;
   additionalSkillPaths?: readonly string[];
   abortSignal?: AbortSignal;
   timeoutMs?: number;
@@ -102,6 +104,8 @@ export type WikiWriteRequest = {
   modelRuntime?: unknown;
   maxContextTokens?: number;
   contextTargetTokens?: number;
+  /** Pi auto-retry policy (workspace.limits.retry). Live adapter injects into session settings. */
+  retry?: RetryLimits;
   additionalSkillPaths?: readonly string[];
   sourceIgnores?: SourceIgnoreInput;
   abortSignal?: AbortSignal;

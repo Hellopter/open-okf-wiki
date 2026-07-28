@@ -15,8 +15,12 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { NodeAttempt } from "@okf-wiki/contract";
-import { createWikiSession, type WikiSessionHandle } from "./create-wiki-session.js";
+import type { NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import {
+  createWikiSession,
+  type WikiSessionHandle,
+  type WikiSessionRetryInput,
+} from "./create-wiki-session.js";
 import type { SourceIgnoreInput } from "./path-policy.js";
 import { resolveAssistantSummary } from "./projectors/assistant-outcome.js";
 import {
@@ -34,6 +38,27 @@ export type ScopedAgentRole = Extract<
 /** Live progress for one scoped loop — maps 1:1 to a NodeAttempt on the Run Graph. */
 export type ScopedAgentProgress = NodeAttempt;
 
+/** Context / prompt capacity exhausted (overflow, oversized task). */
+export class CapacityError extends Error {
+  readonly errorClass = "capacity" as const;
+  name = "CapacityError";
+}
+
+/** Wall-clock or token budget exhausted (timeout, budget caps). */
+export class BudgetError extends Error {
+  readonly errorClass = "budget" as const;
+  name = "BudgetError";
+}
+
+/** Host / runtime infrastructure failure. */
+export class InfrastructureError extends Error {
+  readonly errorClass = "infrastructure" as const;
+  name = "InfrastructureError";
+}
+
+/** Rough char gate before tokenization — oversized tasks fail closed as capacity. */
+const TASK_CHAR_CAPACITY_GATE = 500_000;
+
 export type RunScopedAgentInput = {
   role: ScopedAgentRole;
   runWorkDir: string;
@@ -50,6 +75,8 @@ export type RunScopedAgentInput = {
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
+  /** Pi auto-retry policy (workspace.limits.retry). */
+  retry?: WikiSessionRetryInput | RetryLimits;
   additionalSkillPaths?: readonly string[];
   abortSignal?: AbortSignal;
   timeoutMs?: number;
@@ -111,6 +138,40 @@ function abortError(): Error {
   return err;
 }
 
+/** Best-effort detection of context-window overflow from provider/assistant errors. */
+function looksLikeContextOverflow(message: string): boolean {
+  return /context (?:length |window )?overflow|maximum context|prompt is too long|context_length|too many tokens|token limit exceeded|input is too long/i.test(
+    message,
+  );
+}
+
+/**
+ * Fold auto-retry / compaction session events into a short progress note.
+ * Best-effort: unknown event shapes are ignored.
+ */
+function progressNoteFromSessionEvent(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null || !("type" in event)) return undefined;
+  const type = (event as { type?: unknown }).type;
+  if (typeof type !== "string") return undefined;
+  if (type === "auto_retry_start") {
+    const attempt = (event as { attempt?: unknown }).attempt;
+    const maxAttempts = (event as { maxAttempts?: unknown }).maxAttempts;
+    if (typeof attempt === "number" && typeof maxAttempts === "number") {
+      return `auto-retry ${attempt}/${maxAttempts}`;
+    }
+    return "auto-retry…";
+  }
+  if (type === "auto_retry_end") {
+    const success = (event as { success?: unknown }).success;
+    return success === true ? "auto-retry ok" : "auto-retry failed";
+  }
+  if (type === "compaction_end") {
+    const aborted = (event as { aborted?: unknown }).aborted;
+    return aborted === true ? "compaction aborted" : "compaction done";
+  }
+  return undefined;
+}
+
 /**
  * Run one role-scoped in-process Pi AgentSession.
  * Always uses role allowlist (no bash). Never attaches parent SessionManager.
@@ -131,6 +192,20 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       summary: "Wiki Run cancelled",
     });
     throw abortError();
+  }
+
+  if (typeof input.task === "string" && input.task.length > TASK_CHAR_CAPACITY_GATE) {
+    const message = `Scoped agent (${input.role}) task exceeds capacity gate (${input.task.length} chars > ${TASK_CHAR_CAPACITY_GATE})`;
+    emitProgress(input.onProgress, {
+      attemptId,
+      nodeKey,
+      runIndex,
+      role,
+      status: "error",
+      summary: message,
+      errorClass: "capacity",
+    });
+    throw new CapacityError(message);
   }
 
   if (!input.model) {
@@ -198,6 +273,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       sourceIgnores: input.sourceIgnores,
       maxContextTokens: input.maxContextTokens,
       contextTargetTokens: input.contextTargetTokens,
+      retry: input.retry,
       additionalSkillPaths: input.additionalSkillPaths,
       scopedTools: true,
       customTools: input.customTools,
@@ -217,7 +293,8 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
     const unsub = handle.session.subscribe((event) => {
       applyAttemptSessionEvent(projector, event);
-      emitProgress(input.onProgress, snapshot("running"));
+      const note = progressNoteFromSessionEvent(event);
+      emitProgress(input.onProgress, snapshot("running", note));
     });
 
     try {
@@ -231,7 +308,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     if (timedOut) {
       const message = `Scoped agent (${input.role}) timed out after ${input.timeoutMs} ms (workspace request timeout)`;
       emitProgress(input.onProgress, snapshot("error", message));
-      throw new Error(message);
+      throw new BudgetError(message);
     }
 
     if (input.abortSignal?.aborted) {
@@ -246,10 +323,13 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       preferFinalMessage: input.preferFinalMessage,
     });
     if (resolved.isError) {
-      emitProgress(input.onProgress, snapshot("error", resolved.errorMessage ?? resolved.summary));
-      throw new Error(
-        `Scoped agent (${input.role}) failed: ${resolved.errorMessage ?? resolved.summary}`,
-      );
+      const detail = resolved.errorMessage ?? resolved.summary;
+      emitProgress(input.onProgress, snapshot("error", detail));
+      const message = `Scoped agent (${input.role}) failed: ${detail}`;
+      if (looksLikeContextOverflow(detail) || looksLikeContextOverflow(message)) {
+        throw new CapacityError(message);
+      }
+      throw new Error(message);
     }
 
     const summary = controlSummary(resolved.summary);

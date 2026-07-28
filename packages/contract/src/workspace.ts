@@ -78,6 +78,29 @@ export const ModelRefSchema = z.object({
 
 export type ModelRef = z.infer<typeof ModelRefSchema>;
 
+/** Per-provider retry caps (mirrors Pi settings.retry.provider 1:1). */
+export const RetryProviderLimitsSchema = z.object({
+  maxRetries: z.number().int().min(0).max(5).default(0),
+  maxRetryDelayMs: z.number().int().min(0).max(600_000).default(60_000),
+  timeoutMs: z.number().int().positive().max(3_600_000).optional(),
+});
+
+export type RetryProviderLimits = z.infer<typeof RetryProviderLimitsSchema>;
+
+/**
+ * Workspace retry policy (mirrors Pi settings.retry 1:1).
+ * `maxRetries` is extra attempts after the first call (default 2 → 3 total).
+ */
+export const RetryLimitsSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Extra attempts after first call (Pi maxRetries). Default 2 → 3 total. */
+  maxRetries: z.number().int().min(0).max(10).default(2),
+  baseDelayMs: z.number().int().min(100).max(60_000).default(2000),
+  provider: RetryProviderLimitsSchema.default(() => RetryProviderLimitsSchema.parse({})),
+});
+
+export type RetryLimits = z.infer<typeof RetryLimitsSchema>;
+
 export const WorkspaceLimitsSchema = z.object({
   /**
    * Wall-clock budget (seconds) for one child agent session
@@ -98,9 +121,44 @@ export const WorkspaceLimitsSchema = z.object({
   outputTokensLimit: z.number().int().positive().optional(),
   totalTokensLimit: z.number().int().positive().optional(),
   maxSteps: z.number().int().positive().optional(),
+  /** Retry policy for provider/transient failures (Pi settings.retry shape). */
+  retry: RetryLimitsSchema.default(() => RetryLimitsSchema.parse({})),
 });
 
 export type WorkspaceLimits = z.infer<typeof WorkspaceLimitsSchema>;
+
+/**
+ * Partial limits for workspace PATCH (deep-merged onto existing limits, then re-parsed).
+ * Avoids wiping retry/context when the client sends a single field.
+ */
+export const WorkspaceLimitsPatchSchema = z
+  .object({
+    requestTimeoutSeconds: z.number().positive().max(86_400).optional(),
+    contextTargetTokens: z.number().int().positive().max(10_000_000).optional(),
+    inputTokensLimit: z.number().int().positive().optional(),
+    outputTokensLimit: z.number().int().positive().optional(),
+    totalTokensLimit: z.number().int().positive().optional(),
+    maxSteps: z.number().int().positive().optional(),
+    retry: z
+      .object({
+        enabled: z.boolean().optional(),
+        maxRetries: z.number().int().min(0).max(10).optional(),
+        baseDelayMs: z.number().int().min(100).max(60_000).optional(),
+        provider: z
+          .object({
+            maxRetries: z.number().int().min(0).max(5).optional(),
+            maxRetryDelayMs: z.number().int().min(0).max(600_000).optional(),
+            timeoutMs: z.number().int().positive().max(3_600_000).optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type WorkspaceLimitsPatch = z.infer<typeof WorkspaceLimitsPatchSchema>;
 
 /**
  * Role → model mapping for planner/worker economics (Cursor-style hybrid).

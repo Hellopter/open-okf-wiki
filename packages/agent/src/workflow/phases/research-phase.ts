@@ -3,13 +3,13 @@
  *
  * Domain units (leaf fan-out + domain reduce) have independent scopes and run
  * under bounded parallelism (orchestration.domainConcurrency). Domain reduce
- * failures get one policy-driven retry (runNodeAttempt + retry-policy);
- * retry attempts append to the Run Graph as `domain-x@retryN` under nodeKey
- * `domain-x` with runIndex = attempt index.
+ * failures go through runNodeAttempt + retry-policy; L2 does not retry
+ * transient/capacity/budget/policy/unknown (fail closed). Schema/quality may
+ * still get one repair-style retry when classified that way.
  *
- * Retry policy (single place):
+ * Retry budgets (single place):
  * - leaf research: maxAttempts = 1 (no retry; sibling leaves settle independently)
- * - domain research: maxAttempts = 2 (one policy-driven retry)
+ * - domain research: maxAttempts = 2 (schema/quality only; transport is L0)
  */
 
 import type { AttemptRole, WorkspaceOrchestration } from "@okf-wiki/contract";
@@ -246,7 +246,7 @@ export async function runResearchPhase(
       }
     }
 
-    // Domain maxAttempts=2: one policy-driven retry then fail (critical domains fail the run).
+    // Domain maxAttempts=2: schema/quality may retry once; transport/unknown fail closed.
     try {
       const domainResult = await runResearchUnit({
         kind: "domain",
