@@ -25,6 +25,11 @@ import { StatusBadge } from "./StatusBadge";
 export type WikiProduceGatePanelProps = {
   details: WikiProduceToolDetails;
   onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+  /**
+   * When true, this card is the live pending gate (toolCallId+runId match).
+   * Stale/interrupted awaiting_* cards stay read-only without Approve/Deny.
+   */
+  gateInteractive?: boolean;
 };
 
 function shortRunId(runId: string): string {
@@ -41,19 +46,25 @@ function latestAttemptForNode(attempts: NodeAttempt[], nodeKey: string): NodeAtt
   return forNode[forNode.length - 1];
 }
 
-export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGatePanelProps) {
+export function WikiProduceGatePanel({
+  details,
+  onResumeGate,
+  gateInteractive = false,
+}: WikiProduceGatePanelProps) {
   const { t } = useI18n();
   // Route-scoped workspace ref for the post-run inspector (durable server state).
   const { id: routeWorkspaceId = "" } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const gate =
+  // Status-derived gate kind for read-only chrome; actions require gateInteractive.
+  const gateStatus =
     details.status === "awaiting_plan"
       ? ("plan" as const)
       : details.status === "awaiting_publication"
         ? ("publication" as const)
         : null;
+  const gate = gateInteractive ? gateStatus : null;
   const pages = details.spec?.pages.map((page) => page.path) ?? details.pages ?? [];
   const graphAttempts = details.graph?.attempts;
   const attempts = useMemo(() => graphAttempts ?? [], [graphAttempts]);
@@ -63,13 +74,21 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
   const [dialogNodeKey, setDialogNodeKey] = useState<string | null>(null);
   const [dialogAttemptId, setDialogAttemptId] = useState<string | null>(null);
 
+  // Reset local chrome when the live gate identity or Spec changes (revise re-entry
+  // keeps status=awaiting_plan so runId/status alone are not enough).
   useEffect(() => {
     setSubmitting(false);
     setRevising(false);
     setFeedback("");
     setDialogNodeKey(null);
     setDialogAttemptId(null);
-  }, [details.runId, details.status]);
+  }, [
+    details.runId,
+    details.status,
+    details.summary,
+    details.spec?.summary,
+    gateInteractive,
+  ]);
 
   const relatedAttempts = useMemo(() => {
     if (!dialogNodeKey) return [] as NodeAttempt[];
@@ -112,15 +131,20 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
         ...(gate === "plan" && details.spec ? { spec: details.spec } : {}),
         ...(action === "revise" ? { feedback: feedback.trim() } : {}),
       });
+      // Success: drop local submitting so a re-opened gate (revise loop) is usable.
+      // gateInteractive may briefly go false until the next awaiting_* update.
+      setSubmitting(false);
+      setRevising(false);
+      setFeedback("");
     } catch {
       setSubmitting(false);
     }
   };
 
   const title =
-    gate === "plan"
+    gateStatus === "plan"
       ? t.planConfirm.title
-      : gate === "publication"
+      : gateStatus === "publication"
         ? t.runStatus.awaiting_publication
         : details.status;
 
@@ -151,7 +175,7 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <Badge variant={gate ? "default" : "secondary"}>{title}</Badge>
+          <Badge variant={gateStatus ? "default" : "secondary"}>{title}</Badge>
           {oneLineSummary ? (
             <span
               className="min-w-0 truncate text-xs text-muted-foreground"
@@ -168,7 +192,7 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
         ) : null}
       </div>
 
-      {gate === "plan" && details.spec ? (
+      {gateStatus === "plan" && details.spec ? (
         <div className="border-t border-border/60 pt-2">
           <SpecReviewView spec={details.spec} />
         </div>
@@ -235,7 +259,7 @@ export function WikiProduceGatePanel({ details, onResumeGate }: WikiProduceGateP
         </div>
       ) : null}
 
-      {!gate && details.runId && routeWorkspaceId ? (
+      {!gateStatus && details.runId && routeWorkspaceId ? (
         <div className="border-t border-border/60 pt-2">
           <Button
             type="button"

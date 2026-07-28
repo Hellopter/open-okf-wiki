@@ -139,6 +139,20 @@ export const AgentSseActiveToolSchema = z
 
 export type AgentSseActiveTool = z.infer<typeof AgentSseActiveToolSchema>;
 
+/**
+ * Live wiki_produce HITL waiter on the SSE snapshot arm.
+ * Sourced from getPendingGate — only this card may show Approve/Deny.
+ */
+export const AgentSsePendingGateSchema = z
+  .object({
+    toolCallId: z.string().min(1),
+    runId: z.string().min(1),
+    gate: z.enum(["plan", "publication"]),
+  })
+  .strict();
+
+export type AgentSsePendingGate = z.infer<typeof AgentSsePendingGateSchema>;
+
 /** Current SessionManager branch plus genuine live tool state, sent first on SSE. */
 export const AgentSseSnapshotSchema = z
   .object({
@@ -161,6 +175,8 @@ export const AgentSseSnapshotSchema = z
         messages: z.array(AgentMessageSchema),
         /** Latest genuine Pi tool update; absent when no tool is live. */
         activeTool: AgentSseActiveToolSchema.optional(),
+        /** Live HITL waiter; absent when no operator gate is open. */
+        pendingGate: AgentSsePendingGateSchema.optional(),
       })
       .strict(),
   })

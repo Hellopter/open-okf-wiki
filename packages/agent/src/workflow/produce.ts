@@ -49,14 +49,14 @@ function resolveProduceProgress(input: {
 }
 
 /**
- * Layer B Produce: research → write → council → repair → hard score.
+ * Layer B Produce: research → write → hard-validate → council → post hard-validate.
  */
 export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiResult> {
   /** One protocol for all phases — built only at composition root. */
   const progress = resolveProduceProgress(input);
   const orch = resolveOrchestration(input.workspace);
   const runtime = input.runtime;
-  const metrics = { domainStarts: 0, leafStarts: 0, repairRounds: 0 };
+  const metrics = { domainStarts: 0, leafStarts: 0, repairRounds: 0, hardValidateRepairRounds: 0 };
   const multiSource = (input.workspace.sources?.length ?? 0) > 1;
   const wikiLanguage = input.workspace.wikiLanguage ?? "en";
   const contextTargetTokens =
@@ -143,7 +143,12 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
   const contextTargetTokens =
     input.contextTargetTokens ?? input.workspace.limits?.contextTargetTokens;
   const mode: "fixture" | "live" = input.runtime.kind;
-  const metrics = { domainStarts: 0, leafStarts: 0, repairRounds: 1 };
+  const metrics = {
+    domainStarts: 0,
+    leafStarts: 0,
+    repairRounds: 1,
+    hardValidateRepairRounds: 0,
+  };
 
   const produceInput: ProduceWikiInput = {
     runId: input.runId,

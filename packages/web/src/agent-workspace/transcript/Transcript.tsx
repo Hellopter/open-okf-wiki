@@ -1,6 +1,6 @@
 /** Transcript projected exclusively from Pi messages and tool lifecycle events. */
 
-import type { AgentResumeGateCommand } from "@okf-wiki/contract";
+import type { AgentPendingGate, AgentResumeGateCommand } from "@okf-wiki/contract";
 import { BotIcon, ChevronRightIcon, CircleAlertIcon } from "lucide-react";
 import { memo } from "react";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -31,6 +31,8 @@ import { AgentMarkdown } from "./AgentMarkdown";
 export type TranscriptProps = {
   messages: AgentMessage[];
   onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+  /** Live HITL waiter — only the matching wiki_produce card is interactive. */
+  pendingGate?: AgentPendingGate | null;
   className?: string;
 };
 
@@ -59,9 +61,11 @@ function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: 
 const ChatMessage = memo(function ChatMessage({
   message,
   onResumeGate,
+  pendingGate,
 }: {
   message: AgentMessage;
   onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+  pendingGate: AgentPendingGate | null;
 }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
@@ -75,6 +79,7 @@ const ChatMessage = memo(function ChatMessage({
       key={tool.id}
       tool={tool}
       onResumeGate={onResumeGate}
+      pendingGate={pendingGate}
       settled={!isStreaming && message.status !== "streaming"}
     />
   );
@@ -211,7 +216,12 @@ const ChatMessage = memo(function ChatMessage({
   );
 });
 
-export function Transcript({ messages, onResumeGate, className }: TranscriptProps) {
+export function Transcript({
+  messages,
+  onResumeGate,
+  pendingGate = null,
+  className,
+}: TranscriptProps) {
   const { t } = useI18n();
 
   if (messages.length === 0) {
@@ -245,7 +255,11 @@ export function Transcript({ messages, onResumeGate, className }: TranscriptProp
                   messageId={message.id}
                   scrollAnchor={message.role === "user"}
                 >
-                  <ChatMessage message={message} onResumeGate={onResumeGate} />
+                  <ChatMessage
+                    message={message}
+                    onResumeGate={onResumeGate}
+                    pendingGate={pendingGate}
+                  />
                 </MessageScrollerItem>
               ))}
             </MessageScrollerContent>

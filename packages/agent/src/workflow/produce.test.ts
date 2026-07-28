@@ -181,6 +181,7 @@ describe("produceWiki fixture core flows", () => {
 
     assert.equal(result.status, "ready_for_publish");
     assert.equal(result.metrics.repairRounds, 1);
+    assert.equal(result.metrics.hardValidateRepairRounds, 0, "council repair must not spend HV budget");
     assert.ok(
       result.defects?.clean || !result.defects?.defects.some((d) => d.severity === "blocking"),
     );
@@ -234,6 +235,7 @@ describe("produceWiki fixture core flows", () => {
 
     assert.equal(result.status, "ready_for_publish");
     assert.equal(result.metrics.repairRounds, 1);
+    assert.equal(result.metrics.hardValidateRepairRounds, 0);
     // Two council rounds (blocking then clean) → two attempts under the same topology node.
     assert.ok(reviewAttempts.size >= 2, `expected ≥2 review attempts, got ${reviewAttempts.size}`);
     for (const [attemptId, a] of reviewAttempts) {
@@ -292,6 +294,8 @@ describe("produceWiki fixture core flows", () => {
 
     assert.equal(result.status, "failed");
     assert.ok(result.metrics.repairRounds >= 1);
+    // Council exhaust must not burn mechanical HV budget on review-state reasons.
+    assert.equal(result.metrics.hardValidateRepairRounds, 0);
     assert.equal(result.publishability.publishable, false);
     assert.ok(result.defects && result.defects.defects.length > 0);
   });
@@ -360,7 +364,9 @@ describe("produceWiki fixture core flows", () => {
       ...base,
       acceptance: {
         ...base.acceptance,
-        maxRepairRounds: 2,
+        // Council budget 0: mechanical HV must still repair on its own budget.
+        maxRepairRounds: 0,
+        maxHardValidateRepairRounds: 2,
       },
     };
 
@@ -390,13 +396,14 @@ describe("produceWiki fixture core flows", () => {
 
     assert.equal(result.status, "ready_for_publish", result.summary);
     assert.equal(result.publishability.publishable, true);
-    assert.ok(result.metrics.repairRounds >= 1, "expected hard-validate repair round");
+    assert.equal(result.metrics.repairRounds, 0, "HV must not spend council budget");
+    assert.ok(result.metrics.hardValidateRepairRounds >= 1, "expected hard-validate repair round");
     const overview = await readFile(path.join(layout.wikiDir, "overview.md"), "utf8");
     assert.match(overview, /#L1(?!-L99)/);
     assert.doesNotMatch(overview, /#L1-L99/);
   });
 
-  it("hard-validate OOB exhausts maxRepair → failed", async () => {
+  it("hard-validate OOB exhausts maxHardValidateRepairRounds → failed", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "okf-produce-hv-exhaust-"));
     temps.push(root);
     const { workspace } = await makeWorkspace(root);
@@ -406,7 +413,8 @@ describe("produceWiki fixture core flows", () => {
       ...base,
       acceptance: {
         ...base.acceptance,
-        maxRepairRounds: 1,
+        maxRepairRounds: 2,
+        maxHardValidateRepairRounds: 1,
       },
     };
 
@@ -437,7 +445,84 @@ describe("produceWiki fixture core flows", () => {
     assert.equal(result.status, "failed");
     assert.match(result.summary, /hard-validate|out of bounds|validation/i);
     assert.equal(result.publishability.publishable, false);
-    assert.equal(result.metrics.repairRounds, 1);
+    assert.equal(result.metrics.hardValidateRepairRounds, 1);
+    assert.equal(result.metrics.repairRounds, 0, "pre-council HV exhaust skips council");
+  });
+
+  it("council and hard-validate repair budgets are independent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "okf-produce-budget-split-"));
+    temps.push(root);
+    const { workspace } = await makeWorkspace(root);
+    const { layout } = await makeRunLayout(root, "run-budget-split");
+    const base = defaultWikiRunSpec(workspace.name);
+    const spec: WikiRunSpec = {
+      ...base,
+      acceptance: {
+        ...base.acceptance,
+        maxRepairRounds: 1,
+        maxHardValidateRepairRounds: 1,
+      },
+    };
+
+    // First write is citation-OOB (HV budget); after HV repair, council blocks once (council budget).
+    let writeOrdinal = 0;
+    let reviewerCalls = 0;
+    const runtime = createFixtureProduceRuntime({
+      onWrite: async (req, ordinal) => {
+        writeOrdinal = ordinal;
+        const citation =
+          ordinal === 1 ? "[Source](repo:README.md#L1-L99)" : "[Source](repo:README.md#L1)";
+        const pages = await writeCitationWiki(req.layout.wikiDir, citation);
+        return {
+          mode: "fixture" as const,
+          layout: req.layout,
+          pages,
+          summary: ordinal === 1 ? "bad citation" : "fixed citation",
+        };
+      },
+      onAgent: async (req) => {
+        if (req.role !== "reviewer") return undefined;
+        reviewerCalls += 1;
+        const blocking = reviewerCalls <= 1;
+        // Bare JSON clean must include NO_DEFECTS (parser short-circuit); fenced JSON also works.
+        const text = blocking
+          ? [
+              "```json",
+              JSON.stringify({
+                clean: false,
+                defects: [
+                  {
+                    severity: "blocking",
+                    code: "coverage_gap",
+                    issue: "missing detail",
+                    path: "overview.md",
+                  },
+                ],
+                summary: "blocking",
+              }),
+              "```",
+            ].join("\n")
+          : JSON.stringify({ clean: true, defects: [], summary: "NO_DEFECTS" });
+        return { role: "reviewer", mode: "fixture", summary: text };
+      },
+    });
+
+    const result = await produceWiki({
+      runId: "run-budget-split",
+      workspace: {
+        ...workspace,
+        // Single seat so one blocking reviewer call == one council round.
+        orchestration: { ...workspace.orchestration, reviewCouncilSize: 1 },
+      },
+      layout,
+      spec,
+      runtime,
+    });
+
+    assert.equal(result.status, "ready_for_publish", result.summary);
+    assert.equal(result.metrics.hardValidateRepairRounds, 1, "one pre-council HV repair");
+    assert.equal(result.metrics.repairRounds, 1, "one council repair");
+    assert.ok(writeOrdinal >= 3, `root write + HV repair + council repair, got ${writeOrdinal}`);
   });
 });
 

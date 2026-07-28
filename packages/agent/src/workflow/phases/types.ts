@@ -67,7 +67,10 @@ export type ProduceWikiResult = {
   metrics: {
     domainStarts: number;
     leafStarts: number;
+    /** Council review repair rounds spent (vs acceptance.maxRepairRounds). */
     repairRounds: number;
+    /** Mechanical hard-validate repair rounds spent (vs maxHardValidateRepairRounds). */
+    hardValidateRepairRounds: number;
   };
 };
 

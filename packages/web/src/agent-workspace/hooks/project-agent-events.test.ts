@@ -205,6 +205,11 @@ describe("projectAgentEvent", () => {
             summary: "Awaiting WikiRunSpec approval",
           },
         },
+        pendingGate: {
+          toolCallId: "wiki-1",
+          runId: "run-1",
+          gate: "plan",
+        },
       },
     });
 
@@ -215,6 +220,46 @@ describe("projectAgentEvent", () => {
     assert.equal(tool?.details?.spec?.summary, spec.summary);
     // Snapshot activeTool uses the same toolOutputFromResult path as live updates.
     assert.equal(tool?.output, "Awaiting WikiRunSpec approval");
+    assert.deepEqual(state.pendingGate, {
+      toolCallId: "wiki-1",
+      runId: "run-1",
+      gate: "plan",
+    });
+  });
+
+  it("clears pendingGate when reconnect snapshot omits it (stale awaiting cards)", () => {
+    const seeded = {
+      ...createPiStreamState(),
+      pendingGate: { toolCallId: "old", runId: "run-old", gate: "plan" as const },
+    };
+    const state = projectAgentEvent(seeded, {
+      source: "server",
+      kind: "snapshot",
+      sessionId: "session-1",
+      timestamp: "2026-07-24T00:00:00.000Z",
+      payload: {
+        session: { id: "session-1", workspaceId: "workspace-1" },
+        messages: [
+          {
+            id: "asst-1",
+            role: "assistant",
+            content: "",
+            createdAt: "2026-07-24T00:00:00.002Z",
+            status: "done",
+            tools: [
+              {
+                id: "old",
+                name: "wiki_produce",
+                args: {},
+                status: "error",
+                details: { status: "awaiting_plan", runId: "run-old" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    assert.equal(state.pendingGate, null);
   });
 
   it("snapshot activeTool and live tool_execution_update share details.summary output", () => {

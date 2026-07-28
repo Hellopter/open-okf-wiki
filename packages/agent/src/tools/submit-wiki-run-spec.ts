@@ -49,6 +49,7 @@ const acceptanceSchema = Type.Object(
   {
     reviewRequired: Type.Optional(Type.Boolean()),
     maxRepairRounds: Type.Optional(Type.Number()),
+    maxHardValidateRepairRounds: Type.Optional(Type.Number()),
     blockingSeverities: Type.Optional(
       Type.Array(
         Type.Union([Type.Literal("blocking"), Type.Literal("major"), Type.Literal("minor")]),

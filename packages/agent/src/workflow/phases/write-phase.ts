@@ -142,8 +142,11 @@ export async function runRepairWrite(input: {
   } = ctx;
   let produced = input.produced;
 
-  // metrics.repairRounds is 1-based and already incremented by the caller.
-  const runIndex = Math.max(0, (metrics.repairRounds || 1) - 1);
+  // Total repair attempts across council + hard-validate (each counter is
+  // 1-based and already incremented by the bounded loop before this write).
+  const totalRepairRounds =
+    (metrics.repairRounds ?? 0) + (metrics.hardValidateRepairRounds ?? 0);
+  const runIndex = Math.max(0, (totalRepairRounds || 1) - 1);
   const attemptId = `repair@${runIndex}`;
 
   try {

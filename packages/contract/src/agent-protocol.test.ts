@@ -135,11 +135,21 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
           summary: "Awaiting WikiRunSpec approval",
         },
       },
+      pendingGate: {
+        toolCallId: "tool-1",
+        runId: "run-1",
+        gate: "plan",
+      },
     },
   });
   assert.equal(snapshot.kind, "snapshot");
   if (snapshot.source === "server" && snapshot.kind === "snapshot") {
     assert.equal(snapshot.payload.activeTool?.details.status, "awaiting_plan");
+    assert.deepEqual(snapshot.payload.pendingGate, {
+      toolCallId: "tool-1",
+      runId: "run-1",
+      gate: "plan",
+    });
   }
 
   const stream = AgentSseEventSchema.parse({

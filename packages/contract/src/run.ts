@@ -41,7 +41,13 @@ export type WikiRunSpecPage = z.infer<typeof WikiRunSpecPageSchema>;
 
 export const WikiRunSpecAcceptanceSchema = z.object({
   reviewRequired: z.boolean().default(true),
+  /** Council review repair budget only (blocking defects from review seats). */
   maxRepairRounds: z.number().int().min(0).max(8).default(2),
+  /**
+   * Mechanical hard-validate repair budget only (citation OOB, missing critical
+   * pages, …). Independent of `maxRepairRounds` so council cannot starve HV.
+   */
+  maxHardValidateRepairRounds: z.number().int().min(0).max(8).default(2),
   /** Severities that block publish when present after final review. */
   blockingSeverities: z.array(z.enum(["blocking", "major", "minor"])).default(["blocking"]),
 });
@@ -248,6 +254,7 @@ export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
     acceptance: {
       reviewRequired: true,
       maxRepairRounds: 2,
+      maxHardValidateRepairRounds: 2,
       blockingSeverities: ["blocking"],
     },
     changelog: [],

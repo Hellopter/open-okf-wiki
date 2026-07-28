@@ -21,6 +21,8 @@ export {
   extractMessageThinking,
   extractPartsFromMessage,
   extractToolCallsFromMessage,
+  finalizeIncompleteTools,
+  finalizeIncompleteToolsOnMessage,
   formatToolResultText,
   isRecord,
   makeId,
@@ -33,6 +35,8 @@ export {
 } from "./agent-message.js";
 /** Live stream reduce + view patches (server-owned projection). */
 export {
+  type AgentPendingGate,
+  AgentPendingGateSchema,
   type AgentStreamViewPatch,
   AgentStreamViewPatchSchema,
   type PiAgentStatus,
@@ -41,6 +45,9 @@ export {
   applyStreamPatch,
   createPiStreamState,
   diffStreamState,
+  finalizeIncompleteToolsInState,
+  isLiveWikiProduceGate,
+  pendingGateFromToolDetails,
   reducePiEvent,
   updateToolInState,
   viewMessages,
@@ -59,6 +66,8 @@ export {
   type AgentSseEvent,
   AgentSseEventSchema,
   type AgentSseHeartbeat,
+  type AgentSsePendingGate,
+  AgentSsePendingGateSchema,
   type AgentSseSnapshot,
   type AgentSseStream,
   AgentSseStreamSchema,

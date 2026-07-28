@@ -17,8 +17,10 @@ import {
   loadAgentSessionHistory,
   registerAgentSession,
 } from "../agent-session-registry.ts";
+import { getPendingGate } from "../agent-session/wiki-produce-gate-coordinator.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
+import { sessionKey } from "../session-key.ts";
 
 const HEARTBEAT_MS = 15_000;
 
@@ -35,6 +37,11 @@ export function handleListOperatorCommands(_req: IncomingMessage, res: ServerRes
 
 export type AgentSessionSseDependencies = {
   getActiveTool?: typeof getActiveAgentSessionTool;
+  /** Test seam for live HITL waiter on snapshot (defaults to getPendingGate). */
+  getPendingGate?: (
+    workspaceId: string,
+    sessionId: string,
+  ) => ReturnType<typeof getPendingGate>;
   loadHistory?: typeof loadAgentSessionHistory;
   subscribe?: typeof subscribeAgentSessionEvents;
   heartbeatMs?: number;
@@ -216,6 +223,18 @@ export async function handleAgentSessionEvents(
     workspace.id,
     sessionId,
   );
+  // Live HITL waiter only — stale awaiting_* cards must not become interactive.
+  const pendingRequest = (
+    dependencies.getPendingGate ??
+    ((wsId: string, sid: string) => getPendingGate(sessionKey(wsId, sid)))
+  )(workspace.id, sessionId)?.request;
+  const pendingGate = pendingRequest
+    ? {
+        toolCallId: pendingRequest.toolCallId,
+        runId: pendingRequest.runId,
+        gate: pendingRequest.gate,
+      }
+    : undefined;
   req.once("close", onRequestClose);
   res.once("close", cleanup);
 
@@ -249,6 +268,7 @@ export async function handleAgentSessionEvents(
       session: { id: sessionId, workspaceId: workspace.id },
       messages: history.messages,
       ...(activeTool ? { activeTool } : {}),
+      ...(pendingGate ? { pendingGate } : {}),
     },
   } satisfies AgentSseSnapshot);
   ready = true;

@@ -260,6 +260,17 @@ test("SSE snapshots precede queued live events and include the genuine active to
           summary: "Awaiting WikiRunSpec approval",
         },
       }),
+      getPendingGate: () => ({
+        request: {
+          toolCallId: "tool-live-1",
+          runId: "run-live-1",
+          gate: "plan" as const,
+          spec,
+          pages: [],
+        },
+        resolve: () => undefined,
+        reject: () => undefined,
+      }),
     });
   });
   const abort = new AbortController();
@@ -340,11 +351,19 @@ test("SSE snapshots precede queued live events and include the genuine active to
     const state = { buffer: "" };
     const snapshot = (await nextSseData(reader, state)) as {
       kind?: string;
-      payload?: { activeTool?: { toolCallId?: string; details?: { status?: string } } };
+      payload?: {
+        activeTool?: { toolCallId?: string; details?: { status?: string } };
+        pendingGate?: { toolCallId?: string; runId?: string; gate?: string };
+      };
     };
     assert.equal(snapshot.kind, "snapshot");
     assert.equal(snapshot.payload?.activeTool?.toolCallId, "tool-live-1");
     assert.equal(snapshot.payload?.activeTool?.details?.status, "awaiting_plan");
+    assert.deepEqual(snapshot.payload?.pendingGate, {
+      toolCallId: "tool-live-1",
+      runId: "run-live-1",
+      gate: "plan",
+    });
     assert.deepEqual(await nextSseData(reader, state), streamEvent);
     await reader.cancel();
   } finally {

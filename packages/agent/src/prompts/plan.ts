@@ -35,7 +35,7 @@ export function plannerPrompt(input: {
     '  "domains": [{ "id", "title", "scope", "critical", "questions": string[] }],',
     '  "pages": [{ "path", "purpose", "domainIds", "questions", "template"?, "critical" }],',
     '  "openQuestions": string[],',
-    '  "acceptance": { "reviewRequired": true, "maxRepairRounds": 2, "blockingSeverities": ["blocking"] },',
+    '  "acceptance": { "reviewRequired": true, "maxRepairRounds": 2, "maxHardValidateRepairRounds": 2, "blockingSeverities": ["blocking"] },',
     '  "changelog": string[]',
     "}",
     "",

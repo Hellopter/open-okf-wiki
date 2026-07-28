@@ -76,6 +76,40 @@ describe("formatToolDisplay", () => {
     assert.equal(display.headerOnly, true);
   });
 
+  it("skips empty notes for wiki_produce (no notes= chip)", () => {
+    const display = formatToolDisplay("wiki_produce", { notes: "" });
+    assert.equal(display.title, "wiki_produce");
+    assert.equal(display.kind, "output-only");
+    assert.equal(display.headerOnly, true);
+    assert.equal(display.subtitle, undefined);
+    assert.ok(!String(display.subtitle ?? "").includes("notes="));
+  });
+
+  it("skips whitespace-only notes for wiki_produce", () => {
+    const display = formatToolDisplay("wiki_produce", { notes: "   " });
+    assert.equal(display.title, "wiki_produce");
+    assert.equal(display.kind, "output-only");
+    assert.equal(display.headerOnly, true);
+    assert.equal(display.subtitle, undefined);
+    assert.ok(!String(display.subtitle ?? "").includes("notes="));
+  });
+
+  it("formats wiki_produce with empty args as title-only", () => {
+    const display = formatToolDisplay("wiki_produce", {});
+    assert.equal(display.title, "wiki_produce");
+    assert.equal(display.kind, "output-only");
+    assert.equal(display.headerOnly, true);
+    assert.equal(display.subtitle, undefined);
+  });
+
+  it("shows non-empty wiki_produce notes as primary subtitle text", () => {
+    const display = formatToolDisplay("wiki_produce", { notes: "focus X" });
+    assert.equal(display.title, "wiki_produce");
+    assert.equal(display.kind, "output-only");
+    assert.equal(display.subtitle, "focus X");
+    assert.ok(!String(display.subtitle).includes("notes="));
+  });
+
   it("still accepts JSON string args", () => {
     const display = formatToolDisplay("read", '{"path":"foo/bar.ts"}');
     assert.equal(display.title, "read");

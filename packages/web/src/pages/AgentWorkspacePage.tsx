@@ -305,6 +305,7 @@ export function AgentWorkspacePage() {
           onSend={() => void agent.send()}
           onAbort={() => void agent.abort()}
           onResumeGate={agent.resumeGate}
+          pendingGate={agent.pendingGate}
           onSetModel={agent.setModel}
           agentStatus={agent.status}
           agentReady={agent.ready}

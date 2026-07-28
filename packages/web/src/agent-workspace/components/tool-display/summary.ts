@@ -211,6 +211,7 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
     "description",
     "message",
     "prompt",
+    "notes",
   ];
   const monoKeys = new Set(["path", "file_path", "filePath", "command", "pattern", "url"]);
   for (const key of primaryKeys) {
@@ -225,19 +226,36 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
     }
   }
 
-  // Few scalar fields → pack into subtitle rather than JSON body
+  // Few scalar fields → pack into subtitle rather than JSON body.
+  // Skip empty/whitespace strings and null/undefined so `notes=""` never becomes `notes=`.
   const keys = Object.keys(params);
   if (keys.length > 0 && keys.length <= 4) {
-    const parts = keys
-      .map((k) => {
-        const v = params[k];
-        if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-          return `${k}=${v}`;
-        }
-        return null;
-      })
-      .filter(Boolean) as string[];
-    if (parts.length === keys.length) {
+    const parts: string[] = [];
+    let allScalarsOrEmpty = true;
+    for (const k of keys) {
+      const v = params[k];
+      if (v === null || v === undefined) continue;
+      if (typeof v === "string") {
+        if (!v.trim()) continue;
+        parts.push(`${k}=${v}`);
+        continue;
+      }
+      if (typeof v === "number" || typeof v === "boolean") {
+        parts.push(`${k}=${v}`);
+        continue;
+      }
+      allScalarsOrEmpty = false;
+      break;
+    }
+    if (allScalarsOrEmpty) {
+      if (parts.length === 0) {
+        // e.g. wiki_produce with only empty notes / no meaningful args
+        return {
+          title: name,
+          kind: "output-only",
+          headerOnly: true,
+        };
+      }
       return {
         title: name,
         subtitle: truncateOneLine(parts.join(" · "), 72),
@@ -248,6 +266,13 @@ export function formatToolDisplay(toolName: string, args?: unknown): ToolDisplay
   }
 
   // Last resort: unknown structured args — show compact one-liner, expand only result
+  if (keys.length === 0) {
+    return {
+      title: name,
+      kind: "output-only",
+      headerOnly: true,
+    };
+  }
   return {
     title: name,
     subtitle: truncateOneLine(keys.map((k) => k).join(", "), 48),

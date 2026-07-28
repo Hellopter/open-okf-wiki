@@ -29,19 +29,37 @@ function cancelledStub(): ProduceWikiResult {
       sourceMounts: new Map(),
     },
     mode: "fixture",
-    metrics: { domainStarts: 0, leafStarts: 0, repairRounds: 0 },
+    metrics: {
+      domainStarts: 0,
+      leafStarts: 0,
+      repairRounds: 0,
+      hardValidateRepairRounds: 0,
+    },
   };
 }
 
 describe("consumeRepairBudget", () => {
   it("increments until max, then returns false without further increment", () => {
     const metrics = { repairRounds: 0 };
-    assert.equal(consumeRepairBudget(metrics, 2), true);
+    assert.equal(consumeRepairBudget(metrics, "repairRounds", 2), true);
     assert.equal(metrics.repairRounds, 1);
-    assert.equal(consumeRepairBudget(metrics, 2), true);
+    assert.equal(consumeRepairBudget(metrics, "repairRounds", 2), true);
     assert.equal(metrics.repairRounds, 2);
-    assert.equal(consumeRepairBudget(metrics, 2), false);
+    assert.equal(consumeRepairBudget(metrics, "repairRounds", 2), false);
     assert.equal(metrics.repairRounds, 2);
+  });
+
+  it("tracks independent budget keys without cross-spend", () => {
+    const metrics = { repairRounds: 0, hardValidateRepairRounds: 0 };
+    assert.equal(consumeRepairBudget(metrics, "repairRounds", 1), true);
+    assert.equal(metrics.repairRounds, 1);
+    assert.equal(metrics.hardValidateRepairRounds, 0);
+    assert.equal(consumeRepairBudget(metrics, "hardValidateRepairRounds", 2), true);
+    assert.equal(metrics.repairRounds, 1);
+    assert.equal(metrics.hardValidateRepairRounds, 1);
+    assert.equal(consumeRepairBudget(metrics, "repairRounds", 1), false);
+    assert.equal(consumeRepairBudget(metrics, "hardValidateRepairRounds", 2), true);
+    assert.equal(metrics.hardValidateRepairRounds, 2);
   });
 });
 
@@ -53,6 +71,7 @@ describe("runBoundedRepairLoop abort-before-repair ordering", () => {
         runBoundedRepairLoop({
           maxRepair: 2,
           metrics,
+          budgetKey: "repairRounds",
           score: async () => {
             // Ordering invariant: abort inside score BEFORE kind:'repair'.
             const err = new Error("Wiki Run cancelled");
@@ -74,6 +93,7 @@ describe("runBoundedRepairLoop abort-before-repair ordering", () => {
     const result = await runBoundedRepairLoop({
       maxRepair: 2,
       metrics,
+      budgetKey: "repairRounds",
       score: async () => ({ kind: "cancelled", result: cancelledStub() }),
       repair: async () => {
         assert.fail("repair must not run on cancelled score");
@@ -90,6 +110,7 @@ describe("runBoundedRepairLoop abort-before-repair ordering", () => {
     const outcome = await runBoundedRepairLoop({
       maxRepair: 1,
       metrics,
+      budgetKey: "repairRounds",
       score: async (): Promise<RepairScore> => {
         scores += 1;
         if (scores === 1) return { kind: "repair", repairText: "fix me" };
@@ -103,5 +124,24 @@ describe("runBoundedRepairLoop abort-before-repair ordering", () => {
     assert.equal(outcome.kind, "passed");
     assert.equal(metrics.repairRounds, 1);
     assert.equal(scores, 2);
+  });
+
+  it("spends only the named budgetKey", async () => {
+    const metrics = { repairRounds: 0, hardValidateRepairRounds: 0 };
+    let scores = 0;
+    const outcome = await runBoundedRepairLoop({
+      maxRepair: 1,
+      metrics,
+      budgetKey: "hardValidateRepairRounds",
+      score: async (): Promise<RepairScore> => {
+        scores += 1;
+        if (scores === 1) return { kind: "repair", repairText: "hv fix" };
+        return { kind: "pass" };
+      },
+      repair: async () => ({ kind: "ok" }),
+    });
+    assert.equal(outcome.kind, "passed");
+    assert.equal(metrics.hardValidateRepairRounds, 1);
+    assert.equal(metrics.repairRounds, 0);
   });
 });

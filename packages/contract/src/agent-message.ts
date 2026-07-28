@@ -448,6 +448,45 @@ export function patchToolsOnAssistant(
   return { ...msg, tools, parts };
 }
 
+const INCOMPLETE_TOOL_STATUSES = new Set<AgentToolCallStatus>(["pending", "running"]);
+
+/**
+ * Mark every pending/running tool on a message as error (history has no live tools).
+ * Preserves existing output; fills `Interrupted` when output is empty.
+ */
+export function finalizeIncompleteToolsOnMessage(
+  message: AgentMessage,
+  outputIfEmpty = "Interrupted",
+): AgentMessage {
+  if (!message.tools?.length) return message;
+  let changed = false;
+  const tools = message.tools.map((tool) => {
+    if (!INCOMPLETE_TOOL_STATUSES.has(tool.status)) return tool;
+    changed = true;
+    const hasOutput = typeof tool.output === "string" && tool.output.trim().length > 0;
+    return {
+      ...tool,
+      status: "error" as const,
+      output: hasOutput ? tool.output : outputIfEmpty,
+    };
+  });
+  return changed ? { ...message, tools } : message;
+}
+
+/** Finalize incomplete tools across a message list (pure; returns same ref when unchanged). */
+export function finalizeIncompleteTools(
+  messages: readonly AgentMessage[],
+  outputIfEmpty = "Interrupted",
+): AgentMessage[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    const patched = finalizeIncompleteToolsOnMessage(message, outputIfEmpty);
+    if (patched !== message) changed = true;
+    return patched;
+  });
+  return changed ? next : (messages as AgentMessage[]);
+}
+
 function historyTimestamp(row: unknown): string {
   if (!isRecord(row) || typeof row.timestamp !== "number") {
     return new Date().toISOString();
@@ -512,5 +551,6 @@ export function projectAgentMessagesFromPiHistory(rows: readonly unknown[]): Age
     }
   }
 
-  return messages;
+  // History is durable: no live tools. Anything still pending/running never got a toolResult.
+  return finalizeIncompleteTools(messages);
 }

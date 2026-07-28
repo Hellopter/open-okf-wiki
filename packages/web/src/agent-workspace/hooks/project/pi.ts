@@ -48,7 +48,12 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
     const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
-    return applySnapshotWithActiveTool(snapshotMessages(rows), event.payload.activeTool);
+    // Absent pendingGate on snapshot clears any prior live waiter.
+    return applySnapshotWithActiveTool(
+      snapshotMessages(rows),
+      event.payload.activeTool,
+      event.payload.pendingGate ?? null,
+    );
   }
   if (event.source === "server" && event.kind === "stream") {
     return applyStreamPatch(state, event.payload);

@@ -11,7 +11,11 @@
  * Known tools put args on the trigger line; they are never re-dumped as JSON.
  */
 
-import type { AgentResumeGateCommand } from "@okf-wiki/contract";
+import {
+  isLiveWikiProduceGate,
+  type AgentPendingGate,
+  type AgentResumeGateCommand,
+} from "@okf-wiki/contract";
 import { ChevronRightIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -28,6 +32,8 @@ import { WikiProduceGatePanel } from "./WikiProduceGatePanel";
 export type ToolExecutionCardProps = {
   tool: AgentToolCall;
   onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+  /** Live HITL waiter — gate buttons only when this tool matches. */
+  pendingGate?: AgentPendingGate | null;
   /**
    * When the parent work unit is settled, keep completed tools collapsed.
    * Pass `false` while a unit is still active so non-done tools expand.
@@ -68,6 +74,7 @@ function expandBody(
 export const ToolExecutionCard = memo(function ToolExecutionCard({
   tool,
   onResumeGate,
+  pendingGate = null,
   settled,
 }: ToolExecutionCardProps) {
   const { t } = useI18n();
@@ -77,6 +84,9 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const isRunning = tool.status === "running" || tool.status === "pending";
   const isWikiProduce = tool.name.toLowerCase() === WIKI_PRODUCE_TOOL_NAME;
   const wikiDetails = isWikiProduce ? tool.details : undefined;
+  const gateInteractive = Boolean(
+    wikiDetails && isLiveWikiProduceGate(pendingGate, tool.id, wikiDetails),
+  );
 
   const body = expandBody(display.kind, {
     writePreview: display.writePreview,
@@ -186,7 +196,11 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
       <CollapsibleContent className="min-w-0 overflow-hidden pl-4 pr-1 pb-1.5 sm:pl-6">
         {/* wiki_produce: structured panel only — never dump body pre + details twice. */}
         {wikiDetails ? (
-          <WikiProduceGatePanel details={wikiDetails} onResumeGate={onResumeGate} />
+          <WikiProduceGatePanel
+            details={wikiDetails}
+            onResumeGate={onResumeGate}
+            gateInteractive={gateInteractive}
+          />
         ) : display.diff ? (
           <div className="flex min-w-0 flex-col gap-1.5">
             <DiffPreview removed={display.diff.removed} added={display.diff.added} />

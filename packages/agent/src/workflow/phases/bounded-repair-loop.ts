@@ -1,8 +1,8 @@
 /**
  * Shared bounded repair loop for review-council and hard-validate phases.
  *
- * Repair budget (`metrics.repairRounds` vs `maxRepair`) is consumed in one place
- * so council and mechanical hard-validate share the same counter.
+ * Callers pass independent budget counters (`budgetKey`) so council and
+ * mechanical hard-validate do not share one repair allotment.
  */
 
 import type { ProduceWikiResult } from "./types.js";
@@ -24,16 +24,17 @@ export type BoundedRepairLoopResult =
   | { kind: "failed"; result: ProduceWikiResult };
 
 /**
- * Try to spend one repair round. Returns false when budget is already exhausted
- * (does not increment). On success, increments `metrics.repairRounds` (1-based count
- * of completed repair attempts after return).
+ * Try to spend one repair round on `metrics[budgetKey]`. Returns false when
+ * budget is already exhausted (does not increment). On success, increments the
+ * named counter (1-based count of completed repair attempts after return).
  */
-export function consumeRepairBudget(
-  metrics: { repairRounds: number },
+export function consumeRepairBudget<K extends string>(
+  metrics: Record<K, number>,
+  budgetKey: K,
   maxRepair: number,
 ): boolean {
-  if (metrics.repairRounds >= maxRepair) return false;
-  metrics.repairRounds += 1;
+  if (metrics[budgetKey] >= maxRepair) return false;
+  metrics[budgetKey] += 1;
   return true;
 }
 
@@ -54,11 +55,13 @@ export function consumeRepairBudget(
  * `return { kind: "cancelled", result }` prior to the repair branch.
  *
  * Returning `{ kind: "repair" }` first and aborting later (in `repair` or
- * `onBeforeRepair`) still increments `metrics.repairRounds`.
+ * `onBeforeRepair`) still increments the budget counter named by `budgetKey`.
  */
-export async function runBoundedRepairLoop(input: {
+export async function runBoundedRepairLoop<K extends string>(input: {
   maxRepair: number;
-  metrics: { repairRounds: number };
+  metrics: Record<K, number>;
+  /** Which metrics field this loop spends (council vs hard-validate). */
+  budgetKey: K;
   score: (ctx: { round: number }) => Promise<RepairScore>;
   repair: (repairText: string) => Promise<RepairActionResult>;
   onBeforeRepair?: (ctx: {
@@ -79,12 +82,12 @@ export async function runBoundedRepairLoop(input: {
       return { kind: "cancelled", result: scored.result };
     }
 
-    if (!consumeRepairBudget(input.metrics, input.maxRepair)) {
+    if (!consumeRepairBudget(input.metrics, input.budgetKey, input.maxRepair)) {
       return { kind: "exhausted" };
     }
 
     await input.onBeforeRepair?.({
-      repairRound: input.metrics.repairRounds,
+      repairRound: input.metrics[input.budgetKey],
       repairText: scored.repairText,
       round,
     });

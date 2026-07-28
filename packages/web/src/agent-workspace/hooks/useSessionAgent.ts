@@ -3,6 +3,7 @@
 import type {
   AgentCommand,
   AgentCommandResponse,
+  AgentPendingGate,
   AgentResumeGateCommand,
 } from "@okf-wiki/contract";
 import { AgentSseEventSchema } from "@okf-wiki/contract";
@@ -44,6 +45,8 @@ export type UseSessionAgentResult = {
   /** EventSource connection lifecycle (independent of agent turn status). */
   connectionStatus: ConnectionStatus;
   error: string | null;
+  /** Live wiki_produce HITL waiter; only this card is interactive. */
+  pendingGate: AgentPendingGate | null;
   input: string;
   setInput: (value: string) => void;
   send: (text?: string) => Promise<void>;
@@ -62,6 +65,7 @@ type SessionAgentView = {
   streamingMessage: AgentMessage | null;
   status: AgentStatus;
   error: string | null;
+  pendingGate: AgentPendingGate | null;
 };
 
 function viewFromStream(state: PiStreamState, sending: boolean): SessionAgentView {
@@ -70,6 +74,7 @@ function viewFromStream(state: PiStreamState, sending: boolean): SessionAgentVie
     streamingMessage: state.streamingMessage,
     status: deriveAgentStatus(state.agentStatus, sending),
     error: state.errorText,
+    pendingGate: state.pendingGate,
   };
 }
 
@@ -331,6 +336,18 @@ export function useSessionAgent({
           publish(withLocalError(streamStateRef.current, message));
           throw new Error(message);
         }
+        // Coordinator waiter is gone until the next awaiting_* onUpdate.
+        // Clear only if pendingGate still matches this decision — do not wipe a
+        // newer gate that may have already arrived over SSE after re-plan.
+        const current = streamStateRef.current;
+        const gate = current.pendingGate;
+        if (
+          gate &&
+          gate.gate === command.gate &&
+          (command.runId == null || gate.runId === command.runId)
+        ) {
+          publish({ ...current, pendingGate: null });
+        }
       } catch (caught) {
         // Re-throw after ensuring stream carries the error (avoid double-publish
         // when the failure path above already published).
@@ -359,6 +376,7 @@ export function useSessionAgent({
     ready,
     connectionStatus,
     error: view.error,
+    pendingGate: view.pendingGate,
     input,
     setInput,
     send,

@@ -254,7 +254,12 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         return;
       }
       const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 600 };
-      const { contextTargetTokens: _drop, ...limitsWithoutContext } = baseLimits;
+      // Spread through an explicit optional so the fallback `{ requestTimeoutSeconds }`
+      // is still destructurable under WorkspaceLimits | bare-timeout union.
+      const { contextTargetTokens: _drop, ...limitsWithoutContext } = {
+        contextTargetTokens: undefined as number | undefined,
+        ...baseLimits,
+      };
       void _drop;
       const nextLimits = {
         ...limitsWithoutContext,

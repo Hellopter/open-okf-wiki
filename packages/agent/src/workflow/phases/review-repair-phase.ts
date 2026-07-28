@@ -1,9 +1,10 @@
 /**
- * Review council + bounded repair loop (Run Workflow phase / T2).
+ * Review council + mechanical hard-validate with independent repair budgets (T2).
  *
- * Repair budget (`maxRepairRounds`) is shared by:
- * 1. Review-council blocking defects
- * 2. Mechanical hard-validate failures (citation OOB, missing critical pages, …)
+ * Phase order:
+ * 1. Front-load mechanical hard-validate (own `maxHardValidateRepairRounds`)
+ * 2. Review-council blocking defects (`maxRepairRounds` / `metrics.repairRounds`)
+ * 3. Post-council hard-validate with remaining HV budget (fail-closed if still dirty)
  *
  * Council members run in parallel (reviewConcurrency), use orthogonal lenses,
  * and merge with fingerprint dedupe + sticky prior blocking (ensemble pattern).
@@ -31,7 +32,10 @@ import { reviewerPrompt, type ReviewLens } from "../../prompts/reviewer.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { classifyError } from "../retry-policy.js";
 import { runNodeAttempt } from "../run-node-attempt.js";
-import { runBoundedRepairLoop } from "./bounded-repair-loop.js";
+import {
+  runBoundedRepairLoop,
+  type BoundedRepairLoopResult,
+} from "./bounded-repair-loop.js";
 import {
   formatDefectsForRepair,
   hardValidateRepairText,
@@ -205,6 +209,184 @@ function hardValidateFailedResult(input: {
   });
 }
 
+/** Review receipt / blocking-defect reasons are not mechanical writer work. */
+function isReviewStateHardValidateReason(reason: string): boolean {
+  return (
+    reason.startsWith("blocking defects remain") || reason.startsWith("review required")
+  );
+}
+
+/**
+ * Mechanical hard-validate score + repair loop.
+ * Shares `metrics.hardValidateRepairRounds` across pre- and post-council calls
+ * so remaining budget after front-load HV is available after council.
+ */
+async function runHardValidateRepairLoop(input: {
+  ctx: PhaseContext;
+  produced: WikiWriteResult;
+  defects: MergedDefectReport | null;
+  maxHardValidate: number;
+  label: string;
+  /**
+   * Pre-council HV is mechanical only (no defects.json yet).
+   * Post-council HV requires review receipt when acceptance.reviewRequired.
+   */
+  requireReviewReceipt: boolean;
+}): Promise<{
+  outcome: BoundedRepairLoopResult;
+  produced: WikiWriteResult;
+  publishability: PublishabilityResult;
+}> {
+  const { ctx, maxHardValidate, label, requireReviewReceipt } = input;
+  const { input: wikiInput, progress, metrics, layout, spec } = ctx;
+  let produced = input.produced;
+  const defects = input.defects;
+
+  const sources = sourcesFromMounts(layout.sourceMounts);
+  progress.emit({
+    kind: "status",
+    status: "producing",
+    summary: `${label}: materialize indexes`,
+  });
+  await materializeWikiIndexes(produced.layout.wikiDir);
+  produced = {
+    ...produced,
+    pages: await listWikiMarkdown(produced.layout.wikiDir),
+  };
+
+  // Host path identity: strip run-mount `sources/<id>/…` to Skill repo-relative form.
+  // Re-run on every hard-validate score (including after repair writes) so staging
+  // stays contract-clean; resolve also canonicalizes as a second line of defense.
+  const citationCanon = {
+    sourceIds: [...layout.sourceMounts.keys()],
+    multiSource: layout.sourceMounts.size > 1,
+  };
+
+  let publishability: PublishabilityResult = {
+    publishable: false,
+    reasons: [],
+    pages: produced.pages,
+    defects: null,
+  };
+
+  const receiptIndex = await defaultReceiptStore.buildIndex(
+    wikiInput.workspace.rootPath,
+    wikiInput.runId,
+  );
+
+  const outcome = await runBoundedRepairLoop({
+    maxRepair: maxHardValidate,
+    metrics,
+    budgetKey: "hardValidateRepairRounds",
+    score: async () => {
+      await canonicalizeWikiTreeCitations(produced.layout.wikiDir, citationCanon);
+      publishability = await scorePublishable({
+        wikiRoot: produced.layout.wikiDir,
+        workspaceRoot: wikiInput.workspace.rootPath,
+        runId: wikiInput.runId,
+        sources,
+        spec,
+        requireReviewReceipt,
+      });
+
+      if (publishability.publishable) {
+        return { kind: "pass" as const };
+      }
+
+      const { writerReasons } = partitionHardValidateReasons(publishability.reasons);
+      // Review-state reasons need another council pass — not mechanical HV repair.
+      const mechanicalReasons = writerReasons.filter((r) => !isReviewStateHardValidateReason(r));
+
+      // Index-only or review-state-only: not model HV work — fail closed without budget.
+      if (mechanicalReasons.length === 0) {
+        progress.emit({
+          kind: "status",
+          status: "producing",
+          summary: publishability.reasons.slice(0, 3).join("; "),
+        });
+        if (defects) {
+          progress.emit({ kind: "defects", defects });
+        }
+        return {
+          kind: "fail_closed" as const,
+          result: hardValidateFailedResult({
+            produced,
+            spec,
+            defects,
+            publishability,
+            metrics,
+          }),
+        };
+      }
+
+      // Abort before budget consume (loop increments after score returns repair).
+      throwIfAborted(wikiInput.abortSignal);
+      return {
+        kind: "repair" as const,
+        repairText: hardValidateRepairText(mechanicalReasons),
+      };
+    },
+    onBeforeRepair: ({ repairRound }) => {
+      const { writerReasons } = partitionHardValidateReasons(publishability.reasons);
+      const reasonPreview = writerReasons.slice(0, 3).join("; ");
+      progress.emit({
+        kind: "status",
+        status: "producing",
+        summary: `${label} repair round ${repairRound}: ${reasonPreview}`,
+      });
+    },
+    repair: async (defectText) => {
+      const repair = await runRepairWrite({
+        ctx,
+        produced,
+        defectText,
+        receiptIndex,
+      });
+      if (repair.kind === "cancelled") {
+        return { kind: "cancelled", result: repair.result };
+      }
+      produced = repair.produced;
+      return { kind: "ok" };
+    },
+  });
+
+  return { outcome, produced, publishability };
+}
+
+function hardValidateTerminal(
+  outcome: BoundedRepairLoopResult,
+  input: {
+    produced: WikiWriteResult;
+    spec: ProduceWikiResult["spec"];
+    defects: MergedDefectReport | null;
+    publishability: PublishabilityResult;
+    metrics: ProduceWikiResult["metrics"];
+    progress: PhaseContext["progress"];
+  },
+): ProduceWikiResult | null {
+  const { produced, spec, defects, publishability, metrics, progress } = input;
+  if (outcome.kind === "cancelled") return outcome.result;
+  if (outcome.kind === "failed") return outcome.result;
+  if (outcome.kind === "exhausted") {
+    progress.emit({
+      kind: "status",
+      status: "producing",
+      summary: publishability.reasons.slice(0, 3).join("; "),
+    });
+    if (defects) {
+      progress.emit({ kind: "defects", defects });
+    }
+    return hardValidateFailedResult({
+      produced,
+      spec,
+      defects,
+      publishability,
+      metrics,
+    });
+  }
+  return null; // passed
+}
+
 export async function runReviewRepairPhase(
   ctx: PhaseContext,
   producedIn: WikiWriteResult,
@@ -214,7 +396,8 @@ export async function runReviewRepairPhase(
 
   let produced = producedIn;
   let defects: MergedDefectReport | null = null;
-  const maxRepair = Math.max(0, spec.acceptance?.maxRepairRounds ?? 2);
+  const maxCouncilRepair = Math.max(0, spec.acceptance?.maxRepairRounds ?? 2);
+  const maxHardValidate = Math.max(0, spec.acceptance?.maxHardValidateRepairRounds ?? 2);
   const councilSize = Math.max(1, orch.reviewCouncilSize ?? 3);
   const reviewConcurrency = Math.max(
     1,
@@ -225,10 +408,33 @@ export async function runReviewRepairPhase(
     "blocking",
   ]) as DefectSeverity[];
 
-  // --- Council score + repair (shared budget) ---
+  // --- 1. Front-load mechanical hard-validate (own budget; no review receipt yet) ---
+  {
+    const hv = await runHardValidateRepairLoop({
+      ctx,
+      produced,
+      defects,
+      maxHardValidate,
+      label: "hard-validate",
+      requireReviewReceipt: false,
+    });
+    produced = hv.produced;
+    const terminal = hardValidateTerminal(hv.outcome, {
+      produced,
+      spec,
+      defects,
+      publishability: hv.publishability,
+      metrics,
+      progress,
+    });
+    if (terminal) return { result: terminal };
+  }
+
+  // --- 2. Council score + repair (council-only budget) ---
   const councilOutcome = await runBoundedRepairLoop({
-    maxRepair,
+    maxRepair: maxCouncilRepair,
     metrics,
+    budgetKey: "repairRounds",
     score: async ({ round }) => {
       // Abort before returning repair so cancellation does not consume budget.
       throwIfAborted(input.abortSignal);
@@ -406,156 +612,50 @@ export async function runReviewRepairPhase(
   if (councilOutcome.kind === "failed") {
     return { result: councilOutcome.result };
   }
-  // passed | exhausted — exhausted falls through to hard-validate.
+  // passed | exhausted — exhausted falls through to post-council hard-validate.
+  // Council may have left blocking defects; scorePublishable fail-closes on them.
 
-  // Mechanical hard-validate with remaining shared repair budget (citation OOB, etc.).
-  // Re-materialize indexes once first — cheap drift fix that must not burn model repair rounds.
-  const sources = sourcesFromMounts(layout.sourceMounts);
-  progress.emit({
-    kind: "status",
-    status: "producing",
-    summary: "hard-validate: materialize indexes",
-  });
-  await materializeWikiIndexes(produced.layout.wikiDir);
-  produced = {
-    ...produced,
-    pages: await listWikiMarkdown(produced.layout.wikiDir),
-  };
+  // --- 3. Post-council hard-validate (remaining HV budget + review receipt) ---
+  {
+    const hv = await runHardValidateRepairLoop({
+      ctx,
+      produced,
+      defects,
+      maxHardValidate,
+      label: "post-council hard-validate",
+      requireReviewReceipt: true,
+    });
+    produced = hv.produced;
+    const terminal = hardValidateTerminal(hv.outcome, {
+      produced,
+      spec,
+      defects,
+      publishability: hv.publishability,
+      metrics,
+      progress,
+    });
+    if (terminal) return { result: terminal };
 
-  // Host path identity: strip run-mount `sources/<id>/…` to Skill repo-relative form.
-  // Re-run on every hard-validate score (including after repair writes) so staging
-  // stays contract-clean; resolve also canonicalizes as a second line of defense.
-  const citationCanon = {
-    sourceIds: [...layout.sourceMounts.keys()],
-    multiSource: layout.sourceMounts.size > 1,
-  };
-
-  let publishability: PublishabilityResult = {
-    publishable: false,
-    reasons: [],
-    pages: produced.pages,
-    defects: null,
-  };
-
-  const hardValidateOutcome = await runBoundedRepairLoop({
-    maxRepair,
-    metrics,
-    score: async () => {
-      await canonicalizeWikiTreeCitations(produced.layout.wikiDir, citationCanon);
-      publishability = await scorePublishable({
-        wikiRoot: produced.layout.wikiDir,
-        workspaceRoot: input.workspace.rootPath,
-        runId: input.runId,
-        sources,
-        spec,
-        requireReviewReceipt: true,
-      });
-
-      if (publishability.publishable) {
-        return { kind: "pass" as const };
-      }
-
-      const { writerReasons } = partitionHardValidateReasons(publishability.reasons);
-
-      // Index-only failures after product materialize are not model work — fail closed.
-      if (writerReasons.length === 0) {
-        progress.emit({
-          kind: "status",
-          status: "producing",
-          summary: publishability.reasons.slice(0, 3).join("; "),
-        });
-        if (defects) {
-          progress.emit({ kind: "defects", defects });
-        }
-        return {
-          kind: "fail_closed" as const,
-          result: hardValidateFailedResult({
-            produced,
-            spec,
-            defects,
-            publishability,
-            metrics,
-          }),
-        };
-      }
-
-      // Abort before budget consume (loop increments after score returns repair).
-      throwIfAborted(input.abortSignal);
-      return {
-        kind: "repair" as const,
-        repairText: hardValidateRepairText(writerReasons),
-      };
-    },
-    onBeforeRepair: ({ repairRound }) => {
-      const { writerReasons } = partitionHardValidateReasons(publishability.reasons);
-      const reasonPreview = writerReasons.slice(0, 3).join("; ");
-      progress.emit({
-        kind: "status",
-        status: "producing",
-        summary: `hard-validate repair round ${repairRound}: ${reasonPreview}`,
-      });
-    },
-    repair: async (defectText) => {
-      // Only non-index reasons go to the writer (indexes are re-materialized by repair write).
-      const repair = await runRepairWrite({
-        ctx,
-        produced,
-        defectText,
-        receiptIndex,
-      });
-      if (repair.kind === "cancelled") {
-        return { kind: "cancelled", result: repair.result };
-      }
-      produced = repair.produced;
-      return { kind: "ok" };
-    },
-  });
-
-  if (hardValidateOutcome.kind === "cancelled") {
-    return { result: hardValidateOutcome.result };
-  }
-  if (hardValidateOutcome.kind === "failed") {
-    return { result: hardValidateOutcome.result };
-  }
-  if (hardValidateOutcome.kind === "exhausted") {
+    // passed
     progress.emit({
       kind: "status",
       status: "producing",
-      summary: publishability.reasons.slice(0, 3).join("; "),
+      summary: produced.summary,
     });
-    if (defects) {
-      progress.emit({ kind: "defects", defects });
-    }
+    progress.emit({ kind: "pages", pages: produced.pages });
+
     return {
-      result: hardValidateFailedResult({
-        produced,
+      result: {
+        status: "ready_for_publish",
+        pages: produced.pages,
+        summary: produced.summary,
         spec,
         defects,
-        publishability,
+        publishability: hv.publishability,
+        layout: produced.layout,
+        mode: produced.mode,
         metrics,
-      }),
+      },
     };
   }
-
-  // passed
-  progress.emit({
-    kind: "status",
-    status: "producing",
-    summary: produced.summary,
-  });
-  progress.emit({ kind: "pages", pages: produced.pages });
-
-  return {
-    result: {
-      status: "ready_for_publish",
-      pages: produced.pages,
-      summary: produced.summary,
-      spec,
-      defects,
-      publishability,
-      layout: produced.layout,
-      mode: produced.mode,
-      metrics,
-    },
-  };
 }

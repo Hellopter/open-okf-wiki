@@ -7,7 +7,7 @@
  * transcript can claim width for code / mermaid / math. Mobile: sheets.
  */
 
-import type { AgentResumeGateCommand } from "@okf-wiki/contract";
+import type { AgentPendingGate, AgentResumeGateCommand } from "@okf-wiki/contract";
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -65,6 +65,8 @@ export type AgentWorkspaceShellProps = {
   onSend: () => void;
   onAbort: () => void;
   onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
+  /** Live wiki_produce HITL waiter — only matching cards are interactive. */
+  pendingGate?: AgentPendingGate | null;
   /** Session-scoped chat model switch (composer dropdown). */
   onSetModel?: (profileId: string) => Promise<boolean>;
   agentStatus: AgentStatus;
@@ -93,6 +95,7 @@ export function AgentWorkspaceShell({
   onSend,
   onAbort,
   onResumeGate,
+  pendingGate = null,
   onSetModel,
   agentStatus,
   agentReady,
@@ -299,7 +302,7 @@ export function AgentWorkspaceShell({
         ) : null}
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <Transcript messages={messages} onResumeGate={onResumeGate} />
+          <Transcript messages={messages} onResumeGate={onResumeGate} pendingGate={pendingGate} />
           <Composer
             input={input}
             onInputChange={onInputChange}

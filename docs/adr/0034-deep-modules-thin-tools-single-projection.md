@@ -55,11 +55,14 @@ tools/*  →  workflow guarded/entry  →  phases / produce helpers
 
 ### 4. Bounded repair: shared loop, separate strategies, separate budgets
 
-- `runBoundedRepairLoop`: score-first dispatch + shared `repairRounds` budget only.
+- `runBoundedRepairLoop`: score-first dispatch + a **named** budget counter (`budgetKey`).
 - **Invariant:** if abort should not consume budget, `score` must abort **before** returning `{ kind: "repair" }` (documented on the loop; covered by unit tests).
-- Council vs hard-validate strategies stay separate call sites (or named helpers) — not one god `RepairPolicy`.
-- Attempt knobs stay **orthogonal**:
-  - repair rounds (`maxRepair` / `metrics.repairRounds`)
+- Council vs hard-validate strategies stay separate call sites — not one god `RepairPolicy`.
+- **Independent repair budgets** (do not share one counter):
+  - council: `acceptance.maxRepairRounds` → `metrics.repairRounds`
+  - mechanical hard-validate: `acceptance.maxHardValidateRepairRounds` → `metrics.hardValidateRepairRounds`
+- Phase order: pre-council HV (cheap, no review receipt) → council → post-council HV (fail-closed, review receipt required).
+- Other attempt knobs stay **orthogonal**:
   - reviewer seat attempts (`REVIEWER_MAX_ATTEMPTS`)
   - research attempts (`RESEARCH_MAX_ATTEMPTS` in research phase)
   - node transport/retry (`retry-policy` / `DEFAULT_MAX_ATTEMPTS`)

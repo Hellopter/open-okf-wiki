@@ -357,4 +357,52 @@ describe("projectAgentMessagesFromPiHistory", () => {
     assert.equal(AgentMessageSchema.safeParse(messages[0]).success, true);
     assert.equal(AgentMessageSchema.safeParse(messages[1]).success, true);
   });
+
+  it("finalizes toolCall without toolResult as error (not pending)", () => {
+    const rows = [
+      {
+        role: "assistant",
+        id: "a1",
+        content: [
+          { type: "text", text: "calling" },
+          { type: "toolCall", id: "orphan-1", name: "bash", arguments: { cmd: "ls" } },
+        ],
+        timestamp: Date.parse("2026-07-27T00:00:01.000Z"),
+      },
+    ];
+    const messages = projectAgentMessagesFromPiHistory(rows);
+    assert.equal(messages.length, 1);
+    const tool = messages[0]?.tools?.[0];
+    assert.equal(tool?.id, "orphan-1");
+    assert.equal(tool?.status, "error");
+    assert.equal(tool?.output, "Interrupted");
+  });
+
+  it("keeps completed tools done while finalizing siblings without toolResult", () => {
+    const rows = [
+      {
+        role: "assistant",
+        id: "a1",
+        content: [
+          { type: "toolCall", id: "ok", name: "read", arguments: {} },
+          { type: "toolCall", id: "missing", name: "bash", arguments: {} },
+        ],
+        timestamp: Date.parse("2026-07-27T00:00:01.000Z"),
+      },
+      {
+        role: "toolResult",
+        toolCallId: "ok",
+        toolName: "read",
+        content: [{ type: "text", text: "ok body" }],
+        isError: false,
+        timestamp: Date.parse("2026-07-27T00:00:02.000Z"),
+      },
+    ];
+    const messages = projectAgentMessagesFromPiHistory(rows);
+    const tools = messages[0]?.tools ?? [];
+    assert.equal(tools.find((t) => t.id === "ok")?.status, "done");
+    assert.equal(tools.find((t) => t.id === "ok")?.output, "ok body");
+    assert.equal(tools.find((t) => t.id === "missing")?.status, "error");
+    assert.equal(tools.find((t) => t.id === "missing")?.output, "Interrupted");
+  });
 });
