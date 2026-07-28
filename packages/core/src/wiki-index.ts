@@ -13,8 +13,8 @@ import {
   isReservedWikiPath,
   loadWikiPageRecords,
   scanWikiTree,
-  wikiMarkdownBody,
 } from "./wiki-tree.js";
+import { parseWikiIndexListing } from "./wiki-nav.js";
 
 export type WikiIndexListEntry =
   | { kind: "page"; title: string; href: string; description?: string; type?: string }
@@ -293,22 +293,12 @@ export async function regenerateWikiIndexes(
   return { written, removed };
 }
 
-const LIST_LINK_RE =
-  /^[*+-]\s+\[([^\]]+)\]\(([^)\s]+)\)(?:\s*[-–—:]\s*(.+?))?\s*$/;
-
+/** Project index listing links to hrefs (hash already stripped by parser). */
 function parseIndexHrefs(content: string): string[] {
-  const hrefs: string[] = [];
-  for (const rawLine of wikiMarkdownBody(content).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const m = LIST_LINK_RE.exec(line);
-    if (!m) continue;
-    let href = m[2]!.trim();
-    const hash = href.indexOf("#");
-    if (hash >= 0) href = href.slice(0, hash);
-    if (href) hrefs.push(href);
-  }
-  return hrefs;
+  return parseWikiIndexListing(content)
+    .filter((entry): entry is Extract<typeof entry, { kind: "link" }> => entry.kind === "link")
+    .map((entry) => entry.href)
+    .filter(Boolean);
 }
 
 /**

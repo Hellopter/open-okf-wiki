@@ -1,12 +1,11 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import {
-  parseSourceCitations,
   type SourceRootMap,
   sourceRootMapFromSources,
-  validateCitationFormat,
   validateCitationResolve,
-} from "./citations.js";
+} from "./citations-canonicalize.js";
+import { parseSourceCitations, validateCitationFormat } from "./citations-parse.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { deriveWikiGraph } from "./wiki-links.js";
 import {

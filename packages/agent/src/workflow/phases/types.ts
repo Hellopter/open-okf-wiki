@@ -9,7 +9,7 @@ import type {
   RunWorkdirLayoutPaths,
   SourceIgnoreInput,
 } from "../../ports/agent-runner.js";
-import type { ProduceProgress } from "../../ports/progress-sink.js";
+import type { ProduceProgress, ProgressSink } from "../../ports/progress-sink.js";
 import type { PublishabilityResult } from "../../produce/publishability.js";
 
 export type ProduceWikiModelHandle = {
@@ -42,7 +42,16 @@ export type ProduceWikiInput = {
   additionalSkillPaths?: readonly string[];
   maxContextTokens?: number;
   contextTargetTokens?: number;
+  /**
+   * Tool-edge / test callback. Prefer `progressSink` when injecting a port;
+   * produceWiki adapts this via progressSinkFromCallback at composition root.
+   */
   onProgress?: (progress: ProduceProgress) => void;
+  /**
+   * Optional progress port. When set, used as the single fan-out for phases
+   * (onProgress is ignored). When omitted, produceWiki wraps onProgress.
+   */
+  progressSink?: ProgressSink;
   sourceIgnores?: SourceIgnoreInput;
 };
 
@@ -66,7 +75,12 @@ export type ProduceMetrics = ProduceWikiResult["metrics"];
 
 export type PhaseContext = {
   input: ProduceWikiInput;
-  onProgress: ProduceWikiInput["onProgress"];
+  /**
+   * Single progress fan-out for produce phases.
+   * Built at produceWiki / repairWiki composition root from progressSink or onProgress.
+   * Phases call progress.emit only — never raw callbacks with different safety rules.
+   */
+  progress: ProgressSink;
   runtime: AgentRunner;
   metrics: ProduceMetrics;
   multiSource: boolean;

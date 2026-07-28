@@ -44,6 +44,17 @@ export function consumeRepairBudget(
  * 3. if budget remains, repair then loop; else exhausted
  *
  * `round` is 1-based score attempt count (council uses it as review run index + 1).
+ *
+ * ## Abort / budget ordering invariant
+ *
+ * Budget is consumed **only after** `score` returns `{ kind: "repair" }`
+ * (see `consumeRepairBudget` below). Callers that must not spend a repair
+ * round on cancellation **MUST** abort inside `score` *before* returning
+ * `{ kind: "repair" }` — e.g. `throwIfAborted(signal)` or
+ * `return { kind: "cancelled", result }` prior to the repair branch.
+ *
+ * Returning `{ kind: "repair" }` first and aborting later (in `repair` or
+ * `onBeforeRepair`) still increments `metrics.repairRounds`.
  */
 export async function runBoundedRepairLoop(input: {
   maxRepair: number;

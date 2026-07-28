@@ -7,21 +7,14 @@
 
 import {
   AgentMessageSchema,
+  applySnapshotWithActiveTool,
   applyStreamPatch,
-  createPiStreamState,
   projectAgentMessagesFromPiHistory,
-  toolOutputFromResult,
-  updateToolInState,
   type PiStreamState,
 } from "@okf-wiki/contract";
 import type { AgentMessage, AgentSseLike } from "./types.ts";
 
-export {
-  createPiStreamState,
-  reducePiEvent,
-  updateToolInState,
-  viewMessages,
-} from "@okf-wiki/contract";
+export { createPiStreamState, updateToolInState, viewMessages } from "@okf-wiki/contract";
 export type { PiStreamState } from "@okf-wiki/contract";
 
 /**
@@ -55,19 +48,7 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
     const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
-    const snapshot = createPiStreamState(snapshotMessages(rows));
-    const activeTool = event.payload.activeTool;
-    if (!activeTool) return snapshot;
-    return {
-      ...updateToolInState(snapshot, activeTool.toolCallId, {
-        name: activeTool.toolName,
-        details: activeTool.details,
-        output: toolOutputFromResult(undefined, activeTool.details),
-        status: "running",
-      }),
-      turnActive: true,
-      agentStatus: "streaming",
-    };
+    return applySnapshotWithActiveTool(snapshotMessages(rows), event.payload.activeTool);
   }
   if (event.source === "server" && event.kind === "stream") {
     return applyStreamPatch(state, event.payload);

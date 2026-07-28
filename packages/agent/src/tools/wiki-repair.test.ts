@@ -9,9 +9,9 @@ import { defaultSpecStore } from "../ports/core-spec-store.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
 import { createFixtureProduceRuntime } from "../runtime/produce-runtime.js";
 import { runWorkdirLayout } from "../runtime/workdir.js";
+import { layoutForExistingRun } from "../workflow/layout.js";
 import {
   createWikiRepairTool,
-  layoutForExistingRun,
   WIKI_REPAIR_TOOL_NAME,
   type WikiRepairToolDetails,
 } from "./wiki-repair.js";

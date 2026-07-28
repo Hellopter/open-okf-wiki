@@ -36,8 +36,8 @@ export {
   type AgentStreamViewPatch,
   AgentStreamViewPatchSchema,
   type PiAgentStatus,
-  PiAgentStatusSchema,
   type PiStreamState,
+  applySnapshotWithActiveTool,
   applyStreamPatch,
   createPiStreamState,
   diffStreamState,
@@ -67,8 +67,6 @@ export {
   CreatePiAgentSessionBodySchema,
   type CreatePiAgentSessionResponse,
   PI_SESSIONS_DIR,
-  type PiAgentSseEvent,
-  PiAgentSseEventSchema,
   type PiSessionSummary,
   parseAgentCommand,
   safeParseAgentCommand,
@@ -125,7 +123,6 @@ export {
 export {
   type AnalysisReceipt,
   AnalysisReceiptSchema,
-  ReceiptEvidenceSchema,
   type ReceiptStatus,
   ReceiptStatusSchema,
 } from "./receipt.js";
@@ -163,7 +160,6 @@ export {
   type AttemptRole,
   AttemptRoleSchema,
   type ControlReturn,
-  ControlReturnSchema,
   type ControlReturnStatus,
   ControlReturnStatusSchema,
   type ErrorClass,
@@ -181,10 +177,6 @@ export {
   RunGraphSnapshotSchema,
 } from "./run-graph.js";
 export {
-  assertPhaseTransition,
-  isPhaseTransitionAllowed,
-  phaseAllowsCancel,
-  phaseGate,
   recordStatusFromPhase,
   toolStatusFromPhase,
   type WikiProduceToolStatus,

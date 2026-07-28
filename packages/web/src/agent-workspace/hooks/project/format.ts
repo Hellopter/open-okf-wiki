@@ -2,14 +2,10 @@
  * String / message extractors for projection surfaces.
  *
  * Message/tool extractors that belong on the shared wire path live in
- * `@okf-wiki/contract` and are re-exported here for local imports.
+ * `@okf-wiki/contract` and are re-exported here only when local callers need them.
  */
 
 export {
-  PAYLOAD_TEXT_MAX,
-  extractAssistantError,
-  extractMessageText,
-  extractMessageThinking,
   formatToolResultText,
   isRecord,
   makeId,

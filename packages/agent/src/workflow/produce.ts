@@ -2,7 +2,7 @@
  * Run Workflow produce body: research → write → review/repair → score.
  *
  * Thin sequencer over phases; no Pi SDK, no ToolDefinition.
- * Operator repair (wiki_repair) enters via repairWiki — same write-phase path.
+ * Operator repair enters via repairWikiGuarded → repairWiki (pure write path).
  */
 
 import type { WikiRunSpec, WorkspaceConfig } from "@okf-wiki/contract";
@@ -13,7 +13,11 @@ import type {
   WikiWriteResult,
 } from "../ports/agent-runner.js";
 import { defaultReceiptStore } from "../ports/core-receipt-store.js";
-import { emitProgress, type ProduceProgress } from "../ports/progress-sink.js";
+import {
+  type ProduceProgress,
+  type ProgressSink,
+  progressSinkFromCallback,
+} from "../ports/progress-sink.js";
 import { listWikiMarkdown } from "../produce/wiki-pages.js";
 import { resolveOrchestration } from "./budgets.js";
 import { runResearchPhase } from "./phases/research-phase.js";
@@ -34,10 +38,22 @@ export type {
 } from "./phases/types.js";
 
 /**
+ * Resolve the single ProgressSink for produce phases.
+ * Explicit progressSink wins; otherwise adapt tool-edge onProgress.
+ */
+function resolveProduceProgress(input: {
+  progressSink?: ProgressSink;
+  onProgress?: (progress: ProduceProgress) => void;
+}): ProgressSink {
+  return input.progressSink ?? progressSinkFromCallback(input.onProgress);
+}
+
+/**
  * Layer B Produce: research → write → council → repair → hard score.
  */
 export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiResult> {
-  const onProgress = input.onProgress;
+  /** One protocol for all phases — built only at composition root. */
+  const progress = resolveProduceProgress(input);
   const orch = resolveOrchestration(input.workspace);
   const runtime = input.runtime;
   const metrics = { domainStarts: 0, leafStarts: 0, repairRounds: 0 };
@@ -54,7 +70,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
 
   const ctx: PhaseContext = {
     input,
-    onProgress,
+    progress,
     runtime,
     metrics,
     multiSource,
@@ -67,7 +83,7 @@ export async function produceWiki(input: ProduceWikiInput): Promise<ProduceWikiR
 
   try {
     // Spec must already be committed by runWiki (defaultSpecStore). Produce only reads it.
-    await emitPagesFromDisk(onProgress, layout.wikiDir, spec);
+    await emitPagesFromDisk(progress, layout.wikiDir, spec);
 
     const research = await runResearchPhase(ctx, orch);
     if (research.kind === "cancelled" || research.kind === "failed") {
@@ -104,6 +120,7 @@ export type RepairWikiInput = {
   maxContextTokens?: number;
   contextTargetTokens?: number;
   onProgress?: (progress: ProduceProgress) => void;
+  progressSink?: ProgressSink;
   sourceIgnores?: SourceIgnoreInput;
 };
 
@@ -120,6 +137,7 @@ export type RepairWikiResult = {
  * Tools must call this rather than AgentRunner.writeWiki directly.
  */
 export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResult> {
+  const progress = resolveProduceProgress(input);
   const multiSource = (input.workspace.sources?.length ?? 0) > 1;
   const wikiLanguage = input.workspace.wikiLanguage ?? "en";
   const contextTargetTokens =
@@ -139,12 +157,13 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens,
     onProgress: input.onProgress,
+    progressSink: progress,
     sourceIgnores: input.sourceIgnores,
   };
 
   const ctx: PhaseContext = {
     input: produceInput,
-    onProgress: input.onProgress,
+    progress,
     runtime: input.runtime,
     metrics,
     multiSource,
@@ -164,7 +183,7 @@ export async function repairWiki(input: RepairWikiInput): Promise<RepairWikiResu
   };
 
   const receiptIndex = await defaultReceiptStore.buildIndex(input.workspace.rootPath, input.runId);
-  emitProgress(input.onProgress, {
+  progress.emit({
     kind: "status",
     status: "producing",
     summary: "root_write repair",

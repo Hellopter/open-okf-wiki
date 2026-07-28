@@ -435,7 +435,9 @@ export async function runWiki(input: RunWikiInput): Promise<RunWikiResult> {
       contextTargetTokens: workspace.limits?.contextTargetTokens,
       additionalSkillPaths: [frozen.skillPath],
       sourceIgnores: frozen.sourceIgnores,
-      onProgress: handleProgress,
+      // Graph fold + outer ProgressSink: produce phases emit through this sink only.
+      // progressSinkFromCallback keeps display try/catch on the produce fan-out.
+      progressSink: progressSinkFromCallback(handleProgress),
     });
     // Phase boundary: durable graph after produce body (topology + all attempts).
     await graphOwner.persist();

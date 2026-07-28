@@ -229,16 +229,6 @@ async function readAllPublishedPages(
   });
 }
 
-/**
- * List published pages with their frontmatter metadata (type/title/description)
- * so browsers can label navigation without fetching every page.
- */
-export async function listPublishedWikiPageSummaries(
-  publicationPath: string,
-): Promise<PublishedWikiPageSummary[]> {
-  return (await readAllPublishedPages(publicationPath)).map((page) => page.summary);
-}
-
 export type PublishedWikiBrowse = {
   /** Relative POSIX paths (lexicographic), including reserved files. */
   pages: string[];

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { toolOutputFromResult } from "./project/format.ts";
-import { diffStreamState } from "@okf-wiki/contract";
+import {
+  defaultWikiRunSpec,
+  diffStreamState,
+  reducePiEvent,
+  toolOutputFromResult,
+} from "@okf-wiki/contract";
 import {
   createPiStreamState,
   projectAgentEvent,
   projectPiHistory,
-  reducePiEvent,
   viewMessages,
 } from "./project/pi.ts";
 import type { AgentSseLike, PiStreamState } from "./project/types.ts";

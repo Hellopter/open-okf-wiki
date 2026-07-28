@@ -43,14 +43,15 @@ Ports stay free of Pi SDK, `produce/`, and `runtime/` implementation modules. Al
 | Port | Role |
 |------|------|
 | `AgentRunner` | Scoped agent run + parallel + `writeWiki` |
-| `WikiWriter` | `Pick<AgentRunner, "writeWiki">` for write/repair-only call sites |
 | `GraphStore` | Durable Run Graph save/load |
-| `ProgressSink` | Live progress emission |
+| `ProgressSink` | Live progress emission (sole produce-phase fan-out; see [ADR 0034](0034-deep-modules-thin-tools-single-projection.md)) |
 | `GatePort` | HITL `waitForDecision` (plan / publication) |
 | `ReceiptStore` | Write / attach / buildIndex / list analysis receipts |
 | `SpecStore` | commitSpec / readCommittedSpec / writePlanDraft / readPlanDraft |
 
 Core-backed adapters (`createCoreGraphStore`, `createCoreReceiptStore`, `createCoreSpecStore`) implement ports with `@okf-wiki/core`. Memory fakes live in tests.
+
+**Removed:** `WikiWriter` (`Pick<AgentRunner,"writeWiki">`) was a zero-adapter type alias — deleted per ADR 0034 (real seams only).
 
 ### 4. Agent package layout
 

@@ -1,6 +1,9 @@
 /**
- * Pure view-model: RunGraphSnapshot → layered nodes/edges for read-only canvas.
+ * Pure view-model: RunGraphSnapshot → layered nodes for read-only canvas.
  * Depends only on @okf-wiki/contract.
+ *
+ * Edges are not projected here — the canvas is a layered chip grid; parent
+ * hierarchy is available on each node via `parentKey` when needed.
  */
 
 import type {
@@ -33,16 +36,8 @@ export type RunGraphViewNode = {
   status: NodeAttemptStatus | "idle";
 };
 
-export type RunGraphViewEdge = {
-  id: string;
-  from: string;
-  to: string;
-  kind: "parent" | "depends";
-};
-
 export type RunGraphViewModel = {
   layers: Array<{ id: RunGraphLayerId; nodes: RunGraphViewNode[] }>;
-  edges: RunGraphViewEdge[];
   attempts: NodeAttempt[];
   playhead?: { nodeKey: string; attemptId: string };
   topologyVersion: number;
@@ -101,7 +96,7 @@ function statusFromAttempt(attempt?: NodeAttempt): NodeAttemptStatus | "idle" {
 }
 
 /**
- * Project a contract RunGraphSnapshot into layered canvas nodes + edges.
+ * Project a contract RunGraphSnapshot into layered canvas nodes.
  */
 export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewModel {
   const attempts = [...snapshot.attempts];
@@ -137,26 +132,6 @@ export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewMod
     });
   }
 
-  const edges: RunGraphViewEdge[] = [];
-  for (const def of snapshot.topology) {
-    if (def.parentKey) {
-      edges.push({
-        id: `p:${def.parentKey}->${def.nodeKey}`,
-        from: def.parentKey,
-        to: def.nodeKey,
-        kind: "parent",
-      });
-    }
-    for (const dep of def.dependsOn ?? []) {
-      edges.push({
-        id: `d:${dep}->${def.nodeKey}`,
-        from: dep,
-        to: def.nodeKey,
-        kind: "depends",
-      });
-    }
-  }
-
   const byLayer = new Map<RunGraphLayerId, RunGraphViewNode[]>();
   for (const id of LAYER_ORDER) byLayer.set(id, []);
   for (const node of nodes) {
@@ -169,7 +144,6 @@ export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewMod
 
   return {
     layers,
-    edges,
     attempts,
     ...(snapshot.playhead ? { playhead: snapshot.playhead } : {}),
     topologyVersion: snapshot.topologyVersion,

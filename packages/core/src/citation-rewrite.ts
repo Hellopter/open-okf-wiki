@@ -13,11 +13,8 @@
  */
 
 import path from "node:path";
-import {
-  canonicalizeCitationTarget,
-  parseSourceCitations,
-  type SourceCitation,
-} from "./citations.js";
+import { canonicalizeCitationTarget } from "./citations-canonicalize.js";
+import { parseSourceCitations, type SourceCitation } from "./citations-parse.js";
 
 export type CitationRewriteSources = Array<{ id: string }>;
 

@@ -10,7 +10,6 @@ import {
   type RunGraphSnapshot,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
-import type { WikiWriteRequest, WikiWriteResult } from "./agent-runner.js";
 import type { GatePort } from "./gate-port.js";
 import type { GraphStore } from "./graph-store.js";
 import type {
@@ -21,7 +20,6 @@ import type {
   ResearchChildResult,
 } from "./receipt-store.js";
 import type { SpecStore } from "./spec-store.js";
-import type { WikiWriter } from "./wiki-writer.js";
 
 function memoryReceiptStore(): ReceiptStore {
   const byKey = new Map<string, AnalysisReceipt>();
@@ -199,32 +197,5 @@ describe("ports memory fakes", () => {
     await store.save("run-x", snap);
     assert.deepEqual(await store.load("run-x"), snap);
     assert.equal(await store.load("missing"), null);
-  });
-
-  it("WikiWriter is satisfied by writeWiki-only object", async () => {
-    const writer: WikiWriter = {
-      async writeWiki(_input: WikiWriteRequest): Promise<WikiWriteResult> {
-        return {
-          mode: "fixture",
-          layout: _input.layout,
-          pages: ["overview.md"],
-          summary: "ok",
-        };
-      },
-    };
-    const result = await writer.writeWiki({
-      layout: {
-        runWorkDir: "/r",
-        sourcesDir: "/r/sources",
-        skillDir: "/r/skill",
-        wikiDir: "/r/wiki",
-        analysisDir: "/r/analysis",
-        sourceMounts: new Map(),
-      },
-      spec: defaultWikiRunSpec("W"),
-      workspaceName: "W",
-      task: "write",
-    });
-    assert.deepEqual(result.pages, ["overview.md"]);
   });
 });

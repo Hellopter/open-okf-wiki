@@ -20,7 +20,6 @@ import type { WikiWriteResult } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import { applyStickyBlockingDefects, hasBlockingDefects } from "../../produce/defects.js";
 import { writeMergedDefects } from "../../produce/defects-io.js";
-import { emitProgress } from "../../ports/progress-sink.js";
 import {
   type PublishabilityResult,
   scorePublishable,
@@ -66,6 +65,13 @@ const REVIEW_LENSES: readonly ReviewLens[] = [
   "consistency",
   "general",
 ];
+
+/**
+ * L2 maxAttempts for a single reviewer seat (schema/quality only).
+ * Transient/capacity fail on first L2 attempt via retry-policy.
+ * Kept separate from RESEARCH_MAX_ATTEMPTS and repair-round budget.
+ */
+export const REVIEWER_MAX_ATTEMPTS = 2;
 
 /**
  * Config-missing fail-closed defect only (`reviewer_missing`).
@@ -121,12 +127,11 @@ async function runOneReviewer(input: {
   const model = seatModel(ctx.input.models, seatIndex);
   const attemptId = `review@${runIndex}:${reviewerId}`;
   // L2 maxAttempts only helps schema/quality; transient/capacity fail on first L2 attempt.
-  const maxReviewerAttempts = 2;
 
   try {
     const text = await runNodeAttempt({
       abortSignal: ctx.input.abortSignal,
-      maxAttempts: maxReviewerAttempts,
+      maxAttempts: REVIEWER_MAX_ATTEMPTS,
       nodeKey: "review",
       role: "reviewer",
       attemptId: (attempt) => (attempt === 0 ? attemptId : `${attemptId}~retry${attempt}`),
@@ -159,7 +164,7 @@ async function runOneReviewer(input: {
           contextTargetTokens: ctx.contextTargetTokens,
           sourceIgnores: ctx.input.sourceIgnores,
           abortSignal: ctx.input.abortSignal,
-          onProgress: (span) => emitProgress(ctx.onProgress, { kind: "attempt", attempt: span }),
+          onProgress: (span) => ctx.progress.emit({ kind: "attempt", attempt: span }),
         });
         return child.summary;
       },
@@ -205,7 +210,7 @@ export async function runReviewRepairPhase(
   producedIn: WikiWriteResult,
   orch: WorkspaceOrchestration,
 ): Promise<ReviewRepairPhaseResult> {
-  const { input, onProgress, runtime, metrics, layout, spec, mode } = ctx;
+  const { input, progress, runtime, metrics, layout, spec, mode } = ctx;
 
   let produced = producedIn;
   let defects: MergedDefectReport | null = null;
@@ -225,8 +230,9 @@ export async function runReviewRepairPhase(
     maxRepair,
     metrics,
     score: async ({ round }) => {
+      // Abort before returning repair so cancellation does not consume budget.
       throwIfAborted(input.abortSignal);
-      emitProgress(onProgress, {
+      progress.emit({
         kind: "status",
         status: "producing",
         summary: `review council round ${round} (${councilSize} seats, concurrency ${reviewConcurrency})`,
@@ -294,7 +300,7 @@ export async function runReviewRepairPhase(
           (o): o is Extract<ReviewerSeatOutcome, { kind: "failed" }> => o.kind === "failed",
         );
         if (failedSeats.length > 0) {
-          emitProgress(onProgress, {
+          progress.emit({
             kind: "status",
             status: "producing",
             summary: `review seats failed: ${failedSeats
@@ -353,7 +359,7 @@ export async function runReviewRepairPhase(
       }
       defects = merged;
 
-      emitProgress(onProgress, {
+      progress.emit({
         kind: "defects",
         defects,
         summary: defects.summary ?? `Review round ${round}: ${defects.defects.length} defect(s)`,
@@ -367,10 +373,12 @@ export async function runReviewRepairPhase(
       const defectText =
         formatDefectsForRepair(defects.defects, { severities: blockingSeverities }) ||
         formatDefectsForRepair(defects.defects, { severities: ["blocking"] });
+      // Abort before budget consume (loop increments after score returns repair).
+      throwIfAborted(input.abortSignal);
       return { kind: "repair" as const, repairText: defectText };
     },
     onBeforeRepair: ({ repairRound }) => {
-      emitProgress(onProgress, {
+      progress.emit({
         kind: "status",
         status: "producing",
         summary: `repair round ${repairRound} (${defects?.defects.length ?? 0} defects)`,
@@ -403,7 +411,7 @@ export async function runReviewRepairPhase(
   // Mechanical hard-validate with remaining shared repair budget (citation OOB, etc.).
   // Re-materialize indexes once first — cheap drift fix that must not burn model repair rounds.
   const sources = sourcesFromMounts(layout.sourceMounts);
-  emitProgress(onProgress, {
+  progress.emit({
     kind: "status",
     status: "producing",
     summary: "hard-validate: materialize indexes",
@@ -451,13 +459,13 @@ export async function runReviewRepairPhase(
 
       // Index-only failures after product materialize are not model work — fail closed.
       if (writerReasons.length === 0) {
-        emitProgress(onProgress, {
+        progress.emit({
           kind: "status",
           status: "producing",
           summary: publishability.reasons.slice(0, 3).join("; "),
         });
         if (defects) {
-          emitProgress(onProgress, { kind: "defects", defects });
+          progress.emit({ kind: "defects", defects });
         }
         return {
           kind: "fail_closed" as const,
@@ -481,7 +489,7 @@ export async function runReviewRepairPhase(
     onBeforeRepair: ({ repairRound }) => {
       const { writerReasons } = partitionHardValidateReasons(publishability.reasons);
       const reasonPreview = writerReasons.slice(0, 3).join("; ");
-      emitProgress(onProgress, {
+      progress.emit({
         kind: "status",
         status: "producing",
         summary: `hard-validate repair round ${repairRound}: ${reasonPreview}`,
@@ -510,13 +518,13 @@ export async function runReviewRepairPhase(
     return { result: hardValidateOutcome.result };
   }
   if (hardValidateOutcome.kind === "exhausted") {
-    emitProgress(onProgress, {
+    progress.emit({
       kind: "status",
       status: "producing",
       summary: publishability.reasons.slice(0, 3).join("; "),
     });
     if (defects) {
-      emitProgress(onProgress, { kind: "defects", defects });
+      progress.emit({ kind: "defects", defects });
     }
     return {
       result: hardValidateFailedResult({
@@ -530,12 +538,12 @@ export async function runReviewRepairPhase(
   }
 
   // passed
-  emitProgress(onProgress, {
+  progress.emit({
     kind: "status",
     status: "producing",
     summary: produced.summary,
   });
-  emitProgress(onProgress, { kind: "pages", pages: produced.pages });
+  progress.emit({ kind: "pages", pages: produced.pages });
 
   return {
     result: {

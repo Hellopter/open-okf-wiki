@@ -202,10 +202,12 @@ describe("injectable AgentRunner + GraphStore + journal (no LLM)", () => {
       layout,
       spec,
       runtime: runner,
-      onProgress: (p) => {
-        // Port is live: ProgressSink.emit is the fan-out boundary.
-        sink.emit(p);
-        if (p.kind === "attempt") journal.upsert(p.attempt);
+      // Inject ProgressSink as the single produce fan-out (not dual raw callback).
+      progressSink: {
+        emit(p) {
+          sink.emit(p);
+          if (p.kind === "attempt") journal.upsert(p.attempt);
+        },
       },
     });
 

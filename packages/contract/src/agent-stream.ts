@@ -78,6 +78,32 @@ export function createPiStreamState(seed: readonly AgentMessage[] = []): PiStrea
   };
 }
 
+/**
+ * Build stream state from a durable snapshot, optionally merging an in-flight
+ * active tool (SSE snapshot arm). Shared by server fixtures and web projection.
+ */
+export function applySnapshotWithActiveTool(
+  messages: AgentMessage[],
+  activeTool?: {
+    toolCallId: string;
+    toolName: string;
+    details?: AgentToolCall["details"];
+  } | null,
+): PiStreamState {
+  const snapshot = createPiStreamState(messages);
+  if (!activeTool) return snapshot;
+  return {
+    ...updateToolInState(snapshot, activeTool.toolCallId, {
+      name: activeTool.toolName,
+      details: activeTool.details,
+      output: toolOutputFromResult(undefined, activeTool.details),
+      status: "running",
+    }),
+    turnActive: true,
+    agentStatus: "streaming",
+  };
+}
+
 function withAgentError(state: PiStreamState, errorText: string): PiStreamState {
   return {
     ...state,

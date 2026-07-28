@@ -16,7 +16,6 @@ import type { AttemptRole, WorkspaceOrchestration } from "@okf-wiki/contract";
 import type { ScopedRunnerProgress } from "../../ports/agent-runner.js";
 import { defaultReceiptStore } from "../../ports/core-receipt-store.js";
 import type { ReceiptStore, ResearchChildResult } from "../../ports/receipt-store.js";
-import { emitProgress } from "../../ports/progress-sink.js";
 import { domainResearchPrompt, leafResearchPrompt } from "../../prompts/index.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { isCriticalDomainFailure } from "../retry-policy.js";
@@ -164,9 +163,9 @@ export async function runResearchPhase(
   orch: WorkspaceOrchestration,
   receipts: ReceiptStore = defaultReceiptStore,
 ): Promise<ResearchPhaseResult> {
-  const { input, onProgress, runtime, metrics, layout, spec, mode } = ctx;
+  const { input, progress, runtime, metrics, layout, spec, mode } = ctx;
 
-  emitProgress(onProgress, {
+  progress.emit({
     kind: "status",
     status: "producing",
     summary: "domain + leaf research",
@@ -210,7 +209,7 @@ export async function runResearchPhase(
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
             onProgress: (span: ScopedRunnerProgress) =>
-              emitProgress(onProgress, { kind: "attempt", attempt: span }),
+              progress.emit({ kind: "attempt", attempt: span }),
           },
         };
       });
@@ -282,7 +281,7 @@ export async function runResearchPhase(
             sourceIgnores: input.sourceIgnores,
             abortSignal: input.abortSignal,
             onProgress: (span: ScopedRunnerProgress) =>
-              emitProgress(onProgress, { kind: "attempt", attempt: span }),
+              progress.emit({ kind: "attempt", attempt: span }),
           }),
       });
       await attach.attachDomainComplete({
@@ -336,7 +335,7 @@ export async function runResearchPhase(
   );
 
   if (criticalDomainFailures.length > 0) {
-    emitProgress(onProgress, {
+    progress.emit({
       kind: "status",
       status: "producing",
       summary: `critical domain research failed: ${criticalDomainFailures[0]}`,

@@ -26,11 +26,18 @@ export type ProduceProgress =
   | { kind: "defects"; defects: MergedDefectReport; summary?: string }
   | { kind: "runId"; runId: string };
 
+/**
+ * Single progress fan-out port for Run Workflow.
+ * Composition roots (runWiki / produceWiki) build one sink; phases call emit only.
+ */
 export interface ProgressSink {
   emit(progress: ProduceProgress): void;
 }
 
-/** Adapt a callback into ProgressSink. */
+/**
+ * Adapt a tool-edge / test callback into ProgressSink.
+ * try/catch lives here so phases never need dual raw-callback paths.
+ */
 export function progressSinkFromCallback(
   onProgress?: (progress: ProduceProgress) => void,
 ): ProgressSink {
@@ -41,7 +48,10 @@ export function progressSinkFromCallback(
   };
 }
 
-/** Safe fan-out for optional onProgress callbacks (display must not break the run). */
+/**
+ * Safe fan-out for optional onProgress callbacks (display must not break the run).
+ * Used by progressSinkFromCallback; prefer ProgressSink.emit at phase call sites.
+ */
 export function emitProgress(
   onProgress: ((p: ProduceProgress) => void) | undefined,
   progress: ProduceProgress,

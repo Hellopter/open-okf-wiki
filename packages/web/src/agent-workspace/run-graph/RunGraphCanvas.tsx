@@ -2,9 +2,9 @@
  * Read-only layered Run Graph canvas (CSS grid — no xyflow).
  * Pure presentation of view-model from contract snapshot.
  *
- * Topology edges stay on the view-model for tests / future drawing; this canvas
- * does not dump them as a redundant text list. Contract `playhead` is a journal
- * cursor (latest upserted attempt) and is shown as a chip highlight, not AV chrome.
+ * Layered chip grid only — no edge drawing. Parent hierarchy is available on
+ * nodes via `parentKey`. Contract `playhead` is a journal cursor (latest
+ * upserted attempt) and is shown as a chip highlight, not AV chrome.
  */
 
 import type { RunGraphSnapshot } from "@okf-wiki/contract";
