@@ -39,6 +39,7 @@ import {
   matchWikiApiRoute,
 } from "./routes/wiki.ts";
 import {
+  handleAttemptTranscriptEvents,
   handleGetAttemptTranscript,
   handleGetWikiRun,
   handleWikiRunCommand,
@@ -270,6 +271,23 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       }
     }
     // More-specific run subpaths before generic `/runs/:runId`.
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/attempts/:attemptId/transcript/events",
+      );
+      if (params && method === "GET") {
+        await handleAttemptTranscriptEvents(
+          req,
+          res,
+          params.id!,
+          params.runId!,
+          params.attemptId!,
+          url,
+        );
+        return;
+      }
+    }
     {
       const params = matchRoute(
         pathname,

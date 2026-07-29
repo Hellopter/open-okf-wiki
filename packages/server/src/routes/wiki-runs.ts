@@ -9,6 +9,9 @@ import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
 const HEARTBEAT_MS = 15_000;
 const POLL_MS = 500;
+/** Attempt transcript SSE: poll session.jsonl while the dialog is open. */
+const TRANSCRIPT_SSE_POLL_MS = 400;
+const TRANSCRIPT_SSE_HEARTBEAT_MS = 15_000;
 
 function actorContext(workspaceId: string) {
   return { workspaceId, actor: { id: "local-operator", kind: "local_operator" as const } };
@@ -37,7 +40,7 @@ function parseLastEventId(value: string | undefined): number | undefined {
 
 function writeSse(
   res: ServerResponse,
-  event: "snapshot" | "run.event",
+  event: string,
   payload: unknown,
   eventId?: number,
 ): void {
@@ -52,6 +55,10 @@ function writeHeartbeat(res: ServerResponse): void {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isLiveAttemptState(state: string): boolean {
+  return state === "running" || state === "suspended";
 }
 
 /** POST typed command. Actor and workspace are derived from the trusted route. */
@@ -98,7 +105,7 @@ export async function handleGetWikiRun(
 }
 
 /**
- * GET secret-free Attempt transcript for Node details UI.
+ * GET secret-free Attempt transcript for Node details UI (completed / one-shot).
  * Does not stream tokens into run_events — pure read of session.jsonl / sealed artifact.
  */
 export async function handleGetAttemptTranscript(
@@ -118,6 +125,122 @@ export async function handleGetAttemptTranscript(
     sendJson(res, 200, transcript);
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
+  }
+}
+
+/**
+ * Attempt transcript SSE for Node details while an Attempt is live.
+ *
+ * - First frame: `transcript` (full secret-free messages snapshot)
+ * - While running/suspended: re-read session.jsonl and emit `transcript` on change
+ * - On terminal state: final `transcript` + `done`, then close
+ *
+ * Separate from Run control SSE and Session Pi SSE (ADR 0035). Dialog-scoped only.
+ */
+export async function handleAttemptTranscriptEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  attemptId: string,
+  url: URL,
+  dependencies: { heartbeatMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+
+  let runs;
+  try {
+    runs = await wikiRunsForWorkspace(workspace);
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+    return;
+  }
+
+  let closed = false;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    req.off("close", onRequestClose);
+    res.off("close", cleanup);
+  };
+  const onRequestClose = (): void => {
+    if (req.aborted || !req.complete) cleanup();
+  };
+
+  req.once("close", onRequestClose);
+  res.once("close", cleanup);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+
+  const pollMs = dependencies.pollMs ?? TRANSCRIPT_SSE_POLL_MS;
+  heartbeat = setInterval(
+    () => writeHeartbeat(res),
+    dependencies.heartbeatMs ?? TRANSCRIPT_SSE_HEARTBEAT_MS,
+  );
+
+  let lastFingerprint = "";
+  let seq = 0;
+  try {
+    while (!closed) {
+      let transcript;
+      try {
+        transcript = await runs.readAttemptTranscript({ runId, attemptId });
+      } catch (error) {
+        if (!closed) {
+          // Named `transcript_error` so it does not collide with EventSource's
+          // native connection `error` event on the client.
+          writeSse(res, "transcript_error", { message: redactErrorMessage(error) });
+        }
+        break;
+      }
+
+      const live = isLiveAttemptState(transcript.state);
+      const fingerprint = `${transcript.state}:${transcript.messages.length}:${JSON.stringify(transcript.messages)}`;
+      if (fingerprint !== lastFingerprint) {
+        lastFingerprint = fingerprint;
+        seq += 1;
+        writeSse(
+          res,
+          "transcript",
+          {
+            attemptId: transcript.attemptId,
+            nodeKey: transcript.nodeKey,
+            state: transcript.state,
+            messages: transcript.messages,
+            live,
+          },
+          seq,
+        );
+      }
+
+      if (!live) {
+        seq += 1;
+        writeSse(
+          res,
+          "done",
+          {
+            attemptId: transcript.attemptId,
+            state: transcript.state,
+          },
+          seq,
+        );
+        break;
+      }
+
+      await delay(pollMs);
+    }
+  } catch (error) {
+    if (!closed) writeSse(res, "transcript_error", { message: redactErrorMessage(error) });
+  } finally {
+    cleanup();
+    if (!res.writableEnded && !res.destroyed) res.end();
   }
 }
 

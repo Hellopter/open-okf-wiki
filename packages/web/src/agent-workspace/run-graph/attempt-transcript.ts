@@ -1,8 +1,8 @@
 /**
  * Project opaque Attempt transcript messages for Node details UI.
  *
- * Read-only display helper — not Session SSE projection (ADR 0032 / 0035).
- * Messages come from GET …/attempts/:id/transcript (secret-free JSONL rows).
+ * Read-only display helper — not Session/Run control SSE projection.
+ * Messages come from GET transcript (done) or Attempt transcript SSE (live).
  */
 
 export type ProjectedAttemptTranscriptEntry = {
@@ -204,10 +204,7 @@ export function projectAttemptTranscriptMessages(
   return out;
 }
 
-/** Attempt states that should keep polling the transcript endpoint. */
+/** Attempt states that open transcript SSE (dialog live stream). */
 export function isAttemptTranscriptLive(state: string | null | undefined): boolean {
   return state === "running" || state === "suspended";
 }
-
-/** Poll interval for in-flight Attempt transcripts (1.5–2s band). */
-export const ATTEMPT_TRANSCRIPT_POLL_MS = 1_750;

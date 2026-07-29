@@ -638,6 +638,23 @@ export function getWikiRunAttemptTranscript(
   );
 }
 
+/**
+ * EventSource URL for live Attempt transcript (Node details dialog).
+ * Server emits `transcript` snapshots while running, then `done`.
+ * Completed attempts should use GET instead.
+ */
+export function wikiRunAttemptTranscriptEventsUrl(
+  workspaceId: string,
+  runId: string,
+  attemptId: string,
+  rootPath?: string,
+): string {
+  return `${API_BASE}${withRootPathQuery(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript/events`,
+    rootPath,
+  )}`;
+}
+
 /** Dispatch a durable WikiRuns command (StartRun / ResolveGate / Cancel / …). */
 export function dispatchWikiRunCommand(
   workspaceId: string,

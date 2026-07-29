@@ -237,3 +237,89 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   assert.equal(emptyBody.attemptId, attemptId);
   assert.ok(Array.isArray(emptyBody.messages));
 });
+
+test("GET attempt transcript events streams snapshot then done for terminal attempt", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-runs-tx-sse-"));
+  const workspace = await createWorkspace({
+    name: "Transcript SSE Run",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const server = createServer((req, res) => void dispatch(req, res));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    await resetWikiRunsRegistryForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/runs`;
+  const query = `?rootPath=${encodeURIComponent(root)}`;
+
+  const accepted = await fetch(`${base}/command${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-sse" }),
+  });
+  assert.equal(accepted.status, 202, await accepted.clone().text());
+  const { receipt } = (await accepted.json()) as { receipt: { runId: string } };
+
+  let attemptId: string | undefined;
+  for (let i = 0; i < 200; i += 1) {
+    const read = await fetch(`${base}/${receipt.runId}${query}`);
+    const body = (await read.json()) as {
+      snapshot: { attempts: Array<{ attemptId: string; nodeKey: string; state: string }> };
+    };
+    const attempt =
+      body.snapshot.attempts.find((a) => a.nodeKey === "freeze") ?? body.snapshot.attempts[0];
+    if (attempt && attempt.state !== "running" && attempt.state !== "suspended") {
+      attemptId = attempt.attemptId;
+      break;
+    }
+    if (attempt) attemptId = attempt.attemptId;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(attemptId);
+
+  const sessionPath = path.join(
+    root,
+    ".okf-wiki",
+    "runs",
+    receipt.runId,
+    "attempts",
+    attemptId,
+    "session.jsonl",
+  );
+  await mkdir(path.dirname(sessionPath), { recursive: true });
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({ role: "assistant", content: "stream me" })}\n`,
+    "utf8",
+  );
+
+  const abort = new AbortController();
+  const stream = await fetch(
+    `${base}/${receipt.runId}/attempts/${attemptId}/transcript/events${query}`,
+    { signal: abort.signal },
+  );
+  assert.equal(stream.status, 200, await stream.clone().text());
+  assert.ok(stream.body);
+  const reader = stream.body.getReader();
+  // Share buffer: both frames may arrive in one TCP chunk.
+  const sseBuf = { buffer: "" };
+  const first = await nextFrame(reader, sseBuf);
+  assert.equal(first.event, "transcript");
+  assert.ok(first.data && typeof first.data === "object");
+  const payload = first.data as { messages: unknown[]; live?: boolean };
+  assert.ok(Array.isArray(payload.messages));
+  assert.ok(payload.messages.length >= 1);
+
+  // Terminal attempt should also emit done and end the stream.
+  const second = await nextFrame(reader, sseBuf);
+  assert.equal(second.event, "done");
+  abort.abort();
+});

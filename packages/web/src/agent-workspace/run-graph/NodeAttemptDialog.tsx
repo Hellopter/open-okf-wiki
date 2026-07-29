@@ -5,8 +5,10 @@
  *   [✓] read  settings.ts  offset=… limit=…
  * not bordered cards dumping raw JSON args.
  *
- * Attempt transcript: secret-free JSONL from GET …/attempts/:id/transcript
- * (polled while attempt is live). Not Session SSE.
+ * Attempt transcript:
+ * - completed → GET …/transcript (one-shot render)
+ * - running/suspended → EventSource …/transcript/events (live snapshots)
+ * Not Session SSE; not Run control SSE.
  *
  * Scroll: flex column shell + native overflow-y body.
  * Summary text: MarkdownDocument.
@@ -25,7 +27,11 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { ApiError, getWikiRunAttemptTranscript } from "../../api";
+import {
+  ApiError,
+  getWikiRunAttemptTranscript,
+  wikiRunAttemptTranscriptEventsUrl,
+} from "../../api";
 import { useI18n } from "../../i18n";
 import { MarkdownDocument } from "../../shared/MarkdownDocument";
 import { ToolStatusGlyph } from "../components/tool-display/glyphs";
@@ -36,7 +42,6 @@ import {
   toolPathLabel,
 } from "../components/tool-display/summary";
 import {
-  ATTEMPT_TRANSCRIPT_POLL_MS,
   isAttemptTranscriptLive,
   projectAttemptTranscriptMessages,
   type ProjectedAttemptTranscriptEntry,
@@ -221,71 +226,156 @@ export function NodeAttemptDialog({
     open && Boolean(workspaceId && runId && effectiveAttemptId);
 
   const [fetchState, setFetchState] = useState<TranscriptFetchState>(EMPTY_FETCH);
+  /** True while Attempt transcript SSE is open (running/suspended). */
+  const [streamingLive, setStreamingLive] = useState(false);
 
   useEffect(() => {
     if (!canFetch || !workspaceId || !runId || !effectiveAttemptId) {
       setFetchState(EMPTY_FETCH);
+      setStreamingLive(false);
       return;
     }
 
     let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    let inFlight = false;
-
     setFetchState({ loading: true, error: null, messages: [], ready: false });
+    setStreamingLive(false);
 
-    const load = async () => {
-      if (cancelled || inFlight) return;
-      inFlight = true;
+    // Completed (or unknown idle): one-shot GET, normal render — no SSE.
+    if (!isAttemptTranscriptLive(effectiveState)) {
+      void (async () => {
+        try {
+          const data = await getWikiRunAttemptTranscript(
+            workspaceId,
+            runId,
+            effectiveAttemptId,
+            rootPath,
+          );
+          if (cancelled) return;
+          setFetchState({
+            loading: false,
+            error: null,
+            messages: Array.isArray(data.messages) ? data.messages : [],
+            ready: true,
+          });
+        } catch (error) {
+          if (cancelled) return;
+          if (error instanceof ApiError && error.status === 404) {
+            setFetchState({ loading: false, error: null, messages: [], ready: true });
+            return;
+          }
+          setFetchState({
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+            messages: [],
+            ready: true,
+          });
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Live attempt: open dialog → Attempt transcript SSE (not Run control SSE).
+    if (typeof EventSource === "undefined") {
+      setFetchState({
+        loading: false,
+        error: "EventSource is not available",
+        messages: [],
+        ready: true,
+      });
+      return;
+    }
+
+    const url = wikiRunAttemptTranscriptEventsUrl(
+      workspaceId,
+      runId,
+      effectiveAttemptId,
+      rootPath,
+    );
+    const source = new EventSource(url);
+    setStreamingLive(true);
+
+    const onTranscript = (ev: MessageEvent<string>) => {
+      if (cancelled) return;
       try {
-        const data = await getWikiRunAttemptTranscript(
-          workspaceId,
-          runId,
-          effectiveAttemptId,
-          rootPath,
-        );
-        if (cancelled) return;
+        const data = JSON.parse(ev.data) as {
+          messages?: unknown[];
+          live?: boolean;
+          state?: string;
+        };
         setFetchState({
           loading: false,
           error: null,
           messages: Array.isArray(data.messages) ? data.messages : [],
           ready: true,
         });
-      } catch (error) {
-        if (cancelled) return;
-        // 404 = attempt missing or (legacy) no file. Never surface as a hard error in
-        // the dialog: keep prior messages when polling live, otherwise show empty.
-        if (error instanceof ApiError && error.status === 404) {
-          setFetchState((prev) => ({
-            loading: false,
-            error: null,
-            messages: isAttemptTranscriptLive(effectiveState) && prev.ready ? prev.messages : [],
-            ready: true,
-          }));
-          return;
-        }
-        setFetchState((prev) => ({
-          loading: false,
-          error: error instanceof Error ? error.message : String(error),
-          messages: prev.messages,
-          ready: prev.ready,
-        }));
-      } finally {
-        inFlight = false;
+        if (data.live === false) setStreamingLive(false);
+      } catch {
+        // ignore malformed frame
       }
     };
 
-    void load();
+    const onDone = () => {
+      if (cancelled) return;
+      setStreamingLive(false);
+      // Server closes after `done`; EventSource may error — treat as clean end.
+      try {
+        source.close();
+      } catch {
+        // ignore
+      }
+    };
 
-    if (isAttemptTranscriptLive(effectiveState)) {
-      timer = setInterval(() => {
-        void load();
-      }, ATTEMPT_TRANSCRIPT_POLL_MS);
-    }
+    const onTranscriptError = (ev: MessageEvent<string>) => {
+      if (cancelled) return;
+      try {
+        const data = JSON.parse(ev.data) as { message?: string };
+        setFetchState((prev) => ({
+          loading: false,
+          error: data.message?.trim() || "transcript stream error",
+          messages: prev.messages,
+          ready: true,
+        }));
+      } catch {
+        setFetchState((prev) => ({
+          loading: false,
+          error: "transcript stream error",
+          messages: prev.messages,
+          ready: true,
+        }));
+      }
+      setStreamingLive(false);
+      try {
+        source.close();
+      } catch {
+        // ignore
+      }
+    };
+
+    source.addEventListener("transcript", onTranscript as EventListener);
+    source.addEventListener("done", onDone as EventListener);
+    source.addEventListener("transcript_error", onTranscriptError as EventListener);
+    // Native connection errors — keep last good frame; do not clear messages.
+    source.onerror = () => {
+      if (cancelled) return;
+      if (source.readyState === EventSource.CLOSED) {
+        setStreamingLive(false);
+        setFetchState((prev) =>
+          prev.ready
+            ? { ...prev, loading: false }
+            : { loading: false, error: null, messages: prev.messages, ready: true },
+        );
+      }
+    };
 
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      setStreamingLive(false);
+      source.removeEventListener("transcript", onTranscript as EventListener);
+      source.removeEventListener("done", onDone as EventListener);
+      source.removeEventListener("transcript_error", onTranscriptError as EventListener);
+      source.close();
     };
   }, [canFetch, workspaceId, runId, effectiveAttemptId, rootPath, effectiveState]);
 
@@ -449,7 +539,7 @@ export function NodeAttemptDialog({
                     <div className="flex min-w-0 flex-col gap-1.5">
                       <p className="okf-section-label">
                         {t.agentWorkspace.attemptTranscript}
-                        {isAttemptTranscriptLive(effectiveState) ? (
+                        {streamingLive || isAttemptTranscriptLive(effectiveState) ? (
                           <span className="ml-1.5 font-normal normal-case tracking-normal text-muted-foreground">
                             · {t.agentWorkspace.attemptTranscriptLive}
                           </span>
