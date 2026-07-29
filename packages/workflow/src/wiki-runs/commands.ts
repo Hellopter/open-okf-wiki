@@ -13,6 +13,7 @@ import type {
   WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { digest, now } from "./crypto-util.js";
+import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { CommandIdCollision } from "./types.js";
 
@@ -238,33 +239,17 @@ export function cancelRun(
   if (!["queued", "running", "waiting_for_operator", "cancelling"].includes(state))
     throw new Error(`cannot cancel run in terminal state: ${state}`);
   const timestamp = now();
-  if (requiredNumber(run, "cancel_requested") === 0) {
-    host.abortRunAttempts(command.runId);
-    host.db
-      .prepare(
-        `UPDATE runs SET cancel_requested = 1, state = 'cancelling', updated_at = ?
-           WHERE run_id = ? AND state IN ('queued', 'running', 'waiting_for_operator', 'cancelling')`,
-      )
-      .run(timestamp, command.runId);
-    host.emit(command.runId, "run.cancel_requested");
-    host.withdrawOpenGates(command.runId);
-    host.cancelPreApplyEffects(command.runId);
-    host.db
-      .prepare(
-        "UPDATE attempts SET state = 'cancelled', error = 'cancel requested', ended_at = ? WHERE run_id = ? AND state = 'running'",
-      )
-      .run(timestamp, command.runId);
-    host.db
-      .prepare(
-        `UPDATE nodes SET state = 'cancelled', current_attempt_id = NULL
-           WHERE run_id = ? AND state IN ('blocked', 'ready', 'running', 'waiting', 'invalidated')`,
-      )
-      .run(command.runId);
-    host.db
-      .prepare("UPDATE runs SET state = 'cancelled', updated_at = ? WHERE run_id = ?")
-      .run(timestamp, command.runId);
-  }
-  const revision = host.emit(command.runId, "run.cancelled");
+  const result = applyRunCancelTransitions(host, {
+    runId: command.runId,
+    timestamp,
+    reason: "cancel_requested",
+    skipIfAlreadyRequested: true,
+    requireActiveState: true,
+  });
+  // Shared path emits run.cancelled when it mutates; re-ack still emits for the receipt.
+  const revision = result.didMutate
+    ? result.revision
+    : host.emit(command.runId, "run.cancelled");
   recordCommand(host, command, context, payloadDigest, command.runId, revision);
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
 }

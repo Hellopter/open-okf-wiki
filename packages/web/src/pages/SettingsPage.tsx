@@ -1,31 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type AppSettingsPublic,
@@ -34,14 +9,12 @@ import {
   type DoctorResponse,
   deleteModelProfile,
   deleteProvider,
-  getApiBase,
   getAppSettings,
   getDoctor,
   getHealth,
   getProvider,
   type HealthResponse,
   type ModelProfilePublic,
-  type ProviderApiShape,
   type ProviderEntryPublic,
   type ProviderPublic,
   type ProviderTestResult,
@@ -56,34 +29,18 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { formatMessage, useI18n } from "../i18n";
 import { AppShell } from "../shells/AppShell";
-
-type EditorMode = "closed" | "create" | "edit";
-
-/** Model editor: model-level fields only — connection lives on the provider. */
-const emptyForm = {
-  name: "",
-  modelId: "",
-  /** Empty string means unset; digits-only string when set. */
-  maxContextTokens: "",
-  /** Owning provider (provider-first flow). */
-  providerId: "",
-};
-
-/** Provider editor: gateway connection (one provider hosts many models). */
-const emptyProviderForm = {
-  name: "",
-  baseUrl: "",
-  apiKey: "",
-  apiShape: "completions" as ProviderApiShape,
-  /** Provider-level User-Agent (default node for gateway WAF). */
-  userAgent: "node",
-  /**
-   * When true, allow OpenAI `developer` role (official OpenAI).
-   * Default false — third-party gateways often reject it.
-   */
-  supportsDeveloperRole: false,
-  clearApiKey: false,
-};
+import { AppSettingsPanel } from "./settings/AppSettingsPanel";
+import { DiagnosticsPanel } from "./settings/DiagnosticsPanel";
+import { ModelEditor } from "./settings/ModelEditor";
+import { ProviderEditor } from "./settings/ProviderEditor";
+import { ProviderPanel } from "./settings/ProviderPanel";
+import {
+  type EditorMode,
+  emptyModelForm,
+  emptyProviderForm,
+  type ModelFormState,
+  type ProviderFormState,
+} from "./settings/types";
 
 export function SettingsPage() {
   const { t } = useI18n();
@@ -98,10 +55,10 @@ export function SettingsPage() {
 
   const [editorMode, setEditorMode] = useState<EditorMode>("closed");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<ModelFormState>(emptyModelForm);
   const [providerEditorMode, setProviderEditorMode] = useState<EditorMode>("closed");
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [providerForm, setProviderForm] = useState(emptyProviderForm);
+  const [providerForm, setProviderForm] = useState<ProviderFormState>(emptyProviderForm);
   const [providerDeleteTarget, setProviderDeleteTarget] = useState<ProviderEntryPublic | null>(
     null,
   );
@@ -168,13 +125,13 @@ export function SettingsPage() {
   function openCreateUnderProvider(providerId: string) {
     setEditorMode("create");
     setEditingId(null);
-    setForm({ ...emptyForm, providerId });
+    setForm({ ...emptyModelForm, providerId });
   }
 
   function closeEditor() {
     setEditorMode("closed");
     setEditingId(null);
-    setForm(emptyForm);
+    setForm(emptyModelForm);
   }
 
   function openProviderCreate() {
@@ -441,732 +398,61 @@ export function SettingsPage() {
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="app" className="flex flex-col gap-4 outline-none">
-                <Card data-testid="home-skills-panel">
-                  <CardHeader>
-                    <CardTitle>{t.globalSettings.skillsTitle}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex flex-col gap-3">
-                    <p className="muted small">{t.globalSettings.skillsDescription}</p>
-                    {appSettings ? (
-                      <>
-                        <Field orientation="horizontal">
-                          <FieldContent>
-                            <FieldLabel htmlFor="settings-load-home-skills">
-                              {t.globalSettings.loadHomeSkills}
-                            </FieldLabel>
-                            <FieldDescription>
-                              {t.globalSettings.loadHomeSkillsHint}
-                            </FieldDescription>
-                          </FieldContent>
-                          <Switch
-                            id="settings-load-home-skills"
-                            checked={appSettings.loadHomeSkills}
-                            disabled={skillsSaving}
-                            data-testid="settings-load-home-skills"
-                            onCheckedChange={(checked) => {
-                              void handleToggleHomeSkills(checked);
-                            }}
-                          />
-                        </Field>
-                        <dl className="kv">
-                          <div>
-                            <dt>{t.globalSettings.homeSkillsPath}</dt>
-                            <dd className="mono small whitespace-normal">
-                              {appSettings.homeSkillsDir}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>{t.globalSettings.workspaceSkillsPath}</dt>
-                            <dd className="mono small whitespace-normal">
-                              {"{workspace}/"}
-                              {appSettings.workspaceSkillsRelative}
-                            </dd>
-                          </div>
-                        </dl>
-                        {skillsSaving ? (
-                          <p className="muted small">{t.globalSettings.skillsSaving}</p>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p className="muted small">{t.globalSettings.appSettingsUnavailable}</p>
-                    )}
-                  </CardContent>
-                </Card>
+                <AppSettingsPanel
+                  appSettings={appSettings}
+                  skillsSaving={skillsSaving}
+                  onToggleHomeSkills={handleToggleHomeSkills}
+                />
               </TabsContent>
 
               <TabsContent value="models" className="flex flex-col gap-4 outline-none">
-                <Card data-testid="provider-panel">
-                  <CardHeader className="row-between items-center">
-                    <div className="flex flex-col gap-1">
-                      <CardTitle>{t.globalSettings.modelsTitle}</CardTitle>
-                      <p className="muted small max-w-2xl">{t.globalSettings.providersHint}</p>
-                    </div>
-                    <span className="muted small shrink-0">
-                      {formatMessage(t.globalSettings.modelsCount, { n: models.length })}
-                      {provider?.defaultModelProfileId
-                        ? ` · ${t.globalSettings.defaultSet}`
-                        : models.length > 0
-                          ? ` · ${t.globalSettings.noDefault}`
-                          : ""}
-                    </span>
-                  </CardHeader>
-                  <CardContent className="flex flex-col gap-4">
-                    {catalogEmpty ? (
-                      <Empty className="border-0 p-6" data-testid="models-empty">
-                        <EmptyHeader>
-                          <EmptyTitle className="text-base">
-                            {t.globalSettings.modelsEmpty}
-                          </EmptyTitle>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : (
-                      <div className="flex flex-col gap-4" data-testid="providers-list">
-                        {providers.map((entry) => (
-                          <Card
-                            key={entry.id}
-                            className="border-border/80"
-                            data-testid="provider-card"
-                            data-provider-id={entry.id}
-                          >
-                            <CardHeader className="row-between items-start py-3">
-                              <div className="min-w-0 flex flex-col gap-0.5">
-                                <CardTitle className="text-base">{entry.name}</CardTitle>
-                                <p className="mono small muted truncate">{entry.baseUrl || "—"}</p>
-                                <p className="small muted">
-                                  {entry.apiShape}
-                                  {" · "}
-                                  {entry.apiKeySet
-                                    ? (entry.apiKeyMasked ?? t.globalSettings.keySet)
-                                    : "—"}
-                                  {entry.headers?.["User-Agent"]
-                                    ? ` · UA=${entry.headers["User-Agent"]}`
-                                    : ""}
-                                  {entry.supportsDeveloperRole
-                                    ? ` · ${t.globalSettings.developerRoleOn}`
-                                    : ""}
-                                </p>
-                              </div>
-                              <div className="row-actions shrink-0">
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => openCreateUnderProvider(entry.id)}
-                                  data-testid="provider-add-model"
-                                >
-                                  {t.globalSettings.addModelUnderProvider}
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => openProviderEdit(entry)}
-                                  data-testid="provider-edit"
-                                >
-                                  {t.globalSettings.edit}
-                                </Button>
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-destructive hover:text-destructive"
-                                  onClick={() => setProviderDeleteTarget(entry)}
-                                  data-testid="provider-delete"
-                                >
-                                  {t.globalSettings.delete}
-                                </Button>
-                              </div>
-                            </CardHeader>
-                            <CardContent className="pt-0">
-                              {entry.models.length === 0 ? (
-                                <p className="muted small py-2" data-testid="provider-models-empty">
-                                  {t.globalSettings.providerModelsEmpty}
-                                </p>
-                              ) : (
-                                <Table>
-                                  <TableHeader>
-                                    <TableRow>
-                                      <TableHead>{t.globalSettings.colName}</TableHead>
-                                      <TableHead>{t.globalSettings.colModelId}</TableHead>
-                                      <TableHead>{t.globalSettings.colMaxContext}</TableHead>
-                                      <TableHead className="text-right">
-                                        {t.globalSettings.colActions}
-                                      </TableHead>
-                                    </TableRow>
-                                  </TableHeader>
-                                  <TableBody>
-                                    {entry.models.map((m) => {
-                                      const model = models.find((x) => x.id === m.id);
-                                      if (!model) return null;
-                                      const isDefault =
-                                        provider?.defaultModelProfileId === model.id;
-                                      return (
-                                        <TableRow
-                                          key={model.id}
-                                          data-testid="model-row"
-                                          data-model-id={model.id}
-                                        >
-                                          <TableCell>
-                                            <span className="font-medium">{model.name}</span>
-                                            {isDefault ? (
-                                              <Badge variant="secondary" className="ml-2">
-                                                {t.globalSettings.defaultBadge}
-                                              </Badge>
-                                            ) : null}
-                                          </TableCell>
-                                          <TableCell className="mono small">
-                                            {model.modelId}
-                                          </TableCell>
-                                          <TableCell className="mono small">
-                                            {model.maxContextTokens !== undefined
-                                              ? model.maxContextTokens.toLocaleString()
-                                              : "—"}
-                                          </TableCell>
-                                          <TableCell className="actions-cell">
-                                            <div className="row-actions justify-end">
-                                              {!isDefault ? (
-                                                <Button
-                                                  type="button"
-                                                  size="sm"
-                                                  variant="ghost"
-                                                  onClick={() => void handleSetDefault(model)}
-                                                  data-testid="model-set-default"
-                                                >
-                                                  {t.globalSettings.setDefault}
-                                                </Button>
-                                              ) : null}
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() => openEdit(model)}
-                                                data-testid="model-edit"
-                                              >
-                                                {t.globalSettings.edit}
-                                              </Button>
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                variant="destructive"
-                                                disabled={deletingId === model.id}
-                                                onClick={() => setDeleteTarget(model)}
-                                                data-testid="model-delete"
-                                              >
-                                                {deletingId === model.id ? (
-                                                  <Spinner data-icon="inline-start" />
-                                                ) : null}
-                                                {deletingId === model.id
-                                                  ? t.globalSettings.deleting
-                                                  : t.globalSettings.delete}
-                                              </Button>
-                                            </div>
-                                          </TableCell>
-                                        </TableRow>
-                                      );
-                                    })}
-                                  </TableBody>
-                                </Table>
-                              )}
-                            </CardContent>
-                          </Card>
-                        ))}
-                        {/* Fallback flat table if providers empty but models exist */}
-                        {providers.length === 0 && models.length > 0 ? (
-                          <Table data-testid="models-table">
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>{t.globalSettings.colName}</TableHead>
-                                <TableHead>{t.globalSettings.colModelId}</TableHead>
-                                <TableHead>{t.globalSettings.colBaseUrl}</TableHead>
-                                <TableHead className="text-right">
-                                  {t.globalSettings.colActions}
-                                </TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {models.map((model) => (
-                                <TableRow key={model.id} data-testid="model-row">
-                                  <TableCell>{model.name}</TableCell>
-                                  <TableCell className="mono small">{model.modelId}</TableCell>
-                                  <TableCell className="mono small">{model.baseUrl}</TableCell>
-                                  <TableCell className="text-right">
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => openEdit(model)}
-                                    >
-                                      {t.globalSettings.edit}
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        ) : null}
-                      </div>
-                    )}
-
-                    {provider ? (
-                      <p className="muted small">
-                        {formatMessage(t.globalSettings.envFallback, {
-                          base: provider.envFallback.openaiBaseUrlSet
-                            ? t.globalSettings.envSet
-                            : t.globalSettings.envUnset,
-                          key: provider.envFallback.openaiApiKeySet
-                            ? t.globalSettings.envSet
-                            : t.globalSettings.envUnset,
-                        })}
-                      </p>
-                    ) : null}
-                  </CardContent>
-                </Card>
+                <ProviderPanel
+                  provider={provider}
+                  models={models}
+                  providers={providers}
+                  catalogEmpty={catalogEmpty}
+                  deletingId={deletingId}
+                  onAddModel={openCreateUnderProvider}
+                  onEditProvider={openProviderEdit}
+                  onDeleteProvider={setProviderDeleteTarget}
+                  onEditModel={openEdit}
+                  onDeleteModel={setDeleteTarget}
+                  onSetDefault={handleSetDefault}
+                />
 
                 {editorMode !== "closed" ? (
-                  <Card data-testid="model-editor">
-                    <CardHeader className="row-between items-center">
-                      <CardTitle>
-                        {editorMode === "create"
-                          ? t.globalSettings.editorCreateTitle
-                          : t.globalSettings.editorEditTitle}
-                      </CardTitle>
-                      <Button type="button" variant="ghost" size="sm" onClick={closeEditor}>
-                        {t.common.cancel}
-                      </Button>
-                    </CardHeader>
-                    <CardContent>
-                      <form className="max-w-2xl" onSubmit={(e) => void handleSave(e)}>
-                        <FieldGroup>
-                          <Field>
-                            <FieldLabel htmlFor="model-name">
-                              {t.globalSettings.displayName}
-                            </FieldLabel>
-                            <Input
-                              id="model-name"
-                              value={form.name}
-                              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                              placeholder={t.globalSettings.displayNamePlaceholder}
-                              required
-                              maxLength={120}
-                              data-testid="model-name-input"
-                              autoFocus
-                            />
-                          </Field>
-                          <Field>
-                            <FieldLabel htmlFor="model-id">
-                              {t.globalSettings.modelIdLabel}
-                            </FieldLabel>
-                            <Input
-                              id="model-id"
-                              value={form.modelId}
-                              onChange={(e) => setForm((f) => ({ ...f, modelId: e.target.value }))}
-                              placeholder={t.globalSettings.modelIdPlaceholder}
-                              required
-                              className="font-mono"
-                              data-testid="model-id-input"
-                            />
-                            <FieldDescription>{t.globalSettings.modelIdHint}</FieldDescription>
-                          </Field>
-                          <Field>
-                            <FieldLabel htmlFor="model-max-context">
-                              {t.globalSettings.maxContextTokens}
-                            </FieldLabel>
-                            <Input
-                              id="model-max-context"
-                              type="number"
-                              min={1}
-                              step={1}
-                              value={form.maxContextTokens}
-                              onChange={(e) =>
-                                setForm((f) => ({
-                                  ...f,
-                                  maxContextTokens: e.target.value,
-                                }))
-                              }
-                              placeholder={t.globalSettings.maxContextTokensPlaceholder}
-                              className="font-mono max-w-xs"
-                              data-testid="model-max-context"
-                            />
-                            <FieldDescription>
-                              {t.globalSettings.maxContextTokensHint}
-                            </FieldDescription>
-                          </Field>
-                          {form.providerId ? (
-                            <p className="muted small" data-testid="model-provider-hint">
-                              {formatMessage(t.globalSettings.addingUnderProvider, {
-                                id: form.providerId,
-                              })}
-                            </p>
-                          ) : null}
-                          <div className="form-actions">
-                            <Button
-                              type="submit"
-                              disabled={isSubmitting || !form.name.trim() || !form.modelId.trim()}
-                              data-testid="model-save"
-                            >
-                              {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
-                              {isSubmitting
-                                ? t.globalSettings.saving
-                                : editorMode === "create"
-                                  ? t.globalSettings.saveCreate
-                                  : t.globalSettings.saveEdit}
-                            </Button>
-                          </div>
-                        </FieldGroup>
-                      </form>
-                    </CardContent>
-                  </Card>
+                  <ModelEditor
+                    editorMode={editorMode}
+                    form={form}
+                    setForm={setForm}
+                    isSubmitting={isSubmitting}
+                    onClose={closeEditor}
+                    onSave={handleSave}
+                  />
                 ) : null}
 
                 {providerEditorMode !== "closed" ? (
-                  <Card data-testid="provider-editor">
-                    <CardHeader className="row-between items-center">
-                      <CardTitle>
-                        {providerEditorMode === "create"
-                          ? t.globalSettings.providerCreateTitle
-                          : t.globalSettings.providerEditTitle}
-                      </CardTitle>
-                      <Button type="button" variant="ghost" size="sm" onClick={closeProviderEditor}>
-                        {t.common.cancel}
-                      </Button>
-                    </CardHeader>
-                    <CardContent>
-                      <form className="max-w-2xl" onSubmit={(e) => void handleProviderSave(e)}>
-                        <FieldGroup>
-                          <Field>
-                            <FieldLabel htmlFor="provider-name">
-                              {t.globalSettings.providerName}
-                            </FieldLabel>
-                            <Input
-                              id="provider-name"
-                              value={providerForm.name}
-                              onChange={(e) =>
-                                setProviderForm((f) => ({ ...f, name: e.target.value }))
-                              }
-                              placeholder={t.globalSettings.providerNamePlaceholder}
-                              required
-                              maxLength={120}
-                              data-testid="provider-name-input"
-                              autoFocus
-                            />
-                          </Field>
-                          <Field>
-                            <FieldLabel htmlFor="provider-base-url">
-                              {t.globalSettings.baseUrl}
-                            </FieldLabel>
-                            <Input
-                              id="provider-base-url"
-                              type="url"
-                              value={providerForm.baseUrl}
-                              onChange={(e) =>
-                                setProviderForm((f) => ({ ...f, baseUrl: e.target.value }))
-                              }
-                              placeholder={t.globalSettings.baseUrlPlaceholder}
-                              className="font-mono"
-                              data-testid="provider-base-url"
-                              autoComplete="off"
-                            />
-                          </Field>
-                          <Field>
-                            <FieldLabel htmlFor="provider-api-key">
-                              {t.globalSettings.apiKey}
-                            </FieldLabel>
-                            <Input
-                              id="provider-api-key"
-                              type="password"
-                              value={providerForm.apiKey}
-                              onChange={(e) =>
-                                setProviderForm((f) => ({
-                                  ...f,
-                                  apiKey: e.target.value,
-                                  clearApiKey: false,
-                                }))
-                              }
-                              placeholder={
-                                providerEditorMode === "edit"
-                                  ? t.globalSettings.apiKeyKeepPlaceholder
-                                  : t.globalSettings.apiKeyPlaceholder
-                              }
-                              className="font-mono"
-                              data-testid="provider-api-key"
-                              autoComplete="new-password"
-                              disabled={providerForm.clearApiKey}
-                            />
-                            {providerEditorMode === "edit" ? (
-                              <Field orientation="horizontal" className="mt-1">
-                                <Checkbox
-                                  id="provider-clear-key"
-                                  checked={providerForm.clearApiKey}
-                                  onCheckedChange={(checked) =>
-                                    setProviderForm((f) => ({
-                                      ...f,
-                                      clearApiKey: checked === true,
-                                      apiKey: checked === true ? "" : f.apiKey,
-                                    }))
-                                  }
-                                  data-testid="provider-clear-key"
-                                />
-                                <FieldLabel htmlFor="provider-clear-key" className="font-normal">
-                                  {t.globalSettings.clearApiKey}
-                                </FieldLabel>
-                              </Field>
-                            ) : null}
-                          </Field>
-                          <FieldSet>
-                            <FieldLegend variant="label">{t.globalSettings.apiShape}</FieldLegend>
-                            <RadioGroup
-                              value={providerForm.apiShape}
-                              onValueChange={(next) => {
-                                if (next === "completions" || next === "responses") {
-                                  setProviderForm((f) => ({
-                                    ...f,
-                                    apiShape: next as ProviderApiShape,
-                                  }));
-                                }
-                              }}
-                              aria-label={t.globalSettings.apiShape}
-                              className="gap-3"
-                            >
-                              <Field orientation="horizontal">
-                                <RadioGroupItem
-                                  value="completions"
-                                  id="provider-shape-completions"
-                                  data-testid="provider-shape-completions"
-                                />
-                                <FieldContent>
-                                  <FieldLabel htmlFor="provider-shape-completions">
-                                    {t.globalSettings.shapeCompletions}
-                                  </FieldLabel>
-                                  <FieldDescription>
-                                    <code>POST …/v1/chat/completions</code>
-                                  </FieldDescription>
-                                </FieldContent>
-                              </Field>
-                              <Field orientation="horizontal">
-                                <RadioGroupItem
-                                  value="responses"
-                                  id="provider-shape-responses"
-                                  data-testid="provider-shape-responses"
-                                />
-                                <FieldContent>
-                                  <FieldLabel htmlFor="provider-shape-responses">
-                                    {t.globalSettings.shapeResponses}
-                                  </FieldLabel>
-                                  <FieldDescription>
-                                    <code>POST …/v1/responses</code>
-                                  </FieldDescription>
-                                </FieldContent>
-                              </Field>
-                            </RadioGroup>
-                          </FieldSet>
-                          <Field>
-                            <FieldLabel htmlFor="provider-user-agent">
-                              {t.globalSettings.userAgent}
-                            </FieldLabel>
-                            <Input
-                              id="provider-user-agent"
-                              value={providerForm.userAgent}
-                              onChange={(e) =>
-                                setProviderForm((f) => ({
-                                  ...f,
-                                  userAgent: e.target.value,
-                                }))
-                              }
-                              placeholder="node"
-                              className="font-mono"
-                              data-testid="provider-user-agent"
-                              autoComplete="off"
-                            />
-                            <FieldDescription>{t.globalSettings.userAgentHint}</FieldDescription>
-                          </Field>
-                          <Field orientation="horizontal">
-                            <Checkbox
-                              id="provider-developer-role"
-                              checked={providerForm.supportsDeveloperRole}
-                              onCheckedChange={(checked) =>
-                                setProviderForm((f) => ({
-                                  ...f,
-                                  supportsDeveloperRole: checked === true,
-                                }))
-                              }
-                              data-testid="provider-developer-role"
-                            />
-                            <FieldContent>
-                              <FieldLabel htmlFor="provider-developer-role" className="font-normal">
-                                {t.globalSettings.supportsDeveloperRole}
-                              </FieldLabel>
-                              <FieldDescription>
-                                {t.globalSettings.supportsDeveloperRoleHint}
-                              </FieldDescription>
-                            </FieldContent>
-                          </Field>
-                          <div className="form-actions">
-                            <Button
-                              type="submit"
-                              disabled={isSubmitting || !providerForm.name.trim()}
-                              data-testid="provider-save"
-                            >
-                              {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
-                              {isSubmitting
-                                ? t.globalSettings.saving
-                                : providerEditorMode === "create"
-                                  ? t.globalSettings.saveCreate
-                                  : t.globalSettings.saveEdit}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              disabled={testing || !providerForm.baseUrl.trim()}
-                              onClick={() => void handleTest()}
-                              data-testid="provider-test"
-                            >
-                              {testing ? <Spinner data-icon="inline-start" /> : null}
-                              {testing ? t.globalSettings.testing : t.globalSettings.testConnection}
-                            </Button>
-                          </div>
-                          {testResult ? (
-                            <div
-                              className={
-                                testResult.ok
-                                  ? "provider-test-result ok"
-                                  : "provider-test-result fail"
-                              }
-                              data-testid="provider-test-result"
-                              role="status"
-                            >
-                              <Badge variant={testResult.ok ? "secondary" : "destructive"}>
-                                {testResult.ok
-                                  ? t.globalSettings.testOk
-                                  : t.globalSettings.testFail}
-                              </Badge>
-                              <span className="mono small">
-                                {testResult.message}
-                                {testResult.latencyMs !== undefined
-                                  ? ` · ${testResult.latencyMs}ms`
-                                  : ""}
-                              </span>
-                            </div>
-                          ) : null}
-                        </FieldGroup>
-                      </form>
-                    </CardContent>
-                  </Card>
+                  <ProviderEditor
+                    providerEditorMode={providerEditorMode}
+                    providerForm={providerForm}
+                    setProviderForm={setProviderForm}
+                    isSubmitting={isSubmitting}
+                    testing={testing}
+                    testResult={testResult}
+                    onClose={closeProviderEditor}
+                    onSave={handleProviderSave}
+                    onTest={handleTest}
+                  />
                 ) : null}
               </TabsContent>
 
               <TabsContent value="diagnostics" className="flex flex-col gap-4 outline-none">
-                <Card data-testid="health-panel">
-                  <CardHeader>
-                    <CardTitle>{t.globalSettings.healthTitle}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="flex flex-col gap-4">
-                    <dl className="kv">
-                      <div>
-                        <dt>{t.globalSettings.apiBase}</dt>
-                        <dd className="mono">
-                          {getApiBase() || t.globalSettings.apiBaseSameOrigin}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>{t.globalSettings.health}</dt>
-                        <dd>
-                          {health ? (
-                            <Badge
-                              variant={health.ok ? "secondary" : "destructive"}
-                              data-testid="health-status"
-                            >
-                              {health.ok
-                                ? formatMessage(t.globalSettings.healthOk, {
-                                    service: health.service,
-                                  })
-                                : t.globalSettings.healthNotOk}
-                            </Badge>
-                          ) : (
-                            <span className="muted">{t.globalSettings.healthNotChecked}</span>
-                          )}
-                        </dd>
-                      </div>
-                    </dl>
-                    <div className="form-actions">
-                      <Button
-                        type="button"
-                        onClick={() => void handleHealthCheck()}
-                        disabled={checkingHealth}
-                      >
-                        {checkingHealth ? <Spinner data-icon="inline-start" /> : null}
-                        {checkingHealth
-                          ? t.globalSettings.checking
-                          : t.globalSettings.runHealthCheck}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {doctor ? (
-                  <Card data-testid="doctor-panel">
-                    <CardHeader>
-                      <CardTitle>{t.globalSettings.doctorTitle}</CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex flex-col gap-4">
-                      <dl className="kv kv-grid">
-                        <div>
-                          <dt>{t.globalSettings.status}</dt>
-                          <dd>
-                            <Badge
-                              variant={doctor.ok ? "secondary" : "destructive"}
-                              data-testid="doctor-status"
-                            >
-                              {doctor.ok ? t.globalSettings.statusOk : t.globalSettings.statusNotOk}
-                            </Badge>
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>{t.globalSettings.node}</dt>
-                          <dd className="mono">{doctor.node}</dd>
-                        </div>
-                        <div>
-                          <dt>{t.globalSettings.platform}</dt>
-                          <dd className="mono">
-                            {doctor.platform}/{doctor.arch}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>{t.globalSettings.git}</dt>
-                          <dd>
-                            {doctor.git.available ? (
-                              <Badge variant="secondary">
-                                {t.globalSettings.gitAvailable}
-                                {doctor.git.version ? ` · ${doctor.git.version}` : ""}
-                              </Badge>
-                            ) : (
-                              <Badge variant="destructive">{t.globalSettings.gitUnavailable}</Badge>
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>{t.globalSettings.doctorModels}</dt>
-                          <dd>
-                            {doctor.provider ? (
-                              <Badge
-                                variant={doctor.provider.configured ? "secondary" : "outline"}
-                                data-testid="doctor-provider-status"
-                              >
-                                {formatMessage(t.globalSettings.doctorModelsConfigured, {
-                                  n: doctor.provider.modelCount ?? 0,
-                                })}
-                                {doctor.provider.configured
-                                  ? ""
-                                  : ` · ${t.globalSettings.doctorNoCredentials}`}
-                              </Badge>
-                            ) : (
-                              <span className="muted">—</span>
-                            )}
-                          </dd>
-                        </div>
-                      </dl>
-                    </CardContent>
-                  </Card>
-                ) : null}
+                <DiagnosticsPanel
+                  health={health}
+                  doctor={doctor}
+                  checkingHealth={checkingHealth}
+                  onHealthCheck={handleHealthCheck}
+                />
               </TabsContent>
             </Tabs>
 

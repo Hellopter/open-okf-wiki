@@ -18,6 +18,7 @@ import {
 import { EMPTY_PUBLICATION_DIGEST, runWorkDir } from "@okf-wiki/core";
 import { buildDefinitionV1Graph, isGateKind } from "../definition-v1.js";
 import { digest, now } from "./crypto-util.js";
+import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
@@ -195,32 +196,22 @@ export function applyPlanGateDecision(
   }
   if (command.decision === "deny") {
     // Deny applies CancelRun transitions; the gate stays resolved (not withdrawn).
-    host.abortRunAttempts(command.runId);
-    host.db
-      .prepare(
-        `UPDATE runs SET cancel_requested = 1, state = 'cancelling', updated_at = ?
-         WHERE run_id = ?`,
-      )
-      .run(timestamp, command.runId);
-    host.emit(command.runId, "run.cancel_requested");
-    withdrawOpenGates(host, command.runId);
-    host.cancelPreApplyEffects(command.runId);
-    host.db
-      .prepare(
-        "UPDATE attempts SET state = 'cancelled', error = 'plan denied', ended_at = ? WHERE run_id = ? AND state = 'running'",
-      )
-      .run(timestamp, command.runId);
-    host.db
-      .prepare(
-        `UPDATE nodes SET state = 'cancelled', current_attempt_id = NULL
-         WHERE run_id = ? AND state IN ('blocked', 'ready', 'running', 'waiting', 'invalidated')
-           AND NOT (node_key = ? AND generation = ?)`,
-      )
-      .run(command.runId, gateNodeKey, gateNodeGeneration);
-    host.db
-      .prepare("UPDATE runs SET state = 'cancelled', updated_at = ? WHERE run_id = ?")
-      .run(timestamp, command.runId);
-    host.emit(command.runId, "run.cancelled");
+    // No requireActiveState: historical plan-deny updates cancel_requested by run_id only.
+    applyRunCancelTransitions(
+      {
+        db: host.db,
+        emit: (runId, type) => host.emit(runId, type),
+        abortRunAttempts: (runId) => host.abortRunAttempts(runId),
+        withdrawOpenGates: (runId) => withdrawOpenGates(host, runId),
+        cancelPreApplyEffects: (runId) => host.cancelPreApplyEffects(runId),
+      },
+      {
+        runId: command.runId,
+        timestamp,
+        reason: "plan_denied",
+        preserveNode: { nodeKey: gateNodeKey, generation: gateNodeGeneration },
+      },
+    );
     return;
   }
   throw new Error(`unsupported plan gate decision: ${command.decision}`);
