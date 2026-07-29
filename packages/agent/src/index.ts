@@ -50,8 +50,6 @@ export {
   createWikiProduceTool,
   type StartWikiRun,
   WIKI_PRODUCE_TOOL_NAME,
-  type WikiProduceModelFactory,
-  type WikiProduceModelRole,
 } from "./tools/wiki-produce.js";
 export {
   type CreateWikiRepairToolInput,

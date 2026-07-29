@@ -30,14 +30,17 @@ import {
 import {
   type ArtifactsHost,
   bindAttemptInputs as bindAttemptInputsImpl,
-  commitNodeArtifacts as commitNodeArtifactsImpl,
   copyAttemptInputs as copyAttemptInputsImpl,
   orphanPreparedArtifacts as orphanPreparedArtifactsImpl,
   prepareUnsealedArtifact as prepareUnsealedArtifactImpl,
-  recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
   sealPreparation as sealPreparationImpl,
   upstreamSealedOutputs as upstreamSealedOutputsImpl,
 } from "./wiki-runs/artifacts.js";
+import {
+  type AttemptSuccessHost,
+  commitSuccessfulAttempt as commitSuccessfulAttemptImpl,
+  recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
+} from "./wiki-runs/attempt-success.js";
 import {
   applyCommand as applyCommandImpl,
   applyRerunAt as applyRerunAtImpl,
@@ -46,6 +49,10 @@ import {
   requeueFailedNode as requeueFailedNodeImpl,
 } from "./wiki-runs/commands.js";
 import { now } from "./wiki-runs/crypto-util.js";
+import {
+  loadSpecFromArtifact,
+  upstreamsSucceeded as upstreamsSucceededImpl,
+} from "./wiki-runs/dag.js";
 import {
   cancelPreApplyEffects as cancelPreApplyEffectsImpl,
   cancelPreApplyEffectsForPublication as cancelPreApplyEffectsForPublicationImpl,
@@ -58,20 +65,14 @@ import {
   type FreezeHost,
 } from "./wiki-runs/freeze.js";
 import {
-  type GatesHost,
-  loadSpecFromArtifact,
-  expireStaleOpenGates as expireStaleOpenGatesImpl,
-  autoPassFixGate as autoPassFixGateImpl,
-  openFixGate as openFixGateImpl,
-  openPlanGate as openPlanGateImpl,
-  openPublicationGate as openPublicationGateImpl,
-  readPublicationBaseline as readPublicationBaselineImpl,
-  resolveGate as resolveGateImpl,
-  unlockReadyNodes as unlockReadyNodesImpl,
-  upstreamsSucceeded as upstreamsSucceededImpl,
   withdrawOpenGates as withdrawOpenGatesImpl,
   withdrawOpenGatesForNode as withdrawOpenGatesForNodeImpl,
-} from "./wiki-runs/gates.js";
+} from "./wiki-runs/gate-open.js";
+import {
+  type GatesHost,
+  expireStaleOpenGates as expireStaleOpenGatesImpl,
+  resolveGate as resolveGateImpl,
+} from "./wiki-runs/gate-resolve.js";
 import {
   executeMechanical,
   type MechanicalHost,
@@ -332,7 +333,7 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private async recoverPreparedArtifacts(): Promise<void> {
-    await recoverPreparedArtifactsImpl(this.artifactsHost());
+    await recoverPreparedArtifactsImpl(this.attemptSuccessHost());
   }
 
   private applyCommand(command: RunCommand, context: RunCommandContext): RunCommandReceipt {
@@ -357,12 +358,15 @@ class WikiRunsOwner implements WikiRuns {
     return resolveGateImpl(this.gatesHost(), command, context, payloadDigest);
   }
 
-  private unlockReadyNodes(runId: string): void {
-    unlockReadyNodesImpl(this.gatesHost(), runId);
-  }
-
   private upstreamsSucceeded(runId: string, nodeKey: string): boolean {
-    return upstreamsSucceededImpl(this.gatesHost(), runId, nodeKey);
+    return upstreamsSucceededImpl(
+      {
+        db: this.db,
+        currentNodeGeneration: (id, key) => this.currentNodeGeneration(id, key),
+      },
+      runId,
+      nodeKey,
+    );
   }
 
   /**
@@ -477,15 +481,18 @@ class WikiRunsOwner implements WikiRuns {
       emit: (runId, type) => this.emit(runId, type),
       isCurrent: (claim) => this.isCurrent(claim),
       currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-      openPlanGate: (claim, digest, timestamp) => this.openPlanGate(claim, digest, timestamp),
-      openPublicationGate: (claim, candidate, expectedLiveDigest, timestamp) =>
-        this.openPublicationGate(claim, candidate, expectedLiveDigest, timestamp),
-      openFixGate: (claim, defectsPayloadDigest, timestamp, detail) =>
-        this.openFixGate(claim, defectsPayloadDigest, timestamp, detail),
-      autoPassFixGate: (runId, timestamp) => this.autoPassFixGate(runId, timestamp),
-      readPublicationBaseline: (runId, preparations) =>
-        this.readPublicationBaseline(runId, preparations),
-      unlockReadyNodes: (runId) => this.unlockReadyNodes(runId),
+    };
+  }
+
+  /** Shared success/recovery surface: CAS host + generation for gate open / unlock. */
+  private attemptSuccessHost(): AttemptSuccessHost & { transaction<T>(work: () => T): T } {
+    return {
+      workspace: this.workspace,
+      db: this.db,
+      transaction: (work) => this.transaction(work),
+      emit: (runId, type) => this.emit(runId, type),
+      isCurrent: (claim) => this.isCurrent(claim),
+      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
     };
   }
 
@@ -512,7 +519,6 @@ class WikiRunsOwner implements WikiRuns {
       db: this.db,
       activeAttempts: this.activeAttempts,
       emit: (runId, type) => this.emit(runId, type),
-      unlockReadyNodes: (runId) => this.unlockReadyNodes(runId),
       currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
       upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
@@ -553,6 +559,7 @@ class WikiRunsOwner implements WikiRuns {
       transaction: (work) => this.transaction(work),
       emit: (runId, type) => this.emit(runId, type),
       isCurrent: (claim) => this.isCurrent(claim),
+      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       upstreamsSucceeded: (runId, nodeKey) => this.upstreamsSucceeded(runId, nodeKey),
       upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
       copyAttemptInputs: (attemptId, inputs) => this.copyAttemptInputs(attemptId, inputs),
@@ -563,11 +570,11 @@ class WikiRunsOwner implements WikiRuns {
       prepareUnsealedArtifact: (claim, descriptor) =>
         this.prepareUnsealedArtifact(claim, descriptor),
       sealPreparation: (runId, preparation) => this.sealPreparation(runId, preparation),
-      commitNodeArtifacts: (claim, preparations) => this.commitNodeArtifacts(claim, preparations),
+      commitSuccessfulAttempt: (claim, preparations) =>
+        this.commitSuccessfulAttempt(claim, preparations),
       orphanPreparedArtifacts: (attemptId) => this.orphanPreparedArtifacts(attemptId),
       requeueFailedNode: (runId, nodeKey, generation, lastAttemptId) =>
         this.requeueFailedNode(runId, nodeKey, generation, lastAttemptId),
-      unlockReadyNodes: (runId) => this.unlockReadyNodes(runId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
       attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
       applyRerunAt: (runId, nodeKey, generation, feedback) =>
@@ -664,45 +671,11 @@ class WikiRunsOwner implements WikiRuns {
     return prepareUnsealedArtifactImpl(this.artifactsHost(), claim, descriptor);
   }
 
-  private commitNodeArtifacts(claim: ClaimedNode, preparations: ArtifactPreparation[]): void {
-    commitNodeArtifactsImpl(this.artifactsHost(), claim, preparations);
-  }
-
-  private openPlanGate(claim: ClaimedNode, specPayloadDigest: string, timestamp: string): void {
-    openPlanGateImpl(this.gatesHost(), claim, specPayloadDigest, timestamp);
-  }
-
-  private readPublicationBaseline(runId: string, preparations: ArtifactPreparation[]): string {
-    return readPublicationBaselineImpl(this.gatesHost(), runId, preparations);
-  }
-
-  private openPublicationGate(
+  private commitSuccessfulAttempt(
     claim: ClaimedNode,
-    candidate: ArtifactPreparation,
-    expectedLiveDigest: string,
-    timestamp: string,
+    preparations: ArtifactPreparation[],
   ): void {
-    openPublicationGateImpl(this.gatesHost(), claim, candidate, expectedLiveDigest, timestamp);
-  }
-
-  private openFixGate(
-    claim: ClaimedNode,
-    defectsPayloadDigest: string,
-    timestamp: string,
-    detail?: { summary?: string; clean?: boolean; blockingCount?: number },
-  ): void {
-    openFixGateImpl(this.gatesHost(), claim, defectsPayloadDigest, timestamp, detail);
-  }
-
-  private autoPassFixGate(runId: string, timestamp: string): void {
-    autoPassFixGateImpl(
-      {
-        ...this.gatesHost(),
-        unlockReadyNodes: (id) => this.unlockReadyNodes(id),
-      },
-      runId,
-      timestamp,
-    );
+    commitSuccessfulAttemptImpl(this.attemptSuccessHost(), claim, preparations);
   }
 
   private async executeFreeze(claim: ClaimedFreeze): Promise<void> {

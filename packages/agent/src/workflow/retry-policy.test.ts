@@ -27,9 +27,13 @@ describe("classifyAgentFailure", () => {
 
   it("recognizes capacity / context overflow", () => {
     assert.equal(classifyAgentFailure("context overflow in session"), "capacity");
+    assert.equal(classifyAgentFailure("context window overflow"), "capacity");
     assert.equal(classifyAgentFailure("compact-and-retry required"), "capacity");
     assert.equal(classifyAgentFailure("context length exceeded"), "capacity");
+    assert.equal(classifyAgentFailure("context_length exceeded"), "capacity");
     assert.equal(classifyAgentFailure("maximum context size reached"), "capacity");
+    assert.equal(classifyAgentFailure("task exceeds capacity gate"), "capacity");
+    assert.equal(classifyAgentFailure("capacity exhausted after compact"), "capacity");
   });
 
   it("recognizes policy / billing / quota failures", () => {

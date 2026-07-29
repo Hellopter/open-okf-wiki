@@ -1,8 +1,12 @@
 /**
  * Post-run / in-flight inspector — durable WikiRuns snapshot (ADR 0035).
  *
- * Live truth: useWikiRun (GET + EventSource). Full control chrome lives here:
- * graph, failed-node retry/rerun, NodeAttemptDialog, plan tab, open fix gate.
+ * Live truth for the shell active run: WikiRunProjectionContext (single SSE).
+ * Historical / non-active runs (e.g. ContextPanels list) open a local useWikiRun
+ * only while the dialog is open — residual dual-subscription only in that case.
+ *
+ * Full control chrome lives here: graph, failed-node retry/rerun,
+ * NodeAttemptDialog, plan tab, open fix gate.
  * WikiProduceGatePanel only deep-links here via "View run".
  */
 
@@ -24,6 +28,10 @@ import { FixGatePanel } from "../components/FixGatePanel";
 import { selectPrimaryOpenGate } from "../components/fix-gate";
 import { SpecReviewView } from "../components/SpecReviewView";
 import { StatusBadge } from "../components/StatusBadge";
+import {
+  selectMatchingProjection,
+  useWikiRunProjection,
+} from "../hooks/WikiRunProjectionContext";
 import { useWikiRun } from "../hooks/useWikiRun";
 import { FailedNodesList } from "./FailedNodesList";
 import { NodeAttemptDialog } from "./NodeAttemptDialog";
@@ -52,12 +60,31 @@ export function RunInspectorDialog({
   const [planSpecLoading, setPlanSpecLoading] = useState(false);
   const [planSpecError, setPlanSpecError] = useState<string | null>(null);
 
-  const wikiRun = useWikiRun({
+  const shellProjection = useWikiRunProjection();
+  const matched = selectMatchingProjection(shellProjection, runId);
+
+  // Local subscription only for non-active runs (list history). Disabled when
+  // shell already projects this runId — keeps a single EventSource for active.
+  const localWikiRun = useWikiRun({
     workspaceId,
     runId,
     rootPath,
-    enabled: open && Boolean(runId),
+    enabled: open && Boolean(runId) && !matched.matches,
   });
+
+  const wikiRun = matched.matches
+    ? {
+        snapshot: matched.snapshot,
+        ready: matched.ready,
+        connectionStatus: matched.connectionStatus,
+        error: matched.error,
+      }
+    : {
+        snapshot: localWikiRun.snapshot,
+        ready: localWikiRun.ready,
+        connectionStatus: localWikiRun.connectionStatus,
+        error: localWikiRun.error,
+      };
 
   const snapshot = wikiRun.snapshot;
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);

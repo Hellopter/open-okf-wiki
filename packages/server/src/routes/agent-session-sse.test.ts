@@ -71,7 +71,6 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
     workspace,
     sessionId,
     wikiProduce: {
-      fixture: true,
       startWikiRun: async () => ({
         commandId: "cmd-sse",
         runId: "run-sse",

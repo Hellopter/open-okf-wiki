@@ -115,9 +115,7 @@ export {
   materializePublicationCandidate,
   PublicationConflictError,
   type PublicationTreeManifest,
-  type PublishStagingInput,
   type PublishStagingResult,
-  publishStagingToPublication,
   type ReconcilePublicationApplyInput,
   type ReconcilePublicationApplyResult,
   reconcilePublicationApply,
@@ -147,7 +145,6 @@ export {
 export {
   analysisDir,
   RUNS_DIR_NAME,
-  runRecordPath,
   runSkillDir,
   runsDir,
   runWorkDir,

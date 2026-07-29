@@ -19,9 +19,9 @@ import {
   countAutoHardValidateRepairs,
   HARD_VALIDATE_REPAIR_FEEDBACK_PREFIX,
   HARD_VALIDATE_REPAIR_NODE_PREFIX,
-  type SchedulerHost,
+  type RepairScheduleHost,
   shouldAutoHardValidateRepair,
-} from "../scheduler.js";
+} from "../repair-schedule.js";
 import type { ClaimedNode } from "../types.js";
 import {
   approvePlanGate,
@@ -451,12 +451,16 @@ describe("shouldAutoHardValidateRepair (unit)", () => {
     writeRoot?: boolean;
     repairHvKeys?: string[];
     legacyWriteDetails?: string[];
-  }): SchedulerHost {
+  }): RepairScheduleHost {
     return {
       workspace: { limits: { retry: { enabled: true } } } as WorkspaceConfig,
       db: openPolicyDb(opts),
       closed: opts.closed ?? false,
-    } as SchedulerHost;
+      // Unused by shouldAutoHardValidateRepair policy checks.
+      emit: () => 0,
+      currentNodeGeneration: () => undefined,
+      applyRerunAt: () => undefined,
+    };
   }
 
   const validateClaim: ClaimedNode = {

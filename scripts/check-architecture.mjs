@@ -48,6 +48,9 @@ const removedModulePaths = [
   /\/agent\/src\/produce\/tools\/(?:parent-wiki-produce-tool|wiki-produce-progress)\./,
   /\/agent\/src\/workflow\/(?:run-wiki|gate-protocol|run-phase-writer|repair-guarded|run-graph-owner|journal|produce)\./,
   /\/agent\/src\/ports\/(?:graph-store|core-graph-store)\./,
+  /\/agent\/src\/ports\/(?:progress-sink|receipt-store|core-receipt-store)\./,
+  /\/agent\/src\/produce\/(?:defects|defects-io|review|publishability)\./,
+  /\/agent\/src\/runtime\/produce-runtime\./,
   /\/core\/src\/(?:run-store|run-graph)\./,
   /\/agent\/src\/tools\/wiki-produce-details\./,
   /\/contract\/src\/(?:events|gate-ui|interaction|session)\./,
@@ -98,6 +101,22 @@ const forbiddenSourceRules = [
   [
     "legacy dual-path Run surfaces (hard-cut)",
     /\b(?:registerRunRecord|handleGetRunGraph|produceWiki\s*\(|repairWiki\s*\(|createCoreGraphStore|loadRunGraph|writeRunGraph|updateRunRecord)\b/,
+  ],
+  [
+    "agent ProgressSink museum residue (B1 — projection is Run SSE / workflow)",
+    /\b(?:ProgressSink|progressSinkFromCallback)\b/,
+  ],
+  [
+    "agent ReceiptStore museum residue (B1 — WikiRuns owns receipts)",
+    /\b(?:ReceiptStore|createCoreReceiptStore|defaultReceiptStore)\b/,
+  ],
+  [
+    "agent produce review/defects/publishability museum residue (B1 — workflow mechanical/review-reduce only)",
+    /\b(?:runReviewCouncil|scorePublishable|mergeDefectReports|parseDefectReportFromText)\b/,
+  ],
+  [
+    "core one-shot publish + legacy run record path (B3 — split primitives / WikiRuns only)",
+    /\b(?:publishStagingToPublication|runRecordPath)\b/,
   ],
 ];
 

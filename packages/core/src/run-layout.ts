@@ -21,11 +21,6 @@ export function runSkillDir(root: string, runId: string): string {
   return path.join(runWorkDir(root, runId), "skill");
 }
 
-/** Absolute path to `{root}/.okf-wiki/runs/{runId}.json`. */
-export function runRecordPath(root: string, runId: string): string {
-  return path.join(runsDir(root), `${runId}.json`);
-}
-
 /** Absolute path to `{root}/.okf-wiki/runs/{runId}/analysis`. */
 export function analysisDir(root: string, runId: string): string {
   return path.join(runWorkDir(root, runId), "analysis");

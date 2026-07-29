@@ -38,9 +38,10 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
 export function classifyAgentFailure(message: string | undefined): ErrorClass | undefined {
   const msg = message?.trim();
   if (!msg) return undefined;
-  // capacity (context window) — before budget so "context length" is not misread
+  // capacity (context window) — before budget so "context length" is not misread.
+  // Keep aligned with run-scoped-agent overflow detection (shared via this helper).
   if (
-    /context overflow/i.test(msg) ||
+    /context (?:window )?overflow/i.test(msg) ||
     /compact-and-retry/i.test(msg) ||
     /context.?length/i.test(msg) ||
     /maximum context/i.test(msg) ||
@@ -48,7 +49,8 @@ export function classifyAgentFailure(message: string | undefined): ErrorClass | 
     /too many tokens/i.test(msg) ||
     /token limit exceeded/i.test(msg) ||
     /input is too long/i.test(msg) ||
-    /exceeds capacity gate/i.test(msg)
+    /exceeds capacity gate/i.test(msg) ||
+    /capacity (?:gate|exhausted)/i.test(msg)
   ) {
     return "capacity";
   }

@@ -12,7 +12,7 @@ import {
   type PiAttemptOutcome,
 } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
-import { REVIEW_REPAIR_NODE_PREFIX } from "../gates.js";
+import { REVIEW_REPAIR_NODE_PREFIX } from "../repair-schedule.js";
 import {
   approvePlanGate,
   context,

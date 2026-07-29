@@ -5,7 +5,6 @@ import {
   analysisDir,
   analysisReceiptsDir,
   RUNS_DIR_NAME,
-  runRecordPath,
   runSkillDir,
   runsDir,
   runWorkDir,
@@ -42,7 +41,6 @@ for (const { runId } of runIdCases) {
     const work = runWorkDir(root, runId);
     assert.equal(work, path.join(runsDir(root), runId));
     assert.equal(runSkillDir(root, runId), path.join(work, "skill"));
-    assert.equal(runRecordPath(root, runId), path.join(runsDir(root), `${runId}.json`));
     assert.equal(analysisDir(root, runId), path.join(work, "analysis"));
     assert.equal(analysisReceiptsDir(root, runId), path.join(work, "analysis", "receipts"));
   });

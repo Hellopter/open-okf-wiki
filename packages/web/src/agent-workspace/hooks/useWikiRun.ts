@@ -62,6 +62,26 @@ export function useWikiRun({
   const projectionRef = useRef(projection);
   const eventSourceRef = useRef<EventSource | null>(null);
   const readyRef = useRef(false);
+  /** Bumps on every subscription identity change; late GET/SSE frames must match. */
+  const epochRef = useRef(0);
+  const runIdRef = useRef(runId);
+  runIdRef.current = runId;
+
+  /**
+   * Subscription identity — reset React state during render when it changes so
+   * Gate/Inspector never paint the previous run for one frame (Batch 2 race).
+   */
+  const subscriptionKey = `${enabled ? "1" : "0"}:${workspaceId}:${runId ?? ""}:${rootPath ?? ""}`;
+  const subscriptionKeyRef = useRef(subscriptionKey);
+  if (subscriptionKeyRef.current !== subscriptionKey) {
+    subscriptionKeyRef.current = subscriptionKey;
+    epochRef.current += 1;
+    projectionRef.current = emptyWikiRunProjection();
+    readyRef.current = false;
+    setProjection(emptyWikiRunProjection());
+    setReady(false);
+    setConnectionStatus("offline");
+  }
 
   const eventsUrl = useMemo(() => {
     if (!enabled || !runId || !workspaceId) return null;
@@ -74,7 +94,14 @@ export function useWikiRun({
   }, []);
 
   const applyFrame = useCallback(
-    (frame: WikiRunSseFrame) => {
+    (frame: WikiRunSseFrame, epoch: number) => {
+      // Drop frames from a prior runId/enabled subscription (late SSE / in-flight GET).
+      if (epoch !== epochRef.current) return;
+      if (frame.kind === "snapshot" || frame.kind === "run.event") {
+        const snap = frame.kind === "snapshot" ? frame.snapshot : frame.event.snapshot;
+        const expected = runIdRef.current;
+        if (expected && snap.runId !== expected) return;
+      }
       const next = applyWikiRunFrame(projectionRef.current, frame);
       publish(next);
       if (next.snapshot) {
@@ -87,20 +114,26 @@ export function useWikiRun({
 
   const refresh = useCallback(async () => {
     if (!enabled || !runId || !workspaceId) return;
+    const epoch = epochRef.current;
     try {
       const { snapshot, cursor } = await getWikiRun(workspaceId, runId, rootPath);
-      applyFrame({ kind: "snapshot", cursor, snapshot });
+      applyFrame({ kind: "snapshot", cursor, snapshot }, epoch);
     } catch (error) {
-      applyFrame({
-        kind: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      applyFrame(
+        {
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+        epoch,
+      );
     }
   }, [enabled, runId, workspaceId, rootPath, applyFrame]);
 
   useEffect(() => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
+    // Align with render reset; capture epoch for this effect instance.
+    const epoch = epochRef.current;
     projectionRef.current = emptyWikiRunProjection();
     publish(emptyWikiRunProjection());
     setReady(false);
@@ -119,13 +152,16 @@ export function useWikiRun({
       try {
         const { snapshot, cursor } = await getWikiRun(workspaceId, runId, rootPath);
         if (cancelled) return;
-        applyFrame({ kind: "snapshot", cursor, snapshot });
+        applyFrame({ kind: "snapshot", cursor, snapshot }, epoch);
       } catch (error) {
         if (cancelled) return;
-        applyFrame({
-          kind: "error",
-          message: error instanceof Error ? error.message : String(error),
-        });
+        applyFrame(
+          {
+            kind: "error",
+            message: error instanceof Error ? error.message : String(error),
+          },
+          epoch,
+        );
       }
     })();
 
@@ -133,6 +169,7 @@ export function useWikiRun({
     eventSourceRef.current = source;
 
     source.onopen = () => {
+      if (epoch !== epochRef.current) return;
       if (readyRef.current) setConnectionStatus("live");
       else setConnectionStatus("connecting");
     };
@@ -140,8 +177,10 @@ export function useWikiRun({
     const onFrame = (eventName: string) => (message: MessageEvent<string>) => {
       const frame = parseWikiRunSseData(eventName, message.data);
       if (!frame) return;
-      applyFrame(frame);
-      if (frame.kind !== "error") setConnectionStatus("live");
+      applyFrame(frame, epoch);
+      if (frame.kind !== "error" && epoch === epochRef.current) {
+        setConnectionStatus("live");
+      }
     };
 
     source.addEventListener("snapshot", onFrame("snapshot") as EventListener);
@@ -149,6 +188,7 @@ export function useWikiRun({
 
     // Named events only — onmessage would ignore typed frames; leave unset.
     source.onerror = () => {
+      if (epoch !== epochRef.current) return;
       if (source.readyState === EventSource.CLOSED) {
         setReady(false);
         readyRef.current = false;

@@ -49,7 +49,6 @@ describe("wiki_produce StartRun receipt", () => {
       workspace,
       sessionId: "operator-session",
       startWikiRun,
-      fixture: true,
     });
     assert.equal(definition.name, "wiki_produce");
     assert.match(definition.description, /returns immediately/i);

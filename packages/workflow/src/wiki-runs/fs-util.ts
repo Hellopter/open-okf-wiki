@@ -4,32 +4,26 @@
 
 import { chmod, lstat, open, readdir } from "node:fs/promises";
 import path from "node:path";
-import { fileDigest } from "./crypto-util.js";
+import { manifestPublicationTree } from "@okf-wiki/core";
 import type { ArtifactManifest } from "./types.js";
 
-/** A content-only manifest makes an Artifact independently verifiable after restart. */
+/**
+ * Content-addressed tree manifest for WikiRuns Artifacts.
+ *
+ * Core is the sole authority for walk order, path form, file digests, and
+ * symlink fail-closed semantics ({@link manifestPublicationTree}). The optional
+ * seal-sidecar filter preserves content-only effect identity after seal.
+ */
 export async function manifestFor(
   directory: string,
   ignoreSealManifest = false,
 ): Promise<ArtifactManifest> {
-  const files: ArtifactManifest["files"] = [];
-  const visit = async (absolute: string, relative: string): Promise<void> => {
-    for (const entry of (await readdir(absolute, { withFileTypes: true })).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    )) {
-      const child = path.join(absolute, entry.name);
-      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
-      if (ignoreSealManifest && !relative && entry.name === ".okf-artifact-manifest.json") continue;
-      const info = await lstat(child);
-      if (info.isSymbolicLink() || (!info.isDirectory() && !info.isFile())) {
-        throw new Error(`artifact contains a non-ordinary entry: ${child}`);
-      }
-      if (info.isDirectory()) await visit(child, childRelative);
-      else files.push({ path: childRelative, digest: await fileDigest(child), size: info.size });
-    }
+  const manifest = await manifestPublicationTree(directory);
+  if (!ignoreSealManifest) return manifest;
+  return {
+    schema: 1,
+    files: manifest.files.filter((file) => file.path !== ".okf-artifact-manifest.json"),
   };
-  await visit(directory, "");
-  return { schema: 1, files };
 }
 
 /** Make only an ordinary, run-owned tree removable without following links. */

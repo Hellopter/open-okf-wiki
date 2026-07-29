@@ -53,7 +53,7 @@ describe("SessionManager-owned Operator Sessions", () => {
     const created = await createOperatorSession({
       workspace,
       sessionId: "operator-1",
-      wikiProduce: { startWikiRun: startWikiRunStub, fixture: true },
+      wikiProduce: { startWikiRun: startWikiRunStub },
     });
     try {
       assert.equal(created.sessionId, "operator-1");
@@ -99,7 +99,7 @@ describe("SessionManager-owned Operator Sessions", () => {
     const opened = await openOperatorSession({
       workspace,
       sessionId: "operator-1",
-      wikiProduce: { startWikiRun: startWikiRunStub, fixture: true },
+      wikiProduce: { startWikiRun: startWikiRunStub },
     });
     try {
       assert.equal(opened.sessionId, "operator-1");

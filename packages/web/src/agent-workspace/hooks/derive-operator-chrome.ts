@@ -106,15 +106,30 @@ export type RecentRunForActiveRun = {
 /**
  * Resolve the operator-facing active Run id.
  *
- * Prefer the latest `wiki_produce` tool with `details.status === "accepted"`
- * and a `runId`. Skip when recentRuns already marks that id terminal.
- * Otherwise fall back to the newest non-terminal entry in `recentRuns`.
+ * Authority order:
+ * 1. Latest `wiki_produce` receipt (`accepted` + runId), skipping ids that
+ *    live snapshot or recentRuns already mark terminal (live wins over list).
+ * 2. Weak fallback: newest non-terminal entry in `recentRuns` (UI list only).
  */
 export function resolveActiveRunId(input: {
   messages: ReadonlyArray<MessageForActiveRun>;
   recentRuns: ReadonlyArray<RecentRunForActiveRun>;
+  /**
+   * Live shell projection for the currently subscribed run — stronger than
+   * `recentRuns` when deciding whether an accepted receipt is still active.
+   */
+  liveRun?: { runId: string; state: WikiRunState } | null;
 }): string | null {
   const byId = new Map(input.recentRuns.map((run) => [run.runId, run]));
+  const live = input.liveRun ?? null;
+
+  const isKnownTerminal = (runId: string): boolean => {
+    if (live?.runId === runId && !isNonTerminalWikiRunState(live.state)) {
+      return true;
+    }
+    const known = byId.get(runId);
+    return Boolean(known && !isNonTerminalWikiRunState(known.state));
+  };
 
   const acceptedIds: string[] = [];
   for (const message of input.messages) {
@@ -129,14 +144,18 @@ export function resolveActiveRunId(input: {
 
   for (let i = acceptedIds.length - 1; i >= 0; i--) {
     const runId = acceptedIds[i]!;
-    const known = byId.get(runId);
-    if (!known || isNonTerminalWikiRunState(known.state)) {
+    if (!isKnownTerminal(runId)) {
       return runId;
     }
   }
 
   const nonTerminal = input.recentRuns
-    .filter((run) => isNonTerminalWikiRunState(run.state))
+    .filter((run) => {
+      if (live?.runId === run.runId && !isNonTerminalWikiRunState(live.state)) {
+        return false;
+      }
+      return isNonTerminalWikiRunState(run.state);
+    })
     .slice()
     .sort((a, b) => {
       const at = a.updatedAt ?? "";

@@ -3,8 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { createFixtureProduceRuntime } from "./produce-runtime.js";
-
+import { createFixtureProduceRuntime } from "./fixture-runner.js";
 describe("AgentRunner fixture agent", () => {
   it("emits progress and summary", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-rsa-"));

@@ -2,8 +2,8 @@
  * wiki_produce panel — durable WikiRuns projection (ADR 0035).
  *
  * Tool details only carry the StartRun receipt (accepted+runId). Live status
- * and open plan/publication gates come from useWikiRun (GET + EventSource).
- * Plan HITL uses ResolveGate on the Run API.
+ * and open plan/publication gates come from the shell WikiRunProjectionContext
+ * (single useWikiRun for activeRunId). Plan HITL uses ResolveGate on the Run API.
  *
  * Control chrome (full graph, failed-node retry/rerun, NodeAttemptDialog)
  * lives in RunInspectorDialog — open via run id link or "View run".
@@ -24,7 +24,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { dispatchWikiRunCommand, getWikiRunSpec } from "../../api";
 import { useI18n } from "../../i18n";
-import { useWikiRun } from "../hooks/useWikiRun";
+import {
+  selectMatchingProjection,
+  useWikiRunProjection,
+} from "../hooks/WikiRunProjectionContext";
 import { compactSummary } from "../run-graph/compact-summary";
 import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
@@ -54,12 +57,9 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const runId = details.runId ?? null;
 
-  const wikiRun = useWikiRun({
-    workspaceId: routeWorkspaceId,
-    runId,
-    rootPath: rootPathHint,
-    enabled: Boolean(runId && routeWorkspaceId),
-  });
+  // Shell owns the sole active-run subscription; match by runId (no second EventSource).
+  const shellProjection = useWikiRunProjection();
+  const wikiRun = selectMatchingProjection(shellProjection, runId);
 
   const snapshot = wikiRun.snapshot;
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);
@@ -186,6 +186,9 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const pages =
     planSpec?.pages.map((page) => page.path) ?? details.pages ?? [];
 
+  // Matching active run still loading; non-matching cards stay receipt-only (no spinner).
+  const showLiveLoading = wikiRun.matches && !wikiRun.ready && !wikiRun.error;
+
   return (
     <div
       className="flex flex-col gap-2.5 rounded-md border border-border/70 bg-muted/15 p-2.5"
@@ -197,7 +200,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <Badge variant={primaryGate ? "default" : "secondary"}>{statusLabel}</Badge>
-          {wikiRun.connectionStatus === "reconnecting" ? (
+          {wikiRun.matches && wikiRun.connectionStatus === "reconnecting" ? (
             <span className="text-2xs text-muted-foreground">
               {t.agentWorkspace.connectionReconnecting}
             </span>
@@ -230,14 +233,14 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
         </p>
       ) : null}
 
-      {runId && !wikiRun.ready && !wikiRun.error ? (
+      {showLiveLoading ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Spinner className="size-3.5" />
           {t.common.loading}
         </div>
       ) : null}
 
-      {wikiRun.error ? (
+      {wikiRun.matches && wikiRun.error ? (
         <p className="text-xs text-destructive" data-testid="wiki-produce-run-error">
           {wikiRun.error}
         </p>

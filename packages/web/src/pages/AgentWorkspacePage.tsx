@@ -1,6 +1,10 @@
 /**
  * Agent Workspace page — default home for a workspace (`/w/:id`).
  * Loads workspace + Pi agent sessions; wires the 3-pane shell.
+ *
+ * WikiRun projection: one shell-owned subscription via WikiRunProjectionProvider
+ * (activeRunId). Gate panel + Run inspector consume that context when matched.
+ * `recentRuns` is event-driven list refresh only — not control authority.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,9 +17,13 @@ import {
   type ActiveRunChrome,
   deriveOperatorChrome,
   resolveActiveRunId,
+  TERMINAL_WIKI_RUN_STATES,
 } from "../agent-workspace/hooks/derive-operator-chrome";
+import {
+  WikiRunProjectionProvider,
+  useWikiRunProjection,
+} from "../agent-workspace/hooks/WikiRunProjectionContext";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
-import { useWikiRun } from "../agent-workspace/hooks/useWikiRun";
 import { openGatesFromSnapshot } from "../agent-workspace/run-graph/wiki-run-view-model";
 import {
   createAgentSession,
@@ -50,6 +58,11 @@ export function AgentWorkspacePage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const bootKeyRef = useRef<string | null>(null);
+  /** Live projection hint for resolveActiveRunId (stronger than list terminal). */
+  const [liveRunHint, setLiveRunHint] = useState<{
+    runId: string;
+    state: WikiRunListItem["state"];
+  } | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -67,63 +80,52 @@ export function AgentWorkspacePage() {
     rootPath,
   });
 
-  /** Latest accepted wiki_produce runId and/or non-terminal recentRuns entry. */
+  /**
+   * Active run: produce receipts first (skip terminal via live hint / list),
+   * then weak fallback to newest non-terminal recentRuns row.
+   */
   const activeRunId = useMemo(
-    () => resolveActiveRunId({ messages: agent.messages, recentRuns }),
-    [agent.messages, recentRuns],
-  );
-
-  const activeWikiRun = useWikiRun({
-    workspaceId: id,
-    runId: activeRunId,
-    rootPath,
-    enabled: Boolean(activeRunId),
-  });
-
-  const activeRunChrome: ActiveRunChrome | null = useMemo(() => {
-    if (!activeRunId) return null;
-    const snapshot =
-      activeWikiRun.snapshot?.runId === activeRunId ? activeWikiRun.snapshot : null;
-    if (snapshot) {
-      return {
-        runId: activeRunId,
-        state: snapshot.state,
-        openGateKinds: openGatesFromSnapshot(snapshot).map((gate) => gate.kind),
-        hasRunningAttempt: snapshot.attempts.some((attempt) => attempt.state === "running"),
-      };
-    }
-    const listed = recentRuns.find((run) => run.runId === activeRunId);
-    if (listed) {
-      return { runId: activeRunId, state: listed.state };
-    }
-    // Receipt accepted but list/snapshot not yet loaded — treat as queued so Stop run appears.
-    return { runId: activeRunId, state: "queued" };
-  }, [activeRunId, activeWikiRun.snapshot, recentRuns]);
-
-  const operatorChrome = useMemo(
     () =>
-      deriveOperatorChrome({
-        sessionStatus: agent.status,
-        activeRun: activeRunChrome,
+      resolveActiveRunId({
+        messages: agent.messages,
+        recentRuns,
+        liveRun: liveRunHint,
       }),
-    [agent.status, activeRunChrome],
+    [agent.messages, recentRuns, liveRunHint],
   );
 
-  const handleStopRun = useCallback(() => {
-    if (!id || !activeRunId) return;
-    void dispatchWikiRunCommand(
-      id,
-      {
-        type: "cancel_run",
-        commandId: crypto.randomUUID(),
-        runId: activeRunId,
-      },
-      rootPath,
-    ).catch((err) => {
-      // Surface as a toast; Run SSE will still advance if cancel eventually applies.
-      toast.error(err instanceof Error ? err.message : String(err));
-    });
-  }, [id, activeRunId, rootPath]);
+  const refreshRecentRuns = useCallback(async () => {
+    if (!id || !rootPath) return;
+    try {
+      const runsRes = await listRuns(id, rootPath);
+      if (!mountedRef.current) return;
+      setRecentRuns(runsRes.runs ?? []);
+    } catch {
+      // best-effort list refresh — not control authority
+    }
+  }, [id, rootPath]);
+
+  // Event-driven recentRuns refresh: activeRunId change (new produce / clear).
+  const prevActiveRunIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (loading || !workspace) return;
+    const prev = prevActiveRunIdRef.current;
+    prevActiveRunIdRef.current = activeRunId;
+    // Skip the first observation after boot (boot already loaded the list).
+    if (prev === undefined) return;
+    if (prev === activeRunId) return;
+    void refreshRecentRuns();
+  }, [activeRunId, loading, workspace, refreshRecentRuns]);
+
+  // Optional: refresh list when the window regains focus.
+  useEffect(() => {
+    if (loading || !workspace) return;
+    const onFocus = () => {
+      void refreshRecentRuns();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loading, workspace, refreshRecentRuns]);
 
   const syncSessionIdInUrl = useCallback(
     (sessionId: string) => {
@@ -197,6 +199,8 @@ export function AgentWorkspacePage() {
   useEffect(() => {
     if (bootKeyRef.current === id) return;
     bootKeyRef.current = id;
+    setLiveRunHint(null);
+    prevActiveRunIdRef.current = undefined;
     void boot();
     // Boot once per workspace id (not on every sessionId write).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot boot
@@ -353,35 +357,171 @@ export function AgentWorkspacePage() {
           <LoadingState label={t.agentWorkspace.loading} />
         </div>
       ) : (
-        <AgentWorkspaceShell
-          workspaceId={id}
-          workspace={workspace}
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSelectSession}
-          onCreateSession={() => void handleCreateSession()}
-          onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
-          creatingSession={creating}
-          deletingSessionId={deletingId}
-          messages={agent.messages}
-          input={agent.input}
-          onInputChange={agent.setInput}
-          onSend={() => void agent.send()}
-          onAbort={() => void agent.abort()}
-          onSetModel={agent.setModel}
-          agentStatus={agent.status}
-          agentReady={agent.ready}
-          connectionStatus={agent.connectionStatus}
-          agentError={agent.error}
-          onDismissAgentError={agent.clearError}
-          recentRuns={recentRuns}
-          showStopRun={operatorChrome.showStopRun}
-          onStopRun={handleStopRun}
-          runBusy={operatorChrome.runBusy}
-          runNeedsOperator={operatorChrome.runNeedsOperator}
-          runStateLabel={operatorChrome.runStatusLabel}
-        />
+        <WikiRunProjectionProvider workspaceId={id} rootPath={rootPath} runId={activeRunId}>
+          <AgentWorkspaceShellWithRunChrome
+            workspaceId={id}
+            rootPath={rootPath}
+            workspace={workspace}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onCreateSession={() => void handleCreateSession()}
+            onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
+            creatingSession={creating}
+            deletingSessionId={deletingId}
+            agent={agent}
+            recentRuns={recentRuns}
+            activeRunId={activeRunId}
+            onLiveRunHint={setLiveRunHint}
+            onRefreshRecentRuns={refreshRecentRuns}
+          />
+        </WikiRunProjectionProvider>
       )}
     </WorkbenchShell>
+  );
+}
+
+type AgentWorkspaceShellWithRunChromeProps = {
+  workspaceId: string;
+  rootPath?: string;
+  workspace: WorkspaceConfig;
+  sessions: PiSessionSummary[];
+  activeSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
+  onCreateSession: () => void;
+  onDeleteSession: (sessionId: string) => void;
+  creatingSession: boolean;
+  deletingSessionId: string | null;
+  agent: ReturnType<typeof useSessionAgent>;
+  recentRuns: WikiRunListItem[];
+  activeRunId: string | null;
+  onLiveRunHint: (
+    hint: { runId: string; state: WikiRunListItem["state"] } | null,
+  ) => void;
+  onRefreshRecentRuns: () => Promise<void>;
+};
+
+/**
+ * Reads the shell WikiRun projection (inside provider) for dual-surface chrome
+ * and event-driven recentRuns refresh on terminal live state.
+ */
+function AgentWorkspaceShellWithRunChrome({
+  workspaceId,
+  rootPath,
+  workspace,
+  sessions,
+  activeSessionId,
+  onSelectSession,
+  onCreateSession,
+  onDeleteSession,
+  creatingSession,
+  deletingSessionId,
+  agent,
+  recentRuns,
+  activeRunId,
+  onLiveRunHint,
+  onRefreshRecentRuns,
+}: AgentWorkspaceShellWithRunChromeProps) {
+  const projection = useWikiRunProjection();
+
+  // Feed live snapshot back to resolveActiveRunId (terminal skip without waiting on list).
+  // Do not clear on unsubscribe — clearing before list refresh would re-select the
+  // same accepted receipt and bounce the SSE. Overwrite only when a snapshot arrives.
+  useEffect(() => {
+    const snap = projection.snapshot;
+    if (snap && projection.runId === snap.runId) {
+      onLiveRunHint({ runId: snap.runId, state: snap.state });
+    }
+  }, [projection.snapshot, projection.runId, onLiveRunHint]);
+
+  // Refresh recentRuns when live snapshot enters a terminal state.
+  const terminalRefreshKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const snap = projection.snapshot;
+    if (!snap || snap.runId !== activeRunId) return;
+    if (!TERMINAL_WIKI_RUN_STATES.has(snap.state)) {
+      terminalRefreshKeyRef.current = null;
+      return;
+    }
+    const key = `${snap.runId}:${snap.state}:${snap.revision}`;
+    if (terminalRefreshKeyRef.current === key) return;
+    terminalRefreshKeyRef.current = key;
+    void onRefreshRecentRuns();
+  }, [projection.snapshot, activeRunId, onRefreshRecentRuns]);
+
+  const activeRunChrome: ActiveRunChrome | null = useMemo(() => {
+    if (!activeRunId) return null;
+    const snapshot =
+      projection.snapshot?.runId === activeRunId ? projection.snapshot : null;
+    if (snapshot) {
+      return {
+        runId: activeRunId,
+        state: snapshot.state,
+        openGateKinds: openGatesFromSnapshot(snapshot).map((gate) => gate.kind),
+        hasRunningAttempt: snapshot.attempts.some((attempt) => attempt.state === "running"),
+      };
+    }
+    const listed = recentRuns.find((run) => run.runId === activeRunId);
+    if (listed) {
+      return { runId: activeRunId, state: listed.state };
+    }
+    // Receipt accepted but list/snapshot not yet loaded — treat as queued so Stop run appears.
+    return { runId: activeRunId, state: "queued" };
+  }, [activeRunId, projection.snapshot, recentRuns]);
+
+  const operatorChrome = useMemo(
+    () =>
+      deriveOperatorChrome({
+        sessionStatus: agent.status,
+        activeRun: activeRunChrome,
+      }),
+    [agent.status, activeRunChrome],
+  );
+
+  const handleStopRun = useCallback(() => {
+    if (!workspaceId || !activeRunId) return;
+    void dispatchWikiRunCommand(
+      workspaceId,
+      {
+        type: "cancel_run",
+        commandId: crypto.randomUUID(),
+        runId: activeRunId,
+      },
+      rootPath,
+    ).catch((err) => {
+      // Surface as a toast; Run SSE will still advance if cancel eventually applies.
+      toast.error(err instanceof Error ? err.message : String(err));
+    });
+  }, [workspaceId, activeRunId, rootPath]);
+
+  return (
+    <AgentWorkspaceShell
+      workspaceId={workspaceId}
+      workspace={workspace}
+      sessions={sessions}
+      activeSessionId={activeSessionId}
+      onSelectSession={onSelectSession}
+      onCreateSession={onCreateSession}
+      onDeleteSession={onDeleteSession}
+      creatingSession={creatingSession}
+      deletingSessionId={deletingSessionId}
+      messages={agent.messages}
+      input={agent.input}
+      onInputChange={agent.setInput}
+      onSend={() => void agent.send()}
+      onAbort={() => void agent.abort()}
+      onSetModel={agent.setModel}
+      agentStatus={agent.status}
+      agentReady={agent.ready}
+      connectionStatus={agent.connectionStatus}
+      agentError={agent.error}
+      onDismissAgentError={agent.clearError}
+      recentRuns={recentRuns}
+      showStopRun={operatorChrome.showStopRun}
+      onStopRun={handleStopRun}
+      runBusy={operatorChrome.runBusy}
+      runNeedsOperator={operatorChrome.runNeedsOperator}
+      runStateLabel={operatorChrome.runStatusLabel}
+    />
   );
 }

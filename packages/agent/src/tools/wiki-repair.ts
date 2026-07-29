@@ -41,19 +41,26 @@ export type CreateWikiRepairToolInput = {
 const wikiRepairParameters = Type.Object(
   {
     runId: Type.String({
-      description: "Existing Wiki Run id whose graph node should be re-run for repair.",
+      description:
+        "Existing Wiki Run id (1–200 chars) whose graph node should be re-run. " +
+        "Required — take from a prior wiki_produce receipt or operator message. " +
+        "Do not invent runIds.",
       minLength: 1,
       maxLength: 200,
     }),
     notes: Type.Optional(
       Type.String({
-        description: "Operator repair focus or defect notes (RerunNode feedback).",
+        description:
+          "Operator repair focus or defect notes passed as RerunNode feedback (max 4000 chars). " +
+          "Summarize the defect the operator named; omit if none given.",
         maxLength: 4000,
       }),
     ),
     nodeKey: Type.Optional(
       Type.String({
-        description: "Optional node key to rerun (default: write.root).",
+        description:
+          "Graph node key to rerun (1–200 chars). Default when omitted: write.root. " +
+          "Only set when the operator or run status names a specific node.",
         minLength: 1,
         maxLength: 200,
       }),
@@ -95,16 +102,25 @@ export function createWikiRepairTool(
     name: WIKI_REPAIR_TOOL_NAME,
     label: "Repair wiki",
     description: [
-      "Request a durable RerunNode for an existing Wiki Run (default write.root).",
-      "Use when the operator asks to fix or repair staging on an existing run.",
-      "Dispatches a WikiRuns command and returns a receipt; it does not own the Attempt.",
-      "Never use bash for wiki fixes.",
-    ].join(" "),
+      "Request a durable RerunNode for an existing Wiki Run (default node: write.root).",
+      "Dispatches a WikiRuns command and returns a receipt; does not own the Attempt or write staging outside the control plane.",
+      "",
+      "When to use:",
+      "- Operator asks to fix, repair, or re-run staging/pages on an existing Wiki Run and supplies (or context has) a runId.",
+      "- A prior produce run left fixable defects and the operator wants repair, not a brand-new Run.",
+      "",
+      "Do not use when:",
+      "- No existing runId is known → ask the operator, or use wiki_produce to start a new Run.",
+      "- Operator wants a full produce/refresh of the Wiki → use wiki_produce.",
+      "- Context/token/config questions → use session_status.",
+      "- Never use bash (or other write tools) to edit wiki pages; always wiki_repair or wiki_produce.",
+    ].join("\n"),
     promptSnippet: "Rerun a Wiki Run node for repair (runId required)",
     promptGuidelines: [
       "When the operator asks to fix or repair the Wiki for an existing run, call wiki_repair with that runId.",
       "Never use bash to edit wiki pages — always wiki_repair (or wiki_produce for a full new run).",
       "Do not call wiki_repair to start a new Wiki Run; use wiki_produce for produce/refresh.",
+      "If runId is missing, ask the operator or fall back to wiki_produce — do not invent a runId.",
     ],
     parameters: wikiRepairParameters,
     executionMode: "sequential",
@@ -113,14 +129,21 @@ export function createWikiRepairTool(
         return toRepairToolResult({
           status: "cancelled",
           runId: args.runId,
-          summary: "Wiki repair dispatch was cancelled",
+          summary:
+            "Wiki repair dispatch was cancelled before RerunNode. Ask the operator whether to retry wiki_repair with the same runId.",
         });
       }
 
       const runId = args.runId.trim();
       if (!runId) {
         return toRepairToolResult(
-          { status: "failed", summary: "runId is required" },
+          {
+            status: "failed",
+            summary:
+              "runId is required (non-empty string, max 200 chars). " +
+              "Pass the existing Wiki Run id from a prior wiki_produce receipt or operator message. " +
+              "To start a new Run instead, use wiki_produce.",
+          },
           { isError: true },
         );
       }
@@ -131,7 +154,9 @@ export function createWikiRepairTool(
             status: "failed",
             runId,
             summary:
-              "wiki_repair requires WikiRuns RerunNode dispatch; use the Run API (rerun_node) or wire rerunWikiNode at composition",
+              "wiki_repair is not wired for RerunNode in this session. " +
+              "Tell the operator to use the Run API command rerun_node for this runId, " +
+              "or retry after the host wires rerunWikiNode at composition. Do not use bash to edit wiki pages.",
           },
           { isError: true },
         );
@@ -148,7 +173,10 @@ export function createWikiRepairTool(
             {
               status: "failed",
               runId,
-              summary: `No rerunnable node found for run ${runId}`,
+              summary:
+                `No rerunnable node found for run ${runId}. ` +
+                "Confirm the runId is correct and the run still exists with a repairable node. " +
+                "If the operator wants a brand-new Wiki, use wiki_produce instead of wiki_repair.",
             },
             { isError: true },
           );
@@ -201,7 +229,10 @@ export function createWikiRepairTool(
             runId,
             nodeKey: target.nodeKey,
             generation: target.generation,
-            summary: message.slice(0, 4_000),
+            summary:
+              `RerunNode failed for ${target.nodeKey}@${target.generation}: ${message.slice(0, 3_500)}. ` +
+              "If generation is stale, re-resolve the run and retry wiki_repair once; " +
+              "if the run is gone, use wiki_produce for a new Run. Do not edit wiki pages via bash.",
           },
           { isError: true },
         );

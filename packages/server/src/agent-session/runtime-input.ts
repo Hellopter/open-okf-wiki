@@ -141,21 +141,6 @@ export async function runtimeInput(
         rerunWikiNode: rerunWikiNodeFor(workspace, resolvedSessionId),
         resolveRepairTarget: (input) => resolveRepairTargetFor(workspace, input),
         resolveWorkspace: () => reloadWorkspace(workspace),
-        fixture,
-        resolveModel: fixture
-          ? undefined
-          : async (
-              role: "planner" | "worker" | "writer" | "reviewer",
-              currentWorkspace: WorkspaceConfig,
-              opts?: { seatIndex?: number },
-            ) => {
-              const resolved = await resolveRoleModel(currentWorkspace, role, opts);
-              return {
-                model: resolved.model,
-                modelRuntime: resolved.modelRuntime,
-                maxContextTokens: resolved.runtime.maxContextTokens,
-              };
-            },
       },
     },
     queueFixtureTurn: fixtureModel

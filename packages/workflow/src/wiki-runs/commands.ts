@@ -27,7 +27,6 @@ export type CommandsHost = {
   db: DatabaseSync;
   activeAttempts: Map<string, AbortController>;
   emit(runId: string, type: WikiRunEvent["type"]): number;
-  unlockReadyNodes(runId: string): void;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
   upstreamSealedOutputs(
@@ -43,7 +42,7 @@ export type CommandsHost = {
     publicationNodeKey: string,
     publicationNodeGeneration: number,
   ): void;
-  /** Bound to gates.resolveGate by the owner. */
+  /** Bound to gate-resolve.resolveGate by the owner. */
   resolveGate(
     command: Extract<RunCommand, { type: "resolve_gate" }>,
     context: RunCommandContext,

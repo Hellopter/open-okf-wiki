@@ -22,18 +22,6 @@ export type StartWikiRun = (input: {
   notes?: string;
 }) => Promise<RunCommandReceipt>;
 
-export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
-
-export type WikiProduceModelFactory = (
-  role: WikiProduceModelRole,
-  workspace: WorkspaceConfig,
-  opts?: { seatIndex?: number },
-) => Promise<{
-  model: unknown;
-  modelRuntime?: unknown;
-  maxContextTokens?: number;
-}>;
-
 export type CreateWikiProduceToolInput = {
   workspace: WorkspaceConfig;
   resolveWorkspace?: () => Promise<WorkspaceConfig>;
@@ -43,15 +31,16 @@ export type CreateWikiProduceToolInput = {
    * Tests may supply a fake that returns a receipt immediately.
    */
   startWikiRun: StartWikiRun;
-  resolveModel?: WikiProduceModelFactory;
-  fixture?: boolean;
 };
 
 const wikiProduceParameters = Type.Object(
   {
     notes: Type.Optional(
       Type.String({
-        description: "Optional operator-requested focus for this Wiki Run.",
+        description:
+          "Optional free-text focus for this Wiki Run (max 4000 chars). " +
+          "Pass the operator's stated emphasis only; do not invent scope. " +
+          "Omit when the operator gave no focus.",
         maxLength: 4000,
       }),
     ),
@@ -80,15 +69,23 @@ export function createWikiProduceTool(
     name: WIKI_PRODUCE_TOOL_NAME,
     label: "Produce wiki",
     description: [
-      "Create or refresh the source-grounded repository Wiki.",
-      "ONLY when the operator explicitly asks to produce, build, regenerate, refresh, or rewrite the Wiki.",
-      "Do NOT call for: model/context/token questions, settings, sources management, greetings, or general Q&A.",
-      "Starts a durable Wiki Run and returns immediately with runId; it does not wait for plan or publication.",
-    ].join(" "),
+      "Start a durable Wiki Run that creates or refreshes the source-grounded repository Wiki.",
+      "Returns immediately with runId; plan/publication continue on the Run control plane (this tool does not wait).",
+      "",
+      "When to use:",
+      "- Operator explicitly asks to produce, build, regenerate, refresh, or rewrite the Wiki.",
+      "- Operator wants a brand-new Run (not a fix of an existing run's staging).",
+      "",
+      "Do not use when:",
+      "- Operator asks about model, context window, tokens, session status, or configuration → use session_status or answer in text.",
+      "- Operator asks to fix/repair staging on an existing run → use wiki_repair with that runId.",
+      "- Greetings, general Q&A, sources management, or exploratory chat with no produce intent.",
+      "- A prior wiki_produce already returned accepted+runId and the operator only wants progress (report the runId; do not start another Run).",
+    ].join("\n"),
     promptSnippet: "Produce/refresh Wiki (explicit operator request only)",
     promptGuidelines: [
       "Call wiki_produce only on explicit Wiki produce/refresh intent.",
-      "For questions about context window, tokens, session status, or configuration: answer in text or use session_status if available — never wiki_produce.",
+      "For questions about context window, tokens, session status, or configuration: answer in text or use session_status — never wiki_produce.",
       "To fix or repair an existing Wiki Run staging, call wiki_repair (never bash).",
       "Pass operator focus via notes; do not invent a run for exploratory chat.",
       "After wiki_produce returns accepted+runId, tell the operator the Run is durable and plan/publication gates are resolved via the Run API — do not pretend the tool is still running.",
@@ -99,7 +96,8 @@ export function createWikiProduceTool(
       if (signal?.aborted) {
         const cancelled: WikiProduceToolDetails = {
           status: "cancelled",
-          summary: "Wiki Run start was cancelled before dispatch",
+          summary:
+            "Wiki Run start was cancelled before dispatch. Ask the operator whether to retry wiki_produce; do not assume a runId exists.",
         };
         return toolResult(cancelled);
       }
@@ -133,10 +131,13 @@ export function createWikiProduceTool(
         return toolResult(details);
       } catch (error) {
         const message =
-          error instanceof Error ? error.message.slice(0, 4000) : "Failed to start Wiki Run";
+          error instanceof Error ? error.message.slice(0, 3500) : "Failed to start Wiki Run";
         const details: WikiProduceToolDetails = {
           status: "failed",
-          summary: message,
+          summary:
+            `Failed to start Wiki Run: ${message}. ` +
+            "If a run is already open, report that runId and wait or use wiki_repair; " +
+            "do not retry wiki_produce until the operator confirms a new Run is wanted.",
         };
         return { ...toolResult(details), isError: true };
       }

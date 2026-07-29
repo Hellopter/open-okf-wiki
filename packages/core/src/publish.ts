@@ -10,24 +10,7 @@ import { regenerateWikiIndexes, validateWikiIndexes } from "./wiki-index.js";
 import { updateWikiLogForPublish } from "./wiki-log.js";
 import { countMarkdownFiles, scanWikiTree } from "./wiki-tree.js";
 
-export type PublishStagingInput = {
-  stagingDir: string;
-  publicationPath: string;
-  /** Optional run id for diagnostics / future release naming. */
-  runId?: string;
-  /**
-   * Pinned Snapshot sources for mechanical Source Citation resolve (ADR 0008).
-   * When set, validateWikiTree checks citations against these roots.
-   * Also used to rewrite `repo:` citations to portable relative `sources/<id>/…` links.
-   */
-  sources?: Array<{ id: string; path: string }>;
-  /**
-   * OKF v0.2 provenance stamp (generated / verified / okf_version), applied to
-   * the candidate tree only. Run Boundary-owned facts, never model-authored.
-   */
-  stamp?: OkfStamp;
-};
-
+/** Fields reported after materializing a publication candidate tree. */
 export type PublishStagingResult = {
   publicationPath: string;
   pageCount: number;
@@ -63,16 +46,12 @@ export class PublicationConflictError extends Error {
 }
 
 /**
- * Publish a staging Wiki tree to the stable Published Wiki path.
+ * Portable publication (ADR 0017 / 0035): materialize a complete tree, then
+ * expose it via same-parent renames so readers never see a half-written path.
  *
- * Portable MVP (ADR 0017): materialize a complete tree under a sibling temp
- * directory, then expose it via same-parent renames so readers never see a
- * half-written publication path.
- *
- * WikiRuns (ADR 0035) prefers the split primitives:
+ * Split primitives only (no one-shot compat):
  * {@link capturePublicationBaseline}, {@link materializePublicationCandidate},
  * {@link applySealedPublicationCandidate}, {@link reconcilePublicationApply}.
- * This combined helper remains for mechanical core tests and one-shot tools.
  */
 
 /** In-process serialization per publication path (same-process publishers). */
@@ -195,18 +174,6 @@ export async function capturePublicationBaseline(publicationPath: string): Promi
   await assertNoSymlinkComponents(path.dirname(resolved), "publicationPath parent");
   await mkdir(path.dirname(resolved), { recursive: true });
   return withPublicationLock(resolved, async () => digestPublicationTree(resolved));
-}
-
-/** Remove `.next.*` / `.prev.*` residue of a previously crashed one-shot publish. */
-async function sweepPublishResidue(publicationPath: string): Promise<void> {
-  const parent = path.dirname(publicationPath);
-  const base = path.basename(publicationPath);
-  const entries = await readdir(parent).catch(() => [] as string[]);
-  for (const name of entries) {
-    if (name.startsWith(`${base}.next.`) || name.startsWith(`${base}.prev.`)) {
-      await rm(path.join(parent, name), { recursive: true, force: true }).catch(() => undefined);
-    }
-  }
 }
 
 /** True when `child` equals or lives under `parent`. */
@@ -773,139 +740,3 @@ export async function reconcilePublicationApply(
   });
 }
 
-/**
- * One-shot publish: materialize transforms under the lock, then swap.
- * Prefer the split ADR 0035 primitives for WikiRuns effect protocol.
- */
-export async function publishStagingToPublication(
-  input: PublishStagingInput,
-): Promise<PublishStagingResult> {
-  const stagingDir = path.resolve(assertAbsolutePath(input.stagingDir, "stagingDir"));
-  const publicationPath = path.resolve(
-    assertAbsolutePath(input.publicationPath, "publicationPath"),
-  );
-
-  if (isSameOrInside(stagingDir, publicationPath) || isSameOrInside(publicationPath, stagingDir)) {
-    throw new Error(
-      `stagingDir and publicationPath must not overlap: ${stagingDir} vs ${publicationPath}`,
-    );
-  }
-
-  let stagingInfo;
-  try {
-    stagingInfo = await lstat(stagingDir);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "ENOENT") {
-      throw new Error(`staging directory does not exist: ${stagingDir}`);
-    }
-    throw error;
-  }
-  if (stagingInfo.isSymbolicLink()) {
-    throw new Error(`stagingDir is a symlink: ${stagingDir}`);
-  }
-  if (!stagingInfo.isDirectory()) {
-    throw new Error(`stagingDir is not a directory: ${stagingDir}`);
-  }
-
-  await assertNoSymlinkComponents(stagingDir, "stagingDir");
-  await assertNoSymlinkComponents(publicationPath, "publicationPath");
-
-  try {
-    const pubInfo = await lstat(publicationPath);
-    if (pubInfo.isSymbolicLink()) {
-      throw new Error(`publicationPath is a symlink: ${publicationPath}`);
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code !== "ENOENT") {
-      throw error;
-    }
-  }
-
-  const validation = await validateWikiTree(stagingDir, {
-    ...(input.sources?.length ? { sources: input.sources } : {}),
-  });
-  if (!validation.ok) {
-    throw new Error(`staging failed wiki validation: ${validation.errors.join("; ")}`);
-  }
-  const pageCount = validation.pageCount ?? (await countMarkdownFiles(stagingDir));
-  if (pageCount < 1) {
-    throw new Error(`staging has no markdown pages: ${stagingDir}`);
-  }
-
-  const parent = path.dirname(publicationPath);
-  await mkdir(parent, { recursive: true });
-  await assertNoSymlinkComponents(parent, "publicationPath parent");
-
-  return withPublicationLock(publicationPath, async () => {
-    // One-shot path: any .next.* / .prev.* siblings are crash residue (no effect marker).
-    await sweepPublishResidue(publicationPath);
-
-    const ts = Date.now();
-    const candidate = `${publicationPath}.next.${ts}`;
-    const aside = `${publicationPath}.prev.${ts}`;
-
-    const materialized = await materializePublicationCandidate({
-      wikiDir: stagingDir,
-      candidateDir: candidate,
-      publicationPath,
-      ...(input.sources?.length ? { sources: input.sources } : {}),
-      ...(input.stamp ? { stamp: input.stamp } : {}),
-    });
-
-    let movedAside = false;
-    try {
-      await stat(publicationPath);
-      await rename(publicationPath, aside);
-      movedAside = true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "ENOENT") {
-        await rm(candidate, { recursive: true, force: true });
-        throw error;
-      }
-    }
-
-    try {
-      await rename(candidate, publicationPath);
-    } catch (error) {
-      if (movedAside) {
-        try {
-          await rename(aside, publicationPath);
-        } catch {
-          // Leave aside + candidate for operator recovery.
-        }
-      }
-      await rm(candidate, { recursive: true, force: true }).catch(() => undefined);
-      throw error;
-    }
-
-    const finalInfo = await lstat(publicationPath);
-    if (finalInfo.isSymbolicLink()) {
-      throw new Error(`publicationPath became a symlink after publish: ${publicationPath}`);
-    }
-    if (!finalInfo.isDirectory()) {
-      throw new Error(`publicationPath is not a directory after publish: ${publicationPath}`);
-    }
-
-    if (movedAside) {
-      await rm(aside, { recursive: true, force: true }).catch(() => undefined);
-    }
-
-    return {
-      publicationPath,
-      pageCount: materialized.pageCount,
-      ...(materialized.rewrittenCitationPages !== undefined
-        ? { rewrittenCitationPages: materialized.rewrittenCitationPages }
-        : {}),
-      ...(materialized.stampedPages !== undefined
-        ? { stampedPages: materialized.stampedPages }
-        : {}),
-      ...(materialized.logChanges !== undefined ? { logChanges: materialized.logChanges } : {}),
-      ...(materialized.regeneratedIndexes !== undefined
-        ? { regeneratedIndexes: materialized.regeneratedIndexes }
-        : {}),
-    };
-  });
-}

@@ -194,4 +194,48 @@ describe("resolveActiveRunId", () => {
     });
     assert.equal(id, null);
   });
+
+  it("live snapshot terminal skips accepted receipt before list catches up", () => {
+    const id = resolveActiveRunId({
+      messages: [
+        {
+          tools: [{ name: "wiki_produce", details: { status: "accepted", runId: "run-done" } }],
+        },
+      ],
+      recentRuns: [],
+      liveRun: { runId: "run-done", state: "published" },
+    });
+    assert.equal(id, null);
+  });
+
+  it("live snapshot terminal does not block a newer accepted receipt", () => {
+    const id = resolveActiveRunId({
+      messages: [
+        {
+          tools: [{ name: "wiki_produce", details: { status: "accepted", runId: "run-old" } }],
+        },
+        {
+          tools: [{ name: "wiki_produce", details: { status: "accepted", runId: "run-new" } }],
+        },
+      ],
+      recentRuns: [],
+      liveRun: { runId: "run-old", state: "published" },
+    });
+    assert.equal(id, "run-new");
+  });
+
+  it("live terminal filters a stale non-terminal recentRuns row for the same id", () => {
+    const id = resolveActiveRunId({
+      messages: [],
+      recentRuns: [
+        {
+          runId: "run-done",
+          state: "running",
+          updatedAt: "2026-07-28T02:00:00.000Z",
+        },
+      ],
+      liveRun: { runId: "run-done", state: "published" },
+    });
+    assert.equal(id, null);
+  });
 });

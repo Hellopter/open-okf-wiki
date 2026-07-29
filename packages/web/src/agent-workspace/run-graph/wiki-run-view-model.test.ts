@@ -6,7 +6,6 @@ import {
   failedNodesFromSnapshot,
   openGatesFromSnapshot,
   projectWikiAttempt,
-  wikiRunSnapshotToRunGraph,
   wikiRunToViewModel,
 } from "./wiki-run-view-model.ts";
 
@@ -94,14 +93,9 @@ describe("wikiRun view-model projection", () => {
       ],
     });
 
-    // Deprecated intermediate shape (tests only — product uses wikiRunToViewModel).
-    const graph = wikiRunSnapshotToRunGraph(snapshot);
-    assert.equal(graph.topology.length, 3);
-    assert.equal(graph.topology.find((n) => n.nodeKey === "research.leaf.core")?.kind, "leaf");
-    assert.equal(graph.playhead?.attemptId, "a-leaf");
-
-    // Direct product projection (no RunGraphSnapshot hop required).
+    // Direct product projection (WikiRunSnapshot → wikiRunToViewModel, no RunGraph hop).
     const vm = wikiRunToViewModel(snapshot);
+    assert.equal(vm.layers.flatMap((l) => l.nodes).length, 3);
     assert.ok(vm.layers.some((l) => l.id === "research"));
     assert.ok(vm.layers.some((l) => l.id === "write"));
     assert.equal(vm.runState, "running");

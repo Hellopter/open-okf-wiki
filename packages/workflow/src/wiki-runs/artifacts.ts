@@ -1,6 +1,6 @@
 /**
- * Artifact prepare / seal / commit / recovery and attempt input binding.
- * Owner binds db/workspace/transaction/emit — artifacts stay free of WikiRunsOwner.
+ * Artifact prepare / seal / commit (bytes + CAS) and attempt input binding.
+ * Control-flow after success (gates, unlock, plan accept) lives in attempt-success.ts.
  */
 
 import { randomUUID } from "node:crypto";
@@ -27,12 +27,12 @@ import {
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import { artifactId, digest, now } from "./crypto-util.js";
-import { commitFreezeArtifacts, type FreezeCommitHost, trustedFrozenInputs } from "./freeze.js";
+import { upstreamKeys } from "./dag.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
-import { materializeDefinitionV1Graph, upstreamKeys } from "./gates.js";
-import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
-import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js";
+import { asRow, asRows, requiredText } from "./sql.js";
+import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
+/** Bytes/CAS surface — no gate open or unlock callbacks. */
 export type ArtifactsHost = {
   workspace: WorkspaceConfig;
   db: DatabaseSync;
@@ -40,145 +40,7 @@ export type ArtifactsHost = {
   emit(runId: string, type: WikiRunEvent["type"]): number;
   isCurrent(claim: ClaimedNode): boolean;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-  /** Bound from gates — commitNodeArtifacts opens plan/publication/fix gates. */
-  openPlanGate(claim: ClaimedNode, specPayloadDigest: string, timestamp: string): void;
-  openPublicationGate(
-    claim: ClaimedNode,
-    candidate: ArtifactPreparation,
-    expectedLiveDigest: string,
-    timestamp: string,
-  ): void;
-  openFixGate(
-    claim: ClaimedNode,
-    defectsPayloadDigest: string,
-    timestamp: string,
-    detail?: { summary?: string; clean?: boolean; blockingCount?: number },
-  ): void;
-  autoPassFixGate(runId: string, timestamp: string): void;
-  readPublicationBaseline(runId: string, preparations: ArtifactPreparation[]): string;
-  unlockReadyNodes(runId: string): void;
 };
-
-/** ArtifactsHost already carries the freeze commit surface (db / isCurrent / emit). */
-function freezeCommitHost(host: ArtifactsHost): FreezeCommitHost {
-  return {
-    db: host.db,
-    isCurrent: (claim) => host.isCurrent(claim),
-    emit: (runId, type) => host.emit(runId, type),
-  };
-}
-
-function orphanPreparedGroup(host: ArtifactsHost, attemptId: string): void {
-  host.transaction(() =>
-    host.db
-      .prepare(
-        "UPDATE artifact_preparations SET state = 'orphaned' WHERE attempt_id = ? AND state = 'prepared'",
-      )
-      .run(attemptId),
-  );
-}
-
-/**
- * ADR 0035 recovery: replay only prepared, verified artifacts whose Attempt is
- * still current (`isCurrent` inside commit). Route by preparation `node_key`:
- * freeze → `commitFreezeArtifacts` (needs frozen_* inputs + attempt_output);
- * all other nodes → `commitNodeArtifacts` (plan/publication gates included).
- * Invalid seals or missing claim material orphan the group.
- */
-export async function recoverPreparedArtifacts(host: ArtifactsHost): Promise<void> {
-  const rows = asRows(
-    host.db
-      .prepare(
-        `SELECT preparation_id, attempt_id, run_id, node_key, node_generation, artifact_id, kind, role,
-                manifest_digest, relative_path
-         FROM artifact_preparations WHERE state = 'prepared' ORDER BY attempt_id, preparation_id`,
-      )
-      .all(),
-  );
-  const grouped = new Map<string, SqlRow[]>();
-  for (const row of rows) {
-    const attemptId = requiredText(row, "attempt_id");
-    grouped.set(attemptId, [...(grouped.get(attemptId) ?? []), row]);
-  }
-  for (const [attemptId, preparations] of grouped) {
-    const first = preparations[0]!;
-    const runId = requiredText(first, "run_id");
-    const nodeKey = requiredText(first, "node_key");
-    const nodeGeneration = requiredNumber(first, "node_generation");
-    const valid = await Promise.all(
-      preparations.map((preparation) =>
-        verifyArtifact(
-          path.join(
-            runWorkDir(host.workspace.rootPath, runId),
-            requiredText(preparation, "relative_path"),
-          ),
-          requiredText(preparation, "manifest_digest"),
-        ),
-      ),
-    );
-    if (!valid.every(Boolean)) {
-      orphanPreparedGroup(host, attemptId);
-      continue;
-    }
-    const prepared: ArtifactPreparation[] = preparations.map((preparation) => ({
-      artifactId: requiredText(preparation, "artifact_id"),
-      digest: requiredText(preparation, "manifest_digest"),
-      kind: requiredText(preparation, "kind") as ArtifactPreparation["kind"],
-      preparationId: requiredText(preparation, "preparation_id"),
-      relativePath: requiredText(preparation, "relative_path"),
-      role: requiredText(preparation, "role"),
-      sourceDirectory: "",
-    }));
-
-    if (nodeKey === "freeze") {
-      // Freeze commit also pins frozen_* → pinned_*; require attempt_output + durable freeze inputs.
-      const output = preparations.find(
-        (preparation) => requiredText(preparation, "role") === "attempt_output",
-      );
-      if (!output) {
-        orphanPreparedGroup(host, attemptId);
-        continue;
-      }
-      const inputs = trustedFrozenInputs({ db: host.db }, runId);
-      if (!inputs) {
-        orphanPreparedGroup(host, attemptId);
-        continue;
-      }
-      const claim: ClaimedFreeze = {
-        attemptId,
-        nodeGeneration,
-        nodeKey: "freeze",
-        kind: "freeze",
-        runId,
-      };
-      host.transaction(() => commitFreezeArtifacts(freezeCommitHost(host), claim, prepared));
-      continue;
-    }
-
-    // Non-freeze prepared groups: rebuild claim from the node row and commit via
-    // the same CAS path as live execution. commitNodeArtifacts re-checks isCurrent
-    // and orphans if the attempt is no longer the running current attempt.
-    const node = asRow(
-      host.db
-        .prepare(
-          "SELECT kind FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
-        )
-        .get(runId, nodeKey, nodeGeneration),
-    );
-    if (!node) {
-      orphanPreparedGroup(host, attemptId);
-      continue;
-    }
-    const claim: ClaimedNode = {
-      attemptId,
-      nodeGeneration,
-      nodeKey,
-      kind: requiredText(node, "kind"),
-      runId,
-    };
-    host.transaction(() => commitNodeArtifacts(host, claim, prepared));
-  }
-}
 
 export function copyAttemptInputs(
   host: Pick<ArtifactsHost, "db">,
@@ -518,18 +380,23 @@ export function loadSealedDefectsReport(
   return undefined;
 }
 
+/**
+ * CAS commit of sealed artifact bytes into artifacts/node_outputs and mark
+ * attempt + node succeeded. Returns false when the claim is no longer current
+ * (preparations orphaned). Does not open gates or unlock — see attempt-success.
+ */
 export function commitNodeArtifacts(
-  host: ArtifactsHost,
+  host: Pick<ArtifactsHost, "db" | "emit" | "isCurrent">,
   claim: ClaimedNode,
   preparations: ArtifactPreparation[],
-): void {
+): boolean {
   if (!host.isCurrent(claim)) {
     host.db
       .prepare(
         "UPDATE artifact_preparations SET state = 'orphaned' WHERE attempt_id = ? AND state = 'prepared'",
       )
       .run(claim.attemptId);
-    return;
+    return false;
   }
   const timestamp = now();
   for (const preparation of preparations) {
@@ -579,111 +446,7 @@ export function commitNodeArtifacts(
     )
     .run(claim.attemptId);
   host.emit(claim.runId, "attempt.succeeded");
-
-  if (claim.kind === "plan") {
-    const specPrep = preparations.find((item) => item.role === "spec" || item.kind === "spec");
-    if (!specPrep) throw new Error("plan attempt succeeded without a Spec artifact");
-    // planConfirm=false: auto-approve — materialize Definition v1 without operator gate.
-    if (host.workspace.planConfirm === false) {
-      materializeDefinitionV1Graph(host, claim.runId, specPrep.relativePath);
-      host.db
-        .prepare(
-          "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
-        )
-        .run(timestamp, claim.runId);
-      host.unlockReadyNodes(claim.runId);
-      host.emit(claim.runId, "node.ready");
-      return;
-    }
-    host.openPlanGate(claim, specPrep.digest, timestamp);
-    return;
-  }
-  if (claim.kind === "prepare.publication") {
-    const candidate = preparations.find(
-      (item) => item.role === "publication_candidate" || item.kind === "publication_candidate",
-    );
-    if (!candidate) throw new Error("prepare.publication succeeded without a candidate");
-    const expectedLiveDigest = host.readPublicationBaseline(claim.runId, preparations);
-    host.openPublicationGate(claim, candidate, expectedLiveDigest, timestamp);
-    return;
-  }
-  if (claim.kind === "review.reduce") {
-    // Always succeed path: open gate.fix on blocking defects, else auto-pass.
-    // Non-blocking (major/minor) alone do not hold the run — MVP matches "no blocking".
-    const defectsPrep = preparations.find((item) => item.role === "defects");
-    const report = loadSealedDefectsReport(host, claim.runId, defectsPrep);
-    const blocking = report?.defects.filter((d) => d.severity === "blocking") ?? [];
-    if (blocking.length === 0) {
-      host.autoPassFixGate(claim.runId, timestamp);
-      return;
-    }
-    const payloadDigest =
-      defectsPrep?.digest ?? digest(report ?? { clean: false, defects: blocking });
-    host.openFixGate(claim, payloadDigest, timestamp, {
-      summary: report?.summary,
-      clean: false,
-      blockingCount: blocking.length,
-    });
-    return;
-  }
-  if (claim.kind === "publish") {
-    host.db
-      .prepare(
-        "UPDATE runs SET state = 'published', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
-      )
-      .run(timestamp, claim.runId);
-    host.emit(claim.runId, "run.published");
-    return;
-  }
-
-  host.unlockReadyNodes(claim.runId);
-  const hasReady = asRow(
-    host.db
-      .prepare(
-        `SELECT 1 AS present FROM nodes
-         WHERE run_id = ? AND state = 'ready'
-           AND generation = (
-             SELECT MAX(n2.generation) FROM nodes n2
-             WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
-           )
-         LIMIT 1`,
-      )
-      .get(claim.runId),
-  );
-  // Open gates table is the HITL authority — do not treat stale gate.* nodes
-  // left in state='waiting' after Rerun/withdraw as operator waits (parallel
-  // seat commits used to flip the run to waiting_for_operator and stall).
-  const hasOpenGate = asRow(
-    host.db
-      .prepare(`SELECT 1 AS present FROM gates WHERE run_id = ? AND state = 'open' LIMIT 1`)
-      .get(claim.runId),
-  );
-  if (hasReady) {
-    // Ready work wins over a stale waiting_for_operator (e.g. withdrawn pub gate
-    // node still marked waiting while review.reduce is ready).
-    host.db
-      .prepare(
-        `UPDATE runs SET state = 'queued', updated_at = ?
-         WHERE run_id = ? AND cancel_requested = 0
-           AND state IN ('running', 'queued', 'waiting_for_operator')`,
-      )
-      .run(timestamp, claim.runId);
-    host.emit(claim.runId, "node.ready");
-  } else if (hasOpenGate) {
-    host.db
-      .prepare(
-        "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
-      )
-      .run(timestamp, claim.runId);
-  } else {
-    // Keep running if blocked work may unlock later; otherwise leave state as running
-    // until a terminal transition (publish / completed_unpublished / failed).
-    host.db
-      .prepare(
-        "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
-      )
-      .run(timestamp, claim.runId);
-  }
+  return true;
 }
 
 export async function sealPreparation(

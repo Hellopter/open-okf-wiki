@@ -4,84 +4,8 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type AnalysisReceipt, defaultWikiRunSpec, type WikiRunSpec } from "@okf-wiki/contract";
-import type {
-  AttachReceiptInput,
-  PersistReceiptInput,
-  ReceiptListItem,
-  ReceiptStore,
-  ResearchChildResult,
-} from "./receipt-store.js";
+import { defaultWikiRunSpec, type WikiRunSpec } from "@okf-wiki/contract";
 import type { SpecStore } from "./spec-store.js";
-
-function memoryReceiptStore(): ReceiptStore {
-  const byKey = new Map<string, AnalysisReceipt>();
-  const key = (root: string, runId: string, nodeId: string) => `${root}|${runId}|${nodeId}`;
-
-  return {
-    async write(input: PersistReceiptInput) {
-      const receipt: AnalysisReceipt = {
-        version: 1,
-        runId: input.runId,
-        nodeId: input.nodeId,
-        parentId: input.parentId,
-        attempt: 1,
-        status: input.status ?? "complete",
-        scope: input.scope,
-        summary: input.summary,
-        findings: [input.summary.slice(0, 100)],
-        evidence: [],
-        childReceipts: input.childReceipts ?? [],
-        openQuestions: input.openQuestions ?? [],
-      };
-      byKey.set(key(input.workspaceRoot, input.runId, input.nodeId), receipt);
-      const relativePath = `analysis/receipts/${input.nodeId}.json`;
-      return {
-        receiptPath: `/mem/${input.runId}/${input.nodeId}.json`,
-        relativePath,
-        receipt,
-      };
-    },
-    async attach(child: ResearchChildResult, input: AttachReceiptInput) {
-      const persisted = await this.write({
-        workspaceRoot: input.workspaceRoot,
-        runId: input.runId,
-        nodeId: input.nodeId,
-        parentId: input.parentId,
-        scope: input.scope,
-        summary: input.summary ?? child.summary,
-        status: input.status,
-        childReceipts: input.childReceipts,
-        openQuestions: input.openQuestions,
-      });
-      return {
-        ...child,
-        summary: input.summary ?? child.summary,
-        receiptPath: persisted.relativePath,
-        absoluteReceiptPath: persisted.receiptPath,
-      };
-    },
-    async buildIndex(workspaceRoot: string, runId: string) {
-      const items = await this.list(workspaceRoot, runId);
-      if (items.length === 0) return "No analysis receipts found under analysis/receipts/.";
-      return items.map((i) => `- ${i.relativePath} [${i.status}]`).join("\n");
-    },
-    async list(workspaceRoot: string, runId: string): Promise<ReceiptListItem[]> {
-      const prefix = `${workspaceRoot}|${runId}|`;
-      const out: ReceiptListItem[] = [];
-      for (const [k, r] of byKey) {
-        if (!k.startsWith(prefix)) continue;
-        out.push({
-          relativePath: `analysis/receipts/${r.nodeId}.json`,
-          status: r.status,
-          scope: r.scope,
-          summary: r.summary,
-        });
-      }
-      return out;
-    },
-  };
-}
 
 function memorySpecStore(): SpecStore {
   const committed = new Map<string, WikiRunSpec>();
@@ -108,37 +32,6 @@ function memorySpecStore(): SpecStore {
 }
 
 describe("ports memory fakes", () => {
-  it("ReceiptStore write/attach/buildIndex/list round-trip", async () => {
-    const store = memoryReceiptStore();
-    const written = await store.write({
-      workspaceRoot: "/ws",
-      runId: "r1",
-      nodeId: "domain-a",
-      parentId: "root",
-      scope: "core",
-      summary: "found entrypoints",
-    });
-    assert.equal(written.relativePath, "analysis/receipts/domain-a.json");
-
-    const attached = await store.attach(
-      { role: "leaf", mode: "fixture", summary: "leaf summary" },
-      {
-        workspaceRoot: "/ws",
-        runId: "r1",
-        nodeId: "leaf-1",
-        parentId: "domain-a",
-        scope: "q1",
-      },
-    );
-    assert.equal(attached.receiptPath, "analysis/receipts/leaf-1.json");
-
-    const list = await store.list("/ws", "r1");
-    assert.equal(list.length, 2);
-    const index = await store.buildIndex("/ws", "r1");
-    assert.match(index, /domain-a/);
-    assert.match(index, /leaf-1/);
-  });
-
   it("SpecStore commit/read and plan-draft handoff", async () => {
     const store = memorySpecStore();
     const spec = defaultWikiRunSpec("Demo");

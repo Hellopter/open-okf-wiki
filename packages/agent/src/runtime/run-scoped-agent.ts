@@ -16,6 +16,7 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AttemptItem, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import { classifyAgentFailure } from "../workflow/retry-policy.js";
 import {
   createAttemptTranscriptSink,
   type AttemptTranscriptSink,
@@ -149,11 +150,12 @@ function abortError(): Error {
   return err;
 }
 
-/** Best-effort detection of context-window overflow / compact exhaustion. */
+/**
+ * Best-effort detection of context-window overflow / compact exhaustion.
+ * Routes through shared `classifyAgentFailure` so capacity patterns stay single-sourced.
+ */
 function looksLikeContextOverflow(message: string): boolean {
-  return /context (?:length |window )?overflow|maximum context|prompt is too long|context_length|too many tokens|token limit exceeded|input is too long|compact-and-retry|exceeds capacity gate|capacity (?:gate |exhausted)/i.test(
-    message,
-  );
+  return classifyAgentFailure(message) === "capacity";
 }
 
 /**

@@ -13,7 +13,6 @@ import type { CommitSpecOptions, SpecStore } from "./spec-store.js";
 
 export const SPEC_FILE_NAME = "spec.json";
 export const PLAN_DRAFT_FILE_NAME = "plan-draft.json";
-export const DEFECTS_FILE_NAME = "defects.json";
 
 /** Run-workdir relative path for the planner candidate Spec. */
 export const PLAN_DRAFT_REL_PATH = `analysis/${PLAN_DRAFT_FILE_NAME}`;
@@ -24,10 +23,6 @@ export function runAnalysisDir(workspaceRoot: string, runId: string): string {
 
 export function specPath(workspaceRoot: string, runId: string): string {
   return path.join(runAnalysisDir(workspaceRoot, runId), SPEC_FILE_NAME);
-}
-
-export function defectsPath(workspaceRoot: string, runId: string): string {
-  return path.join(runAnalysisDir(workspaceRoot, runId), DEFECTS_FILE_NAME);
 }
 
 /** Absolute path to planner candidate Spec under a run workdir. */

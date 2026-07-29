@@ -8,12 +8,14 @@ import {
   readdir,
   readFile,
   rename,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import type { OkfStamp } from "./okf-stamp.js";
 import { assertNoSymlinkComponents } from "./paths.js";
 import {
   applySealedPublicationCandidate,
@@ -21,9 +23,10 @@ import {
   digestPublicationTree,
   digestPublicationTreeContentOnly,
   EMPTY_PUBLICATION_DIGEST,
+  manifestPublicationTree,
   materializePublicationCandidate,
-  publishStagingToPublication,
   reconcilePublicationApply,
+  withPublicationLock,
 } from "./publish.js";
 import { validateWikiIndexes } from "./wiki-index.js";
 import { countMarkdownFiles } from "./wiki-tree.js";
@@ -43,6 +46,56 @@ function page(title: string, body = "Hello.", type = "Concept"): string {
   return `---\ntype: ${type}\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
 }
 
+/**
+ * Split-primitive publish used by mechanical coverage (no one-shot API).
+ * capture → materialize → apply under the publication lock protocol.
+ */
+async function publishViaSplit(input: {
+  stagingDir: string;
+  publicationPath: string;
+  sources?: Array<{ id: string; path: string }>;
+  stamp?: OkfStamp;
+}): Promise<{
+  publicationPath: string;
+  pageCount: number;
+  rewrittenCitationPages?: number;
+  stampedPages?: number;
+  logChanges?: number;
+  regeneratedIndexes?: number;
+}> {
+  const publicationPath = path.resolve(input.publicationPath);
+  const candidateDir = `${publicationPath}.candidate.test`;
+  const expectedLiveDigest = await capturePublicationBaseline(publicationPath);
+  const materialized = await materializePublicationCandidate({
+    wikiDir: input.stagingDir,
+    candidateDir,
+    publicationPath,
+    ...(input.sources?.length ? { sources: input.sources } : {}),
+    ...(input.stamp ? { stamp: input.stamp } : {}),
+  });
+  const effectKey = `publish:test:${createHash("sha256").update(candidateDir).digest("hex").slice(0, 16)}`;
+  const applied = await applySealedPublicationCandidate({
+    candidateDir,
+    publicationPath,
+    expectedLiveDigest,
+    effectKey,
+  });
+  assert.equal(applied.status, "applied", `expected applied, got ${JSON.stringify(applied)}`);
+  await rm(candidateDir, { recursive: true, force: true }).catch(() => undefined);
+  return {
+    publicationPath,
+    pageCount: materialized.pageCount,
+    ...(materialized.rewrittenCitationPages !== undefined
+      ? { rewrittenCitationPages: materialized.rewrittenCitationPages }
+      : {}),
+    ...(materialized.stampedPages !== undefined ? { stampedPages: materialized.stampedPages } : {}),
+    ...(materialized.logChanges !== undefined ? { logChanges: materialized.logChanges } : {}),
+    ...(materialized.regeneratedIndexes !== undefined
+      ? { regeneratedIndexes: materialized.regeneratedIndexes }
+      : {}),
+  };
+}
+
 test("countMarkdownFiles counts nested .md files and ignores non-md", async () => {
   const root = await tempDir("okf-pub-count-");
   await writeMd(root, "overview.md", "# O\n");
@@ -51,7 +104,7 @@ test("countMarkdownFiles counts nested .md files and ignores non-md", async () =
   assert.equal(await countMarkdownFiles(root), 2);
 });
 
-test("publishStagingToPublication copies staging into empty publication path", async () => {
+test("split publish copies staging into empty publication path", async () => {
   const root = await tempDir("okf-pub-ok-");
   const staging = path.join(root, "staging");
   const publication = path.join(root, "wiki");
@@ -59,10 +112,9 @@ test("publishStagingToPublication copies staging into empty publication path", a
   await writeMd(staging, "overview.md", page("Overview"));
   await writeMd(staging, "modules/core.md", page("Core"));
 
-  const result = await publishStagingToPublication({
+  const result = await publishViaSplit({
     stagingDir: staging,
     publicationPath: publication,
-    runId: "run-1",
   });
 
   assert.equal(result.publicationPath, path.resolve(publication));
@@ -83,7 +135,7 @@ test("publishStagingToPublication copies staging into empty publication path", a
   assert.equal(indexCheck.ok, true, indexCheck.errors.join("; "));
 });
 
-test("publishStagingToPublication rewrites repo: citations to relative sources/ paths", async () => {
+test("split publish rewrites repo: citations to relative sources/ paths", async () => {
   const root = await tempDir("okf-pub-cite-");
   const staging = path.join(root, "staging");
   const publication = path.join(root, "wiki");
@@ -94,7 +146,7 @@ test("publishStagingToPublication rewrites repo: citations to relative sources/ 
   await writeMd(staging, "overview.md", page("Overview", "Note [Source](repo:README.md#L1)."));
   await writeMd(staging, "modules/core.md", page("Core", "Detail [Source](repo:README.md#L1)."));
 
-  const result = await publishStagingToPublication({
+  const result = await publishViaSplit({
     stagingDir: staging,
     publicationPath: publication,
     sources: [{ id: "app", path: sourceRoot }],
@@ -115,7 +167,7 @@ test("publishStagingToPublication rewrites repo: citations to relative sources/ 
   assert.match(nested, /\[Source\]\(\.\.\/sources\/app\/README\.md#L1\)/);
 });
 
-test("publishStagingToPublication stamps OKF provenance on the candidate only", async () => {
+test("split publish stamps OKF provenance on the candidate only", async () => {
   const root = await tempDir("okf-pub-stamp-");
   const staging = path.join(root, "staging");
   const publication = path.join(root, "wiki");
@@ -123,7 +175,7 @@ test("publishStagingToPublication stamps OKF provenance on the candidate only", 
   await writeMd(staging, "overview.md", page("Overview"));
   await writeMd(staging, "index.md", "# Wiki\n\n* [Overview](overview.md) - intro\n");
 
-  const result = await publishStagingToPublication({
+  const result = await publishViaSplit({
     stagingDir: staging,
     publicationPath: publication,
     stamp: {
@@ -153,7 +205,7 @@ test("publishStagingToPublication stamps OKF provenance on the candidate only", 
   assert.doesNotMatch(stagingBody, /generated:/);
 });
 
-test("publishStagingToPublication renames existing publication aside then replaces", async () => {
+test("split publish renames existing publication aside then replaces", async () => {
   const root = await tempDir("okf-pub-replace-");
   const staging = path.join(root, "staging");
   const publication = path.join(root, "wiki");
@@ -162,7 +214,7 @@ test("publishStagingToPublication renames existing publication aside then replac
   await writeFile(path.join(publication, "old.md"), "# Old\n", "utf8");
   await writeMd(staging, "new.md", page("New"));
 
-  const result = await publishStagingToPublication({
+  const result = await publishViaSplit({
     stagingDir: staging,
     publicationPath: publication,
   });
@@ -180,29 +232,49 @@ test("publishStagingToPublication renames existing publication aside then replac
       (name) =>
         name.startsWith("wiki.prev.") ||
         name.startsWith("wiki.next.") ||
-        name === "wiki.publish-lock",
+        name === "wiki.publish-lock" ||
+        name.startsWith("wiki.candidate."),
     ),
     `expected no publish residue, got: ${siblings.join(", ")}`,
   );
 });
 
-test("publishStagingToPublication sweeps residue from a crashed publish", async () => {
+test("apply sweeps effect-scoped residue from a crashed apply", async () => {
   const root = await tempDir("okf-pub-sweep-");
   const staging = path.join(root, "staging");
   const publication = path.join(root, "wiki");
+  const candidate = path.join(root, "candidate");
   await mkdir(staging, { recursive: true });
   await writeMd(staging, "page.md", page("Page"));
-  await mkdir(path.join(root, "wiki.next.123"), { recursive: true });
-  await mkdir(path.join(root, "wiki.prev.456"), { recursive: true });
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const effectKey = "publish:sweep:0:deadbeef";
+  const token = createHash("sha256").update(effectKey).digest("hex").slice(0, 16);
+  const nextPath = `${publication}.next.${token}`;
+  const prevPath = `${publication}.prev.${token}`;
+  await mkdir(nextPath, { recursive: true });
+  await mkdir(prevPath, { recursive: true });
+  await writeFile(path.join(nextPath, "stale.txt"), "x\n", "utf8");
+  await writeFile(path.join(prevPath, "stale.txt"), "y\n", "utf8");
 
-  await publishStagingToPublication({ stagingDir: staging, publicationPath: publication });
+  const expected = await capturePublicationBaseline(publication);
+  const applied = await applySealedPublicationCandidate({
+    candidateDir: candidate,
+    publicationPath: publication,
+    expectedLiveDigest: expected,
+    effectKey,
+  });
+  assert.equal(applied.status, "applied");
 
   const siblings = await readdir(root);
-  assert.ok(!siblings.includes("wiki.next.123"), "stale candidate should be swept");
-  assert.ok(!siblings.includes("wiki.prev.456"), "stale aside should be swept");
+  assert.ok(!siblings.includes(path.basename(nextPath)), "effect next residue should be swept");
+  assert.ok(!siblings.includes(path.basename(prevPath)), "effect prev residue should be swept");
 });
 
-test("publishStagingToPublication rejects overlapping staging and publication paths", async () => {
+test("materialize rejects overlapping wiki and publication paths", async () => {
   const root = await tempDir("okf-pub-overlap-");
   const staging = path.join(root, "staging");
   await mkdir(staging, { recursive: true });
@@ -210,92 +282,99 @@ test("publishStagingToPublication rejects overlapping staging and publication pa
 
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: staging,
+      materializePublicationCandidate({
+        wikiDir: staging,
+        candidateDir: path.join(root, "candidate"),
         publicationPath: path.join(staging, "wiki"),
       }),
     /must not overlap/,
   );
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: staging,
+      materializePublicationCandidate({
+        wikiDir: staging,
+        candidateDir: path.join(root, "candidate"),
         publicationPath: staging,
       }),
     /must not overlap/,
   );
 });
 
-test("publishStagingToPublication fails closed when another publisher holds the lock", async () => {
+test("publication lock fails closed when another publisher holds the lock", async () => {
   const root = await tempDir("okf-pub-lock-");
-  const staging = path.join(root, "staging");
   const publication = path.join(root, "wiki");
-  await mkdir(staging, { recursive: true });
-  await writeMd(staging, "page.md", page("Page"));
   // Simulate a concurrent publisher in another process holding the lock.
   await mkdir(`${publication}.publish-lock`, { recursive: true });
 
   await assert.rejects(
-    () => publishStagingToPublication({ stagingDir: staging, publicationPath: publication }),
+    () => capturePublicationBaseline(publication),
+    /lock directory is busy and not stale/,
+  );
+  await assert.rejects(
+    () => withPublicationLock(publication, async () => "never"),
     /lock directory is busy and not stale/,
   );
 });
 
-test("publishStagingToPublication rejects relative stagingDir", async () => {
+test("materialize rejects relative wikiDir", async () => {
   const root = await tempDir("okf-pub-rel-");
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: "relative/staging",
+      materializePublicationCandidate({
+        wikiDir: "relative/staging",
+        candidateDir: path.join(root, "candidate"),
         publicationPath: path.join(root, "wiki"),
       }),
     /absolute/,
   );
 });
 
-test("publishStagingToPublication rejects relative publicationPath", async () => {
+test("materialize rejects relative publicationPath", async () => {
   const root = await tempDir("okf-pub-rel2-");
   const staging = path.join(root, "staging");
   await mkdir(staging, { recursive: true });
   await writeMd(staging, "a.md", page("A"));
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: staging,
+      materializePublicationCandidate({
+        wikiDir: staging,
+        candidateDir: path.join(root, "candidate"),
         publicationPath: "relative/wiki",
       }),
     /absolute/,
   );
 });
 
-test("publishStagingToPublication rejects missing staging", async () => {
+test("materialize rejects missing wiki directory", async () => {
   const root = await tempDir("okf-pub-missing-");
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: path.join(root, "no-such"),
+      materializePublicationCandidate({
+        wikiDir: path.join(root, "no-such"),
+        candidateDir: path.join(root, "candidate"),
         publicationPath: path.join(root, "wiki"),
       }),
     /does not exist/,
   );
 });
 
-test("publishStagingToPublication rejects staging with no markdown", async () => {
+test("materialize rejects wiki with no markdown", async () => {
   const root = await tempDir("okf-pub-empty-");
   const staging = path.join(root, "staging");
   await mkdir(staging, { recursive: true });
   await writeFile(path.join(staging, "notes.txt"), "x\n");
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: staging,
+      materializePublicationCandidate({
+        wikiDir: staging,
+        candidateDir: path.join(root, "candidate"),
         publicationPath: path.join(root, "wiki"),
       }),
-    /no markdown/,
+    /no markdown|validation/i,
   );
 });
 
-test("publishStagingToPublication rejects symlink publicationPath", async () => {
+test("materialize rejects symlink publicationPath", async () => {
   const root = await tempDir("okf-pub-symlink-");
   const staging = path.join(root, "staging");
   const realTarget = path.join(root, "real-wiki");
@@ -318,8 +397,9 @@ test("publishStagingToPublication rejects symlink publicationPath", async () => 
 
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: staging,
+      materializePublicationCandidate({
+        wikiDir: staging,
+        candidateDir: path.join(root, "candidate"),
         publicationPath: publication,
       }),
     /symlink/,
@@ -331,19 +411,58 @@ test("assertNoSymlinkComponents accepts real directories", async () => {
   await assertNoSymlinkComponents(root, "root");
 });
 
-test("publishStagingToPublication rejects md without title frontmatter", async () => {
+test("materialize rejects md without title frontmatter", async () => {
   const root = await tempDir("okf-pub-fm-");
   const staging = path.join(root, "staging");
   await mkdir(staging, { recursive: true });
   await writeMd(staging, "bad.md", "# No frontmatter\n");
   await assert.rejects(
     () =>
-      publishStagingToPublication({
-        stagingDir: staging,
+      materializePublicationCandidate({
+        wikiDir: staging,
+        candidateDir: path.join(root, "candidate"),
         publicationPath: path.join(root, "wiki"),
       }),
     /validation|frontmatter|title/i,
   );
+});
+
+test("manifestPublicationTree is sort-stable, posix-relative, and symlink fail-closed", async () => {
+  const root = await tempDir("okf-pub-manifest-");
+  await writeMd(root, "z-last.md", page("Z"));
+  await writeMd(root, "a-first.md", page("A"));
+  await writeMd(root, "nested/b.md", page("B"));
+  await writeFile(path.join(root, "plain.txt"), "bytes\n", "utf8");
+
+  const first = await manifestPublicationTree(root);
+  const second = await manifestPublicationTree(root);
+  assert.deepEqual(first, second);
+  assert.equal(first.schema, 1);
+  // Visit order is readdir-sorted at each level → stable file list order.
+  assert.deepEqual(
+    first.files.map((f) => f.path),
+    ["a-first.md", "nested/b.md", "plain.txt", "z-last.md"],
+  );
+  for (const file of first.files) {
+    assert.equal(file.path.includes("\\"), false, `path must be posix-relative: ${file.path}`);
+    assert.equal(file.digest.length, 64);
+    assert.ok(file.size > 0);
+  }
+  assert.equal(await digestPublicationTree(root), await digestPublicationTree(root));
+  assert.equal(await digestPublicationTree(undefined), EMPTY_PUBLICATION_DIGEST);
+  assert.equal(await digestPublicationTree(path.join(root, "missing")), EMPTY_PUBLICATION_DIGEST);
+
+  // Symlink entry fails closed (does not follow).
+  const linkTarget = path.join(root, "plain.txt");
+  const linkPath = path.join(root, "link.txt");
+  try {
+    await symlink(linkTarget, linkPath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP") return;
+    throw error;
+  }
+  await assert.rejects(() => manifestPublicationTree(root), /non-ordinary entry|symlink/i);
 });
 
 test("capturePublicationBaseline returns EMPTY_PUBLICATION_DIGEST for missing live tree", async () => {
@@ -470,7 +589,7 @@ test("T5 reconcile: live sealed tree matches content-only candidateDigest", asyn
     candidateDir: candidate,
     publicationPath: publication,
   });
-  // WikiRuns seal adds a sidecar; effect identity is content-only.
+  // WikiRuns seals candidates with a sidecar; effect identity is content-only.
   const contentDigest = await digestPublicationTree(candidate);
   await writeFile(
     path.join(candidate, ".okf-artifact-manifest.json"),

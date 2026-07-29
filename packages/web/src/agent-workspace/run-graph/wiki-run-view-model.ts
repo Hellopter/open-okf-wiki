@@ -11,7 +11,6 @@ import type {
   GraphNodeKind,
   NodeAttempt,
   NodeAttemptStatus,
-  RunGraphSnapshot,
   WikiRunAttempt,
   WikiRunAttemptState,
   WikiRunGate,
@@ -149,32 +148,6 @@ export function projectWikiAttempt(attempt: WikiRunAttempt): NodeAttempt {
     ...(attempt.endedAt ? { endedAt: attempt.endedAt } : {}),
     ...(attempt.error ? { summary: attempt.error } : {}),
     ...(errorClass ? { errorClass } : {}),
-  };
-}
-
-/**
- * @deprecated Product UI must use wikiRunToViewModel only. Kept for unit tests
- * that assert the intermediate RunGraphSnapshot shape.
- *
- * Project durable WikiRuns nodes + attempts into the legacy RunGraphSnapshot
- * observation shape (not a product canvas input).
- */
-export function wikiRunSnapshotToRunGraph(snapshot: WikiRunSnapshot): RunGraphSnapshot {
-  const topology = snapshot.nodes.map((node) => ({
-    nodeKey: node.key,
-    kind: graphKindFor(node.kind),
-    label: labelFor(node),
-    ...(node.parentKey ? { parentKey: node.parentKey } : {}),
-  }));
-
-  const attempts = snapshot.attempts.map(projectWikiAttempt);
-  const playhead = playheadFromWikiAttempts(snapshot.attempts);
-
-  return {
-    topologyVersion: snapshot.revision,
-    topology,
-    attempts,
-    ...(playhead ? { playhead } : {}),
   };
 }
 

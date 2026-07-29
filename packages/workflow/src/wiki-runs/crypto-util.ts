@@ -3,7 +3,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import type { WikiRunArtifactKind } from "@okf-wiki/contract";
 
 export function now(): string {
@@ -12,12 +11,6 @@ export function now(): string {
 
 export function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-export async function fileDigest(file: string): Promise<string> {
-  return createHash("sha256")
-    .update(await readFile(file))
-    .digest("hex");
 }
 
 export function artifactId(
