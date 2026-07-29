@@ -1,98 +1,41 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { after, describe, it } from "node:test";
-import { defaultWikiRunSpec, WorkspaceConfigSchema } from "@okf-wiki/contract";
-import { registerRunRecord, runWorkDir } from "@okf-wiki/core";
-import { defaultSpecStore } from "../ports/core-spec-store.js";
-import { writeFixtureWiki } from "../produce/wiki-pages.js";
-import { createFixtureProduceRuntime } from "../runtime/produce-runtime.js";
-import { runWorkdirLayout } from "../runtime/workdir.js";
-import { layoutForExistingRun } from "../workflow/layout.js";
+import { describe, it } from "node:test";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract";
 import {
   createWikiRepairTool,
   WIKI_REPAIR_TOOL_NAME,
   type WikiRepairToolDetails,
 } from "./wiki-repair.js";
 
-const temps: string[] = [];
-after(async () => {
-  for (const t of temps) await rm(t, { recursive: true, force: true });
-});
-
-async function seedRun(
-  root: string,
-  runId: string,
-  recordStatus: "running" | "failed" | "published" = "failed",
-) {
-  const source = path.join(root, "source");
-  const skill = path.join(root, "skill");
-  await mkdir(source, { recursive: true });
-  await mkdir(skill, { recursive: true });
-  await writeFile(path.join(source, "README.md"), "# Src\n", "utf8");
-  await writeFile(path.join(skill, "SKILL.md"), "# Skill\n", "utf8");
-
-  const workspace = WorkspaceConfigSchema.parse({
+function workspace() {
+  return WorkspaceConfigSchema.parse({
     version: 1,
     id: "ws",
-    name: "Repair WS",
-    rootPath: root,
-    sources: [{ id: "main", path: source, applyDefaultIgnores: true, ignore: [] }],
-    skillPath: skill,
+    name: "X",
+    rootPath: "/tmp",
+    sources: [{ id: "main", path: "/tmp/s", applyDefaultIgnores: true, ignore: [] }],
+    skillPath: "/tmp/skill",
     model: { id: "openai/test" },
-    publicationPath: path.join(root, "out"),
+    publicationPath: "/tmp/out",
     limits: { requestTimeoutSeconds: 60, maxSteps: 8 },
     planConfirm: false,
     wikiLanguage: "en",
     createdAt: new Date().toISOString(),
   });
-
-  const work = runWorkDir(root, runId);
-  const mount = path.join(work, "sources", "main");
-  await mkdir(mount, { recursive: true });
-  await mkdir(path.join(work, "skill"), { recursive: true });
-  await mkdir(path.join(work, "wiki"), { recursive: true });
-  await mkdir(path.join(work, "analysis"), { recursive: true });
-  await writeFile(path.join(mount, "README.md"), "# Frozen\n", "utf8");
-  await writeFile(path.join(work, "skill", "SKILL.md"), "# Skill\n", "utf8");
-
-  await registerRunRecord(root, workspace.id, {
-    runId,
-    sessionId: "sess-1",
-    autoApprove: true,
-    skillPath: path.join(work, "skill"),
-    skillDigest: "a".repeat(64),
-    sources: [{ id: "main", revision: "b".repeat(40), effectiveIgnores: [] }],
-    status: recordStatus,
-  });
-  const spec = defaultWikiRunSpec(workspace.name);
-  await defaultSpecStore.commitSpec(root, runId, spec);
-  const layout = runWorkdirLayout(work, new Map([["main", mount]]));
-  await writeFixtureWiki(layout, "Repair WS");
-
-  return { workspace, layout, spec };
 }
+
+type ExecuteRepair = (
+  toolCallId: string,
+  input: { runId: string; notes?: string; nodeKey?: string },
+  signal?: AbortSignal,
+  onUpdate?: (u: { details?: WikiRepairToolDetails }) => void,
+) => Promise<{ details: WikiRepairToolDetails; content: unknown[]; isError?: boolean }>;
 
 describe("wiki_repair tool", () => {
   it("factory registers wiki_repair name and guidelines", () => {
     const tool = createWikiRepairTool({
-      workspace: WorkspaceConfigSchema.parse({
-        version: 1,
-        id: "ws",
-        name: "X",
-        rootPath: "/tmp",
-        sources: [{ id: "main", path: "/tmp/s", applyDefaultIgnores: true, ignore: [] }],
-        skillPath: "/tmp/skill",
-        model: { id: "openai/test" },
-        publicationPath: "/tmp/out",
-        limits: { requestTimeoutSeconds: 60, maxSteps: 8 },
-        planConfirm: false,
-        wikiLanguage: "en",
-        createdAt: new Date().toISOString(),
-      }),
+      workspace: workspace(),
       sessionId: "s",
-      fixture: true,
     });
     assert.equal(tool.name, WIKI_REPAIR_TOOL_NAME);
     assert.ok(
@@ -101,109 +44,72 @@ describe("wiki_repair tool", () => {
     );
   });
 
-  it("execute repairs existing run staging with fixture runtime", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-"));
-    temps.push(root);
-    const runId = "run-repair-1";
-    const { workspace } = await seedRun(root, runId);
-
+  it("fails closed when RerunNode dispatch is not wired", async () => {
     const tool = createWikiRepairTool({
-      workspace,
+      workspace: workspace(),
       sessionId: "sess-1",
-      fixture: true,
-      runtime: createFixtureProduceRuntime(),
     });
-
-    type ExecuteRepair = (
-      toolCallId: string,
-      input: { runId: string; notes?: string },
-      signal?: AbortSignal,
-      onUpdate?: (u: { details?: WikiRepairToolDetails }) => void,
-    ) => Promise<{ details: WikiRepairToolDetails; content: unknown[] }>;
     const execute = tool.execute as unknown as ExecuteRepair;
-    const result = await execute("tc-1", { runId, notes: "fix overview grounding" });
-
-    assert.equal(result.details.status, "repaired");
-    assert.equal(result.details.runId, runId);
-    assert.ok((result.details.pages?.length ?? 0) >= 1);
-    assert.match(String(result.details.summary), /fixture|Repair|wrote|pages/i);
+    const result = await execute("tc-1", { runId: "run-1" });
+    assert.equal(result.details.status, "failed");
+    assert.match(String(result.details.summary), /RerunNode|Run API/i);
   });
 
-  it("execute fails when runId missing on disk", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-miss-"));
-    temps.push(root);
-    const { workspace } = await seedRun(root, "run-exists");
-
+  it("dispatches RerunNode via injected port and returns accepted receipt", async () => {
+    const calls: Array<Record<string, unknown>> = [];
     const tool = createWikiRepairTool({
-      workspace,
+      workspace: workspace(),
       sessionId: "sess-1",
-      fixture: true,
-      runtime: createFixtureProduceRuntime(),
+      resolveRepairTarget: async () => ({ nodeKey: "write.root", generation: 2 }),
+      rerunWikiNode: async (input) => {
+        calls.push(input);
+        return {
+          commandId: input.commandId,
+          runId: input.runId,
+          revision: 9,
+          accepted: true,
+        };
+      },
     });
-
-    type ExecuteRepair = (
-      toolCallId: string,
-      input: { runId: string; notes?: string },
-    ) => Promise<{ details: WikiRepairToolDetails }>;
     const execute = tool.execute as unknown as ExecuteRepair;
-    const result = await execute("tc-2", { runId: "no-such-run" });
-    assert.equal(result.details.status, "failed");
-    assert.match(String(result.details.summary), /not found/i);
+    const result = await execute("tc-2", { runId: "run-repair", notes: "fix citations" });
+    assert.equal(result.details.status, "accepted");
+    assert.equal(result.details.runId, "run-repair");
+    assert.equal(result.details.nodeKey, "write.root");
+    assert.equal(result.details.generation, 2);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.runId, "run-repair");
+    assert.equal(calls[0]?.feedback, "fix citations");
+    assert.equal(calls[0]?.generation, 2);
   });
 
-  it("execute rejects a run owned by another Operator Session", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-owner-"));
-    temps.push(root);
-    const runId = "run-owned";
-    const { workspace } = await seedRun(root, runId);
-
+  it("fails when resolveRepairTarget returns null", async () => {
     const tool = createWikiRepairTool({
-      workspace,
-      sessionId: "sess-other",
-      fixture: true,
-      runtime: createFixtureProduceRuntime(),
-    });
-
-    type ExecuteRepair = (
-      toolCallId: string,
-      input: { runId: string; notes?: string },
-    ) => Promise<{ details: WikiRepairToolDetails }>;
-    const execute = tool.execute as unknown as ExecuteRepair;
-    const result = await execute("tc-owner", { runId });
-    assert.equal(result.details.status, "failed");
-    assert.match(String(result.details.summary), /belongs to Operator Session/i);
-  });
-
-  it("execute rejects a still-active run (pending gates own the staging tree)", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-active-"));
-    temps.push(root);
-    const runId = "run-active";
-    const { workspace } = await seedRun(root, runId, "running");
-
-    const tool = createWikiRepairTool({
-      workspace,
+      workspace: workspace(),
       sessionId: "sess-1",
-      fixture: true,
-      runtime: createFixtureProduceRuntime(),
+      resolveRepairTarget: async () => null,
+      rerunWikiNode: async () => {
+        throw new Error("should not dispatch");
+      },
     });
-
-    type ExecuteRepair = (
-      toolCallId: string,
-      input: { runId: string; notes?: string },
-    ) => Promise<{ details: WikiRepairToolDetails }>;
     const execute = tool.execute as unknown as ExecuteRepair;
-    const result = await execute("tc-active", { runId });
+    const result = await execute("tc-3", { runId: "missing" });
     assert.equal(result.details.status, "failed");
-    assert.match(String(result.details.summary), /still active/i);
+    assert.match(String(result.details.summary), /No rerunnable node/i);
   });
 
-  it("layoutForExistingRun rebuilds mounts", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "okf-repair-layout-"));
-    temps.push(root);
-    const runId = "run-layout";
-    await seedRun(root, runId);
-    const layout = await layoutForExistingRun(root, runId);
-    assert.ok(layout.sourceMounts.has("main"));
-    assert.equal(layout.wikiDir, path.join(runWorkDir(root, runId), "wiki"));
+  it("surfaces dispatch errors as failed", async () => {
+    const tool = createWikiRepairTool({
+      workspace: workspace(),
+      sessionId: "sess-1",
+      resolveRepairTarget: async () => ({ nodeKey: "write.root", generation: 0 }),
+      rerunWikiNode: async () => {
+        throw new Error("generation is not current");
+      },
+    });
+    const execute = tool.execute as unknown as ExecuteRepair;
+    const result = await execute("tc-4", { runId: "run-stale" });
+    assert.equal(result.details.status, "failed");
+    assert.match(String(result.details.summary), /generation is not current/i);
   });
 });

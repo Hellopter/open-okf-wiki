@@ -1,15 +1,17 @@
 /**
- * Read-only Wiki Run projection for the Agent Workspace.
+ * Agent Workspace run list — slim WikiRuns projection (ADR 0035).
  *
- * Wiki Run mutation belongs to the Operator Session's real Pi wiki_produce
- * tool. The server intentionally exposes no independent Run command surface.
+ * Durable Run commands / SSE live on wiki-runs routes. This handler only lists
+ * `{ runId, state, updatedAt, revision }` from the SQLite control plane.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listRuns, loadRunGraph } from "@okf-wiki/core";
+import { redactErrorMessage } from "@okf-wiki/agent";
+import { WorkflowInUseError } from "@okf-wiki/workflow";
 import { sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
+import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
-/** Agent Workspace read model; old/pre-v2 Run Records are filtered by Core. */
+/** Agent Workspace read model: one row per durable WikiRun. */
 export async function handleListRuns(
   _req: IncomingMessage,
   res: ServerResponse,
@@ -18,36 +20,11 @@ export async function handleListRuns(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id, url);
   if (!workspace) return;
-  const runs = await listRuns(workspace.rootPath);
-  sendJson(res, 200, { workspaceId: workspace.id, runs });
-}
-
-/**
- * GET durable Run Graph for one run (analysis/run-graph.json).
- * Read-only observation model — not a command surface.
- */
-export async function handleGetRunGraph(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  workspaceId: string,
-  runId: string,
-  url: URL,
-): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, workspaceId, url);
-  if (!workspace) return;
-  const safeRunId = runId.trim();
-  if (!safeRunId) {
-    sendError(res, 400, "runId is required");
-    return;
+  try {
+    const runs = await (await wikiRunsForWorkspace(workspace)).list();
+    sendJson(res, 200, { workspaceId: workspace.id, runs });
+  } catch (error) {
+    const status = error instanceof WorkflowInUseError ? 409 : 500;
+    sendError(res, status, redactErrorMessage(error));
   }
-  const graph = await loadRunGraph(workspace.rootPath, safeRunId);
-  if (!graph) {
-    sendError(res, 404, "run graph not found: " + safeRunId);
-    return;
-  }
-  sendJson(res, 200, {
-    workspaceId: workspace.id,
-    runId: safeRunId,
-    graph,
-  });
 }

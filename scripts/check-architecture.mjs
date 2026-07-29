@@ -40,13 +40,16 @@ const removedModulePaths = [
   /\/WorkspaceRunPage\./,
   /\/agent\/src\/(?:wiki-run|shell\/wiki-run-shell)\./,
   /\/session-run-transition\./,
-  /\/server\/src\/(?:run-events|wiki-run-job)\./,
   /\/server\/src\/session\/product-inject\./,
   /\/agent\/src\/pi\//,
   /\/agent\/src\/produce\/produce-wiki\./,
   /\/agent\/src\/produce\/wiki-produce-tool\./,
   /\/agent\/src\/produce\/submit-wiki-run-spec-tool\./,
   /\/agent\/src\/produce\/tools\/(?:parent-wiki-produce-tool|wiki-produce-progress)\./,
+  /\/agent\/src\/workflow\/(?:run-wiki|gate-protocol|run-phase-writer|repair-guarded|run-graph-owner|journal|produce)\./,
+  /\/agent\/src\/ports\/(?:graph-store|core-graph-store)\./,
+  /\/core\/src\/(?:run-store|run-graph)\./,
+  /\/agent\/src\/tools\/wiki-produce-details\./,
   /\/contract\/src\/(?:events|gate-ui|interaction|session)\./,
   /\/web\/src\/agent-workspace\/(?:components\/(?:ProduceTrail|ProduceUnitCard)|hooks\/project\/produce|panels\/AgentTree)\./,
 ];
@@ -58,14 +61,7 @@ for (const file of sourceFiles) {
 }
 
 const forbiddenSourceRules = [
-  [
-    "independent Wiki Run surface",
-    /\b(?:WorkspaceRunPage|WikiRunShell|startWikiRun|resumeWikiRun|start_wiki_run)\b/,
-  ],
-  [
-    "mutable Wiki Run HTTP route",
-    /\b(?:handleCreateRun|handleRetryRun|handleApprovePlan|handleDenyPlan|handleRevisePlan|handleApprovePublication|handleDenyPublication|handleCancelRun|handleRunEvents)\b|\/runs\/[^"]*\/(?:retry|approve-plan|deny-plan|revise-plan|approve-publication|deny-publication|cancel|events)/,
-  ],
+  ["removed WikiRunShell compatibility surface", /\b(?:WorkspaceRunPage|WikiRunShell)\b/],
   [
     "product-injected event channel",
     /\b(?:PRODUCT_INJECT_KINDS|ProductSseEvent|ProductAgentEvent|ProductInjectTarget|assertProductInject|emitProductAgentEvent|injectProductEvent|getRecentAgentSessionEvents)\b|source\s*:\s*["']product["']/,
@@ -91,13 +87,31 @@ const forbiddenSourceRules = [
     "removed Run Graph predecessor (children spans)",
     /\b(?:WikiProduceChildSpan|WikiProduceChildItem|WikiProduceChildSpanSchema|WikiProduceChildItemSchema)\b/,
   ],
+  [
+    "memory HITL / long runWiki produce ownership (T2/T7 hard-cut)",
+    /\b(?:resume_gate|pendingGates|runWiki\s*\(|WikiRunShell|gate-protocol|GatePort|createRunPhaseController|repairWikiGuarded|createToolDetailsAccumulator|createRunGraphOwner|AttemptJournal|freezeWikiRun\s*\()/,
+  ],
+  [
+    "WikiRunPhase as scheduler truth (T7 — WikiRuns owns control)",
+    /\b(?:WikiRunPhaseSchema|assertPhaseTransition|isPhaseTransitionAllowed|recordStatusFromPhase|toolStatusFromPhase|phaseAllowsCancel|phaseGate)\b/,
+  ],
+  [
+    "legacy dual-path Run surfaces (hard-cut)",
+    /\b(?:registerRunRecord|handleGetRunGraph|produceWiki\s*\(|repairWiki\s*\(|createCoreGraphStore|loadRunGraph|writeRunGraph|updateRunRecord)\b/,
+  ],
 ];
 
 const allowedProductDependencies = {
   "@okf-wiki/contract": new Set(),
   "@okf-wiki/core": new Set(["@okf-wiki/contract", "@okf-wiki/skill"]),
+  "@okf-wiki/workflow": new Set(["@okf-wiki/contract", "@okf-wiki/core"]),
   "@okf-wiki/agent": new Set(["@okf-wiki/contract", "@okf-wiki/core"]),
-  "@okf-wiki/server": new Set(["@okf-wiki/agent", "@okf-wiki/contract", "@okf-wiki/core"]),
+  "@okf-wiki/server": new Set([
+    "@okf-wiki/agent",
+    "@okf-wiki/contract",
+    "@okf-wiki/core",
+    "@okf-wiki/workflow",
+  ]),
   "@okf-wiki/web": new Set(["@okf-wiki/contract"]),
   "@okf-wiki/skill": new Set(),
 };
@@ -121,7 +135,6 @@ const forTestsDefinitionAllowlist = [
   /\/agent-session-registry\.ts$/,
   /\/agent-session\/test-seams\.ts$/,
   /\/agent-session-events\.ts$/,
-  /\/run-boundary\.ts$/,
   /\/operator-session-test-seams\.ts$/,
   /\/agent\/src\/testing\.ts$/,
 ];
@@ -242,6 +255,7 @@ for (const file of filesUnder("packages/agent/src/workflow").filter(
 const packageDirToName = {
   "packages/contract": "@okf-wiki/contract",
   "packages/core": "@okf-wiki/core",
+  "packages/workflow": "@okf-wiki/workflow",
   "packages/agent": "@okf-wiki/agent",
   "packages/server": "@okf-wiki/server",
   "packages/web": "@okf-wiki/web",

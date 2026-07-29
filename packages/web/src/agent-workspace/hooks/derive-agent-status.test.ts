@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createPiStreamState } from "./project/pi.ts";
 import { clearErrorFromState, deriveAgentStatus } from "./derive-agent-status.ts";
+import { createPiStreamState } from "./project/pi.ts";
 
 describe("deriveAgentStatus", () => {
   it("returns projected error regardless of sending", () => {

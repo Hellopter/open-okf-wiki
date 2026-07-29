@@ -99,6 +99,9 @@ describe("role-model", () => {
     assert.equal(modelRefForRole(ws, "reviewer", { seatIndex: 0 }).profileId, "r1");
     assert.equal(modelRefForRole(ws, "reviewer", { seatIndex: 1 }).profileId, "r2");
     assert.equal(modelRefForRole(ws, "reviewer", { seatIndex: 2 }).profileId, "r1");
-    assert.equal(resolveModelSelection({ workspace: ws, role: "reviewer", seatIndex: 1 }).profileId, "r2");
+    assert.equal(
+      resolveModelSelection({ workspace: ws, role: "reviewer", seatIndex: 1 }).profileId,
+      "r2",
+    );
   });
 });

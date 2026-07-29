@@ -60,13 +60,7 @@ async function guardedFsOp<T>(
   opts: Pick<WikiToolOperationsOptions, "sourceIgnores" | "denyPrefixes">,
   fn: (safePath: string) => Promise<T>,
 ): Promise<T> {
-  const safePath = await guardAbs(
-    runWorkDir,
-    absPath,
-    mode,
-    opts.sourceIgnores,
-    opts.denyPrefixes,
-  );
+  const safePath = await guardAbs(runWorkDir, absPath, mode, opts.sourceIgnores, opts.denyPrefixes);
   return fn(safePath);
 }
 
@@ -119,9 +113,7 @@ export function createWikiReadOperations(options: WikiToolOperationsOptions): Re
   const opts = { sourceIgnores, denyPrefixes };
   return {
     async readFile(absolutePath) {
-      return guardedFsOp(runWorkDir, absolutePath, "read", opts, (safePath) =>
-        readFile(safePath),
-      );
+      return guardedFsOp(runWorkDir, absolutePath, "read", opts, (safePath) => readFile(safePath));
     },
     async access(absolutePath) {
       await guardedFsOp(runWorkDir, absolutePath, "read", opts, async (safePath) => {
@@ -156,9 +148,7 @@ export function createWikiEditOperations(options: WikiToolOperationsOptions): Ed
   return {
     async readFile(absolutePath) {
       // edit only targets files that may be written
-      return guardedFsOp(runWorkDir, absolutePath, "write", opts, (safePath) =>
-        readFile(safePath),
-      );
+      return guardedFsOp(runWorkDir, absolutePath, "write", opts, (safePath) => readFile(safePath));
     },
     async writeFile(absolutePath, content) {
       await guardedFsOp(runWorkDir, absolutePath, "write", opts, async (safePath) => {

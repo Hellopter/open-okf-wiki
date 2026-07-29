@@ -7,8 +7,8 @@ import { describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
   consumeRepairBudget,
-  runBoundedRepairLoop,
   type RepairScore,
+  runBoundedRepairLoop,
 } from "./bounded-repair-loop.js";
 import type { ProduceWikiResult } from "./types.js";
 

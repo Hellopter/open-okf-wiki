@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { redactErrorMessage } from "@okf-wiki/agent";
 import {
   SourceAddSchema,
   SourceCloneSchema,
@@ -8,7 +9,6 @@ import {
   WorkspaceCreateSchema,
   WorkspacePatchSchema,
 } from "@okf-wiki/contract";
-import { redactErrorMessage } from "@okf-wiki/agent";
 import {
   addSource,
   applyWorkspacePatch,
@@ -271,13 +271,6 @@ export async function handleProbeSources(
   );
   sendJson(res, 200, { workspaceId: workspace.id, probes });
 }
-
-/**
- * Persist a status change and emit matching SSE events.
- * When status is terminal, also emits a `done` event so streams close.
- * Does not overwrite an already-cancelled record (cancel wins races);
- * `updateRunRecord` enforces this under concurrent cancel/finalize.
- */
 
 export async function handleCloneSource(
   req: IncomingMessage,

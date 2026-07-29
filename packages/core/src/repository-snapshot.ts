@@ -19,11 +19,13 @@ export async function materializeRepositorySnapshot(
     revision: string;
     destination: string;
     effectiveIgnores: readonly string[];
+    signal?: AbortSignal;
   },
   runner: GitRunner = createDefaultGitRunner(),
 ): Promise<void> {
   const repositoryPath = path.resolve(input.repositoryPath);
   const destination = path.resolve(input.destination);
+  input.signal?.throwIfAborted();
 
   await mkdir(path.dirname(destination), { recursive: true });
   await mkdir(destination);
@@ -33,7 +35,10 @@ export async function materializeRepositorySnapshot(
     indexDir = await mkdtemp(path.join(os.tmpdir(), "okf-snapshot-index-"));
     const indexPath = path.join(indexDir, "index");
     const env = { GIT_INDEX_FILE: indexPath };
-    const readTree = await runner(repositoryPath, ["read-tree", input.revision], { env });
+    const readTree = await runner(repositoryPath, ["read-tree", input.revision], {
+      env,
+      signal: input.signal,
+    });
     if (readTree.code !== 0) {
       throw new Error(`git read-tree failed: ${readTree.stderr || readTree.stdout}`);
     }
@@ -42,14 +47,15 @@ export async function materializeRepositorySnapshot(
     const checkout = await runner(
       repositoryPath,
       ["-c", "core.symlinks=false", "checkout-index", "--all", "--force", `--prefix=${prefix}`],
-      { env },
+      { env, signal: input.signal },
     );
     if (checkout.code !== 0) {
       throw new Error(`git checkout-index failed: ${checkout.stderr || checkout.stdout}`);
     }
-    await removeIgnoredEntries(destination, "", input.effectiveIgnores);
-    await assertOrdinaryTree(destination, "snapshot");
-    await makeTreeReadOnly(destination);
+    await removeIgnoredEntries(destination, "", input.effectiveIgnores, input.signal);
+    input.signal?.throwIfAborted();
+    await assertOrdinaryTree(destination, "snapshot", input.signal);
+    await makeTreeReadOnly(destination, input.signal);
   } catch (error) {
     await cleanupWritableTree(destination);
     throw error;
@@ -64,9 +70,12 @@ async function removeIgnoredEntries(
   directory: string,
   relativeDirectory: string,
   patterns: readonly string[],
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
+    signal?.throwIfAborted();
     const absolutePath = path.join(directory, entry.name);
     const info = await lstat(absolutePath);
     if (entryMatchesIgnore(relativeDirectory, entry.name, info.isDirectory(), patterns)) {
@@ -79,7 +88,7 @@ async function removeIgnoredEntries(
     }
     if (info.isDirectory()) {
       const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
-      await removeIgnoredEntries(absolutePath, relativePath, patterns);
+      await removeIgnoredEntries(absolutePath, relativePath, patterns, signal);
     }
   }
 }

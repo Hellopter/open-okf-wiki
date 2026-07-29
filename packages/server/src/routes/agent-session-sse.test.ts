@@ -72,9 +72,12 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
     sessionId,
     wikiProduce: {
       fixture: true,
-      gateCoordinator: {
-        waitForDecision: async () => ({ action: "deny" as const }),
-      },
+      startWikiRun: async () => ({
+        commandId: "cmd-sse",
+        runId: "run-sse",
+        revision: 1,
+        accepted: true,
+      }),
     },
   });
   handle.session.setSessionName("Durable Pi Session");
@@ -260,17 +263,6 @@ test("SSE snapshots precede queued live events and include the genuine active to
           summary: "Awaiting WikiRunSpec approval",
         },
       }),
-      getPendingGate: () => ({
-        request: {
-          toolCallId: "tool-live-1",
-          runId: "run-live-1",
-          gate: "plan" as const,
-          spec,
-          pages: [],
-        },
-        resolve: () => undefined,
-        reject: () => undefined,
-      }),
     });
   });
   const abort = new AbortController();
@@ -353,17 +345,14 @@ test("SSE snapshots precede queued live events and include the genuine active to
       kind?: string;
       payload?: {
         activeTool?: { toolCallId?: string; details?: { status?: string } };
-        pendingGate?: { toolCallId?: string; runId?: string; gate?: string };
+        pendingGate?: unknown;
       };
     };
     assert.equal(snapshot.kind, "snapshot");
     assert.equal(snapshot.payload?.activeTool?.toolCallId, "tool-live-1");
     assert.equal(snapshot.payload?.activeTool?.details?.status, "awaiting_plan");
-    assert.deepEqual(snapshot.payload?.pendingGate, {
-      toolCallId: "tool-live-1",
-      runId: "run-live-1",
-      gate: "plan",
-    });
+    // T2: Session SSE no longer carries memory pendingGate; gates are WikiRuns ResolveGate.
+    assert.equal(snapshot.payload?.pendingGate, undefined);
     assert.deepEqual(await nextSseData(reader, state), streamEvent);
     await reader.cancel();
   } finally {

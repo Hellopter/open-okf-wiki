@@ -5,22 +5,21 @@
  */
 
 export {
-  type SourceCitation,
-  SOURCE_CITATION_RE,
-  parseSourceCitations,
-  validateCitationFormat,
-} from "./citations-parse.js";
-
-export {
   type CanonicalizeCitationOptions,
   type CanonicalizeCitationResult,
   type CanonicalizeWikiTreeResult,
-  type SourceRootMap,
   canonicalizeCitationInContent,
   canonicalizeCitationTarget,
   canonicalizeWikiTreeCitations,
   formatRepoCitation,
   resolveCitationFile,
+  type SourceRootMap,
   sourceRootMapFromSources,
   validateCitationResolve,
 } from "./citations-canonicalize.js";
+export {
+  parseSourceCitations,
+  SOURCE_CITATION_RE,
+  type SourceCitation,
+  validateCitationFormat,
+} from "./citations-parse.js";

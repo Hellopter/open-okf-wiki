@@ -11,7 +11,7 @@ import { getWorkspace, type WorkspaceConfig } from "../api";
 import { LoadingState } from "../components/LoadingState";
 import { useI18n } from "../i18n";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
-import { WorkspaceSettingsPage, type SettingsSection } from "./WorkspaceSettingsPage";
+import { type SettingsSection, WorkspaceSettingsPage } from "./WorkspaceSettingsPage";
 import { WorkspaceSourcesPage } from "./WorkspaceSourcesPage";
 
 type Section = "sources" | SettingsSection;

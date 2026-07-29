@@ -10,6 +10,7 @@
  */
 
 import type { AttemptItem, NodeAttempt } from "@okf-wiki/contract";
+import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -38,6 +39,8 @@ export type NodeAttemptDialogProps = {
   attempt: NodeAttempt | null | undefined;
   relatedAttempts?: NodeAttempt[];
   onSelectAttempt?: (attemptId: string) => void;
+  /** Optional action row (RetryFailedNode / RerunNode) under the scroll body. */
+  footer?: ReactNode;
 };
 
 /**
@@ -121,6 +124,7 @@ export function NodeAttemptDialog({
   attempt,
   relatedAttempts = [],
   onSelectAttempt,
+  footer,
 }: NodeAttemptDialogProps) {
   const { t } = useI18n();
   const rounds = relatedAttempts.length > 0 ? relatedAttempts : attempt ? [attempt] : [];
@@ -277,6 +281,8 @@ export function NodeAttemptDialog({
             )}
           </div>
         </div>
+
+        {footer ?? null}
       </DialogContent>
     </Dialog>
   );

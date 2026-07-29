@@ -164,8 +164,7 @@ export const zh: MessageTree = {
     maxDomainFanOut: "最大 Domain 数",
     maxLeafFanOut: "每 Domain 最大 Leaf 数",
     planScoutCount: "规划侦察数",
-    planScoutCountHint:
-      "Spec 合成前的并行只读侦察（入口 / 布局 / 测试 / 风险）。0 = 仅单规划器。",
+    planScoutCountHint: "Spec 合成前的并行只读侦察（入口 / 布局 / 测试 / 风险）。0 = 仅单规划器。",
     reviewCouncilSize: "审查委员会规模",
     reviewCouncilSizeHint:
       "独立审查视角（grounding / coverage / consistency …）。默认 3 席多视角；1 最省。",
@@ -502,7 +501,7 @@ export const zh: MessageTree = {
     runsEmpty: "此工作区尚无 Wiki Run。",
     emptyTitle: "从这里开始",
     emptyDescription:
-      "向智能体发消息。需要生成 Wiki 时，智能体会调用 wiki_produce，真实工具生命周期会显示在这里。",
+      "向智能体发消息。需要生成 Wiki 时，智能体会调用 wiki_produce（StartRun 回执）；实时 Run 状态与门闸由耐久控制面负责。",
     placeholder: "给智能体发消息…（Enter 发送，Shift+Enter 换行）",
     composerLabel: "给智能体发消息",
     composerRequired: "发送前请输入消息。",
@@ -540,5 +539,12 @@ export const zh: MessageTree = {
       publish: "发布",
       other: "其他",
     },
+    /** wiki_produce accepted+runId 后的 durable WikiRuns 交接。 */
+    wikiRunAcceptedHint:
+      "Durable Wiki Run 已接受。实时状态、计划/发布门闸与重试来自 Run 控制面（ResolveGate / RetryFailedNode），而非 Session 工具 Promise。",
+    openGates: "打开的门闸",
+    failedNodes: "失败节点",
+    retryFailedNode: "重试",
+    rerunNode: "重跑",
   },
 };

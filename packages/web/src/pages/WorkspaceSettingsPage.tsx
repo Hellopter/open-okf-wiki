@@ -1,3 +1,4 @@
+import { DEFAULT_OPERATOR_TOOLS, type OperatorToolName } from "@okf-wiki/contract";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -22,7 +23,6 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { DEFAULT_OPERATOR_TOOLS, type OperatorToolName } from "@okf-wiki/contract";
 import {
   createWorkspaceSkillFork,
   deleteWorkspace,
@@ -372,535 +372,535 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         <div className="w-full max-w-3xl">
           {section === "general" ? (
             <div className="flex flex-col gap-6">
-            <Card>
-              <CardContent className="flex flex-col gap-6">
-                <form className="max-w-xl" onSubmit={(e) => void handleSubmit(e)}>
-                  <FieldGroup>
-                    <Field>
-                      <FieldLabel htmlFor="settings-name">{t.settings.name}</FieldLabel>
-                      <Input
-                        id="settings-name"
-                        type="text"
-                        value={name}
-                        onChange={(e) => {
-                          setName(e.target.value);
+              <Card>
+                <CardContent className="flex flex-col gap-6">
+                  <form className="max-w-xl" onSubmit={(e) => void handleSubmit(e)}>
+                    <FieldGroup>
+                      <Field>
+                        <FieldLabel htmlFor="settings-name">{t.settings.name}</FieldLabel>
+                        <Input
+                          id="settings-name"
+                          type="text"
+                          value={name}
+                          onChange={(e) => {
+                            setName(e.target.value);
+                          }}
+                          required
+                          maxLength={120}
+                          data-testid="settings-name-input"
+                        />
+                      </Field>
+
+                      <ModelSelect
+                        models={models}
+                        value={modelProfileId}
+                        onChange={(next) => {
+                          setModelProfileId(next);
                         }}
-                        required
-                        maxLength={120}
-                        data-testid="settings-name-input"
+                        defaultModelProfileId={defaultModelProfileId}
+                        required={models.length > 0}
+                        data-testid="settings-model-select"
                       />
-                    </Field>
-
-                    <ModelSelect
-                      models={models}
-                      value={modelProfileId}
-                      onChange={(next) => {
-                        setModelProfileId(next);
-                      }}
-                      defaultModelProfileId={defaultModelProfileId}
-                      required={models.length > 0}
-                      data-testid="settings-model-select"
-                    />
-                    {/* Keep a stable test id for e2e that assert selection */}
-                    <input
-                      type="hidden"
-                      data-testid="settings-model-input"
-                      value={selectedModel?.modelId ?? orphanModelId ?? ""}
-                      readOnly
-                    />
-                    {orphanModelId ? (
-                      <p className="muted small" data-testid="settings-model-orphan">
-                        {formatMessage(t.settings.orphanModel, { id: orphanModelId })}
-                      </p>
-                    ) : null}
-
-                    <Field>
-                      <FieldLabel htmlFor="settings-publication">
-                        {t.settings.publicationPath}
-                      </FieldLabel>
-                      <Input
-                        id="settings-publication"
-                        type="text"
-                        value={publicationPath}
-                        onChange={(e) => {
-                          setPublicationPath(e.target.value);
-                        }}
-                        placeholder="D:/src/app/wiki"
-                        required
-                        className="font-mono"
+                      {/* Keep a stable test id for e2e that assert selection */}
+                      <input
+                        type="hidden"
+                        data-testid="settings-model-input"
+                        value={selectedModel?.modelId ?? orphanModelId ?? ""}
+                        readOnly
                       />
-                    </Field>
+                      {orphanModelId ? (
+                        <p className="muted small" data-testid="settings-model-orphan">
+                          {formatMessage(t.settings.orphanModel, { id: orphanModelId })}
+                        </p>
+                      ) : null}
 
-                    <Field>
-                      <FieldLabel htmlFor="settings-wiki-language">
-                        {t.settings.wikiLanguage}
-                      </FieldLabel>
-                      <Select
-                        value={wikiLanguage}
-                        onValueChange={(next) => {
-                          if (next === "en" || next === "zh") {
-                            setWikiLanguage(next);
-                          }
-                        }}
-                        items={[
-                          { value: "en", label: t.settings.langEn },
-                          { value: "zh", label: t.settings.langZh },
-                        ]}
-                      >
-                        <SelectTrigger
-                          id="settings-wiki-language"
-                          className="w-full max-w-xs"
-                          data-testid="settings-wiki-language"
-                          data-value={wikiLanguage}
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value="en">{t.settings.langEn}</SelectItem>
-                            <SelectItem value="zh">{t.settings.langZh}</SelectItem>
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FieldDescription>{t.settings.wikiLanguageHint}</FieldDescription>
-                    </Field>
-
-                    <Field orientation="horizontal">
-                      <FieldContent>
-                        <FieldLabel htmlFor="settings-plan-confirm">
-                          {t.settings.planConfirm}
+                      <Field>
+                        <FieldLabel htmlFor="settings-publication">
+                          {t.settings.publicationPath}
                         </FieldLabel>
-                        <FieldDescription>{t.settings.planConfirmHint}</FieldDescription>
-                      </FieldContent>
-                      <Switch
-                        id="settings-plan-confirm"
-                        checked={planConfirm}
-                        onCheckedChange={(checked) => {
-                          setPlanConfirm(checked);
-                        }}
-                        data-testid="settings-plan-confirm"
-                      />
-                    </Field>
+                        <Input
+                          id="settings-publication"
+                          type="text"
+                          value={publicationPath}
+                          onChange={(e) => {
+                            setPublicationPath(e.target.value);
+                          }}
+                          placeholder="D:/src/app/wiki"
+                          required
+                          className="font-mono"
+                        />
+                      </Field>
 
-                    <Field>
-                      <FieldLabel>Operator tools</FieldLabel>
-                      <FieldDescription>
-                        Tools available to the chat agent. File tools are read-only and cannot
-                        touch product meta; bash runs unrestricted shell commands in the
-                        workspace — enable it only for workspaces you fully trust.
-                      </FieldDescription>
-                      <div className="flex flex-wrap gap-4" data-testid="settings-operator-tools">
-                        {(["read", "grep", "find", "ls", "bash"] as OperatorToolName[]).map(
-                          (tool) => (
-                            <label
-                              key={tool}
-                              className="flex items-center gap-1.5 text-sm"
-                              data-testid={`settings-operator-tool-${tool}`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={operatorTools.includes(tool)}
+                      <Field>
+                        <FieldLabel htmlFor="settings-wiki-language">
+                          {t.settings.wikiLanguage}
+                        </FieldLabel>
+                        <Select
+                          value={wikiLanguage}
+                          onValueChange={(next) => {
+                            if (next === "en" || next === "zh") {
+                              setWikiLanguage(next);
+                            }
+                          }}
+                          items={[
+                            { value: "en", label: t.settings.langEn },
+                            { value: "zh", label: t.settings.langZh },
+                          ]}
+                        >
+                          <SelectTrigger
+                            id="settings-wiki-language"
+                            className="w-full max-w-xs"
+                            data-testid="settings-wiki-language"
+                            data-value={wikiLanguage}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="en">{t.settings.langEn}</SelectItem>
+                              <SelectItem value="zh">{t.settings.langZh}</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FieldDescription>{t.settings.wikiLanguageHint}</FieldDescription>
+                      </Field>
+
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldLabel htmlFor="settings-plan-confirm">
+                            {t.settings.planConfirm}
+                          </FieldLabel>
+                          <FieldDescription>{t.settings.planConfirmHint}</FieldDescription>
+                        </FieldContent>
+                        <Switch
+                          id="settings-plan-confirm"
+                          checked={planConfirm}
+                          onCheckedChange={(checked) => {
+                            setPlanConfirm(checked);
+                          }}
+                          data-testid="settings-plan-confirm"
+                        />
+                      </Field>
+
+                      <Field>
+                        <FieldLabel>Operator tools</FieldLabel>
+                        <FieldDescription>
+                          Tools available to the chat agent. File tools are read-only and cannot
+                          touch product meta; bash runs unrestricted shell commands in the workspace
+                          — enable it only for workspaces you fully trust.
+                        </FieldDescription>
+                        <div className="flex flex-wrap gap-4" data-testid="settings-operator-tools">
+                          {(["read", "grep", "find", "ls", "bash"] as OperatorToolName[]).map(
+                            (tool) => (
+                              <label
+                                key={tool}
+                                className="flex items-center gap-1.5 text-sm"
+                                data-testid={`settings-operator-tool-${tool}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={operatorTools.includes(tool)}
+                                  onChange={(e) => {
+                                    setOperatorTools((current) =>
+                                      e.target.checked
+                                        ? [...current, tool]
+                                        : current.filter((name) => name !== tool),
+                                    );
+                                  }}
+                                />
+                                <span className={tool === "bash" ? "text-destructive" : undefined}>
+                                  {tool}
+                                </span>
+                              </label>
+                            ),
+                          )}
+                        </div>
+                      </Field>
+
+                      <Field>
+                        <FieldLabel htmlFor="settings-context-target">
+                          {t.settings.contextTargetTokens}
+                        </FieldLabel>
+                        <Input
+                          id="settings-context-target"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={contextTargetTokens}
+                          onChange={(e) => {
+                            setContextTargetTokens(e.target.value);
+                          }}
+                          placeholder={t.settings.contextTargetTokensPlaceholder}
+                          className="font-mono max-w-xs"
+                          data-testid="settings-context-target"
+                        />
+                        <FieldDescription>
+                          {t.settings.contextTargetTokensHint}
+                          {derivedContextTarget !== undefined ? (
+                            <>
+                              {" "}
+                              {formatMessage(t.settings.contextTargetDerived, {
+                                n: derivedContextTarget.toLocaleString(),
+                              })}
+                            </>
+                          ) : null}
+                        </FieldDescription>
+                      </Field>
+
+                      <Field>
+                        <FieldLabel htmlFor="settings-request-timeout">
+                          {t.settings.requestTimeoutSeconds}
+                        </FieldLabel>
+                        <Input
+                          id="settings-request-timeout"
+                          type="number"
+                          min={1}
+                          max={86400}
+                          step={1}
+                          value={requestTimeoutSeconds}
+                          onChange={(e) => {
+                            setRequestTimeoutSeconds(e.target.value);
+                          }}
+                          placeholder={t.settings.requestTimeoutSecondsPlaceholder}
+                          className="font-mono max-w-xs"
+                          data-testid="settings-request-timeout"
+                          required
+                        />
+                        <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
+                      </Field>
+
+                      <Field>
+                        <FieldLabel>{t.settings.retryTitle}</FieldLabel>
+                        <FieldDescription>{t.settings.retryHint}</FieldDescription>
+                        <div className="mt-2 flex flex-col gap-3">
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              id="settings-retry-enabled"
+                              checked={retryEnabled}
+                              onCheckedChange={setRetryEnabled}
+                              data-testid="settings-retry-enabled"
+                            />
+                            <FieldLabel htmlFor="settings-retry-enabled" className="font-normal">
+                              {t.settings.retryEnabled}
+                            </FieldLabel>
+                          </div>
+                          <div className="flex flex-wrap gap-3">
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel
+                                htmlFor="settings-retry-max"
+                                className="text-xs text-muted-foreground"
+                              >
+                                {t.settings.retryMaxRetries}
+                              </FieldLabel>
+                              <Input
+                                id="settings-retry-max"
+                                type="number"
+                                min={0}
+                                max={10}
+                                value={retryMaxRetries}
                                 onChange={(e) => {
-                                  setOperatorTools((current) =>
-                                    e.target.checked
-                                      ? [...current, tool]
-                                      : current.filter((name) => name !== tool),
-                                  );
+                                  setRetryMaxRetries(e.target.value);
                                 }}
+                                className="font-mono w-24"
+                                data-testid="settings-retry-max"
+                                disabled={!retryEnabled}
+                                title={t.settings.retryMaxRetriesHint}
                               />
-                              <span className={tool === "bash" ? "text-destructive" : undefined}>
-                                {tool}
-                              </span>
-                            </label>
-                          ),
-                        )}
-                      </div>
-                    </Field>
-
-                    <Field>
-                      <FieldLabel htmlFor="settings-context-target">
-                        {t.settings.contextTargetTokens}
-                      </FieldLabel>
-                      <Input
-                        id="settings-context-target"
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={contextTargetTokens}
-                        onChange={(e) => {
-                          setContextTargetTokens(e.target.value);
-                        }}
-                        placeholder={t.settings.contextTargetTokensPlaceholder}
-                        className="font-mono max-w-xs"
-                        data-testid="settings-context-target"
-                      />
-                      <FieldDescription>
-                        {t.settings.contextTargetTokensHint}
-                        {derivedContextTarget !== undefined ? (
-                          <>
-                            {" "}
-                            {formatMessage(t.settings.contextTargetDerived, {
-                              n: derivedContextTarget.toLocaleString(),
-                            })}
-                          </>
-                        ) : null}
-                      </FieldDescription>
-                    </Field>
-
-                    <Field>
-                      <FieldLabel htmlFor="settings-request-timeout">
-                        {t.settings.requestTimeoutSeconds}
-                      </FieldLabel>
-                      <Input
-                        id="settings-request-timeout"
-                        type="number"
-                        min={1}
-                        max={86400}
-                        step={1}
-                        value={requestTimeoutSeconds}
-                        onChange={(e) => {
-                          setRequestTimeoutSeconds(e.target.value);
-                        }}
-                        placeholder={t.settings.requestTimeoutSecondsPlaceholder}
-                        className="font-mono max-w-xs"
-                        data-testid="settings-request-timeout"
-                        required
-                      />
-                      <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
-                    </Field>
-
-                    <Field>
-                      <FieldLabel>{t.settings.retryTitle}</FieldLabel>
-                      <FieldDescription>{t.settings.retryHint}</FieldDescription>
-                      <div className="mt-2 flex flex-col gap-3">
-                        <div className="flex items-center gap-3">
-                          <Switch
-                            id="settings-retry-enabled"
-                            checked={retryEnabled}
-                            onCheckedChange={setRetryEnabled}
-                            data-testid="settings-retry-enabled"
-                          />
-                          <FieldLabel htmlFor="settings-retry-enabled" className="font-normal">
-                            {t.settings.retryEnabled}
-                          </FieldLabel>
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel
+                                htmlFor="settings-retry-base-delay"
+                                className="text-xs text-muted-foreground"
+                              >
+                                {t.settings.retryBaseDelayMs}
+                              </FieldLabel>
+                              <Input
+                                id="settings-retry-base-delay"
+                                type="number"
+                                min={100}
+                                max={60000}
+                                step={100}
+                                value={retryBaseDelayMs}
+                                onChange={(e) => {
+                                  setRetryBaseDelayMs(e.target.value);
+                                }}
+                                className="font-mono w-28"
+                                data-testid="settings-retry-base-delay"
+                                disabled={!retryEnabled}
+                                title={t.settings.retryBaseDelayMsHint}
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel
+                                htmlFor="settings-provider-max-retries"
+                                className="text-xs text-muted-foreground"
+                              >
+                                {t.settings.providerMaxRetries}
+                              </FieldLabel>
+                              <Input
+                                id="settings-provider-max-retries"
+                                type="number"
+                                min={0}
+                                max={5}
+                                value={providerMaxRetries}
+                                onChange={(e) => {
+                                  setProviderMaxRetries(e.target.value);
+                                }}
+                                className="font-mono w-24"
+                                data-testid="settings-provider-max-retries"
+                                disabled={!retryEnabled}
+                                title={t.settings.providerMaxRetriesHint}
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <FieldLabel
+                                htmlFor="settings-provider-max-retry-delay"
+                                className="text-xs text-muted-foreground"
+                              >
+                                {t.settings.providerMaxRetryDelayMs}
+                              </FieldLabel>
+                              <Input
+                                id="settings-provider-max-retry-delay"
+                                type="number"
+                                min={0}
+                                max={600000}
+                                step={1000}
+                                value={providerMaxRetryDelayMs}
+                                onChange={(e) => {
+                                  setProviderMaxRetryDelayMs(e.target.value);
+                                }}
+                                className="font-mono w-28"
+                                data-testid="settings-provider-max-retry-delay"
+                                disabled={!retryEnabled}
+                                title={t.settings.providerMaxRetryDelayMsHint}
+                              />
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex flex-wrap gap-3">
+                      </Field>
+
+                      <Field>
+                        <FieldLabel>{t.settings.orchestrationTitle}</FieldLabel>
+                        <FieldDescription>{t.settings.orchestrationHint}</FieldDescription>
+                        <div className="mt-2 flex flex-wrap gap-3">
                           <div className="flex flex-col gap-1">
                             <FieldLabel
-                              htmlFor="settings-retry-max"
+                              htmlFor="settings-max-domain-fanout"
                               className="text-xs text-muted-foreground"
                             >
-                              {t.settings.retryMaxRetries}
+                              {t.settings.maxDomainFanOut}
                             </FieldLabel>
                             <Input
-                              id="settings-retry-max"
+                              id="settings-max-domain-fanout"
                               type="number"
-                              min={0}
-                              max={10}
-                              value={retryMaxRetries}
+                              min={1}
+                              max={16}
+                              value={maxDomainFanOut}
                               onChange={(e) => {
-                                setRetryMaxRetries(e.target.value);
+                                setMaxDomainFanOut(e.target.value);
                               }}
                               className="font-mono w-24"
-                              data-testid="settings-retry-max"
-                              disabled={!retryEnabled}
-                              title={t.settings.retryMaxRetriesHint}
+                              data-testid="settings-max-domain-fanout"
                             />
                           </div>
                           <div className="flex flex-col gap-1">
                             <FieldLabel
-                              htmlFor="settings-retry-base-delay"
+                              htmlFor="settings-max-leaf-fanout"
                               className="text-xs text-muted-foreground"
                             >
-                              {t.settings.retryBaseDelayMs}
+                              {t.settings.maxLeafFanOut}
                             </FieldLabel>
                             <Input
-                              id="settings-retry-base-delay"
+                              id="settings-max-leaf-fanout"
                               type="number"
-                              min={100}
-                              max={60000}
-                              step={100}
-                              value={retryBaseDelayMs}
+                              min={1}
+                              max={16}
+                              value={maxLeafFanOut}
                               onChange={(e) => {
-                                setRetryBaseDelayMs(e.target.value);
-                              }}
-                              className="font-mono w-28"
-                              data-testid="settings-retry-base-delay"
-                              disabled={!retryEnabled}
-                              title={t.settings.retryBaseDelayMsHint}
-                            />
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <FieldLabel
-                              htmlFor="settings-provider-max-retries"
-                              className="text-xs text-muted-foreground"
-                            >
-                              {t.settings.providerMaxRetries}
-                            </FieldLabel>
-                            <Input
-                              id="settings-provider-max-retries"
-                              type="number"
-                              min={0}
-                              max={5}
-                              value={providerMaxRetries}
-                              onChange={(e) => {
-                                setProviderMaxRetries(e.target.value);
+                                setMaxLeafFanOut(e.target.value);
                               }}
                               className="font-mono w-24"
-                              data-testid="settings-provider-max-retries"
-                              disabled={!retryEnabled}
-                              title={t.settings.providerMaxRetriesHint}
+                              data-testid="settings-max-leaf-fanout"
                             />
                           </div>
                           <div className="flex flex-col gap-1">
                             <FieldLabel
-                              htmlFor="settings-provider-max-retry-delay"
+                              htmlFor="settings-plan-scout-count"
                               className="text-xs text-muted-foreground"
                             >
-                              {t.settings.providerMaxRetryDelayMs}
+                              {t.settings.planScoutCount}
                             </FieldLabel>
                             <Input
-                              id="settings-provider-max-retry-delay"
+                              id="settings-plan-scout-count"
                               type="number"
                               min={0}
-                              max={600000}
-                              step={1000}
-                              value={providerMaxRetryDelayMs}
+                              max={4}
+                              value={planScoutCount}
                               onChange={(e) => {
-                                setProviderMaxRetryDelayMs(e.target.value);
+                                setPlanScoutCount(e.target.value);
                               }}
-                              className="font-mono w-28"
-                              data-testid="settings-provider-max-retry-delay"
-                              disabled={!retryEnabled}
-                              title={t.settings.providerMaxRetryDelayMsHint}
+                              className="font-mono w-24"
+                              data-testid="settings-plan-scout-count"
+                              title={t.settings.planScoutCountHint}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-review-council-size"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.reviewCouncilSize}
+                            </FieldLabel>
+                            <Input
+                              id="settings-review-council-size"
+                              type="number"
+                              min={1}
+                              max={4}
+                              value={reviewCouncilSize}
+                              onChange={(e) => {
+                                setReviewCouncilSize(e.target.value);
+                              }}
+                              className="font-mono w-24"
+                              data-testid="settings-review-council-size"
+                              title={t.settings.reviewCouncilSizeHint}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-review-concurrency"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.reviewConcurrency}
+                            </FieldLabel>
+                            <Input
+                              id="settings-review-concurrency"
+                              type="number"
+                              min={1}
+                              max={4}
+                              placeholder={reviewCouncilSize || "3"}
+                              value={reviewConcurrency}
+                              onChange={(e) => {
+                                setReviewConcurrency(e.target.value);
+                              }}
+                              className="font-mono w-24"
+                              data-testid="settings-review-concurrency"
+                              title={t.settings.reviewConcurrencyHint}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-domain-concurrency"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.domainConcurrency}
+                            </FieldLabel>
+                            <Input
+                              id="settings-domain-concurrency"
+                              type="number"
+                              min={1}
+                              max={8}
+                              value={domainConcurrency}
+                              onChange={(e) => {
+                                setDomainConcurrency(e.target.value);
+                              }}
+                              className="font-mono w-24"
+                              data-testid="settings-domain-concurrency"
                             />
                           </div>
                         </div>
-                      </div>
-                    </Field>
+                        <FieldDescription className="mt-2 text-xs">
+                          {t.settings.planScoutCountHint} {t.settings.reviewCouncilSizeHint}
+                        </FieldDescription>
+                      </Field>
 
-                    <Field>
-                      <FieldLabel>{t.settings.orchestrationTitle}</FieldLabel>
-                      <FieldDescription>{t.settings.orchestrationHint}</FieldDescription>
-                      <div className="mt-2 flex flex-wrap gap-3">
-                        <div className="flex flex-col gap-1">
-                          <FieldLabel
-                            htmlFor="settings-max-domain-fanout"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.maxDomainFanOut}
-                          </FieldLabel>
-                          <Input
-                            id="settings-max-domain-fanout"
-                            type="number"
-                            min={1}
-                            max={16}
-                            value={maxDomainFanOut}
-                            onChange={(e) => {
-                              setMaxDomainFanOut(e.target.value);
-                            }}
-                            className="font-mono w-24"
-                            data-testid="settings-max-domain-fanout"
-                          />
+                      <Field>
+                        <FieldLabel>{t.settings.roleModelsTitle}</FieldLabel>
+                        <FieldDescription>{t.settings.roleModelsHint}</FieldDescription>
+                        <div className="mt-2 flex flex-col gap-3">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs text-muted-foreground">
+                              {t.settings.rolePlanner}
+                            </span>
+                            <ModelSelect
+                              models={models}
+                              value={plannerProfileId}
+                              onChange={(next) => {
+                                setPlannerProfileId(next);
+                              }}
+                              defaultModelProfileId={defaultModelProfileId}
+                              data-testid="settings-role-planner"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs text-muted-foreground">
+                              {t.settings.roleWorker}
+                            </span>
+                            <ModelSelect
+                              models={models}
+                              value={workerProfileId}
+                              onChange={(next) => {
+                                setWorkerProfileId(next);
+                              }}
+                              defaultModelProfileId={defaultModelProfileId}
+                              data-testid="settings-role-worker"
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs text-muted-foreground">
+                              {t.settings.roleWriter}
+                            </span>
+                            <ModelSelect
+                              models={models}
+                              value={writerProfileId}
+                              onChange={(next) => {
+                                setWriterProfileId(next);
+                              }}
+                              defaultModelProfileId={defaultModelProfileId}
+                              data-testid="settings-role-writer"
+                            />
+                          </div>
                         </div>
-                        <div className="flex flex-col gap-1">
-                          <FieldLabel
-                            htmlFor="settings-max-leaf-fanout"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.maxLeafFanOut}
-                          </FieldLabel>
-                          <Input
-                            id="settings-max-leaf-fanout"
-                            type="number"
-                            min={1}
-                            max={16}
-                            value={maxLeafFanOut}
-                            onChange={(e) => {
-                              setMaxLeafFanOut(e.target.value);
-                            }}
-                            className="font-mono w-24"
-                            data-testid="settings-max-leaf-fanout"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <FieldLabel
-                            htmlFor="settings-plan-scout-count"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.planScoutCount}
-                          </FieldLabel>
-                          <Input
-                            id="settings-plan-scout-count"
-                            type="number"
-                            min={0}
-                            max={4}
-                            value={planScoutCount}
-                            onChange={(e) => {
-                              setPlanScoutCount(e.target.value);
-                            }}
-                            className="font-mono w-24"
-                            data-testid="settings-plan-scout-count"
-                            title={t.settings.planScoutCountHint}
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <FieldLabel
-                            htmlFor="settings-review-council-size"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.reviewCouncilSize}
-                          </FieldLabel>
-                          <Input
-                            id="settings-review-council-size"
-                            type="number"
-                            min={1}
-                            max={4}
-                            value={reviewCouncilSize}
-                            onChange={(e) => {
-                              setReviewCouncilSize(e.target.value);
-                            }}
-                            className="font-mono w-24"
-                            data-testid="settings-review-council-size"
-                            title={t.settings.reviewCouncilSizeHint}
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <FieldLabel
-                            htmlFor="settings-review-concurrency"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.reviewConcurrency}
-                          </FieldLabel>
-                          <Input
-                            id="settings-review-concurrency"
-                            type="number"
-                            min={1}
-                            max={4}
-                            placeholder={reviewCouncilSize || "3"}
-                            value={reviewConcurrency}
-                            onChange={(e) => {
-                              setReviewConcurrency(e.target.value);
-                            }}
-                            className="font-mono w-24"
-                            data-testid="settings-review-concurrency"
-                            title={t.settings.reviewConcurrencyHint}
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <FieldLabel
-                            htmlFor="settings-domain-concurrency"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.domainConcurrency}
-                          </FieldLabel>
-                          <Input
-                            id="settings-domain-concurrency"
-                            type="number"
-                            min={1}
-                            max={8}
-                            value={domainConcurrency}
-                            onChange={(e) => {
-                              setDomainConcurrency(e.target.value);
-                            }}
-                            className="font-mono w-24"
-                            data-testid="settings-domain-concurrency"
-                          />
-                        </div>
-                      </div>
-                      <FieldDescription className="mt-2 text-xs">
-                        {t.settings.planScoutCountHint} {t.settings.reviewCouncilSizeHint}
-                      </FieldDescription>
-                    </Field>
+                      </Field>
 
-                    <Field>
-                      <FieldLabel>{t.settings.roleModelsTitle}</FieldLabel>
-                      <FieldDescription>{t.settings.roleModelsHint}</FieldDescription>
-                      <div className="mt-2 flex flex-col gap-3">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">
-                            {t.settings.rolePlanner}
-                          </span>
-                          <ModelSelect
-                            models={models}
-                            value={plannerProfileId}
-                            onChange={(next) => {
-                              setPlannerProfileId(next);
-                            }}
-                            defaultModelProfileId={defaultModelProfileId}
-                            data-testid="settings-role-planner"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">
-                            {t.settings.roleWorker}
-                          </span>
-                          <ModelSelect
-                            models={models}
-                            value={workerProfileId}
-                            onChange={(next) => {
-                              setWorkerProfileId(next);
-                            }}
-                            defaultModelProfileId={defaultModelProfileId}
-                            data-testid="settings-role-worker"
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs text-muted-foreground">
-                            {t.settings.roleWriter}
-                          </span>
-                          <ModelSelect
-                            models={models}
-                            value={writerProfileId}
-                            onChange={(next) => {
-                              setWriterProfileId(next);
-                            }}
-                            defaultModelProfileId={defaultModelProfileId}
-                            data-testid="settings-role-writer"
-                          />
-                        </div>
+                      <div className="form-actions">
+                        <Button
+                          type="submit"
+                          disabled={
+                            isSubmitting ||
+                            !name.trim() ||
+                            !publicationPath.trim() ||
+                            (models.length > 0 && !modelProfileId)
+                          }
+                          data-testid="settings-save"
+                        >
+                          {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
+                          {isSubmitting ? t.settings.saving : t.settings.save}
+                        </Button>
                       </div>
-                    </Field>
-
-                    <div className="form-actions">
-                      <Button
-                        type="submit"
-                        disabled={
-                          isSubmitting ||
-                          !name.trim() ||
-                          !publicationPath.trim() ||
-                          (models.length > 0 && !modelProfileId)
-                        }
-                        data-testid="settings-save"
-                      >
-                        {isSubmitting ? <Spinner data-icon="inline-start" /> : null}
-                        {isSubmitting ? t.settings.saving : t.settings.save}
-                      </Button>
-                    </div>
-                  </FieldGroup>
-                </form>
-                <dl className="kv muted-block">
-                  <div>
-                    <dt>{t.settings.rootPath}</dt>
-                    <dd className="mono">{workspace.rootPath}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.common.id}</dt>
-                    <dd className="mono">{workspace.id}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.settings.selectedModelId}</dt>
-                    <dd className="mono">{workspace.model.id}</dd>
-                  </div>
-                  {workspace.model.profileId ? (
+                    </FieldGroup>
+                  </form>
+                  <dl className="kv muted-block">
                     <div>
-                      <dt>{t.settings.modelProfile}</dt>
-                      <dd className="mono">{workspace.model.profileId}</dd>
+                      <dt>{t.settings.rootPath}</dt>
+                      <dd className="mono">{workspace.rootPath}</dd>
                     </div>
-                  ) : null}
-                </dl>
-              </CardContent>
-            </Card>
+                    <div>
+                      <dt>{t.common.id}</dt>
+                      <dd className="mono">{workspace.id}</dd>
+                    </div>
+                    <div>
+                      <dt>{t.settings.selectedModelId}</dt>
+                      <dd className="mono">{workspace.model.id}</dd>
+                    </div>
+                    {workspace.model.profileId ? (
+                      <div>
+                        <dt>{t.settings.modelProfile}</dt>
+                        <dd className="mono">{workspace.model.profileId}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </CardContent>
+              </Card>
             </div>
           ) : null}
           {section === "skill" ? (

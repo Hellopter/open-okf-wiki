@@ -5,12 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract";
-import {
-  FreezeWikiRunError,
-  freezeWikiRun,
-  setFreezeWikiRunIdFactoryForTests,
-} from "./run-boundary.js";
-import { loadRun, registerRunRecord } from "./run-store.js";
+import { FreezeWikiRunError, freezeRunBoundary } from "./run-boundary.js";
 import { skillDigest } from "./skill-digest.js";
 
 async function makeGitRepo(parent: string, name: string): Promise<string> {
@@ -72,38 +67,41 @@ async function makeWorkspace(opts?: {
   return { root, workspace, skillDir };
 }
 
-test("freezeWikiRun creates record with skillDigest and clean sources", async () => {
+test("freezeRunBoundary freezes sources and Skill without creating a v2 Run Record", async () => {
   const { root, workspace } = await makeWorkspace();
-  const frozen = await freezeWikiRun({
-    workspace,
-    sessionId: "sess-1",
-    autoApprove: true,
-  });
+  const runId = "allocated-run";
+  const frozen = await freezeRunBoundary({ workspace, runId });
 
-  assert.ok(frozen.runId);
-  assert.equal(frozen.runWorkDir, path.join(root, ".okf-wiki", "runs", frozen.runId));
+  assert.equal(frozen.runId, runId);
+  assert.equal(frozen.runWorkDir, path.join(root, ".okf-wiki", "runs", runId));
   assert.equal(frozen.wikiDir, path.join(frozen.runWorkDir, "wiki"));
   assert.equal(frozen.analysisDir, path.join(frozen.runWorkDir, "analysis"));
-  assert.equal(frozen.skillPath, path.join(root, ".okf-wiki", "runs", frozen.runId, "skill"));
+  assert.equal(frozen.skillPath, path.join(root, ".okf-wiki", "runs", runId, "skill"));
   assert.ok(frozen.skillDigest && frozen.skillDigest.length > 8);
   assert.equal(frozen.sources.length, 1);
   assert.equal(frozen.sources[0]!.id, "main");
   assert.ok(frozen.sources[0]!.revision);
   assert.equal(frozen.sourcePathMap.get("main"), frozen.sources[0]!.path);
   assert.ok(frozen.sourceIgnores.has("main"));
-
-  const record = await loadRun(root, frozen.runId);
-  assert.ok(record);
-  assert.equal(record!.skillDigest, frozen.skillDigest);
-  assert.equal(record!.sessionId, "sess-1");
-  assert.equal(record!.autoApprove, true);
-  assert.equal(record!.status, "running");
+  assert.equal(
+    await readFile(path.join(frozen.sourcePathMap.get("main")!, "README.md"), "utf8"),
+    "# src\n",
+  );
+  assert.equal(
+    await readFile(path.join(frozen.skillPath, "SKILL.md"), "utf8"),
+    "---\nname: test-skill\n---\n# skill\n",
+  );
+  // No okf.wiki-run/v2 file write on freeze (WikiRuns owns control records).
+  await assert.rejects(
+    () => lstat(path.join(root, ".okf-wiki", "runs", `${runId}.json`)),
+    /ENOENT/,
+  );
 });
 
-test("freezeWikiRun rejects dirty source", async () => {
+test("freezeRunBoundary rejects dirty source", async () => {
   const { workspace } = await makeWorkspace({ dirty: true });
   await assert.rejects(
-    () => freezeWikiRun({ workspace, sessionId: "session-dirty" }),
+    () => freezeRunBoundary({ workspace, runId: "dirty-run" }),
     (err: unknown) => {
       assert.ok(err instanceof FreezeWikiRunError);
       assert.equal(err.code, "source_dirty");
@@ -112,10 +110,10 @@ test("freezeWikiRun rejects dirty source", async () => {
   );
 });
 
-test("freezeWikiRun rejects empty sources", async () => {
+test("freezeRunBoundary rejects empty sources", async () => {
   const { workspace } = await makeWorkspace({ noSources: true });
   await assert.rejects(
-    () => freezeWikiRun({ workspace, sessionId: "session-empty" }),
+    () => freezeRunBoundary({ workspace, runId: "empty-run" }),
     (err: unknown) => {
       assert.ok(err instanceof FreezeWikiRunError);
       assert.equal(err.code, "no_sources");
@@ -124,25 +122,12 @@ test("freezeWikiRun rejects empty sources", async () => {
   );
 });
 
-test("freezeWikiRun registers a generated runId", async () => {
-  const { root, workspace } = await makeWorkspace();
-  const frozen = await freezeWikiRun({
-    workspace,
-    sessionId: "s2",
-  });
-  assert.ok(frozen.runId);
-  const record = await loadRun(root, frozen.runId);
-  assert.ok(record);
-  assert.equal(record!.sessionId, "s2");
-  assert.equal(record!.status, "running");
-});
-
-test("freezeWikiRun materialises a fixed revision instead of exposing the live checkout", async () => {
+test("freezeRunBoundary materialises a fixed revision instead of exposing the live checkout", async () => {
   const { root, workspace } = await makeWorkspace();
   const liveSource = workspace.sources[0]!.path;
-  const frozen = await freezeWikiRun({
+  const frozen = await freezeRunBoundary({
     workspace,
-    sessionId: "snapshot-session",
+    runId: "snapshot-run",
   });
 
   const snapshot = frozen.sourcePathMap.get("main");
@@ -156,7 +141,7 @@ test("freezeWikiRun materialises a fixed revision instead of exposing the live c
   assert.equal(await readFile(path.join(snapshot, "README.md"), "utf8"), "# src\n");
 });
 
-test("freezeWikiRun physically removes Effective Source Ignores from the snapshot", async () => {
+test("freezeRunBoundary physically removes Effective Source Ignores from the snapshot", async () => {
   const { workspace } = await makeWorkspace();
   const liveSource = workspace.sources[0]!.path;
   workspace.sources[0]!.ignore = ["private/**"];
@@ -169,9 +154,9 @@ test("freezeWikiRun physically removes Effective Source Ignores from the snapsho
   spawnSync("git", ["add", "-f", "."], { cwd: liveSource, stdio: "ignore" });
   spawnSync("git", ["commit", "-m", "tracked ignores"], { cwd: liveSource, stdio: "ignore" });
 
-  const frozen = await freezeWikiRun({
+  const frozen = await freezeRunBoundary({
     workspace,
-    sessionId: "ignore-session",
+    runId: "ignore-run",
   });
   const snapshot = frozen.sourcePathMap.get("main")!;
 
@@ -184,16 +169,16 @@ test("freezeWikiRun physically removes Effective Source Ignores from the snapsho
   assert.ok(frozen.sources[0]!.effectiveIgnores.includes("private/**"));
 });
 
-test("freezeWikiRun turns Git symlink blobs into read-only ordinary text files", async () => {
+test("freezeRunBoundary turns Git symlink blobs into read-only ordinary text files", async () => {
   const { workspace } = await makeWorkspace();
   const liveSource = workspace.sources[0]!.path;
   await symlink("README.md", path.join(liveSource, "readme-link"));
   spawnSync("git", ["add", "."], { cwd: liveSource, stdio: "ignore" });
   spawnSync("git", ["commit", "-m", "add symlink blob"], { cwd: liveSource, stdio: "ignore" });
 
-  const frozen = await freezeWikiRun({
+  const frozen = await freezeRunBoundary({
     workspace,
-    sessionId: "symlink-session",
+    runId: "symlink-run",
   });
   const snapshot = frozen.sourcePathMap.get("main")!;
   const linkInfo = await lstat(path.join(snapshot, "readme-link"));
@@ -205,11 +190,11 @@ test("freezeWikiRun turns Git symlink blobs into read-only ordinary text files",
   assert.equal((await lstat(snapshot)).mode & 0o222, 0);
 });
 
-test("freezeWikiRun copies and reverifies the Producer Skill as a run-owned version", async () => {
+test("freezeRunBoundary copies and reverifies the Producer Skill as a run-owned version", async () => {
   const { root, workspace, skillDir } = await makeWorkspace();
-  const frozen = await freezeWikiRun({
+  const frozen = await freezeRunBoundary({
     workspace,
-    sessionId: "skill-session",
+    runId: "skill-run",
   });
 
   const expectedPath = path.join(root, ".okf-wiki", "runs", frozen.runId, "skill");
@@ -220,77 +205,45 @@ test("freezeWikiRun copies and reverifies the Producer Skill as a run-owned vers
 
   await writeFile(path.join(skillDir, "SKILL.md"), "---\nname: changed\n---\n# changed\n");
   assert.equal(await skillDigest(frozen.skillPath), frozen.skillDigest);
-  const record = await loadRun(root, frozen.runId);
-  assert.equal(record?.skillPath, expectedPath);
-  assert.equal(record?.skillDigest, frozen.skillDigest);
 });
 
-test("freezeWikiRun refuses an existing run directory without touching its contents", async () => {
+test("freezeRunBoundary refuses an existing run directory without touching its contents", async () => {
   const { root, workspace } = await makeWorkspace();
-  const first = await freezeWikiRun({
-    workspace,
-    sessionId: "first-session",
-  });
   const collisionId = "collision-run";
   const existing = path.join(root, ".okf-wiki", "runs", collisionId);
   await mkdir(existing, { recursive: true });
   await writeFile(path.join(existing, "sentinel.txt"), "operator data\n");
 
-  setFreezeWikiRunIdFactoryForTests(() => collisionId);
-  try {
-    await assert.rejects(
-      () =>
-        freezeWikiRun({
-          workspace,
-          sessionId: "collision-session",
-        }),
-      /already exists/i,
-    );
-  } finally {
-    setFreezeWikiRunIdFactoryForTests(undefined);
-  }
+  await assert.rejects(
+    () =>
+      freezeRunBoundary({
+        workspace,
+        runId: collisionId,
+      }),
+    /already exists/i,
+  );
   assert.equal(await readFile(path.join(existing, "sentinel.txt"), "utf8"), "operator data\n");
-  assert.ok(await loadRun(root, first.runId));
-  assert.equal(await loadRun(root, collisionId), null);
 });
 
-test("freezeWikiRun removes only its new run directory when later freeze steps fail", async () => {
+test("freezeRunBoundary removes only its new run directory when later freeze steps fail", async () => {
   const { root, workspace, skillDir } = await makeWorkspace();
   const forcedId = "bad-skill-run";
-  // Pre-register a record so freeze fails after materializing the exclusive run dir.
-  await registerRunRecord(root, workspace.id, {
-    runId: forcedId,
-    sessionId: "pre-existing",
-    autoApprove: false,
-    skillPath: path.join(root, ".okf-wiki", "runs", forcedId, "skill"),
-    skillDigest: "a".repeat(64),
-    sources: [
-      {
-        id: "main",
-        revision: "b".repeat(40),
-        effectiveIgnores: [],
-      },
-    ],
-  });
-
-  setFreezeWikiRunIdFactoryForTests(() => forcedId);
-  try {
-    await assert.rejects(
-      () =>
-        freezeWikiRun({
-          workspace,
-          sessionId: "bad-skill-session",
-        }),
-      /already exists/i,
-    );
-  } finally {
-    setFreezeWikiRunIdFactoryForTests(undefined);
-  }
-
+  // Pre-create the exclusive run dir so freeze fails on EEXIST after mkdir attempt.
   const runDir = path.join(root, ".okf-wiki", "runs", forcedId);
-  await assert.rejects(() => lstat(runDir), /ENOENT/);
-  // Pre-existing record file is untouched; only the new run directory is removed.
-  assert.ok(await loadRun(root, forcedId));
+  await mkdir(runDir, { recursive: true });
+  await writeFile(path.join(runDir, "sentinel.txt"), "pre-existing\n");
+
+  await assert.rejects(
+    () =>
+      freezeRunBoundary({
+        workspace,
+        runId: forcedId,
+      }),
+    /already exists/i,
+  );
+
+  // Pre-existing directory is untouched (freeze does not own it).
+  assert.equal(await readFile(path.join(runDir, "sentinel.txt"), "utf8"), "pre-existing\n");
   assert.equal(
     await readFile(path.join(skillDir, "SKILL.md"), "utf8"),
     "---\nname: test-skill\n---\n# skill\n",

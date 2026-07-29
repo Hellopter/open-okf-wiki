@@ -30,8 +30,6 @@ export async function runBestEffortChild<T>(input: {
     if (isAbortError(err, input.abortSignal)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     const errorClass = classifyError(err);
-    return errorClass !== undefined
-      ? { ok: false, errorClass, message }
-      : { ok: false, message };
+    return errorClass !== undefined ? { ok: false, errorClass, message } : { ok: false, message };
   }
 }

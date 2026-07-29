@@ -3,13 +3,13 @@ import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildWikiNav } from "./wiki-nav.js";
 import {
   regenerateWikiIndexes,
   renderDirectoryIndex,
   validateWikiIndexes,
   type WikiIndexListEntry,
 } from "./wiki-index.js";
+import { buildWikiNav } from "./wiki-nav.js";
 
 async function writeConcept(
   root: string,
@@ -32,7 +32,13 @@ async function writeConcept(
 test("renderDirectoryIndex groups by type with product order and Subdirectories last", () => {
   const entries: WikiIndexListEntry[] = [
     { kind: "page", title: "Core", href: "core.md", type: "Module", description: "Core module." },
-    { kind: "page", title: "Overview", href: "overview.md", type: "Overview", description: "Big picture." },
+    {
+      kind: "page",
+      title: "Overview",
+      href: "overview.md",
+      type: "Overview",
+      description: "Big picture.",
+    },
     { kind: "page", title: "Misc", href: "misc.md" },
     { kind: "dir", title: "modules", href: "modules/index.md", description: "2 pages" },
   ];
@@ -126,11 +132,7 @@ test("regenerateWikiIndexes is idempotent", async () => {
 test("regenerateWikiIndexes overwrites existing model-written indexes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-idx-ow-"));
   await writeConcept(root, "overview.md", { title: "Overview", type: "Overview" });
-  await writeFile(
-    path.join(root, "index.md"),
-    "# Stale\n\n* [Deep](modules/core.md)\n",
-    "utf8",
-  );
+  await writeFile(path.join(root, "index.md"), "# Stale\n\n* [Deep](modules/core.md)\n", "utf8");
 
   await regenerateWikiIndexes(root);
   const listing = await readFile(path.join(root, "index.md"), "utf8");
@@ -144,11 +146,7 @@ test("validateWikiIndexes fails on flat deep links", async () => {
   await regenerateWikiIndexes(root);
 
   // Inject a bad root index that deep-links past progressive disclosure.
-  await writeFile(
-    path.join(root, "index.md"),
-    "# Bad\n\n* [Core](modules/core.md)\n",
-    "utf8",
-  );
+  await writeFile(path.join(root, "index.md"), "# Bad\n\n* [Core](modules/core.md)\n", "utf8");
 
   const bad = await validateWikiIndexes(root);
   assert.equal(bad.ok, false);

@@ -9,6 +9,7 @@ import {
 } from "./agent-session/live-session-registry.ts";
 import { dispatch } from "./dispatch.ts";
 import { allowLan, assertBindPolicy, host, port } from "./server-config.ts";
+import { closeWikiRuns } from "./wiki-runs-registry.ts";
 
 assertBindPolicy();
 
@@ -48,7 +49,7 @@ idleSweep.unref();
 // Graceful shutdown: dispose live Pi handles (flush session state) and stop
 // accepting connections before exiting.
 let shuttingDown = false;
-function shutdown(signal: NodeJS.Signals): void {
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   process.stdout.write(`received ${signal}, shutting down…\n`);
@@ -60,7 +61,8 @@ function shutdown(signal: NodeJS.Signals): void {
   }
   // SSE keep-alive sockets would otherwise hold the process open.
   server.closeAllConnections?.();
+  await closeWikiRuns();
   process.exit(0);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", (signal) => void shutdown(signal));
+process.on("SIGTERM", (signal) => void shutdown(signal));

@@ -7,7 +7,7 @@
 
 import { lstat, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { type SourceCitation, parseSourceCitations } from "./citations-parse.js";
+import { parseSourceCitations, type SourceCitation } from "./citations-parse.js";
 import { scanWikiTree } from "./wiki-tree.js";
 
 export type CanonicalizeCitationOptions = {
@@ -106,11 +106,7 @@ export function canonicalizeCitationTarget(
 /**
  * Build a Skill-form Source Citation link from a canonical target + optional lines.
  */
-export function formatRepoCitation(
-  target: string,
-  lineStart?: number,
-  lineEnd?: number,
-): string {
+export function formatRepoCitation(target: string, lineStart?: number, lineEnd?: number): string {
   let fragment = "";
   if (lineStart !== undefined) {
     if (lineEnd !== undefined && lineEnd !== lineStart) {

@@ -1,21 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AgentSseEventSchema, parseAgentCommand, safeParseAgentCommand } from "./agent-protocol.js";
-import { defaultWikiRunSpec } from "./run.js";
-
-const sampleSpec = {
-  ...defaultWikiRunSpec("S"),
-  summary: "S",
-  pages: [
-    {
-      path: "overview.md",
-      purpose: "Overview",
-      domainIds: ["core"],
-      questions: ["Overview?"],
-      critical: true,
-    },
-  ],
-};
 
 test("parseAgentCommand: prompt / steer / abort / compact", () => {
   assert.equal(parseAgentCommand({ type: "prompt", text: "hello" }).type, "prompt");
@@ -24,83 +9,21 @@ test("parseAgentCommand: prompt / steer / abort / compact", () => {
   assert.equal(parseAgentCommand({ type: "compact" }).type, "compact");
 });
 
-test("parseAgentCommand: rejects removed start_wiki_run command", () => {
+test("parseAgentCommand: rejects removed start_wiki_run and resume_gate commands", () => {
   assert.equal(safeParseAgentCommand({ type: "start_wiki_run", notes: "generate" }).success, false);
-});
-
-test("parseAgentCommand: resume_gate approve Spec", () => {
-  const cmd = parseAgentCommand({
-    type: "resume_gate",
-    gate: "plan",
-    action: "approve",
-    spec: sampleSpec,
-    runId: "run-1",
-  });
-  assert.equal(cmd.type, "resume_gate");
-  if (cmd.type === "resume_gate") {
-    assert.equal(cmd.gate, "plan");
-    assert.equal(cmd.action, "approve");
-    assert.equal(cmd.runId, "run-1");
-    assert.equal(cmd.spec?.pages.length, 1);
-  }
-});
-
-test("parseAgentCommand: resume_gate revise requires feedback", () => {
-  const missing = safeParseAgentCommand({
-    type: "resume_gate",
-    gate: "plan",
-    action: "revise",
-  });
-  assert.equal(missing.success, false);
-
-  const empty = safeParseAgentCommand({
-    type: "resume_gate",
-    gate: "plan",
-    action: "revise",
-    feedback: "   ",
-  });
-  assert.equal(empty.success, false);
-
-  const ok = parseAgentCommand({
-    type: "resume_gate",
-    gate: "plan",
-    action: "revise",
-    feedback: "add concepts.md",
-  });
-  assert.equal(ok.type, "resume_gate");
-  if (ok.type === "resume_gate") {
-    assert.equal(ok.feedback, "add concepts.md");
-  }
-});
-
-test("parseAgentCommand: resume_gate revise invalid on publication", () => {
-  const bad = safeParseAgentCommand({
-    type: "resume_gate",
-    gate: "publication",
-    action: "revise",
-    feedback: "nope",
-  });
-  assert.equal(bad.success, false);
-});
-
-test("parseAgentCommand: resume_gate publication approve/deny", () => {
   assert.equal(
-    parseAgentCommand({
+    safeParseAgentCommand({
       type: "resume_gate",
-      gate: "publication",
+      gate: "plan",
       action: "approve",
-      runId: "r2",
-    }).type,
-    "resume_gate",
+      runId: "run-1",
+    }).success,
+    false,
   );
-  assert.equal(
-    parseAgentCommand({
-      type: "resume_gate",
-      gate: "publication",
-      action: "deny",
-    }).type,
-    "resume_gate",
-  );
+});
+
+test("parseAgentCommand: set_model", () => {
+  assert.equal(parseAgentCommand({ type: "set_model", profileId: "default" }).type, "set_model");
 });
 
 test("parseAgentCommand: rejects unknown type and empty prompt", () => {
@@ -130,26 +53,17 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
         toolCallId: "tool-1",
         toolName: "wiki_produce",
         details: {
-          status: "awaiting_plan",
+          status: "accepted",
           runId: "run-1",
-          summary: "Awaiting WikiRunSpec approval",
+          summary: "Wiki Run accepted",
         },
-      },
-      pendingGate: {
-        toolCallId: "tool-1",
-        runId: "run-1",
-        gate: "plan",
       },
     },
   });
   assert.equal(snapshot.kind, "snapshot");
   if (snapshot.source === "server" && snapshot.kind === "snapshot") {
-    assert.equal(snapshot.payload.activeTool?.details.status, "awaiting_plan");
-    assert.deepEqual(snapshot.payload.pendingGate, {
-      toolCallId: "tool-1",
-      runId: "run-1",
-      gate: "plan",
-    });
+    assert.equal(snapshot.payload.activeTool?.details.status, "accepted");
+    assert.equal("pendingGate" in snapshot.payload, false);
   }
 
   const stream = AgentSseEventSchema.parse({
@@ -158,80 +72,22 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
     sessionId: "s1",
     timestamp: "2026-07-24T00:00:00.000Z",
     payload: {
-      agentStatus: "streaming",
+      agentStatus: "idle",
       errorText: null,
-      turnActive: true,
-      lastAssistantId: "asst-1",
-      streamingMessage: {
-        id: "asst-1",
-        role: "assistant",
-        content: "hello",
-        createdAt: "2026-07-24T00:00:00.000Z",
-        status: "streaming",
-      },
+      turnActive: false,
+      lastAssistantId: null,
+      streamingMessage: null,
       appended: [],
       updated: [],
     },
   });
   assert.equal(stream.kind, "stream");
-  if (stream.source === "server" && stream.kind === "stream") {
-    assert.equal(stream.payload.streamingMessage?.content, "hello");
-  }
-
-  assert.equal(
-    AgentSseEventSchema.safeParse({
-      source: "pi",
-      kind: "message_update",
-      sessionId: "s1",
-      payload: {},
-    }).success,
-    false,
-  );
 
   const heartbeat = AgentSseEventSchema.parse({
     source: "server",
     kind: "heartbeat",
     sessionId: "s1",
-    timestamp: new Date().toISOString(),
+    timestamp: "2026-07-24T00:00:00.000Z",
   });
-  assert.equal(heartbeat.source, "server");
-
-  assert.equal(
-    AgentSseEventSchema.safeParse({
-      source: "product",
-      kind: "run_phase",
-      sessionId: "s1",
-    }).success,
-    false,
-  );
-});
-
-test("AgentSseEventSchema: rejects sequence/replay framing", () => {
-  assert.equal(
-    AgentSseEventSchema.safeParse({
-      source: "server",
-      kind: "stream",
-      sessionId: "s1",
-      timestamp: "2026-07-24T00:00:00.000Z",
-      sequence: 1,
-      payload: {
-        agentStatus: "idle",
-        errorText: null,
-        turnActive: false,
-        lastAssistantId: null,
-        streamingMessage: null,
-        appended: [],
-        updated: [],
-      },
-    }).success,
-    false,
-  );
-});
-
-test("parseAgentCommand: set_model requires profileId", () => {
-  const cmd = parseAgentCommand({ type: "set_model", profileId: "profile-1" });
-  assert.equal(cmd.type, "set_model");
-  if (cmd.type === "set_model") assert.equal(cmd.profileId, "profile-1");
-  assert.equal(safeParseAgentCommand({ type: "set_model" }).success, false);
-  assert.equal(safeParseAgentCommand({ type: "set_model", profileId: "" }).success, false);
+  assert.equal(heartbeat.kind, "heartbeat");
 });

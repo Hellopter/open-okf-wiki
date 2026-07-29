@@ -23,11 +23,7 @@ const SEVERITY_RANK: Record<DefectSeverity, number> = {
  * System/protocol defects that must never be demoted by voting.
  * Transport/capacity failures must NOT become defect codes (no reviewer_error).
  */
-const FORCE_KEEP_CODES = new Set([
-  "empty_review",
-  "unparsed_review",
-  "reviewer_missing",
-]);
+const FORCE_KEEP_CODES = new Set(["empty_review", "unparsed_review", "reviewer_missing"]);
 
 export function parseDefectReportFromText(text: string, reviewerId: string): DefectReport {
   const raw = text?.trim() ?? "";
@@ -158,11 +154,7 @@ function normalizeDefectItems(items: unknown[]): DefectItem[] {
  * Cross-reviewer fingerprint for ensemble merge (code + path + normalized issue).
  * Ignores reviewer id and severity so the same finding from two lenses collapses.
  */
-export function defectFingerprint(d: {
-  code?: string;
-  path?: string;
-  issue: string;
-}): string {
+export function defectFingerprint(d: { code?: string; path?: string; issue: string }): string {
   const code = (d.code ?? "review_finding").trim().toLowerCase();
   const pathKey = (d.path ?? "").trim().toLowerCase().replace(/\\/g, "/");
   const issue = d.issue
@@ -278,9 +270,7 @@ export function applyStickyBlockingDefects(
     sticky.push({
       ...d,
       code: d.code?.startsWith("sticky_") ? d.code : `sticky_${d.code ?? "blocking"}`.slice(0, 80),
-      issue: d.issue.startsWith("[sticky]")
-        ? d.issue
-        : `[sticky] ${d.issue}`.slice(0, 2000),
+      issue: d.issue.startsWith("[sticky]") ? d.issue : `[sticky] ${d.issue}`.slice(0, 2000),
     });
   }
   if (sticky.length === 0) return current;

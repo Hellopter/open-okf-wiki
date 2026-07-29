@@ -1,48 +1,50 @@
 /**
- * Thin Pi adapter: real wiki_produce tool (ADR 0032).
- * All Wiki Run logic lives in runWiki.
+ * Thin Pi adapter: wiki_produce dispatches StartRun and returns a receipt (ADR 0035).
+ * WikiRuns owns freeze/plan/gates; this tool does not await the Run.
  */
 
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+  type RunCommandReceipt,
   toDurableWikiProduceDetails,
   type WikiProduceDurableDetails,
   type WikiProduceToolDetails,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import type { AgentRunner } from "../ports/agent-runner.js";
-import { resolveProduceRuntime } from "../runtime/produce-runtime.js";
-import { requestTimeoutMs } from "../workflow/budgets.js";
-import {
-  type GatePort,
-  type RunWikiInput,
-  runWiki,
-  type WikiProduceModelFactory,
-} from "../workflow/run-wiki.js";
-import { createSubmitWikiRunSpecTool } from "./submit-wiki-run-spec.js";
-import { createToolDetailsAccumulator } from "./wiki-produce-details.js";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 
-export type {
-  GateDecision,
-  GatePort,
-  GateRequest,
-  WikiProduceModelFactory,
-  WikiProduceModelRole,
-} from "../workflow/run-wiki.js";
+/** Server-composed port: dispatch StartRun into the workspace WikiRuns owner. */
+export type StartWikiRun = (input: {
+  commandId: string;
+  sessionId: string;
+  notes?: string;
+}) => Promise<RunCommandReceipt>;
+
+export type WikiProduceModelRole = "writer" | "planner" | "worker" | "reviewer";
+
+export type WikiProduceModelFactory = (
+  role: WikiProduceModelRole,
+  workspace: WorkspaceConfig,
+  opts?: { seatIndex?: number },
+) => Promise<{
+  model: unknown;
+  modelRuntime?: unknown;
+  maxContextTokens?: number;
+}>;
 
 export type CreateWikiProduceToolInput = {
   workspace: WorkspaceConfig;
   resolveWorkspace?: () => Promise<WorkspaceConfig>;
   sessionId: string;
-  gateCoordinator: GatePort;
+  /**
+   * Server injects WikiRuns StartRun dispatch. Required on the product path.
+   * Tests may supply a fake that returns a receipt immediately.
+   */
+  startWikiRun: StartWikiRun;
   resolveModel?: WikiProduceModelFactory;
   fixture?: boolean;
-  autoApprove?: boolean;
-  /** Inject runtime for tests; otherwise resolved from fixture/live at execute. */
-  runtime?: AgentRunner;
 };
 
 const wikiProduceParameters = Type.Object(
@@ -59,26 +61,18 @@ const wikiProduceParameters = Type.Object(
 
 function toolResult(details: WikiProduceToolDetails) {
   const durable: WikiProduceDurableDetails = toDurableWikiProduceDetails(details);
-  let text =
+  const text =
     durable.summary?.trim() ||
     (durable.runId
       ? `Wiki Run ${durable.runId}: ${durable.status}`
       : `wiki_produce: ${durable.status}`);
-  // Surface runId in text so the Operator can call wiki_repair without digging into details.
-  if (
-    durable.runId &&
-    (durable.status === "failed" || durable.status === "publication_declined") &&
-    !text.includes(durable.runId)
-  ) {
-    text = `${text} (runId=${durable.runId}; repair staging with wiki_repair)`;
-  }
   return {
     content: [{ type: "text" as const, text }],
     details: durable,
   };
 }
 
-/** Build the LLM-callable Pi tool. One execute owns one complete Wiki Run via runWiki. */
+/** Build the LLM-callable Pi tool. Execute dispatches StartRun and returns the receipt. */
 export function createWikiProduceTool(
   input: CreateWikiProduceToolInput,
 ): ToolDefinition<typeof wikiProduceParameters, WikiProduceToolDetails> {
@@ -89,6 +83,7 @@ export function createWikiProduceTool(
       "Create or refresh the source-grounded repository Wiki.",
       "ONLY when the operator explicitly asks to produce, build, regenerate, refresh, or rewrite the Wiki.",
       "Do NOT call for: model/context/token questions, settings, sources management, greetings, or general Q&A.",
+      "Starts a durable Wiki Run and returns immediately with runId; it does not wait for plan or publication.",
     ].join(" "),
     promptSnippet: "Produce/refresh Wiki (explicit operator request only)",
     promptGuidelines: [
@@ -96,53 +91,55 @@ export function createWikiProduceTool(
       "For questions about context window, tokens, session status, or configuration: answer in text or use session_status if available — never wiki_produce.",
       "To fix or repair an existing Wiki Run staging, call wiki_repair (never bash).",
       "Pass operator focus via notes; do not invent a run for exploratory chat.",
+      "After wiki_produce returns accepted+runId, tell the operator the Run is durable and plan/publication gates are resolved via the Run API — do not pretend the tool is still running.",
     ],
     parameters: wikiProduceParameters,
     executionMode: "sequential",
-    async execute(toolCallId, args, signal, onUpdate) {
-      const acc = createToolDetailsAccumulator({ status: "freezing" });
-      const push = (): void => {
-        try {
-          onUpdate?.(acc.toPartial());
-        } catch {
-          // display must not break the run
+    async execute(_toolCallId, args, signal, onUpdate) {
+      if (signal?.aborted) {
+        const cancelled: WikiProduceToolDetails = {
+          status: "cancelled",
+          summary: "Wiki Run start was cancelled before dispatch",
+        };
+        return toolResult(cancelled);
+      }
+
+      const accepting: WikiProduceToolDetails = {
+        status: "accepted",
+        summary: "Dispatching durable Wiki Run…",
+      };
+      try {
+        onUpdate?.({ content: [{ type: "text", text: accepting.summary! }], details: accepting });
+      } catch {
+        // display must not break dispatch
+      }
+
+      try {
+        // Fresh workspace snapshot so long-lived sessions see saved edits.
+        if (input.resolveWorkspace) {
+          await input.resolveWorkspace();
         }
-      };
-
-      const runtime = resolveProduceRuntime({
-        fixture: input.fixture,
-        runtime: input.runtime,
-        defaults: {
-          timeoutMs: requestTimeoutMs(input.workspace),
-          retry: input.workspace?.limits?.retry,
-        },
-      });
-
-      const runInput: RunWikiInput = {
-        workspace: input.workspace,
-        resolveWorkspace: input.resolveWorkspace,
-        sessionId: input.sessionId,
-        toolCallId,
-        notes: args.notes,
-        autoApprove: input.autoApprove,
-        gateCoordinator: input.gateCoordinator,
-        resolveModel: input.resolveModel,
-        fixture: input.fixture,
-        runtime,
-        abortSignal: signal,
-        // Tool edge owns Pi tools; workflow injects them as opaque customTools.
-        createPlanTools: (runWorkDir) => [createSubmitWikiRunSpecTool({ runWorkDir })],
-        // Single channel: phase/meta + graph all arrive as ProduceProgress.
-        onProgress: (progress) => {
-          acc.apply(progress);
-          push();
-        },
-      };
-
-      const result = await runWiki(runInput);
-      // Final state from runWiki is authoritative for toolResult
-      Object.assign(acc.details, result);
-      return toolResult(acc.details);
+        const commandId = crypto.randomUUID();
+        const receipt = await input.startWikiRun({
+          commandId,
+          sessionId: input.sessionId,
+          ...(args.notes?.trim() ? { notes: args.notes.trim() } : {}),
+        });
+        const details: WikiProduceToolDetails = {
+          status: "accepted",
+          runId: receipt.runId,
+          summary: `Wiki Run accepted (revision ${receipt.revision}). Plan and publication continue on the durable Run control plane.`,
+        };
+        return toolResult(details);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message.slice(0, 4000) : "Failed to start Wiki Run";
+        const details: WikiProduceToolDetails = {
+          status: "failed",
+          summary: message,
+        };
+        return { ...toolResult(details), isError: true };
+      }
     },
   });
 }

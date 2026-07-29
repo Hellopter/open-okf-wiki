@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { WorkspaceConfigSchema } from "@okf-wiki/contract";
-import { registerRunRecord } from "@okf-wiki/core";
 import {
   createOperatorSession,
   deleteOperatorSession,
@@ -41,9 +40,12 @@ async function makeWorkspace() {
   });
 }
 
-const neverGate = {
-  waitForDecision: async () => ({ action: "deny" as const }),
-};
+const startWikiRunStub = async () => ({
+  commandId: "cmd-test",
+  runId: "run-test",
+  revision: 1,
+  accepted: true,
+});
 
 describe("SessionManager-owned Operator Sessions", () => {
   it("creates, lists, opens history, renames, and deletes through Pi authority", async () => {
@@ -51,7 +53,7 @@ describe("SessionManager-owned Operator Sessions", () => {
     const created = await createOperatorSession({
       workspace,
       sessionId: "operator-1",
-      wikiProduce: { gateCoordinator: neverGate, fixture: true },
+      wikiProduce: { startWikiRun: startWikiRunStub, fixture: true },
     });
     try {
       assert.equal(created.sessionId, "operator-1");
@@ -97,7 +99,7 @@ describe("SessionManager-owned Operator Sessions", () => {
     const opened = await openOperatorSession({
       workspace,
       sessionId: "operator-1",
-      wikiProduce: { gateCoordinator: neverGate, fixture: true },
+      wikiProduce: { startWikiRun: startWikiRunStub, fixture: true },
     });
     try {
       assert.equal(opened.sessionId, "operator-1");
@@ -114,37 +116,20 @@ describe("SessionManager-owned Operator Sessions", () => {
       opened.dispose();
     }
 
-    const runId = "operator-run";
+    // Session delete must not touch run workdirs or publication (WikiRuns owns runs).
+    const runId = "durable-run";
     const runDir = path.join(workspace.rootPath, ".okf-wiki", "runs", runId);
-    const skillPath = path.join(runDir, "skill");
-    await mkdir(skillPath, { recursive: true });
+    await mkdir(path.join(runDir, "skill"), { recursive: true });
     await writeFile(path.join(runDir, "staging.txt"), "run-owned", "utf8");
-    await registerRunRecord(workspace.rootPath, workspace.id, {
-      runId,
-      sessionId: "operator-1",
-      autoApprove: false,
-      skillPath,
-      skillDigest: "a".repeat(64),
-      sources: [
-        {
-          id: "main",
-          revision: "b".repeat(40),
-          effectiveIgnores: [],
-        },
-      ],
-    });
     const publishedMarker = path.join(workspace.publicationPath, "keep.md");
     await mkdir(workspace.publicationPath, { recursive: true });
     await writeFile(publishedMarker, "published", "utf8");
 
     const deleted = await deleteOperatorSession(workspace.rootPath, "operator-1");
     assert.equal(deleted.deleted, true);
-    assert.deepEqual(deleted.removedRunIds, [runId]);
     assert.equal((await listOperatorSessions(workspace.rootPath)).length, 0);
-    await assert.rejects(access(runDir));
-    await assert.rejects(
-      access(path.join(workspace.rootPath, ".okf-wiki", "runs", `${runId}.json`)),
-    );
+    await access(runDir);
+    assert.equal(await readFile(path.join(runDir, "staging.txt"), "utf8"), "run-owned");
     assert.equal(await readFile(publishedMarker, "utf8"), "published");
   });
 });

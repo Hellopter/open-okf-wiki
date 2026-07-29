@@ -1,4 +1,4 @@
-/** Pi-native Operator Session authority (ADR 0032). */
+/** Pi-native Operator Session authority (conversation only; WikiRuns owns Runs — ADR 0035). */
 
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
@@ -9,11 +9,11 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage, WorkspaceConfig } from "@okf-wiki/contract";
-import { deleteSessionRuns, isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
+import { isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
 import { createSessionStatusTool } from "../tools/session-status.js";
 import { type CreateWikiProduceToolInput, createWikiProduceTool } from "../tools/wiki-produce.js";
-import { createWikiRepairTool } from "../tools/wiki-repair.js";
+import { type CreateWikiRepairToolInput, createWikiRepairTool } from "../tools/wiki-repair.js";
 import { projectOperatorAgentMessagesFromManager } from "./history.js";
 
 export {
@@ -44,7 +44,8 @@ export type OperatorSessionSummary = {
   updatedAt: string;
 };
 
-type OperatorWikiProduceInput = Omit<CreateWikiProduceToolInput, "workspace" | "sessionId">;
+type OperatorWikiProduceInput = Omit<CreateWikiProduceToolInput, "workspace" | "sessionId"> &
+  Pick<CreateWikiRepairToolInput, "rerunWikiNode" | "resolveRepairTarget">;
 
 type OperatorSessionRuntimeInput = {
   workspace: WorkspaceConfig;
@@ -122,8 +123,10 @@ async function buildOperatorSession(
     workspace: input.workspace,
     resolveWorkspace: input.wikiProduce.resolveWorkspace,
     sessionId,
-    resolveModel: input.wikiProduce.resolveModel,
-    fixture: input.wikiProduce.fixture,
+    // Optional RerunNode wiring is composed by the Server; without it the tool
+    // fails closed and points operators at durable Run commands.
+    rerunWikiNode: input.wikiProduce.rerunWikiNode,
+    resolveRepairTarget: input.wikiProduce.resolveRepairTarget,
   });
   const handle = await createWikiSession({
     role: "operator_chat",
@@ -193,20 +196,19 @@ export async function loadOperatorSessionHistory(
   };
 }
 
-/** Delete the Session JSONL and all v2 Run work owned by that Session. */
+/** Delete the Session JSONL; Wiki Runs are retained independently. */
 export async function deleteOperatorSession(
   workspaceRootInput: string,
   sessionId: string,
-): Promise<{ deleted: boolean; removedRunIds: string[] }> {
+): Promise<{ deleted: boolean }> {
   const root = workspaceRoot(workspaceRootInput);
   const info = await findSessionInfo(root, sessionId);
-  const removedRunIds = await deleteSessionRuns(root, sessionId);
-  if (!info) return { deleted: false, removedRunIds };
+  if (!info) return { deleted: false };
 
   const sessionDir = piSessionsDir(root);
   if (!isPathInside(sessionDir, info.path)) {
     throw new Error("SessionManager returned a path outside pi-sessions");
   }
   await rm(info.path, { force: true });
-  return { deleted: true, removedRunIds };
+  return { deleted: true };
 }

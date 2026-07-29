@@ -9,13 +9,13 @@ import {
   AgentMessageSchema,
   applySnapshotWithActiveTool,
   applyStreamPatch,
-  projectAgentMessagesFromPiHistory,
   type PiStreamState,
+  projectAgentMessagesFromPiHistory,
 } from "@okf-wiki/contract";
 import type { AgentMessage, AgentSseLike } from "./types.ts";
 
-export { createPiStreamState, updateToolInState, viewMessages } from "@okf-wiki/contract";
 export type { PiStreamState } from "@okf-wiki/contract";
+export { createPiStreamState, updateToolInState, viewMessages } from "@okf-wiki/contract";
 
 /**
  * Snapshot messages are AgentMessage[] from the server (ADR 0031).
@@ -48,12 +48,9 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
     const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
-    // Absent pendingGate on snapshot clears any prior live waiter.
-    return applySnapshotWithActiveTool(
-      snapshotMessages(rows),
-      event.payload.activeTool,
-      event.payload.pendingGate ?? null,
-    );
+    // T2/T7: Session SSE no longer carries memory pendingGate; always clear on snapshot.
+    // Live gates are WikiRuns ResolveGate (receipt-only wiki_produce details).
+    return applySnapshotWithActiveTool(snapshotMessages(rows), event.payload.activeTool, null);
   }
   if (event.source === "server" && event.kind === "stream") {
     return applyStreamPatch(state, event.payload);

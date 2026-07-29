@@ -329,9 +329,7 @@ export function WorkspaceWikiPage() {
               data-testid="wiki-source-cite"
               data-cite-href={href}
             >
-              {label !== "Source" ? (
-                <span className="wiki-source-cite__label">{label}</span>
-              ) : null}
+              {label !== "Source" ? <span className="wiki-source-cite__label">{label}</span> : null}
               <span className="wiki-source-cite__target">{shortTarget}</span>
             </span>
           );
@@ -360,9 +358,7 @@ export function WorkspaceWikiPage() {
     };
   }, [id, pageFromRoute, selectPage]);
 
-  const bodyMarkdown = page
-    ? stripLeadingTitle(stripFrontmatter(page.content), page.title)
-    : "";
+  const bodyMarkdown = page ? stripLeadingTitle(stripFrontmatter(page.content), page.title) : "";
   const pageLabel = page?.title ?? (pageFromRoute || undefined);
 
   const treeTitles = useMemo(() => {

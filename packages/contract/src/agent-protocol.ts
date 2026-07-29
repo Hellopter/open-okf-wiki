@@ -9,14 +9,14 @@
 import { z } from "zod";
 import { AgentMessageSchema } from "./agent-message.js";
 import { AgentStreamViewPatchSchema } from "./agent-stream.js";
-import { WikiRunSpecSchema } from "./run.js";
 import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
 
 /** Relative dir under workspace meta: `{root}/.okf-wiki/pi-sessions/`. */
 export const PI_SESSIONS_DIR = "pi-sessions" as const;
 
 // ---------------------------------------------------------------------------
-// Agent commands (client → server → AgentSession / gate coordinator)
+// Agent commands (client → server → AgentSession)
+// Plan/publication HITL is ResolveGate on WikiRuns, not a Session command.
 // ---------------------------------------------------------------------------
 
 export const AgentPromptCommandSchema = z.object({
@@ -37,19 +37,6 @@ export const AgentCompactCommandSchema = z.object({
   type: z.literal("compact"),
 });
 
-/** Resume a plan or publication wait owned by the active `wiki_produce` tool. */
-export const AgentResumeGateCommandSchema = z.object({
-  type: z.literal("resume_gate"),
-  gate: z.enum(["plan", "publication"]),
-  action: z.enum(["approve", "deny", "revise"]),
-  /** Required when action is revise (plan gate only). */
-  feedback: z.string().min(1).max(4000).optional(),
-  /** Optional Spec override when approving or revising a plan gate. */
-  spec: WikiRunSpecSchema.optional(),
-  /** Linked Wiki Run Record id. */
-  runId: z.string().min(1).optional(),
-});
-
 /**
  * Switch this Operator Session's chat model to a Settings model profile.
  * Session-scoped and non-durable: workspace.model stays the default for
@@ -60,39 +47,18 @@ export const AgentSetModelCommandSchema = z.object({
   profileId: z.string().min(1).max(200),
 });
 
-export const AgentCommandSchema = z
-  .discriminatedUnion("type", [
-    AgentPromptCommandSchema,
-    AgentSteerCommandSchema,
-    AgentAbortCommandSchema,
-    AgentCompactCommandSchema,
-    AgentResumeGateCommandSchema,
-    AgentSetModelCommandSchema,
-  ])
-  .superRefine((cmd, ctx) => {
-    if (cmd.type === "resume_gate" && cmd.action === "revise") {
-      if (!cmd.feedback?.trim()) {
-        ctx.addIssue({
-          code: "custom",
-          message: "feedback is required when resume_gate action is revise",
-          path: ["feedback"],
-        });
-      }
-      if (cmd.gate === "publication") {
-        ctx.addIssue({
-          code: "custom",
-          message: "revise is only valid for the plan gate",
-          path: ["action"],
-        });
-      }
-    }
-  });
+export const AgentCommandSchema = z.discriminatedUnion("type", [
+  AgentPromptCommandSchema,
+  AgentSteerCommandSchema,
+  AgentAbortCommandSchema,
+  AgentCompactCommandSchema,
+  AgentSetModelCommandSchema,
+]);
 
 export type AgentPromptCommand = z.infer<typeof AgentPromptCommandSchema>;
 export type AgentSteerCommand = z.infer<typeof AgentSteerCommandSchema>;
 export type AgentAbortCommand = z.infer<typeof AgentAbortCommandSchema>;
 export type AgentCompactCommand = z.infer<typeof AgentCompactCommandSchema>;
-export type AgentResumeGateCommand = z.infer<typeof AgentResumeGateCommandSchema>;
 export type AgentSetModelCommand = z.infer<typeof AgentSetModelCommandSchema>;
 export type AgentCommand = z.infer<typeof AgentCommandSchema>;
 
@@ -139,20 +105,6 @@ export const AgentSseActiveToolSchema = z
 
 export type AgentSseActiveTool = z.infer<typeof AgentSseActiveToolSchema>;
 
-/**
- * Live wiki_produce HITL waiter on the SSE snapshot arm.
- * Sourced from getPendingGate — only this card may show Approve/Deny.
- */
-export const AgentSsePendingGateSchema = z
-  .object({
-    toolCallId: z.string().min(1),
-    runId: z.string().min(1),
-    gate: z.enum(["plan", "publication"]),
-  })
-  .strict();
-
-export type AgentSsePendingGate = z.infer<typeof AgentSsePendingGateSchema>;
-
 /** Current SessionManager branch plus genuine live tool state, sent first on SSE. */
 export const AgentSseSnapshotSchema = z
   .object({
@@ -175,8 +127,6 @@ export const AgentSseSnapshotSchema = z
         messages: z.array(AgentMessageSchema),
         /** Latest genuine Pi tool update; absent when no tool is live. */
         activeTool: AgentSseActiveToolSchema.optional(),
-        /** Live HITL waiter; absent when no operator gate is open. */
-        pendingGate: AgentSsePendingGateSchema.optional(),
       })
       .strict(),
   })
@@ -258,7 +208,7 @@ export type CreatePiAgentSessionResponse = {
 export type AgentCommandResponse = {
   ok: boolean;
   sessionId: string;
-  command: "prompt" | "steer" | "abort" | "compact" | "resume_gate" | "set_model";
+  command: "prompt" | "steer" | "abort" | "compact" | "set_model";
   status: "accepted" | "failed";
   message?: string;
   runId?: string;

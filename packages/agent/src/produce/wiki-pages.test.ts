@@ -53,10 +53,7 @@ test("materializeWikiIndexes: pages list includes nested index after materialize
   );
 
   // Before materialize: only concept pages.
-  assert.deepEqual((await listWikiMarkdown(wikiDir)).sort(), [
-    "modules/core.md",
-    "overview.md",
-  ]);
+  assert.deepEqual((await listWikiMarkdown(wikiDir)).sort(), ["modules/core.md", "overview.md"]);
 
   const indexes = await materializeWikiIndexes(wikiDir);
   assert.ok(indexes.written.includes("index.md"));

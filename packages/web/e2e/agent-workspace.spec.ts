@@ -18,7 +18,7 @@ async function expectWaitingNotThinking(page: Page): Promise<void> {
   await expect(waiting.first()).not.toContainText(/Thinking|思考中/);
 }
 
-test.describe("agent workspace operator surface (ADR 0032)", () => {
+test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
   test("route + shell render after workspace create", async ({ page }) => {
     const { name } = await createWorkspaceViaUi(page, "E2E Agent Shell");
 
@@ -87,11 +87,15 @@ test.describe("agent workspace operator surface (ADR 0032)", () => {
     const source = createTempGitRepo("agent-produce");
 
     await addSourceViaUi(page, source, "appsrc");
+    // Plan confirm lives under Configure → General (default section).
     await page.getByTestId("workspace-subnav-settings").click();
+    await expect(page.getByTestId("configure-page")).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("settings-tab-general").click();
     await expect(page.getByTestId("settings-page")).toBeVisible();
     await setChecked(page, "settings-plan-confirm", true);
     await page.getByTestId("settings-save").click();
-    await expect(page.getByRole("status")).toBeVisible();
+    // Sonner success toast (role may vary); checkbox staying checked proves patch applied.
+    await expect(page.getByTestId("settings-plan-confirm")).toBeChecked({ timeout: 15_000 });
 
     await page.getByTestId("workspace-subnav-agent").click();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
@@ -111,41 +115,80 @@ test.describe("agent workspace operator surface (ADR 0032)", () => {
     await expect(page.locator("[data-product-kind]")).toHaveCount(0);
     await expect(page.getByTestId("agent-start-wiki-run")).toHaveCount(0);
 
+    // ADR 0035: tool details are StartRun receipt only (accepted|failed|cancelled).
+    // Live phase/gates come from WikiRuns projection (data-wiki-run-state + open-gate testids).
+    const produceCard = page.locator(
+      '[data-testid="tool-execution-card"][data-tool-name="wiki_produce"]',
+    );
+    const ensureProducePanelOpen = async (): Promise<void> => {
+      await expect(produceCard).toBeVisible({ timeout: 30_000 });
+      const detailsNow = page.getByTestId("wiki-produce-details");
+      if (!(await detailsNow.isVisible().catch(() => false))) {
+        await produceCard.locator('[data-slot="collapsible-trigger"], button').first().click();
+      }
+      await expect(page.getByTestId("wiki-produce-details")).toBeVisible({ timeout: 15_000 });
+    };
+
+    await ensureProducePanelOpen();
     const details = page.getByTestId("wiki-produce-details");
-    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_plan", {
+    await expect(details).toHaveAttribute("data-wiki-status", "accepted", {
       timeout: 45_000,
     });
-    await expect(details).toContainText("overview.md");
-    await page.reload();
-    await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
-    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_plan", {
+    await expect(details).toHaveAttribute("data-wiki-run-id", /.+/);
+
+    await expect(page.getByTestId("agent-plan-gate")).toBeVisible({ timeout: 90_000 });
+    await expect(details).toHaveAttribute("data-wiki-run-state", "waiting_for_operator", {
       timeout: 15_000,
     });
-    await expect(details).toContainText("overview.md");
-    await page.getByTestId("agent-gate-approve").click();
 
-    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_publication", {
-      timeout: 45_000,
-    });
     await page.reload();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
-    await expect(details).toHaveAttribute("data-wiki-status", "awaiting_publication", {
-      timeout: 15_000,
-    });
+    await ensureProducePanelOpen();
+    await expect(page.getByTestId("agent-plan-gate")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
+      "data-wiki-run-state",
+      "waiting_for_operator",
+      { timeout: 30_000 },
+    );
     await page.getByTestId("agent-gate-approve").click();
 
-    await expect(details).toHaveAttribute("data-wiki-status", "published", {
-      timeout: 45_000,
-    });
+    await expect(page.getByTestId("agent-publication-gate")).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
+      "data-wiki-run-state",
+      "waiting_for_operator",
+      { timeout: 15_000 },
+    );
+
+    await page.reload();
+    await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
+    await ensureProducePanelOpen();
+    await expect(page.getByTestId("agent-publication-gate")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
+      "data-wiki-run-state",
+      "waiting_for_operator",
+      { timeout: 30_000 },
+    );
+    await page.getByTestId("agent-gate-approve").click();
+
+    await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
+      "data-wiki-run-state",
+      "published",
+      { timeout: 60_000 },
+    );
+    await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
+      "data-wiki-status",
+      "accepted",
+    );
     await expectWaitingNotThinking(page);
 
     await page.getByTestId("workspace-subnav-wiki").click();
     await expect(page.getByTestId("wiki-page")).toBeVisible({ timeout: 15_000 });
-    await expect(
-      page.getByTestId("wiki-page-list").getByTestId("wiki-page-link").filter({
-        hasText: "overview.md",
-      }),
-    ).toBeVisible();
+    // Tree shows page title; path is on data-page (fixture writes overview.md).
+    const overviewLink = page.locator(
+      '[data-testid="wiki-page-link"][data-page="overview.md"]',
+    );
+    await expect(overviewLink).toBeVisible({ timeout: 15_000 });
+    await overviewLink.click();
     await expect(page.getByTestId("wiki-page-title")).toContainText(name);
     await expect(page.getByTestId("wiki-markdown")).toContainText("fixture mode");
   });

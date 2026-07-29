@@ -12,6 +12,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Empty,
   EmptyContent,
   EmptyDescription,
@@ -21,12 +27,6 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   createWorkspace,
   deleteWorkspace,
@@ -293,10 +293,7 @@ export function WorkspacesPage() {
             </CardContent>
           </Card>
         ) : (
-          <div
-            className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
-            data-testid="workspace-list"
-          >
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="workspace-list">
             {workspaces.map((ws) => {
               const href = operateHref(ws.id);
               return (
@@ -356,9 +353,7 @@ export function WorkspacesPage() {
                     <p className="text-xs text-muted-foreground">
                       {formatMessage(t.workspaces.sourceCountLabel, { n: ws.sourceCount })}
                       {" · "}
-                      {ws.lastOpenedAt
-                        ? new Date(ws.lastOpenedAt).toLocaleDateString()
-                        : "—"}
+                      {ws.lastOpenedAt ? new Date(ws.lastOpenedAt).toLocaleDateString() : "—"}
                     </p>
                   </CardContent>
                 </Card>

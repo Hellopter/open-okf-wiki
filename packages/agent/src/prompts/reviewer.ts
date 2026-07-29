@@ -52,8 +52,7 @@ export function reviewerPrompt(input: {
           "",
           "DIFFERENTIAL REVIEW — re-verify these prior blocking defects first:",
           ...input.priorBlocking.map(
-            (d, i) =>
-              `${i + 1}. [${d.code ?? "?"}] ${d.path ?? "?"}: ${d.issue.slice(0, 200)}`,
+            (d, i) => `${i + 1}. [${d.code ?? "?"}] ${d.path ?? "?"}: ${d.issue.slice(0, 200)}`,
           ),
           "If still present, re-report them (same code/path when possible).",
           "If fixed, omit them. Only then report new blocking issues with clear evidence.",

@@ -10,7 +10,11 @@ import {
   type WikiNavNode,
 } from "./wiki-nav.js";
 
-function concept(path: string, title: string, type = "Concept"): {
+function concept(
+  path: string,
+  title: string,
+  type = "Concept",
+): {
   path: string;
   content: string;
   title: string;
@@ -227,8 +231,9 @@ test("buildWikiNav A→B→A cross-index cycle does not hang; back-edge omitted"
   ]);
   assert.deepEqual(pathsOf(nav), ["a/page.md", "b/page.md"]);
   // A dir is present; B is nested under A; cycle back-edge does not re-enter A.
-  const aDir = nav.find((n) => n.kind === "dir" && n.path === "a")
-    ?? (nav[0]?.kind === "group"
+  const aDir =
+    nav.find((n) => n.kind === "dir" && n.path === "a") ??
+    (nav[0]?.kind === "group"
       ? nav[0].children.find((n) => n.kind === "dir" && n.path === "a")
       : undefined);
   assert.ok(aDir && aDir.kind === "dir");
@@ -271,9 +276,7 @@ test("buildWikiNav empty children after covered omit dir; empty heading groups d
   assert.equal(
     pathsOf(nav).includes("modules/core.md") &&
       !nav.some(
-        (n) =>
-          n.kind === "dir" ||
-          (n.kind === "group" && n.children.some((c) => c.kind === "dir")),
+        (n) => n.kind === "dir" || (n.kind === "group" && n.children.some((c) => c.kind === "dir")),
       ),
     true,
   );
@@ -319,28 +322,20 @@ test("buildWikiNav multi-index same page: first index wins", () => {
 
 test("parseWikiIndexListing skips empty / whitespace-only title links", () => {
   const entries = parseWikiIndexListing(
-    [
-      "* [ ](overview.md)",
-      "* [](architecture.md)",
-      "* [Real](real.md)",
-    ].join("\n"),
+    ["* [ ](overview.md)", "* [](architecture.md)", "* [Real](real.md)"].join("\n"),
   );
   assert.deepEqual(entries, [{ kind: "link", title: "Real", href: "real.md" }]);
 });
 
 test("parseWikiIndexListing treats fragment-only href carefully (skipped)", () => {
   const entries = parseWikiIndexListing(
-    [
-      "* [Section](#section)",
-      "* [Page with fragment](overview.md#intro)",
-      "* [Bare hash](#)",
-    ].join("\n"),
+    ["* [Section](#section)", "* [Page with fragment](overview.md#intro)", "* [Bare hash](#)"].join(
+      "\n",
+    ),
   );
   // Fragment-only → empty path after strip → skipped.
   // Page + fragment → page target kept, fragment dropped.
-  assert.deepEqual(entries, [
-    { kind: "link", title: "Page with fragment", href: "overview.md" },
-  ]);
+  assert.deepEqual(entries, [{ kind: "link", title: "Page with fragment", href: "overview.md" }]);
 });
 
 test("buildWikiNav never lists reserved index.md / log.md as concept leaves", () => {
@@ -359,7 +354,10 @@ test("buildWikiNav never lists reserved index.md / log.md as concept leaves", ()
   ]);
   const all = pathsOf(nav);
   assert.deepEqual(all, ["overview.md", "modules/core.md"]);
-  assert.equal(all.some((p) => p.endsWith("index.md") || p.endsWith("log.md")), false);
+  assert.equal(
+    all.some((p) => p.endsWith("index.md") || p.endsWith("log.md")),
+    false,
+  );
 });
 
 test("buildWikiNavPathTree dir→file promotion: longer path promotes leaf to dir", () => {
@@ -397,13 +395,18 @@ test("buildWikiNav unwrapSoleGroup expands a single nested group unconditionally
       content: "# modules/\n\n* [A](a.md)\n* [B](b.md)\n",
     },
   ]);
-  const modules = nav.find((n) => n.kind === "dir")
-    ?? (nav[0]?.kind === "group"
-      ? nav[0].children.find((n) => n.kind === "dir")
-      : undefined);
+  const modules =
+    nav.find((n) => n.kind === "dir") ??
+    (nav[0]?.kind === "group" ? nav[0].children.find((n) => n.kind === "dir") : undefined);
   assert.ok(modules && modules.kind === "dir");
-  assert.equal(modules.children.every((c) => c.kind === "page"), true);
-  assert.equal(modules.children.some((c) => c.kind === "group"), false);
+  assert.equal(
+    modules.children.every((c) => c.kind === "page"),
+    true,
+  );
+  assert.equal(
+    modules.children.some((c) => c.kind === "group"),
+    false,
+  );
   assert.deepEqual(pathsOf([modules]), ["modules/a.md", "modules/b.md"]);
 
   // Multiple groups: not a sole group → keep group structure (no unwrap).
@@ -419,11 +422,13 @@ test("buildWikiNav unwrapSoleGroup expands a single nested group unconditionally
       content: "# One\n\n* [A](a.md)\n\n# Two\n\n* [B](b.md)\n",
     },
   ]);
-  const modulesMulti = multi.find((n) => n.kind === "dir")
-    ?? (multi[0]?.kind === "group"
-      ? multi[0].children.find((n) => n.kind === "dir")
-      : undefined);
+  const modulesMulti =
+    multi.find((n) => n.kind === "dir") ??
+    (multi[0]?.kind === "group" ? multi[0].children.find((n) => n.kind === "dir") : undefined);
   assert.ok(modulesMulti && modulesMulti.kind === "dir");
   assert.equal(modulesMulti.children.length, 2);
-  assert.equal(modulesMulti.children.every((c) => c.kind === "group"), true);
+  assert.equal(
+    modulesMulti.children.every((c) => c.kind === "group"),
+    true,
+  );
 });

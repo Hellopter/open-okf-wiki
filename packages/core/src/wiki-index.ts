@@ -9,12 +9,8 @@
 
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  isReservedWikiPath,
-  loadWikiPageRecords,
-  scanWikiTree,
-} from "./wiki-tree.js";
 import { parseWikiIndexListing } from "./wiki-nav.js";
+import { isReservedWikiPath, loadWikiPageRecords, scanWikiTree } from "./wiki-tree.js";
 
 export type WikiIndexListEntry =
   | { kind: "page"; title: string; href: string; description?: string; type?: string }
@@ -77,8 +73,7 @@ export function renderDirectoryIndex(entries: ReadonlyArray<WikiIndexListEntry>)
   const groups = new Map<string, Array<{ title: string; href: string; description?: string }>>();
 
   for (const entry of entries) {
-    const heading =
-      entry.kind === "dir" ? SUBDIRECTORIES_HEADING : entry.type?.trim() || "Other";
+    const heading = entry.kind === "dir" ? SUBDIRECTORIES_HEADING : entry.type?.trim() || "Other";
     const item = {
       title: entry.title,
       href: entry.href,
@@ -93,9 +88,7 @@ export function renderDirectoryIndex(entries: ReadonlyArray<WikiIndexListEntry>)
   const sections: string[] = [];
   for (const heading of headings) {
     const items = groups.get(heading)!;
-    items.sort(
-      (a, b) => a.title.localeCompare(b.title) || a.href.localeCompare(b.href),
-    );
+    items.sort((a, b) => a.title.localeCompare(b.title) || a.href.localeCompare(b.href));
     sections.push(
       [`# ${heading}`, "", ...items.map((e) => renderEntry(e.title, e.href, e.description))].join(
         "\n",
@@ -125,10 +118,7 @@ function directoryDescription(
   return pages;
 }
 
-function conceptsInSubtree(
-  all: ReadonlyArray<ConceptMeta>,
-  dirRel: string,
-): ConceptMeta[] {
+function conceptsInSubtree(all: ReadonlyArray<ConceptMeta>, dirRel: string): ConceptMeta[] {
   if (dirRel === "") return [...all];
   const prefix = `${dirRel}/`;
   return all.filter((c) => c.path.startsWith(prefix));

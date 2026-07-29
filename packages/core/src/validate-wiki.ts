@@ -8,11 +8,7 @@ import {
 import { parseSourceCitations, validateCitationFormat } from "./citations-parse.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { deriveWikiGraph } from "./wiki-links.js";
-import {
-  isReservedWikiPath,
-  loadWikiPageRecords,
-  WIKI_MAX_FILE_BYTES,
-} from "./wiki-tree.js";
+import { isReservedWikiPath, loadWikiPageRecords, WIKI_MAX_FILE_BYTES } from "./wiki-tree.js";
 
 /** Soft caps for mechanical publication validation. */
 export const WIKI_VALIDATE_MAX_FILES = 500;
@@ -145,9 +141,7 @@ export async function validateWikiTree(
     const hasTitle = Boolean(page.values.title);
     if (!hasType || !hasTitle) {
       if (!hasType && !hasTitle) {
-        errors.push(
-          `${page.relativePath}: missing YAML frontmatter with non-empty type and title`,
-        );
+        errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty type and title`);
       } else if (!hasType) {
         errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty type`);
       } else {

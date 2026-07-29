@@ -31,7 +31,10 @@ test.describe("doctor / global settings", () => {
     await page.getByTestId("provider-api-key").fill("sk-e2e-test-key-not-real");
     await page.getByTestId("provider-save").click();
     await expect(
-      page.locator("[data-sonner-toast]").filter({ hasText: /provider added/i }).first(),
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /provider added/i })
+        .first(),
     ).toBeVisible();
     // Provider-first: zero-model gateways must still show (not models-empty).
     await expect(page.getByTestId("provider-card").filter({ hasText: "E2E Gateway" })).toBeVisible({

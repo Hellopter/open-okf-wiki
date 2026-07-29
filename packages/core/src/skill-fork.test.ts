@@ -109,15 +109,13 @@ test("writeWorkspaceSkillFile refuses non-project skillPath", async () => {
         "SKILL.md",
         "x",
       ),
-    (error: unknown) =>
-      error instanceof WorkspaceIntakeError && error.code === "path_escape",
+    (error: unknown) => error instanceof WorkspaceIntakeError && error.code === "path_escape",
   );
 });
 
 test("writeWorkspaceSkillFile requires skillPath", async () => {
   await assert.rejects(
     () => writeWorkspaceSkillFile({ rootPath: "/tmp/ws" }, "SKILL.md", "x"),
-    (error: unknown) =>
-      error instanceof WorkspaceIntakeError && error.code === "invalid_root",
+    (error: unknown) => error instanceof WorkspaceIntakeError && error.code === "invalid_root",
   );
 });

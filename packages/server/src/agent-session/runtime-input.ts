@@ -5,13 +5,15 @@
 import {
   createOperatorFixtureModel,
   createOperatorSession,
+  type RerunWikiNode,
   resolveModelSelection,
   resolveWorkspacePiModel,
+  type StartWikiRun,
   shouldUsePiFixtureMode,
 } from "@okf-wiki/agent";
 import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { loadWorkspaceById, resolveWikiSkillPaths } from "@okf-wiki/core";
-import { gateCoordinator } from "./wiki-produce-gate-coordinator.ts";
+import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
 /** Portable result of runtimeInput (avoids leaking agent-internal declaration paths). */
 export type RuntimeInputResult = {
@@ -43,7 +45,68 @@ async function reloadWorkspace(workspace: WorkspaceConfig): Promise<WorkspaceCon
   return current;
 }
 
-/** Shared create/open runtime payload (model, skills, wikiProduce gate). */
+function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWikiRun {
+  return async ({ commandId, sessionId: sid }) => {
+    const runs = await wikiRunsForWorkspace(workspace);
+    return runs.dispatch(
+      { type: "start_run", commandId },
+      {
+        workspaceId: workspace.id,
+        actor: { id: sid || sessionId, kind: "operator_session" },
+        sessionId: sid || sessionId,
+      },
+    );
+  };
+}
+
+/** Server-composed RerunNode dispatch for wiki_repair (ADR 0035). */
+function rerunWikiNodeFor(workspace: WorkspaceConfig, sessionId: string): RerunWikiNode {
+  return async ({ commandId, runId, nodeKey, generation, feedback, sessionId: sid }) => {
+    const runs = await wikiRunsForWorkspace(workspace);
+    return runs.dispatch(
+      {
+        type: "rerun_node",
+        commandId,
+        runId,
+        nodeKey,
+        generation,
+        ...(feedback !== undefined ? { feedback } : {}),
+      },
+      {
+        workspaceId: workspace.id,
+        actor: { id: sid || sessionId, kind: "operator_session" },
+        sessionId: sid || sessionId,
+      },
+    );
+  };
+}
+
+/** Resolve current generation for the default repair target (write.root). */
+async function resolveRepairTargetFor(
+  workspace: WorkspaceConfig,
+  input: { runId: string },
+): Promise<{ nodeKey: string; generation: number } | null> {
+  const runs = await wikiRunsForWorkspace(workspace);
+  try {
+    const { snapshot } = await runs.read({ runId: input.runId });
+    const write = snapshot.nodes.find((node) => node.key === "write.root");
+    if (write) return { nodeKey: write.key, generation: write.generation };
+    // Fall back to any non-terminal node the operator can still rerun.
+    const candidate = snapshot.nodes.find(
+      (node) =>
+        node.kind !== "freeze" &&
+        !["cancelled", "blocked"].includes(node.state) &&
+        node.key !== "gate.plan" &&
+        node.key !== "gate.publication",
+    );
+    if (!candidate) return null;
+    return { nodeKey: candidate.key, generation: candidate.generation };
+  } catch {
+    return null;
+  }
+}
+
+/** Shared create/open runtime payload (model, skills, wikiProduce StartRun port). */
 export async function runtimeInput(
   workspace: WorkspaceConfig,
   sessionId?: string,
@@ -55,6 +118,7 @@ export async function runtimeInput(
     workspaceRoot: workspace.rootPath,
     skillPath: workspace.skillPath,
   });
+  const resolvedSessionId = sessionId ?? "pending";
   return {
     input: {
       workspace,
@@ -68,7 +132,9 @@ export async function runtimeInput(
       contextTargetTokens: workspace.limits?.contextTargetTokens,
       maxContextTokens: operatorModel?.runtime.maxContextTokens,
       wikiProduce: {
-        gateCoordinator: gateCoordinator(workspace.id, sessionId ?? "pending"),
+        startWikiRun: startWikiRunFor(workspace, resolvedSessionId),
+        rerunWikiNode: rerunWikiNodeFor(workspace, resolvedSessionId),
+        resolveRepairTarget: (input) => resolveRepairTargetFor(workspace, input),
         resolveWorkspace: () => reloadWorkspace(workspace),
         fixture,
         resolveModel: fixture

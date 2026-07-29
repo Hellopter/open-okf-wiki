@@ -9,11 +9,7 @@
 import type { WikiRunSpec } from "@okf-wiki/contract";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useI18n } from "../../i18n";
 
 function QuestionList({ questions }: { questions: readonly string[] }) {
@@ -111,9 +107,8 @@ export function SpecReviewView({ spec }: { spec: WikiRunSpec }) {
       ) : null}
 
       <p className="text-2xs text-muted-foreground">
-        {t.specReview.acceptance} · {spec.acceptance.reviewRequired
-          ? t.specReview.reviewRequired
-          : t.specReview.reviewOptional}
+        {t.specReview.acceptance} ·{" "}
+        {spec.acceptance.reviewRequired ? t.specReview.reviewRequired : t.specReview.reviewOptional}
         {" · "}
         {t.specReview.maxRepairRounds}: {spec.acceptance.maxRepairRounds}
         {" · "}

@@ -5,6 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { regenerateWikiIndexes } from "@okf-wiki/core";
+import { defaultSpecStore } from "../ports/core-spec-store.js";
+import { formatDefectsForRepair } from "../workflow/phases/repair-prompt.js";
 import {
   applyStickyBlockingDefects,
   defectFingerprint,
@@ -13,8 +15,6 @@ import {
   parseDefectReportFromText,
 } from "./defects.js";
 import { writeMergedDefects } from "./defects-io.js";
-import { defaultSpecStore } from "../ports/core-spec-store.js";
-import { formatDefectsForRepair } from "../workflow/phases/repair-prompt.js";
 import { scorePublishable } from "./publishability.js";
 
 test("parseDefectReportFromText recognizes NO_DEFECTS", () => {

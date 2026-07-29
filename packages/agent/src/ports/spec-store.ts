@@ -8,8 +8,7 @@
 import type { WikiRunSpec } from "@okf-wiki/contract";
 
 export type CommitSpecOptions = {
-  /** Also patch Run Record.spec (same Spec object). */
-  mirrorRunRecord?: boolean;
+  /** Optional summary for callers that surface commit context (not a v2 dual-write). */
   summary?: string;
 };
 

@@ -4,10 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import type { WorkspaceOrchestration } from "@okf-wiki/contract";
-import {
-  createFixtureProduceRuntime,
-  type AgentRunRequest,
-} from "../../runtime/fixture-runner.js";
+import { type AgentRunRequest, createFixtureProduceRuntime } from "../../runtime/fixture-runner.js";
 import { runWorkdirLayout } from "../../runtime/workdir.js";
 import { runPlanScouts } from "./plan-scouts.js";
 

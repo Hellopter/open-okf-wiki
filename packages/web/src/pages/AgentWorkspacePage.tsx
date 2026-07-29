@@ -11,14 +11,14 @@ import { Switch } from "@/components/ui/switch";
 import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
 import {
-  patchWorkspace,
   createAgentSession,
   deleteAgentSession,
   getWorkspace,
   listAgentSessions,
   listRuns,
   type PiSessionSummary,
-  type StoredRunRecord,
+  patchWorkspace,
+  type WikiRunListItem,
   type WorkspaceConfig,
 } from "../api";
 import { LoadingState } from "../components/LoadingState";
@@ -35,7 +35,7 @@ export function AgentWorkspacePage() {
   // Only set after boot validates the id exists (or creates one). Starting
   // from the URL would race getAgentSession and 404 on stale sessionIds.
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [recentRuns, setRecentRuns] = useState<StoredRunRecord[]>([]);
+  const [recentRuns, setRecentRuns] = useState<WikiRunListItem[]>([]);
   const [bootError, setBootError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -91,7 +91,7 @@ export function AgentWorkspacePage() {
 
       const [sessRes, runsRes] = await Promise.all([
         listAgentSessions(id, root),
-        listRuns(id, root).catch(() => ({ runs: [] as StoredRunRecord[] })),
+        listRuns(id, root).catch(() => ({ runs: [] as WikiRunListItem[] })),
       ]);
 
       let list = sessRes.sessions ?? [];
@@ -238,9 +238,7 @@ export function AgentWorkspacePage() {
       try {
         const result = await patchWorkspace(id, { planConfirm: next }, workspace.rootPath);
         setWorkspace(result.workspace);
-        toast.success(
-          next ? t.agentWorkspace.planConfirmOn : t.agentWorkspace.planConfirmOff,
-        );
+        toast.success(next ? t.agentWorkspace.planConfirmOn : t.agentWorkspace.planConfirmOff);
       } catch (err) {
         setBootError(err);
       } finally {
@@ -304,8 +302,6 @@ export function AgentWorkspacePage() {
           onInputChange={agent.setInput}
           onSend={() => void agent.send()}
           onAbort={() => void agent.abort()}
-          onResumeGate={agent.resumeGate}
-          pendingGate={agent.pendingGate}
           onSetModel={agent.setModel}
           agentStatus={agent.status}
           agentReady={agent.ready}

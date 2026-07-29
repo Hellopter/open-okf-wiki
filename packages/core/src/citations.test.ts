@@ -159,18 +159,14 @@ test("formatRepoCitation preserves line fragments", () => {
 });
 
 test("canonicalizeCitationInContent rewrites mount-form citations", () => {
-  const md =
-    "A [Source](repo:sources/ebase-2/pom.xml#L1-L2) and [Source](repo:src/a.ts#L3).";
+  const md = "A [Source](repo:sources/ebase-2/pom.xml#L1-L2) and [Source](repo:src/a.ts#L3).";
   const out = canonicalizeCitationInContent(md, {
     sourceIds: ["ebase-2"],
     multiSource: false,
   });
   assert.equal(out.changed, true);
   assert.equal(out.errors.length, 0);
-  assert.equal(
-    out.content,
-    "A [Source](repo:pom.xml#L1-L2) and [Source](repo:src/a.ts#L3).",
-  );
+  assert.equal(out.content, "A [Source](repo:pom.xml#L1-L2) and [Source](repo:src/a.ts#L3).");
 });
 
 test("resolveCitationFile after canonicalize finds mount-form citation", async () => {

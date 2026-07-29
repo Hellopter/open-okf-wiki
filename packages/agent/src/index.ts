@@ -1,7 +1,9 @@
 /**
- * @okf-wiki/agent — Pi-native Operator Sessions and the real wiki_produce tool.
+ * @okf-wiki/agent — Pi-native Operator Sessions and thin wiki_produce / wiki_repair tools.
  *
  * Pi owns conversation and tool lifecycle. Core owns the Run Boundary.
+ * WikiRuns (workflow package, composed by server) owns durable Run control.
+ * wiki_produce dispatches StartRun and returns a receipt; it does not own the Run.
  */
 
 /** Re-export Core skill roots helper (single resolution algorithm lives in Core). */
@@ -21,6 +23,11 @@ export {
 } from "./runtime/model/provider-model.js";
 export { resolveModelSelection } from "./runtime/model/role-model.js";
 export {
+  type CreatePiAttemptExecutorOptions,
+  createPiAttemptExecutor,
+  type PiAttemptExecutor,
+} from "./runtime/pi-attempt-executor.js";
+export {
   type ExpandOperatorCommandResult,
   expandOperatorCommand,
   listOperatorCommands,
@@ -39,7 +46,17 @@ export {
   projectOperatorHistoryMessage,
 } from "./session/operator-session.js";
 export {
-  type GateDecision,
-  type GatePort,
-  type GateRequest,
-} from "./workflow/run-wiki.js";
+  type CreateWikiProduceToolInput,
+  createWikiProduceTool,
+  type StartWikiRun,
+  WIKI_PRODUCE_TOOL_NAME,
+  type WikiProduceModelFactory,
+  type WikiProduceModelRole,
+} from "./tools/wiki-produce.js";
+export {
+  type CreateWikiRepairToolInput,
+  createWikiRepairTool,
+  type RerunWikiNode,
+  WIKI_REPAIR_TOOL_NAME,
+  type WikiRepairToolDetails,
+} from "./tools/wiki-repair.js";

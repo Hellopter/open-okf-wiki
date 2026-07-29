@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  defaultWikiRunSpec,
-  diffStreamState,
-  reducePiEvent,
-  toolOutputFromResult,
-} from "@okf-wiki/contract";
+import { diffStreamState, reducePiEvent, toolOutputFromResult } from "@okf-wiki/contract";
 import {
   createPiStreamState,
   projectAgentEvent,
   projectPiHistory,
   viewMessages,
 } from "./project/pi.ts";
-import type { AgentSseLike, PiStreamState } from "./project/types.ts";
+import type { PiStreamState } from "./project/types.ts";
 
 /** Simulate server live path: reduce Pi → stream patch → web apply. */
 function applyLive(
@@ -169,8 +164,7 @@ describe("projectAgentEvent", () => {
     assert.equal(messages[0]!.id, "user-1");
   });
 
-  it("restores the genuine live wiki_produce gate from a reconnect snapshot", () => {
-    const spec = defaultWikiRunSpec("Reconnect");
+  it("restores the genuine live wiki_produce receipt from a reconnect snapshot", () => {
     const state = projectAgentEvent(createPiStreamState(), {
       source: "server",
       kind: "snapshot",
@@ -199,16 +193,10 @@ describe("projectAgentEvent", () => {
           toolCallId: "wiki-1",
           toolName: "wiki_produce",
           details: {
-            status: "awaiting_plan",
+            status: "accepted",
             runId: "run-1",
-            spec,
-            summary: "Awaiting WikiRunSpec approval",
+            summary: "Wiki Run accepted (revision 1).",
           },
-        },
-        pendingGate: {
-          toolCallId: "wiki-1",
-          runId: "run-1",
-          gate: "plan",
         },
       },
     });
@@ -216,15 +204,12 @@ describe("projectAgentEvent", () => {
     const tool = viewMessages(state)[0]!.tools?.[0];
     assert.equal(tool?.id, "wiki-1");
     assert.equal(tool?.status, "running");
-    assert.equal(tool?.details?.status, "awaiting_plan");
-    assert.equal(tool?.details?.spec?.summary, spec.summary);
+    assert.equal(tool?.details?.status, "accepted");
+    assert.equal(tool?.details?.runId, "run-1");
     // Snapshot activeTool uses the same toolOutputFromResult path as live updates.
-    assert.equal(tool?.output, "Awaiting WikiRunSpec approval");
-    assert.deepEqual(state.pendingGate, {
-      toolCallId: "wiki-1",
-      runId: "run-1",
-      gate: "plan",
-    });
+    assert.equal(tool?.output, "Wiki Run accepted (revision 1).");
+    // T2: Session snapshot no longer seeds memory pendingGate.
+    assert.equal(state.pendingGate, null);
   });
 
   it("clears pendingGate when reconnect snapshot omits it (stale awaiting cards)", () => {
@@ -263,12 +248,10 @@ describe("projectAgentEvent", () => {
   });
 
   it("snapshot activeTool and live tool_execution_update share details.summary output", () => {
-    const summary = "Awaiting WikiRunSpec approval";
-    const spec = defaultWikiRunSpec("Parity");
+    const summary = "Wiki Run accepted (revision 1).";
     const details = {
-      status: "awaiting_plan" as const,
+      status: "accepted" as const,
       runId: "run-parity",
-      spec,
       summary,
     };
 
@@ -343,7 +326,10 @@ describe("projectAgentEvent", () => {
     assert.equal(snapshotOut, liveOut);
     assert.equal(toolOutputFromResult(undefined, details), summary);
     assert.equal(
-      toolOutputFromResult({ content: [{ type: "text", text: "different content text" }], details }),
+      toolOutputFromResult({
+        content: [{ type: "text", text: "different content text" }],
+        details,
+      }),
       summary,
     );
   });
@@ -565,7 +551,6 @@ describe("reducePiEvent", () => {
   });
 
   it("projects the real Pi tool lifecycle on its assistant message", () => {
-    const spec = defaultWikiRunSpec("Fixture");
     let state = createPiStreamState();
     state = reducePiEvent(state, "agent_start", { type: "agent_start" });
     state = reducePiEvent(state, "message_start", {
@@ -610,49 +595,30 @@ describe("reducePiEvent", () => {
       toolName: "wiki_produce",
       args: { audience: "users" },
     });
+    // T7: live updates are StartRun receipt only (no fat spec/graph on tool details).
     state = reducePiEvent(state, "tool_execution_update", {
       type: "tool_execution_update",
       toolCallId: "tool-1",
       partialResult: {
-        content: [{ type: "text", text: "Awaiting WikiRunSpec approval" }],
+        content: [{ type: "text", text: "Dispatching durable Wiki Run…" }],
         details: {
-          status: "awaiting_plan",
-          runId: "run-1",
-          spec,
-          graph: {
-            topologyVersion: 1,
-            topology: [{ nodeKey: "plan", kind: "plan", label: "Plan" }],
-            attempts: [
-              {
-                attemptId: "plan",
-                nodeKey: "plan",
-                runIndex: 0,
-                role: "plan",
-                status: "done",
-                summary: "Fixture default WikiRunSpec",
-                items: [{ type: "text", text: "pages=1" }],
-              },
-            ],
-          },
+          status: "accepted",
+          summary: "Dispatching durable Wiki Run…",
         },
       },
     });
-    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.status, "awaiting_plan");
-    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.spec?.pages[0]?.path, "overview.md");
-    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.graph?.attempts[0]?.role, "plan");
+    assert.equal(viewMessages(state)[0]!.tools?.[0]?.details?.status, "accepted");
     assert.deepEqual(viewMessages(state)[0]!.tools?.[0]?.args, { audience: "users" });
     state = reducePiEvent(state, "tool_execution_end", {
       type: "tool_execution_end",
       toolCallId: "tool-1",
       toolName: "wiki_produce",
       result: {
-        content: [{ type: "text", text: "published" }],
-        // Durable final details: no spec/graph (Run Boundary owns job facts).
+        content: [{ type: "text", text: "Wiki Run accepted" }],
         details: {
-          status: "published",
+          status: "accepted",
           runId: "run-1",
-          pages: ["overview.md"],
-          summary: "Published",
+          summary: "Wiki Run accepted (revision 1).",
         },
       },
       isError: false,
@@ -662,12 +628,22 @@ describe("reducePiEvent", () => {
     assert.equal(tool?.name, "wiki_produce");
     assert.equal(tool?.status, "done");
     // Prefer details.summary over content[].text (single derivation).
-    assert.equal(tool?.output, "Published");
+    assert.equal(tool?.output, "Wiki Run accepted (revision 1).");
     assert.deepEqual(tool?.args, { audience: "users" });
-    assert.equal(tool?.details?.status, "published");
-    assert.deepEqual(tool?.details?.pages, ["overview.md"]);
-    assert.equal(tool?.details?.spec, undefined);
-    assert.equal(tool?.details?.graph, undefined);
+    assert.equal(tool?.details?.status, "accepted");
+    assert.equal(tool?.details?.runId, "run-1");
+    assert.equal(
+      tool?.details && "spec" in tool.details
+        ? (tool.details as { spec?: unknown }).spec
+        : undefined,
+      undefined,
+    );
+    assert.equal(
+      tool?.details && "graph" in tool.details
+        ? (tool.details as { graph?: unknown }).graph
+        : undefined,
+      undefined,
+    );
   });
 
   it("dedupes message_end with the same Pi id (no double-append)", () => {

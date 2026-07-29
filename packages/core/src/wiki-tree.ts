@@ -241,7 +241,7 @@ export async function loadWikiPageRecords(
     const relativePath = file.relativePath.replace(/\\/g, "/");
     if (!relativePath.toLowerCase().endsWith(".md")) continue;
 
-    let size = file.size;
+    let size: number;
     try {
       // Re-lstat: never follow a symlink swapped in after the walk.
       const info = await lstat(file.absolutePath);

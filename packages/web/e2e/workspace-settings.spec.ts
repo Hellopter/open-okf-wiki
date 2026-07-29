@@ -12,7 +12,10 @@ test.describe("workspace settings", () => {
     await page.getByTestId("provider-api-key").fill("sk-e2e-settings-not-real");
     await page.getByTestId("provider-save").click();
     await expect(
-      page.locator("[data-sonner-toast]").filter({ hasText: /provider added/i }).first(),
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /provider added/i })
+        .first(),
     ).toBeVisible();
     await expect(page.getByTestId("provider-card").first()).toBeVisible();
 

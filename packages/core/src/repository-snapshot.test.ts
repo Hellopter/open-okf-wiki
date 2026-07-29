@@ -141,3 +141,47 @@ test("materializeRepositorySnapshot fails closed when checkout-index fails", asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("materializeRepositorySnapshot aborts a Git operation and removes its partial tree", async () => {
+  const root = await tempDir("okf-snap-abort-");
+  try {
+    const repo = path.join(root, "repo");
+    const dest = path.join(root, "snapshot");
+    await mkdir(repo, { recursive: true });
+    const controller = new AbortController();
+    const fake: GitRunner = async (_cwd, _args, opts) =>
+      new Promise((_, reject) => {
+        if (opts?.signal?.aborted) {
+          const error = new Error("The operation was aborted");
+          error.name = "AbortError";
+          reject(error);
+          return;
+        }
+        opts?.signal?.addEventListener(
+          "abort",
+          () => {
+            const error = new Error("The operation was aborted");
+            error.name = "AbortError";
+            reject(error);
+          },
+          { once: true },
+        );
+      });
+
+    const materializing = materializeRepositorySnapshot(
+      {
+        repositoryPath: repo,
+        revision: "abc",
+        destination: dest,
+        effectiveIgnores: [],
+        signal: controller.signal,
+      },
+      fake,
+    );
+    controller.abort();
+    await assert.rejects(materializing, (error: unknown) => (error as Error).name === "AbortError");
+    await assert.rejects(() => access(dest), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

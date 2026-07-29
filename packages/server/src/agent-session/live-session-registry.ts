@@ -13,7 +13,6 @@ import {
 } from "../project-pi-sse.ts";
 import { sessionKey } from "../session-key.ts";
 import { runtimeInput } from "./runtime-input.ts";
-import { hasPendingGate } from "./wiki-produce-gate-coordinator.ts";
 
 type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 
@@ -98,11 +97,7 @@ export function registerLive(
     if (tool === null) delete entry.activeTool;
     else if (tool) entry.activeTool = tool;
     // Server reduces Pi → stream view patch (redacted); web only applies.
-    const advanced = projectLiveStreamEvent(
-      handle.sessionId,
-      entry.streamState,
-      event,
-    );
+    const advanced = projectLiveStreamEvent(handle.sessionId, entry.streamState, event);
     entry.streamState = advanced.state;
     emitAgentSessionEvent(workspaceId, handle.sessionId, advanced.frame);
   });
@@ -130,7 +125,6 @@ export function sweepIdleLiveSessions(now = Date.now()): number {
   let removed = 0;
   for (const [key, entry] of liveSessions) {
     if (entry.busy) continue;
-    if (hasPendingGate(key)) continue;
     try {
       if (!entry.handle.session.isIdle) continue;
     } catch {

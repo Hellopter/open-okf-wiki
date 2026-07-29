@@ -57,7 +57,7 @@ export function createSessionStatusTool(
         contextTargetTokens: budget.contextTarget,
         sourceCount: input.workspace.sources.length,
         sourceIds: input.workspace.sources.map((s) => s.id),
-        // Same default as the run's plan gate (run-wiki requirePlanGate):
+        // Same default as the run's plan gate (requirePlanGate):
         // OFF unless explicitly enabled (schema default is false).
         planConfirm: input.workspace.planConfirm === true,
         wikiLanguage: input.workspace.wikiLanguage ?? "en",

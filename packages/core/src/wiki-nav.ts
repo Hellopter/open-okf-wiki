@@ -12,8 +12,8 @@
  * - Path-tree fallback (module-internal helper, not a public barrel export)
  */
 
-import { isReservedWikiPath, parseWikiFrontmatter, wikiMarkdownBody } from "./wiki-tree.js";
 import { resolveWikiLinkTarget } from "./wiki-links.js";
+import { isReservedWikiPath, parseWikiFrontmatter, wikiMarkdownBody } from "./wiki-tree.js";
 
 /** Stable group marker for pages missing from every consumed index. */
 export const WIKI_NAV_UNLISTED_TITLE = "Unlisted";
@@ -63,8 +63,7 @@ const TYPE_ORDER: Record<string, number> = {
 };
 
 const HEADING_RE = /^(#{1,2})\s+(.+?)\s*$/;
-const LIST_LINK_RE =
-  /^[*+-]\s+\[([^\]]+)\]\(([^)\s]+)\)(?:\s*[-–—:]\s*(.+?))?\s*$/;
+const LIST_LINK_RE = /^[*+-]\s+\[([^\]]+)\]\(([^)\s]+)\)(?:\s*[-–—:]\s*(.+?))?\s*$/;
 
 function posixPath(raw: string): string {
   return raw.replace(/\\/g, "/").replace(/^\/+/, "");

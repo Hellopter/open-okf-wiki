@@ -1,10 +1,30 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { assertNoSymlinkComponents } from "./paths.js";
-import { publishStagingToPublication } from "./publish.js";
+import {
+  applySealedPublicationCandidate,
+  capturePublicationBaseline,
+  digestPublicationTree,
+  digestPublicationTreeContentOnly,
+  EMPTY_PUBLICATION_DIGEST,
+  materializePublicationCandidate,
+  publishStagingToPublication,
+  reconcilePublicationApply,
+} from "./publish.js";
 import { validateWikiIndexes } from "./wiki-index.js";
 import { countMarkdownFiles } from "./wiki-tree.js";
 
@@ -324,4 +344,299 @@ test("publishStagingToPublication rejects md without title frontmatter", async (
       }),
     /validation|frontmatter|title/i,
   );
+});
+
+test("capturePublicationBaseline returns EMPTY_PUBLICATION_DIGEST for missing live tree", async () => {
+  const root = await tempDir("okf-pub-baseline-");
+  const publication = path.join(root, "wiki");
+  const digest = await capturePublicationBaseline(publication);
+  assert.equal(digest, EMPTY_PUBLICATION_DIGEST);
+});
+
+test("applySealedPublicationCandidate conflicts when live baseline drifts", async () => {
+  const root = await tempDir("okf-pub-cas-conflict-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await capturePublicationBaseline(publication);
+  // Drift live after baseline capture.
+  await mkdir(publication, { recursive: true });
+  await writeMd(publication, "other.md", page("Other"));
+
+  let beginCalled = false;
+  const result = await applySealedPublicationCandidate({
+    candidateDir: candidate,
+    publicationPath: publication,
+    expectedLiveDigest: expected,
+    effectKey: "publish:run:0:deadbeef",
+    beginApply: () => {
+      beginCalled = true;
+      return true;
+    },
+  });
+  assert.equal(result.status, "conflict");
+  assert.equal(beginCalled, false, "beginApply must not run on conflict");
+  if (result.status === "conflict") {
+    assert.notEqual(result.liveDigest, expected);
+  }
+});
+
+test("applySealedPublicationCandidate CAS beginApply before rename; reconcile recovers applied", async () => {
+  const root = await tempDir("okf-pub-cas-ok-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await capturePublicationBaseline(publication);
+  const candidateDigest = await digestPublicationTree(candidate);
+  const effectKey = "publish:run-apply:0:abcd";
+
+  let phase = "ready";
+  const result = await applySealedPublicationCandidate({
+    candidateDir: candidate,
+    publicationPath: publication,
+    expectedLiveDigest: expected,
+    effectKey,
+    beginApply: () => {
+      phase = "applying";
+      return true;
+    },
+  });
+  assert.equal(result.status, "applied");
+  assert.equal(phase, "applying");
+  if (result.status === "applied") {
+    assert.equal(result.liveDigest, candidateDigest);
+  }
+  const liveBody = await readFile(path.join(publication, "overview.md"), "utf8");
+  assert.match(liveBody, /Overview/);
+
+  // Simulate crash after success by asking reconcile with applying semantics.
+  const reconciled = await reconcilePublicationApply({
+    publicationPath: publication,
+    candidateDir: candidate,
+    candidateDigest,
+    expectedLiveDigest: expected,
+    effectKey,
+  });
+  assert.equal(reconciled.status, "applied");
+});
+
+test("applySealedPublicationCandidate aborts without rename when beginApply returns false", async () => {
+  const root = await tempDir("okf-pub-abort-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await capturePublicationBaseline(publication);
+  const result = await applySealedPublicationCandidate({
+    candidateDir: candidate,
+    publicationPath: publication,
+    expectedLiveDigest: expected,
+    effectKey: "publish:run-abort:0:ab",
+    beginApply: () => false,
+  });
+  assert.equal(result.status, "aborted");
+  await assert.rejects(() => readFile(path.join(publication, "overview.md"), "utf8"));
+});
+
+test("T5 reconcile: live sealed tree matches content-only candidateDigest", async () => {
+  const root = await tempDir("okf-pub-seal-recon-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  // WikiRuns seal adds a sidecar; effect identity is content-only.
+  const contentDigest = await digestPublicationTree(candidate);
+  await writeFile(
+    path.join(candidate, ".okf-artifact-manifest.json"),
+    `${JSON.stringify({ schema: 1, files: [{ path: "overview.md", digest: "x", size: 1 }] })}\n`,
+    "utf8",
+  );
+  const sealedDigest = await digestPublicationTree(candidate);
+  assert.notEqual(sealedDigest, contentDigest);
+  assert.equal(await digestPublicationTreeContentOnly(candidate), contentDigest);
+
+  const expected = await capturePublicationBaseline(publication);
+  const effectKey = `publish:seal-recon:0:${contentDigest}`;
+  const applied = await applySealedPublicationCandidate({
+    candidateDir: candidate,
+    publicationPath: publication,
+    expectedLiveDigest: expected,
+    effectKey,
+    beginApply: () => true,
+  });
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") {
+    assert.equal(applied.liveDigest, sealedDigest);
+    assert.notEqual(applied.liveDigest, contentDigest);
+  }
+
+  // Crash window: effect still applying, live already holds sealed bytes.
+  const reconciled = await reconcilePublicationApply({
+    publicationPath: publication,
+    candidateDir: candidate,
+    candidateDigest: contentDigest,
+    expectedLiveDigest: expected,
+    effectKey,
+  });
+  assert.equal(reconciled.status, "applied");
+});
+
+test("T5 reconcile: live still at baseline → failed (pre-rename crash)", async () => {
+  const root = await tempDir("okf-pub-recon-fail-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await capturePublicationBaseline(publication);
+  const candidateDigest = await digestPublicationTree(candidate);
+  const effectKey = "publish:recon-fail:0:aa";
+  // Simulate applying without ever renaming: live still empty baseline.
+  const reconciled = await reconcilePublicationApply({
+    publicationPath: publication,
+    candidateDir: candidate,
+    candidateDigest,
+    expectedLiveDigest: expected,
+    effectKey,
+  });
+  assert.equal(reconciled.status, "failed");
+  if (reconciled.status === "failed") {
+    assert.equal(reconciled.liveDigest, expected);
+  }
+});
+
+test("T5 reconcile: complete swap when live missing and next holds candidate", async () => {
+  const root = await tempDir("okf-pub-recon-next-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await capturePublicationBaseline(publication);
+  const candidateDigest = await digestPublicationTree(candidate);
+  const effectKey = "publish:recon-next:0:bb";
+  const token = createHash("sha256").update(effectKey).digest("hex").slice(0, 16);
+  const nextPath = `${publication}.next.${token}`;
+  // Crash after next materialize, before live rename: no live, next holds candidate.
+  await mkdir(path.dirname(publication), { recursive: true });
+  await cp(candidate, nextPath, { recursive: true });
+
+  const reconciled = await reconcilePublicationApply({
+    publicationPath: publication,
+    candidateDir: candidate,
+    candidateDigest,
+    expectedLiveDigest: expected,
+    effectKey,
+  });
+  assert.equal(reconciled.status, "applied");
+  const liveBody = await readFile(path.join(publication, "overview.md"), "utf8");
+  assert.match(liveBody, /Overview/);
+  await assert.rejects(() => lstat(nextPath));
+});
+
+test("T5 reconcile: restore prev aside when live missing mid-swap", async () => {
+  const root = await tempDir("okf-pub-recon-prev-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await mkdir(publication, { recursive: true });
+  await writeMd(publication, "old.md", page("Old"));
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await digestPublicationTree(publication);
+  const candidateDigest = await digestPublicationTree(candidate);
+  const effectKey = "publish:recon-prev:0:cc";
+  const token = createHash("sha256").update(effectKey).digest("hex").slice(0, 16);
+  const prevPath = `${publication}.prev.${token}`;
+  // Crash after live→prev, before next→live.
+  await rename(publication, prevPath);
+
+  const reconciled = await reconcilePublicationApply({
+    publicationPath: publication,
+    candidateDir: candidate,
+    candidateDigest,
+    expectedLiveDigest: expected,
+    effectKey,
+  });
+  assert.equal(reconciled.status, "failed");
+  const restored = await readFile(path.join(publication, "old.md"), "utf8");
+  assert.match(restored, /Old/);
+  await assert.rejects(() => lstat(prevPath));
+});
+
+test("T5 beginApply runs after baseline check and before any live mutation", async () => {
+  const root = await tempDir("okf-pub-cas-order-");
+  const staging = path.join(root, "staging");
+  const candidate = path.join(root, "candidate");
+  const publication = path.join(root, "wiki");
+  await mkdir(staging, { recursive: true });
+  await writeMd(staging, "overview.md", page("Overview"));
+  await materializePublicationCandidate({
+    wikiDir: staging,
+    candidateDir: candidate,
+    publicationPath: publication,
+  });
+  const expected = await capturePublicationBaseline(publication);
+  const order: string[] = [];
+  const result = await applySealedPublicationCandidate({
+    candidateDir: candidate,
+    publicationPath: publication,
+    expectedLiveDigest: expected,
+    effectKey: "publish:cas-order:0:dd",
+    beginApply: async () => {
+      order.push("beginApply");
+      // Live must still be absent / baseline — no rename yet.
+      try {
+        await lstat(publication);
+        order.push("live-exists-too-early");
+      } catch {
+        order.push("live-still-baseline");
+      }
+      return true;
+    },
+  });
+  assert.equal(result.status, "applied");
+  assert.deepEqual(order, ["beginApply", "live-still-baseline"]);
+  await readFile(path.join(publication, "overview.md"), "utf8");
 });

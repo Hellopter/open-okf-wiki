@@ -519,7 +519,7 @@ export const en = {
     runsEmpty: "No Wiki Runs yet for this workspace.",
     emptyTitle: "Start here",
     emptyDescription:
-      "Message the agent. If a Wiki Run is needed, the agent calls wiki_produce and its real tool lifecycle appears here.",
+      "Message the agent. If a Wiki Run is needed, the agent calls wiki_produce (StartRun receipt); live Run status and gates use the durable Run control plane.",
     placeholder: "Message the agent… (Enter to send, Shift+Enter for newline)",
     composerLabel: "Message the agent",
     composerRequired: "Enter a message before sending.",
@@ -557,6 +557,13 @@ export const en = {
       publish: "Publish",
       other: "Other",
     },
+    /** Durable WikiRuns handoff after wiki_produce accepted+runId. */
+    wikiRunAcceptedHint:
+      "Durable Wiki Run accepted. Live status, plan/publication gates, and retries come from the Run control plane (ResolveGate / RetryFailedNode) — not the Session tool Promise.",
+    openGates: "Open gates",
+    failedNodes: "Failed nodes",
+    retryFailedNode: "Retry",
+    rerunNode: "Rerun",
   },
 } as const;
 

@@ -1,19 +1,10 @@
 /** React adapter for the Pi-only Operator Session stream (ADR 0032). */
 
-import type {
-  AgentCommand,
-  AgentCommandResponse,
-  AgentPendingGate,
-  AgentResumeGateCommand,
-} from "@okf-wiki/contract";
+import type { AgentCommand, AgentCommandResponse } from "@okf-wiki/contract";
 import { AgentSseEventSchema } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl } from "../../api";
-import {
-  clearErrorFromState,
-  deriveAgentStatus,
-  type AgentStatus,
-} from "./derive-agent-status";
+import { type AgentStatus, clearErrorFromState, deriveAgentStatus } from "./derive-agent-status";
 import { makeId } from "./project/format";
 import { createPiStreamState, projectAgentEvent, viewMessages } from "./project/pi";
 import type { AgentMessage, AgentSseLike, AgentToolCall, PiStreamState } from "./project/types";
@@ -24,7 +15,7 @@ export function isCommandFailed(res: AgentCommandResponse | null | undefined): b
   return res.ok === false || res.status === "failed";
 }
 
-export type { AgentMessage, AgentToolCall, AgentStatus };
+export type { AgentMessage, AgentStatus, AgentToolCall };
 
 export type AgentMessageRole = AgentMessage["role"];
 
@@ -45,13 +36,10 @@ export type UseSessionAgentResult = {
   /** EventSource connection lifecycle (independent of agent turn status). */
   connectionStatus: ConnectionStatus;
   error: string | null;
-  /** Live wiki_produce HITL waiter; only this card is interactive. */
-  pendingGate: AgentPendingGate | null;
   input: string;
   setInput: (value: string) => void;
   send: (text?: string) => Promise<void>;
   abort: () => Promise<void>;
-  resumeGate: (command: AgentResumeGateCommand) => Promise<void>;
   /** Switch this Session's chat model to a Settings profile; true on success. */
   setModel: (profileId: string) => Promise<boolean>;
   clearError: () => void;
@@ -65,7 +53,6 @@ type SessionAgentView = {
   streamingMessage: AgentMessage | null;
   status: AgentStatus;
   error: string | null;
-  pendingGate: AgentPendingGate | null;
 };
 
 function viewFromStream(state: PiStreamState, sending: boolean): SessionAgentView {
@@ -74,7 +61,6 @@ function viewFromStream(state: PiStreamState, sending: boolean): SessionAgentVie
     streamingMessage: state.streamingMessage,
     status: deriveAgentStatus(state.agentStatus, sending),
     error: state.errorText,
-    pendingGate: state.pendingGate,
   };
 }
 
@@ -256,10 +242,7 @@ export function useSessionAgent({
         if (isCommandFailed(response)) {
           rollbackOptimistic();
           publish(
-            withLocalError(
-              streamStateRef.current,
-              response?.message ?? "Agent command failed",
-            ),
+            withLocalError(streamStateRef.current, response?.message ?? "Agent command failed"),
           );
         }
         // Successful prompt: leave stream projection as authority. Clearing
@@ -326,45 +309,6 @@ export function useSessionAgent({
     [runCommand, publish],
   );
 
-  const resumeGate = useCallback(
-    async (command: AgentResumeGateCommand) => {
-      publish(clearErrorFromState(streamStateRef.current));
-      try {
-        const response = await runCommand(command);
-        if (isCommandFailed(response)) {
-          const message = response?.message ?? "Gate decision failed";
-          publish(withLocalError(streamStateRef.current, message));
-          throw new Error(message);
-        }
-        // Coordinator waiter is gone until the next awaiting_* onUpdate.
-        // Clear only if pendingGate still matches this decision — do not wipe a
-        // newer gate that may have already arrived over SSE after re-plan.
-        const current = streamStateRef.current;
-        const gate = current.pendingGate;
-        if (
-          gate &&
-          gate.gate === command.gate &&
-          (command.runId == null || gate.runId === command.runId)
-        ) {
-          publish({ ...current, pendingGate: null });
-        }
-      } catch (caught) {
-        // Re-throw after ensuring stream carries the error (avoid double-publish
-        // when the failure path above already published).
-        if (streamStateRef.current.errorText == null) {
-          publish(
-            withLocalError(
-              streamStateRef.current,
-              caught instanceof Error ? caught.message : String(caught),
-            ),
-          );
-        }
-        throw caught;
-      }
-    },
-    [runCommand, publish],
-  );
-
   const clearError = useCallback(() => {
     publish(clearErrorFromState(streamStateRef.current));
   }, [publish]);
@@ -376,12 +320,10 @@ export function useSessionAgent({
     ready,
     connectionStatus,
     error: view.error,
-    pendingGate: view.pendingGate,
     input,
     setInput,
     send,
     abort,
-    resumeGate,
     setModel,
     clearError,
     eventsUrl,

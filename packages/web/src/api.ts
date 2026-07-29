@@ -16,18 +16,27 @@ import type {
   ProviderEntryPublic,
   ProviderPublic,
   ProviderTestResult,
+  RunCommand,
+  RunCommandReceipt,
   SkillFileContent,
   SkillFileEntry,
   SkillInfo,
   SourceOrigin,
-  StoredRunRecord,
-  RunGraphSnapshot,
   WikiLanguage,
-  WikiRunRecordStatus,
+  WikiRunSnapshot,
+  WikiRunState,
   WorkspaceConfig,
   WorkspaceSource,
   WorkspaceSummary,
 } from "@okf-wiki/contract";
+
+/** Slim GET /runs row — WikiRuns control plane, not the deleted v2 file record. */
+export type WikiRunListItem = {
+  runId: string;
+  state: WikiRunState;
+  updatedAt: string;
+  revision: number;
+};
 
 export type {
   AgentCommand,
@@ -45,9 +54,8 @@ export type {
   SkillFileEntry,
   SkillInfo,
   SourceOrigin,
-  StoredRunRecord,
   WikiLanguage,
-  WikiRunRecordStatus,
+  WikiRunState,
   WorkspaceConfig,
   WorkspaceSource,
   WorkspaceSummary,
@@ -588,23 +596,39 @@ export function probeSources(
 export function listRuns(
   workspaceId: string,
   rootPath?: string,
-): Promise<{ workspaceId: string; runs: StoredRunRecord[] }> {
+): Promise<{ workspaceId: string; runs: WikiRunListItem[] }> {
   return request(
     withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, rootPath),
   );
 }
 
-/** Durable per-run graph snapshot (analysis/run-graph.json) — survives reloads. */
-export function getRunGraph(
+/** Durable WikiRuns snapshot + cursor (ADR 0035). */
+export function getWikiRun(
   workspaceId: string,
   runId: string,
   rootPath?: string,
-): Promise<{ workspaceId: string; runId: string; graph: RunGraphSnapshot }> {
+): Promise<{ snapshot: WikiRunSnapshot; cursor: number }> {
   return request(
     withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/graph`,
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
       rootPath,
     ),
+  );
+}
+
+/** Dispatch a durable WikiRuns command (StartRun / ResolveGate / Cancel / …). */
+export function dispatchWikiRunCommand(
+  workspaceId: string,
+  command: RunCommand,
+  rootPath?: string,
+): Promise<{ receipt: RunCommandReceipt }> {
+  return request(
+    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, rootPath),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(command),
+    },
   );
 }
 
@@ -774,6 +798,18 @@ export function agentSessionEventsUrl(
 ): string {
   return `${API_BASE}${withRootPathQuery(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
+    rootPath,
+  )}`;
+}
+
+/**
+ * Absolute EventSource URL for durable WikiRuns SSE (ADR 0035).
+ * Server sends `snapshot` then `run.event` frames; heartbeat has no event id.
+ * Native EventSource replays with `Last-Event-ID` after the last received id.
+ */
+export function wikiRunEventsUrl(workspaceId: string, runId: string, rootPath?: string): string {
+  return `${API_BASE}${withRootPathQuery(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events`,
     rootPath,
   )}`;
 }

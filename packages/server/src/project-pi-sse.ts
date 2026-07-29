@@ -61,12 +61,7 @@ export function projectPiEventForSse(
   event: unknown,
   timestamp = new Date().toISOString(),
 ): AgentSseStream {
-  const { frame } = projectLiveStreamEvent(
-    sessionId,
-    createPiStreamState(),
-    event,
-    timestamp,
-  );
+  const { frame } = projectLiveStreamEvent(sessionId, createPiStreamState(), event, timestamp);
   return frame;
 }
 

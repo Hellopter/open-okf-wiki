@@ -7,7 +7,6 @@
  * transcript can claim width for code / mermaid / math. Mobile: sheets.
  */
 
-import type { AgentPendingGate, AgentResumeGateCommand } from "@okf-wiki/contract";
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -16,7 +15,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-import type { PiSessionSummary, StoredRunRecord, WorkspaceConfig } from "../api";
+import type { PiSessionSummary, WikiRunListItem, WorkspaceConfig } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
 import { Composer } from "./composer/Composer";
@@ -64,9 +63,6 @@ export type AgentWorkspaceShellProps = {
   onInputChange: (value: string) => void;
   onSend: () => void;
   onAbort: () => void;
-  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
-  /** Live wiki_produce HITL waiter — only matching cards are interactive. */
-  pendingGate?: AgentPendingGate | null;
   /** Session-scoped chat model switch (composer dropdown). */
   onSetModel?: (profileId: string) => Promise<boolean>;
   agentStatus: AgentStatus;
@@ -75,7 +71,7 @@ export type AgentWorkspaceShellProps = {
   connectionStatus?: ConnectionStatus;
   agentError?: unknown;
   onDismissAgentError?: () => void;
-  recentRuns?: StoredRunRecord[];
+  recentRuns?: WikiRunListItem[];
   className?: string;
 };
 
@@ -94,8 +90,6 @@ export function AgentWorkspaceShell({
   onInputChange,
   onSend,
   onAbort,
-  onResumeGate,
-  pendingGate = null,
   onSetModel,
   agentStatus,
   agentReady,
@@ -302,7 +296,7 @@ export function AgentWorkspaceShell({
         ) : null}
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <Transcript messages={messages} onResumeGate={onResumeGate} pendingGate={pendingGate} />
+          <Transcript messages={messages} />
           <Composer
             input={input}
             onInputChange={onInputChange}

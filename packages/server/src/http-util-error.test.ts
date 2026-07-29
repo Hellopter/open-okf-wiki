@@ -49,7 +49,11 @@ test("sendCaughtError redacts bearer tokens and paths", () => {
 
 test("sendCaughtError keeps WorkspaceIntakeError message as-is", () => {
   const { res, get } = mockRes();
-  sendCaughtError(res, 400, new WorkspaceIntakeError("invalid_name", "name must be a non-empty string"));
+  sendCaughtError(
+    res,
+    400,
+    new WorkspaceIntakeError("invalid_name", "name must be a non-empty string"),
+  );
   const captured = get();
   assert.equal(captured?.status, 400);
   assert.equal(captured?.body.error, "name must be a non-empty string");

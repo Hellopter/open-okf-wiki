@@ -104,49 +104,46 @@ export {
   resolveProviderRuntime,
 } from "./provider-runtime.js";
 export {
+  type ApplySealedPublicationInput,
+  type ApplySealedPublicationResult,
+  applySealedPublicationCandidate,
+  capturePublicationBaseline,
+  digestPublicationTree,
+  digestPublicationTreeContentOnly,
+  EMPTY_PUBLICATION_DIGEST,
+  manifestPublicationTree,
+  materializePublicationCandidate,
+  PublicationConflictError,
+  type PublicationTreeManifest,
   type PublishStagingInput,
   type PublishStagingResult,
   publishStagingToPublication,
+  type ReconcilePublicationApplyInput,
+  type ReconcilePublicationApplyResult,
+  reconcilePublicationApply,
   rewriteWikiTreeCitationsForPublish,
+  withPublicationLock,
 } from "./publish.js";
 export {
   derivePublishedWikiGraph,
   listPublishedWikiBrowse,
   PUBLISHED_WIKI_MAX_FILE_BYTES,
   PUBLISHED_WIKI_MAX_PAGES,
+  type PublishedWikiBrowse,
   PublishedWikiError,
   type PublishedWikiErrorCode,
-  type PublishedWikiBrowse,
   type PublishedWikiPage,
   type PublishedWikiPageSummary,
   readPublishedWikiPage,
 } from "./published-wiki.js";
 export {
-  buildWikiNav,
-  parseWikiIndexListing,
-  WIKI_NAV_UNLISTED_TITLE,
-  type WikiIndexEntry,
-  type WikiNavDirNode,
-  type WikiNavGroupNode,
-  type WikiNavNode,
-  type WikiNavPageInput,
-  type WikiNavPageNode,
-} from "./wiki-nav.js";
-export {
+  type FreezeRunBoundaryInput,
   FreezeWikiRunError,
   type FreezeWikiRunErrorCode,
-  type FreezeWikiRunInput,
   type FrozenRunBoundary,
   type FrozenSourceSnapshot,
-  freezeWikiRun,
+  freezeRunBoundary,
 } from "./run-boundary.js";
-export {
-  loadRunGraph,
-  RUN_GRAPH_FILE_NAME,
-  RUN_GRAPH_REL_PATH,
-  runGraphPath,
-  writeRunGraph,
-} from "./run-graph.js";
 export {
   analysisDir,
   RUNS_DIR_NAME,
@@ -156,16 +153,6 @@ export {
   runWorkDir,
   WORKSPACE_DIR_NAME,
 } from "./run-layout.js";
-export {
-  deleteSessionRuns,
-  listRuns,
-  loadRun,
-  type RegisterRunOptions,
-  type RunRecordPatch,
-  RunStatusConflictError,
-  registerRunRecord,
-  updateRunRecord,
-} from "./run-store.js";
 export {
   listSkillFiles,
   readSkillFrontmatter,
@@ -240,17 +227,27 @@ export {
   type WikiLogChange,
 } from "./wiki-log.js";
 export {
+  buildWikiNav,
+  parseWikiIndexListing,
+  WIKI_NAV_UNLISTED_TITLE,
+  type WikiIndexEntry,
+  type WikiNavDirNode,
+  type WikiNavGroupNode,
+  type WikiNavNode,
+  type WikiNavPageInput,
+  type WikiNavPageNode,
+} from "./wiki-nav.js";
+export {
   countMarkdownFiles,
   isReservedWikiPath,
+  type LoadWikiPageRecordsOptions,
+  type LoadWikiPageRecordsResult,
   loadWikiPageRecords,
   parseWikiFrontmatter,
   RESERVED_WIKI_BASENAMES,
   scanWikiTree,
   splitWikiFrontmatter,
-  wikiMarkdownBody,
   WIKI_MAX_FILE_BYTES,
-  type LoadWikiPageRecordsOptions,
-  type LoadWikiPageRecordsResult,
   type WikiFrontmatter,
   type WikiFrontmatterSplit,
   type WikiPageLoadIssue,
@@ -258,6 +255,7 @@ export {
   type WikiTreeFile,
   type WikiTreeIssue,
   type WikiTreeScan,
+  wikiMarkdownBody,
 } from "./wiki-tree.js";
 export {
   APP_STATE_FILE_NAME,
@@ -288,13 +286,11 @@ export {
   ProviderStoreError,
   WorkspaceIntakeError,
 } from "./workspace-errors.js";
+export { resolveWorkspaceModelSelection } from "./workspace-model.js";
 export {
-  resolveWorkspaceModelSelection,
-} from "./workspace-model.js";
-export {
+  applyWorkspacePatch,
   type ResolveModelSelection,
   type WorkspacePatchDeps,
-  applyWorkspacePatch,
 } from "./workspace-patch.js";
 export {
   type AddSourceInput,

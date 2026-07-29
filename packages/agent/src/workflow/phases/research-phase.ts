@@ -19,7 +19,7 @@ import type { ReceiptStore, ResearchChildResult } from "../../ports/receipt-stor
 import { domainResearchPrompt, leafResearchPrompt } from "../../prompts/index.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { isCriticalDomainFailure } from "../retry-policy.js";
-import { runNodeAttempt, type RunNodeAttemptOptions } from "../run-node-attempt.js";
+import { type RunNodeAttemptOptions, runNodeAttempt } from "../run-node-attempt.js";
 import {
   cancelledResult,
   failedProduceResult,
@@ -253,8 +253,7 @@ export async function runResearchPhase(
         abortSignal: input.abortSignal,
         nodeKey: domainNodeId,
         role: "domain",
-        attemptId: (attempt) =>
-          attempt === 0 ? domainNodeId : `${domainNodeId}@retry${attempt}`,
+        attemptId: (attempt) => (attempt === 0 ? domainNodeId : `${domainNodeId}@retry${attempt}`),
         onExhausted: "throw",
         run: (attempt) =>
           runtime.runAgent({

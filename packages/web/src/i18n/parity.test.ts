@@ -46,11 +46,7 @@ function walkLeaves(
   out: Leaf[] = [],
 ): Leaf[] {
   if (typeof enNode === "string") {
-    assert.equal(
-      typeof zhNode,
-      "string",
-      `zh leaf missing or non-string at ${path.join(".")}`,
-    );
+    assert.equal(typeof zhNode, "string", `zh leaf missing or non-string at ${path.join(".")}`);
     out.push({ path: path.join("."), en: enNode, zh: zhNode as string });
     return out;
   }

@@ -31,10 +31,7 @@ export async function emitPagesFromDisk(
 }
 
 /** Fail-closed: regenerate multi-level indexes after a successful staging write. */
-async function materializeStagingIndexes(
-  progress: ProgressSink,
-  wikiDir: string,
-): Promise<void> {
+async function materializeStagingIndexes(progress: ProgressSink, wikiDir: string): Promise<void> {
   const indexes = await materializeWikiIndexes(wikiDir);
   progress.emit({
     kind: "status",
@@ -144,8 +141,7 @@ export async function runRepairWrite(input: {
 
   // Total repair attempts across council + hard-validate (each counter is
   // 1-based and already incremented by the bounded loop before this write).
-  const totalRepairRounds =
-    (metrics.repairRounds ?? 0) + (metrics.hardValidateRepairRounds ?? 0);
+  const totalRepairRounds = (metrics.repairRounds ?? 0) + (metrics.hardValidateRepairRounds ?? 0);
   const runIndex = Math.max(0, (totalRepairRounds || 1) - 1);
   const attemptId = `repair@${runIndex}`;
 

@@ -13,9 +13,7 @@ export type RepairScore =
   | { kind: "cancelled"; result: ProduceWikiResult }
   | { kind: "repair"; repairText: string };
 
-export type RepairActionResult =
-  | { kind: "ok" }
-  | { kind: "cancelled"; result: ProduceWikiResult };
+export type RepairActionResult = { kind: "ok" } | { kind: "cancelled"; result: ProduceWikiResult };
 
 export type BoundedRepairLoopResult =
   | { kind: "passed" }

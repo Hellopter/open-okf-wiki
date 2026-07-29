@@ -39,19 +39,19 @@ Vocabulary matches the codebase-design skill:
 | Deep module | Small interface, large behavior (e.g. stream reduce in contract, repair loop in workflow) |
 | One adapter ≈ false seam | Do not invent ports for documentation; delete unused port types (`WikiWriter`) |
 | Two adapters ≈ real seam | Keep `AgentRunner` (live + fixture), `GraphStore` (core + memory tests), `GatePort`, etc. |
-| Progress protocol | **One** fan-out: `ProgressSink`. Tool-edge callbacks adapt **once** at composition (`runWiki` / `produceWiki`). Phases call `progress.emit` only. |
+| Progress protocol | **One** fan-out: `ProgressSink`. Tool-edge / attempt callbacks adapt **once** at composition (WikiRuns attempt work / `produceWiki` library). Phases call `progress.emit` only. |
 
 Core-backed stores (`SpecStore`, `ReceiptStore`, `GraphStore`) stay ports: disk I/O + injection for tests. They are not collapsed “because only one production adapter.”
 
 ### 3. Pi tools are thin adapters
 
 ```
-tools/*  →  workflow guarded/entry  →  phases / produce helpers
+tools/*  →  WikiRuns command dispatch (StartRun / RerunNode)  →  receipt
 ```
 
-- `wiki_produce` / `wiki_repair`: schema, resolve runtime/models, map details/progress, call workflow.
-- **Admission** (session ownership, run-status gate, in-process repair lock) and **layout bootstrap** for existing runs live in **workflow** (`repairWikiGuarded`, `layoutForExistingRun` beside layout helpers) — not in pure `runtime/workdir.ts` (projection only) and not inline in the tool body.
-- `repairWiki` remains the pure write path after admission.
+- `wiki_produce` / `wiki_repair`: schema + dispatch durable WikiRuns commands; return a receipt (ADR 0035). They do **not** own the whole Run or await gates.
+- Attempt-local phase helpers live under `agent/workflow` / `runtime` for the Pi attempt executor; they are not a second Run owner.
+- Layout helpers remain pure path projection (`runtime/workdir.ts`).
 
 ### 4. Bounded repair: shared loop, separate strategies, separate budgets
 

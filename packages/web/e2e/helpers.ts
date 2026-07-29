@@ -47,14 +47,20 @@ export async function createWorkspaceViaUi(
   return { rootPath, name };
 }
 
-/** Add a local git source on the Sources page (caller must be on workspace). */
+/**
+ * Add a local git source on Configure → Sources (WorkbenchShell has no top-level
+ * sources mode; open settings/configure first, then the sources tab).
+ */
 export async function addSourceViaUi(
   page: Page,
   gitRepo: string,
   sourceId = "appsrc",
 ): Promise<void> {
+  // Configure mode (testid kept as workspace-subnav-settings for stable e2e).
+  await page.getByTestId("workspace-subnav-settings").click();
+  await expect(page.getByTestId("configure-page")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("workspace-subnav-sources").click();
-  await expect(page.getByTestId("sources-page")).toBeVisible();
+  await expect(page.getByTestId("sources-page")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("source-path-input").fill(gitRepo);
   await page.getByTestId("source-id-input").fill(sourceId);
   await page.getByTestId("source-add-submit").click();

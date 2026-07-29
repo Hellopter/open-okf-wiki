@@ -1,5 +1,6 @@
 /**
- * Operator Session command dispatch: prompt / steer / abort / compact / resume_gate.
+ * Operator Session command dispatch: prompt / steer / abort / compact / set_model.
+ * Plan/publication HITL is ResolveGate on WikiRuns (Run API), not a Session command.
  * Leading-slash prompts expand through the operator command registry before
  * reaching AgentSession.prompt (same single write path, ADR 0032).
  */
@@ -10,10 +11,8 @@ import {
   resolveWorkspacePiModel,
 } from "@okf-wiki/agent";
 import type { AgentCommand, AgentCommandResponse, WorkspaceConfig } from "@okf-wiki/contract";
-import { sessionKey } from "../session-key.ts";
 import { ensureRegistered, type RegisteredAgentSession } from "./live-session-registry.ts";
 import { defaultTitle } from "./session-lifecycle.ts";
-import { getPendingGate } from "./wiki-produce-gate-coordinator.ts";
 
 function titleFromPrompt(text: string, max = 60): string | undefined {
   const firstLine = text
@@ -58,9 +57,6 @@ async function prompt(
   }
   entry.busy = true;
   try {
-    // Slash command expansion: `/wiki notes` → registry prompt. The session
-    // title keeps the operator's original text; unknown commands fail fast
-    // without reaching the model.
     const expansion = expandOperatorCommand(text);
     if (expansion.kind === "unknown") {
       return {
@@ -107,65 +103,13 @@ async function prompt(
   }
 }
 
-function resumeGate(
-  workspace: WorkspaceConfig,
-  sessionId: string,
-  command: Extract<AgentCommand, { type: "resume_gate" }>,
-): AgentCommandResponse {
-  const pending = getPendingGate(sessionKey(workspace.id, sessionId));
-  if (!pending) {
-    return {
-      ok: false,
-      sessionId,
-      command: "resume_gate",
-      status: "failed",
-      message: "Operator Session has no pending Wiki Run gate",
-      runId: command.runId,
-    };
-  }
-  if (pending.request.gate !== command.gate) {
-    return {
-      ok: false,
-      sessionId,
-      command: "resume_gate",
-      status: "failed",
-      message: `pending gate is ${pending.request.gate}, not ${command.gate}`,
-      runId: pending.request.runId,
-    };
-  }
-  if (command.runId && command.runId !== pending.request.runId) {
-    return {
-      ok: false,
-      sessionId,
-      command: "resume_gate",
-      status: "failed",
-      message: "runId does not match the pending Wiki Run gate",
-      runId: pending.request.runId,
-    };
-  }
-  pending.resolve({
-    action: command.action,
-    feedback: command.feedback,
-    spec: command.spec,
-  });
-  return {
-    ok: true,
-    sessionId,
-    command: "resume_gate",
-    status: "accepted",
-    message: `${command.gate} gate ${command.action}`,
-    runId: pending.request.runId,
-  };
-}
-
-/** Delegate commands only to the real AgentSession or its active tool gate. */
+/** Delegate commands only to the real AgentSession. */
 export async function dispatchAgentCommand(
   workspace: WorkspaceConfig,
   sessionId: string,
   command: AgentCommand,
 ): Promise<AgentCommandResponse> {
   const entry = await ensureRegistered(workspace, sessionId);
-  if (command.type === "resume_gate") return resumeGate(workspace, sessionId, command);
 
   if (command.type === "prompt") {
     return prompt(entry, workspace, command.text, workspace.sources.length > 0);
@@ -199,8 +143,6 @@ export async function dispatchAgentCommand(
       };
     }
     try {
-      // Session-scoped switch: workspace.model stays the default for new
-      // Sessions and Wiki Run role models are resolved independently.
       const resolved = await resolveWorkspacePiModel({ profileId: command.profileId });
       await entry.handle.session.setModel(resolved.model);
       return {

@@ -3,8 +3,8 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import {
   filterGrepContentText,
-  grepResultPath,
   type GrepIgnoreFilterContext,
+  grepResultPath,
 } from "./grep-ignore-filter.js";
 
 const runWorkDir = path.resolve("/tmp/okf-wiki-run-workdir");
@@ -46,11 +46,7 @@ describe("filterGrepContentText", () => {
   });
 
   it('returns "No matches found" when every match line is ignored', () => {
-    const text = [
-      "ignored/a.ts:1:secret",
-      "ignored/b.ts:2:secret",
-      "--",
-    ].join("\n");
+    const text = ["ignored/a.ts:1:secret", "ignored/b.ts:2:secret", "--"].join("\n");
     assert.equal(filterGrepContentText(text, ctx(ignores)), "No matches found");
   });
 

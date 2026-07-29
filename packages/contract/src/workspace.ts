@@ -222,8 +222,7 @@ export const WorkspaceOrchestrationSchema = z.object({
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
 
 /** Schema defaults are the sole authority for orchestration budgets. */
-export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration =
-  WorkspaceOrchestrationSchema.parse({});
+export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = WorkspaceOrchestrationSchema.parse({});
 
 /**
  * Tools selectable for the Operator Session (chat agent). The fs tools are
@@ -238,12 +237,7 @@ export const OperatorToolNameSchema = z.enum(["read", "grep", "find", "ls", "bas
 
 export type OperatorToolName = z.infer<typeof OperatorToolNameSchema>;
 
-export const DEFAULT_OPERATOR_TOOLS: readonly OperatorToolName[] = [
-  "read",
-  "grep",
-  "find",
-  "ls",
-];
+export const DEFAULT_OPERATOR_TOOLS: readonly OperatorToolName[] = ["read", "grep", "find", "ls"];
 
 export const OperatorToolsSchema = z
   .array(OperatorToolNameSchema)

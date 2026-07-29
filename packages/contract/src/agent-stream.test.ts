@@ -308,7 +308,11 @@ describe("pendingGate live reduce", () => {
     };
     state = reducePiEvent(state, "message_end", {
       type: "message_end",
-      message: { role: "assistant", content: [{ type: "text", text: "hi" }], stopReason: "aborted" },
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "hi" }],
+        stopReason: "aborted",
+      },
     });
     assert.equal(state.pendingGate, null);
   });
@@ -321,12 +325,18 @@ describe("isLiveWikiProduceGate / pendingGateFromToolDetails", () => {
       runId: "r1",
     });
     assert.deepEqual(pending, { toolCallId: "t1", runId: "r1", gate: "plan" });
-    assert.equal(isLiveWikiProduceGate(pending, "t1", { status: "awaiting_plan", runId: "r1" }), true);
+    assert.equal(
+      isLiveWikiProduceGate(pending, "t1", { status: "awaiting_plan", runId: "r1" }),
+      true,
+    );
     assert.equal(
       isLiveWikiProduceGate(pending, "t1", { status: "awaiting_publication", runId: "r1" }),
       false,
     );
-    assert.equal(isLiveWikiProduceGate(null, "t1", { status: "awaiting_plan", runId: "r1" }), false);
+    assert.equal(
+      isLiveWikiProduceGate(null, "t1", { status: "awaiting_plan", runId: "r1" }),
+      false,
+    );
     assert.equal(pendingGateFromToolDetails("t1", { status: "producing", runId: "r1" }), null);
   });
 });
@@ -339,9 +349,7 @@ describe("reducePiEvent agent_end", () => {
       type: "message_start",
       message: {
         role: "assistant",
-        content: [
-          { type: "toolCall", id: "t-run", name: "bash", arguments: { cmd: "sleep" } },
-        ],
+        content: [{ type: "toolCall", id: "t-run", name: "bash", arguments: { cmd: "sleep" } }],
       },
     });
     state = reducePiEvent(state, "tool_execution_start", {
@@ -424,8 +432,9 @@ describe("reducePiEvent tool_execution_start wiki_produce", () => {
 
     assert.equal(state.pendingGate, null);
     assert.equal(
-      viewMessages(state).flatMap((m) => m.tools ?? []).find((t) => t.id === "old-produce")
-        ?.status,
+      viewMessages(state)
+        .flatMap((m) => m.tools ?? [])
+        .find((t) => t.id === "old-produce")?.status,
       "error",
     );
   });

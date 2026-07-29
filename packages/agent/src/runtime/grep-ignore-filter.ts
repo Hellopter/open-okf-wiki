@@ -35,9 +35,7 @@ export function filterGrepContentText(text: string, ctx: GrepIgnoreFilterContext
       return true;
     }
     const absoluteResult = path.resolve(ctx.resultBase, resultPath);
-    const rel = path
-      .relative(path.resolve(ctx.runWorkDir), absoluteResult)
-      .replace(/\\/g, "/");
+    const rel = path.relative(path.resolve(ctx.runWorkDir), absoluteResult).replace(/\\/g, "/");
     if (isIgnoredSourceRel(rel, ctx.sourceIgnores)) {
       return false;
     }

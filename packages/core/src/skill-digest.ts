@@ -31,11 +31,12 @@ function shouldSkipName(name: string): boolean {
  * Collect skill-relative POSIX paths of all regular files under `skillRoot`,
  * sorted for stable digests.
  */
-export async function listSkillFiles(skillRoot: string): Promise<string[]> {
+export async function listSkillFiles(skillRoot: string, signal?: AbortSignal): Promise<string[]> {
   const root = path.resolve(skillRoot);
   const files: string[] = [];
 
   async function walk(absDir: string, relPosix: string): Promise<void> {
+    signal?.throwIfAborted();
     if (files.length >= SKILL_DIGEST_MAX_FILES) {
       throw new Error(`skill tree exceeds ${SKILL_DIGEST_MAX_FILES} files under ${root}`);
     }
@@ -51,6 +52,7 @@ export async function listSkillFiles(skillRoot: string): Promise<string[]> {
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
+      signal?.throwIfAborted();
       if (shouldSkipName(entry.name)) {
         continue;
       }
@@ -80,7 +82,7 @@ export async function listSkillFiles(skillRoot: string): Promise<string[]> {
  * Hashes sorted relative paths and file bytes so the Run Boundary can freeze
  * an exact Skill Version. Requires SKILL.md at the root.
  */
-export async function skillDigest(skillRoot: string): Promise<string> {
+export async function skillDigest(skillRoot: string, signal?: AbortSignal): Promise<string> {
   const root = path.resolve(skillRoot);
   const skillMd = path.join(root, "SKILL.md");
   try {
@@ -96,11 +98,12 @@ export async function skillDigest(skillRoot: string): Promise<string> {
     throw error;
   }
 
-  const files = await listSkillFiles(root);
+  const files = await listSkillFiles(root, signal);
   const hash = createHash("sha256");
   hash.update("okf-wiki-skill-v1\n");
 
   for (const rel of files) {
+    signal?.throwIfAborted();
     const abs = path.join(root, ...rel.split("/"));
     const info = await stat(abs);
     if (!info.isFile()) {
@@ -129,15 +132,18 @@ export async function materializeSkillVersion(input: {
   sourceSkillPath: string;
   destination: string;
   expectedDigest: string;
+  signal?: AbortSignal;
 }): Promise<{ path: string; digest: string }> {
   const source = path.resolve(input.sourceSkillPath);
   const destination = path.resolve(input.destination);
-  const files = await listSkillFiles(source);
+  input.signal?.throwIfAborted();
+  const files = await listSkillFiles(source, input.signal);
   await mkdir(path.dirname(destination), { recursive: true });
   await mkdir(destination);
 
   try {
     for (const relativePath of files) {
+      input.signal?.throwIfAborted();
       const segments = relativePath.split("/");
       if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
         throw new Error(`invalid skill-relative path: ${relativePath}`);
@@ -152,14 +158,14 @@ export async function materializeSkillVersion(input: {
       await writeFile(destinationFile, await readFile(sourceFile), { flag: "wx" });
     }
 
-    await assertOrdinaryTree(destination, "Producer Skill");
-    const digest = await skillDigest(destination);
+    await assertOrdinaryTree(destination, "Producer Skill", input.signal);
+    const digest = await skillDigest(destination, input.signal);
     if (digest !== input.expectedDigest) {
       throw new Error(
         `Producer Skill digest changed while freezing (${input.expectedDigest} != ${digest})`,
       );
     }
-    await makeTreeReadOnly(destination);
+    await makeTreeReadOnly(destination, input.signal);
     return { path: destination, digest };
   } catch (error) {
     await cleanupWritableTree(destination);

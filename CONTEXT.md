@@ -2,7 +2,7 @@
 
 This context defines the language for deriving a source-grounded Markdown wiki from one or more fixed source repositories.
 
-**Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, **Pi agent harness** (`@earendil-works/pi-*`), and the `@okf-wiki/core` Run Boundary). See [ADR 0032](docs/adr/0032-pi-tool-owned-wiki-runs.md), [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md), and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Terms below remain domain vocabulary; older ADRs may still name historical Python/Mastra packages.
+**Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, durable WikiRuns control plane, **Pi agent harness** (`@earendil-works/pi-*`), and the `@okf-wiki/core` Run Boundary). See [ADR 0035](docs/adr/0035-durable-wikiruns-control-plane.md), [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md), and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Terms below remain domain vocabulary; older ADRs may still name historical Python/Mastra packages.
 
 ## Language
 
@@ -63,48 +63,48 @@ The model-directed sequence of repository exploration, page design, writing, rev
 _Avoid_: Python state machine, fixed role pipeline, Run Instructions dump
 
 **Produce** (also: Supervisor produce; Layer B Semantic Workflow body):
-The Semantic Workflow executed by the real Pi `wiki_produce` custom tool: Root → Domain → Leaf supervisor tree, living WikiRunSpec, review council, repair rounds, and plan/publication gates. Its tool execution is the parent Operator Session's visible unit; it does not synthesize Pi messages or a parallel progress stream.
-_Avoid_: WikiRunShell, Session-synthesized progress, durable-produce stub, second write path, adaptive stage machine
+The semantic work for one durable Wiki Run: Root → Domain → Leaf supervisor tree, living WikiRunSpec, review council, repair rounds, and typed plan/publication gates. Pi executes one discardable Attempt at a time; `WikiRuns` owns durable state, retries, gates, and commits. `wiki_produce` dispatches `StartRun` and returns its receipt.
+_Avoid_: WikiRunShell, Session-synthesized progress, second write path, adaptive stage machine, a Pi Promise owning a Run
 
 **Operator Event** (also: Operator timeline parts):
-An event emitted by the parent Pi Operator Session. The server forwards genuine Pi events after a current snapshot, and the Agent Workspace is a pure projector. Run and gate state is expressed by the real `wiki_produce` tool lifecycle and the linked Run Record, never by product-injected pseudo-events.
-_Avoid_: Product SSE inject, AI SDK UIMessage dual protocol, Session-synthesized fake tools, free-text gate inference, client maps as second true source
+An event emitted by the parent Pi Operator Session. The server forwards genuine Pi events after a current snapshot, and the Agent Workspace is a pure projector. It is separate from a durable Wiki Run Event, which is a low-frequency control event with a full WikiRuns snapshot for Run SSE replay.
+_Avoid_: Product SSE inject into the Operator Session, AI SDK UIMessage dual protocol, Session-synthesized fake tools, client maps as second true source
 
 **SessionTurn**:
-The product module for one Operator Agent command: command validation, turn exclusion, and delegation to the Pi `AgentSession`. A Wiki Run begins only when the agent calls `wiki_produce`; there is no post-turn Session–Run transition.
-_Avoid_: Semantic Workflow body, Run starter, second progress author, free-text gate parser
+The product module for one Operator Agent command: command validation, turn exclusion, and delegation to the Pi `AgentSession`. A Run command may originate from a `wiki_produce` tool call, but the server derives the Workspace and actor context and dispatches it to WikiRuns.
+_Avoid_: Semantic Workflow body, a second progress author, free-text gate parser, trusting actor/workspace fields in HTTP input
 
 **WikiRunSpec** (also: living Spec; operator plan-gate payload):
 The executable specification for one Wiki Run: audience, domains, intended pages with reader questions, acceptance (review rounds / blocking severities), open questions, and replan changelog. Persisted under the run analysis scratch (`spec.json`) and revised when discovery demands it.
 _Avoid_: Thin path-only checklist, Todo transcript, Operator Session history as the only plan store
 
 **WikiRunPhase** (also: canonical job phase):
-The single product truth for where one Wiki Run job is in its lifecycle (`freezing` → `planning` → optional `awaiting_plan` → `producing` → optional `awaiting_publication` → terminal). Durable Run Record status and live `wiki_produce` tool details status are **projections** of this phase (`recordStatusFromPhase` / `toolStatusFromPhase`), not independent enums. Orthogonal to Pi `tool_execution_*` lifecycle and to child-span item status.
-_Avoid_: Dual status enums, inventing job phase from Pi isError alone, second progress author
+Legacy Pi-tool phase projection. Durable WikiRuns instead projects node, attempt, gate, and effect control state into a Run state (`queued`, `running`, `waiting_for_operator`, `failed`, `publication_declined`, `completed_unpublished`, `published`, `cancelling`, `cancelled`). Pi lifecycle remains orthogonal.
+_Avoid_: making a Pi Promise or a coarse phase the durable scheduler truth
 
 **Run Plan** (legacy synonym):
 Older ADRs/skills may say “Run Plan”; map to **WikiRunSpec** / living Spec.
 _Avoid_: Treating Run Plan as a separate durable product object
 
 **Operator Session**:
-The operator-facing **sole conversation truth surface** for one project thread (ADR 0032): one `SessionManager`-owned Pi JSONL tree, its live `AgentSession` events, and zero or more Wiki Runs started by real `wiki_produce` tool calls. The **Agent Workspace** (`/w/:id`) projects that state. There is no product Session metadata, synthetic event stream, or independent Run operate surface.
-_Avoid_: Wiki Run as the main UI, product Session registry, AI SDK UIMessage history, Mastra workflow snapshots, Session-synthesized tool trails, product event injects, ring-buffer history
+The operator-facing **sole conversation truth surface** for one project thread: one `SessionManager`-owned Pi JSONL tree and its live `AgentSession` events. The **Agent Workspace** (`/w/:id`) projects that state. WikiRuns is a separate durable control surface, linked for audit but not owned by the Session or its SSE connection.
+_Avoid_: product Session metadata, AI SDK UIMessage history, Mastra workflow snapshots, Session-synthesized tool trails, product event injects, a second conversation stream
 
 **Wiki Reviewer** / **Review council**:
 Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. The `wiki_produce` runtime merges outputs into `defects.json`; Root repairs; the Run Boundary **fail-closes** publication when blocking defects remain. Reviewers never write Wiki pages or publish.
 _Avoid_: Optional soft review, Skill self-review alone as the only gate, open-loop receipts that do not block publish
 
 **Wiki Run**:
-One bounded attempt, started by an Operator Agent's `wiki_produce` tool call, to derive and publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision. It is linked to its Operator Session; the tool execution waits through plan and publication gates, and no mutable Run HTTP interface exists.
-_Avoid_: Agent turn synonym, Session synonym, Production Run, independent REST job, second HITL center parallel to Session
+One durable, auditable execution graph that derives and may publish a Wiki from a Repository Snapshot Set using one exact Skill Version or Skill Fork revision. It can outlive an Operator Session, Pi Attempt, Server process, and SSE connection. The server exposes typed commands and replayable Run SSE; commands are idempotent by Workspace plus command id.
+_Avoid_: Agent turn synonym, Session synonym, a Pi Promise owning the Run, mutable shared Staging, untyped REST actions
 
 **Wiki Run Record**:
-An `okf.wiki-run/v2`, secret-free record of one Wiki Run's immutable Session link, exact source revisions and Effective Source Ignores, copied Skill Version digest, and evolving outcome/publication state. Pre-v2 records are ignored rather than migrated.
-_Avoid_: Operator Session history, Analysis Receipt, durable checkpoint of the Semantic Workflow
+A secret-free durable WikiRuns Snapshot plus immutable Attempt, Gate, Artifact, Effect, and Event records. Inputs are pinned after `StartRun` is accepted; each event carries a full snapshot at its monotonic revision. The old `okf.wiki-run/v2` file record is migration-era data, not the durable control source.
+_Avoid_: Operator Session history, Analysis Receipt, reconstructing control state from work directories
 
 **Staging Wiki**:
-The isolated candidate Wiki written during a Wiki Run and not visible as the published result until validation succeeds and the operator (or YOLO) approves publication; declining publication leaves Staging intact for further Session work and does not alter the Published Wiki.
-_Avoid_: Published Wiki, model memory, automatic discard on publish denial
+The current sealed Wiki Artifact projected for review. Each Attempt writes only its private workdir; validation, preparation, seal, and conditional commit make an Artifact the current candidate. Declining publication preserves the Artifact and does not alter the Published Wiki.
+_Avoid_: Published Wiki, model memory, shared mutable write tree, automatic discard on publish denial
 
 **Published Wiki**:
 The complete validated Markdown tree made visible as the result of a successful Wiki Run.
@@ -123,8 +123,8 @@ A Wiki Run that updates an existing Published Wiki for a newer Repository Snapsh
 _Avoid_: Knowledge-graph invalidation, patch-only rendering
 
 **Manual Retry Run**:
-A newly created Wiki Run requested through the Operator Session after automatic retries are exhausted. It may reuse an earlier Run Record's frozen inputs, but has its own identity and does not resume the earlier Semantic Workflow or partial receipts.
-_Avoid_: Resume of a Wiki Run graph, checkpoint recovery of Staging as Published, automatic retry
+`RetryFailedNode` creates a new Attempt in the same Run only for the same failed node generation and frozen input digest. Changed inputs, feedback, model, prompt, or budget require `RerunNode`, which increments generations and invalidates actual downstream lineage. A published Run cannot rerun in place; it starts a new Wiki Run.
+_Avoid_: calling an input-changing rerun a retry, resuming a lost Pi Promise, overwriting prior Attempt evidence
 
 **递归委派树**:
 一个 Wiki Run 内按 Root、Domain 和 Leaf 分层的有界 Agent 委派结构；每个 child 使用独立上下文调查受限 source scope，并向 parent 返回可复核的 Source Citation evidence。
@@ -161,7 +161,7 @@ Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
 - Pre-[0019](docs/adr/0019-prefer-run-boundary-over-host.md): **Host** / **Host Instructions** → **Run Boundary** / **Run Instructions**. Do not reintroduce `okf_wiki.host` or `Host*` APIs.
 - Pre-[0021](docs/adr/0021-retire-python-primary-path.md): Python / Pydantic AI harness language → TypeScript `@okf-wiki/core` (Run Boundary) + `@okf-wiki/agent` (Pi harness, ADR 0030).
 - Pre-[0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md): Mastra / AI SDK / UIMessage Session → Pi AgentSession + JSONL.
-- [0032](docs/adr/0032-pi-tool-owned-wiki-runs.md): real `wiki_produce` tool + Pi-only events + `SessionManager`; no WikiRunShell, product injects, session metadata, or compatibility path.
+- [0035](docs/adr/0035-durable-wikiruns-control-plane.md): durable WikiRuns control plane; typed commands/events, generation CAS, typed gates, immutable Artifacts, and separate Run SSE. It supersedes ADR 0032 only where 0032 made Pi own the whole Run or forbade durable Run commands/events. Control-store choice (localhost `workflow.sqlite` vs Pi Session SQLite vs alternatives): [docs/research/pi-sqlite-and-wikiruns-control-store-2026-07.md](docs/research/pi-sqlite-and-wikiruns-control-store-2026-07.md).
 - [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
-- Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) historically superseded transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md); **current** transport is Pi ([0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md)/[0032](docs/adr/0032-pi-tool-owned-wiki-runs.md)).
-- Operator Event / no-compat cleanup: [0032](docs/adr/0032-pi-tool-owned-wiki-runs.md) supersedes ADR 0031's inject whitelist. The Session UI projects only a current snapshot and genuine Pi events; there is no parallel body channel.
+- Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) historically superseded transitional Session-SSE wording in [0023](docs/adr/0023-operator-session-stream-and-plan-confirm.md); **current** conversation transport is Pi ([0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md)), while durable Run control follows [0035](docs/adr/0035-durable-wikiruns-control-plane.md).
+- Operator Event / no-compat cleanup: [0035](docs/adr/0035-durable-wikiruns-control-plane.md) retains Pi-only Operator Session events. Durable Wiki Run Events use their own SSE channel and are never injected as Pi events.

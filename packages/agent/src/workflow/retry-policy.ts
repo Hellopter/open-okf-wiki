@@ -37,12 +37,7 @@ export function decideNodeRetry(input: {
   if (cls === "needs_input") {
     return { action: "needs_input", delayMs: 0, reason: "operator input required" };
   }
-  if (
-    cls === "policy" ||
-    cls === "budget" ||
-    cls === "capacity" ||
-    cls === "infrastructure"
-  ) {
+  if (cls === "policy" || cls === "budget" || cls === "capacity" || cls === "infrastructure") {
     const reasons: Record<string, string> = {
       budget: "budget exhausted",
       policy: "policy violation",

@@ -31,9 +31,9 @@ import {
   type AppSettingsPublic,
   createModelProfile,
   createProvider,
-  deleteProvider,
   type DoctorResponse,
   deleteModelProfile,
+  deleteProvider,
   getApiBase,
   getAppSettings,
   getDoctor,
@@ -579,10 +579,7 @@ export function SettingsPage() {
                             </CardHeader>
                             <CardContent className="pt-0">
                               {entry.models.length === 0 ? (
-                                <p
-                                  className="muted small py-2"
-                                  data-testid="provider-models-empty"
-                                >
+                                <p className="muted small py-2" data-testid="provider-models-empty">
                                   {t.globalSettings.providerModelsEmpty}
                                 </p>
                               ) : (

@@ -1,8 +1,8 @@
 import path from "node:path";
 import {
   type WorkspaceConfig,
-  type WorkspacePatch,
   WorkspaceLimitsSchema,
+  type WorkspacePatch,
 } from "@okf-wiki/contract";
 import { WorkspaceIntakeError } from "./workspace-errors.js";
 

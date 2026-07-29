@@ -1,6 +1,5 @@
 /** Transcript projected exclusively from Pi messages and tool lifecycle events. */
 
-import type { AgentPendingGate, AgentResumeGateCommand } from "@okf-wiki/contract";
 import { BotIcon, ChevronRightIcon, CircleAlertIcon } from "lucide-react";
 import { memo } from "react";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -30,9 +29,6 @@ import { AgentMarkdown } from "./AgentMarkdown";
 
 export type TranscriptProps = {
   messages: AgentMessage[];
-  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
-  /** Live HITL waiter — only the matching wiki_produce card is interactive. */
-  pendingGate?: AgentPendingGate | null;
   className?: string;
 };
 
@@ -58,15 +54,7 @@ function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: 
 
 // Memoized: every streaming tick produces a new messages array, but finalized
 // rows keep their object identity — memo stops full-transcript re-renders.
-const ChatMessage = memo(function ChatMessage({
-  message,
-  onResumeGate,
-  pendingGate,
-}: {
-  message: AgentMessage;
-  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
-  pendingGate: AgentPendingGate | null;
-}) {
+const ChatMessage = memo(function ChatMessage({ message }: { message: AgentMessage }) {
   const { t } = useI18n();
   const isUser = message.role === "user";
   const isError = message.status === "error" || Boolean(message.errorText);
@@ -78,8 +66,6 @@ const ChatMessage = memo(function ChatMessage({
     <ToolExecutionCard
       key={tool.id}
       tool={tool}
-      onResumeGate={onResumeGate}
-      pendingGate={pendingGate}
       settled={!isStreaming && message.status !== "streaming"}
     />
   );
@@ -216,12 +202,7 @@ const ChatMessage = memo(function ChatMessage({
   );
 });
 
-export function Transcript({
-  messages,
-  onResumeGate,
-  pendingGate = null,
-  className,
-}: TranscriptProps) {
+export function Transcript({ messages, className }: TranscriptProps) {
   const { t } = useI18n();
 
   if (messages.length === 0) {
@@ -255,11 +236,7 @@ export function Transcript({
                   messageId={message.id}
                   scrollAnchor={message.role === "user"}
                 >
-                  <ChatMessage
-                    message={message}
-                    onResumeGate={onResumeGate}
-                    pendingGate={pendingGate}
-                  />
+                  <ChatMessage message={message} />
                 </MessageScrollerItem>
               ))}
             </MessageScrollerContent>

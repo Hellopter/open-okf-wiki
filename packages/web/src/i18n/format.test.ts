@@ -16,7 +16,10 @@ describe("formatMessage", () => {
   });
 
   it("leaves unknown placeholders intact", () => {
-    assert.equal(formatMessage("Hi {name}, see {missing}", { name: "Bob" }), "Hi Bob, see {missing}");
+    assert.equal(
+      formatMessage("Hi {name}, see {missing}", { name: "Bob" }),
+      "Hi Bob, see {missing}",
+    );
   });
 
   it("returns the template unchanged when there are no placeholders", () => {

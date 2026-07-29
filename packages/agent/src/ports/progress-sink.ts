@@ -28,7 +28,8 @@ export type ProduceProgress =
 
 /**
  * Single progress fan-out port for Run Workflow.
- * Composition roots (runWiki / produceWiki) build one sink; phases call emit only.
+ * Composition roots (WikiRuns attempt work / phase sequencers) build one sink;
+ * phases call emit only.
  */
 export interface ProgressSink {
   emit(progress: ProduceProgress): void;

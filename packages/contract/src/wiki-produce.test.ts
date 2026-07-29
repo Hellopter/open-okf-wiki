@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultWikiRunSpec } from "./run.js";
-import { emptyRunGraphSnapshot } from "./run-graph.js";
 import {
   projectWikiProduceDetailsForHistory,
   toDurableWikiProduceDetails,
@@ -9,121 +7,90 @@ import {
   WikiProduceToolDetailsSchema,
 } from "./wiki-produce.js";
 
-test("WikiProduceToolDetailsSchema exposes only stable Run and gate facts", () => {
+test("WikiProduceToolDetailsSchema is receipt-oriented (status + runId + summary)", () => {
   const details = WikiProduceToolDetailsSchema.parse({
-    status: "awaiting_plan",
+    status: "accepted",
     runId: "run-1",
-    spec: defaultWikiRunSpec("demo"),
-    pages: [],
-    summary: "Awaiting WikiRunSpec approval",
-    defects: null,
+    summary: "Wiki Run accepted (revision 1).",
   });
-  assert.equal(details.status, "awaiting_plan");
-  assert.equal(details.spec?.pages.length, 1);
+  assert.equal(details.status, "accepted");
+  assert.equal(details.runId, "run-1");
 });
 
-test("WikiProduceToolDetailsSchema accepts optional graph projection", () => {
-  const details = WikiProduceToolDetailsSchema.parse({
-    status: "planning",
-    runId: "run-1",
-    summary: "Planning WikiRunSpec",
-    graph: {
-      topologyVersion: 1,
-      topology: [{ nodeKey: "plan", kind: "plan", label: "Plan" }],
-      attempts: [
-        {
-          attemptId: "plan-0",
-          nodeKey: "plan",
-          runIndex: 0,
-          role: "plan",
-          status: "running",
-          summary: "Inspecting sources…",
-          items: [
-            { type: "text", text: "Looking at sources/main" },
-            { type: "toolCall", name: "ls", argsSummary: "sources/", status: "done" },
-          ],
-          usage: { turns: 1, contextTokens: 1200 },
-        },
-      ],
-      playhead: { nodeKey: "plan", attemptId: "plan-0" },
-    },
-  });
-  assert.equal(details.graph?.attempts[0]?.role, "plan");
-  assert.equal(details.graph?.attempts[0]?.items?.length, 2);
-});
-
-test("WikiProduceToolDetailsSchema rejects children (removed live field)", () => {
+test("WikiProduceToolDetailsSchema rejects fat control mirrors", () => {
   assert.equal(
     WikiProduceToolDetailsSchema.safeParse({
-      status: "planning",
-      children: [{ id: "plan", role: "plan", status: "done" }],
+      status: "accepted",
+      runId: "run-1",
+      spec: { version: 1 },
+    }).success,
+    false,
+  );
+  assert.equal(
+    WikiProduceToolDetailsSchema.safeParse({
+      status: "accepted",
+      graph: { topologyVersion: 1, topology: [], attempts: [] },
+    }).success,
+    false,
+  );
+  assert.equal(
+    WikiProduceToolDetailsSchema.safeParse({
+      status: "accepted",
+      defects: null,
+    }).success,
+    false,
+  );
+  assert.equal(
+    WikiProduceToolDetailsSchema.safeParse({
+      status: "accepted",
+      children: [{ id: "plan" }],
     }).success,
     false,
   );
 });
 
-test("WikiProduceToolDetailsSchema rejects duplicate Pi framing and phase", () => {
+test("WikiProduceToolDetailsSchema rejects duplicate Pi framing fields", () => {
   assert.equal(
     WikiProduceToolDetailsSchema.safeParse({
-      status: "planning",
+      status: "accepted",
       toolCallId: "call-1",
     }).success,
     false,
   );
   assert.equal(
     WikiProduceToolDetailsSchema.safeParse({
-      status: "planning",
+      status: "accepted",
       phase: "planning",
     }).success,
     false,
   );
 });
 
-test("toDurableWikiProduceDetails strips live-only Run mirrors", () => {
+test("toDurableWikiProduceDetails is identity on receipt rows", () => {
   const live = WikiProduceToolDetailsSchema.parse({
-    status: "published",
+    status: "accepted",
     runId: "run-1",
-    spec: defaultWikiRunSpec("demo"),
-    pages: ["overview.md", "architecture.md"],
-    summary: "Published",
-    defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
-    graph: {
-      ...emptyRunGraphSnapshot(1),
-      topology: [{ nodeKey: "plan", kind: "plan", label: "Plan" }],
-      attempts: [
-        {
-          attemptId: "plan-0",
-          nodeKey: "plan",
-          runIndex: 0,
-          role: "plan",
-          status: "done",
-          summary: "done",
-        },
-      ],
-    },
+    pages: ["overview.md"],
+    summary: "Wiki Run accepted",
   });
   const durable = toDurableWikiProduceDetails(live);
   assert.deepEqual(durable, {
-    status: "published",
+    status: "accepted",
     runId: "run-1",
-    pages: ["overview.md", "architecture.md"],
-    summary: "Published",
+    pages: ["overview.md"],
+    summary: "Wiki Run accepted",
   });
-  assert.equal("spec" in durable, false);
-  assert.equal("graph" in durable, false);
-  assert.equal("defects" in durable, false);
   WikiProduceDurableDetailsSchema.parse(durable);
-  WikiProduceToolDetailsSchema.parse(durable);
 });
 
-test("projectWikiProduceDetailsForHistory strips fat fields without rewriting non-wiki details", () => {
+test("projectWikiProduceDetailsForHistory strips fat fields from legacy rows", () => {
   const fat = {
     status: "published",
     runId: "run-1",
     summary: "ok",
     pages: ["overview.md"],
-    spec: defaultWikiRunSpec("demo"),
-    graph: emptyRunGraphSnapshot(1),
+    spec: { version: 1 },
+    graph: { topologyVersion: 1, topology: [], attempts: [] },
     children: [{ id: "plan", role: "plan", status: "done" }],
     defects: null,
   };

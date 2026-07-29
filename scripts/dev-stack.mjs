@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { access } from "node:fs/promises";
 /**
  * Ordered monorepo dev stack (no Turbo).
  *
@@ -14,14 +15,8 @@
  */
 import net from "node:net";
 import path from "node:path";
-import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import {
-  killTree,
-  pidsListeningOnPort,
-  portKillHint,
-  spawnResolved,
-} from "./process-compat.mjs";
+import { killTree, pidsListeningOnPort, portKillHint, spawnResolved } from "./process-compat.mjs";
 
 const monorepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiPort = Number(process.env.OKF_WIKI_PORT ?? "8787");

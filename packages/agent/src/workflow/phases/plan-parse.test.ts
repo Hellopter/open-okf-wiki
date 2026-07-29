@@ -4,10 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import {
-  defaultSpecStore,
-  planDraftPathFromRunWorkDir,
-} from "../../ports/core-spec-store.js";
+import { defaultSpecStore, planDraftPathFromRunWorkDir } from "../../ports/core-spec-store.js";
 import { resolvePlanSpecFromAgentResult } from "./plan-phase.js";
 
 const temps: string[] = [];

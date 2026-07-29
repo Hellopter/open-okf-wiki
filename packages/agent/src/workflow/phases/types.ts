@@ -44,12 +44,12 @@ export type ProduceWikiInput = {
   contextTargetTokens?: number;
   /**
    * Tool-edge / test callback. Prefer `progressSink` when injecting a port;
-   * produceWiki adapts this via progressSinkFromCallback at composition root.
+   * Composition roots adapt this via progressSinkFromCallback.
    */
   onProgress?: (progress: ProduceProgress) => void;
   /**
    * Optional progress port. When set, used as the single fan-out for phases
-   * (onProgress is ignored). When omitted, produceWiki wraps onProgress.
+   * (onProgress is ignored). When omitted, the composition root wraps onProgress.
    */
   progressSink?: ProgressSink;
   sourceIgnores?: SourceIgnoreInput;
@@ -80,7 +80,7 @@ export type PhaseContext = {
   input: ProduceWikiInput;
   /**
    * Single progress fan-out for produce phases.
-   * Built at produceWiki / repairWiki composition root from progressSink or onProgress.
+   * Built at the phase composition root from progressSink or onProgress.
    * Phases call progress.emit only — never raw callbacks with different safety rules.
    */
   progress: ProgressSink;

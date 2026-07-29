@@ -1,14 +1,14 @@
 /**
- * SpecStore adapter over Core analysis scratch + Run Record mirror.
+ * SpecStore adapter over Core analysis scratch (spec.json / plan-draft).
  *
- * Uses @okf-wiki/core only (ports ban produce/). Path constants and the
- * default singleton live here — call sites import this module or SpecStore.
+ * Uses @okf-wiki/core only (ports ban produce/). Does **not** dual-write
+ * `okf.wiki-run/v2` Run Records — WikiRuns owns durable control state.
  */
 
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract";
-import { analysisScratchDir, atomicWriteJson, updateRunRecord } from "@okf-wiki/core";
+import { analysisScratchDir, atomicWriteJson } from "@okf-wiki/core";
 import type { CommitSpecOptions, SpecStore } from "./spec-store.js";
 
 export const SPEC_FILE_NAME = "spec.json";
@@ -44,15 +44,10 @@ export function createCoreSpecStore(): SpecStore {
       spec: WikiRunSpec,
       opts?: CommitSpecOptions,
     ): Promise<string> {
+      void opts; // CommitSpecOptions reserved for future non-v2 metadata only
       const parsed = WikiRunSpecSchema.parse(spec);
       const filePath = specPath(workspaceRoot, runId);
       await atomicWriteJson(filePath, parsed);
-      if (opts?.mirrorRunRecord) {
-        await updateRunRecord(workspaceRoot, runId, {
-          spec: parsed,
-          ...(opts.summary !== undefined ? { summary: opts.summary } : {}),
-        });
-      }
       return filePath;
     },
 

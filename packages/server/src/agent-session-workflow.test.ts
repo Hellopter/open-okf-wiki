@@ -9,10 +9,10 @@ import { addSource, createWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
 import {
   dispatchAgentCommand,
-  getActiveAgentSessionTool,
   registerAgentSession,
   resetAgentSessionRegistryForTests,
 } from "./agent-session-registry.ts";
+import { resetWikiRunsRegistryForTests, wikiRunsForWorkspace } from "./wiki-runs-registry.ts";
 
 function git(cwd: string, ...args: string[]): void {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -44,11 +44,7 @@ function detailsFromEvent(event: {
       appended?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
       updated?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
     };
-    const messages = [
-      patch.streamingMessage,
-      ...(patch.appended ?? []),
-      ...(patch.updated ?? []),
-    ];
+    const messages = [patch.streamingMessage, ...(patch.appended ?? []), ...(patch.updated ?? [])];
     for (const message of messages) {
       for (const tool of message?.tools ?? []) {
         if (tool.details) return tool.details;
@@ -56,30 +52,30 @@ function detailsFromEvent(event: {
     }
     return undefined;
   }
-  const payload = event.payload as {
-    partialResult?: { details?: WikiProduceToolDetails };
-    result?: { details?: WikiProduceToolDetails };
-  };
-  return payload?.partialResult?.details ?? payload?.result?.details;
+  return undefined;
 }
 
-test("fixture prompt emits genuine wiki_produce gate updates through Pi", async (t) => {
+test("fixture prompt dispatches wiki_produce StartRun receipt (T2 hard-cut)", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-session-workflow-"));
   const source = path.join(root, "source");
   const oldMode = process.env.OKF_WIKI_AGENT_MODE;
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
   t.after(async () => {
     resetAgentSessionRegistryForTests();
+    await resetWikiRunsRegistryForTests();
     if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
     else process.env.OKF_WIKI_AGENT_MODE = oldMode;
     await removeRunRoot(root);
   });
 
+  const skill = path.join(root, "skill");
   await mkdir(source, { recursive: true });
+  await mkdir(skill, { recursive: true });
   git(source, "init");
   git(source, "config", "user.email", "fixture@example.test");
   git(source, "config", "user.name", "Fixture");
   await writeFile(path.join(source, "README.md"), "# Fixture\n", "utf8");
+  await writeFile(path.join(skill, "SKILL.md"), "---\nname: fixture\n---\n# skill\n", "utf8");
   git(source, "add", "README.md");
   git(source, "commit", "-m", "fixture");
 
@@ -89,14 +85,12 @@ test("fixture prompt emits genuine wiki_produce gate updates through Pi", async 
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
+  workspace.skillPath = skill;
   await saveWorkspace(workspace);
 
   const sessionId = "fixture-workflow";
   await registerAgentSession({ workspace, sessionId });
 
-  // A live Operator Session can outlive Workspace edits. wiki_produce must
-  // resolve the saved Workspace when execution begins, not use this Session's
-  // empty bootstrap snapshot.
   workspace = {
     ...(await addSource(workspace, { id: "main", path: source })).config,
     planConfirm: true,
@@ -104,87 +98,53 @@ test("fixture prompt emits genuine wiki_produce gate updates through Pi", async 
   await saveWorkspace(workspace);
 
   const events: Array<{ source?: string; kind: string; payload?: unknown }> = [];
-  const waiters = new Map<string, () => void>();
   const unsubscribe = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
     events.push(event);
-    const status = detailsFromEvent(event)?.status;
-    if (status) waiters.get(status)?.();
   });
   t.after(unsubscribe);
 
-  const waitForStatus = (status: string) =>
-    new Promise<void>((resolve, reject) => {
-      if (events.some((event) => detailsFromEvent(event)?.status === status)) {
-        resolve();
-        return;
-      }
-      const timer = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `missing ${status} Pi update; saw ${events
-                .map((event) => detailsFromEvent(event)?.status ?? event.kind)
-                .join(", ")}`,
-            ),
-          ),
-        10_000,
-      );
-      waiters.set(status, () => {
-        clearTimeout(timer);
-        waiters.delete(status);
-        resolve();
-      });
-    });
-
-  const prompt = dispatchAgentCommand(workspace, sessionId, {
+  const prompt = await dispatchAgentCommand(workspace, sessionId, {
     type: "prompt",
     text: "Produce the wiki",
   });
-  await waitForStatus("awaiting_plan");
-  const plan = detailsFromEvent(
-    events.find((event) => detailsFromEvent(event)?.status === "awaiting_plan")!,
-  )!;
-  assert.ok(plan.runId);
-  const activePlan = getActiveAgentSessionTool(workspace.id, sessionId);
-  assert.equal(activePlan?.details.status, "awaiting_plan");
-  assert.equal(activePlan?.details.runId, plan.runId);
-  assert.equal(activePlan?.toolName, "wiki_produce");
-  assert.equal(
-    (
-      await dispatchAgentCommand(workspace, sessionId, {
-        type: "resume_gate",
-        gate: "plan",
-        action: "approve",
-        runId: plan.runId,
-        spec: plan.spec,
-      })
-    ).ok,
-    true,
-  );
+  assert.equal(prompt.ok, true, prompt.message);
 
-  await waitForStatus("awaiting_publication");
-  const publication = detailsFromEvent(
-    events.find((event) => detailsFromEvent(event)?.status === "awaiting_publication")!,
-  )!;
-  const activePublication = getActiveAgentSessionTool(workspace.id, sessionId);
-  assert.equal(activePublication?.details.status, "awaiting_publication");
-  assert.deepEqual(activePublication?.details.pages, publication.pages);
-  assert.equal(
-    (
-      await dispatchAgentCommand(workspace, sessionId, {
-        type: "resume_gate",
-        gate: "publication",
-        action: "approve",
-        runId: publication.runId,
-      })
-    ).ok,
-    true,
-  );
+  // onUpdate may emit accepted before runId; wait for the receipt with runId.
+  let accepted: WikiProduceToolDetails | undefined;
+  for (let i = 0; i < 200; i += 1) {
+    accepted = [...events]
+      .map(detailsFromEvent)
+      .reverse()
+      .find((details) => details?.status === "accepted" && details.runId);
+    if (accepted?.runId) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(accepted?.runId, "wiki_produce must return a durable runId receipt");
+  assert.equal(accepted?.status, "accepted");
 
-  assert.equal((await prompt).ok, true);
-  await waitForStatus("published");
-  assert.equal(getActiveAgentSessionTool(workspace.id, sessionId), undefined);
-  // Live bus is server stream patches (not raw Pi kinds).
+  // WikiRuns owns the Run after StartRun — freeze advances without Session HITL.
+  const runs = await wikiRunsForWorkspace(workspace);
+  let lastState = "";
+  let freezeState = "";
+  let sawFreeze = false;
+  for (let i = 0; i < 400; i += 1) {
+    const { snapshot } = await runs.read({ runId: accepted.runId! });
+    lastState = snapshot.state;
+    const freeze = snapshot.nodes.find((node) => node.key === "freeze");
+    freezeState = freeze?.state ?? "missing";
+    if (freeze?.state === "succeeded" || snapshot.state === "waiting_for_operator") {
+      sawFreeze = true;
+      break;
+    }
+    if (freeze?.state === "failed" || snapshot.state === "failed") {
+      const err = snapshot.attempts.find((a) => a.nodeKey === "freeze")?.error;
+      throw new Error(`freeze failed: ${err ?? snapshot.state}`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(
+    sawFreeze,
+    `WikiRuns should advance freeze after StartRun receipt (state=${lastState} freeze=${freezeState})`,
+  );
   assert.ok(events.every((event) => event.source === "server" && event.kind === "stream"));
-  assert.ok(events.some((event) => detailsFromEvent(event)?.status === "published"));
 });

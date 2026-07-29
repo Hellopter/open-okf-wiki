@@ -1,10 +1,6 @@
 import { z } from "zod";
-import { GitObjectIdSchema, Sha256HexSchema } from "./primitives.js";
-import { type WikiRunRecordStatus, WikiRunRecordStatusSchema } from "./run-phase.js";
+import { GitObjectIdSchema } from "./primitives.js";
 import { IgnorePatternSchema, SourceIdSchema } from "./workspace.js";
-
-export type { WikiRunRecordStatus };
-export { WikiRunRecordStatusSchema };
 
 /** Page template hints from the Producer Skill. */
 export const WikiPageTemplateSchema = z.enum([
@@ -192,39 +188,6 @@ export const RepositorySnapshotSchema = z
   .strict();
 
 export type RepositorySnapshot = z.infer<typeof RepositorySnapshotSchema>;
-
-/**
- * Complete, secret-free Wiki Run Record.
- *
- * Every key is present in v2. State-dependent outcome fields use null/empty
- * values so readers never infer semantics from a missing property. Frozen
- * inputs are immutable after creation; only status and result fields change.
- */
-export const StoredRunRecordSchema = z
-  .object({
-    schema: z.literal("okf.wiki-run/v2"),
-    runId: z.string().trim().min(1),
-    workspaceId: z.string().trim().min(1),
-    sessionId: z.string().trim().min(1),
-    status: WikiRunRecordStatusSchema,
-    autoApprove: z.boolean(),
-    error: z.string().nullable(),
-    /** Absolute path to the immutable, run-owned Producer Skill copy. */
-    skillPath: z.string().trim().min(1),
-    /** SHA-256 content digest reverified after copying the Producer Skill. */
-    skillDigest: Sha256HexSchema,
-    sources: z.array(RepositorySnapshotSchema).min(1),
-    spec: WikiRunSpecSchema.nullable(),
-    /** Wiki-relative page paths produced under staging. */
-    pages: z.array(z.string().trim().min(1)),
-    /** Short operator-facing outcome summary. */
-    summary: z.string().nullable(),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
-
-export type StoredRunRecord = z.infer<typeof StoredRunRecordSchema>;
 
 /** Minimal default Spec used when parsing fails or fixtures need a seed. */
 export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {

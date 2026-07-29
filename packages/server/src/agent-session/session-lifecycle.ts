@@ -1,11 +1,10 @@
 /**
- * Create / delete / list Operator Sessions and cascade Run data on delete.
+ * Create / delete / list Operator Sessions.
  */
 
 import {
   createOperatorSession,
   deleteOperatorSession,
-  type GatePort,
   loadOperatorSessionHistory,
   type OperatorSessionHistory,
   projectOperatorAgentMessages,
@@ -27,12 +26,11 @@ import {
   touchLive,
 } from "./live-session-registry.ts";
 import { runtimeInput } from "./runtime-input.ts";
-import { gateCoordinator, rejectPendingGate } from "./wiki-produce-gate-coordinator.ts";
 
 /**
- * Bound wait for abort/idle before cascading Session delete.
+ * Bound wait for abort/idle before Session JSONL delete.
  * Fail-open: if the session never reports idle within this window, delete still
- * proceeds (dispose + disk cascade) rather than hanging forever.
+ * proceeds (dispose + disk delete) rather than hanging forever.
  */
 const DELETE_SETTLE_TIMEOUT_MS = 5_000;
 const DELETE_SETTLE_POLL_MS = 25;
@@ -50,8 +48,6 @@ export async function registerAgentSession(input: {
   const requestedId = input.sessionId?.trim();
   if (requestedId) {
     const key = sessionKey(input.workspace.id, requestedId);
-    // Delete barrier first: mid-cascade the dying live entry may still be present,
-    // but create must report "being deleted" rather than "already exists".
     if (deletingSessions.has(key)) {
       throw new Error(`Operator Session is being deleted: ${requestedId}`);
     }
@@ -60,30 +56,14 @@ export async function registerAgentSession(input: {
     }
   }
 
-  // A generated id must be known before constructing the gate coordinator. Pi
-  // accepts an omitted id, so create once then bind the coordinator through a
-  // stable wrapper that resolves the final id lazily.
-  let resolvedSessionId = input.sessionId?.trim() ?? "";
-  const coordinator: GatePort = {
-    waitForDecision(request, signal) {
-      return gateCoordinator(input.workspace.id, resolvedSessionId).waitForDecision(
-        request,
-        signal,
-      );
-    },
-  };
   const runtime = await runtimeInput(input.workspace, input.sessionId);
-  // Re-check after await: a delete may have started for the requested id.
   if (requestedId && deletingSessions.has(sessionKey(input.workspace.id, requestedId))) {
     throw new Error(`Operator Session is being deleted: ${requestedId}`);
   }
   const handle = await createOperatorSession({
     ...runtime.input,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-    wikiProduce: { ...runtime.input.wikiProduce, gateCoordinator: coordinator },
   });
-  resolvedSessionId = handle.sessionId;
-  // Final barrier before registerLive (covers client-chosen id races mid-create).
   if (deletingSessions.has(sessionKey(input.workspace.id, handle.sessionId))) {
     try {
       handle.dispose();
@@ -106,13 +86,10 @@ export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSes
 
 /**
  * Abort any live turn, wait briefly for idle/settle, dispose the handle, then
- * cascade v2 Run data + SessionManager JSONL. Gate waiters are rejected first
- * so wiki_produce cannot keep writing after delete begins.
+ * delete SessionManager JSONL.
  *
  * Single-flight per key (like ensureRegistered open): concurrent deletes await
- * the same promise so the deleting barrier stays up until the cascade finishes.
- * Also serialized against cold open: marks deleting, awaits any in-flight open
- * (disposing a late-arriving handle via the deleting map), then tears down.
+ * the same promise so the deleting barrier stays up until deletion finishes.
  */
 export async function deleteAgentSession(
   workspace: WorkspaceConfig,
@@ -123,25 +100,17 @@ export async function deleteAgentSession(
   const inFlightDelete = deletingSessions.get(key);
   if (inFlightDelete) return inFlightDelete;
 
-  // Box so the finally ownership check can compare the same promise without TDZ.
   const flight: {
     promise?: Promise<{ sessionId: string; removed: number }>;
   } = {};
   flight.promise = (async (): Promise<{ sessionId: string; removed: number }> => {
     try {
-      // Unblock gate waiters before filesystem cascade so tool catch can finish.
-      rejectPendingGate(key, new Error("Wiki Run cancelled"));
-
-      // Await the cold-open single-flight so we can dispose its handle. Without
-      // this, openOperatorSession + registerLive can finish after disk delete and
-      // reanimate a “deleted” session.
       const inFlightOpen = openingSessions.get(key);
       if (inFlightOpen) {
         try {
           await inFlightOpen;
         } catch {
-          // Open failed or was cancelled by the deleting flag — nothing to dispose
-          // from that path (handle disposed inside ensureRegistered if needed).
+          // Open failed — nothing to dispose from that path.
         }
       }
 
@@ -155,33 +124,24 @@ export async function deleteAgentSession(
         liveSessions.delete(key);
       }
 
-      // Open's finally may already have cleared this; drop any stale entry.
       openingSessions.delete(key);
 
       const result = await deleteOperatorSession(workspace.rootPath, sessionId);
       return {
         sessionId,
-        removed: (hadLive || result.deleted ? 1 : 0) + result.removedRunIds.length,
+        removed: hadLive || result.deleted ? 1 : 0,
       };
     } finally {
-      // Only the owning flight clears the barrier (single-flight, not refcount).
       if (deletingSessions.get(key) === flight.promise) {
         deletingSessions.delete(key);
       }
     }
   })();
 
-  // Mark before any outer await so concurrent create/open/delete see the barrier.
   deletingSessions.set(key, flight.promise);
   return flight.promise;
 }
 
-/**
- * Wait until the AgentSession reports idle and the registry busy flag clears,
- * or until the timeout elapses. Fail-open: timeout resolves without error so
- * delete can still dispose and cascade disk (never hangs forever).
- * Prefers Pi `waitForIdle()` over polling private event listeners.
- */
 async function waitForSessionQuiet(
   entry: RegisteredAgentSession,
   timeoutMs: number,
@@ -210,7 +170,6 @@ export async function loadAgentSessionHistory(
   const live = liveSessions.get(sessionKey(workspace.id, sessionId));
   if (live) {
     touchLive(live);
-    // Compaction-aware Pi projection → AgentMessage[] (server owns view).
     const piRows = projectOperatorHistoryFromManager(live.handle.session.sessionManager);
     const messages = projectOperatorAgentMessages(
       redactSensitiveValue(piRows) as readonly unknown[],
@@ -222,7 +181,6 @@ export async function loadAgentSessionHistory(
   }
   const history = await loadOperatorSessionHistory(workspace.rootPath, sessionId);
   if (!history) return null;
-  // Cold path already projected; redact string leaves on the wire shape.
   return {
     sessionId: history.sessionId,
     messages: redactSensitiveValue(history.messages),

@@ -3,11 +3,7 @@ import { access, chmod, mkdir, mkdtemp, stat, utimes, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  cleanupWritableTree,
-  withLockedDir,
-  withPerKeyMutex,
-} from "./atomicity.js";
+import { cleanupWritableTree, withLockedDir, withPerKeyMutex } from "./atomicity.js";
 import { makeTreeReadOnly } from "./immutable-tree.js";
 
 test("withPerKeyMutex serializes same-key callers and keeps keys independent", async () => {

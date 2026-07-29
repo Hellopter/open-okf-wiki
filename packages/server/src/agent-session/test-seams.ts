@@ -15,7 +15,6 @@ import {
   openingSessions,
   setLiveIdleTtlMs,
 } from "./live-session-registry.ts";
-import { clearAllPendingGates, rejectPendingGate } from "./wiki-produce-gate-coordinator.ts";
 
 /** Test helper: set idle TTL (ms). Pass null to restore default. */
 export function setLiveSessionIdleTtlForTests(ms: number | null): void {
@@ -31,7 +30,6 @@ export function evictLiveAgentSessionForTests(workspaceId: string, sessionId: st
     liveSessions.delete(key);
   }
   openingSessions.delete(key);
-  rejectPendingGate(key, new Error("test evict"));
 }
 
 /** Test helper: mark product busy flag without poking Pi. */
@@ -98,6 +96,5 @@ export function resetAgentSessionRegistryForTests(): void {
   liveSessions.clear();
   openingSessions.clear();
   deletingSessions.clear();
-  clearAllPendingGates("test reset");
   setLiveSessionIdleTtlForTests(null);
 }

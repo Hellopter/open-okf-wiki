@@ -22,10 +22,7 @@ import type {
   RunWorkdirLayoutPaths,
   SourceIgnoreInput,
 } from "../../ports/agent-runner.js";
-import {
-  defaultSpecStore,
-  PLAN_DRAFT_REL_PATH,
-} from "../../ports/core-spec-store.js";
+import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../../ports/core-spec-store.js";
 import type { SpecStore } from "../../ports/spec-store.js";
 import { plannerPrompt } from "../../prompts/plan.js";
 import { DEFAULT_ORCHESTRATION } from "../budgets.js";
@@ -114,7 +111,7 @@ export type PlanWikiSpecResult = {
 
 /**
  * Plan a WikiRunSpec. Fixture runtime → default Spec; live → optional scouts + planner.
- * Does not commit Spec to living analysis/spec.json — caller (runWiki) owns commitSpec.
+ * Does not commit Spec to living analysis/spec.json — caller owns commitSpec.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
   const store = input.store ?? defaultSpecStore;

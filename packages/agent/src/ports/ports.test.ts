@@ -4,14 +4,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  type AnalysisReceipt,
-  defaultWikiRunSpec,
-  type RunGraphSnapshot,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
-import type { GatePort } from "./gate-port.js";
-import type { GraphStore } from "./graph-store.js";
+import { type AnalysisReceipt, defaultWikiRunSpec, type WikiRunSpec } from "@okf-wiki/contract";
 import type {
   AttachReceiptInput,
   PersistReceiptInput,
@@ -114,18 +107,6 @@ function memorySpecStore(): SpecStore {
   };
 }
 
-function memoryGraphStore(): GraphStore {
-  const graphs = new Map<string, RunGraphSnapshot>();
-  return {
-    async save(runId, snapshot) {
-      graphs.set(runId, snapshot);
-    },
-    async load(runId) {
-      return graphs.get(runId) ?? null;
-    },
-  };
-}
-
 describe("ports memory fakes", () => {
   it("ReceiptStore write/attach/buildIndex/list round-trip", async () => {
     const store = memoryReceiptStore();
@@ -169,33 +150,5 @@ describe("ports memory fakes", () => {
     const committed = await store.readCommittedSpec("/ws", "run-1");
     assert.equal(committed?.pages[0]?.path, "overview.md");
     assert.equal(await store.readCommittedSpec("/ws", "missing"), null);
-  });
-
-  it("GatePort waitForDecision returns decision", async () => {
-    const gate: GatePort = {
-      async waitForDecision(request) {
-        return { action: "approve", spec: request.spec };
-      },
-    };
-    const decision = await gate.waitForDecision({
-      toolCallId: "t1",
-      runId: "r1",
-      gate: "plan",
-      spec: defaultWikiRunSpec("G"),
-      pages: [],
-    });
-    assert.equal(decision.action, "approve");
-  });
-
-  it("GraphStore save/load", async () => {
-    const store = memoryGraphStore();
-    const snap: RunGraphSnapshot = {
-      topology: [],
-      topologyVersion: 1,
-      attempts: [],
-    };
-    await store.save("run-x", snap);
-    assert.deepEqual(await store.load("run-x"), snap);
-    assert.equal(await store.load("missing"), null);
   });
 });

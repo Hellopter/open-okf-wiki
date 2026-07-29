@@ -7,8 +7,8 @@ import {
   WorkspaceOrchestrationSchema,
   WorkspaceRoleModelsSchema,
 } from "@okf-wiki/contract";
-import { applyWorkspacePatch } from "./workspace-patch.js";
 import { WorkspaceIntakeError } from "./workspace-errors.js";
+import { applyWorkspacePatch } from "./workspace-patch.js";
 
 function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
   return {
@@ -114,7 +114,6 @@ test("applyWorkspacePatch rejects model selection without profile id", async () 
         },
       ),
     (error: unknown) =>
-      error instanceof WorkspaceIntakeError &&
-      error.message.includes("modelProfileId is required"),
+      error instanceof WorkspaceIntakeError && error.message.includes("modelProfileId is required"),
   );
 });

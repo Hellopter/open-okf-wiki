@@ -7,8 +7,8 @@
 
 import { ChevronRightIcon, FileTextIcon, FolderIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { WikiNavNode } from "../api";
 import { cn } from "@/lib/utils";
+import type { WikiNavNode } from "../api";
 import { ancestorDirPaths, buildWikiPageTree, type WikiPageTreeNode } from "./page-tree";
 
 export type WikiPageTreeProps = {
@@ -112,8 +112,7 @@ function TreeBranch({
 
   if (node.kind === "group") {
     const kids = node.children;
-    const label =
-      node.source === "unlisted" && unlistedLabel ? unlistedLabel : node.title;
+    const label = node.source === "unlisted" && unlistedLabel ? unlistedLabel : node.title;
     return (
       <li className="mt-1 first:mt-0" data-testid="wiki-toc-group" data-group={node.title}>
         <div
@@ -126,7 +125,11 @@ function TreeBranch({
           <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
             {kids.map((child, i) => (
               <TreeBranch
-                key={child.kind === "page" ? child.path : `${child.kind}:${"path" in child ? child.path : child.title}:${i}`}
+                key={
+                  child.kind === "page"
+                    ? child.path
+                    : `${child.kind}:${"path" in child ? child.path : child.title}:${i}`
+                }
                 node={child}
                 activePath={activePath}
                 depth={depth}
@@ -169,7 +172,11 @@ function TreeBranch({
         <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
           {kids.map((child, i) => (
             <TreeBranch
-              key={child.kind === "page" ? child.path : `${child.kind}:${"path" in child ? child.path : child.title}:${i}`}
+              key={
+                child.kind === "page"
+                  ? child.path
+                  : `${child.kind}:${"path" in child ? child.path : child.title}:${i}`
+              }
               node={child}
               activePath={activePath}
               depth={depth + 1}
@@ -236,7 +243,11 @@ export function WikiPageTree({
     >
       {tree.map((node, i) => (
         <TreeBranch
-          key={node.kind === "page" ? node.path : `${node.kind}:${"path" in node ? node.path : node.title}:${i}`}
+          key={
+            node.kind === "page"
+              ? node.path
+              : `${node.kind}:${"path" in node ? node.path : node.title}:${i}`
+          }
           node={node}
           activePath={activePath}
           depth={0}

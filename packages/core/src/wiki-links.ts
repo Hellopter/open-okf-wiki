@@ -205,7 +205,5 @@ export function deriveWikiGraph(pages: readonly WikiGraphInputPage[]): WikiGraph
 /** Read all `.md` pages under `root` and derive the graph (no symlink follow). */
 export async function deriveWikiGraphFromTree(root: string): Promise<WikiGraph> {
   const { pages } = await loadWikiPageRecords(root);
-  return deriveWikiGraph(
-    pages.map((page) => ({ path: page.relativePath, content: page.content })),
-  );
+  return deriveWikiGraph(pages.map((page) => ({ path: page.relativePath, content: page.content })));
 }

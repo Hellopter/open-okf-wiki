@@ -31,13 +31,14 @@ import {
   handleUpdateModel,
   handleUpdateProvider,
 } from "./routes/provider.ts";
-import { handleGetRunGraph, handleListRuns } from "./routes/runs.ts";
+import { handleListRuns } from "./routes/runs.ts";
 import {
   handleListWiki,
   handleReadWiki,
   handleWikiGraph,
   matchWikiApiRoute,
 } from "./routes/wiki.ts";
+import { handleGetWikiRun, handleWikiRunCommand, handleWikiRunEvents } from "./routes/wiki-runs.ts";
 import {
   handleAddSource,
   handleCloneSource,
@@ -255,10 +256,25 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
         return;
       }
     }
+    // ADR 0035 durable WikiRuns control surface (+ slim list projection).
     {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/graph");
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/command");
+      if (params && method === "POST") {
+        await handleWikiRunCommand(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/events");
       if (params && method === "GET") {
-        await handleGetRunGraph(req, res, params.id!, params.runId!, url);
+        await handleWikiRunEvents(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId");
+      if (params && method === "GET") {
+        await handleGetWikiRun(req, res, params.id!, params.runId!, url);
         return;
       }
     }

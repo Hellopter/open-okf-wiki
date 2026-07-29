@@ -26,16 +26,13 @@ import {
   scorePublishable,
   sourcesFromMounts,
 } from "../../produce/publishability.js";
-import { listWikiMarkdown, materializeWikiIndexes } from "../../produce/wiki-pages.js";
 import { runReviewCouncil } from "../../produce/review.js";
-import { reviewerPrompt, type ReviewLens } from "../../prompts/reviewer.js";
+import { listWikiMarkdown, materializeWikiIndexes } from "../../produce/wiki-pages.js";
+import { type ReviewLens, reviewerPrompt } from "../../prompts/reviewer.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 import { classifyError } from "../retry-policy.js";
 import { runNodeAttempt } from "../run-node-attempt.js";
-import {
-  runBoundedRepairLoop,
-  type BoundedRepairLoopResult,
-} from "./bounded-repair-loop.js";
+import { type BoundedRepairLoopResult, runBoundedRepairLoop } from "./bounded-repair-loop.js";
 import {
   formatDefectsForRepair,
   hardValidateRepairText,
@@ -63,12 +60,7 @@ export {
   partitionHardValidateReasons,
 } from "./repair-prompt.js";
 
-const REVIEW_LENSES: readonly ReviewLens[] = [
-  "grounding",
-  "coverage",
-  "consistency",
-  "general",
-];
+const REVIEW_LENSES: readonly ReviewLens[] = ["grounding", "coverage", "consistency", "general"];
 
 /**
  * L2 maxAttempts for a single reviewer seat (schema/quality only).
@@ -211,9 +203,7 @@ function hardValidateFailedResult(input: {
 
 /** Review receipt / blocking-defect reasons are not mechanical writer work. */
 function isReviewStateHardValidateReason(reason: string): boolean {
-  return (
-    reason.startsWith("blocking defects remain") || reason.startsWith("review required")
-  );
+  return reason.startsWith("blocking defects remain") || reason.startsWith("review required");
 }
 
 /**
@@ -444,10 +434,9 @@ export async function runReviewRepairPhase(
         summary: `review council round ${round} (${councilSize} seats, concurrency ${reviewConcurrency})`,
       });
 
-      const priorBlocking =
-        defects?.defects.filter((d) => d.severity === "blocking") ?? [];
+      const priorBlocking = defects?.defects.filter((d) => d.severity === "blocking") ?? [];
       const priorMerged = defects;
-      let reviewers: CouncilMember[] = [];
+      let reviewers: CouncilMember[];
 
       if (
         runtime.kind === "live" &&
@@ -469,7 +458,7 @@ export async function runReviewRepairPhase(
       } else {
         const runIndex = round - 1;
         const seats = Array.from({ length: councilSize }, (_, i) => i);
-        let seatOutcomes: ReviewerSeatOutcome[] = [];
+        let seatOutcomes: ReviewerSeatOutcome[];
         try {
           seatOutcomes = await mapWithConcurrency(
             seats,
@@ -532,9 +521,9 @@ export async function runReviewRepairPhase(
                 publishable: false,
                 reasons: [
                   `review_council: ${cls}: ${reason}`,
-                  ...failedSeats.slice(0, 4).map(
-                    (s) => `${s.id}: ${s.errorClass ?? "error"}: ${s.message.slice(0, 200)}`,
-                  ),
+                  ...failedSeats
+                    .slice(0, 4)
+                    .map((s) => `${s.id}: ${s.errorClass ?? "error"}: ${s.message.slice(0, 200)}`),
                 ],
                 pages: produced.pages,
                 defects: null,

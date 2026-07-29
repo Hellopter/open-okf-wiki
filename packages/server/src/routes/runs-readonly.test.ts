@@ -4,11 +4,11 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { emptyRunGraphSnapshot } from "@okf-wiki/contract";
-import { createWorkspace, saveWorkspace, writeRunGraph } from "@okf-wiki/core";
+import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
+import { resetWikiRunsRegistryForTests } from "../wiki-runs-registry.ts";
 
-test("Run HTTP surface exposes only the Agent Workspace read model", async () => {
+test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-runs-readonly-"));
   const workspace = await createWorkspace({
     name: "Read-only Run Surface",
@@ -27,32 +27,45 @@ test("Run HTTP surface exposes only the Agent Workspace read model", async () =>
     const query = `rootPath=${encodeURIComponent(root)}`;
     const runs = `${base}/api/workspaces/${workspace.id}/runs`;
 
-    const list = await fetch(`${runs}?${query}`);
-    assert.equal(list.status, 200);
-    assert.deepEqual(await list.json(), { workspaceId: workspace.id, runs: [] });
+    const listEmpty = await fetch(`${runs}?${query}`);
+    assert.equal(listEmpty.status, 200);
+    assert.deepEqual(await listEmpty.json(), { workspaceId: workspace.id, runs: [] });
 
-    // Durable Run Graph GET (read-only observation)
+    // Observation graph route must stay deleted (WikiRuns GET is the snapshot).
     const missingGraph = await fetch(`${runs}/run-missing/graph?${query}`);
     assert.equal(missingGraph.status, 404);
+    assert.deepEqual(await missingGraph.json(), { error: "not found" });
 
-    const graph = emptyRunGraphSnapshot(1);
-    graph.topology = [{ nodeKey: "plan", kind: "plan", label: "Plan" }];
-    await writeRunGraph(root, "run-1", graph);
-    const got = await fetch(`${runs}/run-1/graph?${query}`);
-    assert.equal(got.status, 200);
-    const body = (await got.json()) as {
+    const started = await fetch(`${runs}/command?${query}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "start_run", commandId: "list-start-1" }),
+    });
+    assert.equal(started.status, 202, await started.clone().text());
+    const receipt = (await started.json()) as { receipt: { runId: string; revision: number } };
+
+    const list = await fetch(`${runs}?${query}`);
+    assert.equal(list.status, 200, await list.clone().text());
+    const listed = (await list.json()) as {
       workspaceId: string;
-      runId: string;
-      graph: { topologyVersion: number; topology: unknown[] };
+      runs: Array<{ runId: string; state: string; updatedAt: string; revision: number }>;
     };
-    assert.equal(body.workspaceId, workspace.id);
-    assert.equal(body.runId, "run-1");
-    assert.equal(body.graph.topologyVersion, 1);
-    assert.equal(body.graph.topology.length, 1);
+    assert.equal(listed.workspaceId, workspace.id);
+    assert.equal(listed.runs.length, 1);
+    assert.equal(listed.runs[0]?.runId, receipt.receipt.runId);
+    assert.ok(listed.runs[0]?.state);
+    assert.ok(listed.runs[0]?.updatedAt);
+    assert.ok(typeof listed.runs[0]?.revision === "number");
 
+    // GET /runs/:runId and /events are durable WikiRuns routes (ADR 0035).
+    const got = await fetch(`${runs}/${receipt.receipt.runId}?${query}`);
+    assert.equal(got.status, 200, await got.clone().text());
+    const body = (await got.json()) as { snapshot: { runId: string } };
+    assert.equal(body.snapshot.runId, receipt.receipt.runId);
+
+    // Legacy Session-owned mutation / receipt routes must stay deleted.
     const removedRoutes: Array<[method: string, pathname: string]> = [
       ["POST", ""],
-      ["GET", "/run-1"],
       ["POST", "/run-1/retry"],
       ["POST", "/run-1/approve-plan"],
       ["POST", "/run-1/deny-plan"],
@@ -60,8 +73,8 @@ test("Run HTTP surface exposes only the Agent Workspace read model", async () =>
       ["POST", "/run-1/approve-publication"],
       ["POST", "/run-1/deny-publication"],
       ["POST", "/run-1/cancel"],
-      ["GET", "/run-1/events"],
       ["GET", "/run-1/receipts"],
+      ["GET", "/run-1/graph"],
     ];
 
     for (const [method, pathname] of removedRoutes) {
@@ -78,6 +91,7 @@ test("Run HTTP surface exposes only the Agent Workspace read model", async () =>
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     ).catch(() => undefined);
+    await resetWikiRunsRegistryForTests();
     await rm(root, { recursive: true, force: true });
   }
 });

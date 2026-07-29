@@ -12,11 +12,7 @@ import { useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { StatusBadge } from "../components/StatusBadge";
-import {
-  type RunGraphLayerId,
-  type RunGraphViewNode,
-  runGraphToViewModel,
-} from "./view-model";
+import { type RunGraphLayerId, type RunGraphViewNode, runGraphToViewModel } from "./view-model";
 
 export type RunGraphCanvasProps = {
   graph: RunGraphSnapshot;

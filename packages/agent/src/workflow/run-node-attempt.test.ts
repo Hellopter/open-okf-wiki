@@ -4,13 +4,9 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  classifyAgentFailure,
-  classifyError,
-  decideNodeRetry,
-} from "./retry-policy.js";
-import { runNodeAttempt } from "./run-node-attempt.js";
 import { runBestEffortChild } from "./best-effort-child.js";
+import { classifyAgentFailure, classifyError, decideNodeRetry } from "./retry-policy.js";
+import { runNodeAttempt } from "./run-node-attempt.js";
 
 describe("classifyAgentFailure", () => {
   it("recognizes transient transport failures", () => {

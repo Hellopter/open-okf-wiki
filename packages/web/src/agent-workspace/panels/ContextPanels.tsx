@@ -1,23 +1,23 @@
 /** Read-only workspace context beside the sole Operator Session surface. */
 
 import { BookOpenIcon, ExternalLinkIcon, FolderGit2Icon } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import type { StoredRunRecord, WorkspaceConfig } from "../../api";
-import { useState } from "react";
+import type { WikiRunListItem, WorkspaceConfig } from "../../api";
 import { useI18n } from "../../i18n";
 import { configureHref, wikiHref } from "../../lib/workspace-path";
-import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 import { PaneCollapseButton } from "../components/PaneCollapseButton";
+import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 
 export type ContextPanelsProps = {
   workspaceId: string;
   workspace: WorkspaceConfig | null;
-  recentRuns?: StoredRunRecord[];
+  recentRuns?: WikiRunListItem[];
   /** Desktop: collapse the context pane to a rail. */
   onCollapse?: () => void;
   className?: string;
@@ -55,7 +55,7 @@ export function ContextPanels({
 }: ContextPanelsProps) {
   const { t } = useI18n();
   const sources = workspace?.sources ?? [];
-  const [inspectorRun, setInspectorRun] = useState<StoredRunRecord | null>(null);
+  const [inspectorRunId, setInspectorRunId] = useState<string | null>(null);
 
   return (
     <div
@@ -133,12 +133,12 @@ export function ContextPanels({
                       className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1.5 text-left text-2xs transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                       data-testid="agent-run-open"
                       data-run-id={run.runId}
-                      onClick={() => setInspectorRun(run)}
+                      onClick={() => setInspectorRunId(run.runId)}
                     >
                       <span className="min-w-0 truncate font-mono" title={run.runId}>
                         {run.runId}
                       </span>
-                      <Badge variant="outline">{run.status}</Badge>
+                      <Badge variant="outline">{run.state}</Badge>
                     </button>
                   </li>
                 ))}
@@ -167,11 +167,10 @@ export function ContextPanels({
       <RunInspectorDialog
         workspaceId={workspaceId}
         rootPath={workspace?.rootPath}
-        runId={inspectorRun?.runId ?? null}
-        record={inspectorRun}
-        open={inspectorRun != null}
+        runId={inspectorRunId}
+        open={inspectorRunId != null}
         onOpenChange={(open) => {
-          if (!open) setInspectorRun(null);
+          if (!open) setInspectorRunId(null);
         }}
       />
     </div>

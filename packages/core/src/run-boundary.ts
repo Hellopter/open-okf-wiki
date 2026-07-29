@@ -1,36 +1,22 @@
 /**
- * Run Boundary freeze entry (ADR 0019 / 0030).
+ * Run Boundary freeze entry (ADR 0019 / 0030 / 0035).
  *
  * Fail-closed readiness for one Wiki Run: sources git+clean, Producer Skill
- * path + digest, durable Wiki Run Record. No Pi / framework deps.
+ * path + digest materialisation under an allocated run id. Does **not** write
+ * `okf.wiki-run/v2` Run Records — durable control ownership is WikiRuns.
+ * No Pi / framework deps.
  */
 
-import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import {
-  type RepositorySnapshot,
-  recordStatusFromPhase,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
+import { type RepositorySnapshot, type WorkspaceConfig } from "@okf-wiki/contract";
 import { cleanupWritableTree } from "./atomicity.js";
 import { probeLocalGit } from "./git.js";
 import { materializeRepositorySnapshot } from "./repository-snapshot.js";
 import { analysisDir as runAnalysisDir, runSkillDir, runsDir, runWorkDir } from "./run-layout.js";
-import { registerRunRecord } from "./run-store.js";
 import { materializeSkillVersion, skillDigest } from "./skill-digest.js";
 import { resolveSkillPath } from "./skill-path.js";
 import { effectiveIgnoresForSource } from "./source-ignores.js";
-
-/** Production always uses crypto.randomUUID(); tests may override allocation. */
-let createRunId: () => string = () => randomUUID();
-
-/**
- * Test-only override for run id allocation. Not re-exported from the package barrel.
- */
-export function setFreezeWikiRunIdFactoryForTests(factory: (() => string) | undefined): void {
-  createRunId = factory ?? (() => randomUUID());
-}
 
 export type FreezeWikiRunErrorCode =
   | "no_sources"
@@ -65,10 +51,12 @@ type ReadySource = RepositorySnapshot & {
   repositoryPath: string;
 };
 
-export type FreezeWikiRunInput = {
+/** Materialize immutable run inputs under a run id allocated by the caller (WikiRuns). */
+export type FreezeRunBoundaryInput = {
   workspace: WorkspaceConfig;
-  sessionId: string;
-  autoApprove?: boolean;
+  runId: string;
+  /** Cancels source/Skill materialisation and removes the run-owned tree. */
+  signal?: AbortSignal;
 };
 
 export type FrozenRunBoundary = {
@@ -89,7 +77,10 @@ export type FrozenRunBoundary = {
   sourceIgnores: Map<string, readonly string[]>;
 };
 
-async function assertSourcesReady(workspace: WorkspaceConfig): Promise<ReadySource[]> {
+async function assertSourcesReady(
+  workspace: WorkspaceConfig,
+  signal?: AbortSignal,
+): Promise<ReadySource[]> {
   const sources = workspace.sources ?? [];
   if (sources.length === 0) {
     throw new FreezeWikiRunError(
@@ -100,13 +91,14 @@ async function assertSourcesReady(workspace: WorkspaceConfig): Promise<ReadySour
 
   const frozen: ReadySource[] = [];
   for (const source of sources) {
+    signal?.throwIfAborted();
     if (!source.id?.trim() || !source.path?.trim()) {
       throw new FreezeWikiRunError("no_sources", `source entry missing id or path`, {
         sourceId: source.id,
       });
     }
     const abs = path.resolve(source.path);
-    const probe = await probeLocalGit(abs);
+    const probe = await probeLocalGit(abs, undefined, signal);
     if (!probe.isGit) {
       throw new FreezeWikiRunError(
         "source_not_git",
@@ -140,13 +132,15 @@ async function assertSourcesReady(workspace: WorkspaceConfig): Promise<ReadySour
 
 async function freezeSkill(
   workspace: WorkspaceConfig,
+  signal?: AbortSignal,
 ): Promise<{ skillPath: string; skillDigest: string }> {
   try {
     const skillPath = await resolveSkillPath({
       skillPath: workspace.skillPath,
       workspaceRoot: workspace.rootPath,
     });
-    const digest = await skillDigest(skillPath);
+    signal?.throwIfAborted();
+    const digest = await skillDigest(skillPath, signal);
     return { skillPath, skillDigest: digest };
   } catch (err) {
     if (err instanceof FreezeWikiRunError) throw err;
@@ -159,15 +153,24 @@ async function freezeSkill(
 }
 
 /**
- * Fail-closed freeze for one Wiki Run: sources + Skill Version + Run Record.
+ * Fail-closed freeze for an allocated Wiki Run: sources + Skill Version.
+ * Does not create an `okf.wiki-run/v2` file record (WikiRuns owns control state).
  */
-export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRunBoundary> {
+export async function freezeRunBoundary(input: FreezeRunBoundaryInput): Promise<FrozenRunBoundary> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.runId) || input.runId.includes("..")) {
+    throw new Error("invalid runId");
+  }
+
   const workspace = input.workspace;
   const workspaceRoot = path.resolve(workspace.rootPath);
-  const sources = await assertSourcesReady(workspace);
-  const { skillPath: sourceSkillPath, skillDigest: digest } = await freezeSkill(workspace);
+  input.signal?.throwIfAborted();
+  const sources = await assertSourcesReady(workspace, input.signal);
+  const { skillPath: sourceSkillPath, skillDigest: digest } = await freezeSkill(
+    workspace,
+    input.signal,
+  );
 
-  const runId = createRunId();
+  const runId = input.runId;
   const runsRoot = runsDir(workspaceRoot);
   const runDir = runWorkDir(workspaceRoot, runId);
   const sourcePathMap = new Map<string, string>();
@@ -188,12 +191,14 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
     }
 
     for (const source of sources) {
+      input.signal?.throwIfAborted();
       const snapshotPath = path.join(runDir, "sources", source.id);
       await materializeRepositorySnapshot({
         repositoryPath: source.repositoryPath,
         revision: source.revision,
         destination: snapshotPath,
         effectiveIgnores: source.effectiveIgnores,
+        signal: input.signal,
       });
       sourcePathMap.set(source.id, snapshotPath);
       frozenSources.push({
@@ -209,6 +214,7 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
         sourceSkillPath,
         destination: skillPath,
         expectedDigest: digest,
+        signal: input.signal,
       });
     } catch (error) {
       throw new FreezeWikiRunError(
@@ -217,17 +223,6 @@ export async function freezeWikiRun(input: FreezeWikiRunInput): Promise<FrozenRu
         { cause: error },
       );
     }
-
-    await registerRunRecord(workspaceRoot, workspace.id, {
-      autoApprove: input.autoApprove ?? false,
-      skillPath,
-      skillDigest: digest,
-      sessionId: input.sessionId,
-      sources: sources.map(({ repositoryPath: _repositoryPath, ...source }) => source),
-      runId,
-      // Freezing is in-flight; record projection folds to running.
-      status: recordStatusFromPhase("freezing"),
-    });
   } catch (error) {
     if (ownsRunDir) {
       await cleanupWritableTree(runDir);

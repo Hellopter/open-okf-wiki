@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,7 +10,8 @@ import {
   readRawOperatorBranchMessagesForTests,
 } from "@okf-wiki/agent/testing";
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
-import { addSource, createWorkspace, listRuns, saveWorkspace } from "@okf-wiki/core";
+import { addSource, createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { openWikiRuns } from "@okf-wiki/workflow";
 import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
 import {
   ageLiveSessionForTests,
@@ -59,11 +60,7 @@ function detailsFromEvent(event: {
       appended?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
       updated?: Array<{ tools?: Array<{ details?: WikiProduceToolDetails }> }>;
     };
-    const messages = [
-      patch.streamingMessage,
-      ...(patch.appended ?? []),
-      ...(patch.updated ?? []),
-    ];
+    const messages = [patch.streamingMessage, ...(patch.appended ?? []), ...(patch.updated ?? [])];
     for (const message of messages) {
       for (const tool of message?.tools ?? []) {
         if (tool.details) return tool.details;
@@ -355,6 +352,18 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
       timestamp: Date.now(),
     },
   ] as never);
+  // Seed a durable WikiRun so delete can prove it does not touch Run control data.
+  const wikiRuns = await openWikiRuns({ rootPath: workspace.rootPath });
+  const startReceipt = await wikiRuns.dispatch(
+    { type: "start_run", commandId: "delete-open-race-run" },
+    { workspaceId: workspace.id, actor: { id: "test", kind: "local_operator" } },
+  );
+  const durableRunId = startReceipt.runId;
+  const durableRunDir = path.join(workspace.rootPath, ".okf-wiki", "runs", durableRunId);
+  await mkdir(durableRunDir, { recursive: true });
+  await writeFile(path.join(durableRunDir, "sentinel.txt"), "keep\n");
+  await wikiRuns.close();
+
   evictLiveAgentSessionForTests(workspace.id, sessionId);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
   const beforeFiles = await readdir(sessionsDir);
@@ -409,8 +418,16 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   }
   void cmd; // may reject or return failed — disk/live assertions below are the contract
 
-  // After delete resolves: no live entry, JSONL gone.
+  // After delete resolves: no live entry, JSONL gone; WikiRuns row + workdir remain.
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
+  const afterRuns = await openWikiRuns({ rootPath: workspace.rootPath });
+  t.after(() => afterRuns.close());
+  assert.equal(
+    (await afterRuns.list()).find((run) => run.runId === durableRunId)?.runId,
+    durableRunId,
+  );
+  await access(durableRunDir);
+  assert.equal(await readFile(path.join(durableRunDir, "sentinel.txt"), "utf8"), "keep\n");
   const afterFiles = await readdir(sessionsDir).catch(() => [] as string[]);
   assert.equal(
     afterFiles.some((name) => name.includes(sessionId)),
@@ -505,12 +522,14 @@ test("H2: concurrent delete is single-flight; create blocked mid-cascade", async
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
 });
 
-test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => {
+test("H3: delete during wiki_produce StartRun aborts and settles", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-gate-"));
   const oldMode = process.env.OKF_WIKI_AGENT_MODE;
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
   t.after(async () => {
     resetAgentSessionRegistryForTests();
+    const { resetWikiRunsRegistryForTests } = await import("./wiki-runs-registry.ts");
+    await resetWikiRunsRegistryForTests();
     if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
     else process.env.OKF_WIKI_AGENT_MODE = oldMode;
     await removeRunRoot(root);
@@ -529,27 +548,37 @@ test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => 
   });
   t.after(unsubscribe);
 
-  const waitForStatus = (status: string) =>
-    new Promise<void>((resolve, reject) => {
-      if (events.some((event) => detailsFromEvent(event)?.status === status)) {
-        resolve();
+  const waitForAcceptedReceipt = () =>
+    new Promise<string>((resolve, reject) => {
+      const tryFind = () => {
+        for (const event of events) {
+          const details = detailsFromEvent(event);
+          if (details?.status === "accepted" && details.runId) return details.runId;
+        }
+        return undefined;
+      };
+      const existing = tryFind();
+      if (existing) {
+        resolve(existing);
         return;
       }
       const timer = setTimeout(
         () =>
           reject(
             new Error(
-              `missing ${status}; saw ${events
+              `missing accepted+runId; saw ${events
                 .map((event) => detailsFromEvent(event)?.status ?? event.kind)
                 .join(", ")}`,
             ),
           ),
         10_000,
       );
-      waiters.set(status, () => {
+      waiters.set("accepted", () => {
+        const runId = tryFind();
+        if (!runId) return;
         clearTimeout(timer);
-        waiters.delete(status);
-        resolve();
+        waiters.delete("accepted");
+        resolve(runId);
       });
     });
 
@@ -557,14 +586,12 @@ test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => 
     type: "prompt",
     text: "Produce the wiki",
   });
-  await waitForStatus("awaiting_plan");
-  const plan = detailsFromEvent(
-    events.find((event) => detailsFromEvent(event)?.status === "awaiting_plan")!,
-  )!;
-  assert.ok(plan.runId);
-  const runId = plan.runId;
+  // T2: tool returns StartRun receipt immediately; durable Run continues on WikiRuns.
+  const runId = await waitForAcceptedReceipt();
+  assert.ok(runId);
+  // Run dir may appear as freeze starts; allow either present or still materializing.
   const runDir = path.join(workspace.rootPath, ".okf-wiki", "runs", runId);
-  await access(runDir);
+  await access(runDir).catch(() => undefined);
 
   const deleted = await deleteAgentSession(workspace, sessionId);
   assert.ok(deleted.removed >= 1);
@@ -576,16 +603,7 @@ test("H3: delete mid-gate aborts, settles, and cascades run data", async (t) => 
   // Live cache cleared.
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
 
-  // Run artifacts and session gone.
-  await assert.rejects(access(runDir));
-  await assert.rejects(access(path.join(workspace.rootPath, ".okf-wiki", "runs", `${runId}.json`)));
-  const remaining = await listRuns(workspace.rootPath);
-  assert.equal(remaining.filter((run) => run.sessionId === sessionId).length, 0);
-
-  // Brief settle: no new run dirs reappear for this session.
-  await new Promise((r) => setTimeout(r, 200));
-  const remainingAfter = await listRuns(workspace.rootPath);
-  assert.equal(remainingAfter.filter((run) => run.sessionId === sessionId).length, 0);
+  // The in-flight run settles through its own cancellation path.
 });
 
 test("idle sweep disposes live handle without deleting Session JSONL", async (t) => {

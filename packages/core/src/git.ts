@@ -18,6 +18,7 @@ function isStrictlyInside(parent: string, child: string): boolean {
 export async function probeLocalGit(
   rawPath: string,
   runner: GitRunner = createDefaultGitRunner(),
+  signal?: AbortSignal,
 ): Promise<GitProbe> {
   const resolved = path.resolve(rawPath);
   try {
@@ -33,7 +34,7 @@ export async function probeLocalGit(
     };
   }
 
-  const inside = await runner(resolved, ["rev-parse", "--is-inside-work-tree"]);
+  const inside = await runner(resolved, ["rev-parse", "--is-inside-work-tree"], { signal });
   if (inside.code !== 0 || inside.stdout !== "true") {
     return {
       path: resolved,
@@ -45,9 +46,9 @@ export async function probeLocalGit(
     };
   }
 
-  const head = await runner(resolved, ["rev-parse", "HEAD"]);
-  const branch = await runner(resolved, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const status = await runner(resolved, ["status", "--porcelain"]);
+  const head = await runner(resolved, ["rev-parse", "HEAD"], { signal });
+  const branch = await runner(resolved, ["rev-parse", "--abbrev-ref", "HEAD"], { signal });
+  const status = await runner(resolved, ["status", "--porcelain"], { signal });
 
   if (head.code !== 0) {
     return {

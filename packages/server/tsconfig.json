@@ -8,5 +8,10 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../contract" }, { "path": "../core" }, { "path": "../agent" }]
+  "references": [
+    { "path": "../contract" },
+    { "path": "../core" },
+    { "path": "../agent" },
+    { "path": "../workflow" }
+  ]
 }

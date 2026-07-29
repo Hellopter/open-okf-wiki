@@ -4,11 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import {
-  defaultSpecStore,
-  planDraftPathFromRunWorkDir,
-  specPath,
-} from "./core-spec-store.js";
+import { defaultSpecStore, planDraftPathFromRunWorkDir, specPath } from "./core-spec-store.js";
 
 const temps: string[] = [];
 after(async () => {

@@ -9,8 +9,8 @@
 
 import {
   DEFAULT_OPERATOR_TOOLS,
-  OperatorToolNameSchema,
   type OperatorToolName,
+  OperatorToolNameSchema,
 } from "@okf-wiki/contract";
 
 /** Pi coding-agent built-in tool names we may enable. */

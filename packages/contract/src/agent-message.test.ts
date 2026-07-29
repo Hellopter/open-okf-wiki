@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   type AgentContentPart,
-  type AgentToolCall,
   AgentMessageSchema,
+  type AgentToolCall,
   AgentToolCallSchema,
   assistantFromSnapshot,
   extractPartsFromMessage,

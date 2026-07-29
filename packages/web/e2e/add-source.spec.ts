@@ -19,7 +19,9 @@ test.describe("add git source", () => {
     await page.getByTestId("workspace-create-submit").click();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible({ timeout: 20_000 });
 
-    // Navigate to sources
+    // Configure → Sources (no top-level sources mode on WorkbenchShell).
+    await page.getByTestId("workspace-subnav-settings").click();
+    await expect(page.getByTestId("configure-page")).toBeVisible({ timeout: 15_000 });
     await page.getByTestId("workspace-subnav-sources").click();
     await expect(page.getByTestId("sources-page")).toBeVisible();
 

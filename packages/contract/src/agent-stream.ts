@@ -309,15 +309,11 @@ function supersedeOtherWikiProduce(state: PiStreamState, keepToolCallId: string)
     if (next !== message) changed = true;
     return next;
   });
-  const streamingMessage = state.streamingMessage
-    ? markMessage(state.streamingMessage)
-    : null;
+  const streamingMessage = state.streamingMessage ? markMessage(state.streamingMessage) : null;
   if (streamingMessage !== state.streamingMessage) changed = true;
   // Drop live HITL if it pointed at a tool we just superseded.
   const pendingGate =
-    state.pendingGate && state.pendingGate.toolCallId !== keepToolCallId
-      ? null
-      : state.pendingGate;
+    state.pendingGate && state.pendingGate.toolCallId !== keepToolCallId ? null : state.pendingGate;
   if (pendingGate !== state.pendingGate) changed = true;
   return changed ? { ...state, messages, streamingMessage, pendingGate } : state;
 }
@@ -521,8 +517,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     const toolCallId = typeof body.toolCallId === "string" ? body.toolCallId : makeId("tool");
     const toolName = typeof body.toolName === "string" ? body.toolName : "tool";
     const args = "args" in body ? body.args : undefined;
-    const base =
-      toolName === "wiki_produce" ? supersedeOtherWikiProduce(state, toolCallId) : state;
+    const base = toolName === "wiki_produce" ? supersedeOtherWikiProduce(state, toolCallId) : state;
     return updateToolInState(base, toolCallId, {
       name: toolName,
       args,

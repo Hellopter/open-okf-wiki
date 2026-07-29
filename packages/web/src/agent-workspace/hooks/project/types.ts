@@ -2,12 +2,12 @@
 
 import type {
   AgentContentPart,
-  AgentMessage as ContractAgentMessage,
   AgentMessageRole,
   AgentSseEvent,
   AgentToolCall,
-  PiAgentStatus,
+  AgentMessage as ContractAgentMessage,
   PiStreamState as ContractPiStreamState,
+  PiAgentStatus,
 } from "@okf-wiki/contract";
 
 export type { AgentContentPart, AgentMessageRole, AgentToolCall, PiAgentStatus };

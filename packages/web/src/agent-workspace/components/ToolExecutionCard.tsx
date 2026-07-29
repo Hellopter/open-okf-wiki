@@ -9,13 +9,12 @@
  *   structured details for the real wiki_produce tool (WikiProduceGatePanel).
  *
  * Known tools put args on the trigger line; they are never re-dumped as JSON.
+ *
+ * wiki_produce: tool details only expose accepted+runId (StartRun receipt).
+ * Live Run status / gates / graph come from WikiRuns via the panel — never
+ * treat long-running tool phase strings as control-plane truth.
  */
 
-import {
-  isLiveWikiProduceGate,
-  type AgentPendingGate,
-  type AgentResumeGateCommand,
-} from "@okf-wiki/contract";
 import { ChevronRightIcon } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -31,9 +30,6 @@ import { WikiProduceGatePanel } from "./WikiProduceGatePanel";
 
 export type ToolExecutionCardProps = {
   tool: AgentToolCall;
-  onResumeGate: (command: AgentResumeGateCommand) => Promise<void>;
-  /** Live HITL waiter — gate buttons only when this tool matches. */
-  pendingGate?: AgentPendingGate | null;
   /**
    * When the parent work unit is settled, keep completed tools collapsed.
    * Pass `false` while a unit is still active so non-done tools expand.
@@ -73,8 +69,6 @@ function expandBody(
 // multi-KB outputs on every tick otherwise).
 export const ToolExecutionCard = memo(function ToolExecutionCard({
   tool,
-  onResumeGate,
-  pendingGate = null,
   settled,
 }: ToolExecutionCardProps) {
   const { t } = useI18n();
@@ -84,9 +78,9 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const isRunning = tool.status === "running" || tool.status === "pending";
   const isWikiProduce = tool.name.toLowerCase() === WIKI_PRODUCE_TOOL_NAME;
   const wikiDetails = isWikiProduce ? tool.details : undefined;
-  const gateInteractive = Boolean(
-    wikiDetails && isLiveWikiProduceGate(pendingGate, tool.id, wikiDetails),
-  );
+  // accepted+runId is the durable handoff — keep the card open so the operator
+  // can open the Run inspector / resolve gates without hunting collapsed rows.
+  const wikiRunHandoff = Boolean(wikiDetails?.runId);
 
   const body = expandBody(display.kind, {
     writePreview: display.writePreview,
@@ -98,11 +92,13 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
     (!display.headerOnly &&
       (Boolean(body.trim()) ||
         isError ||
-        (display.kind === "write-body" &&
-          Boolean(display.writePreview || display.diff))));
+        (display.kind === "write-body" && Boolean(display.writePreview || display.diff))));
 
   const autoOpen =
-    isRunning || isError || (settled === false && tool.status !== "done" && canExpand);
+    isRunning ||
+    isError ||
+    wikiRunHandoff ||
+    (settled === false && tool.status !== "done" && canExpand);
 
   const [open, setOpen] = useState(autoOpen);
   useEffect(() => {
@@ -143,7 +139,13 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
         >
           {isWikiProduce ? "wiki_produce" : display.title}
         </span>
-        {display.subtitle ? (
+        {isWikiProduce && wikiDetails?.status === "accepted" && wikiDetails.runId ? (
+          <span className="ml-1.5 font-mono text-2xs text-muted-foreground">
+            {wikiDetails.runId.length > 12
+              ? `${wikiDetails.runId.slice(0, 8)}…`
+              : wikiDetails.runId}
+          </span>
+        ) : display.subtitle ? (
           <span
             className={cn(
               "ml-1.5 text-muted-foreground",
@@ -189,6 +191,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
       data-testid="tool-execution-card"
       data-tool-name={tool.name}
       data-tool-status={tool.status}
+      data-wiki-run-id={wikiDetails?.runId}
     >
       <CollapsibleTrigger className="w-full min-w-0 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
         {trigger}
@@ -196,11 +199,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
       <CollapsibleContent className="min-w-0 overflow-hidden pl-4 pr-1 pb-1.5 sm:pl-6">
         {/* wiki_produce: structured panel only — never dump body pre + details twice. */}
         {wikiDetails ? (
-          <WikiProduceGatePanel
-            details={wikiDetails}
-            onResumeGate={onResumeGate}
-            gateInteractive={gateInteractive}
-          />
+          <WikiProduceGatePanel details={wikiDetails} />
         ) : display.diff ? (
           <div className="flex min-w-0 flex-col gap-1.5">
             <DiffPreview removed={display.diff.removed} added={display.diff.added} />
