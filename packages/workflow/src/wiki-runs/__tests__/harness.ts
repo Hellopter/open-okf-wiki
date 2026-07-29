@@ -94,11 +94,7 @@ export async function fullGraphFixtureExecutor(
   if (input.node.kind === "plan") {
     return succeededPlan(input);
   }
-  if (
-    input.node.kind === "research.leaf" ||
-    input.node.kind === "research.domain" ||
-    input.node.kind === "review.seat"
-  ) {
+  if (input.node.kind === "research.leaf" || input.node.kind === "research.domain") {
     const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
     await writeFile(receipt, `${JSON.stringify({ ok: true, node: input.node.key })}\n`, "utf8");
     return {
@@ -108,6 +104,22 @@ export async function fullGraphFixtureExecutor(
         { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
       ],
       summary: `fixture ${input.node.kind}`,
+    };
+  }
+  if (input.node.kind === "review.seat") {
+    const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
+    await writeFile(
+      receipt,
+      `${JSON.stringify({ clean: true, defects: [], summary: "NO_DEFECTS", node: input.node.key })}\n`,
+      "utf8",
+    );
+    return {
+      type: "succeeded",
+      unsealedArtifacts: [
+        { kind: "receipt", role: "review_seat", sourcePath: receipt, directory: false },
+        { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
+      ],
+      summary: "NO_DEFECTS",
     };
   }
   if (input.node.kind === "write.root" || input.node.kind === "repair") {

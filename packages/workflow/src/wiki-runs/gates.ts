@@ -714,3 +714,54 @@ export function openPublicationGate(
   host.emit(claim.runId, "effect.prepared");
   host.emit(claim.runId, "gate.opened");
 }
+
+/**
+ * Auto-deny open plan/publication gates older than workspace.limits.gateTimeoutSeconds.
+ * 0 / unset disables. Called from owner schedule/dispatch/read so long waits still expire
+ * when any control activity (or Run poll) occurs.
+ */
+export function expireStaleOpenGates(host: GatesHost): number {
+  const timeoutSec = host.workspace.limits?.gateTimeoutSeconds ?? 0;
+  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return 0;
+  const cutoffMs = Date.now() - timeoutSec * 1_000;
+  const open = asRows(
+    host.db
+      .prepare(
+        `SELECT gate_id, run_id, kind, payload_digest, opened_at
+         FROM gates WHERE state = 'open' AND kind IN ('plan', 'publication')
+         ORDER BY opened_at, gate_id`,
+      )
+      .all(),
+  );
+  let expired = 0;
+  for (const row of open) {
+    const openedAt = requiredText(row, "opened_at");
+    const openedMs = Date.parse(openedAt);
+    if (!Number.isFinite(openedMs) || openedMs > cutoffMs) continue;
+    const gateId = requiredText(row, "gate_id");
+    const runId = requiredText(row, "run_id");
+    const kind = requiredText(row, "kind") as "plan" | "publication";
+    const payloadDigest = requiredText(row, "payload_digest");
+    const commandId = `gate-timeout:${gateId}`;
+    const command = {
+      type: "resolve_gate" as const,
+      commandId,
+      runId,
+      gateId,
+      gateKind: kind,
+      decision: "deny" as const,
+      payloadDigest,
+    };
+    try {
+      // command.payloadDigest is the sealed gate payload; recordCommand uses digest(command).
+      resolveGate(host, command, {
+        workspaceId: host.workspace.id,
+        actor: { id: "system-gate-timeout", kind: "local_operator" },
+      }, digest(command));
+      expired += 1;
+    } catch {
+      // Stale race / already closed — ignore and continue.
+    }
+  }
+  return expired;
+}

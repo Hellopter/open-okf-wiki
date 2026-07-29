@@ -142,13 +142,17 @@ export const zh: MessageTree = {
       "Wiki 生成时的上下文压缩预算（Observational Memory + 硬 token 上限）。留空则在模型配置了最大上下文时使用其 85%。",
     contextTargetTokensPlaceholder: "例如 100000",
     contextTargetDerived: "当前由模型最大上下文推导：{n} tokens（85%）。",
-    requestTimeoutSeconds: "智能体会话超时（秒）",
+    requestTimeoutSeconds: "智能体 Attempt 超时（秒）",
     requestTimeoutSecondsHint:
-      "每个子智能体会话的墙钟预算（规划 / 研究 / 写作 / 审查）。长规划常见需要 600–1800 秒。过短会在模型仍在工作时以 “workspace request timeout” 中止。",
+      "每个 Wiki Run 子 Attempt 的墙钟预算（规划 / 研究 / 写作 / 审查）。长规划常见需要 600–1800 秒。过短会在模型仍在工作时以 “workspace request timeout” 中止。保存后仅对之后启动的 Run 生效，不影响进行中的 Attempt。",
     requestTimeoutSecondsPlaceholder: "例如 600",
+    gateTimeoutSeconds: "操作者门闸超时（秒）",
+    gateTimeoutSecondsHint:
+      "大于 0 时，打开的 plan/publication 门闸超过该秒数后自动拒绝。0 表示禁用。对采用已保存 workspace 配置的 Run 上新开的门闸生效。",
+    gateTimeoutSecondsPlaceholder: "0 = 禁用；例如 86400 表示 24 小时",
     retryTitle: "传输层自动重试",
     retryHint:
-      "Pi 在同一子会话内对瞬态错误（429/5xx/网络）自动重试。不会新开 session，也不会对上下文溢出重试。等待时间计入上方会话超时。",
+      "Pi 在同一子 Attempt 内对瞬态错误（429/5xx/网络）自动重试。不会新开 session，也不会对上下文溢出重试。等待时间计入上方超时。保存后仅对之后启动的 Run 生效。",
     retryEnabled: "启用自动重试",
     retryMaxRetries: "最大重试次数",
     retryMaxRetriesHint: "首次调用之后的额外次数（默认 2 → 共 3 次）。仅同 session。",

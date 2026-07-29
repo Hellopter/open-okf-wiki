@@ -60,6 +60,7 @@ import {
 import {
   type GatesHost,
   loadSpecFromArtifact,
+  expireStaleOpenGates as expireStaleOpenGatesImpl,
   openPlanGate as openPlanGateImpl,
   openPublicationGate as openPublicationGateImpl,
   readPublicationBaseline as readPublicationBaselineImpl,
@@ -171,6 +172,7 @@ class WikiRunsOwner implements WikiRuns {
     if (parsedContext.workspaceId !== this.workspace.id) {
       throw new Error("command workspace does not match the opened workspace");
     }
+    this.transaction(() => expireStaleOpenGatesImpl(this.gatesHost()));
     const receipt = this.transaction(() => this.applyCommand(parsedCommand, parsedContext));
     this.schedule();
     if (parsedCommand.type === "cancel_run") await this.waitForRunExecution(parsedCommand.runId);
@@ -189,6 +191,10 @@ class WikiRunsOwner implements WikiRuns {
       throw new Error("afterEventId must be a non-negative integer");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000)
       throw new Error("limit must be between 1 and 1000");
+
+    // Do not expire on read: hot poll paths (waitForRunState / Run SSE) must stay
+    // non-blocking and avoid contending with in-flight attempt commits on the
+    // single EXCLUSIVE SQLite connection. Expiry runs on dispatch + schedule.
 
     this.db.exec("BEGIN DEFERRED");
     try {
@@ -564,6 +570,11 @@ class WikiRunsOwner implements WikiRuns {
 
   private schedule(): void {
     if (this.closed || this.scheduler) return;
+    try {
+      this.transaction(() => expireStaleOpenGatesImpl(this.gatesHost()));
+    } catch {
+      // Expiry best-effort; do not block the scheduler on a single bad gate.
+    }
     this.scheduler = runScheduler(this.schedulerHost()).finally(() => {
       this.scheduler = undefined;
     });

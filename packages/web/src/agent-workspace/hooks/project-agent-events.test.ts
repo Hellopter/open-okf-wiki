@@ -208,41 +208,8 @@ describe("projectAgentEvent", () => {
     assert.equal(tool?.details?.runId, "run-1");
     // Snapshot activeTool uses the same toolOutputFromResult path as live updates.
     assert.equal(tool?.output, "Wiki Run accepted (revision 1).");
-    // T2: Session snapshot no longer seeds memory pendingGate.
-    assert.equal(state.pendingGate, null);
   });
 
-  it("keeps pendingGate null on reconnect snapshot (WikiRuns owns gates)", () => {
-    const seeded = createPiStreamState();
-    const state = projectAgentEvent(seeded, {
-      source: "server",
-      kind: "snapshot",
-      sessionId: "session-1",
-      timestamp: "2026-07-24T00:00:00.000Z",
-      payload: {
-        session: { id: "session-1", workspaceId: "workspace-1" },
-        messages: [
-          {
-            id: "asst-1",
-            role: "assistant",
-            content: "",
-            createdAt: "2026-07-24T00:00:00.002Z",
-            status: "done",
-            tools: [
-              {
-                id: "old",
-                name: "wiki_produce",
-                args: {},
-                status: "done",
-                details: { status: "accepted", runId: "run-old" },
-              },
-            ],
-          },
-        ],
-      },
-    });
-    assert.equal(state.pendingGate, null);
-  });
 
   it("snapshot activeTool and live tool_execution_update share details.summary output", () => {
     const summary = "Wiki Run accepted (revision 1).";

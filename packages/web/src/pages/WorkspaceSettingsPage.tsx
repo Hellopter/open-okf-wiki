@@ -49,6 +49,8 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
   const [contextTargetTokens, setContextTargetTokens] = useState("");
   /** Per child-agent wall-clock budget (workspace.limits.requestTimeoutSeconds). */
   const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState("600");
+  /** Open plan/publication gate auto-deny budget (0 = disabled). */
+  const [gateTimeoutSeconds, setGateTimeoutSeconds] = useState("0");
   /** Pi settings.retry — agent-level transport retries (workspace.limits.retry). */
   const [retryEnabled, setRetryEnabled] = useState(true);
   const [retryMaxRetries, setRetryMaxRetries] = useState("2");
@@ -83,6 +85,7 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
       ws.limits?.contextTargetTokens !== undefined ? String(ws.limits.contextTargetTokens) : "",
     );
     setRequestTimeoutSeconds(String(ws.limits?.requestTimeoutSeconds ?? 600));
+    setGateTimeoutSeconds(String(ws.limits?.gateTimeoutSeconds ?? 0));
     setRetryEnabled(ws.limits?.retry?.enabled !== false);
     setRetryMaxRetries(String(ws.limits?.retry?.maxRetries ?? 2));
     setRetryBaseDelayMs(String(ws.limits?.retry?.baseDelayMs ?? 2000));
@@ -230,6 +233,16 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         setIsSubmitting(false);
         return;
       }
+      const nextGateTimeout = Number(gateTimeoutSeconds.trim() || "0");
+      if (
+        !Number.isInteger(nextGateTimeout) ||
+        nextGateTimeout < 0 ||
+        nextGateTimeout > 604_800
+      ) {
+        setError(new Error("gateTimeoutSeconds must be an integer from 0 to 604800"));
+        setIsSubmitting(false);
+        return;
+      }
       const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 600 };
       // Spread through an explicit optional so the fallback `{ requestTimeoutSeconds }`
       // is still destructurable under WorkspaceLimits | bare-timeout union.
@@ -241,6 +254,7 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
       const nextLimits = {
         ...limitsWithoutContext,
         requestTimeoutSeconds: nextTimeoutSeconds,
+        gateTimeoutSeconds: nextGateTimeout,
         ...(nextContextTarget !== undefined ? { contextTargetTokens: nextContextTarget } : {}),
         retry: {
           enabled: retryEnabled,
@@ -354,6 +368,8 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
               setContextTargetTokens={setContextTargetTokens}
               requestTimeoutSeconds={requestTimeoutSeconds}
               setRequestTimeoutSeconds={setRequestTimeoutSeconds}
+              gateTimeoutSeconds={gateTimeoutSeconds}
+              setGateTimeoutSeconds={setGateTimeoutSeconds}
               retryEnabled={retryEnabled}
               setRetryEnabled={setRetryEnabled}
               retryMaxRetries={retryMaxRetries}

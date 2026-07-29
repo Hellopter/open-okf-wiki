@@ -32,21 +32,6 @@ import {
 export const PiAgentStatusSchema = z.enum(["idle", "streaming", "error"]);
 export type PiAgentStatus = z.infer<typeof PiAgentStatusSchema>;
 
-/**
- * @deprecated ADR 0035 — Session no longer owns HITL. Field retained as always-null
- * on stream state so patches stay shape-stable; live gates are WikiRuns ResolveGate.
- * Do not reintroduce Session pendingGate derivation from tool details.
- */
-export const AgentPendingGateSchema = z
-  .object({
-    toolCallId: z.string().min(1),
-    runId: z.string().min(1),
-    gate: z.enum(["plan", "publication"]),
-  })
-  .strict();
-
-export type AgentPendingGate = z.infer<typeof AgentPendingGateSchema>;
-
 /** Finalized durable rows plus at most one live assistant snapshot. */
 export type PiStreamState = {
   messages: AgentMessage[];
@@ -55,11 +40,6 @@ export type PiStreamState = {
   turnActive: boolean;
   agentStatus: PiAgentStatus;
   errorText: string | null;
-  /**
-   * Always null after ADR 0035 hard-cut (WikiRuns owns gates).
-   * Kept on the state object so stream patches do not dual-write Session HITL.
-   */
-  pendingGate: null;
 };
 
 export const AgentStreamViewPatchSchema = z
@@ -73,8 +53,6 @@ export const AgentStreamViewPatchSchema = z
     appended: z.array(AgentMessageSchema),
     /** Existing finalized messages patched in place (same id). */
     updated: z.array(AgentMessageSchema),
-    /** Always null / omit — Session does not own HITL (ADR 0035). */
-    pendingGate: z.null().optional(),
   })
   .strict();
 
@@ -99,7 +77,6 @@ export function createPiStreamState(seed: readonly AgentMessage[] = []): PiStrea
     turnActive: false,
     agentStatus: "idle",
     errorText: null,
-    pendingGate: null,
   };
 }
 
@@ -109,7 +86,6 @@ export function createPiStreamState(seed: readonly AgentMessage[] = []): PiStrea
  *
  * Snapshot messages are cold history: incomplete tools become error first, then
  * the single live activeTool (if any) is re-applied as running.
- * `pendingGate` is always null (WikiRuns owns gates; argument ignored).
  */
 export function applySnapshotWithActiveTool(
   messages: AgentMessage[],
@@ -118,7 +94,6 @@ export function applySnapshotWithActiveTool(
     toolName: string;
     details?: AgentToolCall["details"];
   } | null,
-  _pendingGate?: AgentPendingGate | null,
 ): PiStreamState {
   const snapshot = createPiStreamState(finalizeIncompleteTools(messages));
   if (!activeTool) return snapshot;
@@ -131,7 +106,6 @@ export function applySnapshotWithActiveTool(
     }),
     turnActive: true,
     agentStatus: "streaming",
-    pendingGate: null,
   };
 }
 
@@ -284,7 +258,7 @@ function supersedeOtherWikiProduce(state: PiStreamState, keepToolCallId: string)
   });
   const streamingMessage = state.streamingMessage ? markMessage(state.streamingMessage) : null;
   if (streamingMessage !== state.streamingMessage) changed = true;
-  return changed ? { ...state, messages, streamingMessage, pendingGate: null } : state;
+  return changed ? { ...state, messages, streamingMessage } : state;
 }
 
 /**
@@ -400,7 +374,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
           ...state,
           messages: hasBody ? [...state.messages, finalized, marker] : [...state.messages, marker],
           streamingMessage: null,
-          pendingGate: null,
           ...(hasBody ? { lastAssistantId: finalized.id } : {}),
         };
       }
@@ -408,7 +381,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
         ...state,
         messages: [...state.messages, marker],
         streamingMessage: null,
-        pendingGate: null,
       };
     }
 
@@ -579,7 +551,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       turnActive: false,
       agentStatus: failed ? "error" : "idle",
       errorText: failed ? finalized.errorText : null,
-      pendingGate: null,
     };
   }
 
@@ -591,7 +562,6 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       lastAssistantId: null,
       agentStatus: "streaming",
       errorText: null,
-      pendingGate: null,
     };
   }
 
@@ -623,7 +593,6 @@ export function diffStreamState(prev: PiStreamState, next: PiStreamState): Agent
     streamingMessage: next.streamingMessage,
     appended,
     updated,
-    pendingGate: next.pendingGate,
   };
 }
 
@@ -665,6 +634,5 @@ export function applyStreamPatch(state: PiStreamState, patch: AgentStreamViewPat
     turnActive: patch.turnActive,
     agentStatus: patch.agentStatus,
     errorText: patch.errorText,
-    pendingGate: null,
   };
 }

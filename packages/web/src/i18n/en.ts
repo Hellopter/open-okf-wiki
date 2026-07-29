@@ -151,11 +151,15 @@ export const en = {
     contextTargetDerived: "Currently derived from model max: {n} tokens (85%).",
     requestTimeoutSeconds: "Agent session timeout (seconds)",
     requestTimeoutSecondsHint:
-      "Wall-clock budget for each child agent session (plan, research, write, review). Long plans often need 600–1800s. Too low aborts with “workspace request timeout” while the model is still working.",
+      "Wall-clock budget for each Wiki Run child attempt (plan, research, write, review). Long plans often need 600–1800s. Too low aborts with “workspace request timeout” while the model is still working. Saves apply to Runs started after save — not in-flight attempts.",
     requestTimeoutSecondsPlaceholder: "e.g. 600",
+    gateTimeoutSeconds: "Operator gate timeout (seconds)",
+    gateTimeoutSecondsHint:
+      "When greater than 0, open plan/publication gates auto-deny after this many seconds. 0 disables. Applies to gates opened on Runs that see the saved workspace config.",
+    gateTimeoutSecondsPlaceholder: "0 = disabled; e.g. 86400 for 24h",
     retryTitle: "Provider transport retry",
     retryHint:
-      "Pi auto-retries transient provider errors (429/5xx/network) inside the same child session. Does not reopen sessions or retry context overflow. Waits count against the session timeout above.",
+      "Pi auto-retries transient provider errors (429/5xx/network) inside the same child attempt. Does not reopen sessions or retry context overflow. Waits count against the session timeout above. Saves apply to subsequent Runs only.",
     retryEnabled: "Enable auto-retry",
     retryMaxRetries: "Max retries",
     retryMaxRetriesHint:

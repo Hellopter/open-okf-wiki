@@ -60,8 +60,6 @@ export {
 } from "./agent-protocol.js";
 /** Live stream reduce + view patches (server-owned projection). */
 export {
-  type AgentPendingGate,
-  AgentPendingGateSchema,
   type AgentStreamViewPatch,
   AgentStreamViewPatchSchema,
   applySnapshotWithActiveTool,

@@ -48,9 +48,8 @@ export function projectPiHistory(rows: readonly unknown[]): AgentMessage[] {
 export function projectAgentEvent(state: PiStreamState, event: AgentSseLike): PiStreamState {
   if (event.source === "server" && event.kind === "snapshot") {
     const rows = Array.isArray(event.payload.messages) ? event.payload.messages : [];
-    // T2/T7: Session SSE no longer carries memory pendingGate; always clear on snapshot.
     // Live gates are WikiRuns ResolveGate (receipt-only wiki_produce details).
-    return applySnapshotWithActiveTool(snapshotMessages(rows), event.payload.activeTool, null);
+    return applySnapshotWithActiveTool(snapshotMessages(rows), event.payload.activeTool);
   }
   if (event.source === "server" && event.kind === "stream") {
     return applyStreamPatch(state, event.payload);

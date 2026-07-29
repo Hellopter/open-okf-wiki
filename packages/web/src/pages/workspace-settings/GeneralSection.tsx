@@ -44,6 +44,8 @@ export type GeneralSectionProps = {
   setContextTargetTokens: (value: string) => void;
   requestTimeoutSeconds: string;
   setRequestTimeoutSeconds: (value: string) => void;
+  gateTimeoutSeconds: string;
+  setGateTimeoutSeconds: (value: string) => void;
   retryEnabled: boolean;
   setRetryEnabled: (value: boolean) => void;
   retryMaxRetries: string;
@@ -100,6 +102,8 @@ export function GeneralSection(props: GeneralSectionProps) {
     setContextTargetTokens,
     requestTimeoutSeconds,
     setRequestTimeoutSeconds,
+    gateTimeoutSeconds,
+    setGateTimeoutSeconds,
     retryEnabled,
     setRetryEnabled,
     retryMaxRetries,
@@ -334,6 +338,27 @@ export function GeneralSection(props: GeneralSectionProps) {
                   required
                 />
                 <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="settings-gate-timeout">
+                  {t.settings.gateTimeoutSeconds}
+                </FieldLabel>
+                <Input
+                  id="settings-gate-timeout"
+                  type="number"
+                  min={0}
+                  max={604800}
+                  step={1}
+                  value={gateTimeoutSeconds}
+                  onChange={(e) => {
+                    setGateTimeoutSeconds(e.target.value);
+                  }}
+                  placeholder={t.settings.gateTimeoutSecondsPlaceholder}
+                  className="font-mono max-w-xs"
+                  data-testid="settings-gate-timeout"
+                />
+                <FieldDescription>{t.settings.gateTimeoutSecondsHint}</FieldDescription>
               </Field>
 
               <Field>

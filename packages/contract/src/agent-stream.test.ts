@@ -105,19 +105,15 @@ describe("applySnapshotWithActiveTool", () => {
       ]),
     ];
 
-    const state = applySnapshotWithActiveTool(
-      messages,
-      {
-        toolCallId: "live",
-        toolName: "wiki_produce",
-        details: {
-          status: "awaiting_plan",
-          runId: "run-1",
-          summary: "Awaiting plan",
-        },
+    const state = applySnapshotWithActiveTool(messages, {
+      toolCallId: "live",
+      toolName: "wiki_produce",
+      details: {
+        status: "accepted",
+        runId: "run-1",
+        summary: "Wiki Run accepted",
       },
-      { toolCallId: "live", runId: "run-1", gate: "plan" },
-    );
+    });
 
     const tools = viewMessages(state).flatMap((m) => m.tools ?? []);
     const orphan = tools.find((t) => t.id === "orphan");
@@ -126,12 +122,10 @@ describe("applySnapshotWithActiveTool", () => {
     assert.equal(orphan?.status, "error");
     assert.equal(orphan?.output, "Interrupted");
     assert.equal(live?.status, "running");
-    assert.equal(live?.details?.status, "awaiting_plan");
-    assert.equal(live?.output, "Awaiting plan");
+    assert.equal(live?.details?.status, "accepted");
+    assert.equal(live?.output, "Wiki Run accepted");
     assert.equal(state.turnActive, true);
     assert.equal(state.agentStatus, "streaming");
-    // ADR 0035: Session stream never owns HITL waiters.
-    assert.equal(state.pendingGate, null);
   });
 
   it("finalizes incomplete tools even when activeTool is absent", () => {
@@ -143,67 +137,6 @@ describe("applySnapshotWithActiveTool", () => {
     assert.equal(state.messages[0]?.tools?.[0]?.output, "Interrupted");
     assert.equal(state.turnActive, false);
     assert.equal(state.agentStatus, "idle");
-    assert.equal(state.pendingGate, null);
-  });
-
-  it("clears pendingGate when snapshot omits it", () => {
-    const messages: AgentMessage[] = [
-      assistantWithTools("asst-1", [
-        {
-          id: "stale",
-          name: "wiki_produce",
-          status: "running",
-          details: { status: "awaiting_plan", runId: "run-old" },
-        },
-      ]),
-    ];
-    const state = applySnapshotWithActiveTool(messages, null, null);
-    assert.equal(state.pendingGate, null);
-  });
-});
-
-describe("pendingGate hard-cut (ADR 0035)", () => {
-  it("never sets pendingGate from wiki_produce tool details (gates are WikiRuns)", () => {
-    let state = createPiStreamState();
-    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
-    state = reducePiEvent(state, "tool_execution_start", {
-      type: "tool_execution_start",
-      toolCallId: "wiki-1",
-      toolName: "wiki_produce",
-      args: {},
-    });
-    state = reducePiEvent(state, "tool_execution_update", {
-      type: "tool_execution_update",
-      toolCallId: "wiki-1",
-      toolName: "wiki_produce",
-      partialResult: {
-        details: {
-          status: "accepted",
-          runId: "run-1",
-          summary: "Wiki Run accepted",
-        },
-      },
-    });
-    assert.equal(state.pendingGate, null);
-
-    state = reducePiEvent(state, "tool_execution_end", {
-      type: "tool_execution_end",
-      toolCallId: "wiki-1",
-      toolName: "wiki_produce",
-      result: { details: { status: "accepted", runId: "run-1" } },
-    });
-    assert.equal(state.pendingGate, null);
-  });
-
-  it("keeps pendingGate null across agent_end", () => {
-    let state = createPiStreamState();
-    state = {
-      ...state,
-      turnActive: true,
-      agentStatus: "streaming",
-    };
-    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
-    assert.equal(state.pendingGate, null);
   });
 });
 
@@ -224,7 +157,6 @@ describe("wiki_produce receipt details on stream (no Session HITL)", () => {
         details: { status: "accepted", runId: "r1", summary: "ok" },
       },
     });
-    assert.equal(state.pendingGate, null);
     const tool = viewMessages(state)
       .flatMap((m) => m.tools ?? [])
       .find((t) => t.id === "t1");
@@ -232,9 +164,6 @@ describe("wiki_produce receipt details on stream (no Session HITL)", () => {
     assert.equal(tool?.details?.runId, "r1");
   });
 
-  it("stream state pendingGate is always null", () => {
-    assert.equal(createPiStreamState().pendingGate, null);
-  });
 });
 
 describe("reducePiEvent agent_end", () => {
@@ -307,30 +236,4 @@ describe("reducePiEvent tool_execution_start wiki_produce", () => {
     assert.equal(tools.find((t) => t.id === "new-produce")?.name, "wiki_produce");
   });
 
-  it("keeps pendingGate null when superseding wiki_produce tools", () => {
-    let state = createPiStreamState([
-      assistantWithTools("asst-1", [
-        { id: "old-produce", name: "wiki_produce", status: "running" },
-      ]),
-    ]);
-    state = {
-      ...state,
-      lastAssistantId: "asst-1",
-    };
-
-    state = reducePiEvent(state, "tool_execution_start", {
-      type: "tool_execution_start",
-      toolCallId: "new-produce",
-      toolName: "wiki_produce",
-      args: {},
-    });
-
-    assert.equal(state.pendingGate, null);
-    assert.equal(
-      viewMessages(state)
-        .flatMap((m) => m.tools ?? [])
-        .find((t) => t.id === "old-produce")?.status,
-      "error",
-    );
-  });
 });

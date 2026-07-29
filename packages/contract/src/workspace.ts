@@ -123,6 +123,12 @@ export const WorkspaceLimitsSchema = z.object({
   maxSteps: z.number().int().positive().optional(),
   /** Retry policy for provider/transient failures (Pi settings.retry shape). */
   retry: RetryLimitsSchema.default(() => RetryLimitsSchema.parse({})),
+  /**
+   * Wall-clock budget (seconds) for an open operator gate (plan / publication).
+   * When > 0, WikiRuns auto-denies stale open gates after this many seconds.
+   * Omit or 0 disables gate timeout.
+   */
+  gateTimeoutSeconds: z.number().int().min(0).max(604_800).optional(),
 });
 
 export type WorkspaceLimits = z.infer<typeof WorkspaceLimitsSchema>;
@@ -139,6 +145,7 @@ export const WorkspaceLimitsPatchSchema = z
     outputTokensLimit: z.number().int().positive().optional(),
     totalTokensLimit: z.number().int().positive().optional(),
     maxSteps: z.number().int().positive().optional(),
+    gateTimeoutSeconds: z.number().int().min(0).max(604_800).optional(),
     retry: z
       .object({
         enabled: z.boolean().optional(),
