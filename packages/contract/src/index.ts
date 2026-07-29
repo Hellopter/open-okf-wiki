@@ -108,6 +108,7 @@ export {
   PiAttemptInputSchema,
   type PiAttemptNode,
   PiAttemptNodeSchema,
+  type PiAttemptExecutor,
   type PiAttemptOutcome,
   PiAttemptOutcomeSchema,
   type PiAttemptTranscriptDescriptor,

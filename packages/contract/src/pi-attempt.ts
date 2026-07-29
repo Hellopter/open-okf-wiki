@@ -138,3 +138,13 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
 ]);
 
 export type PiAttemptOutcome = z.infer<typeof PiAttemptOutcomeSchema>;
+
+/**
+ * Runtime injection slot: WikiRuns calls this for Pi-backed nodes.
+ * Defined on the contract so agent (implements) and workflow (owns control)
+ * share one type without a forbidden agent→workflow dependency.
+ */
+export type PiAttemptExecutor = (
+  input: PiAttemptInput,
+  signal: AbortSignal,
+) => Promise<PiAttemptOutcome>;

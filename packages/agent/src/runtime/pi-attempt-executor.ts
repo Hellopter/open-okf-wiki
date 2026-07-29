@@ -10,6 +10,7 @@ import { chmod, cp, lstat, mkdir, readdir, readFile, stat, writeFile } from "nod
 import path from "node:path";
 import {
   type AttemptItem,
+  type PiAttemptExecutor,
   type PiAttemptInput,
   PiAttemptInputSchema,
   type PiAttemptOutcome,
@@ -47,10 +48,7 @@ export type CreatePiAttemptExecutorOptions = {
   resolveModel?: ResolvePiModel;
 };
 
-export type PiAttemptExecutor = (
-  input: PiAttemptInput,
-  signal: AbortSignal,
-) => Promise<PiAttemptOutcome>;
+export type { PiAttemptExecutor };
 
 function bounded(text: unknown): string {
   const value = String(text ?? "Pi attempt failed")

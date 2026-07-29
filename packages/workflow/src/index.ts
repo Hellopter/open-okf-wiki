@@ -11,7 +11,6 @@ export {
   PI_ATTEMPT_KINDS,
 } from "./definition-v1.js";
 export {
-  type ClaimedNode,
   CommandIdCollision,
   type OpenWikiRunsInput,
   openWikiRuns,
@@ -22,3 +21,4 @@ export {
   type WikiRuns,
   WorkflowInUseError,
 } from "./wiki-runs.js";
+// ClaimedNode is intentionally not re-exported (internal scheduler envelope).

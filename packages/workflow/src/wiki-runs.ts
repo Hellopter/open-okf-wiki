@@ -1,12 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
-  chmod,
   cp,
   lstat,
   mkdir,
   mkdtemp,
-  open,
   readdir,
   readFile,
   rename,
@@ -18,6 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CancelRunCommandSchema,
   type PiAttemptArtifactDescriptor,
+  type PiAttemptExecutor,
   type PiAttemptInput,
   type PiAttemptOutcome,
   RepositorySnapshotSchema,
@@ -61,301 +60,53 @@ import {
   isMechanicalAttemptKind,
   isPiAttemptKind,
 } from "./definition-v1.js";
+import { artifactId, digest, now } from "./wiki-runs/crypto-util.js";
+import { durableFsyncPath, makeOwnedTreeWritable, manifestFor } from "./wiki-runs/fs-util.js";
+import { configureOwner, migrate } from "./wiki-runs/schema.js";
+import {
+  asRow,
+  asRows,
+  parseJson,
+  requiredNumber,
+  requiredText,
+  type SqlRow,
+  sqliteBusy,
+} from "./wiki-runs/sql.js";
+import {
+  parseTranscriptMessages,
+  writeConversationTranscript,
+} from "./wiki-runs/transcript-io.js";
+import {
+  type ArtifactPreparation,
+  type ClaimedFreeze,
+  type ClaimedNode,
+  CommandIdCollision,
+  DATABASE_FILE_NAME,
+  type OpenWikiRunsInput,
+  type PreparedFreeze,
+  type PreparedFreezeArtifacts,
+  RESEARCH_AUTO_RETRY_KINDS,
+  RESEARCH_AUTO_RETRY_MAX_ATTEMPTS,
+  TRANSCRIPT_MAX_BYTES,
+  type TrustedFrozenInputs,
+  type WikiRunAttemptTranscript,
+  type WikiRunListItem,
+  type WikiRunRead,
+  type WikiRuns,
+  WorkflowInUseError,
+} from "./wiki-runs/types.js";
 
-const DATABASE_FILE_NAME = "workflow.sqlite";
-
-/** Fail-closed cap for Attempt transcript reads (Node details UI). */
-const TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
-
-/**
- * Write conversation-shaped attempt session.jsonl for Node details UI.
- * Always includes at least one `{ role, content }` row so the dialog is not empty.
- */
-async function writeConversationTranscript(input: {
-  sessionPath: string;
-  nodeKey: string;
-  summary: string;
-  meta?: Record<string, unknown>;
-  /** When true, append to existing live JSONL instead of replacing. */
-  preserveExisting?: boolean;
-}): Promise<string> {
-  const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, 4_000) || input.nodeKey;
-  await mkdir(path.dirname(input.sessionPath), { recursive: true });
-
-  let existing: unknown[] = [];
-  if (input.preserveExisting) {
-    try {
-      const raw = (await readFile(input.sessionPath, "utf8")).trim();
-      if (raw) {
-        existing = raw
-          .split(/\r?\n/)
-          .filter((line) => line.trim())
-          .map((line) => JSON.parse(line) as unknown);
-      }
-    } catch {
-      // missing file — rebuild
-    }
-  }
-
-  const rows: unknown[] =
-    existing.length > 0
-      ? [
-          ...existing,
-          { role: "assistant", content: summary },
-          { schema: 1, node: input.nodeKey, summary, ...input.meta },
-        ]
-      : [
-          { role: "assistant", content: summary },
-          { schema: 1, node: input.nodeKey, summary, ...input.meta },
-        ];
-  await writeFile(
-    input.sessionPath,
-    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
-    "utf8",
-  );
-  return input.sessionPath;
-}
-
-/**
- * Auto-retry budget for read-only research nodes (ADR 0035 / T4).
- * First failure may re-queue one Attempt with the exact same input digest;
- * further recovery is manual RetryFailedNode or RerunNode.
- * Validate/write/review dirty paths stay manual (Retry same inputs or Rerun/wiki_repair).
- */
-const RESEARCH_AUTO_RETRY_MAX_ATTEMPTS = 2;
-const RESEARCH_AUTO_RETRY_KINDS: ReadonlySet<string> = new Set([
-  "research.leaf",
-  "research.domain",
-]);
-
-type SqlValue = string | number | null;
-type SqlRow = Record<string, SqlValue>;
-
-export type ClaimedNode = {
-  attemptId: string;
-  nodeGeneration: number;
-  nodeKey: string;
-  kind: string;
-  runId: string;
-};
-
-type ClaimedFreeze = ClaimedNode;
-
-type PreparedFreeze = { workspace: WorkspaceConfig };
-
-type TrustedFrozenInputs = {
-  skillDigest: string;
-  sources: unknown;
-};
-
-type ArtifactManifest = {
-  schema: 1;
-  files: Array<{ path: string; digest: string; size: number }>;
-};
-
-type ArtifactPreparation = {
-  artifactId: string;
-  digest: string;
-  kind: WikiRunArtifactKind;
-  preparationId: string;
-  relativePath: string;
-  role: string;
-  sourceDirectory: string;
-};
-
-type PreparedFreezeArtifacts = {
-  preparations: ArtifactPreparation[];
-};
-
-/** The only Pi seam. Workflow owns all state, sealing, gates and effects. */
-export type PiAttemptExecutor = (
-  input: PiAttemptInput,
-  signal: AbortSignal,
-) => Promise<PiAttemptOutcome>;
-
-export type OpenWikiRunsInput = {
-  rootPath: string;
-  piAttemptExecutor?: PiAttemptExecutor;
-  /** Test seam for an abort-aware run-boundary freeze. */
-  freezeRunBoundary?: (input: FreezeRunBoundaryInput) => Promise<FrozenRunBoundary>;
-};
-
-export type WikiRunRead = {
-  snapshot: WikiRunSnapshot;
-  events: WikiRunEvent[];
-  cursor: number;
-};
-
-/** Slim list projection for Agent Workspace / HTTP GET /runs (not full snapshots). */
-export type WikiRunListItem = {
-  runId: string;
-  state: WikiRunSnapshot["state"];
-  updatedAt: string;
-  revision: number;
-};
-
-/**
- * Secret-free Attempt transcript for Node details UI.
- * Messages are raw JSONL entries (or a single JSON document wrapped as one entry).
- */
-export type WikiRunAttemptTranscript = {
-  attemptId: string;
-  nodeKey: string;
-  state: WikiRunAttempt["state"];
-  messages: unknown[];
-};
-
-export interface WikiRuns {
-  dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt>;
-  read(input: { runId: string; afterEventId?: number; limit?: number }): Promise<WikiRunRead>;
-  /** All runs for this workspace, newest `updatedAt` first. */
-  list(): Promise<WikiRunListItem[]>;
-  /**
-   * Read-only Attempt transcript for Node details.
-   * Resolves live `attempts/<id>/session.jsonl` or a sealed transcript artifact under the run.
-   */
-  readAttemptTranscript(input: {
-    runId: string;
-    attemptId: string;
-  }): Promise<WikiRunAttemptTranscript>;
-  close(): Promise<void>;
-}
-
-export class WorkflowInUseError extends Error {
-  readonly code = "WORKFLOW_IN_USE";
-
-  constructor(rootPath: string, cause?: unknown) {
-    super(
-      `workflow is already open for workspace: ${rootPath}`,
-      cause === undefined ? undefined : { cause },
-    );
-    this.name = "WorkflowInUseError";
-  }
-}
-
-export class CommandIdCollision extends Error {
-  readonly code = "COMMAND_ID_COLLISION";
-
-  constructor(commandId: string) {
-    super(`command id was already used with a different payload: ${commandId}`);
-    this.name = "CommandIdCollision";
-  }
-}
-
-function now(): string {
-  return new Date().toISOString();
-}
-
-function digest(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-async function fileDigest(file: string): Promise<string> {
-  return createHash("sha256")
-    .update(await readFile(file))
-    .digest("hex");
-}
-
-/** A content-only manifest makes an Artifact independently verifiable after restart. */
-async function manifestFor(
-  directory: string,
-  ignoreSealManifest = false,
-): Promise<ArtifactManifest> {
-  const files: ArtifactManifest["files"] = [];
-  const visit = async (absolute: string, relative: string): Promise<void> => {
-    for (const entry of (await readdir(absolute, { withFileTypes: true })).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    )) {
-      const child = path.join(absolute, entry.name);
-      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
-      if (ignoreSealManifest && !relative && entry.name === ".okf-artifact-manifest.json") continue;
-      const info = await lstat(child);
-      if (info.isSymbolicLink() || (!info.isDirectory() && !info.isFile())) {
-        throw new Error(`artifact contains a non-ordinary entry: ${child}`);
-      }
-      if (info.isDirectory()) await visit(child, childRelative);
-      else files.push({ path: childRelative, digest: await fileDigest(child), size: info.size });
-    }
-  };
-  await visit(directory, "");
-  return { schema: 1, files };
-}
-
-function artifactId(
-  runId: string,
-  kind: ArtifactPreparation["kind"],
-  manifestDigest: string,
-): string {
-  return `${runId}:${kind}:${manifestDigest}`;
-}
-
-function asRow(value: unknown): SqlRow | undefined {
-  return value === undefined ? undefined : (value as SqlRow);
-}
-
-function asRows(value: unknown): SqlRow[] {
-  return value as SqlRow[];
-}
-
-function sqliteBusy(error: unknown): boolean {
-  const value = error as { code?: string; message?: string } | undefined;
-  return (
-    value?.code === "ERR_SQLITE_ERROR" &&
-    /database is locked|database is busy/i.test(value.message ?? "")
-  );
-}
-
-function parseJson<T>(value: SqlValue): T {
-  if (typeof value !== "string") throw new Error("expected persisted JSON text");
-  return JSON.parse(value) as T;
-}
-
-/**
- * Parse Attempt transcript file content.
- * Prefer JSONL (one JSON value per non-empty line). If the file is a single
- * JSON object/array (including pretty-printed multi-line), wrap/return as messages.
- * Tolerates mixed/corrupt tails from concurrent writers (live sink + finalize).
- */
-function parseTranscriptMessages(raw: string): unknown[] {
-  const trimmed = raw.replace(/^\uFEFF/, "").trim();
-  if (!trimmed) return [];
-
-  const lines = trimmed.split(/\r?\n/).filter((line) => line.trim() !== "");
-
-  // Fast path: pure JSONL (every non-empty line is one JSON value).
-  if (lines.length > 0) {
-    const rows: unknown[] = [];
-    let jsonlOk = true;
-    for (const line of lines) {
-      try {
-        rows.push(JSON.parse(line) as unknown);
-      } catch {
-        jsonlOk = false;
-        break;
-      }
-    }
-    if (jsonlOk) return rows;
-  }
-
-  // Pretty-printed single JSON document (object or array).
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) return parsed;
-    return [parsed];
-  } catch {
-    // Best-effort: keep any lines that still parse (partial concurrent write).
-    const partial: unknown[] = [];
-    for (const line of lines) {
-      try {
-        partial.push(JSON.parse(line) as unknown);
-      } catch {
-        // skip corrupt line
-      }
-    }
-    if (partial.length > 0) return partial;
-    throw new Error("transcript is not valid JSON/JSONL");
-  }
-}
+// Re-export public surface for existing `from "./wiki-runs.js"` imports.
+export type {
+  ClaimedNode,
+  OpenWikiRunsInput,
+  PiAttemptExecutor,
+  WikiRunAttemptTranscript,
+  WikiRunListItem,
+  WikiRunRead,
+  WikiRuns,
+} from "./wiki-runs/types.js";
+export { CommandIdCollision, WorkflowInUseError } from "./wiki-runs/types.js";
 
 function parseRunCommand(value: unknown): RunCommand {
   const type = (value as { type?: unknown } | null)?.type;
@@ -373,18 +124,6 @@ function parseRunCommand(value: unknown): RunCommand {
     default:
       throw new Error("unknown WikiRuns command type");
   }
-}
-
-function requiredText(row: SqlRow, key: string): string {
-  const value = row[key];
-  if (typeof value !== "string") throw new Error(`workflow database has invalid ${key}`);
-  return value;
-}
-
-function requiredNumber(row: SqlRow, key: string): number {
-  const value = row[key];
-  if (typeof value !== "number") throw new Error(`workflow database has invalid ${key}`);
-  return value;
 }
 
 class WikiRunsOwner implements WikiRuns {
@@ -4129,231 +3868,6 @@ class WikiRunsOwner implements WikiRuns {
   }
 }
 
-/** Make only an ordinary, run-owned tree removable without following links. */
-async function makeOwnedTreeWritable(directory: string): Promise<void> {
-  const info = await lstat(directory).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (!info) return;
-  if (!info.isDirectory())
-    throw new Error(`refusing to clean non-directory freeze work: ${directory}`);
-  const unlocked = await chmod(directory, 0o755).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  });
-  if (unlocked === false) return;
-  const entries = await readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (!entries) return;
-  for (const entry of entries) {
-    const child = path.join(directory, entry.name);
-    const childInfo = await lstat(child).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    });
-    if (!childInfo) continue;
-    if (childInfo.isSymbolicLink() || (!childInfo.isDirectory() && !childInfo.isFile())) {
-      throw new Error(`refusing to clean non-ordinary freeze work entry: ${child}`);
-    }
-    if (childInfo.isDirectory()) {
-      await makeOwnedTreeWritable(child);
-    } else {
-      await chmod(child, 0o644).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      });
-    }
-  }
-}
-
-/**
- * Best-effort fsync. On Windows (and some cloud/network FS) fsync may return
- * EPERM/ENOTSUP/EINVAL; durability still rests on process-local disk + rename.
- */
-async function durableFsyncPath(target: string): Promise<void> {
-  const handle = await open(target, "r");
-  try {
-    await handle.sync();
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === "EPERM" || code === "ENOTSUP" || code === "EINVAL" || code === "EACCES") {
-      return;
-    }
-    throw error;
-  } finally {
-    await handle.close();
-  }
-}
-
-function configureOwner(db: DatabaseSync): void {
-  db.exec("PRAGMA locking_mode=EXCLUSIVE");
-  db.exec("PRAGMA journal_mode=WAL");
-  // FULL is ideal on local POSIX disks; Windows/cloud FS often reject the
-  // underlying fsync with EPERM — NORMAL still flushes at critical moments.
-  db.exec(
-    process.platform === "win32" ? "PRAGMA synchronous=NORMAL" : "PRAGMA synchronous=FULL",
-  );
-  db.exec("PRAGMA foreign_keys=ON");
-  db.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
-}
-
-function migrate(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS commands (
-      workspace_id TEXT NOT NULL,
-      command_id TEXT NOT NULL,
-      payload_digest TEXT NOT NULL,
-      actor_id TEXT NOT NULL,
-      actor_kind TEXT NOT NULL,
-      run_id TEXT NOT NULL,
-      revision INTEGER NOT NULL,
-      accepted INTEGER NOT NULL,
-      PRIMARY KEY (workspace_id, command_id)
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS runs (
-      run_id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      operator_session_id TEXT,
-      revision INTEGER NOT NULL,
-      state TEXT NOT NULL,
-      cancel_requested INTEGER NOT NULL,
-      freeze_config_json TEXT NOT NULL,
-      freeze_config_digest TEXT NOT NULL,
-      frozen_sources_json TEXT,
-      frozen_skill_digest TEXT,
-      pinned_sources_json TEXT,
-      skill_digest TEXT,
-      pinned_digest TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS nodes (
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      node_key TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      state TEXT NOT NULL,
-      generation INTEGER NOT NULL,
-      current_attempt_id TEXT,
-      last_attempt_id TEXT,
-      detail_json TEXT,
-      PRIMARY KEY (run_id, node_key, generation)
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS attempts (
-      attempt_id TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      node_key TEXT NOT NULL,
-      node_generation INTEGER NOT NULL,
-      run_index INTEGER NOT NULL,
-      state TEXT NOT NULL,
-      input_digest TEXT NOT NULL,
-      error TEXT,
-      started_at TEXT NOT NULL,
-      ended_at TEXT
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS artifact_preparations (
-      preparation_id TEXT PRIMARY KEY,
-      attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      node_key TEXT NOT NULL,
-      node_generation INTEGER NOT NULL,
-      artifact_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      role TEXT NOT NULL,
-      manifest_digest TEXT NOT NULL,
-      relative_path TEXT NOT NULL,
-      state TEXT NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS artifacts (
-      artifact_id TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      kind TEXT NOT NULL,
-      digest TEXT NOT NULL,
-      relative_path TEXT NOT NULL,
-      producer_attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
-      sealed_at TEXT NOT NULL,
-      UNIQUE (run_id, kind, digest)
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS node_outputs (
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      node_key TEXT NOT NULL,
-      node_generation INTEGER NOT NULL,
-      role TEXT NOT NULL,
-      artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),
-      PRIMARY KEY (run_id, node_key, node_generation, role)
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS run_events (
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      event_id INTEGER NOT NULL,
-      revision INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      occurred_at TEXT NOT NULL,
-      event_json TEXT NOT NULL,
-      PRIMARY KEY (run_id, event_id)
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS gates (
-      gate_id TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      node_key TEXT NOT NULL,
-      node_generation INTEGER NOT NULL,
-      kind TEXT NOT NULL,
-      state TEXT NOT NULL,
-      payload_digest TEXT NOT NULL,
-      decision_json TEXT,
-      detail_json TEXT,
-      opened_at TEXT NOT NULL,
-      opened_revision INTEGER NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS effects (
-      effect_key TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      publication_node_key TEXT NOT NULL,
-      publication_node_generation INTEGER NOT NULL,
-      gate_id TEXT NOT NULL,
-      state TEXT NOT NULL,
-      request_digest TEXT NOT NULL,
-      expected_live_digest TEXT NOT NULL,
-      candidate_artifact_id TEXT NOT NULL,
-      candidate_digest TEXT NOT NULL,
-      observed_outcome TEXT
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS attempt_inputs (
-      attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
-      role TEXT NOT NULL,
-      artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),
-      PRIMARY KEY (attempt_id, role)
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS node_edges (
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      from_key TEXT NOT NULL,
-      to_key TEXT NOT NULL,
-      PRIMARY KEY (run_id, from_key, to_key)
-    ) STRICT;
-    CREATE INDEX IF NOT EXISTS idx_node_edges_to ON node_edges(run_id, to_key);
-    CREATE INDEX IF NOT EXISTS idx_gates_run_state ON gates(run_id, state);
-    CREATE INDEX IF NOT EXISTS idx_gates_node ON gates(run_id, node_key, node_generation);
-    CREATE INDEX IF NOT EXISTS idx_effects_run_state ON effects(run_id, state);
-    CREATE INDEX IF NOT EXISTS idx_effects_gate ON effects(run_id, gate_id);
-    CREATE INDEX IF NOT EXISTS idx_attempt_inputs_artifact ON attempt_inputs(artifact_id);
-    CREATE INDEX IF NOT EXISTS idx_attempts_run_node ON attempts(run_id, node_key, node_generation);
-  `);
-  const runColumns = asRows(db.prepare("PRAGMA table_info(runs)").all()).map((row) =>
-    requiredText(row, "name"),
-  );
-  if (!runColumns.includes("frozen_sources_json")) {
-    db.exec("ALTER TABLE runs ADD COLUMN frozen_sources_json TEXT");
-  }
-  if (!runColumns.includes("frozen_skill_digest")) {
-    db.exec("ALTER TABLE runs ADD COLUMN frozen_skill_digest TEXT");
-  }
-  const nodeColumns = asRows(db.prepare("PRAGMA table_info(nodes)").all()).map((row) =>
-    requiredText(row, "name"),
-  );
-  if (!nodeColumns.includes("detail_json")) {
-    db.exec("ALTER TABLE nodes ADD COLUMN detail_json TEXT");
-  }
-}
 
 export async function openWikiRuns(input: OpenWikiRunsInput): Promise<WikiRuns> {
   const workspace = await loadWorkspace(input.rootPath);
