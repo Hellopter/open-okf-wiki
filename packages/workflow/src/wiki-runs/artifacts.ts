@@ -478,19 +478,26 @@ export function commitNodeArtifacts(
       )
       .get(claim.runId),
   );
-  const hasWaiting = asRow(
+  // Open gates table is the HITL authority — do not treat stale gate.* nodes
+  // left in state='waiting' after Rerun/withdraw as operator waits (parallel
+  // seat commits used to flip the run to waiting_for_operator and stall).
+  const hasOpenGate = asRow(
     host.db
-      .prepare(`SELECT 1 AS present FROM nodes WHERE run_id = ? AND state = 'waiting' LIMIT 1`)
+      .prepare(`SELECT 1 AS present FROM gates WHERE run_id = ? AND state = 'open' LIMIT 1`)
       .get(claim.runId),
   );
   if (hasReady) {
+    // Ready work wins over a stale waiting_for_operator (e.g. withdrawn pub gate
+    // node still marked waiting while review.reduce is ready).
     host.db
       .prepare(
-        "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0 AND state = 'running'",
+        `UPDATE runs SET state = 'queued', updated_at = ?
+         WHERE run_id = ? AND cancel_requested = 0
+           AND state IN ('running', 'queued', 'waiting_for_operator')`,
       )
       .run(timestamp, claim.runId);
     host.emit(claim.runId, "node.ready");
-  } else if (hasWaiting) {
+  } else if (hasOpenGate) {
     host.db
       .prepare(
         "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",

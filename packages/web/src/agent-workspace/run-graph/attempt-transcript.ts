@@ -1,31 +1,27 @@
 /**
- * Project opaque Attempt transcript messages for Node details UI.
+ * Project opaque Attempt transcript messages into AgentMessage[] for Node details.
  *
- * Read-only display helper — not Session/Run control SSE projection.
+ * Same wire shape Session uses — render with TranscriptMessage / TranscriptMessageList
+ * (AgentMarkdown + ToolExecutionCard). Do not reimplement markdown chrome here.
+ *
  * Messages come from GET transcript (done) or Attempt transcript SSE (live).
  */
 
-export type ProjectedAttemptTranscriptEntry = {
-  /** role+content chat row, compact tool line, or truncated raw JSON. */
-  kind: "role" | "tool" | "raw";
-  text: string;
-  /** Present when kind === "role". */
-  role?: string;
-};
+import type { AgentMessage, AgentToolCall, AgentToolCallStatus } from "@okf-wiki/contract";
+import {
+  extractMessageText,
+  isRecord,
+  makeId,
+  projectAgentMessagesFromPiHistory,
+} from "@okf-wiki/contract";
 
-const RAW_MAX = 240;
-const CONTENT_MAX = 2_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
+const CONTENT_MAX = 12_000;
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(1, max - 1))}…`;
 }
 
-/** Flatten Pi-ish content (string | text parts) to plain text. */
 function contentToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -36,10 +32,7 @@ function contentToText(content: unknown): string {
         continue;
       }
       if (!isRecord(part)) continue;
-      if (typeof part.text === "string") {
-        parts.push(part.text);
-        continue;
-      }
+      if (typeof part.text === "string") parts.push(part.text);
     }
     return parts.join("\n").trim();
   }
@@ -49,6 +42,31 @@ function contentToText(content: unknown): string {
   } catch {
     return String(content);
   }
+}
+
+function mapToolStatus(raw: unknown): AgentToolCallStatus {
+  if (raw === "running" || raw === "pending" || raw === "error" || raw === "done") return raw;
+  if (raw === "ok" || raw === "succeeded" || raw === "success") return "done";
+  if (raw === "failed") return "error";
+  return "done";
+}
+
+function parseArgs(raw: unknown): unknown {
+  if (raw == null || raw === "") return undefined;
+  if (typeof raw !== "string") return raw;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed;
 }
 
 const TOOL_TYPES = new Set([
@@ -66,7 +84,6 @@ function isToolish(entry: Record<string, unknown>): boolean {
   if (typeof entry.toolName === "string" && entry.toolName.trim()) return true;
   if (typeof entry.type === "string" && TOOL_TYPES.has(entry.type)) return true;
   if (entry.role === "toolResult" || entry.role === "tool") return true;
-  // Bare tool call shape: { name, arguments|args|input } without chat role+content.
   if (
     typeof entry.name === "string" &&
     entry.name.trim() &&
@@ -76,37 +93,6 @@ function isToolish(entry: Record<string, unknown>): boolean {
     return true;
   }
   return false;
-}
-
-function toolLine(entry: Record<string, unknown>): string {
-  const name =
-    (typeof entry.toolName === "string" && entry.toolName.trim()) ||
-    (typeof entry.name === "string" && entry.name.trim()) ||
-    (typeof entry.type === "string" && entry.type.trim()) ||
-    "tool";
-  const status = typeof entry.status === "string" ? entry.status.trim() : "";
-  const args = entry.arguments ?? entry.args ?? entry.input ?? entry.argsSummary;
-  const chunks = [name];
-  if (status) chunks.push(status);
-  if (args != null && args !== "") {
-    try {
-      const raw = typeof args === "string" ? args : JSON.stringify(args);
-      if (raw && raw !== "{}" && raw !== "null") {
-        chunks.push(truncate(raw.replace(/\s+/g, " ").trim(), 96));
-      }
-    } catch {
-      // ignore unserializable args
-    }
-  }
-  return chunks.join(" · ");
-}
-
-function rawLine(value: unknown): string {
-  try {
-    return truncate(JSON.stringify(value), RAW_MAX);
-  } catch {
-    return truncate(String(value), RAW_MAX);
-  }
 }
 
 /**
@@ -123,64 +109,164 @@ function isLegacyMetadataStub(row: Record<string, unknown>): boolean {
   );
 }
 
+function toolFromRow(row: Record<string, unknown>, index: number): AgentToolCall {
+  const name =
+    (typeof row.toolName === "string" && row.toolName.trim()) ||
+    (typeof row.name === "string" && row.name.trim()) ||
+    "tool";
+  const id =
+    (typeof row.id === "string" && row.id.trim()) ||
+    (typeof row.toolCallId === "string" && row.toolCallId.trim()) ||
+    `att_tool_${index + 1}`;
+  const args = parseArgs(row.arguments ?? row.args ?? row.input ?? row.argsSummary);
+  const status = mapToolStatus(row.status);
+  const output =
+    typeof row.output === "string"
+      ? row.output
+      : typeof row.result === "string"
+        ? row.result
+        : undefined;
+  return {
+    id,
+    name,
+    ...(args !== undefined ? { args } : {}),
+    ...(output !== undefined ? { output } : {}),
+    status,
+  };
+}
+
+function assistantWithTools(
+  tools: AgentToolCall[],
+  index: number,
+  text?: string,
+): AgentMessage {
+  const createdAt = new Date().toISOString();
+  const content = text?.trim() ?? "";
+  const parts: AgentMessage["parts"] = [];
+  if (content) parts.push({ type: "text", text: content });
+  for (const tool of tools) parts.push({ type: "tool", toolId: tool.id });
+  return {
+    id: `att_asst_${index + 1}_${makeId("t")}`,
+    role: "assistant",
+    content,
+    createdAt,
+    status: "done",
+    tools,
+    ...(parts.length > 0 ? { parts } : {}),
+  };
+}
+
 /**
- * Map opaque transcript rows to a stable, UI-ready list.
- * Used by NodeAttemptDialog (and unit-tested in isolation).
+ * Map opaque transcript rows to AgentMessage[] (Session wire shape).
  *
  * Recognises:
- * - Pi-ish `{ role, content }`
- * - AttemptItem `{ type: "text" | "toolCall", … }`
- * - legacy metadata stubs with `summary` (schema:1)
+ * - Pi history `{ role, content }` / toolResult (via projectAgentMessagesFromPiHistory)
+ * - AttemptItem `{ type: "text" | "toolCall", … }` from attempt-transcript-sink
+ * - legacy metadata stubs with `summary`
  */
-export function projectAttemptTranscriptMessages(
-  messages: unknown[],
-): ProjectedAttemptTranscriptEntry[] {
-  const out: ProjectedAttemptTranscriptEntry[] = [];
-  for (const row of messages) {
+export function projectAttemptTranscriptMessages(messages: unknown[]): AgentMessage[] {
+  // Fast path: pure Pi Session history rows.
+  const looksLikePiHistory =
+    messages.length > 0 &&
+    messages.every((row) => {
+      if (!isRecord(row)) return false;
+      const role = typeof row.role === "string" ? row.role : null;
+      return (
+        role === "user" ||
+        role === "assistant" ||
+        role === "toolResult" ||
+        role === "tool"
+      );
+    });
+  if (looksLikePiHistory) {
+    const projected = projectAgentMessagesFromPiHistory(messages);
+    if (projected.length > 0) return projected;
+  }
+
+  const out: AgentMessage[] = [];
+  const createdAt = new Date().toISOString();
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const row = messages[index];
     if (!isRecord(row)) {
-      out.push({ kind: "raw", text: rawLine(row) });
+      out.push({
+        id: `att_raw_${index + 1}`,
+        role: "system",
+        content: truncate(
+          (() => {
+            try {
+              return JSON.stringify(row);
+            } catch {
+              return String(row);
+            }
+          })(),
+          240,
+        ),
+        createdAt,
+        status: "done",
+      });
       continue;
     }
 
     // AttemptItem text row from attempt-transcript-sink.
     if (row.type === "text" && typeof row.text === "string") {
       const text = truncate(row.text, CONTENT_MAX);
-      out.push({ kind: "role", role: "assistant", text: text || "(empty)" });
-      continue;
-    }
-
-    // AttemptItem toolCall row.
-    if (row.type === "toolCall" && typeof row.name === "string") {
-      out.push({ kind: "tool", text: toolLine(row) });
-      continue;
-    }
-
-    // Pi-ish chat: role + content wins over looser tool heuristics.
-    if (typeof row.role === "string" && "content" in row && !isToolish(row)) {
-      const text = truncate(contentToText(row.content), CONTENT_MAX);
+      if (!text) continue;
       out.push({
-        kind: "role",
-        role: row.role,
-        text: text || "(empty)",
+        id: `att_text_${index + 1}`,
+        role: "assistant",
+        content: text,
+        createdAt,
+        status: "done",
+        parts: [{ type: "text", text }],
       });
       continue;
     }
 
-    if (isToolish(row)) {
-      out.push({ kind: "tool", text: toolLine(row) });
+    // AttemptItem toolCall row or loose tool-ish object.
+    if (
+      (row.type === "toolCall" && typeof row.name === "string") ||
+      (isToolish(row) && !(typeof row.role === "string" && "content" in row))
+    ) {
+      out.push(assistantWithTools([toolFromRow(row, index)], index));
       continue;
     }
 
-    // role+content that is also tool-ish (e.g. toolResult with content): prefer role view
-    // when content is present so operators still see the result body.
+    // Pi-ish chat: role + content.
     if (typeof row.role === "string" && "content" in row) {
-      const text = truncate(contentToText(row.content), CONTENT_MAX);
-      out.push({
-        kind: "role",
-        role: row.role,
-        text: text || toolLine(row),
-      });
-      continue;
+      const role = row.role;
+      if (role === "user") {
+        out.push({
+          id: `att_user_${index + 1}`,
+          role: "user",
+          content: truncate(contentToText(row.content) || extractMessageText(row), CONTENT_MAX),
+          createdAt,
+          status: "done",
+        });
+        continue;
+      }
+      if (role === "assistant") {
+        const text = truncate(contentToText(row.content) || extractMessageText(row), CONTENT_MAX);
+        out.push({
+          id: `att_asst_${index + 1}`,
+          role: "assistant",
+          content: text || "(empty)",
+          createdAt,
+          status: "done",
+          ...(text ? { parts: [{ type: "text" as const, text }] } : {}),
+        });
+        continue;
+      }
+      if (role === "system" || role === "tool") {
+        out.push({
+          id: `att_sys_${index + 1}`,
+          role: role === "tool" ? "tool" : "system",
+          content: truncate(contentToText(row.content), CONTENT_MAX) || "(empty)",
+          createdAt,
+          status: "done",
+        });
+        continue;
+      }
     }
 
     // Old metadata-only session.jsonl stubs → readable assistant summary.
@@ -190,17 +276,37 @@ export function projectAttemptTranscriptMessages(
         (typeof row.error === "string" && row.error.trim()) ||
         "";
       if (summary) {
+        const text = truncate(summary, CONTENT_MAX);
         out.push({
-          kind: "role",
+          id: `att_meta_${index + 1}`,
           role: "assistant",
-          text: truncate(summary, CONTENT_MAX),
+          content: text,
+          createdAt,
+          status: "done",
+          parts: [{ type: "text", text }],
         });
         continue;
       }
     }
 
-    out.push({ kind: "raw", text: rawLine(row) });
+    out.push({
+      id: `att_raw_${index + 1}`,
+      role: "system",
+      content: truncate(
+        (() => {
+          try {
+            return JSON.stringify(row);
+          } catch {
+            return String(row);
+          }
+        })(),
+        240,
+      ),
+      createdAt,
+      status: "done",
+    });
   }
+
   return out;
 }
 

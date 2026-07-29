@@ -11,6 +11,10 @@ import type { WikiRunNodeKind, WikiRunSpec } from "@okf-wiki/contract";
 export type BuildDefinitionV1Options = {
   /** Number of review seats (1–4). Default: all REVIEW_LENSES. */
   reviewCouncilSize?: number;
+  /** Cap domains materialized from Spec (workspace.orchestration.maxDomainFanOut). */
+  maxDomainFanOut?: number;
+  /** Cap questions/leaves per domain (workspace.orchestration.maxLeafFanOut). */
+  maxLeafFanOut?: number;
 };
 
 export type DefinitionV1Node = {
@@ -57,6 +61,11 @@ export function buildDefinitionV1Graph(
     Math.min(REVIEW_LENSES.length, Math.floor(options?.reviewCouncilSize ?? REVIEW_LENSES.length)),
   );
   const lenses = REVIEW_LENSES.slice(0, councilSize);
+  const maxDomainFanOut = Math.max(
+    1,
+    Math.min(16, Math.floor(options?.maxDomainFanOut ?? 16)),
+  );
+  const maxLeafFanOut = Math.max(1, Math.min(16, Math.floor(options?.maxLeafFanOut ?? 16)));
 
   const addNode = (node: DefinitionV1Node): void => {
     if (seen.has(node.key)) return;
@@ -69,7 +78,7 @@ export function buildDefinitionV1Graph(
     edges.push({ from, to });
   };
 
-  const domains = spec.domains ?? [];
+  const domains = (spec.domains ?? []).slice(0, maxDomainFanOut);
   const domainKeys: string[] = [];
 
   for (const domain of domains) {
@@ -77,7 +86,7 @@ export function buildDefinitionV1Graph(
     if (!domainId) continue;
     const domainKey = `research.domain.${domainId}`;
     domainKeys.push(domainKey);
-    const questions = domain.questions ?? [];
+    const questions = (domain.questions ?? []).slice(0, maxLeafFanOut);
     const leafKeys: string[] = [];
 
     if (questions.length === 0) {

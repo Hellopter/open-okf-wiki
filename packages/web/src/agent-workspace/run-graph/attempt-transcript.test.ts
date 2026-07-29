@@ -6,15 +6,16 @@ import {
 } from "./attempt-transcript.ts";
 
 describe("projectAttemptTranscriptMessages", () => {
-  it("projects Pi-ish role + content rows", () => {
+  it("projects Pi-ish role + content rows as AgentMessage[]", () => {
     const out = projectAttemptTranscriptMessages([
       { role: "user", content: "plan the wiki" },
       { role: "assistant", content: "drafting overview" },
     ]);
-    assert.deepEqual(out, [
-      { kind: "role", role: "user", text: "plan the wiki" },
-      { kind: "role", role: "assistant", text: "drafting overview" },
-    ]);
+    assert.equal(out.length, 2);
+    assert.equal(out[0]?.role, "user");
+    assert.equal(out[0]?.content, "plan the wiki");
+    assert.equal(out[1]?.role, "assistant");
+    assert.equal(out[1]?.content, "drafting overview");
   });
 
   it("flattens content part arrays", () => {
@@ -28,24 +29,26 @@ describe("projectAttemptTranscriptMessages", () => {
       },
     ]);
     assert.equal(out.length, 1);
-    assert.equal(out[0]?.kind, "role");
-    assert.equal(out[0]?.text, "hello\nworld");
+    assert.equal(out[0]?.role, "assistant");
+    // Same join as contract projectAgentMessagesFromPiHistory / extractMessageText.
+    assert.equal(out[0]?.content, "helloworld");
   });
 
-  it("projects tool-ish rows as compact tool lines", () => {
+  it("projects tool-ish rows as assistant tools for ToolExecutionCard", () => {
     const out = projectAttemptTranscriptMessages([
       { toolName: "read", status: "ok", arguments: { path: "a.ts" } },
-      { type: "toolCall", name: "bash", args: { command: "ls" } },
+      { type: "toolCall", name: "bash", args: { command: "ls" }, status: "done" },
       { name: "write", arguments: { path: "out.md" } },
     ]);
     assert.equal(out.length, 3);
-    assert.equal(out[0]?.kind, "tool");
-    assert.match(out[0]!.text, /read/);
-    assert.match(out[0]!.text, /ok/);
-    assert.equal(out[1]?.kind, "tool");
-    assert.match(out[1]!.text, /bash|toolCall/);
-    assert.equal(out[2]?.kind, "tool");
-    assert.match(out[2]!.text, /write/);
+    for (const msg of out) {
+      assert.equal(msg.role, "assistant");
+      assert.ok(msg.tools && msg.tools.length === 1);
+    }
+    assert.equal(out[0]?.tools?.[0]?.name, "read");
+    assert.equal(out[0]?.tools?.[0]?.status, "done");
+    assert.equal(out[1]?.tools?.[0]?.name, "bash");
+    assert.equal(out[2]?.tools?.[0]?.name, "write");
   });
 
   it("projects AttemptItem text and toolCall rows", () => {
@@ -54,11 +57,11 @@ describe("projectAttemptTranscriptMessages", () => {
       { type: "toolCall", name: "read", status: "done", argsSummary: '{"path":"a.ts"}' },
     ]);
     assert.equal(out.length, 2);
-    assert.equal(out[0]?.kind, "role");
     assert.equal(out[0]?.role, "assistant");
-    assert.equal(out[0]?.text, "scouting sources");
-    assert.equal(out[1]?.kind, "tool");
-    assert.match(out[1]!.text, /read/);
+    assert.equal(out[0]?.content, "scouting sources");
+    assert.equal(out[1]?.role, "assistant");
+    assert.equal(out[1]?.tools?.[0]?.name, "read");
+    assert.deepEqual(out[1]?.tools?.[0]?.args, { path: "a.ts" });
   });
 
   it("projects legacy metadata stubs as assistant summary", () => {
@@ -66,26 +69,25 @@ describe("projectAttemptTranscriptMessages", () => {
       { schema: 1, node: "plan", mode: "fixture", summary: "Fixture default WikiRunSpec" },
     ]);
     assert.equal(out.length, 1);
-    assert.equal(out[0]?.kind, "role");
     assert.equal(out[0]?.role, "assistant");
-    assert.match(out[0]!.text, /Fixture default/);
+    assert.match(out[0]!.content, /Fixture default/);
   });
 
-  it("falls back to truncated JSON for opaque rows without summary", () => {
+  it("falls back to system row for opaque rows without summary", () => {
     const out = projectAttemptTranscriptMessages([{ schema: 1, node: "plan", noise: true }]);
     assert.equal(out.length, 1);
-    assert.equal(out[0]?.kind, "raw");
-    assert.ok(out[0]!.text.includes("schema"));
-    assert.ok(out[0]!.text.includes("plan"));
+    assert.equal(out[0]?.role, "system");
+    assert.ok(out[0]!.content.includes("schema"));
+    assert.ok(out[0]!.content.includes("plan"));
   });
 
-  it("stringifies non-object rows", () => {
+  it("stringifies non-object rows as system", () => {
     const out = projectAttemptTranscriptMessages(["hello", 42, null]);
     assert.equal(out.length, 3);
-    assert.equal(out[0]?.kind, "raw");
-    assert.equal(out[0]?.text, '"hello"');
-    assert.equal(out[1]?.text, "42");
-    assert.equal(out[2]?.text, "null");
+    assert.equal(out[0]?.role, "system");
+    assert.equal(out[0]?.content, '"hello"');
+    assert.equal(out[1]?.content, "42");
+    assert.equal(out[2]?.content, "null");
   });
 
   it("returns empty list for empty input", () => {

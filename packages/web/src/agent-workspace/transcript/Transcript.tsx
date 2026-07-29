@@ -54,7 +54,12 @@ function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: 
 
 // Memoized: every streaming tick produces a new messages array, but finalized
 // rows keep their object identity — memo stops full-transcript re-renders.
-const ChatMessage = memo(function ChatMessage({ message }: { message: AgentMessage }) {
+// Exported so Node Attempt dialog reuses the same MD + tool chrome as Session.
+export const TranscriptMessage = memo(function TranscriptMessage({
+  message,
+}: {
+  message: AgentMessage;
+}) {
   const { t } = useI18n();
   const isUser = message.role === "user";
   const isError = message.status === "error" || Boolean(message.errorText);
@@ -202,6 +207,45 @@ const ChatMessage = memo(function ChatMessage({ message }: { message: AgentMessa
   );
 });
 
+/**
+ * Compact message list for embedded surfaces (Node Attempt dialog).
+ * Same TranscriptMessage chrome as Session — no scroller / empty hero.
+ */
+export function TranscriptMessageList({
+  messages,
+  className,
+  streaming = false,
+}: {
+  messages: AgentMessage[];
+  className?: string;
+  /** When true, mark the last assistant row as still streaming. */
+  streaming?: boolean;
+}) {
+  if (messages.length === 0) return null;
+  const lastId = messages[messages.length - 1]?.id;
+  return (
+    <div
+      className={cn("flex w-full min-w-0 flex-col gap-3", className)}
+      data-testid="transcript-message-list"
+    >
+      {messages.map((message) => {
+        const live =
+          streaming &&
+          message.id === lastId &&
+          message.role === "assistant" &&
+          message.status !== "done" &&
+          message.status !== "error" &&
+          message.status !== "aborted";
+        const view: AgentMessage =
+          live && message.status !== "streaming"
+            ? { ...message, status: "streaming" }
+            : message;
+        return <TranscriptMessage key={message.id} message={view} />;
+      })}
+    </div>
+  );
+}
+
 export function Transcript({ messages, className }: TranscriptProps) {
   const { t } = useI18n();
 
@@ -236,7 +280,7 @@ export function Transcript({ messages, className }: TranscriptProps) {
                   messageId={message.id}
                   scrollAnchor={message.role === "user"}
                 >
-                  <ChatMessage message={message} />
+                  <TranscriptMessage message={message} />
                 </MessageScrollerItem>
               ))}
             </MessageScrollerContent>

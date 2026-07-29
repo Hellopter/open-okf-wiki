@@ -21,6 +21,7 @@ import {
   isMechanicalAttemptKind,
   isPiAttemptKind,
 } from "../definition-v1.js";
+import { canClaimKind } from "./concurrency.js";
 import { digest, now } from "./crypto-util.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { writeConversationTranscript } from "./transcript-io.js";
@@ -75,29 +76,82 @@ export type SchedulerHost = {
   attemptInputDigest(attemptId: string): string;
 };
 
-/** Drain ready claims until the owner closes or the queue is empty. */
+/**
+ * Drain ready claims until the owner closes or the queue is empty.
+ *
+ * Independent ready nodes (multi-domain leaves, review seats, …) run under
+ * workspace.orchestration concurrency — not one-at-a-time serial await.
+ */
 export async function runScheduler(host: SchedulerHost): Promise<void> {
-  while (!host.closed) {
-    const claim = host.transaction(() => claimReadyNode(host));
-    if (!claim) return;
+  const pending = new Set<Promise<void>>();
+
+  const launch = (claim: ClaimedNode): void => {
     const execution =
       claim.kind === "freeze" ? host.executeFreeze(claim) : executeClaimed(host, claim);
     host.activeExecutions.set(claim.attemptId, execution);
-    try {
-      await execution;
-    } finally {
+    const tracked = execution.finally(() => {
       host.activeExecutions.delete(claim.attemptId);
+      pending.delete(tracked);
+    });
+    pending.add(tracked);
+  };
+
+  while (!host.closed) {
+    // Fill free concurrency slots while ready work remains.
+    while (!host.closed) {
+      const claim = host.transaction(() => claimReadyNode(host));
+      if (!claim) break;
+      launch(claim);
     }
+
+    if (pending.size === 0) return;
+
+    // Wait for at least one Attempt to finish, then re-fill (unlock may add ready nodes).
+    await Promise.race(pending);
   }
+
+  if (pending.size > 0) {
+    await Promise.allSettled([...pending]);
+  }
+}
+
+/**
+ * Count in-flight Attempts by kind for concurrency gates.
+ * Uses durable `nodes.state = 'running'` so each claim transaction sees prior claims.
+ */
+export function runningCountByKind(host: SchedulerHost): Map<string, number> {
+  const counts = new Map<string, number>();
+  const rows = asRows(
+    host.db
+      .prepare(
+        `SELECT kind, COUNT(*) AS count FROM nodes
+         WHERE state = 'running'
+           AND generation = (
+             SELECT MAX(n2.generation) FROM nodes n2
+             WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
+           )
+         GROUP BY kind`,
+      )
+      .all(),
+  );
+  for (const row of rows) {
+    counts.set(requiredText(row, "kind"), requiredNumber(row, "count"));
+  }
+  return counts;
 }
 
 /**
  * Claim any ready node at max generation with sealed upstreams.
  * Prefer freeze, then mechanical, then Pi (when executor is wired).
+ * Skips kinds already at workspace.orchestration concurrency.
  */
 export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
-  const freeze = claimNodeByKey(host, "freeze", "freeze");
-  if (freeze) return freeze;
+  const running = runningCountByKind(host);
+
+  if (canClaimKind(host.workspace, "freeze", running)) {
+    const freeze = claimNodeByKey(host, "freeze", "freeze");
+    if (freeze) return freeze;
+  }
 
   const ready = asRows(
     host.db
@@ -126,9 +180,14 @@ export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
     if (nodeKey === "freeze") continue;
     if (isGateKind(kind)) continue;
     if (isPiAttemptKind(kind) && !host.piAttemptExecutor) continue;
+    if (!canClaimKind(host.workspace, kind, running)) continue;
     if (!host.upstreamsSucceeded(requiredText(row, "run_id"), nodeKey)) continue;
     const claim = claimPreparedRow(host, row);
-    if (claim) return claim;
+    if (claim) {
+      // Reserve the slot in this transaction fill pass so sibling claims see it.
+      running.set(kind, (running.get(kind) ?? 0) + 1);
+      return claim;
+    }
   }
   return undefined;
 }

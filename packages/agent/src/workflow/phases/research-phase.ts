@@ -217,9 +217,16 @@ export async function runResearchPhase(
       try {
         // Leaf policy: RESEARCH_MAX_ATTEMPTS.leaf === 1 — single parallel settle;
         // a failed leaf keeps sibling results (no runNodeAttempt retry).
+        // Leaf parallel width: min(2, maxLeafFanOut) — same budget the WikiRuns
+        // scheduler uses per domain unit (see workflow concurrency.ts).
+        const leafConcurrency = Math.min(
+          2,
+          Math.max(1, orch.maxLeafFanOut ?? 2),
+          leafTasks.length,
+        );
         const leafResults = await runtime.runAgentsParallel(
           leafTasks.map((t) => t.input),
-          { concurrency: Math.min(2, leafTasks.length) },
+          { concurrency: leafConcurrency },
         );
         for (let i = 0; i < leafResults.length; i++) {
           const leafNodeId = leafTasks[i]!.leafNodeId;

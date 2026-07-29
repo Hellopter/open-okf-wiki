@@ -402,6 +402,8 @@ export function materializeDefinitionV1Graph(
   if (!spec) throw new Error("plan approve requires a parseable sealed Spec");
   const graph = buildDefinitionV1Graph(spec, {
     reviewCouncilSize: host.workspace.orchestration?.reviewCouncilSize,
+    maxDomainFanOut: host.workspace.orchestration?.maxDomainFanOut,
+    maxLeafFanOut: host.workspace.orchestration?.maxLeafFanOut,
   });
   for (const node of graph.nodes) {
     const existing = asRow(

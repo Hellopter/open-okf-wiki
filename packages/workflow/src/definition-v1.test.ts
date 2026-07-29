@@ -42,3 +42,40 @@ test("buildDefinitionV1Graph without domains wires plan → write.root", () => {
     false,
   );
 });
+
+test("buildDefinitionV1Graph applies maxDomainFanOut and maxLeafFanOut", () => {
+  const spec = defaultWikiRunSpec("Fanout");
+  spec.domains = [
+    {
+      id: "a",
+      title: "A",
+      scope: "a",
+      critical: true,
+      questions: ["q1", "q2", "q3"],
+    },
+    {
+      id: "b",
+      title: "B",
+      scope: "b",
+      critical: false,
+      questions: ["q1"],
+    },
+    {
+      id: "c",
+      title: "C",
+      scope: "c",
+      critical: false,
+      questions: ["q1"],
+    },
+  ];
+  const graph = buildDefinitionV1Graph(spec, { maxDomainFanOut: 2, maxLeafFanOut: 1 });
+  const leaves = graph.nodes.filter((n) => n.kind === "research.leaf");
+  const domains = graph.nodes.filter((n) => n.kind === "research.domain");
+  assert.equal(domains.length, 2);
+  assert.equal(leaves.length, 2);
+  assert.ok(leaves.every((n) => n.key.endsWith(".1")));
+  assert.equal(
+    graph.nodes.some((n) => n.key === "research.domain.c"),
+    false,
+  );
+});

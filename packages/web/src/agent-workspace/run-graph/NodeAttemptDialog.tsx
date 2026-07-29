@@ -1,17 +1,15 @@
 /**
  * Popup for a single run-graph node's attempt(s).
  *
- * Tool trail (OpenCode / Claude / Codex style): one dense line per tool —
- *   [✓] read  settings.ts  offset=… limit=…
- * not bordered cards dumping raw JSON args.
- *
  * Attempt transcript:
  * - completed → GET …/transcript (one-shot render)
  * - running/suspended → EventSource …/transcript/events (live snapshots)
  * Not Session SSE; not Run control SSE.
  *
+ * Markdown + tools reuse Session TranscriptMessage chrome (AgentMarkdown /
+ * ToolExecutionCard) — no second MD renderer for Node details.
+ *
  * Scroll: flex column shell + native overflow-y body.
- * Summary text: MarkdownDocument.
  */
 
 import type { AttemptItem, NodeAttempt } from "@okf-wiki/contract";
@@ -33,18 +31,13 @@ import {
   wikiRunAttemptTranscriptEventsUrl,
 } from "../../api";
 import { useI18n } from "../../i18n";
-import { MarkdownDocument } from "../../shared/MarkdownDocument";
-import { ToolStatusGlyph } from "../components/tool-display/glyphs";
-import { toolIcon } from "../components/tool-display/icons";
-import {
-  formatToolDisplay,
-  parseToolInput,
-  toolPathLabel,
-} from "../components/tool-display/summary";
+import { ToolExecutionCard } from "../components/ToolExecutionCard";
+import type { AgentToolCall } from "../hooks/useSessionAgent";
+import { AgentMarkdown } from "../transcript/AgentMarkdown";
+import { TranscriptMessageList } from "../transcript/Transcript";
 import {
   isAttemptTranscriptLive,
   projectAttemptTranscriptMessages,
-  type ProjectedAttemptTranscriptEntry,
 } from "./attempt-transcript";
 
 export type NodeAttemptDialogProps = {
@@ -67,127 +60,33 @@ export type NodeAttemptDialogProps = {
   attemptState?: string | null;
 };
 
-/**
- * Parse attempt item argsSummary (often a JSON string) into OpenCode-style one-liner.
- */
-function AttemptToolLine({ item }: { item: Extract<AttemptItem, { type: "toolCall" }> }) {
-  const display = formatToolDisplay(
-    item.name,
-    parseToolInput(item.argsSummary) ?? item.argsSummary,
-  );
-  const Icon = toolIcon(item.name);
-  const isError = item.status === "error";
-  const isRunning = item.status === "running";
-
-  // Prefer path-ish subtitle; fall back to truncated raw args without full JSON walls.
-  let subtitle = display.subtitle;
-  if (!subtitle && item.argsSummary) {
-    const params = parseToolInput(item.argsSummary);
-    const path =
-      params &&
-      (typeof params.path === "string"
-        ? params.path
-        : typeof params.file_path === "string"
-          ? params.file_path
-          : undefined);
-    if (path) {
-      subtitle = toolPathLabel(path);
-    } else if (!item.argsSummary.trim().startsWith("{")) {
-      subtitle =
-        item.argsSummary.length > 64 ? `${item.argsSummary.slice(0, 63)}…` : item.argsSummary;
+function parseToolArgs(argsSummary: string | undefined): unknown {
+  if (!argsSummary?.trim()) return undefined;
+  const trimmed = argsSummary.trim();
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      return trimmed;
     }
   }
-
-  return (
-    <div
-      className="flex min-w-0 items-center gap-1.5 py-0.5 text-xs leading-5"
-      data-testid="attempt-tool-line"
-      data-tool-name={item.name}
-      data-tool-status={item.status}
-    >
-      <ToolStatusGlyph status={item.status} />
-      <Icon
-        className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")}
-      />
-      <span className="min-w-0 flex-1 truncate">
-        <span
-          className={cn(
-            "font-medium",
-            isRunning && "text-muted-foreground",
-            isError && "text-destructive",
-          )}
-        >
-          {display.title}
-        </span>
-        {subtitle ? (
-          <span
-            className={cn(
-              "ml-1.5 text-muted-foreground",
-              display.subtitleMono && "font-mono text-2xs",
-            )}
-            title={item.argsSummary}
-          >
-            {subtitle}
-          </span>
-        ) : null}
-        {display.args?.map((arg) => (
-          <span key={arg} className="ml-1.5 font-mono text-2xs text-muted-foreground/80">
-            {arg}
-          </span>
-        ))}
-      </span>
-    </div>
-  );
+  return trimmed;
 }
 
-function AttemptTranscriptRow({
-  entry,
-  streaming = false,
-}: {
-  entry: ProjectedAttemptTranscriptEntry;
-  streaming?: boolean;
-}) {
-  if (entry.kind === "role") {
-    return (
-      <div
-        className="flex min-w-0 flex-col gap-0.5 py-1"
-        data-testid="attempt-transcript-role"
-        data-role={entry.role}
-      >
-        <span className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-          {entry.role}
-        </span>
-        <div className="max-h-48 min-w-0 overflow-auto text-xs leading-5">
-          <MarkdownDocument
-            content={entry.text}
-            mode={streaming ? "streaming" : "static"}
-            surface="agent"
-            className="text-xs"
-          />
-        </div>
-      </div>
-    );
-  }
-  if (entry.kind === "tool") {
-    return (
-      <div
-        className="truncate py-0.5 font-mono text-2xs text-muted-foreground"
-        data-testid="attempt-transcript-tool"
-        title={entry.text}
-      >
-        ▸ {entry.text}
-      </div>
-    );
-  }
-  return (
-    <div
-      className="truncate py-0.5 font-mono text-2xs text-muted-foreground/80"
-      data-testid="attempt-transcript-raw"
-      title={entry.text}
-    >
-      {entry.text}
-    </div>
-  );
+/** Map AttemptItem toolCall → AgentToolCall for shared ToolExecutionCard. */
+function attemptItemToTool(item: Extract<AttemptItem, { type: "toolCall" }>, index: number): AgentToolCall {
+  const raw = item.status;
+  const status: AgentToolCall["status"] =
+    raw === "running" || raw === "error" ? raw : raw === "done" ? "done" : "done";
+  return {
+    id: `item-tool-${index}`,
+    name: item.name || "tool",
+    args: parseToolArgs(item.argsSummary),
+    status,
+  };
 }
 
 type TranscriptFetchState = {
@@ -233,8 +132,7 @@ export function NodeAttemptDialog({
         ? "suspended"
         : attempt?.status ?? null);
 
-  const canFetch =
-    open && Boolean(workspaceId && runId && effectiveAttemptId);
+  const canFetch = open && Boolean(workspaceId && runId && effectiveAttemptId);
 
   const [fetchState, setFetchState] = useState<TranscriptFetchState>(EMPTY_FETCH);
   /** True while Attempt transcript SSE is open (running/suspended). */
@@ -330,7 +228,6 @@ export function NodeAttemptDialog({
     const onDone = () => {
       if (cancelled) return;
       setStreamingLive(false);
-      // Server closes after `done`; EventSource may error — treat as clean end.
       try {
         source.close();
       } catch {
@@ -367,7 +264,6 @@ export function NodeAttemptDialog({
     source.addEventListener("transcript", onTranscript as EventListener);
     source.addEventListener("done", onDone as EventListener);
     source.addEventListener("transcript_error", onTranscriptError as EventListener);
-    // Native connection errors — keep last good frame; do not clear messages.
     source.onerror = () => {
       if (cancelled) return;
       if (source.readyState === EventSource.CLOSED) {
@@ -394,6 +290,30 @@ export function NodeAttemptDialog({
     () => projectAttemptTranscriptMessages(fetchState.messages),
     [fetchState.messages],
   );
+
+  const itemTools = useMemo(() => {
+    const items = attempt?.items ?? [];
+    return items
+      .map((item, index) =>
+        item.type === "toolCall" ? attemptItemToTool(item, index) : null,
+      )
+      .filter((t): t is AgentToolCall => t !== null);
+  }, [attempt?.items]);
+
+  const itemTexts = useMemo(() => {
+    const items = attempt?.items ?? [];
+    return items
+      .map((item, index) =>
+        item.type === "text" && item.text.trim()
+          ? { key: `text-${index}`, text: item.text }
+          : null,
+      )
+      .filter((t): t is { key: string; text: string } => t !== null);
+  }, [attempt?.items]);
+
+  // Prefer full transcript when present; fall back to attempt.items trail.
+  const showItemTrail =
+    projected.length === 0 && (itemTools.length > 0 || itemTexts.length > 0);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -468,12 +388,7 @@ export function NodeAttemptDialog({
                   <div className="flex min-w-0 flex-col gap-1.5">
                     <p className="okf-section-label">{t.agentWorkspace.runGraphAttempt}</p>
                     <div className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-2.5">
-                      <MarkdownDocument
-                        content={attempt.summary}
-                        mode="static"
-                        surface="agent"
-                        className="text-xs"
-                      />
+                      <AgentMarkdown content={attempt.summary} />
                     </div>
                   </div>
                 ) : null}
@@ -522,24 +437,20 @@ export function NodeAttemptDialog({
                   </>
                 )}
 
-                {(attempt.items?.length ?? 0) > 0 ? (
+                {showItemTrail ? (
                   <>
                     <Separator />
-                    <div className="flex flex-col gap-0.5" data-testid="attempt-tool-trail">
-                      {attempt.items!.map((item, index) =>
-                        item.type === "toolCall" ? (
-                          <AttemptToolLine key={`${attempt.attemptId}-tool-${index}`} item={item} />
-                        ) : (
-                          <div key={`${attempt.attemptId}-text-${index}`} className="min-w-0 py-1">
-                            <MarkdownDocument
-                              content={item.text}
-                              mode="static"
-                              surface="agent"
-                              className="text-xs"
-                            />
-                          </div>
-                        ),
-                      )}
+                    <div className="flex flex-col gap-2" data-testid="attempt-tool-trail">
+                      {itemTexts.map((row) => (
+                        <AgentMarkdown key={row.key} content={row.text} />
+                      ))}
+                      {itemTools.map((tool) => (
+                        <ToolExecutionCard
+                          key={tool.id}
+                          tool={tool}
+                          settled={attempt.status !== "running" && attempt.status !== "pending"}
+                        />
+                      ))}
                     </div>
                   </>
                 ) : null}
@@ -585,13 +496,10 @@ export function NodeAttemptDialog({
                             {t.agentWorkspace.attemptTranscriptEmpty}
                           </p>
                         ) : (
-                          projected.map((entry, index) => (
-                            <AttemptTranscriptRow
-                              key={`${effectiveAttemptId}-tx-${index}`}
-                              entry={entry}
-                              streaming={streamingLive}
-                            />
-                          ))
+                          <TranscriptMessageList
+                            messages={projected}
+                            streaming={streamingLive}
+                          />
                         )}
                       </div>
                     </div>
@@ -602,7 +510,9 @@ export function NodeAttemptDialog({
           </div>
         </div>
 
-        {footer ?? null}
+        {footer ? (
+          <div className="shrink-0 border-t border-border px-4 py-3">{footer}</div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );
