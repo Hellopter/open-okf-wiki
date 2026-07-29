@@ -3330,25 +3330,15 @@ class WikiRunsOwner implements WikiRuns {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const child = path.join(directory, entry.name);
       if (entry.isDirectory()) await this.syncTree(child);
-      else if (entry.isFile()) {
-        const handle = await open(child, "r");
-        try {
-          await handle.sync();
-        } finally {
-          await handle.close();
-        }
-      }
+      else if (entry.isFile()) await durableFsyncPath(child);
     }
     await this.syncDirectory(directory);
   }
 
   private async syncDirectory(directory: string): Promise<void> {
-    const handle = await open(directory, "r");
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
+    // Directory fsync is a POSIX durability hint; Windows often returns EPERM.
+    if (process.platform === "win32") return;
+    await durableFsyncPath(directory);
   }
 
   /** Inputs are trusted only after the Run Boundary returns, never from Pi output. */
@@ -3809,10 +3799,33 @@ async function makeOwnedTreeWritable(directory: string): Promise<void> {
   }
 }
 
+/**
+ * Best-effort fsync. On Windows (and some cloud/network FS) fsync may return
+ * EPERM/ENOTSUP/EINVAL; durability still rests on process-local disk + rename.
+ */
+async function durableFsyncPath(target: string): Promise<void> {
+  const handle = await open(target, "r");
+  try {
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "ENOTSUP" || code === "EINVAL" || code === "EACCES") {
+      return;
+    }
+    throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
 function configureOwner(db: DatabaseSync): void {
   db.exec("PRAGMA locking_mode=EXCLUSIVE");
   db.exec("PRAGMA journal_mode=WAL");
-  db.exec("PRAGMA synchronous=FULL");
+  // FULL is ideal on local POSIX disks; Windows/cloud FS often reject the
+  // underlying fsync with EPERM — NORMAL still flushes at critical moments.
+  db.exec(
+    process.platform === "win32" ? "PRAGMA synchronous=NORMAL" : "PRAGMA synchronous=FULL",
+  );
   db.exec("PRAGMA foreign_keys=ON");
   db.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
 }
