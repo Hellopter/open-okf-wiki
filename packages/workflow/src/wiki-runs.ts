@@ -68,6 +68,55 @@ const DATABASE_FILE_NAME = "workflow.sqlite";
 const TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Write conversation-shaped attempt session.jsonl for Node details UI.
+ * Always includes at least one `{ role, content }` row so the dialog is not empty.
+ */
+async function writeConversationTranscript(input: {
+  sessionPath: string;
+  nodeKey: string;
+  summary: string;
+  meta?: Record<string, unknown>;
+  /** When true, append to existing live JSONL instead of replacing. */
+  preserveExisting?: boolean;
+}): Promise<string> {
+  const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, 4_000) || input.nodeKey;
+  await mkdir(path.dirname(input.sessionPath), { recursive: true });
+
+  let existing: unknown[] = [];
+  if (input.preserveExisting) {
+    try {
+      const raw = (await readFile(input.sessionPath, "utf8")).trim();
+      if (raw) {
+        existing = raw
+          .split(/\r?\n/)
+          .filter((line) => line.trim())
+          .map((line) => JSON.parse(line) as unknown);
+      }
+    } catch {
+      // missing file — rebuild
+    }
+  }
+
+  const rows: unknown[] =
+    existing.length > 0
+      ? [
+          ...existing,
+          { role: "assistant", content: summary },
+          { schema: 1, node: input.nodeKey, summary, ...input.meta },
+        ]
+      : [
+          { role: "assistant", content: summary },
+          { schema: 1, node: input.nodeKey, summary, ...input.meta },
+        ];
+  await writeFile(
+    input.sessionPath,
+    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8",
+  );
+  return input.sessionPath;
+}
+
+/**
  * Auto-retry budget for read-only research nodes (ADR 0035 / T4).
  * First failure may re-queue one Attempt with the exact same input digest;
  * further recovery is manual RetryFailedNode or RerunNode.
@@ -2093,11 +2142,39 @@ class WikiRunsOwner implements WikiRuns {
       this.transaction(() => this.commitNodeArtifacts(claim, preparations));
     } catch (error) {
       if (this.closed) return;
+      // Best-effort: leave a readable conversation row when Pi/mechanical failed
+      // without sealing a transcript (mechanical cancel, missing executor, …).
+      await this.ensureAttemptFailureTranscript(claim, error).catch(() => undefined);
       this.transaction(() => this.failNode(claim, error));
     } finally {
       this.activeAttempts.delete(claim.attemptId);
       this.transaction(() => this.orphanPreparedArtifacts(claim.attemptId));
     }
+  }
+
+  /**
+   * Ensure session.jsonl exists for failed attempts so Node details is not empty.
+   * Preserves any live JSONL already written by the Pi sink.
+   */
+  private async ensureAttemptFailureTranscript(
+    claim: ClaimedNode,
+    error: unknown,
+  ): Promise<void> {
+    const message =
+      error instanceof Error ? error.message.slice(0, 4_000) : `${claim.nodeKey} failed`;
+    const sessionPath = path.join(
+      runWorkDir(this.workspace.rootPath, claim.runId),
+      "attempts",
+      claim.attemptId,
+      "session.jsonl",
+    );
+    await writeConversationTranscript({
+      sessionPath,
+      nodeKey: claim.nodeKey,
+      summary: `Error: ${message}`,
+      preserveExisting: true,
+      meta: { mode: "failed", kind: claim.kind, error: message },
+    });
   }
 
   private async executePi(claim: ClaimedNode, signal: AbortSignal): Promise<PiAttemptOutcome> {
@@ -2183,13 +2260,19 @@ class WikiRunsOwner implements WikiRuns {
     claim: ClaimedNode,
     signal: AbortSignal,
   ): Promise<PiAttemptOutcome> {
-    if (signal.aborted) {
-      return { type: "failed", error: "attempt cancelled", failureClass: "cancelled" };
-    }
     const runDir = runWorkDir(this.workspace.rootPath, claim.runId);
     const attemptDir = path.join(runDir, "attempts", claim.attemptId);
     const workDir = path.join(attemptDir, "work");
     await mkdir(workDir, { recursive: true });
+    if (signal.aborted) {
+      await writeConversationTranscript({
+        sessionPath: path.join(attemptDir, "session.jsonl"),
+        nodeKey: claim.nodeKey,
+        summary: "Error: attempt cancelled",
+        meta: { mode: "failed", failureClass: "cancelled", kind: claim.kind },
+      });
+      return { type: "failed", error: "attempt cancelled", failureClass: "cancelled" };
+    }
 
     if (claim.kind === "validate.pre" || claim.kind === "validate.final") {
       return this.mechanicalValidate(claim, workDir, runDir);
@@ -2203,6 +2286,14 @@ class WikiRunsOwner implements WikiRuns {
     if (claim.kind === "publish") {
       return this.mechanicalPublish(claim, workDir, runDir);
     }
+    // Unknown mechanical kind: still leave a transcript for the dialog.
+    const sessionPath = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
+    await writeConversationTranscript({
+      sessionPath,
+      nodeKey: claim.nodeKey,
+      summary: `Error: unsupported mechanical kind: ${claim.kind}`,
+      meta: { mode: "failed", kind: claim.kind },
+    });
     return {
       type: "failed",
       error: `unsupported mechanical kind: ${claim.kind}`,
@@ -2268,12 +2359,13 @@ class WikiRunsOwner implements WikiRuns {
     }
     const reportPath = path.join(workDir, "validate-report.json");
     await writeFile(reportPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
-    const transcript = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
-    await writeFile(
-      transcript,
-      `${JSON.stringify({ schema: 1, node: claim.nodeKey, kind: claim.kind, ok: true })}\n`,
-      "utf8",
-    );
+    const validateSummary = `${claim.kind} ok (${result.pageCount ?? 0} pages)`;
+    const transcript = await writeConversationTranscript({
+      sessionPath: path.join(runDir, "attempts", claim.attemptId, "session.jsonl"),
+      nodeKey: claim.nodeKey,
+      summary: validateSummary,
+      meta: { kind: claim.kind, ok: true },
+    });
     return {
       type: "succeeded",
       unsealedArtifacts: [
@@ -2281,7 +2373,7 @@ class WikiRunsOwner implements WikiRuns {
         { kind: "receipt", role: "validate_report", sourcePath: reportPath, directory: false },
         { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
       ],
-      summary: `${claim.kind} ok (${result.pageCount ?? 0} pages)`,
+      summary: validateSummary,
     };
   }
 
@@ -2339,12 +2431,12 @@ class WikiRunsOwner implements WikiRuns {
     };
     const defectsPath = path.join(workDir, "defects.json");
     await writeFile(defectsPath, `${JSON.stringify(defects, null, 2)}\n`, "utf8");
-    const transcript = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
-    await writeFile(
-      transcript,
-      `${JSON.stringify({ schema: 1, node: claim.nodeKey, defects })}\n`,
-      "utf8",
-    );
+    const transcript = await writeConversationTranscript({
+      sessionPath: path.join(runDir, "attempts", claim.attemptId, "session.jsonl"),
+      nodeKey: claim.nodeKey,
+      summary: defects.summary,
+      meta: { defects },
+    });
     return {
       type: "succeeded",
       unsealedArtifacts: [
@@ -2427,17 +2519,13 @@ class WikiRunsOwner implements WikiRuns {
       })}\n`,
       "utf8",
     );
-    const transcript = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
-    await writeFile(
-      transcript,
-      `${JSON.stringify({
-        schema: 1,
-        node: "prepare.publication",
-        ok: true,
-        expectedLiveDigest,
-      })}\n`,
-      "utf8",
-    );
+    const prepSummary = `publication candidate sealed (baseline ${expectedLiveDigest.slice(0, 12)}…)`;
+    const transcript = await writeConversationTranscript({
+      sessionPath: path.join(runDir, "attempts", claim.attemptId, "session.jsonl"),
+      nodeKey: claim.nodeKey,
+      summary: prepSummary,
+      meta: { ok: true, expectedLiveDigest },
+    });
     return {
       type: "succeeded",
       unsealedArtifacts: [
@@ -2450,7 +2538,7 @@ class WikiRunsOwner implements WikiRuns {
         { kind: "receipt", role: "candidate_meta", sourcePath: metaPath, directory: false },
         { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
       ],
-      summary: `publication candidate sealed (baseline ${expectedLiveDigest.slice(0, 12)}…)`,
+      summary: prepSummary,
     };
   }
 
@@ -2655,12 +2743,12 @@ class WikiRunsOwner implements WikiRuns {
       `${JSON.stringify({ schema: 1, effectKey, state: "applied" })}\n`,
       "utf8",
     );
-    const transcript = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
-    await writeFile(
-      transcript,
-      `${JSON.stringify({ schema: 1, node: "publish", effectKey })}\n`,
-      "utf8",
-    );
+    const transcript = await writeConversationTranscript({
+      sessionPath: path.join(runDir, "attempts", claim.attemptId, "session.jsonl"),
+      nodeKey: claim.nodeKey,
+      summary: "published",
+      meta: { effectKey },
+    });
     return {
       type: "succeeded",
       unsealedArtifacts: [
@@ -3206,6 +3294,14 @@ class WikiRunsOwner implements WikiRuns {
         if (outcome.type === "failed") {
           throw new Error(outcome.error);
         }
+      } else {
+        // No Pi executor: still leave a readable freeze transcript for Node details.
+        await writeConversationTranscript({
+          sessionPath,
+          nodeKey: "freeze",
+          summary: "Freeze inputs sealed by WikiRuns",
+          meta: { mode: "freeze_boundary" },
+        });
       }
       if (this.closed || !this.isCurrent(claim)) return;
       const outputArtifacts = await this.prepareFreezeArtifacts(claim, [
@@ -3223,6 +3319,20 @@ class WikiRunsOwner implements WikiRuns {
       );
     } catch (error) {
       if (this.closed) return;
+      const message =
+        error instanceof Error ? error.message.slice(0, 4_000) : "freeze failed";
+      await writeConversationTranscript({
+        sessionPath: path.join(
+          runWorkDir(this.workspace.rootPath, claim.runId),
+          "attempts",
+          claim.attemptId,
+          "session.jsonl",
+        ),
+        nodeKey: "freeze",
+        summary: `Error: ${message}`,
+        preserveExisting: true,
+        meta: { mode: "failed", error: message },
+      }).catch(() => undefined);
       this.transaction(() => this.failFreeze(claim, error));
     } finally {
       this.activeAttempts.delete(claim.attemptId);

@@ -9,6 +9,7 @@
 import { chmod, cp, lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  type AttemptItem,
   type PiAttemptInput,
   PiAttemptInputSchema,
   type PiAttemptOutcome,
@@ -28,6 +29,7 @@ import {
 } from "../prompts/index.js";
 import { createSubmitWikiRunSpecTool } from "../tools/submit-wiki-run-spec.js";
 import { planWikiSpec } from "../workflow/phases/plan-phase.js";
+import { finalizeAttemptTranscript } from "./attempt-transcript-sink.js";
 import { createFixtureProduceRuntime } from "./fixture-runner.js";
 import { resolveWorkspacePiModel } from "./model/provider-model.js";
 import { resolveModelSelection } from "./model/role-model.js";
@@ -155,15 +157,35 @@ function sourceIgnores(input: PiAttemptInput): Map<string, readonly string[]> {
   );
 }
 
-async function writeTranscript(
+/**
+ * Seal a conversation-shaped attempt transcript (JSONL).
+ * Prefer items/summary from the scoped agent; never metadata-only when content exists.
+ * Live runs may already have written sessionPath via transcriptPath — finalize replaces
+ * with a complete snapshot including optional control meta.
+ */
+async function sealTranscript(
   input: PiAttemptInput,
-  data: Record<string, unknown>,
+  parts: {
+    task?: string;
+    items?: AttemptItem[];
+    summary?: string;
+    terminal?: "done" | "error" | "cancelled";
+    meta?: Record<string, unknown>;
+  },
 ): Promise<string> {
   if (!isPathInside(input.attemptDir, input.sessionPath))
     throw new Error("session path escaped attempt");
-  await mkdir(path.dirname(input.sessionPath), { recursive: true });
-  await writeFile(input.sessionPath, `${JSON.stringify(data)}\n`, "utf8");
-  return input.sessionPath;
+  return finalizeAttemptTranscript(input.sessionPath, {
+    task: parts.task,
+    items: parts.items,
+    summary: parts.summary,
+    terminal: parts.terminal ?? "done",
+    meta: {
+      node: input.node.key,
+      attemptId: input.attemptId,
+      ...parts.meta,
+    },
+  });
 }
 
 async function readSpec(input: PiAttemptInput) {
@@ -250,11 +272,10 @@ export function createPiAttemptExecutor(
       // Freeze is owned by WikiRuns (Run Boundary). The optional executor probe is a
       // no-op success so production wiring can share one PiAttemptExecutor for all nodes.
       if (input.node.kind === "freeze") {
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          mode: "freeze_noop",
+        const transcript = await sealTranscript(input, {
+          summary: "Freeze inputs already sealed by WikiRuns",
+          terminal: "done",
+          meta: { mode: "freeze_noop" },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -274,6 +295,7 @@ export function createPiAttemptExecutor(
       if (input.node.kind === "plan" && input.node.key === "plan") {
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "planner", resolveModel) : undefined;
+        const planTask = `Plan WikiRunSpec for ${input.workspace.name}`;
         const planned = await planWikiSpec({
           layout,
           workspaceName: input.workspace.name,
@@ -286,15 +308,17 @@ export function createPiAttemptExecutor(
           sourceIgnores: ignores,
           abortSignal: signal,
           customTools: [createSubmitWikiRunSpecTool({ runWorkDir: input.workDir })],
+          transcriptPath: input.sessionPath,
         });
         const specPath = path.join(layout.analysisDir, "spec.json");
         await writeFile(specPath, `${JSON.stringify(planned.spec, null, 2)}\n`, "utf8");
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          mode: planned.mode,
-          summary: planned.rawSummary ?? planned.spec.summary,
+        const summary = bounded(planned.rawSummary ?? planned.spec.summary);
+        const transcript = await sealTranscript(input, {
+          task: planTask,
+          items: planned.items,
+          summary,
+          terminal: "done",
+          meta: { mode: planned.mode, source: planned.source },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -302,7 +326,7 @@ export function createPiAttemptExecutor(
             { kind: "spec", role: "spec", sourcePath: specPath, directory: false },
             { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
           ],
-          summary: bounded(planned.rawSummary ?? planned.spec.summary),
+          summary,
         });
       }
 
@@ -312,6 +336,12 @@ export function createPiAttemptExecutor(
         await writeFile(specPath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "writer", resolveModel) : undefined;
+        const writeTask = rootWritePrompt({
+          layout,
+          spec,
+          wikiLanguage: input.workspace.wikiLanguage,
+          multiSource: Object.keys(input.sourcePaths).length > 1,
+        });
         const produced = await runtime.writeWiki({
           layout,
           spec,
@@ -326,24 +356,19 @@ export function createPiAttemptExecutor(
           abortSignal: signal,
           timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
           systemPrompt: rootWriteSystemPrompt(),
-          task: rootWritePrompt({
-            layout,
-            spec,
-            wikiLanguage: input.workspace.wikiLanguage,
-            multiSource: Object.keys(input.sourcePaths).length > 1,
-          }),
+          task: writeTask,
           spanId: input.attemptId,
           nodeKey: input.node.key,
           runIndex: input.node.runIndex,
+          transcriptPath: input.sessionPath,
         });
         await materializeWikiIndexes(layout.wikiDir);
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          mode: produced.mode,
+        const transcript = await sealTranscript(input, {
+          task: writeTask,
+          items: produced.items,
           summary: produced.summary,
-          pages: produced.pages,
+          terminal: "done",
+          meta: { mode: produced.mode, pages: produced.pages },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -361,19 +386,20 @@ export function createPiAttemptExecutor(
         const question = String(detail.question ?? input.node.key);
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
+        const leafTask = leafResearchPrompt({
+          domainId,
+          question,
+          scope: String(detail.scope ?? ""),
+          nodeId: input.node.key,
+          runId: input.runId,
+        });
         const result = await runtime.runAgent({
           role: "leaf",
           spanId: input.attemptId,
           nodeKey: input.node.key,
           runIndex: input.node.runIndex,
           runWorkDir: input.workDir,
-          task: leafResearchPrompt({
-            domainId,
-            question,
-            scope: String(detail.scope ?? ""),
-            nodeId: input.node.key,
-            runId: input.runId,
-          }),
+          task: leafTask,
           systemPrompt:
             "You are a leaf researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.",
           preferFinalMessage: false,
@@ -384,6 +410,7 @@ export function createPiAttemptExecutor(
           sourceIgnores: ignores,
           abortSignal: signal,
           timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
+          transcriptPath: input.sessionPath,
         });
         if (result.failed) throw new Error(result.summary);
         const receiptPath = path.join(layout.analysisDir, `${input.node.key}.json`);
@@ -392,12 +419,12 @@ export function createPiAttemptExecutor(
           `${JSON.stringify({ role: "leaf", summary: result.summary, mode: result.mode }, null, 2)}\n`,
           "utf8",
         );
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          mode: result.mode,
+        const transcript = await sealTranscript(input, {
+          task: leafTask,
+          items: result.items,
           summary: result.summary,
+          terminal: "done",
+          meta: { mode: result.mode, role: "leaf" },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -416,20 +443,21 @@ export function createPiAttemptExecutor(
         );
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
+        const domainTask = domainResearchPrompt({
+          domainId,
+          title: String(detail.title ?? domainId),
+          scope: String(detail.scope ?? ""),
+          questions: Array.isArray(detail.questions) ? detail.questions.map(String) : [],
+          nodeId: input.node.key,
+          runId: input.runId,
+        });
         const result = await runtime.runAgent({
           role: "domain",
           spanId: input.attemptId,
           nodeKey: input.node.key,
           runIndex: input.node.runIndex,
           runWorkDir: input.workDir,
-          task: domainResearchPrompt({
-            domainId,
-            title: String(detail.title ?? domainId),
-            scope: String(detail.scope ?? ""),
-            questions: Array.isArray(detail.questions) ? detail.questions.map(String) : [],
-            nodeId: input.node.key,
-            runId: input.runId,
-          }),
+          task: domainTask,
           systemPrompt:
             "You are a domain researcher. Use only read tools (ls, find, grep, read). Do not write files. Return a concise evidence summary with source paths.",
           preferFinalMessage: false,
@@ -440,6 +468,7 @@ export function createPiAttemptExecutor(
           sourceIgnores: ignores,
           abortSignal: signal,
           timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
+          transcriptPath: input.sessionPath,
         });
         if (result.failed) throw new Error(result.summary);
         const receiptPath = path.join(layout.analysisDir, `${input.node.key}.json`);
@@ -448,12 +477,12 @@ export function createPiAttemptExecutor(
           `${JSON.stringify({ role: "domain", summary: result.summary, mode: result.mode }, null, 2)}\n`,
           "utf8",
         );
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          mode: result.mode,
+        const transcript = await sealTranscript(input, {
+          task: domainTask,
+          items: result.items,
           summary: result.summary,
+          terminal: "done",
+          meta: { mode: result.mode, role: "domain" },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -472,13 +501,14 @@ export function createPiAttemptExecutor(
         const pages = await listWikiMarkdown(layout.wikiDir);
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "reviewer", resolveModel) : undefined;
+        const reviewTask = reviewerPrompt({ pages, lens });
         const result = await runtime.runAgent({
           role: "reviewer",
           spanId: input.attemptId,
           nodeKey: input.node.key,
           runIndex: input.node.runIndex,
           runWorkDir: input.workDir,
-          task: reviewerPrompt({ pages, lens }),
+          task: reviewTask,
           systemPrompt:
             "You are a wiki reviewer. Return JSON with clean/defects/summary. Prefer fail-closed blocking only for true defects.",
           preferFinalMessage: true,
@@ -490,6 +520,7 @@ export function createPiAttemptExecutor(
           abortSignal: signal,
           timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
           additionalSkillPaths: [layout.skillDir],
+          transcriptPath: input.sessionPath,
         });
         if (result.failed) throw new Error(result.summary);
         const receiptPath = path.join(layout.analysisDir, `${input.node.key}.json`);
@@ -498,13 +529,12 @@ export function createPiAttemptExecutor(
           `${JSON.stringify({ lens, summary: result.summary, mode: result.mode }, null, 2)}\n`,
           "utf8",
         );
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          lens,
-          mode: result.mode,
+        const transcript = await sealTranscript(input, {
+          task: reviewTask,
+          items: result.items,
           summary: result.summary,
+          terminal: "done",
+          meta: { mode: result.mode, lens },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -523,6 +553,16 @@ export function createPiAttemptExecutor(
         await writeFile(specPath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "writer", resolveModel) : undefined;
+        const repairTask = [
+          rootWritePrompt({
+            layout,
+            spec,
+            wikiLanguage: input.workspace.wikiLanguage,
+            multiSource: Object.keys(input.sourcePaths).length > 1,
+          }),
+          "",
+          "Repair mode: fix blocking defects on the existing Staging Wiki; preserve good pages.",
+        ].join("\n");
         const produced = await runtime.writeWiki({
           layout,
           spec,
@@ -537,29 +577,20 @@ export function createPiAttemptExecutor(
           abortSignal: signal,
           timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
           systemPrompt: rootWriteSystemPrompt(),
-          task: [
-            rootWritePrompt({
-              layout,
-              spec,
-              wikiLanguage: input.workspace.wikiLanguage,
-              multiSource: Object.keys(input.sourcePaths).length > 1,
-            }),
-            "",
-            "Repair mode: fix blocking defects on the existing Staging Wiki; preserve good pages.",
-          ].join("\n"),
+          task: repairTask,
           spanId: input.attemptId,
           nodeKey: input.node.key,
           runIndex: input.node.runIndex,
           graphRole: "repair",
+          transcriptPath: input.sessionPath,
         });
         await materializeWikiIndexes(layout.wikiDir);
-        const transcript = await writeTranscript(input, {
-          schema: 1,
-          node: input.node.key,
-          attemptId: input.attemptId,
-          mode: produced.mode,
+        const transcript = await sealTranscript(input, {
+          task: repairTask,
+          items: produced.items,
           summary: produced.summary,
-          pages: produced.pages,
+          terminal: "done",
+          meta: { mode: produced.mode, pages: produced.pages },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",
@@ -575,17 +606,25 @@ export function createPiAttemptExecutor(
     } catch (error) {
       const outcome = failure(error, signal);
       // Best-effort: leave a readable session transcript for the transcript API
-      // even when the attempt fails or is cancelled. Never mask the original failure.
+      // even when the attempt fails or is cancelled. Prefer appending over wipe
+      // when live JSONL already exists — sealTranscript rebuilds from summary.
       if (input && outcome.type === "failed") {
         try {
-          await writeTranscript(input, {
-            schema: 1,
-            node: input.node.key,
-            attemptId: input.attemptId,
-            mode: "failed",
-            failureClass: outcome.failureClass,
-            error: outcome.error,
+          if (!isPathInside(input.attemptDir, input.sessionPath)) {
+            throw new Error("session path escaped attempt");
+          }
+          // Preserve any live JSONL already written by the scoped agent sink.
+          await finalizeAttemptTranscript(input.sessionPath, {
             summary: outcome.error,
+            terminal: outcome.failureClass === "cancelled" ? "cancelled" : "error",
+            preserveExisting: true,
+            meta: {
+              node: input.node.key,
+              attemptId: input.attemptId,
+              mode: "failed",
+              failureClass: outcome.failureClass,
+              error: outcome.error,
+            },
           });
         } catch {
           // ignore transcript write errors on the failure path

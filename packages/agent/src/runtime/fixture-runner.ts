@@ -11,6 +11,7 @@ import type {
   WikiWriteResult,
 } from "../ports/agent-runner.js";
 import { writeFixtureWiki } from "../produce/wiki-pages.js";
+import { finalizeAttemptTranscript } from "./attempt-transcript-sink.js";
 import type { RunWorkdirLayout } from "./workdir.js";
 
 export type {
@@ -88,6 +89,7 @@ export function createFixtureProduceRuntime(
         : `[fixture ${input.role}] ${input.task.slice(0, 200)}`;
 
     const attemptId = input.spanId?.trim() || input.role;
+    const items = [{ type: "text" as const, text: summary.slice(0, 2000) }];
     input.onProgress?.({
       attemptId,
       nodeKey: input.nodeKey?.trim() || attemptId,
@@ -95,12 +97,22 @@ export function createFixtureProduceRuntime(
       role: input.role,
       status: "done",
       summary: summary.slice(0, 4000),
-      items: [{ type: "text", text: summary.slice(0, 2000) }],
+      items,
     });
+    if (input.transcriptPath) {
+      await finalizeAttemptTranscript(input.transcriptPath, {
+        task: input.task,
+        items,
+        summary: summary.slice(0, 4000),
+        terminal: "done",
+        meta: { mode: "fixture", role: input.role, node: input.nodeKey ?? input.role },
+      }).catch(() => undefined);
+    }
     return {
       role: input.role,
       mode: "fixture",
       summary: summary.slice(0, 4000),
+      items,
     };
   }
 
@@ -155,6 +167,7 @@ export function createFixtureProduceRuntime(
         graphRole === "repair"
           ? "Pi fixture mode repaired overview.md + listing index.md"
           : "Pi fixture mode wrote overview.md + listing index.md";
+      const items = [{ type: "text" as const, text: `wrote ${pages.join(", ")}` }];
       input.onProgress?.({
         attemptId,
         nodeKey,
@@ -162,13 +175,23 @@ export function createFixtureProduceRuntime(
         role: graphRole,
         status: "done",
         summary,
-        items: [{ type: "text", text: `wrote ${pages.join(", ")}` }],
+        items,
       });
+      if (input.transcriptPath) {
+        await finalizeAttemptTranscript(input.transcriptPath, {
+          task: input.task,
+          items,
+          summary,
+          terminal: "done",
+          meta: { mode: "fixture", role: graphRole, node: nodeKey },
+        }).catch(() => undefined);
+      }
       return {
         mode: "fixture",
         layout: input.layout,
         pages,
         summary,
+        items,
       };
     },
   };

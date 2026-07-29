@@ -56,6 +56,7 @@ function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
     runIndex: input.runIndex,
     customTools: input.customTools as ToolDefinition<any, any>[] | undefined,
     onProgress: input.onProgress,
+    transcriptPath: input.transcriptPath,
   };
 }
 
@@ -110,6 +111,7 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
         sourceIgnores: asSourceIgnores(input.sourceIgnores),
         abortSignal: input.abortSignal,
         timeoutMs: input.timeoutMs ?? defaults?.timeoutMs,
+        transcriptPath: input.transcriptPath,
         onProgress: input.onProgress
           ? (span) =>
               input.onProgress!({
@@ -131,6 +133,7 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
         layout: input.layout,
         pages,
         summary: result.summary?.trim() || `Pi live produce wrote ${pages.length} page(s)`,
+        ...(result.items ? { items: result.items } : {}),
       };
     },
   };

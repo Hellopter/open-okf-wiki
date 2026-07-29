@@ -11,6 +11,7 @@
  */
 
 import {
+  type AttemptItem,
   defaultWikiRunSpec,
   type NodeAttempt,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
@@ -95,6 +96,11 @@ export type PlanWikiSpecInput = {
    */
   customTools?: readonly unknown[];
   store?: SpecStore;
+  /**
+   * Attempt session.jsonl for Node details transcript (live + fixture).
+   * Passed through to the synthesizer runAgent only (scouts stay private).
+   */
+  transcriptPath?: string;
 };
 
 export type PlanWikiSpecResult = {
@@ -107,6 +113,8 @@ export type PlanWikiSpecResult = {
   draftPath?: string;
   /** Scout kinds that produced receipts (empty when scouts disabled). */
   scoutKinds?: string[];
+  /** Final tool/text trail from the planner agent when available. */
+  items?: AttemptItem[];
 };
 
 /**
@@ -119,16 +127,24 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
   if (input.runtime.kind === "fixture") {
     const spec = input.priorSpec ?? defaultWikiRunSpec(input.workspaceName);
     const draftPath = await store.writePlanDraft(input.layout.runWorkDir, spec);
+    const items: AttemptItem[] = [
+      {
+        type: "text",
+        text: `pages=${spec.pages.length} draft=${PLAN_DRAFT_REL_PATH}`,
+      },
+    ];
+    const summary = "Fixture default WikiRunSpec";
     input.onProgress?.({
       attemptId: "plan",
       nodeKey: "plan",
       runIndex: 0,
       role: "plan",
       status: "done",
-      summary: "Fixture default WikiRunSpec",
-      items: [{ type: "text", text: `pages=${spec.pages.length} draft=${PLAN_DRAFT_REL_PATH}` }],
+      summary,
+      items,
     });
-    return { spec, mode: "fixture", source: "fixture", draftPath, scoutKinds: [] };
+    // Transcript disk write is owned by pi-attempt-executor (runtime edge).
+    return { spec, mode: "fixture", source: "fixture", draftPath, scoutKinds: [], items };
   }
 
   if (!input.model) {
@@ -198,6 +214,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     contextTargetTokens: input.contextTargetTokens,
     abortSignal: input.abortSignal,
     onProgress: input.onProgress,
+    transcriptPath: input.transcriptPath,
   });
 
   const resolved = await resolvePlanSpecFromAgentResult({
@@ -213,5 +230,6 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     source: resolved.source,
     draftPath: resolved.draftPath,
     scoutKinds: scouts.receipts.map((r) => r.kind),
+    ...(child.items ? { items: child.items } : {}),
   };
 }

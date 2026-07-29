@@ -30,7 +30,20 @@ async function succeededPlan(
   await mkdir(input.workDir, { recursive: true });
   await writeFile(specPath, `${JSON.stringify(spec)}\n`, "utf8");
   const transcript = path.join(input.attemptDir, "session.jsonl");
-  await writeFile(transcript, `${JSON.stringify({ schema: 1, node: "plan" })}\n`, "utf8");
+  await writeFile(
+    transcript,
+    [
+      JSON.stringify({ role: "user", content: `Plan WikiRunSpec for ${workspaceName}` }),
+      JSON.stringify({ role: "assistant", content: spec.summary || "Fixture default WikiRunSpec" }),
+      JSON.stringify({
+        schema: 1,
+        node: "plan",
+        mode: "fixture",
+        summary: spec.summary || "Fixture default WikiRunSpec",
+      }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
   return {
     type: "succeeded",
     unsealedArtifacts: [
@@ -65,7 +78,15 @@ async function fullGraphFixtureExecutor(
   await mkdir(path.join(input.workDir, "analysis"), { recursive: true });
   const transcript = path.join(input.attemptDir, "session.jsonl");
   await mkdir(path.dirname(transcript), { recursive: true });
-  await writeFile(transcript, `${JSON.stringify({ schema: 1, node: input.node.key })}\n`, "utf8");
+  const nodeSummary = `fixture ${input.node.key}`;
+  await writeFile(
+    transcript,
+    [
+      JSON.stringify({ role: "assistant", content: nodeSummary }),
+      JSON.stringify({ schema: 1, node: input.node.key, summary: nodeSummary }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
 
   if (input.node.kind === "freeze") {
     return succeededProbe(input.workDir);
@@ -2427,28 +2448,6 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
   const planAttempt = finished.snapshot.attempts.find((attempt) => attempt.nodeKey === "plan");
   assert.ok(planAttempt, "plan attempt should exist after freeze+plan");
 
-  // Live session.jsonl may still be present; otherwise sealed transcript artifact is used.
-  const liveSession = path.join(
-    root,
-    ".okf-wiki",
-    "runs",
-    receipt.runId,
-    "attempts",
-    planAttempt.attemptId,
-    "session.jsonl",
-  );
-  // Ensure at least the live path has known content when the plan left it.
-  try {
-    await readFile(liveSession, "utf8");
-  } catch {
-    await mkdir(path.dirname(liveSession), { recursive: true });
-    await writeFile(
-      liveSession,
-      `${JSON.stringify({ schema: 1, node: "plan", role: "assistant" })}\n`,
-      "utf8",
-    );
-  }
-
   const transcript = await runs.readAttemptTranscript({
     runId: receipt.runId,
     attemptId: planAttempt.attemptId,
@@ -2457,10 +2456,18 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
   assert.equal(transcript.nodeKey, "plan");
   assert.equal(transcript.state, planAttempt.state);
   assert.ok(Array.isArray(transcript.messages));
-  assert.ok(transcript.messages.length >= 1);
-  assert.equal(
-    (transcript.messages[0] as { schema?: number } | undefined)?.schema,
-    1,
+  assert.ok(transcript.messages.length >= 2, "plan transcript should be multi-row conversation");
+  const first = transcript.messages[0] as Record<string, unknown> | undefined;
+  assert.equal(first?.role, "user");
+  assert.ok(
+    transcript.messages.some(
+      (row) =>
+        typeof row === "object" &&
+        row !== null &&
+        ((row as { role?: string }).role === "assistant" ||
+          (row as { type?: string }).type === "text"),
+    ),
+    "expected assistant/text content in plan transcript",
   );
 
   await assert.rejects(

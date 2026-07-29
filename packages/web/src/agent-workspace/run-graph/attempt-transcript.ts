@@ -110,8 +110,27 @@ function rawLine(value: unknown): string {
 }
 
 /**
+ * Legacy metadata-only stub from early WikiRuns attempts:
+ * `{ schema: 1, node, summary, mode, … }` without role/content.
+ */
+function isLegacyMetadataStub(row: Record<string, unknown>): boolean {
+  if (typeof row.role === "string" && "content" in row) return false;
+  if (row.type === "text" || row.type === "toolCall") return false;
+  if (isToolish(row)) return false;
+  return (
+    (row.schema === 1 || typeof row.node === "string" || typeof row.attemptId === "string") &&
+    (typeof row.summary === "string" || typeof row.error === "string" || typeof row.mode === "string")
+  );
+}
+
+/**
  * Map opaque transcript rows to a stable, UI-ready list.
  * Used by NodeAttemptDialog (and unit-tested in isolation).
+ *
+ * Recognises:
+ * - Pi-ish `{ role, content }`
+ * - AttemptItem `{ type: "text" | "toolCall", … }`
+ * - legacy metadata stubs with `summary` (schema:1)
  */
 export function projectAttemptTranscriptMessages(
   messages: unknown[],
@@ -120,6 +139,19 @@ export function projectAttemptTranscriptMessages(
   for (const row of messages) {
     if (!isRecord(row)) {
       out.push({ kind: "raw", text: rawLine(row) });
+      continue;
+    }
+
+    // AttemptItem text row from attempt-transcript-sink.
+    if (row.type === "text" && typeof row.text === "string") {
+      const text = truncate(row.text, CONTENT_MAX);
+      out.push({ kind: "role", role: "assistant", text: text || "(empty)" });
+      continue;
+    }
+
+    // AttemptItem toolCall row.
+    if (row.type === "toolCall" && typeof row.name === "string") {
+      out.push({ kind: "tool", text: toolLine(row) });
       continue;
     }
 
@@ -149,6 +181,22 @@ export function projectAttemptTranscriptMessages(
         text: text || toolLine(row),
       });
       continue;
+    }
+
+    // Old metadata-only session.jsonl stubs → readable assistant summary.
+    if (isLegacyMetadataStub(row)) {
+      const summary =
+        (typeof row.summary === "string" && row.summary.trim()) ||
+        (typeof row.error === "string" && row.error.trim()) ||
+        "";
+      if (summary) {
+        out.push({
+          kind: "role",
+          role: "assistant",
+          text: truncate(summary, CONTENT_MAX),
+        });
+        continue;
+      }
     }
 
     out.push({ kind: "raw", text: rawLine(row) });

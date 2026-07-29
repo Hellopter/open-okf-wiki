@@ -100,6 +100,22 @@ test("Pi attempt fixture plan writes an unsealed canonical spec and transcript",
   assert.ok(spec);
   assert.deepEqual(JSON.parse(await readFile(spec.sourcePath, "utf8")), defaultWikiRunSpec("Demo"));
   await access(input.sessionPath);
+  // Conversation-shaped JSONL (not metadata-only stub) for Node details UI.
+  const transcriptLines = (await readFile(input.sessionPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(transcriptLines.length >= 2, "expected multi-row conversation transcript");
+  assert.equal(transcriptLines[0]?.role, "user");
+  assert.ok(
+    transcriptLines.some(
+      (row) =>
+        row.role === "assistant" ||
+        row.type === "text" ||
+        (typeof row.summary === "string" && row.summary.length > 0),
+    ),
+    "expected assistant/text/summary content in plan transcript",
+  );
   assert.equal(
     await readFile(path.join(input.workDir, "sources", "main", "README.md"), "utf8"),
     "# Demo\n",
@@ -220,6 +236,14 @@ test("Pi attempt reports cancellation and bad sealed specs as terminal failures"
   if (failed.type === "failed") assert.equal(failed.failureClass, "infrastructure");
 });
 
+function parseTranscriptJsonl(raw: string): Record<string, unknown>[] {
+  return raw
+    .trim()
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 test("Pi attempt writes a readable failure transcript on cancel and infrastructure fail", async (t) => {
   const cancelled = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });
   const invalidSpec = await fixture({
@@ -236,12 +260,14 @@ test("Pi attempt writes a readable failure transcript on cancel and infrastructu
   const cancelledOut = await executor(cancelled, controller.signal);
   assert.equal(cancelledOut.type, "failed");
   await access(cancelled.sessionPath);
-  const cancelledTranscript = JSON.parse(await readFile(cancelled.sessionPath, "utf8"));
-  assert.equal(cancelledTranscript.mode, "failed");
-  assert.equal(cancelledTranscript.failureClass, "cancelled");
-  assert.equal(cancelledTranscript.error, "Pi attempt cancelled");
-  assert.equal(cancelledTranscript.attemptId, cancelled.attemptId);
-  assert.equal(cancelledTranscript.node, "plan");
+  const cancelledRows = parseTranscriptJsonl(await readFile(cancelled.sessionPath, "utf8"));
+  assert.ok(cancelledRows.some((row) => row.role === "assistant"));
+  const cancelledMeta = cancelledRows.find((row) => row.mode === "failed");
+  assert.ok(cancelledMeta, "expected failed meta row");
+  assert.equal(cancelledMeta.failureClass, "cancelled");
+  assert.equal(cancelledMeta.error, "Pi attempt cancelled");
+  assert.equal(cancelledMeta.attemptId, cancelled.attemptId);
+  assert.equal(cancelledMeta.node, "plan");
 
   const specPath = path.join(path.dirname(path.dirname(invalidSpec.attemptDir)), "bad-spec.json");
   await writeFile(specPath, "{}\n", "utf8");
@@ -253,10 +279,11 @@ test("Pi attempt writes a readable failure transcript on cancel and infrastructu
   const failed = await executor(invalidSpec, new AbortController().signal);
   assert.equal(failed.type, "failed");
   await access(invalidSpec.sessionPath);
-  const failedTranscript = JSON.parse(await readFile(invalidSpec.sessionPath, "utf8"));
-  assert.equal(failedTranscript.mode, "failed");
-  assert.equal(failedTranscript.failureClass, "infrastructure");
-  assert.equal(typeof failedTranscript.error, "string");
-  assert.ok(String(failedTranscript.error).length > 0);
-  assert.equal(failedTranscript.summary, failedTranscript.error);
+  const failedRows = parseTranscriptJsonl(await readFile(invalidSpec.sessionPath, "utf8"));
+  assert.ok(failedRows.some((row) => row.role === "assistant"));
+  const failedMeta = failedRows.find((row) => row.mode === "failed");
+  assert.ok(failedMeta, "expected failed meta row");
+  assert.equal(failedMeta.failureClass, "infrastructure");
+  assert.equal(typeof failedMeta.error, "string");
+  assert.ok(String(failedMeta.error).length > 0);
 });

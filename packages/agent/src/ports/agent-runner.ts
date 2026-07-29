@@ -6,7 +6,7 @@
  * Live/fixture adapters cast to concrete Pi types at the boundary.
  */
 
-import type { NodeAttempt, RetryLimits, WikiRunSpec } from "@okf-wiki/contract";
+import type { AttemptItem, NodeAttempt, RetryLimits, WikiRunSpec } from "@okf-wiki/contract";
 
 /** Roles that may run through AgentRunner (subset of operator/scoped roles). */
 export type ScopedRunnerRole =
@@ -81,6 +81,11 @@ export type AgentRunRequest = {
   /** Opaque custom tools (plan submit, etc.) — typed loosely to avoid Pi coupling. */
   customTools?: readonly unknown[];
   onProgress?: (attempt: ScopedRunnerProgress) => void;
+  /**
+   * Attempt session.jsonl path for secret-free conversation/tool projection.
+   * Live/fixture adapters write JSONL here for Node details transcript API.
+   */
+  transcriptPath?: string;
 };
 
 export type AgentRunResult = {
@@ -88,6 +93,8 @@ export type AgentRunResult = {
   summary: string;
   mode: "live" | "fixture";
   receiptPath?: string;
+  /** Final tool/text trail when the runner projected one. */
+  items?: AttemptItem[];
   /**
    * Per-task settle marker for runAgentsParallel: true when this task failed
    * (summary carries the error). Sibling results are still returned; only
@@ -131,6 +138,10 @@ export type WikiWriteRequest = {
    * report `repair` so the Run Graph attaches to the repair topology node.
    */
   graphRole?: "root_write" | "repair";
+  /**
+   * Attempt session.jsonl path for secret-free conversation/tool projection.
+   */
+  transcriptPath?: string;
 };
 
 export type WikiWriteResult = {
@@ -138,6 +149,8 @@ export type WikiWriteResult = {
   layout: RunWorkdirLayoutPaths;
   pages: string[];
   summary: string;
+  /** Final tool/text trail when the runner projected one. */
+  items?: AttemptItem[];
 };
 
 /**

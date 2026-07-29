@@ -24,6 +24,33 @@ describe("AgentRunner fixture agent", () => {
     assert.ok(spans.some((s) => s.id === "domain-auth" && s.status === "done"));
   });
 
+  it("writes conversation JSONL when transcriptPath is set", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-rsa-tx-"));
+    const transcriptPath = path.join(dir, "session.jsonl");
+    const runtime = createFixtureProduceRuntime();
+    await runtime.runAgent({
+      role: "plan",
+      spanId: "plan",
+      runWorkDir: dir,
+      task: "Plan the wiki structure",
+      systemPrompt: "You are the planner.",
+      preferFinalMessage: true,
+      transcriptPath,
+    });
+    const lines = (await readFile(transcriptPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.ok(lines.length >= 2);
+    assert.equal(lines[0]?.role, "user");
+    assert.match(String(lines[0]?.content ?? ""), /Plan the wiki/);
+    assert.ok(
+      lines.some((row) => row.role === "assistant" || row.type === "text"),
+      "expected assistant or text row",
+    );
+  });
+
   it("parallel fan-out preserves order", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-par-"));
     const runtime = createFixtureProduceRuntime();

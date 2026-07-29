@@ -15,7 +15,11 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import type { AttemptItem, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import {
+  createAttemptTranscriptSink,
+  type AttemptTranscriptSink,
+} from "./attempt-transcript-sink.js";
 import {
   createWikiSession,
   type WikiSessionHandle,
@@ -98,6 +102,11 @@ export type RunScopedAgentInput = {
    */
   customTools?: ToolDefinition<any, any>[];
   onProgress?: (span: ScopedAgentProgress) => void;
+  /**
+   * When set, secret-free conversation/tool JSONL is written here for the
+   * Attempt transcript API (Node details). Does not use disk SessionManager.
+   */
+  transcriptPath?: string;
 };
 
 export type RunScopedAgentResult = {
@@ -105,6 +114,8 @@ export type RunScopedAgentResult = {
   summary: string;
   mode: "live";
   receiptPath?: string;
+  /** Final projector items (tool/text trail) for callers that seal transcripts. */
+  items?: AttemptItem[];
   /** Set by runScopedAgentsParallel when this task failed (summary holds the error). */
   failed?: boolean;
 };
@@ -238,12 +249,41 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
   };
 
   const projector = createAttemptProjectorState();
+  const sink: AttemptTranscriptSink | undefined = input.transcriptPath
+    ? createAttemptTranscriptSink(input.transcriptPath)
+    : undefined;
+
+  const flushTranscript = (
+    status: ScopedAgentProgress["status"],
+    summary?: string,
+  ): void => {
+    if (!sink) return;
+    const items = attemptItemsSnapshot(projector);
+    const terminal =
+      status === "done"
+        ? "done"
+        : status === "error"
+          ? "error"
+          : status === "cancelled"
+            ? "cancelled"
+            : undefined;
+    // Fire-and-forget; sink serializes writes. Failures must not kill the agent.
+    void sink
+      .writeProgress({
+        task: input.task,
+        items,
+        summary,
+        terminal,
+      })
+      .catch(() => undefined);
+  };
 
   const snapshot = (
     status: ScopedAgentProgress["status"],
     summary?: string,
   ): ScopedAgentProgress => {
     const items = attemptItemsSnapshot(projector);
+    flushTranscript(status, summary);
     return {
       attemptId,
       nodeKey,
@@ -334,13 +374,18 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
     const summary = controlSummary(resolved.summary);
     emitProgress(input.onProgress, snapshot("done", summary));
+    const items = attemptItemsSnapshot(projector);
     return {
       role: input.role,
       mode: "live",
       summary,
+      ...(items ? { items } : {}),
     };
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") throw err;
+    if (err instanceof Error && err.name === "AbortError") {
+      flushTranscript("cancelled", "Wiki Run cancelled");
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     emitProgress(input.onProgress, snapshot("error", message));
     throw err;

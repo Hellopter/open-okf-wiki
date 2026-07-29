@@ -48,7 +48,30 @@ describe("projectAttemptTranscriptMessages", () => {
     assert.match(out[2]!.text, /write/);
   });
 
-  it("falls back to truncated JSON for opaque rows", () => {
+  it("projects AttemptItem text and toolCall rows", () => {
+    const out = projectAttemptTranscriptMessages([
+      { type: "text", text: "scouting sources" },
+      { type: "toolCall", name: "read", status: "done", argsSummary: '{"path":"a.ts"}' },
+    ]);
+    assert.equal(out.length, 2);
+    assert.equal(out[0]?.kind, "role");
+    assert.equal(out[0]?.role, "assistant");
+    assert.equal(out[0]?.text, "scouting sources");
+    assert.equal(out[1]?.kind, "tool");
+    assert.match(out[1]!.text, /read/);
+  });
+
+  it("projects legacy metadata stubs as assistant summary", () => {
+    const out = projectAttemptTranscriptMessages([
+      { schema: 1, node: "plan", mode: "fixture", summary: "Fixture default WikiRunSpec" },
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?.kind, "role");
+    assert.equal(out[0]?.role, "assistant");
+    assert.match(out[0]!.text, /Fixture default/);
+  });
+
+  it("falls back to truncated JSON for opaque rows without summary", () => {
     const out = projectAttemptTranscriptMessages([{ schema: 1, node: "plan", noise: true }]);
     assert.equal(out.length, 1);
     assert.equal(out[0]?.kind, "raw");
