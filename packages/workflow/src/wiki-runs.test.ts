@@ -2487,10 +2487,9 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
     /run not found/,
   );
 
-  // Attempt without a transcript file → clear 404-style message.
+  // Attempt without a transcript file → 200-shaped empty (not 404); UI must not error.
   const freezeAttempt = finished.snapshot.attempts.find((attempt) => attempt.nodeKey === "freeze");
   assert.ok(freezeAttempt);
-  // Freeze probe does not seal a transcript kind; remove any residual session if present.
   const freezeSession = path.join(
     root,
     ".okf-wiki",
@@ -2501,14 +2500,20 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
     "session.jsonl",
   );
   await rm(freezeSession, { force: true });
-  await assert.rejects(
-    () =>
-      runs.readAttemptTranscript({
-        runId: receipt.runId,
-        attemptId: freezeAttempt.attemptId,
-      }),
-    /transcript not found/,
-  );
+  // Also drop any sealed transcript leaves so the read path has nothing on disk.
+  const runArtifacts = path.join(root, ".okf-wiki", "runs", receipt.runId, "artifacts");
+  await rm(runArtifacts, { recursive: true, force: true }).catch(() => undefined);
+  const emptyTx = await runs.readAttemptTranscript({
+    runId: receipt.runId,
+    attemptId: freezeAttempt.attemptId,
+  });
+  assert.equal(emptyTx.attemptId, freezeAttempt.attemptId);
+  assert.equal(emptyTx.nodeKey, "freeze");
+  assert.ok(Array.isArray(emptyTx.messages));
+  // Failed freeze may still synthesize an error row from attempts.error.
+  if (freezeAttempt.state === "failed" && freezeAttempt.error) {
+    assert.ok(emptyTx.messages.length >= 1);
+  }
 });
 
 test("readAttemptTranscript refuses oversized transcripts", async (t) => {

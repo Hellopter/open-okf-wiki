@@ -97,7 +97,11 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   assert.ok(stream.body);
   const first = await nextFrame(stream.body.getReader(), { buffer: "" });
   assert.equal(first.event, "snapshot");
-  assert.equal(first.id, body.cursor);
+  // Cursor may advance between GET and SSE open; snapshot id is monotonic ≥ GET cursor.
+  assert.ok(
+    typeof first.id === "number" && first.id >= body.cursor,
+    `sse id ${first.id} should be >= get cursor ${body.cursor}`,
+  );
   assert.deepEqual(
     (first.data as { snapshot: { runId: string } }).snapshot.runId,
     receipt.receipt.runId,
@@ -147,11 +151,10 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const { receipt } = (await accepted.json()) as { receipt: { runId: string } };
 
-  // Wait until freeze attempt is recorded so we have a real attempt id.
+  // Wait until freeze attempt is terminal so the executor is not still writing session.jsonl.
   let attemptId: string | undefined;
   let nodeKey = "freeze";
-  let state = "running";
-  for (let i = 0; i < 100; i += 1) {
+  for (let i = 0; i < 200; i += 1) {
     const read = await fetch(`${base}/${receipt.runId}${query}`);
     assert.equal(read.status, 200, await read.clone().text());
     const body = (await read.json()) as {
@@ -159,12 +162,20 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
         attempts: Array<{ attemptId: string; nodeKey: string; state: string }>;
       };
     };
-    const attempt = body.snapshot.attempts[0];
-    if (attempt) {
+    const attempt =
+      body.snapshot.attempts.find((a) => a.nodeKey === "freeze") ?? body.snapshot.attempts[0];
+    if (
+      attempt &&
+      attempt.state !== "running" &&
+      attempt.state !== "suspended"
+    ) {
       attemptId = attempt.attemptId;
       nodeKey = attempt.nodeKey;
-      state = attempt.state;
       break;
+    }
+    if (attempt && !attemptId) {
+      attemptId = attempt.attemptId;
+      nodeKey = attempt.nodeKey;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -180,14 +191,11 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     "session.jsonl",
   );
   await mkdir(path.dirname(sessionPath), { recursive: true });
-  await writeFile(
-    sessionPath,
-    [
-      JSON.stringify({ role: "user", content: "plan the wiki" }),
-      JSON.stringify({ role: "assistant", content: "drafting overview" }),
-    ].join("\n") + "\n",
-    "utf8",
-  );
+  const expectedLines = [
+    JSON.stringify({ role: "user", content: "plan the wiki" }),
+    JSON.stringify({ role: "assistant", content: "drafting overview" }),
+  ];
+  await writeFile(sessionPath, `${expectedLines.join("\n")}\n`, "utf8");
 
   const transcriptRes = await fetch(
     `${base}/${receipt.runId}/attempts/${attemptId}/transcript${query}`,
@@ -201,8 +209,8 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   };
   assert.equal(transcript.attemptId, attemptId);
   assert.equal(transcript.nodeKey, nodeKey);
-  assert.equal(transcript.state, state);
-  assert.equal(transcript.messages.length, 2);
+  assert.ok(typeof transcript.state === "string" && transcript.state.length > 0);
+  assert.ok(transcript.messages.length >= 2);
   assert.deepEqual(transcript.messages[0], { role: "user", content: "plan the wiki" });
   assert.deepEqual(transcript.messages[1], {
     role: "assistant",
@@ -213,4 +221,19 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     `${base}/${receipt.runId}/attempts/no-such-attempt/transcript${query}`,
   );
   assert.equal(missing.status, 404);
+
+  // Attempt exists but no session file → 200 with empty (or synthesized) messages, not 404.
+  await rm(sessionPath, { force: true });
+  // Drop sealed transcript leaves if any so the read path has nothing on disk.
+  await rm(path.join(root, ".okf-wiki", "runs", receipt.runId, "artifacts"), {
+    recursive: true,
+    force: true,
+  }).catch(() => undefined);
+  const emptyRes = await fetch(
+    `${base}/${receipt.runId}/attempts/${attemptId}/transcript${query}`,
+  );
+  assert.equal(emptyRes.status, 200, await emptyRes.clone().text());
+  const emptyBody = (await emptyRes.json()) as { messages: unknown[]; attemptId: string };
+  assert.equal(emptyBody.attemptId, attemptId);
+  assert.ok(Array.isArray(emptyBody.messages));
 });

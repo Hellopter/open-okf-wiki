@@ -253,17 +253,14 @@ export function NodeAttemptDialog({
         });
       } catch (error) {
         if (cancelled) return;
-        // Live attempts may not have a session file yet — treat 404 as empty, keep polling.
-        if (
-          error instanceof ApiError &&
-          error.status === 404 &&
-          isAttemptTranscriptLive(effectiveState)
-        ) {
+        // 404 = attempt missing or (legacy) no file. Never surface as a hard error in
+        // the dialog: keep prior messages when polling live, otherwise show empty.
+        if (error instanceof ApiError && error.status === 404) {
           setFetchState((prev) => ({
             loading: false,
             error: null,
-            messages: prev.ready ? prev.messages : [],
-            ready: prev.ready,
+            messages: isAttemptTranscriptLive(effectiveState) && prev.ready ? prev.messages : [],
+            ready: true,
           }));
           return;
         }

@@ -314,23 +314,47 @@ function parseJson<T>(value: SqlValue): T {
  * Parse Attempt transcript file content.
  * Prefer JSONL (one JSON value per non-empty line). If the file is a single
  * JSON object/array (including pretty-printed multi-line), wrap/return as messages.
+ * Tolerates mixed/corrupt tails from concurrent writers (live sink + finalize).
  */
 function parseTranscriptMessages(raw: string): unknown[] {
   const trimmed = raw.replace(/^\uFEFF/, "").trim();
   if (!trimmed) return [];
 
   const lines = trimmed.split(/\r?\n/).filter((line) => line.trim() !== "");
-  if (lines.length > 1) {
-    try {
-      return lines.map((line) => JSON.parse(line) as unknown);
-    } catch {
-      // Fall through: multi-line pretty JSON document.
+
+  // Fast path: pure JSONL (every non-empty line is one JSON value).
+  if (lines.length > 0) {
+    const rows: unknown[] = [];
+    let jsonlOk = true;
+    for (const line of lines) {
+      try {
+        rows.push(JSON.parse(line) as unknown);
+      } catch {
+        jsonlOk = false;
+        break;
+      }
     }
+    if (jsonlOk) return rows;
   }
 
-  const parsed = JSON.parse(trimmed) as unknown;
-  if (Array.isArray(parsed)) return parsed;
-  return [parsed];
+  // Pretty-printed single JSON document (object or array).
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) return parsed;
+    return [parsed];
+  } catch {
+    // Best-effort: keep any lines that still parse (partial concurrent write).
+    const partial: unknown[] = [];
+    for (const line of lines) {
+      try {
+        partial.push(JSON.parse(line) as unknown);
+      } catch {
+        // skip corrupt line
+      }
+    }
+    if (partial.length > 0) return partial;
+    throw new Error("transcript is not valid JSON/JSONL");
+  }
 }
 
 function parseRunCommand(value: unknown): RunCommand {
@@ -471,7 +495,7 @@ class WikiRunsOwner implements WikiRuns {
       attempt = asRow(
         this.db
           .prepare(
-            `SELECT attempt_id, run_id, node_key, state FROM attempts
+            `SELECT attempt_id, run_id, node_key, state, error FROM attempts
              WHERE attempt_id = ? AND run_id = ?`,
           )
           .get(attemptId, runId),
@@ -513,13 +537,48 @@ class WikiRunsOwner implements WikiRuns {
       throw error;
     }
 
+    const nodeKey = requiredText(attempt, "node_key");
+    const state = requiredText(attempt, "state") as WikiRunAttempt["state"];
+    const attemptError =
+      typeof attempt.error === "string" && attempt.error.trim() ? attempt.error.trim() : null;
+
     const runDir = runWorkDir(this.workspace.rootPath, runId);
     const candidates = this.transcriptCandidatePaths(runDir, attemptId, sealedRelativePaths);
     const transcriptPath = await this.firstExistingTranscriptFile(runDir, candidates);
-    if (!transcriptPath) throw new Error("transcript not found");
+
+    // Attempt exists but no file yet (running) or never sealed (legacy / wipe):
+    // return 200-shaped empty/synthetic messages — never "transcript not found" 404.
+    // Only run/attempt missing stay 404 for the HTTP adapter.
+    if (!transcriptPath) {
+      const messages: unknown[] = attemptError
+        ? [
+            { role: "assistant", content: `Error: ${attemptError.slice(0, 4_000)}` },
+            {
+              schema: 1,
+              node: nodeKey,
+              mode: "missing_transcript",
+              summary: attemptError.slice(0, 4_000),
+              error: attemptError.slice(0, 4_000),
+            },
+          ]
+        : [];
+      return {
+        attemptId: requiredText(attempt, "attempt_id"),
+        nodeKey,
+        state,
+        messages,
+      };
+    }
 
     const info = await lstat(transcriptPath);
-    if (!info.isFile()) throw new Error("transcript not found");
+    if (!info.isFile()) {
+      return {
+        attemptId: requiredText(attempt, "attempt_id"),
+        nodeKey,
+        state,
+        messages: [],
+      };
+    }
     if (info.size > TRANSCRIPT_MAX_BYTES) {
       throw new Error(`transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`);
     }
@@ -540,8 +599,8 @@ class WikiRunsOwner implements WikiRuns {
 
     return {
       attemptId: requiredText(attempt, "attempt_id"),
-      nodeKey: requiredText(attempt, "node_key"),
-      state: requiredText(attempt, "state") as WikiRunAttempt["state"],
+      nodeKey,
+      state,
       messages,
     };
   }
@@ -3294,6 +3353,19 @@ class WikiRunsOwner implements WikiRuns {
         if (outcome.type === "failed") {
           throw new Error(outcome.error);
         }
+        // Probe may write session.jsonl; ensure a conversation row even if it did not.
+        const liveInfo = await lstat(sessionPath).catch(() => undefined);
+        if (!liveInfo?.isFile()) {
+          await writeConversationTranscript({
+            sessionPath,
+            nodeKey: "freeze",
+            summary:
+              outcome.type === "succeeded" && outcome.summary
+                ? outcome.summary
+                : "Freeze inputs sealed by WikiRuns",
+            meta: { mode: "freeze_probe" },
+          });
+        }
       } else {
         // No Pi executor: still leave a readable freeze transcript for Node details.
         await writeConversationTranscript({
@@ -3310,6 +3382,9 @@ class WikiRunsOwner implements WikiRuns {
       if (!outputArtifacts) return;
       for (const preparation of outputArtifacts.preparations)
         await this.sealPreparation(claim.runId, preparation);
+      // Live session.jsonl is enough for GET transcript (readAttemptTranscript).
+      // Do not seal transcript as a freeze node_output — recovery would re-bind it
+      // into freeze outputs and pollute child attempt_inputs.
       if (this.closed || !this.isCurrent(claim)) return;
       this.transaction(() =>
         this.commitFreezeArtifacts(claim, [

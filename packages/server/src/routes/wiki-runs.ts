@@ -18,6 +18,8 @@ function statusFor(error: unknown): number {
   if (error instanceof CommandIdCollision || error instanceof WorkflowInUseError) return 409;
   if (error instanceof Error && error.message.startsWith("run not found:")) return 404;
   if (error instanceof Error && error.message.startsWith("attempt not found:")) return 404;
+  // Missing transcript *file* is no longer an error (empty messages). Keep this
+  // mapping only for any residual throw sites.
   if (error instanceof Error && error.message === "transcript not found") return 404;
   if (error instanceof Error && error.message.startsWith("transcript exceeds size limit"))
     return 413;
