@@ -424,12 +424,35 @@ export function createPiAttemptExecutor(
         await writeFile(specPath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "writer", resolveModel) : undefined;
-        const writeTask = rootWritePrompt({
+        // Rerun / auto-HV repair: detail.feedback turns write.root into repair-style write
+        // (seed prior wiki when sealed, feedback-first task, preserve good pages).
+        const writeFeedback =
+          typeof input.node.detail?.feedback === "string" && input.node.detail.feedback.trim()
+            ? input.node.detail.feedback.trim()
+            : undefined;
+        if (writeFeedback && input.sealedInputs.some((item) => item.role === "wiki_tree")) {
+          try {
+            await readSealedWikiTree(input, layout.wikiDir);
+          } catch {
+            // Prior wiki may be absent or unreadable on first write; pure repair still proceeds.
+          }
+        }
+        const baseWritePrompt = rootWritePrompt({
           layout,
           spec,
           wikiLanguage: input.workspace.wikiLanguage,
           multiSource: Object.keys(input.sourcePaths).length > 1,
         });
+        // Feedback first so it is not lost when transcripts truncate long write prompts.
+        const writeTask = writeFeedback
+          ? [
+              `Operator feedback: ${writeFeedback}`,
+              "",
+              baseWritePrompt,
+              "",
+              "Repair mode: fix validation, citation, and frontmatter defects on the existing Staging Wiki; preserve good pages.",
+            ].join("\n")
+          : baseWritePrompt;
         const produced = await runtime.writeWiki({
           layout,
           spec,
@@ -448,6 +471,7 @@ export function createPiAttemptExecutor(
           spanId: input.attemptId,
           nodeKey: input.node.key,
           runIndex: input.node.runIndex,
+          ...(writeFeedback ? { graphRole: "repair" as const } : {}),
           transcriptPath: input.sessionPath,
         });
         await materializeWikiIndexes(layout.wikiDir);
@@ -456,7 +480,11 @@ export function createPiAttemptExecutor(
           items: produced.items,
           summary: produced.summary,
           terminal: "done",
-          meta: { mode: produced.mode, pages: produced.pages },
+          meta: {
+            mode: produced.mode,
+            pages: produced.pages,
+            ...(writeFeedback ? { repair: true } : {}),
+          },
         });
         return PiAttemptOutcomeSchema.parse({
           type: "succeeded",

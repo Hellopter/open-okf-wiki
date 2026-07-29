@@ -130,6 +130,8 @@ export const PiAttemptFailureClassSchema = z.enum([
   "budget",
   "infrastructure",
   "cancelled",
+  /** Mechanical / product quality defects (e.g. hard-validate dirty wiki). */
+  "schema",
 ]);
 
 export type PiAttemptFailureClass = z.infer<typeof PiAttemptFailureClassSchema>;

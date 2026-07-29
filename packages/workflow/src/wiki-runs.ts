@@ -565,6 +565,8 @@ class WikiRunsOwner implements WikiRuns {
       unlockReadyNodes: (runId) => this.unlockReadyNodes(runId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
       attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
+      applyRerunAt: (runId, nodeKey, generation, feedback) =>
+        this.applyRerunAt(runId, nodeKey, generation, feedback),
     };
   }
 

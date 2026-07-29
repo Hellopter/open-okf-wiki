@@ -144,6 +144,14 @@ test("PiAttemptOutcome rejects malformed and cross-variant results", () => {
   );
   assert.equal(
     PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "validation failed: missing type",
+      failureClass: "schema",
+    }).success,
+    true,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
       type: "gate_requested",
       question: "Continue?",
       transcript: {

@@ -274,10 +274,77 @@ test("Pi attempt domain uses sealed questions array; repair appends feedback", a
     capturedRepairTask.includes("Operator feedback: Fix broken citation on overview."),
     "repair task must include sealed feedback",
   );
+  assert.ok(
+    capturedRepairTask.includes("Repair mode:"),
+    "repair task must include Repair mode instruction",
+  );
   const repairTranscript = await readFile(repair.sessionPath, "utf8");
   assert.ok(
     repairTranscript.includes("Operator feedback: Fix broken citation on overview."),
     "repair transcript must include sealed feedback",
+  );
+});
+
+test("Pi attempt write.root with detail.feedback uses repair-style task", async (t) => {
+  const input = await fixture({
+    key: "write.root",
+    kind: "write.root",
+    generation: 1,
+    runIndex: 1,
+    detail: { feedback: "Fix missing frontmatter on overview." },
+  });
+  t.after(() => cleanup(input));
+  const root = path.dirname(path.dirname(input.attemptDir));
+  const wikiRoot = path.join(root, "sealed-wiki-write-feedback");
+  await mkdir(wikiRoot, { recursive: true });
+  await writeFile(
+    path.join(wikiRoot, "overview.md"),
+    "---\ntype: Overview\ntitle: Demo\n---\n\n# Demo\n",
+    "utf8",
+  );
+  const specPath = path.join(root, "sealed-spec-write-feedback.json");
+  await writeFile(specPath, `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`, "utf8");
+  input.sealedInputs.push(
+    {
+      role: "wiki_tree",
+      artifact: { artifactId: "wiki", kind: "wiki_tree", digest, sealedAt: timestamp },
+      readOnlyPath: wikiRoot,
+    },
+    {
+      role: "spec",
+      artifact: { artifactId: "spec", kind: "spec", digest, sealedAt: timestamp },
+      readOnlyPath: specPath,
+    },
+  );
+  let capturedWriteTask = "";
+  const outcome = await createPiAttemptExecutor({
+    runtime: createFixtureProduceRuntime({
+      onWrite: (req) => {
+        capturedWriteTask = req.task ?? "";
+        return undefined;
+      },
+    }),
+  })(input, new AbortController().signal);
+  assert.equal(outcome.type, "succeeded");
+  assert.ok(
+    capturedWriteTask.includes("Operator feedback: Fix missing frontmatter on overview."),
+    "write.root feedback task must include sealed feedback",
+  );
+  assert.ok(
+    capturedWriteTask.includes(
+      "Repair mode: fix validation, citation, and frontmatter defects on the existing Staging Wiki; preserve good pages.",
+    ),
+    "write.root feedback task must include Repair mode instruction",
+  );
+  // Transcript truncates long write prompts (USER_CONTENT_MAX); feedback is first so it survives.
+  const transcript = await readFile(input.sessionPath, "utf8");
+  assert.ok(
+    transcript.includes("Operator feedback: Fix missing frontmatter on overview."),
+    "write.root feedback transcript must include sealed feedback (prefix survives truncation)",
+  );
+  assert.ok(
+    capturedWriteTask.startsWith("Operator feedback:"),
+    "feedback must lead the write task so truncated transcripts still show repair intent",
   );
 });
 

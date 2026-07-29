@@ -206,13 +206,13 @@ export function bindAttemptInputs(
   }
 }
 
-export function nodeOutputsAtCurrentGen(
-  host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
+/** Succeeded node outputs at a fixed generation (not necessarily current max). */
+export function nodeOutputsAtGeneration(
+  host: Pick<ArtifactsHost, "db">,
   runId: string,
   nodeKey: string,
+  generation: number,
 ): Array<{ role: string; artifactId: string }> {
-  const generation = host.currentNodeGeneration(runId, nodeKey);
-  if (generation === undefined) return [];
   const node = asRow(
     host.db
       .prepare("SELECT state FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
@@ -231,6 +231,64 @@ export function nodeOutputsAtCurrentGen(
     role: requiredText(row, "role"),
     artifactId: requiredText(row, "artifact_id"),
   }));
+}
+
+export function nodeOutputsAtCurrentGen(
+  host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
+  runId: string,
+  nodeKey: string,
+): Array<{ role: string; artifactId: string }> {
+  const generation = host.currentNodeGeneration(runId, nodeKey);
+  if (generation === undefined) return [];
+  return nodeOutputsAtGeneration(host, runId, nodeKey, generation);
+}
+
+/**
+ * Whether write.root's current generation carries repair feedback (operator or
+ * auto hard-validate) so we should bind a prior wiki_tree for repair mode.
+ */
+function writeRootNeedsPriorWiki(
+  host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
+  runId: string,
+  generation: number,
+): boolean {
+  if (generation > 0) return true;
+  const row = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, "write.root", generation),
+  );
+  if (!row || row.detail_json == null || row.detail_json === "") return false;
+  try {
+    const parsed = JSON.parse(String(row.detail_json)) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const feedback = (parsed as Record<string, unknown>).feedback;
+    return typeof feedback === "string" && feedback.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Latest succeeded prior write.root / repair wiki_tree for repair reruns.
+ * Walks write.root generations below `generation`, then repair current gen.
+ */
+function priorWriteWikiTree(
+  host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
+  runId: string,
+  generation: number,
+): { role: string; artifactId: string } | undefined {
+  for (let g = generation - 1; g >= 0; g -= 1) {
+    for (const output of nodeOutputsAtGeneration(host, runId, "write.root", g)) {
+      if (output.role === "wiki_tree") return output;
+    }
+  }
+  for (const output of nodeOutputsAtCurrentGen(host, runId, "repair")) {
+    if (output.role === "wiki_tree") return output;
+  }
+  return undefined;
 }
 
 export function upstreamSealedOutputs(
@@ -294,6 +352,16 @@ export function upstreamSealedOutputs(
         if (output.role === "wiki_tree") add("wiki_tree", output.artifactId);
       }
       if (byRole.has("wiki_tree")) break;
+    }
+  }
+
+  // write.root repair reruns (gen>0 or detail.feedback): bind prior succeeded
+  // wiki_tree so the writer can read existing staging (auto HV repair / operator Rerun).
+  if (nodeKey === "write.root" && !byRole.has("wiki_tree")) {
+    const generation = host.currentNodeGeneration(runId, nodeKey);
+    if (generation !== undefined && writeRootNeedsPriorWiki(host, runId, generation)) {
+      const prior = priorWriteWikiTree(host, runId, generation);
+      if (prior) add("wiki_tree", prior.artifactId);
     }
   }
 

@@ -26,6 +26,7 @@ import {
 } from "../definition-v1.js";
 import { canClaimKind } from "./concurrency.js";
 import { digest, now } from "./crypto-util.js";
+import { loadSpecFromArtifact } from "./gates.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { writeConversationTranscript } from "./transcript-io.js";
 import type {
@@ -38,6 +39,15 @@ import {
   RESEARCH_AUTO_RETRY_KINDS,
   RESEARCH_AUTO_RETRY_MAX_ATTEMPTS,
 } from "./types.js";
+
+/** Feedback prefix used to count prior auto hard-validate repairs on write.root. */
+export const HARD_VALIDATE_REPAIR_FEEDBACK_PREFIX = "Hard-validate repair (";
+
+/** Validate kinds that may trigger durable auto hard-validate repair of write.root. */
+const HARD_VALIDATE_REPAIR_KINDS: ReadonlySet<string> = new Set([
+  "validate.pre",
+  "validate.final",
+]);
 
 export type SchedulerHost = {
   workspace: WorkspaceConfig;
@@ -77,6 +87,11 @@ export type SchedulerHost = {
   unlockReadyNodes(runId: string): void;
   trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
   attemptInputDigest(attemptId: string): string;
+  /**
+   * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
+   * Used by auto hard-validate repair to re-run write.root after validate.* schema fails.
+   */
+  applyRerunAt(runId: string, nodeKey: string, generation: number, feedback?: string): void;
 };
 
 /**
@@ -602,19 +617,43 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
   host.emit(claim.runId, "attempt.failed");
 
   // Research read-only auto-retry: re-queue same generation with exact input digest.
-  // Validate dirty / write / review stay manual (RetryFailedNode or RerunNode/wiki_repair).
   if (shouldAutoRetryResearch(host, claim, message, failureClass)) {
     host.requeueFailedNode(claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
     host.emit(claim.runId, "node.ready");
     return;
   }
 
-  // Siblings may still be ready; only fail the run when nothing else can progress.
+  // Mechanical hard-validate repair: Rerun write.root with validation feedback under
+  // sealed Spec acceptance.maxHardValidateRepairRounds (default 2). Independent of
+  // research L_control and council maxRepairRounds.
+  if (shouldAutoHardValidateRepair(host, claim, message, failureClass)) {
+    const writeGen = currentWriteRootGeneration(host, claim.runId);
+    if (writeGen !== undefined) {
+      const budget = loadHardValidateBudget(host, claim.runId);
+      const prior = countAutoHardValidateRepairs(host, claim.runId);
+      const round = prior + 1;
+      const feedback = [
+        `${HARD_VALIDATE_REPAIR_FEEDBACK_PREFIX}round ${round}/${budget}):`,
+        message,
+      ].join("\n");
+      try {
+        host.applyRerunAt(claim.runId, "write.root", writeGen, feedback);
+        host.emit(claim.runId, "node.ready");
+        return;
+      } catch {
+        // Stale gen / missing write: fall through to normal fail-run path.
+      }
+    }
+  }
+
+  // Siblings may still be ready/running, or an open gate may be waiting.
+  // Do not count 'blocked' alone as progress — a failed critical-path node leaves
+  // downstream blocked forever; without ready/running/waiting work the run is failed.
   const hasWork = asRow(
     host.db
       .prepare(
         `SELECT 1 AS present FROM nodes
-         WHERE run_id = ? AND state IN ('ready', 'running', 'waiting', 'blocked')
+         WHERE run_id = ? AND state IN ('ready', 'running', 'waiting')
            AND generation = (
              SELECT MAX(n2.generation) FROM nodes n2
              WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
@@ -705,4 +744,139 @@ export function shouldAutoRetryResearch(
   const failedCount = requiredNumber(countRow ?? { count: 0 }, "count");
   // failedCount includes this just-failed Attempt; allow one more total Attempt.
   return failedCount < RESEARCH_AUTO_RETRY_MAX_ATTEMPTS;
+}
+
+/**
+ * Latest write.root generation (max generation row), if the node exists.
+ * Used as the CAS target for auto hard-validate RerunNode.
+ */
+export function currentWriteRootGeneration(
+  host: Pick<SchedulerHost, "db">,
+  runId: string,
+): number | undefined {
+  const row = asRow(
+    host.db
+      .prepare(
+        `SELECT MAX(generation) AS generation FROM nodes
+         WHERE run_id = ? AND node_key = 'write.root'`,
+      )
+      .get(runId),
+  );
+  if (!row || row.generation === null) return undefined;
+  return requiredNumber(row, "generation");
+}
+
+/**
+ * Load sealed Spec acceptance.maxHardValidateRepairRounds (default 2).
+ * Reads plan node_outputs role=spec → artifact relative_path → loadSpecFromArtifact.
+ */
+export function loadHardValidateBudget(
+  host: Pick<SchedulerHost, "db" | "workspace">,
+  runId: string,
+): number {
+  const plan = asRow(
+    host.db
+      .prepare(
+        `SELECT node_outputs.node_generation, artifacts.relative_path
+         FROM node_outputs
+         JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+         WHERE node_outputs.run_id = ?
+           AND node_outputs.node_key = 'plan'
+           AND node_outputs.role = 'spec'
+         ORDER BY node_outputs.node_generation DESC
+         LIMIT 1`,
+      )
+      .get(runId),
+  );
+  if (!plan) return 2;
+  const relativePath = requiredText(plan, "relative_path");
+  const spec = loadSpecFromArtifact({ workspace: host.workspace }, runId, relativePath);
+  const budget = spec?.acceptance?.maxHardValidateRepairRounds;
+  return typeof budget === "number" && Number.isFinite(budget) && budget >= 0 ? budget : 2;
+}
+
+/**
+ * Count prior auto hard-validate repairs by write.root generations whose
+ * detail_json feedback starts with HARD_VALIDATE_REPAIR_FEEDBACK_PREFIX or
+ * carries autoHardValidate:true.
+ */
+export function countAutoHardValidateRepairs(
+  host: Pick<SchedulerHost, "db">,
+  runId: string,
+): number {
+  const rows = asRows(
+    host.db
+      .prepare(
+        `SELECT detail_json FROM nodes
+         WHERE run_id = ? AND node_key = 'write.root' AND detail_json IS NOT NULL`,
+      )
+      .all(runId),
+  );
+  let count = 0;
+  for (const row of rows) {
+    const raw = row.detail_json;
+    if (raw == null || raw === "") continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(String(raw));
+    } catch {
+      // Fall back to raw substring match for corrupt-but-prefixed detail.
+      if (String(raw).includes(`"autoHardValidate":true`) || String(raw).includes(HARD_VALIDATE_REPAIR_FEEDBACK_PREFIX)) {
+        count += 1;
+      }
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    const detail = parsed as Record<string, unknown>;
+    if (detail.autoHardValidate === true) {
+      count += 1;
+      continue;
+    }
+    if (
+      typeof detail.feedback === "string" &&
+      detail.feedback.startsWith(HARD_VALIDATE_REPAIR_FEEDBACK_PREFIX)
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Durable auto hard-validate repair after validate.pre / validate.final fails
+ * with repairable schema/quality errors (message contains `validation failed:`).
+ * Not for missing wiki_tree infrastructure.
+ * Budget: sealed Spec acceptance.maxHardValidateRepairRounds (default 2).
+ */
+export function shouldAutoHardValidateRepair(
+  host: SchedulerHost,
+  claim: ClaimedNode,
+  message: string,
+  failureClass?: string | PiAttemptFailureClass,
+): boolean {
+  if (!HARD_VALIDATE_REPAIR_KINDS.has(claim.kind)) return false;
+  if (host.closed) return false;
+  const run = asRow(
+    host.db.prepare("SELECT cancel_requested FROM runs WHERE run_id = ?").get(claim.runId),
+  );
+  if (!run || requiredNumber(run, "cancel_requested") === 1) return false;
+
+  // Infrastructure (missing wiki_tree, …) never auto-repairs.
+  const cls = failureClass?.trim().toLowerCase();
+  if (cls === "infrastructure" || cls === "cancelled" || cls === "cancel") return false;
+  if (cls === "capacity" || cls === "budget" || cls === "policy" || cls === "provider") {
+    return false;
+  }
+
+  // Prefer typed schema/quality; also accept classic validation-failed messages.
+  const isSchema = cls === "schema" || cls === "quality";
+  const isValidationMessage = /validation failed:/i.test(message);
+  if (!isSchema && !isValidationMessage) return false;
+
+  if (currentWriteRootGeneration(host, claim.runId) === undefined) return false;
+
+  const budget = loadHardValidateBudget(host, claim.runId);
+  if (budget <= 0) return false;
+  const prior = countAutoHardValidateRepairs(host, claim.runId);
+  return prior < budget;
 }
