@@ -58,6 +58,48 @@ test("gate commands admit only their typed decisions", () => {
       .success,
     false,
   );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({ ...base, gateKind: "fix", decision: "pass" }).success,
+    true,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({ ...base, gateKind: "fix", decision: "deny" }).success,
+    true,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({ ...base, gateKind: "fix", decision: "fix" }).success,
+    true,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({
+      ...base,
+      gateKind: "fix",
+      decision: "fix",
+      feedback: "Fix missing citations on overview",
+    }).success,
+    true,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({
+      ...base,
+      gateKind: "fix",
+      decision: "revise",
+      feedback: "Tighten citations on overview.md",
+    }).success,
+    true,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({ ...base, gateKind: "fix", decision: "revise" }).success,
+    false,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({ ...base, gateKind: "fix", decision: "approve" }).success,
+    false,
+  );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({ ...base, gateKind: "plan", decision: "pass" }).success,
+    false,
+  );
 });
 
 test("run events carry one matching full snapshot", () => {

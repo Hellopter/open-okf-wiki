@@ -1,6 +1,9 @@
 /**
  * Mechanical review.reduce execution (merge seat transcripts → defects receipt).
- * Fail-closed: blocking defects or clean:false from any seat fail the attempt.
+ *
+ * Always succeeds when merge completes: blocking defects are sealed into the
+ * defects receipt and handled by gate.fix (HITL pass/fix/revise/deny).
+ * Only true infrastructure failures (missing wiki_tree) fail the attempt.
  */
 
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
@@ -236,35 +239,17 @@ export async function mechanicalReviewReduce(
     findings.push(parseSeatFinding(role, text));
   }
 
-  // No seat inputs bound: keep prior behavior (clean NO_DEFECTS) so mechanical
-  // graphs without seat artifacts still flow; explicit blocking seats still fail.
-  if (findings.length === 0) {
-    const empty = MergedDefectReportSchema.parse({
-      clean: true,
-      defects: [],
-      summary: "NO_DEFECTS",
-      reviewerIds: [],
-    });
-    const defectsPath = path.join(workDir, "defects.json");
-    await writeFile(defectsPath, `${JSON.stringify(empty, null, 2)}\n`, "utf8");
-    const transcript = await writeConversationTranscript({
-      sessionPath: path.join(runDir, "attempts", claim.attemptId, "session.jsonl"),
-      nodeKey: claim.nodeKey,
-      summary: empty.summary ?? "NO_DEFECTS",
-      meta: { defects: empty },
-    });
-    return {
-      type: "succeeded",
-      unsealedArtifacts: [
-        { kind: "wiki_tree", role: "wiki_tree", sourcePath: stagingWiki, directory: true },
-        { kind: "receipt", role: "defects", sourcePath: defectsPath, directory: false },
-        { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
-      ],
-      summary: empty.summary ?? "NO_DEFECTS",
-    };
-  }
+  // No seat inputs bound: clean NO_DEFECTS so graphs without seat artifacts still flow.
+  const merged =
+    findings.length === 0
+      ? MergedDefectReportSchema.parse({
+          clean: true,
+          defects: [],
+          summary: "NO_DEFECTS",
+          reviewerIds: [],
+        })
+      : mergeSeatFindings(findings);
 
-  const merged = mergeSeatFindings(findings);
   const defectsPath = path.join(workDir, "defects.json");
   await writeFile(defectsPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
   const summaryText = merged.summary ?? "review.reduce complete";
@@ -275,18 +260,8 @@ export async function mechanicalReviewReduce(
     meta: { defects: merged },
   });
 
-  if (!merged.clean || merged.defects.some((d) => d.severity === "blocking")) {
-    // defects.json + transcript already written under workDir for local debug;
-    // failed outcomes cannot commit unsealed artifacts (contract).
-    void defectsPath;
-    void transcript;
-    return {
-      type: "failed",
-      error: summaryText.slice(0, 4000),
-      failureClass: "infrastructure",
-    };
-  }
-
+  // Always succeed after merge: clean vs blocking is carried in the sealed
+  // defects receipt; gate.fix (or auto-pass) decides the control path.
   return {
     type: "succeeded",
     unsealedArtifacts: [

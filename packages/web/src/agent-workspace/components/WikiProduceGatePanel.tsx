@@ -10,8 +10,8 @@
  */
 
 import type {
+  ResolveGateCommand,
   WikiProduceToolDetails,
-  WikiRunGate,
   WikiRunGateKind,
   WikiRunSpec,
 } from "@okf-wiki/contract";
@@ -28,6 +28,8 @@ import { useWikiRun } from "../hooks/useWikiRun";
 import { compactSummary } from "../run-graph/compact-summary";
 import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
+import { FixGatePanel } from "./FixGatePanel";
+import { selectPrimaryOpenGate } from "./fix-gate";
 import { SpecReviewView } from "./SpecReviewView";
 
 export type WikiProduceGatePanelProps = {
@@ -41,6 +43,7 @@ function shortRunId(runId: string): string {
 function gateTitle(kind: WikiRunGateKind, t: ReturnType<typeof useI18n>["t"]): string {
   if (kind === "plan") return t.planConfirm.title;
   if (kind === "publication") return t.runStatus.awaiting_publication;
+  if (kind === "fix") return t.fixConfirm.title;
   return kind;
 }
 
@@ -82,11 +85,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   }, [runId]);
 
   const openGates = viewModel?.openGates ?? [];
-  const primaryGate: WikiRunGate | null =
-    openGates.find((g) => g.kind === "plan") ??
-    openGates.find((g) => g.kind === "publication") ??
-    openGates[0] ??
-    null;
+  const primaryGate = selectPrimaryOpenGate(openGates);
 
   // Load sealed Spec whenever a plan gate is open (or after plan succeeded for review).
   const wantPlanSpec =
@@ -140,6 +139,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
 
   const decide = async (action: "approve" | "deny" | "revise") => {
     if (!primaryGate || !runId) return;
+    if (primaryGate.kind === "fix") return;
     if (action === "revise" && !feedback.trim()) {
       setRevising(true);
       setActiveGateId(primaryGate.gateId);
@@ -160,6 +160,16 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
       setFeedback("");
       setActiveGateId(null);
     }
+  };
+
+  const resolveFixGate = async (command: ResolveGateCommand): Promise<boolean> => {
+    const ok = await dispatchCommand(command);
+    if (ok) {
+      setRevising(false);
+      setFeedback("");
+      setActiveGateId(null);
+    }
+    return ok;
   };
 
   const statusLabel = snapshot
@@ -291,7 +301,16 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
         </div>
       ) : null}
 
-      {primaryGate && runId ? (
+      {primaryGate && runId && primaryGate.kind === "fix" ? (
+        <FixGatePanel
+          gate={primaryGate}
+          runId={runId}
+          snapshot={snapshot}
+          submitting={submitting}
+          commandError={commandError}
+          onResolve={resolveFixGate}
+        />
+      ) : primaryGate && runId ? (
         <div
           className="flex flex-col gap-2 border-t border-border/60 pt-2"
           data-testid={`agent-${primaryGate.kind}-gate`}

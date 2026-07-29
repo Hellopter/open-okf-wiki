@@ -453,6 +453,24 @@ export const zh: MessageTree = {
     chipPublish: "发布暂存 Wiki",
     chipKeepStaging: "仅保留暂存",
   },
+  /** 操作者缺陷/质量门闸（kind "fix"）。 */
+  fixConfirm: {
+    title: "缺陷复核",
+    working: "处理中…",
+    /** 接受当前暂存 / 将已报问题视为非阻塞。 */
+    pass: "通过（非问题/接受）",
+    /** 请求自动或智能体修复已报缺陷。 */
+    fix: "修复",
+    revise: "提出修改意见",
+    reviseLabel: "修改说明",
+    revisePlaceholder: "例如：overview.md 保持不动；仅修复 modules.md 引用",
+    reviseSubmit: "提交说明",
+    deny: "拒绝",
+    clean: "干净",
+    defectCount: "{n} 个缺陷",
+    suggestedFix: "建议修复",
+    noDefectsHint: "尚无封存缺陷列表——可选择通过、修复、提出修改意见或拒绝。",
+  },
   modelSelect: {
     label: "模型",
     emptyBefore: "尚未配置模型。请先",
@@ -476,6 +494,7 @@ export const zh: MessageTree = {
     cancelled: "已取消",
     awaiting_plan: "等待计划确认",
     awaiting_publication: "等待发布确认",
+    awaiting_fix: "等待缺陷复核",
     publication_declined: "已拒绝发布",
   },
   loading: {
@@ -563,7 +582,7 @@ export const zh: MessageTree = {
     },
     /** wiki_produce accepted+runId 后的 durable WikiRuns 交接。 */
     wikiRunAcceptedHint:
-      "Durable Wiki Run 已接受。实时状态、计划/发布门闸与重试来自 Run 控制面（ResolveGate / RetryFailedNode），而非 Session 工具 Promise。",
+      "Durable Wiki Run 已接受。实时状态、计划/缺陷/发布门闸与重试来自 Run 控制面（ResolveGate / RetryFailedNode），而非 Session 工具 Promise。",
     openGates: "打开的门闸",
     failedNodes: "失败节点",
     retryFailedNode: "重试",

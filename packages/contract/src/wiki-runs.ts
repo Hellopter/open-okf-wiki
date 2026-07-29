@@ -38,6 +38,8 @@ export const WikiRunNodeKindSchema = z.enum([
   "validate.pre",
   "review.seat",
   "review.reduce",
+  /** HITL after review.reduce when blocking defects are present (or auto-passed when clean). */
+  "gate.fix",
   "repair",
   "validate.final",
   "prepare.publication",
@@ -65,8 +67,22 @@ export const WikiRunAttemptStateSchema = z.enum([
   "cancelled",
 ]);
 
-export const WikiRunGateKindSchema = z.enum(["plan", "operator_input", "publication"]);
+/** Operator HITL kinds. `fix` is defect/quality review (pass | fix | revise | deny). */
+export const WikiRunGateKindSchema = z.enum(["plan", "operator_input", "publication", "fix"]);
 export const WikiRunGateStateSchema = z.enum(["open", "resolved", "withdrawn"]);
+/** Decisions admitted on ResolveGate; validity is further refined per gateKind. */
+export const WikiRunGateDecisionValueSchema = z.enum([
+  "approve",
+  "deny",
+  "revise",
+  "answer",
+  "pass",
+  "fix",
+]);
+export type WikiRunGateDecisionValue = z.infer<typeof WikiRunGateDecisionValueSchema>;
+/** Operator decisions for an open fix gate. */
+export const FixGateDecisionSchema = z.enum(["pass", "deny", "fix", "revise"]);
+export type FixGateDecision = z.infer<typeof FixGateDecisionSchema>;
 export const WikiRunEffectStateSchema = z.enum([
   "prepared",
   "candidate_ready",
@@ -159,6 +175,33 @@ export const CancelRunCommandSchema = z
   })
   .strict();
 
+function decisionAllowedForGateKind(
+  gateKind: z.infer<typeof WikiRunGateKindSchema>,
+  decision: WikiRunGateDecisionValue,
+): boolean {
+  if (gateKind === "operator_input") return decision === "answer";
+  if (gateKind === "fix") {
+    return (
+      decision === "pass" ||
+      decision === "deny" ||
+      decision === "fix" ||
+      decision === "revise"
+    );
+  }
+  // plan + publication
+  return decision === "approve" || decision === "deny" || decision === "revise";
+}
+
+/**
+ * Resolve an open gate. Decisions are refined by `gateKind`:
+ * - plan / publication: `approve` | `deny` | `revise` (revise requires feedback)
+ * - operator_input: `answer` (requires answer)
+ * - fix (review defects after review.reduce):
+ *   - `pass` — accept current wiki (waive / clean enough); unlock validate.final
+ *   - `deny` — abandon run (failed)
+ *   - `fix` — schedule repair.review.N (optional feedback notes)
+ *   - `revise` — operator suggestions; re-open gate with new payload digest (requires feedback)
+ */
 export const ResolveGateCommandSchema = z
   .object({
     type: z.literal("resolve_gate"),
@@ -167,29 +210,35 @@ export const ResolveGateCommandSchema = z
     gateId: RunGateIdSchema,
     gateKind: WikiRunGateKindSchema,
     payloadDigest: Sha256HexSchema,
-    decision: z.enum(["approve", "deny", "revise", "answer"]),
+    decision: WikiRunGateDecisionValueSchema,
     feedback: z.string().trim().min(1).max(4_000).optional(),
     answer: z.string().trim().min(1).max(4_000).optional(),
   })
   .strict()
   .superRefine((command, ctx) => {
-    const expectsFeedback = command.decision === "revise";
     const expectsAnswer = command.gateKind === "operator_input" && command.decision === "answer";
-    const decisionAllowed =
-      (command.gateKind === "operator_input" && command.decision === "answer") ||
-      (command.gateKind !== "operator_input" &&
-        ["approve", "deny", "revise"].includes(command.decision));
-    if (!decisionAllowed) {
+    if (!decisionAllowedForGateKind(command.gateKind, command.decision)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "decision is not valid for gate kind",
         path: ["decision"],
       });
     }
-    if (Boolean(command.feedback) !== expectsFeedback) {
+    // revise requires feedback; fix may carry optional notes; all other decisions forbid it.
+    if (command.decision === "revise") {
+      if (!command.feedback) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "revise requires feedback",
+          path: ["feedback"],
+        });
+      }
+    } else if (command.decision === "fix") {
+      // optional feedback/notes for repair.review — allowed
+    } else if (command.feedback) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "revise requires feedback only",
+        message: "feedback is only valid for revise or fix decisions",
         path: ["feedback"],
       });
     }
@@ -313,6 +362,22 @@ export const WikiRunGateDecisionSchema = z
   })
   .strict();
 
+/**
+ * Optional operator-facing detail sealed when a gate opens (e.g. fix gate
+ * blocking count / summary). Never carries full defect bodies or secrets.
+ */
+export const WikiRunGateDetailSchema = z
+  .object({
+    source: z.string().trim().min(1).max(100).optional(),
+    summary: z.string().trim().max(4_000).optional(),
+    clean: z.boolean().optional(),
+    blockingCount: z.number().int().min(0).max(10_000).optional(),
+    feedback: z.string().trim().max(4_000).optional(),
+  })
+  .strict();
+
+export type WikiRunGateDetail = z.infer<typeof WikiRunGateDetailSchema>;
+
 export const WikiRunGateSchema = z
   .object({
     gateId: RunGateIdSchema,
@@ -323,20 +388,22 @@ export const WikiRunGateSchema = z
     payloadDigest: Sha256HexSchema,
     decision: WikiRunGateDecisionSchema.nullable(),
     openedAt: IsoDateTimeSchema,
+    /** Secret-free operator summary from sealed gate detail_json. */
+    detail: WikiRunGateDetailSchema.optional(),
   })
   .strict()
   .superRefine((gate, ctx) => {
-    const decisionAllowed =
-      gate.decision === null ||
-      (gate.kind === "operator_input" && gate.decision.decision === "answer") ||
-      (gate.kind !== "operator_input" &&
-        ["approve", "deny", "revise"].includes(gate.decision.decision));
-    if (!decisionAllowed) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "decision is not valid for gate kind",
-        path: ["decision", "decision"],
-      });
+    if (gate.decision !== null) {
+      const parsed = WikiRunGateDecisionValueSchema.safeParse(gate.decision.decision);
+      const decisionOk =
+        parsed.success && decisionAllowedForGateKind(gate.kind, parsed.data);
+      if (!decisionOk) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "decision is not valid for gate kind",
+          path: ["decision", "decision"],
+        });
+      }
     }
     if ((gate.state === "resolved") !== (gate.decision !== null)) {
       ctx.addIssue({

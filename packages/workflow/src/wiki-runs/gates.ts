@@ -120,6 +120,9 @@ export function resolveGate(
     case "publication":
       applyPublicationGateDecision(host, command, timestamp);
       break;
+    case "fix":
+      applyFixGateDecision(host, command, nodeKey, nodeGeneration, timestamp);
+      break;
   }
 
   const revision = host.emit(command.runId, "gate.resolved");
@@ -340,6 +343,235 @@ export function applyPublicationGateDecision(
     return;
   }
   throw new Error(`unsupported publication gate decision: ${command.decision}`);
+}
+
+/** Dedicated review-repair node keys: `repair.review.1`, `repair.review.2`, … */
+export const REVIEW_REPAIR_NODE_PREFIX = "repair.review.";
+
+/**
+ * Count prior review repair stages (`repair.review.N`).
+ * Used to enforce Spec acceptance.maxRepairRounds on ResolveGate(fix).
+ */
+export function countReviewRepairs(host: Pick<GatesHost, "db">, runId: string): number {
+  const row = asRow(
+    host.db
+      .prepare(
+        `SELECT COUNT(DISTINCT node_key) AS count FROM nodes
+         WHERE run_id = ? AND node_key LIKE 'repair.review.%'`,
+      )
+      .get(runId),
+  );
+  return requiredNumber(row ?? { count: 0 }, "count");
+}
+
+/**
+ * Load sealed Spec acceptance.maxRepairRounds (default 2).
+ * Reads plan node_outputs role=spec → artifact relative_path.
+ */
+export function loadReviewRepairBudget(
+  host: Pick<GatesHost, "db" | "workspace">,
+  runId: string,
+): number {
+  const plan = asRow(
+    host.db
+      .prepare(
+        `SELECT artifacts.relative_path
+         FROM node_outputs
+         JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+         WHERE node_outputs.run_id = ?
+           AND node_outputs.node_key = 'plan'
+           AND node_outputs.role = 'spec'
+         ORDER BY node_outputs.node_generation DESC
+         LIMIT 1`,
+      )
+      .get(runId),
+  );
+  if (!plan) return 2;
+  const relativePath = requiredText(plan, "relative_path");
+  const spec = loadSpecFromArtifact(host, runId, relativePath);
+  const budget = spec?.acceptance?.maxRepairRounds;
+  return typeof budget === "number" && Number.isFinite(budget) && budget >= 0 ? budget : 2;
+}
+
+/**
+ * Fix gate decisions after review.reduce sealed defects:
+ * - pass — accept wiki; unlock validate.final
+ * - deny — mark run failed
+ * - fix — schedule repair.review.N (kind=repair) with optional notes under maxRepairRounds
+ * - revise — re-open gate.fix at gen+1 with notes baked into payload digest
+ */
+export function applyFixGateDecision(
+  host: GatesHost,
+  command: Extract<RunCommand, { type: "resolve_gate" }>,
+  gateNodeKey: string,
+  gateNodeGeneration: number,
+  timestamp: string,
+): void {
+  if (command.decision === "pass") {
+    host.db
+      .prepare(
+        "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+      )
+      .run(timestamp, command.runId);
+    unlockReadyNodes(host, command.runId);
+    host.emit(command.runId, "node.ready");
+    return;
+  }
+
+  if (command.decision === "deny") {
+    host.db
+      .prepare("UPDATE runs SET state = 'failed', updated_at = ? WHERE run_id = ?")
+      .run(timestamp, command.runId);
+    return;
+  }
+
+  if (command.decision === "revise") {
+    if (!command.feedback?.trim()) {
+      throw new Error("fix gate revise requires feedback");
+    }
+    const nextGen = gateNodeGeneration + 1;
+    const existingNext = asRow(
+      host.db
+        .prepare(
+          "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+        )
+        .get(command.runId, gateNodeKey, nextGen),
+    );
+    if (existingNext) throw new Error("fix gate revise is stale: newer generation already exists");
+
+    const newPayloadDigest = digest({
+      priorPayloadDigest: command.payloadDigest,
+      notes: command.feedback.trim(),
+      revisedAt: timestamp,
+    });
+    const detailJson = JSON.stringify({
+      feedback: command.feedback.trim(),
+      priorPayloadDigest: command.payloadDigest,
+      source: "review",
+    });
+
+    host.db
+      .prepare(
+        `INSERT INTO nodes (
+          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+        ) VALUES (?, ?, 'gate.fix', 'waiting', ?, NULL, NULL, ?)`,
+      )
+      .run(command.runId, gateNodeKey, nextGen, detailJson);
+
+    const gateId = randomUUID();
+    host.db
+      .prepare(
+        `INSERT INTO gates (
+          gate_id, run_id, node_key, node_generation, kind, state, payload_digest,
+          decision_json, detail_json, opened_at, opened_revision
+        ) VALUES (?, ?, ?, ?, 'fix', 'open', ?, NULL, ?, ?,
+          (SELECT revision FROM runs WHERE run_id = ?))`,
+      )
+      .run(
+        gateId,
+        command.runId,
+        gateNodeKey,
+        nextGen,
+        newPayloadDigest,
+        detailJson,
+        timestamp,
+        command.runId,
+      );
+    host.db
+      .prepare(
+        "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+      )
+      .run(timestamp, command.runId);
+    host.emit(command.runId, "gate.opened");
+    return;
+  }
+
+  if (command.decision === "fix") {
+    scheduleReviewRepair(host, command, timestamp);
+    return;
+  }
+
+  throw new Error(`unsupported fix gate decision: ${command.decision}`);
+}
+
+/**
+ * Insert repair.review.N (kind=repair), wire edges from review.reduce → repair → validate.final,
+ * and re-arm validate.final so it waits for the repair stage.
+ */
+export function scheduleReviewRepair(
+  host: GatesHost,
+  command: Extract<RunCommand, { type: "resolve_gate" }>,
+  timestamp: string,
+): void {
+  const budget = loadReviewRepairBudget(host, command.runId);
+  if (budget <= 0) {
+    throw new Error(
+      "review repair budget is 0 (acceptance.maxRepairRounds); only pass or deny allowed",
+    );
+  }
+  const prior = countReviewRepairs(host, command.runId);
+  if (prior >= budget) {
+    throw new Error(
+      `review repair budget exhausted (${prior}/${budget}); only pass or deny allowed`,
+    );
+  }
+
+  const round = prior + 1;
+  const key = `${REVIEW_REPAIR_NODE_PREFIX}${round}`;
+  const existing = asRow(
+    host.db
+      .prepare("SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? LIMIT 1")
+      .get(command.runId, key),
+  );
+  if (existing) throw new Error(`review repair node already exists: ${key}`);
+
+  const notes = command.feedback?.trim();
+  const feedback =
+    notes && notes.length > 0
+      ? notes
+      : `Review repair (round ${round}/${budget}): address sealed defects from review.reduce`;
+  const detailJson = JSON.stringify({
+    feedback,
+    source: "review",
+    round,
+    autoRepair: false,
+  });
+
+  host.db
+    .prepare(
+      `INSERT INTO nodes (
+        run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+      ) VALUES (?, ?, 'repair', 'ready', 0, NULL, NULL, ?)`,
+    )
+    .run(command.runId, key, detailJson);
+
+  // review.reduce → repair.review.n (wiki_tree + defects); repair → validate.final
+  host.db
+    .prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'review.reduce', ?)
+       ON CONFLICT DO NOTHING`,
+    )
+    .run(command.runId, key);
+  host.db
+    .prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'validate.final')
+       ON CONFLICT DO NOTHING`,
+    )
+    .run(command.runId, key);
+
+  // Re-arm validate.final so it waits for repair (MVP: skip re-seats; repair → final).
+  const finalGen = host.currentNodeGeneration(command.runId, "validate.final");
+  if (finalGen !== undefined) {
+    host.applyRerunAt(command.runId, "validate.final", finalGen);
+  }
+
+  unlockReadyNodes(host, command.runId);
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(timestamp, command.runId);
+  host.emit(command.runId, "node.ready");
 }
 
 export function planNodeKeyForGate(
@@ -620,6 +852,125 @@ export function openPlanGate(
 }
 
 /**
+ * Open gate.fix after review.reduce sealed blocking defects.
+ * payloadDigest binds the sealed defects receipt (or a hash of the report).
+ * detailJson may carry operator-facing summary (blocking count, clean flag).
+ */
+export function openFixGate(
+  host: Pick<GatesHost, "db" | "emit" | "currentNodeGeneration">,
+  claim: ClaimedNode,
+  defectsPayloadDigest: string,
+  timestamp: string,
+  detail?: { summary?: string; clean?: boolean; blockingCount?: number },
+): void {
+  const gateId = randomUUID();
+  const gateNodeKey = "gate.fix";
+  const gateGen = host.currentNodeGeneration(claim.runId, gateNodeKey) ?? 0;
+  const existingGateNode = asRow(
+    host.db
+      .prepare(
+        "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(claim.runId, gateNodeKey, gateGen),
+  );
+  const detailJson =
+    detail !== undefined
+      ? JSON.stringify({
+          source: "review",
+          summary: detail.summary,
+          clean: detail.clean === true,
+          blockingCount: detail.blockingCount ?? 0,
+        })
+      : null;
+  if (!existingGateNode) {
+    host.db
+      .prepare(
+        `INSERT INTO nodes (
+          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+        ) VALUES (?, ?, 'gate.fix', 'waiting', ?, NULL, NULL, ?)`,
+      )
+      .run(claim.runId, gateNodeKey, gateGen, detailJson);
+  } else {
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'waiting', current_attempt_id = NULL, detail_json = COALESCE(?, detail_json)
+         WHERE run_id = ? AND node_key = ? AND generation = ?`,
+      )
+      .run(detailJson, claim.runId, gateNodeKey, gateGen);
+  }
+  host.db
+    .prepare(
+      `INSERT INTO gates (
+        gate_id, run_id, node_key, node_generation, kind, state, payload_digest,
+        decision_json, detail_json, opened_at, opened_revision
+      ) VALUES (?, ?, ?, ?, 'fix', 'open', ?, NULL, ?, ?,
+        (SELECT revision FROM runs WHERE run_id = ?))`,
+    )
+    .run(
+      gateId,
+      claim.runId,
+      gateNodeKey,
+      gateGen,
+      defectsPayloadDigest,
+      detailJson,
+      timestamp,
+      claim.runId,
+    );
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(timestamp, claim.runId);
+  host.emit(claim.runId, "gate.opened");
+}
+
+/**
+ * Clean review path: mark gate.fix succeeded without operator HITL and unlock
+ * validate.final. Called from commitNodeArtifacts when sealed defects are clean.
+ */
+export function autoPassFixGate(
+  host: Pick<GatesHost, "db" | "emit" | "currentNodeGeneration"> & {
+    unlockReadyNodes(runId: string): void;
+  },
+  runId: string,
+  timestamp: string,
+): void {
+  const gateNodeKey = "gate.fix";
+  const gateGen = host.currentNodeGeneration(runId, gateNodeKey) ?? 0;
+  const existing = asRow(
+    host.db
+      .prepare(
+        "SELECT state FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, gateNodeKey, gateGen),
+  );
+  if (!existing) {
+    host.db
+      .prepare(
+        `INSERT INTO nodes (
+          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+        ) VALUES (?, ?, 'gate.fix', 'succeeded', ?, NULL, NULL, ?)`,
+      )
+      .run(runId, gateNodeKey, gateGen, JSON.stringify({ source: "review", clean: true, autoPass: true }));
+  } else {
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'succeeded', current_attempt_id = NULL
+         WHERE run_id = ? AND node_key = ? AND generation = ?
+           AND state IN ('blocked', 'waiting', 'ready', 'running')`,
+      )
+      .run(runId, gateNodeKey, gateGen);
+  }
+  host.unlockReadyNodes(runId);
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(timestamp, runId);
+  host.emit(runId, "node.ready");
+}
+
+/**
  * Recover the live baseline captured during prepare.publication.
  * Prefers the attempt-private stage copy, then the sealed receipt artifact.
  * Falls back to the canonical empty-tree digest (not 64 zero hex).
@@ -718,7 +1069,7 @@ export function openPublicationGate(
 }
 
 /**
- * Auto-deny open plan/publication gates older than workspace.limits.gateTimeoutSeconds.
+ * Auto-deny open plan/publication/fix gates older than workspace.limits.gateTimeoutSeconds.
  * 0 / unset disables. Called from owner schedule/dispatch/read so long waits still expire
  * when any control activity (or Run poll) occurs.
  */
@@ -730,7 +1081,7 @@ export function expireStaleOpenGates(host: GatesHost): number {
     host.db
       .prepare(
         `SELECT gate_id, run_id, kind, payload_digest, opened_at
-         FROM gates WHERE state = 'open' AND kind IN ('plan', 'publication')
+         FROM gates WHERE state = 'open' AND kind IN ('plan', 'publication', 'fix')
          ORDER BY opened_at, gate_id`,
       )
       .all(),
@@ -742,9 +1093,10 @@ export function expireStaleOpenGates(host: GatesHost): number {
     if (!Number.isFinite(openedMs) || openedMs > cutoffMs) continue;
     const gateId = requiredText(row, "gate_id");
     const runId = requiredText(row, "run_id");
-    const kind = requiredText(row, "kind") as "plan" | "publication";
+    const kind = requiredText(row, "kind") as "plan" | "publication" | "fix";
     const payloadDigest = requiredText(row, "payload_digest");
     const commandId = `gate-timeout:${gateId}`;
+    // plan/publication deny with "deny"; fix gate uses "deny" as well (abandon).
     const command = {
       type: "resolve_gate" as const,
       commandId,

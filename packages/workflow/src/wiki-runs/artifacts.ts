@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   cp,
   lstat,
@@ -17,10 +18,12 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type {
-  PiAttemptArtifactDescriptor,
-  WikiRunEvent,
-  WorkspaceConfig,
+import {
+  type MergedDefectReport,
+  MergedDefectReportSchema,
+  type PiAttemptArtifactDescriptor,
+  type WikiRunEvent,
+  type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import { artifactId, digest, now } from "./crypto-util.js";
@@ -37,7 +40,7 @@ export type ArtifactsHost = {
   emit(runId: string, type: WikiRunEvent["type"]): number;
   isCurrent(claim: ClaimedNode): boolean;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-  /** Bound from gates — commitNodeArtifacts opens plan/publication gates. */
+  /** Bound from gates — commitNodeArtifacts opens plan/publication/fix gates. */
   openPlanGate(claim: ClaimedNode, specPayloadDigest: string, timestamp: string): void;
   openPublicationGate(
     claim: ClaimedNode,
@@ -45,6 +48,13 @@ export type ArtifactsHost = {
     expectedLiveDigest: string,
     timestamp: string,
   ): void;
+  openFixGate(
+    claim: ClaimedNode,
+    defectsPayloadDigest: string,
+    timestamp: string,
+    detail?: { summary?: string; clean?: boolean; blockingCount?: number },
+  ): void;
+  autoPassFixGate(runId: string, timestamp: string): void;
   readPublicationBaseline(runId: string, preparations: ArtifactPreparation[]): string;
   unlockReadyNodes(runId: string): void;
 };
@@ -340,9 +350,18 @@ export function upstreamSealedOutputs(
 
   // Carry forward the latest wiki_tree for validate/review/prepare/publish when
   // edges only reference intermediate nodes that re-emit it.
-  // Prefer refined trees (repair.hv / validate) over the original write.root so
-  // auto hard-validate repair is not lost when seats do not re-emit wiki_tree.
+  // Prefer refined trees (repair.review / repair.hv / validate) over write.root so
+  // auto hard-validate / review repair is not lost when seats do not re-emit wiki_tree.
   if (!byRole.has("wiki_tree")) {
+    const reviewRepairKeys = asRows(
+      host.db
+        .prepare(
+          `SELECT DISTINCT node_key FROM nodes
+           WHERE run_id = ? AND node_key LIKE 'repair.review.%'
+           ORDER BY node_key DESC`,
+        )
+        .all(runId),
+    ).map((row) => requiredText(row, "node_key"));
     const hvKeys = asRows(
       host.db
         .prepare(
@@ -353,6 +372,7 @@ export function upstreamSealedOutputs(
         .all(runId),
     ).map((row) => requiredText(row, "node_key"));
     for (const key of [
+      ...reviewRepairKeys,
       ...hvKeys,
       "repair",
       "validate.final",
@@ -374,6 +394,18 @@ export function upstreamSealedOutputs(
       if (output.role === "wiki_tree") {
         byRole.set("wiki_tree", output.artifactId);
         break;
+      }
+    }
+  }
+
+  // repair.review.*: prefer review.reduce wiki (+ defects already via edge).
+  if (nodeKey.startsWith("repair.review.")) {
+    for (const output of nodeOutputsAtCurrentGen(host, runId, "review.reduce")) {
+      if (output.role === "wiki_tree") {
+        byRole.set("wiki_tree", output.artifactId);
+      }
+      if (output.role === "defects" && !byRole.has("defects")) {
+        byRole.set("defects", output.artifactId);
       }
     }
   }
@@ -454,6 +486,36 @@ export async function prepareUnsealedArtifact(
       );
     return preparation;
   });
+}
+
+/**
+ * Load a sealed MergedDefectReport from a review.reduce defects preparation.
+ * Prefers sourceDirectory (still present at commit), then sealed relative path.
+ */
+export function loadSealedDefectsReport(
+  host: Pick<ArtifactsHost, "workspace">,
+  runId: string,
+  preparation: ArtifactPreparation | undefined,
+): MergedDefectReport | undefined {
+  if (!preparation) return undefined;
+  const candidates: string[] = [];
+  if (preparation.sourceDirectory) {
+    candidates.push(path.join(preparation.sourceDirectory, "defects.json"));
+    candidates.push(preparation.sourceDirectory);
+  }
+  const sealedRoot = path.join(runWorkDir(host.workspace.rootPath, runId), preparation.relativePath);
+  candidates.push(path.join(sealedRoot, "defects.json"), sealedRoot);
+  for (const candidate of candidates) {
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      const report = MergedDefectReportSchema.safeParse(parsed);
+      if (report.success) return report.data;
+    } catch {
+      // Try next path.
+    }
+  }
+  return undefined;
 }
 
 export function commitNodeArtifacts(
@@ -543,6 +605,25 @@ export function commitNodeArtifacts(
     if (!candidate) throw new Error("prepare.publication succeeded without a candidate");
     const expectedLiveDigest = host.readPublicationBaseline(claim.runId, preparations);
     host.openPublicationGate(claim, candidate, expectedLiveDigest, timestamp);
+    return;
+  }
+  if (claim.kind === "review.reduce") {
+    // Always succeed path: open gate.fix on blocking defects, else auto-pass.
+    // Non-blocking (major/minor) alone do not hold the run — MVP matches "no blocking".
+    const defectsPrep = preparations.find((item) => item.role === "defects");
+    const report = loadSealedDefectsReport(host, claim.runId, defectsPrep);
+    const blocking = report?.defects.filter((d) => d.severity === "blocking") ?? [];
+    if (blocking.length === 0) {
+      host.autoPassFixGate(claim.runId, timestamp);
+      return;
+    }
+    const payloadDigest =
+      defectsPrep?.digest ?? digest(report ?? { clean: false, defects: blocking });
+    host.openFixGate(claim, payloadDigest, timestamp, {
+      summary: report?.summary,
+      clean: false,
+      blockingCount: blocking.length,
+    });
     return;
   }
   if (claim.kind === "publish") {

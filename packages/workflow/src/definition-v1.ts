@@ -58,11 +58,12 @@ const REVIEW_LENSES = ["grounding", "coverage", "consistency", "general"] as con
  * plan ──► research.leaf.* ──► research.domain.* ──► write.root
  *   ╰───────────────────────────────────────────────► write.root (no domains)
  * write.root → validate.pre → review.seat.* → review.reduce
- *   → validate.final → prepare.publication → gate.publication → publish
+ *   → gate.fix → validate.final → prepare.publication → gate.publication → publish
  * ```
  *
  * `gate.plan` is already open/resolved before this runs; edges from `plan`
  * express the semantic dependency for attempt_inputs binding.
+ * `gate.fix` auto-passes when review is clean; opens for HITL on blocking defects.
  */
 export function buildDefinitionV1Graph(
   spec: WikiRunSpec,
@@ -182,9 +183,14 @@ export function buildDefinitionV1Graph(
   addNode({ key: "review.reduce", kind: "review.reduce" });
   for (const seatKey of seatKeys) addEdge(seatKey, "review.reduce");
 
-  // Happy path skips explicit repair nodes; RerunNode / publication revise insert them later.
+  // Fix gate sits between council reduce and final validate. Clean reviews
+  // auto-pass; blocking defects open HITL (pass / fix / revise / deny).
+  // Explicit repair.review.N nodes are inserted only on ResolveGate(fix).
+  addNode({ key: "gate.fix", kind: "gate.fix" });
+  addEdge("review.reduce", "gate.fix");
+
   addNode({ key: "validate.final", kind: "validate.final" });
-  addEdge("review.reduce", "validate.final");
+  addEdge("gate.fix", "validate.final");
 
   addNode({ key: "prepare.publication", kind: "prepare.publication" });
   addEdge("validate.final", "prepare.publication");
@@ -218,7 +224,11 @@ export const MECHANICAL_ATTEMPT_KINDS: ReadonlySet<WikiRunNodeKind> = new Set([
 ]);
 
 /** Gates wait for ResolveGate; never claimed for execute. */
-export const GATE_KINDS: ReadonlySet<WikiRunNodeKind> = new Set(["gate.plan", "gate.publication"]);
+export const GATE_KINDS: ReadonlySet<WikiRunNodeKind> = new Set([
+  "gate.plan",
+  "gate.fix",
+  "gate.publication",
+]);
 
 export function isPiAttemptKind(kind: string): boolean {
   return PI_ATTEMPT_KINDS.has(kind as WikiRunNodeKind);

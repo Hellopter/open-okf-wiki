@@ -61,6 +61,8 @@ import {
   type GatesHost,
   loadSpecFromArtifact,
   expireStaleOpenGates as expireStaleOpenGatesImpl,
+  autoPassFixGate as autoPassFixGateImpl,
+  openFixGate as openFixGateImpl,
   openPlanGate as openPlanGateImpl,
   openPublicationGate as openPublicationGateImpl,
   readPublicationBaseline as readPublicationBaselineImpl,
@@ -478,6 +480,9 @@ class WikiRunsOwner implements WikiRuns {
       openPlanGate: (claim, digest, timestamp) => this.openPlanGate(claim, digest, timestamp),
       openPublicationGate: (claim, candidate, expectedLiveDigest, timestamp) =>
         this.openPublicationGate(claim, candidate, expectedLiveDigest, timestamp),
+      openFixGate: (claim, defectsPayloadDigest, timestamp, detail) =>
+        this.openFixGate(claim, defectsPayloadDigest, timestamp, detail),
+      autoPassFixGate: (runId, timestamp) => this.autoPassFixGate(runId, timestamp),
       readPublicationBaseline: (runId, preparations) =>
         this.readPublicationBaseline(runId, preparations),
       unlockReadyNodes: (runId) => this.unlockReadyNodes(runId),
@@ -678,6 +683,26 @@ class WikiRunsOwner implements WikiRuns {
     timestamp: string,
   ): void {
     openPublicationGateImpl(this.gatesHost(), claim, candidate, expectedLiveDigest, timestamp);
+  }
+
+  private openFixGate(
+    claim: ClaimedNode,
+    defectsPayloadDigest: string,
+    timestamp: string,
+    detail?: { summary?: string; clean?: boolean; blockingCount?: number },
+  ): void {
+    openFixGateImpl(this.gatesHost(), claim, defectsPayloadDigest, timestamp, detail);
+  }
+
+  private autoPassFixGate(runId: string, timestamp: string): void {
+    autoPassFixGateImpl(
+      {
+        ...this.gatesHost(),
+        unlockReadyNodes: (id) => this.unlockReadyNodes(id),
+      },
+      runId,
+      timestamp,
+    );
   }
 
   private async executeFreeze(claim: ClaimedFreeze): Promise<void> {

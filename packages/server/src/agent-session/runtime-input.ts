@@ -101,6 +101,7 @@ async function resolveRepairTargetFor(
         node.kind !== "freeze" &&
         !["cancelled", "blocked"].includes(node.state) &&
         node.key !== "gate.plan" &&
+        node.key !== "gate.fix" &&
         node.key !== "gate.publication",
     );
     if (!candidate) return null;

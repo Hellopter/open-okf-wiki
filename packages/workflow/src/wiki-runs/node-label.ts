@@ -32,6 +32,8 @@ export function mechanicalLabel(kind: WikiRunNodeKind, key: string): string {
       return "Validate (final)";
     case "review.reduce":
       return "Review reduce";
+    case "gate.fix":
+      return "Fix gate";
     case "repair":
       return "Repair";
     case "prepare.publication":
@@ -102,6 +104,7 @@ export function parentKeyForNode(
   if (kind === "research.domain") return "plan";
   if (kind === "review.seat") return "validate.pre";
   if (kind === "gate.plan") return "plan";
+  if (kind === "gate.fix") return "review.reduce";
   if (kind === "gate.publication") return "prepare.publication";
   return undefined;
 }

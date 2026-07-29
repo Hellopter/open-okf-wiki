@@ -471,6 +471,24 @@ export const en = {
     chipPublish: "Publish staged wiki",
     chipKeepStaging: "Keep staging only",
   },
+  /** Operator fix gate (kind "fix") — defect / quality HITL. */
+  fixConfirm: {
+    title: "Review defects",
+    working: "Working…",
+    /** Accept current staging / mark reported issues as non-blocking. */
+    pass: "Pass (not a problem)",
+    /** Request automated or agent repair for reported defects. */
+    fix: "Fix",
+    revise: "Request changes",
+    reviseLabel: "Revision notes",
+    revisePlaceholder: "e.g. keep overview.md as-is; repair modules.md citations only",
+    reviseSubmit: "Submit notes",
+    deny: "Deny",
+    clean: "Clean",
+    defectCount: "{n} defect(s)",
+    suggestedFix: "Suggested fix",
+    noDefectsHint: "No sealed defects list yet — use Pass, Fix, Revise, or Deny.",
+  },
   modelSelect: {
     label: "Model",
     emptyBefore: "No models configured. ",
@@ -494,6 +512,7 @@ export const en = {
     cancelled: "Cancelled",
     awaiting_plan: "Awaiting plan",
     awaiting_publication: "Awaiting publication",
+    awaiting_fix: "Awaiting fix review",
     publication_declined: "Publication declined",
   },
   loading: {
@@ -583,7 +602,7 @@ export const en = {
     },
     /** Durable WikiRuns handoff after wiki_produce accepted+runId. */
     wikiRunAcceptedHint:
-      "Durable Wiki Run accepted. Live status, plan/publication gates, and retries come from the Run control plane (ResolveGate / RetryFailedNode) — not the Session tool Promise.",
+      "Durable Wiki Run accepted. Live status, plan/fix/publication gates, and retries come from the Run control plane (ResolveGate / RetryFailedNode) — not the Session tool Promise.",
     openGates: "Open gates",
     failedNodes: "Failed nodes",
     retryFailedNode: "Retry",

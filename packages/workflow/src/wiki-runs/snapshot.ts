@@ -5,6 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   type WikiRunAttempt,
+  type WikiRunGateDetail,
   type WikiRunNode,
   type WikiRunNodeKind,
   type WikiRunSnapshot,
@@ -12,6 +13,28 @@ import {
 } from "@okf-wiki/contract";
 import { labelForNode, parentKeyForNode, parseNodeDetail } from "./node-label.js";
 import { asRow, asRows, parseJson, requiredNumber, requiredText } from "./sql.js";
+
+/** Narrow gate detail_json into secret-free WikiRunGateDetail. */
+function parseGateDetail(raw: unknown): WikiRunGateDetail | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const row = raw as Record<string, unknown>;
+  const out: WikiRunGateDetail = {};
+  if (typeof row.source === "string" && row.source.trim())
+    out.source = row.source.trim().slice(0, 100);
+  if (typeof row.summary === "string" && row.summary.trim())
+    out.summary = row.summary.trim().slice(0, 4_000);
+  if (typeof row.clean === "boolean") out.clean = row.clean;
+  if (
+    typeof row.blockingCount === "number" &&
+    Number.isInteger(row.blockingCount) &&
+    row.blockingCount >= 0
+  ) {
+    out.blockingCount = row.blockingCount;
+  }
+  if (typeof row.feedback === "string" && row.feedback.trim())
+    out.feedback = row.feedback.trim().slice(0, 4_000);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /**
  * Prefer a single semantic parent for UI hierarchy:
@@ -128,19 +151,27 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     run.pinned_sources_json === null ? null : parseJson<unknown>(run.pinned_sources_json);
   const gates = asRows(
     db.prepare("SELECT * FROM gates WHERE run_id = ? ORDER BY opened_at, gate_id").all(runId),
-  ).map((gate) => ({
-    gateId: requiredText(gate, "gate_id"),
-    nodeKey: requiredText(gate, "node_key"),
-    nodeGeneration: requiredNumber(gate, "node_generation"),
-    kind: requiredText(gate, "kind") as WikiRunSnapshot["gates"][number]["kind"],
-    state: requiredText(gate, "state") as WikiRunSnapshot["gates"][number]["state"],
-    payloadDigest: requiredText(gate, "payload_digest"),
-    decision:
-      gate.decision_json === null
-        ? null
-        : parseJson<WikiRunSnapshot["gates"][number]["decision"]>(gate.decision_json),
-    openedAt: requiredText(gate, "opened_at"),
-  }));
+  ).map((gate) => {
+    const rawDetail =
+      gate.detail_json == null || gate.detail_json === ""
+        ? undefined
+        : parseJson<unknown>(gate.detail_json as string);
+    const detail = parseGateDetail(rawDetail);
+    return {
+      gateId: requiredText(gate, "gate_id"),
+      nodeKey: requiredText(gate, "node_key"),
+      nodeGeneration: requiredNumber(gate, "node_generation"),
+      kind: requiredText(gate, "kind") as WikiRunSnapshot["gates"][number]["kind"],
+      state: requiredText(gate, "state") as WikiRunSnapshot["gates"][number]["state"],
+      payloadDigest: requiredText(gate, "payload_digest"),
+      decision:
+        gate.decision_json === null
+          ? null
+          : parseJson<WikiRunSnapshot["gates"][number]["decision"]>(gate.decision_json),
+      openedAt: requiredText(gate, "opened_at"),
+      ...(detail ? { detail } : {}),
+    };
+  });
   const effects = asRows(
     db.prepare("SELECT * FROM effects WHERE run_id = ? ORDER BY effect_key").all(runId),
   ).map((effect) => ({

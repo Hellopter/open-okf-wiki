@@ -68,6 +68,7 @@ function graphKindFor(kind: WikiRunNodeKind): GraphNodeKind {
       return "write";
     case "review.seat":
     case "review.reduce":
+    case "gate.fix":
       return "review";
     case "repair":
       return "repair";

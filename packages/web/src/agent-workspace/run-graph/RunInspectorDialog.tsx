@@ -2,11 +2,11 @@
  * Post-run / in-flight inspector — durable WikiRuns snapshot (ADR 0035).
  *
  * Live truth: useWikiRun (GET + EventSource). Full control chrome lives here:
- * graph, failed-node retry/rerun, NodeAttemptDialog, plan tab.
+ * graph, failed-node retry/rerun, NodeAttemptDialog, plan tab, open fix gate.
  * WikiProduceGatePanel only deep-links here via "View run".
  */
 
-import type { WikiRunSpec } from "@okf-wiki/contract";
+import type { ResolveGateCommand, WikiRunSpec } from "@okf-wiki/contract";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +20,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getWikiRunSpec } from "../../api";
 import { useI18n } from "../../i18n";
+import { FixGatePanel } from "../components/FixGatePanel";
+import { selectPrimaryOpenGate } from "../components/fix-gate";
 import { SpecReviewView } from "../components/SpecReviewView";
 import { StatusBadge } from "../components/StatusBadge";
 import { useWikiRun } from "../hooks/useWikiRun";
@@ -94,6 +96,11 @@ export function RunInspectorDialog({
   );
   const status = snapshot?.state;
   const loading = open && Boolean(runId) && !wikiRun.ready && !wikiRun.error;
+  const primaryGate = viewModel ? selectPrimaryOpenGate(viewModel.openGates) : null;
+
+  const resolveFixGate = async (command: ResolveGateCommand): Promise<boolean> => {
+    return actions.dispatchCommand(command);
+  };
 
   return (
     <Sheet
@@ -184,7 +191,16 @@ export function RunInspectorDialog({
                 selectedNodeKey={actions.dialogNodeKey}
                 onSelectNode={actions.openNode}
               />
-              {viewModel.openGates.length > 0 ? (
+              {primaryGate?.kind === "fix" && runId ? (
+                <FixGatePanel
+                  gate={primaryGate}
+                  runId={runId}
+                  snapshot={snapshot}
+                  submitting={actions.submitting}
+                  commandError={actions.commandError}
+                  onResolve={resolveFixGate}
+                />
+              ) : viewModel.openGates.length > 0 ? (
                 <div data-testid="run-inspector-open-gates" className="flex flex-col gap-1">
                   <p className="okf-section-label">{t.agentWorkspace.openGates}</p>
                   <ul className="flex flex-col gap-1 text-xs">
@@ -215,6 +231,15 @@ export function RunInspectorDialog({
                 }}
               />
             </div>
+          ) : primaryGate?.kind === "fix" && runId ? (
+            <FixGatePanel
+              gate={primaryGate}
+              runId={runId}
+              snapshot={snapshot}
+              submitting={actions.submitting}
+              commandError={actions.commandError}
+              onResolve={resolveFixGate}
+            />
           ) : (
             <p className="py-6 text-xs text-muted-foreground">{t.runInspector.noGraph}</p>
           )}

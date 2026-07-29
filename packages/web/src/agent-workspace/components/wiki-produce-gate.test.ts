@@ -56,6 +56,27 @@ describe("wiki_produce gate interactivity (WikiRuns snapshot)", () => {
     assert.equal(open[0]?.kind, "plan");
   });
 
+  it("open fix gate is interactive source for Pass/Fix/Revise/Deny", () => {
+    const open = openGatesFromSnapshot(
+      snapshot({
+        gates: [
+          {
+            gateId: "g-fix",
+            nodeKey: "gate.fix",
+            nodeGeneration: 0,
+            kind: "fix",
+            state: "open",
+            payloadDigest: digest,
+            decision: null,
+            openedAt: timestamp,
+          },
+        ],
+      }),
+    );
+    assert.equal(open.length, 1);
+    assert.equal(open[0]?.kind, "fix");
+  });
+
   it("resolved gates are not interactive", () => {
     const open = openGatesFromSnapshot(
       snapshot({
