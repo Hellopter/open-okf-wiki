@@ -20,12 +20,13 @@ test("independent research.leaf nodes run concurrently under domainConcurrency",
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
 
-  // domainConcurrency=2 → leaf pool = 2 * min(2, maxLeafFanOut) = 4 slots.
+  // domainConcurrency=2, leafConcurrency=2 → leaf pool = 2 * min(2, maxLeafFanOut) = 4 slots.
   const workspace = await loadWorkspace(root);
   assert.ok(workspace);
   workspace.orchestration = {
     ...workspace.orchestration,
     domainConcurrency: 2,
+    leafConcurrency: 2,
     maxLeafFanOut: 6,
     maxDomainFanOut: 4,
   };

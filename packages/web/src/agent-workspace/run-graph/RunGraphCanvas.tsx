@@ -5,17 +5,23 @@
  * Layered chip grid only — no edge drawing. Parent hierarchy is available on
  * nodes via `parentKey`. Contract `playhead` is a journal cursor (latest
  * upserted attempt) and is shown as a chip highlight, not AV chrome.
+ *
+ * Product path: WikiRunSnapshot → wikiRunToViewModel → RunGraphCanvas.
+ * Accepts pre-projected `viewModel` only (no raw graph prop).
  */
 
-import type { RunGraphSnapshot } from "@okf-wiki/contract";
-import { useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { StatusBadge } from "../components/StatusBadge";
-import { type RunGraphLayerId, type RunGraphViewNode, runGraphToViewModel } from "./view-model";
+import {
+  type RunGraphLayerId,
+  type RunGraphViewModel,
+  type RunGraphViewNode,
+} from "./view-model";
 
 export type RunGraphCanvasProps = {
-  graph: RunGraphSnapshot;
+  /** Pre-projected layered view (e.g. wikiRunToViewModel). */
+  viewModel: RunGraphViewModel;
   className?: string;
   /** Currently selected nodeKey (highlight). */
   selectedNodeKey?: string | null;
@@ -69,13 +75,12 @@ function nodeTitle(node: RunGraphViewNode): string {
 }
 
 export function RunGraphCanvas({
-  graph,
+  viewModel: vm,
   className,
   selectedNodeKey,
   onSelectNode,
 }: RunGraphCanvasProps) {
   const { t } = useI18n();
-  const vm = useMemo(() => runGraphToViewModel(graph), [graph]);
   const playheadKey = vm.playhead?.nodeKey;
 
   if (vm.layers.length === 0 && vm.attempts.length === 0) {

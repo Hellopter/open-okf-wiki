@@ -29,6 +29,7 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
       reviewCouncilSize: 3,
       planScoutCount: 2,
       domainConcurrency: 2,
+      leafConcurrency: 2,
     },
     planConfirm: false,
     operatorTools: ["read", "grep", "find", "ls"],

@@ -167,6 +167,7 @@ export const zh: MessageTree = {
       "运行边界的 Plan Scout、Domain/Leaf 研究与多视角审查预算。中等仓库可用默认；省成本可调低，大仓可调高。",
     maxDomainFanOut: "最大 Domain 数",
     maxLeafFanOut: "每 Domain 最大 Leaf 数",
+    maxLeafFanOutHint: "仅拓扑：每个 Domain 最多物化的问题/Leaf 数。不决定 Leaf 并发池大小。",
     planScoutCount: "规划侦察数",
     planScoutCountHint: "Spec 合成前的并行只读侦察（入口 / 布局 / 测试 / 风险）。0 = 仅单规划器。",
     reviewCouncilSize: "审查委员会规模",
@@ -175,6 +176,10 @@ export const zh: MessageTree = {
     reviewConcurrency: "审查并行度",
     reviewConcurrencyHint: "同时运行的委员会成员数（默认等于委员会规模）。",
     domainConcurrency: "Domain 并行度",
+    domainConcurrencyHint: "可并行研究的 Domain 数。也会与 Leaf 并行度一起放大共享 Leaf 池。",
+    leafConcurrency: "Leaf 并行度",
+    leafConcurrencyHint:
+      "每个 Domain 内的 Leaf 并行宽度。Leaf 总槽位 = Domain 并行度 × min(Leaf 并行度, 每 Domain 最大 Leaf 数)。",
     roleModelsTitle: "角色模型（混合经济学）",
     roleModelsHint:
       "可选：强规划 + 便宜研究/侦察 + 独立审查。留空则回退到上方工作区默认模型。各角色 Pi 会话在接近上下文目标时自动压缩。",

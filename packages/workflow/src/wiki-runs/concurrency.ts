@@ -18,17 +18,6 @@ import {
 import { isMechanicalAttemptKind } from "../definition-v1.js";
 
 /**
- * Historical leaf-parallel width inside one domain unit (pre-WikiRuns
- * research-phase). maxLeafFanOut is a topology cap (how many leaf nodes the
- * graph materializes per domain). The scheduler leaf *pool* is:
- *   domainConcurrency × min(LEGACY_LEAF_PARALLEL, maxLeafFanOut)
- * so multi-domain leaves share one concurrency pool without running the full
- * fan-out width at once. Settings authors: raise domainConcurrency for more
- * parallel domains; raise maxLeafFanOut only to allow more questions per domain.
- */
-const LEGACY_LEAF_PARALLEL = 2;
-
-/**
  * Resolve orchestration with schema defaults (workspace may omit optional keys).
  * Thin workspace wrapper over the single canonical resolveOrchestration in
  * @okf-wiki/contract — do not reimplement defaults here.
@@ -42,9 +31,12 @@ export function resolveSchedulerOrchestration(
 /**
  * Max concurrent in-flight Attempts for a node kind.
  *
- * - research.leaf: domainConcurrency × min(2, maxLeafFanOut) so multi-domain
- *   leaves share one pool (matches pre-SQLite domain units × leaf parallel).
- *   maxLeafFanOut itself is topology only (see LEGACY_LEAF_PARALLEL comment).
+ * - research.leaf: domainConcurrency × min(leafConcurrency, maxLeafFanOut) so
+ *   multi-domain leaves share one pool. maxLeafFanOut is topology only (how many
+ *   leaf nodes the graph materializes per domain); leafConcurrency is per-domain
+ *   parallel width. Raise domainConcurrency for more parallel domains; raise
+ *   leafConcurrency for more leaves in-flight per domain; raise maxLeafFanOut
+ *   only to allow more questions per domain.
  * - research.domain: domainConcurrency
  * - review.seat: reviewConcurrency (default council size)
  * - single-pipeline Pi (plan/write/repair): 1
@@ -56,6 +48,7 @@ export function concurrencyLimitForKind(
 ): number {
   const orch = resolveSchedulerOrchestration(workspace);
   const domainConcurrency = Math.max(1, orch.domainConcurrency);
+  const leafConcurrency = Math.max(1, orch.leafConcurrency);
   const maxLeafFanOut = Math.max(1, orch.maxLeafFanOut);
   const reviewCouncilSize = Math.max(1, orch.reviewCouncilSize);
   const reviewConcurrency = Math.max(
@@ -65,7 +58,7 @@ export function concurrencyLimitForKind(
 
   switch (kind) {
     case "research.leaf":
-      return domainConcurrency * Math.min(LEGACY_LEAF_PARALLEL, maxLeafFanOut);
+      return domainConcurrency * Math.min(leafConcurrency, maxLeafFanOut);
     case "research.domain":
       return domainConcurrency;
     case "review.seat":

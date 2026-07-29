@@ -68,6 +68,8 @@ export type GeneralSectionProps = {
   setReviewConcurrency: (value: string) => void;
   domainConcurrency: string;
   setDomainConcurrency: (value: string) => void;
+  leafConcurrency: string;
+  setLeafConcurrency: (value: string) => void;
   plannerProfileId: string;
   setPlannerProfileId: (value: string) => void;
   workerProfileId: string;
@@ -126,6 +128,8 @@ export function GeneralSection(props: GeneralSectionProps) {
     setReviewConcurrency,
     domainConcurrency,
     setDomainConcurrency,
+    leafConcurrency,
+    setLeafConcurrency,
     plannerProfileId,
     setPlannerProfileId,
     workerProfileId,
@@ -513,6 +517,7 @@ export function GeneralSection(props: GeneralSectionProps) {
                       }}
                       className="font-mono w-24"
                       data-testid="settings-max-leaf-fanout"
+                      title={t.settings.maxLeafFanOutHint}
                     />
                   </div>
                   <div className="flex flex-col gap-1">
@@ -597,11 +602,35 @@ export function GeneralSection(props: GeneralSectionProps) {
                       }}
                       className="font-mono w-24"
                       data-testid="settings-domain-concurrency"
+                      title={t.settings.domainConcurrencyHint}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <FieldLabel
+                      htmlFor="settings-leaf-concurrency"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {t.settings.leafConcurrency}
+                    </FieldLabel>
+                    <Input
+                      id="settings-leaf-concurrency"
+                      type="number"
+                      min={1}
+                      max={16}
+                      value={leafConcurrency}
+                      onChange={(e) => {
+                        setLeafConcurrency(e.target.value);
+                      }}
+                      className="font-mono w-24"
+                      data-testid="settings-leaf-concurrency"
+                      title={t.settings.leafConcurrencyHint}
                     />
                   </div>
                 </div>
                 <FieldDescription className="mt-2 text-xs">
-                  {t.settings.planScoutCountHint} {t.settings.reviewCouncilSizeHint}
+                  {t.settings.planScoutCountHint} {t.settings.reviewCouncilSizeHint}{" "}
+                  {t.settings.domainConcurrencyHint} {t.settings.leafConcurrencyHint}{" "}
+                  {t.settings.maxLeafFanOutHint}
                 </FieldDescription>
               </Field>
 

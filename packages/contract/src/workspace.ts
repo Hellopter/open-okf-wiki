@@ -195,15 +195,15 @@ export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
 export const WorkspaceOrchestrationSchema = z.object({
   /**
    * @deprecated Fossil field. Definition v1 has no recursive depth axis; WikiRuns
-   * path ignores maxDepth. Kept so older workspace JSON still parses; Settings may
-   * re-save the value but no UI controls it and no scheduler/graph reads it.
+   * path ignores maxDepth. Kept so older workspace JSON still parses and resolve
+   * still fills a default; Settings no longer re-saves it and no UI controls it.
    */
   maxDepth: z.number().int().min(1).max(4).default(2),
   /** Cap domains materialized from Spec (topology). */
   maxDomainFanOut: z.number().int().min(1).max(16).default(4),
   /**
-   * Cap questions/leaves per domain (topology only).
-   * Scheduler leaf pool is separate: domainConcurrency × min(2, maxLeafFanOut).
+   * Cap questions/leaves per domain (topology only — not the leaf concurrency pool).
+   * Scheduler leaf pool is separate: domainConcurrency × min(leafConcurrency, maxLeafFanOut).
    */
   maxLeafFanOut: z.number().int().min(1).max(16).default(6),
   /**
@@ -231,9 +231,15 @@ export const WorkspaceOrchestrationSchema = z.object({
   /**
    * How many domain research units may run concurrently (each unit is
    * leaf fan-out + domain reduce). Domains have independent scopes, so
-   * this bounds wall-clock, not correctness.
+   * this bounds wall-clock, not correctness. Also scales the shared leaf
+   * pool with leafConcurrency.
    */
   domainConcurrency: z.number().int().min(1).max(8).default(2),
+  /**
+   * Per-domain leaf parallel width. Total leaf slots =
+   * domainConcurrency × min(leafConcurrency, maxLeafFanOut).
+   */
+  leafConcurrency: z.number().int().min(1).max(16).default(2),
 });
 
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
@@ -253,6 +259,7 @@ export function resolveOrchestration(
   const reviewCouncilSize = o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize;
   const planScoutCount = o.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount;
   return {
+    // maxDepth: deprecated fossil; still filled for older JSON / type compat.
     maxDepth: o.maxDepth ?? DEFAULT_ORCHESTRATION.maxDepth,
     maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
     maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
@@ -263,6 +270,7 @@ export function resolveOrchestration(
       ? { planScoutConcurrency: o.planScoutConcurrency }
       : {}),
     domainConcurrency: o.domainConcurrency ?? DEFAULT_ORCHESTRATION.domainConcurrency,
+    leafConcurrency: o.leafConcurrency ?? DEFAULT_ORCHESTRATION.leafConcurrency,
   };
 }
 
@@ -359,7 +367,7 @@ export const WorkspaceConfigSchema = z.object({
    * Omitted roles use `model`.
    */
   roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
-  /** Supervisor tree fan-out, depth, and review council size. */
+  /** Supervisor tree fan-out, concurrency, and review council size. */
   orchestration: WorkspaceOrchestrationSchema.default(() => ({ ...DEFAULT_ORCHESTRATION })),
   /**
    * When true, interactive Wiki Runs pause for operator Spec confirmation

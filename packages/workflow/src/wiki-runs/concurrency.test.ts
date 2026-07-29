@@ -44,8 +44,20 @@ test("resolveSchedulerOrchestration fills defaults via contract resolveOrchestra
   );
 });
 
-test("leaf concurrency is domainConcurrency × min(2, maxLeafFanOut)", () => {
+test("leaf concurrency is domainConcurrency × min(leafConcurrency, maxLeafFanOut)", () => {
+  // defaults: domainConcurrency 2, leafConcurrency 2 → leaf limit 4
+  assert.equal(
+    concurrencyLimitForKind(workspace({ domainConcurrency: 2, leafConcurrency: 2 }), "research.leaf"),
+    4,
+  );
+  // leafConcurrency 1 → leaf limit 2
+  assert.equal(
+    concurrencyLimitForKind(workspace({ domainConcurrency: 2, leafConcurrency: 1 }), "research.leaf"),
+    2,
+  );
+  // default leafConcurrency (2) with domainConcurrency 3 → 6
   assert.equal(concurrencyLimitForKind(workspace({ domainConcurrency: 3 }), "research.leaf"), 6);
+  // maxLeafFanOut caps the per-domain width
   assert.equal(
     concurrencyLimitForKind(workspace({ domainConcurrency: 2, maxLeafFanOut: 1 }), "research.leaf"),
     2,

@@ -1,17 +1,18 @@
 /**
  * wiki_produce panel — durable WikiRuns projection (ADR 0035).
  *
- * Tool details only carry the StartRun receipt (accepted+runId). Live status,
- * open gates, graph chips, and failed-node actions come from useWikiRun
- * (GET + EventSource). Plan/publication HITL uses ResolveGate on the Run API.
+ * Tool details only carry the StartRun receipt (accepted+runId). Live status
+ * and open plan/publication gates come from useWikiRun (GET + EventSource).
+ * Plan HITL uses ResolveGate on the Run API.
+ *
+ * Control chrome (full graph, failed-node retry/rerun, NodeAttemptDialog)
+ * lives in RunInspectorDialog — open via run id link or "View run".
  */
 
 import type {
   WikiProduceToolDetails,
-  WikiRunAttempt,
   WikiRunGate,
   WikiRunGateKind,
-  WikiRunNode,
   WikiRunSpec,
 } from "@okf-wiki/contract";
 import { useEffect, useMemo, useState } from "react";
@@ -25,16 +26,9 @@ import { dispatchWikiRunCommand, getWikiRunSpec } from "../../api";
 import { useI18n } from "../../i18n";
 import { useWikiRun } from "../hooks/useWikiRun";
 import { compactSummary } from "../run-graph/compact-summary";
-import { NodeAttemptDialog } from "../run-graph/NodeAttemptDialog";
-import { RunGraphCanvas } from "../run-graph/RunGraphCanvas";
 import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
-import {
-  projectWikiAttempt,
-  wikiRunSnapshotToRunGraph,
-  wikiRunToViewModel,
-} from "../run-graph/wiki-run-view-model";
+import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
 import { SpecReviewView } from "./SpecReviewView";
-import { StatusBadge } from "./StatusBadge";
 
 export type WikiProduceGatePanelProps = {
   details: WikiProduceToolDetails;
@@ -66,15 +60,12 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
 
   const snapshot = wikiRun.snapshot;
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);
-  const graph = useMemo(() => (snapshot ? wikiRunSnapshotToRunGraph(snapshot) : null), [snapshot]);
 
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [revising, setRevising] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [commandError, setCommandError] = useState<string | null>(null);
-  const [dialogNodeKey, setDialogNodeKey] = useState<string | null>(null);
-  const [dialogAttemptId, setDialogAttemptId] = useState<string | null>(null);
   const [activeGateId, setActiveGateId] = useState<string | null>(null);
   const [planSpec, setPlanSpec] = useState<WikiRunSpec | null>(null);
   const [planSpecLoading, setPlanSpecLoading] = useState(false);
@@ -85,8 +76,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     setRevising(false);
     setFeedback("");
     setCommandError(null);
-    setDialogNodeKey(null);
-    setDialogAttemptId(null);
     setActiveGateId(null);
     setPlanSpec(null);
     setPlanSpecError(null);
@@ -132,46 +121,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     };
   }, [wantPlanSpec, runId, routeWorkspaceId, rootPathHint, primaryGate?.gateId, snapshot?.revision]);
 
-  const relatedAttempts = useMemo(() => {
-    if (!dialogNodeKey || !snapshot) return [] as ReturnType<typeof projectWikiAttempt>[];
-    return snapshot.attempts
-      .filter((a) => a.nodeKey === dialogNodeKey)
-      .sort((a, b) => a.runIndex - b.runIndex)
-      .map(projectWikiAttempt);
-  }, [dialogNodeKey, snapshot]);
-
-  const dialogWikiAttempt = useMemo(() => {
-    if (!dialogNodeKey || !snapshot) return undefined as WikiRunAttempt | undefined;
-    const forNode = snapshot.attempts
-      .filter((a) => a.nodeKey === dialogNodeKey)
-      .sort((a, b) => a.runIndex - b.runIndex);
-    if (dialogAttemptId) {
-      return forNode.find((a) => a.attemptId === dialogAttemptId) ?? forNode.at(-1);
-    }
-    return forNode.at(-1);
-  }, [dialogAttemptId, dialogNodeKey, snapshot]);
-
-  const dialogNode: WikiRunNode | undefined = useMemo(() => {
-    if (!dialogNodeKey || !snapshot) return undefined;
-    return snapshot.nodes.find((n) => n.key === dialogNodeKey);
-  }, [dialogNodeKey, snapshot]);
-
-  const dialogAttempt = dialogWikiAttempt ? projectWikiAttempt(dialogWikiAttempt) : undefined;
-
-  const dialogLabel = useMemo(() => {
-    if (!dialogNodeKey) return "";
-    return dialogNodeKey;
-  }, [dialogNodeKey]);
-
-  const openNode = (nodeKey: string) => {
-    const latest = snapshot?.attempts
-      .filter((a) => a.nodeKey === nodeKey)
-      .sort((a, b) => a.runIndex - b.runIndex)
-      .at(-1);
-    setDialogNodeKey(nodeKey);
-    setDialogAttemptId(latest?.attemptId ?? null);
-  };
-
   const dispatchCommand = async (
     command: Parameters<typeof dispatchWikiRunCommand>[1],
   ): Promise<boolean> => {
@@ -213,29 +162,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     }
   };
 
-  const retryFailed = async (node: WikiRunNode, attempt: WikiRunAttempt) => {
-    if (!runId) return;
-    await dispatchCommand({
-      type: "retry_failed_node",
-      commandId: crypto.randomUUID(),
-      runId,
-      nodeKey: node.key,
-      generation: node.generation,
-      attemptId: attempt.attemptId,
-    });
-  };
-
-  const rerunNode = async (node: WikiRunNode) => {
-    if (!runId) return;
-    await dispatchCommand({
-      type: "rerun_node",
-      commandId: crypto.randomUUID(),
-      runId,
-      nodeKey: node.key,
-      generation: node.generation,
-    });
-  };
-
   const statusLabel = snapshot
     ? snapshot.state
     : details.status === "accepted"
@@ -249,21 +175,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   /** Prefer live sealed Spec pages; receipt pages are historical only. */
   const pages =
     planSpec?.pages.map((page) => page.path) ?? details.pages ?? [];
-  const hasGraph =
-    Boolean(graph) && ((graph?.topology.length ?? 0) > 0 || (graph?.attempts.length ?? 0) > 0);
-
-  const canRetryDialog =
-    dialogNode &&
-    dialogWikiAttempt &&
-    dialogNode.state === "failed" &&
-    (dialogWikiAttempt.state === "failed" || dialogWikiAttempt.state === "interrupted") &&
-    dialogWikiAttempt.nodeGeneration === dialogNode.generation;
-
-  const canRerunDialog =
-    dialogNode &&
-    dialogNode.state !== "cancelled" &&
-    dialogNode.state !== "blocked" &&
-    runId != null;
 
   return (
     <div
@@ -359,69 +270,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
         </div>
       ) : null}
 
-      {hasGraph && graph ? (
-        <div
-          className="flex flex-col gap-1.5 border-t border-border/60 pt-2"
-          data-testid="wiki-produce-graph"
-        >
-          <p className="okf-section-label">
-            {t.agentWorkspace.runGraph}
-            {graph.attempts.length > 0 ? ` · ${graph.attempts.length}` : null}
-          </p>
-          <RunGraphCanvas graph={graph} selectedNodeKey={dialogNodeKey} onSelectNode={openNode} />
-        </div>
-      ) : null}
-
-      {viewModel && viewModel.failedNodes.length > 0 ? (
-        <div
-          className="flex flex-col gap-1.5 border-t border-border/60 pt-2"
-          data-testid="wiki-produce-failed-nodes"
-        >
-          <p className="okf-section-label">{t.agentWorkspace.failedNodes}</p>
-          <ul className="flex flex-col gap-1">
-            {viewModel.failedNodes.map(({ node, attempt }) => (
-              <li
-                key={node.key}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs"
-              >
-                <button
-                  type="button"
-                  className="min-w-0 truncate font-medium hover:underline"
-                  onClick={() => openNode(node.key)}
-                >
-                  {node.key}
-                </button>
-                <span className="flex shrink-0 flex-wrap items-center gap-1">
-                  <StatusBadge status={attempt.state} />
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="outline"
-                    data-testid="wiki-run-retry-failed"
-                    data-node-key={node.key}
-                    disabled={submitting}
-                    onClick={() => void retryFailed(node, attempt)}
-                  >
-                    {t.agentWorkspace.retryFailedNode}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    variant="ghost"
-                    data-testid="wiki-run-rerun-node"
-                    data-node-key={node.key}
-                    disabled={submitting}
-                    onClick={() => void rerunNode(node)}
-                  >
-                    {t.agentWorkspace.rerunNode}
-                  </Button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
       {runId && routeWorkspaceId ? (
         <div className="border-t border-border/60 pt-2">
           <Button
@@ -442,55 +290,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
           />
         </div>
       ) : null}
-
-      <NodeAttemptDialog
-        open={dialogNodeKey != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setDialogNodeKey(null);
-            setDialogAttemptId(null);
-          }
-        }}
-        nodeKey={dialogNodeKey ?? ""}
-        nodeLabel={dialogLabel}
-        attempt={dialogAttempt}
-        relatedAttempts={relatedAttempts}
-        onSelectAttempt={setDialogAttemptId}
-        workspaceId={routeWorkspaceId || undefined}
-        runId={runId}
-        rootPath={rootPathHint}
-        attemptId={dialogWikiAttempt?.attemptId ?? dialogAttemptId}
-        attemptState={dialogWikiAttempt?.state ?? null}
-        footer={
-          dialogNode && runId ? (
-            <div className="flex flex-wrap gap-1.5 border-t border-border px-4 py-2">
-              {canRetryDialog && dialogWikiAttempt ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  data-testid="wiki-run-dialog-retry"
-                  disabled={submitting}
-                  onClick={() => void retryFailed(dialogNode, dialogWikiAttempt)}
-                >
-                  {t.agentWorkspace.retryFailedNode}
-                </Button>
-              ) : null}
-              {canRerunDialog ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  data-testid="wiki-run-dialog-rerun"
-                  disabled={submitting}
-                  onClick={() => void rerunNode(dialogNode)}
-                >
-                  {t.agentWorkspace.rerunNode}
-                </Button>
-              ) : null}
-            </div>
-          ) : null
-        }
-      />
 
       {primaryGate && runId ? (
         <div

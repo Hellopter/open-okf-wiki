@@ -31,6 +31,7 @@ const orch = (partial: Partial<WorkspaceOrchestration> = {}): WorkspaceOrchestra
   reviewCouncilSize: 3,
   planScoutCount: 2,
   domainConcurrency: 2,
+  leafConcurrency: 2,
   ...partial,
 });
 

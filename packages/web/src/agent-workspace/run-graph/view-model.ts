@@ -2,6 +2,9 @@
  * Pure view-model: RunGraphSnapshot → layered nodes for read-only canvas.
  * Depends only on @okf-wiki/contract.
  *
+ * Product canvas path uses WikiRunSnapshot → wikiRunToViewModel (no dual hop).
+ * runGraphToViewModel remains for unit tests / legacy snapshot shapes.
+ *
  * Edges are not projected here — the canvas is a layered chip grid; parent
  * hierarchy is available on each node via `parentKey` when needed.
  */
@@ -54,7 +57,7 @@ const LAYER_ORDER: RunGraphLayerId[] = [
   "other",
 ];
 
-function layerForKind(kind: GraphNodeKind): RunGraphLayerId {
+export function layerForKind(kind: GraphNodeKind): RunGraphLayerId {
   switch (kind) {
     case "plan":
       return "plan";
@@ -76,7 +79,7 @@ function layerForKind(kind: GraphNodeKind): RunGraphLayerId {
   }
 }
 
-function latestAttemptFor(
+export function latestAttemptFor(
   nodeKey: string,
   attempts: readonly NodeAttempt[],
 ): NodeAttempt | undefined {
@@ -91,12 +94,53 @@ function latestAttemptFor(
   });
 }
 
-function statusFromAttempt(attempt?: NodeAttempt): NodeAttemptStatus | "idle" {
+export function statusFromAttempt(attempt?: NodeAttempt): NodeAttemptStatus | "idle" {
   return attempt?.status ?? "idle";
+}
+
+/** Bucket view-nodes into non-empty ordered layers. */
+export function groupViewNodesIntoLayers(
+  nodes: readonly RunGraphViewNode[],
+): Array<{ id: RunGraphLayerId; nodes: RunGraphViewNode[] }> {
+  const byLayer = new Map<RunGraphLayerId, RunGraphViewNode[]>();
+  for (const id of LAYER_ORDER) byLayer.set(id, []);
+  for (const node of nodes) {
+    byLayer.get(node.layer)!.push(node);
+  }
+  return LAYER_ORDER.filter((id) => (byLayer.get(id)?.length ?? 0) > 0).map((id) => ({
+    id,
+    nodes: byLayer.get(id)!,
+  }));
+}
+
+/**
+ * Append synthetic nodes for attempts whose nodeKey is not already present.
+ * Orphans land in layer "other" with kind "validate" (canvas chip fallback).
+ */
+export function appendOrphanAttemptNodes(
+  nodes: RunGraphViewNode[],
+  attempts: readonly NodeAttempt[],
+): void {
+  const known = new Set(nodes.map((n) => n.nodeKey));
+  for (const attempt of attempts) {
+    if (known.has(attempt.nodeKey)) continue;
+    known.add(attempt.nodeKey);
+    const latest = latestAttemptFor(attempt.nodeKey, attempts);
+    nodes.push({
+      nodeKey: attempt.nodeKey,
+      kind: "validate",
+      label: attempt.role ?? attempt.nodeKey,
+      layer: "other",
+      ...(latest ? { latestAttempt: latest } : {}),
+      attemptCount: attempts.filter((a) => a.nodeKey === attempt.nodeKey).length,
+      status: statusFromAttempt(latest),
+    });
+  }
 }
 
 /**
  * Project a contract RunGraphSnapshot into layered canvas nodes.
+ * Prefer wikiRunToViewModel for product WikiRuns UI.
  */
 export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewModel {
   const attempts = [...snapshot.attempts];
@@ -115,35 +159,10 @@ export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewMod
     };
   });
 
-  // Orphan attempts (no topology node) still appear as synthetic nodes.
-  const known = new Set(nodes.map((n) => n.nodeKey));
-  for (const attempt of attempts) {
-    if (known.has(attempt.nodeKey)) continue;
-    known.add(attempt.nodeKey);
-    const latest = latestAttemptFor(attempt.nodeKey, attempts);
-    nodes.push({
-      nodeKey: attempt.nodeKey,
-      kind: "validate",
-      label: attempt.role ?? attempt.nodeKey,
-      layer: "other",
-      ...(latest ? { latestAttempt: latest } : {}),
-      attemptCount: attempts.filter((a) => a.nodeKey === attempt.nodeKey).length,
-      status: statusFromAttempt(latest),
-    });
-  }
-
-  const byLayer = new Map<RunGraphLayerId, RunGraphViewNode[]>();
-  for (const id of LAYER_ORDER) byLayer.set(id, []);
-  for (const node of nodes) {
-    byLayer.get(node.layer)!.push(node);
-  }
-  const layers = LAYER_ORDER.filter((id) => (byLayer.get(id)?.length ?? 0) > 0).map((id) => ({
-    id,
-    nodes: byLayer.get(id)!,
-  }));
+  appendOrphanAttemptNodes(nodes, attempts);
 
   return {
-    layers,
+    layers: groupViewNodesIntoLayers(nodes),
     attempts,
     ...(snapshot.playhead ? { playhead: snapshot.playhead } : {}),
     topologyVersion: snapshot.topologyVersion,

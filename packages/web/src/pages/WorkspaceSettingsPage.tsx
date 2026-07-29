@@ -63,6 +63,7 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
   const [reviewCouncilSize, setReviewCouncilSize] = useState("3");
   const [reviewConcurrency, setReviewConcurrency] = useState("");
   const [domainConcurrency, setDomainConcurrency] = useState("2");
+  const [leafConcurrency, setLeafConcurrency] = useState("2");
   const [plannerProfileId, setPlannerProfileId] = useState("");
   const [workerProfileId, setWorkerProfileId] = useState("");
   const [writerProfileId, setWriterProfileId] = useState("");
@@ -101,6 +102,7 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         : "",
     );
     setDomainConcurrency(String(ws.orchestration?.domainConcurrency ?? 2));
+    setLeafConcurrency(String(ws.orchestration?.leafConcurrency ?? 2));
     setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
     setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
     setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
@@ -277,22 +279,21 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         ...(profileToRef(writerProfileId) ? { writer: profileToRef(writerProfileId) } : {}),
         reviewers: workspace?.roleModels?.reviewers ?? [],
       };
-      const baseOrch = workspace?.orchestration;
       const council = Math.min(4, Math.max(1, Number(reviewCouncilSize) || 3));
       const reviewConcRaw = reviewConcurrency.trim();
       const reviewConc = reviewConcRaw
         ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
         : undefined;
+      // maxDepth is a fossil (no Definition v1 depth axis / no Settings UI) —
+      // do not re-save it; schema still accepts older JSON on load.
       const orchestration = {
-        // maxDepth is a fossil (no Definition v1 depth axis / no Settings UI).
-        // Preserve on save so older workspace JSON round-trips; WikiRuns ignores it.
-        maxDepth: baseOrch?.maxDepth ?? 2,
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
         planScoutCount: Math.min(4, Math.max(0, Number(planScoutCount) || 0)),
         reviewCouncilSize: council,
         ...(reviewConc !== undefined ? { reviewConcurrency: reviewConc } : {}),
         domainConcurrency: Math.min(8, Math.max(1, Number(domainConcurrency) || 2)),
+        leafConcurrency: Math.min(16, Math.max(1, Number(leafConcurrency) || 2)),
       };
       const result = await patchWorkspace(
         id,
@@ -394,6 +395,8 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
               setReviewConcurrency={setReviewConcurrency}
               domainConcurrency={domainConcurrency}
               setDomainConcurrency={setDomainConcurrency}
+              leafConcurrency={leafConcurrency}
+              setLeafConcurrency={setLeafConcurrency}
               plannerProfileId={plannerProfileId}
               setPlannerProfileId={setPlannerProfileId}
               workerProfileId={workerProfileId}

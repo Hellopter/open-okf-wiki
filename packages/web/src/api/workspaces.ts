@@ -53,8 +53,8 @@ export type PatchWorkspaceInput = {
   limits?: WorkspaceConfig["limits"];
   /** Hybrid model economics: planner / worker / writer / reviewers. */
   roleModels?: WorkspaceConfig["roleModels"];
-  /** Supervisor tree budgets. */
-  orchestration?: WorkspaceConfig["orchestration"];
+  /** Supervisor tree budgets (partial; server fills schema defaults). */
+  orchestration?: Partial<WorkspaceConfig["orchestration"]>;
   /** Operator Session tool selection (read/grep/find/ls/bash subset). */
   operatorTools?: WorkspaceConfig["operatorTools"];
 };

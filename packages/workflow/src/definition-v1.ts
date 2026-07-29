@@ -8,7 +8,7 @@
  * Depth: there is no recursive depth axis. workspace.orchestration.maxDepth is
  * ignored here (fossil field; see resolveOrchestration / WorkspaceOrchestrationSchema).
  * Topology caps are maxDomainFanOut and maxLeafFanOut only; leaf *concurrency*
- * is separate (domainConcurrency × min(2, maxLeafFanOut) in concurrency.ts).
+ * is separate (domainConcurrency × min(leafConcurrency, maxLeafFanOut) in concurrency.ts).
  */
 
 import {

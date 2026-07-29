@@ -1,9 +1,9 @@
 /**
  * Pure projection: WikiRunSnapshot (ADR 0035 control plane) → Run Graph
- * observation shapes the existing canvas understands.
+ * view-model the canvas renders directly.
  *
- * WikiRuns nodes/attempts are the durable truth; legacy analysis/run-graph.json
- * is optional read-only history and is not required for live Run UI.
+ * Product path: WikiRunSnapshot → wikiRunToViewModel → RunGraphCanvas.
+ * No dual hop through RunGraphSnapshot for live UI.
  */
 
 import type {
@@ -20,6 +20,14 @@ import type {
   WikiRunNodeState,
   WikiRunSnapshot,
 } from "@okf-wiki/contract";
+import {
+  appendOrphanAttemptNodes,
+  groupViewNodesIntoLayers,
+  layerForKind,
+  latestAttemptFor,
+  type RunGraphViewModel,
+  type RunGraphViewNode,
+} from "./view-model.ts";
 
 /** ErrorClass values accepted on NodeAttempt (Run Graph observation). */
 const NODE_ATTEMPT_ERROR_CLASSES: ReadonlySet<string> = new Set([
@@ -32,11 +40,6 @@ const NODE_ATTEMPT_ERROR_CLASSES: ReadonlySet<string> = new Set([
   "capacity",
   "infrastructure",
 ]);
-import {
-  type RunGraphViewModel,
-  type RunGraphViewNode,
-  runGraphToViewModel,
-} from "./view-model.ts";
 
 export type WikiRunFailedNode = {
   node: WikiRunNode;
@@ -149,8 +152,11 @@ export function projectWikiAttempt(attempt: WikiRunAttempt): NodeAttempt {
 }
 
 /**
+ * @deprecated Product UI must use wikiRunToViewModel only. Kept for unit tests
+ * that assert the intermediate RunGraphSnapshot shape.
+ *
  * Project durable WikiRuns nodes + attempts into the legacy RunGraphSnapshot
- * shape so RunGraphCanvas / runGraphToViewModel stay reusable.
+ * observation shape (not a product canvas input).
  */
 export function wikiRunSnapshotToRunGraph(snapshot: WikiRunSnapshot): RunGraphSnapshot {
   const topology = snapshot.nodes.map((node) => ({
@@ -161,17 +167,7 @@ export function wikiRunSnapshotToRunGraph(snapshot: WikiRunSnapshot): RunGraphSn
   }));
 
   const attempts = snapshot.attempts.map(projectWikiAttempt);
-
-  // Playhead: prefer a running attempt, else a suspended/waiting one, else latest by runIndex.
-  let playhead: RunGraphSnapshot["playhead"];
-  const ranked = [...snapshot.attempts].sort((a, b) => b.runIndex - a.runIndex);
-  const live =
-    ranked.find((a) => a.state === "running") ??
-    ranked.find((a) => a.state === "suspended") ??
-    ranked[0];
-  if (live) {
-    playhead = { nodeKey: live.nodeKey, attemptId: live.attemptId };
-  }
+  const playhead = playheadFromWikiAttempts(snapshot.attempts);
 
   return {
     topologyVersion: snapshot.revision,
@@ -179,6 +175,20 @@ export function wikiRunSnapshotToRunGraph(snapshot: WikiRunSnapshot): RunGraphSn
     attempts,
     ...(playhead ? { playhead } : {}),
   };
+}
+
+/** Playhead: prefer running, else suspended, else latest by runIndex. */
+function playheadFromWikiAttempts(
+  attempts: readonly WikiRunAttempt[],
+): { nodeKey: string; attemptId: string } | undefined {
+  if (attempts.length === 0) return undefined;
+  const ranked = [...attempts].sort((a, b) => b.runIndex - a.runIndex);
+  const live =
+    ranked.find((a) => a.state === "running") ??
+    ranked.find((a) => a.state === "suspended") ??
+    ranked[0];
+  if (!live) return undefined;
+  return { nodeKey: live.nodeKey, attemptId: live.attemptId };
 }
 
 export function openGatesFromSnapshot(snapshot: WikiRunSnapshot): WikiRunGate[] {
@@ -205,29 +215,39 @@ export function failedNodesFromSnapshot(snapshot: WikiRunSnapshot): WikiRunFaile
   return out;
 }
 
-/** Full canvas + HITL helpers from one durable snapshot. */
+/**
+ * Direct product projection: WikiRunSnapshot → canvas view-model.
+ * Builds layers from nodes + attempts without RunGraphSnapshot intermediate.
+ */
 export function wikiRunToViewModel(snapshot: WikiRunSnapshot): WikiRunGraphViewModel {
-  const graph = wikiRunSnapshotToRunGraph(snapshot);
-  const base = runGraphToViewModel(graph);
+  const attempts = snapshot.attempts.map(projectWikiAttempt);
 
-  // Overlay control-plane node state when a node has no attempts yet.
-  const nodeByKey = new Map(snapshot.nodes.map((n) => [n.key, n]));
-  const layers = base.layers.map((layer) => ({
-    id: layer.id,
-    nodes: layer.nodes.map((viewNode: RunGraphViewNode): RunGraphViewNode => {
-      if (viewNode.latestAttempt) return viewNode;
-      const control = nodeByKey.get(viewNode.nodeKey);
-      if (!control) return viewNode;
-      return {
-        ...viewNode,
-        status: nodeStatusFromWiki(control.state),
-      };
-    }),
-  }));
+  const nodes: RunGraphViewNode[] = snapshot.nodes.map((node) => {
+    const kind = graphKindFor(node.kind);
+    const latest = latestAttemptFor(node.key, attempts);
+    const attemptCount = attempts.filter((a) => a.nodeKey === node.key).length;
+    return {
+      nodeKey: node.key,
+      kind,
+      label: labelFor(node),
+      layer: layerForKind(kind),
+      ...(node.parentKey ? { parentKey: node.parentKey } : {}),
+      ...(latest ? { latestAttempt: latest } : {}),
+      attemptCount,
+      // Overlay control-plane node state when no attempt exists yet.
+      status: latest ? latest.status : nodeStatusFromWiki(node.state),
+    };
+  });
+
+  appendOrphanAttemptNodes(nodes, attempts);
+
+  const playhead = playheadFromWikiAttempts(snapshot.attempts);
 
   return {
-    ...base,
-    layers,
+    layers: groupViewNodesIntoLayers(nodes),
+    attempts,
+    ...(playhead ? { playhead } : {}),
+    topologyVersion: snapshot.revision,
     openGates: openGatesFromSnapshot(snapshot),
     failedNodes: failedNodesFromSnapshot(snapshot),
     runState: snapshot.state,

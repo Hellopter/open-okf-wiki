@@ -46,6 +46,7 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   assert.equal(ws.orchestration.reviewCouncilSize, 3);
   assert.equal(ws.orchestration.planScoutCount, 2);
   assert.equal(ws.orchestration.domainConcurrency, 2);
+  assert.equal(ws.orchestration.leafConcurrency, 2);
   assert.deepEqual(ws.operatorTools, ["read", "grep", "find", "ls"]);
   assert.deepEqual(ws.roleModels.reviewers, []);
   assert.equal(ws.version, 1);
@@ -104,5 +105,24 @@ test("resolveOrchestration fills schema defaults and preserves partials", () => 
   assert.equal(partial.maxLeafFanOut, DEFAULT_ORCHESTRATION.maxLeafFanOut);
   assert.equal(partial.planScoutCount, DEFAULT_ORCHESTRATION.planScoutCount);
   assert.equal(partial.maxDepth, DEFAULT_ORCHESTRATION.maxDepth);
+  assert.equal(partial.leafConcurrency, DEFAULT_ORCHESTRATION.leafConcurrency);
+  assert.equal(partial.leafConcurrency, 2);
   assert.equal("reviewConcurrency" in partial, false);
+});
+
+test("leafConcurrency defaults to 2 and accepts overrides", () => {
+  assert.equal(DEFAULT_ORCHESTRATION.leafConcurrency, 2);
+  assert.equal(resolveOrchestration({}).leafConcurrency, 2);
+  assert.equal(resolveOrchestration({ leafConcurrency: 4 }).leafConcurrency, 4);
+  const ws = WorkspaceConfigSchema.parse({
+    id: "ws_1",
+    name: "Demo",
+    rootPath: "D:/ws/demo",
+    sources: [],
+    model: { id: "openai/corp-model" },
+    publicationPath: "D:/ws/demo/wiki",
+    createdAt: new Date().toISOString(),
+    orchestration: { leafConcurrency: 8 },
+  });
+  assert.equal(ws.orchestration.leafConcurrency, 8);
 });

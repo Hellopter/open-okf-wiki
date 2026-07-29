@@ -177,6 +177,8 @@ export const en = {
       "Run Boundary budgets for plan scouts, Domain/Leaf research, and multi-lens review. Defaults suit medium repos; lower for cost, raise for large codebases.",
     maxDomainFanOut: "Max domains",
     maxLeafFanOut: "Max leaves / domain",
+    maxLeafFanOutHint:
+      "Topology only: max questions/leaves materialized per domain. Does not set the leaf concurrency pool.",
     planScoutCount: "Plan scouts",
     planScoutCountHint:
       "Parallel read-only scouts (entry / layout / tests / risks) before the Spec synthesizer. 0 = single planner only.",
@@ -186,6 +188,11 @@ export const en = {
     reviewConcurrency: "Review concurrency",
     reviewConcurrencyHint: "How many council members run at once (defaults to council size).",
     domainConcurrency: "Domain concurrency",
+    domainConcurrencyHint:
+      "How many domains research in parallel. Also scales the shared leaf pool with leaf concurrency.",
+    leafConcurrency: "Leaf concurrency",
+    leafConcurrencyHint:
+      "Per-domain leaf parallel width. Total leaf slots = domain concurrency × min(leaf concurrency, max leaves / domain).",
     roleModelsTitle: "Role models (hybrid economics)",
     roleModelsHint:
       "Optional: frontier planner + cheaper workers/scouts + separate reviewers. Empty roles fall back to the workspace default model above. Pi auto-compacts each role session near the context target.",
