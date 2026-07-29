@@ -340,13 +340,25 @@ export function upstreamSealedOutputs(
 
   // Carry forward the latest wiki_tree for validate/review/prepare/publish when
   // edges only reference intermediate nodes that re-emit it.
+  // Prefer refined trees (repair.hv / validate) over the original write.root so
+  // auto hard-validate repair is not lost when seats do not re-emit wiki_tree.
   if (!byRole.has("wiki_tree")) {
+    const hvKeys = asRows(
+      host.db
+        .prepare(
+          `SELECT DISTINCT node_key FROM nodes
+           WHERE run_id = ? AND node_key LIKE 'repair.hv.%'
+           ORDER BY node_key DESC`,
+        )
+        .all(runId),
+    ).map((row) => requiredText(row, "node_key"));
     for (const key of [
-      "write.root",
+      ...hvKeys,
       "repair",
-      "validate.pre",
       "validate.final",
+      "validate.pre",
       "review.reduce",
+      "write.root",
     ]) {
       for (const output of nodeOutputsAtCurrentGen(host, runId, key)) {
         if (output.role === "wiki_tree") add("wiki_tree", output.artifactId);
@@ -355,8 +367,19 @@ export function upstreamSealedOutputs(
     }
   }
 
+  // repair.hv.*: always prefer write.root wiki as the dirty staging baseline
+  // (edge write.root → repair.hv.N normally supplies this; force for safety).
+  if (nodeKey.startsWith("repair.hv.")) {
+    for (const output of nodeOutputsAtCurrentGen(host, runId, "write.root")) {
+      if (output.role === "wiki_tree") {
+        byRole.set("wiki_tree", output.artifactId);
+        break;
+      }
+    }
+  }
+
   // write.root repair reruns (gen>0 or detail.feedback): bind prior succeeded
-  // wiki_tree so the writer can read existing staging (auto HV repair / operator Rerun).
+  // wiki_tree so the writer can read existing staging (operator Rerun / legacy HV).
   if (nodeKey === "write.root" && !byRole.has("wiki_tree")) {
     const generation = host.currentNodeGeneration(runId, nodeKey);
     if (generation !== undefined && writeRootNeedsPriorWiki(host, runId, generation)) {

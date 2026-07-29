@@ -46,8 +46,8 @@ export async function mechanicalValidate(
     requireCitations: claim.kind === "validate.final" ? undefined : false,
   });
   if (!result.ok) {
-    // Quality / mechanical dirty — not missing infrastructure. L_control may
-    // auto hard-validate-repair write.root under acceptance.maxHardValidateRepairRounds.
+    // Quality / mechanical dirty — not missing infrastructure. Scheduler may
+    // auto-schedule repair.hv.N under acceptance.maxHardValidateRepairRounds.
     return {
       type: "failed",
       error: `validation failed: ${result.errors.slice(0, 8).join("; ")}`.slice(0, 4_000),
