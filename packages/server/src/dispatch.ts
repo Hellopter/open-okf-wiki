@@ -42,6 +42,7 @@ import {
   handleAttemptTranscriptEvents,
   handleGetAttemptTranscript,
   handleGetWikiRun,
+  handleGetWikiRunSpec,
   handleWikiRunCommand,
   handleWikiRunEvents,
 } from "./routes/wiki-runs.ts";
@@ -309,6 +310,13 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/events");
       if (params && method === "GET") {
         await handleWikiRunEvents(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/spec");
+      if (params && method === "GET") {
+        await handleGetWikiRunSpec(req, res, params.id!, params.runId!, url);
         return;
       }
     }

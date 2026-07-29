@@ -33,8 +33,9 @@ export const PiAgentStatusSchema = z.enum(["idle", "streaming", "error"]);
 export type PiAgentStatus = z.infer<typeof PiAgentStatusSchema>;
 
 /**
- * Live wiki_produce HITL waiter identity (one per Operator Session).
- * Bound to toolCallId + runId so stale awaiting_* cards stay read-only.
+ * @deprecated ADR 0035 — Session no longer owns HITL. Field retained as always-null
+ * on stream state so patches stay shape-stable; live gates are WikiRuns ResolveGate.
+ * Do not reintroduce Session pendingGate derivation from tool details.
  */
 export const AgentPendingGateSchema = z
   .object({
@@ -46,34 +47,6 @@ export const AgentPendingGateSchema = z
 
 export type AgentPendingGate = z.infer<typeof AgentPendingGateSchema>;
 
-/** True only for the live pending gate card (interactive Approve/Deny). */
-export function isLiveWikiProduceGate(
-  pendingGate: AgentPendingGate | null | undefined,
-  toolCallId: string,
-  details: { status?: string; runId?: string } | null | undefined,
-): boolean {
-  if (!pendingGate || !details?.runId) return false;
-  if (toolCallId !== pendingGate.toolCallId) return false;
-  if (details.runId !== pendingGate.runId) return false;
-  if (pendingGate.gate === "plan") return details.status === "awaiting_plan";
-  return details.status === "awaiting_publication";
-}
-
-/** Derive pendingGate from wiki_produce tool details (live onUpdate path). */
-export function pendingGateFromToolDetails(
-  toolCallId: string,
-  details: { status?: string; runId?: string } | null | undefined,
-): AgentPendingGate | null {
-  if (!details?.runId) return null;
-  if (details.status === "awaiting_plan") {
-    return { toolCallId, runId: details.runId, gate: "plan" };
-  }
-  if (details.status === "awaiting_publication") {
-    return { toolCallId, runId: details.runId, gate: "publication" };
-  }
-  return null;
-}
-
 /** Finalized durable rows plus at most one live assistant snapshot. */
 export type PiStreamState = {
   messages: AgentMessage[];
@@ -82,8 +55,11 @@ export type PiStreamState = {
   turnActive: boolean;
   agentStatus: PiAgentStatus;
   errorText: string | null;
-  /** Live HITL waiter; null when no operator gate is open. */
-  pendingGate: AgentPendingGate | null;
+  /**
+   * Always null after ADR 0035 hard-cut (WikiRuns owns gates).
+   * Kept on the state object so stream patches do not dual-write Session HITL.
+   */
+  pendingGate: null;
 };
 
 export const AgentStreamViewPatchSchema = z
@@ -97,8 +73,8 @@ export const AgentStreamViewPatchSchema = z
     appended: z.array(AgentMessageSchema),
     /** Existing finalized messages patched in place (same id). */
     updated: z.array(AgentMessageSchema),
-    /** Live HITL waiter identity; null clears; omit preserves client value. */
-    pendingGate: AgentPendingGateSchema.nullable().optional(),
+    /** Always null / omit — Session does not own HITL (ADR 0035). */
+    pendingGate: z.null().optional(),
   })
   .strict();
 
@@ -133,7 +109,7 @@ export function createPiStreamState(seed: readonly AgentMessage[] = []): PiStrea
  *
  * Snapshot messages are cold history: incomplete tools become error first, then
  * the single live activeTool (if any) is re-applied as running.
- * `pendingGate` is the live waiter from getPendingGate (absent/null clears).
+ * `pendingGate` is always null (WikiRuns owns gates; argument ignored).
  */
 export function applySnapshotWithActiveTool(
   messages: AgentMessage[],
@@ -142,12 +118,9 @@ export function applySnapshotWithActiveTool(
     toolName: string;
     details?: AgentToolCall["details"];
   } | null,
-  pendingGate?: AgentPendingGate | null,
+  _pendingGate?: AgentPendingGate | null,
 ): PiStreamState {
-  const snapshot = {
-    ...createPiStreamState(finalizeIncompleteTools(messages)),
-    pendingGate: pendingGate ?? null,
-  };
+  const snapshot = createPiStreamState(finalizeIncompleteTools(messages));
   if (!activeTool) return snapshot;
   return {
     ...updateToolInState(snapshot, activeTool.toolCallId, {
@@ -158,7 +131,7 @@ export function applySnapshotWithActiveTool(
     }),
     turnActive: true,
     agentStatus: "streaming",
-    pendingGate: pendingGate ?? null,
+    pendingGate: null,
   };
 }
 
@@ -311,11 +284,7 @@ function supersedeOtherWikiProduce(state: PiStreamState, keepToolCallId: string)
   });
   const streamingMessage = state.streamingMessage ? markMessage(state.streamingMessage) : null;
   if (streamingMessage !== state.streamingMessage) changed = true;
-  // Drop live HITL if it pointed at a tool we just superseded.
-  const pendingGate =
-    state.pendingGate && state.pendingGate.toolCallId !== keepToolCallId ? null : state.pendingGate;
-  if (pendingGate !== state.pendingGate) changed = true;
-  return changed ? { ...state, messages, streamingMessage, pendingGate } : state;
+  return changed ? { ...state, messages, streamingMessage, pendingGate: null } : state;
 }
 
 /**
@@ -395,16 +364,12 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
         const details = wikiProduceDetails(message);
         const output = toolOutputFromResult(message, details);
         const isError = message.isError === true;
-        const next = updateToolInState(state, toolCallId, {
+        return updateToolInState(state, toolCallId, {
           output,
           ...(details ? { details } : {}),
           status: isError ? "error" : "done",
           name: typeof message.toolName === "string" ? message.toolName : undefined,
         });
-        if (state.pendingGate?.toolCallId === toolCallId) {
-          return { ...next, pendingGate: null };
-        }
-        return next;
       }
       return state;
     }
@@ -530,21 +495,11 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     if (!toolCallId) return state;
     const details = wikiProduceDetails(body.partialResult);
     const partial = toolOutputFromResult(body.partialResult, details);
-    const next = updateToolInState(state, toolCallId, {
+    return updateToolInState(state, toolCallId, {
       output: partial,
       ...(details ? { details } : {}),
       status: "running",
     });
-    // Live HITL: only touch pendingGate when details parse successfully.
-    // Detail-less / unparseable partials must not drop an open gate.
-    if (details) {
-      const fromDetails = pendingGateFromToolDetails(toolCallId, details);
-      if (fromDetails) return { ...next, pendingGate: fromDetails };
-      if (state.pendingGate?.toolCallId === toolCallId) {
-        return { ...next, pendingGate: null };
-      }
-    }
-    return next;
   }
 
   if (kind === "tool_execution_end") {
@@ -553,15 +508,11 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     const details = wikiProduceDetails(body.result);
     const output = toolOutputFromResult(body.result, details);
     const isError = body.isError === true;
-    const next = updateToolInState(state, toolCallId, {
+    return updateToolInState(state, toolCallId, {
       output,
       ...(details ? { details } : {}),
       status: isError ? "error" : "done",
     });
-    if (state.pendingGate?.toolCallId === toolCallId) {
-      return { ...next, pendingGate: null };
-    }
-    return next;
   }
 
   if (kind === "error") {
@@ -714,7 +665,6 @@ export function applyStreamPatch(state: PiStreamState, patch: AgentStreamViewPat
     turnActive: patch.turnActive,
     agentStatus: patch.agentStatus,
     errorText: patch.errorText,
-    // Omitted pendingGate preserves client value (partial fixtures); null clears.
-    pendingGate: patch.pendingGate !== undefined ? patch.pendingGate : state.pendingGate,
+    pendingGate: null,
   };
 }

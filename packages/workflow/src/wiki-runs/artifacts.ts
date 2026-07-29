@@ -26,7 +26,7 @@ import { runWorkDir } from "@okf-wiki/core";
 import { artifactId, digest, now } from "./crypto-util.js";
 import { commitFreezeArtifacts, type FreezeCommitHost, trustedFrozenInputs } from "./freeze.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
-import { upstreamKeys } from "./gates.js";
+import { materializeDefinitionV1Graph, upstreamKeys } from "./gates.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js";
 
@@ -430,6 +430,18 @@ export function commitNodeArtifacts(
   if (claim.kind === "plan") {
     const specPrep = preparations.find((item) => item.role === "spec" || item.kind === "spec");
     if (!specPrep) throw new Error("plan attempt succeeded without a Spec artifact");
+    // planConfirm=false: auto-approve — materialize Definition v1 without operator gate.
+    if (host.workspace.planConfirm === false) {
+      materializeDefinitionV1Graph(host, claim.runId, specPrep.relativePath);
+      host.db
+        .prepare(
+          "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+        )
+        .run(timestamp, claim.runId);
+      host.unlockReadyNodes(claim.runId);
+      host.emit(claim.runId, "node.ready");
+      return;
+    }
     host.openPlanGate(claim, specPrep.digest, timestamp);
     return;
   }

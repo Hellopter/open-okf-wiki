@@ -161,6 +161,8 @@ export function applyPlanGateDecision(
         "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
       )
       .run(timestamp, command.runId);
+    unlockReadyNodes(host, command.runId);
+    host.emit(command.runId, "node.ready");
     return;
   }
   if (command.decision === "revise") {
@@ -387,14 +389,20 @@ export function loadSpecFromArtifact(
  * After plan approve: materialize Definition v1 research → write → validate →
  * review → prepare → gate.publication → publish with durable edges.
  */
+/**
+ * Insert Definition v1 nodes/edges from a sealed Spec path.
+ * Caller sets run state and calls unlockReadyNodes + emit as needed.
+ */
 export function materializeDefinitionV1Graph(
-  host: GatesHost,
+  host: Pick<GatesHost, "db" | "workspace">,
   runId: string,
   relativePath: string,
 ): void {
   const spec = loadSpecFromArtifact(host, runId, relativePath);
   if (!spec) throw new Error("plan approve requires a parseable sealed Spec");
-  const graph = buildDefinitionV1Graph(spec);
+  const graph = buildDefinitionV1Graph(spec, {
+    reviewCouncilSize: host.workspace.orchestration?.reviewCouncilSize,
+  });
   for (const node of graph.nodes) {
     const existing = asRow(
       host.db
@@ -428,8 +436,6 @@ export function materializeDefinitionV1Graph(
       )
       .run(runId, edge.from, edge.to);
   }
-  unlockReadyNodes(host, runId);
-  host.emit(runId, "node.ready");
 }
 
 /**

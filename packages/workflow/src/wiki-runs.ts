@@ -17,6 +17,8 @@ import {
   type WikiRunEvent,
   WikiRunEventSchema,
   type WikiRunSnapshot,
+  type WikiRunSpecRead,
+  WikiRunSpecReadSchema,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import {
@@ -57,6 +59,7 @@ import {
 } from "./wiki-runs/freeze.js";
 import {
   type GatesHost,
+  loadSpecFromArtifact,
   openPlanGate as openPlanGateImpl,
   openPublicationGate as openPublicationGateImpl,
   readPublicationBaseline as readPublicationBaselineImpl,
@@ -145,12 +148,21 @@ class WikiRunsOwner implements WikiRuns {
 
   constructor(
     private readonly db: DatabaseSync,
-    private readonly workspace: WorkspaceConfig,
+    private workspace: WorkspaceConfig,
     private readonly piAttemptExecutor?: PiAttemptExecutor,
     private readonly runBoundary: (
       input: FreezeRunBoundaryInput,
     ) => Promise<FrozenRunBoundary> = freezeRunBoundary,
   ) {}
+
+  /** Hot-swap workspace config for subsequent StartRun / attempts (same SQLite owner). */
+  replaceWorkspace(workspace: WorkspaceConfig): void {
+    this.assertOpen();
+    if (workspace.rootPath !== this.workspace.rootPath) {
+      throw new Error("replaceWorkspace rootPath must match the open owner");
+    }
+    this.workspace = workspace;
+  }
 
   async dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt> {
     this.assertOpen();
@@ -231,6 +243,61 @@ class WikiRunsOwner implements WikiRuns {
   }): Promise<WikiRunAttemptTranscript> {
     this.assertOpen();
     return readAttemptTranscriptImpl(this.transcriptHost(), input);
+  }
+
+  async readPlanSpec(input: { runId: string }): Promise<WikiRunSpecRead> {
+    this.assertOpen();
+    const runId = input.runId;
+    this.db.exec("BEGIN DEFERRED");
+    try {
+      const run = asRow(this.db.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId));
+      if (!run) throw new Error(`run not found: ${runId}`);
+      // Prefer plan node output role=spec; fall back to any sealed spec artifact.
+      const row =
+        asRow(
+          this.db
+            .prepare(
+              `SELECT artifacts.artifact_id, artifacts.digest, artifacts.relative_path
+               FROM node_outputs
+               JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+               JOIN (
+                 SELECT node_key, MAX(generation) AS generation FROM nodes
+                 WHERE run_id = ? AND node_key = 'plan' GROUP BY node_key
+               ) cur ON cur.node_key = node_outputs.node_key
+                    AND cur.generation = node_outputs.node_generation
+               WHERE node_outputs.run_id = ?
+                 AND node_outputs.node_key = 'plan'
+                 AND (node_outputs.role = 'spec' OR artifacts.kind = 'spec')
+               ORDER BY artifacts.sealed_at DESC
+               LIMIT 1`,
+            )
+            .get(runId, runId),
+        ) ??
+        asRow(
+          this.db
+            .prepare(
+              `SELECT artifact_id, digest, relative_path FROM artifacts
+               WHERE run_id = ? AND kind = 'spec'
+               ORDER BY sealed_at DESC LIMIT 1`,
+            )
+            .get(runId),
+        );
+      if (!row) throw new Error(`spec not found: ${runId}`);
+      const relativePath = requiredText(row, "relative_path");
+      const spec = loadSpecFromArtifact({ workspace: this.workspace }, runId, relativePath);
+      if (!spec) throw new Error(`spec not found: ${runId}`);
+      const result = WikiRunSpecReadSchema.parse({
+        runId,
+        artifactId: requiredText(row, "artifact_id"),
+        digest: requiredText(row, "digest"),
+        spec,
+      });
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.rollback();
+      throw error;
+    }
   }
 
   async close(): Promise<void> {

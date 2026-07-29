@@ -140,7 +140,13 @@ function AttemptToolLine({ item }: { item: Extract<AttemptItem, { type: "toolCal
   );
 }
 
-function AttemptTranscriptRow({ entry }: { entry: ProjectedAttemptTranscriptEntry }) {
+function AttemptTranscriptRow({
+  entry,
+  streaming = false,
+}: {
+  entry: ProjectedAttemptTranscriptEntry;
+  streaming?: boolean;
+}) {
   if (entry.kind === "role") {
     return (
       <div
@@ -151,9 +157,14 @@ function AttemptTranscriptRow({ entry }: { entry: ProjectedAttemptTranscriptEntr
         <span className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
           {entry.role}
         </span>
-        <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-2xs leading-5 text-foreground/90">
-          {entry.text}
-        </pre>
+        <div className="max-h-48 min-w-0 overflow-auto text-xs leading-5">
+          <MarkdownDocument
+            content={entry.text}
+            mode={streaming ? "streaming" : "static"}
+            surface="agent"
+            className="text-xs"
+          />
+        </div>
       </div>
     );
   }
@@ -578,6 +589,7 @@ export function NodeAttemptDialog({
                             <AttemptTranscriptRow
                               key={`${effectiveAttemptId}-tx-${index}`}
                               entry={entry}
+                              streaming={streamingLive}
                             />
                           ))
                         )}

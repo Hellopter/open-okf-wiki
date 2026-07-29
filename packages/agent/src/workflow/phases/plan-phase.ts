@@ -14,6 +14,7 @@ import {
   type AttemptItem,
   defaultWikiRunSpec,
   type NodeAttempt,
+  type RetryLimits,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
   type WorkspaceOrchestration,
@@ -83,6 +84,10 @@ export type PlanWikiSpecInput = {
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
+  /** Pi transport retry (workspace.limits.retry). */
+  retry?: RetryLimits;
+  /** Wall-clock budget for planner (and scouts via planScout path). */
+  timeoutMs?: number;
   abortSignal?: AbortSignal;
   operatorNotes?: string;
   priorSpec?: WikiRunSpec;
@@ -212,6 +217,8 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     sourceIgnores: input.sourceIgnores,
     maxContextTokens: input.maxContextTokens,
     contextTargetTokens: input.contextTargetTokens,
+    retry: input.retry,
+    timeoutMs: input.timeoutMs,
     abortSignal: input.abortSignal,
     onProgress: input.onProgress,
     transcriptPath: input.transcriptPath,

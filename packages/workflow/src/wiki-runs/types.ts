@@ -14,6 +14,7 @@ import type {
   WikiRunAttempt,
   WikiRunEvent,
   WikiRunSnapshot,
+  WikiRunSpecRead,
   WorkspaceConfig,
 } from "@okf-wiki/contract";
 import type { FreezeRunBoundaryInput, FrozenRunBoundary } from "@okf-wiki/core";
@@ -102,6 +103,13 @@ export interface WikiRuns {
     runId: string;
     attemptId: string;
   }): Promise<WikiRunAttemptTranscript>;
+  /**
+   * Sealed plan Spec for operator review (GET …/runs/:runId/spec).
+   * Throws `spec not found: <runId>` when no sealed plan output exists.
+   */
+  readPlanSpec(input: { runId: string }): Promise<WikiRunSpecRead>;
+  /** Replace in-memory workspace config (new StartRun uses updated limits). */
+  replaceWorkspace(workspace: WorkspaceConfig): void;
   close(): Promise<void>;
 }
 

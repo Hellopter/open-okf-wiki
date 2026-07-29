@@ -68,9 +68,10 @@ function graphKindFor(kind: WikiRunNodeKind): GraphNodeKind {
   }
 }
 
+/** Prefer control-plane projected label; fall back to key tail only if absent. */
 function labelFor(node: WikiRunNode): string {
-  // Keys are durable identifiers (e.g. research.leaf.core); use as display when
-  // no separate label field exists on the control-plane node.
+  const projected = node.label?.trim();
+  if (projected) return projected;
   const key = node.key;
   const short = key.includes(".") ? key.slice(key.lastIndexOf(".") + 1) : key;
   return short || key;
@@ -138,6 +139,7 @@ export function wikiRunSnapshotToRunGraph(snapshot: WikiRunSnapshot): RunGraphSn
     nodeKey: node.key,
     kind: graphKindFor(node.kind),
     label: labelFor(node),
+    ...(node.parentKey ? { parentKey: node.parentKey } : {}),
   }));
 
   const attempts = snapshot.attempts.map(projectWikiAttempt);

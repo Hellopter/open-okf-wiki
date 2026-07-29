@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Sha256HexSchema } from "./primitives.js";
-import { RepositorySnapshotSchema } from "./run.js";
+import { RepositorySnapshotSchema, WikiRunSpecSchema } from "./run.js";
 
 /** Durable WikiRuns contract version. Definition v1 is Wiki-specific, not a workflow DSL. */
 export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v1" as const;
@@ -239,6 +239,22 @@ export const WikiRunNodeOutputSchema = z
   })
   .strict();
 
+/**
+ * Secret-free operator-facing node detail (from sealed definition detail_json).
+ * Never carries provider secrets or full Spec bodies.
+ */
+export const WikiRunNodeDetailSchema = z
+  .object({
+    domainId: z.string().trim().min(1).max(200).optional(),
+    title: z.string().trim().max(500).optional(),
+    question: z.string().trim().max(4_000).optional(),
+    questionIndex: z.number().int().positive().optional(),
+    scope: z.string().trim().max(2_000).optional(),
+    lens: z.string().trim().min(1).max(100).optional(),
+    critical: z.boolean().optional(),
+  })
+  .strict();
+
 export const WikiRunNodeSchema = z
   .object({
     key: RunNodeKeySchema,
@@ -248,6 +264,23 @@ export const WikiRunNodeSchema = z
     currentAttemptId: RunAttemptIdSchema.nullable(),
     lastAttemptId: RunAttemptIdSchema.nullable(),
     outputs: z.array(WikiRunNodeOutputSchema),
+    /** Operator chip label (projected; not a durable control key). */
+    label: z.string().trim().min(1).max(200),
+    /** Optional parent for research hierarchy tooltips (leaf → domain → plan). */
+    parentKey: RunNodeKeySchema.optional(),
+    detail: WikiRunNodeDetailSchema.optional(),
+  })
+  .strict();
+
+/**
+ * GET …/runs/:runId/spec — sealed plan Spec for operator review (not on snapshot SSE).
+ */
+export const WikiRunSpecReadSchema = z
+  .object({
+    runId: WikiRunIdSchema,
+    artifactId: IdentifierSchema.optional(),
+    digest: Sha256HexSchema,
+    spec: WikiRunSpecSchema,
   })
   .strict();
 
@@ -411,10 +444,12 @@ export const RunCommandReceiptSchema = z
 
 export type WikiRunArtifact = z.infer<typeof WikiRunArtifactSchema>;
 export type WikiRunNode = z.infer<typeof WikiRunNodeSchema>;
+export type WikiRunNodeDetail = z.infer<typeof WikiRunNodeDetailSchema>;
 export type WikiRunAttempt = z.infer<typeof WikiRunAttemptSchema>;
 export type WikiRunGate = z.infer<typeof WikiRunGateSchema>;
 export type WikiRunEffect = z.infer<typeof WikiRunEffectSchema>;
 export type WikiRunSnapshot = z.infer<typeof WikiRunSnapshotSchema>;
 export type WikiRunEvent = z.infer<typeof WikiRunEventSchema>;
 export type WikiRunEventType = z.infer<typeof WikiRunEventTypeSchema>;
+export type WikiRunSpecRead = z.infer<typeof WikiRunSpecReadSchema>;
 export type RunCommandReceipt = z.infer<typeof RunCommandReceiptSchema>;

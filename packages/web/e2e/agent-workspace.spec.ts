@@ -140,6 +140,8 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await expect(details).toHaveAttribute("data-wiki-run-state", "waiting_for_operator", {
       timeout: 15_000,
     });
+    // Sealed Spec must render for operator review (ADR 0035 read path).
+    await expect(page.getByTestId("spec-review")).toBeVisible({ timeout: 30_000 });
 
     await page.reload();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
@@ -150,6 +152,7 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
       "waiting_for_operator",
       { timeout: 30_000 },
     );
+    await expect(page.getByTestId("spec-review")).toBeVisible({ timeout: 30_000 });
     await page.getByTestId("agent-gate-approve").click();
 
     await expect(page.getByTestId("agent-publication-gate")).toBeVisible({ timeout: 120_000 });

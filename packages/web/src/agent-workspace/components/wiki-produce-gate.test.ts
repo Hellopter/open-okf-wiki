@@ -94,6 +94,7 @@ describe("wiki_produce gate interactivity (WikiRuns snapshot)", () => {
             currentAttemptId: "a1",
             lastAttemptId: "a1",
             outputs: [],
+            label: "node",
           },
         ],
         attempts: [
@@ -128,6 +129,7 @@ describe("wiki_produce gate interactivity (WikiRuns snapshot)", () => {
             currentAttemptId: "a-old",
             lastAttemptId: "a-old",
             outputs: [],
+            label: "node",
           },
         ],
         attempts: [

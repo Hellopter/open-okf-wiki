@@ -21,6 +21,7 @@ function statusFor(error: unknown): number {
   if (error instanceof CommandIdCollision || error instanceof WorkflowInUseError) return 409;
   if (error instanceof Error && error.message.startsWith("run not found:")) return 404;
   if (error instanceof Error && error.message.startsWith("attempt not found:")) return 404;
+  if (error instanceof Error && error.message.startsWith("spec not found:")) return 404;
   // Missing transcript *file* is no longer an error (empty messages). Keep this
   // mapping only for any residual throw sites.
   if (error instanceof Error && error.message === "transcript not found") return 404;
@@ -99,6 +100,24 @@ export async function handleGetWikiRun(
   try {
     const { snapshot, cursor } = await (await wikiRunsForWorkspace(workspace)).read({ runId });
     sendJson(res, 200, { snapshot, cursor });
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+  }
+}
+
+/** GET sealed plan Spec for operator review (not embedded on Run SSE). */
+export async function handleGetWikiRunSpec(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id, url);
+  if (!workspace) return;
+  try {
+    const body = await (await wikiRunsForWorkspace(workspace)).readPlanSpec({ runId });
+    sendJson(res, 200, body);
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
   }

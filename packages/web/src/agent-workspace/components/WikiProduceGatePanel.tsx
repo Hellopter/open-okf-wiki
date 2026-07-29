@@ -12,6 +12,7 @@ import type {
   WikiRunGate,
   WikiRunGateKind,
   WikiRunNode,
+  WikiRunSpec,
 } from "@okf-wiki/contract";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
@@ -20,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { FieldLabel } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { dispatchWikiRunCommand } from "../../api";
+import { dispatchWikiRunCommand, getWikiRunSpec } from "../../api";
 import { useI18n } from "../../i18n";
 import { useWikiRun } from "../hooks/useWikiRun";
 import { compactSummary } from "../run-graph/compact-summary";
@@ -32,6 +33,7 @@ import {
   wikiRunSnapshotToRunGraph,
   wikiRunToViewModel,
 } from "../run-graph/wiki-run-view-model";
+import { SpecReviewView } from "./SpecReviewView";
 import { StatusBadge } from "./StatusBadge";
 
 export type WikiProduceGatePanelProps = {
@@ -74,6 +76,9 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const [dialogNodeKey, setDialogNodeKey] = useState<string | null>(null);
   const [dialogAttemptId, setDialogAttemptId] = useState<string | null>(null);
   const [activeGateId, setActiveGateId] = useState<string | null>(null);
+  const [planSpec, setPlanSpec] = useState<WikiRunSpec | null>(null);
+  const [planSpecLoading, setPlanSpecLoading] = useState(false);
+  const [planSpecError, setPlanSpecError] = useState<string | null>(null);
 
   useEffect(() => {
     setSubmitting(false);
@@ -83,6 +88,8 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     setDialogNodeKey(null);
     setDialogAttemptId(null);
     setActiveGateId(null);
+    setPlanSpec(null);
+    setPlanSpecError(null);
   }, [runId]);
 
   const openGates = viewModel?.openGates ?? [];
@@ -91,6 +98,39 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     openGates.find((g) => g.kind === "publication") ??
     openGates[0] ??
     null;
+
+  // Load sealed Spec whenever a plan gate is open (or after plan succeeded for review).
+  const wantPlanSpec =
+    Boolean(runId && routeWorkspaceId) &&
+    (primaryGate?.kind === "plan" ||
+      Boolean(snapshot?.nodes.some((n) => n.key === "plan" && n.state === "succeeded")));
+
+  useEffect(() => {
+    if (!wantPlanSpec || !runId || !routeWorkspaceId) {
+      setPlanSpec(null);
+      setPlanSpecError(null);
+      setPlanSpecLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPlanSpecLoading(true);
+    setPlanSpecError(null);
+    void getWikiRunSpec(routeWorkspaceId, runId, rootPathHint)
+      .then((body) => {
+        if (cancelled) return;
+        setPlanSpec(body.spec);
+        setPlanSpecLoading(false);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setPlanSpec(null);
+        setPlanSpecLoading(false);
+        setPlanSpecError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wantPlanSpec, runId, routeWorkspaceId, rootPathHint, primaryGate?.gateId, snapshot?.revision]);
 
   const relatedAttempts = useMemo(() => {
     if (!dialogNodeKey || !snapshot) return [] as ReturnType<typeof projectWikiAttempt>[];
@@ -206,8 +246,9 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     compactSummary(details.summary, 96) ||
     compactSummary(snapshot ? `rev ${snapshot.revision}` : undefined, 96);
 
-  /** Receipt may still carry historical page paths; live plan text is on Run inspector. */
-  const pages = details.pages ?? [];
+  /** Prefer live sealed Spec pages; receipt pages are historical only. */
+  const pages =
+    planSpec?.pages.map((page) => page.path) ?? details.pages ?? [];
   const hasGraph =
     Boolean(graph) && ((graph?.topology.length ?? 0) > 0 || (graph?.attempts.length ?? 0) > 0);
 
@@ -281,7 +322,27 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
         </p>
       ) : null}
 
-      {pages.length > 0 ? (
+      {primaryGate?.kind === "plan" || planSpec ? (
+        <div
+          className="flex flex-col gap-1.5 border-t border-border/60 pt-2"
+          data-testid="wiki-produce-plan-review"
+        >
+          {planSpecLoading ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Spinner className="size-3.5" />
+              {t.common.loading}
+            </div>
+          ) : null}
+          {planSpecError ? (
+            <p className="text-xs text-destructive" data-testid="wiki-produce-plan-spec-error">
+              {planSpecError}
+            </p>
+          ) : null}
+          {planSpec ? <SpecReviewView spec={planSpec} /> : null}
+        </div>
+      ) : null}
+
+      {!planSpec && pages.length > 0 ? (
         <div className="flex flex-col gap-1">
           <p className="okf-section-label">
             {t.planConfirm.pagesLabel} · {pages.length}

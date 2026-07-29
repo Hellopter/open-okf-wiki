@@ -6,15 +6,54 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   type WikiRunAttempt,
   type WikiRunNode,
+  type WikiRunNodeKind,
   type WikiRunSnapshot,
   WikiRunSnapshotSchema,
 } from "@okf-wiki/contract";
+import { labelForNode, parentKeyForNode, parseNodeDetail } from "./node-label.js";
 import { asRow, asRows, parseJson, requiredNumber, requiredText } from "./sql.js";
+
+/**
+ * Prefer a single semantic parent for UI hierarchy:
+ * research.leaf → research.domain; research.domain → plan; else first inbound edge.
+ */
+function pickParentFromEdges(
+  kind: WikiRunNodeKind,
+  _key: string,
+  inbound: string[],
+): string | undefined {
+  if (inbound.length === 0) return undefined;
+  if (kind === "research.leaf") {
+    const domain = inbound.find((k) => k.startsWith("research.domain."));
+    if (domain) return domain;
+  }
+  if (kind === "research.domain") {
+    if (inbound.includes("plan")) return "plan";
+  }
+  // Avoid gate self-noise: prefer non-gate parents when multiple.
+  const nonGate = inbound.find((k) => !k.startsWith("gate."));
+  return nonGate ?? inbound[0];
+}
 
 /** Build a validated WikiRunSnapshot for one run from the control-plane DB. */
 export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot {
   const run = asRow(db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId));
   if (!run) throw new Error(`run not found: ${runId}`);
+
+  // Inbound edges: to_key → from_key[] (for parentKey projection).
+  const inboundByTo = new Map<string, string[]>();
+  for (const edge of asRows(
+    db
+      .prepare("SELECT from_key, to_key FROM node_edges WHERE run_id = ?")
+      .all(runId),
+  )) {
+    const from = requiredText(edge, "from_key");
+    const to = requiredText(edge, "to_key");
+    const list = inboundByTo.get(to) ?? [];
+    list.push(from);
+    inboundByTo.set(to, list);
+  }
+
   const nodes: WikiRunNode[] = asRows(
     db
       .prepare(
@@ -24,32 +63,47 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
          WHERE nodes.run_id = ? ORDER BY nodes.node_key`,
       )
       .all(runId, runId),
-  ).map((node) => ({
-    key: requiredText(node, "node_key"),
-    kind: requiredText(node, "kind") as WikiRunNode["kind"],
-    state: requiredText(node, "state") as WikiRunNode["state"],
-    generation: requiredNumber(node, "generation"),
-    currentAttemptId: node.current_attempt_id as string | null,
-    lastAttemptId: node.last_attempt_id as string | null,
-    outputs: asRows(
-      db
-        .prepare(
-          `SELECT node_outputs.role, artifacts.artifact_id, artifacts.kind, artifacts.digest, artifacts.sealed_at
-           FROM node_outputs JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
-           WHERE node_outputs.run_id = ? AND node_outputs.node_key = ? AND node_outputs.node_generation = ?
-           ORDER BY node_outputs.role`,
-        )
-        .all(runId, requiredText(node, "node_key"), requiredNumber(node, "generation")),
-    ).map((output) => ({
-      role: requiredText(output, "role"),
-      artifact: {
-        artifactId: requiredText(output, "artifact_id"),
-        kind: requiredText(output, "kind") as WikiRunNode["outputs"][number]["artifact"]["kind"],
-        digest: requiredText(output, "digest"),
-        sealedAt: requiredText(output, "sealed_at"),
-      },
-    })),
-  }));
+  ).map((node) => {
+    const key = requiredText(node, "node_key");
+    const kind = requiredText(node, "kind") as WikiRunNodeKind;
+    const detailRaw =
+      node.detail_json == null || node.detail_json === ""
+        ? undefined
+        : parseJson<unknown>(node.detail_json as string);
+    const detail = parseNodeDetail(detailRaw);
+    const edgeParent = pickParentFromEdges(kind, key, inboundByTo.get(key) ?? []);
+    const parentKey = parentKeyForNode(kind, key, detail, edgeParent);
+    const label = labelForNode(kind, key, detail);
+    return {
+      key,
+      kind,
+      state: requiredText(node, "state") as WikiRunNode["state"],
+      generation: requiredNumber(node, "generation"),
+      currentAttemptId: node.current_attempt_id as string | null,
+      lastAttemptId: node.last_attempt_id as string | null,
+      outputs: asRows(
+        db
+          .prepare(
+            `SELECT node_outputs.role, artifacts.artifact_id, artifacts.kind, artifacts.digest, artifacts.sealed_at
+             FROM node_outputs JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+             WHERE node_outputs.run_id = ? AND node_outputs.node_key = ? AND node_outputs.node_generation = ?
+             ORDER BY node_outputs.role`,
+          )
+          .all(runId, key, requiredNumber(node, "generation")),
+      ).map((output) => ({
+        role: requiredText(output, "role"),
+        artifact: {
+          artifactId: requiredText(output, "artifact_id"),
+          kind: requiredText(output, "kind") as WikiRunNode["outputs"][number]["artifact"]["kind"],
+          digest: requiredText(output, "digest"),
+          sealedAt: requiredText(output, "sealed_at"),
+        },
+      })),
+      label,
+      ...(parentKey ? { parentKey } : {}),
+      ...(detail ? { detail } : {}),
+    };
+  });
   const attempts: WikiRunAttempt[] = asRows(
     db.prepare("SELECT * FROM attempts WHERE run_id = ? ORDER BY started_at, attempt_id").all(runId),
   ).map((attempt) => ({

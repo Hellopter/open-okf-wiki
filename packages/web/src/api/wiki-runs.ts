@@ -3,7 +3,13 @@
  * Domain types come from `@okf-wiki/contract` — do not redeclare schemas here.
  */
 
-import type { RunCommand, RunCommandReceipt, WikiRunSnapshot, WikiRunState } from "@okf-wiki/contract";
+import type {
+  RunCommand,
+  RunCommandReceipt,
+  WikiRunSnapshot,
+  WikiRunSpecRead,
+  WikiRunState,
+} from "@okf-wiki/contract";
 import { getApiBase, request, withRootPathQuery } from "./client";
 
 export type { WikiRunState };
@@ -34,6 +40,20 @@ export function getWikiRun(
   return request(
     withRootPathQuery(
       `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
+      rootPath,
+    ),
+  );
+}
+
+/** Sealed plan Spec for operator review (not on Run SSE). */
+export function getWikiRunSpec(
+  workspaceId: string,
+  runId: string,
+  rootPath?: string,
+): Promise<WikiRunSpecRead> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,
       rootPath,
     ),
   );

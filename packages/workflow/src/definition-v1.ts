@@ -8,6 +8,11 @@
 
 import type { WikiRunNodeKind, WikiRunSpec } from "@okf-wiki/contract";
 
+export type BuildDefinitionV1Options = {
+  /** Number of review seats (1–4). Default: all REVIEW_LENSES. */
+  reviewCouncilSize?: number;
+};
+
 export type DefinitionV1Node = {
   key: string;
   kind: WikiRunNodeKind;
@@ -40,10 +45,18 @@ const REVIEW_LENSES = ["grounding", "coverage", "consistency", "general"] as con
  * `gate.plan` is already open/resolved before this runs; edges from `plan`
  * express the semantic dependency for attempt_inputs binding.
  */
-export function buildDefinitionV1Graph(spec: WikiRunSpec): DefinitionV1Graph {
+export function buildDefinitionV1Graph(
+  spec: WikiRunSpec,
+  options?: BuildDefinitionV1Options,
+): DefinitionV1Graph {
   const nodes: DefinitionV1Node[] = [];
   const edges: DefinitionV1Edge[] = [];
   const seen = new Set<string>();
+  const councilSize = Math.max(
+    1,
+    Math.min(REVIEW_LENSES.length, Math.floor(options?.reviewCouncilSize ?? REVIEW_LENSES.length)),
+  );
+  const lenses = REVIEW_LENSES.slice(0, councilSize);
 
   const addNode = (node: DefinitionV1Node): void => {
     if (seen.has(node.key)) return;
@@ -125,7 +138,7 @@ export function buildDefinitionV1Graph(spec: WikiRunSpec): DefinitionV1Graph {
   addEdge("write.root", "validate.pre");
 
   const seatKeys: string[] = [];
-  for (const lens of REVIEW_LENSES) {
+  for (const lens of lenses) {
     const seatKey = `review.seat.${lens}`;
     seatKeys.push(seatKey);
     addNode({

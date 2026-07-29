@@ -47,11 +47,13 @@ async function reloadWorkspace(workspace: WorkspaceConfig): Promise<WorkspaceCon
 
 function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWikiRun {
   return async ({ commandId, sessionId: sid }) => {
-    const runs = await wikiRunsForWorkspace(workspace);
+    // Always reload from disk — session may have been opened before sources/settings were saved.
+    const current = await reloadWorkspace(workspace);
+    const runs = await wikiRunsForWorkspace(current);
     return runs.dispatch(
       { type: "start_run", commandId },
       {
-        workspaceId: workspace.id,
+        workspaceId: current.id,
         actor: { id: sid || sessionId, kind: "operator_session" },
         sessionId: sid || sessionId,
       },
@@ -62,7 +64,8 @@ function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWi
 /** Server-composed RerunNode dispatch for wiki_repair (ADR 0035). */
 function rerunWikiNodeFor(workspace: WorkspaceConfig, sessionId: string): RerunWikiNode {
   return async ({ commandId, runId, nodeKey, generation, feedback, sessionId: sid }) => {
-    const runs = await wikiRunsForWorkspace(workspace);
+    const current = await reloadWorkspace(workspace);
+    const runs = await wikiRunsForWorkspace(current);
     return runs.dispatch(
       {
         type: "rerun_node",
@@ -73,7 +76,7 @@ function rerunWikiNodeFor(workspace: WorkspaceConfig, sessionId: string): RerunW
         ...(feedback !== undefined ? { feedback } : {}),
       },
       {
-        workspaceId: workspace.id,
+        workspaceId: current.id,
         actor: { id: sid || sessionId, kind: "operator_session" },
         sessionId: sid || sessionId,
       },
@@ -86,7 +89,8 @@ async function resolveRepairTargetFor(
   workspace: WorkspaceConfig,
   input: { runId: string },
 ): Promise<{ nodeKey: string; generation: number } | null> {
-  const runs = await wikiRunsForWorkspace(workspace);
+  const current = await reloadWorkspace(workspace);
+  const runs = await wikiRunsForWorkspace(current);
   try {
     const { snapshot } = await runs.read({ runId: input.runId });
     const write = snapshot.nodes.find((node) => node.key === "write.root");

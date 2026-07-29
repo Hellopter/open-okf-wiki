@@ -212,11 +212,8 @@ describe("projectAgentEvent", () => {
     assert.equal(state.pendingGate, null);
   });
 
-  it("clears pendingGate when reconnect snapshot omits it (stale awaiting cards)", () => {
-    const seeded = {
-      ...createPiStreamState(),
-      pendingGate: { toolCallId: "old", runId: "run-old", gate: "plan" as const },
-    };
+  it("keeps pendingGate null on reconnect snapshot (WikiRuns owns gates)", () => {
+    const seeded = createPiStreamState();
     const state = projectAgentEvent(seeded, {
       source: "server",
       kind: "snapshot",
@@ -236,8 +233,8 @@ describe("projectAgentEvent", () => {
                 id: "old",
                 name: "wiki_produce",
                 args: {},
-                status: "error",
-                details: { status: "awaiting_plan", runId: "run-old" },
+                status: "done",
+                details: { status: "accepted", runId: "run-old" },
               },
             ],
           },

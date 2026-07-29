@@ -4,8 +4,6 @@ import type { AgentMessage } from "./agent-message.js";
 import {
   applySnapshotWithActiveTool,
   createPiStreamState,
-  isLiveWikiProduceGate,
-  pendingGateFromToolDetails,
   reducePiEvent,
   updateToolInState,
   viewMessages,
@@ -132,11 +130,8 @@ describe("applySnapshotWithActiveTool", () => {
     assert.equal(live?.output, "Awaiting plan");
     assert.equal(state.turnActive, true);
     assert.equal(state.agentStatus, "streaming");
-    assert.deepEqual(state.pendingGate, {
-      toolCallId: "live",
-      runId: "run-1",
-      gate: "plan",
-    });
+    // ADR 0035: Session stream never owns HITL waiters.
+    assert.equal(state.pendingGate, null);
   });
 
   it("finalizes incomplete tools even when activeTool is absent", () => {
@@ -167,8 +162,8 @@ describe("applySnapshotWithActiveTool", () => {
   });
 });
 
-describe("pendingGate live reduce", () => {
-  it("sets pendingGate on awaiting_plan tool_execution_update and clears on end", () => {
+describe("pendingGate hard-cut (ADR 0035)", () => {
+  it("never sets pendingGate from wiki_produce tool details (gates are WikiRuns)", () => {
     let state = createPiStreamState();
     state = reducePiEvent(state, "agent_start", { type: "agent_start" });
     state = reducePiEvent(state, "tool_execution_start", {
@@ -183,161 +178,62 @@ describe("pendingGate live reduce", () => {
       toolName: "wiki_produce",
       partialResult: {
         details: {
-          status: "awaiting_plan",
+          status: "accepted",
           runId: "run-1",
-          summary: "Awaiting WikiRunSpec approval",
+          summary: "Wiki Run accepted",
         },
-      },
-    });
-    assert.deepEqual(state.pendingGate, {
-      toolCallId: "wiki-1",
-      runId: "run-1",
-      gate: "plan",
-    });
-    assert.equal(
-      isLiveWikiProduceGate(state.pendingGate, "wiki-1", {
-        status: "awaiting_plan",
-        runId: "run-1",
-      }),
-      true,
-    );
-    assert.equal(
-      isLiveWikiProduceGate(state.pendingGate, "stale-card", {
-        status: "awaiting_plan",
-        runId: "run-1",
-      }),
-      false,
-    );
-
-    state = reducePiEvent(state, "tool_execution_update", {
-      type: "tool_execution_update",
-      toolCallId: "wiki-1",
-      toolName: "wiki_produce",
-      partialResult: {
-        details: { status: "producing", runId: "run-1", summary: "Producing" },
       },
     });
     assert.equal(state.pendingGate, null);
-
-    state = reducePiEvent(state, "tool_execution_update", {
-      type: "tool_execution_update",
-      toolCallId: "wiki-1",
-      toolName: "wiki_produce",
-      partialResult: {
-        details: {
-          status: "awaiting_publication",
-          runId: "run-1",
-          summary: "Awaiting publication",
-        },
-      },
-    });
-    assert.deepEqual(state.pendingGate, {
-      toolCallId: "wiki-1",
-      runId: "run-1",
-      gate: "publication",
-    });
 
     state = reducePiEvent(state, "tool_execution_end", {
       type: "tool_execution_end",
       toolCallId: "wiki-1",
       toolName: "wiki_produce",
-      result: { details: { status: "published", runId: "run-1" } },
+      result: { details: { status: "accepted", runId: "run-1" } },
     });
     assert.equal(state.pendingGate, null);
   });
 
-  it("clears pendingGate on agent_end", () => {
+  it("keeps pendingGate null across agent_end", () => {
     let state = createPiStreamState();
     state = {
       ...state,
-      pendingGate: { toolCallId: "wiki-1", runId: "run-1", gate: "plan" },
       turnActive: true,
       agentStatus: "streaming",
     };
     state = reducePiEvent(state, "agent_end", { type: "agent_end" });
     assert.equal(state.pendingGate, null);
   });
+});
 
-  it("does not clear pendingGate on detail-less tool_execution_update", () => {
+describe("wiki_produce receipt details on stream (no Session HITL)", () => {
+  it("projects accepted receipt details without Session gate", () => {
     let state = createPiStreamState();
-    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
     state = reducePiEvent(state, "tool_execution_start", {
       type: "tool_execution_start",
-      toolCallId: "wiki-1",
+      toolCallId: "t1",
       toolName: "wiki_produce",
       args: {},
     });
     state = reducePiEvent(state, "tool_execution_update", {
       type: "tool_execution_update",
-      toolCallId: "wiki-1",
+      toolCallId: "t1",
       toolName: "wiki_produce",
       partialResult: {
-        details: {
-          status: "awaiting_plan",
-          runId: "run-1",
-          summary: "Awaiting",
-        },
-      },
-    });
-    assert.ok(state.pendingGate);
-
-    // Partial without parseable details must not drop the open gate.
-    state = reducePiEvent(state, "tool_execution_update", {
-      type: "tool_execution_update",
-      toolCallId: "wiki-1",
-      toolName: "wiki_produce",
-      partialResult: { content: [{ type: "text", text: "progress" }] },
-    });
-    assert.deepEqual(state.pendingGate, {
-      toolCallId: "wiki-1",
-      runId: "run-1",
-      gate: "plan",
-    });
-  });
-
-  it("clears pendingGate on aborted message_end", () => {
-    let state = createPiStreamState();
-    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
-    state = reducePiEvent(state, "message_start", {
-      type: "message_start",
-      message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
-    });
-    state = {
-      ...state,
-      pendingGate: { toolCallId: "wiki-1", runId: "run-1", gate: "plan" },
-    };
-    state = reducePiEvent(state, "message_end", {
-      type: "message_end",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "hi" }],
-        stopReason: "aborted",
+        details: { status: "accepted", runId: "r1", summary: "ok" },
       },
     });
     assert.equal(state.pendingGate, null);
+    const tool = viewMessages(state)
+      .flatMap((m) => m.tools ?? [])
+      .find((t) => t.id === "t1");
+    assert.equal(tool?.details?.status, "accepted");
+    assert.equal(tool?.details?.runId, "r1");
   });
-});
 
-describe("isLiveWikiProduceGate / pendingGateFromToolDetails", () => {
-  it("matches only toolCallId + runId + gate status", () => {
-    const pending = pendingGateFromToolDetails("t1", {
-      status: "awaiting_plan",
-      runId: "r1",
-    });
-    assert.deepEqual(pending, { toolCallId: "t1", runId: "r1", gate: "plan" });
-    assert.equal(
-      isLiveWikiProduceGate(pending, "t1", { status: "awaiting_plan", runId: "r1" }),
-      true,
-    );
-    assert.equal(
-      isLiveWikiProduceGate(pending, "t1", { status: "awaiting_publication", runId: "r1" }),
-      false,
-    );
-    assert.equal(
-      isLiveWikiProduceGate(null, "t1", { status: "awaiting_plan", runId: "r1" }),
-      false,
-    );
-    assert.equal(pendingGateFromToolDetails("t1", { status: "producing", runId: "r1" }), null);
+  it("stream state pendingGate is always null", () => {
+    assert.equal(createPiStreamState().pendingGate, null);
   });
 });
 
@@ -411,7 +307,7 @@ describe("reducePiEvent tool_execution_start wiki_produce", () => {
     assert.equal(tools.find((t) => t.id === "new-produce")?.name, "wiki_produce");
   });
 
-  it("clears pendingGate when superseding the live wiki_produce toolCallId", () => {
+  it("keeps pendingGate null when superseding wiki_produce tools", () => {
     let state = createPiStreamState([
       assistantWithTools("asst-1", [
         { id: "old-produce", name: "wiki_produce", status: "running" },
@@ -420,7 +316,6 @@ describe("reducePiEvent tool_execution_start wiki_produce", () => {
     state = {
       ...state,
       lastAssistantId: "asst-1",
-      pendingGate: { toolCallId: "old-produce", runId: "run-old", gate: "plan" },
     };
 
     state = reducePiEvent(state, "tool_execution_start", {

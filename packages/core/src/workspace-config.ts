@@ -93,7 +93,8 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
     limits: WorkspaceLimitsSchema.parse({}),
     roleModels: WorkspaceRoleModelsSchema.parse({}),
     orchestration: WorkspaceOrchestrationSchema.parse({}),
-    planConfirm: false,
+    // Match WorkspaceConfigSchema default — HITL plan gate on unless operator opts out.
+    planConfirm: true,
     operatorTools: [...DEFAULT_OPERATOR_TOOLS],
     wikiLanguage: "en",
     createdAt: now,

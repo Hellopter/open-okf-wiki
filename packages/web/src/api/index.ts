@@ -77,6 +77,7 @@ export {
   dispatchWikiRunCommand,
   getWikiRun,
   getWikiRunAttemptTranscript,
+  getWikiRunSpec,
   listRuns,
   type WikiRunAttemptTranscript,
   type WikiRunListItem,

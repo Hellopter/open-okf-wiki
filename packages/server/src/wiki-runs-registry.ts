@@ -6,13 +6,25 @@ import { openWikiRuns, type WikiRuns } from "@okf-wiki/workflow";
 const owners = new Map<string, WikiRuns>();
 const opening = new Map<string, Promise<WikiRuns>>();
 
+/**
+ * Return the WikiRuns owner for this workspace root.
+ * Always applies the latest `workspace` config onto a warm owner so subsequent
+ * StartRun / attempts see saved timeout/retry/orchestration (ADR 0035 follow-up).
+ */
 export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<WikiRuns> {
   const key = workspace.rootPath;
   const existing = owners.get(key);
-  if (existing) return existing;
+  if (existing) {
+    existing.replaceWorkspace(workspace);
+    return existing;
+  }
 
   const pending = opening.get(key);
-  if (pending) return pending;
+  if (pending) {
+    const runs = await pending;
+    runs.replaceWorkspace(workspace);
+    return runs;
+  }
 
   const fixture = shouldUsePiFixtureMode({});
   const owner = openWikiRuns({
@@ -20,6 +32,7 @@ export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<
     piAttemptExecutor: createPiAttemptExecutor({ fixture }),
   })
     .then((runs) => {
+      runs.replaceWorkspace(workspace);
       owners.set(key, runs);
       return runs;
     })

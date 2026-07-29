@@ -5,8 +5,8 @@
  * snapshot only (no legacy v2 StoredRunRecord list projection).
  */
 
-import type { NodeAttempt, WikiRunAttempt, WikiRunNode } from "@okf-wiki/contract";
-import { useMemo, useState } from "react";
+import type { NodeAttempt, WikiRunAttempt, WikiRunNode, WikiRunSpec } from "@okf-wiki/contract";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -17,8 +17,9 @@ import {
 } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { dispatchWikiRunCommand } from "../../api";
+import { dispatchWikiRunCommand, getWikiRunSpec } from "../../api";
 import { useI18n } from "../../i18n";
+import { SpecReviewView } from "../components/SpecReviewView";
 import { StatusBadge } from "../components/StatusBadge";
 import { useWikiRun } from "../hooks/useWikiRun";
 import { NodeAttemptDialog } from "./NodeAttemptDialog";
@@ -50,6 +51,9 @@ export function RunInspectorDialog({
   const [dialogAttemptId, setDialogAttemptId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [planSpec, setPlanSpec] = useState<WikiRunSpec | null>(null);
+  const [planSpecLoading, setPlanSpecLoading] = useState(false);
+  const [planSpecError, setPlanSpecError] = useState<string | null>(null);
 
   const wikiRun = useWikiRun({
     workspaceId,
@@ -61,6 +65,28 @@ export function RunInspectorDialog({
   const snapshot = wikiRun.snapshot;
   const graph = useMemo(() => (snapshot ? wikiRunSnapshotToRunGraph(snapshot) : null), [snapshot]);
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);
+
+  useEffect(() => {
+    if (!open || !runId || !workspaceId || tab !== "plan") return;
+    let cancelled = false;
+    setPlanSpecLoading(true);
+    setPlanSpecError(null);
+    void getWikiRunSpec(workspaceId, runId, rootPath)
+      .then((body) => {
+        if (cancelled) return;
+        setPlanSpec(body.spec);
+        setPlanSpecLoading(false);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setPlanSpec(null);
+        setPlanSpecLoading(false);
+        setPlanSpecError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, runId, workspaceId, rootPath, tab, snapshot?.revision]);
 
   const relatedAttempts = useMemo(() => {
     if (!dialogNodeKey || !snapshot) return [] as NodeAttempt[];
@@ -182,7 +208,18 @@ export function RunInspectorDialog({
               {t.common.loading}
             </div>
           ) : tab === "plan" ? (
-            <p className="py-6 text-xs text-muted-foreground">{t.runInspector.noSpec}</p>
+            planSpecLoading ? (
+              <div className="flex items-center gap-2 py-6 text-xs text-muted-foreground">
+                <Spinner className="size-3.5" />
+                {t.common.loading}
+              </div>
+            ) : planSpec ? (
+              <SpecReviewView spec={planSpec} />
+            ) : (
+              <p className="py-6 text-xs text-muted-foreground" data-testid="run-inspector-no-spec">
+                {planSpecError?.trim() || t.runInspector.noSpec}
+              </p>
+            )
           ) : hasGraph && graph ? (
             <div className="flex flex-col gap-3">
               <RunGraphCanvas

@@ -503,6 +503,8 @@ export function shouldAutoRetryResearch(
   message: string,
 ): boolean {
   if (!RESEARCH_AUTO_RETRY_KINDS.has(claim.kind)) return false;
+  // Align with workspace.limits.retry.enabled — off means no control-plane auto-requeue.
+  if (host.workspace.limits.retry.enabled === false) return false;
   if (host.closed) return false;
   const run = asRow(
     host.db.prepare("SELECT cancel_requested FROM runs WHERE run_id = ?").get(claim.runId),

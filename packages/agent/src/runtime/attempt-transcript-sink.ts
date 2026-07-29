@@ -39,7 +39,19 @@ export type AttemptTranscriptSink = {
   }): Promise<void>;
 };
 
+/**
+ * Cap length without collapsing newlines — assistant/user bodies are markdown.
+ * Tool argsSummary still benefits from single-line display at the call site.
+ */
 function truncate(text: string, max: number): string {
+  const t = text.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
+  if (!t) return "";
+  if (t.length <= max) return t;
+  return `${t.slice(0, Math.max(1, max - 1))}…`;
+}
+
+/** Single-line cap for tool args (UI mono lines). */
+function truncateOneLine(text: string, max: number): string {
   const t = text.replace(/\s+/g, " ").trim();
   if (!t) return "";
   if (t.length <= max) return t;
@@ -72,7 +84,7 @@ export function buildTranscriptRows(input: {
         status: item.status || "done",
       };
       if (item.argsSummary?.trim()) {
-        row.argsSummary = truncate(item.argsSummary, 500);
+        row.argsSummary = truncateOneLine(item.argsSummary, 500);
       }
       rows.push(row);
     }

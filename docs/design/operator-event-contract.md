@@ -1,71 +1,88 @@
 # Operator Event contract
 
-**Status:** accepted (ADR 0032)
-
-**Date:** 2026-07-24
-**Authority:** [ADR 0032](../adr/0032-pi-tool-owned-wiki-runs.md)
+**Status:** accepted (ADR 0035)  
+**Date:** 2026-07-29  
+**Authority:** [ADR 0035](../adr/0035-durable-wikiruns-control-plane.md)  
+**Supersedes:** ADR 0032-era Session-owned wiki_produce HITL and fat live tool details
 
 ## Authority
 
-One `SessionManager`-owned Pi Session is the Operator Session's durable conversation authority. Its real `AgentSession` events are the only live trajectory authority. The Run Boundary owns Wiki Run records and artifacts; the Web module only projects these interfaces.
-
 ```text
-Web → Server → Agent → Pi
-                 ↘ Core
+Operator Session (Pi SessionManager JSONL)
+  → conversation only: prompts, tool receipts, assistant text
+
+WikiRuns (workflow.sqlite + sealed artifacts)
+  → Run control: nodes, attempts, gates, effects, Run SSE
 ```
 
-Core never imports Pi or Agent. The server never fabricates Pi messages, tool executions, or assistant progress.
-
-## SSE interface
-
-An Operator Session stream sends, in order:
-
-1. one server snapshot containing the current Pi Session projection and linked read-only Run facts;
-2. subsequent genuine parent `AgentSession` events without a product-defined business-event layer;
-3. heartbeat frames used only to keep the connection alive.
-
-There are no product event injects, event sequence numbers, replay cursors, or in-memory event history. Reconnection starts with a new snapshot. A full Pi message snapshot is authoritative over deltas.
+- **Session SSE** projects genuine Pi conversation events (and StartRun receipts on `wiki_produce`).
+- **Run SSE** (`GET …/runs/:runId/events`) is the durable control projection: full secret-free snapshots.
+- Web never invents control state from Session mirrors. Live plan/publication HITL uses **ResolveGate** on the Run command API.
 
 ## `wiki_produce`
 
-`wiki_produce` is a real Pi custom tool called by the Operator Agent. Pi owns its `tool_execution_start`, update, and end lifecycle. The same `execute()` call waits for plan and publication decisions. Child sessions remain implementation details: they must not write Operator Session JSONL and must not inject product SSE events. They may only become operator-visible through the parent tool’s structured live `details` (including optional `details.children[]` projections of text/toolCall/usage).
+`wiki_produce` is a Pi custom tool. Its `execute()` **dispatches `StartRun` and returns immediately** with a receipt:
 
-### Live vs durable tool details
+```json
+{ "status": "accepted", "runId": "…", "summary": "…" }
+```
 
-Pi persists only the **final** `toolResult` on `message_end` (Operator Session JSONL). Progressive `onUpdate` payloads are not session history.
+It does **not** wait for plan or publication. Live Run status, open gates, graph chips, and failed-node actions come from `useWikiRun` (GET snapshot + Run SSE).
 
-| Layer | Carrier | Payload | Persisted? |
-|---|---|---|---|
-| **Live** | `onUpdate` → registry `activeTool` → SSE | Full gate/progress: `status`, `runId`, optional `spec`, `pages`, `children`, `defects` | **No** |
-| **Durable** | Final `toolResult.details` | Lean control: `status`, `runId`, short `summary`, optional `pages[]` paths | **Yes** (JSONL) |
-| **Run data** | Run Record v2, `analysis/`, `wiki/`, publication path | Full spec, receipts, wiki pages, defects | Run Boundary only |
+### Tool details (receipt only)
 
-Do not re-embed complete `WikiRunSpec`, child transcripts, or defect reports into durable `toolResult.details`. After the tool settles, operator UI loads job facts from the Run Record / analysis / Published Wiki APIs, not from historical toolResult mirrors. Live gate UI continues to use `activeTool.details` (including `spec` while awaiting plan).
+| Field | Role |
+|-------|------|
+| `status` | `accepted` / `failed` / `cancelled` (StartRun outcome) |
+| `runId` | Durable WikiRuns id |
+| `summary` | Short operator text |
+| `pages` | Historical only; current path does not write pages on the receipt |
 
-### Parent/child path-first handoff
+Do **not** re-embed `spec`, `graph`, `defects`, or `children` on tool details. Spec review loads `GET …/runs/:runId/spec` (sealed artifact). Graph labels come from WikiRunSnapshot node projection (`label`, `parentKey`, `detail`).
 
-In-process child sessions stay on `SessionManager.inMemory` and never write Operator Session JSONL. Research evidence is Host-persisted under `analysis/receipts/{nodeId}.json`. Parent orchestration keeps **relative receipt paths + short summaries** (ADR 0011 control return); full findings are read from disk via `buildReceiptIndex` / path refs. Directory scans are not completion signals.
+### Gates
 
-### Operator history projection
+| Concern | Mechanism |
+|---------|-----------|
+| Open plan / publication gate | WikiRuns control plane (`waiting_for_operator`) |
+| Operator decision | `POST …/runs/command` → `resolve_gate` with `payloadDigest` CAS |
+| Plan body for review | Sealed Spec artifact + `GET …/runs/:runId/spec` → `SpecReviewView` |
+| Session `pendingGate` / `resume_gate` | **Removed** (hard-cut) |
 
-SSE/history snapshots use Pi’s compaction-aware context path (`buildContextEntries` + `sessionEntryToContextMessages`), then product-side strip of fat historical `wiki_produce` details. Pi storage is never rewritten by the snapshot. Live idle handles may be disposed from the process cache; disk JSONL remains until Session delete.
+`workspace.planConfirm === false` auto-materializes Definition v1 after plan without opening a plan gate.
 
-The server may resolve a pending structured gate, but it does not start, resume, or patch a Run through a separate mutable Run route.
+## Streams
+
+### Operator Session SSE
+
+1. One snapshot of Pi conversation projection (no control pendingGate).
+2. Subsequent genuine parent `AgentSession` events.
+3. Heartbeats only.
+
+Reconnection starts with a new snapshot. Session delete removes conversation data only — **not** WikiRuns control records or sealed artifacts (ADR 0035).
+
+### Run SSE
+
+1. Initial secret-free `WikiRunSnapshot` + cursor.
+2. `run.event` frames with full snapshot after each control revision.
+3. Heartbeat comment frames (no event id).
+
+Attempt transcripts use separate GET/SSE under `…/attempts/:attemptId/transcript`.
 
 ## Durability and deletion
 
-- Pi JSONL: durable Operator Session history, discovered and mutated only through `SessionManager`.
-- `okf.wiki-run/v2`: linked Run facts and frozen inputs; older schemas are ignored.
-- Run work directory: materialized Repository Snapshots, copied Producer Skill, Staging, and analysis artifacts.
-- Published Wiki, Workspace, source checkout, and Skill Fork: independent retained data.
-
-Deleting an Operator Session deletes its associated Run records and work directories. It does not delete retained independent data. Old cwd JSONL files and product Session metadata are ignored without migration or automatic cleanup.
+| Store | Lifetime |
+|-------|----------|
+| Pi Session JSONL | Operator conversation; deleted with Session |
+| `workflow.sqlite` | Runs, nodes, gates, effects; survives Session delete |
+| Sealed artifacts under run work dir | Spec, wiki trees, transcripts, publication candidates |
+| Published Wiki / sources / skill fork | Independent retained data |
 
 ## Forbidden parallel paths
 
-- product `source: "product"` SSE events or inject whitelists;
-- synthetic Pi messages or tool lifecycle events;
-- ring buffers, sequence/replay state, and browser event databases;
-- `{sessionId}.json` metadata, filesystem path scans, or merged Session registries;
-- `okf.produce_progress` custom entries or duplicate client Produce trees;
-- an independent Wiki Run page, mutable Run HTTP routes, CLI, or desktop operator interface.
+- Session-owned whole-Run tool Promise / in-memory `pendingGates`
+- Fat live `wiki_produce` details carrying Spec/graph as control truth
+- Session `resume_gate` / `start_wiki_run` commands
+- Observation-only `run-graph.json` as live authority (Definition v1 + WikiRuns snapshot only)
+- Dual topology generators (`topologyFromSpec` removed)
+- Product-injected Pi messages or synthetic control SSE on the Session channel
