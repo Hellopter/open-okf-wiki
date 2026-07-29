@@ -616,6 +616,28 @@ export function getWikiRun(
   );
 }
 
+/** Secret-free Attempt transcript for Node details UI (JSONL messages). */
+export type WikiRunAttemptTranscript = {
+  attemptId: string;
+  nodeKey: string;
+  state: string;
+  messages: unknown[];
+};
+
+export function getWikiRunAttemptTranscript(
+  workspaceId: string,
+  runId: string,
+  attemptId: string,
+  rootPath?: string,
+): Promise<WikiRunAttemptTranscript> {
+  return request(
+    withRootPathQuery(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript`,
+      rootPath,
+    ),
+  );
+}
+
 /** Dispatch a durable WikiRuns command (StartRun / ResolveGate / Cancel / …). */
 export function dispatchWikiRunCommand(
   workspaceId: string,

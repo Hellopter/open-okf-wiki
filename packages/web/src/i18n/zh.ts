@@ -507,10 +507,18 @@ export const zh: MessageTree = {
     composerRequired: "发送前请输入消息。",
     send: "发送",
     stop: "停止",
+    /** 取消耐久 WikiRun（与会话中止分离）。 */
+    stopRun: "停止运行",
     statusReady: "就绪",
     modelSelectLabel: "模型",
     modelSelectPlaceholder: "模型…",
     statusBusy: "处理中…",
+    /** 会话空闲但耐久 Run 仍在执行。 */
+    runRunningHint: "运行中…",
+    runQueuedHint: "运行排队中…",
+    runCancellingHint: "正在取消运行…",
+    /** 会话空闲；Run 阻塞在计划/发布/操作员门闸。 */
+    runWaitingOperatorHint: "等待操作员…",
     statusError: "错误",
     connectionConnecting: "连接中",
     connectionLive: "已连接",
@@ -529,6 +537,11 @@ export const zh: MessageTree = {
     runGraphEmpty: "尚无拓扑或尝试记录。",
     runGraphAttempt: "摘要",
     runGraphAttemptEmpty: "该节点暂无尝试数据。",
+    /** 节点详情中的 Attempt 会话 transcript（无密钥）。 */
+    attemptTranscript: "对话记录",
+    attemptTranscriptEmpty: "尚无对话记录。",
+    attemptTranscriptLive: "实时",
+
     runGraphLayers: {
       plan: "规划",
       research: "研究",

@@ -525,10 +525,18 @@ export const en = {
     composerRequired: "Enter a message before sending.",
     send: "Send",
     stop: "Stop",
+    /** Cancel the durable WikiRun (separate from Session abort). */
+    stopRun: "Stop run",
     statusReady: "Ready",
     modelSelectLabel: "Model",
     modelSelectPlaceholder: "Model…",
     statusBusy: "Working…",
+    /** Session idle but durable Run is still executing. */
+    runRunningHint: "Run running…",
+    runQueuedHint: "Run queued…",
+    runCancellingHint: "Cancelling run…",
+    /** Session idle; Run is blocked on a plan/publication/operator gate. */
+    runWaitingOperatorHint: "Waiting for operator…",
     statusError: "Error",
     connectionConnecting: "Connecting",
     connectionLive: "Live",
@@ -547,6 +555,11 @@ export const en = {
     runGraphEmpty: "No topology or attempts yet.",
     runGraphAttempt: "Summary",
     runGraphAttemptEmpty: "No attempt data for this node.",
+    /** Secret-free Attempt session transcript (Node details). */
+    attemptTranscript: "Transcript",
+    attemptTranscriptEmpty: "No transcript messages yet.",
+    attemptTranscriptLive: "live",
+
     runGraphLayers: {
       plan: "Plan",
       research: "Research",

@@ -284,6 +284,11 @@ export function RunInspectorDialog({
           attempt={dialogAttempt}
           relatedAttempts={relatedAttempts}
           onSelectAttempt={setDialogAttemptId}
+          workspaceId={workspaceId}
+          runId={runId}
+          rootPath={rootPath}
+          attemptId={dialogWikiAttempt?.attemptId ?? dialogAttemptId}
+          attemptState={dialogWikiAttempt?.state ?? null}
           footer={
             dialogNode && runId ? (
               <div className="flex flex-wrap gap-1.5 border-t border-border px-4 py-2">

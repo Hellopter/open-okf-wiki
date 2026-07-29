@@ -5,12 +5,15 @@
  *   [✓] read  settings.ts  offset=… limit=…
  * not bordered cards dumping raw JSON args.
  *
+ * Attempt transcript: secret-free JSONL from GET …/attempts/:id/transcript
+ * (polled while attempt is live). Not Session SSE.
+ *
  * Scroll: flex column shell + native overflow-y body.
  * Summary text: MarkdownDocument.
  */
 
 import type { AttemptItem, NodeAttempt } from "@okf-wiki/contract";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -20,7 +23,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { ApiError, getWikiRunAttemptTranscript } from "../../api";
 import { useI18n } from "../../i18n";
 import { MarkdownDocument } from "../../shared/MarkdownDocument";
 import { ToolStatusGlyph } from "../components/tool-display/glyphs";
@@ -30,6 +35,12 @@ import {
   parseToolInput,
   toolPathLabel,
 } from "../components/tool-display/summary";
+import {
+  ATTEMPT_TRANSCRIPT_POLL_MS,
+  isAttemptTranscriptLive,
+  projectAttemptTranscriptMessages,
+  type ProjectedAttemptTranscriptEntry,
+} from "./attempt-transcript";
 
 export type NodeAttemptDialogProps = {
   open: boolean;
@@ -41,6 +52,14 @@ export type NodeAttemptDialogProps = {
   onSelectAttempt?: (attemptId: string) => void;
   /** Optional action row (RetryFailedNode / RerunNode) under the scroll body. */
   footer?: ReactNode;
+  /** Workspace / run context for Attempt transcript fetch. */
+  workspaceId?: string;
+  runId?: string | null;
+  rootPath?: string;
+  /** Explicit attempt id (preferred over attempt.attemptId when set). */
+  attemptId?: string | null;
+  /** WikiRunAttempt.state (or equivalent); drives live polling while `running`. */
+  attemptState?: string | null;
 };
 
 /**
@@ -116,6 +135,60 @@ function AttemptToolLine({ item }: { item: Extract<AttemptItem, { type: "toolCal
   );
 }
 
+function AttemptTranscriptRow({ entry }: { entry: ProjectedAttemptTranscriptEntry }) {
+  if (entry.kind === "role") {
+    return (
+      <div
+        className="flex min-w-0 flex-col gap-0.5 py-1"
+        data-testid="attempt-transcript-role"
+        data-role={entry.role}
+      >
+        <span className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
+          {entry.role}
+        </span>
+        <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-2xs leading-5 text-foreground/90">
+          {entry.text}
+        </pre>
+      </div>
+    );
+  }
+  if (entry.kind === "tool") {
+    return (
+      <div
+        className="truncate py-0.5 font-mono text-2xs text-muted-foreground"
+        data-testid="attempt-transcript-tool"
+        title={entry.text}
+      >
+        ▸ {entry.text}
+      </div>
+    );
+  }
+  return (
+    <div
+      className="truncate py-0.5 font-mono text-2xs text-muted-foreground/80"
+      data-testid="attempt-transcript-raw"
+      title={entry.text}
+    >
+      {entry.text}
+    </div>
+  );
+}
+
+type TranscriptFetchState = {
+  loading: boolean;
+  error: string | null;
+  messages: unknown[];
+  /** True once at least one successful fetch completed for the current attempt. */
+  ready: boolean;
+};
+
+const EMPTY_FETCH: TranscriptFetchState = {
+  loading: false,
+  error: null,
+  messages: [],
+  ready: false,
+};
+
 export function NodeAttemptDialog({
   open,
   onOpenChange,
@@ -125,9 +198,104 @@ export function NodeAttemptDialog({
   relatedAttempts = [],
   onSelectAttempt,
   footer,
+  workspaceId,
+  runId,
+  rootPath,
+  attemptId,
+  attemptState,
 }: NodeAttemptDialogProps) {
   const { t } = useI18n();
   const rounds = relatedAttempts.length > 0 ? relatedAttempts : attempt ? [attempt] : [];
+
+  const effectiveAttemptId = attemptId ?? attempt?.attemptId ?? null;
+  // Prefer durable WikiRunAttempt.state; fall back to projected NodeAttempt.status.
+  const effectiveState =
+    attemptState ??
+    (attempt?.status === "running"
+      ? "running"
+      : attempt?.status === "awaiting"
+        ? "suspended"
+        : attempt?.status ?? null);
+
+  const canFetch =
+    open && Boolean(workspaceId && runId && effectiveAttemptId);
+
+  const [fetchState, setFetchState] = useState<TranscriptFetchState>(EMPTY_FETCH);
+
+  useEffect(() => {
+    if (!canFetch || !workspaceId || !runId || !effectiveAttemptId) {
+      setFetchState(EMPTY_FETCH);
+      return;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let inFlight = false;
+
+    setFetchState({ loading: true, error: null, messages: [], ready: false });
+
+    const load = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const data = await getWikiRunAttemptTranscript(
+          workspaceId,
+          runId,
+          effectiveAttemptId,
+          rootPath,
+        );
+        if (cancelled) return;
+        setFetchState({
+          loading: false,
+          error: null,
+          messages: Array.isArray(data.messages) ? data.messages : [],
+          ready: true,
+        });
+      } catch (error) {
+        if (cancelled) return;
+        // Live attempts may not have a session file yet — treat 404 as empty, keep polling.
+        if (
+          error instanceof ApiError &&
+          error.status === 404 &&
+          isAttemptTranscriptLive(effectiveState)
+        ) {
+          setFetchState((prev) => ({
+            loading: false,
+            error: null,
+            messages: prev.ready ? prev.messages : [],
+            ready: prev.ready,
+          }));
+          return;
+        }
+        setFetchState((prev) => ({
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+          messages: prev.messages,
+          ready: prev.ready,
+        }));
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void load();
+
+    if (isAttemptTranscriptLive(effectiveState)) {
+      timer = setInterval(() => {
+        void load();
+      }, ATTEMPT_TRANSCRIPT_POLL_MS);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [canFetch, workspaceId, runId, effectiveAttemptId, rootPath, effectiveState]);
+
+  const projected = useMemo(
+    () => projectAttemptTranscriptMessages(fetchState.messages),
+    [fetchState.messages],
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -274,6 +442,59 @@ export function NodeAttemptDialog({
                           </div>
                         ),
                       )}
+                    </div>
+                  </>
+                ) : null}
+
+                {canFetch ? (
+                  <>
+                    <Separator />
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                      <p className="okf-section-label">
+                        {t.agentWorkspace.attemptTranscript}
+                        {isAttemptTranscriptLive(effectiveState) ? (
+                          <span className="ml-1.5 font-normal normal-case tracking-normal text-muted-foreground">
+                            · {t.agentWorkspace.attemptTranscriptLive}
+                          </span>
+                        ) : null}
+                      </p>
+                      <div
+                        className="flex min-w-0 flex-col gap-0.5 rounded-md border border-border/60 bg-muted/10 px-2.5 py-2"
+                        data-testid="attempt-transcript"
+                        data-attempt-id={effectiveAttemptId ?? undefined}
+                        data-attempt-state={effectiveState ?? undefined}
+                      >
+                        {fetchState.loading && !fetchState.ready ? (
+                          <div
+                            className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
+                            data-testid="attempt-transcript-loading"
+                          >
+                            <Spinner className="size-3.5" />
+                            {t.common.loading}
+                          </div>
+                        ) : fetchState.error ? (
+                          <p
+                            className="text-xs text-destructive"
+                            data-testid="attempt-transcript-error"
+                          >
+                            {fetchState.error}
+                          </p>
+                        ) : projected.length === 0 ? (
+                          <p
+                            className="text-xs text-muted-foreground"
+                            data-testid="attempt-transcript-empty"
+                          >
+                            {t.agentWorkspace.attemptTranscriptEmpty}
+                          </p>
+                        ) : (
+                          projected.map((entry, index) => (
+                            <AttemptTranscriptRow
+                              key={`${effectiveAttemptId}-tx-${index}`}
+                              entry={entry}
+                            />
+                          ))
+                        )}
+                      </div>
                     </div>
                   </>
                 ) : null}

@@ -38,7 +38,12 @@ import {
   handleWikiGraph,
   matchWikiApiRoute,
 } from "./routes/wiki.ts";
-import { handleGetWikiRun, handleWikiRunCommand, handleWikiRunEvents } from "./routes/wiki-runs.ts";
+import {
+  handleGetAttemptTranscript,
+  handleGetWikiRun,
+  handleWikiRunCommand,
+  handleWikiRunEvents,
+} from "./routes/wiki-runs.ts";
 import {
   handleAddSource,
   handleCloneSource,
@@ -261,6 +266,24 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       const params = matchRoute(pathname, "/api/workspaces/:id/runs/command");
       if (params && method === "POST") {
         await handleWikiRunCommand(req, res, params.id!, url);
+        return;
+      }
+    }
+    // More-specific run subpaths before generic `/runs/:runId`.
+    {
+      const params = matchRoute(
+        pathname,
+        "/api/workspaces/:id/runs/:runId/attempts/:attemptId/transcript",
+      );
+      if (params && method === "GET") {
+        await handleGetAttemptTranscript(
+          req,
+          res,
+          params.id!,
+          params.runId!,
+          params.attemptId!,
+          url,
+        );
         return;
       }
     }

@@ -219,3 +219,44 @@ test("Pi attempt reports cancellation and bad sealed specs as terminal failures"
   assert.equal(failed.type, "failed");
   if (failed.type === "failed") assert.equal(failed.failureClass, "infrastructure");
 });
+
+test("Pi attempt writes a readable failure transcript on cancel and infrastructure fail", async (t) => {
+  const cancelled = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });
+  const invalidSpec = await fixture({
+    key: "write.root",
+    kind: "write.root",
+    generation: 0,
+    runIndex: 1,
+  });
+  t.after(() => Promise.all([cleanup(cancelled), cleanup(invalidSpec)]).then(() => undefined));
+  const executor = createPiAttemptExecutor({ fixture: true });
+
+  const controller = new AbortController();
+  controller.abort();
+  const cancelledOut = await executor(cancelled, controller.signal);
+  assert.equal(cancelledOut.type, "failed");
+  await access(cancelled.sessionPath);
+  const cancelledTranscript = JSON.parse(await readFile(cancelled.sessionPath, "utf8"));
+  assert.equal(cancelledTranscript.mode, "failed");
+  assert.equal(cancelledTranscript.failureClass, "cancelled");
+  assert.equal(cancelledTranscript.error, "Pi attempt cancelled");
+  assert.equal(cancelledTranscript.attemptId, cancelled.attemptId);
+  assert.equal(cancelledTranscript.node, "plan");
+
+  const specPath = path.join(path.dirname(path.dirname(invalidSpec.attemptDir)), "bad-spec.json");
+  await writeFile(specPath, "{}\n", "utf8");
+  invalidSpec.sealedInputs.push({
+    role: "spec",
+    artifact: { artifactId: "bad-spec", kind: "spec", digest, sealedAt: timestamp },
+    readOnlyPath: specPath,
+  });
+  const failed = await executor(invalidSpec, new AbortController().signal);
+  assert.equal(failed.type, "failed");
+  await access(invalidSpec.sessionPath);
+  const failedTranscript = JSON.parse(await readFile(invalidSpec.sessionPath, "utf8"));
+  assert.equal(failedTranscript.mode, "failed");
+  assert.equal(failedTranscript.failureClass, "infrastructure");
+  assert.equal(typeof failedTranscript.error, "string");
+  assert.ok(String(failedTranscript.error).length > 0);
+  assert.equal(failedTranscript.summary, failedTranscript.error);
+});

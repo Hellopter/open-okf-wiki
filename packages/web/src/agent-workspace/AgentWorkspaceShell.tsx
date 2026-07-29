@@ -72,6 +72,12 @@ export type AgentWorkspaceShellProps = {
   agentError?: unknown;
   onDismissAgentError?: () => void;
   recentRuns?: WikiRunListItem[];
+  /** Dual-surface WikiRun chrome (Session vs Run stop). */
+  showStopRun?: boolean;
+  onStopRun?: () => void;
+  runBusy?: boolean;
+  runNeedsOperator?: boolean;
+  runStateLabel?: string;
   className?: string;
 };
 
@@ -97,6 +103,11 @@ export function AgentWorkspaceShell({
   agentError,
   onDismissAgentError,
   recentRuns = [],
+  showStopRun = false,
+  onStopRun,
+  runBusy = false,
+  runNeedsOperator = false,
+  runStateLabel,
   className,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
@@ -306,6 +317,11 @@ export function AgentWorkspaceShell({
             disabled={!activeSessionId || !agentReady}
             modelProfileId={workspace?.model.profileId}
             onSetModel={onSetModel}
+            showStopRun={showStopRun}
+            onStopRun={onStopRun}
+            runBusy={runBusy}
+            runNeedsOperator={runNeedsOperator}
+            runStateLabel={runStateLabel}
           />
         </main>
 

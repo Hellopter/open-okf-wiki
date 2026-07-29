@@ -16,6 +16,7 @@ export {
   type OpenWikiRunsInput,
   openWikiRuns,
   type PiAttemptExecutor,
+  type WikiRunAttemptTranscript,
   type WikiRunListItem,
   type WikiRunRead,
   type WikiRuns,

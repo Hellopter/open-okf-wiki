@@ -2,16 +2,17 @@
 
 OKF Wiki turns a pinned **Repository Snapshot Set** into a source-grounded Markdown **Wiki**.
 
-The product is a **local Web UI**, a **localhost Node server**, and a **Pi agent harness**, with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill, writes pages into isolated Staging, and returns a typed terminal result. The Run Boundary freezes snapshots and the Skill, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
+The product is a **local Web UI**, a **localhost Node server**, and a **Pi agent harness**, with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`) and a durable **WikiRuns** control plane (`@okf-wiki/workflow`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill; each Attempt writes pages into isolated Staging. The Run Boundary freezes snapshots and the Skill, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
 
-The **Agent Workspace** (`/w/:id`) is the only operator surface. Its real Pi `wiki_produce` tool owns each Wiki Run, including both gates. Pi JSONL is the conversation authority; Run Record v2 and the run work directory hold the frozen job facts and artifacts.
+The **Agent Workspace** (`/w/:id`) is the only operator surface. It projects two independent authorities: the **Operator Session** (Pi JSONL / genuine Pi events) and **WikiRuns** (durable Run commands, gates, and Run SSE). The real Pi `wiki_produce` tool dispatches `StartRun` and returns a receipt; it does **not** own the whole Run or await gates ([ADR 0035](docs/adr/0035-durable-wikiruns-control-plane.md)).
 
 | Doc | Purpose |
 |---|---|
 | [CONTEXT.md](CONTEXT.md) | Domain vocabulary |
 | [docs/adr/](docs/adr/) | Architecture decisions ([index](docs/adr/README.md)) |
 | [packages/README.md](packages/README.md) | Monorepo package map |
-| [ADR 0032](docs/adr/0032-pi-tool-owned-wiki-runs.md) | **Current stack:** Pi-owned Session and `wiki_produce` tool, immutable Run Boundary, Agent Workspace |
+| [ADR 0035](docs/adr/0035-durable-wikiruns-control-plane.md) | **Current Run control:** durable WikiRuns, typed commands/gates/events, `wiki_produce` → `StartRun` receipt, separate Run SSE |
+| [ADR 0032](docs/adr/0032-pi-tool-owned-wiki-runs.md) | Pi Session authority and Agent Workspace; whole-Run tool ownership superseded by 0035 |
 | [ADR 0021](docs/adr/0021-retire-python-primary-path.md) | Python primary path retired |
 | [ADR 0022](docs/adr/0022-source-clone-into-workspace.md) | Operator-initiated source clone |
 | [ADR 0031](docs/adr/0031-unidirectional-framework-first-operator-surface.md) | Unidirectional package boundaries and framework-first projection |
@@ -23,7 +24,7 @@ Historical ADRs 0020 / 0024 / 0025 / 0027 describe the former Mastra + AI SDK st
 
 | Need | Detail |
 |---|---|
-| **Node.js** | 22+ |
+| **Node.js** | `>=22.23.0 <23` (`engines` in root `package.json`). CI pins **`22.23.x`** for `node:sqlite` (WikiRuns `workflow.sqlite`, ADR 0035) |
 | **pnpm** | Workspace package manager ([pnpm.io](https://pnpm.io/); pin in `packageManager`) |
 | **Git** | Local checkouts; product may **clone** when the operator asks (never silently in the Semantic Workflow) |
 | **pre-commit** (optional) | [pre-commit.com](https://pre-commit.com/) for staged hygiene + ESLint |
@@ -43,10 +44,11 @@ Copy [`.env.example`](.env.example) to an untracked `.env` (or export vars in th
 | Package | Role |
 |---|---|
 | `@okf-wiki/web` | Operator Web UI (Vite + React + shadcn Agent Workspace) |
-| `@okf-wiki/server` | Localhost HTTP API + Pi agent session SSE/commands |
-| `@okf-wiki/agent` | Pi sessions, real `wiki_produce` tool, Semantic Workflow (no Mastra/AI SDK) |
+| `@okf-wiki/server` | Localhost HTTP API + Pi session SSE + WikiRuns command/Run SSE routes |
+| `@okf-wiki/agent` | Pi sessions, real `wiki_produce` → `StartRun` receipt, Semantic Workflow (no Mastra/AI SDK) |
+| `@okf-wiki/workflow` | Durable WikiRuns control plane (`workflow.sqlite`, commands, gates, events) |
 | `@okf-wiki/core` | Run Boundary (git probe, path policy, publish, stores) |
-| `@okf-wiki/contract` | Shared Zod schemas + agent protocol |
+| `@okf-wiki/contract` | Shared Zod schemas + agent protocol + `okf.wiki-runs/v1` |
 | `@okf-wiki/skill` | Bundled Producer Skill assets |
 
 **Architecture guard:** `pnpm check:architecture` rejects retired packages/protocols and forbidden product dependencies (`@mastra/*`, `ai`, `@ai-sdk/*`).
@@ -106,7 +108,7 @@ health gate: `pnpm dev:stack:parallel`.
 1. Open **Workspaces** → create a workspace with an **absolute** `rootPath`.
 2. **Settings** → configure model catalog endpoints if needed (secrets stay machine-local / env).
 3. Open **Agent Workspace** (`/w/:id`) — session list, transcript, sources/wiki/plan/run panels.
-4. Ask the Operator Agent to produce or refresh the Wiki; it calls `wiki_produce`, then approve plan/publication gates when shown.
+4. Ask the Operator Agent to produce or refresh the Wiki; it calls `wiki_produce` (returns a `StartRun` receipt). Approve plan/publication gates on the durable Run surface when shown. **Stop Run** cancels the WikiRun; Session abort only stops the current Operator turn (dual-surface chrome).
 5. Browse published Markdown under the Wiki panel or `/workspaces/:id/wiki`.
 
 Legacy multi-tab Session chat (AI SDK `useChat`) is **removed**. Old `.okf-wiki/sessions/*.json` files are not migrated — wipe if present and use Pi sessions under `.okf-wiki/pi-sessions/`.

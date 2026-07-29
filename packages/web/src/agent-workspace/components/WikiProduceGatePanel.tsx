@@ -395,6 +395,11 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
         attempt={dialogAttempt}
         relatedAttempts={relatedAttempts}
         onSelectAttempt={setDialogAttemptId}
+        workspaceId={routeWorkspaceId || undefined}
+        runId={runId}
+        rootPath={rootPathHint}
+        attemptId={dialogWikiAttempt?.attemptId ?? dialogAttemptId}
+        attemptState={dialogWikiAttempt?.state ?? null}
         footer={
           dialogNode && runId ? (
             <div className="flex flex-wrap gap-1.5 border-t border-border px-4 py-2">

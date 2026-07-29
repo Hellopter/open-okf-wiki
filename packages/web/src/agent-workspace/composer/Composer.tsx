@@ -48,6 +48,16 @@ export type ComposerProps = {
   modelProfileId?: string;
   /** Session-scoped model switch; resolves false when the server rejects it. */
   onSetModel?: (profileId: string) => Promise<boolean>;
+  /**
+   * Dual-surface WikiRun chrome (ADR 0035). Session Stop stays on `agent-abort`;
+   * Run cancel is a separate control so chat can continue while a Run is busy.
+   */
+  showStopRun?: boolean;
+  onStopRun?: () => void;
+  runBusy?: boolean;
+  runNeedsOperator?: boolean;
+  /** Raw WikiRun state for optional chip wording. */
+  runStateLabel?: string;
 };
 
 /** Menu shows only while typing the command name (`/wi`), not after a space. */
@@ -66,6 +76,11 @@ export function Composer({
   className,
   modelProfileId,
   onSetModel,
+  showStopRun = false,
+  onStopRun,
+  runBusy = false,
+  runNeedsOperator = false,
+  runStateLabel,
 }: ComposerProps) {
   const { t } = useI18n();
   const inputId = useId();
@@ -76,6 +91,7 @@ export function Composer({
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
   const [modelChoice, setModelChoice] = useState<string>("");
   const [modelSwitching, setModelSwitching] = useState(false);
+  // Session-only pending — Run busy must not disable Send (dual-surface chrome).
   const isPending = status === "sending" || status === "streaming";
   const trimmed = input.trim();
   const canSend = !disabled && !isPending && trimmed.length > 0;
@@ -84,6 +100,17 @@ export function Composer({
   // set control disabled / data-disabled — that applies opacity-50 to Stop too
   // (InputGroup: has-[[data-slot=input-group-control]:disabled]:opacity-50).
   const groupDisabled = disabled;
+  const runHint =
+    runNeedsOperator
+      ? t.agentWorkspace.runWaitingOperatorHint
+      : runBusy
+        ? runStateLabel === "cancelling"
+          ? t.agentWorkspace.runCancellingHint
+          : runStateLabel === "queued"
+            ? t.agentWorkspace.runQueuedHint
+            : t.agentWorkspace.runRunningHint
+        : null;
+  const statusBusyVisual = isPending || runBusy || runNeedsOperator;
 
   useEffect(() => {
     let alive = true;
@@ -277,7 +304,7 @@ export function Composer({
           className="min-h-[2.75rem] resize-none text-sm"
         />
         <InputGroupAddon align="block-end" className="justify-between gap-2">
-          <div>
+          <div className="flex flex-wrap items-center gap-1.5">
             {isPending ? (
               <Button
                 type="button"
@@ -295,6 +322,25 @@ export function Composer({
               >
                 <SquareIcon data-icon="inline-start" />
                 {t.agentWorkspace.stop}
+              </Button>
+            ) : null}
+            {showStopRun ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid="agent-stop-run"
+                aria-label={t.agentWorkspace.stopRun}
+                disabled={false}
+                className="opacity-100"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onStopRun?.();
+                }}
+              >
+                <SquareIcon data-icon="inline-start" />
+                {t.agentWorkspace.stopRun}
               </Button>
             ) : null}
           </div>
@@ -327,18 +373,22 @@ export function Composer({
             <span
               role="status"
               aria-live="polite"
+              data-testid="agent-composer-status"
+              data-run-state={runStateLabel || undefined}
               className={cn(
                 "text-2xs text-muted-foreground",
-                status === "error" && "text-destructive",
-                isPending && "inline-flex items-center gap-1",
+                status === "error" && !isPending && !runHint && "text-destructive",
+                statusBusyVisual && "inline-flex items-center gap-1",
               )}
             >
-              {isPending ? <Spinner className="size-3" /> : null}
+              {statusBusyVisual ? <Spinner className="size-3" /> : null}
               {isPending
                 ? t.agentWorkspace.statusBusy
-                : status === "error"
-                  ? t.agentWorkspace.statusError
-                  : t.agentWorkspace.statusReady}
+                : runHint
+                  ? runHint
+                  : status === "error"
+                    ? t.agentWorkspace.statusError
+                    : t.agentWorkspace.statusReady}
             </span>
             <InputGroupButton
               type="submit"

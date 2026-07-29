@@ -239,7 +239,7 @@ export function createPiAttemptExecutor(
   const resolveModel = options.resolveModel ?? resolveWorkspacePiModel;
 
   return async (rawInput, signal) => {
-    let input: PiAttemptInput;
+    let input: PiAttemptInput | undefined;
     try {
       input = PiAttemptInputSchema.parse(rawInput);
       if (signal.aborted)
@@ -573,7 +573,25 @@ export function createPiAttemptExecutor(
 
       throw new Error(`unsupported Pi attempt node: ${input.node.kind}/${input.node.key}`);
     } catch (error) {
-      return failure(error, signal);
+      const outcome = failure(error, signal);
+      // Best-effort: leave a readable session transcript for the transcript API
+      // even when the attempt fails or is cancelled. Never mask the original failure.
+      if (input && outcome.type === "failed") {
+        try {
+          await writeTranscript(input, {
+            schema: 1,
+            node: input.node.key,
+            attemptId: input.attemptId,
+            mode: "failed",
+            failureClass: outcome.failureClass,
+            error: outcome.error,
+            summary: outcome.error,
+          });
+        } catch {
+          // ignore transcript write errors on the failure path
+        }
+      }
+      return outcome;
     }
   };
 }

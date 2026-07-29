@@ -4,6 +4,8 @@ This context defines the language for deriving a source-grounded Markdown wiki f
 
 **Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, durable WikiRuns control plane, **Pi agent harness** (`@earendil-works/pi-*`), and the `@okf-wiki/core` Run Boundary). See [ADR 0035](docs/adr/0035-durable-wikiruns-control-plane.md), [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md), and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Terms below remain domain vocabulary; older ADRs may still name historical Python/Mastra packages.
 
+**Operator chrome (dual surface):** Session turn busy and WikiRun busy are independent. **Session abort** stops only the current Operator turn; **Stop Run** cancels the durable WikiRun. A running WikiRun must not lock the composer or be treated as Session-owned busy state.
+
 ## Language
 
 **Wiki**:

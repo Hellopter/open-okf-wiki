@@ -2409,3 +2409,135 @@ test("T5 effect state machine reaches applied only via candidate_ready→applyin
   assert.ok(appliedAt > applyingAt, "applied must follow applying");
   assert.ok(types.includes("run.published"));
 });
+
+test("readAttemptTranscript returns JSONL messages from live session or sealed artifact", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: freezeAndPlanExecutor(async ({ workDir }) => succeededProbe(workDir)),
+  });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-transcript-read" },
+    context(workspaceId),
+  );
+  const finished = await waitForTerminal(runs, receipt.runId);
+  const planAttempt = finished.snapshot.attempts.find((attempt) => attempt.nodeKey === "plan");
+  assert.ok(planAttempt, "plan attempt should exist after freeze+plan");
+
+  // Live session.jsonl may still be present; otherwise sealed transcript artifact is used.
+  const liveSession = path.join(
+    root,
+    ".okf-wiki",
+    "runs",
+    receipt.runId,
+    "attempts",
+    planAttempt.attemptId,
+    "session.jsonl",
+  );
+  // Ensure at least the live path has known content when the plan left it.
+  try {
+    await readFile(liveSession, "utf8");
+  } catch {
+    await mkdir(path.dirname(liveSession), { recursive: true });
+    await writeFile(
+      liveSession,
+      `${JSON.stringify({ schema: 1, node: "plan", role: "assistant" })}\n`,
+      "utf8",
+    );
+  }
+
+  const transcript = await runs.readAttemptTranscript({
+    runId: receipt.runId,
+    attemptId: planAttempt.attemptId,
+  });
+  assert.equal(transcript.attemptId, planAttempt.attemptId);
+  assert.equal(transcript.nodeKey, "plan");
+  assert.equal(transcript.state, planAttempt.state);
+  assert.ok(Array.isArray(transcript.messages));
+  assert.ok(transcript.messages.length >= 1);
+  assert.equal(
+    (transcript.messages[0] as { schema?: number } | undefined)?.schema,
+    1,
+  );
+
+  await assert.rejects(
+    () =>
+      runs.readAttemptTranscript({
+        runId: receipt.runId,
+        attemptId: "missing-attempt-id",
+      }),
+    /attempt not found/,
+  );
+  await assert.rejects(
+    () =>
+      runs.readAttemptTranscript({
+        runId: "missing-run-id",
+        attemptId: planAttempt.attemptId,
+      }),
+    /run not found/,
+  );
+
+  // Attempt without a transcript file → clear 404-style message.
+  const freezeAttempt = finished.snapshot.attempts.find((attempt) => attempt.nodeKey === "freeze");
+  assert.ok(freezeAttempt);
+  // Freeze probe does not seal a transcript kind; remove any residual session if present.
+  const freezeSession = path.join(
+    root,
+    ".okf-wiki",
+    "runs",
+    receipt.runId,
+    "attempts",
+    freezeAttempt.attemptId,
+    "session.jsonl",
+  );
+  await rm(freezeSession, { force: true });
+  await assert.rejects(
+    () =>
+      runs.readAttemptTranscript({
+        runId: receipt.runId,
+        attemptId: freezeAttempt.attemptId,
+      }),
+    /transcript not found/,
+  );
+});
+
+test("readAttemptTranscript refuses oversized transcripts", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({ rootPath: root });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-transcript-size" },
+    context(workspaceId),
+  );
+  const finished = await waitForTerminal(runs, receipt.runId);
+  const attempt = finished.snapshot.attempts[0];
+  assert.ok(attempt);
+
+  const sessionPath = path.join(
+    root,
+    ".okf-wiki",
+    "runs",
+    receipt.runId,
+    "attempts",
+    attempt.attemptId,
+    "session.jsonl",
+  );
+  await mkdir(path.dirname(sessionPath), { recursive: true });
+  // Just over 2MB of JSONL-looking content.
+  const oversized = `${"x".repeat(2 * 1024 * 1024 + 1)}\n`;
+  await writeFile(sessionPath, oversized, "utf8");
+
+  await assert.rejects(
+    () =>
+      runs.readAttemptTranscript({
+        runId: receipt.runId,
+        attemptId: attempt.attemptId,
+      }),
+    /transcript exceeds size limit/,
+  );
+});

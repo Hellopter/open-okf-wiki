@@ -3,16 +3,24 @@
  * Loads workspace + Pi agent sessions; wires the 3-pane shell.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
+import {
+  type ActiveRunChrome,
+  deriveOperatorChrome,
+  resolveActiveRunId,
+} from "../agent-workspace/hooks/derive-operator-chrome";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
+import { useWikiRun } from "../agent-workspace/hooks/useWikiRun";
+import { openGatesFromSnapshot } from "../agent-workspace/run-graph/wiki-run-view-model";
 import {
   createAgentSession,
   deleteAgentSession,
+  dispatchWikiRunCommand,
   getWorkspace,
   listAgentSessions,
   listRuns,
@@ -58,6 +66,64 @@ export function AgentWorkspacePage() {
     sessionId: activeSessionId,
     rootPath,
   });
+
+  /** Latest accepted wiki_produce runId and/or non-terminal recentRuns entry. */
+  const activeRunId = useMemo(
+    () => resolveActiveRunId({ messages: agent.messages, recentRuns }),
+    [agent.messages, recentRuns],
+  );
+
+  const activeWikiRun = useWikiRun({
+    workspaceId: id,
+    runId: activeRunId,
+    rootPath,
+    enabled: Boolean(activeRunId),
+  });
+
+  const activeRunChrome: ActiveRunChrome | null = useMemo(() => {
+    if (!activeRunId) return null;
+    const snapshot =
+      activeWikiRun.snapshot?.runId === activeRunId ? activeWikiRun.snapshot : null;
+    if (snapshot) {
+      return {
+        runId: activeRunId,
+        state: snapshot.state,
+        openGateKinds: openGatesFromSnapshot(snapshot).map((gate) => gate.kind),
+        hasRunningAttempt: snapshot.attempts.some((attempt) => attempt.state === "running"),
+      };
+    }
+    const listed = recentRuns.find((run) => run.runId === activeRunId);
+    if (listed) {
+      return { runId: activeRunId, state: listed.state };
+    }
+    // Receipt accepted but list/snapshot not yet loaded — treat as queued so Stop run appears.
+    return { runId: activeRunId, state: "queued" };
+  }, [activeRunId, activeWikiRun.snapshot, recentRuns]);
+
+  const operatorChrome = useMemo(
+    () =>
+      deriveOperatorChrome({
+        sessionStatus: agent.status,
+        activeRun: activeRunChrome,
+      }),
+    [agent.status, activeRunChrome],
+  );
+
+  const handleStopRun = useCallback(() => {
+    if (!id || !activeRunId) return;
+    void dispatchWikiRunCommand(
+      id,
+      {
+        type: "cancel_run",
+        commandId: crypto.randomUUID(),
+        runId: activeRunId,
+      },
+      rootPath,
+    ).catch((err) => {
+      // Surface as a toast; Run SSE will still advance if cancel eventually applies.
+      toast.error(err instanceof Error ? err.message : String(err));
+    });
+  }, [id, activeRunId, rootPath]);
 
   const syncSessionIdInUrl = useCallback(
     (sessionId: string) => {
@@ -309,6 +375,11 @@ export function AgentWorkspacePage() {
           agentError={agent.error}
           onDismissAgentError={agent.clearError}
           recentRuns={recentRuns}
+          showStopRun={operatorChrome.showStopRun}
+          onStopRun={handleStopRun}
+          runBusy={operatorChrome.runBusy}
+          runNeedsOperator={operatorChrome.runNeedsOperator}
+          runStateLabel={operatorChrome.runStatusLabel}
         />
       )}
     </WorkbenchShell>

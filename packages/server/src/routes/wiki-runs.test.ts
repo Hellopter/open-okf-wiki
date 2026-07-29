@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -115,4 +115,102 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   assert.equal(replayFrame.event, "run.event");
   assert.equal(replayFrame.id, 1);
   replayAbort.abort();
+});
+
+test("GET attempt transcript returns secret-free messages from session.jsonl", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-runs-transcript-"));
+  const workspace = await createWorkspace({
+    name: "Transcript HTTP Run",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const server = createServer((req, res) => void dispatch(req, res));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    await resetWikiRunsRegistryForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/runs`;
+  const query = `?rootPath=${encodeURIComponent(root)}`;
+
+  const accepted = await fetch(`${base}/command${query}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-http" }),
+  });
+  assert.equal(accepted.status, 202, await accepted.clone().text());
+  const { receipt } = (await accepted.json()) as { receipt: { runId: string } };
+
+  // Wait until freeze attempt is recorded so we have a real attempt id.
+  let attemptId: string | undefined;
+  let nodeKey = "freeze";
+  let state = "running";
+  for (let i = 0; i < 100; i += 1) {
+    const read = await fetch(`${base}/${receipt.runId}${query}`);
+    assert.equal(read.status, 200, await read.clone().text());
+    const body = (await read.json()) as {
+      snapshot: {
+        attempts: Array<{ attemptId: string; nodeKey: string; state: string }>;
+      };
+    };
+    const attempt = body.snapshot.attempts[0];
+    if (attempt) {
+      attemptId = attempt.attemptId;
+      nodeKey = attempt.nodeKey;
+      state = attempt.state;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(attemptId, "expected at least one attempt on the run");
+
+  const sessionPath = path.join(
+    root,
+    ".okf-wiki",
+    "runs",
+    receipt.runId,
+    "attempts",
+    attemptId,
+    "session.jsonl",
+  );
+  await mkdir(path.dirname(sessionPath), { recursive: true });
+  await writeFile(
+    sessionPath,
+    [
+      JSON.stringify({ role: "user", content: "plan the wiki" }),
+      JSON.stringify({ role: "assistant", content: "drafting overview" }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+
+  const transcriptRes = await fetch(
+    `${base}/${receipt.runId}/attempts/${attemptId}/transcript${query}`,
+  );
+  assert.equal(transcriptRes.status, 200, await transcriptRes.clone().text());
+  const transcript = (await transcriptRes.json()) as {
+    attemptId: string;
+    nodeKey: string;
+    state: string;
+    messages: unknown[];
+  };
+  assert.equal(transcript.attemptId, attemptId);
+  assert.equal(transcript.nodeKey, nodeKey);
+  assert.equal(transcript.state, state);
+  assert.equal(transcript.messages.length, 2);
+  assert.deepEqual(transcript.messages[0], { role: "user", content: "plan the wiki" });
+  assert.deepEqual(transcript.messages[1], {
+    role: "assistant",
+    content: "drafting overview",
+  });
+
+  const missing = await fetch(
+    `${base}/${receipt.runId}/attempts/no-such-attempt/transcript${query}`,
+  );
+  assert.equal(missing.status, 404);
 });
