@@ -7,11 +7,11 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 | ADR | Role |
 |---|---|
 | [0035](0035-durable-wikiruns-control-plane.md) | **Current Run control:** durable WikiRuns, typed commands/gates/events, generation CAS, immutable artifacts, separate Run SSE |
-| [0034](0034-deep-modules-thin-tools-single-projection.md) | **Deep modules / real ports / thin Pi tools / single web projection / ProgressSink fan-out / bounded repair budgets** |
-| [0033](0033-run-graph-and-agent-layering.md) | **Current layout:** Run Graph observation; Run Workflow orchestration; ports DIP; session/runtime/tools/workflow split |
-| [0032](0032-pi-tool-owned-wiki-runs.md) | Pi-only Session events and one Agent Workspace; whole-Run tool ownership and no-Run-route clauses superseded by 0035 |
-| [0031](0031-unidirectional-framework-first-operator-surface.md) | Unidirectional layers and framework-first surface; product-inject clauses superseded by 0032 |
-| [0030](0030-pi-agent-harness-for-semantic-workflow.md) | Pi agent harness and built-in tools; WikiRunShell clauses superseded by 0032 |
+| [0034](0034-deep-modules-thin-tools-single-projection.md) | **Deep modules / real ports / thin Pi tools / single web projection / Run SSE fan-out / bounded repair budgets** (ProgressSink historical) |
+| [0033](0033-run-graph-and-agent-layering.md) | **Agent layering / ports DIP** (`AgentRunner` + `SpecStore`); ProgressSink/GatePort/GraphStore/ReceiptStore/run-wiki **DELETED** → WikiRuns (0035) |
+| [0032](0032-pi-tool-owned-wiki-runs.md) | Pi-only Session events and one Agent Workspace; whole-Run tool ownership superseded by 0035 (`wiki_produce` = StartRun receipt) |
+| [0031](0031-unidirectional-framework-first-operator-surface.md) | Unidirectional layers and framework-first surface; product-inject clauses superseded by 0032; WikiRunShell gates → 0035 |
+| [0030](0030-pi-agent-harness-for-semantic-workflow.md) | Pi agent harness and built-in tools; WikiRunShell clauses superseded by 0032/0035 |
 | [0021](0021-retire-python-primary-path.md) | Python primary path **removed** |
 | [0022](0022-source-clone-into-workspace.md) | Operator-initiated clone; Semantic Workflow never clones |
 | [0026](0026-session-centric-agent-workspace.md) | **Session-centric intent** (re-read under 0030/0031: Pi session = operator timeline; Run = linked job) |
@@ -52,7 +52,7 @@ Still load-bearing domain/ops decisions (map Host → Run Boundary when reading 
 ## Reading rules for agents
 
 1. Prefer **CONTEXT.md** for domain terms.
-2. Prefer **0035 + 0034 + 0033 + 0032 + 0031 + 0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0035 wins on durable Run execution, commands, gates, events, and Run SSE; 0034 wins on deep-module / thin-tool / projection / ProgressSink / repair-budget rules; 0033 wins on agent package layering and ports DIP; 0032 wins on Pi Session authority and conversation events; 0031 wins on dependency direction; 0030 wins on Pi/tool stack; 0029 wins on no-compat culture).
+2. Prefer **0035 + 0034 + 0033 + 0032 + 0031 + 0030 + 0021 + 0022 + 0026 + 0028 + 0029** for “how the product is built” (0035 wins on durable Run execution, commands, gates, events, and **Run SSE** fan-out; 0034 wins on deep-module / thin-tool / projection / repair-budget rules; 0033 wins on agent package layering and ports DIP — **current ports `AgentRunner` + `SpecStore` only**; 0032 wins on Pi Session authority and conversation events, not whole-Run tool ownership; 0031 wins on dependency direction; 0030 wins on Pi/tool stack; 0029 wins on no-compat culture). Do **not** reintroduce ProgressSink, GatePort, GraphStore, ReceiptStore, or `run-wiki` shell.
 3. Pre-0019 ADRs may say **Host** / **Host Instructions** → map to **Run Boundary** / **Run Instructions**.
 4. Pre-0021 ADRs may assume **Python** harness → map duties to `@okf-wiki/core` + `@okf-wiki/agent`.
 5. Pre-0030 ADRs may assume **Mastra / AI SDK / UIMessage / list_source tools** → map to **Pi AgentSession / JSONL / built-in tools** (0030).

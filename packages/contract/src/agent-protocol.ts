@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { AgentMessageSchema } from "./agent-message.js";
 import { AgentStreamViewPatchSchema } from "./agent-stream.js";
+import { SessionUsageSchema } from "./session-usage.js";
 import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
 
 /** Relative dir under workspace meta: `{root}/.okf-wiki/pi-sessions/`. */
@@ -127,6 +128,11 @@ export const AgentSseSnapshotSchema = z
         messages: z.array(AgentMessageSchema),
         /** Latest genuine Pi tool update; absent when no tool is live. */
         activeTool: AgentSseActiveToolSchema.optional(),
+        /**
+         * Ephemeral context-fill proxy for Operator chrome (last assistant
+         * totalTokens + known window). Not durable control truth (ADR 0035).
+         */
+        sessionUsage: SessionUsageSchema.optional(),
       })
       .strict(),
   })

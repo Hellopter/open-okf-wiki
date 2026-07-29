@@ -3,13 +3,11 @@
  * Shared loadAcceptance / sealed Spec helpers — counters stay separate (ADR acceptance).
  */
 
-import type { DatabaseSync } from "node:sqlite";
 import type {
   PiAttemptFailureClass,
-  WikiRunEvent,
   WikiRunSpecAcceptance,
-  WorkspaceConfig,
 } from "@okf-wiki/contract";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { now } from "./crypto-util.js";
 import { loadSpecFromArtifact, unlockReadyNodes } from "./dag.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
@@ -31,10 +29,7 @@ const HARD_VALIDATE_REPAIR_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Shared surface for loading sealed Spec acceptance and scheduling repairs. */
-export type RepairScheduleHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
+export type RepairScheduleHost = WikiRunsDbCtx & {
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   /**
    * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).

@@ -17,15 +17,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import {
   type MergedDefectReport,
   MergedDefectReportSchema,
   type PiAttemptArtifactDescriptor,
-  type WikiRunEvent,
-  type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
+import type { WikiRunsCasCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
 import { upstreamKeys } from "./dag.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
@@ -33,14 +31,7 @@ import { asRow, asRows, requiredText } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
 /** Bytes/CAS surface — no gate open or unlock callbacks. */
-export type ArtifactsHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
-  transaction<T>(work: () => T): T;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
-  isCurrent(claim: ClaimedNode): boolean;
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-};
+export type ArtifactsHost = WikiRunsCasCtx;
 
 export function copyAttemptInputs(
   host: Pick<ArtifactsHost, "db">,

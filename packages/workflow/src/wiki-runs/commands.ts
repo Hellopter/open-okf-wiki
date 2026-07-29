@@ -4,14 +4,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
 import type {
   RunCommand,
   RunCommandContext,
   RunCommandReceipt,
-  WikiRunEvent,
-  WorkspaceConfig,
 } from "@okf-wiki/contract";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
@@ -22,11 +20,8 @@ import { CommandIdCollision } from "./types.js";
  * (dispatch → applyCommand). Do not put `transaction` on this host — nested
  * BEGIN would throw. Scheduling is the owner's post-commit concern, not commands.
  */
-export type CommandsHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
+export type CommandsHost = WikiRunsDbCtx & {
   activeAttempts: Map<string, AbortController>;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
   upstreamSealedOutputs(

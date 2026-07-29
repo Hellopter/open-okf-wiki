@@ -18,6 +18,7 @@ export function domainResearchPrompt(input: {
       ? input.questions.map((q) => `- ${q}`)
       : ["- What are the main boundaries and entry points in this scope?"]),
     "",
+    "Read skill/references/domain-research.md in full before investigating.",
     "Use only read tools (ls, find, grep, read). Never write wiki pages.",
     "Return a concise evidence summary:",
     "- key findings (bullet list)",

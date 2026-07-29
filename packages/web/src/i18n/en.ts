@@ -560,6 +560,9 @@ export const en = {
     statusReady: "Ready",
     modelSelectLabel: "Model",
     modelSelectPlaceholder: "Model…",
+    /** Context-fill chip (last assistant tokens / window) — not billing. */
+    contextFillLabel: "Context",
+    contextFillHint: "Session context fill (last assistant tokens / window). Not a cost meter.",
     statusBusy: "Working…",
     /** Session idle but durable Run is still executing. */
     runRunningHint: "Run running…",

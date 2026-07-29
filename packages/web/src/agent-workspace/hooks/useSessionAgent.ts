@@ -1,6 +1,6 @@
 /** React adapter for the Pi-only Operator Session stream (ADR 0032). */
 
-import type { AgentCommand, AgentCommandResponse } from "@okf-wiki/contract";
+import type { AgentCommand, AgentCommandResponse, SessionUsage } from "@okf-wiki/contract";
 import { AgentSseEventSchema } from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl } from "../../api";
@@ -36,6 +36,11 @@ export type UseSessionAgentResult = {
   /** EventSource connection lifecycle (independent of agent turn status). */
   connectionStatus: ConnectionStatus;
   error: string | null;
+  /**
+   * Ephemeral context-fill from SSE snapshot / stream (last assistant
+   * totalTokens + window). UI-only; not durable control truth.
+   */
+  sessionUsage: SessionUsage | null;
   input: string;
   setInput: (value: string) => void;
   send: (text?: string) => Promise<void>;
@@ -86,6 +91,7 @@ export function useSessionAgent({
   );
   const [ready, setReady] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("offline");
+  const [sessionUsage, setSessionUsage] = useState<SessionUsage | null>(null);
   const [input, setInput] = useState("");
   const [lastCommandResponse, setLastCommandResponse] = useState<AgentCommandResponse | null>(null);
 
@@ -121,6 +127,7 @@ export function useSessionAgent({
     setView(viewFromStream(createPiStreamState(), false));
     setReady(false);
     readyRef.current = false;
+    setSessionUsage(null);
     setLastCommandResponse(null);
 
     if (!eventsUrl || typeof EventSource === "undefined") {
@@ -160,6 +167,15 @@ export function useSessionAgent({
         setReady(true);
         readyRef.current = true;
         setConnectionStatus("live");
+        // Snapshot fully replaces usage (including clear when absent).
+        setSessionUsage(event.payload.sessionUsage ?? null);
+      } else if (
+        event.source === "server" &&
+        event.kind === "stream" &&
+        event.payload.sessionUsage
+      ) {
+        // Stream patches only carry sessionUsage on change — merge when present.
+        setSessionUsage(event.payload.sessionUsage);
       }
       // status/error for render come solely from publish → viewFromStream.
       // Optimistic sending is held in sendingRef until the command settles.
@@ -320,6 +336,7 @@ export function useSessionAgent({
     ready,
     connectionStatus,
     error: view.error,
+    sessionUsage,
     input,
     setInput,
     send,

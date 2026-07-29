@@ -1,5 +1,9 @@
 # Domain research branch
 
+**Job:** investigate one self-contained Domain and return a bounded evidence summary.
+**Prereq:** Root assigned scope/questions; optional Leaf subtasks via `skill/references/leaf-research.md`.
+**Next:** return summary text only — Root synthesizes Spec; do not write Wiki pages.
+
 Use this branch only for the self-contained Domain task assigned by Root.
 
 1. Write and maintain a concise Run Plan containing the local objective, completion gates, evidence

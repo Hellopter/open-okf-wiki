@@ -4,14 +4,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
 import {
   type RunCommand,
   type RunCommandContext,
   type RunCommandReceipt,
-  type WikiRunEvent,
-  type WorkspaceConfig,
 } from "@okf-wiki/contract";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
 import {
   materializeDefinitionV1Graph,
@@ -27,10 +25,7 @@ import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.
  * Full resolve surface: decision handlers need rerun/cancel/command recording.
  * Open helpers take narrower picks from gate-open.ts.
  */
-export type GatesHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
+export type GatesHost = WikiRunsDbCtx & {
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
   abortRunAttempts(runId: string): void;
@@ -140,10 +135,7 @@ export function resolveGate(
  * Used by ResolveGate(plan approve) and planConfirm===false auto-approve.
  */
 export function onPlanAccepted(
-  host: {
-    db: DatabaseSync;
-    workspace: WorkspaceConfig;
-    emit(runId: string, type: WikiRunEvent["type"]): number;
+  host: WikiRunsDbCtx & {
     currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   },
   runId: string,

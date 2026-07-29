@@ -1,11 +1,19 @@
 # Deep modules, thin tools, single projection, real ports
 
-**Status:** accepted  
+**Status:** accepted (ProgressSink / museum-store clauses historical — see status note)  
 **Date:** 2026-07-28  
 **Refines:** [ADR 0033](0033-run-graph-and-agent-layering.md) (ports DIP / layering), [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (Pi tools own runs), [ADR 0031](0031-unidirectional-framework-first-operator-surface.md) (pure projection)  
-**Related:** ADR 0029 (no-compat), codebase-design skill (deep modules / seam vocabulary)  
-**Does not supersede:** Pi Session authority (0032), Run Boundary in `@okf-wiki/core` (0019), Run Graph as observation only (0033)  
+**Related:** ADR 0029 (no-compat), codebase-design skill (deep modules / seam vocabulary), [ADR 0035](0035-durable-wikiruns-control-plane.md)  
+**Does not supersede:** Pi Session authority (0032), Run Boundary in `@okf-wiki/core` (0019)  
+**Superseded clauses by:** [ADR 0035](0035-durable-wikiruns-control-plane.md) (Run progress fan-out = Run SSE; durable control = WikiRuns)  
 **Index:** [docs/adr/README.md](README.md)
+
+> **Status note / Superseded clauses (read first)**  
+> Keep deep-module / thin-tool / single-projection / real-port **culture**. Strike museum fan-out and store ports:
+>
+> - ~~**One fan-out: `ProgressSink`**~~ → **Current fan-out: Run SSE** (ADR 0035; separate from Operator Session SSE).  
+> - ~~Keep `GraphStore` / `GatePort` / `ReceiptStore` as required agent ports~~ → **DELETED**; durable control is WikiRuns; remaining agent ports are **`AgentRunner`** + **`SpecStore`**.  
+> - Thin Pi tools → WikiRuns command dispatch remains current (§3).
 
 ## Context
 
@@ -15,7 +23,7 @@ After ADR 0033, the tree still accumulated **shallow surfaces** that fought loca
 - Web kept zero-depth shims (`pi-message`) and hand-rolled snapshot projection beside contract `applyStreamPatch`.
 - `wiki_repair` was a fat Pi tool (admission, locks, layout bootstrap, workflow) while `wiki_produce` stayed thin.
 - `useSessionAgent` mirrored `status` / `error` in React state beside `streamStateRef`, with `clearError` bypassing the projector.
-- `ProgressSink` existed as a port but phases mostly called raw `onProgress` / `emitProgress` — a half-used seam.
+- ~~`ProgressSink` existed as a port but phases mostly called raw `onProgress` / `emitProgress` — a half-used seam.~~ **Historical:** ProgressSink deleted; Run observation is Run SSE.
 - Core duplicated `LIST_LINK_RE` parsers; `citations.ts` mixed parse, canonicalize, resolve, and staging rewrite.
 - Run Graph view-model computed `edges` the canvas never drew.
 
@@ -38,10 +46,10 @@ Vocabulary matches the codebase-design skill:
 |------|---------------------|
 | Deep module | Small interface, large behavior (e.g. stream reduce in contract, repair loop in workflow) |
 | One adapter ≈ false seam | Do not invent ports for documentation; delete unused port types (`WikiWriter`) |
-| Two adapters ≈ real seam | Keep `AgentRunner` (live + fixture), `GraphStore` (core + memory tests), `GatePort`, etc. |
-| Progress protocol | **One** fan-out: `ProgressSink`. Tool-edge / attempt callbacks adapt **once** at composition (WikiRuns attempt work / `produceWiki` library). Phases call `progress.emit` only. |
+| Two adapters ≈ real seam | Keep **`AgentRunner`** (live + fixture) and **`SpecStore`** (core + tests). ~~`GraphStore` / `GatePort` / `ReceiptStore`~~ **DELETED** under ADR 0035. |
+| Progress protocol | ~~**One** fan-out: `ProgressSink`.~~ **Current:** **Run SSE** is the sole Run progress fan-out (Snapshot + durable events after `Last-Event-ID`). Operator Session SSE stays Pi conversation only. Do not reintroduce ProgressSink or dual progress protocols. |
 
-Core-backed stores (`SpecStore`, `ReceiptStore`, `GraphStore`) stay ports: disk I/O + injection for tests. They are not collapsed “because only one production adapter.”
+~~Core-backed stores (`SpecStore`, `ReceiptStore`, `GraphStore`) stay ports…~~ **Current:** only **`SpecStore`** remains as a core-backed agent port for Spec draft/commit. Analysis receipts and durable topology are not reintroduced as agent ports.
 
 ### 3. Pi tools are thin adapters
 
@@ -78,6 +86,7 @@ Do not merge these into a single “maxAttempts” policy object.
 - Render **derives** `status` / `error` (`deriveAgentStatus`: error → streaming → sending → idle).
 - `clearError` goes through the same publish path as stream updates (no ref-only bypass).
 - Do not re-export server-only helpers (`reducePiEvent`) from web for “convenience.”
+- Run observation UI projects **Run SSE** / WikiRuns snapshots — not a ProgressSink client map.
 
 ### 6. Core locality
 
@@ -94,8 +103,8 @@ Per ADR 0029: delete shims and dual paths; update call sites and tests. Do not l
 - Contract surface shrinks; web snapshot logic lives next to stream patches.
 - `wiki_repair` mirrors `wiki_produce` thickness; admission is unit-testable without Pi tool context.
 - Operator session hook tests can target pure derive/reducers; fewer dual mocks.
-- Progress injection tests exercise the real phase path.
-- ADR 0033 port table: **`WikiWriter` removed** (was a zero-adapter type alias). Remaining ports stand.
+- ~~Progress injection tests exercise the real phase path.~~ Run progress tests exercise WikiRuns / Run SSE.
+- ADR 0033 port table: **`WikiWriter` removed**; museum ports **ProgressSink / GatePort / GraphStore / ReceiptStore removed**; remaining ports **`AgentRunner` + `SpecStore`**.
 
 ## Out of scope (explicit)
 

@@ -127,14 +127,34 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
       ...(detail ? { detail } : {}),
     };
   });
-  const attempts: WikiRunAttempt[] = asRows(
+  /**
+   * Slim attempts projection for snapshots embedded in every SSE/event (not full audit).
+   *
+   * Policy (least-breaking for inspector / retry UI):
+   * 1. All attempts whose node_generation matches the node's *current* generation
+   *    (includes same-gen auto-retry / manual RetryFailedNode history).
+   * 2. Plus any still-running attempts (stale-gen edge during abort windows).
+   * 3. Plus, per nodeKey, up to FAILED_HISTORY_CAP older failed/interrupted attempts
+   *    (newest first) so fix-gate / inspector retain recent failure context after Rerun.
+   *
+   * Full attempt rows remain in SQLite; conversation bytes via readAttemptTranscript.
+   * Do not drop snapshot from WikiRunEventSchema — Web replaces projection by event id.
+   */
+  const FAILED_HISTORY_CAP = 3;
+  const currentGenByNode = new Map(nodes.map((n) => [n.key, n.generation]));
+  const allAttemptRows = asRows(
     db.prepare("SELECT * FROM attempts WHERE run_id = ? ORDER BY started_at, attempt_id").all(runId),
-  ).map((attempt) => {
+  );
+  const selectedAttemptIds = new Set<string>();
+  const mappedAttempts: WikiRunAttempt[] = [];
+  const olderFailedByNode = new Map<string, WikiRunAttempt[]>();
+
+  for (const attempt of allAttemptRows) {
     const failureClassRaw =
       attempt.failure_class == null || attempt.failure_class === ""
         ? undefined
         : String(attempt.failure_class).trim();
-    return {
+    const projected: WikiRunAttempt = {
       attemptId: requiredText(attempt, "attempt_id"),
       nodeKey: requiredText(attempt, "node_key"),
       nodeGeneration: requiredNumber(attempt, "node_generation"),
@@ -146,6 +166,39 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
       startedAt: requiredText(attempt, "started_at"),
       endedAt: attempt.ended_at as string | null,
     };
+    const currentGen = currentGenByNode.get(projected.nodeKey);
+    const isCurrentGen = currentGen !== undefined && projected.nodeGeneration === currentGen;
+    const isRunning = projected.state === "running";
+    if (isCurrentGen || isRunning) {
+      selectedAttemptIds.add(projected.attemptId);
+      mappedAttempts.push(projected);
+      continue;
+    }
+    if (projected.state === "failed" || projected.state === "interrupted") {
+      const list = olderFailedByNode.get(projected.nodeKey) ?? [];
+      list.push(projected);
+      olderFailedByNode.set(projected.nodeKey, list);
+    }
+  }
+
+  // Older failed/interrupted: keep the newest FAILED_HISTORY_CAP per nodeKey.
+  for (const list of olderFailedByNode.values()) {
+    const newestFirst = [...list].sort((a, b) => {
+      const byEnd = (b.endedAt ?? b.startedAt).localeCompare(a.endedAt ?? a.startedAt);
+      if (byEnd !== 0) return byEnd;
+      return b.attemptId.localeCompare(a.attemptId);
+    });
+    for (const older of newestFirst.slice(0, FAILED_HISTORY_CAP)) {
+      if (selectedAttemptIds.has(older.attemptId)) continue;
+      selectedAttemptIds.add(older.attemptId);
+      mappedAttempts.push(older);
+    }
+  }
+
+  const attempts = mappedAttempts.sort((a, b) => {
+    const byStart = a.startedAt.localeCompare(b.startedAt);
+    if (byStart !== 0) return byStart;
+    return a.attemptId.localeCompare(b.attemptId);
   });
   const sources =
     run.pinned_sources_json === null ? null : parseJson<unknown>(run.pinned_sources_json);

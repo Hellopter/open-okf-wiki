@@ -95,11 +95,11 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
       provider: "fixture",
       model: "fixture",
       usage: {
-        input: 0,
-        output: 0,
+        input: 100,
+        output: 50,
         cacheRead: 0,
         cacheWrite: 0,
-        totalTokens: 0,
+        totalTokens: 12_400,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
       stopReason: "stop",
@@ -133,12 +133,25 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
       source?: string;
       kind?: string;
       sequence?: number;
-      payload?: { messages?: Array<{ role?: string; content?: unknown }> };
+      payload?: {
+        messages?: Array<{ role?: string; content?: unknown }>;
+        sessionUsage?: {
+          contextTokens?: number;
+          contextWindow?: number;
+          contextTarget?: number;
+        };
+      };
     };
     assert.equal(first.source, "server");
     assert.equal(first.kind, "snapshot");
     assert.equal(first.sequence, undefined);
     assert.equal(first.payload?.messages?.[0]?.role, "user");
+    // Ephemeral context-fill from last assistant totalTokens + default window.
+    assert.equal(first.payload?.sessionUsage?.contextTokens, 12_400);
+    assert.ok(
+      first.payload?.sessionUsage?.contextWindow &&
+        first.payload.sessionUsage.contextWindow >= 4096,
+    );
 
     const streamEvent = {
       source: "server" as const,

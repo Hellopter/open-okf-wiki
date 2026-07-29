@@ -1,5 +1,9 @@
 # Refresh
 
+**Job:** update an existing Staging Wiki against the current Repository Snapshot Set.
+**Prereq:** plan complete (`skill/references/plan.md`); `wiki/` already has prior pages.
+**Next:** review (`skill/references/review.md`).
+
 Treat the existing Staging Wiki as useful context, not as authority.
 
 1. Reinspect the complete Repository Snapshot Set and reconsider every existing page against current

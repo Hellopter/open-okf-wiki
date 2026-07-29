@@ -15,6 +15,13 @@ export {
   redactSensitiveValue,
   sanitizeSummary,
 } from "./redact/index.js";
+export {
+  type ContextBudget,
+  type ContextBudgetInput,
+  compactionSettingsFromBudget,
+  resolveContextBudget,
+  resolveSeatContextBudget,
+} from "./runtime/context-budget.js";
 export { shouldUsePiFixtureMode } from "./runtime/fixture-mode.js";
 export { createOperatorFixtureModel } from "./runtime/model/fixture-model.js";
 export {

@@ -1,5 +1,6 @@
 /** One Pi prompt surface. Wiki Runs begin only when the agent calls wiki_produce. */
 
+import { type SessionUsage, formatContextFill } from "@okf-wiki/contract";
 import { SendIcon, SquareIcon } from "lucide-react";
 import {
   type FormEvent,
@@ -58,6 +59,11 @@ export type ComposerProps = {
   runNeedsOperator?: boolean;
   /** Raw WikiRun state for optional chip wording. */
   runStateLabel?: string;
+  /**
+   * Ephemeral session context fill (last assistant totalTokens + window).
+   * Hidden when absent or unformattable — never paints 0/0 noise.
+   */
+  sessionUsage?: SessionUsage | null;
 };
 
 /** Menu shows only while typing the command name (`/wi`), not after a space. */
@@ -81,6 +87,7 @@ export function Composer({
   runBusy = false,
   runNeedsOperator = false,
   runStateLabel,
+  sessionUsage = null,
 }: ComposerProps) {
   const { t } = useI18n();
   const inputId = useId();
@@ -111,6 +118,7 @@ export function Composer({
             : t.agentWorkspace.runRunningHint
         : null;
   const statusBusyVisual = isPending || runBusy || runNeedsOperator;
+  const contextFill = useMemo(() => formatContextFill(sessionUsage), [sessionUsage]);
 
   useEffect(() => {
     let alive = true;
@@ -345,6 +353,38 @@ export function Composer({
             ) : null}
           </div>
           <div className="flex items-center gap-2">
+            {contextFill ? (
+              <span
+                data-testid="agent-context-fill"
+                title={t.agentWorkspace.contextFillHint}
+                aria-label={`${t.agentWorkspace.contextFillLabel}: ${contextFill.label}`}
+                className={cn(
+                  "inline-flex max-w-[9rem] items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground tabular-nums",
+                  contextFill.percent !== null &&
+                    contextFill.percent >= 90 &&
+                    "border-destructive/40 text-destructive",
+                  contextFill.percent !== null &&
+                    contextFill.percent >= 70 &&
+                    contextFill.percent < 90 &&
+                    "border-amber-500/40 text-amber-700 dark:text-amber-400",
+                )}
+              >
+                {contextFill.percent !== null ? (
+                  <span
+                    aria-hidden
+                    className="relative h-1 w-6 overflow-hidden rounded-full bg-muted-foreground/20"
+                  >
+                    <span
+                      className={cn(
+                        "absolute inset-y-0 left-0 rounded-full bg-current opacity-70",
+                      )}
+                      style={{ width: `${Math.min(100, contextFill.percent)}%` }}
+                    />
+                  </span>
+                ) : null}
+                <span data-testid="agent-context-fill-label">{contextFill.label}</span>
+              </span>
+            ) : null}
             {onSetModel && models.length > 0 ? (
               <Select
                 value={selectedModelId || undefined}

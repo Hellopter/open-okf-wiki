@@ -540,6 +540,9 @@ export const zh: MessageTree = {
     statusReady: "就绪",
     modelSelectLabel: "模型",
     modelSelectPlaceholder: "模型…",
+    /** 上下文占用芯片（最近助手 totalTokens / 窗口）— 非计费。 */
+    contextFillLabel: "上下文",
+    contextFillHint: "会话上下文占用（最近助手 token / 窗口）。不是费用计量。",
     statusBusy: "处理中…",
     /** 会话空闲但耐久 Run 仍在执行。 */
     runRunningHint: "运行中…",

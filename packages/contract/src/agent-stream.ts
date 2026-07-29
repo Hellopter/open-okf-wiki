@@ -24,6 +24,7 @@ import {
   toolOutputFromResult,
   wikiProduceDetails,
 } from "./agent-message.js";
+import { SessionUsageSchema } from "./session-usage.js";
 
 // ---------------------------------------------------------------------------
 // Stream view types
@@ -53,6 +54,11 @@ export const AgentStreamViewPatchSchema = z
     appended: z.array(AgentMessageSchema),
     /** Existing finalized messages patched in place (same id). */
     updated: z.array(AgentMessageSchema),
+    /**
+     * Optional context-fill update (e.g. after assistant message_end with usage).
+     * Absent means "no change" on the client; present replaces prior sessionUsage.
+     */
+    sessionUsage: SessionUsageSchema.optional(),
   })
   .strict();
 

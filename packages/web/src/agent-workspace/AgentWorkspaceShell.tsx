@@ -15,6 +15,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
+import type { SessionUsage } from "@okf-wiki/contract";
 import type { PiSessionSummary, WikiRunListItem, WorkspaceConfig } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
@@ -78,6 +79,8 @@ export type AgentWorkspaceShellProps = {
   runBusy?: boolean;
   runNeedsOperator?: boolean;
   runStateLabel?: string;
+  /** Ephemeral context-fill chip (Composer); hidden when null. */
+  sessionUsage?: SessionUsage | null;
   className?: string;
 };
 
@@ -108,6 +111,7 @@ export function AgentWorkspaceShell({
   runBusy = false,
   runNeedsOperator = false,
   runStateLabel,
+  sessionUsage = null,
   className,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
@@ -322,6 +326,7 @@ export function AgentWorkspaceShell({
             runBusy={runBusy}
             runNeedsOperator={runNeedsOperator}
             runStateLabel={runStateLabel}
+            sessionUsage={sessionUsage}
           />
         </main>
 

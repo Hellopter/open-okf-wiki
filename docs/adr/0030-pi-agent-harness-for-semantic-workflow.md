@@ -2,11 +2,13 @@
 
 **Status:** accepted  
 **Date:** 2026-07-22  
-**Refined by:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (real `wiki_produce` tool replaces WikiRunShell; `SessionManager` and Pi events are sole Session authorities)
+**Refined by:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (real `wiki_produce` tool replaces WikiRunShell; `SessionManager` and Pi events are sole Session authorities); [ADR 0035](0035-durable-wikiruns-control-plane.md) (WikiRuns owns durable Run control; tool = StartRun receipt)  
 **Related:** ADR 0002 (untrusted source), 0019 (Run Boundary), 0026 (Session-centric intent), 0028 (thin shell + supervisor tree intent)  
 **Supersedes (framework clauses):** [0020](0020-typescript-mastra-web-workspace.md) Mastra/AI SDK stack; [0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) Mastra workflow + `toAISdkStream`; [0027](0027-framework-first-session-stream.md) Mastra + AI SDK as the only stream/HITL backbone  
 **Does not supersede:** Run Boundary (`@okf-wiki/core`), Staging/atomic publish, Producer Skill method layer, no-shell source policy (0002), Session as sole human operate surface (0026 intent)  
 **Index:** [docs/adr/README.md](README.md)
+
+> **Status note:** ~~WikiRunShell owns plan/publish job phases~~ ([§1](#1-runtime-stack), invariant P4) is **historical**. **Current:** WikiRuns owns durable phases/gates; Pi owns conversation; thin tools dispatch commands.
 
 ## Context
 
@@ -24,7 +26,7 @@ Re-implementing FS tools (`list_source`, `read_source`, `write_wiki`, …) on Ma
 | Agent loop / tool execution / events | `@earendil-works/pi-agent-core` |
 | Session JSONL tree, skills, compaction, SDK | `@earendil-works/pi-coding-agent` (`createAgentSession`, `SessionManager`, `AgentSession`) |
 | Run Boundary, freeze, validate, publish | `@okf-wiki/core` (unchanged ownership) |
-| Plan → produce → hard-validate → publish gates | Product **WikiRunShell** (thin phase machine; **not** Mastra Workflow) |
+| Plan → produce → hard-validate → publish gates | ~~Product **WikiRunShell**~~ → **WikiRuns** durable control (ADR 0035); thin Pi tools return receipts (**not** Mastra Workflow) |
 
 **Forbidden in product packages:** `@mastra/*`, `ai`, `@ai-sdk/*` as runtime dependencies after cutover.
 
@@ -89,6 +91,6 @@ Same spirit as ADR 0029: hard cut, no dual runtime, no dual protocol, no “temp
 | P1 | No `@mastra/*` / `ai` / `@ai-sdk/*` in product runtime after cutover |
 | P2 | Conversation persist = Pi JSONL only |
 | P3 | FS tools = Pi built-ins + phase allowlists; bash off for Semantic Workflow |
-| P4 | WikiRunShell owns plan/publish job phases; Pi owns conversation |
+| P4 | ~~WikiRunShell owns plan/publish job phases~~ → **WikiRuns** owns durable job phases/gates; Pi owns conversation; tools are thin StartRun receipts |
 | P5 | core has no Pi/Mastra framework dependency |
 | P6 | Zero history migration for old Operator Session JSON |

@@ -48,6 +48,7 @@ import {
   recordCommand as recordCommandImpl,
   requeueFailedNode as requeueFailedNodeImpl,
 } from "./wiki-runs/commands.js";
+import type { WikiRunsCasCtx, WikiRunsDbCtx, WikiRunsTxCtx } from "./wiki-runs/ctx.js";
 import { now } from "./wiki-runs/crypto-util.js";
 import {
   loadSpecFromArtifact,
@@ -444,24 +445,45 @@ class WikiRunsOwner implements WikiRuns {
     return reconcileApplyingEffectImpl(this.effectsHost(), input);
   }
 
-  private effectsHost(): EffectsHost {
-    const owner = this;
+  /** Minimum host surface: workspace + db + emit (reads live workspace after replaceWorkspace). */
+  private baseCtx(): WikiRunsDbCtx {
     return {
       workspace: this.workspace,
       db: this.db,
+      emit: (runId, type) => this.emit(runId, type),
+    };
+  }
+
+  /** baseCtx + owner IMMEDIATE transaction. */
+  private txCtx(): WikiRunsTxCtx {
+    return {
+      ...this.baseCtx(),
+      transaction: (work) => this.transaction(work),
+    };
+  }
+
+  /** txCtx + isCurrent / currentNodeGeneration CAS checks. */
+  private casCtx(): WikiRunsCasCtx {
+    return {
+      ...this.txCtx(),
+      isCurrent: (claim) => this.isCurrent(claim),
+      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
+    };
+  }
+
+  private effectsHost(): EffectsHost {
+    const owner = this;
+    return {
+      ...this.txCtx(),
       get closed() {
         return owner.closed;
       },
-      transaction: (work) => this.transaction(work),
-      emit: (runId, type) => this.emit(runId, type),
     };
   }
 
   private gatesHost(): GatesHost {
     return {
-      workspace: this.workspace,
-      db: this.db,
-      emit: (runId, type) => this.emit(runId, type),
+      ...this.baseCtx(),
       currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
       abortRunAttempts: (runId) => this.abortRunAttempts(runId),
@@ -474,26 +496,12 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private artifactsHost(): ArtifactsHost {
-    return {
-      workspace: this.workspace,
-      db: this.db,
-      transaction: (work) => this.transaction(work),
-      emit: (runId, type) => this.emit(runId, type),
-      isCurrent: (claim) => this.isCurrent(claim),
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-    };
+    return this.casCtx();
   }
 
   /** Shared success/recovery surface: CAS host + generation for gate open / unlock. */
   private attemptSuccessHost(): AttemptSuccessHost & { transaction<T>(work: () => T): T } {
-    return {
-      workspace: this.workspace,
-      db: this.db,
-      transaction: (work) => this.transaction(work),
-      emit: (runId, type) => this.emit(runId, type),
-      isCurrent: (claim) => this.isCurrent(claim),
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-    };
+    return this.casCtx();
   }
 
   private recordCommand(
@@ -504,7 +512,7 @@ class WikiRunsOwner implements WikiRuns {
     revision: number,
   ): void {
     recordCommandImpl(
-      { db: this.db, workspace: this.workspace },
+      this.baseCtx(),
       command,
       context,
       payloadDigest,
@@ -515,10 +523,8 @@ class WikiRunsOwner implements WikiRuns {
 
   private commandsHost(): CommandsHost {
     return {
-      workspace: this.workspace,
-      db: this.db,
+      ...this.baseCtx(),
       activeAttempts: this.activeAttempts,
-      emit: (runId, type) => this.emit(runId, type),
       currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
       upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
@@ -539,27 +545,19 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private transcriptHost(): TranscriptHost {
-    return {
-      workspace: this.workspace,
-      db: this.db,
-    };
+    return this.baseCtx();
   }
 
   private schedulerHost(): SchedulerHost {
     const owner = this;
     return {
-      workspace: this.workspace,
-      db: this.db,
+      ...this.casCtx(),
       get closed() {
         return owner.closed;
       },
       piAttemptExecutor: this.piAttemptExecutor,
       activeAttempts: this.activeAttempts,
       activeExecutions: this.activeExecutions,
-      transaction: (work) => this.transaction(work),
-      emit: (runId, type) => this.emit(runId, type),
-      isCurrent: (claim) => this.isCurrent(claim),
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       upstreamsSucceeded: (runId, nodeKey) => this.upstreamsSucceeded(runId, nodeKey),
       upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
       copyAttemptInputs: (attemptId, inputs) => this.copyAttemptInputs(attemptId, inputs),
@@ -626,11 +624,8 @@ class WikiRunsOwner implements WikiRuns {
 
   private mechanicalHost(): MechanicalHost {
     return {
-      workspace: this.workspace,
-      db: this.db,
+      ...this.txCtx(),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
-      transaction: (work) => this.transaction(work),
-      emit: (runId, type) => this.emit(runId, type),
       currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       reconcileApplyingEffect: (input) => this.reconcileApplyingEffect(input),
     };
@@ -639,17 +634,13 @@ class WikiRunsOwner implements WikiRuns {
   private freezeHost(): FreezeHost {
     const owner = this;
     return {
-      workspace: this.workspace,
-      db: this.db,
+      ...this.casCtx(),
       get closed() {
         return owner.closed;
       },
       activeAttempts: this.activeAttempts,
       piAttemptExecutor: this.piAttemptExecutor,
       runBoundary: (input) => this.runBoundary(input),
-      transaction: (work) => this.transaction(work),
-      isCurrent: (claim) => this.isCurrent(claim),
-      emit: (runId, type) => this.emit(runId, type),
       sealPreparation: (runId, preparation) => this.sealPreparation(runId, preparation),
       attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),

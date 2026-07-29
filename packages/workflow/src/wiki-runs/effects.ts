@@ -4,18 +4,13 @@
  */
 
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import type { WikiRunEvent, WorkspaceConfig } from "@okf-wiki/contract";
 import { reconcilePublicationApply, runWorkDir } from "@okf-wiki/core";
+import type { WikiRunsTxCtx } from "./ctx.js";
 import { now } from "./crypto-util.js";
 import { asRow, asRows, requiredText } from "./sql.js";
 
-export type EffectsHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
+export type EffectsHost = WikiRunsTxCtx & {
   closed: boolean;
-  transaction<T>(work: () => T): T;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
 };
 
 export function cancelPreApplyEffects(host: Pick<EffectsHost, "db">, runId: string): void {

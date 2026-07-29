@@ -4,17 +4,12 @@
  */
 
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import type { WikiRunEvent, WorkspaceConfig } from "@okf-wiki/contract";
+import type { WikiRunsTxCtx } from "../ctx.js";
 import { asRow, requiredText } from "../sql.js";
 import type { ClaimedNode, TrustedFrozenInputs } from "../types.js";
 
-export type MechanicalHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
+export type MechanicalHost = WikiRunsTxCtx & {
   trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
-  transaction<T>(work: () => T): T;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   reconcileApplyingEffect(input: {
     effectKey: string;

@@ -73,6 +73,18 @@ export {
   updateToolInState,
   viewMessages,
 } from "./agent-stream.js";
+/** Ephemeral Operator Session context-fill (UI only; not control truth). */
+export {
+  buildSessionUsage,
+  type ContextFillView,
+  contextFillPercent,
+  extractContextTokensFromPiHistory,
+  extractContextTokensFromPiMessage,
+  formatContextFill,
+  formatTokenCount,
+  type SessionUsage,
+  SessionUsageSchema,
+} from "./session-usage.js";
 export {
   PROVIDER_STORE_ERROR_CODES,
   type ProviderStoreErrorCode,

@@ -6,15 +6,12 @@
  * This helper must not open a nested transaction.
  */
 
-import type { DatabaseSync } from "node:sqlite";
-import type { WikiRunEvent } from "@okf-wiki/contract";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { asRow, requiredNumber } from "./sql.js";
 
 export type TerminalCancelReason = "cancel_requested" | "plan_denied";
 
-export type TerminalCancelHost = {
-  db: DatabaseSync;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
+export type TerminalCancelHost = Pick<WikiRunsDbCtx, "db" | "emit"> & {
   abortRunAttempts(runId: string): void;
   withdrawOpenGates(runId: string): void;
   cancelPreApplyEffects(runId: string): void;

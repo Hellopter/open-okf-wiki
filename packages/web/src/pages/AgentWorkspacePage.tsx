@@ -522,6 +522,7 @@ function AgentWorkspaceShellWithRunChrome({
       runBusy={operatorChrome.runBusy}
       runNeedsOperator={operatorChrome.runNeedsOperator}
       runStateLabel={operatorChrome.runStatusLabel}
+      sessionUsage={agent.sessionUsage}
     />
   );
 }

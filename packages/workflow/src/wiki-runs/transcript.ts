@@ -5,17 +5,14 @@
 
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import type { WikiRunAttempt, WorkspaceConfig } from "@okf-wiki/contract";
+import type { WikiRunAttempt } from "@okf-wiki/contract";
 import { isPathInside, runWorkDir } from "@okf-wiki/core";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { asRow, asRows, requiredText, type SqlRow } from "./sql.js";
 import { parseTranscriptMessages } from "./transcript-io.js";
 import { TRANSCRIPT_MAX_BYTES, type WikiRunAttemptTranscript } from "./types.js";
 
-export type TranscriptHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
-};
+export type TranscriptHost = Pick<WikiRunsDbCtx, "workspace" | "db">;
 
 /**
  * Secret-free Attempt transcript for Node details.

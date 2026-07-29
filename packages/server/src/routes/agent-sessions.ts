@@ -249,6 +249,7 @@ export async function handleAgentSessionEvents(
       session: { id: sessionId, workspaceId: workspace.id },
       messages: history.messages,
       ...(activeTool ? { activeTool } : {}),
+      ...(history.sessionUsage ? { sessionUsage: history.sessionUsage } : {}),
     },
   } satisfies AgentSseSnapshot);
   ready = true;

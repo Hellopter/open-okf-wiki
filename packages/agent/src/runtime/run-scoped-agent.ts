@@ -16,6 +16,7 @@
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AttemptItem, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import type { AgentRunRequest, ScopedRunnerRole } from "../ports/agent-runner.js";
 import { classifyAgentFailure } from "../workflow/retry-policy.js";
 import {
   createAttemptTranscriptSink,
@@ -35,10 +36,11 @@ import {
 } from "./projectors/attempt-projector.js";
 import type { WikiAgentRole } from "./tool-policy.js";
 
-export type ScopedAgentRole = Extract<
-  WikiAgentRole,
-  "domain" | "leaf" | "reviewer" | "root_research" | "plan" | "root_write"
->;
+/**
+ * Single role type for scoped runners (port + live runtime).
+ * Alias of port ScopedRunnerRole — ports stay free of Pi SDK / tool-policy imports.
+ */
+export type ScopedAgentRole = ScopedRunnerRole;
 
 /** Live progress for one scoped loop — maps 1:1 to a NodeAttempt on the Run Graph. */
 export type ScopedAgentProgress = NodeAttempt;
@@ -64,50 +66,25 @@ export class InfrastructureError extends Error {
 /** Rough char gate before tokenization — oversized tasks fail closed as capacity. */
 const TASK_CHAR_CAPACITY_GATE = 500_000;
 
-export type RunScopedAgentInput = {
-  role: ScopedAgentRole;
-  runWorkDir: string;
-  task: string;
-  /** Required for live sessions — no role-based runtime defaults. */
-  systemPrompt?: string;
-  /**
-   * Prefer last assistant message over streamed text for the control summary.
-   * Required to match AgentRunRequest: plan/reviewer true; research/scouts false.
-   */
-  preferFinalMessage: boolean;
+/**
+ * Live runtime input: AgentRunRequest field list with Pi-concrete overrides at the
+ * adapter boundary (model/runtime/tools/sourceIgnores). Ports keep those as unknown.
+ */
+export type RunScopedAgentInput = Omit<
+  AgentRunRequest,
+  "model" | "modelRuntime" | "sourceIgnores" | "customTools" | "retry" | "onProgress"
+> & {
   model?: Model<any>;
   modelRuntime?: ModelRuntime;
   sourceIgnores?: SourceIgnoreInput;
-  maxContextTokens?: number;
-  contextTargetTokens?: number;
-  /** Pi auto-retry policy (workspace.limits.retry). */
-  retry?: WikiSessionRetryInput | RetryLimits;
-  additionalSkillPaths?: readonly string[];
-  abortSignal?: AbortSignal;
-  timeoutMs?: number;
-  /**
-   * Unique attempt id for this scoped loop (streaming upserts share the same id).
-   * Defaults to role when omitted.
-   */
-  spanId?: string;
-  /**
-   * Topology node this attempt belongs to. Defaults to spanId/role when omitted.
-   * Multi-member roles (review council) share one nodeKey and differ by spanId/runIndex.
-   */
-  nodeKey?: string;
-  /** Round / retry index for the topology node (0-based). Defaults to 0. */
-  runIndex?: number;
   /**
    * Extra Pi customTools (merged by name over Operations-scoped tools).
    * Plan role must pass submit_wiki_run_spec here — runner does not inject by role.
    */
   customTools?: ToolDefinition<any, any>[];
+  /** Pi auto-retry policy (workspace.limits.retry) or session-shaped override. */
+  retry?: WikiSessionRetryInput | RetryLimits;
   onProgress?: (span: ScopedAgentProgress) => void;
-  /**
-   * When set, secret-free conversation/tool JSONL is written here for the
-   * Attempt transcript API (Node details). Does not use disk SessionManager.
-   */
-  transcriptPath?: string;
 };
 
 export type RunScopedAgentResult = {

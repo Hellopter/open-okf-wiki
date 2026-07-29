@@ -6,8 +6,6 @@
  */
 
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import type { WikiRunEvent, WorkspaceConfig } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import {
   type ArtifactsHost,
@@ -15,6 +13,7 @@ import {
   loadSealedDefectsReport,
   verifyArtifact,
 } from "./artifacts.js";
+import type { WikiRunsCasCtx, WikiRunsDbCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
 import { unlockReadyNodes } from "./dag.js";
 import { commitFreezeArtifacts, type FreezeCommitHost, trustedFrozenInputs } from "./freeze.js";
@@ -29,14 +28,12 @@ import { onPlanAccepted } from "./gate-resolve.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js";
 
-/** Host for successful-attempt side effects (gates + unlock + plan accept). */
-export type AttemptSuccessHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
-  isCurrent(claim: ClaimedNode): boolean;
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-};
+/**
+ * Host for successful-attempt side effects (gates + unlock + plan accept).
+ * CAS checks without requiring transaction on every call site.
+ */
+export type AttemptSuccessHost = WikiRunsDbCtx &
+  Pick<WikiRunsCasCtx, "isCurrent" | "currentNodeGeneration">;
 
 /** Recovery needs transaction + the success host surface. */
 export type RecoverArtifactsHost = AttemptSuccessHost & Pick<ArtifactsHost, "transaction">;

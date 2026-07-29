@@ -8,14 +8,22 @@ export type { LiveAgentSessionSummary } from "./live-session-registry.ts";
 export {
   ensureRegistered,
   getActiveAgentSessionTool,
+  getAgentSessionUsage,
   sweepIdleLiveSessions,
 } from "./live-session-registry.ts";
 export {
+  type AgentSessionHistoryLoad,
   deleteAgentSession,
   listLiveAgentSessionSummaries,
   loadAgentSessionHistory,
   registerAgentSession,
 } from "./session-lifecycle.ts";
+export {
+  composeSessionUsage,
+  contextBudgetFields,
+  sessionUsageFromPiEvent,
+  sessionUsageFromPiRows,
+} from "./session-usage.ts";
 
 export {
   ageLiveSessionForTests,

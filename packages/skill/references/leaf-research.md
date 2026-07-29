@@ -1,5 +1,9 @@
 # Leaf research branch
 
+**Job:** investigate one narrow Leaf task and return a concise evidence summary.
+**Prereq:** Domain parent assigned scope/question (`skill/references/domain-research.md`).
+**Next:** return summary text only — Produce persists the Analysis Receipt; do not write Wiki pages.
+
 Use this branch only for the narrow, self-contained Leaf task assigned by its Domain parent.
 
 1. Investigate only the assigned scope and collect precise evidence from the frozen Repository

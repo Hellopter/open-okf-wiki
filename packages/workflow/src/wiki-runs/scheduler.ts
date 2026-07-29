@@ -5,7 +5,6 @@
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import {
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
@@ -15,8 +14,6 @@ import {
   type PiAttemptOutcome,
   PiAttemptNodeDetailSchema,
   type WikiRunArtifactKind,
-  type WikiRunEvent,
-  type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import {
@@ -25,6 +22,7 @@ import {
   isPiAttemptKind,
 } from "../definition-v1.js";
 import { canClaimKind } from "./concurrency.js";
+import type { WikiRunsCasCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
 import { unlockReadyNodes } from "./dag.js";
 import {
@@ -44,17 +42,11 @@ import {
   RESEARCH_AUTO_RETRY_MAX_ATTEMPTS,
 } from "./types.js";
 
-export type SchedulerHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
+export type SchedulerHost = WikiRunsCasCtx & {
   closed: boolean;
   piAttemptExecutor?: PiAttemptExecutor;
   activeAttempts: Map<string, AbortController>;
   activeExecutions: Map<string, Promise<void>>;
-  transaction<T>(work: () => T): T;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
-  isCurrent(claim: ClaimedNode): boolean;
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   upstreamsSucceeded(runId: string, nodeKey: string): boolean;
   upstreamSealedOutputs(
     runId: string,

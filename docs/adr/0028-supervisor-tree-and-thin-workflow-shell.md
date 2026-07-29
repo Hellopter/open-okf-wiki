@@ -1,9 +1,12 @@
 # Thin Workflow shell + dynamic Supervisor tree for Wiki generation
 
-**Status:** accepted  
+**Status:** accepted (shell implementation historical — see status note)  
 **Date:** 2026-07-22  
 **Related:** ADR 0014 (planning/subagents), ADR 0025 (wiki-run workflow), ADR 0026/0027 (Session stream)  
-**Supersedes (partial):** optional `adaptive`/`reviewer` flags; fixed-stage research/write foreach as the primary topology; open-loop post-write review
+**Supersedes (partial):** optional `adaptive`/`reviewer` flags; fixed-stage research/write foreach as the primary topology; open-loop post-write review  
+**Shell path:** Mastra workflow → Pi WikiRunShell ([0030](0030-pi-agent-harness-for-semantic-workflow.md)) → tool-owned run ([0032](0032-pi-tool-owned-wiki-runs.md)) → **WikiRuns durable control** ([0035](0035-durable-wikiruns-control-plane.md))
+
+> **Status note:** Supervisor **topology intent** (plan → research Domain/Leaf → write → review council → repair → publish) remains. ~~Thin Workflow shell / WikiRunShell as Run owner~~ is **historical**. Current durable shell is WikiRuns definition DAG + thin Pi tools (StartRun receipt).
 
 ## Context
 

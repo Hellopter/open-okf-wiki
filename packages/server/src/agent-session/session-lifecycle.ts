@@ -11,7 +11,7 @@ import {
   projectOperatorHistoryFromManager,
   redactSensitiveValue,
 } from "@okf-wiki/agent";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { SessionUsage, WorkspaceConfig } from "@okf-wiki/contract";
 import { sessionKey } from "../session-key.ts";
 import {
   deletingSessions,
@@ -26,6 +26,7 @@ import {
   touchLive,
 } from "./live-session-registry.ts";
 import { runtimeInput } from "./runtime-input.ts";
+import { composeSessionUsage, sessionUsageFromPiRows } from "./session-usage.ts";
 
 /**
  * Bound wait for abort/idle before Session JSONL delete.
@@ -161,28 +162,42 @@ async function waitForSessionQuiet(
   ]);
 }
 
+/** History load result with optional ephemeral context-fill for SSE snapshot. */
+export type AgentSessionHistoryLoad = OperatorSessionHistory & {
+  sessionUsage?: SessionUsage;
+};
+
 /** Read compaction-aware operator history (Pi context path + durable details strip). */
 export async function loadAgentSessionHistory(
   workspace: WorkspaceConfig,
   sessionId: string,
-): Promise<OperatorSessionHistory | null> {
+): Promise<AgentSessionHistoryLoad | null> {
   sweepIdleLiveSessions();
   const live = liveSessions.get(sessionKey(workspace.id, sessionId));
   if (live) {
     touchLive(live);
     const piRows = projectOperatorHistoryFromManager(live.handle.session.sessionManager);
-    const messages = projectOperatorAgentMessages(
-      redactSensitiveValue(piRows) as readonly unknown[],
-    );
+    const redactedRows = redactSensitiveValue(piRows) as readonly unknown[];
+    const messages = projectOperatorAgentMessages(redactedRows);
+    const sessionUsage =
+      live.sessionUsage ??
+      sessionUsageFromPiRows(redactedRows, { live, workspace });
+    if (sessionUsage) live.sessionUsage = sessionUsage;
     return {
       sessionId: live.handle.session.sessionManager.getSessionId(),
       messages,
+      ...(sessionUsage ? { sessionUsage } : {}),
     };
   }
   const history = await loadOperatorSessionHistory(workspace.rootPath, sessionId);
   if (!history) return null;
+  const sessionUsage = composeSessionUsage({
+    contextTokens: history.lastContextTokens,
+    workspace,
+  });
   return {
     sessionId: history.sessionId,
     messages: redactSensitiveValue(history.messages),
+    ...(sessionUsage ? { sessionUsage } : {}),
   };
 }

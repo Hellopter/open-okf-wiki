@@ -6,18 +6,16 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
-import type { WikiRunEvent, WorkspaceConfig } from "@okf-wiki/contract";
+import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { EMPTY_PUBLICATION_DIGEST, runWorkDir } from "@okf-wiki/core";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { digest } from "./crypto-util.js";
 import { unlockReadyNodes } from "./dag.js";
 import { asRow, asRows } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
 /** Minimal surface for gate open / withdraw. */
-export type GateOpenHost = {
-  db: DatabaseSync;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
+export type GateOpenHost = Pick<WikiRunsDbCtx, "db" | "emit"> & {
   currentNodeGeneration?(runId: string, nodeKey: string): number | undefined;
   workspace?: WorkspaceConfig;
 };
@@ -122,9 +120,7 @@ export function openPlanGate(
  * detailJson may carry operator-facing summary (blocking count, clean flag).
  */
 export function openFixGate(
-  host: {
-    db: DatabaseSync;
-    emit(runId: string, type: WikiRunEvent["type"]): number;
+  host: Pick<WikiRunsDbCtx, "db" | "emit"> & {
     currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   },
   claim: ClaimedNode,
@@ -198,9 +194,7 @@ export function openFixGate(
  * validate.final. Called from attempt-success when sealed defects are clean.
  */
 export function autoPassFixGate(
-  host: {
-    db: DatabaseSync;
-    emit(runId: string, type: WikiRunEvent["type"]): number;
+  host: Pick<WikiRunsDbCtx, "db" | "emit"> & {
     currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   },
   runId: string,
@@ -283,9 +277,7 @@ export function readPublicationBaseline(
 }
 
 export function openPublicationGate(
-  host: {
-    db: DatabaseSync;
-    emit(runId: string, type: WikiRunEvent["type"]): number;
+  host: Pick<WikiRunsDbCtx, "db" | "emit"> & {
     currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   },
   claim: ClaimedNode,

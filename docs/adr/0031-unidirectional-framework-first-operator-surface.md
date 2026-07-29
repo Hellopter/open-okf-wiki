@@ -2,10 +2,11 @@
 
 **Status:** accepted  
 **Date:** 2026-07-23  
-**Refined by:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (removes all product SSE injects, session metadata, and replay state)
+**Refined by:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) (removes all product SSE injects, session metadata, and replay state); [ADR 0035](0035-durable-wikiruns-control-plane.md) (Run SSE separate from Session; WikiRuns gates)  
 **Related:** [0030](0030-pi-agent-harness-for-semantic-workflow.md) (Pi stack), [0026](0026-session-centric-agent-workspace.md) (Session-centric intent), [0028](0028-supervisor-tree-and-thin-workflow-shell.md) (thin shell + produce), [0029](0029-architecture-cleanup-no-compat.md) (no dual paths), [0019](0019-prefer-run-boundary-over-host.md) (Run Boundary)  
 **Refines:** 0030 (session/events ownership), 0026 (visibility), operator-event-contract  
-**Does not supersede:** Run Boundary (`@okf-wiki/core`), Producer Skill method layer, WikiRunShell gates  
+**Does not supersede:** Run Boundary (`@okf-wiki/core`), Producer Skill method layer  
+**Historical:** ~~WikiRunShell gates~~ → WikiRuns typed Gates (0035)  
 **Index:** [docs/adr/README.md](README.md)  
 **Research:** [pi-ui-design-vs-okf-workspace-2026-07](../research/pi-ui-design-vs-okf-workspace-2026-07.md)
 
@@ -16,7 +17,7 @@ ADR 0030 selected Pi as the agent harness. Implementation then grew **parallel o
 That is an **ownership** failure, not a missing drawer widget. Judging by architecture (not patch size):
 
 - Dependencies must stay **unidirectional**.
-- **Framework capabilities first** (Pi session, events, tools, JSONL); product only owns what Pi deliberately does not (Run Boundary, plan/publish gates, wiki Spec/receipts).
+- **Framework capabilities first** (Pi session, events, tools, JSONL); product only owns what Pi deliberately does not (Run Boundary, **WikiRuns** plan/publish gates, wiki Spec/receipts, Run SSE).
 
 ## Decision
 
@@ -113,7 +114,7 @@ Fan-in of raw child events onto the operator SSE bus is an **adapter detail**. I
 
 ### Positive
 
-- Clear ownership: Pi owns conversation stream; Core owns run boundary; shell owns gates; Web owns pixels.  
+- Clear ownership: Pi owns conversation stream; Core owns run boundary; **WikiRuns** owns durable gates/events (not WikiRunShell); Web owns pixels.  
 - Aligns with ADR 0026/0027/0030 intent without dual UIMessage/Mastra ghosts.  
 - Stops empty product shells from masquerading as live agent output.  
 - Makes “prefer framework” reviewable in PRs (new client maps / inject body channels are red flags).

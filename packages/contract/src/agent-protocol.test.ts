@@ -58,11 +58,17 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
           summary: "Wiki Run accepted",
         },
       },
+      sessionUsage: {
+        contextTokens: 12_400,
+        contextWindow: 128_000,
+        contextTarget: 108_800,
+      },
     },
   });
   assert.equal(snapshot.kind, "snapshot");
   if (snapshot.source === "server" && snapshot.kind === "snapshot") {
     assert.equal(snapshot.payload.activeTool?.details.status, "accepted");
+    assert.equal(snapshot.payload.sessionUsage?.contextTokens, 12_400);
     assert.equal("pendingGate" in snapshot.payload, false);
   }
 
@@ -79,9 +85,13 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
       streamingMessage: null,
       appended: [],
       updated: [],
+      sessionUsage: { contextTokens: 2500, contextWindow: 128_000 },
     },
   });
   assert.equal(stream.kind, "stream");
+  if (stream.source === "server" && stream.kind === "stream") {
+    assert.equal(stream.payload.sessionUsage?.contextTokens, 2500);
+  }
 
   const heartbeat = AgentSseEventSchema.parse({
     source: "server",

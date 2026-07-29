@@ -9,12 +9,16 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage, WorkspaceConfig } from "@okf-wiki/contract";
+import { extractContextTokensFromPiHistory } from "@okf-wiki/contract";
 import { isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
 import { createSessionStatusTool } from "../tools/session-status.js";
 import { type CreateWikiProduceToolInput, createWikiProduceTool } from "../tools/wiki-produce.js";
 import { type CreateWikiRepairToolInput, createWikiRepairTool } from "../tools/wiki-repair.js";
-import { projectOperatorAgentMessagesFromManager } from "./history.js";
+import {
+  projectOperatorAgentMessages,
+  projectOperatorHistoryFromManager,
+} from "./history.js";
 
 export {
   projectOperatorAgentMessages,
@@ -35,6 +39,11 @@ export function piSessionsDir(workspaceRoot: string): string {
 export type OperatorSessionHistory = {
   sessionId: string;
   messages: AgentMessage[];
+  /**
+   * Last assistant `usage.totalTokens` from Pi context history (ephemeral UI
+   * fill proxy). Not durable control truth (ADR 0035).
+   */
+  lastContextTokens?: number;
 };
 
 export type OperatorSessionSummary = {
@@ -190,9 +199,12 @@ export async function loadOperatorSessionHistory(
   const info = await findSessionInfo(root, sessionId);
   if (!info) return null;
   const manager = SessionManager.open(info.path, piSessionsDir(root), root);
+  const piRows = projectOperatorHistoryFromManager(manager);
+  const lastContextTokens = extractContextTokensFromPiHistory(piRows);
   return {
     sessionId: manager.getSessionId(),
-    messages: projectOperatorAgentMessagesFromManager(manager),
+    messages: projectOperatorAgentMessages(piRows),
+    ...(lastContextTokens !== undefined ? { lastContextTokens } : {}),
   };
 }
 

@@ -1,5 +1,9 @@
 # Generate
 
+**Job:** write a new Staging Wiki from an empty (or fixture-seeded empty) `wiki/`.
+**Prereq:** plan complete (`skill/references/plan.md`); Spec pages are known.
+**Next:** review (`skill/references/review.md`).
+
 Start from the empty Staging Wiki.
 
 1. Find each repository's stated purpose, executable or library entry points, public interfaces,

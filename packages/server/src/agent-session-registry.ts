@@ -3,21 +3,25 @@
  * Logic lives under `./agent-session/*` — this path stays stable for routes/tests.
  */
 
-export type { LiveAgentSessionSummary } from "./agent-session/index.ts";
+export type { AgentSessionHistoryLoad, LiveAgentSessionSummary } from "./agent-session/index.ts";
 export {
   ageLiveSessionForTests,
+  composeSessionUsage,
   deleteAgentSession,
   dispatchAgentCommand,
   emitProductSseForTests,
   ensureRegistered,
   evictLiveAgentSessionForTests,
   getActiveAgentSessionTool,
+  getAgentSessionUsage,
   injectDurableMessagesForTests,
   listLiveAgentSessionSummaries,
   loadAgentSessionHistory,
   markLiveSessionBusyForTests,
   registerAgentSession,
   resetAgentSessionRegistryForTests,
+  sessionUsageFromPiEvent,
+  sessionUsageFromPiRows,
   setLiveSessionIdleTtlForTests,
   sweepIdleLiveSessions,
 } from "./agent-session/index.ts";

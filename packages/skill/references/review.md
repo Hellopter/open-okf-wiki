@@ -1,5 +1,9 @@
 # Review
 
+**Job:** independently verify the Staging Wiki; blocking defects must be repaired before completion.
+**Prereq:** concept pages exist under `wiki/` (after generate or refresh).
+**Next:** repair via earlier plan/write steps, or fail the run if unclean after repair rounds.
+
 Review the Wiki as both a first-time reader and a source verifier. Repair before completing:
 
 - unclear purpose, audience, or terminology on concept pages (especially the narrative overview)

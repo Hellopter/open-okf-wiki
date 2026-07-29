@@ -4,7 +4,12 @@
  */
 
 import { createOperatorSession, openOperatorSession } from "@okf-wiki/agent";
-import type { AgentSseActiveTool, PiStreamState, WorkspaceConfig } from "@okf-wiki/contract";
+import type {
+  AgentSseActiveTool,
+  PiStreamState,
+  SessionUsage,
+  WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { emitAgentSessionEvent } from "../agent-session-events.ts";
 import {
   activeToolUpdate,
@@ -13,6 +18,7 @@ import {
 } from "../project-pi-sse.ts";
 import { sessionKey } from "../session-key.ts";
 import { runtimeInput } from "./runtime-input.ts";
+import { sessionUsageFromPiEvent } from "./session-usage.ts";
 
 type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 
@@ -27,6 +33,11 @@ export type RegisteredAgentSession = {
   activeTool?: AgentSseActiveTool;
   /** Server-owned live stream reduce state (view projection). */
   streamState: PiStreamState;
+  /**
+   * Ephemeral context-fill for Operator chrome (last assistant totalTokens +
+   * budget). Updated on message_end with usage; not durable control truth.
+   */
+  sessionUsage?: SessionUsage;
   queueFixtureTurn?: (text: string, canProduce: boolean) => void;
 };
 
@@ -99,6 +110,15 @@ export function registerLive(
     // Server reduces Pi → stream view patch (redacted); web only applies.
     const advanced = projectLiveStreamEvent(handle.sessionId, entry.streamState, event);
     entry.streamState = advanced.state;
+    // Context-fill chip: refresh from assistant message_end usage when present.
+    const usageUpdate = sessionUsageFromPiEvent(event, entry.sessionUsage, { live: entry });
+    if (usageUpdate) {
+      entry.sessionUsage = usageUpdate;
+      advanced.frame = {
+        ...advanced.frame,
+        payload: { ...advanced.frame.payload, sessionUsage: usageUpdate },
+      };
+    }
     emitAgentSessionEvent(workspaceId, handle.sessionId, advanced.frame);
   });
   liveSessions.set(key, entry);
@@ -207,4 +227,12 @@ export function getActiveAgentSessionTool(
   sessionId: string,
 ): AgentSseActiveTool | undefined {
   return liveSessions.get(sessionKey(workspaceId, sessionId))?.activeTool;
+}
+
+/** Current ephemeral context-fill for an SSE snapshot (UI only). */
+export function getAgentSessionUsage(
+  workspaceId: string,
+  sessionId: string,
+): SessionUsage | undefined {
+  return liveSessions.get(sessionKey(workspaceId, sessionId))?.sessionUsage;
 }

@@ -7,7 +7,7 @@
 **Historically refined:** [ADR 0025](0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) Session stream entry — framework path was the only conversion; product shell was thin  
 **Index:** [docs/adr/README.md](README.md)
 
-> **Do not implement as written.** Mastra `suspend`/`resumeStream`, `toAISdkStream`, UIMessage/`useChat`, and `$OKF_WIKI_HOME/mastra` LibSQL snapshots are **not** current product ops. The durable intent is **framework-first Session streaming** (now Pi AgentSession events + JSONL) and a thin product shell — re-read under 0030/0032.
+> **Do not implement as written.** Mastra `suspend`/`resumeStream`, `toAISdkStream`, UIMessage/`useChat`, and `$OKF_WIKI_HOME/mastra` LibSQL snapshots are **not** current product ops. The durable intent is **framework-first Session streaming** (now Pi AgentSession events + JSONL) and a thin product shell — re-read under 0030/0032. **Run** durability and HITL gates are WikiRuns + Run SSE ([0035](0035-durable-wikiruns-control-plane.md)), not Session tool-lifecycle ownership.
 
 ## Context
 

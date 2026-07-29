@@ -35,28 +35,14 @@ function asLayout(layout: WikiWriteRequest["layout"]): RunWorkdirLayout {
   return layout as RunWorkdirLayout;
 }
 
+/** Port → live: spread AgentRunRequest, cast only opaque Pi boundary fields. */
 function toScopedInput(input: AgentRunRequest): RunScopedAgentInput {
   return {
-    role: input.role,
-    runWorkDir: input.runWorkDir,
-    task: input.task,
-    systemPrompt: input.systemPrompt,
-    preferFinalMessage: input.preferFinalMessage,
+    ...input,
     model: asModel(input.model),
     modelRuntime: asModelRuntime(input.modelRuntime),
     sourceIgnores: asSourceIgnores(input.sourceIgnores),
-    maxContextTokens: input.maxContextTokens,
-    contextTargetTokens: input.contextTargetTokens,
-    retry: input.retry,
-    additionalSkillPaths: input.additionalSkillPaths,
-    abortSignal: input.abortSignal,
-    timeoutMs: input.timeoutMs,
-    spanId: input.spanId,
-    nodeKey: input.nodeKey,
-    runIndex: input.runIndex,
     customTools: input.customTools as ToolDefinition<any, any>[] | undefined,
-    onProgress: input.onProgress,
-    transcriptPath: input.transcriptPath,
   };
 }
 

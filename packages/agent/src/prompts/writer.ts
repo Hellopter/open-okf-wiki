@@ -47,7 +47,7 @@ export function rootWritePrompt(input: {
     paths,
     "",
     "## Method",
-    "1. Read skill/SKILL.md in full.",
+    "1. Read skill/SKILL.md (job index) in full.",
     `2. ${branch}`,
     "3. Read analysis/spec.json (living WikiRunSpec) and follow its pages/domains.",
     "4. Read relevant skill/templates/{overview,architecture,module,flow,concept}.md before writing those page kinds.",

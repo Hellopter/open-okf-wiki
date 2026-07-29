@@ -6,14 +6,11 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import {
   type PiAttemptExecutor,
   type PiAttemptInput,
   type PiAttemptOutcome,
   RepositorySnapshotSchema,
-  type WikiRunEvent,
-  type WorkspaceConfig,
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import {
@@ -21,6 +18,7 @@ import {
   type FrozenRunBoundary,
   runWorkDir,
 } from "@okf-wiki/core";
+import type { WikiRunsCasCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
 import { makeOwnedTreeWritable, manifestFor } from "./fs-util.js";
 import { asRow, asRows, parseJson, requiredText, type SqlRow } from "./sql.js";
@@ -33,16 +31,11 @@ import type {
   TrustedFrozenInputs,
 } from "./types.js";
 
-export type FreezeHost = {
-  workspace: WorkspaceConfig;
-  db: DatabaseSync;
+export type FreezeHost = WikiRunsCasCtx & {
   closed: boolean;
   activeAttempts: Map<string, AbortController>;
   piAttemptExecutor?: PiAttemptExecutor;
   runBoundary(input: FreezeRunBoundaryInput): Promise<FrozenRunBoundary>;
-  transaction<T>(work: () => T): T;
-  isCurrent(claim: ClaimedFreeze): boolean;
-  emit(runId: string, type: WikiRunEvent["type"]): number;
   sealPreparation(runId: string, preparation: ArtifactPreparation): Promise<void>;
   attemptInputDigest(attemptId: string): string;
   trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
