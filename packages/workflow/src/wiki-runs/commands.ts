@@ -307,8 +307,6 @@ export function applyRerunAt(
     targets.set(`${item.nodeKey}@${item.generation}`, item);
   }
 
-  const detailJson = feedback !== undefined ? JSON.stringify({ feedback }) : null;
-
   for (const target of targets.values()) {
     cancelNodeAttempts(host, runId, target.nodeKey, target.generation, "superseded");
     host.withdrawOpenGatesForNode(runId, target.nodeKey, target.generation);
@@ -326,6 +324,37 @@ export function applyRerunAt(
         .get(runId, target.nodeKey, nextGeneration),
     );
     if (existingNext) throw new Error("rerun target is stale: newer generation already exists");
+
+    // Copy prior generation detail so definition question/lens/… survive gen bumps.
+    // Root target: merge optional operator feedback into that detail (do not replace).
+    const priorRow = asRow(
+      host.db
+        .prepare(
+          "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+        )
+        .get(runId, target.nodeKey, target.generation),
+    );
+    const priorDetailJson =
+      priorRow?.detail_json != null && priorRow.detail_json !== ""
+        ? String(priorRow.detail_json)
+        : null;
+    let nextDetailJson: string | null = priorDetailJson;
+    if (isRoot) {
+      let base: Record<string, unknown> = {};
+      if (priorDetailJson) {
+        try {
+          const parsed = JSON.parse(priorDetailJson) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            base = { ...(parsed as Record<string, unknown>) };
+          }
+        } catch {
+          // Corrupt prior detail: start from empty and still persist feedback.
+        }
+      }
+      if (feedback !== undefined) base.feedback = feedback;
+      nextDetailJson = Object.keys(base).length > 0 ? JSON.stringify(base) : null;
+    }
+
     host.db
       .prepare(
         `INSERT INTO nodes (
@@ -338,7 +367,7 @@ export function applyRerunAt(
         target.kind,
         isRoot ? "ready" : "invalidated",
         nextGeneration,
-        isRoot ? detailJson : null,
+        nextDetailJson,
       );
   }
 

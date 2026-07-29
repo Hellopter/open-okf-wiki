@@ -67,6 +67,7 @@ export function migrate(db: DatabaseSync): void {
       state TEXT NOT NULL,
       input_digest TEXT NOT NULL,
       error TEXT,
+      failure_class TEXT,
       started_at TEXT NOT NULL,
       ended_at TEXT
     ) STRICT;
@@ -170,5 +171,11 @@ export function migrate(db: DatabaseSync): void {
   );
   if (!nodeColumns.includes("detail_json")) {
     db.exec("ALTER TABLE nodes ADD COLUMN detail_json TEXT");
+  }
+  const attemptColumns = asRows(db.prepare("PRAGMA table_info(attempts)").all()).map((row) =>
+    requiredText(row, "name"),
+  );
+  if (!attemptColumns.includes("failure_class")) {
+    db.exec("ALTER TABLE attempts ADD COLUMN failure_class TEXT");
   }
 }

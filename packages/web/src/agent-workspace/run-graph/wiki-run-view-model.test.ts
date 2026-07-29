@@ -5,6 +5,7 @@ import {
   attemptStatusFromWiki,
   failedNodesFromSnapshot,
   openGatesFromSnapshot,
+  projectWikiAttempt,
   wikiRunSnapshotToRunGraph,
   wikiRunToViewModel,
 } from "./wiki-run-view-model.ts";
@@ -141,6 +142,7 @@ describe("wikiRun view-model projection", () => {
           state: "failed",
           inputDigest: digest,
           error: "provider timeout",
+          failureClass: "infrastructure",
           startedAt: timestamp,
           endedAt: timestamp,
         },
@@ -191,5 +193,38 @@ describe("wikiRun view-model projection", () => {
     assert.equal(attemptStatusFromWiki("succeeded"), "done");
     assert.equal(attemptStatusFromWiki("interrupted"), "error");
     assert.equal(attemptStatusFromWiki("suspended"), "awaiting");
+  });
+
+  it("maps WikiRunAttempt.failureClass to NodeAttempt.errorClass", () => {
+    const projected = projectWikiAttempt({
+      attemptId: "a-cap",
+      nodeKey: "research.leaf.x",
+      nodeGeneration: 0,
+      runIndex: 1,
+      state: "failed",
+      inputDigest: digest,
+      error: "context overflow",
+      failureClass: "capacity",
+      startedAt: timestamp,
+      endedAt: timestamp,
+    });
+    assert.equal(projected.errorClass, "capacity");
+    assert.equal(projected.summary, "context overflow");
+    assert.equal(projected.status, "error");
+
+    // provider/cancelled are Pi classes, not ErrorClass — omit rather than invent.
+    const provider = projectWikiAttempt({
+      attemptId: "a-prov",
+      nodeKey: "research.leaf.x",
+      nodeGeneration: 0,
+      runIndex: 2,
+      state: "failed",
+      inputDigest: digest,
+      error: "auth",
+      failureClass: "provider",
+      startedAt: timestamp,
+      endedAt: timestamp,
+    });
+    assert.equal(provider.errorClass, undefined);
   });
 });

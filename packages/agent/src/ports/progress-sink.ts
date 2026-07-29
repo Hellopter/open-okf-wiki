@@ -2,13 +2,15 @@
  * Live progress emission port (wiki_produce onUpdate / tests).
  *
  * Event shape uses contract types only — no produce/ or pi/ imports.
+ *
+ * Operator Run graph is not a second true-source here: WikiRuns SSE owns
+ * the operator graph surface. This sink carries status/phase/pages/spec/
+ * attempt/defects/runId only.
  */
 
 import type {
-  GraphNodeDef,
   MergedDefectReport,
   NodeAttempt,
-  RunGraphSnapshot,
   WikiProduceToolDetails,
   WikiRunSpec,
 } from "@okf-wiki/contract";
@@ -20,9 +22,6 @@ export type ProduceProgress =
   | { kind: "pages"; pages: string[] }
   | { kind: "spec"; spec: WikiRunSpec }
   | { kind: "attempt"; attempt: NodeAttempt }
-  | { kind: "graph"; graph: RunGraphSnapshot }
-  /** Set/replace topology without wiping append-only attempts. */
-  | { kind: "topology"; topology: GraphNodeDef[]; topologyVersion?: number }
   | { kind: "defects"; defects: MergedDefectReport; summary?: string }
   | { kind: "runId"; runId: string };
 

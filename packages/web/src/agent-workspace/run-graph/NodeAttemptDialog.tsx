@@ -6,13 +6,14 @@
  * - running/suspended → EventSource …/transcript/events (live snapshots)
  * Not Session SSE; not Run control SSE.
  *
- * Markdown + tools reuse Session TranscriptMessage chrome (AgentMarkdown /
- * ToolExecutionCard) — no second MD renderer for Node details.
+ * Display surfaces (no dual trail):
+ * - summary → AgentMarkdown
+ * - transcript → TranscriptMessageList (projects tool rows via shared chrome)
  *
  * Scroll: flex column shell + native overflow-y body.
  */
 
-import type { AttemptItem, NodeAttempt } from "@okf-wiki/contract";
+import type { NodeAttempt } from "@okf-wiki/contract";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -31,8 +32,6 @@ import {
   wikiRunAttemptTranscriptEventsUrl,
 } from "../../api";
 import { useI18n } from "../../i18n";
-import { ToolExecutionCard } from "../components/ToolExecutionCard";
-import type { AgentToolCall } from "../hooks/useSessionAgent";
 import { AgentMarkdown } from "../transcript/AgentMarkdown";
 import { TranscriptMessageList } from "../transcript/Transcript";
 import {
@@ -59,35 +58,6 @@ export type NodeAttemptDialogProps = {
   /** WikiRunAttempt.state (or equivalent); drives live polling while `running`. */
   attemptState?: string | null;
 };
-
-function parseToolArgs(argsSummary: string | undefined): unknown {
-  if (!argsSummary?.trim()) return undefined;
-  const trimmed = argsSummary.trim();
-  if (
-    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-    (trimmed.startsWith("[") && trimmed.endsWith("]"))
-  ) {
-    try {
-      return JSON.parse(trimmed) as unknown;
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed;
-}
-
-/** Map AttemptItem toolCall → AgentToolCall for shared ToolExecutionCard. */
-function attemptItemToTool(item: Extract<AttemptItem, { type: "toolCall" }>, index: number): AgentToolCall {
-  const raw = item.status;
-  const status: AgentToolCall["status"] =
-    raw === "running" || raw === "error" ? raw : raw === "done" ? "done" : "done";
-  return {
-    id: `item-tool-${index}`,
-    name: item.name || "tool",
-    args: parseToolArgs(item.argsSummary),
-    status,
-  };
-}
 
 type TranscriptFetchState = {
   loading: boolean;
@@ -291,30 +261,6 @@ export function NodeAttemptDialog({
     [fetchState.messages],
   );
 
-  const itemTools = useMemo(() => {
-    const items = attempt?.items ?? [];
-    return items
-      .map((item, index) =>
-        item.type === "toolCall" ? attemptItemToTool(item, index) : null,
-      )
-      .filter((t): t is AgentToolCall => t !== null);
-  }, [attempt?.items]);
-
-  const itemTexts = useMemo(() => {
-    const items = attempt?.items ?? [];
-    return items
-      .map((item, index) =>
-        item.type === "text" && item.text.trim()
-          ? { key: `text-${index}`, text: item.text }
-          : null,
-      )
-      .filter((t): t is { key: string; text: string } => t !== null);
-  }, [attempt?.items]);
-
-  // Prefer full transcript when present; fall back to attempt.items trail.
-  const showItemTrail =
-    projected.length === 0 && (itemTools.length > 0 || itemTexts.length > 0);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -436,24 +382,6 @@ export function NodeAttemptDialog({
                     </dl>
                   </>
                 )}
-
-                {showItemTrail ? (
-                  <>
-                    <Separator />
-                    <div className="flex flex-col gap-2" data-testid="attempt-tool-trail">
-                      {itemTexts.map((row) => (
-                        <AgentMarkdown key={row.key} content={row.text} />
-                      ))}
-                      {itemTools.map((tool) => (
-                        <ToolExecutionCard
-                          key={tool.id}
-                          tool={tool}
-                          settled={attempt.status !== "running" && attempt.status !== "pending"}
-                        />
-                      ))}
-                    </div>
-                  </>
-                ) : null}
 
                 {canFetch ? (
                   <>

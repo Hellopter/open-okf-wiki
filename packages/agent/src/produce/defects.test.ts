@@ -6,10 +6,10 @@ import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { regenerateWikiIndexes } from "@okf-wiki/core";
 import { defaultSpecStore } from "../ports/core-spec-store.js";
-import { formatDefectsForRepair } from "../workflow/phases/repair-prompt.js";
 import {
   applyStickyBlockingDefects,
   defectFingerprint,
+  formatDefectsForRepair,
   hasBlockingDefects,
   mergeDefectReports,
   parseDefectReportFromText,

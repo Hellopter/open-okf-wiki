@@ -11,6 +11,7 @@ import path from "node:path";
 import {
   type AttemptItem,
   type PiAttemptExecutor,
+  type PiAttemptFailureClass,
   type PiAttemptInput,
   PiAttemptInputSchema,
   type PiAttemptOutcome,
@@ -57,19 +58,76 @@ function bounded(text: unknown): string {
   return (value || "Pi attempt failed").slice(0, 4_000);
 }
 
-function failure(error: unknown, signal: AbortSignal): PiAttemptOutcome {
+/**
+ * Map a thrown value to PiAttemptFailureClass.
+ * Prefer structured errorClass / named errors; message patterns are fallback.
+ * Capacity (overflow / compact exhausted) must never look like transport.
+ * Transport (429/5xx/overload/network) maps to infrastructure — L0 already
+ * retried in-session; L_control may requeue research once for infrastructure.
+ */
+function classifyPiFailureClass(error: unknown, signal: AbortSignal): PiAttemptFailureClass {
+  if (signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+    return "cancelled";
+  }
+
+  // Structured classes from run-scoped-agent (CapacityError / BudgetError / …).
+  if (error && typeof error === "object" && "errorClass" in error) {
+    const cls = (error as { errorClass?: unknown }).errorClass;
+    if (cls === "capacity") return "capacity";
+    if (cls === "budget") return "budget";
+    if (cls === "infrastructure") return "infrastructure";
+    // ErrorClass "transient" has no PiAttemptOutcome twin — infrastructure is the
+    // control-plane equivalent after L0 transport exhaustion.
+    if (cls === "transient") return "infrastructure";
+    if (cls === "policy") return "budget";
+  }
+  if (error instanceof Error) {
+    if (error.name === "CapacityError") return "capacity";
+    if (error.name === "BudgetError") return "budget";
+    if (error.name === "InfrastructureError") return "infrastructure";
+  }
+
   const message = bounded(error instanceof Error ? error.message : error);
   const lower = message.toLowerCase();
-  const failureClass =
-    signal.aborted || (error instanceof Error && error.name === "AbortError")
-      ? "cancelled"
-      : /rate limit|too many requests|capacity|overloaded|temporar(?:y|ily) unavailable/.test(lower)
-        ? "capacity"
-        : /budget|quota|credit|token limit|context length|max tokens/.test(lower)
-          ? "budget"
-          : /provider|model|credential|api key|authentication|unauthori[sz]ed|forbidden/.test(lower)
-            ? "provider"
-            : "infrastructure";
+
+  // Capacity first — context overflow / compact exhausted (not transport).
+  if (
+    /context overflow|context.?length|maximum context|prompt is too long|context_length|too many tokens|token limit exceeded|input is too long|compact-and-retry|exceeds capacity gate|\bcapacity\b/i.test(
+      lower,
+    )
+  ) {
+    return "capacity";
+  }
+  // Budget / wall-clock / quota (policy-ish billing folded to budget for Pi enum).
+  if (
+    /budget exhausted|token budget|timed out after \d+|workspace request timeout|insufficient_quota|quota exceeded|billing|out of (?:budget|credits?)|\bcredits?\b/i.test(
+      lower,
+    )
+  ) {
+    return "budget";
+  }
+  // Transport / overload → infrastructure (L_control may auto-requeue research).
+  if (
+    /rate.?limit|too many requests|\b(?:429|500|502|503|529)\b|overloaded|temporar(?:y|ily) unavailable|service unavailable|bad gateway|internal server error|econnreset|etimedout|econnrefused|eai_again|enotfound|epipe|socket hang up|fetch failed|network error|connection (?:closed|reset|refused|error)/i.test(
+      lower,
+    )
+  ) {
+    return "infrastructure";
+  }
+  // Stable provider / auth failures.
+  if (
+    /credential|api key|authentication|unauthori[sz]ed|forbidden|invalid.?api|model not found/i.test(
+      lower,
+    )
+  ) {
+    return "provider";
+  }
+  return "infrastructure";
+}
+
+function failure(error: unknown, signal: AbortSignal): PiAttemptOutcome {
+  const message = bounded(error instanceof Error ? error.message : error);
+  const failureClass = classifyPiFailureClass(error, signal);
   return PiAttemptOutcomeSchema.parse({ type: "failed", error: message, failureClass });
 }
 
@@ -223,27 +281,56 @@ async function readSealedWikiTree(input: PiAttemptInput, destWikiDir: string): P
   await cp(wikiInput.readOnlyPath, destWikiDir, { recursive: true, dereference: false });
 }
 
+/**
+ * Prefer sealed node.detail from WikiRuns; fall back to key conventions only
+ * for missing fields so older claims without detail still run.
+ */
 function parseNodeDetail(input: PiAttemptInput): Record<string, unknown> {
-  // Detail is not on PiAttemptInput; infer from node key conventions.
+  const sealed = input.node.detail ?? {};
   if (input.node.kind === "research.leaf") {
     const match = /^research\.leaf\.([^.]+)\.(\d+)$/.exec(input.node.key);
-    if (match) {
-      return {
-        domainId: match[1],
-        questionIndex: Number(match[2]),
-        question: `Question ${match[2]}`,
-      };
-    }
+    const domainId =
+      (typeof sealed.domainId === "string" && sealed.domainId) || match?.[1] || "core";
+    const questionIndex =
+      typeof sealed.questionIndex === "number"
+        ? sealed.questionIndex
+        : match
+          ? Number(match[2])
+          : undefined;
+    const question =
+      (typeof sealed.question === "string" && sealed.question.trim()) ||
+      (questionIndex != null ? `Question ${questionIndex}` : input.node.key);
+    return {
+      ...sealed,
+      domainId,
+      questionIndex,
+      question,
+      scope: typeof sealed.scope === "string" ? sealed.scope : "",
+    };
   }
   if (input.node.kind === "research.domain") {
-    const domainId = input.node.key.replace(/^research\.domain\./, "");
-    return { domainId, title: domainId, scope: domainId, questions: [] as string[] };
+    const domainId =
+      (typeof sealed.domainId === "string" && sealed.domainId) ||
+      input.node.key.replace(/^research\.domain\./, "");
+    const questions = Array.isArray(sealed.questions)
+      ? sealed.questions.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+      : [];
+    return {
+      ...sealed,
+      domainId,
+      title:
+        (typeof sealed.title === "string" && sealed.title.trim()) || domainId,
+      scope: typeof sealed.scope === "string" ? sealed.scope : "",
+      questions,
+    };
   }
   if (input.node.kind === "review.seat") {
-    const lens = input.node.key.replace(/^review\.seat\./, "") as ReviewLens;
-    return { lens };
+    const fromKey = input.node.key.replace(/^review\.seat\./, "");
+    const lens =
+      (typeof sealed.lens === "string" && sealed.lens.trim()) || fromKey || "general";
+    return { ...sealed, lens };
   }
-  return {};
+  return { ...sealed };
 }
 
 /**
@@ -557,7 +644,13 @@ export function createPiAttemptExecutor(
         await writeFile(specPath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
         const resolved =
           runtime.kind === "live" ? await liveModel(input, "writer", resolveModel) : undefined;
+        const repairFeedback =
+          typeof input.node.detail?.feedback === "string" && input.node.detail.feedback.trim()
+            ? input.node.detail.feedback.trim()
+            : undefined;
+        // Feedback first so it is not lost when transcripts truncate long write prompts.
         const repairTask = [
+          ...(repairFeedback ? [`Operator feedback: ${repairFeedback}`, ""] : []),
           rootWritePrompt({
             layout,
             spec,

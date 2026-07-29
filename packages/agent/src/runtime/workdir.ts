@@ -1,7 +1,6 @@
 /**
  * Run workdir layout projection for Pi cwd (ADR 0032 / freeze).
  *
- * Prefer workflow/layout.layoutFromFrozen(FrozenRunBoundary) at the Run shell.
  * runWorkdirLayout remains for tests and tools that hand-build trees without freeze.
  */
 

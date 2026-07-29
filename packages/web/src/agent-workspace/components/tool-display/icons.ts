@@ -1,6 +1,6 @@
 /**
- * Tool icon mapping shared by ToolExecutionCard (transcript) and
- * NodeAttemptDialog (run graph) so the two tool-trail renderings cannot drift.
+ * Tool icon mapping for ToolExecutionCard (transcript / attempt transcript).
+ * Single chrome path — NodeAttemptDialog renders tools only via TranscriptMessageList.
  */
 
 import { FileIcon, LayersIcon, SearchIcon, WrenchIcon } from "lucide-react";

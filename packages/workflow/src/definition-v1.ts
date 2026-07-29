@@ -4,16 +4,31 @@
  * Pure topology from an approved WikiRunSpec. WikiRuns inserts these rows and
  * edges after plan approve; the scheduler unlocks ready nodes from sealed
  * upstream outputs — this module does not execute Attempts.
+ *
+ * Depth: there is no recursive depth axis. workspace.orchestration.maxDepth is
+ * ignored here (fossil field; see resolveOrchestration / WorkspaceOrchestrationSchema).
+ * Topology caps are maxDomainFanOut and maxLeafFanOut only; leaf *concurrency*
+ * is separate (domainConcurrency × min(2, maxLeafFanOut) in concurrency.ts).
  */
 
-import type { WikiRunNodeKind, WikiRunSpec } from "@okf-wiki/contract";
+import {
+  DEFAULT_ORCHESTRATION,
+  type WikiRunNodeKind,
+  type WikiRunSpec,
+} from "@okf-wiki/contract";
 
 export type BuildDefinitionV1Options = {
-  /** Number of review seats (1–4). Default: all REVIEW_LENSES. */
+  /** Number of review seats (1–4). Default: DEFAULT_ORCHESTRATION.reviewCouncilSize (3). */
   reviewCouncilSize?: number;
-  /** Cap domains materialized from Spec (workspace.orchestration.maxDomainFanOut). */
+  /**
+   * Cap domains materialized from Spec (workspace.orchestration.maxDomainFanOut).
+   * Default: DEFAULT_ORCHESTRATION.maxDomainFanOut (4), not the schema max (16).
+   */
   maxDomainFanOut?: number;
-  /** Cap questions/leaves per domain (workspace.orchestration.maxLeafFanOut). */
+  /**
+   * Cap questions/leaves per domain (workspace.orchestration.maxLeafFanOut).
+   * Topology only — not the leaf concurrency pool. Default: DEFAULT_ORCHESTRATION.maxLeafFanOut (6).
+   */
   maxLeafFanOut?: number;
 };
 
@@ -58,14 +73,20 @@ export function buildDefinitionV1Graph(
   const seen = new Set<string>();
   const councilSize = Math.max(
     1,
-    Math.min(REVIEW_LENSES.length, Math.floor(options?.reviewCouncilSize ?? REVIEW_LENSES.length)),
+    Math.min(
+      REVIEW_LENSES.length,
+      Math.floor(options?.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize),
+    ),
   );
   const lenses = REVIEW_LENSES.slice(0, councilSize);
   const maxDomainFanOut = Math.max(
     1,
-    Math.min(16, Math.floor(options?.maxDomainFanOut ?? 16)),
+    Math.min(16, Math.floor(options?.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut)),
   );
-  const maxLeafFanOut = Math.max(1, Math.min(16, Math.floor(options?.maxLeafFanOut ?? 16)));
+  const maxLeafFanOut = Math.max(
+    1,
+    Math.min(16, Math.floor(options?.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut)),
+  );
 
   const addNode = (node: DefinitionV1Node): void => {
     if (seen.has(node.key)) return;

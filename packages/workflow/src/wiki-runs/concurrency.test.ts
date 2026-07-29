@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_ORCHESTRATION, type WorkspaceConfig } from "@okf-wiki/contract";
+import {
+  DEFAULT_ORCHESTRATION,
+  resolveOrchestration,
+  type WorkspaceConfig,
+} from "@okf-wiki/contract";
 import {
   canClaimKind,
   concurrencyLimitForKind,
@@ -29,11 +33,15 @@ function workspace(orchestration?: Partial<WorkspaceConfig["orchestration"]>): W
   } as unknown as WorkspaceConfig;
 }
 
-test("resolveSchedulerOrchestration fills defaults", () => {
+test("resolveSchedulerOrchestration fills defaults via contract resolveOrchestration", () => {
   const resolved = resolveSchedulerOrchestration(workspace({ domainConcurrency: 4 }));
   assert.equal(resolved.domainConcurrency, 4);
   assert.equal(resolved.maxLeafFanOut, DEFAULT_ORCHESTRATION.maxLeafFanOut);
   assert.equal(resolved.reviewCouncilSize, DEFAULT_ORCHESTRATION.reviewCouncilSize);
+  assert.deepEqual(
+    resolved,
+    resolveOrchestration({ ...DEFAULT_ORCHESTRATION, domainConcurrency: 4 }),
+  );
 });
 
 test("leaf concurrency is domainConcurrency × min(2, maxLeafFanOut)", () => {

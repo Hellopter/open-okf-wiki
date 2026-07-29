@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { WorkspaceConfigSchema, WorkspaceSourceSchema } from "./workspace.js";
+import {
+  DEFAULT_ORCHESTRATION,
+  resolveOrchestration,
+  WorkspaceConfigSchema,
+  WorkspaceSourceSchema,
+} from "./workspace.js";
 
 test("WorkspaceSourceSchema accepts a clean local source", () => {
   const source = WorkspaceSourceSchema.parse({
@@ -87,4 +92,17 @@ test("WorkspaceConfigSchema strips legacy orchestration MaxSteps keys", () => {
   assert.equal(ws.orchestration.reviewCouncilSize, 2);
   assert.equal("rootMaxSteps" in ws.orchestration, false);
   assert.equal("planMaxSteps" in ws.orchestration, false);
+});
+
+test("resolveOrchestration fills schema defaults and preserves partials", () => {
+  assert.deepEqual(resolveOrchestration(null), DEFAULT_ORCHESTRATION);
+  assert.deepEqual(resolveOrchestration(undefined), DEFAULT_ORCHESTRATION);
+  const partial = resolveOrchestration({ domainConcurrency: 4, reviewCouncilSize: 1 });
+  assert.equal(partial.domainConcurrency, 4);
+  assert.equal(partial.reviewCouncilSize, 1);
+  assert.equal(partial.maxDomainFanOut, DEFAULT_ORCHESTRATION.maxDomainFanOut);
+  assert.equal(partial.maxLeafFanOut, DEFAULT_ORCHESTRATION.maxLeafFanOut);
+  assert.equal(partial.planScoutCount, DEFAULT_ORCHESTRATION.planScoutCount);
+  assert.equal(partial.maxDepth, DEFAULT_ORCHESTRATION.maxDepth);
+  assert.equal("reviewConcurrency" in partial, false);
 });

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { defaultWikiRunSpec, type PiAttemptInput, PiAttemptInputSchema } from "@okf-wiki/contract";
+import { createFixtureProduceRuntime } from "./fixture-runner.js";
 import { createPiAttemptExecutor } from "./pi-attempt-executor.js";
 
 const digest = "a".repeat(64);
@@ -174,6 +175,112 @@ test("Pi attempt fixture research.leaf and research.domain return receipts", asy
   assert.equal(domainOut.type, "succeeded");
 });
 
+test("Pi attempt leaf uses sealed question from node.detail (not invented Question N)", async (t) => {
+  const sealedQuestion = "What are the main runtime boundaries?";
+  const leaf = await fixture({
+    key: "research.leaf.core.2",
+    kind: "research.leaf",
+    generation: 0,
+    runIndex: 1,
+    detail: {
+      domainId: "core",
+      questionIndex: 2,
+      question: sealedQuestion,
+      scope: "runtime",
+      title: "Core",
+    },
+  });
+  t.after(() => cleanup(leaf));
+  const outcome = await createPiAttemptExecutor({ fixture: true })(
+    leaf,
+    new AbortController().signal,
+  );
+  assert.equal(outcome.type, "succeeded");
+  await access(leaf.sessionPath);
+  const transcript = await readFile(leaf.sessionPath, "utf8");
+  assert.ok(
+    transcript.includes(sealedQuestion),
+    "transcript task must include sealed question text",
+  );
+  assert.ok(
+    !transcript.includes("Question: Question 2"),
+    "must not invent placeholder Question N when sealed question exists",
+  );
+});
+
+test("Pi attempt domain uses sealed questions array; repair appends feedback", async (t) => {
+  const domain = await fixture({
+    key: "research.domain.core",
+    kind: "research.domain",
+    generation: 0,
+    runIndex: 1,
+    detail: {
+      domainId: "core",
+      title: "Core",
+      scope: "entry points",
+      questions: ["What is this repository for?", "What are the main runtime boundaries?"],
+    },
+  });
+  t.after(() => cleanup(domain));
+  const domainOut = await createPiAttemptExecutor({ fixture: true })(
+    domain,
+    new AbortController().signal,
+  );
+  assert.equal(domainOut.type, "succeeded");
+  const domainTranscript = await readFile(domain.sessionPath, "utf8");
+  assert.ok(domainTranscript.includes("What is this repository for?"));
+  assert.ok(domainTranscript.includes("What are the main runtime boundaries?"));
+
+  const repair = await fixture({
+    key: "repair",
+    kind: "repair",
+    generation: 1,
+    runIndex: 1,
+    detail: { feedback: "Fix broken citation on overview." },
+  });
+  t.after(() => cleanup(repair));
+  const wikiRoot = path.join(path.dirname(path.dirname(repair.attemptDir)), "sealed-wiki-repair");
+  await mkdir(wikiRoot, { recursive: true });
+  await writeFile(
+    path.join(wikiRoot, "overview.md"),
+    "---\ntype: Overview\ntitle: Demo\n---\n\n# Demo\n",
+    "utf8",
+  );
+  const specPath = path.join(path.dirname(path.dirname(repair.attemptDir)), "sealed-spec-repair.json");
+  await writeFile(specPath, `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`, "utf8");
+  repair.sealedInputs.push(
+    {
+      role: "wiki_tree",
+      artifact: { artifactId: "wiki", kind: "wiki_tree", digest, sealedAt: timestamp },
+      readOnlyPath: wikiRoot,
+    },
+    {
+      role: "spec",
+      artifact: { artifactId: "spec", kind: "spec", digest, sealedAt: timestamp },
+      readOnlyPath: specPath,
+    },
+  );
+  let capturedRepairTask = "";
+  const repairOut = await createPiAttemptExecutor({
+    runtime: createFixtureProduceRuntime({
+      onWrite: (req) => {
+        capturedRepairTask = req.task ?? "";
+        return undefined;
+      },
+    }),
+  })(repair, new AbortController().signal);
+  assert.equal(repairOut.type, "succeeded");
+  assert.ok(
+    capturedRepairTask.includes("Operator feedback: Fix broken citation on overview."),
+    "repair task must include sealed feedback",
+  );
+  const repairTranscript = await readFile(repair.sessionPath, "utf8");
+  assert.ok(
+    repairTranscript.includes("Operator feedback: Fix broken citation on overview."),
+    "repair transcript must include sealed feedback",
+  );
+});
+
 test("Pi attempt fixture review.seat needs wiki_tree and returns seat receipt", async (t) => {
   const input = await fixture({
     key: "review.seat.grounding",
@@ -243,6 +350,71 @@ function parseTranscriptJsonl(raw: string): Record<string, unknown>[] {
     .filter((line) => line.trim())
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
+
+test("Pi attempt maps capacity and transport failures to typed failureClass", async (t) => {
+  const { CapacityError } = await import("./run-scoped-agent.js");
+  const capacityInput = await fixture({
+    key: "research.leaf.core.1",
+    kind: "research.leaf",
+    generation: 0,
+    runIndex: 1,
+  });
+  const transportInput = await fixture({
+    key: "research.leaf.core.2",
+    kind: "research.leaf",
+    generation: 0,
+    runIndex: 1,
+  });
+  t.after(() =>
+    Promise.all([cleanup(capacityInput), cleanup(transportInput)]).then(() => undefined),
+  );
+
+  const capacityExecutor = createPiAttemptExecutor({
+    fixture: true,
+    runtime: {
+      kind: "fixture",
+      async runAgent() {
+        throw new CapacityError("context overflow / compact-and-retry exhausted");
+      },
+      async runAgentsParallel() {
+        return [];
+      },
+      async writeWiki() {
+        throw new Error("not used");
+      },
+    },
+  });
+  const capacityOut = await capacityExecutor(capacityInput, new AbortController().signal);
+  assert.equal(capacityOut.type, "failed");
+  if (capacityOut.type === "failed") {
+    assert.equal(capacityOut.failureClass, "capacity");
+  }
+
+  const transportExecutor = createPiAttemptExecutor({
+    fixture: true,
+    runtime: {
+      kind: "fixture",
+      async runAgent() {
+        throw new Error("429 Too Many Requests — rate limit / overloaded");
+      },
+      async runAgentsParallel() {
+        return [];
+      },
+      async writeWiki() {
+        throw new Error("not used");
+      },
+    },
+  });
+  const transportOut = await transportExecutor(transportInput, new AbortController().signal);
+  assert.equal(transportOut.type, "failed");
+  if (transportOut.type === "failed") {
+    assert.equal(
+      transportOut.failureClass,
+      "infrastructure",
+      "transport after L0 maps to infrastructure (not capacity)",
+    );
+  }
+});
 
 test("Pi attempt writes a readable failure transcript on cancel and infrastructure fail", async (t) => {
   const cancelled = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });

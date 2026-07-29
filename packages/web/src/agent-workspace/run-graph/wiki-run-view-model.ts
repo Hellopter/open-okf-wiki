@@ -7,6 +7,7 @@
  */
 
 import type {
+  ErrorClass,
   GraphNodeKind,
   NodeAttempt,
   NodeAttemptStatus,
@@ -19,6 +20,18 @@ import type {
   WikiRunNodeState,
   WikiRunSnapshot,
 } from "@okf-wiki/contract";
+
+/** ErrorClass values accepted on NodeAttempt (Run Graph observation). */
+const NODE_ATTEMPT_ERROR_CLASSES: ReadonlySet<string> = new Set([
+  "transient",
+  "schema",
+  "quality",
+  "policy",
+  "budget",
+  "needs_input",
+  "capacity",
+  "infrastructure",
+]);
 import {
   type RunGraphViewModel,
   type RunGraphViewNode,
@@ -119,6 +132,10 @@ export function nodeStatusFromWiki(state: WikiRunNodeState): NodeAttemptStatus |
 }
 
 export function projectWikiAttempt(attempt: WikiRunAttempt): NodeAttempt {
+  const errorClass =
+    attempt.failureClass && NODE_ATTEMPT_ERROR_CLASSES.has(attempt.failureClass)
+      ? (attempt.failureClass as ErrorClass)
+      : undefined;
   return {
     attemptId: attempt.attemptId,
     nodeKey: attempt.nodeKey,
@@ -127,6 +144,7 @@ export function projectWikiAttempt(attempt: WikiRunAttempt): NodeAttempt {
     startedAt: attempt.startedAt,
     ...(attempt.endedAt ? { endedAt: attempt.endedAt } : {}),
     ...(attempt.error ? { summary: attempt.error } : {}),
+    ...(errorClass ? { errorClass } : {}),
   };
 }
 

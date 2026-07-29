@@ -293,6 +293,12 @@ export const WikiRunAttemptSchema = z
     state: WikiRunAttemptStateSchema,
     inputDigest: Sha256HexSchema,
     error: z.string().max(4_000).nullable(),
+    /**
+     * Typed failure class from the Attempt executor (Pi or mechanical), when known.
+     * Persisted on the control store for L_control research auto-retry policy
+     * and Run Graph observation (ADR 0013 / ADR 0035).
+     */
+    failureClass: z.string().trim().min(1).max(64).optional(),
     startedAt: IsoDateTimeSchema,
     endedAt: IsoDateTimeSchema.nullable(),
   })

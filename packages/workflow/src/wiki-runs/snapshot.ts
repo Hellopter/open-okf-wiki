@@ -106,17 +106,24 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   });
   const attempts: WikiRunAttempt[] = asRows(
     db.prepare("SELECT * FROM attempts WHERE run_id = ? ORDER BY started_at, attempt_id").all(runId),
-  ).map((attempt) => ({
-    attemptId: requiredText(attempt, "attempt_id"),
-    nodeKey: requiredText(attempt, "node_key"),
-    nodeGeneration: requiredNumber(attempt, "node_generation"),
-    runIndex: requiredNumber(attempt, "run_index"),
-    state: requiredText(attempt, "state") as WikiRunAttempt["state"],
-    inputDigest: requiredText(attempt, "input_digest"),
-    error: attempt.error as string | null,
-    startedAt: requiredText(attempt, "started_at"),
-    endedAt: attempt.ended_at as string | null,
-  }));
+  ).map((attempt) => {
+    const failureClassRaw =
+      attempt.failure_class == null || attempt.failure_class === ""
+        ? undefined
+        : String(attempt.failure_class).trim();
+    return {
+      attemptId: requiredText(attempt, "attempt_id"),
+      nodeKey: requiredText(attempt, "node_key"),
+      nodeGeneration: requiredNumber(attempt, "node_generation"),
+      runIndex: requiredNumber(attempt, "run_index"),
+      state: requiredText(attempt, "state") as WikiRunAttempt["state"],
+      inputDigest: requiredText(attempt, "input_digest"),
+      error: attempt.error as string | null,
+      ...(failureClassRaw ? { failureClass: failureClassRaw } : {}),
+      startedAt: requiredText(attempt, "started_at"),
+      endedAt: attempt.ended_at as string | null,
+    };
+  });
   const sources =
     run.pinned_sources_json === null ? null : parseJson<unknown>(run.pinned_sources_json);
   const gates = asRows(

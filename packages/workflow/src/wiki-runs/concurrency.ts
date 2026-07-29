@@ -4,40 +4,39 @@
  * Pre-SQLite produce ran domain units under domainConcurrency and review seats
  * under reviewConcurrency. Definition v1 makes each leaf/domain/seat a durable
  * node; the scheduler must re-apply the same budgets when claiming ready work.
+ *
+ * Note: workspace.orchestration.maxDepth is a fossil — Definition v1 has no
+ * recursive depth axis and this module ignores it. Topology caps are
+ * maxDomainFanOut / maxLeafFanOut only (see definition-v1 + resolveOrchestration).
  */
 
 import {
-  DEFAULT_ORCHESTRATION,
   type WorkspaceConfig,
   type WorkspaceOrchestration,
+  resolveOrchestration,
 } from "@okf-wiki/contract";
 import { isMechanicalAttemptKind } from "../definition-v1.js";
 
-/** Pre-WikiRuns leaf parallel width inside one domain unit (research-phase). */
+/**
+ * Historical leaf-parallel width inside one domain unit (pre-WikiRuns
+ * research-phase). maxLeafFanOut is a topology cap (how many leaf nodes the
+ * graph materializes per domain). The scheduler leaf *pool* is:
+ *   domainConcurrency × min(LEGACY_LEAF_PARALLEL, maxLeafFanOut)
+ * so multi-domain leaves share one concurrency pool without running the full
+ * fan-out width at once. Settings authors: raise domainConcurrency for more
+ * parallel domains; raise maxLeafFanOut only to allow more questions per domain.
+ */
 const LEGACY_LEAF_PARALLEL = 2;
 
 /**
  * Resolve orchestration with schema defaults (workspace may omit optional keys).
+ * Thin workspace wrapper over the single canonical resolveOrchestration in
+ * @okf-wiki/contract — do not reimplement defaults here.
  */
 export function resolveSchedulerOrchestration(
   workspace: WorkspaceConfig | null | undefined,
 ): WorkspaceOrchestration {
-  const o = workspace?.orchestration;
-  if (!o) return { ...DEFAULT_ORCHESTRATION };
-  const reviewCouncilSize = o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize;
-  const planScoutCount = o.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount;
-  return {
-    maxDepth: o.maxDepth ?? DEFAULT_ORCHESTRATION.maxDepth,
-    maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
-    maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
-    reviewCouncilSize,
-    ...(o.reviewConcurrency !== undefined ? { reviewConcurrency: o.reviewConcurrency } : {}),
-    planScoutCount,
-    ...(o.planScoutConcurrency !== undefined
-      ? { planScoutConcurrency: o.planScoutConcurrency }
-      : {}),
-    domainConcurrency: o.domainConcurrency ?? DEFAULT_ORCHESTRATION.domainConcurrency,
-  };
+  return resolveOrchestration(workspace?.orchestration);
 }
 
 /**
@@ -45,6 +44,7 @@ export function resolveSchedulerOrchestration(
  *
  * - research.leaf: domainConcurrency × min(2, maxLeafFanOut) so multi-domain
  *   leaves share one pool (matches pre-SQLite domain units × leaf parallel).
+ *   maxLeafFanOut itself is topology only (see LEGACY_LEAF_PARALLEL comment).
  * - research.domain: domainConcurrency
  * - review.seat: reviewConcurrency (default council size)
  * - single-pipeline Pi (plan/write/repair): 1

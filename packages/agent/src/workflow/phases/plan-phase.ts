@@ -12,6 +12,7 @@
 
 import {
   type AttemptItem,
+  DEFAULT_ORCHESTRATION,
   defaultWikiRunSpec,
   type NodeAttempt,
   type RetryLimits,
@@ -27,7 +28,6 @@ import type {
 import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../../ports/core-spec-store.js";
 import type { SpecStore } from "../../ports/spec-store.js";
 import { plannerPrompt } from "../../prompts/plan.js";
-import { DEFAULT_ORCHESTRATION } from "../budgets.js";
 import { runPlanScouts } from "./plan-scouts.js";
 
 /** Tool name constant (contract-owned — no tools/ import). */

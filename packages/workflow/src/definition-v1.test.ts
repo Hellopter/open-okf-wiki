@@ -79,3 +79,29 @@ test("buildDefinitionV1Graph applies maxDomainFanOut and maxLeafFanOut", () => {
     false,
   );
 });
+
+test("buildDefinitionV1Graph omitted options use DEFAULT_ORCHESTRATION (4/6/3), not schema max", () => {
+  const spec = defaultWikiRunSpec("Defaults");
+  // 5 domains × 7 questions each — caps should bite at 4 domains and 6 leaves.
+  spec.domains = Array.from({ length: 5 }, (_, i) => ({
+    id: `d${i}`,
+    title: `D${i}`,
+    scope: `d${i}`,
+    critical: i === 0,
+    questions: Array.from({ length: 7 }, (_, q) => `q${q}`),
+  }));
+  const graph = buildDefinitionV1Graph(spec);
+  const domains = graph.nodes.filter((n) => n.kind === "research.domain");
+  const leaves = graph.nodes.filter((n) => n.kind === "research.leaf");
+  const seats = graph.nodes.filter((n) => n.kind === "review.seat");
+  assert.equal(domains.length, 4);
+  assert.equal(leaves.length, 4 * 6);
+  assert.equal(seats.length, 3);
+  assert.ok(seats.some((n) => n.key === "review.seat.grounding"));
+  assert.ok(seats.some((n) => n.key === "review.seat.coverage"));
+  assert.ok(seats.some((n) => n.key === "review.seat.consistency"));
+  assert.equal(
+    seats.some((n) => n.key === "review.seat.general"),
+    false,
+  );
+});

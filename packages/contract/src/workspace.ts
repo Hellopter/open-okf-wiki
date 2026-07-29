@@ -188,13 +188,23 @@ export const WorkspaceRoleModelsSchema = z.object({
 export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
 
 /**
- * Supervisor-tree budgets: fan-out/depth/council enforced by produce orchestration.
+ * Supervisor-tree budgets: fan-out/council enforced by produce / WikiRuns.
  * There is no per-role maxSteps API on Pi AgentSession; turn budgets are abort/timeout only.
  * Unknown legacy keys (e.g. rootMaxSteps) are stripped on parse.
  */
 export const WorkspaceOrchestrationSchema = z.object({
+  /**
+   * @deprecated Fossil field. Definition v1 has no recursive depth axis; WikiRuns
+   * path ignores maxDepth. Kept so older workspace JSON still parses; Settings may
+   * re-save the value but no UI controls it and no scheduler/graph reads it.
+   */
   maxDepth: z.number().int().min(1).max(4).default(2),
+  /** Cap domains materialized from Spec (topology). */
   maxDomainFanOut: z.number().int().min(1).max(16).default(4),
+  /**
+   * Cap questions/leaves per domain (topology only).
+   * Scheduler leaf pool is separate: domainConcurrency × min(2, maxLeafFanOut).
+   */
   maxLeafFanOut: z.number().int().min(1).max(16).default(6),
   /**
    * Independent review council size (Run Boundary-owned).
@@ -230,6 +240,31 @@ export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema
 
 /** Schema defaults are the sole authority for orchestration budgets. */
 export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = WorkspaceOrchestrationSchema.parse({});
+
+/**
+ * Canonical merge of partial orchestration onto schema defaults.
+ * Sole resolve path for produce, WikiRuns scheduler, and plan-phase — do not
+ * reimplement field-by-field defaults elsewhere.
+ */
+export function resolveOrchestration(
+  o?: Partial<WorkspaceOrchestration> | null,
+): WorkspaceOrchestration {
+  if (!o) return { ...DEFAULT_ORCHESTRATION };
+  const reviewCouncilSize = o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize;
+  const planScoutCount = o.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount;
+  return {
+    maxDepth: o.maxDepth ?? DEFAULT_ORCHESTRATION.maxDepth,
+    maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
+    maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
+    reviewCouncilSize,
+    ...(o.reviewConcurrency !== undefined ? { reviewConcurrency: o.reviewConcurrency } : {}),
+    planScoutCount,
+    ...(o.planScoutConcurrency !== undefined
+      ? { planScoutConcurrency: o.planScoutConcurrency }
+      : {}),
+    domainConcurrency: o.domainConcurrency ?? DEFAULT_ORCHESTRATION.domainConcurrency,
+  };
+}
 
 /**
  * Tools selectable for the Operator Session (chat agent). The fs tools are

@@ -11,6 +11,12 @@
  * - compaction from maxContextTokens + contextTargetTokens
  * - retry from workspace.limits.retry (Pi settings.retry shape)
  * - skills via additionalSkillPaths (producer / workspace / home)
+ *
+ * SINGLE PATH for Pi settings.compaction + settings.retry: this module is the
+ * only place SettingsManager.inMemory({ compaction, retry }) is injected for
+ * Operator Sessions and Wiki Run Attempts. Do not add a second inject path
+ * (grep SettingsManager.inMemory to enforce). Callers pass budget/retry inputs;
+ * createWikiSession alone builds the in-memory SettingsManager.
  */
 
 import { mkdir } from "node:fs/promises";

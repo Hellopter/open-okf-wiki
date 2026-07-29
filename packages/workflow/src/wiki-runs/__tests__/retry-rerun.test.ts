@@ -362,7 +362,7 @@ test("RerunNode on write.root invalidates validate/review lineage and unlocks af
   });
 });
 
-test("research auto-retry re-queues once; further failure stays manual", async (t) => {
+test("research auto-retry re-queues once on infrastructure; further failure stays manual", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   let leaf1Count = 0;
@@ -372,16 +372,19 @@ test("research auto-retry re-queues once; further failure stays manual", async (
       if (input.node.key === "research.leaf.core.1") {
         leaf1Count += 1;
         // Always fail this leaf so auto-retry exhausts and node ends failed.
+        // infrastructure (post-L0 transport) is the typed class L_control may requeue.
         return {
           type: "failed",
           error: "persistent research flake",
-          failureClass: "provider",
+          failureClass: "infrastructure",
         };
       }
       return fullGraphFixtureExecutor(input, signal);
     },
   });
-  t.after(() => runs.close());
+  t.after(async () => {
+    await runs.close();
+  });
 
   const receipt = await runs.dispatch(
     { type: "start_run", commandId: "start-auto-retry" },
@@ -398,11 +401,67 @@ test("research auto-retry re-queues once; further failure stays manual", async (
   assert.equal(leaf1Count, 2, "research auto-retry allows exactly one extra Attempt");
   const snapshot = (await runs.read({ runId: receipt.runId })).snapshot;
   assert.equal(snapshot.nodes.find((n) => n.key === "research.leaf.core.1")?.state, "failed");
-  const digests = snapshot.attempts
-    .filter((a) => a.nodeKey === "research.leaf.core.1")
-    .map((a) => a.inputDigest);
+  const leaf1Attempts = snapshot.attempts.filter((a) => a.nodeKey === "research.leaf.core.1");
+  const digests = leaf1Attempts.map((a) => a.inputDigest);
   assert.equal(digests.length, 2);
   assert.equal(digests[0], digests[1]);
+  for (const attempt of leaf1Attempts) {
+    assert.equal(
+      attempt.failureClass,
+      "infrastructure",
+      "failed research Attempts persist failureClass on snapshot",
+    );
+  }
+  // Drain sibling/background Attempts before the next test file can see rejections.
+  await runs.close();
+});
+
+test("capacity failure does not auto-requeue research", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  let leaf1Count = 0;
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: async (input, signal) => {
+      if (input.node.key === "research.leaf.core.1") {
+        leaf1Count += 1;
+        return {
+          type: "failed",
+          error: "context overflow / compact-and-retry exhausted",
+          failureClass: "capacity",
+        };
+      }
+      return fullGraphFixtureExecutor(input, signal);
+    },
+  });
+  t.after(async () => {
+    await runs.close();
+  });
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-capacity-no-retry" },
+    context(workspaceId),
+  );
+  await approvePlanGate(runs, receipt.runId, workspaceId, "approve-capacity-no-retry");
+
+  for (let count = 0; count < 400; count += 1) {
+    const snapshot = (await runs.read({ runId: receipt.runId })).snapshot;
+    const leaf1 = snapshot.nodes.find((n) => n.key === "research.leaf.core.1");
+    if (leaf1?.state === "failed") break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(leaf1Count, 1, "capacity must never auto-requeue a second Attempt");
+  const snapshot = (await runs.read({ runId: receipt.runId })).snapshot;
+  assert.equal(snapshot.nodes.find((n) => n.key === "research.leaf.core.1")?.state, "failed");
+  const leaf1Attempts = snapshot.attempts.filter((a) => a.nodeKey === "research.leaf.core.1");
+  assert.equal(leaf1Attempts.length, 1);
+  assert.equal(
+    leaf1Attempts[0]?.failureClass,
+    "capacity",
+    "capacity fail persists failureClass on snapshot",
+  );
+  // Drain sibling/background Attempts so seal races do not leak as unhandled rejections.
+  await runs.close();
 });
 
 test("pre-pin freeze Retry remains banned; post-pin plan Retry works for any failed kind", async (t) => {

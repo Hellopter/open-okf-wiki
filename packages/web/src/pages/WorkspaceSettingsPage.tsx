@@ -284,6 +284,8 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
         : undefined;
       const orchestration = {
+        // maxDepth is a fossil (no Definition v1 depth axis / no Settings UI).
+        // Preserve on save so older workspace JSON round-trips; WikiRuns ignores it.
         maxDepth: baseOrch?.maxDepth ?? 2,
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),

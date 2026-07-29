@@ -149,9 +149,9 @@ function abortError(): Error {
   return err;
 }
 
-/** Best-effort detection of context-window overflow from provider/assistant errors. */
+/** Best-effort detection of context-window overflow / compact exhaustion. */
 function looksLikeContextOverflow(message: string): boolean {
-  return /context (?:length |window )?overflow|maximum context|prompt is too long|context_length|too many tokens|token limit exceeded|input is too long/i.test(
+  return /context (?:length |window )?overflow|maximum context|prompt is too long|context_length|too many tokens|token limit exceeded|input is too long|compact-and-retry|exceeds capacity gate|capacity (?:gate |exhausted)/i.test(
     message,
   );
 }

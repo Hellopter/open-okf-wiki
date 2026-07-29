@@ -140,7 +140,12 @@ export const TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 export const DATABASE_FILE_NAME = "workflow.sqlite";
 
 /**
- * Auto-retry budget for read-only research nodes (ADR 0035 / T4).
+ * L_control auto-retry budget for read-only research nodes (ADR 0013 / ADR 0035).
+ *
+ * WikiRuns may requeue research.leaf/domain ONCE (this cap = 2 total Attempts
+ * per generation) for failureClass infrastructure|transient only, same
+ * generation + input_digest. Never capacity|budget|policy|provider|cancelled.
+ * Manual recovery remains RetryFailedNode / RerunNode.
  */
 export const RESEARCH_AUTO_RETRY_MAX_ATTEMPTS = 2;
 export const RESEARCH_AUTO_RETRY_KINDS: ReadonlySet<string> = new Set([

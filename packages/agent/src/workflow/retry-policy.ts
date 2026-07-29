@@ -1,74 +1,19 @@
 /**
- * Pure retry policy for Run Workflow node failures.
+ * Pure error classification for Wiki Run child failures.
  *
- * Maps errorClass → action; runNodeAttempt applies the decision.
- * L2 (workflow) never retries transient or capacity failures — L0 Pi
- * already handles transport retries, and capacity needs a new strategy
- * (not a blind session reopen). Unknown classes fail closed (no default retry).
+ * Layering (ADR 0013 / ADR 0035):
+ * - L0 Pi settings.retry: in-session transport only (createWikiSession).
+ * - L0 compaction: overflow → capacity (not transport-retried).
+ * - L_control: WikiRuns may auto-requeue research.leaf/domain ONCE for
+ *   failureClass infrastructure|transient only — never capacity|budget|
+ *   policy|provider|cancelled. This classifier does not decide requeue;
+ *   scheduler.shouldAutoRetryResearch owns that policy.
+ * - Manual: RetryFailedNode / RerunNode.
+ *
+ * Unknown classes fail closed (no default retry).
  */
 
 import type { ErrorClass } from "@okf-wiki/contract";
-
-export type RetryAction = "retry" | "fail" | "skip" | "needs_input";
-
-export type RetryDecision = {
-  action: RetryAction;
-  /** Suggested delay before retry (ms); 0 = immediate. */
-  delayMs: number;
-  reason: string;
-};
-
-const DEFAULT_MAX_ATTEMPTS = 2;
-
-/**
- * Decide whether a failed node attempt should retry.
- * Pure: no I/O, no Pi.
- */
-export function decideNodeRetry(input: {
-  errorClass?: ErrorClass;
-  attemptIndex: number;
-  maxAttempts?: number;
-  message?: string;
-}): RetryDecision {
-  const maxAttempts = Math.max(1, input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
-  const attemptIndex = Math.max(0, input.attemptIndex);
-  const cls = input.errorClass;
-
-  if (cls === "needs_input") {
-    return { action: "needs_input", delayMs: 0, reason: "operator input required" };
-  }
-  if (cls === "policy" || cls === "budget" || cls === "capacity" || cls === "infrastructure") {
-    const reasons: Record<string, string> = {
-      budget: "budget exhausted",
-      policy: "policy violation",
-      capacity: "context capacity exhausted",
-      infrastructure: "infrastructure failure",
-    };
-    return { action: "fail", delayMs: 0, reason: reasons[cls] ?? `${cls}: no retry` };
-  }
-  if (cls === "schema" || cls === "quality") {
-    // Quality/schema: one repair-style retry at most, then fail closed.
-    if (attemptIndex + 1 < maxAttempts) {
-      return { action: "retry", delayMs: 0, reason: `${cls}: retry once` };
-    }
-    return { action: "fail", delayMs: 0, reason: `${cls}: retries exhausted` };
-  }
-  if (cls === "transient") {
-    // L0 Pi already retried transport; L2 must not open a new session.
-    return { action: "fail", delayMs: 0, reason: "transient: L0 already retried" };
-  }
-  // unknown (undefined class) → fail closed; do not default-retry
-  return {
-    action: "fail",
-    delayMs: 0,
-    reason: input.message?.trim() || "unknown error class: no retry",
-  };
-}
-
-/** Whether a critical domain failure should abort the whole produce body. */
-export function isCriticalDomainFailure(critical: boolean | undefined): boolean {
-  return critical !== false;
-}
 
 const TRANSIENT_PATTERNS: readonly RegExp[] = [
   /rate.?limit/i,

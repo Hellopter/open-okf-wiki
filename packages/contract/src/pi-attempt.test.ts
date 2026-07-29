@@ -67,6 +67,50 @@ test("PiAttemptInput is strict, secret-free, and binds sealed inputs to absolute
   );
 });
 
+test("PiAttemptNode.detail accepts secret-free prompt fields and rejects unknown keys", () => {
+  const withDetail = {
+    ...input,
+    node: {
+      key: "research.leaf.core.1",
+      kind: "research.leaf",
+      generation: 0,
+      runIndex: 1,
+      detail: {
+        domainId: "core",
+        title: "Core",
+        scope: "src/",
+        question: "What is the entry point?",
+        questionIndex: 1,
+        questions: ["What is the entry point?", "What are the boundaries?"],
+        lens: "grounding",
+        critical: true,
+        feedback: "Focus on runtime boundaries.",
+      },
+    },
+  };
+  assert.equal(PiAttemptInputSchema.safeParse(withDetail).success, true);
+  assert.equal(
+    PiAttemptInputSchema.safeParse({
+      ...withDetail,
+      node: {
+        ...withDetail.node,
+        detail: { ...withDetail.node.detail, apiKey: "secret" },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    PiAttemptInputSchema.safeParse({
+      ...withDetail,
+      node: {
+        ...withDetail.node,
+        detail: { questionIndex: 0 },
+      },
+    }).success,
+    false,
+  );
+});
+
 test("PiAttemptOutcome rejects malformed and cross-variant results", () => {
   assert.equal(
     PiAttemptOutcomeSchema.safeParse({

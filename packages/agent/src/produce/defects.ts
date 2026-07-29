@@ -1,7 +1,7 @@
 /**
  * Structured defect reports and merge (council domain).
  * Fail-closed: blocking defects prevent publish.
- * Persist I/O: defects-io.ts. Repair prompt text: workflow/phases/repair-prompt.ts.
+ * Persist I/O: defects-io.ts.
  */
 
 import {
@@ -18,6 +18,18 @@ const SEVERITY_RANK: Record<DefectSeverity, number> = {
   major: 2,
   minor: 1,
 };
+
+/** Format defects for writer repair prompts (blocking-only by default). */
+export function formatDefectsForRepair(
+  defects: readonly DefectItem[],
+  options?: { severities?: DefectSeverity[] },
+): string {
+  const allowed = new Set(options?.severities ?? (["blocking"] as DefectSeverity[]));
+  const lines = defects
+    .filter((d) => allowed.has(d.severity))
+    .map((d) => `- [${d.severity}] ${d.path ?? "?"} ${d.code ?? ""}: ${d.issue}`);
+  return lines.join("\n");
+}
 
 /**
  * System/protocol defects that must never be demoted by voting.

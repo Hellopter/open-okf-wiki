@@ -38,12 +38,35 @@ export const PiAttemptInputArtifactSchema = z
 
 export type PiAttemptInputArtifact = z.infer<typeof PiAttemptInputArtifactSchema>;
 
+/**
+ * Secret-free node detail for prompt construction (from nodes.detail_json).
+ * Carries definition fields (question, lens, …) plus optional operator feedback.
+ * Never carries provider secrets or full Spec bodies.
+ */
+export const PiAttemptNodeDetailSchema = z
+  .object({
+    domainId: z.string().trim().min(1).max(200).optional(),
+    title: z.string().trim().max(500).optional(),
+    scope: z.string().trim().max(2_000).optional(),
+    question: z.string().trim().max(4_000).optional(),
+    questionIndex: z.number().int().positive().optional(),
+    questions: z.array(z.string().trim().min(1).max(500)).max(64).optional(),
+    lens: z.string().trim().min(1).max(100).optional(),
+    critical: z.boolean().optional(),
+    feedback: z.string().trim().min(1).max(4_000).optional(),
+  })
+  .strict();
+
+export type PiAttemptNodeDetail = z.infer<typeof PiAttemptNodeDetailSchema>;
+
 export const PiAttemptNodeSchema = z
   .object({
     key: RunNodeKeySchema,
     kind: WikiRunNodeKindSchema,
     generation: z.number().int().min(0),
     runIndex: z.number().int().positive(),
+    /** Sealed definition / operator detail for this generation (optional). */
+    detail: PiAttemptNodeDetailSchema.optional(),
   })
   .strict();
 

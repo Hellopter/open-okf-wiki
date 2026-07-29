@@ -6,14 +6,17 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type {
-  PiAttemptArtifactDescriptor,
-  PiAttemptExecutor,
-  PiAttemptInput,
-  PiAttemptOutcome,
-  WikiRunArtifactKind,
-  WikiRunEvent,
-  WorkspaceConfig,
+import {
+  type PiAttemptArtifactDescriptor,
+  type PiAttemptExecutor,
+  type PiAttemptFailureClass,
+  type PiAttemptInput,
+  type PiAttemptNodeDetail,
+  type PiAttemptOutcome,
+  PiAttemptNodeDetailSchema,
+  type WikiRunArtifactKind,
+  type WikiRunEvent,
+  type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import {
@@ -355,7 +358,10 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
       ? await host.executeMechanical(claim, controller.signal)
       : await executePi(host, claim, controller.signal);
     if (host.closed || !host.isCurrent(claim)) return;
-    if (outcome.type === "failed") throw new Error(outcome.error);
+    if (outcome.type === "failed") {
+      // Preserve typed failureClass for L_control research auto-retry policy.
+      throw Object.assign(new Error(outcome.error), { failureClass: outcome.failureClass });
+    }
     if (outcome.type === "gate_requested") {
       throw new Error(`${claim.kind} must not request an inline gate`);
     }
@@ -424,6 +430,49 @@ export async function executePi(
   return host.piAttemptExecutor(input, signal);
 }
 
+/**
+ * Load secret-free node detail from nodes.detail_json for this generation.
+ * Invalid / unknown JSON is dropped so a corrupt row cannot break the claim.
+ */
+export function loadPiAttemptNodeDetail(
+  host: Pick<SchedulerHost, "db">,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+): PiAttemptNodeDetail | undefined {
+  const row = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, nodeKey, generation),
+  );
+  if (!row) return undefined;
+  const raw = row.detail_json;
+  if (raw == null || raw === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(raw));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const rowObj = parsed as Record<string, unknown>;
+  // Pick known keys only — detail_json may carry extras from older writers.
+  const candidate: Record<string, unknown> = {};
+  if (typeof rowObj.domainId === "string") candidate.domainId = rowObj.domainId;
+  if (typeof rowObj.title === "string") candidate.title = rowObj.title;
+  if (typeof rowObj.scope === "string") candidate.scope = rowObj.scope;
+  if (typeof rowObj.question === "string") candidate.question = rowObj.question;
+  if (typeof rowObj.questionIndex === "number") candidate.questionIndex = rowObj.questionIndex;
+  if (Array.isArray(rowObj.questions)) candidate.questions = rowObj.questions;
+  if (typeof rowObj.lens === "string") candidate.lens = rowObj.lens;
+  if (typeof rowObj.critical === "boolean") candidate.critical = rowObj.critical;
+  if (typeof rowObj.feedback === "string") candidate.feedback = rowObj.feedback;
+  const result = PiAttemptNodeDetailSchema.safeParse(candidate);
+  return result.success && Object.keys(result.data).length > 0 ? result.data : undefined;
+}
+
 export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): PiAttemptInput {
   const runDir = runWorkDir(host.workspace.rootPath, claim.runId);
   const attemptDir = path.join(runDir, "attempts", claim.attemptId);
@@ -471,6 +520,12 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
     host.db.prepare("SELECT run_index FROM attempts WHERE attempt_id = ?").get(claim.attemptId),
   );
   const kind = claim.kind as PiAttemptInput["node"]["kind"];
+  const detail = loadPiAttemptNodeDetail(
+    host,
+    claim.runId,
+    claim.nodeKey,
+    claim.nodeGeneration,
+  );
   return {
     runId: claim.runId,
     attemptId: claim.attemptId,
@@ -479,6 +534,7 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
       kind,
       generation: claim.nodeGeneration,
       runIndex: requiredNumber(runIndexRow ?? { run_index: 1 }, "run_index"),
+      ...(detail ? { detail } : {}),
     },
     inputDigest: host.attemptInputDigest(claim.attemptId),
     workspace: host.workspace,
@@ -491,16 +547,47 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
   };
 }
 
+/** Extract typed failureClass from a failed outcome Error or plain object. */
+export function failureClassOf(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "failureClass" in error) {
+    const value = (error as { failureClass?: unknown }).failureClass;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Classes L_control may auto-requeue for research.leaf/domain (same input_digest).
+ * Transport after L0 exhaustion maps to infrastructure (or transient when present).
+ * capacity / budget / policy / cancel / provider never auto-requeue.
+ */
+const RESEARCH_AUTO_RETRY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  "transient",
+  "infrastructure",
+]);
+
+/** Typed classes that must never auto-requeue (even if message looks flaky). */
+const RESEARCH_NO_AUTO_RETRY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  "capacity",
+  "budget",
+  "policy",
+  "cancelled",
+  "cancel",
+  "provider",
+]);
+
 export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown): void {
   if (!host.isCurrent(claim)) return;
   const timestamp = now();
   const message =
     error instanceof Error ? error.message.slice(0, 4_000) : `${claim.nodeKey} failed`;
+  const failureClass = failureClassOf(error);
   host.db
     .prepare(
-      "UPDATE attempts SET state = 'failed', error = ?, ended_at = ? WHERE attempt_id = ? AND state = 'running'",
+      `UPDATE attempts SET state = 'failed', error = ?, failure_class = ?, ended_at = ?
+       WHERE attempt_id = ? AND state = 'running'`,
     )
-    .run(message, timestamp, claim.attemptId);
+    .run(message, failureClass ?? null, timestamp, claim.attemptId);
   host.db
     .prepare(
       `UPDATE nodes SET state = 'failed', current_attempt_id = NULL
@@ -516,7 +603,7 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
 
   // Research read-only auto-retry: re-queue same generation with exact input digest.
   // Validate dirty / write / review stay manual (RetryFailedNode or RerunNode/wiki_repair).
-  if (shouldAutoRetryResearch(host, claim, message)) {
+  if (shouldAutoRetryResearch(host, claim, message, failureClass)) {
     host.requeueFailedNode(claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
     host.emit(claim.runId, "node.ready");
     return;
@@ -552,14 +639,38 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
 }
 
 /**
+ * Clear transport / infrastructure message patterns used only when failureClass
+ * is missing (legacy bare Errors). Product defects must not match.
+ */
+const RESEARCH_AUTO_RETRY_MESSAGE_PATTERNS: readonly RegExp[] = [
+  /rate.?limit/i,
+  /\b(?:429|500|502|503|529)\b/,
+  /\bETIMEDOUT\b|\bECONNRESET\b|\bECONNREFUSED\b|\bEAI_AGAIN\b|\bENOTFOUND\b|\bEPIPE\b/,
+  /socket hang up/i,
+  /fetch failed/i,
+  /network error/i,
+  /\boverloaded\b/i,
+  /service unavailable/i,
+  /bad gateway/i,
+  /internal server error/i,
+  /connection (?:closed|reset|refused|error)/i,
+  /\binfrastructure\b/i,
+  /\btransient\b/i,
+];
+
+/**
  * Limited auto-retry for research.leaf / research.domain only.
  * Budget: RESEARCH_AUTO_RETRY_MAX_ATTEMPTS total Attempts per generation.
- * Non-retryable: cancel, budget, capacity, and explicit policy signals.
+ * Prefer typed failureClass; missing class is fail-closed unless the message
+ * clearly matches transport/infrastructure patterns (never bare product errors
+ * like "requires sealed sources").
+ * Allow: transient, infrastructure. Deny: capacity, budget, policy, cancel, provider.
  */
 export function shouldAutoRetryResearch(
   host: SchedulerHost,
   claim: ClaimedNode,
   message: string,
+  failureClass?: string | PiAttemptFailureClass,
 ): boolean {
   if (!RESEARCH_AUTO_RETRY_KINDS.has(claim.kind)) return false;
   // Align with workspace.limits.retry.enabled — off means no control-plane auto-requeue.
@@ -569,14 +680,19 @@ export function shouldAutoRetryResearch(
     host.db.prepare("SELECT cancel_requested FROM runs WHERE run_id = ?").get(claim.runId),
   );
   if (!run || requiredNumber(run, "cancel_requested") === 1) return false;
-  if (
-    /cancel/i.test(message) ||
-    /budget exhausted|token budget/i.test(message) ||
-    /capacity|context overflow|context.?length/i.test(message) ||
-    /insufficient_quota|quota exceeded|billing/i.test(message)
-  ) {
-    return false;
+
+  const cls = failureClass?.trim().toLowerCase();
+  if (cls) {
+    if (RESEARCH_NO_AUTO_RETRY_FAILURE_CLASSES.has(cls)) return false;
+    if (!RESEARCH_AUTO_RETRY_FAILURE_CLASSES.has(cls)) return false;
+  } else {
+    // Fail-closed when failureClass was not plumbed: only clear transport/infra
+    // messages may requeue. Bare product errors never auto-requeue.
+    if (!RESEARCH_AUTO_RETRY_MESSAGE_PATTERNS.some((p) => p.test(message))) {
+      return false;
+    }
   }
+
   const countRow = asRow(
     host.db
       .prepare(
