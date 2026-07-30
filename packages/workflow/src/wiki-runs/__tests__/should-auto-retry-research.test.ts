@@ -90,7 +90,12 @@ const writeClaim: ClaimedNode = {
 describe("shouldAutoRetryResearch", () => {
   it("allows research.leaf/domain once for infrastructure|transient", () => {
     assert.equal(
-      shouldAutoRetryResearch(host({ failedAttemptCount: 1 }), researchClaim, "flake", "infrastructure"),
+      shouldAutoRetryResearch(
+        host({ failedAttemptCount: 1 }),
+        researchClaim,
+        "flake",
+        "infrastructure",
+      ),
       true,
     );
     assert.equal(
@@ -100,14 +105,18 @@ describe("shouldAutoRetryResearch", () => {
   });
 
   it("denies non-research kinds even with infrastructure", () => {
-    assert.equal(
-      shouldAutoRetryResearch(host({}), writeClaim, "flake", "infrastructure"),
-      false,
-    );
+    assert.equal(shouldAutoRetryResearch(host({}), writeClaim, "flake", "infrastructure"), false);
   });
 
   it("denies capacity|budget|policy|provider|cancelled", () => {
-    for (const cls of ["capacity", "budget", "policy", "provider", "cancelled", "cancel"] as const) {
+    for (const cls of [
+      "capacity",
+      "budget",
+      "policy",
+      "provider",
+      "cancelled",
+      "cancel",
+    ] as const) {
       assert.equal(
         shouldAutoRetryResearch(host({}), researchClaim, `msg ${cls}`, cls),
         false,
@@ -117,10 +126,7 @@ describe("shouldAutoRetryResearch", () => {
   });
 
   it("denies unknown typed classes", () => {
-    assert.equal(
-      shouldAutoRetryResearch(host({}), researchClaim, "schema boom", "schema"),
-      false,
-    );
+    assert.equal(shouldAutoRetryResearch(host({}), researchClaim, "schema boom", "schema"), false);
   });
 
   it("fail-closed when failureClass missing and message is a bare product error", () => {
@@ -133,15 +139,16 @@ describe("shouldAutoRetryResearch", () => {
       false,
       "must not requeue bare 'requires sealed sources'",
     );
-    assert.equal(
-      shouldAutoRetryResearch(host({}), researchClaim, "boom domain"),
-      false,
-    );
+    assert.equal(shouldAutoRetryResearch(host({}), researchClaim, "boom domain"), false);
   });
 
   it("allows missing failureClass only for clear transport/infra messages", () => {
     assert.equal(
-      shouldAutoRetryResearch(host({ failedAttemptCount: 1 }), researchClaim, "429 Too Many Requests"),
+      shouldAutoRetryResearch(
+        host({ failedAttemptCount: 1 }),
+        researchClaim,
+        "429 Too Many Requests",
+      ),
       true,
     );
     assert.equal(
@@ -153,7 +160,11 @@ describe("shouldAutoRetryResearch", () => {
       true,
     );
     assert.equal(
-      shouldAutoRetryResearch(host({ failedAttemptCount: 1 }), researchClaim, "provider overloaded"),
+      shouldAutoRetryResearch(
+        host({ failedAttemptCount: 1 }),
+        researchClaim,
+        "provider overloaded",
+      ),
       true,
     );
   });

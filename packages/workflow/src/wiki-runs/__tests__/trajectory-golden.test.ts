@@ -17,11 +17,10 @@ import type { WikiRunEvent, WikiRunSnapshot } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   context,
-  freezeAndPlanExecutor,
   fullGraphFixtureExecutor,
   makeWorkspace,
   removeWorkspace,
-  succeededProbe,
+  succeededPlan,
   waitForRunState,
 } from "./harness.js";
 
@@ -34,7 +33,11 @@ function eventTypes(events: readonly WikiRunEvent[]): string[] {
  * Assert `expected` appears in order inside `actual` (not necessarily contiguous).
  * Process goldens care about milestone order, not every intermediate scheduler tick.
  */
-function assertSubsequence(actual: readonly string[], expected: readonly string[], label: string): void {
+function assertSubsequence(
+  actual: readonly string[],
+  expected: readonly string[],
+  label: string,
+): void {
   let from = 0;
   for (const item of expected) {
     const at = actual.indexOf(item, from);
@@ -48,7 +51,9 @@ function assertSubsequence(actual: readonly string[], expected: readonly string[
 
 /** Set of node keys currently in `succeeded` (snapshot node list is not process-ordered). */
 function succeededNodeKeySet(snapshot: WikiRunSnapshot): Set<string> {
-  return new Set(snapshot.nodes.filter((node) => node.state === "succeeded").map((node) => node.key));
+  return new Set(
+    snapshot.nodes.filter((node) => node.state === "succeeded").map((node) => node.key),
+  );
 }
 
 /** Assert every key is present among succeeded nodes (membership, not array order). */
@@ -95,7 +100,7 @@ test("trajectory golden: StartRun → freeze → plan → gate.plan (waiting_for
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "traj-plan-gate-start" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "traj-plan-gate-start", intent: { mode: "generate" } },
     context(workspaceId),
   );
 
@@ -161,7 +166,7 @@ test("trajectory golden: approve plan → full graph → publication gate → pu
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "traj-publish-start" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "traj-publish-start", intent: { mode: "generate" } },
     context(workspaceId),
   );
 
@@ -255,7 +260,7 @@ test("trajectory golden: approve plan → full graph → publication gate → pu
 });
 
 test("trajectory golden: cancel mid-flight → cancelled, no further claims", async (t) => {
-  // Cancel process shape: abort in-flight freeze claim, land cancelled, freeze no late commit.
+  // Cancel process shape: abort in-flight plan attempt, land cancelled, no late commit.
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
 
@@ -268,23 +273,24 @@ test("trajectory golden: cancel mid-flight → cancelled, no further claims", as
 
   const runs = await openWikiRuns({
     rootPath: root,
-    piAttemptExecutor: freezeAndPlanExecutor(async ({ workDir }, signal) => {
+    piAttemptExecutor: async (input, signal) => {
+      assert.equal(input.node.key, "plan");
       if (cancelSeen) {
         postCancelClaims += 1;
-        return succeededProbe(workDir);
+        return succeededPlan(input);
       }
       started();
       await new Promise<void>((resolve) =>
         signal.addEventListener("abort", () => resolve(), { once: true }),
       );
       // Late success must not commit after cancel (control plane owns terminal state).
-      return succeededProbe(workDir);
-    }),
+      return succeededPlan(input);
+    },
   });
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "traj-cancel-start" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "traj-cancel-start", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedAttempt;
@@ -302,22 +308,19 @@ test("trajectory golden: cancel mid-flight → cancelled, no further claims", as
   assert.equal(snapshot.cancelRequested, true);
   assert.equal(postCancelClaims, 0, "no new Pi claims after cancel accepted");
 
-  // In-flight freeze attempt ends cancelled (not succeeded).
-  const freezeAttempt = firstAttempt(snapshot, "freeze");
-  assert.ok(freezeAttempt, "freeze was claimed before cancel");
-  assert.equal(freezeAttempt.state, "cancelled");
-  assert.equal(snapshot.nodes.find((n) => n.key === "freeze")?.state, "cancelled");
+  // In-flight plan attempt ends cancelled (not succeeded).
+  const planAttempt = firstAttempt(snapshot, "plan");
+  assert.ok(planAttempt, "plan was claimed before cancel");
+  assert.equal(planAttempt.state, "cancelled");
+  assert.equal(snapshot.nodes.find((n) => n.key === "plan")?.state, "cancelled");
 
-  // Plan must not have been claimed after cancel mid-freeze.
+  // Freeze stays mechanical; no post-cancel Pi work can be claimed.
   assert.equal(
-    snapshot.attempts.filter((a) => a.nodeKey === "plan").length,
+    snapshot.attempts.filter((a) => a.nodeKey !== "freeze" && a.nodeKey !== "plan").length,
     0,
-    "plan must not be claimed after mid-flight cancel",
+    "no post-plan Pi node may be claimed after cancel",
   );
-  assert.ok(
-    !succeededNodeKeySet(snapshot).has("plan"),
-    "plan must not succeed after mid-flight cancel",
-  );
+  assert.ok(!succeededNodeKeySet(snapshot).has("plan"), "plan must not succeed after cancel");
 
   // Cancel event spine.
   assertSubsequence(

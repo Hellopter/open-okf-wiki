@@ -28,18 +28,16 @@ function seedRun(db: DatabaseSync, runId = "run-1"): void {
   const ts = "2026-07-30T12:00:00.000Z";
   db.prepare(
     `INSERT INTO runs (
-       run_id, workspace_id, revision, state, cancel_requested,
+       run_id, workspace_id, definition_version, revision, state, cancel_requested,
        freeze_config_json, freeze_config_digest, created_at, updated_at
-     ) VALUES (?, 'ws-1', 0, 'running', 0, '{}', 'deadbeef', ?, ?)`,
+     ) VALUES (?, 'ws-1', 2, 0, 'running', 0, '{}', 'deadbeef', ?, ?)`,
   ).run(runId, ts, ts);
 }
 
 test("migrate creates wiki_candidates table + index", () => {
   const db = openMigratedDb();
   const table = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wiki_candidates'`,
-    )
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wiki_candidates'`)
     .get() as { name?: string } | undefined;
   assert.equal(table?.name, "wiki_candidates");
   const index = db

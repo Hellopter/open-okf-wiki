@@ -7,8 +7,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { StatusBadge } from "./StatusBadge";
 import type { WikiRunListItem } from "../../api";
+import { StatusBadge } from "./StatusBadge";
 
 export type RunPickerProps = {
   runId: string;

@@ -23,8 +23,8 @@ import {
   appendOrphanAttemptNodes,
   edgesFromNodes,
   groupViewNodesIntoLayers,
-  layerForKind,
   latestAttemptFor,
+  layerForKind,
   type RunGraphViewModel,
   type RunGraphViewNode,
 } from "./view-model.ts";

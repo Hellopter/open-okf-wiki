@@ -1,9 +1,5 @@
 import { z } from "zod";
-import {
-  DefectItemSchema,
-  DefectSeveritySchema,
-  type WikiRunSpecAcceptance,
-} from "./run.js";
+import { DefectItemSchema, DefectSeveritySchema, type WikiRunSpecAcceptance } from "./run.js";
 
 /** How a WikiCandidate tree was produced. */
 export const WikiCandidateProducedBySchema = z.enum(["write", "repair", "mechanical_fix"]);
@@ -192,7 +188,9 @@ export const EvaluationPolicySchema = z
     mechanical: MechanicalEvaluationPolicySchema.default(() =>
       MechanicalEvaluationPolicySchema.parse({}),
     ),
-    semantic: SemanticEvaluationPolicySchema.default(() => SemanticEvaluationPolicySchema.parse({})),
+    semantic: SemanticEvaluationPolicySchema.default(() =>
+      SemanticEvaluationPolicySchema.parse({}),
+    ),
     repair: RepairEvaluationPolicySchema.default(() => RepairEvaluationPolicySchema.parse({})),
     onExhausted: EvaluationOnExhaustedSchema.default("fail"),
   })

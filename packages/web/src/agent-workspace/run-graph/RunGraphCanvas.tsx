@@ -25,11 +25,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { StatusBadge } from "../components/StatusBadge";
-import {
-  type RunGraphLayerId,
-  type RunGraphViewModel,
-  type RunGraphViewNode,
-} from "./view-model";
+import { type RunGraphLayerId, type RunGraphViewModel, type RunGraphViewNode } from "./view-model";
 
 export type RunGraphCanvasProps = {
   /** Pre-projected layered view (e.g. wikiRunToViewModel). */

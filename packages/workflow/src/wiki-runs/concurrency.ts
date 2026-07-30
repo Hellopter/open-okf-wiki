@@ -2,20 +2,18 @@
  * WikiRuns scheduler concurrency from workspace.orchestration (Settings).
  *
  * Pre-SQLite produce ran domain units under domainConcurrency and review seats
- * under reviewConcurrency. Definition v1 makes each leaf/domain/seat a durable
+ * under reviewConcurrency. The execution graph makes each leaf/domain/seat a durable
  * node; the scheduler must re-apply the same budgets when claiming ready work.
  *
- * Note: workspace.orchestration.maxDepth is a fossil — Definition v1 has no
- * recursive depth axis and this module ignores it. Topology caps are
- * maxDomainFanOut / maxLeafFanOut only (see definition-v1 + resolveOrchestration).
+ * Execution graph topology caps are maxDomainFanOut / maxLeafFanOut only.
  */
 
 import {
+  resolveOrchestration,
   type WorkspaceConfig,
   type WorkspaceOrchestration,
-  resolveOrchestration,
 } from "@okf-wiki/contract";
-import { isMechanicalAttemptKind } from "../definition-v1.js";
+import { isMechanicalAttemptKind } from "../execution-graph.js";
 
 /**
  * Resolve orchestration with schema defaults (workspace may omit optional keys).

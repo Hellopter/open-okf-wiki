@@ -31,7 +31,7 @@
  */
 
 import type { PiAttemptFailureClass } from "@okf-wiki/contract";
-import { PiAttemptOutcomeSchema, type PiAttemptOutcome } from "@okf-wiki/contract";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract";
 import { classifyError } from "../../workflow/retry-policy.js";
 import { bounded } from "./shared.js";
 
@@ -44,10 +44,7 @@ import { bounded } from "./shared.js";
  * 3. Pi-edge message fallbacks (capacity extras, budget/credits, transport, provider)
  * 4. Fail closed as infrastructure
  */
-export function classifyPiFailureClass(
-  error: unknown,
-  signal: AbortSignal,
-): PiAttemptFailureClass {
+export function classifyPiFailureClass(error: unknown, signal: AbortSignal): PiAttemptFailureClass {
   if (signal.aborted || (error instanceof Error && error.name === "AbortError")) {
     return "cancelled";
   }

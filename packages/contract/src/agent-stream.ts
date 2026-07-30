@@ -606,9 +606,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       const done: AgentMessage = {
         ...streamingMessage,
         status: streamingMessage.status === "error" ? "error" : "done",
-        thinkingStatus: streamingMessage.thinking
-          ? "done"
-          : streamingMessage.thinkingStatus,
+        thinkingStatus: streamingMessage.thinking ? "done" : streamingMessage.thinkingStatus,
       };
       messages = [...messages, done];
       lastAssistantId = done.id;
@@ -653,8 +651,7 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       turnActive: false,
       agentStatus: failed ? "error" : "idle",
       errorText: failed ? finalized.errorText : null,
-      contextPhase:
-        finalized.contextPhase === "compacting" ? "unknown" : finalized.contextPhase,
+      contextPhase: finalized.contextPhase === "compacting" ? "unknown" : finalized.contextPhase,
     };
   }
 

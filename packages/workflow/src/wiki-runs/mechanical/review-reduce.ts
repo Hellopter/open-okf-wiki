@@ -9,7 +9,7 @@
  * - No keyword / empty-text / JSONL-guess soft paths.
  */
 
-import { cp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type DefectItem,
@@ -328,10 +328,11 @@ export async function mechanicalReviewReduce(
   if (errors.length > 0) {
     return {
       type: "failed",
-      error: `review.reduce: ${errors.length} invalid seat report(s): ${errors.slice(0, 4).join("; ")}`.slice(
-        0,
-        4_000,
-      ),
+      error:
+        `review.reduce: ${errors.length} invalid seat report(s): ${errors.slice(0, 4).join("; ")}`.slice(
+          0,
+          4_000,
+        ),
       failureClass: "schema",
     };
   }

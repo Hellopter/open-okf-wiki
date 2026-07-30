@@ -105,7 +105,9 @@ function isLegacyMetadataStub(row: Record<string, unknown>): boolean {
   if (isToolish(row)) return false;
   return (
     (row.schema === 1 || typeof row.node === "string" || typeof row.attemptId === "string") &&
-    (typeof row.summary === "string" || typeof row.error === "string" || typeof row.mode === "string")
+    (typeof row.summary === "string" ||
+      typeof row.error === "string" ||
+      typeof row.mode === "string")
   );
 }
 
@@ -135,11 +137,7 @@ function toolFromRow(row: Record<string, unknown>, index: number): AgentToolCall
   };
 }
 
-function assistantWithTools(
-  tools: AgentToolCall[],
-  index: number,
-  text?: string,
-): AgentMessage {
+function assistantWithTools(tools: AgentToolCall[], index: number, text?: string): AgentMessage {
   const createdAt = new Date().toISOString();
   const content = text?.trim() ?? "";
   const parts: AgentMessage["parts"] = [];
@@ -171,12 +169,7 @@ export function projectAttemptTranscriptMessages(messages: unknown[]): AgentMess
     messages.every((row) => {
       if (!isRecord(row)) return false;
       const role = typeof row.role === "string" ? row.role : null;
-      return (
-        role === "user" ||
-        role === "assistant" ||
-        role === "toolResult" ||
-        role === "tool"
-      );
+      return role === "user" || role === "assistant" || role === "toolResult" || role === "tool";
     });
   if (looksLikePiHistory) {
     const projected = projectAgentMessagesFromPiHistory(messages);

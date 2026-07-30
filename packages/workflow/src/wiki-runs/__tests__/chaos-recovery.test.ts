@@ -57,7 +57,7 @@ test("close mid plan Pi attempt interrupts; RetryFailedNode reclaims the failed 
   });
 
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "chaos-close-mid-plan" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "chaos-close-mid-plan", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedPlan;
@@ -124,7 +124,7 @@ test("recover() after process reopen with a running plan attempt row interrupts 
     piAttemptExecutor: fullGraphFixtureExecutor,
   });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "chaos-dirty-running-plan" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "chaos-dirty-running-plan", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const atGate = await waitForRunState(owner, receipt.runId, ["waiting_for_operator"]);
@@ -143,18 +143,13 @@ test("recover() after process reopen with a running plan attempt row interrupts 
   db.prepare(
     "DELETE FROM attempt_inputs WHERE attempt_id IN (SELECT attempt_id FROM attempts WHERE run_id = ? AND node_key = 'plan')",
   ).run(receipt.runId);
-  db.prepare(
-    "DELETE FROM node_outputs WHERE run_id = ? AND node_key = 'plan'",
-  ).run(receipt.runId);
-  db.prepare(
-    "DELETE FROM artifacts WHERE run_id = ? AND producer_attempt_id = ?",
-  ).run(receipt.runId, planAttempt.attemptId);
-  db.prepare(
-    "DELETE FROM gates WHERE run_id = ? AND kind = 'plan'",
-  ).run(receipt.runId);
-  db.prepare(
-    "DELETE FROM artifact_preparations WHERE attempt_id = ?",
-  ).run(planAttempt.attemptId);
+  db.prepare("DELETE FROM node_outputs WHERE run_id = ? AND node_key = 'plan'").run(receipt.runId);
+  db.prepare("DELETE FROM artifacts WHERE run_id = ? AND producer_attempt_id = ?").run(
+    receipt.runId,
+    planAttempt.attemptId,
+  );
+  db.prepare("DELETE FROM gates WHERE run_id = ? AND kind = 'plan'").run(receipt.runId);
+  db.prepare("DELETE FROM artifact_preparations WHERE attempt_id = ?").run(planAttempt.attemptId);
   db.prepare(
     "UPDATE attempts SET state = 'running', ended_at = NULL, error = NULL WHERE attempt_id = ?",
   ).run(planAttempt.attemptId);
@@ -167,9 +162,9 @@ test("recover() after process reopen with a running plan attempt row interrupts 
     `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
      WHERE run_id = ? AND node_key = 'gate.plan'`,
   ).run(receipt.runId);
-  db.prepare(
-    "UPDATE runs SET state = 'running', cancel_requested = 0 WHERE run_id = ?",
-  ).run(receipt.runId);
+  db.prepare("UPDATE runs SET state = 'running', cancel_requested = 0 WHERE run_id = ?").run(
+    receipt.runId,
+  );
   db.close();
 
   // openWikiRuns → recover(): prepared CAS (none) → applying reconcile → interrupt running.
@@ -315,7 +310,7 @@ test("close mid research.leaf Pi attempt fails the node; run is not auto-reclaim
   });
 
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "chaos-close-mid-leaf" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "chaos-close-mid-leaf", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const atPlan = await waitForRunState(owner, receipt.runId, ["waiting_for_operator"]);

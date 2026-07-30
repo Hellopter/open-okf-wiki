@@ -164,7 +164,6 @@ describe("wiki_produce receipt details on stream (no Session HITL)", () => {
     assert.equal(tool?.details?.status, "accepted");
     assert.equal(tool?.details?.runId, "r1");
   });
-
 });
 
 describe("reducePiEvent agent_end vs agent_settled", () => {
@@ -249,18 +248,12 @@ describe("deriveContextPhase", () => {
   it("maps compacting / thresholds / unknown", () => {
     assert.equal(deriveContextPhase({ compacting: true }), "compacting");
     assert.equal(deriveContextPhase({}), "unknown");
-    assert.equal(
-      deriveContextPhase({ contextTokens: 50, contextTarget: 100 }),
-      "normal",
-    );
+    assert.equal(deriveContextPhase({ contextTokens: 50, contextTarget: 100 }), "normal");
     assert.equal(
       deriveContextPhase({ contextTokens: 85, contextTarget: 100 }),
       "approaching_target",
     );
-    assert.equal(
-      deriveContextPhase({ contextTokens: 100, contextTarget: 100 }),
-      "at_target",
-    );
+    assert.equal(deriveContextPhase({ contextTokens: 100, contextTarget: 100 }), "at_target");
   });
 });
 
@@ -293,5 +286,4 @@ describe("reducePiEvent tool_execution_start wiki_produce", () => {
     assert.equal(tools.find((t) => t.id === "new-produce")?.status, "running");
     assert.equal(tools.find((t) => t.id === "new-produce")?.name, "wiki_produce");
   });
-
 });

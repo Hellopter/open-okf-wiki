@@ -1,266 +1,217 @@
-/**
- * Live-handle cache for Pi-native Operator Sessions (Map + ensure/open/evict/idle TTL).
- * Disk JSONL is never deleted here — only product-cache dispose.
- */
+/** Live-runtime cache and per-session open/create/delete flights. */
 
 import { createOperatorSession, openOperatorSession } from "@okf-wiki/agent";
-import type {
-  AgentSseActiveTool,
-  PiStreamState,
-  SessionUsage,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
-import { emitAgentSessionEvent } from "../agent-session-events.ts";
-import {
-  activeToolUpdate,
-  initialLiveStreamState,
-  projectLiveStreamEvent,
-} from "../project-pi-sse.ts";
+import type { AgentSseActiveTool, SessionUsage, WorkspaceConfig } from "@okf-wiki/contract";
 import { sessionKey } from "../session-key.ts";
 import { runtimeInput } from "./runtime-input.ts";
-import { sessionUsageFromPiEvent } from "./session-usage.ts";
+import {
+  createSessionRuntime,
+  type LiveAgentSessionSummary,
+  type LiveSessionRuntime,
+} from "./session-runtime.ts";
 
 type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 
-/** Internal live entry — not a public test surface for Pi handles. */
-export type RegisteredAgentSession = {
-  handle: OperatorSessionHandle;
-  workspaceId: string;
-  /**
-   * Admission lock for a detached prompt turn. Set on HTTP admission; cleared
-   * when the prompt promise settles (after agent_settled). Prefer this over a
-   * separate busy boolean that can disagree with Pi settled state.
-   */
-  admittedTurnId?: string;
-  /**
-   * @deprecated Use admittedTurnId / SessionRuntime.isBusy(). Kept as a mirror
-   * for idle-sweep and delete settle until callers migrate.
-   */
-  busy: boolean;
-  /** Wall-clock ms of last product touch (prompt, gate, open, live event). */
-  lastActivityAt: number;
-  unsubscribe: () => void;
-  activeTool?: AgentSseActiveTool;
-  /** Server-owned live stream reduce state (view projection). */
-  streamState: PiStreamState;
-  /**
-   * Ephemeral context-fill for Operator chrome (last assistant totalTokens +
-   * budget). Updated on message_end with usage; not durable control truth.
-   */
-  sessionUsage?: SessionUsage;
-  queueFixtureTurn?: (text: string, canProduce: boolean) => void;
-};
+export type { LiveAgentSessionSummary } from "./session-runtime.ts";
 
-export type LiveAgentSessionSummary = {
-  id: string;
-  title?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-/** Default idle before disposeLive; disk JSONL is kept (Pi SessionManager.open on next use). */
 const DEFAULT_LIVE_IDLE_TTL_MS = 30 * 60 * 1000;
 let liveIdleTtlMs = DEFAULT_LIVE_IDLE_TTL_MS;
 
-export const liveSessions = new Map<string, RegisteredAgentSession>();
-/** Single-flight open for cold ensureRegistered (one SessionManager per JSONL). */
-export const openingSessions = new Map<string, Promise<RegisteredAgentSession>>();
-/**
- * Single-flight delete per key (mirrors openingSessions). Concurrent deletes await
- * the same promise; create/open check `.has(key)` so they cannot registerLive while
- * a cascade is in progress. Cleared only when that flight finishes.
- */
-export const deletingSessions = new Map<string, Promise<{ sessionId: string; removed: number }>>();
+const liveSessions = new Map<string, LiveSessionRuntime>();
+const openingSessions = new Map<string, Promise<LiveSessionRuntime>>();
+const deletingSessions = new Map<string, Promise<{ sessionId: string; removed: number }>>();
+
+function disposeHandle(handle: OperatorSessionHandle): void {
+  try {
+    handle.dispose();
+  } catch {
+    // Already disposed.
+  }
+}
 
 /** Internal: set idle TTL (ms). Pass null to restore default. Used by test-seams. */
 export function setLiveIdleTtlMs(ms: number | null): void {
   liveIdleTtlMs = ms === null || ms <= 0 ? DEFAULT_LIVE_IDLE_TTL_MS : ms;
 }
 
-export function touchLive(entry: RegisteredAgentSession): void {
-  entry.lastActivityAt = Date.now();
+export function isDeletingLiveSession(workspaceId: string, sessionId: string): boolean {
+  return deletingSessions.has(sessionKey(workspaceId, sessionId));
 }
 
-export function disposeLive(entry: RegisteredAgentSession): void {
-  try {
-    entry.unsubscribe();
-  } catch {
-    // Already detached.
-  }
-  try {
-    entry.handle.dispose();
-  } catch {
-    // Already disposed.
-  }
+export function getLiveSession(
+  workspaceId: string,
+  sessionId: string,
+): LiveSessionRuntime | undefined {
+  return liveSessions.get(sessionKey(workspaceId, sessionId));
 }
 
 export function registerLive(
-  workspaceId: string,
+  workspace: WorkspaceConfig,
   handle: OperatorSessionHandle,
   queueFixtureTurn?: (text: string, canProduce: boolean) => void,
-): RegisteredAgentSession {
-  const key = sessionKey(workspaceId, handle.sessionId);
-  const prior = liveSessions.get(key);
-  if (prior) disposeLive(prior);
-
-  const entry: RegisteredAgentSession = {
-    handle,
-    workspaceId,
-    busy: false,
-    lastActivityAt: Date.now(),
-    unsubscribe: () => undefined,
-    streamState: initialLiveStreamState(),
-    ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
-  };
-  entry.unsubscribe = handle.session.subscribe((event) => {
-    touchLive(entry);
-    const tool = activeToolUpdate(event);
-    if (tool === null) delete entry.activeTool;
-    else if (tool) entry.activeTool = tool;
-    // Server reduces Pi → stream view patch (redacted); web only applies.
-    const advanced = projectLiveStreamEvent(handle.sessionId, entry.streamState, event);
-    entry.streamState = advanced.state;
-    // Keep deprecated busy mirror aligned with admission + turnActive (no dual truth).
-    entry.busy = Boolean(entry.admittedTurnId) || entry.streamState.turnActive;
-    // Context-fill chip: refresh from assistant message_end usage when present.
-    const usageUpdate = sessionUsageFromPiEvent(event, entry.sessionUsage, { live: entry });
-    if (usageUpdate) {
-      entry.sessionUsage = usageUpdate;
-      advanced.frame = {
-        ...advanced.frame,
-        payload: {
-          ...advanced.frame.payload,
-          sessionUsage: usageUpdate,
-          contextPhase: advanced.state.contextPhase,
-        },
-      };
-    } else if (advanced.frame.payload.contextPhase === undefined) {
-      advanced.frame = {
-        ...advanced.frame,
-        payload: {
-          ...advanced.frame.payload,
-          contextPhase: advanced.state.contextPhase,
-        },
-      };
-    }
-    // On agent_settled, admission is already released by the detached finally;
-    // ensure busy mirror clears if stream says idle.
-    if (
-      event &&
-      typeof event === "object" &&
-      "type" in event &&
-      (event as { type: unknown }).type === "agent_settled"
-    ) {
-      entry.busy = Boolean(entry.admittedTurnId);
-    }
-    emitAgentSessionEvent(workspaceId, handle.sessionId, advanced.frame);
-  });
-  liveSessions.set(key, entry);
-  return entry;
-}
-
-export function projectLiveSession(entry: RegisteredAgentSession): LiveAgentSessionSummary {
-  const manager = entry.handle.session.sessionManager;
-  const header = manager.getHeader();
-  if (!header) throw new Error("Pi did not initialize the Operator Session");
-  return {
-    id: manager.getSessionId(),
-    title: manager.getSessionName()?.trim() || undefined,
-    createdAt: header.timestamp,
-    updatedAt: manager.getBranch().at(-1)?.timestamp ?? header.timestamp,
-  };
+): LiveSessionRuntime {
+  const key = sessionKey(workspace.id, handle.sessionId);
+  if (deletingSessions.has(key)) {
+    disposeHandle(handle);
+    throw new Error(`Operator Session is being deleted: ${handle.sessionId}`);
+  }
+  if (liveSessions.has(key)) {
+    disposeHandle(handle);
+    throw new Error(`Operator Session already exists: ${handle.sessionId}`);
+  }
+  const runtime = createSessionRuntime({ workspace, handle, queueFixtureTurn });
+  liveSessions.set(key, runtime);
+  return runtime;
 }
 
 /**
- * Drop idle live handles only (product cache). Never deletes JSONL or Run data.
- * Skips busy sessions, pending gates, and non-idle AgentSession turns.
+ * Serialize explicit create requests by key. An in-flight cold open is also an
+ * existing session for create purposes, so it receives the same conflict.
  */
+export async function createLiveSessionFlight(
+  workspaceId: string,
+  sessionId: string,
+  create: () => Promise<LiveSessionRuntime>,
+): Promise<LiveSessionRuntime> {
+  const key = sessionKey(workspaceId, sessionId);
+  if (deletingSessions.has(key)) {
+    throw new Error(`Operator Session is being deleted: ${sessionId}`);
+  }
+  if (liveSessions.has(key) || openingSessions.has(key)) {
+    throw new Error(`Operator Session already exists: ${sessionId}`);
+  }
+
+  const flight = Promise.resolve().then(create);
+  openingSessions.set(key, flight);
+  try {
+    return await flight;
+  } finally {
+    if (openingSessions.get(key) === flight) openingSessions.delete(key);
+  }
+}
+
+/** Wait for the current cold open before a delete removes the JSONL. */
+export async function waitForOpeningLiveSession(
+  workspaceId: string,
+  sessionId: string,
+): Promise<void> {
+  const inFlight = openingSessions.get(sessionKey(workspaceId, sessionId));
+  if (!inFlight) return;
+  try {
+    await inFlight;
+  } catch {
+    // Failed open leaves nothing to dispose.
+  }
+}
+
+/** Cache eviction only: it never deletes Pi JSONL or WikiRuns data. */
+export function evictLiveSession(workspaceId: string, sessionId: string): boolean {
+  const key = sessionKey(workspaceId, sessionId);
+  const runtime = liveSessions.get(key);
+  if (!runtime) return false;
+  runtime.dispose();
+  liveSessions.delete(key);
+  return true;
+}
+
+export function unregisterLiveSession(runtime: LiveSessionRuntime): void {
+  const key = sessionKey(runtime.workspaceId, runtime.sessionId);
+  if (liveSessions.get(key) === runtime) liveSessions.delete(key);
+}
+
+/** Drop idle live handles only; persisted Pi session data is retained. */
 export function sweepIdleLiveSessions(now = Date.now()): number {
   let removed = 0;
-  for (const [key, entry] of liveSessions) {
-    if (entry.admittedTurnId || entry.busy || entry.streamState.turnActive) continue;
-    try {
-      if (!entry.handle.session.isIdle) continue;
-    } catch {
-      // Treat broken handles as evictable.
-    }
-    if (now - entry.lastActivityAt < liveIdleTtlMs) continue;
-    disposeLive(entry);
+  for (const [key, runtime] of liveSessions) {
+    if (!runtime.isEvictable(now, liveIdleTtlMs)) continue;
+    runtime.dispose();
     liveSessions.delete(key);
     removed += 1;
   }
   return removed;
 }
 
-/**
- * Open the exact SessionManager id; never scan legacy metadata or cwd stores.
- * Concurrent cold opens share one in-flight promise so only one SessionManager
- * is constructed against the JSONL. A concurrent delete wins: the open disposes
- * its handle and rejects rather than reanimating a deleted session.
- */
+/** Open the exact persisted SessionManager id, sharing one cold-open flight. */
 export async function ensureRegistered(
   workspace: WorkspaceConfig,
   sessionId: string,
-): Promise<RegisteredAgentSession> {
+): Promise<LiveSessionRuntime> {
   const key = sessionKey(workspace.id, sessionId);
   if (deletingSessions.has(key)) {
     throw new Error(`Operator Session is being deleted: ${sessionId}`);
   }
-  // Opportunistic product-cache GC (does not touch disk JSONL).
   sweepIdleLiveSessions();
   const existing = liveSessions.get(key);
   if (existing) {
-    touchLive(existing);
+    existing.updateWorkspace(workspace);
+    existing.touch();
     return existing;
   }
 
   const inFlight = openingSessions.get(key);
   if (inFlight) return inFlight;
 
-  const openPromise = (async (): Promise<RegisteredAgentSession> => {
+  const open = async (): Promise<LiveSessionRuntime> => {
     if (deletingSessions.has(key)) {
       throw new Error(`Operator Session is being deleted: ${sessionId}`);
     }
-    // Re-check after any prior await inside open; another path may have registered.
-    const raced = liveSessions.get(key);
-    if (raced) return raced;
     const runtime = await runtimeInput(workspace, sessionId);
     if (deletingSessions.has(key)) {
       throw new Error(`Operator Session is being deleted: ${sessionId}`);
     }
-    const again = liveSessions.get(key);
-    if (again) return again;
+    const raced = liveSessions.get(key);
+    if (raced) {
+      raced.updateWorkspace(workspace);
+      return raced;
+    }
     const handle = await openOperatorSession({ ...runtime.input, sessionId });
-    // Delete may have started while openOperatorSession was in flight. Dispose
-    // immediately and reject so waiters never observe a resurrected live entry.
-    if (deletingSessions.has(key)) {
-      try {
-        handle.dispose();
-      } catch {
-        // Already disposed.
-      }
-      throw new Error(`Operator Session was deleted during open: ${sessionId}`);
-    }
-    return registerLive(workspace.id, handle, runtime.queueFixtureTurn);
-  })();
+    return registerLive(workspace, handle, runtime.queueFixtureTurn);
+  };
 
-  openingSessions.set(key, openPromise);
+  const flight = open();
+  openingSessions.set(key, flight);
   try {
-    return await openPromise;
+    return await flight;
   } finally {
-    // Clear on both success and failure so retries can re-open after a failed open.
-    if (openingSessions.get(key) === openPromise) {
-      openingSessions.delete(key);
-    }
+    if (openingSessions.get(key) === flight) openingSessions.delete(key);
   }
 }
 
-/** Current genuine Pi tool update for an SSE snapshot; never reconstructed from a Run Record. */
+/** Delete flight is per key, so create/open refuse until the cascade completes. */
+export async function deleteLiveSessionFlight(
+  workspaceId: string,
+  sessionId: string,
+  remove: () => Promise<{ sessionId: string; removed: number }>,
+): Promise<{ sessionId: string; removed: number }> {
+  const key = sessionKey(workspaceId, sessionId);
+  const inFlight = deletingSessions.get(key);
+  if (inFlight) return inFlight;
+
+  const holder: { promise?: Promise<{ sessionId: string; removed: number }> } = {};
+  holder.promise = (async () => {
+    try {
+      return await remove();
+    } finally {
+      if (deletingSessions.get(key) === holder.promise) deletingSessions.delete(key);
+    }
+  })();
+  deletingSessions.set(key, holder.promise);
+  return holder.promise;
+}
+
+export function listLiveAgentSessionSummaries(workspaceId: string): LiveAgentSessionSummary[] {
+  sweepIdleLiveSessions();
+  return [...liveSessions.values()]
+    .filter((runtime) => runtime.workspaceId === workspaceId)
+    .map((runtime) => runtime.summary());
+}
+
+/** Current genuine Pi tool update for an SSE snapshot. */
 export function getActiveAgentSessionTool(
   workspaceId: string,
   sessionId: string,
 ): AgentSseActiveTool | undefined {
-  return liveSessions.get(sessionKey(workspaceId, sessionId))?.activeTool;
+  return getLiveSession(workspaceId, sessionId)?.activeTool();
 }
 
 /** Current ephemeral context-fill for an SSE snapshot (UI only). */
@@ -268,5 +219,19 @@ export function getAgentSessionUsage(
   workspaceId: string,
   sessionId: string,
 ): SessionUsage | undefined {
-  return liveSessions.get(sessionKey(workspaceId, sessionId))?.sessionUsage;
+  return getLiveSession(workspaceId, sessionId)?.sessionUsage();
+}
+
+/** Process shutdown / test reset. */
+export function disposeAllLiveSessions(): void {
+  for (const runtime of liveSessions.values()) runtime.dispose();
+  liveSessions.clear();
+}
+
+/** Test-only registry reset delegates through runtime disposal. */
+export function resetLiveSessionRegistry(): void {
+  disposeAllLiveSessions();
+  openingSessions.clear();
+  deletingSessions.clear();
+  setLiveIdleTtlMs(null);
 }

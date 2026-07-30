@@ -11,18 +11,21 @@ import {
   type SessionUsage,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import type { RegisteredAgentSession } from "./live-session-registry.ts";
+
+export type ContextBudget = {
+  contextWindow?: number;
+  contextTarget?: number;
+};
 
 /** Budget slice from a live handle or workspace defaults. */
 export function contextBudgetFields(input: {
-  live?: RegisteredAgentSession | null;
+  contextBudget?: ContextBudget | null;
   workspace?: WorkspaceConfig | null;
 }): { contextWindow?: number; contextTarget?: number } {
-  const liveBudget = input.live?.handle.contextBudget;
-  if (liveBudget) {
+  if (input.contextBudget) {
     return {
-      contextWindow: liveBudget.contextWindow,
-      contextTarget: liveBudget.contextTarget,
+      contextWindow: input.contextBudget.contextWindow,
+      contextTarget: input.contextBudget.contextTarget,
     };
   }
   const budget = resolveContextBudget({
@@ -41,7 +44,7 @@ export function contextBudgetFields(input: {
  */
 export function composeSessionUsage(input: {
   contextTokens?: number;
-  live?: RegisteredAgentSession | null;
+  contextBudget?: ContextBudget | null;
   workspace?: WorkspaceConfig | null;
 }): SessionUsage | undefined {
   if (
@@ -62,11 +65,11 @@ export function composeSessionUsage(input: {
 /** From redacted Pi history rows + budget. */
 export function sessionUsageFromPiRows(
   piRows: readonly unknown[],
-  opts: { live?: RegisteredAgentSession | null; workspace?: WorkspaceConfig | null } = {},
+  opts: { contextBudget?: ContextBudget | null; workspace?: WorkspaceConfig | null } = {},
 ): SessionUsage | undefined {
   return composeSessionUsage({
     contextTokens: extractContextTokensFromPiHistory(piRows),
-    live: opts.live,
+    contextBudget: opts.contextBudget,
     workspace: opts.workspace,
   });
 }
@@ -78,7 +81,7 @@ export function sessionUsageFromPiRows(
 export function sessionUsageFromPiEvent(
   event: unknown,
   prior: SessionUsage | undefined,
-  opts: { live?: RegisteredAgentSession | null; workspace?: WorkspaceConfig | null } = {},
+  opts: { contextBudget?: ContextBudget | null; workspace?: WorkspaceConfig | null } = {},
 ): SessionUsage | undefined {
   if (!event || typeof event !== "object") return undefined;
   const body = event as Record<string, unknown>;
@@ -88,7 +91,7 @@ export function sessionUsageFromPiEvent(
   if (tokens === undefined) return undefined;
   const next = composeSessionUsage({
     contextTokens: tokens,
-    live: opts.live,
+    contextBudget: opts.contextBudget,
     workspace: opts.workspace,
   });
   if (!next) return undefined;

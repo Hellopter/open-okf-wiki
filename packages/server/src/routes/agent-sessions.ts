@@ -9,7 +9,6 @@ import {
   deriveContextPhase,
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
-import { subscribeAgentSessionEvents } from "../agent-session-events.ts";
 import {
   deleteAgentSession,
   dispatchAgentCommand,
@@ -17,7 +16,8 @@ import {
   listLiveAgentSessionSummaries,
   loadAgentSessionHistory,
   registerAgentSession,
-} from "../agent-session-registry.ts";
+} from "../agent-session/index.ts";
+import { subscribeAgentSessionEvents } from "../agent-session-events.ts";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 
@@ -46,9 +46,9 @@ export async function handleListAgentSessions(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   const sessionsById = new Map(
     (await listOperatorSessions(workspace.rootPath)).map(
@@ -69,12 +69,12 @@ export async function handleCreateAgentSession(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
-  const raw = await readJsonBody(req).catch(() => ({}));
+  const raw = await readJsonBody(req);
   const parsed = CreatePiAgentSessionBodySchema.safeParse(raw);
   if (!parsed.success) {
     sendError(res, 400, "invalid create session body", parsed.error.flatten());
@@ -115,9 +115,9 @@ export async function handleDeleteAgentSession(
   res: ServerResponse,
   id: string,
   sessionId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
     const deleted = await deleteAgentSession(workspace, sessionId);
@@ -141,9 +141,9 @@ export async function handleAgentSessionCommand(
   res: ServerResponse,
   id: string,
   sessionId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   const parsed = safeParseAgentCommand(await readJsonBody(req));
@@ -165,10 +165,10 @@ export async function handleAgentSessionEvents(
   res: ServerResponse,
   id: string,
   sessionId: string,
-  url: URL,
+  _url: URL,
   dependencies: AgentSessionSseDependencies = {},
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   let closed = false;

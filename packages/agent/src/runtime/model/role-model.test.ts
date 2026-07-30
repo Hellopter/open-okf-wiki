@@ -5,7 +5,7 @@ import { modelRefForRole, resolveModelSelection } from "./role-model.js";
 
 function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
   return {
-    version: 1,
+    version: 2,
     id: "ws1",
     name: "Test",
     rootPath: "/tmp/ws",
@@ -23,7 +23,6 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
     },
     roleModels: { reviewers: [] },
     orchestration: {
-      maxDepth: 2,
       maxDomainFanOut: 4,
       maxLeafFanOut: 6,
       reviewCouncilSize: 3,

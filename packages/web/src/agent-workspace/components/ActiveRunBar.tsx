@@ -9,15 +9,9 @@
 import type { ResolveGateCommand } from "@okf-wiki/contract";
 import { ExternalLinkIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Drawer,
-  DrawerContent,
-  DrawerHeader,
-  DrawerTitle,
-} from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { dispatchWikiRunCommand, type WikiRunListItem } from "../../api";
@@ -26,19 +20,20 @@ import { useWikiRunProjection } from "../hooks/WikiRunProjectionContext";
 import { selectMatchingProjection } from "../hooks/wiki-run-projection";
 import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
 import { ActiveRunSummary } from "./ActiveRunSummary";
-import { GateAction } from "./GateAction";
-import {
-  gateActionPresentationForWidth,
-  type GateActionPresentation,
-} from "./gate-action-presentation";
-import { gateActionTitle } from "./gate-action";
 import { selectPrimaryOpenGate } from "./fix-gate";
+import { GateAction } from "./GateAction";
+import { gateActionTitle } from "./gate-action";
+import {
+  type GateActionPresentation,
+  gateActionPresentationForWidth,
+} from "./gate-action-presentation";
 import { RunPicker } from "./RunPicker";
 import { isRunCancellable } from "./run-actions";
 
 export type ActiveRunBarProps = {
   workspaceId: string;
-  rootPath?: string;
+  runId: string | null;
+  onSelectRun: (runId: string) => void;
   recentRuns?: WikiRunListItem[];
   /** Local: whether graph/plan details are expanded under the bar. */
   graphOpen: boolean;
@@ -69,7 +64,8 @@ function useGateActionPresentation(): GateActionPresentation {
 
 export function ActiveRunBar({
   workspaceId,
-  rootPath,
+  runId,
+  onSelectRun,
   recentRuns = [],
   graphOpen,
   onGraphOpenChange,
@@ -78,8 +74,6 @@ export function ActiveRunBar({
   className,
 }: ActiveRunBarProps) {
   const { t } = useI18n();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const runId = searchParams.get("run");
   const shellProjection = useWikiRunProjection();
   const wikiRun = selectMatchingProjection(shellProjection, runId);
   const snapshot = wikiRun.snapshot;
@@ -102,19 +96,6 @@ export function ActiveRunBar({
 
   if (!runId) return null;
 
-  const selectRun = (nextRunId: string) => {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        next.delete("rootPath");
-        next.set("run", nextRunId);
-        next.delete("attempt");
-        return next;
-      },
-      { replace: true },
-    );
-  };
-
   const dispatchCommand = async (
     command: Parameters<typeof dispatchWikiRunCommand>[1],
   ): Promise<boolean> => {
@@ -122,7 +103,7 @@ export function ActiveRunBar({
     setSubmitting(true);
     setCommandError(null);
     try {
-      await dispatchWikiRunCommand(workspaceId, command, rootPath);
+      await dispatchWikiRunCommand(workspaceId, command);
       return true;
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error));
@@ -176,7 +157,8 @@ export function ActiveRunBar({
         onGraphOpenChange={showInspectorTrigger ? onGraphOpenChange : undefined}
         onCancelRun={
           canCancel && !gateMovesToOverlay
-            ? () => void dispatchCommand({ type: "cancel_run", commandId: crypto.randomUUID(), runId })
+            ? () =>
+                void dispatchCommand({ type: "cancel_run", commandId: crypto.randomUUID(), runId })
             : undefined
         }
         cancelDisabled={submitting || currentState === "cancelling"}
@@ -185,7 +167,7 @@ export function ActiveRunBar({
           <RunPicker
             runId={runId}
             recentRuns={recentRuns}
-            onSelectRun={selectRun}
+            onSelectRun={onSelectRun}
             menuSide="top"
           />
         ) : null}
@@ -212,7 +194,9 @@ export function ActiveRunBar({
       ) : null}
 
       {primaryGate ? (
-        gatePresentation === "dock" ? gateAction : null
+        gatePresentation === "dock" ? (
+          gateAction
+        ) : null
       ) : commandError ? (
         <Alert variant="destructive" data-testid="agent-gate-error">
           <AlertDescription>{commandError}</AlertDescription>

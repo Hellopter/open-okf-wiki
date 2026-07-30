@@ -80,7 +80,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
 
   const now = new Date().toISOString();
   return {
-    version: 1,
+    version: 2,
     id: randomUUID(),
     name: options.name.trim(),
     rootPath,

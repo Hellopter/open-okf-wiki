@@ -5,10 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  planUncertaintyFromSpec,
-  resolveAdaptiveOrchestration,
-} from "./adaptive-router.js";
+import { planUncertaintyFromSpec, resolveAdaptiveOrchestration } from "./adaptive-router.js";
 
 test("light path default: 0 scouts, 1 review lens", () => {
   const decision = resolveAdaptiveOrchestration({});

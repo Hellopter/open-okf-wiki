@@ -182,11 +182,7 @@ export const TranscriptMessage = memo(function TranscriptMessage({
             })}
           </div>
         ) : message.content ? (
-          <AgentMarkdown
-            content={message.content}
-            streaming={isStreaming}
-            className="max-w-3xl"
-          />
+          <AgentMarkdown content={message.content} streaming={isStreaming} className="max-w-3xl" />
         ) : waiting ? (
           <div
             className="flex items-center gap-2 text-muted-foreground"
@@ -246,9 +242,7 @@ export function TranscriptMessageList({
           message.status !== "error" &&
           message.status !== "aborted";
         const view: AgentMessage =
-          live && message.status !== "streaming"
-            ? { ...message, status: "streaming" }
-            : message;
+          live && message.status !== "streaming" ? { ...message, status: "streaming" } : message;
         return <TranscriptMessage key={message.id} message={view} />;
       })}
     </div>

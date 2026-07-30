@@ -50,44 +50,38 @@ import {
   recordCommand as recordCommandImpl,
   requeueFailedNode as requeueFailedNodeImpl,
 } from "./wiki-runs/commands.js";
-import type { WikiRunsCasCtx, WikiRunsDbCtx, WikiRunsTxCtx } from "./wiki-runs/ctx.js";
 import { now } from "./wiki-runs/crypto-util.js";
+import type { WikiRunsCasCtx, WikiRunsDbCtx, WikiRunsTxCtx } from "./wiki-runs/ctx.js";
 import {
   loadSpecFromArtifact,
   upstreamsSucceeded as upstreamsSucceededImpl,
 } from "./wiki-runs/dag.js";
 import {
-  cancelPreApplyEffects as cancelPreApplyEffectsImpl,
   cancelPreApplyEffectsForPublication as cancelPreApplyEffectsForPublicationImpl,
+  cancelPreApplyEffects as cancelPreApplyEffectsImpl,
   type EffectsHost,
   reconcileApplyingEffect as reconcileApplyingEffectImpl,
   reconcileApplyingEffects as reconcileApplyingEffectsImpl,
 } from "./wiki-runs/effects.js";
+import { type FreezeHost, executeFreeze as runFreeze } from "./wiki-runs/freeze.js";
 import {
-  executeFreeze as runFreeze,
-  type FreezeHost,
-} from "./wiki-runs/freeze.js";
-import {
-  withdrawOpenGates as withdrawOpenGatesImpl,
   withdrawOpenGatesForNode as withdrawOpenGatesForNodeImpl,
+  withdrawOpenGates as withdrawOpenGatesImpl,
 } from "./wiki-runs/gate-open.js";
 import {
-  type GatesHost,
   expireStaleOpenGates as expireStaleOpenGatesImpl,
+  type GatesHost,
   resolveGate as resolveGateImpl,
 } from "./wiki-runs/gate-resolve.js";
-import {
-  executeMechanical,
-  type MechanicalHost,
-} from "./wiki-runs/mechanical/index.js";
-import { configureOwner, migrate } from "./wiki-runs/schema.js";
+import { executeMechanical, type MechanicalHost } from "./wiki-runs/mechanical/index.js";
 import {
   abortActiveAttempts as abortActiveAttemptsImpl,
   abortRunAttempts as abortRunAttemptsImpl,
-  type SchedulerHost,
   runScheduler,
+  type SchedulerHost,
   waitForRunExecution as waitForRunExecutionImpl,
 } from "./wiki-runs/scheduler.js";
+import { configureOwner, migrate } from "./wiki-runs/schema.js";
 import { buildSnapshot } from "./wiki-runs/snapshot.js";
 import {
   asRow,
@@ -264,36 +258,25 @@ class WikiRunsOwner implements WikiRuns {
     try {
       const run = asRow(this.db.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId));
       if (!run) throw new Error(`run not found: ${runId}`);
-      // Prefer plan node output role=spec; fall back to any sealed spec artifact.
-      const row =
-        asRow(
-          this.db
-            .prepare(
-              `SELECT artifacts.artifact_id, artifacts.digest, artifacts.relative_path
-               FROM node_outputs
-               JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
-               JOIN (
-                 SELECT node_key, MAX(generation) AS generation FROM nodes
-                 WHERE run_id = ? AND node_key = 'plan' GROUP BY node_key
-               ) cur ON cur.node_key = node_outputs.node_key
-                    AND cur.generation = node_outputs.node_generation
-               WHERE node_outputs.run_id = ?
-                 AND node_outputs.node_key = 'plan'
-                 AND (node_outputs.role = 'spec' OR artifacts.kind = 'spec')
-               ORDER BY artifacts.sealed_at DESC
-               LIMIT 1`,
-            )
-            .get(runId, runId),
-        ) ??
-        asRow(
-          this.db
-            .prepare(
-              `SELECT artifact_id, digest, relative_path FROM artifacts
-               WHERE run_id = ? AND kind = 'spec'
-               ORDER BY sealed_at DESC LIMIT 1`,
-            )
-            .get(runId),
-        );
+      const row = asRow(
+        this.db
+          .prepare(
+            `SELECT artifacts.artifact_id, artifacts.digest, artifacts.relative_path
+             FROM node_outputs
+             JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+             JOIN (
+               SELECT node_key, MAX(generation) AS generation FROM nodes
+               WHERE run_id = ? AND node_key = 'plan' GROUP BY node_key
+             ) cur ON cur.node_key = node_outputs.node_key
+                  AND cur.generation = node_outputs.node_generation
+             WHERE node_outputs.run_id = ?
+               AND node_outputs.node_key = 'plan'
+               AND node_outputs.role = 'spec'
+             ORDER BY artifacts.sealed_at DESC
+             LIMIT 1`,
+          )
+          .get(runId, runId),
+      );
       if (!row) throw new Error(`spec not found: ${runId}`);
       const relativePath = requiredText(row, "relative_path");
       const spec = loadSpecFromArtifact({ workspace: this.workspace }, runId, relativePath);
@@ -475,11 +458,11 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private effectsHost(): EffectsHost {
-    const owner = this;
+    const isClosed = () => this.closed;
     return {
       ...this.txCtx(),
       get closed() {
-        return owner.closed;
+        return isClosed();
       },
     };
   }
@@ -518,14 +501,7 @@ class WikiRunsOwner implements WikiRuns {
     runId: string,
     revision: number,
   ): void {
-    recordCommandImpl(
-      this.baseCtx(),
-      command,
-      context,
-      payloadDigest,
-      runId,
-      revision,
-    );
+    recordCommandImpl(this.baseCtx(), command, context, payloadDigest, runId, revision);
   }
 
   private commandsHost(): CommandsHost {
@@ -556,11 +532,11 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private schedulerHost(): SchedulerHost {
-    const owner = this;
+    const isClosed = () => this.closed;
     return {
       ...this.casCtx(),
       get closed() {
-        return owner.closed;
+        return isClosed();
       },
       piAttemptExecutor: this.piAttemptExecutor,
       activeAttempts: this.activeAttempts,
@@ -641,17 +617,15 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private freezeHost(): FreezeHost {
-    const owner = this;
+    const isClosed = () => this.closed;
     return {
       ...this.casCtx(),
       get closed() {
-        return owner.closed;
+        return isClosed();
       },
       activeAttempts: this.activeAttempts,
-      piAttemptExecutor: this.piAttemptExecutor,
       runBoundary: (input) => this.runBoundary(input),
       sealPreparation: (runId, preparation) => this.sealPreparation(runId, preparation),
-      attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
       orphanPreparedArtifacts: (attemptId) => this.orphanPreparedArtifacts(attemptId),
     };

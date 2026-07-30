@@ -6,10 +6,10 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import { contractForNode, type WorkspaceConfig } from "@okf-wiki/contract";
 import { EMPTY_PUBLICATION_DIGEST, runWorkDir } from "@okf-wiki/core";
-import type { WikiRunsDbCtx } from "./ctx.js";
 import { digest } from "./crypto-util.js";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { unlockReadyNodes } from "./dag.js";
 import { asRow, asRows } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
@@ -20,10 +20,7 @@ export type GateOpenHost = Pick<WikiRunsDbCtx, "db" | "emit"> & {
   workspace?: WorkspaceConfig;
 };
 
-export function withdrawOpenGates(
-  host: Pick<GateOpenHost, "db" | "emit">,
-  runId: string,
-): void {
+export function withdrawOpenGates(host: Pick<GateOpenHost, "db" | "emit">, runId: string): void {
   const open = asRows(
     host.db.prepare("SELECT gate_id FROM gates WHERE run_id = ? AND state = 'open'").all(runId),
   );
@@ -66,6 +63,7 @@ export function openPlanGate(
 ): void {
   const gateId = randomUUID();
   const gateNodeKey = "gate.plan";
+  contractForNode("gate.plan", gateNodeKey);
   const existingGateNode = asRow(
     host.db
       .prepare(
@@ -130,6 +128,7 @@ export function openFixGate(
 ): void {
   const gateId = randomUUID();
   const gateNodeKey = "gate.fix";
+  contractForNode("gate.fix", gateNodeKey);
   const gateGen = host.currentNodeGeneration(claim.runId, gateNodeKey) ?? 0;
   const existingGateNode = asRow(
     host.db
@@ -201,12 +200,11 @@ export function autoPassFixGate(
   timestamp: string,
 ): void {
   const gateNodeKey = "gate.fix";
+  contractForNode("gate.fix", gateNodeKey);
   const gateGen = host.currentNodeGeneration(runId, gateNodeKey) ?? 0;
   const existing = asRow(
     host.db
-      .prepare(
-        "SELECT state FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
-      )
+      .prepare("SELECT state FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
       .get(runId, gateNodeKey, gateGen),
   );
   if (!existing) {
@@ -293,8 +291,7 @@ export function openOperatorInputGate(
 ): string {
   const gateId = randomUUID();
   const question = input.question.trim().slice(0, 1_000);
-  const context =
-    input.context !== undefined ? input.context.trim().slice(0, 4_000) : undefined;
+  const context = input.context !== undefined ? input.context.trim().slice(0, 4_000) : undefined;
   const payloadDigest = digest({
     kind: "operator_input",
     question,

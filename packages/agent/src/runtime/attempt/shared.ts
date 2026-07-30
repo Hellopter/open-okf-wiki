@@ -2,13 +2,13 @@
  * Shared Attempt helpers used by handlers and the thin executor.
  */
 
-import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type AttemptItem,
   type PiAttemptInput,
-  WikiRunSpecSchema,
   type WikiRunSpec,
+  WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import { effectiveIgnoresForSource, isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../../ports/agent-runner.js";
@@ -73,52 +73,20 @@ export async function sealTranscript(
   });
 }
 
-/**
- * Load WikiRunSpec: prefer projected inputs/spec.json (Phase 2 canonical),
- * then analysis/spec.json, then sealed artifact paths.
- */
-export async function readSpec(
-  input: PiAttemptInput,
-  layout?: RunWorkdirLayout,
-): Promise<WikiRunSpec> {
-  const projected: string[] = [];
-  if (layout) {
-    projected.push(
-      path.join(layout.runWorkDir, "inputs", "spec.json"),
-      path.join(layout.analysisDir, "spec.json"),
-    );
-  } else {
-    projected.push(
-      path.join(input.workDir, "inputs", "spec.json"),
-      path.join(input.workDir, "analysis", "spec.json"),
-    );
+/** Load the sealed Spec projection for this Attempt. */
+export async function readSpec(layout: RunWorkdirLayout): Promise<WikiRunSpec> {
+  const specPath = path.join(layout.runWorkDir, "inputs", "spec.json");
+  let raw: string;
+  try {
+    raw = await readFile(specPath, "utf8");
+  } catch (error) {
+    throw new Error(`projected inputs/spec.json is unreadable: ${bounded(error)}`);
   }
-  const specInput = input.sealedInputs.find((item) => item.role === "spec");
-  const sealedCandidates = specInput
-    ? [
-        specInput.readOnlyPath,
-        path.join(specInput.readOnlyPath, "spec.json"),
-        path.join(specInput.readOnlyPath, "analysis", "spec.json"),
-      ]
-    : [];
-  const candidates = [...projected, ...sealedCandidates];
-  for (const candidate of candidates) {
-    try {
-      const info = await stat(candidate);
-      if (!info.isFile()) continue;
-      return WikiRunSpecSchema.parse(JSON.parse(await readFile(candidate, "utf8")));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      // Invalid JSON / schema: keep trying other candidates, then surface.
-      if ((error as NodeJS.ErrnoException).code === undefined) {
-        // zod / parse errors on a found file should fail closed for that file only if more candidates
-        continue;
-      }
-      throw new Error(`sealed spec is unreadable: ${bounded(error)}`);
-    }
+  try {
+    return WikiRunSpecSchema.parse(JSON.parse(raw));
+  } catch (error) {
+    throw new Error(`projected inputs/spec.json is invalid: ${bounded(error)}`);
   }
-  if (!specInput) throw new Error("write requires a sealed spec input (role=spec)");
-  throw new Error("sealed spec artifact does not contain spec.json");
 }
 
 export async function liveModel(
@@ -135,86 +103,62 @@ export async function liveModel(
   return resolveModel({ profileId: selected.profileId, modelId: selected.id });
 }
 
-/**
- * Resolve reviewer seat index from node detail or `review.seat.<lens>` key order.
- * Used for roleModels.reviewers[i] rotation.
- */
+function requiredDetail(input: PiAttemptInput): NonNullable<PiAttemptInput["node"]["detail"]> {
+  if (!input.node.detail) {
+    throw new Error(`${input.node.kind}/${input.node.key} requires sealed node detail`);
+  }
+  return input.node.detail;
+}
+
+function requiredDetailString(
+  input: PiAttemptInput,
+  detail: NonNullable<PiAttemptInput["node"]["detail"]>,
+  field: "domainId" | "question" | "scope" | "title" | "lens",
+): string {
+  const value = detail[field];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${input.node.kind}/${input.node.key} requires detail.${field}`);
+  }
+  return value.trim();
+}
+
+/** Resolve a sealed reviewer seat index for roleModels.reviewers[i] rotation. */
 export function resolveReviewSeatIndex(input: PiAttemptInput): number {
-  const detail = input.node.detail ?? {};
+  const detail = requiredDetail(input);
   if (typeof detail.seatIndex === "number" && Number.isFinite(detail.seatIndex)) {
     return Math.max(0, Math.floor(detail.seatIndex));
   }
-  const match = /^review\.seat\.(.+)$/.exec(input.node.key);
-  if (match?.[1]) {
-    const lens = match[1];
-    const order = ["grounding", "coverage", "consistency", "general"];
-    const idx = order.indexOf(lens);
-    if (idx >= 0) return idx;
-  }
-  return 0;
+  throw new Error(`${input.node.kind}/${input.node.key} requires detail.seatIndex`);
 }
 
-export async function readSealedWikiTree(
-  input: PiAttemptInput,
-  destWikiDir: string,
-): Promise<void> {
-  const wikiInput =
-    input.sealedInputs.find((item) => item.role === "wiki_tree") ??
-    input.sealedInputs.find((item) => item.role === "prior_wiki");
-  if (!wikiInput) {
-    throw new Error(`${input.node.kind} requires a sealed wiki_tree or prior_wiki input`);
-  }
-  await mkdir(path.dirname(destWikiDir), { recursive: true });
-  await cp(wikiInput.readOnlyPath, destWikiDir, { recursive: true, dereference: false });
-}
-
-/**
- * Prefer sealed node.detail from WikiRuns; fall back to key conventions only
- * for missing fields so older claims without detail still run.
- */
+/** Parse the mandatory sealed detail for dynamic execution-graph nodes. */
 export function parseNodeDetail(input: PiAttemptInput): Record<string, unknown> {
-  const sealed = input.node.detail ?? {};
+  const sealed = requiredDetail(input);
   if (input.node.kind === "research.leaf") {
-    const match = /^research\.leaf\.([^.]+)\.(\d+)$/.exec(input.node.key);
-    const domainId =
-      (typeof sealed.domainId === "string" && sealed.domainId) || match?.[1] || "core";
-    const questionIndex =
-      typeof sealed.questionIndex === "number"
-        ? sealed.questionIndex
-        : match
-          ? Number(match[2])
-          : undefined;
-    const question =
-      (typeof sealed.question === "string" && sealed.question.trim()) ||
-      (questionIndex != null ? `Question ${questionIndex}` : input.node.key);
     return {
       ...sealed,
-      domainId,
-      questionIndex,
-      question,
-      scope: typeof sealed.scope === "string" ? sealed.scope : "",
+      domainId: requiredDetailString(input, sealed, "domainId"),
+      question: requiredDetailString(input, sealed, "question"),
+      scope: requiredDetailString(input, sealed, "scope"),
     };
   }
   if (input.node.kind === "research.domain") {
-    const domainId =
-      (typeof sealed.domainId === "string" && sealed.domainId) ||
-      input.node.key.replace(/^research\.domain\./, "");
-    const questions = Array.isArray(sealed.questions)
-      ? sealed.questions.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
-      : [];
+    if (
+      !Array.isArray(sealed.questions) ||
+      !sealed.questions.every((question) => typeof question === "string" && question.trim())
+    ) {
+      throw new Error(`${input.node.kind}/${input.node.key} requires detail.questions`);
+    }
     return {
       ...sealed,
-      domainId,
-      title: (typeof sealed.title === "string" && sealed.title.trim()) || domainId,
-      scope: typeof sealed.scope === "string" ? sealed.scope : "",
-      questions,
+      domainId: requiredDetailString(input, sealed, "domainId"),
+      title: requiredDetailString(input, sealed, "title"),
+      scope: requiredDetailString(input, sealed, "scope"),
+      questions: sealed.questions.map((question) => question.trim()),
     };
   }
   if (input.node.kind === "review.seat") {
-    const fromKey = input.node.key.replace(/^review\.seat\./, "");
-    const lens =
-      (typeof sealed.lens === "string" && sealed.lens.trim()) || fromKey || "general";
-    return { ...sealed, lens };
+    return { ...sealed, lens: requiredDetailString(input, sealed, "lens") };
   }
   return { ...sealed };
 }

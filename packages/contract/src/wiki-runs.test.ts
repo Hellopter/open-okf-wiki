@@ -39,17 +39,15 @@ test("durable commands are strict and keyed by server-derived workspace context"
   );
 });
 
-test("StartRun intent focus is optional; mode defaults to generate", () => {
-  const parsed = RunCommandSchema.parse({
-    type: "start_run",
-    commandId: "command-focus",
-    intent: { focus: "Runtime and publication seams" },
-  });
-  assert.equal(parsed.type, "start_run");
-  if (parsed.type === "start_run") {
-    assert.equal(parsed.intent.mode, "generate");
-    assert.equal(parsed.intent.focus, "Runtime and publication seams");
-  }
+test("StartRun intent requires an explicit mode", () => {
+  assert.equal(
+    RunCommandSchema.safeParse({
+      type: "start_run",
+      commandId: "command-focus",
+      intent: { focus: "Runtime and publication seams" },
+    }).success,
+    false,
+  );
 });
 
 test("gate commands admit only their typed decisions", () => {

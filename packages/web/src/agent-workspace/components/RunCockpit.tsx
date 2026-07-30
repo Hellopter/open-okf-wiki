@@ -9,7 +9,6 @@
 import type { WikiRunGate, WikiRunSpec } from "@okf-wiki/contract";
 import { CircleAlertIcon, CircleCheckIcon, CircleDotIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import {
   Accordion,
   AccordionContent,
@@ -26,11 +25,7 @@ import {
   ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
-import {
-  Progress,
-  ProgressLabel,
-  ProgressValue,
-} from "@/components/ui/progress";
+import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -51,7 +46,9 @@ type RunCockpitTab = "overview" | "plan" | "workflow" | "attempts";
 
 export type RunCockpitProps = {
   workspaceId: string;
-  rootPath?: string;
+  runId: string | null;
+  attemptId: string | null;
+  onSelectAttempt: (attemptId: string | null) => void;
   /** Closes this presentation host only; it never clears URL `?run=`. */
   onClose?: () => void;
   className?: string;
@@ -96,11 +93,15 @@ function progressForNodes(viewModel: ReturnType<typeof wikiRunToViewModel> | nul
   return { completed, total: nodes.length, value: (completed / nodes.length) * 100 };
 }
 
-export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCockpitProps) {
+export function RunCockpit({
+  workspaceId,
+  runId,
+  attemptId,
+  onSelectAttempt,
+  onClose,
+  className,
+}: RunCockpitProps) {
   const { t } = useI18n();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const runId = searchParams.get("run");
-  const attemptId = searchParams.get("attempt");
   const projection = useWikiRunProjection();
   const matched = selectMatchingProjection(projection, runId);
   const snapshot = matched.snapshot;
@@ -113,22 +114,9 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
 
   const actions = useWikiRunNodeActions({
     workspaceId,
-    rootPath,
     runId,
     snapshot,
   });
-
-  const syncAttemptId = (nextAttemptId: string | null) => {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        if (nextAttemptId) next.set("attempt", nextAttemptId);
-        else next.delete("attempt");
-        return next;
-      },
-      { replace: true },
-    );
-  };
 
   const openNode = (nodeKey: string) => {
     actions.openNode(nodeKey);
@@ -136,7 +124,7 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
       .filter((attempt) => attempt.nodeKey === nodeKey)
       .sort((a, b) => a.runIndex - b.runIndex)
       .at(-1);
-    if (latest) syncAttemptId(latest.attemptId);
+    if (latest) onSelectAttempt(latest.attemptId);
   };
 
   useEffect(() => {
@@ -155,7 +143,7 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
     let cancelled = false;
     setPlanSpecLoading(true);
     setPlanSpecError(null);
-    void getWikiRunSpec(workspaceId, runId, rootPath)
+    void getWikiRunSpec(workspaceId, runId)
       .then((response) => {
         if (cancelled) return;
         setPlanSpec(response.spec);
@@ -170,7 +158,7 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
     return () => {
       cancelled = true;
     };
-  }, [rootPath, runId, snapshot?.revision, tab, workspaceId]);
+  }, [runId, snapshot?.revision, tab, workspaceId]);
 
   if (!runId) return null;
 
@@ -241,10 +229,15 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
                 <ItemTitle className="font-mono text-xs">{runId}</ItemTitle>
                 <ItemDescription>{connectionLabel(matched.connectionStatus, t)}</ItemDescription>
               </ItemContent>
-              <ItemActions>{snapshot?.state ? <StatusBadge status={snapshot.state} /> : null}</ItemActions>
+              <ItemActions>
+                {snapshot?.state ? <StatusBadge status={snapshot.state} /> : null}
+              </ItemActions>
             </Item>
             {progress ? (
-              <Progress value={progress.value} aria-label={`${progress.completed} / ${progress.total}`}>
+              <Progress
+                value={progress.value}
+                aria-label={`${progress.completed} / ${progress.total}`}
+              >
                 <ProgressLabel>{t.runInspector.graphTab}</ProgressLabel>
                 <ProgressValue>{() => `${progress.completed} / ${progress.total}`}</ProgressValue>
               </Progress>
@@ -255,7 +248,9 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
                   <Item key={gate.gateId} size="xs" variant="muted">
                     <ItemContent>
                       <ItemTitle>{gateLabel(gate, t)}</ItemTitle>
-                      {gate.detail?.summary ? <ItemDescription>{gate.detail.summary}</ItemDescription> : null}
+                      {gate.detail?.summary ? (
+                        <ItemDescription>{gate.detail.summary}</ItemDescription>
+                      ) : null}
                     </ItemContent>
                     <ItemActions>
                       <StatusBadge status={gate.state} />
@@ -335,7 +330,7 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
                     variant="outline"
                     onClick={() => {
                       actions.openNode(attempt.nodeKey);
-                      syncAttemptId(attempt.attemptId);
+                      onSelectAttempt(attempt.attemptId);
                     }}
                     data-testid="run-inspector-attempt"
                     data-attempt-id={attempt.attemptId}
@@ -362,7 +357,7 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
         onOpenChange={(open) => {
           if (open) return;
           actions.closeDialog();
-          syncAttemptId(null);
+          onSelectAttempt(null);
         }}
         nodeKey={actions.dialogNodeKey ?? ""}
         nodeLabel={actions.dialogLabel}
@@ -370,11 +365,10 @@ export function RunCockpit({ workspaceId, rootPath, onClose, className }: RunCoc
         relatedAttempts={actions.relatedAttempts}
         onSelectAttempt={(nextAttemptId) => {
           actions.setDialogAttemptId(nextAttemptId);
-          syncAttemptId(nextAttemptId);
+          onSelectAttempt(nextAttemptId);
         }}
         workspaceId={workspaceId}
         runId={runId}
-        rootPath={rootPath}
         attemptId={actions.dialogWikiAttempt?.attemptId ?? actions.dialogAttemptId}
         attemptState={actions.dialogWikiAttempt?.state ?? null}
         footer={

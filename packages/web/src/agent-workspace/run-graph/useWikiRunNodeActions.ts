@@ -45,7 +45,6 @@ function commandKeyFor(command: RunCommand): CommandKey {
 
 export type UseWikiRunNodeActionsArgs = {
   workspaceId: string;
-  rootPath?: string;
   runId: string | null;
   snapshot: WikiRunSnapshot | null;
 };
@@ -73,7 +72,6 @@ export type UseWikiRunNodeActionsResult = {
 
 export function useWikiRunNodeActions({
   workspaceId,
-  rootPath,
   runId,
   snapshot,
 }: UseWikiRunNodeActionsArgs): UseWikiRunNodeActionsResult {
@@ -156,7 +154,7 @@ export function useWikiRunNodeActions({
       if (blocked) return false;
       try {
         // HTTP accept/reject is admission only; Run SSE is truth.
-        await dispatchWikiRunCommand(workspaceId, command, rootPath);
+        await dispatchWikiRunCommand(workspaceId, command);
         setCommandStates((prev) => {
           const next = { ...prev };
           delete next[key];
@@ -174,7 +172,7 @@ export function useWikiRunNodeActions({
         return false;
       }
     },
-    [workspaceId, rootPath],
+    [workspaceId],
   );
 
   const retryFailed = useCallback(

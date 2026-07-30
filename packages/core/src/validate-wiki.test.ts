@@ -145,7 +145,10 @@ test("validateWikiTree fails when Spec critical page is missing", async () => {
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("; "), /critical page missing: modules\/missing\.md/);
-  assert.equal(result.errors.some((e) => e.includes("optional.md")), false);
+  assert.equal(
+    result.errors.some((e) => e.includes("optional.md")),
+    false,
+  );
 });
 
 test("validateWikiTree accepts when all critical pages exist", async () => {

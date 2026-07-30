@@ -9,11 +9,19 @@ import {
 
 function workspace() {
   return WorkspaceConfigSchema.parse({
-    version: 1,
+    version: 2,
     id: "ws",
     name: "X",
     rootPath: "/tmp",
-    sources: [{ id: "main", path: "/tmp/s", applyDefaultIgnores: true, ignore: [] }],
+    sources: [
+      {
+        id: "main",
+        path: "/tmp/s",
+        applyDefaultIgnores: true,
+        ignore: [],
+        origin: { type: "path" },
+      },
+    ],
     skillPath: "/tmp/skill",
     model: { id: "openai/test" },
     publicationPath: "/tmp/out",

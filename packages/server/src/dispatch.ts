@@ -82,6 +82,13 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
   const { pathname } = url;
   const method = req.method ?? "GET";
 
+  // Workspace identity is the path id; accepting the historical rootPath query
+  // would silently preserve a second address for the same resource.
+  if (url.searchParams.has("rootPath")) {
+    sendError(res, 400, "rootPath query is not supported");
+    return;
+  }
+
   try {
     if (method === "GET" && pathname === "/api/health") {
       await handleHealth(req, res);

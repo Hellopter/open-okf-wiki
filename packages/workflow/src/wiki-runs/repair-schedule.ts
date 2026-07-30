@@ -11,16 +11,14 @@ import type {
   WikiRunSpecAcceptance,
 } from "@okf-wiki/contract";
 import {
+  contractForNode,
   evaluationPolicyFromAcceptance,
   RepairRequestSchema,
   WikiRunSpecAcceptanceSchema,
 } from "@okf-wiki/contract";
-import {
-  extractPagesFromValidationMessage,
-  MECHANICAL_REPAIR_PAGE_CAP,
-} from "@okf-wiki/core";
-import type { WikiRunsDbCtx } from "./ctx.js";
+import { extractPagesFromValidationMessage, MECHANICAL_REPAIR_PAGE_CAP } from "@okf-wiki/core";
 import { now } from "./crypto-util.js";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { loadSpecFromArtifact, unlockReadyNodes } from "./dag.js";
 import {
   assertUnderMaxCandidates,
@@ -103,8 +101,7 @@ export function buildSemanticRepairRequest(opts: {
 }): RepairRequest {
   const source: RepairSource = opts.source ?? "semantic";
   const message =
-    opts.feedback?.trim().slice(0, 4_000) ||
-    `Repair (round ${opts.round}): address sealed defects`;
+    opts.feedback?.trim().slice(0, 4_000) || `Repair (round ${opts.round}): address sealed defects`;
   return RepairRequestSchema.parse({
     requestId: `repair:${source}:${opts.runId}:${opts.round}`,
     baselineCandidateId: opts.baselineCandidateId?.trim() || "pending",
@@ -150,9 +147,7 @@ export function loadEvaluationPolicy(
   runId: string,
 ): EvaluationPolicy {
   const acceptance = loadAcceptance(host, runId);
-  return evaluationPolicyFromAcceptance(
-    WikiRunSpecAcceptanceSchema.parse(acceptance ?? {}),
-  );
+  return evaluationPolicyFromAcceptance(WikiRunSpecAcceptanceSchema.parse(acceptance ?? {}));
 }
 
 /** All prior `repair.N` stages (single family). */
@@ -268,16 +263,13 @@ export function scheduleRepair(host: RepairScheduleHost, input: ScheduleRepairIn
 
   const sources = input.repairRequest.sources;
   const needsMechanical = sources.includes("mechanical");
-  const needsSemantic =
-    sources.includes("semantic") || sources.includes("operator");
+  const needsSemantic = sources.includes("semantic") || sources.includes("operator");
 
   if (needsMechanical) {
     const budget = policy.mechanical.modelRepairBudget;
     const prior = countRepairsBySource(host, input.runId, "mechanical");
     if (budget <= 0 || prior >= budget) {
-      throw new Error(
-        `mechanical repair budget exhausted or zero (${prior}/${budget})`,
-      );
+      throw new Error(`mechanical repair budget exhausted or zero (${prior}/${budget})`);
     }
   }
   if (needsSemantic) {
@@ -330,6 +322,7 @@ export function scheduleRepair(host: RepairScheduleHost, input: ScheduleRepairIn
     baselineCandidateId: repairRequest.baselineCandidateId,
     ...(input.failedValidateKey ? { validateNodeKey: input.failedValidateKey } : {}),
   });
+  contractForNode("repair", key);
 
   host.db
     .prepare(
@@ -458,10 +451,7 @@ export function scheduleOperatorRepair(
  * otherwise budget-exhausted validate failure leaves unclaimable ready seats and
  * the run never reaches failed.
  */
-export function rearmEvaluationRoundAfterRepair(
-  host: RepairScheduleHost,
-  runId: string,
-): void {
+export function rearmEvaluationRoundAfterRepair(host: RepairScheduleHost, runId: string): void {
   const seatKeys = asRows(
     host.db
       .prepare(
@@ -572,7 +562,9 @@ export function shouldAutoMechanicalRepair(
 
   const policy = loadEvaluationPolicy(host, claim.runId);
   if (policy.mechanical.modelRepairBudget <= 0) return false;
-  if (countRepairsBySource(host, claim.runId, "mechanical") >= policy.mechanical.modelRepairBudget) {
+  if (
+    countRepairsBySource(host, claim.runId, "mechanical") >= policy.mechanical.modelRepairBudget
+  ) {
     return false;
   }
   if (countWikiCandidates(host, claim.runId) >= policy.maxCandidates) return false;

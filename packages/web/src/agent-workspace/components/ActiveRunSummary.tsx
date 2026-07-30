@@ -60,7 +60,10 @@ export function ActiveRunSummary({
             {t.common.loading}
           </span>
         ) : (
-          <p className="truncate text-xs text-muted-foreground" data-testid="active-run-summary-text">
+          <p
+            className="truncate text-xs text-muted-foreground"
+            data-testid="active-run-summary-text"
+          >
             {summary ?? t.agentWorkspace.activeRunIdle}
           </p>
         )}

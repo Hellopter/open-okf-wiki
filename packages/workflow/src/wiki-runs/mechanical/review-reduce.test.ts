@@ -64,7 +64,10 @@ test("parseSeatDefectReport rejects clean with defects", () => {
 });
 
 test("parseSeatFinding throws on malformed (fail-closed)", () => {
-  assert.throws(() => parseSeatFinding("review.seat.grounding", "NO_DEFECTS"), /DefectReport|JSON/i);
+  assert.throws(
+    () => parseSeatFinding("review.seat.grounding", "NO_DEFECTS"),
+    /DefectReport|JSON/i,
+  );
 });
 
 test("mergeSeatFindings fail-closed on any blocking seat", () => {

@@ -151,7 +151,7 @@ export const RunIntentSchema = z
   .object({
     /** Operator focus / emphasis (was tool `notes`). */
     focus: z.string().trim().min(1).max(4_000).optional(),
-    mode: z.enum(["generate", "refresh"]).default("generate"),
+    mode: z.enum(["generate", "refresh"]),
     objective: z.string().trim().min(1).max(4_000).optional(),
     constraints: z.string().trim().min(1).max(4_000).optional(),
     audience: z.string().trim().min(1).max(1_000).optional(),
@@ -206,10 +206,7 @@ function decisionAllowedForGateKind(
   if (gateKind === "operator_input") return decision === "answer";
   if (gateKind === "fix") {
     return (
-      decision === "pass" ||
-      decision === "deny" ||
-      decision === "fix" ||
-      decision === "revise"
+      decision === "pass" || decision === "deny" || decision === "fix" || decision === "revise"
     );
   }
   // plan + publication
@@ -446,8 +443,7 @@ export const WikiRunGateSchema = z
   .superRefine((gate, ctx) => {
     if (gate.decision !== null) {
       const parsed = WikiRunGateDecisionValueSchema.safeParse(gate.decision.decision);
-      const decisionOk =
-        parsed.success && decisionAllowedForGateKind(gate.kind, parsed.data);
+      const decisionOk = parsed.success && decisionAllowedForGateKind(gate.kind, parsed.data);
       if (!decisionOk) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -488,8 +484,8 @@ export const WikiRunSnapshotSchema = z
     revision: z.number().int().min(0),
     state: WikiRunStateSchema,
     cancelRequested: z.boolean(),
-    /** Operator StartRun intent (null only if a pre-v2 row lacks intent_json). */
-    intent: RunIntentSchema.nullable(),
+    /** Operator StartRun intent, sealed when the Run is accepted. */
+    intent: RunIntentSchema,
     pinnedInputs: z
       .object({
         sources: z.array(RepositorySnapshotSchema).min(1),

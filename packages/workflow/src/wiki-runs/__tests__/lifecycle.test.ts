@@ -7,10 +7,9 @@ import {
   assertFreezeAdvancedToPlan,
   blockingFreeze,
   context,
-  freezeAndPlanExecutor,
   makeWorkspace,
   removeWorkspace,
-  succeededProbe,
+  succeededPlan,
   waitForTerminal,
 } from "./harness.js";
 
@@ -90,18 +89,19 @@ test("close waits for an aborted executor before releasing the owner lock", asyn
   });
   const owner = await openWikiRuns({
     rootPath: root,
-    piAttemptExecutor: freezeAndPlanExecutor(async ({ workDir }, signal) => {
+    piAttemptExecutor: async (input, signal) => {
+      assert.equal(input.node.key, "plan");
       started();
       await new Promise<void>((resolve) =>
         signal.addEventListener("abort", () => resolve(), { once: true }),
       );
       aborted();
       await released;
-      return succeededProbe(workDir);
-    }),
+      return succeededPlan(input);
+    },
   });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-close-waits" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-close-waits", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedAttempt;
@@ -127,7 +127,7 @@ test("close aborts an active freeze and removes its unpinned run tree", async (t
     freezeRunBoundary: blockingFreeze(root, started),
   });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-close-freeze" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-close-freeze", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedFreeze;
@@ -141,7 +141,7 @@ test("snapshot, cursor, and incremental replay share every revision", async (t) 
   const runs = await openWikiRuns({ rootPath: root });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-read" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-read", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const terminal = await waitForTerminal(runs, receipt.runId);

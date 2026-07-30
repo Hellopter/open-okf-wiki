@@ -7,15 +7,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createPiStreamState, reducePiEvent } from "@okf-wiki/contract";
 import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
-import { reducePiEvent, createPiStreamState } from "@okf-wiki/contract";
-import {
-  dispatchAgentCommand,
-  registerAgentSession,
-  resetAgentSessionRegistryForTests,
-} from "../agent-session-registry.ts";
+import { dispatchAgentCommand, registerAgentSession } from "./index.ts";
 import { ensureRegistered } from "./live-session-registry.ts";
 import { createSessionRuntime } from "./session-runtime.ts";
+import { resetAgentSessionRegistryForTests } from "./test-seams.ts";
 
 test("prompt returns acceptedTurnId before the turn fully settles", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-session-runtime-"));
@@ -56,7 +53,7 @@ test("prompt returns acceptedTurnId before the turn fully settles", async (t) =>
   // Wait briefly for detached turn to settle so the registry is clean.
   const entry = await ensureRegistered(workspace, sessionId);
   const deadline = Date.now() + 5_000;
-  while ((entry.admittedTurnId || entry.streamState.turnActive) && Date.now() < deadline) {
+  while (entry.isBusy() && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 25));
   }
 });
@@ -82,7 +79,7 @@ test("SessionRuntime.cancel scopes map to abort / clear_queue / abort_compaction
   const sessionId = "runtime-cancel";
   await registerAgentSession({ workspace, sessionId });
   const entry = await ensureRegistered(workspace, sessionId);
-  const runtime = createSessionRuntime(entry, workspace);
+  const runtime = entry;
 
   const abort = await runtime.cancel("turn");
   assert.equal(abort.ok, true);
@@ -95,6 +92,115 @@ test("SessionRuntime.cancel scopes map to abort / clear_queue / abort_compaction
   const abortCompact = await runtime.cancel("compaction");
   assert.equal(abortCompact.ok, true);
   assert.equal(abortCompact.command, "abort_compaction");
+});
+
+test("SessionRuntime abort acknowledges before a stalled Pi turn settles", async () => {
+  const never = new Promise<void>(() => undefined);
+  let abortCalled = false;
+  const runtime = createSessionRuntime({
+    workspace: { id: "runtime-abort", name: "Abort" } as never,
+    handle: {
+      sessionId: "runtime-abort",
+      session: {
+        subscribe: () => () => undefined,
+        abort: async () => {
+          abortCalled = true;
+          await never;
+        },
+      },
+      dispose: () => undefined,
+    } as never,
+  });
+
+  const started = Date.now();
+  const response = await runtime.cancel("turn");
+  assert.equal(response.ok, true);
+  assert.equal(response.status, "accepted");
+  assert.equal(abortCalled, true);
+  assert.ok(Date.now() - started < 250, "abort acknowledgement must not await Pi idle");
+  runtime.dispose();
+});
+
+test("SessionRuntime rejects steer and follow_up without an active turn", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-session-runtime-idle-command-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const workspace = await createWorkspace({
+    name: "Idle Commands",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "runtime-idle-command";
+  await registerAgentSession({ workspace, sessionId });
+
+  const runtime = await ensureRegistered(workspace, sessionId);
+  for (const command of [
+    { type: "steer", text: "later" } as const,
+    { type: "follow_up", text: "also later" } as const,
+  ]) {
+    const response = await runtime.dispatch(command);
+    assert.equal(response.ok, false);
+    assert.match(response.message ?? "", /no active turn/i);
+  }
+});
+
+test("SessionRuntime delete timeout does not await a stalled Pi abort", async () => {
+  const never = new Promise<void>(() => undefined);
+  let abortCalled = false;
+  const runtime = createSessionRuntime({
+    workspace: { id: "runtime-timeout", name: "Timeout" } as never,
+    handle: {
+      sessionId: "runtime-timeout",
+      session: {
+        subscribe: () => () => undefined,
+        abort: async () => {
+          abortCalled = true;
+          await never;
+        },
+        get isIdle() {
+          return false;
+        },
+        waitForIdle: async () => never,
+      },
+      dispose: () => undefined,
+    } as never,
+  });
+
+  const started = Date.now();
+  await runtime.abortAndSettle(20);
+  assert.equal(abortCalled, true);
+  assert.ok(Date.now() - started < 250, "delete settlement must honor its timeout");
+  runtime.dispose();
+});
+
+test("SessionRuntime admission and eviction ignore stale SSE turn state", () => {
+  const runtime = createSessionRuntime({
+    workspace: { id: "runtime-projection", name: "Projection" } as never,
+    handle: {
+      sessionId: "runtime-projection",
+      session: {
+        subscribe: () => () => undefined,
+        get isIdle() {
+          return true;
+        },
+      },
+      dispose: () => undefined,
+    } as never,
+  });
+
+  runtime.receivePiEvent({ type: "agent_start" });
+  assert.equal(runtime.isBusy(), false);
+  assert.equal(runtime.isEvictable(Date.now() + 1_000, 1), true);
+  runtime.dispose();
 });
 
 test("reducePiEvent unit: agent_end is not idle terminal", () => {

@@ -102,9 +102,7 @@ export function wallTimeMsFromStarted(
 }
 
 /** Normalize partial metrics; drop empty objects. Never throws on bad input. */
-export function normalizeAttemptMetrics(
-  value: unknown,
-): AttemptMetrics | undefined {
+export function normalizeAttemptMetrics(value: unknown): AttemptMetrics | undefined {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const parsed = AttemptMetricsSchema.safeParse(value);
   if (!parsed.success) return undefined;
@@ -150,9 +148,7 @@ export function writeAttemptMetrics(
 ): void {
   if (!metrics) return;
   const extraJson =
-    metrics.extra && Object.keys(metrics.extra).length > 0
-      ? JSON.stringify(metrics.extra)
-      : null;
+    metrics.extra && Object.keys(metrics.extra).length > 0 ? JSON.stringify(metrics.extra) : null;
   db.prepare(
     `UPDATE attempts SET
        role = COALESCE(?, role),
@@ -190,7 +186,11 @@ export function projectAttemptMetrics(row: Record<string, unknown>): AttemptMetr
   if (typeof row.model_id === "string" && row.model_id.trim()) {
     out.modelId = row.model_id.trim().slice(0, 200);
   }
-  if (typeof row.input_tokens === "number" && Number.isFinite(row.input_tokens) && row.input_tokens >= 0) {
+  if (
+    typeof row.input_tokens === "number" &&
+    Number.isFinite(row.input_tokens) &&
+    row.input_tokens >= 0
+  ) {
     out.inputTokens = Math.floor(row.input_tokens);
   }
   if (
@@ -214,7 +214,11 @@ export function projectAttemptMetrics(row: Record<string, unknown>): AttemptMetr
   ) {
     out.costEstimate = row.cost_estimate;
   }
-  if (typeof row.tool_calls === "number" && Number.isFinite(row.tool_calls) && row.tool_calls >= 0) {
+  if (
+    typeof row.tool_calls === "number" &&
+    Number.isFinite(row.tool_calls) &&
+    row.tool_calls >= 0
+  ) {
     out.toolCalls = Math.floor(row.tool_calls);
   }
   if (

@@ -6,15 +6,13 @@
  * Malformed / missing reports never become clean NO_DEFECTS.
  */
 
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import {
   type DefectReport,
   DefectReportSchema,
   type MergedDefectReport,
   MergedDefectReportSchema,
-  PiAttemptOutcomeSchema,
   type PiAttemptOutcome,
+  PiAttemptOutcomeSchema,
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
 } from "@okf-wiki/contract";
 import { listWikiMarkdown } from "../../../produce/wiki-pages.js";
@@ -34,8 +32,6 @@ import {
   bounded,
   liveModel,
   parseNodeDetail,
-  readSealedWikiTree,
-  readSpec,
   resolveReviewSeatIndex,
   sealTranscript,
   writeAnalysisJson,
@@ -47,9 +43,8 @@ const REVIEW_SYSTEM = [
   "Do not rely on free-text chat as the handoff. Prefer fail-closed blocking only for true defects.",
 ].join(" ");
 
-function reviewerIdForSeat(input: AttemptHandlerContext["input"], lens: string): string {
-  const fromKey = input.node.key.replace(/^review\.seat\./, "");
-  return fromKey || lens || "reviewer";
+function reviewerIdForSeat(lens: string): string {
+  return lens;
 }
 
 function tryParseDefectReportJson(text: string, reviewerId: string): DefectReport | null {
@@ -100,39 +95,16 @@ function tryParseDefectReportJson(text: string, reviewerId: string): DefectRepor
 
 async function loadPriorBlocking(
   layout: AttemptHandlerContext["layout"],
-  input: AttemptHandlerContext["input"],
 ): Promise<DefectReport["defects"]> {
-  const text =
-    (await loadProjectedDefectsText(layout)) ?? (await loadSealedDefectsText(input));
+  const text = await loadProjectedDefectsText(layout);
   if (!text) return [];
   try {
     const parsed = MergedDefectReportSchema.safeParse(JSON.parse(text));
     if (!parsed.success) return [];
-    return parsed.data.defects.filter(
-      (d) => d.severity === "blocking" || d.severity === "major",
-    );
+    return parsed.data.defects.filter((d) => d.severity === "blocking" || d.severity === "major");
   } catch {
     return [];
   }
-}
-
-async function loadSealedDefectsText(
-  input: AttemptHandlerContext["input"],
-): Promise<string | undefined> {
-  const sealed = input.sealedInputs.find((item) => item.role === "defects");
-  if (!sealed) return undefined;
-  const candidates = [
-    sealed.readOnlyPath,
-    path.join(sealed.readOnlyPath, "defects.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return await readFile(candidate, "utf8");
-    } catch {
-      // try next
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -144,8 +116,7 @@ export async function resolveSeatDefectReport(input: {
   reviewerId: string;
   summaryText: string;
 }): Promise<
-  | { ok: true; report: DefectReport; source: "tool" | "free_text" }
-  | { ok: false; error: string }
+  { ok: true; report: DefectReport; source: "tool" | "free_text" } | { ok: false; error: string }
 > {
   const fromTool = await readDefectReportDraft(input.workDir);
   if (fromTool) {
@@ -182,20 +153,12 @@ export async function resolveSeatDefectReport(input: {
 
 export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAttemptOutcome> {
   const { input, layout, ignores, runtime, resolveModel, signal } = ctx;
-  // Phase 2: materialize projects wiki_tree into wiki/ + inputs/; ensure seed.
-  await readSealedWikiTree(input, layout.wikiDir);
-  // Prefer projected inputs/spec.json when present (materialize already copied).
-  try {
-    await readSpec(input, layout);
-  } catch {
-    // Spec is required by NodeContract at claim; fixture paths may omit it.
-  }
   const detail = parseNodeDetail(input);
-  const lens = (String(detail.lens ?? "general") as ReviewLens) || "general";
-  const reviewerId = reviewerIdForSeat(input, lens);
+  const lens = detail.lens as ReviewLens;
+  const reviewerId = reviewerIdForSeat(lens);
   const seatIndex = resolveReviewSeatIndex(input);
   const pages = await listWikiMarkdown(layout.wikiDir);
-  const priorBlocking = await loadPriorBlocking(layout, input);
+  const priorBlocking = await loadPriorBlocking(layout);
 
   const resolved =
     runtime.kind === "live"
@@ -266,8 +229,7 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
   await writeDefectReportDraft(input.workDir, report);
 
   const summaryText =
-    report.summary?.trim() ||
-    (report.clean ? "NO_DEFECTS" : `${report.defects.length} defect(s)`);
+    report.summary?.trim() || (report.clean ? "NO_DEFECTS" : `${report.defects.length} defect(s)`);
   const transcript = await sealTranscript(input, {
     task: reviewTask,
     items: result.items,

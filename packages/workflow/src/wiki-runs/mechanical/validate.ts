@@ -9,8 +9,8 @@
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  evaluationPolicyFromAcceptance,
   type EvaluationPolicy,
+  evaluationPolicyFromAcceptance,
   type PiAttemptOutcome,
   type WikiRunSpec,
   WikiRunSpecAcceptanceSchema,

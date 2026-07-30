@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+import { writeDefectReportDraft } from "../../../tools/submit-defect-report.js";
 import { resolveReviewSeatIndex } from "../shared.js";
 import { resolveSeatDefectReport } from "./review.js";
-import { writeDefectReportDraft } from "../../../tools/submit-defect-report.js";
 
 const temps: string[] = [];
 after(async () => {
@@ -25,11 +25,16 @@ function fakeInput(key: string, detail?: Record<string, unknown>) {
 }
 
 describe("review seat fail-closed", () => {
-  it("resolveReviewSeatIndex prefers detail.seatIndex then lens order", () => {
+  it("resolveReviewSeatIndex requires sealed seatIndex", () => {
     assert.equal(resolveReviewSeatIndex(fakeInput("review.seat.grounding", { seatIndex: 2 })), 2);
-    assert.equal(resolveReviewSeatIndex(fakeInput("review.seat.coverage")), 1);
-    assert.equal(resolveReviewSeatIndex(fakeInput("review.seat.consistency")), 2);
-    assert.equal(resolveReviewSeatIndex(fakeInput("review.seat.general")), 3);
+    assert.throws(
+      () => resolveReviewSeatIndex(fakeInput("review.seat.coverage")),
+      /review\.seat\/review\.seat\.coverage requires sealed node detail/,
+    );
+    assert.throws(
+      () => resolveReviewSeatIndex(fakeInput("review.seat.consistency", { lens: "consistency" })),
+      /requires detail\.seatIndex/,
+    );
   });
 
   it("resolveSeatDefectReport prefers tool draft", async () => {

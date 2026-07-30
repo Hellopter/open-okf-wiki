@@ -5,6 +5,15 @@
  */
 
 export {
+  type AutofixCitationsInContentOptions,
+  type AutofixCitationsInContentResult,
+  type AutofixWikiTreeResult,
+  autofixCitationsInContent,
+  autofixWikiTreeCitations,
+  type ClampCitationOptions,
+  clampCitationLineRange,
+} from "./citations-autofix.js";
+export {
   type CanonicalizeCitationOptions,
   type CanonicalizeCitationResult,
   type CanonicalizeWikiTreeResult,
@@ -18,15 +27,6 @@ export {
   sourceRootMapFromSources,
   validateCitationResolve,
 } from "./citations-canonicalize.js";
-export {
-  type AutofixCitationsInContentOptions,
-  type AutofixCitationsInContentResult,
-  type AutofixWikiTreeResult,
-  type ClampCitationOptions,
-  autofixCitationsInContent,
-  autofixWikiTreeCitations,
-  clampCitationLineRange,
-} from "./citations-autofix.js";
 export {
   parseSourceCitations,
   SOURCE_CITATION_RE,

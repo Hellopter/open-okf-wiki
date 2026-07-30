@@ -206,9 +206,9 @@ export type ExecutionPlanReduction = z.infer<typeof ExecutionPlanReductionSchema
 
 export const ExecutionPlanSchema = z
   .object({
-    version: z.literal(1),
-    workUnits: z.array(ExecutionPlanWorkUnitSchema).default([]),
-    reductions: z.array(ExecutionPlanReductionSchema).default([]),
+    version: z.literal(2),
+    workUnits: z.array(ExecutionPlanWorkUnitSchema),
+    reductions: z.array(ExecutionPlanReductionSchema),
     /**
      * Review council lenses. Empty only when Spec acceptance.reviewRequired is false
      * (compile may emit zero seats). When reviewRequired, host requires ≥1 seat.
@@ -245,12 +245,12 @@ export type ExecutionPlan = z.infer<typeof ExecutionPlanSchema>;
  */
 export const FrozenRunManifestSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     /** Full StartRun intent (mode mirrored at top-level for quick reads). */
     intent: z
       .object({
         focus: z.string().trim().min(1).max(4_000).optional(),
-        mode: z.enum(["generate", "refresh"]).default("generate"),
+        mode: z.enum(["generate", "refresh"]),
         objective: z.string().trim().min(1).max(4_000).optional(),
         constraints: z.string().trim().min(1).max(4_000).optional(),
         audience: z.string().trim().min(1).max(1_000).optional(),
@@ -263,16 +263,14 @@ export const FrozenRunManifestSchema = z
       .string()
       .regex(/^[a-f0-9]{64}$/i)
       .optional(),
-    sources: z
-      .array(
-        z
-          .object({
-            id: z.string().trim().min(1),
-            revision: z.string().trim().min(1).optional(),
-          })
-          .strict(),
-      )
-      .default([]),
+    sources: z.array(
+      z
+        .object({
+          id: z.string().trim().min(1),
+          revision: z.string().trim().min(1).optional(),
+        })
+        .strict(),
+    ),
   })
   .strict();
 

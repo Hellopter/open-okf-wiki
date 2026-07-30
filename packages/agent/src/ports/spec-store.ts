@@ -1,28 +1,16 @@
 /**
- * Living WikiRunSpec persistence port.
+ * Planner draft persistence port.
  *
- * Planner handoff (path-first): plan-draft.json is the candidate Spec;
- * commitSpec promotes to analysis/spec.json. Ports stay free of produce/runtime.
+ * Planner handoff is path-first: plan-draft.json is this Attempt's candidate
+ * Spec. Ports stay free of produce/runtime.
  */
 
 import type { WikiRunSpec } from "@okf-wiki/contract";
 
-export type CommitSpecOptions = {
-  /** Optional summary for callers that surface commit context (not a v2 dual-write). */
-  summary?: string;
-};
-
 /**
- * Spec read/write surface for plan → produce orchestration.
+ * Spec draft surface for plan orchestration.
  */
 export interface SpecStore {
-  commitSpec(
-    workspaceRoot: string,
-    runId: string,
-    spec: WikiRunSpec,
-    opts?: CommitSpecOptions,
-  ): Promise<string>;
-  readCommittedSpec(workspaceRoot: string, runId: string): Promise<WikiRunSpec | null>;
   writePlanDraft(runWorkDir: string, spec: WikiRunSpec): Promise<string>;
   readPlanDraft(runWorkDir: string): Promise<WikiRunSpec | null>;
   /**

@@ -1,26 +1,30 @@
 /**
- * Phase 1: handlePlan wires operatorNotes / priorSpec / revisionFeedback.
+ * Plan re-runs use sealed RunIntent plus current revision feedback only.
  */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  defaultWikiRunSpec,
-  type PiAttemptInput,
-  WorkspaceConfigSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptInput, WorkspaceConfigSchema } from "@okf-wiki/contract";
 import { createFixtureProduceRuntime } from "../../fixture-runner.js";
 import { handlePlan } from "./plan.js";
 
 function baseWorkspace(rootPath: string) {
   return WorkspaceConfigSchema.parse({
-    version: 1,
+    version: 2,
     id: "ws",
     name: "Plan Handler Test",
     rootPath,
-    sources: [{ id: "main", path: path.join(rootPath, "src"), applyDefaultIgnores: true, ignore: [] }],
+    sources: [
+      {
+        id: "main",
+        path: path.join(rootPath, "src"),
+        applyDefaultIgnores: true,
+        ignore: [],
+        origin: { type: "path" },
+      },
+    ],
     model: { id: "openai/test" },
     publicationPath: path.join(rootPath, "published"),
     limits: { requestTimeoutSeconds: 60 },
@@ -54,26 +58,14 @@ async function makeLayout(root: string) {
   };
 }
 
-test("handlePlan fixture revise passes priorSpec and revisionFeedback", async () => {
+test("handlePlan fixture revise uses current feedback without a prior Spec input", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-plan-handler-"));
   const layout = await makeLayout(root);
-  const prior = defaultWikiRunSpec("Prior");
-  prior.summary = "Prior summary for revise";
-  const priorDir = path.join(layout.runWorkDir, "prior-spec");
-  await mkdir(priorDir, { recursive: true });
-  await writeFile(path.join(priorDir, "spec.json"), `${JSON.stringify(prior)}\n`, "utf8");
-
-  const intentDir = path.join(layout.runWorkDir, "intent");
-  await mkdir(intentDir, { recursive: true });
+  const inputsDir = path.join(layout.runWorkDir, "inputs");
+  await mkdir(inputsDir, { recursive: true });
   await writeFile(
-    path.join(intentDir, "frozen-run-manifest.json"),
-    `${JSON.stringify({
-      version: 1,
-      intent: { mode: "generate", focus: "Emphasize publication" },
-      mode: "generate",
-      intentDigest: "a".repeat(64),
-      sources: [],
-    })}\n`,
+    path.join(inputsDir, "intent.json"),
+    `${JSON.stringify({ mode: "generate", focus: "Emphasize publication" })}\n`,
     "utf8",
   );
 
@@ -113,21 +105,11 @@ test("handlePlan fixture revise passes priorSpec and revisionFeedback", async ()
       },
       {
         role: "frozen_run_manifest",
-        readOnlyPath: intentDir,
+        readOnlyPath: path.join(root, "sealed-intent-not-read"),
         artifact: {
           artifactId: "art-intent",
           kind: "manifest",
           digest: "e".repeat(64),
-          sealedAt: new Date().toISOString(),
-        },
-      },
-      {
-        role: "prior_spec",
-        readOnlyPath: priorDir,
-        artifact: {
-          artifactId: "art-prior",
-          kind: "spec",
-          digest: "f".repeat(64),
           sealedAt: new Date().toISOString(),
         },
       },
@@ -160,7 +142,6 @@ test("handlePlan fixture revise passes priorSpec and revisionFeedback", async ()
 
   assert.equal(outcome.type, "succeeded");
   if (outcome.type !== "succeeded") return;
-  // Fixture planWikiSpec uses priorSpec when provided.
   assert.ok(outcome.unsealedArtifacts.some((a) => a.kind === "spec"));
-  assert.match(outcome.summary ?? "", /Prior summary|Fixture|WikiRunSpec/i);
+  assert.match(outcome.summary ?? "", /Source-grounded wiki for Plan Handler Test/);
 });

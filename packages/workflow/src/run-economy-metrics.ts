@@ -124,9 +124,7 @@ export function withEconomyMetrics(
 }
 
 /** Summarize run-level economy for dashboards (from attempt extras). */
-export function summarizeRunEconomy(
-  attempts: readonly { metrics?: AttemptMetrics }[],
-): {
+export function summarizeRunEconomy(attempts: readonly { metrics?: AttemptMetrics }[]): {
   sourceReadOverlap?: number;
   receiptBytesTotal: number;
   writerFallbackSearchCount: number;

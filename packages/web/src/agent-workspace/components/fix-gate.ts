@@ -70,9 +70,7 @@ export function buildFixGateResolveCommand(
 }
 
 /** Prefer plan, then fix, then operator_input, then publication, then any open gate. */
-export function selectPrimaryOpenGate(
-  gates: readonly WikiRunGate[],
-): WikiRunGate | null {
+export function selectPrimaryOpenGate(gates: readonly WikiRunGate[]): WikiRunGate | null {
   const open = gates.filter((g) => g.state === "open");
   return (
     open.find((g) => g.kind === "plan") ??
@@ -155,9 +153,7 @@ export function fixGateContextFromSnapshot(
 
   const summary =
     gateSummary ||
-    (hints.length > 0
-      ? `${hints.length} issue(s) from validate/review/repair attempts`
-      : null);
+    (hints.length > 0 ? `${hints.length} issue(s) from validate/review/repair attempts` : null);
 
   return {
     summary,

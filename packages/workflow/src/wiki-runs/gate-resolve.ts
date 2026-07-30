@@ -7,18 +7,15 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  contractForNode,
   type RunCommand,
   type RunCommandContext,
   type RunCommandReceipt,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
-import type { WikiRunsDbCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
-import {
-  materializeDefinitionV1Graph,
-  planNodeKeyForGate,
-  unlockReadyNodes,
-} from "./dag.js";
+import type { WikiRunsDbCtx } from "./ctx.js";
+import { materializeExecutionGraph, planNodeKeyForGate, unlockReadyNodes } from "./dag.js";
 import { withdrawOpenGates } from "./gate-open.js";
 import { scheduleOperatorRepair } from "./repair-schedule.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
@@ -56,9 +53,7 @@ export function resolveGate(
   payloadDigest: string,
 ): RunCommandReceipt {
   const run = asRow(
-    host.db
-      .prepare("SELECT cancel_requested, state FROM runs WHERE run_id = ?")
-      .get(command.runId),
+    host.db.prepare("SELECT cancel_requested, state FROM runs WHERE run_id = ?").get(command.runId),
   );
   if (!run) throw new Error(`run not found: ${command.runId}`);
   if (requiredNumber(run, "cancel_requested") === 1)
@@ -80,8 +75,7 @@ export function resolveGate(
   const nodeKey = requiredText(gate, "node_key");
   const nodeGeneration = requiredNumber(gate, "node_generation");
   const currentGen = host.currentNodeGeneration(command.runId, nodeKey);
-  if (currentGen !== nodeGeneration)
-    throw new Error("gate is stale: node generation was replaced");
+  if (currentGen !== nodeGeneration) throw new Error("gate is stale: node generation was replaced");
 
   const timestamp = now();
   const decision = {
@@ -101,11 +95,7 @@ export function resolveGate(
       `UPDATE gates SET state = 'resolved', decision_json = ?, detail_json = ?
        WHERE gate_id = ? AND state = 'open'`,
     )
-    .run(
-      JSON.stringify(decision),
-      detail === null ? null : JSON.stringify(detail),
-      command.gateId,
-    );
+    .run(JSON.stringify(decision), detail === null ? null : JSON.stringify(detail), command.gateId);
   const updated = asRow(
     host.db.prepare("SELECT state FROM gates WHERE gate_id = ?").get(command.gateId),
   );
@@ -145,7 +135,7 @@ export function resolveGate(
 }
 
 /**
- * Single plan-accepted path: materialize Definition v1, mark running, unlock, emit.
+ * Single plan-accepted path: materialize the sealed execution graph, mark running, unlock, emit.
  * Used by ResolveGate(plan approve) and planConfirm===false auto-approve.
  */
 export function onPlanAccepted(
@@ -156,7 +146,7 @@ export function onPlanAccepted(
   relativePath: string,
   timestamp: string,
 ): void {
-  materializeDefinitionV1Graph(host, runId, relativePath);
+  materializeExecutionGraph(host, runId, relativePath);
   host.db
     .prepare(
       "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
@@ -186,7 +176,7 @@ export function applyPlanGateDecision(
            WHERE node_outputs.run_id = ?
              AND node_outputs.node_key = ?
              AND node_outputs.node_generation = ?
-             AND (node_outputs.role = 'spec' OR artifacts.kind = 'spec')
+             AND node_outputs.role = 'spec'
            LIMIT 1`,
         )
         .get(command.runId, planKey, planGen),
@@ -207,6 +197,7 @@ export function applyPlanGateDecision(
         .get(command.runId, planKey, planGen),
     );
     if (!plan) throw new Error("plan node not found for revise");
+    contractForNode(requiredText(plan, "kind"), planKey);
     host.db
       .prepare(
         `INSERT INTO nodes (
@@ -359,6 +350,7 @@ export function applyOperatorInputGateDecision(
   };
 
   // Old gen stays waiting (non-succeeded) so unlockReadyNodes cannot treat it as done.
+  contractForNode(requiredText(current, "kind"), gateNodeKey);
   host.db
     .prepare(
       `INSERT INTO nodes (
@@ -531,6 +523,7 @@ export function applyFixGateDecision(
       priorPayloadDigest: command.payloadDigest,
       source: "review",
     });
+    contractForNode("gate.fix", gateNodeKey);
 
     host.db
       .prepare(

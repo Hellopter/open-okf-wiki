@@ -3,20 +3,15 @@
  */
 
 import assert from "node:assert/strict";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { AnalysisReceiptSchema, type PiAttemptInput, PiAttemptInputSchema } from "@okf-wiki/contract";
+import {
+  AnalysisReceiptSchema,
+  type PiAttemptInput,
+  PiAttemptInputSchema,
+} from "@okf-wiki/contract";
 import { createFixtureProduceRuntime } from "../../fixture-runner.js";
 import { createPiAttemptExecutor } from "../../pi-attempt-executor.js";
 import { evidenceFromSummary, findingsFromSummary } from "./research.js";
@@ -44,17 +39,45 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
   const root = await mkdtemp(path.join(tmpdir(), "okf-research-receipt-"));
   const sources = path.join(root, "sealed-sources");
   const skill = path.join(root, "sealed-skill");
+  const manifest = path.join(root, "sealed-manifest");
+  const executionPlan = path.join(root, "sealed-execution-plan");
   const attemptDir = path.join(root, "attempts", "attempt-1");
   await mkdir(sources, { recursive: true });
   await mkdir(skill, { recursive: true });
+  await mkdir(manifest, { recursive: true });
+  await mkdir(executionPlan, { recursive: true });
   await writeFile(path.join(sources, "README.md"), "# Demo\n", "utf8");
   await writeFile(path.join(skill, "SKILL.md"), "# Skill\n", "utf8");
+  await writeFile(
+    path.join(manifest, "frozen-run-manifest.json"),
+    `${JSON.stringify({
+      version: 2,
+      intent: { mode: "generate" },
+      mode: "generate",
+      intentDigest: digest,
+      sources: [{ id: "main" }],
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(executionPlan, "execution-plan.json"),
+    `${JSON.stringify({
+      version: 2,
+      workUnits: [],
+      reductions: [],
+      reviewLenses: [],
+      budgets: { maxRepairRounds: 2, maxHardValidateRepairRounds: 0 },
+      fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+    })}\n`,
+    "utf8",
+  );
   return PiAttemptInputSchema.parse({
     runId: "run-research-1",
     attemptId: "attempt-1",
     node,
     inputDigest: digest,
     workspace: {
+      version: 2,
       id: "workspace-1",
       name: "Demo",
       rootPath: root,
@@ -81,6 +104,21 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
         role: "skill",
         artifact: { artifactId: "skill", kind: "skill", digest, sealedAt: timestamp },
         readOnlyPath: skill,
+      },
+      {
+        role: "frozen_run_manifest",
+        artifact: { artifactId: "manifest", kind: "manifest", digest, sealedAt: timestamp },
+        readOnlyPath: manifest,
+      },
+      {
+        role: "execution_plan",
+        artifact: {
+          artifactId: "execution-plan",
+          kind: "execution_plan",
+          digest,
+          sealedAt: timestamp,
+        },
+        readOnlyPath: executionPlan,
       },
     ],
     attemptDir,

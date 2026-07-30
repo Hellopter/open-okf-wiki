@@ -97,12 +97,3 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export function getApiBase(): string {
   return API_BASE;
 }
-
-/** Append optional rootPath query for workspace-scoped routes. */
-export function withRootPathQuery(path: string, rootPath?: string): string {
-  if (!rootPath) {
-    return path;
-  }
-  const params = new URLSearchParams({ rootPath });
-  return `${path}?${params.toString()}`;
-}

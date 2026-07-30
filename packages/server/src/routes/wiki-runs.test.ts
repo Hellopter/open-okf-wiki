@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { createWorkspace, registerWorkspaceInAppIndex, saveWorkspace } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 import { resetWikiRunsRegistryForTests } from "../wiki-runs-registry.ts";
 
@@ -46,6 +46,7 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
   const server = createServer((req, res) => void dispatch(req, res));
   t.after(async () => {
     server.closeAllConnections();
@@ -57,9 +58,8 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/runs`;
-  const query = `?rootPath=${encodeURIComponent(root)}`;
 
-  const started = await fetch(`${base}/command${query}`, {
+  const started = await fetch(`${base}/command`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -72,15 +72,19 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   });
   assert.equal(started.status, 400);
 
-  const accepted = await fetch(`${base}/command${query}`, {
+  const accepted = await fetch(`${base}/command`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "start-over-http" , intent: { mode: "generate" } }),
+    body: JSON.stringify({
+      type: "start_run",
+      commandId: "start-over-http",
+      intent: { mode: "generate" },
+    }),
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const receipt = (await accepted.json()) as { receipt: { runId: string; revision: number } };
 
-  const read = await fetch(`${base}/${receipt.receipt.runId}${query}`);
+  const read = await fetch(`${base}/${receipt.receipt.runId}`);
   assert.equal(read.status, 200, await read.clone().text());
   const body = (await read.json()) as {
     snapshot: { workspaceId: string; runId: string };
@@ -91,7 +95,7 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   assert.ok(body.cursor >= receipt.receipt.revision);
 
   const abort = new AbortController();
-  const stream = await fetch(`${base}/${receipt.receipt.runId}/events${query}`, {
+  const stream = await fetch(`${base}/${receipt.receipt.runId}/events`, {
     signal: abort.signal,
   });
   assert.equal(stream.status, 200);
@@ -110,7 +114,7 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   abort.abort();
 
   const replayAbort = new AbortController();
-  const replay = await fetch(`${base}/${receipt.receipt.runId}/events${query}`, {
+  const replay = await fetch(`${base}/${receipt.receipt.runId}/events`, {
     headers: { "Last-Event-ID": "0" },
     signal: replayAbort.signal,
   });
@@ -131,6 +135,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
   const server = createServer((req, res) => void dispatch(req, res));
   t.after(async () => {
     server.closeAllConnections();
@@ -142,12 +147,15 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/runs`;
-  const query = `?rootPath=${encodeURIComponent(root)}`;
 
-  const accepted = await fetch(`${base}/command${query}`, {
+  const accepted = await fetch(`${base}/command`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-http" , intent: { mode: "generate" } }),
+    body: JSON.stringify({
+      type: "start_run",
+      commandId: "start-transcript-http",
+      intent: { mode: "generate" },
+    }),
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const { receipt } = (await accepted.json()) as { receipt: { runId: string } };
@@ -156,7 +164,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   let attemptId: string | undefined;
   let nodeKey = "freeze";
   for (let i = 0; i < 200; i += 1) {
-    const read = await fetch(`${base}/${receipt.runId}${query}`);
+    const read = await fetch(`${base}/${receipt.runId}`);
     assert.equal(read.status, 200, await read.clone().text());
     const body = (await read.json()) as {
       snapshot: {
@@ -165,11 +173,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     };
     const attempt =
       body.snapshot.attempts.find((a) => a.nodeKey === "freeze") ?? body.snapshot.attempts[0];
-    if (
-      attempt &&
-      attempt.state !== "running" &&
-      attempt.state !== "suspended"
-    ) {
+    if (attempt && attempt.state !== "running" && attempt.state !== "suspended") {
       attemptId = attempt.attemptId;
       nodeKey = attempt.nodeKey;
       break;
@@ -198,9 +202,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   ];
   await writeFile(sessionPath, `${expectedLines.join("\n")}\n`, "utf8");
 
-  const transcriptRes = await fetch(
-    `${base}/${receipt.runId}/attempts/${attemptId}/transcript${query}`,
-  );
+  const transcriptRes = await fetch(`${base}/${receipt.runId}/attempts/${attemptId}/transcript`);
   assert.equal(transcriptRes.status, 200, await transcriptRes.clone().text());
   const transcript = (await transcriptRes.json()) as {
     attemptId: string;
@@ -218,9 +220,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     content: "drafting overview",
   });
 
-  const missing = await fetch(
-    `${base}/${receipt.runId}/attempts/no-such-attempt/transcript${query}`,
-  );
+  const missing = await fetch(`${base}/${receipt.runId}/attempts/no-such-attempt/transcript`);
   assert.equal(missing.status, 404);
 
   // Attempt exists but no session file → 200 with empty (or synthesized) messages, not 404.
@@ -230,9 +230,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     recursive: true,
     force: true,
   }).catch(() => undefined);
-  const emptyRes = await fetch(
-    `${base}/${receipt.runId}/attempts/${attemptId}/transcript${query}`,
-  );
+  const emptyRes = await fetch(`${base}/${receipt.runId}/attempts/${attemptId}/transcript`);
   assert.equal(emptyRes.status, 200, await emptyRes.clone().text());
   const emptyBody = (await emptyRes.json()) as { messages: unknown[]; attemptId: string };
   assert.equal(emptyBody.attemptId, attemptId);
@@ -248,6 +246,7 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
   const server = createServer((req, res) => void dispatch(req, res));
   t.after(async () => {
     server.closeAllConnections();
@@ -259,19 +258,22 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/runs`;
-  const query = `?rootPath=${encodeURIComponent(root)}`;
 
-  const accepted = await fetch(`${base}/command${query}`, {
+  const accepted = await fetch(`${base}/command`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-sse" , intent: { mode: "generate" } }),
+    body: JSON.stringify({
+      type: "start_run",
+      commandId: "start-transcript-sse",
+      intent: { mode: "generate" },
+    }),
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const { receipt } = (await accepted.json()) as { receipt: { runId: string } };
 
   let attemptId: string | undefined;
   for (let i = 0; i < 200; i += 1) {
-    const read = await fetch(`${base}/${receipt.runId}${query}`);
+    const read = await fetch(`${base}/${receipt.runId}`);
     const body = (await read.json()) as {
       snapshot: { attempts: Array<{ attemptId: string; nodeKey: string; state: string }> };
     };
@@ -303,10 +305,9 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   );
 
   const abort = new AbortController();
-  const stream = await fetch(
-    `${base}/${receipt.runId}/attempts/${attemptId}/transcript/events${query}`,
-    { signal: abort.signal },
-  );
+  const stream = await fetch(`${base}/${receipt.runId}/attempts/${attemptId}/transcript/events`, {
+    signal: abort.signal,
+  });
   assert.equal(stream.status, 200, await stream.clone().text());
   assert.ok(stream.body);
   const reader = stream.body.getReader();

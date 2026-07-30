@@ -4,17 +4,14 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  contractForNode,
-  isResearchRole,
-  validateBoundInputs,
-} from "./node-contract.js";
+import { contractForNode, isResearchRole, validateBoundInputs } from "@okf-wiki/contract";
 
 test("contractForNode: plan requires sources+skill; research optional on write", () => {
   const plan = contractForNode("plan", "plan");
   assert.equal(plan.execution, "pi");
   assert.ok(plan.requiredInputs.some((r) => r.role === "sources" && r.required));
   assert.ok(plan.requiredInputs.some((r) => r.role === "skill" && r.required));
+  assert.ok(plan.requiredInputs.some((r) => r.role === "frozen_run_manifest" && r.required));
   assert.ok(plan.outputs.some((o) => o.role === "spec"));
 
   const write = contractForNode("write.root", "write.root");
@@ -38,7 +35,17 @@ test("contractForNode: repair.N has optional defects (semantic or mechanical)", 
   assert.ok(defects);
   assert.equal(defects.required, false);
   assert.ok(repair.requiredInputs.some((r) => r.role === "wiki_tree" && r.required));
+  assert.ok(repair.requiredInputs.some((r) => r.role === "operator_input"));
   assert.equal(repair.execution, "pi");
+});
+
+test("contractForNode rejects unknown kinds and malformed dynamic keys", () => {
+  assert.throws(() => contractForNode("unknown", "unknown"), /unknown WikiRuns node kind/);
+  assert.throws(
+    () => contractForNode("research.leaf", "research.leaf.core"),
+    /unknown WikiRuns node key/,
+  );
+  assert.throws(() => contractForNode("repair", "repair.0"), /unknown WikiRuns node key/);
 });
 
 test("validateBoundInputs: fails closed on missing required research for domain", () => {
@@ -48,16 +55,19 @@ test("validateBoundInputs: fails closed on missing required research for domain"
     /missing required sealed input role\(s\): research/,
   );
   // Namespaced leaf research satisfies the research requirement.
-  validateBoundInputs(domain, ["sources", "skill", "research.leaf.core.1:research"]);
+  validateBoundInputs(domain, [
+    "sources",
+    "skill",
+    "research.leaf.core.1:research",
+    "execution_plan",
+    "frozen_run_manifest",
+  ]);
 });
 
 test("validateBoundInputs: review.seat requires wiki_tree + spec", () => {
   const seat = contractForNode("review.seat", "review.seat.grounding");
-  assert.throws(
-    () => validateBoundInputs(seat, ["sources", "skill"]),
-    /wiki_tree/,
-  );
-  validateBoundInputs(seat, ["sources", "skill", "wiki_tree", "spec"]);
+  assert.throws(() => validateBoundInputs(seat, ["sources", "skill"]), /wiki_tree/);
+  validateBoundInputs(seat, ["sources", "skill", "wiki_tree", "spec", "frozen_run_manifest"]);
 });
 
 test("contractForNode: review.reduce treats review_seat as optional (zero-seat clean path)", () => {
@@ -71,10 +81,7 @@ test("contractForNode: review.reduce treats review_seat as optional (zero-seat c
   validateBoundInputs(reduce, ["wiki_tree", "spec"]);
   // With seats bound still valid.
   validateBoundInputs(reduce, ["wiki_tree", "spec", "review.seat.grounding:review_seat"]);
-  assert.throws(
-    () => validateBoundInputs(reduce, ["spec"]),
-    /wiki_tree/,
-  );
+  assert.throws(() => validateBoundInputs(reduce, ["spec"]), /wiki_tree/);
 });
 
 test("contractForNode: validate.pre/final require Spec", () => {

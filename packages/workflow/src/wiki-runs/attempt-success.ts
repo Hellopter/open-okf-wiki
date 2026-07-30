@@ -23,8 +23,8 @@ import {
   prepareUnsealedArtifact,
   verifyArtifact,
 } from "./artifacts.js";
-import type { WikiRunsCasCtx, WikiRunsDbCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
+import type { WikiRunsCasCtx, WikiRunsDbCtx } from "./ctx.js";
 import { unlockReadyNodes } from "./dag.js";
 import { commitFreezeArtifacts, type FreezeCommitHost, trustedFrozenInputs } from "./freeze.js";
 import {
@@ -163,9 +163,7 @@ export async function recoverPreparedArtifacts(host: RecoverArtifactsHost): Prom
     // the same CAS + control-flow path as live execution.
     const node = asRow(
       host.db
-        .prepare(
-          "SELECT kind FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
-        )
+        .prepare("SELECT kind FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
         .get(runId, nodeKey, nodeGeneration),
     );
     if (!node) {
@@ -235,8 +233,7 @@ export function onAttemptSucceeded(
         ? acceptance.blockingSeverities
         : (["blocking"] as const);
     const severitySet = new Set(blockingSeverities);
-    const blocking =
-      report?.defects.filter((d) => severitySet.has(d.severity)) ?? [];
+    const blocking = report?.defects.filter((d) => severitySet.has(d.severity)) ?? [];
     if (blocking.length === 0) {
       autoPassFixGate(host, claim.runId, timestamp);
       return;
@@ -401,21 +398,14 @@ export async function preparePlanExecutionPlan(
   });
 }
 
-/** Load WikiRunSpec JSON from a sealed Spec artifact root or file. */
-function loadSpecJson(artifactRoot: string): ReturnType<typeof WikiRunSpecSchema.parse> | undefined {
-  const candidates = [
-    path.join(artifactRoot, "spec.json"),
-    artifactRoot,
-    path.join(artifactRoot, "analysis", "spec.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const raw = readFileSync(candidate, "utf8");
-      const parsed = WikiRunSpecSchema.safeParse(JSON.parse(raw));
-      if (parsed.success) return parsed.data;
-    } catch {
-      // try next
-    }
+/** Load WikiRunSpec JSON from the canonical sealed Spec payload. */
+function loadSpecJson(
+  artifactRoot: string,
+): ReturnType<typeof WikiRunSpecSchema.parse> | undefined {
+  try {
+    const raw = readFileSync(path.join(artifactRoot, "spec.json"), "utf8");
+    return WikiRunSpecSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
   }
-  return undefined;
 }

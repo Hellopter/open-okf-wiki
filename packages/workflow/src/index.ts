@@ -1,17 +1,17 @@
 export {
-  buildDefinitionV1Graph,
-  buildDefinitionV2Graph,
-  buildGraphFromExecutionPlan,
-  type DefinitionV1Edge,
-  type DefinitionV1Graph,
-  type DefinitionV1Node,
+  type BuildExecutionGraphOptions,
+  buildExecutionGraph,
+  buildExecutionGraphFromPlan,
+  type ExecutionGraph,
+  type ExecutionGraphEdge,
+  type ExecutionGraphNode,
   GATE_KINDS,
   isGateKind,
   isMechanicalAttemptKind,
   isPiAttemptKind,
   MECHANICAL_ATTEMPT_KINDS,
   PI_ATTEMPT_KINDS,
-} from "./definition-v1.js";
+} from "./execution-graph.js";
 export {
   type CompileExecutionPlanCaps,
   compileExecutionPlan,
@@ -31,21 +31,9 @@ export {
 export {
   graphRoleForNodeKind,
   listNonTerminalRuns,
-  type NonTerminalRunRow,
   NON_TERMINAL_RUN_STATES,
+  type NonTerminalRunRow,
 } from "./wiki-runs/attempt-metrics.js";
-export {
-  allNodeContracts,
-  contractForNode,
-  type InputRequirement,
-  isResearchRole,
-  isReviewSeatRole,
-  type NodeContract,
-  type OutputRequirement,
-  type ProjectionMode,
-  roleSatisfied,
-  validateBoundInputs,
-} from "./wiki-runs/node-contract.js";
 export {
   CommandIdCollision,
   type OpenWikiRunsInput,

@@ -29,7 +29,7 @@ export async function readAttemptTranscript(
 
   host.db.exec("BEGIN DEFERRED");
   let attempt: SqlRow | undefined;
-  let sealedRelativePaths: string[] = [];
+  let sealedRelativePaths: string[];
   try {
     const run = asRow(host.db.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId));
     if (!run) throw new Error(`run not found: ${runId}`);

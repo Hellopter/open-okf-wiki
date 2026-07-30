@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { PiAttemptInput } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
+import { loadPiAttemptNodeDetail } from "../scheduler.js";
 import {
   approvePlanGate,
   context,
@@ -17,6 +18,66 @@ import {
   removeWorkspace,
   waitForRunState,
 } from "./harness.js";
+
+function detailHost(detailJson: string | null): Parameters<typeof loadPiAttemptNodeDetail>[0] {
+  return {
+    db: {
+      prepare: () => ({ get: () => ({ detail_json: detailJson }) }),
+    },
+  } as unknown as Parameters<typeof loadPiAttemptNodeDetail>[0];
+}
+
+test("dynamic Pi nodes reject missing or invalid sealed detail_json", () => {
+  const host = detailHost(null);
+  assert.throws(
+    () => loadPiAttemptNodeDetail(host, "run-1", "research.leaf.core.1", 0, "research.leaf"),
+    /research\.leaf\/research\.leaf\.core\.1 requires valid sealed detail_json: detail_json is missing/,
+  );
+  assert.throws(
+    () =>
+      loadPiAttemptNodeDetail(
+        detailHost("{bad json"),
+        "run-1",
+        "review.seat.grounding",
+        0,
+        "review.seat",
+      ),
+    /detail_json is not JSON/,
+  );
+  assert.throws(
+    () =>
+      loadPiAttemptNodeDetail(
+        detailHost(JSON.stringify({ domainId: "core", question: "What?", scope: "src/" })),
+        "run-1",
+        "research.domain.core",
+        0,
+        "research.domain",
+      ),
+    /missing detail\.title/,
+  );
+  assert.throws(
+    () =>
+      loadPiAttemptNodeDetail(
+        detailHost(JSON.stringify({ lens: "grounding" })),
+        "run-1",
+        "review.seat.grounding",
+        0,
+        "review.seat",
+      ),
+    /missing detail\.seatIndex/,
+  );
+  assert.throws(
+    () =>
+      loadPiAttemptNodeDetail(
+        detailHost(JSON.stringify({ feedback: "Fix it" })),
+        "run-1",
+        "repair.1",
+        0,
+        "repair",
+      ),
+    /missing detail\.repairRequest/,
+  );
+});
 
 test("buildPiAttemptInput binds sealed leaf question from detail_json", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
@@ -38,7 +99,7 @@ test("buildPiAttemptInput binds sealed leaf question from detail_json", async (t
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-detail-bind" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-detail-bind", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-detail-bind");
@@ -83,7 +144,7 @@ test("RerunNode copies prior detail_json and merges feedback on the root target"
     piAttemptExecutor: fullGraphFixtureExecutor,
   });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-rerun-detail" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-rerun-detail", intent: { mode: "generate" } },
     context(workspaceId),
   );
   // Freeze → plan ready is enough; seed a leaf with definition detail and rerun it.
@@ -164,9 +225,7 @@ test("RerunNode copies prior detail_json and merges feedback on the root target"
 
   const dbAfter = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
   const leafGen1 = dbAfter
-    .prepare(
-      "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 1",
-    )
+    .prepare("SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 1")
     .get(receipt.runId, leafKey) as { detail_json: string | null };
   const domainGen1 = dbAfter
     .prepare(

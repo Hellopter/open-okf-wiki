@@ -3,6 +3,8 @@
  * Path-first handoff (ADR 0011) — control returns a short ACK + path, not free-text defects.
  */
 
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
@@ -11,8 +13,6 @@ import {
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
 } from "@okf-wiki/contract";
 import { atomicWriteJson } from "@okf-wiki/core";
-import { mkdir } from "node:fs/promises";
-import path from "node:path";
 
 export { SUBMIT_DEFECT_REPORT_TOOL_NAME };
 
@@ -27,10 +27,9 @@ export function defectReportPathFromRunWorkDir(runWorkDir: string): string {
 
 const defectItemSchema = Type.Object(
   {
-    severity: Type.Union(
-      [Type.Literal("blocking"), Type.Literal("major"), Type.Literal("minor")],
-      { description: "Defect severity: blocking | major | minor." },
-    ),
+    severity: Type.Union([Type.Literal("blocking"), Type.Literal("major"), Type.Literal("minor")], {
+      description: "Defect severity: blocking | major | minor.",
+    }),
     code: Type.String({
       description: "Stable defect code (1–80 chars), e.g. missing_citation.",
       minLength: 1,
@@ -119,9 +118,7 @@ export async function writeDefectReportDraft(
   return filePath;
 }
 
-export async function readDefectReportDraft(
-  runWorkDir: string,
-): Promise<DefectReport | null> {
+export async function readDefectReportDraft(runWorkDir: string): Promise<DefectReport | null> {
   try {
     const { readFile } = await import("node:fs/promises");
     const raw = await readFile(defectReportPathFromRunWorkDir(runWorkDir), "utf8");

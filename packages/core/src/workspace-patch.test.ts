@@ -12,7 +12,7 @@ import { applyWorkspacePatch } from "./workspace-patch.js";
 
 function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
   return {
-    version: 1,
+    version: 2,
     id: "ws-1",
     name: "Demo",
     rootPath: "/tmp/ws",

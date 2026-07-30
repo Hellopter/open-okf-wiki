@@ -9,7 +9,6 @@
 
 import type { AgentCommand, AgentCommandResponse, WorkspaceConfig } from "@okf-wiki/contract";
 import { ensureRegistered } from "./live-session-registry.ts";
-import { createSessionRuntime } from "./session-runtime.ts";
 
 /** Delegate commands only to SessionRuntime over the real AgentSession. */
 export async function dispatchAgentCommand(
@@ -17,6 +16,5 @@ export async function dispatchAgentCommand(
   sessionId: string,
   command: AgentCommand,
 ): Promise<AgentCommandResponse> {
-  const entry = await ensureRegistered(workspace, sessionId);
-  return createSessionRuntime(entry, workspace).dispatch(command);
+  return (await ensureRegistered(workspace, sessionId)).dispatch(command);
 }

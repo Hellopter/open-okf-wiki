@@ -142,9 +142,7 @@ export function GeneralSection(props: GeneralSectionProps) {
 
   const selectedModel = models.find((m) => m.id === modelProfileId);
   const orphanModelId =
-    !selectedModel &&
-    workspace.model.id &&
-    !models.some((m) => m.modelId === workspace.model.id)
+    !selectedModel && workspace.model.id && !models.some((m) => m.modelId === workspace.model.id)
       ? workspace.model.id
       : null;
   /** 85% of model max when workspace target is blank (matches agent CONTEXT_COMPACTION_RATIO). */

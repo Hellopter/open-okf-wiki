@@ -6,12 +6,9 @@ import path from "node:path";
 import test from "node:test";
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
 import { addSource, createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { dispatchAgentCommand, registerAgentSession } from "./agent-session/index.ts";
+import { resetAgentSessionRegistryForTests } from "./agent-session/test-seams.ts";
 import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
-import {
-  dispatchAgentCommand,
-  registerAgentSession,
-  resetAgentSessionRegistryForTests,
-} from "./agent-session-registry.ts";
 import { resetWikiRunsRegistryForTests, wikiRunsForWorkspace } from "./wiki-runs-registry.ts";
 
 function git(cwd: string, ...args: string[]): void {

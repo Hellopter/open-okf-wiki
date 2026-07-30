@@ -65,7 +65,7 @@ test("create/load/save workspace roundtrip", async () => {
   assert.equal(config.name, "Demo Workspace");
   assert.equal(config.rootPath, path.resolve(root));
   assert.equal(config.publicationPath, path.join(path.resolve(root), "wiki"));
-  assert.equal(config.version, 1);
+  assert.equal(config.version, 2);
   assert.equal(config.model.id, "openai/corp-model");
   assert.equal(config.model.profileId, "corp-profile");
   assert.equal(config.sources.length, 0);
@@ -84,7 +84,7 @@ test("create/load/save workspace roundtrip", async () => {
   await saveWorkspace(config);
 
   const onDisk = await readFile(workspaceConfigPath(root), "utf8");
-  assert.match(onDisk, /"version": 1/);
+  assert.match(onDisk, /"version": 2/);
   assert.doesNotMatch(onDisk, /api[_-]?key/i);
 
   const loaded = await loadWorkspace(root);
@@ -124,7 +124,7 @@ test("loadWorkspace rejects missing and invalid files", async () => {
   await assert.rejects(() => loadWorkspace(root), /invalid workspace config/);
 });
 
-test("loadWorkspace normalizes legacy sources without origin to path-linked", async () => {
+test("loadWorkspace rejects historical sources without origin", async () => {
   const root = await tempDir("okf-wiki-ws-legacy-origin-");
   const sourceRoot = await tempDir("okf-wiki-src-legacy-");
   await initGitRepo(sourceRoot);
@@ -134,7 +134,7 @@ test("loadWorkspace normalizes legacy sources without origin to path-linked", as
   await writeFile(
     path.join(okfDir, "workspace.json"),
     JSON.stringify({
-      version: 1,
+      version: 2,
       id: "legacy-ws",
       name: "Legacy",
       rootPath: root,
@@ -146,9 +146,7 @@ test("loadWorkspace normalizes legacy sources without origin to path-linked", as
     "utf8",
   );
 
-  const loaded = await loadWorkspace(root);
-  assert.equal(loaded.sources.length, 1);
-  assert.deepEqual(loaded.sources[0]?.origin, { type: "path" });
+  await assert.rejects(() => loadWorkspace(root), /invalid workspace config/);
 });
 
 test("addSource fails for non-git and dirty when requireClean", async () => {

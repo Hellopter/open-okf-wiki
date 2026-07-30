@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { createWorkspace, registerWorkspaceInAppIndex, saveWorkspace } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 
 test("wiki list returns page summaries and wiki-graph returns the link graph", async () => {
@@ -38,6 +38,7 @@ test("wiki list returns page summaries and wiki-graph returns the link graph", a
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
   const server = createServer((req, res) => void dispatch(req, res));
 
   try {
@@ -45,9 +46,7 @@ test("wiki list returns page summaries and wiki-graph returns the link graph", a
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const base = `http://127.0.0.1:${address.port}`;
-    const query = `rootPath=${encodeURIComponent(root)}`;
-
-    const list = await fetch(`${base}/api/workspaces/${workspace.id}/wiki?${query}`);
+    const list = await fetch(`${base}/api/workspaces/${workspace.id}/wiki`);
     assert.equal(list.status, 200);
     const listBody = (await list.json()) as {
       pages: string[];
@@ -84,7 +83,7 @@ test("wiki list returns page summaries and wiki-graph returns the link graph", a
     assert.ok(navPaths.includes("modules/core.md"));
     assert.ok(!navPaths.includes("index.md"));
 
-    const graphRes = await fetch(`${base}/api/workspaces/${workspace.id}/wiki-graph?${query}`);
+    const graphRes = await fetch(`${base}/api/workspaces/${workspace.id}/wiki-graph`);
     assert.equal(graphRes.status, 200);
     const graph = (await graphRes.json()) as {
       workspaceId: string;

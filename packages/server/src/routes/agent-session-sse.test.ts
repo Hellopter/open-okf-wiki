@@ -5,10 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createOperatorSession, type OperatorSessionHistory } from "@okf-wiki/agent";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { createWorkspace, registerWorkspaceInAppIndex, saveWorkspace } from "@okf-wiki/core";
+import { resetAgentSessionRegistryForTests } from "../agent-session/test-seams.ts";
 import { emitAgentSessionEvent } from "../agent-session-events.ts";
-import { resetAgentSessionRegistryForTests } from "../agent-session-registry.ts";
 import { dispatch } from "../dispatch.ts";
 import { handleAgentSessionEvents } from "./agent-sessions.ts";
 
@@ -65,6 +64,7 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
 
   const sessionId = "session-sse-1";
   const handle = await createOperatorSession({
@@ -121,8 +121,7 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
       workspace.id +
       "/agent/sessions/" +
       sessionId +
-      "/events?rootPath=" +
-      encodeURIComponent(root);
+      "/events";
     const response = await fetch(url, { signal: abort.signal });
     assert.equal(response.status, 200);
     assert.ok(response.body);
@@ -206,6 +205,7 @@ test("a live Pi Session supports SSE before its first assistant message is persi
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
 
   const server = createServer((req, res) => void dispatch(req, res));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -213,10 +213,9 @@ test("a live Pi Session supports SSE before its first assistant message is persi
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/agent/sessions`;
-  const query = `?rootPath=${encodeURIComponent(root)}`;
   const sessionId = "live-session-sse-1";
 
-  const created = await fetch(`${base}${query}`, {
+  const created = await fetch(base, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ sessionId }),
@@ -224,7 +223,7 @@ test("a live Pi Session supports SSE before its first assistant message is persi
   assert.equal(created.status, 201, await created.clone().text());
 
   const abort = new AbortController();
-  const response = await fetch(`${base}/${sessionId}/events${query}`, { signal: abort.signal });
+  const response = await fetch(`${base}/${sessionId}/events`, { signal: abort.signal });
   assert.equal(response.status, 200);
   assert.ok(response.body);
   const reader = response.body.getReader();
@@ -239,7 +238,7 @@ test("a live Pi Session supports SSE before its first assistant message is persi
   await reader.cancel();
   abort.abort();
 
-  const deleted = await fetch(`${base}/${sessionId}${query}`, { method: "DELETE" });
+  const deleted = await fetch(`${base}/${sessionId}`, { method: "DELETE" });
   assert.equal(deleted.status, 200, await deleted.clone().text());
 });
 
@@ -252,12 +251,11 @@ test("SSE snapshots precede queued live events and include the genuine active to
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
 
   const sessionId = "ordered-session-sse-1";
   const historyStarted = deferred<void>();
   const history = deferred<OperatorSessionHistory | null>();
-  const spec = defaultWikiRunSpec("Reconnect");
-  let activeStatus: "awaiting_plan" | "awaiting_publication" = "awaiting_plan";
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     void handleAgentSessionEvents(req, res, workspace.id, sessionId, url, {
@@ -269,10 +267,9 @@ test("SSE snapshots precede queued live events and include the genuine active to
         toolCallId: "tool-live-1",
         toolName: "wiki_produce",
         details: {
-          status: activeStatus,
+          status: "accepted",
           runId: "run-live-1",
-          spec,
-          summary: "Awaiting WikiRunSpec approval",
+          summary: "Wiki Run accepted",
         },
       }),
     });
@@ -282,11 +279,10 @@ test("SSE snapshots precede queued live events and include the genuine active to
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const url = `http://127.0.0.1:${address.port}/events?rootPath=${encodeURIComponent(root)}`;
+    const url = `http://127.0.0.1:${address.port}/events`;
     const responsePromise = fetch(url, { signal: abort.signal });
     await within(historyStarted.promise, "history loader");
 
-    activeStatus = "awaiting_publication";
     const streamEvent = {
       source: "server" as const,
       kind: "stream" as const,
@@ -313,11 +309,9 @@ test("SSE snapshots precede queued live events and include the genuine active to
                 args: {},
                 status: "running" as const,
                 details: {
-                  status: activeStatus,
+                  status: "accepted" as const,
                   runId: "run-live-1",
-                  spec,
-                  pages: ["overview.md"],
-                  summary: "Awaiting publication approval",
+                  summary: "Wiki Run accepted",
                 },
               },
             ],
@@ -362,7 +356,7 @@ test("SSE snapshots precede queued live events and include the genuine active to
     };
     assert.equal(snapshot.kind, "snapshot");
     assert.equal(snapshot.payload?.activeTool?.toolCallId, "tool-live-1");
-    assert.equal(snapshot.payload?.activeTool?.details?.status, "awaiting_plan");
+    assert.equal(snapshot.payload?.activeTool?.details?.status, "accepted");
     // T2: Session SSE no longer carries memory pendingGate; gates are WikiRuns ResolveGate.
     assert.equal(snapshot.payload?.pendingGate, undefined);
     assert.deepEqual(await nextSseData(reader, state), streamEvent);
@@ -385,6 +379,7 @@ test("SSE disconnect during history load unsubscribes exactly once", async () =>
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
 
   const sessionId = "early-close-sse-1";
   const historyStarted = deferred<void>();
@@ -420,7 +415,7 @@ test("SSE disconnect during history load unsubscribes exactly once", async () =>
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const url = `http://127.0.0.1:${address.port}/events?rootPath=${encodeURIComponent(root)}`;
+    const url = `http://127.0.0.1:${address.port}/events`;
     client = httpRequest(url);
     client.on("error", () => undefined);
     client.end();

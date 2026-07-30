@@ -52,33 +52,19 @@ export function initialLiveStreamState(): PiStreamState {
 }
 
 /**
- * @deprecated Prefer {@link projectLiveStreamEvent}. Kept for tests that only
- * assert redaction of a single event envelope.
- */
-export function projectPiEventForSse(
-  _workspaceId: string,
-  sessionId: string,
-  event: unknown,
-  timestamp = new Date().toISOString(),
-): AgentSseStream {
-  const { frame } = projectLiveStreamEvent(sessionId, createPiStreamState(), event, timestamp);
-  return frame;
-}
-
-/**
  * Derive activeTool chrome from a Pi tool_execution_update with wiki_produce details.
  * Returns null to clear, undefined for no change.
  */
 export function activeToolUpdate(event: unknown): AgentSseActiveTool | null | undefined {
   if (!event || typeof event !== "object") return undefined;
-  const body = event as Record<string, unknown>;
+  const body = redactSensitiveValue(event) as Record<string, unknown>;
   // Clear chrome only when the tool ends or the full turn settles.
   // agent_end is not terminal (retry/compaction/queue may continue).
   if (body.type === "tool_execution_end" || body.type === "agent_settled") {
     return null;
   }
   if (body.type === "tool_execution_start") return null;
-  if (body.type !== "tool_execution_update") return undefined;
+  if (body.type !== "tool_execution_update" || body.toolName !== "wiki_produce") return undefined;
 
   const partial = body.partialResult;
   if (!partial || typeof partial !== "object") return undefined;

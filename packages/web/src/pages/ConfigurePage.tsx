@@ -76,9 +76,9 @@ export function ConfigurePage() {
       onDismissError={() => setError(null)}
       testId="configure-page"
     >
-      {loading && !workspace ? (
+      {loading ? (
         <LoadingState label={t.common.loading} />
-      ) : (
+      ) : workspace ? (
         <div className="flex w-full flex-col gap-4">
           <Tabs
             value={section}
@@ -104,12 +104,16 @@ export function ConfigurePage() {
             </TabsList>
           </Tabs>
           {section === "sources" ? (
-            <WorkspaceSourcesPage />
+            <WorkspaceSourcesPage workspace={workspace} onWorkspaceChange={setWorkspace} />
           ) : (
-            <WorkspaceSettingsPage section={section} />
+            <WorkspaceSettingsPage
+              workspace={workspace}
+              onWorkspaceChange={setWorkspace}
+              section={section}
+            />
           )}
         </div>
-      )}
+      ) : null}
     </WorkbenchShell>
   );
 }

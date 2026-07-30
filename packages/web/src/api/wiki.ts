@@ -2,7 +2,7 @@
  * Published wiki list / graph / page HTTP API.
  */
 
-import { request, withRootPathQuery } from "./client";
+import { request } from "./client";
 
 export type WikiPageSummary = {
   path: string;
@@ -57,35 +57,21 @@ export type WikiPageResponse = {
 };
 
 /** List published wiki markdown pages (404 when missing/empty). */
-export function listWikiPages(
-  workspaceId: string,
-  rootPath?: string,
-): Promise<WikiPageListResponse> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki`, rootPath),
-  );
+export function listWikiPages(workspaceId: string): Promise<WikiPageListResponse> {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki`);
 }
 
 /** Derived cross-link graph of the Published Wiki (Wiki Visualization data). */
-export function getWikiGraph(workspaceId: string, rootPath?: string): Promise<WikiGraphResponse> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki-graph`, rootPath),
-  );
+export function getWikiGraph(workspaceId: string): Promise<WikiGraphResponse> {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki-graph`);
 }
 
 /**
  * Read one published wiki page by relative path (e.g. `overview.md`).
  * Uses the `?path=` query form so nested paths stay simple.
  */
-export function getWikiPage(
-  workspaceId: string,
-  pagePath: string,
-  rootPath?: string,
-): Promise<WikiPageResponse> {
+export function getWikiPage(workspaceId: string, pagePath: string): Promise<WikiPageResponse> {
   const params = new URLSearchParams();
   params.set("path", pagePath);
-  if (rootPath) {
-    params.set("rootPath", rootPath);
-  }
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/wiki?${params.toString()}`);
 }

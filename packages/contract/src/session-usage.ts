@@ -27,9 +27,7 @@ export type SessionUsage = z.infer<typeof SessionUsageSchema>;
  * Walk Pi history rows newest-first and return the last assistant
  * `usage.totalTokens` when present and finite.
  */
-export function extractContextTokensFromPiHistory(
-  rows: readonly unknown[],
-): number | undefined {
+export function extractContextTokensFromPiHistory(rows: readonly unknown[]): number | undefined {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i];
     if (!isRecord(row) || row.role !== "assistant") continue;

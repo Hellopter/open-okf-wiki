@@ -6,28 +6,23 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   type RunIntent,
   RunIntentSchema,
+  WIKI_RUNS_SCHEMA,
   type WikiRunAttempt,
   type WikiRunGateDetail,
   type WikiRunNode,
   type WikiRunNodeKind,
   type WikiRunSnapshot,
   WikiRunSnapshotSchema,
-  WIKI_RUNS_SCHEMA,
 } from "@okf-wiki/contract";
 import { projectAttemptMetrics } from "./attempt-metrics.js";
 import { labelForNode, parentKeyForNode, parseNodeDetail } from "./node-label.js";
 import { asRow, asRows, parseJson, requiredNumber, requiredText } from "./sql.js";
 
-/** Parse durable runs.intent_json into secret-free RunIntent (null if missing/corrupt). */
-function parseRunIntent(raw: unknown): RunIntent | null {
-  if (raw == null || raw === "") return null;
-  try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    const result = RunIntentSchema.safeParse(parsed);
-    return result.success ? result.data : null;
-  } catch {
-    return null;
-  }
+/** Parse the required StartRun intent from the durable run record. */
+function parseRunIntent(raw: unknown): RunIntent {
+  if (raw == null || raw === "") throw new Error("run has no sealed intent");
+  const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return RunIntentSchema.parse(parsed);
 }
 
 /** Narrow gate detail_json into secret-free WikiRunGateDetail. */
@@ -78,13 +73,15 @@ function pickParentFromEdges(
 export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot {
   const run = asRow(db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId));
   if (!run) throw new Error(`run not found: ${runId}`);
+  const definitionVersion = requiredNumber(run, "definition_version");
+  if (definitionVersion !== 2) {
+    throw new Error(`unsupported WikiRuns definition version for run ${runId}`);
+  }
 
   // Inbound edges: to_key → from_key[] (for parentKey projection).
   const inboundByTo = new Map<string, string[]>();
   for (const edge of asRows(
-    db
-      .prepare("SELECT from_key, to_key FROM node_edges WHERE run_id = ?")
-      .all(runId),
+    db.prepare("SELECT from_key, to_key FROM node_edges WHERE run_id = ?").all(runId),
   )) {
     const from = requiredText(edge, "from_key");
     const to = requiredText(edge, "to_key");
@@ -159,7 +156,9 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   const FAILED_HISTORY_CAP = 3;
   const currentGenByNode = new Map(nodes.map((n) => [n.key, n.generation]));
   const allAttemptRows = asRows(
-    db.prepare("SELECT * FROM attempts WHERE run_id = ? ORDER BY started_at, attempt_id").all(runId),
+    db
+      .prepare("SELECT * FROM attempts WHERE run_id = ? ORDER BY started_at, attempt_id")
+      .all(runId),
   );
   const selectedAttemptIds = new Set<string>();
   const mappedAttempts: WikiRunAttempt[] = [];
@@ -258,7 +257,7 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     candidateDigest: requiredText(effect, "candidate_digest"),
   }));
   // WikiCandidate lineage (table may be empty on older DBs / pre-write runs).
-  let candidates: WikiRunSnapshot["candidates"] = [];
+  let candidates: WikiRunSnapshot["candidates"];
   try {
     candidates = asRows(
       db
@@ -272,7 +271,10 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
       candidateId: requiredText(row, "candidate_id"),
       digest: requiredText(row, "digest"),
       artifactId: requiredText(row, "artifact_id"),
-      producedBy: requiredText(row, "produced_by") as WikiRunSnapshot["candidates"][number]["producedBy"],
+      producedBy: requiredText(
+        row,
+        "produced_by",
+      ) as WikiRunSnapshot["candidates"][number]["producedBy"],
       round: requiredNumber(row, "round"),
       ...(row.parent_candidate_id != null && String(row.parent_candidate_id).trim()
         ? { parentCandidateId: String(row.parent_candidate_id).trim() }
@@ -286,7 +288,7 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   }
   return WikiRunSnapshotSchema.parse({
     schema: WIKI_RUNS_SCHEMA,
-    definitionVersion: 2,
+    definitionVersion,
     runId: requiredText(run, "run_id"),
     workspaceId: requiredText(run, "workspace_id"),
     revision: requiredNumber(run, "revision"),

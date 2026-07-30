@@ -10,7 +10,7 @@ import type {
   WikiRunSpecRead,
   WikiRunState,
 } from "@okf-wiki/contract";
-import { getApiBase, request, withRootPathQuery } from "./client";
+import { getApiBase, request } from "./client";
 
 export type { WikiRunState };
 
@@ -24,38 +24,24 @@ export type WikiRunListItem = {
 
 export function listRuns(
   workspaceId: string,
-  rootPath?: string,
 ): Promise<{ workspaceId: string; runs: WikiRunListItem[] }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, rootPath),
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`);
 }
 
 /** Durable WikiRuns snapshot + cursor (ADR 0035). */
 export function getWikiRun(
   workspaceId: string,
   runId: string,
-  rootPath?: string,
 ): Promise<{ snapshot: WikiRunSnapshot; cursor: number }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
-      rootPath,
-    ),
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
   );
 }
 
 /** Sealed plan Spec for operator review (not on Run SSE). */
-export function getWikiRunSpec(
-  workspaceId: string,
-  runId: string,
-  rootPath?: string,
-): Promise<WikiRunSpecRead> {
+export function getWikiRunSpec(workspaceId: string, runId: string): Promise<WikiRunSpecRead> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,
-      rootPath,
-    ),
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,
   );
 }
 
@@ -71,13 +57,9 @@ export function getWikiRunAttemptTranscript(
   workspaceId: string,
   runId: string,
   attemptId: string,
-  rootPath?: string,
 ): Promise<WikiRunAttemptTranscript> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript`,
-      rootPath,
-    ),
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript`,
   );
 }
 
@@ -90,28 +72,20 @@ export function wikiRunAttemptTranscriptEventsUrl(
   workspaceId: string,
   runId: string,
   attemptId: string,
-  rootPath?: string,
 ): string {
-  return `${getApiBase()}${withRootPathQuery(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript/events`,
-    rootPath,
-  )}`;
+  return `${getApiBase()}/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript/events`;
 }
 
 /** Dispatch a durable WikiRuns command (StartRun / ResolveGate / Cancel / …). */
 export function dispatchWikiRunCommand(
   workspaceId: string,
   command: RunCommand,
-  rootPath?: string,
 ): Promise<{ receipt: RunCommandReceipt }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, rootPath),
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(command),
-    },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(command),
+  });
 }
 
 /**
@@ -119,9 +93,6 @@ export function dispatchWikiRunCommand(
  * Server sends `snapshot` then `run.event` frames; heartbeat has no event id.
  * Native EventSource replays with `Last-Event-ID` after the last received id.
  */
-export function wikiRunEventsUrl(workspaceId: string, runId: string, rootPath?: string): string {
-  return `${getApiBase()}${withRootPathQuery(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events`,
-    rootPath,
-  )}`;
+export function wikiRunEventsUrl(workspaceId: string, runId: string): string {
+  return `${getApiBase()}/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events`;
 }

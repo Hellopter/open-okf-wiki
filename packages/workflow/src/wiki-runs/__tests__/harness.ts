@@ -7,8 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { defaultWikiRunSpec, type PiAttemptInput, type PiAttemptOutcome } from "@okf-wiki/contract";
 import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { compileExecutionPlan } from "../../plan-compiler.js";
 import { openWikiRuns } from "../../wiki-runs.js";
-
 
 /** Minimal successful outcome for freeze-path executor probes. */
 export function succeededProbe(workDir: string): PiAttemptOutcome {
@@ -68,7 +68,7 @@ export function freezeAndPlanExecutor(
   };
 }
 
-/** Fixture Pi executor covering Definition v1 model kinds (no live LLM). */
+/** Fixture Pi executor covering execution-graph model kinds (no live LLM). */
 export async function fullGraphFixtureExecutor(
   input: PiAttemptInput,
   _signal: AbortSignal,
@@ -103,11 +103,11 @@ export async function fullGraphFixtureExecutor(
       nodeId: input.node.key,
       parentId:
         input.node.kind === "research.leaf"
-          ? `research.domain.${String(input.node.detail?.domainId ?? "core")}`
+          ? `research.domain.${String(input.node.detail?.domainId ?? "fixture")}`
           : null,
       attempt: Math.max(1, input.node.generation + 1),
       status: "complete",
-      scope: String(input.node.detail?.scope ?? input.node.key),
+      scope: String(input.node.detail?.scope ?? "fixture"),
       summary: `fixture ${input.node.kind} for ${input.node.key}`,
       findings: [`fixture ${input.node.kind} for ${input.node.key}`],
       evidence: [],
@@ -126,7 +126,7 @@ export async function fullGraphFixtureExecutor(
   }
   if (input.node.kind === "review.seat") {
     const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
-    const reviewerId = input.node.key.replace(/^review\.seat\./, "") || "general";
+    const reviewerId = String(input.node.detail?.lens ?? "fixture");
     const report = {
       version: 1 as const,
       reviewerId,
@@ -230,7 +230,6 @@ export async function makeWorkspace(): Promise<{ root: string; workspaceId: stri
   return { root, workspaceId: workspace.id };
 }
 
-
 export async function removeWorkspace(root: string): Promise<void> {
   spawnSync("chmod", ["-R", "u+w", root], { stdio: "ignore" });
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
@@ -241,7 +240,10 @@ export function context(workspaceId: string) {
 }
 
 /** Default StartRun body (hard-cut requires intent). */
-export function startRunCommand(commandId: string, intent?: { mode?: "generate" | "refresh"; focus?: string }) {
+export function startRunCommand(
+  commandId: string,
+  intent?: { mode?: "generate" | "refresh"; focus?: string },
+) {
   return {
     type: "start_run" as const,
     commandId,
@@ -344,7 +346,10 @@ export function startChildOwner(root: string, workspaceId: string): ChildProcess
  * Wait until freeze fails, freeze succeeds and plan is ready (no plan executor),
  * or plan opens gate.plan (executor path).
  */
-export async function waitForTerminal(runs: Awaited<ReturnType<typeof openWikiRuns>>, runId: string) {
+export async function waitForTerminal(
+  runs: Awaited<ReturnType<typeof openWikiRuns>>,
+  runId: string,
+) {
   for (let count = 0; count < 300; count += 1) {
     const result = await runs.read({ runId });
     if (result.snapshot.state === "failed" || result.snapshot.state === "cancelled") return result;
@@ -380,7 +385,11 @@ export function assertFreezeAdvancedToPlan(
 export const PLAN_PAYLOAD_DIGEST = "b".repeat(64);
 
 /** Seed a durable open plan gate without running the full Pi graph (T3). */
-export function seedOpenPlanGate(root: string, runId: string, options?: { gateId?: string }): string {
+export function seedOpenPlanGate(
+  root: string,
+  runId: string,
+  options?: { gateId?: string },
+): string {
   const gateId = options?.gateId ?? "gate-plan-1";
   const db = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
   db.exec("PRAGMA foreign_keys=ON");
@@ -409,21 +418,28 @@ export function seedOpenPlanGate(root: string, runId: string, options?: { gateId
   return gateId;
 }
 
-/** Attach a sealed Spec artifact to the current plan generation (approve prerequisite). */
+/** Attach sealed v2 Spec + ExecutionPlan artifacts to the current plan generation. */
 export async function seedPlanSpecArtifact(root: string, runId: string): Promise<void> {
-  const relativePath = "artifacts/spec-plan";
-  const artifactDir = path.join(root, ".okf-wiki", "runs", runId, relativePath);
-  await mkdir(artifactDir, { recursive: true });
+  const specRelativePath = "artifacts/spec-plan";
+  const planRelativePath = "artifacts/execution-plan";
+  const runDir = path.join(root, ".okf-wiki", "runs", runId);
+  const specDir = path.join(runDir, specRelativePath);
+  const planDir = path.join(runDir, planRelativePath);
+  await mkdir(specDir, { recursive: true });
+  await mkdir(planDir, { recursive: true });
+  const spec = defaultWikiRunSpec("Workflow test");
+  await writeFile(path.join(specDir, "spec.json"), `${JSON.stringify(spec)}\n`, "utf8");
   await writeFile(
-    path.join(artifactDir, "spec.json"),
-    `${JSON.stringify(defaultWikiRunSpec("Workflow test"))}\n`,
+    path.join(planDir, "execution-plan.json"),
+    `${JSON.stringify(compileExecutionPlan(spec))}\n`,
     "utf8",
   );
   const db = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
   db.exec("PRAGMA foreign_keys=ON");
   const timestamp = new Date().toISOString();
   const attemptId = "attempt-plan-spec-1";
-  const artifactId = `${runId}:spec:${"a".repeat(64)}`;
+  const specArtifactId = `${runId}:spec:${"a".repeat(64)}`;
+  const planArtifactId = `${runId}:execution-plan:${"c".repeat(64)}`;
   db.prepare(
     `INSERT INTO attempts (
       attempt_id, run_id, node_key, node_generation, run_index, state, input_digest, error, started_at, ended_at
@@ -432,11 +448,19 @@ export async function seedPlanSpecArtifact(root: string, runId: string): Promise
   db.prepare(
     `INSERT INTO artifacts (artifact_id, run_id, kind, digest, relative_path, producer_attempt_id, sealed_at)
      VALUES (?, ?, 'spec', ?, ?, ?, ?)`,
-  ).run(artifactId, runId, "a".repeat(64), relativePath, attemptId, timestamp);
+  ).run(specArtifactId, runId, "a".repeat(64), specRelativePath, attemptId, timestamp);
+  db.prepare(
+    `INSERT INTO artifacts (artifact_id, run_id, kind, digest, relative_path, producer_attempt_id, sealed_at)
+     VALUES (?, ?, 'execution_plan', ?, ?, ?, ?)`,
+  ).run(planArtifactId, runId, "c".repeat(64), planRelativePath, attemptId, timestamp);
   db.prepare(
     `INSERT INTO node_outputs (run_id, node_key, node_generation, role, artifact_id)
      VALUES (?, 'plan', 0, 'spec', ?)`,
-  ).run(runId, artifactId);
+  ).run(runId, specArtifactId);
+  db.prepare(
+    `INSERT INTO node_outputs (run_id, node_key, node_generation, role, artifact_id)
+     VALUES (?, 'plan', 0, 'execution_plan', ?)`,
+  ).run(runId, planArtifactId);
   db.close();
 }
 

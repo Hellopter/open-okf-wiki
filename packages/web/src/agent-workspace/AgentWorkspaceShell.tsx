@@ -9,7 +9,7 @@ import type { SessionUsage } from "@okf-wiki/contract";
 import { PanelRightCloseIcon, PanelRightOpenIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import {
   Breadcrumb,
@@ -20,23 +20,10 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
-import {
-  Drawer,
-  DrawerContent,
-  DrawerHeader,
-  DrawerTitle,
-} from "@/components/ui/drawer";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
@@ -47,6 +34,7 @@ import { ActiveRunBar } from "./components/ActiveRunBar";
 import { RunCockpit } from "./components/RunCockpit";
 import { RunPicker } from "./components/RunPicker";
 import { Composer } from "./composer/Composer";
+import { useAgentWorkspaceRoute } from "./hooks/useAgentWorkspaceRoute";
 import type { AgentMessage, AgentStatus, ConnectionStatus } from "./hooks/useSessionAgent";
 import { AgentSessionSidebar } from "./session-list/SessionList";
 import { Transcript } from "./transcript/Transcript";
@@ -59,10 +47,7 @@ export type WorkspaceToolbarProps = {
   actions?: ReactNode;
 };
 
-function connectionLabel(
-  status: ConnectionStatus,
-  t: ReturnType<typeof useI18n>["t"],
-): string {
+function connectionLabel(status: ConnectionStatus, t: ReturnType<typeof useI18n>["t"]): string {
   switch (status) {
     case "live":
       return t.agentWorkspace.connectionLive;
@@ -106,9 +91,7 @@ export function WorkspaceToolbar({
         <Breadcrumb className="min-w-0">
           <BreadcrumbList>
             <BreadcrumbItem className="hidden sm:inline-flex">
-              <BreadcrumbLink render={<Link to="/workspaces" />}>
-                {t.nav.workspaces}
-              </BreadcrumbLink>
+              <BreadcrumbLink render={<Link to="/workspaces" />}>{t.nav.workspaces}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator className="hidden sm:inline-flex" />
             <BreadcrumbItem className="min-w-0">
@@ -233,11 +216,6 @@ export type AgentWorkspaceShellProps = {
   agentError?: unknown;
   onDismissAgentError?: () => void;
   recentRuns?: WikiRunListItem[];
-  showStopRun?: boolean;
-  onStopRun?: () => void;
-  runBusy?: boolean;
-  runNeedsOperator?: boolean;
-  runStateLabel?: string;
   sessionUsage?: SessionUsage | null;
   pageError?: unknown;
   onDismissPageError?: () => void;
@@ -253,8 +231,8 @@ const RESIZABLE_PANEL_FILL_STYLE = {
 } as const;
 
 function useWideDesktop() {
-  const [isWide, setIsWide] = useState(() =>
-    typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
+  const [isWide, setIsWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
   );
 
   useEffect(() => {
@@ -290,11 +268,6 @@ export function AgentWorkspaceShell({
   agentError,
   onDismissAgentError,
   recentRuns = [],
-  showStopRun = false,
-  onStopRun,
-  runBusy = false,
-  runNeedsOperator = false,
-  runStateLabel,
   sessionUsage = null,
   pageError,
   onDismissPageError,
@@ -302,29 +275,14 @@ export function AgentWorkspaceShell({
   className,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const runId = searchParams.get("run");
+  const { attemptId, runId, selectAttempt, selectRun } = useAgentWorkspaceRoute();
   const isMobile = useIsMobile();
   const isWideDesktop = useWideDesktop();
   const [cockpitOpen, setCockpitOpen] = useState(false);
-  const rootPath = workspace?.rootPath;
 
   useEffect(() => {
-    if (searchParams.get("attempt")) setCockpitOpen(true);
-  }, [searchParams]);
-
-  const selectRun = (nextRunId: string) => {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        next.delete("rootPath");
-        next.set("run", nextRunId);
-        next.delete("attempt");
-        return next;
-      },
-      { replace: true },
-    );
-  };
+    if (attemptId) setCockpitOpen(true);
+  }, [attemptId]);
 
   const cockpitLabel = cockpitOpen ? t.runInspector.close : t.runInspector.open;
   const runControls = runId ? (
@@ -365,7 +323,8 @@ export function AgentWorkspaceShell({
       <div className="shrink-0" data-testid="agent-action-dock">
         <ActiveRunBar
           workspaceId={workspaceId}
-          rootPath={rootPath}
+          runId={runId}
+          onSelectRun={selectRun}
           recentRuns={recentRuns}
           graphOpen={cockpitOpen}
           onGraphOpenChange={setCockpitOpen}
@@ -381,11 +340,6 @@ export function AgentWorkspaceShell({
           disabled={!activeSessionId || !agentReady}
           modelProfileId={workspace?.model.profileId}
           onSetModel={onSetModel}
-          showStopRun={showStopRun}
-          onStopRun={onStopRun}
-          runBusy={runBusy}
-          runNeedsOperator={runNeedsOperator}
-          runStateLabel={runStateLabel}
           sessionUsage={sessionUsage}
         />
       </div>
@@ -393,14 +347,13 @@ export function AgentWorkspaceShell({
   );
 
   const cockpit = (
-    <div
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
-      data-testid="active-run-details"
-    >
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-testid="active-run-details">
       <RunCockpit
         key={runId}
         workspaceId={workspaceId}
-        rootPath={rootPath}
+        runId={runId}
+        attemptId={attemptId}
+        onSelectAttempt={selectAttempt}
         onClose={() => setCockpitOpen(false)}
       />
     </div>
@@ -441,10 +394,7 @@ export function AgentWorkspaceShell({
         ) : null}
 
         {isWideDesktop && cockpitOpen && runId ? (
-          <ResizablePanelGroup
-            orientation="horizontal"
-            className="min-h-0 min-w-0 flex-1"
-          >
+          <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
             {/*
               v4 Panel paints overflow:auto on its inner wrapper and is not a
               flex column. Override so children can use h-full/flex-1, the
@@ -491,7 +441,10 @@ export function AgentWorkspaceShell({
 
       {!isWideDesktop && cockpitOpen && runId && isMobile ? (
         <Drawer open={cockpitOpen} onOpenChange={setCockpitOpen} showSwipeHandle>
-          <DrawerContent className="pb-[env(safe-area-inset-bottom)]" data-testid="run-cockpit-drawer">
+          <DrawerContent
+            className="pb-[env(safe-area-inset-bottom)]"
+            data-testid="run-cockpit-drawer"
+          >
             <DrawerHeader className="sr-only">
               <DrawerTitle>{t.runInspector.title}</DrawerTitle>
             </DrawerHeader>

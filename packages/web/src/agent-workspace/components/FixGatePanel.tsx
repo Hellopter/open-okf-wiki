@@ -5,18 +5,23 @@
  * Dispatches ResolveGate via parent using buildFixGateResolveCommand.
  */
 
-import type { FixGateDecision, MergedDefectReport, WikiRunGate, WikiRunSnapshot } from "@okf-wiki/contract";
+import type {
+  FixGateDecision,
+  MergedDefectReport,
+  WikiRunGate,
+  WikiRunSnapshot,
+} from "@okf-wiki/contract";
 import { useMemo, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { InputGroup, InputGroupTextarea } from "@/components/ui/input-group";
 import { useI18n } from "../../i18n";
 import {
   buildFixGateResolveCommand,
-  fixGateContextFromSnapshot,
   type FixGateDefectHint,
+  fixGateContextFromSnapshot,
 } from "./fix-gate";
 
 export type FixGatePanelProps = {
@@ -116,10 +121,7 @@ export function FixGatePanel({
       )}
 
       {context.defects.length > 0 ? (
-        <ul
-          className="flex max-h-48 flex-col gap-1 overflow-y-auto"
-          data-testid="fix-gate-defects"
-        >
+        <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto" data-testid="fix-gate-defects">
           {context.defects.map((defect, index) => (
             <li
               key={`${defect.path ?? ""}-${defect.code ?? ""}-${index}`}

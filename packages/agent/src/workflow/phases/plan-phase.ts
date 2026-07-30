@@ -90,7 +90,6 @@ export type PlanWikiSpecInput = {
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   operatorNotes?: string;
-  priorSpec?: WikiRunSpec;
   revisionFeedback?: string;
   /** Orchestration budgets (planScoutCount, …). */
   orchestration?: WorkspaceOrchestration;
@@ -124,13 +123,12 @@ export type PlanWikiSpecResult = {
 
 /**
  * Plan a WikiRunSpec. Fixture runtime → default Spec; live → optional scouts + planner.
- * Does not commit Spec to living analysis/spec.json — caller owns commitSpec.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
   const store = input.store ?? defaultSpecStore;
 
   if (input.runtime.kind === "fixture") {
-    const spec = input.priorSpec ?? defaultWikiRunSpec(input.workspaceName);
+    const spec = defaultWikiRunSpec(input.workspaceName);
     const draftPath = await store.writePlanDraft(input.layout.runWorkDir, spec);
     const items: AttemptItem[] = [
       {
@@ -185,12 +183,10 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     wikiLanguage: input.wikiLanguage,
     operatorNotes: input.operatorNotes,
   });
-  const revisionPrompt = input.priorSpec
+  const revisionPrompt = input.revisionFeedback?.trim()
     ? [
-        "Revise the existing WikiRunSpec after re-reading the frozen sources.",
-        `Operator feedback: ${input.revisionFeedback?.trim() || "Re-evaluate the Spec."}`,
-        "Existing WikiRunSpec:",
-        JSON.stringify(input.priorSpec),
+        "Produce a fresh WikiRunSpec after re-reading the frozen sources.",
+        `Operator feedback: ${input.revisionFeedback.trim()}`,
       ].join("\n\n")
     : "";
 

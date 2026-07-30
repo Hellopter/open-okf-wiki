@@ -25,7 +25,6 @@ async function makeLayout(root: string) {
 }
 
 const orch = (partial: Partial<WorkspaceOrchestration> = {}): WorkspaceOrchestration => ({
-  maxDepth: 2,
   maxDomainFanOut: 4,
   maxLeafFanOut: 6,
   reviewCouncilSize: 3,

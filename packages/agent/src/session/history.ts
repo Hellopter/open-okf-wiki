@@ -16,38 +16,11 @@ import {
   type SessionManager,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import {
-  type AgentMessage,
-  projectAgentMessagesFromPiHistory,
-  projectWikiProduceDetailsForHistory,
-} from "@okf-wiki/contract";
-
-/**
- * Operator-facing history projection of one Pi message.
- * Clones wiki_produce toolResult.details to a durable (lean) shape; does not
- * mutate SessionManager-owned objects.
- */
-export function projectOperatorHistoryMessage(message: Message): Message {
-  if (!message || typeof message !== "object") return message;
-  const row = message as Message & {
-    role?: string;
-    toolName?: string;
-    details?: unknown;
-  };
-  if (row.role !== "toolResult") return message;
-  // Always project: projectWikiProduceDetailsForHistory no-ops unless status is a wiki_produce status.
-  if (!("details" in row) || row.details == null) return message;
-  const projected = projectWikiProduceDetailsForHistory(row.details);
-  if (projected === row.details) return message;
-  return { ...row, details: projected } as Message;
-}
+import { type AgentMessage, projectAgentMessagesFromPiHistory } from "@okf-wiki/contract";
 
 function projectEntries(manager: SessionManager, mode: "branch" | "context"): Message[] {
-  const entries =
-    mode === "branch" ? manager.getBranch() : manager.buildContextEntries();
-  return entries
-    .flatMap((entry) => sessionEntryToContextMessages(entry) as Message[])
-    .map((message) => projectOperatorHistoryMessage(message));
+  const entries = mode === "branch" ? manager.getBranch() : manager.buildContextEntries();
+  return entries.flatMap((entry) => sessionEntryToContextMessages(entry) as Message[]);
 }
 
 /**

@@ -11,27 +11,24 @@
  */
 
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { AgentWorkbench, AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
-import {
-  type ActiveRunChrome,
-  deriveOperatorChrome,
-  TERMINAL_WIKI_RUN_STATES,
-} from "../agent-workspace/hooks/derive-operator-chrome";
-import {
-  WikiRunProjectionProvider,
-  useWikiRunProjection,
-} from "../agent-workspace/hooks/WikiRunProjectionContext";
+import { isTerminalWikiRunState } from "../agent-workspace/components/run-actions";
+import { removeSessionSelection } from "../agent-workspace/hooks/session-delete";
+import { useAgentWorkspaceRoute } from "../agent-workspace/hooks/useAgentWorkspaceRoute";
 import { useSessionAgent } from "../agent-workspace/hooks/useSessionAgent";
-import { openGatesFromSnapshot } from "../agent-workspace/run-graph/wiki-run-view-model";
+import {
+  useWikiRunProjection,
+  WikiRunProjectionProvider,
+} from "../agent-workspace/hooks/WikiRunProjectionContext";
+import { reconcileAcceptedReceipt } from "../agent-workspace/hooks/workspace-route";
 import {
   createAgentSession,
   deleteAgentSession,
-  dispatchWikiRunCommand,
   getWorkspace,
   listAgentSessions,
   listRuns,
@@ -46,10 +43,12 @@ import { useI18n } from "../i18n";
 export function AgentWorkspacePage() {
   const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
-  const [searchParams, setSearchParams] = useSearchParams();
-
-  const urlRun = searchParams.get("run");
-  const urlSessionId = searchParams.get("sessionId");
+  const {
+    runId: activeRunId,
+    sessionId: urlSessionId,
+    focusRun,
+    selectSession,
+  } = useAgentWorkspaceRoute();
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [sessions, setSessions] = useState<PiSessionSummary[]>([]);
@@ -63,6 +62,10 @@ export function AgentWorkspacePage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const bootKeyRef = useRef<string | null>(null);
+  const sessionsRef = useRef(sessions);
+  const activeSessionIdRef = useRef(activeSessionId);
+  sessionsRef.current = sessions;
+  activeSessionIdRef.current = activeSessionId;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -71,27 +74,21 @@ export function AgentWorkspacePage() {
     };
   }, []);
 
-  // rootPath is for API optional args only — never required in the URL.
-  const rootPath = workspace?.rootPath;
-
   const agent = useSessionAgent({
     workspaceId: id,
     sessionId: activeSessionId,
-    rootPath,
   });
 
-  const activeRunId = urlRun;
-
   const refreshRecentRuns = useCallback(async () => {
-    if (!id || !rootPath) return;
+    if (!id) return;
     try {
-      const runsRes = await listRuns(id, rootPath);
+      const runsRes = await listRuns(id);
       if (!mountedRef.current) return;
       setRecentRuns(runsRes.runs ?? []);
     } catch {
       // best-effort list refresh — not control authority
     }
-  }, [id, rootPath]);
+  }, [id]);
 
   // Event-driven recentRuns refresh: activeRunId change (new produce / clear).
   const prevActiveRunIdRef = useRef<string | null | undefined>(undefined);
@@ -121,18 +118,9 @@ export function AgentWorkspacePage() {
       // A stale Agent page must not navigate the now-current page back to /w/:id.
       const agentPath = `/w/${encodeURIComponent(id)}`;
       if (!mountedRef.current || window.location.pathname !== agentPath) return;
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          // Drop legacy rootPath query if present; navigation is id-only.
-          next.delete("rootPath");
-          next.set("sessionId", sessionId);
-          return next;
-        },
-        { replace: true },
-      );
+      selectSession(sessionId);
     },
-    [id, setSearchParams],
+    [id, selectSession],
   );
 
   /**
@@ -143,41 +131,19 @@ export function AgentWorkspacePage() {
     (runId: string, attemptId?: string | null) => {
       const agentPath = `/w/${encodeURIComponent(id)}`;
       if (!mountedRef.current || window.location.pathname !== agentPath) return;
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          next.delete("rootPath");
-          if (prev.get("run") === runId) {
-            if (attemptId) {
-              if (prev.get("attempt") === attemptId) return prev;
-              next.set("attempt", attemptId);
-              return next;
-            }
-            if (!prev.has("attempt")) return prev;
-            next.delete("attempt");
-            return next;
-          }
-          next.set("run", runId);
-          if (attemptId) next.set("attempt", attemptId);
-          else next.delete("attempt");
-          return next;
-        },
-        { replace: true },
-      );
+      focusRun(runId, attemptId);
     },
-    [id, setSearchParams],
+    [id, focusRun],
   );
 
-  // Receipt → URL only: a *new* accepted wiki_produce updates `run` (not control facts).
-  // Do not re-apply historical receipts over an operator-selected list run.
-  const lastReceiptRunIdRef = useRef<string | null>(null);
+  const receiptBaselineRef = useRef<string | null | undefined>(undefined);
 
   // Browser history and external links can change the selected Session after
   // boot. Keep the live Pi projection aligned with the validated URL state.
   useEffect(() => {
     if (loading || !urlSessionId || urlSessionId === activeSessionId) return;
     if (sessions.some((session) => session.id === urlSessionId)) {
-      lastReceiptRunIdRef.current = null;
+      activeSessionIdRef.current = urlSessionId;
       setActiveSessionId(urlSessionId);
       return;
     }
@@ -185,7 +151,10 @@ export function AgentWorkspacePage() {
   }, [activeSessionId, loading, sessions, syncSessionIdInUrl, urlSessionId]);
 
   useEffect(() => {
-    if (!agent.messages.length) return;
+    if (!agent.ready) {
+      receiptBaselineRef.current = undefined;
+      return;
+    }
     let latestAccepted: string | null = null;
     for (let i = agent.messages.length - 1; i >= 0; i--) {
       const msg = agent.messages[i]!;
@@ -201,13 +170,10 @@ export function AgentWorkspacePage() {
       }
       if (latestAccepted) break;
     }
-    if (!latestAccepted) return;
-    if (lastReceiptRunIdRef.current === latestAccepted) return;
-    lastReceiptRunIdRef.current = latestAccepted;
-    if (latestAccepted !== urlRun) {
-      syncRunIdInUrl(latestAccepted);
-    }
-  }, [agent.messages, urlRun, syncRunIdInUrl]);
+    const next = reconcileAcceptedReceipt(receiptBaselineRef.current, latestAccepted);
+    receiptBaselineRef.current = next.seenRunId;
+    if (next.focusRunId) syncRunIdInUrl(next.focusRunId);
+  }, [agent.messages, agent.ready, syncRunIdInUrl]);
 
   const boot = useCallback(async () => {
     if (!id) return;
@@ -217,15 +183,14 @@ export function AgentWorkspacePage() {
       const wsRes = await getWorkspace(id);
       const ws = wsRes.workspace;
       setWorkspace(ws);
-      const root = ws.rootPath;
 
       const [sessRes, runsRes] = await Promise.all([
-        listAgentSessions(id, root),
-        listRuns(id, root).catch(() => ({ runs: [] as WikiRunListItem[] })),
+        listAgentSessions(id),
+        listRuns(id).catch(() => ({ runs: [] as WikiRunListItem[] })),
       ]);
 
       let list = sessRes.sessions ?? [];
-      let sessionId = searchParams.get("sessionId") ?? list[0]?.id ?? null;
+      let sessionId = urlSessionId ?? list[0]?.id ?? null;
 
       if (sessionId && !list.some((s) => s.id === sessionId)) {
         // URL id missing on disk — fall through to create/latest.
@@ -233,7 +198,7 @@ export function AgentWorkspacePage() {
       }
 
       if (!sessionId) {
-        const created = await createAgentSession(id, {}, root);
+        const created = await createAgentSession(id, {});
         list = [
           {
             id: created.session.id,
@@ -245,6 +210,8 @@ export function AgentWorkspacePage() {
         sessionId = created.session.id;
       }
 
+      sessionsRef.current = list;
+      activeSessionIdRef.current = sessionId;
       setSessions(list);
       setActiveSessionId(sessionId);
       setRecentRuns(runsRes.runs ?? []);
@@ -256,13 +223,13 @@ export function AgentWorkspacePage() {
     } finally {
       setLoading(false);
     }
-  }, [id, searchParams, syncSessionIdInUrl]);
+  }, [id, urlSessionId, syncSessionIdInUrl]);
 
   useEffect(() => {
     if (bootKeyRef.current === id) return;
     bootKeyRef.current = id;
     prevActiveRunIdRef.current = undefined;
-    lastReceiptRunIdRef.current = null;
+    receiptBaselineRef.current = undefined;
     void boot();
     // Boot once per workspace id (not on every sessionId write).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot boot
@@ -270,8 +237,8 @@ export function AgentWorkspacePage() {
 
   const handleSelectSession = useCallback(
     (sessionId: string) => {
+      activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
-      lastReceiptRunIdRef.current = null;
       syncSessionIdInUrl(sessionId);
     },
     [syncSessionIdInUrl],
@@ -282,17 +249,20 @@ export function AgentWorkspacePage() {
     setCreating(true);
     setBootError(null);
     try {
-      const created = await createAgentSession(
-        id,
-        { title: `Wiki Agent · ${workspace?.name ?? id}` },
-        rootPath,
-      );
+      const created = await createAgentSession(id, {
+        title: `Wiki Agent · ${workspace?.name ?? id}`,
+      });
       const summary: PiSessionSummary = {
         id: created.session.id,
         title: created.session.title,
         updatedAt: created.session.createdAt,
       };
-      setSessions((prev) => [summary, ...prev]);
+      setSessions((prev) => {
+        const next = [summary, ...prev];
+        sessionsRef.current = next;
+        return next;
+      });
+      activeSessionIdRef.current = created.session.id;
       setActiveSessionId(created.session.id);
       syncSessionIdInUrl(created.session.id);
     } catch (err) {
@@ -300,7 +270,7 @@ export function AgentWorkspacePage() {
     } finally {
       setCreating(false);
     }
-  }, [id, creating, workspace?.name, rootPath, syncSessionIdInUrl]);
+  }, [id, creating, workspace?.name, syncSessionIdInUrl]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -308,12 +278,15 @@ export function AgentWorkspacePage() {
       setDeletingId(sessionId);
       setBootError(null);
       try {
-        await deleteAgentSession(id, sessionId, rootPath);
-        let nextList = sessions.filter((s) => s.id !== sessionId);
-        let nextActive = activeSessionId === sessionId ? null : activeSessionId;
+        await deleteAgentSession(id, sessionId);
+        let { sessions: nextList, activeSessionId: nextActive } = removeSessionSelection(
+          sessionsRef.current,
+          sessionId,
+          activeSessionIdRef.current,
+        );
 
         if (nextList.length === 0) {
-          const created = await createAgentSession(id, {}, rootPath);
+          const created = await createAgentSession(id, {});
           nextList = [
             {
               id: created.session.id,
@@ -322,10 +295,10 @@ export function AgentWorkspacePage() {
             },
           ];
           nextActive = created.session.id;
-        } else if (!nextActive || !nextList.some((s) => s.id === nextActive)) {
-          nextActive = nextList[0]!.id;
         }
 
+        sessionsRef.current = nextList;
+        activeSessionIdRef.current = nextActive;
         setSessions(nextList);
         setActiveSessionId(nextActive);
         if (nextActive) syncSessionIdInUrl(nextActive);
@@ -335,7 +308,7 @@ export function AgentWorkspacePage() {
         setDeletingId(null);
       }
     },
-    [id, deletingId, rootPath, sessions, activeSessionId, syncSessionIdInUrl],
+    [id, deletingId, syncSessionIdInUrl],
   );
 
   // Refresh session list titles after first prompt auto-titles the active session.
@@ -343,11 +316,11 @@ export function AgentWorkspacePage() {
   const activeTitleLooksDefault = activeListTitle === `Wiki Agent · ${workspace?.name ?? id}`;
   const userMessageCount = agent.messages.filter((m) => m.role === "user").length;
   useEffect(() => {
-    if (!id || !activeSessionId || !rootPath) return;
+    if (!id || !activeSessionId) return;
     if (userMessageCount < 1 || !activeTitleLooksDefault) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void listAgentSessions(id, rootPath)
+      void listAgentSessions(id)
         .then((res) => {
           if (cancelled) return;
           setSessions(res.sessions ?? []);
@@ -360,7 +333,7 @@ export function AgentWorkspacePage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [id, activeSessionId, rootPath, userMessageCount, activeTitleLooksDefault]);
+  }, [id, activeSessionId, userMessageCount, activeTitleLooksDefault]);
 
   const [savingPlanConfirm, setSavingPlanConfirm] = useState(false);
   const planConfirmOn = workspace?.planConfirm === true;
@@ -369,7 +342,7 @@ export function AgentWorkspacePage() {
       if (!workspace || savingPlanConfirm) return;
       setSavingPlanConfirm(true);
       try {
-        const result = await patchWorkspace(id, { planConfirm: next }, workspace.rootPath);
+        const result = await patchWorkspace(id, { planConfirm: next });
         setWorkspace(result.workspace);
         toast.success(next ? t.agentWorkspace.planConfirmOn : t.agentWorkspace.planConfirmOff);
       } catch (err) {
@@ -421,10 +394,9 @@ export function AgentWorkspacePage() {
   }
 
   return (
-    <WikiRunProjectionProvider workspaceId={id} rootPath={rootPath} runId={activeRunId}>
+    <WikiRunProjectionProvider workspaceId={id} runId={activeRunId}>
       <AgentWorkspaceShellWithRunChrome
         workspaceId={id}
-        rootPath={rootPath}
         workspace={workspace}
         sessions={sessions}
         activeSessionId={activeSessionId}
@@ -447,7 +419,6 @@ export function AgentWorkspacePage() {
 
 type AgentWorkspaceShellWithRunChromeProps = {
   workspaceId: string;
-  rootPath?: string;
   workspace: WorkspaceConfig;
   sessions: PiSessionSummary[];
   activeSessionId: string | null;
@@ -472,7 +443,6 @@ type AgentWorkspaceShellWithRunChromeProps = {
  */
 function AgentWorkspaceShellWithRunChrome({
   workspaceId,
-  rootPath,
   workspace,
   sessions,
   activeSessionId,
@@ -496,7 +466,7 @@ function AgentWorkspaceShellWithRunChrome({
   useEffect(() => {
     const snap = projection.snapshot;
     if (!snap || snap.runId !== activeRunId) return;
-    if (!TERMINAL_WIKI_RUN_STATES.has(snap.state)) {
+    if (!isTerminalWikiRunState(snap.state)) {
       terminalRefreshKeyRef.current = null;
       return;
     }
@@ -505,51 +475,6 @@ function AgentWorkspaceShellWithRunChrome({
     terminalRefreshKeyRef.current = key;
     void onRefreshRecentRuns();
   }, [projection.snapshot, activeRunId, onRefreshRecentRuns]);
-
-  const activeRunChrome: ActiveRunChrome | null = useMemo(() => {
-    if (!activeRunId) return null;
-    const snapshot =
-      projection.snapshot?.runId === activeRunId ? projection.snapshot : null;
-    if (snapshot) {
-      return {
-        runId: activeRunId,
-        state: snapshot.state,
-        openGateKinds: openGatesFromSnapshot(snapshot).map((gate) => gate.kind),
-        hasRunningAttempt: snapshot.attempts.some((attempt) => attempt.state === "running"),
-      };
-    }
-    const listed = recentRuns.find((run) => run.runId === activeRunId);
-    if (listed) {
-      return { runId: activeRunId, state: listed.state };
-    }
-    // Receipt accepted but list/snapshot not yet loaded — treat as queued so Stop run appears.
-    return { runId: activeRunId, state: "queued" };
-  }, [activeRunId, projection.snapshot, recentRuns]);
-
-  const operatorChrome = useMemo(
-    () =>
-      deriveOperatorChrome({
-        sessionStatus: agent.status,
-        activeRun: activeRunChrome,
-      }),
-    [agent.status, activeRunChrome],
-  );
-
-  const handleStopRun = useCallback(() => {
-    if (!workspaceId || !activeRunId) return;
-    void dispatchWikiRunCommand(
-      workspaceId,
-      {
-        type: "cancel_run",
-        commandId: crypto.randomUUID(),
-        runId: activeRunId,
-      },
-      rootPath,
-    ).catch((err) => {
-      // Surface as a toast; Run SSE will still advance if cancel eventually applies.
-      toast.error(err instanceof Error ? err.message : String(err));
-    });
-  }, [workspaceId, activeRunId, rootPath]);
 
   return (
     <AgentWorkspaceShell
@@ -574,11 +499,6 @@ function AgentWorkspaceShellWithRunChrome({
       agentError={agent.error}
       onDismissAgentError={agent.clearError}
       recentRuns={recentRuns}
-      showStopRun={operatorChrome.showStopRun}
-      onStopRun={handleStopRun}
-      runBusy={operatorChrome.runBusy}
-      runNeedsOperator={operatorChrome.runNeedsOperator}
-      runStateLabel={operatorChrome.runStatusLabel}
       sessionUsage={agent.sessionUsage}
       pageError={pageError}
       onDismissPageError={onDismissPageError}

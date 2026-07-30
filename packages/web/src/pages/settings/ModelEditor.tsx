@@ -68,7 +68,9 @@ export function ModelEditor({
               <FieldDescription>{t.globalSettings.modelIdHint}</FieldDescription>
             </Field>
             <Field>
-              <FieldLabel htmlFor="model-max-context">{t.globalSettings.maxContextTokens}</FieldLabel>
+              <FieldLabel htmlFor="model-max-context">
+                {t.globalSettings.maxContextTokens}
+              </FieldLabel>
               <Input
                 id="model-max-context"
                 type="number"

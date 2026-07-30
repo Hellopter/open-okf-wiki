@@ -3,15 +3,11 @@
  */
 
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import {
-  defaultWikiRunSpec,
-  type PiAttemptInput,
-  type PiAttemptOutcome,
-} from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type PiAttemptInput, type PiAttemptOutcome } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
 import { repairNodeKey } from "../repair-schedule.js";
 import {
@@ -77,9 +73,9 @@ async function writeSucceeded(
 }
 
 /** One seat emits blocking defects; others clean. */
-function blockingSeatExecutor(
-  options?: { maxRepairRounds?: number },
-): (input: PiAttemptInput, signal: AbortSignal) => Promise<PiAttemptOutcome> {
+function blockingSeatExecutor(options?: {
+  maxRepairRounds?: number;
+}): (input: PiAttemptInput, signal: AbortSignal) => Promise<PiAttemptOutcome> {
   let blockingEmitted = false;
   return async (input, signal) => {
     if (input.node.kind === "plan") {
@@ -180,7 +176,7 @@ test("definition materializes gate.fix between review.reduce and validate.final"
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-def-fix" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-def-fix", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-def-fix");
@@ -198,7 +194,7 @@ test("review.reduce with blocking seats succeeds and opens fix gate", async (t) 
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-open" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-fix-open", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-open");
@@ -207,10 +203,7 @@ test("review.reduce with blocking seats succeeds and opens fix gate", async (t) 
   const fixGate = atFix.snapshot.gates.find((g) => g.kind === "fix" && g.state === "open");
   assert.ok(fixGate, "expected open fix gate after blocking review.reduce");
   assert.equal(fixGate.nodeKey, "gate.fix");
-  assert.equal(
-    atFix.snapshot.nodes.find((n) => n.key === "gate.fix")?.state,
-    "waiting",
-  );
+  assert.equal(atFix.snapshot.nodes.find((n) => n.key === "gate.fix")?.state, "waiting");
 
   const reduce = atFix.snapshot.nodes.find((n) => n.key === "review.reduce");
   assert.equal(reduce?.state, "succeeded", "review.reduce must succeed with sealed defects");
@@ -234,7 +227,7 @@ test("resolve fix pass unlocks validate.final path toward publication", async (t
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-pass" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-fix-pass", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-pass");
@@ -258,10 +251,7 @@ test("resolve fix pass unlocks validate.final path toward publication", async (t
   const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 60_000);
   const pubGate = atPub.snapshot.gates.find((g) => g.kind === "publication" && g.state === "open");
   assert.ok(pubGate, "pass should advance to publication gate");
-  assert.equal(
-    atPub.snapshot.gates.find((g) => g.gateId === fixGate.gateId)?.state,
-    "resolved",
-  );
+  assert.equal(atPub.snapshot.gates.find((g) => g.gateId === fixGate.gateId)?.state, "resolved");
   assert.equal(
     atPub.snapshot.gates.find((g) => g.gateId === fixGate.gateId)?.decision?.decision,
     "pass",
@@ -395,7 +385,7 @@ test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-budget0" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-fix-budget0", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-budget0");
@@ -422,10 +412,7 @@ test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
 
   // Gate must remain open after rejected fix (transaction rolled back).
   const stillOpen = (await runs.read({ runId: receipt.runId })).snapshot;
-  assert.equal(
-    stillOpen.gates.find((g) => g.gateId === fixGate.gateId)?.state,
-    "open",
-  );
+  assert.equal(stillOpen.gates.find((g) => g.gateId === fixGate.gateId)?.state, "open");
 
   await runs.dispatch(
     {
@@ -453,7 +440,7 @@ test("clean review auto-passes gate.fix (no HITL) and reaches publication", asyn
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-clean" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-fix-clean", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-clean");
@@ -571,7 +558,7 @@ test("resolve fix deny marks run failed", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-deny" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-fix-deny", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-deny");

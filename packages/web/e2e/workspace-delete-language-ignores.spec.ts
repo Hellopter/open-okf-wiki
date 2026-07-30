@@ -36,7 +36,12 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
     await expect(page.getByTestId("settings-page")).toBeVisible();
     await chooseOption(page, "settings-wiki-language", /Chinese|中文/i);
     await page.getByTestId("settings-save").click();
-    await expect(page.getByRole("status")).toContainText(/saved|已保存/i);
+    await expect(
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: /saved|已保存/i })
+        .first(),
+    ).toBeVisible();
 
     await page.reload();
     await expect(page.getByTestId("settings-wiki-language")).toHaveAttribute("data-value", "zh");

@@ -24,17 +24,76 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
   const root = await mkdtemp(path.join(tmpdir(), "okf-pi-attempt-"));
   const sources = path.join(root, "sealed-sources");
   const skill = path.join(root, "sealed-skill");
+  const manifest = path.join(root, "sealed-manifest");
+  const executionPlan = path.join(root, "sealed-execution-plan");
+  const research = path.join(root, "sealed-research");
+  const reviewSpec = path.join(root, "sealed-review-spec");
   const attemptDir = path.join(root, "attempts", "attempt-1");
   await mkdir(sources, { recursive: true });
   await mkdir(skill, { recursive: true });
+  await mkdir(manifest, { recursive: true });
+  await mkdir(executionPlan, { recursive: true });
+  await mkdir(research, { recursive: true });
   await writeFile(path.join(sources, "README.md"), "# Demo\n", "utf8");
   await writeFile(path.join(skill, "SKILL.md"), "# Skill\n", "utf8");
+  await writeFile(
+    path.join(manifest, "frozen-run-manifest.json"),
+    `${JSON.stringify({
+      version: 2,
+      intent: { mode: "generate" },
+      mode: "generate",
+      intentDigest: digest,
+      sources: [{ id: "main" }],
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(executionPlan, "execution-plan.json"),
+    `${JSON.stringify({
+      version: 2,
+      workUnits: [],
+      reductions: [],
+      reviewLenses: [],
+      budgets: { maxRepairRounds: 2, maxHardValidateRepairRounds: 0 },
+      fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+    })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(research, "receipt.json"),
+    `${JSON.stringify({
+      version: 1,
+      runId: "run-1",
+      nodeId: "research.leaf.core.1",
+      parentId: "research.domain.core",
+      attempt: 1,
+      status: "complete",
+      scope: "Repository entry points",
+      summary: "Entry points are documented.",
+      findings: ["Entry points are documented."],
+      evidence: [],
+      childReceipts: [],
+      openQuestions: [],
+    })}\n`,
+    "utf8",
+  );
+  if (node.kind === "review.seat") {
+    await mkdir(reviewSpec, { recursive: true });
+    await writeFile(
+      path.join(reviewSpec, "spec.json"),
+      `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`,
+      "utf8",
+    );
+  }
+  const requiresExecutionPlan =
+    node.kind === "research.leaf" || node.kind === "research.domain" || node.kind === "write.root";
   return PiAttemptInputSchema.parse({
     runId: "run-1",
     attemptId: "attempt-1",
     node,
     inputDigest: digest,
     workspace: {
+      version: 2,
       id: "workspace-1",
       name: "Demo",
       rootPath: root,
@@ -62,6 +121,43 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
         artifact: { artifactId: "skill", kind: "skill", digest, sealedAt: timestamp },
         readOnlyPath: skill,
       },
+      {
+        role: "frozen_run_manifest",
+        artifact: { artifactId: "manifest", kind: "manifest", digest, sealedAt: timestamp },
+        readOnlyPath: manifest,
+      },
+      ...(requiresExecutionPlan
+        ? [
+            {
+              role: "execution_plan",
+              artifact: {
+                artifactId: "execution-plan",
+                kind: "execution_plan",
+                digest,
+                sealedAt: timestamp,
+              },
+              readOnlyPath: executionPlan,
+            },
+          ]
+        : []),
+      ...(node.kind === "research.domain"
+        ? [
+            {
+              role: "research",
+              artifact: { artifactId: "research", kind: "receipt", digest, sealedAt: timestamp },
+              readOnlyPath: research,
+            },
+          ]
+        : []),
+      ...(node.kind === "review.seat"
+        ? [
+            {
+              role: "spec",
+              artifact: { artifactId: "review-spec", kind: "spec", digest, sealedAt: timestamp },
+              readOnlyPath: reviewSpec,
+            },
+          ]
+        : []),
     ],
     attemptDir,
     workDir: path.join(attemptDir, "work"),
@@ -86,6 +182,27 @@ async function cleanup(input: PiAttemptInput): Promise<void> {
   const root = path.dirname(path.dirname(input.attemptDir));
   await unlock(root);
   await rm(root, { recursive: true, force: true });
+}
+
+async function addRepairInputs(input: PiAttemptInput): Promise<void> {
+  const root = path.dirname(path.dirname(input.attemptDir));
+  const wikiRoot = path.join(root, "sealed-wiki-repair-input");
+  const specPath = path.join(root, "sealed-spec-repair-input.json");
+  await mkdir(wikiRoot, { recursive: true });
+  await writeFile(path.join(wikiRoot, "overview.md"), "# Demo\n", "utf8");
+  await writeFile(specPath, `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`, "utf8");
+  input.sealedInputs.push(
+    {
+      role: "wiki_tree",
+      artifact: { artifactId: "wiki", kind: "wiki_tree", digest, sealedAt: timestamp },
+      readOnlyPath: wikiRoot,
+    },
+    {
+      role: "spec",
+      artifact: { artifactId: "spec", kind: "spec", digest, sealedAt: timestamp },
+      readOnlyPath: specPath,
+    },
+  );
 }
 
 test("Pi attempt fixture plan writes an unsealed canonical spec and transcript", async (t) => {
@@ -155,6 +272,7 @@ test("Pi attempt fixture root writer returns a private wiki tree", async (t) => 
   assert.equal(wiki.directory, true);
   await access(path.join(wiki.sourcePath, "overview.md"));
   await access(path.join(wiki.sourcePath, "index.md"));
+  await assert.rejects(() => access(path.join(input.workDir, "analysis", "spec.json")), /ENOENT/);
 });
 
 test("Pi attempt fixture research.leaf and research.domain return full AnalysisReceipt", async (t) => {
@@ -163,12 +281,24 @@ test("Pi attempt fixture research.leaf and research.domain return full AnalysisR
     kind: "research.leaf",
     generation: 0,
     runIndex: 1,
+    detail: {
+      domainId: "core",
+      questionIndex: 1,
+      question: "What is this repository for?",
+      scope: "Repository entry points",
+    },
   });
   const domain = await fixture({
     key: "research.domain.core",
     kind: "research.domain",
     generation: 0,
     runIndex: 1,
+    detail: {
+      domainId: "core",
+      title: "Core",
+      scope: "Repository entry points",
+      questions: ["What is this repository for?"],
+    },
   });
   t.after(() => Promise.all([cleanup(leaf), cleanup(domain)]).then(() => undefined));
   const executor = createPiAttemptExecutor({ fixture: true });
@@ -253,11 +383,21 @@ test("Pi attempt domain uses sealed questions array; repair appends feedback", a
   assert.ok(domainTranscript.includes("What are the main runtime boundaries?"));
 
   const repair = await fixture({
-    key: "repair",
+    key: "repair.1",
     kind: "repair",
     generation: 1,
     runIndex: 1,
-    detail: { feedback: "Fix broken citation on overview." },
+    detail: {
+      feedback: "Fix broken citation on overview.",
+      repairRequest: {
+        requestId: "repair:run-1:1",
+        baselineCandidateId: "write.root",
+        round: 1,
+        sources: ["semantic"],
+        issues: [{ kind: "semantic", message: "Fix broken citation on overview." }],
+        scope: { pages: ["overview.md"], mode: "patch" },
+      },
+    },
   });
   t.after(() => cleanup(repair));
   const wikiRoot = path.join(path.dirname(path.dirname(repair.attemptDir)), "sealed-wiki-repair");
@@ -267,7 +407,10 @@ test("Pi attempt domain uses sealed questions array; repair appends feedback", a
     "---\ntype: Overview\ntitle: Demo\n---\n\n# Demo\n",
     "utf8",
   );
-  const specPath = path.join(path.dirname(path.dirname(repair.attemptDir)), "sealed-spec-repair.json");
+  const specPath = path.join(
+    path.dirname(path.dirname(repair.attemptDir)),
+    "sealed-spec-repair.json",
+  );
   await writeFile(specPath, `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`, "utf8");
   repair.sealedInputs.push(
     {
@@ -369,6 +512,50 @@ test("Pi attempt repair with detail.repairRequest leads task with scope pages", 
   assert.ok(capturedTask.includes("Operator feedback: Hard-validate repair"));
 });
 
+test("Pi attempt repair rejects missing or invalid detail.repairRequest", async (t) => {
+  const missing = await fixture({
+    key: "repair.1",
+    kind: "repair",
+    generation: 0,
+    runIndex: 1,
+    detail: { feedback: "Fix the broken citation." },
+  });
+  const invalid = await fixture({
+    key: "repair.1",
+    kind: "repair",
+    generation: 0,
+    runIndex: 1,
+    detail: {
+      repairRequest: {
+        requestId: "repair:run-1:1",
+        baselineCandidateId: "write.root",
+        round: 1,
+        sources: ["semantic"],
+        issues: [],
+        scope: { pages: ["overview.md"], mode: "patch" },
+      },
+    },
+  });
+  t.after(() => Promise.all([cleanup(missing), cleanup(invalid)]).then(() => undefined));
+  await Promise.all([addRepairInputs(missing), addRepairInputs(invalid)]);
+
+  const missingOutcome = await createPiAttemptExecutor({ fixture: true })(
+    missing,
+    new AbortController().signal,
+  );
+  assert.equal(missingOutcome.type, "failed");
+  if (missingOutcome.type === "failed") {
+    assert.match(missingOutcome.error, /repair requires sealed detail\.repairRequest/);
+  }
+
+  (invalid.node.detail as { repairRequest?: unknown }).repairRequest = { requestId: "partial" };
+  const invalidOutcome = await createPiAttemptExecutor({ fixture: true })(
+    invalid,
+    new AbortController().signal,
+  );
+  assert.equal(invalidOutcome.type, "failed");
+});
+
 test("Pi attempt write.root with detail.feedback uses repair-style task", async (t) => {
   const input = await fixture({
     key: "write.root",
@@ -438,6 +625,7 @@ test("Pi attempt fixture review.seat needs wiki_tree and returns seat receipt", 
     kind: "review.seat",
     generation: 0,
     runIndex: 1,
+    detail: { lens: "grounding", seatIndex: 0 },
   });
   t.after(() => cleanup(input));
   const wikiRoot = path.join(path.dirname(path.dirname(input.attemptDir)), "sealed-wiki");
@@ -513,12 +701,24 @@ test("Pi attempt maps capacity and transport failures to typed failureClass", as
     kind: "research.leaf",
     generation: 0,
     runIndex: 1,
+    detail: {
+      domainId: "core",
+      questionIndex: 1,
+      question: "What is this repository for?",
+      scope: "Repository entry points",
+    },
   });
   const transportInput = await fixture({
     key: "research.leaf.core.2",
     kind: "research.leaf",
     generation: 0,
     runIndex: 1,
+    detail: {
+      domainId: "core",
+      questionIndex: 2,
+      question: "What are the main runtime boundaries?",
+      scope: "Repository entry points",
+    },
   });
   t.after(() =>
     Promise.all([cleanup(capacityInput), cleanup(transportInput)]).then(() => undefined),

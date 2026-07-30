@@ -15,10 +15,7 @@ import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wik
 import { createSessionStatusTool } from "../tools/session-status.js";
 import { type CreateWikiProduceToolInput, createWikiProduceTool } from "../tools/wiki-produce.js";
 import { type CreateWikiRepairToolInput, createWikiRepairTool } from "../tools/wiki-repair.js";
-import {
-  projectOperatorAgentMessages,
-  projectOperatorHistoryFromManager,
-} from "./history.js";
+import { projectOperatorAgentMessages, projectOperatorHistoryFromManager } from "./history.js";
 
 export {
   projectOperatorAgentMessages,
@@ -27,7 +24,6 @@ export {
   projectOperatorContextAgentMessagesFromManager,
   projectOperatorContextHistoryFromManager,
   projectOperatorHistoryFromManager,
-  projectOperatorHistoryMessage,
 } from "./history.js";
 
 /** Pi JSONL session tree root for a workspace. */

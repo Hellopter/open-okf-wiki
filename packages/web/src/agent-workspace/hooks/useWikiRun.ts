@@ -34,7 +34,6 @@ export {
 export type UseWikiRunArgs = {
   workspaceId: string;
   runId: string | null | undefined;
-  rootPath?: string;
   /** When false, do not open GET/SSE (e.g. no active runId). Default true. */
   enabled?: boolean;
 };
@@ -54,7 +53,6 @@ export type UseWikiRunResult = {
 export function useWikiRun({
   workspaceId,
   runId,
-  rootPath,
   enabled = true,
 }: UseWikiRunArgs): UseWikiRunResult {
   const [projection, setProjection] = useState<WikiRunProjection>(emptyWikiRunProjection);
@@ -73,7 +71,7 @@ export function useWikiRun({
    * Subscription identity — reset React state during render when it changes so
    * Gate/Inspector never paint the previous run for one frame (Batch 2 race).
    */
-  const subscriptionKey = `${enabled ? "1" : "0"}:${workspaceId}:${runId ?? ""}:${rootPath ?? ""}`;
+  const subscriptionKey = `${enabled ? "1" : "0"}:${workspaceId}:${runId ?? ""}`;
   const subscriptionKeyRef = useRef(subscriptionKey);
   if (subscriptionKeyRef.current !== subscriptionKey) {
     subscriptionKeyRef.current = subscriptionKey;
@@ -87,8 +85,8 @@ export function useWikiRun({
 
   const eventsUrl = useMemo(() => {
     if (!enabled || !runId || !workspaceId) return null;
-    return wikiRunEventsUrl(workspaceId, runId, rootPath);
-  }, [enabled, runId, workspaceId, rootPath]);
+    return wikiRunEventsUrl(workspaceId, runId);
+  }, [enabled, runId, workspaceId]);
 
   const publish = useCallback((next: WikiRunProjection) => {
     projectionRef.current = next;
@@ -118,7 +116,7 @@ export function useWikiRun({
     if (!enabled || !runId || !workspaceId) return;
     const epoch = epochRef.current;
     try {
-      const { snapshot, cursor } = await getWikiRun(workspaceId, runId, rootPath);
+      const { snapshot, cursor } = await getWikiRun(workspaceId, runId);
       applyFrame({ kind: "snapshot", cursor, snapshot }, epoch);
     } catch (error) {
       applyFrame(
@@ -129,7 +127,7 @@ export function useWikiRun({
         epoch,
       );
     }
-  }, [enabled, runId, workspaceId, rootPath, applyFrame]);
+  }, [enabled, runId, workspaceId, applyFrame]);
 
   useEffect(() => {
     eventSourceRef.current?.close();
@@ -152,7 +150,7 @@ export function useWikiRun({
     // GET first for immediate paint; SSE then replaces/advances by event id.
     void (async () => {
       try {
-        const { snapshot, cursor } = await getWikiRun(workspaceId, runId, rootPath);
+        const { snapshot, cursor } = await getWikiRun(workspaceId, runId);
         if (cancelled) return;
         applyFrame({ kind: "snapshot", cursor, snapshot }, epoch);
       } catch (error) {
@@ -205,7 +203,7 @@ export function useWikiRun({
       source.close();
       if (eventSourceRef.current === source) eventSourceRef.current = null;
     };
-  }, [eventsUrl, runId, workspaceId, rootPath, applyFrame, publish]);
+  }, [eventsUrl, runId, workspaceId, applyFrame, publish]);
 
   return {
     snapshot: projection.snapshot,

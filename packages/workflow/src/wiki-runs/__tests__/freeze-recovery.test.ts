@@ -4,21 +4,18 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
 import { loadWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { openWikiRuns, WorkflowInUseError } from "../../wiki-runs.js";
 import {
-  PLAN_PAYLOAD_DIGEST,
   assertFreezeAdvancedToPlan,
   context,
-  freezeAndPlanExecutor,
   makeWorkspace,
+  PLAN_PAYLOAD_DIGEST,
   removeWorkspace,
   seedOpenPlanGate,
   startChildOwner,
   stopChild,
   succeededPlan,
-  succeededProbe,
   waitForChildMessage,
   waitForTerminal,
 } from "./harness.js";
@@ -30,7 +27,7 @@ test("freeze pins real Git and Skill inputs", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-pin" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-pin", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const { snapshot } = await waitForTerminal(runs, receipt.runId);
@@ -77,7 +74,9 @@ test("Pi receives canonical sealed source and skill artifacts", async (t) => {
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({
     rootPath: root,
-    piAttemptExecutor: freezeAndPlanExecutor(async ({ skillPath, sourcePaths, workDir }) => {
+    piAttemptExecutor: async (input) => {
+      assert.equal(input.node.kind, "plan");
+      const { skillPath, sourcePaths } = input;
       const sourcePath = sourcePaths.main;
       assert.ok(sourcePath);
       assert.match(sourcePath, /\/artifacts\/snapshot_set-/);
@@ -96,12 +95,12 @@ test("Pi receives canonical sealed source and skill artifacts", async (t) => {
           .schema,
         1,
       );
-      return succeededProbe(workDir);
-    }),
+      return succeededPlan(input);
+    },
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-sealed-pi-inputs" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-sealed-pi-inputs", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const finished = await waitForTerminal(runs, receipt.runId);
@@ -117,19 +116,14 @@ test("a pre-pin freeze failure requires a new run instead of reusing mutable sel
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({
     rootPath: root,
-    // Fail only freeze; plan is never reached because freeze fails closed pre-pin.
-    piAttemptExecutor: async (input) => {
-      if (input.node.key === "plan") return succeededPlan(input);
-      return {
-        type: "failed",
-        error: "fixture Pi failure",
-        failureClass: "infrastructure",
-      } satisfies PiAttemptOutcome;
+    // Freeze is a Run Boundary operation. A pre-pin failure must not expose a Pi retry path.
+    freezeRunBoundary: async () => {
+      throw new Error("fixture freeze failure");
     },
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-unpinned" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-unpinned", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const result = await waitForTerminal(runs, receipt.runId);
@@ -157,11 +151,11 @@ test("same content is sealed as distinct run-scoped artifacts", async (t) => {
   const runs = await openWikiRuns({ rootPath: root });
   t.after(() => runs.close());
   const first = await runs.dispatch(
-    { type: "start_run", commandId: "same-content-1" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "same-content-1", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const second = await runs.dispatch(
-    { type: "start_run", commandId: "same-content-2" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "same-content-2", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const [firstFinished, secondFinished] = await Promise.all([
@@ -187,7 +181,7 @@ test("reopen adopts only a prepared, already sealed artifact", async (t) => {
   t.after(() => removeWorkspace(root));
   const owner = await openWikiRuns({ rootPath: root });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-recover-seal" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-recover-seal", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const completed = await waitForTerminal(owner, receipt.runId);
@@ -225,71 +219,12 @@ test("reopen adopts only a prepared, already sealed artifact", async (t) => {
   );
 });
 
-test("recovery pins Run Boundary metadata even when Pi tampers sealed attempt output", async (t) => {
-  const { root, workspaceId } = await makeWorkspace();
-  t.after(() => removeWorkspace(root));
-  const owner = await openWikiRuns({
-    rootPath: root,
-    piAttemptExecutor: freezeAndPlanExecutor(async ({ workDir }) => {
-      await writeFile(
-        path.join(workDir, "freeze-inputs.json"),
-        `${JSON.stringify({
-          skillDigest: "c".repeat(64),
-          sources: [{ id: "forged", revision: "d".repeat(40), effectiveIgnores: [] }],
-        })}\n`,
-        "utf8",
-      );
-      return succeededProbe(workDir);
-    }),
-  });
-  const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-recover-tampered-output" , intent: { mode: "generate" } },
-    context(workspaceId),
-  );
-  const completed = await waitForTerminal(owner, receipt.runId);
-  const attempt = completed.snapshot.attempts.find((row) => row.nodeKey === "freeze")!;
-  const expectedInputs = completed.snapshot.pinnedInputs;
-  assert.ok(expectedInputs);
-  assert.ok(attempt);
-  await owner.close();
-
-  // Model a crash after every artifact was sealed but before the final DB CAS.
-  const db = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
-  db.exec("PRAGMA foreign_keys=ON");
-  // Drop plan lineage first so freeze artifact DELETE is not blocked by attempt_inputs FK.
-  db.prepare(
-    "DELETE FROM attempt_inputs WHERE attempt_id IN (SELECT attempt_id FROM attempts WHERE run_id = ?)",
-  ).run(receipt.runId);
-  db.prepare("DELETE FROM node_outputs WHERE run_id = ?").run(receipt.runId);
-  db.prepare("DELETE FROM artifacts WHERE run_id = ?").run(receipt.runId);
-  db.prepare("UPDATE artifact_preparations SET state = 'prepared' WHERE attempt_id = ?").run(
-    attempt.attemptId,
-  );
-  db.prepare("UPDATE attempts SET state = 'running', ended_at = NULL WHERE attempt_id = ?").run(
-    attempt.attemptId,
-  );
-  db.prepare(
-    "UPDATE nodes SET state = 'running', current_attempt_id = ? WHERE run_id = ? AND node_key = 'freeze' AND generation = 0",
-  ).run(attempt.attemptId, receipt.runId);
-  db.prepare(
-    "UPDATE runs SET state = 'running', pinned_sources_json = NULL, skill_digest = NULL, pinned_digest = NULL WHERE run_id = ?",
-  ).run(receipt.runId);
-  db.close();
-
-  const reopened = await openWikiRuns({ rootPath: root });
-  t.after(() => reopened.close());
-  const recovered = await reopened.read({ runId: receipt.runId });
-  assert.deepEqual(recovered.snapshot.pinnedInputs, expectedInputs);
-  assert.equal(recovered.snapshot.pinnedInputs?.sources[0]?.id, "main");
-  assert.notEqual(recovered.snapshot.pinnedInputs?.skillDigest, "c".repeat(64));
-});
-
 test("recovery rejects a tampered sealed input artifact", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   const owner = await openWikiRuns({ rootPath: root });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-recover-tampered-input" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-recover-tampered-input", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const completed = await waitForTerminal(owner, receipt.runId);
@@ -364,7 +299,7 @@ test("close interrupts a claimed freeze and reopen never accepts its late comple
   t.after(() => removeWorkspace(root));
   const owner = await openWikiRuns({ rootPath: root });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-close" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-close", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await owner.close();
@@ -387,7 +322,7 @@ test("freeze recovery uses its Run snapshot and removes unpinned residual work",
 
   const owner = await openWikiRuns({ rootPath: root });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-retry" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-retry", intent: { mode: "generate" } },
     context(workspaceId),
   );
   assert.equal((await waitForTerminal(owner, receipt.runId)).snapshot.state, "failed");
@@ -438,7 +373,7 @@ test("reopen preserves open gates and does not withdraw them", async (t) => {
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-preserve-gate" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-preserve-gate", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await waitForTerminal(runs, receipt.runId);
@@ -460,7 +395,7 @@ test("recovery marks applying effects unknown without withdrawing open gates", a
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-effect-unknown" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-effect-unknown", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await waitForTerminal(runs, receipt.runId);

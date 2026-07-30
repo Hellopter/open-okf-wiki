@@ -6,11 +6,19 @@ import { createSessionStatusTool, SESSION_STATUS_TOOL_NAME } from "./session-sta
 describe("session_status tool", () => {
   it("reports context budget and sources without starting a run", async () => {
     const workspace = WorkspaceConfigSchema.parse({
-      version: 1,
+      version: 2,
       id: "ws-status",
       name: "Status WS",
       rootPath: "/tmp/ws",
-      sources: [{ id: "main", path: "/tmp/src", applyDefaultIgnores: true, ignore: [] }],
+      sources: [
+        {
+          id: "main",
+          path: "/tmp/src",
+          applyDefaultIgnores: true,
+          ignore: [],
+          origin: { type: "path" },
+        },
+      ],
       model: { id: "openai/gpt-test" },
       publicationPath: "/tmp/wiki",
       limits: { requestTimeoutSeconds: 60, contextTargetTokens: 50_000 },
@@ -44,7 +52,7 @@ describe("session_status tool", () => {
 
   it("reports planConfirm ON by default, matching the run gate default", async () => {
     const workspace = WorkspaceConfigSchema.parse({
-      version: 1,
+      version: 2,
       id: "ws-status-default",
       name: "Status WS",
       rootPath: "/tmp/ws",

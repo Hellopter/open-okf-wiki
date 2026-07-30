@@ -238,9 +238,7 @@ export function ProviderEditor({
             </div>
             {testResult ? (
               <div
-                className={
-                  testResult.ok ? "provider-test-result ok" : "provider-test-result fail"
-                }
+                className={testResult.ok ? "provider-test-result ok" : "provider-test-result fail"}
                 data-testid="provider-test-result"
                 role="status"
               >

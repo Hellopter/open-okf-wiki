@@ -16,18 +16,14 @@ import {
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
-import {
-  baselineWikiForRepair,
-  parseRepairRound,
-  upstreamSealedOutputs,
-} from "../artifacts.js";
+import { baselineWikiForRepair, parseRepairRound, upstreamSealedOutputs } from "../artifacts.js";
 import {
   countRepairsBySource,
-  MECHANICAL_REPAIR_FEEDBACK_PREFIX,
   isRepairNodeKey,
+  MECHANICAL_REPAIR_FEEDBACK_PREFIX,
   REPAIR_NODE_PREFIX,
-  repairNodeKey,
   type RepairScheduleHost,
+  repairNodeKey,
   shouldAutoMechanicalRepair,
 } from "../repair-schedule.js";
 import type { ClaimedNode } from "../types.js";
@@ -168,9 +164,7 @@ test("auto mechanical repair schedules repair.1 then reaches publication", async
       if (input.node.kind === "plan") return planWithHvBudget(2)(input, signal);
       if (input.node.kind === "write.root") {
         const feedback =
-          typeof input.node.detail?.feedback === "string"
-            ? input.node.detail.feedback
-            : undefined;
+          typeof input.node.detail?.feedback === "string" ? input.node.detail.feedback : undefined;
         writeClaims.push({ generation: input.node.generation, feedback });
         await mkdir(input.workDir, { recursive: true });
         // Initial write is dirty; repair stage fixes it.
@@ -179,9 +173,7 @@ test("auto mechanical repair schedules repair.1 then reaches publication", async
       }
       if (input.node.kind === "repair") {
         const feedback =
-          typeof input.node.detail?.feedback === "string"
-            ? input.node.detail.feedback
-            : undefined;
+          typeof input.node.detail?.feedback === "string" ? input.node.detail.feedback : undefined;
         repairClaims.push({
           key: input.node.key,
           kind: input.node.kind,
@@ -211,7 +203,11 @@ test("auto mechanical repair schedules repair.1 then reaches publication", async
   );
 
   // write.root runs once at gen 0 with no mechanical feedback.
-  assert.equal(writeClaims.length, 1, `expected exactly one write.root claim, got ${writeClaims.length}`);
+  assert.equal(
+    writeClaims.length,
+    1,
+    `expected exactly one write.root claim, got ${writeClaims.length}`,
+  );
   assert.equal(writeClaims[0]?.generation, 0);
   assert.equal(writeClaims[0]?.feedback, undefined);
 
@@ -480,9 +476,7 @@ test("multi-round repair.2 binds wiki from repair.1 not write.root", async (t) =
   );
 
   assert.ok(
-    atPub.snapshot.nodes.some(
-      (n) => n.key === repairNodeKey(2) && n.state === "succeeded",
-    ),
+    atPub.snapshot.nodes.some((n) => n.key === repairNodeKey(2) && n.state === "succeeded"),
     "repair.2 must succeed",
   );
 });
@@ -583,9 +577,9 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
       ).run();
     }
     if (opts.specRelativePath) {
-      db.prepare(
-        "INSERT INTO artifacts (artifact_id, relative_path) VALUES ('spec-art', ?)",
-      ).run(opts.specRelativePath);
+      db.prepare("INSERT INTO artifacts (artifact_id, relative_path) VALUES ('spec-art', ?)").run(
+        opts.specRelativePath,
+      );
       db.prepare(
         `INSERT INTO node_outputs (run_id, node_key, node_generation, role, artifact_id)
          VALUES ('run-1', 'plan', 0, 'spec', 'spec-art')`,

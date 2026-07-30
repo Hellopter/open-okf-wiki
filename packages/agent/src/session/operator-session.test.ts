@@ -27,7 +27,7 @@ async function makeWorkspace() {
   await mkdir(skill, { recursive: true });
   await writeFile(path.join(skill, "SKILL.md"), "# skill\n", "utf8");
   return WorkspaceConfigSchema.parse({
-    version: 1,
+    version: 2,
     id: "workspace",
     name: "Operator Workspace",
     rootPath: root,
@@ -164,10 +164,7 @@ describe("SessionManager-owned Operator Sessions", () => {
 
       // Default history load uses full branch (not model-context-only).
       created.dispose();
-      const history = await loadOperatorSessionHistory(
-        workspace.rootPath,
-        "operator-dual-history",
-      );
+      const history = await loadOperatorSessionHistory(workspace.rootPath, "operator-dual-history");
       assert.ok(history);
       assert.ok(history.messages.some((m) => m.role === "user"));
     } finally {

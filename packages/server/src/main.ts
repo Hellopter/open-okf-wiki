@@ -3,8 +3,7 @@
  */
 import { createServer } from "node:http";
 import {
-  disposeLive,
-  liveSessions,
+  disposeAllLiveSessions,
   sweepIdleLiveSessions,
 } from "./agent-session/live-session-registry.ts";
 import { dispatch } from "./dispatch.ts";
@@ -55,10 +54,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   process.stdout.write(`received ${signal}, shutting down…\n`);
   clearInterval(idleSweep);
   server.close();
-  for (const [key, entry] of liveSessions) {
-    disposeLive(entry);
-    liveSessions.delete(key);
-  }
+  disposeAllLiveSessions();
   // SSE keep-alive sockets would otherwise hold the process open.
   server.closeAllConnections?.();
   await closeWikiRuns();

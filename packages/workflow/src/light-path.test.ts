@@ -9,7 +9,7 @@ import {
   planUncertaintyFromSpec,
   resolveAdaptiveOrchestration,
 } from "@okf-wiki/contract";
-import { buildDefinitionV1Graph, buildGraphFromExecutionPlan } from "./definition-v1.js";
+import { buildExecutionGraph, buildExecutionGraphFromPlan } from "./execution-graph.js";
 import { compileExecutionPlan } from "./plan-compiler.js";
 
 test("light path: adaptive defaults feed 0 scouts / 1 lens into compile", () => {
@@ -38,7 +38,7 @@ test("single-cluster (one leaf) direct to Writer — no domain reducer", () => {
   const plan = compileExecutionPlan(spec, { reviewCouncilSize: 1 });
   assert.equal(plan.workUnits.length, 1);
   assert.equal(plan.reductions.length, 0);
-  const graph = buildGraphFromExecutionPlan(plan, spec);
+  const graph = buildExecutionGraphFromPlan(plan, spec);
   assert.equal(
     graph.nodes.some((n) => n.kind === "research.domain"),
     false,
@@ -52,22 +52,16 @@ test("single-cluster (one leaf) direct to Writer — no domain reducer", () => {
 });
 
 test("multi-leaf domain still uses domain reducer", () => {
-  const graph = buildDefinitionV1Graph(defaultWikiRunSpec("Multi"), {
+  const graph = buildExecutionGraph(defaultWikiRunSpec("Multi"), {
     reviewCouncilSize: 1,
   });
   assert.ok(graph.nodes.some((n) => n.key === "research.domain.core"));
-  assert.ok(
-    graph.edges.some((e) => e.from === "research.domain.core" && e.to === "write.root"),
-  );
+  assert.ok(graph.edges.some((e) => e.from === "research.domain.core" && e.to === "write.root"));
 });
 
 test("high uncertainty + multi inventory raises beyond light path", () => {
   const uncertainty = planUncertaintyFromSpec({
-    domains: [
-      { questions: ["q1", "q2", "q3"] },
-      { questions: ["q4"] },
-      { questions: ["q5"] },
-    ],
+    domains: [{ questions: ["q1", "q2", "q3"] }, { questions: ["q4"] }, { questions: ["q5"] }],
     openQuestions: ["a", "b", "c", "d", "e", "f"],
   });
   const decision = resolveAdaptiveOrchestration({

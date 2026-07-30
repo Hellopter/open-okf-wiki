@@ -14,7 +14,7 @@ import type {
   WorkspaceSource,
   WorkspaceSummary,
 } from "@okf-wiki/contract";
-import { request, withRootPathQuery } from "./client";
+import { request } from "./client";
 
 export type {
   GitProbe,
@@ -80,13 +80,8 @@ export function listWorkspaces(): Promise<{ workspaces: WorkspaceSummary[] }> {
   return request<{ workspaces: WorkspaceSummary[] }>("/api/workspaces");
 }
 
-export function getWorkspace(
-  id: string,
-  rootPath?: string,
-): Promise<{ workspace: WorkspaceConfig }> {
-  return request<{ workspace: WorkspaceConfig }>(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(id)}`, rootPath),
-  );
+export function getWorkspace(id: string): Promise<{ workspace: WorkspaceConfig }> {
+  return request<{ workspace: WorkspaceConfig }>(`/api/workspaces/${encodeURIComponent(id)}`);
 }
 
 export function createWorkspace(
@@ -101,15 +96,11 @@ export function createWorkspace(
 export function patchWorkspace(
   id: string,
   input: PatchWorkspaceInput,
-  rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig }> {
-  return request<{ workspace: WorkspaceConfig }>(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(id)}`, rootPath),
-    {
-      method: "PATCH",
-      body: JSON.stringify(input),
-    },
-  );
+  return request<{ workspace: WorkspaceConfig }>(`/api/workspaces/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
 }
 
 /**
@@ -118,7 +109,7 @@ export function patchWorkspace(
  */
 export function deleteWorkspace(
   id: string,
-  options?: { rootPath?: string; deleteFiles?: boolean },
+  options?: { deleteFiles?: boolean },
 ): Promise<{
   ok: boolean;
   id: string;
@@ -126,9 +117,8 @@ export function deleteWorkspace(
   deletedMeta: boolean;
   rootPath: string;
 }> {
-  const base = withRootPathQuery(`/api/workspaces/${encodeURIComponent(id)}`, options?.rootPath);
-  const sep = base.includes("?") ? "&" : "?";
-  const url = options?.deleteFiles ? `${base}${sep}deleteFiles=true` : base;
+  const base = `/api/workspaces/${encodeURIComponent(id)}`;
+  const url = options?.deleteFiles ? `${base}?deleteFiles=true` : base;
   return request(url, { method: "DELETE" });
 }
 
@@ -136,13 +126,9 @@ export function updateSource(
   workspaceId: string,
   sourceId: string,
   input: UpdateSourceInput,
-  rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig; source: WorkspaceSource }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
-      rootPath,
-    ),
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
     {
       method: "PATCH",
       body: JSON.stringify(input),
@@ -153,136 +139,102 @@ export function updateSource(
 export function addSource(
   workspaceId: string,
   input: AddSourceInput,
-  rootPath?: string,
 ): Promise<{
   workspace: WorkspaceConfig;
   source: WorkspaceSource;
   probe: GitProbe;
 }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources`, rootPath),
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 /** Clone a remote git repo into the workspace and register it as a source. */
 export function cloneSource(
   workspaceId: string,
   input: CloneSourceInput,
-  rootPath?: string,
 ): Promise<{
   workspace: WorkspaceConfig;
   source: WorkspaceSource;
   probe: GitProbe;
 }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/clone`, rootPath),
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/clone`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
-export function getWorkspaceSkill(
-  workspaceId: string,
-  rootPath?: string,
-): Promise<{ skill: SkillInfo }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill`, rootPath),
-  );
+export function getWorkspaceSkill(workspaceId: string): Promise<{ skill: SkillInfo }> {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill`);
 }
 
 export function createWorkspaceSkillFork(
   workspaceId: string,
-  rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`, rootPath),
-    { method: "POST", body: JSON.stringify({}) },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function resetWorkspaceSkill(
   workspaceId: string,
-  rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`, rootPath),
-    { method: "POST", body: JSON.stringify({}) },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function listWorkspaceSkillFiles(
   workspaceId: string,
   dirPath?: string,
-  rootPath?: string,
 ): Promise<{
   skillPath: string;
   path: string;
   entries: SkillFileEntry[];
   writable: boolean;
 }> {
-  const base = withRootPathQuery(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`,
-    rootPath,
-  );
-  const sep = base.includes("?") ? "&" : "?";
+  const base = `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`;
   const url =
-    dirPath && dirPath.trim() ? `${base}${sep}path=${encodeURIComponent(dirPath.trim())}` : base;
+    dirPath && dirPath.trim() ? `${base}?path=${encodeURIComponent(dirPath.trim())}` : base;
   return request(url);
 }
 
 export function readWorkspaceSkillFile(
   workspaceId: string,
   filePath: string,
-  rootPath?: string,
 ): Promise<{ file: SkillFileContent; writable: boolean }> {
-  const base = withRootPathQuery(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/file`,
-    rootPath,
+  return request(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/file?path=${encodeURIComponent(filePath)}`,
   );
-  const sep = base.includes("?") ? "&" : "?";
-  return request(`${base}${sep}path=${encodeURIComponent(filePath)}`);
 }
 
 export function writeWorkspaceSkillFile(
   workspaceId: string,
   input: { path: string; content: string },
-  rootPath?: string,
 ): Promise<{ file: SkillFileContent; skill: SkillInfo }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`, rootPath),
-    {
-      method: "PUT",
-      body: JSON.stringify(input),
-    },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
 }
 
 export function deleteSource(
   workspaceId: string,
   sourceId: string,
-  rootPath?: string,
 ): Promise<{ workspace: WorkspaceConfig }> {
   return request(
-    withRootPathQuery(
-      `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
-      rootPath,
-    ),
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" },
   );
 }
 
 export function probeSources(
   workspaceId: string,
-  rootPath?: string,
 ): Promise<{ workspaceId: string; probes: SourceProbeResult[] }> {
-  return request(
-    withRootPathQuery(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/probe`, rootPath),
-    { method: "POST" },
-  );
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/probe`, {
+    method: "POST",
+  });
 }

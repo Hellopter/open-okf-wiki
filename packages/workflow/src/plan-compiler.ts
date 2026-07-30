@@ -78,9 +78,7 @@ export function compileExecutionPlan(
     if (!domainId) {
       throw new ExecutionPlanCompileError("WikiRunSpec domain id must be non-empty");
     }
-    const questions = (domain.questions ?? [])
-      .map((q) => q.trim())
-      .filter((q) => q.length > 0);
+    const questions = (domain.questions ?? []).map((q) => q.trim()).filter((q) => q.length > 0);
     if (questions.length > maxLeafFanOut) {
       throw new ExecutionPlanCompileError(
         `Domain "${domainId}" has ${questions.length} questions but maxLeafFanOut is ${maxLeafFanOut}; ` +
@@ -130,7 +128,7 @@ export function compileExecutionPlan(
   }
 
   return ExecutionPlanSchema.parse({
-    version: 1,
+    version: 2,
     workUnits,
     reductions,
     reviewLenses,

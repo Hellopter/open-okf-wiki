@@ -7,8 +7,6 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   type RunCommandReceipt,
-  toDurableWikiProduceDetails,
-  type WikiProduceDurableDetails,
   type WikiProduceToolDetails,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
@@ -49,15 +47,14 @@ const wikiProduceParameters = Type.Object(
 );
 
 function toolResult(details: WikiProduceToolDetails) {
-  const durable: WikiProduceDurableDetails = toDurableWikiProduceDetails(details);
   const text =
-    durable.summary?.trim() ||
-    (durable.runId
-      ? `Wiki Run ${durable.runId}: ${durable.status}`
-      : `wiki_produce: ${durable.status}`);
+    details.summary?.trim() ||
+    (details.runId
+      ? `Wiki Run ${details.runId}: ${details.status}`
+      : `wiki_produce: ${details.status}`);
   return {
     content: [{ type: "text" as const, text }],
-    details: durable,
+    details,
   };
 }
 

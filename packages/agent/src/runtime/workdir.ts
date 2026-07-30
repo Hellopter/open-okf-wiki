@@ -57,6 +57,6 @@ export function runWorkdirPromptPaths(layout: RunWorkdirLayout): string {
     "  - inputs/operator-input.json  Sealed operator answer when continuing after a gate",
     "  - inputs/evidence/ Research receipt index + receipts (read these before re-scan)",
     "  - wiki/           Staging Wiki (writable only in write roles)",
-    "  - analysis/       Run analysis (plan-draft.json, spec.json, local receipts)",
+    "  - analysis/       Current Attempt outputs only (planner Spec and research/review receipts)",
   ].join("\n");
 }

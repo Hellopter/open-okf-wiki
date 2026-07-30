@@ -25,24 +25,9 @@ export async function listWorkspaceSummaries(appStatePath?: string): Promise<Wor
   return summaries;
 }
 
-/**
- * Resolve a workspace by id using the app index of recent roots.
- * Optionally accept an explicit rootPath query to avoid scanning.
- */
-export async function loadWorkspaceById(
-  id: string,
-  options: { rootPath?: string; appStatePath?: string } = {},
-): Promise<WorkspaceConfig | null> {
-  if (options.rootPath) {
-    try {
-      const ws = await loadWorkspace(options.rootPath);
-      return ws.id === id ? ws : null;
-    } catch {
-      return null;
-    }
-  }
-
-  const roots = await listRecentWorkspaces(options.appStatePath);
+/** Resolve a workspace by id using the app index of recent roots. */
+export async function loadWorkspaceById(id: string): Promise<WorkspaceConfig | null> {
+  const roots = await listRecentWorkspaces();
   for (const root of roots) {
     try {
       const ws = await loadWorkspace(root);

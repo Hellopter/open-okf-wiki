@@ -50,7 +50,7 @@ async function makeWorkspace(opts?: {
   }
 
   const workspace = WorkspaceConfigSchema.parse({
-    version: 1,
+    version: 2,
     id: "ws1",
     name: "Freeze WS",
     rootPath: root,

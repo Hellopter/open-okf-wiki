@@ -26,7 +26,7 @@ export function publishedWikiHttpStatus(code: PublishedWikiError["code"]): numbe
 
 /**
  * List published wiki pages under workspace.publicationPath.
- * GET /api/workspaces/:id/wiki?rootPath=
+ * GET /api/workspaces/:id/wiki
  *
  * Includes index-aware `nav` for the reader TOC (concept pages only).
  */
@@ -34,9 +34,9 @@ export async function handleListWiki(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   try {
@@ -61,15 +61,15 @@ export async function handleListWiki(
 
 /**
  * Derived cross-link graph of the Published Wiki (Wiki Visualization data).
- * GET /api/workspaces/:id/wiki-graph?rootPath=
+ * GET /api/workspaces/:id/wiki-graph
  */
 export async function handleWikiGraph(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   try {
@@ -88,17 +88,17 @@ export async function handleWikiGraph(
 
 /**
  * Read one published wiki markdown page.
- * GET /api/workspaces/:id/wiki/*path?rootPath=
- * GET /api/workspaces/:id/wiki?path=overview.md&rootPath=
+ * GET /api/workspaces/:id/wiki/*path
+ * GET /api/workspaces/:id/wiki?path=overview.md
  */
 export async function handleReadWiki(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
   pagePath: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   const trimmed = pagePath.trim();

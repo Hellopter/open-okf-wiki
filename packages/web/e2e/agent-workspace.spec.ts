@@ -221,9 +221,9 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     // Approve on the Active Run bar only (not the produce receipt card).
     await page.getByTestId("active-run-bar").getByTestId("agent-gate-approve").click();
 
-    await expect(page.getByTestId("active-run-bar").getByTestId("agent-publication-gate")).toBeVisible(
-      { timeout: 120_000 },
-    );
+    await expect(
+      page.getByTestId("active-run-bar").getByTestId("agent-publication-gate"),
+    ).toBeVisible({ timeout: 120_000 });
     await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
       "data-wiki-run-state",
       "waiting_for_operator",
@@ -233,7 +233,9 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await page.reload();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
     await ensureProducePanelOpen();
-    await expect(page.getByTestId("active-run-bar").getByTestId("agent-publication-gate")).toBeVisible({
+    await expect(
+      page.getByTestId("active-run-bar").getByTestId("agent-publication-gate"),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
@@ -257,9 +259,7 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await page.getByTestId("workspace-subnav-wiki").click();
     await expect(page.getByTestId("wiki-page")).toBeVisible({ timeout: 15_000 });
     // Tree shows page title; path is on data-page (fixture writes overview.md).
-    const overviewLink = page.locator(
-      '[data-testid="wiki-page-link"][data-page="overview.md"]',
-    );
+    const overviewLink = page.locator('[data-testid="wiki-page-link"][data-page="overview.md"]');
     await expect(overviewLink).toBeVisible({ timeout: 15_000 });
     await overviewLink.click();
     await expect(page.getByTestId("wiki-page-title")).toContainText(name);

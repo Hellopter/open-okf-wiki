@@ -44,7 +44,10 @@ export type AttemptTranscriptSink = {
  * Tool argsSummary still benefits from single-line display at the call site.
  */
 function truncate(text: string, max: number): string {
-  const t = text.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
+  const t = text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
   if (!t) return "";
   if (t.length <= max) return t;
   return `${t.slice(0, Math.max(1, max - 1))}…`;

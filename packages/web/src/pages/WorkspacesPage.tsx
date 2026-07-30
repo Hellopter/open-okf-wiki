@@ -132,7 +132,6 @@ export function WorkspacesPage() {
     setError(null);
     try {
       await deleteWorkspace(target.id, {
-        rootPath: target.rootPath,
         deleteFiles,
       });
       await load();

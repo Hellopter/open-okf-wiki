@@ -8,16 +8,16 @@ import path from "node:path";
 import {
   type AnalysisReceipt,
   AnalysisReceiptSchema,
-  PiAttemptOutcomeSchema,
   type PiAttemptOutcome,
+  PiAttemptOutcomeSchema,
 } from "@okf-wiki/contract";
 import { domainResearchPrompt, leafResearchPrompt } from "../../../prompts/index.js";
 import {
+  type EvidenceBundle,
   formatEvidenceIndex,
   formatOperatorInputNotes,
   loadEvidenceBundle,
   loadProjectedOperatorInput,
-  type EvidenceBundle,
 } from "../materialize.js";
 import {
   type AttemptHandlerContext,
@@ -38,9 +38,17 @@ const DOMAIN_SYSTEM =
 export function findingsFromSummary(summary: string): string[] {
   const text = summary.replace(/\r\n/g, "\n").trim();
   if (!text) return [];
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   const bullets = lines
-    .map((line) => line.replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, "").trim())
+    .map((line) =>
+      line
+        .replace(/^[-*•]\s+/, "")
+        .replace(/^\d+[.)]\s+/, "")
+        .trim(),
+    )
     .filter((line) => line.length > 0 && line.length <= 500);
   if (bullets.length >= 2) return bullets.slice(0, 40);
   // Single-paragraph summary → one finding minimum so schema has content.
@@ -56,7 +64,7 @@ export function evidenceFromSummary(summary: string): AnalysisReceipt["evidence"
   ];
   for (const re of patterns) {
     for (const match of summary.matchAll(re)) {
-      let raw = match[0] ?? "";
+      const raw = match[0] ?? "";
       if (!raw || raw.length > 200) continue;
       let repositoryId = "main";
       let filePath = raw;
@@ -109,7 +117,10 @@ function openQuestionsFromSummary(summary: string): string[] {
     }
     if (inSection) {
       if (/^#{1,3}\s|^[A-Z][a-z]+ findings/i.test(trimmed)) break;
-      const item = trimmed.replace(/^[-*•]\s+/, "").replace(/^\d+[.)]\s+/, "").trim();
+      const item = trimmed
+        .replace(/^[-*•]\s+/, "")
+        .replace(/^\d+[.)]\s+/, "")
+        .trim();
       if (item) out.push(item.slice(0, 500));
     }
   }
@@ -151,9 +162,9 @@ function buildAnalysisReceipt(parts: {
 export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<PiAttemptOutcome> {
   const { input, layout, ignores, runtime, resolveModel, signal } = ctx;
   const detail = parseNodeDetail(input);
-  const domainId = String(detail.domainId ?? "core");
-  const question = String(detail.question ?? input.node.key);
-  const scope = String(detail.scope ?? "");
+  const domainId = detail.domainId as string;
+  const question = detail.question as string;
+  const scope = detail.scope as string;
   const resolved =
     runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
   const operatorNotes = formatOperatorInputNotes(await loadProjectedOperatorInput(layout));
@@ -228,12 +239,10 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
 export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<PiAttemptOutcome> {
   const { input, layout, ignores, runtime, resolveModel, signal } = ctx;
   const detail = parseNodeDetail(input);
-  const domainId = String(
-    detail.domainId ?? input.node.key.replace(/^research\.domain\./, ""),
-  );
-  const scope = String(detail.scope ?? "");
-  const title = String(detail.title ?? domainId);
-  const questions = Array.isArray(detail.questions) ? detail.questions.map(String) : [];
+  const domainId = detail.domainId as string;
+  const scope = detail.scope as string;
+  const title = detail.title as string;
+  const questions = detail.questions as string[];
 
   // Phase 2: load projected child receipts (cognitive locality).
   const evidence = await loadEvidenceBundle(layout);
@@ -319,7 +328,7 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
     parentId: null,
     attempt: Math.max(1, input.node.generation + 1),
     status: childIds.length > 0 ? "complete" : "partial",
-    scope: scope || domainId,
+    scope,
     summary,
     childReceipts: childIds,
   });

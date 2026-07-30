@@ -161,9 +161,7 @@ export async function mechanicalPublish(
       // Error before CAS — safe to mark failed; live was never mutated.
       host.transaction(() => {
         host.db
-          .prepare(
-            "UPDATE effects SET state = 'failed', observed_outcome = ? WHERE effect_key = ?",
-          )
+          .prepare("UPDATE effects SET state = 'failed', observed_outcome = ? WHERE effect_key = ?")
           .run(message.slice(0, 4_000), effectKey);
         host.emit(claim.runId, "effect.failed");
       });

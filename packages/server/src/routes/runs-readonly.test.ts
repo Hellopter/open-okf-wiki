@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
+import { createWorkspace, registerWorkspaceInAppIndex, saveWorkspace } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 import { resetWikiRunsRegistryForTests } from "../wiki-runs-registry.ts";
 
@@ -17,6 +17,7 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     resolvedModelId: "openai/test",
   });
   await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
   const server = createServer((req, res) => void dispatch(req, res));
 
   try {
@@ -24,27 +25,30 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const base = `http://127.0.0.1:${address.port}`;
-    const query = `rootPath=${encodeURIComponent(root)}`;
     const runs = `${base}/api/workspaces/${workspace.id}/runs`;
 
-    const listEmpty = await fetch(`${runs}?${query}`);
+    const listEmpty = await fetch(runs);
     assert.equal(listEmpty.status, 200);
     assert.deepEqual(await listEmpty.json(), { workspaceId: workspace.id, runs: [] });
 
     // Observation graph route must stay deleted (WikiRuns GET is the snapshot).
-    const missingGraph = await fetch(`${runs}/run-missing/graph?${query}`);
+    const missingGraph = await fetch(`${runs}/run-missing/graph`);
     assert.equal(missingGraph.status, 404);
     assert.deepEqual(await missingGraph.json(), { error: "not found" });
 
-    const started = await fetch(`${runs}/command?${query}`, {
+    const started = await fetch(`${runs}/command`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "start_run", commandId: "list-start-1" , intent: { mode: "generate" } }),
+      body: JSON.stringify({
+        type: "start_run",
+        commandId: "list-start-1",
+        intent: { mode: "generate" },
+      }),
     });
     assert.equal(started.status, 202, await started.clone().text());
     const receipt = (await started.json()) as { receipt: { runId: string; revision: number } };
 
-    const list = await fetch(`${runs}?${query}`);
+    const list = await fetch(runs);
     assert.equal(list.status, 200, await list.clone().text());
     const listed = (await list.json()) as {
       workspaceId: string;
@@ -58,7 +62,7 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     assert.ok(typeof listed.runs[0]?.revision === "number");
 
     // GET /runs/:runId and /events are durable WikiRuns routes (ADR 0035).
-    const got = await fetch(`${runs}/${receipt.receipt.runId}?${query}`);
+    const got = await fetch(`${runs}/${receipt.receipt.runId}`);
     assert.equal(got.status, 200, await got.clone().text());
     const body = (await got.json()) as { snapshot: { runId: string } };
     assert.equal(body.snapshot.runId, receipt.receipt.runId);
@@ -78,7 +82,7 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     ];
 
     for (const [method, pathname] of removedRoutes) {
-      const response = await fetch(`${runs}${pathname}?${query}`, {
+      const response = await fetch(`${runs}${pathname}`, {
         method,
         ...(method === "POST"
           ? { headers: { "content-type": "application/json" }, body: "{}" }

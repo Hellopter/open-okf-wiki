@@ -10,10 +10,10 @@
  */
 
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
-import { useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { useI18n } from "../../i18n";
+import { useAgentWorkspaceRoute } from "../hooks/useAgentWorkspaceRoute";
 import { useWikiRunProjection } from "../hooks/WikiRunProjectionContext";
 import { selectMatchingProjection } from "../hooks/wiki-run-projection";
 import { compactSummary } from "../run-graph/compact-summary";
@@ -29,7 +29,7 @@ function shortRunId(runId: string): string {
 
 export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const { t } = useI18n();
-  const [, setSearchParams] = useSearchParams();
+  const { selectRun } = useAgentWorkspaceRoute();
   const runId = details.runId ?? null;
 
   // Shell owns the sole active-run subscription; match by runId (no second EventSource).
@@ -43,19 +43,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
 
   // Matching active run still loading; non-matching cards stay receipt-only (no spinner).
   const showLiveLoading = wikiRun.matches && !wikiRun.ready && !wikiRun.error;
-
-  const focusRun = (id: string) => {
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete("rootPath");
-        next.set("run", id);
-        next.delete("attempt");
-        return next;
-      },
-      { replace: true },
-    );
-  };
 
   return (
     <div
@@ -92,7 +79,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
             className="shrink-0 font-mono text-2xs text-primary underline-offset-2 hover:underline"
             title={runId}
             data-testid="wiki-produce-run-id-link"
-            onClick={() => focusRun(runId)}
+            onClick={() => selectRun(runId)}
           >
             {shortRunId(runId)}
           </button>

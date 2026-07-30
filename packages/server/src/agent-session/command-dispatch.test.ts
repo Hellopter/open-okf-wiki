@@ -8,12 +8,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
-import {
-  dispatchAgentCommand,
-  ensureRegistered,
-  registerAgentSession,
-  resetAgentSessionRegistryForTests,
-} from "../agent-session-registry.ts";
+import { dispatchAgentCommand, ensureRegistered, registerAgentSession } from "./index.ts";
+import { resetAgentSessionRegistryForTests } from "./test-seams.ts";
 
 test("prompt dispatch expands slash commands and rejects unknown ones", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-cmd-dispatch-"));
@@ -56,7 +52,7 @@ test("prompt dispatch expands slash commands and rejects unknown ones", async (t
   // Wait for the detached fixture turn to settle before the next prompt.
   const entry = await ensureRegistered(workspace, sessionId);
   const deadline = Date.now() + 5_000;
-  while ((entry.admittedTurnId || entry.streamState.turnActive) && Date.now() < deadline) {
+  while (entry.isBusy() && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 20));
   }
 
@@ -69,7 +65,7 @@ test("prompt dispatch expands slash commands and rejects unknown ones", async (t
   assert.ok(pathLike.acceptedTurnId);
 
   const deadline2 = Date.now() + 5_000;
-  while ((entry.admittedTurnId || entry.streamState.turnActive) && Date.now() < deadline2) {
+  while (entry.isBusy() && Date.now() < deadline2) {
     await new Promise((r) => setTimeout(r, 20));
   }
 

@@ -19,15 +19,7 @@ async function writeWikiPage(dir: string, body: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   await writeFile(
     path.join(dir, "overview.md"),
-    [
-      "---",
-      "type: Overview",
-      'title: "Seal reseed"',
-      "---",
-      "",
-      body,
-      "",
-    ].join("\n"),
+    ["---", "type: Overview", 'title: "Seal reseed"', "---", "", body, ""].join("\n"),
     "utf8",
   );
 }

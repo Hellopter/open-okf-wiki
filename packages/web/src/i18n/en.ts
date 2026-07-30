@@ -626,8 +626,7 @@ export const en = {
     /** Durable WikiRuns handoff after wiki_produce accepted+runId. */
     wikiRunStarted: "Run started",
     produceWiki: "Produce wiki",
-    wikiRunAcceptedHint:
-      "Wiki Run started. When action is needed, use the Run bar below the chat.",
+    wikiRunAcceptedHint: "Wiki Run started. When action is needed, use the Run bar below the chat.",
     openGates: "Open gates",
     failedNodes: "Failed nodes",
     retryFailedNode: "Retry",

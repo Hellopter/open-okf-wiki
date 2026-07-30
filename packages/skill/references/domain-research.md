@@ -22,5 +22,6 @@ Use this branch only for the self-contained Domain task assigned by Root.
    at most once within the Run Boundary budget. Reopen important source spans before relying on them.
 5. Reduce complete child evidence into one bounded Domain evidence summary: key findings, source
    paths with line ranges when known from tools, open questions, and child receipt paths when present.
-   Produce persists this as an Analysis Receipt under `analysis/receipts/`. Return only the summary
-   text — do not invent a Host publish tool or handoff JSON schema.
+   Produce seals this Attempt's Analysis Receipt and projects it to later Attempts under
+   `inputs/evidence/`. Return only the summary text — do not invent a Host publish tool or handoff
+   JSON schema.

@@ -7,21 +7,18 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   type AttemptMetrics,
+  contractForNode,
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
   type PiAttemptFailureClass,
   type PiAttemptInput,
   type PiAttemptNodeDetail,
-  type PiAttemptOutcome,
   PiAttemptNodeDetailSchema,
+  type PiAttemptOutcome,
   type WikiRunArtifactKind,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
-import {
-  isGateKind,
-  isMechanicalAttemptKind,
-  isPiAttemptKind,
-} from "../definition-v1.js";
+import { isGateKind, isMechanicalAttemptKind, isPiAttemptKind } from "../execution-graph.js";
 import {
   graphRoleForNodeKind,
   mergeAttemptMetrics,
@@ -31,14 +28,11 @@ import {
   writeAttemptMetrics,
 } from "./attempt-metrics.js";
 import { canClaimKind } from "./concurrency.js";
-import type { WikiRunsCasCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
+import type { WikiRunsCasCtx } from "./ctx.js";
 import { unlockReadyNodes } from "./dag.js";
 import { openOperatorInputGate } from "./gate-open.js";
-import {
-  scheduleMechanicalRepair,
-  shouldAutoMechanicalRepair,
-} from "./repair-schedule.js";
+import { scheduleMechanicalRepair, shouldAutoMechanicalRepair } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { writeConversationTranscript } from "./transcript-io.js";
 import type {
@@ -47,10 +41,7 @@ import type {
   ClaimedNode,
   TrustedFrozenInputs,
 } from "./types.js";
-import {
-  RESEARCH_AUTO_RETRY_KINDS,
-  RESEARCH_AUTO_RETRY_MAX_ATTEMPTS,
-} from "./types.js";
+import { RESEARCH_AUTO_RETRY_KINDS, RESEARCH_AUTO_RETRY_MAX_ATTEMPTS } from "./types.js";
 
 export type SchedulerHost = WikiRunsCasCtx & {
   closed: boolean;
@@ -62,10 +53,7 @@ export type SchedulerHost = WikiRunsCasCtx & {
     runId: string,
     nodeKey: string,
   ): Array<{ role: string; artifactId: string }>;
-  copyAttemptInputs(
-    attemptId: string,
-    inputs: Array<{ role: string; artifactId: string }>,
-  ): void;
+  copyAttemptInputs(attemptId: string, inputs: Array<{ role: string; artifactId: string }>): void;
   bindAttemptInputs(attemptId: string, runId: string, nodeKey: string): void;
   executeFreeze(claim: ClaimedFreeze): Promise<void>;
   executeMechanical(claim: ClaimedNode, signal: AbortSignal): Promise<PiAttemptOutcome>;
@@ -258,16 +246,13 @@ export function claimPreparedRow(host: SchedulerHost, node: SqlRow): ClaimedNode
   const runId = requiredText(node, "run_id");
   const nodeKey = requiredText(node, "node_key");
   const kind = requiredText(node, "kind");
+  contractForNode(kind, nodeKey);
   const generation = requiredNumber(node, "generation");
   const attemptId = randomUUID();
   const upstreams = host.upstreamSealedOutputs(runId, nodeKey);
   // Freeze has no sealed upstreams; every other node needs at least freeze pins
   // (or explicit edge outputs) before claim.
-  if (
-    nodeKey !== "freeze" &&
-    upstreams.length === 0 &&
-    !host.upstreamsSucceeded(runId, nodeKey)
-  ) {
+  if (nodeKey !== "freeze" && upstreams.length === 0 && !host.upstreamsSucceeded(runId, nodeKey)) {
     return undefined;
   }
   // RetryFailedNode / research auto-retry: reuse the exact failed Attempt's
@@ -372,9 +357,7 @@ function operatorContinuationSource(
 ): { inputDigest: string; inputs: Array<{ role: string; artifactId: string }> } | undefined {
   const node = asRow(
     host.db
-      .prepare(
-        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
-      )
+      .prepare("SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
       .get(runId, nodeKey, generation),
   );
   if (!node || node.detail_json == null || node.detail_json === "") return undefined;
@@ -389,16 +372,12 @@ function operatorContinuationSource(
   const parentAttemptId =
     typeof detail.parentAttemptId === "string" ? detail.parentAttemptId.trim() : "";
   const operatorInputArtifactId =
-    typeof detail.operatorInputArtifactId === "string"
-      ? detail.operatorInputArtifactId.trim()
-      : "";
+    typeof detail.operatorInputArtifactId === "string" ? detail.operatorInputArtifactId.trim() : "";
   if (!parentAttemptId || !operatorInputArtifactId) return undefined;
 
   const parent = asRow(
     host.db
-      .prepare(
-        `SELECT attempt_id, state, node_key, run_id FROM attempts WHERE attempt_id = ?`,
-      )
+      .prepare(`SELECT attempt_id, state, node_key, run_id FROM attempts WHERE attempt_id = ?`)
       .get(parentAttemptId),
   );
   if (!parent) return undefined;
@@ -408,18 +387,14 @@ function operatorContinuationSource(
 
   const artifact = asRow(
     host.db
-      .prepare(
-        `SELECT artifact_id, kind FROM artifacts WHERE artifact_id = ? AND run_id = ?`,
-      )
+      .prepare(`SELECT artifact_id, kind FROM artifacts WHERE artifact_id = ? AND run_id = ?`)
       .get(operatorInputArtifactId, runId),
   );
   if (!artifact || requiredText(artifact, "kind") !== "operator_input") return undefined;
 
   const parentInputs = asRows(
     host.db
-      .prepare(
-        `SELECT role, artifact_id FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`,
-      )
+      .prepare(`SELECT role, artifact_id FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`)
       .all(parentAttemptId),
   ).map((row) => ({
     role: requiredText(row, "role"),
@@ -496,16 +471,12 @@ export function suspendForOperatorInput(
     )
     .run(claim.attemptId, claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
 
-  openOperatorInputGate(
-    { db: host.db, emit: (runId, type) => host.emit(runId, type) },
-    claim,
-    {
-      question: outcome.question,
-      context: outcome.context,
-      inputDigest,
-      timestamp,
-    },
-  );
+  openOperatorInputGate({ db: host.db, emit: (runId, type) => host.emit(runId, type) }, claim, {
+    question: outcome.question,
+    context: outcome.context,
+    inputDigest,
+    timestamp,
+  });
 }
 
 export function abortRunAttempts(host: SchedulerHost, runId: string): void {
@@ -642,31 +613,35 @@ export async function executePi(
 
 /**
  * Load secret-free node detail from nodes.detail_json for this generation.
- * Invalid / unknown JSON is dropped so a corrupt row cannot break the claim.
+ * Dynamic graph nodes own execution semantics in this row, so they fail closed
+ * rather than letting Pi invent missing scope, questions, or repair intent.
  */
 export function loadPiAttemptNodeDetail(
   host: Pick<SchedulerHost, "db">,
   runId: string,
   nodeKey: string,
   generation: number,
+  kind: PiAttemptInput["node"]["kind"],
 ): PiAttemptNodeDetail | undefined {
   const row = asRow(
     host.db
-      .prepare(
-        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
-      )
+      .prepare("SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
       .get(runId, nodeKey, generation),
   );
-  if (!row) return undefined;
+  if (!row) return requireDynamicNodeDetail(kind, nodeKey, undefined, "row is missing");
   const raw = row.detail_json;
-  if (raw == null || raw === "") return undefined;
+  if (raw == null || raw === "") {
+    return requireDynamicNodeDetail(kind, nodeKey, undefined, "detail_json is missing");
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(String(raw));
   } catch {
-    return undefined;
+    return requireDynamicNodeDetail(kind, nodeKey, undefined, "detail_json is not JSON");
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return requireDynamicNodeDetail(kind, nodeKey, undefined, "detail_json is not an object");
+  }
   const rowObj = parsed as Record<string, unknown>;
   // Pick known keys only — detail_json may carry extras from older writers.
   const candidate: Record<string, unknown> = {};
@@ -685,7 +660,75 @@ export function loadPiAttemptNodeDetail(
     candidate.repairRequest = rowObj.repairRequest;
   }
   const result = PiAttemptNodeDetailSchema.safeParse(candidate);
-  return result.success && Object.keys(result.data).length > 0 ? result.data : undefined;
+  if (!result.success) {
+    return requireDynamicNodeDetail(kind, nodeKey, undefined, "detail_json has invalid fields");
+  }
+  const detail = Object.keys(result.data).length > 0 ? result.data : undefined;
+  return requireDynamicNodeDetail(kind, nodeKey, detail);
+}
+
+function dynamicDetailError(kind: string, nodeKey: string, reason: string): never {
+  throw new Error(`${kind}/${nodeKey} requires valid sealed detail_json: ${reason}`);
+}
+
+function detailString(
+  detail: PiAttemptNodeDetail,
+  field: "domainId" | "question" | "scope" | "title" | "lens",
+): boolean {
+  const value = detail[field];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Enforce the detail fields the dynamic NodeContract cannot express as artifacts. */
+function requireDynamicNodeDetail(
+  kind: PiAttemptInput["node"]["kind"],
+  nodeKey: string,
+  detail: PiAttemptNodeDetail | undefined,
+  invalidReason?: string,
+): PiAttemptNodeDetail | undefined {
+  if (!isDynamicPiNodeKind(kind)) return detail;
+  if (!detail) dynamicDetailError(kind, nodeKey, invalidReason ?? "detail_json is empty");
+
+  if (kind === "research.leaf") {
+    for (const field of ["domainId", "question", "scope"] as const) {
+      if (!detailString(detail, field))
+        dynamicDetailError(kind, nodeKey, `missing detail.${field}`);
+    }
+  }
+  if (kind === "research.domain") {
+    for (const field of ["domainId", "title", "scope"] as const) {
+      if (!detailString(detail, field))
+        dynamicDetailError(kind, nodeKey, `missing detail.${field}`);
+    }
+    if (
+      !Array.isArray(detail.questions) ||
+      detail.questions.length === 0 ||
+      !detail.questions.every((question) => typeof question === "string" && question.trim())
+    ) {
+      dynamicDetailError(kind, nodeKey, "missing detail.questions");
+    }
+  }
+  if (kind === "review.seat") {
+    if (!detailString(detail, "lens")) dynamicDetailError(kind, nodeKey, "missing detail.lens");
+    if (!Number.isInteger(detail.seatIndex) || (detail.seatIndex ?? -1) < 0) {
+      dynamicDetailError(kind, nodeKey, "missing detail.seatIndex");
+    }
+  }
+  if (kind === "repair" && !detail.repairRequest) {
+    dynamicDetailError(kind, nodeKey, "missing detail.repairRequest");
+  }
+  return detail;
+}
+
+function isDynamicPiNodeKind(
+  kind: PiAttemptInput["node"]["kind"],
+): kind is "research.leaf" | "research.domain" | "review.seat" | "repair" {
+  return (
+    kind === "research.leaf" ||
+    kind === "research.domain" ||
+    kind === "review.seat" ||
+    kind === "repair"
+  );
 }
 
 export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): PiAttemptInput {
@@ -740,6 +783,7 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
     claim.runId,
     claim.nodeKey,
     claim.nodeGeneration,
+    kind,
   );
   return {
     runId: claim.runId,
@@ -939,5 +983,3 @@ export function shouldAutoRetryResearch(
   // failedCount includes this just-failed Attempt; allow one more total Attempt.
   return failedCount < RESEARCH_AUTO_RETRY_MAX_ATTEMPTS;
 }
-
-

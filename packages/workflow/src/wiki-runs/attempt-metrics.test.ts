@@ -102,15 +102,24 @@ test("migrate adds attempt metric columns on fresh and legacy schemas", () => {
   legacy.close();
 });
 
+test("migrate rejects persisted runs with no definition version", () => {
+  const legacy = new DatabaseSync(":memory:");
+  configureOwner(legacy);
+  legacy.exec("CREATE TABLE runs (run_id TEXT PRIMARY KEY) STRICT");
+  legacy.prepare("INSERT INTO runs (run_id) VALUES ('old-run')").run();
+  assert.throws(() => migrate(legacy), /existing runs have no definition_version/);
+  legacy.close();
+});
+
 test("writeAttemptMetrics + snapshot project metrics when set", () => {
   const db = openMigratedDb();
   const ts = "2026-07-30T12:00:00.000Z";
   const digest = "a".repeat(64);
   db.prepare(
     `INSERT INTO runs (
-      run_id, workspace_id, operator_session_id, revision, state, cancel_requested,
-      freeze_config_json, freeze_config_digest, created_at, updated_at
-    ) VALUES (?, ?, NULL, 1, 'running', 0, '{}', ?, ?, ?)`,
+      run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
+      freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
+    ) VALUES (?, ?, NULL, 2, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   ).run("run-1", "ws-1", digest, ts, ts);
   db.prepare(
     `INSERT INTO nodes (
@@ -165,9 +174,9 @@ test("listNonTerminalRuns returns only non-terminal states", () => {
   const digest = "b".repeat(64);
   const insert = db.prepare(
     `INSERT INTO runs (
-      run_id, workspace_id, operator_session_id, revision, state, cancel_requested,
-      freeze_config_json, freeze_config_digest, created_at, updated_at
-    ) VALUES (?, 'ws', NULL, 1, ?, 0, '{}', ?, ?, ?)`,
+      run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
+      freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
+    ) VALUES (?, 'ws', NULL, 2, 1, ?, 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   );
   insert.run("run-running", "running", digest, ts, ts);
   insert.run("run-queued", "queued", digest, ts, ts);
@@ -203,7 +212,7 @@ test("successful freeze attempt path persists wall_time_ms and role", async (t) 
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "metrics-start-1" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "metrics-start-1", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const finished = await waitForTerminal(runs, receipt.runId);

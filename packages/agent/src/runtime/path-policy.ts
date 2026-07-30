@@ -4,7 +4,7 @@
  *   sources/  — snapshot mounts (read-only)
  *   skill/    — Producer Skill (read-only)
  *   wiki/     — Staging Wiki (writable for write roles)
- *   analysis/ — spec + receipts (writable for write roles)
+ *   analysis/ — current Attempt outputs (writable for write roles)
  *
  * No filesystem I/O — policy is unit-tested without node:fs.
  */

@@ -10,6 +10,7 @@ import {
   makeWorkspace,
   removeWorkspace,
   seedOpenPlanGate,
+  succeededPlan,
   succeededProbe,
   waitForTerminal,
 } from "./harness.js";
@@ -27,7 +28,7 @@ test("cancel before the executor starts prevents its invocation", async (t) => {
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel-before-pi" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-cancel-before-pi", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await runs.dispatch(
@@ -47,18 +48,19 @@ test("cancel aborts an executing Pi attempt and its late result cannot commit", 
   });
   const runs = await openWikiRuns({
     rootPath: root,
-    piAttemptExecutor: freezeAndPlanExecutor(async ({ workDir }, signal) => {
+    piAttemptExecutor: async (input, signal) => {
+      assert.equal(input.node.key, "plan");
       started();
       await new Promise<void>((resolve) =>
         signal.addEventListener("abort", () => resolve(), { once: true }),
       );
-      await writeFile(path.join(workDir, "late-result.txt"), "too late\n", "utf8");
-      return succeededProbe(workDir);
-    }),
+      await writeFile(path.join(input.workDir, "late-result.txt"), "too late\n", "utf8");
+      return succeededPlan(input);
+    },
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-cancel", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedAttempt;
@@ -74,10 +76,11 @@ test("cancel aborts an executing Pi attempt and its late result cannot commit", 
     cancelled,
   );
   const snapshot = (await runs.read({ runId: receipt.runId })).snapshot;
-  assert.equal(snapshot.attempts[0]?.state, "cancelled");
+  const planAttempt = snapshot.attempts.find((attempt) => attempt.nodeKey === "plan");
+  assert.equal(planAttempt?.state, "cancelled");
   assert.equal(snapshot.state, "cancelled");
-  assert.equal(snapshot.nodes[0]?.state, "cancelled");
-  assert.deepEqual(snapshot.nodes[0]?.outputs, []);
+  assert.equal(snapshot.nodes.find((node) => node.key === "plan")?.state, "cancelled");
+  assert.deepEqual(snapshot.nodes.find((node) => node.key === "plan")?.outputs, []);
 });
 
 test("cancel aborts an active freeze and removes its unpinned run tree", async (t) => {
@@ -93,7 +96,7 @@ test("cancel aborts an active freeze and removes its unpinned run tree", async (
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel-freeze" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-cancel-freeze", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedFreeze;
@@ -111,7 +114,7 @@ test("terminal runs reject a new cancellation command", async (t) => {
   const runs = await openWikiRuns({ rootPath: root });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-terminal-cancel" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-terminal-cancel", intent: { mode: "generate" } },
     context(workspaceId),
   );
   // Freeze advances to plan-ready (still active); cancel is allowed, then terminal.
@@ -136,7 +139,7 @@ test("CancelRun withdraws open gates", async (t) => {
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel-gate" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-cancel-gate", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await waitForTerminal(runs, receipt.runId);

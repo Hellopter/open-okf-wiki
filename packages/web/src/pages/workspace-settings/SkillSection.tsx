@@ -19,8 +19,6 @@ import { useI18n } from "../../i18n";
 
 export type SkillSectionProps = {
   workspaceId: string;
-  workspace: WorkspaceConfig;
-  rootPathHint?: string;
   models: ModelProfilePublic[];
   skill: SkillInfo | null;
   skillBusy: boolean;
@@ -38,8 +36,6 @@ export type SkillSectionProps = {
 
 export function SkillSection({
   workspaceId,
-  workspace,
-  rootPathHint,
   models,
   skill,
   skillBusy,
@@ -55,7 +51,6 @@ export function SkillSection({
   applyWorkspace,
 }: SkillSectionProps) {
   const { t } = useI18n();
-  const rootPath = workspace.rootPath ?? rootPathHint;
 
   return (
     <Card>
@@ -103,14 +98,10 @@ export function SkillSection({
                   setSkillBusy(true);
                   setError(null);
                   try {
-                    const result = await createWorkspaceSkillFork(workspaceId, rootPath);
+                    const result = await createWorkspaceSkillFork(workspaceId);
                     applyWorkspace(result.workspace, models);
                     setSkill(result.skill);
-                    const file = await readWorkspaceSkillFile(
-                      workspaceId,
-                      "SKILL.md",
-                      result.workspace.rootPath ?? rootPathHint,
-                    );
+                    const file = await readWorkspaceSkillFile(workspaceId, "SKILL.md");
                     setSkillFilePath("SKILL.md");
                     setSkillFileContent(file.file.content);
                     setSkillFileDirty(false);
@@ -139,7 +130,7 @@ export function SkillSection({
                   setSkillBusy(true);
                   setError(null);
                   try {
-                    const result = await resetWorkspaceSkill(workspaceId, rootPath);
+                    const result = await resetWorkspaceSkill(workspaceId);
                     applyWorkspace(result.workspace, models);
                     setSkill(result.skill);
                     setSkillFileContent("");
@@ -167,11 +158,7 @@ export function SkillSection({
                   setSkillBusy(true);
                   setError(null);
                   try {
-                    const file = await readWorkspaceSkillFile(
-                      workspaceId,
-                      skillFilePath.trim(),
-                      rootPath,
-                    );
+                    const file = await readWorkspaceSkillFile(workspaceId, skillFilePath.trim());
                     setSkillFileContent(file.file.content);
                     setSkillFileDirty(false);
                   } catch (err) {
@@ -198,14 +185,10 @@ export function SkillSection({
                   setSkillBusy(true);
                   setError(null);
                   try {
-                    const result = await writeWorkspaceSkillFile(
-                      workspaceId,
-                      {
-                        path: skillFilePath.trim(),
-                        content: skillFileContent,
-                      },
-                      rootPath,
-                    );
+                    const result = await writeWorkspaceSkillFile(workspaceId, {
+                      path: skillFilePath.trim(),
+                      content: skillFileContent,
+                    });
                     setSkill(result.skill);
                     setSkillFileDirty(false);
                     toast.success(t.settings.skillSaved);
@@ -224,7 +207,9 @@ export function SkillSection({
           {skill?.kind === "fork" ? (
             <FieldGroup className="gap-2">
               <Field>
-                <FieldLabel htmlFor="settings-skill-file-path">{t.settings.skillFileLabel}</FieldLabel>
+                <FieldLabel htmlFor="settings-skill-file-path">
+                  {t.settings.skillFileLabel}
+                </FieldLabel>
                 <Input
                   id="settings-skill-file-path"
                   className="font-mono"
@@ -260,7 +245,7 @@ export function SkillSection({
                         return;
                       }
                       try {
-                        const listed = await listWorkspaceSkillFiles(workspaceId, "", rootPath);
+                        const listed = await listWorkspaceSkillFiles(workspaceId, "");
                         const firstMd = listed.entries.find(
                           (e) => e.kind === "file" && e.path.endsWith(".md"),
                         );

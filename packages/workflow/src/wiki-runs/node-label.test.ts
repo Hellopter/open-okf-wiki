@@ -16,7 +16,10 @@ test("labelForNode uses domain title and leaf question", () => {
     "What is the module boundary?",
   );
   assert.equal(labelForNode("write.root", "write.root"), "Write");
-  assert.notEqual(labelForNode("research.leaf", "research.leaf.core.1", { questionIndex: 1, domainId: "core" }), "1");
+  assert.notEqual(
+    labelForNode("research.leaf", "research.leaf.core.1", { questionIndex: 1, domainId: "core" }),
+    "1",
+  );
 });
 
 test("parentKeyForNode links leaf to domain", () => {
@@ -24,7 +27,10 @@ test("parentKeyForNode links leaf to domain", () => {
     parentKeyForNode("research.leaf", "research.leaf.core.1", { domainId: "core" }),
     "research.domain.core",
   );
-  assert.equal(parentKeyForNode("research.domain", "research.domain.core", { domainId: "core" }), "plan");
+  assert.equal(
+    parentKeyForNode("research.domain", "research.domain.core", { domainId: "core" }),
+    "plan",
+  );
 });
 
 test("parseNodeDetail keeps only known fields", () => {

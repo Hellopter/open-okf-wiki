@@ -6,7 +6,7 @@
  * Operator-explicit orchestration values still win via resolveOrchestration first.
  */
 
-import { type WorkspaceOrchestration, resolveOrchestration } from "./workspace.js";
+import { resolveOrchestration, type WorkspaceOrchestration } from "./workspace.js";
 
 /**
  * Deterministic host-side inventory signals used for adaptive fan-out.
@@ -105,8 +105,7 @@ export function resolveAdaptiveOrchestration(
     reviewCouncilSize: Math.min(4, Math.max(1, reviewCouncilSize)),
   };
 
-  const lightPath =
-    orchestration.planScoutCount === 0 && orchestration.reviewCouncilSize === 1;
+  const lightPath = orchestration.planScoutCount === 0 && orchestration.reviewCouncilSize === 1;
 
   return { orchestration, reasons, lightPath };
 }
@@ -120,8 +119,7 @@ export function planUncertaintyFromSpec(spec: {
   openQuestions?: readonly string[];
 }): number {
   const domains = spec.domains?.length ?? 0;
-  const questions =
-    spec.domains?.reduce((n, d) => n + (d.questions?.length ?? 0), 0) ?? 0;
+  const questions = spec.domains?.reduce((n, d) => n + (d.questions?.length ?? 0), 0) ?? 0;
   const open = spec.openQuestions?.length ?? 0;
   // Heuristic: more open Qs and multi-domain → higher uncertainty.
   const openScore = Math.min(1, open / 6);

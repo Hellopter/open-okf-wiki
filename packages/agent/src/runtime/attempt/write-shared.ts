@@ -1,16 +1,15 @@
 /**
  * Shared write path for write.root and repair.
  *
- * Eliminates near-duplicate branches: both materialise a sealed spec, optionally
- * seed a prior wiki tree, build a feedback-first task, call writeWiki, index pages,
- * and seal a transcript with wiki_tree + transcript artifacts.
+ * Both modes consume Attempt-local projections, build a feedback-first task,
+ * call writeWiki, index pages, and seal wiki_tree + transcript artifacts.
  *
  * Phase 2: consume projected EvidenceBundle, defects, and refresh prior wiki.
  */
 
 import {
-  PiAttemptOutcomeSchema,
   type PiAttemptOutcome,
+  PiAttemptOutcomeSchema,
   type RepairRequest,
   RepairRequestSchema,
 } from "@okf-wiki/contract";
@@ -29,30 +28,37 @@ import {
   type AttemptHandlerContext,
   bounded,
   liveModel,
-  readSealedWikiTree,
   readSpec,
   sealTranscript,
-  writeAnalysisJson,
 } from "./shared.js";
 
 export type WriteSharedMode = "write.root" | "repair";
 
-/** Parse optional structured RepairRequest from node detail (schema-validated). */
-function loadRepairRequest(detail: AttemptHandlerContext["input"]["node"]["detail"]): RepairRequest | undefined {
+/**
+ * Parse the structured RepairRequest from sealed node detail.
+ * A write.root feedback pass can be unstructured, but a repair.N node has no
+ * valid semantic fallback: scheduling must supply its exact repair envelope.
+ */
+function loadRepairRequest(
+  detail: AttemptHandlerContext["input"]["node"]["detail"],
+  required: boolean,
+): RepairRequest | undefined {
   const raw = detail && "repairRequest" in detail ? detail.repairRequest : undefined;
-  if (raw == null) return undefined;
+  if (raw == null) {
+    if (required) throw new Error("repair requires sealed detail.repairRequest");
+    return undefined;
+  }
   const parsed = RepairRequestSchema.safeParse(raw);
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) {
+    if (required) throw new Error("repair requires a valid sealed detail.repairRequest");
+    return undefined;
+  }
+  return parsed.data;
 }
 
 /** Lead-in block so truncation still keeps repair scope facts. */
 function formatRepairRequestBlock(request: RepairRequest): string {
-  const lines: string[] = [
-    "RepairRequest:",
-    "```json",
-    JSON.stringify(request, null, 2),
-    "```",
-  ];
+  const lines: string[] = ["RepairRequest:", "```json", JSON.stringify(request, null, 2), "```"];
   if (request.scope.pages.length > 0) {
     lines.push(`Repair scope pages: ${request.scope.pages.join(", ")}`);
   }
@@ -69,7 +75,7 @@ function formatRepairRequestBlock(request: RepairRequest): string {
  * Run the writer (or repair-style writer) for one Attempt.
  *
  * Behaviour differences preserved:
- * - repair: always requires sealed wiki_tree; always graphRole "repair";
+ * - repair: materialized wiki baseline; always graphRole "repair";
  *   repair instruction mentions "blocking defects".
  * - write.root: optional feedback turns the task into repair-style; prior wiki
  *   is seeded by materialize for refresh/prior_wiki; graphRole "repair"
@@ -84,81 +90,18 @@ export async function runWriteShared(
   const intent = await loadProjectedIntent(layout);
   const isRefresh = intent?.mode === "refresh";
 
-  if (mode === "repair") {
-    // materialize may already have seeded wiki/ from wiki_tree; ensure present.
-    const needsSeed = input.sealedInputs.some(
-      (item) => item.role === "wiki_tree" || item.role === "prior_wiki",
-    );
-    if (needsSeed) {
-      try {
-        await readSealedWikiTree(input, layout.wikiDir);
-      } catch {
-        // Already seeded by materialize — continue.
-      }
-    } else {
-      await readSealedWikiTree(input, layout.wikiDir);
-    }
-  }
-
-  // Refresh fail-closed: must have prior wiki projected or sealed.
-  if (mode === "write.root" && isRefresh) {
-    const hasPrior = input.sealedInputs.some(
-      (item) => item.role === "prior_wiki" || item.role === "wiki_tree",
-    );
-    if (!hasPrior) {
-      throw new Error(
-        "write.root refresh mode requires sealed prior_wiki (or wiki_tree); freeze must pin the published wiki",
-      );
-    }
-    // Ensure wiki/ is seeded (materialize should have done this).
-    try {
-      await readSealedWikiTree(input, layout.wikiDir);
-    } catch {
-      // Prefer prior_wiki role for seed.
-      const prior = input.sealedInputs.find((item) => item.role === "prior_wiki");
-      if (prior) {
-        const { cp, mkdir } = await import("node:fs/promises");
-        await mkdir(layout.wikiDir, { recursive: true });
-        await cp(prior.readOnlyPath, layout.wikiDir, {
-          recursive: true,
-          dereference: false,
-          errorOnExist: false,
-        });
-      } else {
-        throw new Error("refresh mode: prior wiki could not be seeded into wiki/");
-      }
-    }
-  }
-
-  // write.root with feedback: seed prior wiki when sealed (best-effort).
   const feedback =
     typeof input.node.detail?.feedback === "string" && input.node.detail.feedback.trim()
       ? input.node.detail.feedback.trim()
       : undefined;
-  const repairRequest = loadRepairRequest(input.node.detail);
+  const repairRequest = loadRepairRequest(input.node.detail, mode === "repair");
   const repairRequestBlock = repairRequest ? formatRepairRequestBlock(repairRequest) : undefined;
 
-  if (
-    mode === "write.root" &&
-    !isRefresh &&
-    (feedback || repairRequest) &&
-    input.sealedInputs.some((item) => item.role === "wiki_tree")
-  ) {
-    try {
-      await readSealedWikiTree(input, layout.wikiDir);
-    } catch {
-      // Prior wiki may be absent or unreadable on first write; pure repair still proceeds.
-    }
-  }
-
-  const spec = await readSpec(input, layout);
-  await writeAnalysisJson(layout, "spec.json", spec);
+  const spec = await readSpec(layout);
 
   const evidence = await loadEvidenceBundle(layout);
   const receiptIndex = formatEvidenceIndex(evidence);
-  const defectsText =
-    (await loadProjectedDefectsText(layout)) ??
-    (await loadSealedDefectsText(input));
+  const defectsText = await loadProjectedDefectsText(layout);
   const operatorNotes = formatOperatorInputNotes(await loadProjectedOperatorInput(layout));
 
   const resolved =
@@ -269,27 +212,4 @@ export async function runWriteShared(
     ],
     summary: bounded(produced.summary),
   });
-}
-
-async function loadSealedDefectsText(
-  input: AttemptHandlerContext["input"],
-): Promise<string | undefined> {
-  const sealed = input.sealedInputs.find((item) => item.role === "defects");
-  if (!sealed) return undefined;
-  const { readFile, stat } = await import("node:fs/promises");
-  const pathMod = await import("node:path");
-  const candidates = [
-    sealed.readOnlyPath,
-    pathMod.join(sealed.readOnlyPath, "defects.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const info = await stat(candidate);
-      if (!info.isFile()) continue;
-      return await readFile(candidate, "utf8");
-    } catch {
-      // try next
-    }
-  }
-  return undefined;
 }

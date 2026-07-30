@@ -113,11 +113,7 @@ export function AgentSessionSidebar({
 
   return (
     <>
-      <Sidebar
-        collapsible="icon"
-        data-testid="agent-left-pane"
-        className={cn(className)}
-      >
+      <Sidebar collapsible="icon" data-testid="agent-left-pane" className={cn(className)}>
         <SidebarHeader>
           <SidebarGroupLabel title={workspaceName ?? workspaceId}>
             {workspaceName ?? workspaceId}
@@ -132,7 +128,9 @@ export function AgentSessionSidebar({
                 onClick={onCreate}
               >
                 <PlusIcon />
-                <span>{creating ? t.agentWorkspace.creatingSession : t.agentWorkspace.newSession}</span>
+                <span>
+                  {creating ? t.agentWorkspace.creatingSession : t.agentWorkspace.newSession}
+                </span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

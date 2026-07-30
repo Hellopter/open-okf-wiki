@@ -15,7 +15,11 @@ export function domainResearchPrompt(input: {
   childReceiptSummaries?: string;
 }): string {
   const evidenceBlock = input.receiptIndex?.trim()
-    ? ["", "## Projected child receipts (prefer these over full re-scan)", input.receiptIndex.trim()]
+    ? [
+        "",
+        "## Projected child receipts (prefer these over full re-scan)",
+        input.receiptIndex.trim(),
+      ]
     : [
         "",
         "## Projected child receipts",

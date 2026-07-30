@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import {
-  buildDefinitionV1Graph,
+  buildExecutionGraph,
   isMechanicalAttemptKind,
   isPiAttemptKind,
-} from "./definition-v1.js";
+} from "./execution-graph.js";
 import { compileExecutionPlan, ExecutionPlanCompileError } from "./plan-compiler.js";
 
-test("buildDefinitionV1Graph orders leaves before domains and ends at publish", () => {
-  const graph = buildDefinitionV1Graph(defaultWikiRunSpec("Demo"));
+test("buildExecutionGraph orders leaves before domains and ends at publish", () => {
+  const graph = buildExecutionGraph(defaultWikiRunSpec("Demo"));
   const keys = graph.nodes.map((n) => n.key);
   assert.ok(keys.includes("research.leaf.core.1"));
   assert.ok(keys.includes("research.leaf.core.2"));
@@ -45,7 +45,7 @@ test("reviewRequired=false compiles empty lenses and skips seats", () => {
   spec.acceptance.reviewRequired = false;
   const plan = compileExecutionPlan(spec);
   assert.deepEqual(plan.reviewLenses, []);
-  const graph = buildDefinitionV1Graph(spec);
+  const graph = buildExecutionGraph(spec);
   assert.equal(
     graph.nodes.some((n) => n.kind === "review.seat"),
     false,
@@ -53,10 +53,10 @@ test("reviewRequired=false compiles empty lenses and skips seats", () => {
   assert.ok(graph.edges.some((e) => e.from === "validate.pre" && e.to === "review.reduce"));
 });
 
-test("buildDefinitionV1Graph without domains wires plan → write.root", () => {
+test("buildExecutionGraph without domains wires plan → write.root", () => {
   const spec = defaultWikiRunSpec("Empty");
   spec.domains = [];
-  const graph = buildDefinitionV1Graph(spec);
+  const graph = buildExecutionGraph(spec);
   assert.ok(graph.edges.some((e) => e.from === "plan" && e.to === "write.root"));
   assert.equal(
     graph.nodes.some((n) => n.kind === "research.domain"),
@@ -79,7 +79,7 @@ test("compileExecutionPlan throws when domains exceed maxDomainFanOut", () => {
       /3 domains.*maxDomainFanOut is 2/i.test(err.message),
   );
   assert.throws(
-    () => buildDefinitionV1Graph(spec, { maxDomainFanOut: 2, maxLeafFanOut: 6 }),
+    () => buildExecutionGraph(spec, { maxDomainFanOut: 2, maxLeafFanOut: 6 }),
     ExecutionPlanCompileError,
   );
 });
@@ -106,7 +106,7 @@ test("compileExecutionPlan throws when questions exceed maxLeafFanOut", () => {
 test("compileExecutionPlan within caps builds workUnits and reductions", () => {
   const spec = defaultWikiRunSpec("Ok");
   const plan = compileExecutionPlan(spec, { maxDomainFanOut: 4, maxLeafFanOut: 6 });
-  assert.equal(plan.version, 1);
+  assert.equal(plan.version, 2);
   assert.equal(plan.fanOut.domainCount, 1);
   assert.equal(plan.fanOut.leafCount, 2);
   assert.equal(plan.workUnits.length, 2);
@@ -119,7 +119,7 @@ test("compileExecutionPlan within caps builds workUnits and reductions", () => {
   });
 });
 
-test("buildDefinitionV1Graph omitted options use DEFAULT_ORCHESTRATION (4/6/1)", () => {
+test("buildExecutionGraph omitted options use DEFAULT_ORCHESTRATION (4/6/1)", () => {
   const spec = defaultWikiRunSpec("Defaults");
   // Exactly at default caps — must succeed (not throw, not truncate).
   spec.domains = Array.from({ length: 4 }, (_, i) => ({
@@ -130,7 +130,7 @@ test("buildDefinitionV1Graph omitted options use DEFAULT_ORCHESTRATION (4/6/1)",
     questions: Array.from({ length: 6 }, (_, q) => `q${q}`),
   }));
   // Pages must reference domains for Spec validity elsewhere; graph only needs domains.
-  const graph = buildDefinitionV1Graph(spec);
+  const graph = buildExecutionGraph(spec);
   const domains = graph.nodes.filter((n) => n.kind === "research.domain");
   const leaves = graph.nodes.filter((n) => n.kind === "research.leaf");
   const seats = graph.nodes.filter((n) => n.kind === "review.seat");
@@ -152,7 +152,7 @@ test("buildDefinitionV1Graph omitted options use DEFAULT_ORCHESTRATION (4/6/1)",
   );
 });
 
-test("buildDefinitionV1Graph throws (not slice) when Spec exceeds default caps", () => {
+test("buildExecutionGraph throws (not slice) when Spec exceeds default caps", () => {
   const spec = defaultWikiRunSpec("Over");
   spec.domains = Array.from({ length: 5 }, (_, i) => ({
     id: `d${i}`,
@@ -161,5 +161,5 @@ test("buildDefinitionV1Graph throws (not slice) when Spec exceeds default caps",
     critical: i === 0,
     questions: Array.from({ length: 7 }, (_, q) => `q${q}`),
   }));
-  assert.throws(() => buildDefinitionV1Graph(spec), ExecutionPlanCompileError);
+  assert.throws(() => buildExecutionGraph(spec), ExecutionPlanCompileError);
 });

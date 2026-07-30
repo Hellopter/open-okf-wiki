@@ -1,39 +1,31 @@
 /**
  * plan node: produce an unsealed WikiRunSpec via planWikiSpec.
- * Phase 1: wires RunIntent (focus → operatorNotes), plan revise (priorSpec +
- * revisionFeedback), and scout model (worker role).
+ * Wires RunIntent (focus → operatorNotes), revision feedback, and the scout
+ * model (worker role). Replanning never reads a prior Spec artifact.
  */
 
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  FrozenRunManifestSchema,
-  PiAttemptOutcomeSchema,
   type PiAttemptOutcome,
-  planUncertaintyFromSpec,
-  type RunIntent,
-  RunIntentSchema,
+  PiAttemptOutcomeSchema,
   resolveAdaptiveOrchestration,
-  type WikiRunSpec,
-  WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import { createSubmitWikiRunSpecTool } from "../../../tools/submit-wiki-run-spec.js";
 import { planWikiSpec } from "../../../workflow/phases/plan-phase.js";
 import {
+  loadProjectedIntent,
   loadProjectedOperatorInput,
   mergeOperatorNotes,
 } from "../materialize.js";
-import {
-  type AttemptHandlerContext,
-  bounded,
-  liveModel,
-  sealTranscript,
-} from "../shared.js";
+import { type AttemptHandlerContext, bounded, liveModel, sealTranscript } from "../shared.js";
 
 /** Coarse inventory from workspace sources (no tree walk — cheap signal). */
-function inventoryFromWorkspace(workspace: {
-  sources?: readonly unknown[];
-}): { sourceCount: number; multiEntry?: boolean; large?: boolean } {
+function inventoryFromWorkspace(workspace: { sources?: readonly unknown[] }): {
+  sourceCount: number;
+  multiEntry?: boolean;
+  large?: boolean;
+} {
   const sourceCount = workspace.sources?.length ?? 0;
   return {
     sourceCount,
@@ -48,7 +40,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     throw new Error(`unsupported Pi attempt node: ${input.node.kind}/${input.node.key}`);
   }
 
-  const intent = await loadRunIntent(input);
+  const intent = await loadProjectedIntent(layout);
   // Phase 4: sealed operator_input answer is authoritative for continuation Attempts.
   const operatorInput = await loadProjectedOperatorInput(layout);
   const operatorNotes = mergeOperatorNotes({
@@ -60,13 +52,12 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       ? input.node.detail.feedback.trim()
       : undefined;
   const isRevise = input.node.generation > 0 || Boolean(revisionFeedback);
-  const priorSpec = isRevise ? await loadPriorSpec(input) : undefined;
 
-  // Phase 7: inventory + plan-uncertainty adaptive scouts (default 0 light path).
+  // Phase 7: inventory-based adaptive scouts; replan does not recover a prior Spec.
   const adaptive = resolveAdaptiveOrchestration({
     orchestration: input.workspace.orchestration,
     inventory: inventoryFromWorkspace(input.workspace),
-    planUncertainty: priorSpec ? planUncertaintyFromSpec(priorSpec) : 0,
+    planUncertainty: 0,
   });
 
   const resolved =
@@ -94,7 +85,6 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     sourceIgnores: ignores,
     abortSignal: signal,
     operatorNotes,
-    ...(priorSpec ? { priorSpec } : {}),
     ...(revisionFeedback ? { revisionFeedback } : {}),
     customTools: [createSubmitWikiRunSpecTool({ runWorkDir: input.workDir })],
     transcriptPath: input.sessionPath,
@@ -110,7 +100,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     meta: {
       mode: planned.mode,
       source: planned.source,
-      intentMode: intent?.mode ?? "generate",
+      intentMode: intent?.mode,
       revise: isRevise,
       ...(operatorInput?.answer ? { operatorInputBound: true } : {}),
     },
@@ -123,57 +113,4 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     ],
     summary,
   });
-}
-
-/** Load RunIntent from sealed frozen_run_manifest (Phase 1 freeze output). */
-async function loadRunIntent(
-  input: AttemptHandlerContext["input"],
-): Promise<RunIntent | undefined> {
-  const sealed = input.sealedInputs.find(
-    (item) => item.role === "frozen_run_manifest" || item.role === "manifest",
-  );
-  if (!sealed) return undefined;
-  const candidates = [
-    path.join(sealed.readOnlyPath, "frozen-run-manifest.json"),
-    sealed.readOnlyPath,
-  ];
-  for (const candidate of candidates) {
-    try {
-      const info = await stat(candidate);
-      if (!info.isFile()) continue;
-      const raw = JSON.parse(await readFile(candidate, "utf8")) as unknown;
-      const manifest = FrozenRunManifestSchema.safeParse(raw);
-      if (manifest.success) return RunIntentSchema.parse(manifest.data.intent);
-      const intentOnly = RunIntentSchema.safeParse(raw);
-      if (intentOnly.success) return intentOnly.data;
-    } catch {
-      // try next
-    }
-  }
-  return undefined;
-}
-
-/** Load prior Spec from sealed prior_spec (plan revise) or role spec. */
-async function loadPriorSpec(
-  input: AttemptHandlerContext["input"],
-): Promise<WikiRunSpec | undefined> {
-  const sealed =
-    input.sealedInputs.find((item) => item.role === "prior_spec") ??
-    input.sealedInputs.find((item) => item.role === "spec");
-  if (!sealed) return undefined;
-  const candidates = [
-    path.join(sealed.readOnlyPath, "spec.json"),
-    sealed.readOnlyPath,
-    path.join(sealed.readOnlyPath, "analysis", "spec.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const info = await stat(candidate);
-      if (!info.isFile()) continue;
-      return WikiRunSpecSchema.parse(JSON.parse(await readFile(candidate, "utf8")));
-    } catch {
-      // try next
-    }
-  }
-  return undefined;
 }

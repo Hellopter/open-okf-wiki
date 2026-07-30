@@ -45,7 +45,7 @@ describe("wikiRun view-model projection", () => {
           currentAttemptId: null,
           lastAttemptId: "a-plan",
           outputs: [],
-            label: "node",
+          label: "node",
         },
         {
           key: "research.leaf.core",
@@ -55,7 +55,7 @@ describe("wikiRun view-model projection", () => {
           currentAttemptId: "a-leaf",
           lastAttemptId: "a-leaf",
           outputs: [],
-            label: "node",
+          label: "node",
         },
         {
           key: "write.root",
@@ -65,7 +65,7 @@ describe("wikiRun view-model projection", () => {
           currentAttemptId: null,
           lastAttemptId: null,
           outputs: [],
-            label: "node",
+          label: "node",
         },
       ],
       attempts: [
@@ -205,7 +205,7 @@ describe("wikiRun view-model projection", () => {
           currentAttemptId: null,
           lastAttemptId: null,
           outputs: [],
-            label: "node",
+          label: "node",
         },
         {
           key: "research.leaf.x",
@@ -215,7 +215,7 @@ describe("wikiRun view-model projection", () => {
           currentAttemptId: "a-fail",
           lastAttemptId: "a-fail",
           outputs: [],
-            label: "node",
+          label: "node",
         },
       ],
       attempts: [

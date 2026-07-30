@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isRunCancellable } from "./run-actions.ts";
+import { isRunCancellable, isTerminalWikiRunState } from "./run-actions.ts";
 
 describe("isRunCancellable", () => {
   it("keeps a newly accepted run cancellable before its first snapshot", () => {
@@ -17,5 +17,13 @@ describe("isRunCancellable", () => {
 
   it("does not offer a command while the selected Run has failed to load", () => {
     assert.equal(isRunCancellable(undefined, true), false);
+  });
+});
+
+describe("isTerminalWikiRunState", () => {
+  it("identifies terminal Run states for list refresh", () => {
+    assert.equal(isTerminalWikiRunState("published"), true);
+    assert.equal(isTerminalWikiRunState("cancelled"), true);
+    assert.equal(isTerminalWikiRunState("running"), false);
   });
 });

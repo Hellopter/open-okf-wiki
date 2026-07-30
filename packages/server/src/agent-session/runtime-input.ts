@@ -12,7 +12,7 @@ import {
   shouldUsePiFixtureMode,
 } from "@okf-wiki/agent";
 import type { WorkspaceConfig } from "@okf-wiki/contract";
-import { loadWorkspaceById, resolveWikiSkillPaths } from "@okf-wiki/core";
+import { loadWorkspace, resolveWikiSkillPaths } from "@okf-wiki/core";
 import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
 /** Portable result of runtimeInput (avoids leaking agent-internal declaration paths). */
@@ -38,11 +38,7 @@ async function resolveRoleModel(
 }
 
 async function reloadWorkspace(workspace: WorkspaceConfig): Promise<WorkspaceConfig> {
-  const current = await loadWorkspaceById(workspace.id, { rootPath: workspace.rootPath });
-  if (!current) {
-    throw new Error(`Workspace not found while starting Wiki Run: ${workspace.id}`);
-  }
-  return current;
+  return loadWorkspace(workspace.rootPath);
 }
 
 function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWikiRun {

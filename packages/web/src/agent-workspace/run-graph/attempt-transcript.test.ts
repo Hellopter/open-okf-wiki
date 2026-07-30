@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  isAttemptTranscriptLive,
-  projectAttemptTranscriptMessages,
-} from "./attempt-transcript.ts";
+import { isAttemptTranscriptLive, projectAttemptTranscriptMessages } from "./attempt-transcript.ts";
 
 describe("projectAttemptTranscriptMessages", () => {
   it("projects Pi-ish role + content rows as AgentMessage[]", () => {

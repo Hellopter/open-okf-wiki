@@ -19,8 +19,8 @@ import type { AttemptItem, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
 import type { AgentRunRequest, ScopedRunnerRole } from "../ports/agent-runner.js";
 import { classifyAgentFailure } from "../workflow/retry-policy.js";
 import {
-  createAttemptTranscriptSink,
   type AttemptTranscriptSink,
+  createAttemptTranscriptSink,
 } from "./attempt-transcript-sink.js";
 import {
   createWikiSession,
@@ -232,10 +232,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     ? createAttemptTranscriptSink(input.transcriptPath)
     : undefined;
 
-  const flushTranscript = (
-    status: ScopedAgentProgress["status"],
-    summary?: string,
-  ): void => {
+  const flushTranscript = (status: ScopedAgentProgress["status"], summary?: string): void => {
     if (!sink) return;
     const items = attemptItemsSnapshot(projector);
     const terminal =

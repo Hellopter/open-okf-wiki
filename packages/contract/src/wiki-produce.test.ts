@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  projectWikiProduceDetailsForHistory,
-  toDurableWikiProduceDetails,
-  WikiProduceDurableDetailsSchema,
-  WikiProduceToolDetailsSchema,
-} from "./wiki-produce.js";
+import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
 
 test("WikiProduceToolDetailsSchema is receipt-oriented (status + runId + summary)", () => {
   const details = WikiProduceToolDetailsSchema.parse({
@@ -66,41 +61,28 @@ test("WikiProduceToolDetailsSchema rejects duplicate Pi framing fields", () => {
   );
 });
 
-test("toDurableWikiProduceDetails is identity on receipt rows", () => {
-  const live = WikiProduceToolDetailsSchema.parse({
-    status: "accepted",
-    runId: "run-1",
-    pages: ["overview.md"],
-    summary: "Wiki Run accepted",
-  });
-  const durable = toDurableWikiProduceDetails(live);
-  assert.deepEqual(durable, {
-    status: "accepted",
-    runId: "run-1",
-    pages: ["overview.md"],
-    summary: "Wiki Run accepted",
-  });
-  WikiProduceDurableDetailsSchema.parse(durable);
-});
+test("WikiProduceToolDetailsSchema rejects historical status values and page lists", () => {
+  assert.equal(
+    WikiProduceToolDetailsSchema.safeParse({
+      status: "accepted",
+      pages: ["overview.md"],
+    }).success,
+    false,
+  );
 
-test("projectWikiProduceDetailsForHistory strips fat fields from legacy rows", () => {
-  const fat = {
-    status: "published",
-    runId: "run-1",
-    summary: "ok",
-    pages: ["overview.md"],
-    spec: { version: 1 },
-    graph: { topologyVersion: 1, topology: [], attempts: [] },
-    children: [{ id: "plan", role: "plan", status: "done" }],
-    defects: null,
-  };
-  const projected = projectWikiProduceDetailsForHistory(fat) as Record<string, unknown>;
-  assert.equal(projected.status, "published");
-  assert.equal(projected.runId, "run-1");
-  assert.equal("spec" in projected, false);
-  assert.equal("graph" in projected, false);
-  assert.equal("children" in projected, false);
-  assert.equal("defects" in projected, false);
-  const other = { path: "/tmp/x", bytes: 12 };
-  assert.equal(projectWikiProduceDetailsForHistory(other), other);
+  for (const status of [
+    "freezing",
+    "planning",
+    "awaiting_plan",
+    "producing",
+    "awaiting_publication",
+    "published",
+    "publication_declined",
+  ]) {
+    assert.equal(
+      WikiProduceToolDetailsSchema.safeParse({ status, runId: "run-1" }).success,
+      false,
+      status,
+    );
+  }
 });

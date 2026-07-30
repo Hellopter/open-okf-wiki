@@ -19,9 +19,12 @@ import {
 import path from "node:path";
 import {
   type AttemptMetrics,
+  contractForNode,
+  inputRoleMatches,
   type MergedDefectReport,
   MergedDefectReportSchema,
   type PiAttemptArtifactDescriptor,
+  validateBoundInputs,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import {
@@ -30,8 +33,8 @@ import {
   wallTimeMsFromStarted,
   writeAttemptMetrics,
 } from "./attempt-metrics.js";
-import type { WikiRunsCasCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
+import type { WikiRunsCasCtx } from "./ctx.js";
 import { upstreamKeys } from "./dag.js";
 import {
   latestWikiCandidate,
@@ -39,7 +42,6 @@ import {
   registerWikiCandidate,
 } from "./evaluation/candidate.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
-import { contractForNode, validateBoundInputs } from "./node-contract.js";
 import { isRepairNodeKey, REPAIR_NODE_PREFIX } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
@@ -76,14 +78,6 @@ export function bindAttemptInputs(
   runId: string,
   nodeKey: string,
 ): void {
-  for (const input of upstreamSealedOutputs(host, runId, nodeKey)) {
-    host.db
-      .prepare(
-        `INSERT INTO attempt_inputs (attempt_id, role, artifact_id) VALUES (?, ?, ?)
-         ON CONFLICT(attempt_id, role) DO NOTHING`,
-      )
-      .run(attemptId, input.role, input.artifactId);
-  }
   const kindRow = asRow(
     host.db
       .prepare(
@@ -94,12 +88,24 @@ export function bindAttemptInputs(
       .get(runId, nodeKey),
   );
   const kind = kindRow ? requiredText(kindRow, "kind") : nodeKey;
+  const contract = contractForNode(kind, nodeKey);
+  for (const input of upstreamSealedOutputs(host, runId, nodeKey)) {
+    if (!contract.requiredInputs.some((requirement) => inputRoleMatches(requirement, input.role))) {
+      continue;
+    }
+    host.db
+      .prepare(
+        `INSERT INTO attempt_inputs (attempt_id, role, artifact_id) VALUES (?, ?, ?)
+         ON CONFLICT(attempt_id, role) DO NOTHING`,
+      )
+      .run(attemptId, input.role, input.artifactId);
+  }
   const boundRoles = asRows(
     host.db
       .prepare(`SELECT role FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`)
       .all(attemptId),
   ).map((row) => requiredText(row, "role"));
-  validateBoundInputs(contractForNode(kind, nodeKey), boundRoles);
+  validateBoundInputs(contract, boundRoles);
 }
 
 /** Succeeded node outputs at a fixed generation (not necessarily current max). */
@@ -172,9 +178,7 @@ function writeRootNeedsPriorWiki(
   if (generation > 0) return true;
   const row = asRow(
     host.db
-      .prepare(
-        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
-      )
+      .prepare("SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
       .get(runId, "write.root", generation),
   );
   if (!row || row.detail_json == null || row.detail_json === "") return false;
@@ -318,15 +322,7 @@ export function upstreamSealedOutputs(
       add(output.role, output.artifactId);
     }
   }
-  if (nodeKey === "plan") {
-    // Plan revise (generation > 0): bind prior generation Spec as prior_spec.
-    const planGen = host.currentNodeGeneration(runId, "plan");
-    if (planGen !== undefined && planGen > 0) {
-      for (const output of nodeOutputsAtGeneration(host, runId, "plan", planGen - 1)) {
-        if (output.role === "spec") add("prior_spec", output.artifactId);
-      }
-    }
-  } else {
+  if (nodeKey !== "plan") {
     for (const output of nodeOutputsAtCurrentGen(host, runId, "plan")) {
       if (output.role === "spec") add(output.role, output.artifactId);
       if (output.role === "execution_plan") add(output.role, output.artifactId);
@@ -341,7 +337,6 @@ export function upstreamSealedOutputs(
     "skill",
     "spec",
     "execution_plan",
-    "prior_spec",
     "frozen_run_manifest",
     "prior_wiki",
     "wiki_tree",
@@ -538,7 +533,10 @@ export function loadSealedDefectsReport(
     candidates.push(path.join(preparation.sourceDirectory, "defects.json"));
     candidates.push(preparation.sourceDirectory);
   }
-  const sealedRoot = path.join(runWorkDir(host.workspace.rootPath, runId), preparation.relativePath);
+  const sealedRoot = path.join(
+    runWorkDir(host.workspace.rootPath, runId),
+    preparation.relativePath,
+  );
   candidates.push(path.join(sealedRoot, "defects.json"), sealedRoot);
   for (const candidate of candidates) {
     try {
@@ -682,10 +680,7 @@ export async function sealPreparation(
   }
 }
 
-export async function verifyArtifact(
-  directory: string,
-  expectedDigest: string,
-): Promise<boolean> {
+export async function verifyArtifact(directory: string, expectedDigest: string): Promise<boolean> {
   const info = await lstat(directory).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -717,10 +712,7 @@ export async function syncDirectory(directory: string): Promise<void> {
   await durableFsyncPath(directory);
 }
 
-export function orphanPreparedArtifacts(
-  host: Pick<ArtifactsHost, "db">,
-  attemptId: string,
-): void {
+export function orphanPreparedArtifacts(host: Pick<ArtifactsHost, "db">, attemptId: string): void {
   host.db
     .prepare(
       "UPDATE artifact_preparations SET state = 'orphaned' WHERE attempt_id = ? AND state = 'prepared'",

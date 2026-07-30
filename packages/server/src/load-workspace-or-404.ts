@@ -4,17 +4,13 @@ import { loadWorkspaceById } from "@okf-wiki/core";
 import { sendError } from "./http-util.ts";
 
 /**
- * Load a workspace by id (optional rootPath query) or send 404 and return null.
- * Shared by HTTP route handlers; registry internal reload may call loadWorkspaceById directly.
+ * Load a workspace by id or send 404 and return null.
  */
 export async function loadWorkspaceOr404(
   res: ServerResponse,
   id: string,
-  url: URL,
 ): Promise<WorkspaceConfig | null> {
-  const workspace = await loadWorkspaceById(id, {
-    rootPath: url.searchParams.get("rootPath") ?? undefined,
-  });
+  const workspace = await loadWorkspaceById(id);
   if (!workspace) {
     sendError(res, 404, `workspace not found: ${id}`);
     return null;

@@ -4,13 +4,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type {
+import {
+  contractForNode,
   RunCommand,
   RunCommandContext,
   RunCommandReceipt,
 } from "@okf-wiki/contract";
-import type { WikiRunsDbCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { CommandIdCollision } from "./types.js";
@@ -82,16 +83,17 @@ export function applyCommand(
 
   const runId = randomUUID();
   const timestamp = now();
+  contractForNode("freeze", "freeze");
   // Hard-cut: StartRun always carries intent (schema-enforced).
   const intentJson = JSON.stringify(command.intent);
   host.db
     .prepare(
       `INSERT INTO runs (
-          run_id, workspace_id, operator_session_id, revision, state, cancel_requested,
+          run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
           freeze_config_json, freeze_config_digest, intent_json,
           frozen_sources_json, frozen_skill_digest,
           pinned_sources_json, skill_digest, pinned_digest, created_at, updated_at
-        ) VALUES (?, ?, ?, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, 2, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       runId,
@@ -244,9 +246,7 @@ export function cancelRun(
     requireActiveState: true,
   });
   // Shared path emits run.cancelled when it mutates; re-ack still emits for the receipt.
-  const revision = result.didMutate
-    ? result.revision
-    : host.emit(command.runId, "run.cancelled");
+  const revision = result.didMutate ? result.revision : host.emit(command.runId, "run.cancelled");
   recordCommand(host, command, context, payloadDigest, command.runId, revision);
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
 }
@@ -371,6 +371,7 @@ export function applyRerunAt(
       nextDetailJson = Object.keys(base).length > 0 ? JSON.stringify(base) : null;
     }
 
+    contractForNode(target.kind, target.nodeKey);
     host.db
       .prepare(
         `INSERT INTO nodes (

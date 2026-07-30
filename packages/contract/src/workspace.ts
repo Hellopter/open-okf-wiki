@@ -44,19 +44,17 @@ export type SourceOrigin = z.infer<typeof SourceOriginSchema>;
  * One local Git working tree used as a Wiki source.
  * Path is always absolute after registration. May live inside or outside Workspace rootPath.
  */
-export const WorkspaceSourceSchema = z.object({
-  id: SourceIdSchema,
-  /** Absolute filesystem path to a local Git checkout. */
-  path: z.string().trim().min(1),
-  applyDefaultIgnores: z.boolean().default(true),
-  ignore: z.array(IgnorePatternSchema).default([]),
-  /**
-   * How the source was attached. Always set on write.
-   * Legacy on-disk records without origin normalize to `{ type: "path" }` on parse
-   * so freeze/run keep working; subsequent save persists the default.
-   */
-  origin: SourceOriginSchema.default({ type: "path" }),
-});
+export const WorkspaceSourceSchema = z
+  .object({
+    id: SourceIdSchema,
+    /** Absolute filesystem path to a local Git checkout. */
+    path: z.string().trim().min(1),
+    applyDefaultIgnores: z.boolean().default(true),
+    ignore: z.array(IgnorePatternSchema).default([]),
+    /** How the source was attached. Always set on write. */
+    origin: SourceOriginSchema,
+  })
+  .strict();
 
 export type WorkspaceSource = z.infer<typeof WorkspaceSourceSchema>;
 
@@ -192,56 +190,52 @@ export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
  * There is no per-role maxSteps API on Pi AgentSession; turn budgets are abort/timeout only.
  * Unknown legacy keys (e.g. rootMaxSteps) are stripped on parse.
  */
-export const WorkspaceOrchestrationSchema = z.object({
-  /**
-   * @deprecated Fossil field. Definition v1 has no recursive depth axis; WikiRuns
-   * path ignores maxDepth. Kept so older workspace JSON still parses and resolve
-   * still fills a default; Settings no longer re-saves it and no UI controls it.
-   */
-  maxDepth: z.number().int().min(1).max(4).default(2),
-  /** Cap domains materialized from Spec (topology). */
-  maxDomainFanOut: z.number().int().min(1).max(16).default(4),
-  /**
-   * Cap questions/leaves per domain (topology only — not the leaf concurrency pool).
-   * Scheduler leaf pool is separate: domainConcurrency × min(leafConcurrency, maxLeafFanOut).
-   */
-  maxLeafFanOut: z.number().int().min(1).max(16).default(6),
-  /**
-   * Independent review council size (Run Boundary-owned).
-   * Default 1 (light path). Raise for multi-lens ensemble
-   * (grounding/coverage/consistency). Pad with same model + different prompts when
-   * only one reviewer profile is configured.
-   */
-  reviewCouncilSize: z.number().int().min(1).max(4).default(1),
-  /**
-   * How many review council members may run concurrently.
-   * Defaults to `reviewCouncilSize` when omitted.
-   */
-  reviewConcurrency: z.number().int().min(1).max(4).optional(),
-  /**
-   * Parallel plan scouts before the Spec synthesizer (entry / layout / tests).
-   * 0 disables scouts (single planner only; light-path default).
-   * Raise when inventory shows large/multi-entry or plan uncertainty.
-   */
-  planScoutCount: z.number().int().min(0).max(4).default(0),
-  /**
-   * How many plan scouts may run concurrently.
-   * Defaults to `planScoutCount` when omitted.
-   */
-  planScoutConcurrency: z.number().int().min(1).max(4).optional(),
-  /**
-   * How many domain research units may run concurrently (each unit is
-   * leaf fan-out + domain reduce). Domains have independent scopes, so
-   * this bounds wall-clock, not correctness. Also scales the shared leaf
-   * pool with leafConcurrency.
-   */
-  domainConcurrency: z.number().int().min(1).max(8).default(2),
-  /**
-   * Per-domain leaf parallel width. Total leaf slots =
-   * domainConcurrency × min(leafConcurrency, maxLeafFanOut).
-   */
-  leafConcurrency: z.number().int().min(1).max(16).default(2),
-});
+export const WorkspaceOrchestrationSchema = z
+  .object({
+    /** Cap domains materialized from Spec (topology). */
+    maxDomainFanOut: z.number().int().min(1).max(16).default(4),
+    /**
+     * Cap questions/leaves per domain (topology only — not the leaf concurrency pool).
+     * Scheduler leaf pool is separate: domainConcurrency × min(leafConcurrency, maxLeafFanOut).
+     */
+    maxLeafFanOut: z.number().int().min(1).max(16).default(6),
+    /**
+     * Independent review council size (Run Boundary-owned).
+     * Default 1 (light path). Raise for multi-lens ensemble
+     * (grounding/coverage/consistency). Pad with same model + different prompts when
+     * only one reviewer profile is configured.
+     */
+    reviewCouncilSize: z.number().int().min(1).max(4).default(1),
+    /**
+     * How many review council members may run concurrently.
+     * Defaults to `reviewCouncilSize` when omitted.
+     */
+    reviewConcurrency: z.number().int().min(1).max(4).optional(),
+    /**
+     * Parallel plan scouts before the Spec synthesizer (entry / layout / tests).
+     * 0 disables scouts (single planner only; light-path default).
+     * Raise when inventory shows large/multi-entry or plan uncertainty.
+     */
+    planScoutCount: z.number().int().min(0).max(4).default(0),
+    /**
+     * How many plan scouts may run concurrently.
+     * Defaults to `planScoutCount` when omitted.
+     */
+    planScoutConcurrency: z.number().int().min(1).max(4).optional(),
+    /**
+     * How many domain research units may run concurrently (each unit is
+     * leaf fan-out + domain reduce). Domains have independent scopes, so
+     * this bounds wall-clock, not correctness. Also scales the shared leaf
+     * pool with leafConcurrency.
+     */
+    domainConcurrency: z.number().int().min(1).max(8).default(2),
+    /**
+     * Per-domain leaf parallel width. Total leaf slots =
+     * domainConcurrency × min(leafConcurrency, maxLeafFanOut).
+     */
+    leafConcurrency: z.number().int().min(1).max(16).default(2),
+  })
+  .strict();
 
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
 
@@ -260,8 +254,6 @@ export function resolveOrchestration(
   const reviewCouncilSize = o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize;
   const planScoutCount = o.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount;
   return {
-    // maxDepth: deprecated fossil; still filled for older JSON / type compat.
-    maxDepth: o.maxDepth ?? DEFAULT_ORCHESTRATION.maxDepth,
     maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
     maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
     reviewCouncilSize,
@@ -351,51 +343,53 @@ export const IGNORE_PRESETS: Readonly<
  * Operator project (Workspace). Distinct from run-local analysis scratch.
  * Secrets must never appear in this document.
  */
-export const WorkspaceConfigSchema = z.object({
-  version: z.literal(1).default(1),
-  id: z.string().trim().min(1),
-  name: z.string().trim().min(1).max(120),
-  /** Absolute path to the workspace root directory. */
-  rootPath: z.string().trim().min(1),
-  /** Empty until the operator adds at least one local Git source. */
-  sources: z.array(WorkspaceSourceSchema).default([]),
-  model: ModelRefSchema,
-  /** Absolute path for the Published Wiki tree (same-volume rules apply at prepare). */
-  publicationPath: z.string().trim().min(1),
-  limits: WorkspaceLimitsSchema.default(() => WorkspaceLimitsSchema.parse({})),
-  /**
-   * Optional per-role models (planner / worker / reviewers).
-   * Omitted roles use `model`.
-   */
-  roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
-  /** Supervisor tree fan-out, concurrency, and review council size. */
-  orchestration: WorkspaceOrchestrationSchema.default(() => ({ ...DEFAULT_ORCHESTRATION })),
-  /**
-   * When true, interactive Wiki Runs pause for operator Spec confirmation
-   * before produce. Headless/autoApprove skips this gate.
-   */
-  // HITL by default: interactive runs pause for operator plan approval.
-  planConfirm: z.boolean().default(true),
-  /**
-   * Operator Session tool selection (all, partial, or none of the selectable
-   * tools). Defaults to the Operations-scoped read-only set; `bash` only via
-   * explicit opt-in.
-   */
-  operatorTools: OperatorToolsSchema.default([...DEFAULT_OPERATOR_TOOLS]),
-  /**
-   * Output language for Wiki page body and titles produced by Wiki Runs.
-   * Independent of the operator UI locale.
-   */
-  wikiLanguage: WikiLanguageSchema.default("en"),
-  /**
-   * Optional path to a project Producer Skill
-   * (`{root}/.agents/skills/repository-wiki-producer`).
-   * Omit to resolve home (`~/.agents/skills`) or package default.
-   */
-  skillPath: z.string().trim().min(1).optional(),
-  createdAt: z.string().datetime(),
-  lastOpenedAt: z.string().datetime().optional(),
-});
+export const WorkspaceConfigSchema = z
+  .object({
+    version: z.literal(2),
+    id: z.string().trim().min(1),
+    name: z.string().trim().min(1).max(120),
+    /** Absolute path to the workspace root directory. */
+    rootPath: z.string().trim().min(1),
+    /** Empty until the operator adds at least one local Git source. */
+    sources: z.array(WorkspaceSourceSchema).default([]),
+    model: ModelRefSchema,
+    /** Absolute path for the Published Wiki tree (same-volume rules apply at prepare). */
+    publicationPath: z.string().trim().min(1),
+    limits: WorkspaceLimitsSchema.default(() => WorkspaceLimitsSchema.parse({})),
+    /**
+     * Optional per-role models (planner / worker / reviewers).
+     * Omitted roles use `model`.
+     */
+    roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
+    /** Supervisor tree fan-out, concurrency, and review council size. */
+    orchestration: WorkspaceOrchestrationSchema.default(() => ({ ...DEFAULT_ORCHESTRATION })),
+    /**
+     * When true, interactive Wiki Runs pause for operator Spec confirmation
+     * before produce. Headless/autoApprove skips this gate.
+     */
+    // HITL by default: interactive runs pause for operator plan approval.
+    planConfirm: z.boolean().default(true),
+    /**
+     * Operator Session tool selection (all, partial, or none of the selectable
+     * tools). Defaults to the Operations-scoped read-only set; `bash` only via
+     * explicit opt-in.
+     */
+    operatorTools: OperatorToolsSchema.default([...DEFAULT_OPERATOR_TOOLS]),
+    /**
+     * Output language for Wiki page body and titles produced by Wiki Runs.
+     * Independent of the operator UI locale.
+     */
+    wikiLanguage: WikiLanguageSchema.default("en"),
+    /**
+     * Optional path to a project Producer Skill
+     * (`{root}/.agents/skills/repository-wiki-producer`).
+     * Omit to resolve home (`~/.agents/skills`) or package default.
+     */
+    skillPath: z.string().trim().min(1).optional(),
+    createdAt: z.string().datetime(),
+    lastOpenedAt: z.string().datetime().optional(),
+  })
+  .strict();
 
 export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
 

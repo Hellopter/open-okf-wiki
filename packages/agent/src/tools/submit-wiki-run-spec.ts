@@ -90,7 +90,8 @@ const pageSchema = Type.Object(
           Type.Literal("concept"),
         ],
         {
-          description: "Optional page template hint: overview | architecture | module | flow | concept.",
+          description:
+            "Optional page template hint: overview | architecture | module | flow | concept.",
         },
       ),
     ),
@@ -115,7 +116,8 @@ const acceptanceSchema = Type.Object(
     ),
     maxHardValidateRepairRounds: Type.Optional(
       Type.Number({
-        description: "Max hard-validate repair rounds (non-negative number). Omit for product default.",
+        description:
+          "Max hard-validate repair rounds (non-negative number). Omit for product default.",
       }),
     ),
     blockingSeverities: Type.Optional(
@@ -148,7 +150,8 @@ export const submitWikiRunSpecParameters = Type.Object(
       }),
     ),
     domains: Type.Array(domainSchema, {
-      description: "Domain breakdown of the sources (may be empty only if pages fully stand alone).",
+      description:
+        "Domain breakdown of the sources (may be empty only if pages fully stand alone).",
     }),
     pages: Type.Array(pageSchema, {
       minItems: 1,

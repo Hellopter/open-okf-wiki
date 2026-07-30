@@ -83,12 +83,8 @@ export function ProviderPanel({
                       {entry.apiShape}
                       {" · "}
                       {entry.apiKeySet ? (entry.apiKeyMasked ?? t.globalSettings.keySet) : "—"}
-                      {entry.headers?.["User-Agent"]
-                        ? ` · UA=${entry.headers["User-Agent"]}`
-                        : ""}
-                      {entry.supportsDeveloperRole
-                        ? ` · ${t.globalSettings.developerRoleOn}`
-                        : ""}
+                      {entry.headers?.["User-Agent"] ? ` · UA=${entry.headers["User-Agent"]}` : ""}
+                      {entry.supportsDeveloperRole ? ` · ${t.globalSettings.developerRoleOn}` : ""}
                     </p>
                   </div>
                   <div className="row-actions shrink-0">
@@ -134,7 +130,9 @@ export function ProviderPanel({
                           <TableHead>{t.globalSettings.colName}</TableHead>
                           <TableHead>{t.globalSettings.colModelId}</TableHead>
                           <TableHead>{t.globalSettings.colMaxContext}</TableHead>
-                          <TableHead className="text-right">{t.globalSettings.colActions}</TableHead>
+                          <TableHead className="text-right">
+                            {t.globalSettings.colActions}
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>

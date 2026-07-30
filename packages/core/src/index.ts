@@ -19,12 +19,12 @@ export {
   type AutofixCitationsInContentOptions,
   type AutofixCitationsInContentResult,
   type AutofixWikiTreeResult,
+  autofixCitationsInContent,
+  autofixWikiTreeCitations,
   type CanonicalizeCitationOptions,
   type CanonicalizeCitationResult,
   type CanonicalizeWikiTreeResult,
   type ClampCitationOptions,
-  autofixCitationsInContent,
-  autofixWikiTreeCitations,
   canonicalizeCitationInContent,
   canonicalizeCitationTarget,
   canonicalizeWikiTreeCitations,
@@ -53,6 +53,13 @@ export {
   type GitRunner,
   type GitRunResult,
 } from "./git-runner.js";
+export {
+  extractPagesFromValidationMessage,
+  extractPathFromValidateError,
+  MECHANICAL_REPAIR_PAGE_CAP,
+  mechanicalIssuesFromErrors,
+  toMechanicalReport,
+} from "./mechanical-report.js";
 export {
   OKF_VERSION,
   type OkfStamp,
@@ -205,13 +212,6 @@ export {
   WIKI_VALIDATE_MAX_FILE_BYTES,
   WIKI_VALIDATE_MAX_FILES,
 } from "./validate-wiki.js";
-export {
-  extractPagesFromValidationMessage,
-  extractPathFromValidateError,
-  MECHANICAL_REPAIR_PAGE_CAP,
-  mechanicalIssuesFromErrors,
-  toMechanicalReport,
-} from "./mechanical-report.js";
 export {
   regenerateWikiIndexes,
   renderDirectoryIndex,

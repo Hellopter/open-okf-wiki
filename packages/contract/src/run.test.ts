@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AnalysisReceiptSchema } from "./receipt.js";
-import { MergedDefectReportSchema, WikiRunSpecSchema } from "./run.js";
+import { ExecutionPlanSchema, MergedDefectReportSchema, WikiRunSpecSchema } from "./run.js";
+
+test("ExecutionPlan requires v2", () => {
+  const plan = {
+    version: 2,
+    workUnits: [],
+    reductions: [],
+    reviewLenses: [],
+    budgets: { maxRepairRounds: 0, maxHardValidateRepairRounds: 0 },
+    fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+  };
+  assert.equal(ExecutionPlanSchema.safeParse(plan).success, true);
+  assert.equal(ExecutionPlanSchema.safeParse({ ...plan, version: 1 }).success, false);
+  const { version: _version, ...withoutVersion } = plan;
+  assert.equal(ExecutionPlanSchema.safeParse(withoutVersion).success, false);
+});
 
 test("WikiRunSpec bidirectional domain↔page (ok / orphan / empty / unknown)", () => {
   const good = {

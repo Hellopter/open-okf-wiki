@@ -68,6 +68,9 @@ test.describe("workspace settings", () => {
     await expect(
       page.locator("[data-sonner-toast]").filter({ hasText: /saved/i }).first(),
     ).toBeVisible();
+    await expect(page.getByTestId("configure-page").getByRole("heading", { level: 1 })).toHaveText(
+      updatedName,
+    );
 
     await page.reload();
     await expect(page.getByTestId("settings-page")).toBeVisible();

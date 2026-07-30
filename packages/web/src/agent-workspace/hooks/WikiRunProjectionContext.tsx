@@ -6,10 +6,10 @@
  * Graph expand is local UI state (not this context). Receipt only updates URL run.
  */
 
-import { createContext, useContext, useMemo, type ReactNode } from "react";
-import type { WikiRunProjectionContextValue } from "./wiki-run-projection";
-import { useWikiRun } from "./useWikiRun";
+import { createContext, type ReactNode, useContext, useMemo } from "react";
 import type { ConnectionStatus } from "./useSessionAgent";
+import { useWikiRun } from "./useWikiRun";
+import type { WikiRunProjectionContextValue } from "./wiki-run-projection";
 
 const IDLE_VALUE: WikiRunProjectionContextValue = {
   runId: null,
@@ -27,7 +27,6 @@ const WikiRunProjectionContext = createContext<WikiRunProjectionContextValue>(ID
 
 export type WikiRunProjectionProviderProps = {
   workspaceId: string;
-  rootPath?: string;
   /** Active run id from URL `?run=` (null → no SSE). */
   runId: string | null;
   children: ReactNode;
@@ -38,14 +37,12 @@ export type WikiRunProjectionProviderProps = {
  */
 export function WikiRunProjectionProvider({
   workspaceId,
-  rootPath,
   runId,
   children,
 }: WikiRunProjectionProviderProps) {
   const wikiRun = useWikiRun({
     workspaceId,
     runId,
-    rootPath,
     enabled: Boolean(runId && workspaceId),
   });
 

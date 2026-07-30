@@ -1,9 +1,8 @@
 /**
- * Finite NodeContract registry — single source for required inputs, outputs,
- * and projection mode (Phase 2 hard-cut).
+ * Finite WikiRuns NodeContract registry.
  *
- * Binding validates required roles after attempt_inputs freeze; materialize
- * (agent) projects sealed artifacts into workDir/inputs/ using the same roles.
+ * This is the single fixed projection table shared by WikiRuns input binding
+ * and Pi Attempt materialization. It is deliberately not a user-editable DSL.
  */
 
 export type ProjectionMode = "inline" | "mounted" | "handle" | "audit-only";
@@ -14,7 +13,7 @@ export type InputRequirement = {
   artifactKind?: string;
   required: boolean;
   projection: ProjectionMode;
-  /** Relative path under attempt workDir inputs/ when projection is mounted. */
+  /** Relative path under Attempt workDir/inputs when projection is mounted. */
   mountPath?: string;
 };
 
@@ -40,34 +39,28 @@ export function isReviewSeatRole(role: string): boolean {
   return role === "review_seat" || role.endsWith(":review_seat");
 }
 
-function matchesRole(requirement: string, bound: string): boolean {
-  if (requirement === bound) return true;
-  if (requirement === "research") return isResearchRole(bound);
-  if (requirement === "review_seat") return isReviewSeatRole(bound);
-  // Prefix: allow exact well-known or namespaced `nodeKey:role`.
-  if (bound.endsWith(`:${requirement}`)) return true;
-  return false;
+/** Whether one sealed role matches an input requirement. */
+export function inputRoleMatches(requirement: InputRequirement, boundRole: string): boolean {
+  if (requirement.role === boundRole) return true;
+  if (requirement.role === "research") return isResearchRole(boundRole);
+  if (requirement.role === "review_seat") return isReviewSeatRole(boundRole);
+  return boundRole.endsWith(`:${requirement.role}`);
 }
 
 /** Whether bound roles satisfy one InputRequirement (at least one match when required). */
-export function roleSatisfied(requirement: InputRequirement, boundRoles: readonly string[]): boolean {
-  const hit = boundRoles.some((role) => matchesRole(requirement.role, role));
-  if (requirement.required) return hit;
-  return true;
+export function roleSatisfied(
+  requirement: InputRequirement,
+  boundRoles: readonly string[],
+): boolean {
+  const hit = boundRoles.some((role) => inputRoleMatches(requirement, role));
+  return requirement.required ? hit : true;
 }
 
-/**
- * Throw if any required input role is missing from the bound attempt envelope.
- * Optional roles never fail closed here (projection may still skip them).
- */
-export function validateBoundInputs(
-  contract: NodeContract,
-  boundRoles: readonly string[],
-): void {
+/** Throw if any required input role is missing from the bound attempt envelope. */
+export function validateBoundInputs(contract: NodeContract, boundRoles: readonly string[]): void {
   const missing: string[] = [];
   for (const req of contract.requiredInputs) {
-    if (!req.required) continue;
-    if (!roleSatisfied(req, boundRoles)) missing.push(req.role);
+    if (req.required && !roleSatisfied(req, boundRoles)) missing.push(req.role);
   }
   if (missing.length > 0) {
     throw new Error(
@@ -82,7 +75,7 @@ const SOURCES: InputRequirement = {
   artifactKind: "snapshot_set",
   required: true,
   projection: "mounted",
-  mountPath: "../sources/", // sources/ is sibling of inputs/ (legacy mount)
+  mountPath: "../sources/",
 };
 
 const SKILL: InputRequirement = {
@@ -96,9 +89,9 @@ const SKILL: InputRequirement = {
 const FROZEN_MANIFEST: InputRequirement = {
   role: "frozen_run_manifest",
   artifactKind: "manifest",
-  required: false,
+  required: true,
   projection: "mounted",
-  mountPath: "manifest.json",
+  mountPath: "frozen-run-manifest.json",
 };
 
 const SPEC: InputRequirement = {
@@ -109,10 +102,7 @@ const SPEC: InputRequirement = {
   mountPath: "spec.json",
 };
 
-const SPEC_OPTIONAL: InputRequirement = {
-  ...SPEC,
-  required: false,
-};
+const SPEC_OPTIONAL: InputRequirement = { ...SPEC, required: false };
 
 const EXECUTION_PLAN: InputRequirement = {
   role: "execution_plan",
@@ -130,10 +120,7 @@ const RESEARCH: InputRequirement = {
   mountPath: "evidence/receipts/",
 };
 
-const RESEARCH_OPTIONAL: InputRequirement = {
-  ...RESEARCH,
-  required: false,
-};
+const RESEARCH_OPTIONAL: InputRequirement = { ...RESEARCH, required: false };
 
 const WIKI_TREE: InputRequirement = {
   role: "wiki_tree",
@@ -143,10 +130,7 @@ const WIKI_TREE: InputRequirement = {
   mountPath: "prior-wiki/",
 };
 
-const WIKI_TREE_OPTIONAL: InputRequirement = {
-  ...WIKI_TREE,
-  required: false,
-};
+const WIKI_TREE_OPTIONAL: InputRequirement = { ...WIKI_TREE, required: false };
 
 const PRIOR_WIKI: InputRequirement = {
   role: "prior_wiki",
@@ -171,7 +155,6 @@ const TRANSCRIPT_AUDIT: InputRequirement = {
   projection: "audit-only",
 };
 
-/** Optional sealed operator answer after gate_requested → ResolveGate(answer). */
 const OPERATOR_INPUT: InputRequirement = {
   role: "operator_input",
   artifactKind: "operator_input",
@@ -188,7 +171,6 @@ const CONTRACTS: Record<string, NodeContract> = {
       { role: "sources", artifactKind: "snapshot_set" },
       { role: "skill", artifactKind: "skill" },
       { role: "frozen_run_manifest", artifactKind: "manifest" },
-      // prior_wiki only when intent.mode === refresh (optional output)
       { role: "prior_wiki", artifactKind: "wiki_tree" },
     ],
     execution: "mechanical",
@@ -198,7 +180,6 @@ const CONTRACTS: Record<string, NodeContract> = {
     requiredInputs: [SOURCES, SKILL, FROZEN_MANIFEST, TRANSCRIPT_AUDIT, OPERATOR_INPUT],
     outputs: [
       { role: "spec", artifactKind: "spec" },
-      // execution_plan sealed by host after plan success
       { role: "execution_plan", artifactKind: "execution_plan" },
     ],
     execution: "pi",
@@ -209,8 +190,9 @@ const CONTRACTS: Record<string, NodeContract> = {
       SOURCES,
       SKILL,
       SPEC_OPTIONAL,
-      EXECUTION_PLAN,
+      { ...EXECUTION_PLAN, required: true },
       FROZEN_MANIFEST,
+      TRANSCRIPT_AUDIT,
       OPERATOR_INPUT,
     ],
     outputs: [{ role: "research", artifactKind: "receipt" }],
@@ -223,8 +205,9 @@ const CONTRACTS: Record<string, NodeContract> = {
       SKILL,
       RESEARCH,
       SPEC_OPTIONAL,
-      EXECUTION_PLAN,
+      { ...EXECUTION_PLAN, required: true },
       FROZEN_MANIFEST,
+      TRANSCRIPT_AUDIT,
       OPERATOR_INPUT,
     ],
     outputs: [{ role: "research", artifactKind: "receipt" }],
@@ -236,12 +219,13 @@ const CONTRACTS: Record<string, NodeContract> = {
       SOURCES,
       SKILL,
       SPEC,
-      EXECUTION_PLAN,
+      { ...EXECUTION_PLAN, required: true },
       RESEARCH_OPTIONAL,
       PRIOR_WIKI,
       WIKI_TREE_OPTIONAL,
       DEFECTS,
       FROZEN_MANIFEST,
+      TRANSCRIPT_AUDIT,
       OPERATOR_INPUT,
     ],
     outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
@@ -249,17 +233,21 @@ const CONTRACTS: Record<string, NodeContract> = {
   },
   "review.seat": {
     kind: "review.seat",
-    // defects optional: present on re-review after repair for priorBlocking differential.
-    requiredInputs: [WIKI_TREE, SPEC, SOURCES, SKILL, FROZEN_MANIFEST, DEFECTS, OPERATOR_INPUT],
+    requiredInputs: [
+      WIKI_TREE,
+      SPEC,
+      SOURCES,
+      SKILL,
+      FROZEN_MANIFEST,
+      TRANSCRIPT_AUDIT,
+      DEFECTS,
+      OPERATOR_INPUT,
+    ],
     outputs: [{ role: "review_seat", artifactKind: "receipt" }],
     execution: "pi",
   },
   "review.reduce": {
     kind: "review.reduce",
-    // review_seat is optional at claim time: when acceptance.reviewRequired=false the
-    // graph has zero seats, so no seat artifacts are bound. Mechanical reduce still
-    // fail-closes when reviewRequired or configured review.seat.* nodes exist without
-    // bound seat artifacts (never invents NO_DEFECTS in those cases).
     requiredInputs: [
       WIKI_TREE,
       { role: "review_seat", artifactKind: "receipt", required: false, projection: "handle" },
@@ -273,7 +261,16 @@ const CONTRACTS: Record<string, NodeContract> = {
   },
   repair: {
     kind: "repair",
-    requiredInputs: [WIKI_TREE, SPEC, DEFECTS, SOURCES, SKILL, FROZEN_MANIFEST, OPERATOR_INPUT],
+    requiredInputs: [
+      WIKI_TREE,
+      SPEC,
+      DEFECTS,
+      SOURCES,
+      SKILL,
+      FROZEN_MANIFEST,
+      TRANSCRIPT_AUDIT,
+      OPERATOR_INPUT,
+    ],
     outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
     execution: "pi",
   },
@@ -297,8 +294,6 @@ const CONTRACTS: Record<string, NodeContract> = {
   },
   publish: {
     kind: "publish",
-    // Candidate is owned by the durable effect row (gate.publication → publish edge
-    // does not re-bind prepare.publication outputs). Validate via effect, not attempt_inputs.
     requiredInputs: [
       {
         role: "publication_candidate",
@@ -337,30 +332,49 @@ const CONTRACTS: Record<string, NodeContract> = {
   },
 };
 
-/**
- * Resolve the NodeContract for a node kind/key.
- * Single repair family (`repair.N`) via kind===repair or repair.* key prefix.
- * Defects are optional — present for semantic repair, absent for mechanical-only.
- */
+function hasValidKey(kind: string, nodeKey: string): boolean {
+  switch (kind) {
+    case "repair":
+      return /^repair\.[1-9]\d*$/.test(nodeKey);
+    case "research.leaf":
+      return /^research\.leaf\..+\.\d+$/.test(nodeKey);
+    case "research.domain":
+      return /^research\.domain\..+$/.test(nodeKey);
+    case "review.seat":
+      return /^review\.seat\..+$/.test(nodeKey);
+    default:
+      return nodeKey === kind;
+  }
+}
+
+/** Resolve the fixed contract for a valid WikiRuns node kind/key. */
 export function contractForNode(kind: string, nodeKey: string): NodeContract {
-  if (kind === "repair" || nodeKey.startsWith("repair.")) {
-    // defects optional — present for semantic repair, absent for mechanical-only
+  if (kind === "repair") {
+    if (!hasValidKey(kind, nodeKey)) {
+      throw new Error(`unknown WikiRuns node key for repair: ${nodeKey}`);
+    }
     return {
       kind: "repair",
-      requiredInputs: [WIKI_TREE, SPEC, SOURCES, SKILL, DEFECTS, FROZEN_MANIFEST],
+      requiredInputs: [
+        WIKI_TREE,
+        SPEC,
+        SOURCES,
+        SKILL,
+        DEFECTS,
+        FROZEN_MANIFEST,
+        TRANSCRIPT_AUDIT,
+        OPERATOR_INPUT,
+      ],
       outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
       execution: "pi",
     };
   }
   const exact = CONTRACTS[kind];
-  if (exact) return exact;
-  // Unknown kinds: minimal ambient sources/skill when post-freeze (fail soft — no required extras).
-  return {
-    kind,
-    requiredInputs: [],
-    outputs: [],
-    execution: "mechanical",
-  };
+  if (!exact) throw new Error(`unknown WikiRuns node kind: ${kind}`);
+  if (!hasValidKey(kind, nodeKey)) {
+    throw new Error(`unknown WikiRuns node key for ${kind}: ${nodeKey}`);
+  }
+  return exact;
 }
 
 /** All registered contracts (tests / diagnostics). */

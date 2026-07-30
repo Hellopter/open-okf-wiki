@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { getApiBase, type DoctorResponse, type HealthResponse } from "../../api";
+import { type DoctorResponse, getApiBase, type HealthResponse } from "../../api";
 import { formatMessage, useI18n } from "../../i18n";
 
 export type DiagnosticsPanelProps = {

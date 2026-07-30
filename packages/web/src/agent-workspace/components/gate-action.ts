@@ -1,8 +1,4 @@
-import type {
-  ResolveGateCommand,
-  WikiRunGate,
-  WikiRunGateKind,
-} from "@okf-wiki/contract";
+import type { ResolveGateCommand, WikiRunGate, WikiRunGateKind } from "@okf-wiki/contract";
 
 type GateActionCopy = {
   planConfirm: { title: string };

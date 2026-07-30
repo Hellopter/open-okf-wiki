@@ -81,9 +81,9 @@ export async function handleGetWorkspace(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   // Do not rewrite workspace.json for lastOpenedAt — only bump recents index.
   await registerWorkspaceInAppIndex(workspace.rootPath);
@@ -94,9 +94,9 @@ export async function handlePatchWorkspace(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   // Contract boundary: strict schema — unknown keys are rejected, not ignored.
@@ -126,7 +126,7 @@ export async function handleDeleteWorkspace(
   id: string,
   url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   await removeWorkspaceFromAppIndex(workspace.rootPath);
@@ -161,9 +161,9 @@ export async function handleAddSource(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   const raw = await readJsonBody(req);
@@ -212,9 +212,9 @@ export async function handleDeleteSource(
   res: ServerResponse,
   id: string,
   sourceId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   try {
@@ -232,9 +232,9 @@ export async function handleUpdateSource(
   res: ServerResponse,
   id: string,
   sourceId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   const parsed = SourceUpdateSchema.safeParse(await readJsonBody(req));
@@ -258,9 +258,9 @@ export async function handleProbeSources(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   const probes = await Promise.all(
@@ -276,9 +276,9 @@ export async function handleCloneSource(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   const raw = (await readJsonBody(req)) as Record<string, unknown>;
@@ -338,9 +338,9 @@ export async function handleGetSkill(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
     const active = await resolveSkillSource({
@@ -358,9 +358,9 @@ export async function handleCreateSkillFork(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
     // Fork from home/package default — not from an existing project skill.
@@ -382,9 +382,9 @@ export async function handleResetSkill(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   const next = { ...workspace };
   delete next.skillPath;
@@ -414,7 +414,7 @@ export async function handleListSkillFiles(
   id: string,
   url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   const dir = url.searchParams.get("path") ?? "";
   try {
@@ -440,7 +440,7 @@ export async function handleReadSkillFile(
   id: string,
   url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   const filePath = url.searchParams.get("path") ?? "";
   if (!filePath.trim()) {
@@ -466,9 +466,9 @@ export async function handleWriteSkillFile(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   const body = (await readJsonBody(req)) as { path?: unknown; content?: unknown };
   if (typeof body.path !== "string" || !body.path.trim()) {

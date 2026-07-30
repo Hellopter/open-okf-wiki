@@ -8,39 +8,30 @@
  * Hard-cut (Phase 1): no silent `.slice` fan-out. Caps are enforced by
  * `compileExecutionPlan` which throws when Spec exceeds maxDomainFanOut / maxLeafFanOut.
  *
- * Depth: there is no recursive depth axis. workspace.orchestration.maxDepth is
- * ignored here (fossil field; see resolveOrchestration / WorkspaceOrchestrationSchema).
  * Topology caps are maxDomainFanOut and maxLeafFanOut only; leaf *concurrency*
  * is separate (domainConcurrency × min(leafConcurrency, maxLeafFanOut) in concurrency.ts).
  */
 
-import {
-  type ExecutionPlan,
-  type WikiRunNodeKind,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
-import {
-  compileExecutionPlan,
-  type CompileExecutionPlanCaps,
-} from "./plan-compiler.js";
+import { type ExecutionPlan, type WikiRunNodeKind, type WikiRunSpec } from "@okf-wiki/contract";
+import { type CompileExecutionPlanCaps, compileExecutionPlan } from "./plan-compiler.js";
 
-export type BuildDefinitionV1Options = CompileExecutionPlanCaps;
+export type BuildExecutionGraphOptions = CompileExecutionPlanCaps;
 
-export type DefinitionV1Node = {
+export type ExecutionGraphNode = {
   key: string;
   kind: WikiRunNodeKind;
   /** Optional operator-facing detail (question text, lens, …). */
   detail?: Record<string, unknown>;
 };
 
-export type DefinitionV1Edge = {
+export type ExecutionGraphEdge = {
   from: string;
   to: string;
 };
 
-export type DefinitionV1Graph = {
-  nodes: DefinitionV1Node[];
-  edges: DefinitionV1Edge[];
+export type ExecutionGraph = {
+  nodes: ExecutionGraphNode[];
+  edges: ExecutionGraphEdge[];
 };
 
 /**
@@ -59,15 +50,15 @@ export type DefinitionV1Graph = {
  * express the semantic dependency for attempt_inputs binding.
  * `gate.fix` auto-passes when review is clean; opens for HITL on blocking defects.
  */
-export function buildGraphFromExecutionPlan(
+export function buildExecutionGraphFromPlan(
   plan: ExecutionPlan,
   spec: WikiRunSpec,
-): DefinitionV1Graph {
-  const nodes: DefinitionV1Node[] = [];
-  const edges: DefinitionV1Edge[] = [];
+): ExecutionGraph {
+  const nodes: ExecutionGraphNode[] = [];
+  const edges: ExecutionGraphEdge[] = [];
   const seen = new Set<string>();
 
-  const addNode = (node: DefinitionV1Node): void => {
+  const addNode = (node: ExecutionGraphNode): void => {
     if (seen.has(node.key)) return;
     seen.add(node.key);
     nodes.push(node);
@@ -90,7 +81,10 @@ export function buildGraphFromExecutionPlan(
   );
 
   // Group leaf work units by domain for research.domain nodes.
-  const leavesByDomain = new Map<string, Array<{ key: string; unit: ExecutionPlan["workUnits"][number] }>>();
+  const leavesByDomain = new Map<
+    string,
+    Array<{ key: string; unit: ExecutionPlan["workUnits"][number] }>
+  >();
   for (const unit of plan.workUnits) {
     if (unit.kind !== "leaf") continue;
     const domainId = unit.domainId?.trim();
@@ -211,18 +205,14 @@ export function buildGraphFromExecutionPlan(
  * Build the post-plan Definition DAG from Spec + workspace caps.
  * Compiles an ExecutionPlan first (throws on over-cap); never silently truncates.
  *
- * @deprecated name retained for import stability — semantics are schema v2 (no slice).
  */
-export function buildDefinitionV1Graph(
+export function buildExecutionGraph(
   spec: WikiRunSpec,
-  options?: BuildDefinitionV1Options,
-): DefinitionV1Graph {
+  options?: BuildExecutionGraphOptions,
+): ExecutionGraph {
   const plan = compileExecutionPlan(spec, options);
-  return buildGraphFromExecutionPlan(plan, spec);
+  return buildExecutionGraphFromPlan(plan, spec);
 }
-
-/** Alias for schema v2 call sites. */
-export const buildDefinitionV2Graph = buildDefinitionV1Graph;
 
 /** Node kinds executed by the optional PiAttemptExecutor (model / fixture agent). */
 export const PI_ATTEMPT_KINDS: ReadonlySet<WikiRunNodeKind> = new Set([

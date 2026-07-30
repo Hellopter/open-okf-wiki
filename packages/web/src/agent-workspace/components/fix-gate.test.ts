@@ -174,7 +174,12 @@ describe("fixGateContextFromSnapshot", () => {
     const openFix = gate({
       gateId: "g-fix",
       kind: "fix",
-      detail: { source: "review", summary: "3 blocking from council", blockingCount: 3, clean: false },
+      detail: {
+        source: "review",
+        summary: "3 blocking from council",
+        blockingCount: 3,
+        clean: false,
+      },
     });
     const ctx = fixGateContextFromSnapshot(snapshot(), { gate: openFix });
     assert.equal(ctx.summary, "3 blocking from council");

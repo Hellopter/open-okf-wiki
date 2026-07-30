@@ -16,9 +16,9 @@ export async function handleListRuns(
   _req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
     const runs = await (await wikiRunsForWorkspace(workspace)).list();

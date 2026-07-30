@@ -1,6 +1,6 @@
 /** One Pi prompt surface. Wiki Runs begin only when the agent calls wiki_produce. */
 
-import { type SessionUsage, formatContextFill } from "@okf-wiki/contract";
+import { formatContextFill, type SessionUsage } from "@okf-wiki/contract";
 import { SendIcon, SquareIcon } from "lucide-react";
 import {
   type FormEvent,
@@ -50,16 +50,6 @@ export type ComposerProps = {
   modelProfileId?: string;
   /** Session-scoped model switch; resolves false when the server rejects it. */
   onSetModel?: (profileId: string) => Promise<boolean>;
-  /** @deprecated Durable Run controls belong to the Action Dock. */
-  showStopRun?: boolean;
-  /** @deprecated Durable Run controls belong to the Action Dock. */
-  onStopRun?: () => void;
-  /** @deprecated Run state is presented by ActiveRunSummary. */
-  runBusy?: boolean;
-  /** @deprecated Run state is presented by ActiveRunSummary. */
-  runNeedsOperator?: boolean;
-  /** @deprecated Run state is presented by ActiveRunSummary. */
-  runStateLabel?: string;
   /**
    * Ephemeral session context fill (last assistant totalTokens + window).
    * Hidden when absent or unformattable — never paints 0/0 noise.
@@ -325,38 +315,38 @@ export function Composer({
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
-            {contextFill ? (
-              <span
-                data-testid="agent-context-fill"
-                title={t.agentWorkspace.contextFillHint}
-                aria-label={`${t.agentWorkspace.contextFillLabel}: ${contextFill.label}`}
-                className={cn(
-                  "inline-flex max-w-[9rem] items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground tabular-nums",
-                  contextFill.percent !== null &&
-                    contextFill.percent >= 90 &&
-                    "border-destructive/40 text-destructive",
-                  contextFill.percent !== null &&
-                    contextFill.percent >= 70 &&
-                    contextFill.percent < 90 &&
-                    "border-amber-500/40 text-amber-700 dark:text-amber-400",
-                )}
-              >
-                {contextFill.percent !== null ? (
+                {contextFill ? (
                   <span
-                    aria-hidden
-                    className="relative h-1 w-6 overflow-hidden rounded-full bg-muted-foreground/20"
+                    data-testid="agent-context-fill"
+                    title={t.agentWorkspace.contextFillHint}
+                    aria-label={`${t.agentWorkspace.contextFillLabel}: ${contextFill.label}`}
+                    className={cn(
+                      "inline-flex max-w-[9rem] items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground tabular-nums",
+                      contextFill.percent !== null &&
+                        contextFill.percent >= 90 &&
+                        "border-destructive/40 text-destructive",
+                      contextFill.percent !== null &&
+                        contextFill.percent >= 70 &&
+                        contextFill.percent < 90 &&
+                        "border-amber-500/40 text-amber-700 dark:text-amber-400",
+                    )}
                   >
-                    <span
-                      className={cn(
-                        "absolute inset-y-0 left-0 rounded-full bg-current opacity-70",
-                      )}
-                      style={{ width: `${Math.min(100, contextFill.percent)}%` }}
-                    />
+                    {contextFill.percent !== null ? (
+                      <span
+                        aria-hidden
+                        className="relative h-1 w-6 overflow-hidden rounded-full bg-muted-foreground/20"
+                      >
+                        <span
+                          className={cn(
+                            "absolute inset-y-0 left-0 rounded-full bg-current opacity-70",
+                          )}
+                          style={{ width: `${Math.min(100, contextFill.percent)}%` }}
+                        />
+                      </span>
+                    ) : null}
+                    <span data-testid="agent-context-fill-label">{contextFill.label}</span>
                   </span>
                 ) : null}
-                <span data-testid="agent-context-fill-label">{contextFill.label}</span>
-              </span>
-            ) : null}
                 {onSetModel && models.length > 0 ? (
                   <Select
                     items={modelItems}
@@ -364,23 +354,23 @@ export function Composer({
                     onValueChange={(value) => void changeModel(value ?? "")}
                     disabled={disabled || isPending || modelSwitching}
                   >
-                <SelectTrigger
-                  data-testid="agent-model-select"
-                  aria-label={t.agentWorkspace.modelSelectLabel}
-                  className="max-w-44 border-transparent text-xs text-muted-foreground shadow-none hover:border-input data-[popup-open]:border-input"
-                >
-                  {modelSwitching ? <Spinner className="size-3" /> : null}
-                  <SelectValue placeholder={t.agentWorkspace.modelSelectPlaceholder} />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectGroup>
-                    {models.map((model) => (
-                      <SelectItem key={model.id} value={model.id}>
-                        {model.name || model.modelId}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
+                    <SelectTrigger
+                      data-testid="agent-model-select"
+                      aria-label={t.agentWorkspace.modelSelectLabel}
+                      className="max-w-44 border-transparent text-xs text-muted-foreground shadow-none hover:border-input data-[popup-open]:border-input"
+                    >
+                      {modelSwitching ? <Spinner className="size-3" /> : null}
+                      <SelectValue placeholder={t.agentWorkspace.modelSelectPlaceholder} />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                      <SelectGroup>
+                        {models.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            {model.name || model.modelId}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
                   </Select>
                 ) : null}
                 <span

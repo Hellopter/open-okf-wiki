@@ -5,30 +5,27 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { redactErrorMessage } from "@okf-wiki/agent";
-import {
-  readDurableOperatorBranchMessagesForTests,
-  readRawOperatorBranchMessagesForTests,
-} from "@okf-wiki/agent/testing";
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
 import { addSource, createWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { openWikiRuns } from "@okf-wiki/workflow";
-import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
 import {
-  ageLiveSessionForTests,
   deleteAgentSession,
   dispatchAgentCommand,
-  emitProductSseForTests,
   ensureRegistered,
-  evictLiveAgentSessionForTests,
-  injectDurableMessagesForTests,
   listLiveAgentSessionSummaries,
   loadAgentSessionHistory,
-  markLiveSessionBusyForTests,
   registerAgentSession,
+  sweepIdleLiveSessions,
+} from "./agent-session/index.ts";
+import {
+  emitProductSseForTests,
+  evictLiveAgentSessionForTests,
+  injectDurableMessagesForTests,
+  readRawLiveSessionMessagesForTests,
   resetAgentSessionRegistryForTests,
   setLiveSessionIdleTtlForTests,
-  sweepIdleLiveSessions,
-} from "./agent-session-registry.ts";
+} from "./agent-session/test-seams.ts";
+import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
 
 function git(cwd: string, ...args: string[]): void {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -146,18 +143,39 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
       timestamp: Date.now(),
     },
     {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Starting the durable Wiki Run." },
+        {
+          type: "toolCall",
+          id: "tool-hist-1",
+          name: "wiki_produce",
+          arguments: {},
+        },
+      ],
+      api: "openai-completions",
+      provider: "fixture",
+      model: "fixture",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse",
+      timestamp: Date.now(),
+    },
+    {
       role: "toolResult",
       toolCallId: "tool-hist-1",
       toolName: "wiki_produce",
-      content: [{ type: "text", text: "published" }],
+      content: [{ type: "text", text: "accepted" }],
       details: {
-        status: "published",
+        status: "accepted",
         runId: "run-hist",
-        summary: "Published",
-        pages: ["overview.md"],
-        spec: { version: 1, summary: "Should not leave snapshot", pages: [] },
-        children: [{ id: "plan", role: "plan", status: "done" }],
-        defects: { version: 1, clean: true, defects: [], reviewerIds: [] },
+        summary: "Wiki Run accepted",
       },
       isError: false,
       timestamp: Date.now(),
@@ -174,18 +192,17 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
     serialized,
     /\[redacted-key\]|Bearer \[redacted\]|api_key=\[redacted\]|\[redacted-path\]/,
   );
-  assert.equal(serialized.includes("Should not leave snapshot"), false);
-  assert.equal(serialized.includes('"children"'), false);
-  assert.equal(serialized.includes('"graph"'), false);
+  assert.match(serialized, /"status":"accepted"/);
+  assert.equal(serialized.includes('"pages"'), false);
 
   // Cold reopen reads durable JSONL — secrets remain in Pi storage (not mutated).
-  // Product projection strips fat wiki details; raw branch still has them.
   evictLiveAgentSessionForTests(workspace.id, sessionId);
-  const entry = await ensureRegistered(workspace, sessionId);
-  const projected = JSON.stringify(readDurableOperatorBranchMessagesForTests(entry.handle));
-  assert.equal(projected.includes("Should not leave snapshot"), false);
-  const rawSerialized = JSON.stringify(readRawOperatorBranchMessagesForTests(entry.handle));
-  assert.ok(rawSerialized.includes("Should not leave snapshot"));
+  const reopened = await loadAgentSessionHistory(workspace, sessionId);
+  const projected = JSON.stringify(reopened?.messages);
+  assert.match(projected, /"status":"accepted"/);
+  const rawSerialized = JSON.stringify(
+    await readRawLiveSessionMessagesForTests(workspace, sessionId),
+  );
   assert.equal(rawSerialized.includes("sk-live-abcdefghijklmnopqrstuvwxyz"), true);
 });
 
@@ -240,6 +257,70 @@ test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
   assert.equal(blob.includes("super-secret-value"), false);
   assert.equal(blob.includes("/home/cyberspace"), false);
   assert.match(blob, /\[redacted-key\]|Bearer \[redacted\]|api_key=\[redacted\]|\[redacted-path\]/);
+});
+
+test("H2: deleted live runtime ignores late Pi events", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-late-event-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Late Event",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "late-event";
+  await registerAgentSession({ workspace, sessionId });
+  const runtime = await ensureRegistered(workspace, sessionId);
+
+  const seen: unknown[] = [];
+  const unsubscribe = subscribeAgentSessionEvents(workspace.id, sessionId, (event) => {
+    seen.push(event);
+  });
+  t.after(unsubscribe);
+
+  await deleteAgentSession(workspace, sessionId);
+  runtime.receivePiEvent({
+    type: "error",
+    message: "event from a disposed Pi handle",
+  });
+  assert.deepEqual(seen, []);
+});
+
+test("H2: a closing runtime rejects commands before touching Pi", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-closing-command-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Closing Command",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "closing-command";
+  await registerAgentSession({ workspace, sessionId });
+  const runtime = await ensureRegistered(workspace, sessionId);
+
+  runtime.beginClosing();
+  const response = await runtime.dispatch({ type: "prompt", text: "must not reach Pi" });
+  assert.equal(response.ok, false);
+  assert.match(response.message ?? "", /being deleted/i);
 });
 
 test("H2: concurrent ensureRegistered opens a single live SessionManager", async (t) => {
@@ -304,6 +385,48 @@ test("H2: concurrent ensureRegistered opens a single live SessionManager", async
   assert.equal(listLiveAgentSessionSummaries(workspace.id)[0]?.id, sessionId);
 });
 
+test("H2: concurrent create admits one Operator Session", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-registry-create-race-"));
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  const workspace = await createWorkspace({
+    name: "Create Race",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  await saveWorkspace(workspace);
+  const sessionId = "create-race";
+
+  const attempts = await Promise.allSettled([
+    registerAgentSession({ workspace, sessionId }),
+    registerAgentSession({ workspace, sessionId }),
+  ]);
+  type CreatedSession = Awaited<ReturnType<typeof registerAgentSession>>;
+  const created = attempts.filter(
+    (attempt): attempt is PromiseFulfilledResult<CreatedSession> => attempt.status === "fulfilled",
+  );
+  const rejected = attempts.filter(
+    (attempt): attempt is PromiseRejectedResult => attempt.status === "rejected",
+  );
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0]?.value.id, sessionId);
+  assert.equal(rejected.length, 1);
+  assert.match(String(rejected[0]?.reason), /already exists/i);
+  assert.deepEqual(
+    listLiveAgentSessionSummaries(workspace.id).map((session) => session.id),
+    [sessionId],
+  );
+});
+
 test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-open-race-"));
   const oldMode = process.env.OKF_WIKI_AGENT_MODE;
@@ -355,7 +478,7 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   // Seed a durable WikiRun so delete can prove it does not touch Run control data.
   const wikiRuns = await openWikiRuns({ rootPath: workspace.rootPath });
   const startReceipt = await wikiRuns.dispatch(
-    { type: "start_run", commandId: "delete-open-race-run" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "delete-open-race-run", intent: { mode: "generate" } },
     { workspaceId: workspace.id, actor: { id: "test", kind: "local_operator" } },
   );
   const durableRunId = startReceipt.runId;
@@ -453,7 +576,7 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   );
 });
 
-test("H2: concurrent delete is single-flight; create blocked mid-cascade", async (t) => {
+test("H2: concurrent delete is single-flight; create and command blocked mid-cascade", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-registry-delete-flight-"));
   const oldMode = process.env.OKF_WIKI_AGENT_MODE;
   process.env.OKF_WIKI_AGENT_MODE = "fixture";
@@ -474,16 +597,7 @@ test("H2: concurrent delete is single-flight; create blocked mid-cascade", async
   const sessionId = "delete-flight";
 
   await registerAgentSession({ workspace, sessionId });
-  await ensureRegistered(workspace, sessionId);
-
-  // Hold waitForSessionQuiet via registry busy (product flag — not Pi private).
-  markLiveSessionBusyForTests(workspace.id, sessionId, true);
-
   const deleteA = deleteAgentSession(workspace, sessionId);
-  // Yield so delete marks the barrier and enters waitForSessionQuiet.
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setTimeout(resolve, 50));
-
   const deleteB = deleteAgentSession(workspace, sessionId);
 
   // Create with the same id must fail cleanly while delete is in flight.
@@ -504,9 +618,14 @@ test("H2: concurrent delete is single-flight; create blocked mid-cascade", async
       return true;
     },
   );
-
-  // Release settle so both delete waiters can finish the shared flight.
-  markLiveSessionBusyForTests(workspace.id, sessionId, false);
+  await assert.rejects(
+    () => dispatchAgentCommand(workspace, sessionId, { type: "prompt", text: "late command" }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /being deleted/i);
+      return true;
+    },
+  );
 
   const [a, b] = await Promise.all([deleteA, deleteB]);
   assert.equal(a.sessionId, sessionId);
@@ -656,8 +775,7 @@ test("idle sweep disposes live handle without deleting Session JSONL", async (t)
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
 
   setLiveSessionIdleTtlForTests(1);
-  // Age the entry past TTL without waiting wall clock.
-  ageLiveSessionForTests(workspace.id, sessionId, Date.now() - 10_000);
+  await new Promise((resolve) => setTimeout(resolve, 5));
   const removed = sweepIdleLiveSessions();
   assert.equal(removed, 1);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 0);
@@ -669,6 +787,6 @@ test("idle sweep disposes live handle without deleting Session JSONL", async (t)
 
   // Disk JSONL still there; cold ensureRegistered reopens.
   const reopened = await ensureRegistered(workspace, sessionId);
-  assert.ok(reopened.handle.sessionId === sessionId);
+  assert.equal(reopened.sessionId, sessionId);
   assert.equal(listLiveAgentSessionSummaries(workspace.id).length, 1);
 });

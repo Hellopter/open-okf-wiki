@@ -3,16 +3,14 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { asRows, requiredText } from "./sql.js";
+import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 
 export function configureOwner(db: DatabaseSync): void {
   db.exec("PRAGMA locking_mode=EXCLUSIVE");
   db.exec("PRAGMA journal_mode=WAL");
   // FULL is ideal on local POSIX disks; Windows/cloud FS often reject the
   // underlying fsync with EPERM — NORMAL still flushes at critical moments.
-  db.exec(
-    process.platform === "win32" ? "PRAGMA synchronous=NORMAL" : "PRAGMA synchronous=FULL",
-  );
+  db.exec(process.platform === "win32" ? "PRAGMA synchronous=NORMAL" : "PRAGMA synchronous=FULL");
   db.exec("PRAGMA foreign_keys=ON");
   db.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
 }
@@ -34,6 +32,7 @@ export function migrate(db: DatabaseSync): void {
       run_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       operator_session_id TEXT,
+      definition_version INTEGER NOT NULL CHECK (definition_version = 2),
       revision INTEGER NOT NULL,
       state TEXT NOT NULL,
       cancel_requested INTEGER NOT NULL,
@@ -186,15 +185,52 @@ export function migrate(db: DatabaseSync): void {
   const runColumns = asRows(db.prepare("PRAGMA table_info(runs)").all()).map((row) =>
     requiredText(row, "name"),
   );
+  if (!runColumns.includes("definition_version")) {
+    const count = asRow(db.prepare("SELECT COUNT(*) AS count FROM runs").get());
+    if (requiredNumber(count ?? {}, "count") > 0) {
+      throw new Error(
+        "unsupported WikiRuns database: existing runs have no definition_version; clear the control store before upgrading",
+      );
+    }
+    db.exec("ALTER TABLE runs ADD COLUMN definition_version INTEGER");
+  }
+  const unsupportedRun = asRow(
+    db
+      .prepare(
+        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 2 LIMIT 1",
+      )
+      .get(),
+  );
+  if (unsupportedRun) {
+    throw new Error(
+      `unsupported WikiRuns definition version for run ${requiredText(unsupportedRun, "run_id")}; clear the control store before upgrading`,
+    );
+  }
   if (!runColumns.includes("frozen_sources_json")) {
     db.exec("ALTER TABLE runs ADD COLUMN frozen_sources_json TEXT");
   }
   if (!runColumns.includes("frozen_skill_digest")) {
     db.exec("ALTER TABLE runs ADD COLUMN frozen_skill_digest TEXT");
   }
-  // Phase 1: durable StartRun intent (hard-cut; new runs always set this).
+  // A v2 Run always carries its StartRun intent; no recovery default exists.
   if (!runColumns.includes("intent_json")) {
+    const count = asRow(db.prepare("SELECT COUNT(*) AS count FROM runs").get());
+    if (requiredNumber(count ?? {}, "count") > 0) {
+      throw new Error(
+        "unsupported WikiRuns database: existing runs have no sealed intent; clear the control store before upgrading",
+      );
+    }
     db.exec("ALTER TABLE runs ADD COLUMN intent_json TEXT");
+  }
+  const missingIntent = asRow(
+    db
+      .prepare("SELECT run_id FROM runs WHERE intent_json IS NULL OR intent_json = '' LIMIT 1")
+      .get(),
+  );
+  if (missingIntent) {
+    throw new Error(
+      `unsupported WikiRuns run ${requiredText(missingIntent, "run_id")}: sealed intent is missing`,
+    );
   }
   const nodeColumns = asRows(db.prepare("PRAGMA table_info(nodes)").all()).map((row) =>
     requiredText(row, "name"),

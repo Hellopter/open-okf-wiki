@@ -64,9 +64,7 @@ export function labelForNode(
   if (kind === "research.domain") {
     const title = detail?.title?.trim() || detail?.domainId?.trim();
     if (title) return clip(title, LABEL_MAX);
-    const id = key.startsWith("research.domain.")
-      ? key.slice("research.domain.".length)
-      : key;
+    const id = key.startsWith("research.domain.") ? key.slice("research.domain.".length) : key;
     return clip(id, LABEL_MAX) || key;
   }
   if (kind === "research.leaf") {
@@ -116,16 +114,18 @@ export function parseNodeDetail(raw: unknown): WikiRunNodeDetail | undefined {
   const out: WikiRunNodeDetail = {};
   if (typeof row.domainId === "string" && row.domainId.trim())
     out.domainId = row.domainId.trim().slice(0, 200);
-  if (typeof row.title === "string" && row.title.trim())
-    out.title = row.title.trim().slice(0, 500);
+  if (typeof row.title === "string" && row.title.trim()) out.title = row.title.trim().slice(0, 500);
   if (typeof row.question === "string" && row.question.trim())
     out.question = row.question.trim().slice(0, 4_000);
-  if (typeof row.questionIndex === "number" && Number.isInteger(row.questionIndex) && row.questionIndex > 0)
+  if (
+    typeof row.questionIndex === "number" &&
+    Number.isInteger(row.questionIndex) &&
+    row.questionIndex > 0
+  )
     out.questionIndex = row.questionIndex;
   if (typeof row.scope === "string" && row.scope.trim())
     out.scope = row.scope.trim().slice(0, 2_000);
-  if (typeof row.lens === "string" && row.lens.trim())
-    out.lens = row.lens.trim().slice(0, 100);
+  if (typeof row.lens === "string" && row.lens.trim()) out.lens = row.lens.trim().slice(0, 100);
   if (typeof row.critical === "boolean") out.critical = row.critical;
   return Object.keys(out).length > 0 ? out : undefined;
 }

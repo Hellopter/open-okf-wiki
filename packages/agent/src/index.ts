@@ -53,7 +53,6 @@ export {
   projectOperatorContextAgentMessagesFromManager,
   projectOperatorContextHistoryFromManager,
   projectOperatorHistoryFromManager,
-  projectOperatorHistoryMessage,
 } from "./session/operator-session.js";
 export {
   type CreateWikiProduceToolInput,

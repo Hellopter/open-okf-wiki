@@ -24,6 +24,7 @@ import {
   type PiAttemptInput,
   PiAttemptInputSchema,
 } from "@okf-wiki/contract";
+import { runWorkdirLayout } from "../workdir.js";
 import {
   formatEvidenceIndex,
   formatOperatorInputNotes,
@@ -31,6 +32,7 @@ import {
   materializeInputs,
   mergeOperatorNotes,
 } from "./materialize.js";
+import { readSpec } from "./shared.js";
 
 const digest = "b".repeat(64);
 const timestamp = "2026-07-30T00:00:00.000Z";
@@ -47,17 +49,59 @@ async function baseFixture(
   const root = await mkdtemp(path.join(tmpdir(), "okf-materialize-"));
   const sources = path.join(root, "sealed-sources");
   const skill = path.join(root, "sealed-skill");
+  const spec = path.join(root, "sealed-spec");
+  const executionPlan = path.join(root, "sealed-execution-plan");
+  const manifest = path.join(root, "sealed-manifest");
   const attemptDir = path.join(root, "attempts", "attempt-1");
   await mkdir(sources, { recursive: true });
   await mkdir(skill, { recursive: true });
+  await mkdir(spec, { recursive: true });
+  await mkdir(executionPlan, { recursive: true });
+  await mkdir(manifest, { recursive: true });
   await writeFile(path.join(sources, "README.md"), "# Demo\n", "utf8");
   await writeFile(path.join(skill, "SKILL.md"), "# Skill\n", "utf8");
+  const extraRoles = new Set(extras.map((extra) => extra.role));
+  if (!extraRoles.has("spec")) {
+    await writeFile(
+      path.join(spec, "spec.json"),
+      `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`,
+      "utf8",
+    );
+  }
+  if (!extraRoles.has("execution_plan")) {
+    await writeFile(
+      path.join(executionPlan, "execution-plan.json"),
+      `${JSON.stringify({
+        version: 2,
+        workUnits: [],
+        reductions: [],
+        reviewLenses: [],
+        budgets: { maxRepairRounds: 2, maxHardValidateRepairRounds: 0 },
+        fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+      })}\n`,
+      "utf8",
+    );
+  }
+  if (!extraRoles.has("frozen_run_manifest")) {
+    await writeFile(
+      path.join(manifest, "frozen-run-manifest.json"),
+      `${JSON.stringify({
+        version: 2,
+        intent: { mode: "generate" },
+        mode: "generate",
+        intentDigest: digest,
+        sources: [{ id: "main" }],
+      })}\n`,
+      "utf8",
+    );
+  }
   return PiAttemptInputSchema.parse({
     runId: "run-mat-1",
     attemptId: "attempt-1",
     node,
     inputDigest: digest,
     workspace: {
+      version: 2,
       id: "workspace-1",
       name: "Demo",
       rootPath: root,
@@ -85,6 +129,38 @@ async function baseFixture(
         artifact: { artifactId: "skill", kind: "skill", digest, sealedAt: timestamp },
         readOnlyPath: skill,
       },
+      ...(!extraRoles.has("spec")
+        ? [
+            {
+              role: "spec",
+              artifact: { artifactId: "spec", kind: "spec", digest, sealedAt: timestamp },
+              readOnlyPath: spec,
+            },
+          ]
+        : []),
+      ...(!extraRoles.has("execution_plan")
+        ? [
+            {
+              role: "execution_plan",
+              artifact: {
+                artifactId: "execution-plan",
+                kind: "execution_plan",
+                digest,
+                sealedAt: timestamp,
+              },
+              readOnlyPath: executionPlan,
+            },
+          ]
+        : []),
+      ...(!extraRoles.has("frozen_run_manifest")
+        ? [
+            {
+              role: "frozen_run_manifest",
+              artifact: { artifactId: "manifest", kind: "manifest", digest, sealedAt: timestamp },
+              readOnlyPath: manifest,
+            },
+          ]
+        : []),
       ...extras,
     ],
     attemptDir,
@@ -141,6 +217,11 @@ test("materialize projects spec + research receipts into inputs/evidence", async
   const receiptDir = path.join(root, "sealed-receipt");
   await mkdir(receiptDir, { recursive: true });
   await writeFile(path.join(receiptDir, "leaf.json"), `${JSON.stringify(receipt)}\n`, "utf8");
+  await writeFile(
+    path.join(receiptDir, ".okf-artifact-manifest.json"),
+    '{"schema":1,"files":[]}\n',
+    "utf8",
+  );
 
   const input = await baseFixture([
     {
@@ -164,8 +245,8 @@ test("materialize projects spec + research receipts into inputs/evidence", async
     JSON.parse(await readFile(specProjected, "utf8")).summary,
     defaultWikiRunSpec("Demo").summary,
   );
-  // Back-compat analysis/spec.json
-  await access(path.join(layout.analysisDir, "spec.json"));
+  assert.equal((await readSpec(layout)).summary, defaultWikiRunSpec("Demo").summary);
+  await assert.rejects(() => access(path.join(layout.analysisDir, "spec.json")), /ENOENT/);
 
   const indexPath = path.join(layout.runWorkDir, "inputs", "evidence", "index.json");
   await access(indexPath);
@@ -175,10 +256,112 @@ test("materialize projects spec + research receipts into inputs/evidence", async
   assert.equal(bundle.receipts[0]?.nodeId, "research.leaf.core.1");
   assert.ok(bundle.receipts[0]?.path.includes("inputs/evidence/receipts/"));
   await access(path.join(layout.runWorkDir, bundle.receipts[0]!.path));
+  await assert.rejects(
+    () => access(path.join(layout.analysisDir, "research.leaf.core.1.json")),
+    /ENOENT/,
+  );
 
   const indexText = formatEvidenceIndex(bundle);
   assert.ok(indexText.includes("research.leaf.core.1"));
   assert.ok(indexText.includes("findings=1"));
+});
+
+test("readSpec requires inputs/spec.json instead of an analysis fallback", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-projected-spec-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const layout = runWorkdirLayout(path.join(root, "work"), new Map());
+  await mkdir(layout.analysisDir, { recursive: true });
+  await writeFile(
+    path.join(layout.analysisDir, "spec.json"),
+    `${JSON.stringify(defaultWikiRunSpec("Analysis only"))}\n`,
+    "utf8",
+  );
+
+  await assert.rejects(() => readSpec(layout), /projected inputs\/spec\.json is unreadable/);
+});
+
+test("materialize rejects legacy manifest versions, role names, and filenames", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-legacy-manifest-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const v1Dir = path.join(root, "v1");
+  await mkdir(v1Dir, { recursive: true });
+  await writeFile(
+    path.join(v1Dir, "frozen-run-manifest.json"),
+    `${JSON.stringify({
+      version: 1,
+      intent: { mode: "generate" },
+      mode: "generate",
+      intentDigest: digest,
+      sources: [{ id: "main" }],
+    })}\n`,
+    "utf8",
+  );
+  const v1 = await baseFixture([
+    {
+      role: "frozen_run_manifest",
+      artifact: { artifactId: "v1", kind: "manifest", digest, sealedAt: timestamp },
+      readOnlyPath: v1Dir,
+    },
+  ]);
+  t.after(() => cleanup(v1));
+  await assert.rejects(() => materializeInputs(v1), /sealed frozen_run_manifest is invalid/);
+
+  const oldNameDir = path.join(root, "old-name");
+  await mkdir(oldNameDir, { recursive: true });
+  await writeFile(
+    path.join(oldNameDir, "manifest.json"),
+    `${JSON.stringify({ version: 2, intent: { mode: "generate" } })}\n`,
+    "utf8",
+  );
+  const oldName = await baseFixture([
+    {
+      role: "frozen_run_manifest",
+      artifact: { artifactId: "old-name", kind: "manifest", digest, sealedAt: timestamp },
+      readOnlyPath: oldNameDir,
+    },
+  ]);
+  t.after(() => cleanup(oldName));
+  await assert.rejects(
+    () => materializeInputs(oldName),
+    /sealed frozen_run_manifest is unreadable/,
+  );
+
+  const legacyRole = await baseFixture([
+    {
+      role: "manifest",
+      artifact: { artifactId: "legacy-role", kind: "manifest", digest, sealedAt: timestamp },
+      readOnlyPath: oldNameDir,
+    },
+  ]);
+  t.after(() => cleanup(legacyRole));
+  await assert.rejects(
+    () => materializeInputs(legacyRole),
+    /sealed input role is not declared by write\.root: manifest/,
+  );
+});
+
+test("materialize rejects a Pi envelope missing NodeContract-required inputs", async (t) => {
+  const input = await baseFixture([], {
+    key: "research.leaf.core.1",
+    kind: "research.leaf",
+    generation: 0,
+    runIndex: 1,
+    detail: {
+      domainId: "core",
+      question: "What is this repository for?",
+      scope: "Repository entry points",
+    },
+  });
+  t.after(() => cleanup(input));
+  const index = input.sealedInputs.findIndex((sealed) => sealed.role === "execution_plan");
+  assert.ok(index >= 0, "fixture must start with a valid execution plan");
+  input.sealedInputs.splice(index, 1);
+
+  await assert.rejects(
+    () => materializeInputs(input),
+    /research\.leaf missing required sealed input role\(s\): execution_plan/,
+  );
 });
 
 test("mergeOperatorNotes prefers sealed answer over focus", () => {
@@ -211,7 +394,7 @@ test("materialize projects operator_input into inputs/operator-input.json", asyn
   await writeFile(
     path.join(opDir, "operator-input.json"),
     `${JSON.stringify({
-      version: 1,
+      version: 2,
       kind: "operator_input",
       answer: "Platform engineers",
       gateId: "gate-1",
@@ -292,7 +475,7 @@ test("materialize refresh seeds wiki from prior_wiki and fails without it", asyn
   await writeFile(
     path.join(manifestDir, "frozen-run-manifest.json"),
     `${JSON.stringify({
-      version: 1,
+      version: 2,
       intent: { mode: "refresh" },
       mode: "refresh",
       intentDigest: "c".repeat(64),

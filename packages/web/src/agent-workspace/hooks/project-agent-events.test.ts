@@ -210,7 +210,6 @@ describe("projectAgentEvent", () => {
     assert.equal(tool?.output, "Wiki Run accepted (revision 1).");
   });
 
-
   it("snapshot activeTool and live tool_execution_update share details.summary output", () => {
     const summary = "Wiki Run accepted (revision 1).";
     const details = {

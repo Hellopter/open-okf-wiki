@@ -117,7 +117,7 @@ test("independent research.leaf nodes run concurrently under domainConcurrency",
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-parallel-leaves" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-parallel-leaves", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-parallel-leaves");

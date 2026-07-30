@@ -49,7 +49,8 @@ function rowToCandidate(row: SqlRow): WikiCandidate {
       typeof parentRaw === "string" && parentRaw.trim().length > 0 ? parentRaw : undefined,
     producedBy: requiredText(row, "produced_by"),
     round: requiredNumber(row, "round"),
-    createdAt: typeof createdRaw === "string" && createdRaw.trim().length > 0 ? createdRaw : undefined,
+    createdAt:
+      typeof createdRaw === "string" && createdRaw.trim().length > 0 ? createdRaw : undefined,
   });
 }
 
@@ -76,9 +77,7 @@ export function producedByForNode(kind: string, nodeKey: string): WikiCandidateP
 export function countWikiCandidates(host: WikiCandidateHost, runId: string): number {
   try {
     const row = asRow(
-      host.db
-        .prepare(`SELECT COUNT(*) AS count FROM wiki_candidates WHERE run_id = ?`)
-        .get(runId),
+      host.db.prepare(`SELECT COUNT(*) AS count FROM wiki_candidates WHERE run_id = ?`).get(runId),
     );
     return requiredNumber(row ?? { count: 0 }, "count");
   } catch (error) {
@@ -183,9 +182,7 @@ export function registerWikiCandidate(
 
   const row = asRow(
     host.db
-      .prepare(
-        `SELECT * FROM wiki_candidates WHERE run_id = ? AND candidate_id = ?`,
-      )
+      .prepare(`SELECT * FROM wiki_candidates WHERE run_id = ? AND candidate_id = ?`)
       .get(input.runId, candidateId),
   );
   if (!row) {

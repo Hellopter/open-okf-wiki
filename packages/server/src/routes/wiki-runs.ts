@@ -39,12 +39,7 @@ function parseLastEventId(value: string | undefined): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
-function writeSse(
-  res: ServerResponse,
-  event: string,
-  payload: unknown,
-  eventId?: number,
-): void {
+function writeSse(res: ServerResponse, event: string, payload: unknown, eventId?: number): void {
   if (res.writableEnded || res.destroyed) return;
   const id = eventId === undefined ? "" : `id: ${eventId}\n`;
   res.write(`${id}event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
@@ -67,9 +62,9 @@ export async function handleWikiRunCommand(
   req: IncomingMessage,
   res: ServerResponse,
   id: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   const parsed = RunCommandSchema.safeParse(await readJsonBody(req));
   if (!parsed.success) {
@@ -93,9 +88,9 @@ export async function handleGetWikiRun(
   res: ServerResponse,
   id: string,
   runId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
     const { snapshot, cursor } = await (await wikiRunsForWorkspace(workspace)).read({ runId });
@@ -111,9 +106,9 @@ export async function handleGetWikiRunSpec(
   res: ServerResponse,
   id: string,
   runId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
     const body = await (await wikiRunsForWorkspace(workspace)).readPlanSpec({ runId });
@@ -133,14 +128,15 @@ export async function handleGetAttemptTranscript(
   id: string,
   runId: string,
   attemptId: string,
-  url: URL,
+  _url: URL,
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
-    const transcript = await (
-      await wikiRunsForWorkspace(workspace)
-    ).readAttemptTranscript({ runId, attemptId });
+    const transcript = await (await wikiRunsForWorkspace(workspace)).readAttemptTranscript({
+      runId,
+      attemptId,
+    });
     sendJson(res, 200, transcript);
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
@@ -162,10 +158,10 @@ export async function handleAttemptTranscriptEvents(
   id: string,
   runId: string,
   attemptId: string,
-  url: URL,
+  _url: URL,
   dependencies: { heartbeatMs?: number; pollMs?: number } = {},
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   let runs;
@@ -177,11 +173,11 @@ export async function handleAttemptTranscriptEvents(
   }
 
   let closed = false;
-  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const lifecycle: { heartbeat?: ReturnType<typeof setInterval> } = {};
   const cleanup = (): void => {
     if (closed) return;
     closed = true;
-    if (heartbeat) clearInterval(heartbeat);
+    if (lifecycle.heartbeat) clearInterval(lifecycle.heartbeat);
     req.off("close", onRequestClose);
     res.off("close", cleanup);
   };
@@ -199,11 +195,10 @@ export async function handleAttemptTranscriptEvents(
   });
 
   const pollMs = dependencies.pollMs ?? TRANSCRIPT_SSE_POLL_MS;
-  heartbeat = setInterval(
+  lifecycle.heartbeat = setInterval(
     () => writeHeartbeat(res),
     dependencies.heartbeatMs ?? TRANSCRIPT_SSE_HEARTBEAT_MS,
   );
-
   let lastFingerprint = "";
   let seq = 0;
   try {
@@ -269,10 +264,10 @@ export async function handleWikiRunEvents(
   res: ServerResponse,
   id: string,
   runId: string,
-  url: URL,
+  _url: URL,
   dependencies: { heartbeatMs?: number; pollMs?: number } = {},
 ): Promise<void> {
-  const workspace = await loadWorkspaceOr404(res, id, url);
+  const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
   let runs;

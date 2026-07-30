@@ -25,7 +25,6 @@ export type ConnectionStatus = "connecting" | "live" | "reconnecting" | "offline
 export type UseSessionAgentArgs = {
   workspaceId: string;
   sessionId: string | null;
-  rootPath?: string;
 };
 
 export type UseSessionAgentResult = {
@@ -95,7 +94,6 @@ function streamTurnActive(state: PiStreamState): boolean {
 export function useSessionAgent({
   workspaceId,
   sessionId,
-  rootPath,
 }: UseSessionAgentArgs): UseSessionAgentResult {
   const [view, setView] = useState<SessionAgentView>(() =>
     viewFromStream(createPiStreamState(), false),
@@ -121,7 +119,7 @@ export function useSessionAgent({
    * Subscription identity — reset React state during render when it changes so
    * a prior session never paints for one frame after switch (matches useWikiRun).
    */
-  const subscriptionKey = `${workspaceId}:${sessionId ?? ""}:${rootPath ?? ""}`;
+  const subscriptionKey = `${workspaceId}:${sessionId ?? ""}`;
   const subscriptionKeyRef = useRef(subscriptionKey);
   if (subscriptionKeyRef.current !== subscriptionKey) {
     subscriptionKeyRef.current = subscriptionKey;
@@ -137,8 +135,8 @@ export function useSessionAgent({
   }
 
   const eventsUrl = useMemo(
-    () => (sessionId ? agentSessionEventsUrl(workspaceId, sessionId, rootPath) : null),
-    [workspaceId, sessionId, rootPath],
+    () => (sessionId ? agentSessionEventsUrl(workspaceId, sessionId) : null),
+    [workspaceId, sessionId],
   );
 
   /** Publish stream state → ref + derived React view (messages/status/error). */
@@ -147,7 +145,11 @@ export function useSessionAgent({
     streamStateRef.current = state;
     // Clear optimistic sending once SSE owns the turn or settles to idle/error.
     if (sendingRef.current) {
-      if (streamTurnActive(state) || state.agentStatus === "idle" || state.agentStatus === "error") {
+      if (
+        streamTurnActive(state) ||
+        state.agentStatus === "idle" ||
+        state.agentStatus === "error"
+      ) {
         // Keep sending only until first stream evidence of the turn OR terminal idle/error.
         // After admission, agent_start sets streaming; after settle, idle/error.
         if (streamTurnActive(state) || state.agentStatus === "error") {
@@ -259,12 +261,12 @@ export function useSessionAgent({
     async (command: AgentCommand): Promise<AgentCommandResponse | null> => {
       if (!sessionId) return null;
       const epoch = epochRef.current;
-      const response = await agentSessionCommand(workspaceId, sessionId, command, rootPath);
+      const response = await agentSessionCommand(workspaceId, sessionId, command);
       if (epoch !== epochRef.current) return null;
       setLastCommandResponse(response);
       return response;
     },
-    [workspaceId, sessionId, rootPath],
+    [workspaceId, sessionId],
   );
 
   const send = useCallback(
@@ -358,10 +360,7 @@ export function useSessionAgent({
       const response = await runCommand({ type: "abort" });
       if (epoch !== epochRef.current) return;
       if (isCommandFailed(response)) {
-        publish(
-          withLocalError(streamStateRef.current, response?.message ?? "Abort failed"),
-          epoch,
-        );
+        publish(withLocalError(streamStateRef.current, response?.message ?? "Abort failed"), epoch);
         return;
       }
     } catch (caught) {

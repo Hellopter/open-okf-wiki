@@ -10,10 +10,7 @@ test("parseAgentCommand: prompt / steer / follow_up / abort / compact", () => {
   assert.equal(parseAgentCommand({ type: "clear_queue" }).type, "clear_queue");
   assert.equal(parseAgentCommand({ type: "abort_compaction" }).type, "abort_compaction");
   assert.equal(parseAgentCommand({ type: "compact" }).type, "compact");
-  assert.equal(
-    parseAgentCommand({ type: "compact", mode: "stop_and_compact" }).type,
-    "compact",
-  );
+  assert.equal(parseAgentCommand({ type: "compact", mode: "stop_and_compact" }).type, "compact");
 });
 
 test("parseAgentCommand: rejects removed start_wiki_run and resume_gate commands", () => {

@@ -14,7 +14,7 @@
  */
 
 import type { NodeAttempt } from "@okf-wiki/contract";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -34,10 +34,7 @@ import {
 import { useI18n } from "../../i18n";
 import { AgentMarkdown } from "../transcript/AgentMarkdown";
 import { TranscriptMessageList } from "../transcript/Transcript";
-import {
-  isAttemptTranscriptLive,
-  projectAttemptTranscriptMessages,
-} from "./attempt-transcript";
+import { isAttemptTranscriptLive, projectAttemptTranscriptMessages } from "./attempt-transcript";
 
 export type NodeAttemptDialogProps = {
   open: boolean;
@@ -52,7 +49,6 @@ export type NodeAttemptDialogProps = {
   /** Workspace / run context for Attempt transcript fetch. */
   workspaceId?: string;
   runId?: string | null;
-  rootPath?: string;
   /** Explicit attempt id (preferred over attempt.attemptId when set). */
   attemptId?: string | null;
   /** WikiRunAttempt.state (or equivalent); drives live polling while `running`. */
@@ -85,7 +81,6 @@ export function NodeAttemptDialog({
   footer,
   workspaceId,
   runId,
-  rootPath,
   attemptId,
   attemptState,
 }: NodeAttemptDialogProps) {
@@ -100,7 +95,7 @@ export function NodeAttemptDialog({
       ? "running"
       : attempt?.status === "awaiting"
         ? "suspended"
-        : attempt?.status ?? null);
+        : (attempt?.status ?? null));
 
   const canFetch = open && Boolean(workspaceId && runId && effectiveAttemptId);
 
@@ -123,12 +118,7 @@ export function NodeAttemptDialog({
     if (!isAttemptTranscriptLive(effectiveState)) {
       void (async () => {
         try {
-          const data = await getWikiRunAttemptTranscript(
-            workspaceId,
-            runId,
-            effectiveAttemptId,
-            rootPath,
-          );
+          const data = await getWikiRunAttemptTranscript(workspaceId, runId, effectiveAttemptId);
           if (cancelled) return;
           setFetchState({
             loading: false,
@@ -166,12 +156,7 @@ export function NodeAttemptDialog({
       return;
     }
 
-    const url = wikiRunAttemptTranscriptEventsUrl(
-      workspaceId,
-      runId,
-      effectiveAttemptId,
-      rootPath,
-    );
+    const url = wikiRunAttemptTranscriptEventsUrl(workspaceId, runId, effectiveAttemptId);
     const source = new EventSource(url);
     setStreamingLive(true);
 
@@ -254,7 +239,7 @@ export function NodeAttemptDialog({
       source.removeEventListener("transcript_error", onTranscriptError as EventListener);
       source.close();
     };
-  }, [canFetch, workspaceId, runId, effectiveAttemptId, rootPath, effectiveState]);
+  }, [canFetch, workspaceId, runId, effectiveAttemptId, effectiveState]);
 
   const projected = useMemo(
     () => projectAttemptTranscriptMessages(fetchState.messages),
@@ -424,10 +409,7 @@ export function NodeAttemptDialog({
                             {t.agentWorkspace.attemptTranscriptEmpty}
                           </p>
                         ) : (
-                          <TranscriptMessageList
-                            messages={projected}
-                            streaming={streamingLive}
-                          />
+                          <TranscriptMessageList messages={projected} streaming={streamingLive} />
                         )}
                       </div>
                     </div>
@@ -438,9 +420,7 @@ export function NodeAttemptDialog({
           </div>
         </div>
 
-        {footer ? (
-          <div className="shrink-0 border-t border-border px-4 py-3">{footer}</div>
-        ) : null}
+        {footer ? <div className="shrink-0 border-t border-border px-4 py-3">{footer}</div> : null}
       </DialogContent>
     </Dialog>
   );

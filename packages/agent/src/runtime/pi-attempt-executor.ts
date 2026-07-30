@@ -13,8 +13,8 @@ import {
   type AttemptMetrics,
   type PiAttemptExecutor,
   type PiAttemptInput,
-  type PiAttemptOutcome,
   PiAttemptInputSchema,
+  type PiAttemptOutcome,
   PiAttemptOutcomeSchema,
 } from "@okf-wiki/contract";
 import { isPathInside } from "@okf-wiki/core";
@@ -23,6 +23,7 @@ import { classifyPiFailureClass, failure } from "./attempt/classify.js";
 
 /** Re-export the sole attempt-edge classifier for tests and callers. */
 export { classifyPiFailureClass, failure };
+
 import { handleFreeze } from "./attempt/handlers/freeze.js";
 import { handlePlan } from "./attempt/handlers/plan.js";
 import { handleRepair } from "./attempt/handlers/repair.js";

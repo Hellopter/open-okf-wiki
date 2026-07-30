@@ -13,7 +13,7 @@ import {
 
 function workspace(orchestration?: Partial<WorkspaceConfig["orchestration"]>): WorkspaceConfig {
   return {
-    version: 1,
+    version: 2,
     id: "ws",
     name: "Test",
     rootPath: "/tmp/ws",
@@ -22,7 +22,12 @@ function workspace(orchestration?: Partial<WorkspaceConfig["orchestration"]>): W
     publicationPath: "/tmp/pub",
     limits: {
       requestTimeoutSeconds: 600,
-      retry: { enabled: true, maxRetries: 2, baseDelayMs: 2000, provider: { maxRetries: 0, maxRetryDelayMs: 60_000 } },
+      retry: {
+        enabled: true,
+        maxRetries: 2,
+        baseDelayMs: 2000,
+        provider: { maxRetries: 0, maxRetryDelayMs: 60_000 },
+      },
     },
     roleModels: {},
     orchestration: { ...DEFAULT_ORCHESTRATION, ...orchestration },
@@ -47,12 +52,18 @@ test("resolveSchedulerOrchestration fills defaults via contract resolveOrchestra
 test("leaf concurrency is domainConcurrency × min(leafConcurrency, maxLeafFanOut)", () => {
   // defaults: domainConcurrency 2, leafConcurrency 2 → leaf limit 4
   assert.equal(
-    concurrencyLimitForKind(workspace({ domainConcurrency: 2, leafConcurrency: 2 }), "research.leaf"),
+    concurrencyLimitForKind(
+      workspace({ domainConcurrency: 2, leafConcurrency: 2 }),
+      "research.leaf",
+    ),
     4,
   );
   // leafConcurrency 1 → leaf limit 2
   assert.equal(
-    concurrencyLimitForKind(workspace({ domainConcurrency: 2, leafConcurrency: 1 }), "research.leaf"),
+    concurrencyLimitForKind(
+      workspace({ domainConcurrency: 2, leafConcurrency: 1 }),
+      "research.leaf",
+    ),
     2,
   );
   // default leafConcurrency (2) with domainConcurrency 3 → 6
@@ -66,10 +77,7 @@ test("leaf concurrency is domainConcurrency × min(leafConcurrency, maxLeafFanOu
 });
 
 test("review concurrency defaults to council size and respects cap", () => {
-  assert.equal(
-    concurrencyLimitForKind(workspace({ reviewCouncilSize: 3 }), "review.seat"),
-    3,
-  );
+  assert.equal(concurrencyLimitForKind(workspace({ reviewCouncilSize: 3 }), "review.seat"), 3);
   assert.equal(
     concurrencyLimitForKind(
       workspace({ reviewCouncilSize: 3, reviewConcurrency: 1 }),

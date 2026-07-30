@@ -89,4 +89,3 @@ export async function durableFsyncPath(target: string): Promise<void> {
     await handle.close();
   }
 }
-

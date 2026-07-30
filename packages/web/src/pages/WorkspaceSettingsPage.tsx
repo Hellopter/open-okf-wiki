@@ -1,11 +1,10 @@
 import { DEFAULT_OPERATOR_TOOLS, type OperatorToolName } from "@okf-wiki/contract";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   deleteWorkspace,
   getProvider,
-  getWorkspace,
   getWorkspaceSkill,
   type ModelProfilePublic,
   patchWorkspace,
@@ -24,13 +23,20 @@ import { SkillSection } from "./workspace-settings/SkillSection";
 
 export type SettingsSection = "general" | "skill" | "danger";
 
-export function WorkspaceSettingsPage({ section = "general" }: { section?: SettingsSection }) {
+export type WorkspaceSettingsPageProps = {
+  workspace: WorkspaceConfig;
+  onWorkspaceChange: (workspace: WorkspaceConfig) => void;
+  section?: SettingsSection;
+};
+
+export function WorkspaceSettingsPage({
+  workspace,
+  onWorkspaceChange,
+  section = "general",
+}: WorkspaceSettingsPageProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const { id = "" } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
-  const rootPathHint = searchParams.get("rootPath") ?? undefined;
-  const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
   const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
@@ -75,103 +81,102 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
   const [skillFilePath, setSkillFilePath] = useState("SKILL.md");
   const [skillFileContent, setSkillFileContent] = useState("");
   const [skillFileDirty, setSkillFileDirty] = useState(false);
+  const skipWorkspaceReloadRef = useRef<string | null>(null);
 
-  const applyWorkspace = useCallback((ws: WorkspaceConfig, catalog: ModelProfilePublic[]) => {
-    setWorkspace(ws);
-    setName(ws.name);
-    setPublicationPath(ws.publicationPath);
-    setPlanConfirm(Boolean(ws.planConfirm));
-    setWikiLanguage(ws.wikiLanguage ?? "en");
-    setContextTargetTokens(
-      ws.limits?.contextTargetTokens !== undefined ? String(ws.limits.contextTargetTokens) : "",
-    );
-    setRequestTimeoutSeconds(String(ws.limits?.requestTimeoutSeconds ?? 600));
-    setGateTimeoutSeconds(String(ws.limits?.gateTimeoutSeconds ?? 0));
-    setRetryEnabled(ws.limits?.retry?.enabled !== false);
-    setRetryMaxRetries(String(ws.limits?.retry?.maxRetries ?? 2));
-    setRetryBaseDelayMs(String(ws.limits?.retry?.baseDelayMs ?? 2000));
-    setProviderMaxRetries(String(ws.limits?.retry?.provider?.maxRetries ?? 0));
-    setProviderMaxRetryDelayMs(String(ws.limits?.retry?.provider?.maxRetryDelayMs ?? 60_000));
-    setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
-    setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
-    setPlanScoutCount(String(ws.orchestration?.planScoutCount ?? 2));
-    setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 3));
-    setReviewConcurrency(
-      ws.orchestration?.reviewConcurrency !== undefined
-        ? String(ws.orchestration.reviewConcurrency)
-        : "",
-    );
-    setDomainConcurrency(String(ws.orchestration?.domainConcurrency ?? 2));
-    setLeafConcurrency(String(ws.orchestration?.leafConcurrency ?? 2));
-    setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
-    setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
-    setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
-    setOperatorTools([...(ws.operatorTools ?? DEFAULT_OPERATOR_TOOLS)] as OperatorToolName[]);
+  const applyWorkspace = useCallback(
+    (ws: WorkspaceConfig, catalog: ModelProfilePublic[]) => {
+      onWorkspaceChange(ws);
+      setName(ws.name);
+      setPublicationPath(ws.publicationPath);
+      setPlanConfirm(Boolean(ws.planConfirm));
+      setWikiLanguage(ws.wikiLanguage ?? "en");
+      setContextTargetTokens(
+        ws.limits?.contextTargetTokens !== undefined ? String(ws.limits.contextTargetTokens) : "",
+      );
+      setRequestTimeoutSeconds(String(ws.limits?.requestTimeoutSeconds ?? 600));
+      setGateTimeoutSeconds(String(ws.limits?.gateTimeoutSeconds ?? 0));
+      setRetryEnabled(ws.limits?.retry?.enabled !== false);
+      setRetryMaxRetries(String(ws.limits?.retry?.maxRetries ?? 2));
+      setRetryBaseDelayMs(String(ws.limits?.retry?.baseDelayMs ?? 2000));
+      setProviderMaxRetries(String(ws.limits?.retry?.provider?.maxRetries ?? 0));
+      setProviderMaxRetryDelayMs(String(ws.limits?.retry?.provider?.maxRetryDelayMs ?? 60_000));
+      setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
+      setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
+      setPlanScoutCount(String(ws.orchestration?.planScoutCount ?? 2));
+      setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 3));
+      setReviewConcurrency(
+        ws.orchestration?.reviewConcurrency !== undefined
+          ? String(ws.orchestration.reviewConcurrency)
+          : "",
+      );
+      setDomainConcurrency(String(ws.orchestration?.domainConcurrency ?? 2));
+      setLeafConcurrency(String(ws.orchestration?.leafConcurrency ?? 2));
+      setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
+      setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
+      setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
+      setOperatorTools([...(ws.operatorTools ?? DEFAULT_OPERATOR_TOOLS)] as OperatorToolName[]);
 
-    // Prefer profileId; else match denormalized model id; else keep empty.
-    if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
-      setModelProfileId(ws.model.profileId);
-    } else {
-      const byModelId = catalog.find((m) => m.modelId === ws.model.id);
-      setModelProfileId(byModelId?.id ?? ws.model.profileId ?? "");
+      // Prefer profileId; else match denormalized model id; else keep empty.
+      if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
+        setModelProfileId(ws.model.profileId);
+      } else {
+        const byModelId = catalog.find((m) => m.modelId === ws.model.id);
+        setModelProfileId(byModelId?.id ?? ws.model.profileId ?? "");
+      }
+    },
+    [onWorkspaceChange],
+  );
+
+  const loadSkill = useCallback(async (ws: WorkspaceConfig) => {
+    try {
+      const data = await getWorkspaceSkill(ws.id);
+      setSkill(data.skill);
+      // Prefetch SKILL.md for editor when fork is active.
+      if (data.skill.kind === "fork") {
+        try {
+          const file = await readWorkspaceSkillFile(ws.id, "SKILL.md");
+          setSkillFilePath("SKILL.md");
+          setSkillFileContent(file.file.content);
+          setSkillFileDirty(false);
+        } catch {
+          // Editor is optional if read fails.
+        }
+      }
+    } catch {
+      setSkill(null);
     }
   }, []);
 
-  const loadSkill = useCallback(
-    async (ws: WorkspaceConfig) => {
-      try {
-        const data = await getWorkspaceSkill(ws.id, ws.rootPath ?? rootPathHint);
-        setSkill(data.skill);
-        // Prefetch SKILL.md for editor when fork is active.
-        if (data.skill.kind === "fork") {
-          try {
-            const file = await readWorkspaceSkillFile(
-              ws.id,
-              "SKILL.md",
-              ws.rootPath ?? rootPathHint,
-            );
-            setSkillFilePath("SKILL.md");
-            setSkillFileContent(file.file.content);
-            setSkillFileDirty(false);
-          } catch {
-            // Editor is optional if read fails.
-          }
-        }
-      } catch {
-        setSkill(null);
-      }
-    },
-    [rootPathHint],
-  );
-
-  const load = useCallback(async () => {
-    if (!id) {
+  useEffect(() => {
+    if (skipWorkspaceReloadRef.current === workspace.id) {
+      skipWorkspaceReloadRef.current = null;
       return;
     }
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    try {
-      const [wsData, providerData] = await Promise.all([
-        getWorkspace(id, rootPathHint),
-        getProvider().catch(() => null),
-      ]);
-      const catalog = providerData?.provider.models ?? [];
-      setModels(catalog);
-      setDefaultModelProfileId(providerData?.provider.defaultModelProfileId);
-      applyWorkspace(wsData.workspace, catalog);
-      await loadSkill(wsData.workspace);
-    } catch (err) {
-      setError(err);
-      setWorkspace(null);
-      setSkill(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [id, rootPathHint, applyWorkspace, loadSkill]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+    void (async () => {
+      try {
+        const providerData = await getProvider().catch(() => null);
+        const catalog = providerData?.provider.models ?? [];
+        if (cancelled) return;
+        setModels(catalog);
+        setDefaultModelProfileId(providerData?.provider.defaultModelProfileId);
+        applyWorkspace(workspace, catalog);
+        await loadSkill(workspace);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err);
+          setSkill(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace, applyWorkspace, loadSkill]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -236,11 +241,7 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         return;
       }
       const nextGateTimeout = Number(gateTimeoutSeconds.trim() || "0");
-      if (
-        !Number.isInteger(nextGateTimeout) ||
-        nextGateTimeout < 0 ||
-        nextGateTimeout > 604_800
-      ) {
+      if (!Number.isInteger(nextGateTimeout) || nextGateTimeout < 0 || nextGateTimeout > 604_800) {
         setError(new Error("gateTimeoutSeconds must be an integer from 0 to 604800"));
         setIsSubmitting(false);
         return;
@@ -284,8 +285,6 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
       const reviewConc = reviewConcRaw
         ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
         : undefined;
-      // maxDepth is a fossil (no Definition v1 depth axis / no Settings UI) —
-      // do not re-save it; schema still accepts older JSON on load.
       const orchestration = {
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
@@ -295,21 +294,18 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
         domainConcurrency: Math.min(8, Math.max(1, Number(domainConcurrency) || 2)),
         leafConcurrency: Math.min(16, Math.max(1, Number(leafConcurrency) || 2)),
       };
-      const result = await patchWorkspace(
-        id,
-        {
-          name: name.trim(),
-          ...(modelProfileId ? { modelProfileId } : {}),
-          publicationPath: publicationPath.trim(),
-          planConfirm,
-          wikiLanguage,
-          limits: nextLimits,
-          roleModels,
-          orchestration,
-          operatorTools,
-        },
-        workspace?.rootPath ?? rootPathHint,
-      );
+      const result = await patchWorkspace(id, {
+        name: name.trim(),
+        ...(modelProfileId ? { modelProfileId } : {}),
+        publicationPath: publicationPath.trim(),
+        planConfirm,
+        wikiLanguage,
+        limits: nextLimits,
+        roleModels,
+        orchestration,
+        operatorTools,
+      });
+      skipWorkspaceReloadRef.current = result.workspace.id;
       applyWorkspace(result.workspace, models);
       toast.success(t.settings.saved);
     } catch (err) {
@@ -328,7 +324,6 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
     setError(null);
     try {
       await deleteWorkspace(id, {
-        rootPath: workspace.rootPath ?? rootPathHint,
         deleteFiles,
       });
       navigate("/workspaces");
@@ -410,8 +405,6 @@ export function WorkspaceSettingsPage({ section = "general" }: { section?: Setti
           {section === "skill" ? (
             <SkillSection
               workspaceId={id}
-              workspace={workspace}
-              rootPathHint={rootPathHint}
               models={models}
               skill={skill}
               skillBusy={skillBusy}

@@ -30,7 +30,10 @@ describe("classifyPiFailureClass", () => {
 
   it("maps capacity via named CapacityError and message patterns (classifyError first)", () => {
     assert.equal(
-      classifyPiFailureClass(new CapacityError("context overflow / compact exhausted"), openSignal()),
+      classifyPiFailureClass(
+        new CapacityError("context overflow / compact exhausted"),
+        openSignal(),
+      ),
       "capacity",
     );
     // Named type wins even when message looks like transport.
@@ -131,10 +134,7 @@ describe("classifyPiFailureClass", () => {
   });
 
   it("maps stable provider / auth message patterns to provider", () => {
-    assert.equal(
-      classifyPiFailureClass(new Error("invalid API key"), openSignal()),
-      "provider",
-    );
+    assert.equal(classifyPiFailureClass(new Error("invalid API key"), openSignal()), "provider");
     assert.equal(
       classifyPiFailureClass(new Error("authentication failed"), openSignal()),
       "provider",

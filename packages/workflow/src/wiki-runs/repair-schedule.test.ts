@@ -9,8 +9,8 @@ import {
   buildMechanicalRepairRequest,
   buildSemanticRepairRequest,
   isRepairNodeKey,
-  repairNodeKey,
   REPAIR_NODE_PREFIX,
+  repairNodeKey,
 } from "./repair-schedule.js";
 
 test("repairNodeKey / isRepairNodeKey product keys", () => {

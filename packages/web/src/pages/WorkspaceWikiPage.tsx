@@ -202,9 +202,8 @@ export function WorkspaceWikiPage() {
           return;
         }
         setWorkspace(data.workspace);
-        const root = data.workspace.rootPath;
         try {
-          const list = await listWikiPages(id, root);
+          const list = await listWikiPages(id);
           if (cancelled) {
             return;
           }
@@ -213,7 +212,7 @@ export function WorkspaceWikiPage() {
           setNav(list.nav ?? []);
           setEmpty(false);
           // Cross-link graph is optional presentation data; failures stay silent.
-          getWikiGraph(id, root)
+          getWikiGraph(id)
             .then((data) => {
               if (!cancelled) setGraph(data);
             })
@@ -276,7 +275,7 @@ export function WorkspaceWikiPage() {
       setPageLoading(true);
       setError(null);
       try {
-        const data = await getWikiPage(id, pageFromRoute, workspace.rootPath);
+        const data = await getWikiPage(id, pageFromRoute);
         if (!cancelled) {
           setPage(data);
         }

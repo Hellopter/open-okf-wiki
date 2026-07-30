@@ -11,11 +11,18 @@ test("WorkspaceSourceSchema accepts a clean local source", () => {
   const source = WorkspaceSourceSchema.parse({
     id: "application",
     path: "D:/src/my-app",
+    origin: { type: "path" },
   });
   assert.equal(source.applyDefaultIgnores, true);
   assert.deepEqual(source.ignore, []);
-  // Legacy records without origin normalize to path-linked on parse.
   assert.deepEqual(source.origin, { type: "path" });
+});
+
+test("WorkspaceSourceSchema rejects historical source records without origin", () => {
+  assert.equal(
+    WorkspaceSourceSchema.safeParse({ id: "application", path: "D:/src/my-app" }).success,
+    false,
+  );
 });
 
 test("WorkspaceSourceSchema accepts clone origin", () => {
@@ -33,10 +40,11 @@ test("WorkspaceSourceSchema accepts clone origin", () => {
 
 test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict parse of known fields", () => {
   const ws = WorkspaceConfigSchema.parse({
+    version: 2,
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
-    sources: [{ id: "application", path: "D:/src/app" }],
+    sources: [{ id: "application", path: "D:/src/app", origin: { type: "path" } }],
     model: { id: "openai/corp-model" },
     publicationPath: "D:/ws/demo/wiki",
     createdAt: new Date().toISOString(),
@@ -50,13 +58,14 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   assert.equal(ws.orchestration.leafConcurrency, 2);
   assert.deepEqual(ws.operatorTools, ["read", "grep", "find", "ls"]);
   assert.deepEqual(ws.roleModels.reviewers, []);
-  assert.equal(ws.version, 1);
+  assert.equal(ws.version, 2);
   assert.equal(ws.wikiLanguage, "en");
   assert.deepEqual(ws.sources[0]?.origin, { type: "path" });
 });
 
 test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {
   const ws = WorkspaceConfigSchema.parse({
+    version: 2,
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
@@ -69,8 +78,8 @@ test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {
   assert.equal(ws.wikiLanguage, "zh");
 });
 
-test("WorkspaceConfigSchema strips legacy orchestration MaxSteps keys", () => {
-  const ws = WorkspaceConfigSchema.parse({
+test("WorkspaceConfigSchema rejects prior workspace formats", () => {
+  const base = {
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
@@ -78,22 +87,18 @@ test("WorkspaceConfigSchema strips legacy orchestration MaxSteps keys", () => {
     model: { id: "openai/corp-model" },
     publicationPath: "D:/ws/demo/wiki",
     createdAt: new Date().toISOString(),
-    orchestration: {
-      maxDepth: 2,
-      maxDomainFanOut: 3,
-      maxLeafFanOut: 5,
-      rootMaxSteps: 96,
-      domainMaxSteps: 12,
-      leafMaxSteps: 8,
-      reviewerMaxSteps: 8,
-      planMaxSteps: 24,
-      reviewCouncilSize: 2,
-    },
-  });
-  assert.equal(ws.orchestration.maxDomainFanOut, 3);
-  assert.equal(ws.orchestration.reviewCouncilSize, 2);
-  assert.equal("rootMaxSteps" in ws.orchestration, false);
-  assert.equal("planMaxSteps" in ws.orchestration, false);
+  };
+
+  assert.equal(WorkspaceConfigSchema.safeParse(base).success, false);
+  assert.equal(WorkspaceConfigSchema.safeParse({ ...base, version: 1 }).success, false);
+  assert.equal(
+    WorkspaceConfigSchema.safeParse({
+      ...base,
+      version: 2,
+      orchestration: { maxDepth: 2 },
+    }).success,
+    false,
+  );
 });
 
 test("resolveOrchestration fills schema defaults and preserves partials", () => {
@@ -108,7 +113,6 @@ test("resolveOrchestration fills schema defaults and preserves partials", () => 
   assert.equal(partial.maxDomainFanOut, DEFAULT_ORCHESTRATION.maxDomainFanOut);
   assert.equal(partial.maxLeafFanOut, DEFAULT_ORCHESTRATION.maxLeafFanOut);
   assert.equal(partial.planScoutCount, DEFAULT_ORCHESTRATION.planScoutCount);
-  assert.equal(partial.maxDepth, DEFAULT_ORCHESTRATION.maxDepth);
   assert.equal(partial.leafConcurrency, DEFAULT_ORCHESTRATION.leafConcurrency);
   assert.equal(partial.leafConcurrency, 2);
   assert.equal("reviewConcurrency" in partial, false);
@@ -119,6 +123,7 @@ test("leafConcurrency defaults to 2 and accepts overrides", () => {
   assert.equal(resolveOrchestration({}).leafConcurrency, 2);
   assert.equal(resolveOrchestration({ leafConcurrency: 4 }).leafConcurrency, 4);
   const ws = WorkspaceConfigSchema.parse({
+    version: 2,
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
