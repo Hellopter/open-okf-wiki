@@ -168,6 +168,20 @@ export function migrate(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_effects_gate ON effects(run_id, gate_id);
     CREATE INDEX IF NOT EXISTS idx_attempt_inputs_artifact ON attempt_inputs(artifact_id);
     CREATE INDEX IF NOT EXISTS idx_attempts_run_node ON attempts(run_id, node_key, node_generation);
+    CREATE TABLE IF NOT EXISTS wiki_candidates (
+      run_id TEXT NOT NULL,
+      candidate_id TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      artifact_id TEXT NOT NULL,
+      parent_candidate_id TEXT,
+      produced_by TEXT NOT NULL,
+      round INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      producer_node_key TEXT,
+      producer_attempt_id TEXT,
+      PRIMARY KEY (run_id, candidate_id)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_wiki_candidates_run ON wiki_candidates(run_id, round);
   `);
   const runColumns = asRows(db.prepare("PRAGMA table_info(runs)").all()).map((row) =>
     requiredText(row, "name"),

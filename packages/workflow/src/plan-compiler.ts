@@ -136,7 +136,7 @@ export function compileExecutionPlan(
     reviewLenses,
     budgets: {
       maxRepairRounds: spec.acceptance?.maxRepairRounds ?? 2,
-      maxHardValidateRepairRounds: spec.acceptance?.maxHardValidateRepairRounds ?? 2,
+      maxHardValidateRepairRounds: spec.acceptance?.maxHardValidateRepairRounds ?? 0,
     },
     fanOut: {
       domainCount: domains.length,

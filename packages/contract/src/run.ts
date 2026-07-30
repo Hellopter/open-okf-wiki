@@ -35,17 +35,75 @@ export const WikiRunSpecPageSchema = z.object({
 
 export type WikiRunSpecPage = z.infer<typeof WikiRunSpecPageSchema>;
 
+/**
+ * Acceptance knobs on WikiSpec. Budgets map into EvaluationPolicy via
+ * `evaluationPolicyFromAcceptance` (contract/evaluation).
+ *
+ * Optional `maxCandidates` and `evaluationPolicy` are backward-compatible
+ * overrides; omitted fields keep EvaluationPolicy defaults.
+ */
 export const WikiRunSpecAcceptanceSchema = z.object({
   reviewRequired: z.boolean().default(true),
   /** Council review repair budget only (blocking defects from review seats). */
   maxRepairRounds: z.number().int().min(0).max(8).default(2),
   /**
-   * Mechanical hard-validate repair budget only (citation OOB, missing critical
-   * pages, …). Independent of `maxRepairRounds` so council cannot starve HV.
+   * Mechanical hard-validate *model* repair budget only (missing critical pages,
+   * non-autoFixable citation defects, …). Independent of `maxRepairRounds`.
+   * Default 0: host citation autofix (clamp/canonicalize) is preferred; raise
+   * only when model repair of mechanical defects is required.
    */
-  maxHardValidateRepairRounds: z.number().int().min(0).max(8).default(2),
+  maxHardValidateRepairRounds: z.number().int().min(0).max(8).default(0),
   /** Severities that block publish when present after final review. */
   blockingSeverities: z.array(z.enum(["blocking", "major", "minor"])).default(["blocking"]),
+  /** Cap on WikiCandidate versions in one run (EvaluationPolicy.maxCandidates). */
+  maxCandidates: z.number().int().min(1).max(16).optional(),
+  /**
+   * Optional nested EvaluationPolicy overrides (partial).
+   * Shape is intentionally loose here to avoid a run↔evaluation import cycle;
+   * `evaluationPolicyFromAcceptance` validates/merges against EvaluationPolicySchema.
+   */
+  evaluationPolicy: z
+    .object({
+      maxCandidates: z.number().int().min(1).max(16).optional(),
+      mechanical: z
+        .object({
+          requireCitations: z.boolean().optional(),
+          requireCriticalPages: z.boolean().optional(),
+          autoFix: z
+            .object({
+              canonicalizeCitations: z.boolean().optional(),
+              clampCitationLines: z.boolean().optional(),
+              clampLineSlack: z.number().int().min(0).max(5).optional(),
+              regenerateIndexes: z.boolean().optional(),
+            })
+            .strict()
+            .optional(),
+          modelRepairBudget: z.number().int().min(0).max(8).optional(),
+        })
+        .strict()
+        .optional(),
+      semantic: z
+        .object({
+          reviewRequired: z.boolean().optional(),
+          modelRepairBudget: z.number().int().min(0).max(8).optional(),
+          reReview: z.enum(["always", "affected_lenses"]).optional(),
+          stickyPriorBlocking: z.boolean().optional(),
+          blockingSeverities: z.array(z.enum(["blocking", "major", "minor"])).optional(),
+        })
+        .strict()
+        .optional(),
+      repair: z
+        .object({
+          defaultMode: z.enum(["mechanical_only", "patch", "rewrite_scoped"]).optional(),
+          allowFullTreeRewrite: z.boolean().optional(),
+          maxPagesPerRepair: z.number().int().min(1).max(50).optional(),
+        })
+        .strict()
+        .optional(),
+      onExhausted: z.enum(["fail", "operator"]).optional(),
+    })
+    .strict()
+    .optional(),
 });
 
 export type WikiRunSpecAcceptance = z.infer<typeof WikiRunSpecAcceptanceSchema>;
@@ -341,7 +399,7 @@ export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
     acceptance: {
       reviewRequired: true,
       maxRepairRounds: 2,
-      maxHardValidateRepairRounds: 2,
+      maxHardValidateRepairRounds: 0,
       blockingSeverities: ["blocking"],
     },
     changelog: [],

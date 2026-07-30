@@ -276,8 +276,8 @@ export function rerunNode(
 export type ApplyRerunAtOptions = {
   /**
    * When true, only bump `nodeKey` (no attempt_inputs consumer lineage).
-   * Used after repair.review to re-arm validate.pre / seats / reduce without
-   * invalidating the just-succeeded repair stage (which consumed reduce outputs).
+   * Used after repair.N to re-arm validate.pre / seats / reduce without
+   * invalidating the just-succeeded repair stage (which consumed upstream outputs).
    */
   selfOnly?: boolean;
   /**

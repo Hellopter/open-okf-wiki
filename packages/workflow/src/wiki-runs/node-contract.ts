@@ -164,11 +164,6 @@ const DEFECTS: InputRequirement = {
   mountPath: "defects.json",
 };
 
-const DEFECTS_REQUIRED: InputRequirement = {
-  ...DEFECTS,
-  required: true,
-};
-
 const TRANSCRIPT_AUDIT: InputRequirement = {
   role: "transcript",
   artifactKind: "transcript",
@@ -344,28 +339,18 @@ const CONTRACTS: Record<string, NodeContract> = {
 
 /**
  * Resolve the NodeContract for a node kind/key.
- * Supports repair.review.* / repair.hv.* via kind===repair or repair.* key prefix.
+ * Single repair family (`repair.N`) via kind===repair or repair.* key prefix.
+ * Defects are optional — present for semantic repair, absent for mechanical-only.
  */
 export function contractForNode(kind: string, nodeKey: string): NodeContract {
   if (kind === "repair" || nodeKey.startsWith("repair.")) {
-    // repair.review.* prefers defects; repair.hv.* may lack defects (mechanical HV notes in feedback).
-    if (nodeKey.startsWith("repair.hv.")) {
-      return {
-        kind: "repair",
-        requiredInputs: [WIKI_TREE, SPEC, SOURCES, SKILL, DEFECTS, FROZEN_MANIFEST],
-        outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
-        execution: "pi",
-      };
-    }
-    if (nodeKey.startsWith("repair.review.")) {
-      return {
-        kind: "repair",
-        requiredInputs: [WIKI_TREE, SPEC, DEFECTS_REQUIRED, SOURCES, SKILL, FROZEN_MANIFEST],
-        outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
-        execution: "pi",
-      };
-    }
-    return CONTRACTS.repair!;
+    // defects optional — present for semantic repair, absent for mechanical-only
+    return {
+      kind: "repair",
+      requiredInputs: [WIKI_TREE, SPEC, SOURCES, SKILL, DEFECTS, FROZEN_MANIFEST],
+      outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
+      execution: "pi",
+    };
   }
   const exact = CONTRACTS[kind];
   if (exact) return exact;

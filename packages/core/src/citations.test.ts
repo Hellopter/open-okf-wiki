@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  autofixCitationsInContent,
+  autofixWikiTreeCitations,
   canonicalizeCitationInContent,
   canonicalizeCitationTarget,
   canonicalizeWikiTreeCitations,
+  clampCitationLineRange,
   formatRepoCitation,
   parseSourceCitations,
   resolveCitationFile,
@@ -278,5 +281,108 @@ test("canonicalizeWikiTreeCitations rewrites a temp wiki dir", async () => {
   assert.equal(
     await readFile(path.join(root, "modules", "runtime.md"), "utf8"),
     "Also [Source](repo:src/a.ts#L2-L4).\n",
+  );
+});
+
+test("clampCitationLineRange: classic off-by-one L477 on 476-line file", () => {
+  const r = clampCitationLineRange(410, 477, 476, 2);
+  assert.equal(r.clamped, true);
+  assert.equal(r.lineStart, 410);
+  assert.equal(r.lineEnd, 476);
+});
+
+test("clampCitationLineRange: slack=0 does not clamp L477", () => {
+  const r = clampCitationLineRange(410, 477, 476, 0);
+  assert.equal(r.clamped, false);
+  assert.equal(r.lineStart, 410);
+  assert.equal(r.lineEnd, 477);
+});
+
+test("clampCitationLineRange: start beyond slack is not clampable", () => {
+  const r = clampCitationLineRange(480, 480, 476, 2);
+  assert.equal(r.clamped, false);
+});
+
+test("clampCitationLineRange: start < 1 is not clampable", () => {
+  const r = clampCitationLineRange(0, 5, 10, 2);
+  assert.equal(r.clamped, false);
+  assert.equal(r.lineStart, 0);
+});
+
+test("clampCitationLineRange: no line numbers → not clamped", () => {
+  const r = clampCitationLineRange(undefined, undefined, 10, 2);
+  assert.equal(r.clamped, false);
+  assert.equal(r.lineStart, undefined);
+});
+
+test("clampCitationLineRange: single-line OOB within slack collapses to last line", () => {
+  const r = clampCitationLineRange(477, undefined, 476, 1);
+  assert.equal(r.clamped, true);
+  assert.equal(r.lineStart, 476);
+  assert.equal(r.lineEnd, 476);
+});
+
+test("autofixCitationsInContent clamps + canonicalizes", async () => {
+  // 3-line file simulated via getLineCount; cite L1-L4 (off-by-one with slack 2).
+  const md = "Note [Source](repo:sources/main/a.ts#L1-L4).";
+  const out = await autofixCitationsInContent(md, {
+    sourceIds: ["main"],
+    multiSource: false,
+    lineSlack: 2,
+    getLineCount: async () => 3,
+  });
+  assert.equal(out.changed, true);
+  assert.equal(out.content, "Note [Source](repo:a.ts#L1-L3).");
+  assert.ok(out.fixes.some((f) => f.includes("clamped") || f.includes("canonicalized")));
+});
+
+test("autofixWikiTreeCitations + validateWikiTree autofixCitations", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-autofix-"));
+  const src = path.join(root, "src");
+  const wiki = path.join(root, "wiki");
+  await mkdir(src, { recursive: true });
+  await mkdir(wiki, { recursive: true });
+  // 3 lines in source file
+  await writeFile(path.join(src, "a.ts"), "a\nb\nc\n", "utf8");
+  // OOB end line + mount-form target
+  await writeFile(
+    path.join(wiki, "overview.md"),
+    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\n" +
+      "Note [Source](repo:sources/main/a.ts#L1-L4).\n",
+    "utf8",
+  );
+
+  // Without autofix, resolve should fail on OOB (even after canonicalize would strip mount).
+  const fail = await validateWikiTree(wiki, {
+    sources: [{ id: "main", path: src }],
+  });
+  assert.equal(fail.ok, false);
+  assert.ok(fail.errors.some((e) => e.includes("out of bounds") || e.includes("not found")));
+
+  // autofixWikiTreeCitations alone rewrites the page
+  const map = sourceRootMapFromSources([{ id: "main", path: src }]);
+  const fix = await autofixWikiTreeCitations(wiki, map, { lineSlack: 2 });
+  assert.equal(fix.rewrittenPages, 1);
+  assert.ok(fix.fixes.length >= 1);
+  const rewritten = await readFile(path.join(wiki, "overview.md"), "utf8");
+  assert.match(rewritten, /\[Source\]\(repo:a\.ts#L1-L3\)/);
+
+  // Fresh OOB write + validate with autofixCitations: true should pass
+  await writeFile(
+    path.join(wiki, "overview.md"),
+    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\n" +
+      "Note [Source](repo:a.ts#L2-L4).\n",
+    "utf8",
+  );
+  const pass = await validateWikiTree(wiki, {
+    sources: [{ id: "main", path: src }],
+    autofixCitations: true,
+    lineSlack: 2,
+  });
+  assert.equal(pass.ok, true, pass.errors.join("; "));
+  assert.equal(
+    await readFile(path.join(wiki, "overview.md"), "utf8"),
+    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\n" +
+      "Note [Source](repo:a.ts#L2-L3).\n",
   );
 });

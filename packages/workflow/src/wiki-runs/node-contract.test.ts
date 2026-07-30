@@ -32,14 +32,13 @@ test("contractForNode: domain requires research; leaf does not", () => {
   assert.ok(domain.requiredInputs.some((r) => r.role === "research" && r.required));
 });
 
-test("contractForNode: repair.review requires defects; repair.hv does not force defects", () => {
-  const review = contractForNode("repair", "repair.review.1");
-  assert.ok(review.requiredInputs.some((r) => r.role === "defects" && r.required));
-
-  const hv = contractForNode("repair", "repair.hv.1");
-  const defects = hv.requiredInputs.find((r) => r.role === "defects");
+test("contractForNode: repair.N has optional defects (semantic or mechanical)", () => {
+  const repair = contractForNode("repair", "repair.1");
+  const defects = repair.requiredInputs.find((r) => r.role === "defects");
   assert.ok(defects);
   assert.equal(defects.required, false);
+  assert.ok(repair.requiredInputs.some((r) => r.role === "wiki_tree" && r.required));
+  assert.equal(repair.execution, "pi");
 });
 
 test("validateBoundInputs: fails closed on missing required research for domain", () => {

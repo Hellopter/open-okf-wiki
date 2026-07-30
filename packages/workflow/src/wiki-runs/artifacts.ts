@@ -33,8 +33,14 @@ import {
 import type { WikiRunsCasCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
 import { upstreamKeys } from "./dag.js";
+import {
+  latestWikiCandidate,
+  producedByForNode,
+  registerWikiCandidate,
+} from "./evaluation/candidate.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
 import { contractForNode, validateBoundInputs } from "./node-contract.js";
+import { isRepairNodeKey, REPAIR_NODE_PREFIX } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
@@ -202,6 +208,93 @@ function priorWriteWikiTree(
   return undefined;
 }
 
+/** Parse N from `repair.N`; undefined when the key is not a product repair stage. */
+export function parseRepairRound(nodeKey: string): number | undefined {
+  if (!isRepairNodeKey(nodeKey)) return undefined;
+  const suffix = nodeKey.slice(REPAIR_NODE_PREFIX.length);
+  if (!/^\d+$/.test(suffix)) return undefined;
+  const n = Number.parseInt(suffix, 10);
+  return Number.isFinite(n) && n >= 1 ? n : undefined;
+}
+
+function wikiTreeFromLatestSucceeded(
+  host: Pick<ArtifactsHost, "db">,
+  runId: string,
+  nodeKey: string,
+): { role: string; artifactId: string } | undefined {
+  for (const output of latestSucceededOutputs(host, runId, nodeKey)) {
+    if (output.role === "wiki_tree") return output;
+  }
+  return undefined;
+}
+
+/**
+ * Product `repair.N` node keys for a run, highest round first (numeric N).
+ * When `beforeRound` is set, only include rounds strictly less than that value.
+ */
+function repairKeysDesc(
+  host: Pick<ArtifactsHost, "db">,
+  runId: string,
+  beforeRound?: number,
+): string[] {
+  const keys = asRows(
+    host.db
+      .prepare(
+        `SELECT DISTINCT node_key FROM nodes
+         WHERE run_id = ? AND node_key LIKE 'repair.%'`,
+      )
+      .all(runId),
+  ).map((row) => requiredText(row, "node_key"));
+  return keys
+    .map((key) => ({ key, n: parseRepairRound(key) }))
+    .filter((item): item is { key: string; n: number } => {
+      if (item.n === undefined) return false;
+      if (beforeRound !== undefined && item.n >= beforeRound) return false;
+      return true;
+    })
+    .sort((a, b) => b.n - a.n)
+    .map((item) => item.key);
+}
+
+/**
+ * Baseline wiki_tree for a repair stage `repair.N`.
+ *
+ * Priority:
+ * 1. latest succeeded prior repair.M (M < N) wiki (numeric DESC) — progressive multi-round
+ * 2. latestWikiCandidate artifact if resolvable
+ * 3. undefined — caller keeps edge-bound wiki (write.root or review.reduce) or falls back
+ *
+ * Does not bind the node's own outputs — only upstream baselines.
+ */
+export function baselineWikiForRepair(
+  host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
+  runId: string,
+  nodeKey: string,
+): { role: string; artifactId: string } | undefined {
+  const round = parseRepairRound(nodeKey);
+  if (round === undefined) return undefined;
+
+  // 1. Prior repair.M (M < N), highest first — multi-round progressive seed.
+  for (const key of repairKeysDesc(host, runId, round)) {
+    const found = wikiTreeFromLatestSucceeded(host, runId, key);
+    if (found) return found;
+  }
+
+  // 2. Durable candidate registry (when present).
+  try {
+    const cand = latestWikiCandidate(host, runId);
+    if (cand?.artifactId?.trim()) {
+      return { role: "wiki_tree", artifactId: cand.artifactId };
+    }
+  } catch {
+    // wiki_candidates may be absent in partial unit fixtures
+  }
+
+  // 3. No forced write.root — preserve edge-bound wiki (mechanical: write.root,
+  // operator: review.reduce). Caller falls back when wiki_tree is still missing.
+  return undefined;
+}
+
 export function upstreamSealedOutputs(
   host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
   runId: string,
@@ -270,62 +363,56 @@ export function upstreamSealedOutputs(
 
   // Carry forward the latest wiki_tree for validate/review/prepare/publish when
   // edges only reference intermediate nodes that re-emit it.
-  // Prefer refined trees (repair.review / repair.hv / validate) over write.root so
-  // auto hard-validate / review repair is not lost when seats do not re-emit wiki_tree.
+  // Prefer refined trees (repair.N / validate) over write.root so model repair
+  // progress is not lost when seats do not re-emit wiki_tree.
   if (!byRole.has("wiki_tree")) {
-    const reviewRepairKeys = asRows(
-      host.db
-        .prepare(
-          `SELECT DISTINCT node_key FROM nodes
-           WHERE run_id = ? AND node_key LIKE 'repair.review.%'
-           ORDER BY node_key DESC`,
-        )
-        .all(runId),
-    ).map((row) => requiredText(row, "node_key"));
-    const hvKeys = asRows(
-      host.db
-        .prepare(
-          `SELECT DISTINCT node_key FROM nodes
-           WHERE run_id = ? AND node_key LIKE 'repair.hv.%'
-           ORDER BY node_key DESC`,
-        )
-        .all(runId),
-    ).map((row) => requiredText(row, "node_key"));
+    const repairKeys = repairKeysDesc(host, runId);
     for (const key of [
-      ...reviewRepairKeys,
-      ...hvKeys,
+      ...repairKeys,
       "repair",
       "validate.final",
       "validate.pre",
       "review.reduce",
       "write.root",
     ]) {
-      for (const output of nodeOutputsAtCurrentGen(host, runId, key)) {
+      // Prefer latest *succeeded* gen (re-arm may leave current gen without outputs).
+      const outputs = isRepairNodeKey(key)
+        ? latestSucceededOutputs(host, runId, key)
+        : nodeOutputsAtCurrentGen(host, runId, key);
+      for (const output of outputs) {
         if (output.role === "wiki_tree") add("wiki_tree", output.artifactId);
       }
       if (byRole.has("wiki_tree")) break;
     }
   }
 
-  // repair.hv.*: always prefer write.root wiki as the dirty staging baseline
-  // (edge write.root → repair.hv.N normally supplies this; force for safety).
-  if (nodeKey.startsWith("repair.hv.")) {
-    for (const output of nodeOutputsAtCurrentGen(host, runId, "write.root")) {
-      if (output.role === "wiki_tree") {
-        byRole.set("wiki_tree", output.artifactId);
-        break;
+  // repair.N: progressive seed — prior repair.M (M < N), else candidate / write.root.
+  // Edges wire write.root or review.reduce → repair.N; without this multi-round
+  // repair would discard progress from repair.(N-1).
+  if (isRepairNodeKey(nodeKey)) {
+    const baseline = baselineWikiForRepair(host, runId, nodeKey);
+    if (baseline) {
+      byRole.set("wiki_tree", baseline.artifactId);
+    } else if (!byRole.has("wiki_tree")) {
+      // Fall through: review.reduce (operator) or write.root via edges already tried.
+      for (const key of ["review.reduce", "write.root"]) {
+        const found = wikiTreeFromLatestSucceeded(host, runId, key);
+        if (found) {
+          byRole.set("wiki_tree", found.artifactId);
+          break;
+        }
       }
     }
   }
 
-  // repair.review.*: prefer review.reduce wiki (+ defects already via edge).
-  if (nodeKey.startsWith("repair.review.")) {
-    for (const output of latestSucceededOutputs(host, runId, "review.reduce")) {
-      if (output.role === "wiki_tree") {
-        byRole.set("wiki_tree", output.artifactId);
-      }
-      if (output.role === "defects" && !byRole.has("defects")) {
-        byRole.set("defects", output.artifactId);
+  // validate.* after multi-round repair: prefer highest-N succeeded repair.N wiki
+  // (still beats write.root; leaves pure write.root path when no repair exists).
+  if (nodeKey.startsWith("validate.")) {
+    for (const key of repairKeysDesc(host, runId)) {
+      const found = wikiTreeFromLatestSucceeded(host, runId, key);
+      if (found) {
+        byRole.set("wiki_tree", found.artifactId);
+        break;
       }
     }
   }
@@ -516,6 +603,19 @@ export function commitNodeArtifacts(
         preparation.role,
         preparation.artifactId,
       );
+    // Always register WikiCandidate identity when a wiki_tree is committed (truth).
+    // maxCandidates is enforced when scheduling repair, not here.
+    if (preparation.role === "wiki_tree" || preparation.kind === "wiki_tree") {
+      registerWikiCandidate(host, {
+        runId: claim.runId,
+        digest: preparation.digest,
+        artifactId: preparation.artifactId,
+        producedBy: producedByForNode(claim.kind, claim.nodeKey),
+        createdAt: timestamp,
+        producerNodeKey: claim.nodeKey,
+        producerAttemptId: claim.attemptId,
+      });
+    }
   }
   host.db
     .prepare(

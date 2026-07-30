@@ -257,6 +257,33 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     candidateArtifactId: requiredText(effect, "candidate_artifact_id"),
     candidateDigest: requiredText(effect, "candidate_digest"),
   }));
+  // WikiCandidate lineage (table may be empty on older DBs / pre-write runs).
+  let candidates: WikiRunSnapshot["candidates"] = [];
+  try {
+    candidates = asRows(
+      db
+        .prepare(
+          `SELECT candidate_id, digest, artifact_id, parent_candidate_id, produced_by, round, created_at
+           FROM wiki_candidates WHERE run_id = ?
+           ORDER BY round ASC, created_at ASC`,
+        )
+        .all(runId),
+    ).map((row) => ({
+      candidateId: requiredText(row, "candidate_id"),
+      digest: requiredText(row, "digest"),
+      artifactId: requiredText(row, "artifact_id"),
+      producedBy: requiredText(row, "produced_by") as WikiRunSnapshot["candidates"][number]["producedBy"],
+      round: requiredNumber(row, "round"),
+      ...(row.parent_candidate_id != null && String(row.parent_candidate_id).trim()
+        ? { parentCandidateId: String(row.parent_candidate_id).trim() }
+        : {}),
+      ...(row.created_at != null && String(row.created_at).trim()
+        ? { createdAt: String(row.created_at).trim() }
+        : {}),
+    }));
+  } catch {
+    candidates = [];
+  }
   return WikiRunSnapshotSchema.parse({
     schema: WIKI_RUNS_SCHEMA,
     definitionVersion: 2,
@@ -277,6 +304,7 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     nodes,
     attempts,
     gates,
+    candidates,
     effects,
     createdAt: requiredText(run, "created_at"),
     updatedAt: requiredText(run, "updated_at"),

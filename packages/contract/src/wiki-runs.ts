@@ -223,7 +223,7 @@ function decisionAllowedForGateKind(
  * - fix (review defects after review.reduce):
  *   - `pass` — accept current wiki (waive / clean enough); unlock validate.final
  *   - `deny` — abandon run (failed)
- *   - `fix` — schedule repair.review.N (optional feedback notes)
+ *   - `fix` — schedule repair.N (optional feedback notes)
  *   - `revise` — operator suggestions; re-open gate with new payload digest (requires feedback)
  */
 export const ResolveGateCommandSchema = z
@@ -258,7 +258,7 @@ export const ResolveGateCommandSchema = z
         });
       }
     } else if (command.decision === "fix") {
-      // optional feedback/notes for repair.review — allowed
+      // optional feedback/notes for repair.N — allowed
     } else if (command.feedback) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -502,6 +502,25 @@ export const WikiRunSnapshotSchema = z
     attempts: z.array(WikiRunAttemptSchema),
     gates: z.array(WikiRunGateSchema),
     effects: z.array(WikiRunEffectSchema),
+    /**
+     * WikiCandidate lineage for evaluation (write / repair / mechanical_fix).
+     * Empty when the run has not sealed a wiki_tree yet or on older DBs.
+     */
+    candidates: z
+      .array(
+        z
+          .object({
+            candidateId: z.string().min(1),
+            digest: z.string().min(1),
+            artifactId: z.string().min(1),
+            parentCandidateId: z.string().min(1).optional(),
+            producedBy: z.enum(["write", "repair", "mechanical_fix"]),
+            round: z.number().int().min(0),
+            createdAt: z.string().optional(),
+          })
+          .strict(),
+      )
+      .default([]),
     createdAt: IsoDateTimeSchema,
     updatedAt: IsoDateTimeSchema,
   })

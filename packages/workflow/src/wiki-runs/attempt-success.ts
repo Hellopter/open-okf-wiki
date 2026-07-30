@@ -36,8 +36,9 @@ import {
 } from "./gate-open.js";
 import { onPlanAccepted } from "./gate-resolve.js";
 import {
+  isRepairNodeKey,
   loadAcceptance,
-  rearmEvaluationRoundAfterReviewRepair,
+  rearmEvaluationRoundAfterRepair,
 } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js";
@@ -49,8 +50,8 @@ import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js
 export type AttemptSuccessHost = WikiRunsDbCtx &
   Pick<WikiRunsCasCtx, "isCurrent" | "currentNodeGeneration"> & {
     /**
-     * Durable RerunNode core — required to re-arm EvaluationRound after repair.review.
-     * Optional only for unit hosts that never exercise review repair.
+     * Durable RerunNode core — required to re-arm EvaluationRound after any repair.N.
+     * Optional only for unit hosts that never exercise repair success.
      */
     applyRerunAt?(
       runId: string,
@@ -259,13 +260,14 @@ export function onAttemptSucceeded(
     return;
   }
 
-  // repair.review.N succeeded → re-arm EvaluationRound (validate.pre + seats + reduce).
+  // ANY repair.N success → full EvaluationRound re-arm (validate.pre + seats + reduce).
   // gate.fix / validate.final were already held at schedule time.
   if (
-    claim.nodeKey.startsWith("repair.review.") &&
+    (isRepairNodeKey(claim.nodeKey) ||
+      (claim.kind === "repair" && claim.nodeKey.startsWith("repair."))) &&
     typeof host.applyRerunAt === "function"
   ) {
-    rearmEvaluationRoundAfterReviewRepair(
+    rearmEvaluationRoundAfterRepair(
       {
         db: host.db,
         workspace: host.workspace,

@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { autofixWikiTreeCitations } from "./citations-autofix.js";
 import {
   type SourceRootMap,
   sourceRootMapFromSources,
@@ -29,8 +30,16 @@ export type ValidateWikiOptions = {
    * Entries with `critical: false` are skipped; omitted critical defaults to true.
    */
   requiredPages?: Array<{ path: string; critical?: boolean }>;
+  /**
+   * When true and `sources` are provided, mechanically clamp off-by-one citation
+   * line ranges (and canonicalize targets) on disk before validation.
+   * Default false — callers / workflows may also invoke {@link autofixWikiTreeCitations}
+   * explicitly before validate.
+   */
+  autofixCitations?: boolean;
+  /** Line slack for {@link autofixCitations} (default 1 — true off-by-one). */
+  lineSlack?: number;
 };
-
 export type ValidateWikiResult = {
   ok: boolean;
   errors: string[];
@@ -115,6 +124,13 @@ export async function validateWikiTree(
       errors: [error instanceof Error ? error.message : String(error)],
       warnings,
     };
+  }
+
+  // Mechanical autofix (canonicalize + off-by-one line clamp) before load/validate.
+  if (options.autofixCitations && sourceMap) {
+    await autofixWikiTreeCitations(resolved, sourceMap, {
+      lineSlack: options.lineSlack,
+    });
   }
 
   const { pages, scan, loadIssues } = await loadWikiPageRecords(resolved, {

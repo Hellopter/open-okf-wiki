@@ -115,7 +115,7 @@ test("compileExecutionPlan within caps builds workUnits and reductions", () => {
   assert.equal(plan.reviewLenses.length, 1);
   assert.deepEqual(plan.budgets, {
     maxRepairRounds: 2,
-    maxHardValidateRepairRounds: 2,
+    maxHardValidateRepairRounds: 0,
   });
 });
 

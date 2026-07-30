@@ -11,12 +11,22 @@ export {
   canonicalizeCitationInContent,
   canonicalizeCitationTarget,
   canonicalizeWikiTreeCitations,
+  countFileLines,
   formatRepoCitation,
   resolveCitationFile,
   type SourceRootMap,
   sourceRootMapFromSources,
   validateCitationResolve,
 } from "./citations-canonicalize.js";
+export {
+  type AutofixCitationsInContentOptions,
+  type AutofixCitationsInContentResult,
+  type AutofixWikiTreeResult,
+  type ClampCitationOptions,
+  autofixCitationsInContent,
+  autofixWikiTreeCitations,
+  clampCitationLineRange,
+} from "./citations-autofix.js";
 export {
   parseSourceCitations,
   SOURCE_CITATION_RE,

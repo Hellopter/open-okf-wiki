@@ -20,7 +20,7 @@ import {
   unlockReadyNodes,
 } from "./dag.js";
 import { withdrawOpenGates } from "./gate-open.js";
-import { scheduleReviewRepair } from "./repair-schedule.js";
+import { scheduleOperatorRepair } from "./repair-schedule.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 
@@ -479,7 +479,7 @@ export function applyPublicationGateDecision(
  * Fix gate decisions after review.reduce sealed defects:
  * - pass — accept wiki; unlock validate.final
  * - deny — mark run failed
- * - fix — schedule repair.review.N (kind=repair) with optional notes under maxRepairRounds
+ * - fix — schedule repair.N (kind=repair, semantic source) with optional notes under modelRepairBudget
  * - revise — re-open gate.fix at gen+1 with notes baked into payload digest
  */
 export function applyFixGateDecision(
@@ -569,7 +569,7 @@ export function applyFixGateDecision(
   }
 
   if (command.decision === "fix") {
-    scheduleReviewRepair(host, command, timestamp);
+    scheduleOperatorRepair(host, command, timestamp);
     return;
   }
 

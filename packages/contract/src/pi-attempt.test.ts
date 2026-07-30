@@ -111,6 +111,49 @@ test("PiAttemptNode.detail accepts secret-free prompt fields and rejects unknown
   );
 });
 
+test("PiAttemptNode.detail accepts optional repairRequest", () => {
+  const withRepair = {
+    ...input,
+    node: {
+      key: "repair.1",
+      kind: "repair",
+      generation: 0,
+      runIndex: 1,
+      detail: {
+        feedback: "Hard-validate repair (round 1/1):\noverview.md: boom",
+        repairRequest: {
+          requestId: "mech-repair:run-1:1",
+          baselineCandidateId: "write.root",
+          round: 1,
+          sources: ["mechanical"],
+          issues: [{ kind: "mechanical", message: "overview.md: boom" }],
+          scope: { pages: ["overview.md"], mode: "patch" },
+        },
+      },
+    },
+  };
+  const parsed = PiAttemptInputSchema.safeParse(withRepair);
+  assert.equal(parsed.success, true);
+  if (parsed.success) {
+    assert.equal(parsed.data.node.detail?.repairRequest?.requestId, "mech-repair:run-1:1");
+    assert.deepEqual(parsed.data.node.detail?.repairRequest?.scope.pages, ["overview.md"]);
+  }
+  assert.equal(
+    PiAttemptInputSchema.safeParse({
+      ...withRepair,
+      node: {
+        ...withRepair.node,
+        detail: {
+          ...withRepair.node.detail,
+          repairRequest: { requestId: "x" },
+        },
+      },
+    }).success,
+    false,
+    "malformed repairRequest must fail closed",
+  );
+});
+
 test("PiAttemptOutcome rejects malformed and cross-variant results", () => {
   assert.equal(
     PiAttemptOutcomeSchema.safeParse({

@@ -16,12 +16,20 @@ export {
   rewriteRepoCitationsToRelative,
 } from "./citation-rewrite.js";
 export {
+  type AutofixCitationsInContentOptions,
+  type AutofixCitationsInContentResult,
+  type AutofixWikiTreeResult,
   type CanonicalizeCitationOptions,
   type CanonicalizeCitationResult,
   type CanonicalizeWikiTreeResult,
+  type ClampCitationOptions,
+  autofixCitationsInContent,
+  autofixWikiTreeCitations,
   canonicalizeCitationInContent,
   canonicalizeCitationTarget,
   canonicalizeWikiTreeCitations,
+  clampCitationLineRange,
+  countFileLines,
   formatRepoCitation,
   parseSourceCitations,
   resolveCitationFile,
@@ -197,6 +205,13 @@ export {
   WIKI_VALIDATE_MAX_FILE_BYTES,
   WIKI_VALIDATE_MAX_FILES,
 } from "./validate-wiki.js";
+export {
+  extractPagesFromValidationMessage,
+  extractPathFromValidateError,
+  MECHANICAL_REPAIR_PAGE_CAP,
+  mechanicalIssuesFromErrors,
+  toMechanicalReport,
+} from "./mechanical-report.js";
 export {
   regenerateWikiIndexes,
   renderDirectoryIndex,

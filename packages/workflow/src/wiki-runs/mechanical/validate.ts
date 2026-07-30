@@ -1,18 +1,22 @@
 /**
  * Mechanical validate.pre / validate.final execution.
  *
- * Phase 3: when Spec is sealed, require every pages[] entry with critical:true
- * (default true) to exist as markdown under the wiki tree.
+ * Single mechanical contract (EvaluationPolicy): critical pages, frontmatter,
+ * citations when sources are bound. Host auto-fixes clamp/canonicalize before
+ * score so off-by-one citation OOB does not burn model repair budget.
  */
 
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  evaluationPolicyFromAcceptance,
+  type EvaluationPolicy,
   type PiAttemptOutcome,
   type WikiRunSpec,
+  WikiRunSpecAcceptanceSchema,
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
-import { validateWikiTree } from "@okf-wiki/core";
+import { regenerateWikiIndexes, toMechanicalReport, validateWikiTree } from "@okf-wiki/core";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { type MechanicalHost, sealedInputPath } from "./host.js";
@@ -39,6 +43,11 @@ async function loadSealedSpec(
     }
   }
   return undefined;
+}
+
+function policyForSpec(spec: WikiRunSpec | undefined): EvaluationPolicy {
+  const acceptance = WikiRunSpecAcceptanceSchema.parse(spec?.acceptance ?? {});
+  return evaluationPolicyFromAcceptance(acceptance);
 }
 
 export async function mechanicalValidate(
@@ -73,38 +82,69 @@ export async function mechanicalValidate(
   }
 
   const spec = await loadSealedSpec(host, claim, runDir);
-  const requiredPages = spec?.pages?.map((p) => ({
-    path: p.path,
-    critical: p.critical,
-  }));
+  const policy = policyForSpec(spec);
+  const hasSources = sources.length > 0;
+  const requiredPages =
+    policy.mechanical.requireCriticalPages && spec?.pages
+      ? spec.pages.map((p) => ({ path: p.path, critical: p.critical }))
+      : undefined;
+
+  // Host-owned indexes before score (EvaluationPolicy.autoFix.regenerateIndexes).
+  if (policy.mechanical.autoFix.regenerateIndexes) {
+    try {
+      await regenerateWikiIndexes(stagingWiki);
+    } catch {
+      // Index regen is best-effort; missing layout still fails validate below.
+    }
+  }
+
+  const wantAutofix =
+    hasSources &&
+    (policy.mechanical.autoFix.canonicalizeCitations ||
+      policy.mechanical.autoFix.clampCitationLines);
 
   const result = await validateWikiTree(stagingWiki, {
-    sources: sources.length > 0 ? sources : undefined,
-    // Pre-review validate is structural; final still checks citations when sources exist.
-    requireCitations: claim.kind === "validate.final" ? undefined : false,
+    sources: hasSources ? sources : undefined,
+    // Single mechanical contract for pre and final (no weaker pre path).
+    requireCitations: hasSources ? policy.mechanical.requireCitations : false,
+    autofixCitations: wantAutofix,
+    lineSlack: policy.mechanical.autoFix.clampLineSlack,
     ...(requiredPages && requiredPages.length > 0 ? { requiredPages } : {}),
   });
+  const mechanical = toMechanicalReport(result);
+  const reportPath = path.join(workDir, "validate-report.json");
+  const reportBody = {
+    ...result,
+    mechanical,
+    kind: claim.kind,
+    autofixCitations: wantAutofix,
+    requireCitations: hasSources ? policy.mechanical.requireCitations : false,
+  };
+  // Always write the report on disk (success seals it; failure keeps the path for
+  // operator diagnostics — PiAttemptOutcome.failed cannot carry unsealedArtifacts).
+  await writeFile(reportPath, `${JSON.stringify(reportBody, null, 2)}\n`, "utf8");
+
   if (!result.ok) {
     // Quality / mechanical dirty — not missing infrastructure. Scheduler may
-    // auto-schedule repair.hv.N under acceptance.maxHardValidateRepairRounds.
+    // auto-schedule repair.N under EvaluationPolicy.mechanical.modelRepairBudget.
+    // Issue summary is already in errors; mechanical report is on disk under workDir.
     return {
       type: "failed",
       error: `validation failed: ${result.errors.slice(0, 8).join("; ")}`.slice(0, 4_000),
       failureClass: "schema",
     };
   }
-  const reportPath = path.join(workDir, "validate-report.json");
-  await writeFile(reportPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   const validateSummary = `${claim.kind} ok (${result.pageCount ?? 0} pages)`;
   const transcript = await writeConversationTranscript({
     sessionPath: path.join(runDir, "attempts", claim.attemptId, "session.jsonl"),
     nodeKey: claim.nodeKey,
     summary: validateSummary,
-    meta: { kind: claim.kind, ok: true },
+    meta: { kind: claim.kind, ok: true, autofixCitations: wantAutofix },
   });
   return {
     type: "succeeded",
     unsealedArtifacts: [
+      // Staging may include host autofix rewrites — re-seal as the refined wiki_tree.
       { kind: "wiki_tree", role: "wiki_tree", sourcePath: stagingWiki, directory: true },
       { kind: "receipt", role: "validate_report", sourcePath: reportPath, directory: false },
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },

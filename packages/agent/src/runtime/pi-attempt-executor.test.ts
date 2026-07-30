@@ -306,6 +306,69 @@ test("Pi attempt domain uses sealed questions array; repair appends feedback", a
   );
 });
 
+test("Pi attempt repair with detail.repairRequest leads task with scope pages", async (t) => {
+  const repairRequest = {
+    requestId: "mech-repair:run-1:1",
+    baselineCandidateId: "write.root",
+    round: 1,
+    sources: ["mechanical" as const],
+    issues: [{ kind: "mechanical" as const, message: "overview.md: missing Source Citation" }],
+    scope: { pages: ["overview.md", "architecture.md"], mode: "patch" as const },
+  };
+  const repair = await fixture({
+    key: "repair.1",
+    kind: "repair",
+    generation: 0,
+    runIndex: 1,
+    detail: {
+      feedback: "Hard-validate repair (round 1/1):\noverview.md: missing Source Citation",
+      repairRequest,
+    },
+  });
+  t.after(() => cleanup(repair));
+  const wikiRoot = path.join(path.dirname(path.dirname(repair.attemptDir)), "sealed-wiki-rr");
+  await mkdir(wikiRoot, { recursive: true });
+  await writeFile(
+    path.join(wikiRoot, "overview.md"),
+    "---\ntype: Overview\ntitle: Demo\n---\n\n# Demo\n",
+    "utf8",
+  );
+  const specPath = path.join(path.dirname(path.dirname(repair.attemptDir)), "sealed-spec-rr.json");
+  await writeFile(specPath, `${JSON.stringify(defaultWikiRunSpec("Demo"))}\n`, "utf8");
+  repair.sealedInputs.push(
+    {
+      role: "wiki_tree",
+      artifact: { artifactId: "wiki", kind: "wiki_tree", digest, sealedAt: timestamp },
+      readOnlyPath: wikiRoot,
+    },
+    {
+      role: "spec",
+      artifact: { artifactId: "spec", kind: "spec", digest, sealedAt: timestamp },
+      readOnlyPath: specPath,
+    },
+  );
+  let capturedTask = "";
+  const outcome = await createPiAttemptExecutor({
+    runtime: createFixtureProduceRuntime({
+      onWrite: (req) => {
+        capturedTask = req.task ?? "";
+        return undefined;
+      },
+    }),
+  })(repair, new AbortController().signal);
+  assert.equal(outcome.type, "succeeded");
+  assert.ok(capturedTask.startsWith("RepairRequest:"), "RepairRequest block must lead the task");
+  assert.ok(capturedTask.includes('"requestId": "mech-repair:run-1:1"'));
+  assert.ok(capturedTask.includes("Repair scope pages: overview.md, architecture.md"));
+  assert.ok(capturedTask.includes("Baseline candidate: write.root"));
+  assert.ok(
+    capturedTask.includes(
+      "Only edit the listed scope pages unless a consistency fix on another page is strictly required.",
+    ),
+  );
+  assert.ok(capturedTask.includes("Operator feedback: Hard-validate repair"));
+});
+
 test("Pi attempt write.root with detail.feedback uses repair-style task", async (t) => {
   const input = await fixture({
     key: "write.root",

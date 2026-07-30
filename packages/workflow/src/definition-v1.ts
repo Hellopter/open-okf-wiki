@@ -188,7 +188,7 @@ export function buildGraphFromExecutionPlan(
 
   // Fix gate sits between council reduce and final validate. Clean reviews
   // auto-pass; blocking defects open HITL (pass / fix / revise / deny).
-  // Explicit repair.review.N nodes are inserted only on ResolveGate(fix).
+  // Explicit repair.N nodes are inserted only on ResolveGate(fix) or auto mechanical repair.
   addNode({ key: "gate.fix", kind: "gate.fix" });
   addEdge("review.reduce", "gate.fix");
 

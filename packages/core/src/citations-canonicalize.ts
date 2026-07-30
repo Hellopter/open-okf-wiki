@@ -286,7 +286,8 @@ export function resolveCitationFile(
   return { error: `cannot resolve citation (no sources): ${citation.raw}` };
 }
 
-async function countFileLines(absPath: string): Promise<number> {
+/** Count lines in a text file (handles final line without trailing newline). */
+export async function countFileLines(absPath: string): Promise<number> {
   const fh = await open(absPath, "r");
   try {
     let lines = 0;

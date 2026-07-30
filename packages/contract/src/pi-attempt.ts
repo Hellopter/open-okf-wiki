@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RepairRequestSchema } from "./evaluation.js";
 import { Sha256HexSchema } from "./primitives.js";
 import {
   AttemptMetricsSchema,
@@ -57,6 +58,11 @@ export const PiAttemptNodeDetailSchema = z
     seatIndex: z.number().int().min(0).max(16).optional(),
     critical: z.boolean().optional(),
     feedback: z.string().trim().min(1).max(4_000).optional(),
+    /**
+     * Structured repair envelope from scheduleMechanicalRepair / scheduleOperatorRepair.
+     * Optional so older detail_json rows still parse; agents may ignore when absent.
+     */
+    repairRequest: RepairRequestSchema.optional(),
   })
   .strict();
 

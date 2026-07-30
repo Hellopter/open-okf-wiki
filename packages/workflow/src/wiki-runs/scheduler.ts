@@ -36,8 +36,8 @@ import { digest, now } from "./crypto-util.js";
 import { unlockReadyNodes } from "./dag.js";
 import { openOperatorInputGate } from "./gate-open.js";
 import {
-  scheduleHardValidateRepair,
-  shouldAutoHardValidateRepair,
+  scheduleMechanicalRepair,
+  shouldAutoMechanicalRepair,
 } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { writeConversationTranscript } from "./transcript-io.js";
@@ -99,7 +99,7 @@ export type SchedulerHost = WikiRunsCasCtx & {
   attemptInputDigest(attemptId: string): string;
   /**
    * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
-   * Used by auto hard-validate repair to re-arm validate.* + downstream after scheduling repair.hv.N.
+   * Used by auto mechanical repair to re-arm validate.* + downstream after scheduling repair.N.
    */
   applyRerunAt(
     runId: string,
@@ -680,6 +680,10 @@ export function loadPiAttemptNodeDetail(
   if (typeof rowObj.seatIndex === "number") candidate.seatIndex = rowObj.seatIndex;
   if (typeof rowObj.critical === "boolean") candidate.critical = rowObj.critical;
   if (typeof rowObj.feedback === "string") candidate.feedback = rowObj.feedback;
+  // Structured RepairRequest from scheduleMechanicalRepair / scheduleOperatorRepair.
+  if (rowObj.repairRequest != null && typeof rowObj.repairRequest === "object") {
+    candidate.repairRequest = rowObj.repairRequest;
+  }
   const result = PiAttemptNodeDetailSchema.safeParse(candidate);
   return result.success && Object.keys(result.data).length > 0 ? result.data : undefined;
 }
@@ -825,12 +829,12 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
     return;
   }
 
-  // Mechanical hard-validate repair: schedule a dedicated repair.hv.N stage with
-  // validation feedback under sealed Spec acceptance.maxHardValidateRepairRounds
-  // (default 2). Independent of research L_control and council maxRepairRounds.
+  // Mechanical model repair: schedule a dedicated repair.N stage with
+  // validation feedback under EvaluationPolicy.mechanical.modelRepairBudget
+  // (default 0; host autofix preferred). Independent of research L_control and council.
   // Does NOT disguise fix as write.root (write stays at its successful generation).
-  if (shouldAutoHardValidateRepair(host, claim, message, failureClass)) {
-    if (scheduleHardValidateRepair(host, claim, message)) {
+  if (shouldAutoMechanicalRepair(host, claim, message, failureClass)) {
+    if (scheduleMechanicalRepair(host, claim, message)) {
       host.emit(claim.runId, "node.ready");
       return;
     }

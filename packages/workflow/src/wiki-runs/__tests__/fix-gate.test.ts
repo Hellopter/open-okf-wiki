@@ -1,5 +1,5 @@
 /**
- * Phase F1: gate.fix after review.reduce + repair.review.N on ResolveGate(fix).
+ * Phase F1: gate.fix after review.reduce + repair.N on ResolveGate(fix) (ADR 0038).
  */
 
 import assert from "node:assert/strict";
@@ -13,7 +13,7 @@ import {
   type PiAttemptOutcome,
 } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
-import { REVIEW_REPAIR_NODE_PREFIX } from "../repair-schedule.js";
+import { repairNodeKey } from "../repair-schedule.js";
 import {
   approvePlanGate,
   context,
@@ -164,7 +164,7 @@ function blockingSeatExecutor(
     if (input.node.kind === "repair") {
       await mkdir(input.workDir, { recursive: true });
       const wikiDir = await writeGoodWiki(input.workDir);
-      return writeSucceeded(input, wikiDir, "fixture repair.review fix");
+      return writeSucceeded(input, wikiDir, "fixture repair.1 fix");
     }
     return fullGraphFixtureExecutor(input, signal);
   };
@@ -273,7 +273,7 @@ test("resolve fix pass unlocks validate.final path toward publication", async (t
   );
 });
 
-test("resolve fix schedules repair.review.1 claimed with kind repair and feedback", async (t) => {
+test("resolve fix schedules repair.1 claimed with kind repair and feedback", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
 
@@ -306,7 +306,7 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-repair" , intent: { mode: "generate" } },
+    { type: "start_run", commandId: "start-fix-repair", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-repair");
@@ -332,18 +332,18 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
   const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 90_000);
   assert.ok(
     atPub.snapshot.gates.some((g) => g.kind === "publication" && g.state === "open"),
-    "expected publication after repair.review EvaluationRound",
+    "expected publication after repair.1 EvaluationRound",
   );
 
   assert.equal(repairClaims.length, 1, `expected one repair claim, got ${repairClaims.length}`);
   const claim = repairClaims[0]!;
   assert.equal(claim.kind, "repair");
-  assert.equal(claim.key, `${REVIEW_REPAIR_NODE_PREFIX}1`);
+  assert.equal(claim.key, repairNodeKey(1));
   assert.equal(claim.feedback, "Add grounding citations to overview.md");
-  assert.equal(claim.hasWiki, true, "repair.review must bind wiki_tree");
-  assert.equal(claim.hasDefects, true, "repair.review must bind defects receipt");
+  assert.equal(claim.hasWiki, true, "repair.1 must bind wiki_tree");
+  assert.equal(claim.hasDefects, true, "repair.1 must bind defects receipt");
 
-  const repairNode = atPub.snapshot.nodes.find((n) => n.key === `${REVIEW_REPAIR_NODE_PREFIX}1`);
+  const repairNode = atPub.snapshot.nodes.find((n) => n.key === repairNodeKey(1));
   assert.ok(repairNode);
   assert.equal(repairNode?.kind, "repair");
   assert.equal(repairNode?.state, "succeeded");
@@ -352,7 +352,7 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
   const reSeated = atPub.snapshot.nodes.filter(
     (n) => n.kind === "review.seat" && n.generation > 0 && n.state === "succeeded",
   );
-  assert.ok(reSeated.length >= 1, "expected review seats re-armed after repair.review");
+  assert.ok(reSeated.length >= 1, "expected review seats re-armed after repair.1");
   const reduceAfter = atPub.snapshot.nodes.find((n) => n.key === "review.reduce");
   assert.ok(
     reduceAfter && reduceAfter.generation > 0 && reduceAfter.state === "succeeded",
@@ -365,25 +365,21 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
     .prepare(
       "SELECT from_key, to_key FROM node_edges WHERE run_id = ? AND (from_key = ? OR to_key = ?) ORDER BY from_key, to_key",
     )
-    .all(receipt.runId, `${REVIEW_REPAIR_NODE_PREFIX}1`, `${REVIEW_REPAIR_NODE_PREFIX}1`) as Array<{
+    .all(receipt.runId, repairNodeKey(1), repairNodeKey(1)) as Array<{
     from_key: string;
     to_key: string;
   }>;
   db.close();
   assert.ok(
-    edges.some((e) => e.from_key === "review.reduce" && e.to_key === `${REVIEW_REPAIR_NODE_PREFIX}1`),
-    "edge review.reduce → repair.review.1",
+    edges.some((e) => e.from_key === "review.reduce" && e.to_key === repairNodeKey(1)),
+    "edge review.reduce → repair.1",
   );
   assert.ok(
-    edges.some(
-      (e) => e.from_key === `${REVIEW_REPAIR_NODE_PREFIX}1` && e.to_key === "validate.pre",
-    ),
-    "edge repair.review.1 → validate.pre (EvaluationRound, not validate.final bypass)",
+    edges.some((e) => e.from_key === repairNodeKey(1) && e.to_key === "validate.pre"),
+    "edge repair.1 → validate.pre (EvaluationRound, not validate.final bypass)",
   );
   assert.equal(
-    edges.some(
-      (e) => e.from_key === `${REVIEW_REPAIR_NODE_PREFIX}1` && e.to_key === "validate.final",
-    ),
+    edges.some((e) => e.from_key === repairNodeKey(1) && e.to_key === "validate.final"),
     false,
     "must not wire repair → validate.final bypass",
   );

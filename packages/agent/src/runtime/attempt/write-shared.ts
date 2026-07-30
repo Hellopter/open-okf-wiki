@@ -8,7 +8,13 @@
  * Phase 2: consume projected EvidenceBundle, defects, and refresh prior wiki.
  */
 
-import { PiAttemptOutcomeSchema, type PiAttemptOutcome } from "@okf-wiki/contract";
+import {
+  PiAttemptOutcomeSchema,
+  type PiAttemptOutcome,
+  type RepairRequest,
+  RepairRequestSchema,
+} from "@okf-wiki/contract";
+import { digestPublicationTreeContentOnly } from "@okf-wiki/core";
 import { materializeWikiIndexes } from "../../produce/wiki-pages.js";
 import { rootWritePrompt, rootWriteSystemPrompt } from "../../prompts/index.js";
 import {
@@ -30,6 +36,34 @@ import {
 } from "./shared.js";
 
 export type WriteSharedMode = "write.root" | "repair";
+
+/** Parse optional structured RepairRequest from node detail (schema-validated). */
+function loadRepairRequest(detail: AttemptHandlerContext["input"]["node"]["detail"]): RepairRequest | undefined {
+  const raw = detail && "repairRequest" in detail ? detail.repairRequest : undefined;
+  if (raw == null) return undefined;
+  const parsed = RepairRequestSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Lead-in block so truncation still keeps repair scope facts. */
+function formatRepairRequestBlock(request: RepairRequest): string {
+  const lines: string[] = [
+    "RepairRequest:",
+    "```json",
+    JSON.stringify(request, null, 2),
+    "```",
+  ];
+  if (request.scope.pages.length > 0) {
+    lines.push(`Repair scope pages: ${request.scope.pages.join(", ")}`);
+  }
+  lines.push(`Baseline candidate: ${request.baselineCandidateId}`);
+  if (request.scope.pages.length > 0) {
+    lines.push(
+      "Only edit the listed scope pages unless a consistency fix on another page is strictly required.",
+    );
+  }
+  return lines.join("\n");
+}
 
 /**
  * Run the writer (or repair-style writer) for one Attempt.
@@ -101,11 +135,13 @@ export async function runWriteShared(
     typeof input.node.detail?.feedback === "string" && input.node.detail.feedback.trim()
       ? input.node.detail.feedback.trim()
       : undefined;
+  const repairRequest = loadRepairRequest(input.node.detail);
+  const repairRequestBlock = repairRequest ? formatRepairRequestBlock(repairRequest) : undefined;
 
   if (
     mode === "write.root" &&
     !isRefresh &&
-    feedback &&
+    (feedback || repairRequest) &&
     input.sealedInputs.some((item) => item.role === "wiki_tree")
   ) {
     try {
@@ -138,24 +174,25 @@ export async function runWriteShared(
     isRefresh: isRefresh || mode === "repair",
   });
 
-  // Feedback / operator answer first so truncation does not drop sealed facts.
+  // RepairRequest + feedback first so truncation does not drop sealed facts.
   let writeTask: string;
   let asRepair: boolean;
   if (mode === "repair") {
     asRepair = true;
     writeTask = [
+      ...(repairRequestBlock ? [repairRequestBlock, ""] : []),
       ...(operatorNotes ? [operatorNotes, ""] : []),
       ...(feedback ? [`Operator feedback: ${feedback}`, ""] : []),
       baseWritePrompt,
       "",
       "Repair mode: fix blocking defects on the existing Staging Wiki; preserve good pages.",
     ].join("\n");
-  } else if (feedback) {
+  } else if (feedback || repairRequest) {
     asRepair = true;
     writeTask = [
+      ...(repairRequestBlock ? [repairRequestBlock, ""] : []),
       ...(operatorNotes ? [operatorNotes, ""] : []),
-      `Operator feedback: ${feedback}`,
-      "",
+      ...(feedback ? [`Operator feedback: ${feedback}`, ""] : []),
       baseWritePrompt,
       "",
       "Repair mode: fix validation, citation, and frontmatter defects on the existing Staging Wiki; preserve good pages.",
@@ -163,6 +200,16 @@ export async function runWriteShared(
   } else {
     asRepair = false;
     writeTask = operatorNotes ? `${operatorNotes}\n\n${baseWritePrompt}` : baseWritePrompt;
+  }
+
+  // Baseline content digest for empty-repair detection (EvaluationRound invariant).
+  let baselineWikiDigest: string | undefined;
+  if (asRepair) {
+    try {
+      baselineWikiDigest = await digestPublicationTreeContentOnly(layout.wikiDir);
+    } catch {
+      baselineWikiDigest = undefined;
+    }
   }
 
   const produced = await runtime.writeWiki({
@@ -188,6 +235,16 @@ export async function runWriteShared(
   });
 
   await materializeWikiIndexes(layout.wikiDir);
+
+  // Fail closed on no-op repair: digest unchanged means the round did not produce a new candidate.
+  if (asRepair && baselineWikiDigest) {
+    const afterDigest = await digestPublicationTreeContentOnly(layout.wikiDir);
+    if (afterDigest === baselineWikiDigest) {
+      throw new Error(
+        "repair produced no content change (wiki digest unchanged); empty repair rounds are not allowed",
+      );
+    }
+  }
 
   const transcript = await sealTranscript(input, {
     task: writeTask,
