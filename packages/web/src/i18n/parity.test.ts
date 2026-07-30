@@ -16,7 +16,6 @@ const ALLOW_SAME_PATHS = new Set([
   // Shared product / technical terms
   "subnav.wiki",
   "wiki.breadcrumb",
-  "agentWorkspace.panelWiki",
   "common.id",
   "sources.colId",
   "settings.tabSkill",

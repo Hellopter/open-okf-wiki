@@ -1,10 +1,9 @@
 /**
- * Shell-owned single WikiRun projection (Batch 2 / Phase 6).
+ * Shell-owned single WikiRun projection.
  *
- * One `useWikiRun` subscription per workspace shell, keyed by the URL `run`
- * param only. Gate panel + Run inspector consume this context when their
- * runId matches — no second/third EventSource for the same active run.
- * Message-derived activeRunId is deleted; receipt only updates the URL.
+ * One `useWikiRun` subscription per workspace shell, keyed by URL `?run=` only.
+ * ActiveRunBar / ActiveRunDetails match by runId — no second EventSource.
+ * Graph expand is local UI state (not this context). Receipt only updates URL run.
  */
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";

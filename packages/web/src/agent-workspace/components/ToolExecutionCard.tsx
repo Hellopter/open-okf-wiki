@@ -78,8 +78,8 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
   const isRunning = tool.status === "running" || tool.status === "pending";
   const isWikiProduce = tool.name.toLowerCase() === WIKI_PRODUCE_TOOL_NAME;
   const wikiDetails = isWikiProduce ? tool.details : undefined;
-  // accepted+runId is the durable handoff — keep the card open so the operator
-  // can open the Run inspector / resolve gates without hunting collapsed rows.
+  // accepted+runId receipt — keep the card open so the operator can see the
+  // handoff; HITL lives on the Active Run bar, not this card.
   const wikiRunHandoff = Boolean(wikiDetails?.runId);
 
   const body = expandBody(display.kind, {

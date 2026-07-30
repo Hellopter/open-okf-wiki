@@ -1,10 +1,10 @@
 /**
  * Shared node-dialog selection + RetryFailedNode / RerunNode dispatch.
  *
- * Used by RunInspectorDialog control chrome (shell-owned). WikiProduceGatePanel
- * stays slim (receipt + plan gate HITL + "View run") and does not own this surface.
+ * Used by ActiveRunDetails (inline graph under the Active Run bar).
+ * WikiProduceGatePanel is receipt-only; HITL CTAs live on ActiveRunBar.
  *
- * Command state is resource-keyed (Phase 6):
+ * Command state is resource-keyed:
  *   `run:<id>:cancel` | `gate:<id>:resolve` | `node:<id>:retry`
  * HTTP accept/reject is admission only; Run SSE is truth.
  */

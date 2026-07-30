@@ -35,7 +35,7 @@ export type UseWikiRunArgs = {
   workspaceId: string;
   runId: string | null | undefined;
   rootPath?: string;
-  /** When false, do not open GET/SSE (e.g. inspector closed). Default true. */
+  /** When false, do not open GET/SSE (e.g. no active runId). Default true. */
   enabled?: boolean;
 };
 

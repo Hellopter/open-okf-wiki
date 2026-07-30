@@ -1,12 +1,13 @@
 /**
  * Agent Workspace page — default home for a workspace (`/w/:id`).
- * Loads workspace + Pi agent sessions; wires the 3-pane shell.
+ * Loads workspace + Pi agent sessions; wires the session workbench shell.
  *
- * URL ownership (Phase 6): `/w/:workspaceId?sessionId=&run=&attempt=`
- * WikiRun projection: one shell-owned subscription via WikiRunProjectionProvider
- * keyed by URL `run` only. Gate panel + Run inspector consume that context when
- * matched. `wiki_produce` receipt only updates the `run` param (not control facts).
- * `recentRuns` is event-driven list refresh only — not control authority.
+ * URL: `/w/:workspaceId?sessionId=&run=&attempt=`
+ * - `run` = active WikiRun SSE subscription (Active Run bar); does not open graph.
+ * - `attempt` = optional node attempt dialog selection.
+ * WikiRunProjectionProvider is shell-owned, keyed by `run` only.
+ * `wiki_produce` receipt only updates `run` (not control facts / not graphOpen).
+ * `recentRuns` is list refresh for the bar switcher — not control authority.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

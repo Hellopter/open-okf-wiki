@@ -1,13 +1,14 @@
 /**
- * Agent Workspace 3-pane shell (ADR 0032).
+ * Agent Workspace shell (ADR 0032 hard-cut).
  *
- * left: session list · center: transcript + composer · right: context panels
+ * left: collapsible session list · center: transcript + Active Run + composer
  *
- * Desktop: both side panes collapse to a thin rail (localStorage), so the
- * transcript can claim width for code / mermaid / math. Mobile: sheets.
+ * Right ContextPanels rail removed. Active run observation lives inline
+ * (ActiveRunBar / ActiveRunDetails); URL `?run=` selects the run, local
+ * `graphOpen` expands plan/graph under the bar (not a Sheet/Dialog).
  */
 
-import { LayoutListIcon, PanelRightIcon } from "lucide-react";
+import { LayoutListIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -20,10 +21,10 @@ import type { SessionUsage } from "@okf-wiki/contract";
 import type { PiSessionSummary, WikiRunListItem, WorkspaceConfig } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
+import { ActiveRunBar } from "./components/ActiveRunBar";
+import { ActiveRunDetails } from "./components/ActiveRunDetails";
 import { Composer } from "./composer/Composer";
 import type { AgentMessage, AgentStatus, ConnectionStatus } from "./hooks/useSessionAgent";
-import { ContextPanels } from "./panels/ContextPanels";
-import { RunInspectorDialog } from "./run-graph/RunInspectorDialog";
 import { SessionList } from "./session-list/SessionList";
 import { Transcript } from "./transcript/Transcript";
 
@@ -31,7 +32,6 @@ const CONNECTION_TOAST_ID = "agent-connection-status";
 
 /** localStorage: "1" = collapsed, "0" / missing = expanded. */
 const LEFT_STORAGE_KEY = "okf-wiki.agent.left-collapsed";
-const RIGHT_STORAGE_KEY = "okf-wiki.agent.right-collapsed";
 
 function readCollapsed(key: string, defaultCollapsed = false): boolean {
   try {
@@ -118,16 +118,12 @@ export function AgentWorkspaceShell({
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const inspectorRunId = searchParams.get("run");
-  const inspectorAttemptId = searchParams.get("attempt");
-  const inspectorOpen = Boolean(inspectorRunId);
+  const [searchParams] = useSearchParams();
+  const runId = searchParams.get("run");
   const [leftSheetOpen, setLeftSheetOpen] = useState(false);
-  const [rightSheetOpen, setRightSheetOpen] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(() => readCollapsed(LEFT_STORAGE_KEY, false));
-  const [rightCollapsed, setRightCollapsed] = useState(() =>
-    readCollapsed(RIGHT_STORAGE_KEY, false),
-  );
+  /** Local graph expand — not tied to URL `?run=`. */
+  const [graphOpen, setGraphOpen] = useState(false);
 
   // Connection UX: sonner toast for transitions (not a permanent chrome strip / dialog).
   // live = silent; reconnecting/offline = toast; connecting only after leaving live.
@@ -185,14 +181,6 @@ export function AgentWorkspaceShell({
     });
   }, []);
 
-  const toggleRight = useCallback(() => {
-    setRightCollapsed((prev) => {
-      const next = !prev;
-      writeCollapsed(RIGHT_STORAGE_KEY, next);
-      return next;
-    });
-  }, []);
-
   const sessionList = (
     <SessionList
       sessions={sessions}
@@ -209,14 +197,7 @@ export function AgentWorkspaceShell({
     />
   );
 
-  const contextPanels = (
-    <ContextPanels
-      workspaceId={workspaceId}
-      workspace={workspace}
-      recentRuns={recentRuns}
-      onCollapse={!isMobile ? toggleRight : undefined}
-    />
-  );
+  const rootPath = workspace?.rootPath;
 
   return (
     <div
@@ -241,18 +222,6 @@ export function AgentWorkspaceShell({
           <div className="min-w-0 flex-1 truncate text-sm font-medium">
             {workspace?.name ?? t.agentWorkspace.title}
           </div>
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label={t.agentWorkspace.panels}
-            title={t.agentWorkspace.panels}
-            onClick={() => setRightSheetOpen(true)}
-            data-testid="agent-mobile-panels"
-          >
-            <PanelRightIcon />
-            <span className="sr-only">{t.agentWorkspace.panels}</span>
-          </Button>
         </header>
       ) : null}
 
@@ -318,6 +287,17 @@ export function AgentWorkspaceShell({
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           <Transcript messages={messages} />
+          {/* Bar above composer; graph expands under the bar (not a right Sheet). */}
+          <ActiveRunBar
+            workspaceId={workspaceId}
+            rootPath={rootPath}
+            recentRuns={recentRuns}
+            graphOpen={graphOpen}
+            onGraphOpenChange={setGraphOpen}
+          />
+          {graphOpen && runId ? (
+            <ActiveRunDetails workspaceId={workspaceId} rootPath={rootPath} />
+          ) : null}
           <Composer
             input={input}
             onInputChange={onInputChange}
@@ -335,87 +315,18 @@ export function AgentWorkspaceShell({
             sessionUsage={sessionUsage}
           />
         </main>
-
-        {!isMobile ? (
-          rightCollapsed ? (
-            <aside
-              data-testid="agent-right-rail"
-              data-collapsed="true"
-              className="flex w-10 shrink-0 flex-col items-center border-l border-border bg-muted/20 py-2"
-            >
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      type="button"
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label={t.agentWorkspace.expandPanels}
-                      aria-expanded={false}
-                      data-testid="agent-right-expand"
-                      onClick={toggleRight}
-                    />
-                  }
-                >
-                  <PanelRightIcon />
-                </TooltipTrigger>
-                <TooltipContent side="left">{t.agentWorkspace.expandPanels}</TooltipContent>
-              </Tooltip>
-            </aside>
-          ) : (
-            <aside
-              data-testid="agent-right-pane"
-              data-collapsed="false"
-              className="flex w-60 shrink-0 flex-col border-l border-border lg:w-64"
-            >
-              {contextPanels}
-            </aside>
-          )
-        ) : null}
       </div>
 
       {isMobile ? (
-        <>
-          <Sheet open={leftSheetOpen} onOpenChange={setLeftSheetOpen}>
-            <SheetContent side="left" className="w-[min(100%,18rem)] p-0">
-              <SheetHeader className="sr-only">
-                <SheetTitle>{t.agentWorkspace.sessions}</SheetTitle>
-              </SheetHeader>
-              {sessionList}
-            </SheetContent>
-          </Sheet>
-          <Sheet open={rightSheetOpen} onOpenChange={setRightSheetOpen}>
-            <SheetContent side="right" className="w-[min(100%,20rem)] p-0">
-              <SheetHeader className="sr-only">
-                <SheetTitle>{t.agentWorkspace.panels}</SheetTitle>
-              </SheetHeader>
-              {contextPanels}
-            </SheetContent>
-          </Sheet>
-        </>
+        <Sheet open={leftSheetOpen} onOpenChange={setLeftSheetOpen}>
+          <SheetContent side="left" className="w-[min(100%,18rem)] p-0">
+            <SheetHeader className="sr-only">
+              <SheetTitle>{t.agentWorkspace.sessions}</SheetTitle>
+            </SheetHeader>
+            {sessionList}
+          </SheetContent>
+        </Sheet>
       ) : null}
-
-      {/* Shell owns the single Inspector; open/attempt controlled by URL ?run=&attempt= */}
-      <RunInspectorDialog
-        workspaceId={workspaceId}
-        rootPath={workspace?.rootPath}
-        runId={inspectorRunId}
-        open={inspectorOpen}
-        attemptId={inspectorAttemptId}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSearchParams(
-              (prev) => {
-                const next = new URLSearchParams(prev);
-                next.delete("run");
-                next.delete("attempt");
-                return next;
-              },
-              { replace: true },
-            );
-          }
-        }}
-      />
     </div>
   );
 }

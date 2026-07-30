@@ -54,7 +54,6 @@ export const zh: MessageTree = {
     title: "Wiki 运行",
     planTab: "计划",
     graphTab: "运行图",
-    viewRun: "查看运行",
     noSpec: "该运行没有记录计划。",
     noGraph: "该运行没有记录运行图。",
   },
@@ -522,15 +521,8 @@ export const zh: MessageTree = {
     deleteSession: "删除会话",
     deleteSessionConfirm: "删除「{title}」？该会话的对话历史与工具记录将被移除。",
     deletingSession: "删除中…",
-    panels: "上下文面板",
     collapseSessions: "收起会话列表",
     expandSessions: "展开会话列表",
-    collapsePanels: "收起上下文",
-    expandPanels: "展开上下文",
-    panelSources: "源码",
-    panelWiki: "Wiki",
-    panelRun: "运行记录",
-    openFull: "打开",
     attemptErrorLabel: "错误",
     attemptReceiptLabel: "回执",
     attemptCtxLabel: "上下文",
@@ -538,7 +530,6 @@ export const zh: MessageTree = {
     toolResultLines: "{n} 行",
     planConfirmOn: "已开启计划确认——运行将暂停等待批准",
     planConfirmOff: "已关闭计划确认——运行不再等待批准",
-    runsEmpty: "此工作区尚无 Wiki Run。",
     emptyTitle: "从这里开始",
     emptyDescription:
       "向智能体发消息。需要生成 Wiki 时，智能体会调用 wiki_produce（StartRun 回执）；实时 Run 状态与门闸由耐久控制面负责。",
@@ -596,11 +587,14 @@ export const zh: MessageTree = {
       other: "其他",
     },
     /** wiki_produce accepted+runId 后的 durable WikiRuns 交接。 */
-    wikiRunAcceptedHint:
-      "Durable Wiki Run 已接受。实时状态、计划/缺陷/发布门闸与重试来自 Run 控制面（ResolveGate / RetryFailedNode），而非 Session 工具 Promise。",
+    wikiRunAcceptedHint: "Wiki Run 已启动。需要操作时，请使用聊天下方的运行条。",
     openGates: "打开的门闸",
     failedNodes: "失败节点",
     retryFailedNode: "重试",
     rerunNode: "重跑",
+    /** Active Run 条 — 无打开门闸；仅观察。 */
+    activeRunIdle: "无需操作",
+    expandGraph: "展开运行图",
+    collapseGraph: "收起运行图",
   },
 };

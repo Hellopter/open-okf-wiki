@@ -113,19 +113,16 @@ test.describe("UI shell a11y and polish", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await createWorkspaceViaUi(page, "Mobile Chrome");
 
+    // Hard-cut: right context panels removed — only sessions mobile chrome.
     const sessions = page.getByTestId("agent-mobile-sessions");
-    const panels = page.getByTestId("agent-mobile-panels");
     await expect(sessions).toBeVisible();
-    await expect(panels).toBeVisible();
+    await expect(page.getByTestId("agent-mobile-panels")).toHaveCount(0);
     await expect(sessions).toHaveAttribute("aria-label", /session/i);
-    await expect(panels).toHaveAttribute("aria-label", /panel/i);
 
     // Target size ≥ 24 CSS px (WCAG 2.5.8)
-    for (const control of [sessions, panels]) {
-      const box = await control.boundingBox();
-      expect(box).toBeTruthy();
-      expect(Math.min(box!.width, box!.height)).toBeGreaterThanOrEqual(24);
-    }
+    const box = await sessions.boundingBox();
+    expect(box).toBeTruthy();
+    expect(Math.min(box!.width, box!.height)).toBeGreaterThanOrEqual(24);
 
     await sessions.click();
     const sessionsDialog = page.getByRole("dialog");
@@ -135,11 +132,6 @@ test.describe("UI shell a11y and polish", () => {
     await expect(sessionsDialog.locator('[data-slot="sheet-title"]')).toHaveText(/sessions/i);
     await page.keyboard.press("Escape");
     await expect(sessionsDialog).toBeHidden();
-
-    await panels.click();
-    const panelsDialog = page.getByRole("dialog");
-    await expect(panelsDialog).toBeVisible();
-    await expect(panelsDialog.locator('[data-slot="sheet-title"]')).toHaveText(/context panels/i);
   });
 
   test("primary interactive chrome has usable pointer targets on desktop", async ({ page }) => {

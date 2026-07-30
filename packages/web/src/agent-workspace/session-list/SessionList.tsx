@@ -100,7 +100,6 @@ export function SessionList({
         </Button>
         {onCollapse ? (
           <PaneCollapseButton
-            side="left"
             onCollapse={onCollapse}
             label={t.agentWorkspace.collapseSessions}
           />

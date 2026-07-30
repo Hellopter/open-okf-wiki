@@ -53,7 +53,6 @@ export const en = {
     title: "Wiki Run",
     planTab: "Plan",
     graphTab: "Run graph",
-    viewRun: "View run",
     noSpec: "No plan recorded for this run.",
     noGraph: "No run graph recorded for this run.",
   },
@@ -541,15 +540,8 @@ export const en = {
     deleteSessionConfirm:
       "Delete “{title}”? Conversation history and tool logs for this session will be removed.",
     deletingSession: "Deleting…",
-    panels: "Context panels",
     collapseSessions: "Collapse sessions",
     expandSessions: "Expand sessions",
-    collapsePanels: "Collapse context",
-    expandPanels: "Expand context",
-    panelSources: "Sources",
-    panelWiki: "Wiki",
-    panelRun: "Runs",
-    openFull: "Open",
     attemptErrorLabel: "error",
     attemptReceiptLabel: "receipt",
     attemptCtxLabel: "ctx",
@@ -557,7 +549,6 @@ export const en = {
     toolResultLines: "{n} lines",
     planConfirmOn: "Plan confirm on — runs will pause for plan approval",
     planConfirmOff: "Plan confirm off — runs proceed without approval",
-    runsEmpty: "No Wiki Runs yet for this workspace.",
     emptyTitle: "Start here",
     emptyDescription:
       "Message the agent. If a Wiki Run is needed, the agent calls wiki_produce (StartRun receipt); live Run status and gates use the durable Run control plane.",
@@ -616,11 +607,15 @@ export const en = {
     },
     /** Durable WikiRuns handoff after wiki_produce accepted+runId. */
     wikiRunAcceptedHint:
-      "Durable Wiki Run accepted. Live status, plan/fix/publication gates, and retries come from the Run control plane (ResolveGate / RetryFailedNode) — not the Session tool Promise.",
+      "Wiki Run started. When action is needed, use the Run bar below the chat.",
     openGates: "Open gates",
     failedNodes: "Failed nodes",
     retryFailedNode: "Retry",
     rerunNode: "Rerun",
+    /** Active Run bar — no open gate; observation only. */
+    activeRunIdle: "No action needed",
+    expandGraph: "Expand graph",
+    collapseGraph: "Collapse graph",
   },
 } as const;
 

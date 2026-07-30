@@ -28,13 +28,10 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await expect(page.getByTestId("agent-composer")).toBeVisible();
     await expect(page.getByTestId("agent-start-wiki-run")).toHaveCount(0);
     await expect(page.getByTestId("agent-composer-mode")).toHaveCount(0);
-    // Desktop: context pane expanded by default; collapse rail available.
-    await expect(page.getByTestId("agent-context-panels")).toBeVisible();
-    await expect(page.getByTestId("agent-right-collapse")).toBeVisible();
-    await page.getByTestId("agent-right-collapse").click();
-    await expect(page.getByTestId("agent-right-rail")).toBeVisible();
-    await page.getByTestId("agent-right-expand").click();
-    await expect(page.getByTestId("agent-context-panels")).toBeVisible();
+    // Hard-cut: no right context pane / collapse rail on the operator surface.
+    await expect(page.getByTestId("agent-context-panels")).toHaveCount(0);
+    await expect(page.getByTestId("agent-right-collapse")).toHaveCount(0);
+    await expect(page.getByTestId("agent-right-rail")).toHaveCount(0);
     await expect(page.getByTestId("agent-workspace-page")).toContainText(name);
 
     // Boot auto-creates a session when none exist.
@@ -116,7 +113,7 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await expect(page.getByTestId("agent-start-wiki-run")).toHaveCount(0);
 
     // ADR 0035: tool details are StartRun receipt only (accepted|failed|cancelled).
-    // Live phase/gates come from WikiRuns projection (data-wiki-run-state + open-gate testids).
+    // Live phase/gates come from WikiRuns projection (Active Run bar owns HITL).
     const produceCard = page.locator(
       '[data-testid="tool-execution-card"][data-tool-name="wiki_produce"]',
     );
@@ -135,27 +132,44 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
       timeout: 45_000,
     });
     await expect(details).toHaveAttribute("data-wiki-run-id", /.+/);
+    // Receipt card is read-only — no gate chrome on the produce card.
+    await expect(details.getByTestId("agent-gate-approve")).toHaveCount(0);
 
-    await expect(page.getByTestId("agent-plan-gate")).toBeVisible({ timeout: 90_000 });
+    // Active Run bar is the sole HITL surface (agent-gate-approve lives there).
+    const runBar = page.getByTestId("active-run-bar");
+    await expect(runBar).toBeVisible({ timeout: 30_000 });
+    await expect(runBar.getByTestId("agent-plan-gate")).toBeVisible({ timeout: 90_000 });
     await expect(details).toHaveAttribute("data-wiki-run-state", "waiting_for_operator", {
       timeout: 15_000,
     });
-    // Sealed Spec must render for operator review (ADR 0035 read path).
+
+    // Sealed Spec lives under Active Run details (expand graph → plan tab).
+    const toggleGraph = page.getByTestId("active-run-toggle-graph");
+    if ((await page.getByTestId("active-run-details").count()) === 0) {
+      await toggleGraph.click();
+    }
+    await expect(page.getByTestId("active-run-details")).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("run-inspector-tab-plan").click();
     await expect(page.getByTestId("spec-review")).toBeVisible({ timeout: 30_000 });
 
     await page.reload();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
     await ensureProducePanelOpen();
-    await expect(page.getByTestId("agent-plan-gate")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("active-run-bar")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("active-run-bar").getByTestId("agent-plan-gate")).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
       "data-wiki-run-state",
       "waiting_for_operator",
       { timeout: 30_000 },
     );
-    await expect(page.getByTestId("spec-review")).toBeVisible({ timeout: 30_000 });
-    await page.getByTestId("agent-gate-approve").click();
+    // Approve on the Active Run bar only (not the produce receipt card).
+    await page.getByTestId("active-run-bar").getByTestId("agent-gate-approve").click();
 
-    await expect(page.getByTestId("agent-publication-gate")).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByTestId("active-run-bar").getByTestId("agent-publication-gate")).toBeVisible(
+      { timeout: 120_000 },
+    );
     await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
       "data-wiki-run-state",
       "waiting_for_operator",
@@ -165,13 +179,15 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await page.reload();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();
     await ensureProducePanelOpen();
-    await expect(page.getByTestId("agent-publication-gate")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("active-run-bar").getByTestId("agent-publication-gate")).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
       "data-wiki-run-state",
       "waiting_for_operator",
       { timeout: 30_000 },
     );
-    await page.getByTestId("agent-gate-approve").click();
+    await page.getByTestId("active-run-bar").getByTestId("agent-gate-approve").click();
 
     await expect(page.getByTestId("wiki-produce-details")).toHaveAttribute(
       "data-wiki-run-state",
