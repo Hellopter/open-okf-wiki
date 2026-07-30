@@ -245,6 +245,13 @@ export type AgentWorkspaceShellProps = {
   className?: string;
 };
 
+/** Fill styles for react-resizable-panels v4 inner wrappers (see split layout below). */
+const RESIZABLE_PANEL_FILL_STYLE = {
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+} as const;
+
 function useWideDesktop() {
   const [isWide, setIsWide] = useState(() =>
     typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
@@ -349,8 +356,11 @@ export function AgentWorkspaceShell({
     </>
   ) : null;
 
+  // h-full is required when this tree sits inside react-resizable-panels v4:
+  // the library's inner panel wrapper is not a flex column, so flex-1 alone
+  // collapses to content height and the composer jumps up under the transcript.
   const conversationPanel = (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Transcript messages={messages} />
       <div className="shrink-0" data-testid="agent-action-dock">
         <ActiveRunBar
@@ -383,7 +393,10 @@ export function AgentWorkspaceShell({
   );
 
   const cockpit = (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="active-run-details">
+    <div
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
+      data-testid="active-run-details"
+    >
       <RunCockpit
         key={runId}
         workspaceId={workspaceId}
@@ -428,12 +441,30 @@ export function AgentWorkspaceShell({
         ) : null}
 
         {isWideDesktop && cockpitOpen && runId ? (
-          <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
-            <ResizablePanel defaultSize={68} minSize={45}>
+          <ResizablePanelGroup
+            orientation="horizontal"
+            className="min-h-0 min-w-0 flex-1"
+          >
+            {/*
+              v4 Panel paints overflow:auto on its inner wrapper and is not a
+              flex column. Override so children can use h-full/flex-1, the
+              transcript scrolls internally, and the composer stays bottom.
+            */}
+            <ResizablePanel
+              defaultSize={68}
+              minSize={45}
+              className="min-h-0"
+              style={RESIZABLE_PANEL_FILL_STYLE}
+            >
               {conversationPanel}
             </ResizablePanel>
             <ResizableHandle withHandle />
-            <ResizablePanel defaultSize={32} minSize={24}>
+            <ResizablePanel
+              defaultSize={32}
+              minSize={24}
+              className="min-h-0"
+              style={RESIZABLE_PANEL_FILL_STYLE}
+            >
               {cockpit}
             </ResizablePanel>
           </ResizablePanelGroup>
