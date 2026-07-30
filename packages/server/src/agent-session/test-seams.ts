@@ -32,14 +32,21 @@ export function evictLiveAgentSessionForTests(workspaceId: string, sessionId: st
   openingSessions.delete(key);
 }
 
-/** Test helper: mark product busy flag without poking Pi. */
+/** Test helper: mark product admission lock without poking Pi. */
 export function markLiveSessionBusyForTests(
   workspaceId: string,
   sessionId: string,
   busy: boolean,
 ): void {
   const entry = liveSessions.get(sessionKey(workspaceId, sessionId));
-  if (entry) entry.busy = busy;
+  if (!entry) return;
+  if (busy) {
+    entry.admittedTurnId = entry.admittedTurnId ?? "test-turn";
+    entry.busy = true;
+  } else {
+    entry.admittedTurnId = undefined;
+    entry.busy = false;
+  }
 }
 
 /** Test helper: set lastActivityAt for idle sweep tests. */

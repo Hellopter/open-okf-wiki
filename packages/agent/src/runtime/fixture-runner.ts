@@ -39,6 +39,8 @@ export type FixtureProduceRuntimeOptions = {
 };
 
 const DEFAULT_CLEAN_REVIEW = JSON.stringify({
+  version: 1,
+  reviewerId: "fixture",
   clean: true,
   defects: [],
   summary: "NO_DEFECTS",
@@ -225,6 +227,8 @@ export function createScriptedReviewFixtureRuntime(input: {
       const blocking = reviewerCalls <= input.blockingRounds;
       const text = blocking
         ? JSON.stringify({
+            version: 1,
+            reviewerId: "fixture",
             clean: false,
             defects: [
               {
@@ -232,6 +236,7 @@ export function createScriptedReviewFixtureRuntime(input: {
                 code: "scripted_defect",
                 path: "overview.md",
                 issue: `Scripted blocking defect call ${reviewerCalls}`,
+                reviewerId: "fixture",
               },
             ],
             summary: `blocking call ${reviewerCalls}`,

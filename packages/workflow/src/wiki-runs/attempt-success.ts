@@ -5,12 +5,22 @@
  * Also owns prepared-artifact recovery (CAS + control-flow in one path).
  */
 
+import { readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AttemptMetrics } from "@okf-wiki/contract";
+import {
+  planUncertaintyFromSpec,
+  resolveAdaptiveOrchestration,
+  WikiRunSpecSchema,
+} from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
+import { compileExecutionPlan } from "../plan-compiler.js";
 import {
   type ArtifactsHost,
   commitNodeArtifacts,
   loadSealedDefectsReport,
+  prepareUnsealedArtifact,
   verifyArtifact,
 } from "./artifacts.js";
 import type { WikiRunsCasCtx, WikiRunsDbCtx } from "./ctx.js";
@@ -25,6 +35,10 @@ import {
   readPublicationBaseline,
 } from "./gate-open.js";
 import { onPlanAccepted } from "./gate-resolve.js";
+import {
+  loadAcceptance,
+  rearmEvaluationRoundAfterReviewRepair,
+} from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js";
 
@@ -33,7 +47,19 @@ import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js
  * CAS checks without requiring transaction on every call site.
  */
 export type AttemptSuccessHost = WikiRunsDbCtx &
-  Pick<WikiRunsCasCtx, "isCurrent" | "currentNodeGeneration">;
+  Pick<WikiRunsCasCtx, "isCurrent" | "currentNodeGeneration"> & {
+    /**
+     * Durable RerunNode core — required to re-arm EvaluationRound after repair.review.
+     * Optional only for unit hosts that never exercise review repair.
+     */
+    applyRerunAt?(
+      runId: string,
+      nodeKey: string,
+      generation: number,
+      feedback?: string,
+      opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
+    ): void;
+  };
 
 /** Recovery needs transaction + the success host surface. */
 export type RecoverArtifactsHost = AttemptSuccessHost & Pick<ArtifactsHost, "transaction">;
@@ -169,12 +195,23 @@ export function onAttemptSucceeded(
   if (claim.kind === "plan") {
     const specPrep = preparations.find((item) => item.role === "spec" || item.kind === "spec");
     if (!specPrep) throw new Error("plan attempt succeeded without a Spec artifact");
+    const planPrep = preparations.find(
+      (item) => item.role === "execution_plan" || item.kind === "execution_plan",
+    );
+    if (!planPrep) {
+      throw new Error("plan attempt succeeded without an ExecutionPlan artifact");
+    }
+    // Gate payload binds Spec digest + ExecutionPlan digest (Phase 1 hard-cut).
+    const payloadDigest = digest({
+      specDigest: specPrep.digest,
+      planDigest: planPrep.digest,
+    });
     // planConfirm=false: auto-approve — same onPlanAccepted path as ResolveGate approve.
     if (host.workspace.planConfirm === false) {
       onPlanAccepted(host, claim.runId, specPrep.relativePath, timestamp);
       return;
     }
-    openPlanGate(host, claim, specPrep.digest, timestamp);
+    openPlanGate(host, claim, payloadDigest, timestamp);
     return;
   }
   if (claim.kind === "prepare.publication") {
@@ -187,11 +224,18 @@ export function onAttemptSucceeded(
     return;
   }
   if (claim.kind === "review.reduce") {
-    // Always succeed path: open gate.fix on blocking defects, else auto-pass.
-    // Non-blocking (major/minor) alone do not hold the run — MVP matches "no blocking".
+    // Open gate.fix when any defect severity is in Spec acceptance.blockingSeverities
+    // (default ["blocking"]). Otherwise auto-pass. Fail-closed reduce never invents clean.
     const defectsPrep = preparations.find((item) => item.role === "defects");
     const report = loadSealedDefectsReport(host, claim.runId, defectsPrep);
-    const blocking = report?.defects.filter((d) => d.severity === "blocking") ?? [];
+    const acceptance = loadAcceptance(host, claim.runId);
+    const blockingSeverities =
+      acceptance?.blockingSeverities && acceptance.blockingSeverities.length > 0
+        ? acceptance.blockingSeverities
+        : (["blocking"] as const);
+    const severitySet = new Set(blockingSeverities);
+    const blocking =
+      report?.defects.filter((d) => severitySet.has(d.severity)) ?? [];
     if (blocking.length === 0) {
       autoPassFixGate(host, claim.runId, timestamp);
       return;
@@ -213,6 +257,25 @@ export function onAttemptSucceeded(
       .run(timestamp, claim.runId);
     host.emit(claim.runId, "run.published");
     return;
+  }
+
+  // repair.review.N succeeded → re-arm EvaluationRound (validate.pre + seats + reduce).
+  // gate.fix / validate.final were already held at schedule time.
+  if (
+    claim.nodeKey.startsWith("repair.review.") &&
+    typeof host.applyRerunAt === "function"
+  ) {
+    rearmEvaluationRoundAfterReviewRepair(
+      {
+        db: host.db,
+        workspace: host.workspace,
+        emit: host.emit,
+        currentNodeGeneration: (runId, nodeKey) => host.currentNodeGeneration(runId, nodeKey),
+        applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
+          host.applyRerunAt!(runId, nodeKey, generation, feedback, opts),
+      },
+      claim.runId,
+    );
   }
 
   unlockReadyNodes(host, claim.runId);
@@ -269,15 +332,88 @@ export function onAttemptSucceeded(
  * Single entry used by scheduler success path and prepared-artifact recovery:
  * CAS commit bytes + attempt/node success, then gate open / unlock / plan accept.
  * Must run inside the owner's outer transaction.
+ * Optional metrics are best-effort (Phase 0 observation baseline).
  */
 export function commitSuccessfulAttempt(
   host: AttemptSuccessHost,
   claim: ClaimedNode,
   preparations: ArtifactPreparation[],
+  metrics?: AttemptMetrics,
 ): void {
-  const committed = commitNodeArtifacts(host, claim, preparations);
+  const committed = commitNodeArtifacts(host, claim, preparations, metrics);
   if (!committed) return;
   // commitNodeArtifacts already stamped ended_at; reuse now() for run-state updates
   // (same second granularity as before when control flow lived inside commit).
   onAttemptSucceeded(host, claim, preparations);
+}
+
+/**
+ * After plan Spec is sealed, compile ExecutionPlan (fail-closed on fan-out caps)
+ * and prepare it as an unsealed artifact for seal+commit.
+ * Called from the scheduler before commitSuccessfulAttempt.
+ */
+export async function preparePlanExecutionPlan(
+  host: ArtifactsHost,
+  claim: ClaimedNode,
+  preparations: ArtifactPreparation[],
+): Promise<ArtifactPreparation | undefined> {
+  if (claim.kind !== "plan") return undefined;
+  if (preparations.some((p) => p.role === "execution_plan" || p.kind === "execution_plan")) {
+    return undefined; // already present
+  }
+  const specPrep = preparations.find((item) => item.role === "spec" || item.kind === "spec");
+  if (!specPrep) throw new Error("plan attempt succeeded without a Spec artifact");
+
+  const runDir = runWorkDir(host.workspace.rootPath, claim.runId);
+  const spec = loadSpecJson(path.join(runDir, specPrep.relativePath));
+  if (!spec) throw new Error("plan Spec artifact is not parseable");
+
+  // Phase 7: adaptive lenses from inventory + Spec uncertainty (default 1).
+  const adaptive = resolveAdaptiveOrchestration({
+    orchestration: host.workspace.orchestration,
+    inventory: {
+      sourceCount: host.workspace.sources?.length ?? 0,
+      multiEntry: (host.workspace.sources?.length ?? 0) >= 2,
+      large: (host.workspace.sources?.length ?? 0) >= 3,
+    },
+    planUncertainty: planUncertaintyFromSpec(spec),
+  });
+  const orch = adaptive.orchestration;
+  const plan = compileExecutionPlan(spec, {
+    maxDomainFanOut: orch.maxDomainFanOut,
+    maxLeafFanOut: orch.maxLeafFanOut,
+    reviewCouncilSize: orch.reviewCouncilSize,
+    specDigest: specPrep.digest,
+  });
+
+  const stageParent = path.join(runDir, "attempts", claim.attemptId, "work");
+  await mkdir(stageParent, { recursive: true });
+  const planPath = path.join(stageParent, "execution-plan.json");
+  await writeFile(planPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+
+  return prepareUnsealedArtifact(host, claim, {
+    kind: "execution_plan",
+    role: "execution_plan",
+    sourcePath: planPath,
+    directory: false,
+  });
+}
+
+/** Load WikiRunSpec JSON from a sealed Spec artifact root or file. */
+function loadSpecJson(artifactRoot: string): ReturnType<typeof WikiRunSpecSchema.parse> | undefined {
+  const candidates = [
+    path.join(artifactRoot, "spec.json"),
+    artifactRoot,
+    path.join(artifactRoot, "analysis", "spec.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = WikiRunSpecSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
 }

@@ -7,17 +7,28 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  FrozenRunManifestSchema,
   type PiAttemptExecutor,
   type PiAttemptInput,
   type PiAttemptOutcome,
   RepositorySnapshotSchema,
+  RunIntentSchema,
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import {
   type FreezeRunBoundaryInput,
   type FrozenRunBoundary,
+  listPublishedWikiPages,
+  PublishedWikiError,
   runWorkDir,
 } from "@okf-wiki/core";
+import {
+  graphRoleForNodeKind,
+  mergeAttemptMetrics,
+  metricsOf,
+  wallTimeMsFromStarted,
+  writeAttemptMetrics,
+} from "./attempt-metrics.js";
 import type { WikiRunsCasCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
 import { makeOwnedTreeWritable, manifestFor } from "./fs-util.js";
@@ -82,14 +93,61 @@ export async function executeFreeze(host: FreezeHost, claim: ClaimedFreeze): Pro
       "session.jsonl",
     );
     await mkdir(workDir, { recursive: true });
+    const sourceSummaries = frozen.sources.map(({ path: _path, ...source }) => source);
     await writeFile(
       path.join(workDir, "freeze-inputs.json"),
       `${JSON.stringify({
         skillDigest: frozen.skillDigest,
-        sources: frozen.sources.map(({ path: _path, ...source }) => source),
+        sources: sourceSummaries,
       })}\n`,
       "utf8",
     );
+    // Phase 1: seal FrozenRunManifest (intent + mode + digests) for plan/handler.
+    const intent = loadRunIntent(host, claim.runId);
+    const intentDigest = digest(intent);
+    const frozenManifest = FrozenRunManifestSchema.parse({
+      version: 1,
+      intent,
+      mode: intent.mode,
+      intentDigest,
+      skillDigest: frozen.skillDigest,
+      sources: sourceSummaries.map((s) => ({
+        id: s.id,
+        ...(typeof s.revision === "string" ? { revision: s.revision } : {}),
+      })),
+    });
+    const manifestDir = path.join(workDir, "frozen_run_manifest");
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      path.join(manifestDir, "frozen-run-manifest.json"),
+      `${JSON.stringify(frozenManifest, null, 2)}\n`,
+      "utf8",
+    );
+    // Phase 2 refresh: freeze the current published wiki as prior_wiki (fail closed).
+    const priorWikiCandidates: Array<{
+      directory: string;
+      kind: ArtifactPreparation["kind"];
+      role: string;
+    }> = [];
+    if (intent.mode === "refresh") {
+      const publicationPath = prepared.workspace.publicationPath;
+      try {
+        await listPublishedWikiPages(publicationPath);
+      } catch (error) {
+        if (error instanceof PublishedWikiError) {
+          throw new Error(
+            `refresh mode requires a non-empty published wiki at publicationPath ` +
+              `(${publicationPath}): ${error.message}`,
+          );
+        }
+        throw error;
+      }
+      priorWikiCandidates.push({
+        directory: publicationPath,
+        kind: "wiki_tree",
+        role: "prior_wiki",
+      });
+    }
     const inputArtifacts = await prepareFreezeArtifacts(host, claim, [
       {
         directory: path.join(frozen.runWorkDir, "sources"),
@@ -97,6 +155,12 @@ export async function executeFreeze(host: FreezeHost, claim: ClaimedFreeze): Pro
         role: "sources",
       },
       { directory: frozen.skillPath, kind: "skill", role: "skill" },
+      {
+        directory: manifestDir,
+        kind: "manifest",
+        role: "frozen_run_manifest",
+      },
+      ...priorWikiCandidates,
     ]);
     if (!inputArtifacts) return;
     for (const preparation of inputArtifacts.preparations)
@@ -245,7 +309,7 @@ export async function executePinnedFreezeRetry(
            JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
            WHERE node_outputs.run_id = ?
              AND node_outputs.node_key = 'freeze'
-             AND node_outputs.role IN ('sources', 'skill')
+             AND node_outputs.role IN ('sources', 'skill', 'frozen_run_manifest', 'prior_wiki')
            ORDER BY node_outputs.node_generation DESC, node_outputs.role`,
         )
         .all(claim.runId),
@@ -258,6 +322,12 @@ export async function executePinnedFreezeRetry(
     const sources = byRole.get("sources");
     const skill = byRole.get("skill");
     if (!sources || !skill) throw new Error("pinned freeze artifacts are missing for retry");
+    const intentForPin = loadRunIntent(host, claim.runId);
+    if (intentForPin.mode === "refresh" && !byRole.get("prior_wiki")) {
+      throw new Error(
+        "pinned freeze retry in refresh mode is missing sealed prior_wiki; start a new run",
+      );
+    }
 
     const workDir = path.join(runDir, "attempts", claim.attemptId, "work");
     await mkdir(workDir, { recursive: true });
@@ -269,6 +339,28 @@ export async function executePinnedFreezeRetry(
       })}\n`,
       "utf8",
     );
+    const intent = loadRunIntent(host, claim.runId);
+    const intentDigest = digest(intent);
+    const frozenManifest = FrozenRunManifestSchema.parse({
+      version: 1,
+      intent,
+      mode: intent.mode,
+      intentDigest,
+      skillDigest: inputs.skillDigest,
+      sources: (inputs.sources as Array<{ id: string; revision?: string }>).map((s) => ({
+        id: s.id,
+        ...(typeof s.revision === "string" ? { revision: s.revision } : {}),
+      })),
+    });
+    const manifestDir = path.join(workDir, "frozen_run_manifest");
+    await mkdir(manifestDir, { recursive: true });
+    await writeFile(
+      path.join(manifestDir, "frozen-run-manifest.json"),
+      `${JSON.stringify(frozenManifest, null, 2)}\n`,
+      "utf8",
+    );
+    // Prefer already-sealed frozen_run_manifest when present on prior freeze gen.
+    const priorManifest = byRole.get("frozen_run_manifest");
     if (host.piAttemptExecutor) {
       const sourcesRoot = path.join(runDir, requiredText(sources, "relative_path"));
       const skillPath = path.join(runDir, requiredText(skill, "relative_path"));
@@ -276,6 +368,13 @@ export async function executePinnedFreezeRetry(
       for (const source of inputs.sources as Array<{ id: string }>) {
         sourcePaths[source.id] = path.join(sourcesRoot, source.id);
       }
+      const priorWikiRow = byRole.get("prior_wiki");
+      const sealedRows = [
+        sources,
+        skill,
+        ...(priorManifest ? [priorManifest] : []),
+        ...(priorWikiRow ? [priorWikiRow] : []),
+      ];
       const outcome = await host.piAttemptExecutor(
         {
           runId: claim.runId,
@@ -288,7 +387,7 @@ export async function executePinnedFreezeRetry(
           },
           inputDigest: host.attemptInputDigest(claim.attemptId),
           workspace: host.workspace,
-          sealedInputs: [sources, skill].map((row) => ({
+          sealedInputs: sealedRows.map((row) => ({
             role: requiredText(row, "role"),
             readOnlyPath: path.join(runDir, requiredText(row, "relative_path")),
             artifact: {
@@ -309,6 +408,27 @@ export async function executePinnedFreezeRetry(
       if (outcome.type === "failed") throw new Error(outcome.error);
     }
     if (host.closed || !host.isCurrent(claim)) return;
+    // Re-seal frozen_run_manifest when prior freeze lacked it (pre-Phase-1 pin).
+    let manifestPrep: ArtifactPreparation | undefined;
+    if (priorManifest) {
+      manifestPrep = {
+        artifactId: requiredText(priorManifest, "artifact_id"),
+        digest: requiredText(priorManifest, "digest"),
+        kind: requiredText(priorManifest, "kind") as ArtifactPreparation["kind"],
+        preparationId: randomUUID(),
+        relativePath: requiredText(priorManifest, "relative_path"),
+        role: requiredText(priorManifest, "role"),
+        sourceDirectory: "",
+      };
+    } else {
+      const freshManifest = await prepareFreezeArtifacts(host, claim, [
+        { directory: manifestDir, kind: "manifest", role: "frozen_run_manifest" },
+      ]);
+      if (!freshManifest) return;
+      for (const preparation of freshManifest.preparations)
+        await host.sealPreparation(claim.runId, preparation);
+      manifestPrep = freshManifest.preparations[0];
+    }
     const outputArtifacts = await prepareFreezeArtifacts(host, claim, [
       { directory: workDir, kind: "manifest", role: "attempt_output" },
     ]);
@@ -316,15 +436,19 @@ export async function executePinnedFreezeRetry(
     for (const preparation of outputArtifacts.preparations)
       await host.sealPreparation(claim.runId, preparation);
     if (host.closed || !host.isCurrent(claim)) return;
-    const inputPreparations: ArtifactPreparation[] = [sources, skill].map((row) => ({
-      artifactId: requiredText(row, "artifact_id"),
-      digest: requiredText(row, "digest"),
-      kind: requiredText(row, "kind") as ArtifactPreparation["kind"],
-      preparationId: randomUUID(),
-      relativePath: requiredText(row, "relative_path"),
-      role: requiredText(row, "role"),
-      sourceDirectory: "",
-    }));
+    const priorWikiPinned = byRole.get("prior_wiki");
+    const inputPreparations: ArtifactPreparation[] = [
+      ...[sources, skill, ...(priorWikiPinned ? [priorWikiPinned] : [])].map((row) => ({
+        artifactId: requiredText(row, "artifact_id"),
+        digest: requiredText(row, "digest"),
+        kind: requiredText(row, "kind") as ArtifactPreparation["kind"],
+        preparationId: randomUUID(),
+        relativePath: requiredText(row, "relative_path"),
+        role: requiredText(row, "role"),
+        sourceDirectory: "",
+      })),
+      ...(manifestPrep ? [manifestPrep] : []),
+    ];
     // Reuse already-sealed input artifacts; only the new attempt_output needs commit prep rows.
     host.transaction(() => {
       for (const preparation of inputPreparations) {
@@ -440,6 +564,15 @@ export function commitFreezeArtifacts(
       "UPDATE attempts SET state = 'succeeded', ended_at = ? WHERE attempt_id = ? AND state = 'running'",
     )
     .run(timestamp, claim.attemptId);
+  writeAttemptMetrics(
+    host.db,
+    claim.attemptId,
+    mergeAttemptMetrics(undefined, {
+      role: graphRoleForNodeKind("freeze"),
+      wallTimeMs: wallTimeMsFromStarted(host.db, claim.attemptId, timestamp),
+      stopReason: "succeeded",
+    }),
+  );
   host.db
     .prepare(
       `UPDATE nodes SET state = 'succeeded', current_attempt_id = NULL
@@ -494,6 +627,15 @@ export function failFreeze(host: FreezeHost, claim: ClaimedFreeze, error: unknow
       "UPDATE attempts SET state = 'failed', error = ?, ended_at = ? WHERE attempt_id = ? AND state = 'running'",
     )
     .run(message, timestamp, claim.attemptId);
+  writeAttemptMetrics(
+    host.db,
+    claim.attemptId,
+    mergeAttemptMetrics(metricsOf(error), {
+      role: graphRoleForNodeKind("freeze"),
+      wallTimeMs: wallTimeMsFromStarted(host.db, claim.attemptId, timestamp),
+      stopReason: "failed",
+    }),
+  );
   host.db
     .prepare(
       `UPDATE nodes SET state = 'failed', current_attempt_id = NULL
@@ -622,4 +764,17 @@ function preparationPath(
   const preparation = preparations.find((candidate) => candidate.role === role);
   if (!preparation) throw new Error(`missing ${role} artifact preparation`);
   return path.join(runWorkDir(host.workspace.rootPath, runId), preparation.relativePath);
+}
+
+/** Load StartRun intent from runs.intent_json (hard-cut; defaults only if column missing). */
+export function loadRunIntent(
+  host: Pick<FreezeHost, "db">,
+  runId: string,
+): ReturnType<typeof RunIntentSchema.parse> {
+  const run = asRow(host.db.prepare("SELECT intent_json FROM runs WHERE run_id = ?").get(runId));
+  if (!run || run.intent_json == null || run.intent_json === "") {
+    // Pre-v2 rows / recovery: fail closed with generate mode only when column empty.
+    return RunIntentSchema.parse({ mode: "generate" });
+  }
+  return RunIntentSchema.parse(parseJson<unknown>(String(run.intent_json)));
 }

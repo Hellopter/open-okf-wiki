@@ -531,6 +531,37 @@ export function projectAgentMessagesFromPiHistory(rows: readonly unknown[]): Age
       continue;
     }
 
+    // Full-branch transcript includes compaction markers (not model-only context).
+    if (role === "compactionSummary") {
+      const summary =
+        typeof row.summary === "string" && row.summary.trim()
+          ? row.summary.trim()
+          : "Conversation context was compacted.";
+      messages.push({
+        id: piMessageId(row) ?? `hist_compact_${index + 1}`,
+        role: "system",
+        content: summary,
+        createdAt,
+        status: "done",
+      });
+      continue;
+    }
+
+    if (role === "branchSummary") {
+      const summary =
+        typeof row.summary === "string" && row.summary.trim()
+          ? row.summary.trim()
+          : "Branch summary.";
+      messages.push({
+        id: piMessageId(row) ?? `hist_branch_${index + 1}`,
+        role: "system",
+        content: summary,
+        createdAt,
+        status: "done",
+      });
+      continue;
+    }
+
     if (role !== "toolResult" || typeof row.toolCallId !== "string") continue;
     const details = wikiProduceDetails(row);
     const output = toolOutputFromResult(row, details);

@@ -99,9 +99,11 @@ export function Composer({
   const [modelChoice, setModelChoice] = useState<string>("");
   const [modelSwitching, setModelSwitching] = useState(false);
   // Session-only pending — Run busy must not disable Send (dual-surface chrome).
+  // Phase 6: when running, Send uses steer/follow_up queue semantics (idle-only prompt).
   const isPending = status === "sending" || status === "streaming";
   const trimmed = input.trim();
-  const canSend = !disabled && !isPending && trimmed.length > 0;
+  // Allow send while streaming so the operator can steer / queue follow-up.
+  const canSend = !disabled && trimmed.length > 0;
   const invalid = validationMessage !== null && !canSend && !isPending;
   // Only session-level disable greys the group. During streaming we must NOT
   // set control disabled / data-disabled — that applies opacity-50 to Stop too
@@ -182,7 +184,7 @@ export function Composer({
   const submit = useCallback(
     (event: FormEvent) => {
       event.preventDefault();
-      if (disabled || isPending) return;
+      if (disabled) return;
       if (!trimmed) {
         setValidationMessage(t.agentWorkspace.composerRequired);
         return;
@@ -190,7 +192,7 @@ export function Composer({
       setValidationMessage(null);
       onSend();
     },
-    [disabled, isPending, onSend, t.agentWorkspace.composerRequired, trimmed],
+    [disabled, onSend, t.agentWorkspace.composerRequired, trimmed],
   );
 
   const handleKeyDown = useCallback(
@@ -219,7 +221,7 @@ export function Composer({
       }
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
-      if (disabled || isPending) return;
+      if (disabled) return;
       if (!trimmed) {
         setValidationMessage(t.agentWorkspace.composerRequired);
         return;
@@ -230,7 +232,6 @@ export function Composer({
     [
       activeIndex,
       disabled,
-      isPending,
       menuItems,
       menuOpen,
       onSend,

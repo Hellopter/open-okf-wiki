@@ -169,10 +169,11 @@ export const zh: MessageTree = {
     maxLeafFanOut: "每 Domain 最大 Leaf 数",
     maxLeafFanOutHint: "仅拓扑：每个 Domain 最多物化的问题/Leaf 数。不决定 Leaf 并发池大小。",
     planScoutCount: "规划侦察数",
-    planScoutCountHint: "Spec 合成前的并行只读侦察（入口 / 布局 / 测试 / 风险）。0 = 仅单规划器。",
+    planScoutCountHint:
+      "Spec 合成前的并行只读侦察（入口 / 布局 / 测试 / 风险）。默认 0（轻路径：inventory + 单规划器）；大仓/多入口时再提高。",
     reviewCouncilSize: "审查委员会规模",
     reviewCouncilSizeHint:
-      "独立审查视角（grounding / coverage / consistency …）。默认 3 席多视角；1 最省。",
+      "独立审查视角（grounding / coverage / consistency …）。默认 1（轻路径）；仅在额外 lens 能捕获独特缺陷时提高。",
     reviewConcurrency: "审查并行度",
     reviewConcurrencyHint: "同时运行的委员会成员数（默认等于委员会规模）。",
     domainConcurrency: "Domain 并行度",
@@ -471,6 +472,16 @@ export const zh: MessageTree = {
     suggestedFix: "建议修复",
     noDefectsHint: "尚无封存缺陷列表——可选择通过、修复、提出修改意见或拒绝。",
   },
+  /** 持久化 operator_input 门闸——回答事实问题；不会恢复旧 Pi worker。 */
+  operatorInput: {
+    title: "需要操作者输入",
+    answerLabel: "你的回答",
+    answerPlaceholder: "提供缺失的事实或决策…",
+    submit: "提交回答",
+    working: "处理中…",
+    answerRequired: "提交前请输入非空回答。",
+    questionFallback: "运行正在等待操作者回答。",
+  },
   modelSelect: {
     label: "模型",
     emptyBefore: "尚未配置模型。请先",
@@ -495,6 +506,7 @@ export const zh: MessageTree = {
     awaiting_plan: "等待计划确认",
     awaiting_publication: "等待发布确认",
     awaiting_fix: "等待缺陷复核",
+    awaiting_operator_input: "等待操作者输入",
     publication_declined: "已拒绝发布",
   },
   loading: {

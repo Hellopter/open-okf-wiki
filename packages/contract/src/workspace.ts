@@ -208,11 +208,11 @@ export const WorkspaceOrchestrationSchema = z.object({
   maxLeafFanOut: z.number().int().min(1).max(16).default(6),
   /**
    * Independent review council size (Run Boundary-owned).
-   * Default 3 for multi-lens ensemble (grounding/coverage/consistency);
-   * set 1 for cheapest runs. Pad with same model + different prompts when
+   * Default 1 (light path). Raise for multi-lens ensemble
+   * (grounding/coverage/consistency). Pad with same model + different prompts when
    * only one reviewer profile is configured.
    */
-  reviewCouncilSize: z.number().int().min(1).max(4).default(3),
+  reviewCouncilSize: z.number().int().min(1).max(4).default(1),
   /**
    * How many review council members may run concurrently.
    * Defaults to `reviewCouncilSize` when omitted.
@@ -220,9 +220,10 @@ export const WorkspaceOrchestrationSchema = z.object({
   reviewConcurrency: z.number().int().min(1).max(4).optional(),
   /**
    * Parallel plan scouts before the Spec synthesizer (entry / layout / tests).
-   * 0 disables scouts (single planner only). Default 2 for multi-angle coverage.
+   * 0 disables scouts (single planner only; light-path default).
+   * Raise when inventory shows large/multi-entry or plan uncertainty.
    */
-  planScoutCount: z.number().int().min(0).max(4).default(2),
+  planScoutCount: z.number().int().min(0).max(4).default(0),
   /**
    * How many plan scouts may run concurrently.
    * Defaults to `planScoutCount` when omitted.

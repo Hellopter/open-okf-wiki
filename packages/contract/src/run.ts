@@ -51,8 +51,10 @@ export const WikiRunSpecAcceptanceSchema = z.object({
 export type WikiRunSpecAcceptance = z.infer<typeof WikiRunSpecAcceptanceSchema>;
 
 /**
- * Living, executable Wiki Run specification (operator-facing + agent-facing).
- * Replaces the thin path/purpose plan: domains, questions, acceptance, replan trail.
+ * Content / acceptance Spec produced by the planner (WikiSpec semantically).
+ * Topology fan-out is **not** derived by silent truncation here — the host
+ * compiles a separate {@link ExecutionPlan} via `compileExecutionPlan`.
+ * Export name stays `WikiRunSpec` for compatibility; prefer `WikiSpec` in new code.
  */
 export const WikiRunSpecSchema = z
   .object({
@@ -113,6 +115,111 @@ export const WikiRunSpecSchema = z
 
 export type WikiRunSpec = z.infer<typeof WikiRunSpecSchema>;
 
+/** Semantic alias: content Spec only (not host ExecutionPlan). */
+export const WikiSpecSchema = WikiRunSpecSchema;
+export type WikiSpec = WikiRunSpec;
+
+/**
+ * Host-compiled execution topology (not planner product output).
+ * Built by `compileExecutionPlan(spec, caps)`; sealed as artifact kind `execution_plan`.
+ * Hard-cut: over-cap Spec fails compile — never silent `.slice` truncation.
+ */
+export const ExecutionPlanWorkUnitSchema = z
+  .object({
+    id: z.string().trim().min(1).max(200),
+    domainId: z.string().trim().min(1).max(80).optional(),
+    questions: z.array(z.string().trim().min(1).max(500)).default([]),
+    scope: z.string().trim().min(1).max(2_000),
+    kind: z.enum(["leaf", "cluster"]),
+  })
+  .strict();
+
+export type ExecutionPlanWorkUnit = z.infer<typeof ExecutionPlanWorkUnitSchema>;
+
+export const ExecutionPlanReductionSchema = z
+  .object({
+    id: z.string().trim().min(1).max(200),
+    childWorkUnitIds: z.array(z.string().trim().min(1).max(200)).min(1),
+    domainId: z.string().trim().min(1).max(80),
+  })
+  .strict();
+
+export type ExecutionPlanReduction = z.infer<typeof ExecutionPlanReductionSchema>;
+
+export const ExecutionPlanSchema = z
+  .object({
+    version: z.literal(1),
+    workUnits: z.array(ExecutionPlanWorkUnitSchema).default([]),
+    reductions: z.array(ExecutionPlanReductionSchema).default([]),
+    /**
+     * Review council lenses. Empty only when Spec acceptance.reviewRequired is false
+     * (compile may emit zero seats). When reviewRequired, host requires ≥1 seat.
+     */
+    reviewLenses: z.array(z.string().trim().min(1).max(100)).max(4),
+    budgets: z
+      .object({
+        maxRepairRounds: z.number().int().min(0).max(8),
+        maxHardValidateRepairRounds: z.number().int().min(0).max(8),
+      })
+      .strict(),
+    roleModels: z.record(z.string(), z.unknown()).optional(),
+    fanOut: z
+      .object({
+        domainCount: z.number().int().min(0),
+        leafCount: z.number().int().min(0),
+        maxDomainFanOut: z.number().int().min(1).max(16),
+        maxLeafFanOut: z.number().int().min(1).max(16),
+      })
+      .strict(),
+    /** Optional link back to the Spec digest that produced this plan. */
+    specDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+  })
+  .strict();
+
+export type ExecutionPlan = z.infer<typeof ExecutionPlanSchema>;
+
+/**
+ * Freeze-sealed run identity: intent + pinned inputs summary.
+ * Written under freeze attempt work as `frozen-run-manifest.json`.
+ */
+export const FrozenRunManifestSchema = z
+  .object({
+    version: z.literal(1),
+    /** Full StartRun intent (mode mirrored at top-level for quick reads). */
+    intent: z
+      .object({
+        focus: z.string().trim().min(1).max(4_000).optional(),
+        mode: z.enum(["generate", "refresh"]).default("generate"),
+        objective: z.string().trim().min(1).max(4_000).optional(),
+        constraints: z.string().trim().min(1).max(4_000).optional(),
+        audience: z.string().trim().min(1).max(1_000).optional(),
+      })
+      .strict(),
+    mode: z.enum(["generate", "refresh"]),
+    /** SHA-256 of canonical intent JSON (deterministic). */
+    intentDigest: z.string().regex(/^[a-f0-9]{64}$/i),
+    skillDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/i)
+      .optional(),
+    sources: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1),
+            revision: z.string().trim().min(1).optional(),
+          })
+          .strict(),
+      )
+      .default([]),
+  })
+  .strict();
+
+export type FrozenRunManifest = z.infer<typeof FrozenRunManifestSchema>;
+
 export const DefectSeveritySchema = z.enum(["blocking", "major", "minor"]);
 export type DefectSeverity = z.infer<typeof DefectSeveritySchema>;
 
@@ -128,13 +235,30 @@ export const DefectItemSchema = z.object({
 
 export type DefectItem = z.infer<typeof DefectItemSchema>;
 
-export const DefectReportSchema = z.object({
-  version: z.literal(1).default(1),
-  reviewerId: z.string().min(1),
-  clean: z.boolean(),
-  defects: z.array(DefectItemSchema).default([]),
-  summary: z.string().max(2000).optional(),
-});
+export const DefectReportSchema = z
+  .object({
+    version: z.literal(1).default(1),
+    reviewerId: z.string().min(1),
+    clean: z.boolean(),
+    defects: z.array(DefectItemSchema).default([]),
+    summary: z.string().max(2000).optional(),
+  })
+  .superRefine((report, ctx) => {
+    if (report.clean && report.defects.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "clean requires empty defects",
+        path: ["clean"],
+      });
+    }
+    if (!report.clean && report.defects.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "non-clean requires at least one defect",
+        path: ["defects"],
+      });
+    }
+  });
 
 export type DefectReport = z.infer<typeof DefectReportSchema>;
 
@@ -230,3 +354,9 @@ export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
  * drift between layers.
  */
 export const SUBMIT_WIKI_RUN_SPEC_TOOL_NAME = "submit_wiki_run_spec" as const;
+
+/**
+ * Wire name of the reviewer's DefectReport submission tool (path-first seat handoff).
+ * Single source for tools/ and runtime/ so the constant cannot drift.
+ */
+export const SUBMIT_DEFECT_REPORT_TOOL_NAME = "submit_defect_report" as const;

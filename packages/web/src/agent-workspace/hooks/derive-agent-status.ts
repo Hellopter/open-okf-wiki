@@ -15,15 +15,23 @@ export type AgentStatus = "idle" | "sending" | "streaming" | "error";
  *
  * Priority:
  * 1. Projected `error` always wins (command failures and stream errors).
- * 2. Projected `streaming` wins over optimistic sending (server confirmed the turn).
+ * 2. Any in-turn Pi status (streaming / between_operations / retrying / compacting)
+ *    maps to UI `streaming` (turn still active until agent_settled).
  * 3. Optimistic `sending` wins over projected `idle` (awaiting first stream event).
  * 4. Otherwise use projected status (`idle`).
  */
 export function deriveAgentStatus(projected: PiAgentStatus, sending: boolean): AgentStatus {
   if (projected === "error") return "error";
-  if (projected === "streaming") return "streaming";
+  if (
+    projected === "streaming" ||
+    projected === "between_operations" ||
+    projected === "retrying" ||
+    projected === "compacting"
+  ) {
+    return "streaming";
+  }
   if (sending) return "sending";
-  return projected;
+  return "idle";
 }
 
 /** Clear stream-level error text without inventing other local UI state. */

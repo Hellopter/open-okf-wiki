@@ -53,7 +53,10 @@ export function runWorkdirPromptPaths(layout: RunWorkdirLayout): string {
     "Working directory layout (all tool paths are relative to cwd):",
     sourceLines || "  - (no sources)",
     "  - skill/          Producer Skill (read-only)",
+    "  - inputs/         Projected sealed inputs (spec, evidence, defects, prior-wiki, operator-input)",
+    "  - inputs/operator-input.json  Sealed operator answer when continuing after a gate",
+    "  - inputs/evidence/ Research receipt index + receipts (read these before re-scan)",
     "  - wiki/           Staging Wiki (writable only in write roles)",
-    "  - analysis/       Run analysis (plan-draft.json, spec.json, receipts)",
+    "  - analysis/       Run analysis (plan-draft.json, spec.json, local receipts)",
   ].join("\n");
 }

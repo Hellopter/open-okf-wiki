@@ -10,9 +10,12 @@
  */
 
 import {
+  type AttemptMetrics,
   type PiAttemptExecutor,
   type PiAttemptInput,
+  type PiAttemptOutcome,
   PiAttemptInputSchema,
+  PiAttemptOutcomeSchema,
 } from "@okf-wiki/contract";
 import { isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../ports/agent-runner.js";
@@ -48,6 +51,57 @@ export type CreatePiAttemptExecutorOptions = {
 
 export type { PiAttemptExecutor };
 
+/** Graph role for metrics attribution (mirrors workflow graphRoleForNodeKind). */
+function graphRoleForKind(kind: string): string {
+  switch (kind) {
+    case "plan":
+      return "plan";
+    case "research.leaf":
+      return "leaf";
+    case "research.domain":
+      return "domain";
+    case "write.root":
+      return "writer";
+    case "review.seat":
+      return "review";
+    case "repair":
+      return "repair";
+    case "freeze":
+      return "mechanical";
+    default:
+      return kind.slice(0, 64) || "unknown";
+  }
+}
+
+/**
+ * Attach best-effort observation metrics without blocking on missing token counts.
+ * Executor-supplied metrics win; defaults fill role / wall_time / stop_reason / model_id.
+ */
+function withAttemptMetrics(
+  outcome: PiAttemptOutcome,
+  defaults: {
+    role: string;
+    wallTimeMs: number;
+    modelId?: string;
+    stopReason: string;
+  },
+): PiAttemptOutcome {
+  const existing =
+    "metrics" in outcome && outcome.metrics && typeof outcome.metrics === "object"
+      ? (outcome.metrics as AttemptMetrics)
+      : undefined;
+  const metrics: AttemptMetrics = {
+    ...(existing ?? {}),
+  };
+  if (metrics.role === undefined) metrics.role = defaults.role;
+  if (metrics.wallTimeMs === undefined) metrics.wallTimeMs = defaults.wallTimeMs;
+  if (metrics.stopReason === undefined) metrics.stopReason = defaults.stopReason;
+  if (metrics.modelId === undefined && defaults.modelId) metrics.modelId = defaults.modelId;
+  const merged = { ...outcome, metrics };
+  const parsed = PiAttemptOutcomeSchema.safeParse(merged);
+  return parsed.success ? parsed.data : outcome;
+}
+
 /**
  * Create the concrete Pi executor used by WikiRuns.  It does not read or write
  * WikiRuns state; all returned files remain unsealed Attempt output.
@@ -62,6 +116,7 @@ export function createPiAttemptExecutor(
 
   return async (rawInput, signal) => {
     let input: PiAttemptInput | undefined;
+    const startedMs = Date.now();
     try {
       input = PiAttemptInputSchema.parse(rawInput);
       if (signal.aborted)
@@ -77,26 +132,46 @@ export function createPiAttemptExecutor(
         signal,
       };
 
+      let outcome: PiAttemptOutcome;
       switch (input.node.kind) {
         case "freeze":
-          return await handleFreeze(ctx);
+          outcome = await handleFreeze(ctx);
+          break;
         case "plan":
-          return await handlePlan(ctx);
+          outcome = await handlePlan(ctx);
+          break;
         case "write.root":
-          return await handleWriteRoot(ctx);
+          outcome = await handleWriteRoot(ctx);
+          break;
         case "research.leaf":
-          return await handleResearchLeaf(ctx);
+          outcome = await handleResearchLeaf(ctx);
+          break;
         case "research.domain":
-          return await handleResearchDomain(ctx);
+          outcome = await handleResearchDomain(ctx);
+          break;
         case "review.seat":
-          return await handleReviewSeat(ctx);
+          outcome = await handleReviewSeat(ctx);
+          break;
         case "repair":
-          return await handleRepair(ctx);
+          outcome = await handleRepair(ctx);
+          break;
         default:
           throw new Error(
             `unsupported Pi attempt node: ${(input.node as { kind: string }).kind}/${(input.node as { key: string }).key}`,
           );
       }
+      const stopReason =
+        outcome.type === "succeeded"
+          ? "succeeded"
+          : outcome.type === "failed"
+            ? outcome.failureClass
+            : "gate_requested";
+      return withAttemptMetrics(outcome, {
+        role: graphRoleForKind(input.node.kind),
+        wallTimeMs: Math.max(0, Date.now() - startedMs),
+        modelId: input.workspace.model?.id,
+        stopReason,
+      });
     } catch (error) {
       const outcome = failure(error, signal);
       // Best-effort: leave a readable session transcript for the transcript API
@@ -124,7 +199,12 @@ export function createPiAttemptExecutor(
           // ignore transcript write errors on the failure path
         }
       }
-      return outcome;
+      return withAttemptMetrics(outcome, {
+        role: input ? graphRoleForKind(input.node.kind) : "unknown",
+        wallTimeMs: Math.max(0, Date.now() - startedMs),
+        modelId: input?.workspace.model?.id,
+        stopReason: outcome.type === "failed" ? outcome.failureClass : "failed",
+      });
     }
   };
 }

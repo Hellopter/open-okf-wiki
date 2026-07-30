@@ -39,6 +39,7 @@ export function migrate(db: DatabaseSync): void {
       cancel_requested INTEGER NOT NULL,
       freeze_config_json TEXT NOT NULL,
       freeze_config_digest TEXT NOT NULL,
+      intent_json TEXT,
       frozen_sources_json TEXT,
       frozen_skill_digest TEXT,
       pinned_sources_json TEXT,
@@ -69,7 +70,18 @@ export function migrate(db: DatabaseSync): void {
       error TEXT,
       failure_class TEXT,
       started_at TEXT NOT NULL,
-      ended_at TEXT
+      ended_at TEXT,
+      role TEXT,
+      model_id TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_tokens INTEGER,
+      cost_estimate REAL,
+      tool_calls INTEGER,
+      wall_time_ms INTEGER,
+      projection_bytes INTEGER,
+      stop_reason TEXT,
+      metrics_json TEXT
     ) STRICT;
     CREATE TABLE IF NOT EXISTS artifact_preparations (
       preparation_id TEXT PRIMARY KEY,
@@ -166,6 +178,10 @@ export function migrate(db: DatabaseSync): void {
   if (!runColumns.includes("frozen_skill_digest")) {
     db.exec("ALTER TABLE runs ADD COLUMN frozen_skill_digest TEXT");
   }
+  // Phase 1: durable StartRun intent (hard-cut; new runs always set this).
+  if (!runColumns.includes("intent_json")) {
+    db.exec("ALTER TABLE runs ADD COLUMN intent_json TEXT");
+  }
   const nodeColumns = asRows(db.prepare("PRAGMA table_info(nodes)").all()).map((row) =>
     requiredText(row, "name"),
   );
@@ -177,5 +193,24 @@ export function migrate(db: DatabaseSync): void {
   );
   if (!attemptColumns.includes("failure_class")) {
     db.exec("ALTER TABLE attempts ADD COLUMN failure_class TEXT");
+  }
+  // Phase 0 attempt observation metrics (hard-cut: additive columns only; no dual reader).
+  const attemptMetricColumns: Array<{ name: string; sqlType: string }> = [
+    { name: "role", sqlType: "TEXT" },
+    { name: "model_id", sqlType: "TEXT" },
+    { name: "input_tokens", sqlType: "INTEGER" },
+    { name: "output_tokens", sqlType: "INTEGER" },
+    { name: "cache_tokens", sqlType: "INTEGER" },
+    { name: "cost_estimate", sqlType: "REAL" },
+    { name: "tool_calls", sqlType: "INTEGER" },
+    { name: "wall_time_ms", sqlType: "INTEGER" },
+    { name: "projection_bytes", sqlType: "INTEGER" },
+    { name: "stop_reason", sqlType: "TEXT" },
+    { name: "metrics_json", sqlType: "TEXT" },
+  ];
+  for (const column of attemptMetricColumns) {
+    if (!attemptColumns.includes(column.name)) {
+      db.exec(`ALTER TABLE attempts ADD COLUMN ${column.name} ${column.sqlType}`);
+    }
   }
 }

@@ -4,7 +4,8 @@
 **Date:** 2026-07-28  
 **Supersedes:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) only for whole-Run Pi-tool ownership and the prohibition on durable Run commands/events  
 **Refines:** [ADR 0034](0034-deep-modules-thin-tools-single-projection.md), [ADR 0033](0033-run-graph-and-agent-layering.md)  
-**Retains:** Pi-only Operator Session conversation events, `SessionManager` authority for conversations, `@okf-wiki/core` Run Boundary, and no-compat cleanup
+**Retains:** Pi-only Operator Session conversation events, `SessionManager` authority for conversations, `@okf-wiki/core` Run Boundary, and no-compat cleanup  
+**Narrowly superseded by:** [ADR 0036](0036-semantic-artifact-plane-and-execution-plan.md) for fixed Definition v1 topology as the product semantic ceiling (control plane ownership, artifacts, gates, effects, and Run SSE remain)
 
 ## Context
 

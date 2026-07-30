@@ -19,7 +19,7 @@ test("RerunNode bumps generation, invalidates lineage consumers, and rejects sta
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-rerun" },
+    { type: "start_run", commandId: "start-rerun" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const finished = await waitForTerminal(runs, receipt.runId);
@@ -135,7 +135,7 @@ test("RerunNode on a ready node leaves only one claimable generation", async (t)
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-rerun-ready" },
+    { type: "start_run", commandId: "start-rerun-ready" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const finished = await waitForTerminal(runs, receipt.runId);
@@ -208,7 +208,7 @@ test("failed leaf Retry reuses input_digest and does not re-run succeeded siblin
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-leaf-retry" },
+    { type: "start_run", commandId: "start-leaf-retry" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-leaf-retry");
@@ -292,7 +292,7 @@ test("RerunNode on write.root invalidates validate/review lineage and unlocks af
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-rerun-write" },
+    { type: "start_run", commandId: "start-rerun-write" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-rerun-write");
@@ -387,7 +387,7 @@ test("research auto-retry re-queues once on infrastructure; further failure stay
   });
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-auto-retry" },
+    { type: "start_run", commandId: "start-auto-retry" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-auto-retry");
@@ -439,7 +439,7 @@ test("capacity failure does not auto-requeue research", async (t) => {
   });
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-capacity-no-retry" },
+    { type: "start_run", commandId: "start-capacity-no-retry" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-capacity-no-retry");
@@ -486,7 +486,7 @@ test("pre-pin freeze Retry remains banned; post-pin plan Retry works for any fai
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-plan-retry" },
+    { type: "start_run", commandId: "start-plan-retry" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   // Wait for plan failed (freeze already pinned).

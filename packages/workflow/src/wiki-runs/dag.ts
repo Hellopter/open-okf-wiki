@@ -6,9 +6,22 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { type WikiRunSpec, WikiRunSpecSchema, type WorkspaceConfig } from "@okf-wiki/contract";
+import {
+  type ExecutionPlan,
+  ExecutionPlanSchema,
+  planUncertaintyFromSpec,
+  resolveAdaptiveOrchestration,
+  type WikiRunSpec,
+  WikiRunSpecSchema,
+  type WorkspaceConfig,
+} from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
-import { buildDefinitionV1Graph, isGateKind } from "../definition-v1.js";
+import {
+  buildDefinitionV1Graph,
+  buildGraphFromExecutionPlan,
+  isGateKind,
+} from "../definition-v1.js";
+import { compileExecutionPlan } from "../plan-compiler.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 
 /** Minimal db + generation surface for unlock / upstream checks. */
@@ -60,8 +73,58 @@ export function planNodeKeyForGate(
   return "plan";
 }
 
+/** Load sealed ExecutionPlan from plan node outputs when present. */
+export function loadExecutionPlanFromPlanNode(
+  host: { db: DatabaseSync; workspace: WorkspaceConfig },
+  runId: string,
+): ExecutionPlan | undefined {
+  const planGen = asRow(
+    host.db
+      .prepare(
+        `SELECT MAX(generation) AS generation FROM nodes
+         WHERE run_id = ? AND node_key = 'plan'`,
+      )
+      .get(runId),
+  );
+  if (!planGen || planGen.generation == null) return undefined;
+  const generation = requiredNumber(planGen, "generation");
+  const output = asRow(
+    host.db
+      .prepare(
+        `SELECT artifacts.relative_path
+         FROM node_outputs
+         JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+         WHERE node_outputs.run_id = ?
+           AND node_outputs.node_key = 'plan'
+           AND node_outputs.node_generation = ?
+           AND (node_outputs.role = 'execution_plan' OR artifacts.kind = 'execution_plan')
+         LIMIT 1`,
+      )
+      .get(runId, generation),
+  );
+  if (!output) return undefined;
+  const runDir = runWorkDir(host.workspace.rootPath, runId);
+  const artifactRoot = path.join(runDir, requiredText(output, "relative_path"));
+  const candidates = [
+    path.join(artifactRoot, "execution-plan.json"),
+    artifactRoot,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const parsed = ExecutionPlanSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
+}
+
 /**
- * Insert Definition v1 nodes/edges from a sealed Spec path.
+ * Insert Definition nodes/edges from a sealed Spec (+ optional sealed ExecutionPlan).
+ * Prefer sealed ExecutionPlan; recompile from Spec when missing (seeded tests).
+ * Compile throws on over-cap — never silent slice.
  * Caller sets run state and calls unlockReadyNodes + emit as needed.
  */
 export function materializeDefinitionV1Graph(
@@ -71,11 +134,27 @@ export function materializeDefinitionV1Graph(
 ): void {
   const spec = loadSpecFromArtifact(host, runId, relativePath);
   if (!spec) throw new Error("plan approve requires a parseable sealed Spec");
-  const graph = buildDefinitionV1Graph(spec, {
-    reviewCouncilSize: host.workspace.orchestration?.reviewCouncilSize,
-    maxDomainFanOut: host.workspace.orchestration?.maxDomainFanOut,
-    maxLeafFanOut: host.workspace.orchestration?.maxLeafFanOut,
+  // Phase 7: adaptive review lenses from inventory + plan uncertainty (default 1).
+  const adaptive = resolveAdaptiveOrchestration({
+    orchestration: host.workspace.orchestration,
+    inventory: {
+      sourceCount: host.workspace.sources?.length ?? 0,
+      multiEntry: (host.workspace.sources?.length ?? 0) >= 2,
+      large: (host.workspace.sources?.length ?? 0) >= 3,
+    },
+    planUncertainty: planUncertaintyFromSpec(spec),
   });
+  const orch = adaptive.orchestration;
+  const caps = {
+    reviewCouncilSize: orch.reviewCouncilSize,
+    maxDomainFanOut: orch.maxDomainFanOut,
+    maxLeafFanOut: orch.maxLeafFanOut,
+  };
+  const sealedPlan = loadExecutionPlanFromPlanNode(host, runId);
+  const plan = sealedPlan ?? compileExecutionPlan(spec, caps);
+  const graph = sealedPlan
+    ? buildGraphFromExecutionPlan(plan, spec)
+    : buildDefinitionV1Graph(spec, caps);
   for (const node of graph.nodes) {
     const existing = asRow(
       host.db

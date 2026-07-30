@@ -174,17 +174,17 @@ export const en = {
       "If the server asks to wait longer than this, fail immediately instead of sleeping.",
     orchestrationTitle: "Supervisor tree budgets",
     orchestrationHint:
-      "Run Boundary budgets for plan scouts, Domain/Leaf research, and multi-lens review. Defaults suit medium repos; lower for cost, raise for large codebases.",
+      "Run Boundary budgets for plan scouts, Domain/Leaf research, and multi-lens review. Light-path defaults (0 scouts, 1 lens); raise for large or multi-entry codebases.",
     maxDomainFanOut: "Max domains",
     maxLeafFanOut: "Max leaves / domain",
     maxLeafFanOutHint:
       "Topology only: max questions/leaves materialized per domain. Does not set the leaf concurrency pool.",
     planScoutCount: "Plan scouts",
     planScoutCountHint:
-      "Parallel read-only scouts (entry / layout / tests / risks) before the Spec synthesizer. 0 = single planner only.",
+      "Parallel read-only scouts (entry / layout / tests / risks) before the Spec synthesizer. Default 0 (light path: inventory + one planner); raise for large or multi-entry repos.",
     reviewCouncilSize: "Review council size",
     reviewCouncilSizeHint:
-      "Independent review lenses (grounding, coverage, consistency, …). 3 is the multi-lens default; 1 is cheapest.",
+      "Independent review lenses (grounding, coverage, consistency, …). Default 1 (light path); raise when extra lenses earn unique defects.",
     reviewConcurrency: "Review concurrency",
     reviewConcurrencyHint: "How many council members run at once (defaults to council size).",
     domainConcurrency: "Domain concurrency",
@@ -489,6 +489,16 @@ export const en = {
     suggestedFix: "Suggested fix",
     noDefectsHint: "No sealed defects list yet — use Pass, Fix, Revise, or Deny.",
   },
+  /** Durable operator_input gate — answer a fact question; does not resume old Pi worker. */
+  operatorInput: {
+    title: "Operator input needed",
+    answerLabel: "Your answer",
+    answerPlaceholder: "Provide the missing fact or decision…",
+    submit: "Submit answer",
+    working: "Working…",
+    answerRequired: "Enter a non-empty answer before submitting.",
+    questionFallback: "The run is waiting for an operator answer.",
+  },
   modelSelect: {
     label: "Model",
     emptyBefore: "No models configured. ",
@@ -513,6 +523,7 @@ export const en = {
     awaiting_plan: "Awaiting plan",
     awaiting_publication: "Awaiting publication",
     awaiting_fix: "Awaiting fix review",
+    awaiting_operator_input: "Awaiting operator input",
     publication_declined: "Publication declined",
   },
   loading: {

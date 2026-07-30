@@ -4,13 +4,16 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
   type RunCommand,
   type RunCommandContext,
   type RunCommandReceipt,
 } from "@okf-wiki/contract";
+import { runWorkDir } from "@okf-wiki/core";
 import type { WikiRunsDbCtx } from "./ctx.js";
-import { digest, now } from "./crypto-util.js";
+import { artifactId, digest, now } from "./crypto-util.js";
 import {
   materializeDefinitionV1Graph,
   planNodeKeyForGate,
@@ -30,7 +33,13 @@ export type GatesHost = WikiRunsDbCtx & {
   currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
   abortRunAttempts(runId: string): void;
   cancelPreApplyEffects(runId: string): void;
-  applyRerunAt(runId: string, nodeKey: string, generation: number, feedback?: string): void;
+  applyRerunAt(
+    runId: string,
+    nodeKey: string,
+    generation: number,
+    feedback?: string,
+    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
+  ): void;
   recordCommand(
     command: RunCommand,
     context: RunCommandContext,
@@ -103,12 +112,17 @@ export function resolveGate(
   if (!updated || requiredText(updated, "state") !== "resolved")
     throw new Error("gate is stale or already closed");
 
-  host.db
-    .prepare(
-      `UPDATE nodes SET state = 'succeeded', current_attempt_id = NULL
-       WHERE run_id = ? AND node_key = ? AND generation = ? AND state IN ('waiting', 'ready', 'running')`,
-    )
-    .run(command.runId, nodeKey, nodeGeneration);
+  // Plan/fix/publication gates own dedicated gate.* nodes that succeed on resolve.
+  // operator_input attaches to the Pi node: gen N stays non-succeeded (waiting) so
+  // downstream unlock cannot race; gen N+1 re-runs with frozen inputs + answer.
+  if (command.gateKind !== "operator_input") {
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'succeeded', current_attempt_id = NULL
+         WHERE run_id = ? AND node_key = ? AND generation = ? AND state IN ('waiting', 'ready', 'running')`,
+      )
+      .run(command.runId, nodeKey, nodeGeneration);
+  }
 
   switch (command.gateKind) {
     case "plan":
@@ -237,27 +251,128 @@ export function applyPlanGateDecision(
   throw new Error(`unsupported plan gate decision: ${command.decision}`);
 }
 
+/**
+ * Seal the operator answer as an `operator_input` Artifact, keep the old Attempt
+ * suspended (audit-only), and unlock a new generation Attempt that binds the
+ * parent frozen inputs + answer. Restart never resumes the old Pi worker.
+ */
 export function applyOperatorInputGateDecision(
   host: GatesHost,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   gateNodeKey: string,
-  _gateNodeGeneration: number,
+  gateNodeGeneration: number,
   timestamp: string,
 ): void {
   if (command.decision !== "answer")
     throw new Error(`unsupported operator_input decision: ${command.decision}`);
-  // Continuation node shares the gate's node key family; bump generation so a new
-  // attempt can claim with the sealed answer as input (execution is T3).
+  const answer = command.answer?.trim();
+  if (!answer) throw new Error("operator_input answer requires non-empty answer text");
+
   const current = host.currentNodeRow(command.runId, gateNodeKey);
   if (!current) throw new Error("operator_input node not found");
   const generation = requiredNumber(current, "generation");
+  if (generation !== gateNodeGeneration) {
+    throw new Error("operator_input gate is stale: node generation was replaced");
+  }
+  if (requiredText(current, "state") !== "waiting") {
+    throw new Error("operator_input node is not waiting for an answer");
+  }
+
+  // Parent Attempt must remain suspended (not re-run / not failed).
+  const parentAttemptId =
+    (current.last_attempt_id != null && String(current.last_attempt_id).trim()) ||
+    (current.current_attempt_id != null && String(current.current_attempt_id).trim()) ||
+    "";
+  if (!parentAttemptId) throw new Error("operator_input parent attempt not found");
+  const parentAttempt = asRow(
+    host.db
+      .prepare(`SELECT attempt_id, state, node_generation FROM attempts WHERE attempt_id = ?`)
+      .get(parentAttemptId),
+  );
+  if (!parentAttempt || requiredText(parentAttempt, "state") !== "suspended") {
+    throw new Error("operator_input parent attempt is not suspended");
+  }
+  if (requiredNumber(parentAttempt, "node_generation") !== gateNodeGeneration) {
+    throw new Error("operator_input parent attempt generation mismatch");
+  }
+
+  const nextGen = generation + 1;
+  const existingNext = asRow(
+    host.db
+      .prepare(
+        "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(command.runId, gateNodeKey, nextGen),
+  );
+  if (existingNext) {
+    throw new Error("operator_input answer is stale: newer generation already exists");
+  }
+
+  // Seal answer bytes under run artifacts/ (sync: resolveGate runs inside BEGIN IMMEDIATE).
+  const payload = {
+    version: 1 as const,
+    kind: "operator_input" as const,
+    answer,
+    gateId: command.gateId,
+    nodeKey: gateNodeKey,
+    nodeGeneration: gateNodeGeneration,
+    parentAttemptId,
+    decidedAt: timestamp,
+    actor: "operator",
+  };
+  const contentDigest = digest(payload);
+  const artId = artifactId(command.runId, "operator_input", contentDigest);
+  const relativePath = `artifacts/operator_input-${contentDigest}`;
+  const destDir = path.join(runWorkDir(host.workspace.rootPath, command.runId), relativePath);
+  mkdirSync(destDir, { recursive: true });
+  writeFileSync(
+    path.join(destDir, "operator-input.json"),
+    `${JSON.stringify(payload, null, 2)}\n`,
+    "utf8",
+  );
+
+  host.db
+    .prepare(
+      `INSERT INTO artifacts (artifact_id, run_id, kind, digest, relative_path, producer_attempt_id, sealed_at)
+       VALUES (?, ?, 'operator_input', ?, ?, ?, ?)
+       ON CONFLICT(artifact_id) DO NOTHING`,
+    )
+    .run(artId, command.runId, contentDigest, relativePath, parentAttemptId, timestamp);
+
+  // Preserve prior definition detail (question/lens/…) and attach continuation pointers.
+  let priorDetail: Record<string, unknown> = {};
+  if (current.detail_json != null && current.detail_json !== "") {
+    try {
+      const parsed = JSON.parse(String(current.detail_json)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        priorDetail = { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      priorDetail = {};
+    }
+  }
+  const nextDetail = {
+    ...priorDetail,
+    parentAttemptId,
+    operatorInputArtifactId: artId,
+    operatorInputGateId: command.gateId,
+  };
+
+  // Old gen stays waiting (non-succeeded) so unlockReadyNodes cannot treat it as done.
   host.db
     .prepare(
       `INSERT INTO nodes (
         run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
-      ) VALUES (?, ?, ?, 'ready', ?, NULL, NULL, NULL)`,
+      ) VALUES (?, ?, ?, 'ready', ?, NULL, NULL, ?)`,
     )
-    .run(command.runId, gateNodeKey, requiredText(current, "kind"), generation + 1);
+    .run(
+      command.runId,
+      gateNodeKey,
+      requiredText(current, "kind"),
+      nextGen,
+      JSON.stringify(nextDetail),
+    );
+
   host.db
     .prepare(
       "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",

@@ -96,7 +96,25 @@ export async function fullGraphFixtureExecutor(
   }
   if (input.node.kind === "research.leaf" || input.node.kind === "research.domain") {
     const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
-    await writeFile(receipt, `${JSON.stringify({ ok: true, node: input.node.key })}\n`, "utf8");
+    // Phase 2: full AnalysisReceipt shape (no thin {role,summary,mode}).
+    const fullReceipt = {
+      version: 1,
+      runId: input.runId,
+      nodeId: input.node.key,
+      parentId:
+        input.node.kind === "research.leaf"
+          ? `research.domain.${String(input.node.detail?.domainId ?? "core")}`
+          : null,
+      attempt: Math.max(1, input.node.generation + 1),
+      status: "complete",
+      scope: String(input.node.detail?.scope ?? input.node.key),
+      summary: `fixture ${input.node.kind} for ${input.node.key}`,
+      findings: [`fixture ${input.node.kind} for ${input.node.key}`],
+      evidence: [],
+      childReceipts: [],
+      openQuestions: [],
+    };
+    await writeFile(receipt, `${JSON.stringify(fullReceipt)}\n`, "utf8");
     return {
       type: "succeeded",
       unsealedArtifacts: [
@@ -108,11 +126,15 @@ export async function fullGraphFixtureExecutor(
   }
   if (input.node.kind === "review.seat") {
     const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
-    await writeFile(
-      receipt,
-      `${JSON.stringify({ clean: true, defects: [], summary: "NO_DEFECTS", node: input.node.key })}\n`,
-      "utf8",
-    );
+    const reviewerId = input.node.key.replace(/^review\.seat\./, "") || "general";
+    const report = {
+      version: 1 as const,
+      reviewerId,
+      clean: true,
+      defects: [] as const,
+      summary: "NO_DEFECTS",
+    };
+    await writeFile(receipt, `${JSON.stringify(report)}\n`, "utf8");
     return {
       type: "succeeded",
       unsealedArtifacts: [
@@ -218,6 +240,18 @@ export function context(workspaceId: string) {
   return { workspaceId, actor: { id: "operator", kind: "local_operator" as const } };
 }
 
+/** Default StartRun body (hard-cut requires intent). */
+export function startRunCommand(commandId: string, intent?: { mode?: "generate" | "refresh"; focus?: string }) {
+  return {
+    type: "start_run" as const,
+    commandId,
+    intent: {
+      mode: intent?.mode ?? ("generate" as const),
+      ...(intent?.focus ? { focus: intent.focus } : {}),
+    },
+  };
+}
+
 export function blockingFreeze(root: string, started: () => void) {
   return async ({ runId, signal }: { runId: string; signal?: AbortSignal }) => {
     const runDir = path.join(root, ".okf-wiki", "runs", runId);
@@ -284,7 +318,7 @@ export function startChildOwner(root: string, workspaceId: string): ChildProcess
     const { openWikiRuns } = await import(process.env.WORKFLOW_MODULE_URL);
     const runs = await openWikiRuns({ rootPath: process.env.WORKFLOW_ROOT });
     const receipt = await runs.dispatch(
-      { type: "start_run", commandId: "child-start" },
+      { type: "start_run", commandId: "child-start" , intent: { mode: "generate" } },
       { workspaceId: process.env.WORKFLOW_ID, actor: { id: "child", kind: "local_operator" } },
     );
     const result = await runs.read({ runId: receipt.runId });
@@ -453,7 +487,7 @@ export async function reachPublicationGate(
     piAttemptExecutor: fullGraphFixtureExecutor,
   });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: `${commandPrefix}-start` },
+    { type: "start_run", commandId: `${commandPrefix}-start`, intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, `${commandPrefix}-approve-plan`);

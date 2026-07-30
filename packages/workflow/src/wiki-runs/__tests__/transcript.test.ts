@@ -22,7 +22,7 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-transcript-read" },
+    { type: "start_run", commandId: "start-transcript-read" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const finished = await waitForTerminal(runs, receipt.runId);
@@ -104,7 +104,7 @@ test("readAttemptTranscript refuses oversized transcripts", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-transcript-size" },
+    { type: "start_run", commandId: "start-transcript-size" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const finished = await waitForTerminal(runs, receipt.runId);

@@ -14,13 +14,14 @@ const digest = "a".repeat(64);
 
 function baseSnapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v1",
-    definitionVersion: 1,
+    schema: "okf.wiki-runs/v2",
+    definitionVersion: 2,
     runId: "run-1",
     workspaceId: "ws-1",
     revision: 3,
     state: "running",
     cancelRequested: false,
+    intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
     attempts: [],

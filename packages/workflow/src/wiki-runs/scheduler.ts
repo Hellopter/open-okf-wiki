@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
+  type AttemptMetrics,
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
   type PiAttemptFailureClass,
@@ -21,10 +22,19 @@ import {
   isMechanicalAttemptKind,
   isPiAttemptKind,
 } from "../definition-v1.js";
+import {
+  graphRoleForNodeKind,
+  mergeAttemptMetrics,
+  metricsOf,
+  normalizeAttemptMetrics,
+  wallTimeMsFromStarted,
+  writeAttemptMetrics,
+} from "./attempt-metrics.js";
 import { canClaimKind } from "./concurrency.js";
 import type { WikiRunsCasCtx } from "./ctx.js";
 import { digest, now } from "./crypto-util.js";
 import { unlockReadyNodes } from "./dag.js";
+import { openOperatorInputGate } from "./gate-open.js";
 import {
   scheduleHardValidateRepair,
   shouldAutoHardValidateRepair,
@@ -64,8 +74,20 @@ export type SchedulerHost = WikiRunsCasCtx & {
     descriptor: PiAttemptArtifactDescriptor,
   ): Promise<ArtifactPreparation | undefined>;
   sealPreparation(runId: string, preparation: ArtifactPreparation): Promise<void>;
+  /**
+   * Compile ExecutionPlan from sealed Spec and prepare as unsealed artifact.
+   * Throws on fan-out over-cap (plan attempt fails).
+   */
+  preparePlanExecutionPlan(
+    claim: ClaimedNode,
+    preparations: ArtifactPreparation[],
+  ): Promise<ArtifactPreparation | undefined>;
   /** CAS + gate open / unlock / plan accept (attempt-success single entry). */
-  commitSuccessfulAttempt(claim: ClaimedNode, preparations: ArtifactPreparation[]): void;
+  commitSuccessfulAttempt(
+    claim: ClaimedNode,
+    preparations: ArtifactPreparation[],
+    metrics?: AttemptMetrics,
+  ): void;
   orphanPreparedArtifacts(attemptId: string): void;
   requeueFailedNode(
     runId: string,
@@ -79,7 +101,13 @@ export type SchedulerHost = WikiRunsCasCtx & {
    * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
    * Used by auto hard-validate repair to re-arm validate.* + downstream after scheduling repair.hv.N.
    */
-  applyRerunAt(runId: string, nodeKey: string, generation: number, feedback?: string): void;
+  applyRerunAt(
+    runId: string,
+    nodeKey: string,
+    generation: number,
+    feedback?: string,
+    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
+  ): void;
 };
 
 /**
@@ -244,9 +272,14 @@ export function claimPreparedRow(host: SchedulerHost, node: SqlRow): ClaimedNode
   }
   // RetryFailedNode / research auto-retry: reuse the exact failed Attempt's
   // input_digest + attempt_inputs rather than re-picking "current latest".
+  // Operator-input continuation: reuse suspended parent inputs + sealed answer.
   const retrySource = retrySourceAttempt(host, runId, nodeKey, generation);
-  const inputDigest = retrySource
-    ? retrySource.inputDigest
+  const operatorSource = retrySource
+    ? undefined
+    : operatorContinuationSource(host, runId, nodeKey, generation);
+  const frozenSource = retrySource ?? operatorSource;
+  const inputDigest = frozenSource
+    ? frozenSource.inputDigest
     : nodeKey === "freeze" && typeof node.freeze_config_digest === "string"
       ? requiredText(node, "freeze_config_digest")
       : digest(upstreams.map((input) => ({ role: input.role, artifactId: input.artifactId })));
@@ -271,8 +304,8 @@ export function claimPreparedRow(host: SchedulerHost, node: SqlRow): ClaimedNode
       inputDigest,
       timestamp,
     );
-  if (retrySource) {
-    host.copyAttemptInputs(attemptId, retrySource.inputs);
+  if (frozenSource) {
+    host.copyAttemptInputs(attemptId, frozenSource.inputs);
   } else {
     host.bindAttemptInputs(attemptId, runId, nodeKey);
   }
@@ -327,6 +360,154 @@ function retrySourceAttempt(
   return { inputDigest: requiredText(attempt, "input_digest"), inputs };
 }
 
+/**
+ * After ResolveGate(operator_input answer): new generation detail_json carries
+ * parentAttemptId + operatorInputArtifactId so claim reuses frozen inputs + answer.
+ */
+function operatorContinuationSource(
+  host: SchedulerHost,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+): { inputDigest: string; inputs: Array<{ role: string; artifactId: string }> } | undefined {
+  const node = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, nodeKey, generation),
+  );
+  if (!node || node.detail_json == null || node.detail_json === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(node.detail_json));
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const detail = parsed as Record<string, unknown>;
+  const parentAttemptId =
+    typeof detail.parentAttemptId === "string" ? detail.parentAttemptId.trim() : "";
+  const operatorInputArtifactId =
+    typeof detail.operatorInputArtifactId === "string"
+      ? detail.operatorInputArtifactId.trim()
+      : "";
+  if (!parentAttemptId || !operatorInputArtifactId) return undefined;
+
+  const parent = asRow(
+    host.db
+      .prepare(
+        `SELECT attempt_id, state, node_key, run_id FROM attempts WHERE attempt_id = ?`,
+      )
+      .get(parentAttemptId),
+  );
+  if (!parent) return undefined;
+  if (requiredText(parent, "run_id") !== runId) return undefined;
+  if (requiredText(parent, "node_key") !== nodeKey) return undefined;
+  if (requiredText(parent, "state") !== "suspended") return undefined;
+
+  const artifact = asRow(
+    host.db
+      .prepare(
+        `SELECT artifact_id, kind FROM artifacts WHERE artifact_id = ? AND run_id = ?`,
+      )
+      .get(operatorInputArtifactId, runId),
+  );
+  if (!artifact || requiredText(artifact, "kind") !== "operator_input") return undefined;
+
+  const parentInputs = asRows(
+    host.db
+      .prepare(
+        `SELECT role, artifact_id FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`,
+      )
+      .all(parentAttemptId),
+  ).map((row) => ({
+    role: requiredText(row, "role"),
+    artifactId: requiredText(row, "artifact_id"),
+  }));
+  // Drop any prior operator_input so the sealed answer is authoritative.
+  const inputs = [
+    ...parentInputs.filter((item) => item.role !== "operator_input"),
+    { role: "operator_input", artifactId: operatorInputArtifactId },
+  ].sort((a, b) => a.role.localeCompare(b.role));
+  return {
+    inputDigest: digest(inputs.map((item) => ({ role: item.role, artifactId: item.artifactId }))),
+    inputs,
+  };
+}
+
+/**
+ * Durable pause: Attempt=suspended, Node=waiting, Gate(operator_input)=open,
+ * Run=waiting_for_operator. Old Pi worker is discarded; resume is a new Attempt.
+ */
+export function suspendForOperatorInput(
+  host: SchedulerHost,
+  claim: ClaimedNode,
+  outcome: Extract<PiAttemptOutcome, { type: "gate_requested" }>,
+  transcriptPrep: ArtifactPreparation | undefined,
+  metrics?: AttemptMetrics,
+): void {
+  if (!host.isCurrent(claim)) return;
+  const timestamp = now();
+  const inputDigest = host.attemptInputDigest(claim.attemptId);
+
+  // Optionally seal the gate_requested transcript as an audit artifact (not a success output).
+  if (transcriptPrep) {
+    host.db
+      .prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, digest, relative_path, producer_attempt_id, sealed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(artifact_id) DO NOTHING`,
+      )
+      .run(
+        transcriptPrep.artifactId,
+        claim.runId,
+        transcriptPrep.kind,
+        transcriptPrep.digest,
+        transcriptPrep.relativePath,
+        claim.attemptId,
+        timestamp,
+      );
+    host.db
+      .prepare(
+        "UPDATE artifact_preparations SET state = 'committed' WHERE preparation_id = ? AND state = 'prepared'",
+      )
+      .run(transcriptPrep.preparationId);
+  }
+
+  host.db
+    .prepare(
+      `UPDATE attempts SET state = 'suspended', ended_at = ?
+       WHERE attempt_id = ? AND state = 'running'`,
+    )
+    .run(timestamp, claim.attemptId);
+  const resolved = mergeAttemptMetrics(metrics, {
+    role: graphRoleForNodeKind(claim.kind),
+    wallTimeMs: wallTimeMsFromStarted(host.db, claim.attemptId, timestamp),
+    stopReason: "gate_requested",
+  });
+  writeAttemptMetrics(host.db, claim.attemptId, resolved);
+
+  // Keep last_attempt_id for UI; clear current so isCurrent fails for late commits.
+  host.db
+    .prepare(
+      `UPDATE nodes SET state = 'waiting', current_attempt_id = NULL, last_attempt_id = ?
+       WHERE run_id = ? AND node_key = ? AND generation = ? AND current_attempt_id = ?`,
+    )
+    .run(claim.attemptId, claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
+
+  openOperatorInputGate(
+    { db: host.db, emit: (runId, type) => host.emit(runId, type) },
+    claim,
+    {
+      question: outcome.question,
+      context: outcome.context,
+      inputDigest,
+      timestamp,
+    },
+  );
+}
+
 export function abortRunAttempts(host: SchedulerHost, runId: string): void {
   for (const [attemptId, controller] of host.activeAttempts) {
     if (attemptRunId(host, attemptId) === runId) controller.abort();
@@ -361,12 +542,30 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
       ? await host.executeMechanical(claim, controller.signal)
       : await executePi(host, claim, controller.signal);
     if (host.closed || !host.isCurrent(claim)) return;
+    const outcomeMetrics = normalizeAttemptMetrics(
+      "metrics" in outcome ? outcome.metrics : undefined,
+    );
     if (outcome.type === "failed") {
-      // Preserve typed failureClass for L_control research auto-retry policy.
-      throw Object.assign(new Error(outcome.error), { failureClass: outcome.failureClass });
+      // Preserve typed failureClass + optional metrics for L_control / observation.
+      throw Object.assign(new Error(outcome.error), {
+        failureClass: outcome.failureClass,
+        ...(outcomeMetrics ? { metrics: outcomeMetrics } : {}),
+      });
     }
     if (outcome.type === "gate_requested") {
-      throw new Error(`${claim.kind} must not request an inline gate`);
+      // Phase 4: durable operator_input HITL — suspend, do not throw/fail.
+      let transcriptPrep: ArtifactPreparation | undefined;
+      if (outcome.transcript) {
+        transcriptPrep = await host.prepareUnsealedArtifact(claim, outcome.transcript);
+        if (transcriptPrep) {
+          await host.sealPreparation(claim.runId, transcriptPrep);
+        }
+      }
+      if (host.closed || !host.isCurrent(claim)) return;
+      host.transaction(() =>
+        suspendForOperatorInput(host, claim, outcome, transcriptPrep, outcomeMetrics),
+      );
+      return;
     }
     if (outcome.type !== "succeeded") throw new Error("unexpected attempt outcome");
 
@@ -377,8 +576,16 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
       await host.sealPreparation(claim.runId, preparation);
       preparations.push(preparation);
     }
+    // Phase 1: compile + seal ExecutionPlan before plan gate / auto-approve.
+    if (claim.kind === "plan") {
+      const planPrep = await host.preparePlanExecutionPlan(claim, preparations);
+      if (planPrep) {
+        await host.sealPreparation(claim.runId, planPrep);
+        preparations.push(planPrep);
+      }
+    }
     if (host.closed || !host.isCurrent(claim)) return;
-    host.transaction(() => host.commitSuccessfulAttempt(claim, preparations));
+    host.transaction(() => host.commitSuccessfulAttempt(claim, preparations, outcomeMetrics));
   } catch (error) {
     if (host.closed) return;
     // Best-effort: leave a readable conversation row when Pi/mechanical failed
@@ -470,6 +677,7 @@ export function loadPiAttemptNodeDetail(
   if (typeof rowObj.questionIndex === "number") candidate.questionIndex = rowObj.questionIndex;
   if (Array.isArray(rowObj.questions)) candidate.questions = rowObj.questions;
   if (typeof rowObj.lens === "string") candidate.lens = rowObj.lens;
+  if (typeof rowObj.seatIndex === "number") candidate.seatIndex = rowObj.seatIndex;
   if (typeof rowObj.critical === "boolean") candidate.critical = rowObj.critical;
   if (typeof rowObj.feedback === "string") candidate.feedback = rowObj.feedback;
   const result = PiAttemptNodeDetailSchema.safeParse(candidate);
@@ -591,6 +799,12 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
        WHERE attempt_id = ? AND state = 'running'`,
     )
     .run(message, failureClass ?? null, timestamp, claim.attemptId);
+  const resolved = mergeAttemptMetrics(metricsOf(error), {
+    role: graphRoleForNodeKind(claim.kind),
+    wallTimeMs: wallTimeMsFromStarted(host.db, claim.attemptId, timestamp),
+    stopReason: failureClass ?? "failed",
+  });
+  writeAttemptMetrics(host.db, claim.attemptId, resolved);
   host.db
     .prepare(
       `UPDATE nodes SET state = 'failed', current_attempt_id = NULL

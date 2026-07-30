@@ -1,8 +1,12 @@
 /**
  * Shared node-dialog selection + RetryFailedNode / RerunNode dispatch.
  *
- * Used by RunInspectorDialog control chrome. WikiProduceGatePanel stays slim
- * (receipt + plan gate HITL + "View run") and does not own this surface.
+ * Used by RunInspectorDialog control chrome (shell-owned). WikiProduceGatePanel
+ * stays slim (receipt + plan gate HITL + "View run") and does not own this surface.
+ *
+ * Command state is resource-keyed (Phase 6):
+ *   `run:<id>:cancel` | `gate:<id>:resolve` | `node:<id>:retry`
+ * HTTP accept/reject is admission only; Run SSE is truth.
  */
 
 import type {
@@ -15,6 +19,29 @@ import type {
 import { useCallback, useMemo, useState } from "react";
 import { dispatchWikiRunCommand } from "../../api";
 import { projectWikiAttempt } from "./wiki-run-view-model";
+
+/** Resource-keyed command state (Phase 6). */
+export type CommandKey =
+  | `run:${string}:cancel`
+  | `gate:${string}:resolve`
+  | `node:${string}:retry`
+  | `node:${string}:rerun`
+  | string;
+
+function commandKeyFor(command: RunCommand): CommandKey {
+  switch (command.type) {
+    case "cancel_run":
+      return `run:${command.runId}:cancel`;
+    case "resolve_gate":
+      return `gate:${command.gateId}:resolve`;
+    case "retry_failed_node":
+      return `node:${command.nodeKey}:retry`;
+    case "rerun_node":
+      return `node:${command.nodeKey}:rerun`;
+    default:
+      return `run:${"runId" in command ? String(command.runId) : "unknown"}:${command.type}`;
+  }
+}
 
 export type UseWikiRunNodeActionsArgs = {
   workspaceId: string;
@@ -52,8 +79,15 @@ export function useWikiRunNodeActions({
 }: UseWikiRunNodeActionsArgs): UseWikiRunNodeActionsResult {
   const [dialogNodeKey, setDialogNodeKey] = useState<string | null>(null);
   const [dialogAttemptId, setDialogAttemptId] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [commandError, setCommandError] = useState<string | null>(null);
+  /** Resource-keyed in-flight / error state (Phase 6). */
+  const [commandStates, setCommandStates] = useState<
+    Record<string, { submitting: boolean; error: string | null }>
+  >({});
+  const submitting = Object.values(commandStates).some((s) => s.submitting);
+  const commandError =
+    Object.values(commandStates)
+      .map((s) => s.error)
+      .find((e) => e != null) ?? null;
 
   const relatedAttempts = useMemo(() => {
     if (!dialogNodeKey || !snapshot) return [] as NodeAttempt[];
@@ -100,25 +134,47 @@ export function useWikiRunNodeActions({
   }, []);
 
   const clearCommandError = useCallback(() => {
-    setCommandError(null);
+    setCommandStates({});
   }, []);
 
   const dispatchCommand = useCallback(
     async (command: RunCommand): Promise<boolean> => {
-      if (!workspaceId || submitting) return false;
-      setSubmitting(true);
-      setCommandError(null);
+      if (!workspaceId) return false;
+      const key = commandKeyFor(command);
+      let blocked = false;
+      // Allow concurrent commands on different resources; block same key.
+      setCommandStates((prev) => {
+        if (prev[key]?.submitting) {
+          blocked = true;
+          return prev;
+        }
+        return {
+          ...prev,
+          [key]: { submitting: true, error: null },
+        };
+      });
+      if (blocked) return false;
       try {
+        // HTTP accept/reject is admission only; Run SSE is truth.
         await dispatchWikiRunCommand(workspaceId, command, rootPath);
-        setSubmitting(false);
+        setCommandStates((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
         return true;
       } catch (error) {
-        setSubmitting(false);
-        setCommandError(error instanceof Error ? error.message : String(error));
+        setCommandStates((prev) => ({
+          ...prev,
+          [key]: {
+            submitting: false,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        }));
         return false;
       }
     },
-    [workspaceId, rootPath, submitting],
+    [workspaceId, rootPath],
   );
 
   const retryFailed = useCallback(

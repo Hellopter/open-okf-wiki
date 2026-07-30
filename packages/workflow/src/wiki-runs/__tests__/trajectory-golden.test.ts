@@ -95,7 +95,7 @@ test("trajectory golden: StartRun → freeze → plan → gate.plan (waiting_for
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "traj-plan-gate-start" },
+    { type: "start_run", commandId: "traj-plan-gate-start" , intent: { mode: "generate" } },
     context(workspaceId),
   );
 
@@ -161,7 +161,7 @@ test("trajectory golden: approve plan → full graph → publication gate → pu
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "traj-publish-start" },
+    { type: "start_run", commandId: "traj-publish-start" , intent: { mode: "generate" } },
     context(workspaceId),
   );
 
@@ -284,7 +284,7 @@ test("trajectory golden: cancel mid-flight → cancelled, no further claims", as
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "traj-cancel-start" },
+    { type: "start_run", commandId: "traj-cancel-start" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedAttempt;

@@ -73,14 +73,35 @@ export async function sealTranscript(
   });
 }
 
-export async function readSpec(input: PiAttemptInput): Promise<WikiRunSpec> {
+/**
+ * Load WikiRunSpec: prefer projected inputs/spec.json (Phase 2 canonical),
+ * then analysis/spec.json, then sealed artifact paths.
+ */
+export async function readSpec(
+  input: PiAttemptInput,
+  layout?: RunWorkdirLayout,
+): Promise<WikiRunSpec> {
+  const projected: string[] = [];
+  if (layout) {
+    projected.push(
+      path.join(layout.runWorkDir, "inputs", "spec.json"),
+      path.join(layout.analysisDir, "spec.json"),
+    );
+  } else {
+    projected.push(
+      path.join(input.workDir, "inputs", "spec.json"),
+      path.join(input.workDir, "analysis", "spec.json"),
+    );
+  }
   const specInput = input.sealedInputs.find((item) => item.role === "spec");
-  if (!specInput) throw new Error("write.root requires a sealed spec input");
-  const candidates = [
-    specInput.readOnlyPath,
-    path.join(specInput.readOnlyPath, "spec.json"),
-    path.join(specInput.readOnlyPath, "analysis", "spec.json"),
-  ];
+  const sealedCandidates = specInput
+    ? [
+        specInput.readOnlyPath,
+        path.join(specInput.readOnlyPath, "spec.json"),
+        path.join(specInput.readOnlyPath, "analysis", "spec.json"),
+      ]
+    : [];
+  const candidates = [...projected, ...sealedCandidates];
   for (const candidate of candidates) {
     try {
       const info = await stat(candidate);
@@ -88,9 +109,15 @@ export async function readSpec(input: PiAttemptInput): Promise<WikiRunSpec> {
       return WikiRunSpecSchema.parse(JSON.parse(await readFile(candidate, "utf8")));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      // Invalid JSON / schema: keep trying other candidates, then surface.
+      if ((error as NodeJS.ErrnoException).code === undefined) {
+        // zod / parse errors on a found file should fail closed for that file only if more candidates
+        continue;
+      }
       throw new Error(`sealed spec is unreadable: ${bounded(error)}`);
     }
   }
+  if (!specInput) throw new Error("write requires a sealed spec input (role=spec)");
   throw new Error("sealed spec artifact does not contain spec.json");
 }
 
@@ -98,17 +125,45 @@ export async function liveModel(
   input: PiAttemptInput,
   role: "planner" | "writer" | "worker" | "reviewer",
   resolveModel: ResolvePiModel,
+  opts?: { seatIndex?: number },
 ) {
-  const selected = resolveModelSelection({ workspace: input.workspace, role });
+  const selected = resolveModelSelection({
+    workspace: input.workspace,
+    role,
+    ...(opts?.seatIndex !== undefined ? { seatIndex: opts.seatIndex } : {}),
+  });
   return resolveModel({ profileId: selected.profileId, modelId: selected.id });
+}
+
+/**
+ * Resolve reviewer seat index from node detail or `review.seat.<lens>` key order.
+ * Used for roleModels.reviewers[i] rotation.
+ */
+export function resolveReviewSeatIndex(input: PiAttemptInput): number {
+  const detail = input.node.detail ?? {};
+  if (typeof detail.seatIndex === "number" && Number.isFinite(detail.seatIndex)) {
+    return Math.max(0, Math.floor(detail.seatIndex));
+  }
+  const match = /^review\.seat\.(.+)$/.exec(input.node.key);
+  if (match?.[1]) {
+    const lens = match[1];
+    const order = ["grounding", "coverage", "consistency", "general"];
+    const idx = order.indexOf(lens);
+    if (idx >= 0) return idx;
+  }
+  return 0;
 }
 
 export async function readSealedWikiTree(
   input: PiAttemptInput,
   destWikiDir: string,
 ): Promise<void> {
-  const wikiInput = input.sealedInputs.find((item) => item.role === "wiki_tree");
-  if (!wikiInput) throw new Error(`${input.node.kind} requires a sealed wiki_tree input`);
+  const wikiInput =
+    input.sealedInputs.find((item) => item.role === "wiki_tree") ??
+    input.sealedInputs.find((item) => item.role === "prior_wiki");
+  if (!wikiInput) {
+    throw new Error(`${input.node.kind} requires a sealed wiki_tree or prior_wiki input`);
+  }
   await mkdir(path.dirname(destWikiDir), { recursive: true });
   await cp(wikiInput.readOnlyPath, destWikiDir, { recursive: true, dereference: false });
 }

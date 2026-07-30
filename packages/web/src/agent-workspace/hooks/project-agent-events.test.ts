@@ -662,7 +662,7 @@ describe("reducePiEvent", () => {
     assert.equal(viewMessages(state)[0]!.id, "pi-live-1");
   });
 
-  it("projects agentStatus streaming on agent_start and idle on agent_end", () => {
+  it("projects agentStatus streaming on agent_start, between_operations on agent_end, idle on agent_settled", () => {
     let state = createPiStreamState();
     assert.equal(state.agentStatus, "idle");
     assert.equal(state.errorText, null);
@@ -673,6 +673,11 @@ describe("reducePiEvent", () => {
     assert.equal(state.errorText, null);
 
     state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    assert.equal(state.agentStatus, "between_operations");
+    assert.equal(state.turnActive, true);
+    assert.equal(state.errorText, null);
+
+    state = reducePiEvent(state, "agent_settled", { type: "agent_settled" });
     assert.equal(state.agentStatus, "idle");
     assert.equal(state.turnActive, false);
     assert.equal(state.errorText, null);
@@ -699,10 +704,14 @@ describe("reducePiEvent", () => {
     assert.equal(state.errorText, "rate limited");
     assert.equal(viewMessages(state)[0]!.status, "error");
 
-    // agent_end preserves error status (matches prior hook behavior).
+    // agent_end preserves error status and keeps turn active.
     state = reducePiEvent(state, "agent_end", { type: "agent_end" });
     assert.equal(state.agentStatus, "error");
     assert.equal(state.errorText, "rate limited");
+    assert.equal(state.turnActive, true);
+
+    state = reducePiEvent(state, "agent_settled", { type: "agent_settled" });
+    assert.equal(state.agentStatus, "error");
     assert.equal(state.turnActive, false);
   });
 
@@ -743,6 +752,10 @@ describe("reducePiEvent", () => {
     assert.ok(viewMessages(state).some((m) => m.status === "aborted"));
 
     state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    assert.equal(state.agentStatus, "between_operations");
+    assert.equal(state.errorText, null);
+
+    state = reducePiEvent(state, "agent_settled", { type: "agent_settled" });
     assert.equal(state.agentStatus, "idle");
     assert.equal(state.errorText, null);
   });

@@ -65,6 +65,7 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
     body: JSON.stringify({
       type: "start_run",
       commandId: "start-over-http",
+      intent: { mode: "generate" },
       // An asserted actor/workspace must be rejected rather than trusted.
       workspaceId: "attacker-workspace",
     }),
@@ -74,7 +75,7 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   const accepted = await fetch(`${base}/command${query}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "start-over-http" }),
+    body: JSON.stringify({ type: "start_run", commandId: "start-over-http" , intent: { mode: "generate" } }),
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const receipt = (await accepted.json()) as { receipt: { runId: string; revision: number } };
@@ -146,7 +147,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   const accepted = await fetch(`${base}/command${query}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-http" }),
+    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-http" , intent: { mode: "generate" } }),
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const { receipt } = (await accepted.json()) as { receipt: { runId: string } };
@@ -263,7 +264,7 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   const accepted = await fetch(`${base}/command${query}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-sse" }),
+    body: JSON.stringify({ type: "start_run", commandId: "start-transcript-sse" , intent: { mode: "generate" } }),
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const { receipt } = (await accepted.json()) as { receipt: { runId: string } };

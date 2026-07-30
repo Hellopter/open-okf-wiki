@@ -30,8 +30,34 @@ import { SessionUsageSchema } from "./session-usage.js";
 // Stream view types
 // ---------------------------------------------------------------------------
 
-export const PiAgentStatusSchema = z.enum(["idle", "streaming", "error"]);
+/**
+ * Operator Session turn projection status.
+ *
+ * Pi lifecycle: `agent_end` is not terminal (retry / compaction / queued
+ * continuation may follow). Only `agent_settled` maps to idle/error.
+ */
+export const PiAgentStatusSchema = z.enum([
+  "idle",
+  "streaming",
+  "between_operations",
+  "retrying",
+  "compacting",
+  "error",
+]);
 export type PiAgentStatus = z.infer<typeof PiAgentStatusSchema>;
+
+/**
+ * Session context pressure phase (UI chrome; not durable control truth).
+ * Token counts remain measurements; phase is derived by the server.
+ */
+export const ContextPhaseSchema = z.enum([
+  "normal",
+  "approaching_target",
+  "at_target",
+  "compacting",
+  "unknown",
+]);
+export type ContextPhase = z.infer<typeof ContextPhaseSchema>;
 
 /** Finalized durable rows plus at most one live assistant snapshot. */
 export type PiStreamState = {
@@ -41,6 +67,8 @@ export type PiStreamState = {
   turnActive: boolean;
   agentStatus: PiAgentStatus;
   errorText: string | null;
+  /** Context pressure phase; updated with usage / compaction events. */
+  contextPhase: ContextPhase;
 };
 
 export const AgentStreamViewPatchSchema = z
@@ -59,6 +87,8 @@ export const AgentStreamViewPatchSchema = z
      * Absent means "no change" on the client; present replaces prior sessionUsage.
      */
     sessionUsage: SessionUsageSchema.optional(),
+    /** Context pressure phase when known; always set on live reduce patches. */
+    contextPhase: ContextPhaseSchema.optional(),
   })
   .strict();
 
@@ -83,7 +113,40 @@ export function createPiStreamState(seed: readonly AgentMessage[] = []): PiStrea
     turnActive: false,
     agentStatus: "idle",
     errorText: null,
+    contextPhase: "unknown",
   };
+}
+
+/**
+ * Derive context pressure phase from fill proxy + compaction flag.
+ * Compacting wins; missing tokens/target → unknown.
+ */
+export function deriveContextPhase(input: {
+  contextTokens?: number;
+  contextTarget?: number;
+  contextWindow?: number;
+  compacting?: boolean;
+}): ContextPhase {
+  if (input.compacting) return "compacting";
+  const tokens = input.contextTokens;
+  const target =
+    typeof input.contextTarget === "number" && input.contextTarget > 0
+      ? input.contextTarget
+      : typeof input.contextWindow === "number" && input.contextWindow > 0
+        ? input.contextWindow
+        : undefined;
+  if (
+    typeof tokens !== "number" ||
+    !Number.isFinite(tokens) ||
+    tokens < 0 ||
+    typeof target !== "number"
+  ) {
+    return "unknown";
+  }
+  if (tokens >= target) return "at_target";
+  // Approaching: at least 80% of target/window.
+  if (tokens >= target * 0.8) return "approaching_target";
+  return "normal";
 }
 
 /**
@@ -112,6 +175,7 @@ export function applySnapshotWithActiveTool(
     }),
     turnActive: true,
     agentStatus: "streaming",
+    contextPhase: snapshot.contextPhase,
   };
 }
 
@@ -529,8 +593,40 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
     );
   }
 
-  if (kind === "agent_end" || kind === "agent_settled") {
-    // Turn is over: no tool may remain pending/running (UI would spin forever).
+  if (kind === "agent_end") {
+    // Agent loop ended; Pi may still retry, compact, or run queued follow-ups.
+    // Keep turn active — only agent_settled is terminal.
+    const failed = state.agentStatus === "error";
+    let messages = state.messages;
+    let lastAssistantId = state.lastAssistantId;
+    let streamingMessage = state.streamingMessage;
+    // Fold any leftover streaming tail into durable messages, but do not
+    // finalize incomplete tools (retry/continuation may still own them).
+    if (streamingMessage) {
+      const done: AgentMessage = {
+        ...streamingMessage,
+        status: streamingMessage.status === "error" ? "error" : "done",
+        thinkingStatus: streamingMessage.thinking
+          ? "done"
+          : streamingMessage.thinkingStatus,
+      };
+      messages = [...messages, done];
+      lastAssistantId = done.id;
+      streamingMessage = null;
+    }
+    return {
+      ...state,
+      messages,
+      streamingMessage,
+      lastAssistantId,
+      turnActive: true,
+      agentStatus: failed ? "error" : "between_operations",
+      errorText: failed ? state.errorText : null,
+    };
+  }
+
+  if (kind === "agent_settled") {
+    // True turn terminal: no automatic retry, compaction, or queued continuation.
     const finalized = finalizeIncompleteToolsInState(state);
     let messages = finalized.messages;
     let lastAssistantId = finalized.lastAssistantId;
@@ -557,6 +653,72 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
       turnActive: false,
       agentStatus: failed ? "error" : "idle",
       errorText: failed ? finalized.errorText : null,
+      contextPhase:
+        finalized.contextPhase === "compacting" ? "unknown" : finalized.contextPhase,
+    };
+  }
+
+  if (kind === "auto_retry_start") {
+    return {
+      ...state,
+      turnActive: true,
+      agentStatus: "retrying",
+    };
+  }
+
+  if (kind === "auto_retry_end") {
+    const success = body.success === true;
+    if (!success && typeof body.finalError === "string" && body.finalError.trim()) {
+      return withAgentError(
+        { ...state, turnActive: true, agentStatus: "between_operations" },
+        body.finalError.trim(),
+      );
+    }
+    // Stay between operations until agent_settled (or next agent_start).
+    return {
+      ...state,
+      turnActive: true,
+      agentStatus: state.agentStatus === "error" ? "error" : "between_operations",
+    };
+  }
+
+  if (kind === "compaction_start") {
+    return {
+      ...state,
+      turnActive: true,
+      agentStatus: "compacting",
+      contextPhase: "compacting",
+    };
+  }
+
+  if (kind === "compaction_end") {
+    const aborted = body.aborted === true;
+    const willRetry = body.willRetry === true;
+    const err =
+      typeof body.errorMessage === "string" && body.errorMessage.trim()
+        ? body.errorMessage.trim()
+        : null;
+    if (err && !aborted) {
+      return withAgentError(
+        {
+          ...state,
+          turnActive: true,
+          agentStatus: "between_operations",
+          contextPhase: "unknown",
+        },
+        err,
+      );
+    }
+    return {
+      ...state,
+      turnActive: true,
+      agentStatus: willRetry
+        ? "streaming"
+        : state.agentStatus === "error"
+          ? "error"
+          : "between_operations",
+      // Compaction clears reliable fill until the next usage snapshot.
+      contextPhase: "unknown",
     };
   }
 
@@ -599,6 +761,7 @@ export function diffStreamState(prev: PiStreamState, next: PiStreamState): Agent
     streamingMessage: next.streamingMessage,
     appended,
     updated,
+    contextPhase: next.contextPhase,
   };
 }
 
@@ -640,5 +803,6 @@ export function applyStreamPatch(state: PiStreamState, patch: AgentStreamViewPat
     turnActive: patch.turnActive,
     agentStatus: patch.agentStatus,
     errorText: patch.errorText,
+    contextPhase: patch.contextPhase ?? state.contextPhase,
   };
 }

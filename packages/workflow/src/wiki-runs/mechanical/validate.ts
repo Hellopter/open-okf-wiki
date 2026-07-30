@@ -1,14 +1,45 @@
 /**
  * Mechanical validate.pre / validate.final execution.
+ *
+ * Phase 3: when Spec is sealed, require every pages[] entry with critical:true
+ * (default true) to exist as markdown under the wiki tree.
  */
 
-import { cp, rm, writeFile } from "node:fs/promises";
+import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import {
+  type PiAttemptOutcome,
+  type WikiRunSpec,
+  WikiRunSpecSchema,
+} from "@okf-wiki/contract";
 import { validateWikiTree } from "@okf-wiki/core";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { type MechanicalHost, sealedInputPath } from "./host.js";
+
+async function loadSealedSpec(
+  host: MechanicalHost,
+  claim: ClaimedNode,
+  runDir: string,
+): Promise<WikiRunSpec | undefined> {
+  const specPath = sealedInputPath(host, claim, runDir, "spec");
+  if (!specPath) return undefined;
+  const candidates = [
+    path.join(specPath, "spec.json"),
+    specPath,
+    path.join(specPath, "analysis", "spec.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = await readFile(candidate, "utf8");
+      const parsed = WikiRunSpecSchema.safeParse(JSON.parse(raw));
+      if (parsed.success) return parsed.data;
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
+}
 
 export async function mechanicalValidate(
   host: MechanicalHost,
@@ -40,10 +71,18 @@ export async function mechanicalValidate(
       sources.push({ id, path: path.join(sourcesPath, id) });
     }
   }
+
+  const spec = await loadSealedSpec(host, claim, runDir);
+  const requiredPages = spec?.pages?.map((p) => ({
+    path: p.path,
+    critical: p.critical,
+  }));
+
   const result = await validateWikiTree(stagingWiki, {
     sources: sources.length > 0 ? sources : undefined,
     // Pre-review validate is structural; final still checks citations when sources exist.
     requireCitations: claim.kind === "validate.final" ? undefined : false,
+    ...(requiredPages && requiredPages.length > 0 ? { requiredPages } : {}),
   });
   if (!result.ok) {
     // Quality / mechanical dirty — not missing infrastructure. Scheduler may

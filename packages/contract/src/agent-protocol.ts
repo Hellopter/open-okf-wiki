@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 import { AgentMessageSchema } from "./agent-message.js";
-import { AgentStreamViewPatchSchema } from "./agent-stream.js";
+import { AgentStreamViewPatchSchema, ContextPhaseSchema } from "./agent-stream.js";
 import { SessionUsageSchema } from "./session-usage.js";
 import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
 
@@ -30,12 +30,34 @@ export const AgentSteerCommandSchema = z.object({
   text: z.string().min(1).max(100_000),
 });
 
+/** Queue a follow-up delivered only when the agent would otherwise stop. */
+export const AgentFollowUpCommandSchema = z.object({
+  type: z.literal("follow_up"),
+  text: z.string().min(1).max(100_000),
+});
+
+/** Abort the current Operator Session turn (not cancel_run). */
 export const AgentAbortCommandSchema = z.object({
   type: z.literal("abort"),
 });
 
+/** Clear steer + follow-up queues without aborting the active turn. */
+export const AgentClearQueueCommandSchema = z.object({
+  type: z.literal("clear_queue"),
+});
+
+/** Abort in-progress manual/auto compaction only. */
+export const AgentAbortCompactionCommandSchema = z.object({
+  type: z.literal("abort_compaction"),
+});
+
 export const AgentCompactCommandSchema = z.object({
   type: z.literal("compact"),
+  /**
+   * idle: only when session is idle (default).
+   * stop_and_compact: abort the turn first, then compact (destructive).
+   */
+  mode: z.enum(["idle", "stop_and_compact"]).optional(),
 });
 
 /**
@@ -51,14 +73,20 @@ export const AgentSetModelCommandSchema = z.object({
 export const AgentCommandSchema = z.discriminatedUnion("type", [
   AgentPromptCommandSchema,
   AgentSteerCommandSchema,
+  AgentFollowUpCommandSchema,
   AgentAbortCommandSchema,
+  AgentClearQueueCommandSchema,
+  AgentAbortCompactionCommandSchema,
   AgentCompactCommandSchema,
   AgentSetModelCommandSchema,
 ]);
 
 export type AgentPromptCommand = z.infer<typeof AgentPromptCommandSchema>;
 export type AgentSteerCommand = z.infer<typeof AgentSteerCommandSchema>;
+export type AgentFollowUpCommand = z.infer<typeof AgentFollowUpCommandSchema>;
 export type AgentAbortCommand = z.infer<typeof AgentAbortCommandSchema>;
+export type AgentClearQueueCommand = z.infer<typeof AgentClearQueueCommandSchema>;
+export type AgentAbortCompactionCommand = z.infer<typeof AgentAbortCompactionCommandSchema>;
 export type AgentCompactCommand = z.infer<typeof AgentCompactCommandSchema>;
 export type AgentSetModelCommand = z.infer<typeof AgentSetModelCommandSchema>;
 export type AgentCommand = z.infer<typeof AgentCommandSchema>;
@@ -133,6 +161,8 @@ export const AgentSseSnapshotSchema = z
          * totalTokens + known window). Not durable control truth (ADR 0035).
          */
         sessionUsage: SessionUsageSchema.optional(),
+        /** Context pressure phase derived by the server. */
+        contextPhase: ContextPhaseSchema.optional(),
       })
       .strict(),
   })
@@ -214,10 +244,23 @@ export type CreatePiAgentSessionResponse = {
 export type AgentCommandResponse = {
   ok: boolean;
   sessionId: string;
-  command: "prompt" | "steer" | "abort" | "compact" | "set_model";
+  command:
+    | "prompt"
+    | "steer"
+    | "follow_up"
+    | "abort"
+    | "clear_queue"
+    | "abort_compaction"
+    | "compact"
+    | "set_model";
   status: "accepted" | "failed";
   message?: string;
   runId?: string;
   /** Resolved model id after a successful set_model. */
   modelId?: string;
+  /**
+   * Present when a prompt/steer/follow_up was admitted. The turn runs detached;
+   * completion and errors arrive on Session SSE — HTTP is admission-only.
+   */
+  acceptedTurnId?: string;
 };

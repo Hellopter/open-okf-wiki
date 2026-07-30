@@ -27,7 +27,7 @@ test("cancel before the executor starts prevents its invocation", async (t) => {
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel-before-pi" },
+    { type: "start_run", commandId: "start-cancel-before-pi" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await runs.dispatch(
@@ -58,7 +58,7 @@ test("cancel aborts an executing Pi attempt and its late result cannot commit", 
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel" },
+    { type: "start_run", commandId: "start-cancel" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedAttempt;
@@ -93,7 +93,7 @@ test("cancel aborts an active freeze and removes its unpinned run tree", async (
   });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel-freeze" },
+    { type: "start_run", commandId: "start-cancel-freeze" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedFreeze;
@@ -111,7 +111,7 @@ test("terminal runs reject a new cancellation command", async (t) => {
   const runs = await openWikiRuns({ rootPath: root });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-terminal-cancel" },
+    { type: "start_run", commandId: "start-terminal-cancel" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   // Freeze advances to plan-ready (still active); cancel is allowed, then terminal.
@@ -136,7 +136,7 @@ test("CancelRun withdraws open gates", async (t) => {
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-cancel-gate" },
+    { type: "start_run", commandId: "start-cancel-gate" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await waitForTerminal(runs, receipt.runId);

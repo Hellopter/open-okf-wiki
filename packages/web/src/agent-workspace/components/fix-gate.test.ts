@@ -28,13 +28,14 @@ function gate(partial: Partial<WikiRunGate> & Pick<WikiRunGate, "gateId" | "kind
 
 function snapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v1",
-    definitionVersion: 1,
+    schema: "okf.wiki-runs/v2",
+    definitionVersion: 2,
     runId: "run-1",
     workspaceId: "ws-1",
     revision: 1,
     state: "waiting_for_operator",
     cancelRequested: false,
+    intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
     attempts: [],
@@ -90,12 +91,14 @@ describe("buildFixGateResolveCommand", () => {
 });
 
 describe("selectPrimaryOpenGate", () => {
-  it("prefers plan over fix over publication", () => {
+  it("prefers plan over fix over operator_input over publication", () => {
     const plan = gate({ gateId: "g-plan", kind: "plan" });
     const fix = gate({ gateId: "g-fix", kind: "fix" });
+    const op = gate({ gateId: "g-op", kind: "operator_input", nodeKey: "plan" });
     const pub = gate({ gateId: "g-pub", kind: "publication" });
     assert.equal(selectPrimaryOpenGate([pub, fix, plan])?.gateId, "g-plan");
     assert.equal(selectPrimaryOpenGate([pub, fix])?.gateId, "g-fix");
+    assert.equal(selectPrimaryOpenGate([pub, op])?.gateId, "g-op");
     assert.equal(selectPrimaryOpenGate([pub])?.gateId, "g-pub");
     assert.equal(selectPrimaryOpenGate([]), null);
   });

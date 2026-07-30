@@ -1,9 +1,10 @@
 /**
- * Shell-owned single WikiRun projection (Batch 2).
+ * Shell-owned single WikiRun projection (Batch 2 / Phase 6).
  *
- * One `useWikiRun` subscription per workspace shell, keyed by activeRunId.
- * Gate panel + Run inspector consume this context when their runId matches —
- * no second/third EventSource for the same active run.
+ * One `useWikiRun` subscription per workspace shell, keyed by the URL `run`
+ * param only. Gate panel + Run inspector consume this context when their
+ * runId matches — no second/third EventSource for the same active run.
+ * Message-derived activeRunId is deleted; receipt only updates the URL.
  */
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
@@ -31,7 +32,7 @@ const WikiRunProjectionContext = createContext<WikiRunProjectionContextValue>(ID
 export type WikiRunProjectionProviderProps = {
   workspaceId: string;
   rootPath?: string;
-  /** Active run id from resolveActiveRunId (null → no SSE). */
+  /** Active run id from URL `?run=` (null → no SSE). */
   runId: string | null;
   children: ReactNode;
 };

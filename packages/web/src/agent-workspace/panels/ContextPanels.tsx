@@ -1,8 +1,7 @@
 /** Read-only workspace context beside the sole Operator Session surface. */
 
 import { BookOpenIcon, ExternalLinkIcon, FolderGit2Icon } from "lucide-react";
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -12,7 +11,6 @@ import type { WikiRunListItem, WorkspaceConfig } from "../../api";
 import { useI18n } from "../../i18n";
 import { configureHref, wikiHref } from "../../lib/workspace-path";
 import { PaneCollapseButton } from "../components/PaneCollapseButton";
-import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 
 export type ContextPanelsProps = {
   workspaceId: string;
@@ -55,7 +53,7 @@ export function ContextPanels({
 }: ContextPanelsProps) {
   const { t } = useI18n();
   const sources = workspace?.sources ?? [];
-  const [inspectorRunId, setInspectorRunId] = useState<string | null>(null);
+  const [, setSearchParams] = useSearchParams();
 
   return (
     <div
@@ -133,7 +131,18 @@ export function ContextPanels({
                       className="flex w-full items-center justify-between gap-2 rounded-md border border-border/60 px-2 py-1.5 text-left text-2xs transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                       data-testid="agent-run-open"
                       data-run-id={run.runId}
-                      onClick={() => setInspectorRunId(run.runId)}
+                      onClick={() => {
+                        setSearchParams(
+                          (prev) => {
+                            const next = new URLSearchParams(prev);
+                            next.delete("rootPath");
+                            next.set("run", run.runId);
+                            next.delete("attempt");
+                            return next;
+                          },
+                          { replace: true },
+                        );
+                      }}
                     >
                       <span className="min-w-0 truncate font-mono" title={run.runId}>
                         {run.runId}
@@ -164,15 +173,6 @@ export function ContextPanels({
         </TabsContent>
       </Tabs>
 
-      <RunInspectorDialog
-        workspaceId={workspaceId}
-        rootPath={workspace?.rootPath}
-        runId={inspectorRunId}
-        open={inspectorRunId != null}
-        onOpenChange={(open) => {
-          if (!open) setInspectorRunId(null);
-        }}
-      />
     </div>
   );
 }

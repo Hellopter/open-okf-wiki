@@ -12,6 +12,16 @@ export {
   sweepIdleLiveSessions,
 } from "./live-session-registry.ts";
 export {
+  type AcceptedTurn,
+  type CancelScope,
+  type CompactOptions,
+  createSessionRuntime,
+  type Delivery,
+  type SessionProjection,
+  type SessionRuntime,
+  snapshotSession,
+} from "./session-runtime.ts";
+export {
   type AgentSessionHistoryLoad,
   deleteAgentSession,
   listLiveAgentSessionSummaries,

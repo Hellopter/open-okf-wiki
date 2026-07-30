@@ -23,6 +23,9 @@ import {
 export {
   projectOperatorAgentMessages,
   projectOperatorAgentMessagesFromManager,
+  projectOperatorBranchHistoryFromManager,
+  projectOperatorContextAgentMessagesFromManager,
+  projectOperatorContextHistoryFromManager,
   projectOperatorHistoryFromManager,
   projectOperatorHistoryMessage,
 } from "./history.js";
@@ -190,7 +193,10 @@ export async function openOperatorSession(
   return buildOperatorSession(input, manager);
 }
 
-/** Read compaction-aware operator history (not the full unsummarized branch). */
+/**
+ * Read full-branch operator history (default chat transcript).
+ * Model-context inspector uses {@link projectOperatorContextHistoryFromManager}.
+ */
 export async function loadOperatorSessionHistory(
   workspaceRootInput: string,
   sessionId: string,

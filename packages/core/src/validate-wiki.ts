@@ -24,6 +24,11 @@ export type ValidateWikiOptions = {
    * When true (default), every `.md` page must contain at least one Source Citation.
    */
   requireCitations?: boolean;
+  /**
+   * Spec pages that must exist as markdown under the wiki tree.
+   * Entries with `critical: false` are skipped; omitted critical defaults to true.
+   */
+  requiredPages?: Array<{ path: string; critical?: boolean }>;
 };
 
 export type ValidateWikiResult = {
@@ -169,6 +174,24 @@ export async function validateWikiTree(
     pages.map((page) => ({ path: page.relativePath, content: page.content })),
   ).brokenLinks) {
     warnings.push(`${broken.from}: broken internal link (${broken.target})`);
+  }
+
+  // Spec critical pages must exist as markdown (Phase 3 EvaluationPolicy).
+  if (options.requiredPages && options.requiredPages.length > 0) {
+    const present = new Set(
+      scan.files
+        .filter((file) => file.relativePath.toLowerCase().endsWith(".md"))
+        .map((file) => file.relativePath.replace(/\\/g, "/")),
+    );
+    for (const page of options.requiredPages) {
+      const critical = page.critical !== false;
+      if (!critical) continue;
+      const rel = page.path.replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!rel || isReservedWikiPath(rel)) continue;
+      if (!present.has(rel)) {
+        errors.push(`critical page missing: ${rel}`);
+      }
+    }
   }
 
   return {

@@ -38,7 +38,7 @@ test("buildPiAttemptInput binds sealed leaf question from detail_json", async (t
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-detail-bind" },
+    { type: "start_run", commandId: "start-detail-bind" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-detail-bind");
@@ -83,7 +83,7 @@ test("RerunNode copies prior detail_json and merges feedback on the root target"
     piAttemptExecutor: fullGraphFixtureExecutor,
   });
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-rerun-detail" },
+    { type: "start_run", commandId: "start-rerun-detail" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   // Freeze → plan ready is enough; seed a leaf with definition detail and rerun it.

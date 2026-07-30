@@ -72,11 +72,9 @@ export function projectPiEventForSse(
 export function activeToolUpdate(event: unknown): AgentSseActiveTool | null | undefined {
   if (!event || typeof event !== "object") return undefined;
   const body = event as Record<string, unknown>;
-  if (
-    body.type === "tool_execution_end" ||
-    body.type === "agent_end" ||
-    body.type === "agent_settled"
-  ) {
+  // Clear chrome only when the tool ends or the full turn settles.
+  // agent_end is not terminal (retry/compaction/queue may continue).
+  if (body.type === "tool_execution_end" || body.type === "agent_settled") {
     return null;
   }
   if (body.type === "tool_execution_start") return null;

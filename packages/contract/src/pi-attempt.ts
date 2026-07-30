@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Sha256HexSchema } from "./primitives.js";
 import {
+  AttemptMetricsSchema,
   RunAttemptIdSchema,
   RunNodeKeySchema,
   WikiRunArtifactKindSchema,
@@ -52,6 +53,8 @@ export const PiAttemptNodeDetailSchema = z
     questionIndex: z.number().int().positive().optional(),
     questions: z.array(z.string().trim().min(1).max(500)).max(64).optional(),
     lens: z.string().trim().min(1).max(100).optional(),
+    /** Council seat index for reviewer roleModels.reviewers[i] rotation. */
+    seatIndex: z.number().int().min(0).max(16).optional(),
     critical: z.boolean().optional(),
     feedback: z.string().trim().min(1).max(4_000).optional(),
   })
@@ -136,6 +139,14 @@ export const PiAttemptFailureClassSchema = z.enum([
 
 export type PiAttemptFailureClass = z.infer<typeof PiAttemptFailureClassSchema>;
 
+/**
+ * Optional observation metrics on a terminal Attempt outcome.
+ * Missing fields never block completion; WikiRuns fills wall_time/role when known.
+ */
+const PiAttemptOutcomeMetricsField = {
+  metrics: AttemptMetricsSchema.optional(),
+} as const;
+
 /** Terminal result from one discardable Pi Attempt. */
 export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
   z
@@ -143,6 +154,7 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
       type: z.literal("succeeded"),
       unsealedArtifacts: z.array(PiAttemptArtifactDescriptorSchema).min(1).max(64),
       summary: BoundedTextSchema.optional(),
+      ...PiAttemptOutcomeMetricsField,
     })
     .strict(),
   z
@@ -151,6 +163,7 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
       question: z.string().trim().min(1).max(1_000),
       context: BoundedTextSchema.optional(),
       transcript: PiAttemptTranscriptDescriptorSchema,
+      ...PiAttemptOutcomeMetricsField,
     })
     .strict(),
   z
@@ -158,6 +171,7 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
       type: z.literal("failed"),
       error: BoundedTextSchema,
       failureClass: PiAttemptFailureClassSchema,
+      ...PiAttemptOutcomeMetricsField,
     })
     .strict(),
 ]);

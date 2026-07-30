@@ -63,8 +63,10 @@ export function reviewerPrompt(input: {
   return [
     lensHint,
     "Read wiki/ pages and relevant sources/ with read-only tools when needed.",
-    "Return JSON only (optionally fenced): { clean: boolean, defects: [{ severity, code, path, issue }], summary }.",
+    "Submit a typed DefectReport via the submit_defect_report tool (required handoff).",
+    "Fields: { reviewerId, clean, defects: [{ severity, code, path, issue }], summary }.",
     "severity is blocking | major | minor. Prefer few high-signal defects over long lists.",
+    "clean=true only with empty defects; clean=false requires ≥1 defect.",
     `Pages present: ${input.pages.join(", ") || "(none)"}`,
     prior,
   ]

@@ -186,7 +186,7 @@ test("auto hard-validate repair schedules repair.hv.1 then reaches publication",
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-hv-repair" },
+    { type: "start_run", commandId: "start-hv-repair" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-hv-repair");
@@ -308,7 +308,7 @@ test("auto hard-validate repair exhausts budget and fails the run", async (t) =>
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-hv-exhaust" },
+    { type: "start_run", commandId: "start-hv-exhaust" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-hv-exhaust");
@@ -363,7 +363,7 @@ test("maxHardValidateRepairRounds=0 never auto-repairs", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-hv-zero" },
+    { type: "start_run", commandId: "start-hv-zero" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-hv-zero");

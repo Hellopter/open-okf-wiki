@@ -49,6 +49,9 @@ export {
   openOperatorSession,
   projectOperatorAgentMessages,
   projectOperatorAgentMessagesFromManager,
+  projectOperatorBranchHistoryFromManager,
+  projectOperatorContextAgentMessagesFromManager,
+  projectOperatorContextHistoryFromManager,
   projectOperatorHistoryFromManager,
   projectOperatorHistoryMessage,
 } from "./session/operator-session.js";

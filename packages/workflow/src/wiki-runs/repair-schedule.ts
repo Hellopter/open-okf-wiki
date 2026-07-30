@@ -35,7 +35,13 @@ export type RepairScheduleHost = WikiRunsDbCtx & {
    * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
    * Used to re-arm validate.* / validate.final after scheduling a repair stage.
    */
-  applyRerunAt(runId: string, nodeKey: string, generation: number, feedback?: string): void;
+  applyRerunAt(
+    runId: string,
+    nodeKey: string,
+    generation: number,
+    feedback?: string,
+    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
+  ): void;
   /** When true, auto HV repair is suppressed (owner closed). */
   closed?: boolean;
 };
@@ -97,8 +103,12 @@ export function loadReviewRepairBudget(
 }
 
 /**
- * Insert repair.review.N (kind=repair), wire edges from review.reduce → repair → validate.final,
- * and re-arm validate.final so it waits for the repair stage.
+ * Insert repair.review.N (kind=repair) and re-arm a full EvaluationRound:
+ *
+ *   repair.review.N → validate.pre → review.seat.* → review.reduce → gate.fix → validate.final
+ *
+ * Every repair produces a new candidate that re-runs mechanical validate + configured
+ * review seats (no repair → validate.final bypass).
  */
 export function scheduleReviewRepair(
   host: RepairScheduleHost,
@@ -150,24 +160,41 @@ export function scheduleReviewRepair(
     )
     .run(command.runId, key, detailJson);
 
-  // review.reduce → repair.review.n (wiki_tree + defects); repair → validate.final
+  // review.reduce → repair.review.n (wiki_tree + defects binding).
+  // Keep reduce succeeded until repair finishes — re-arming reduce here deadlocks
+  // repair on its own upstream.
   host.db
     .prepare(
       `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'review.reduce', ?)
        ON CONFLICT DO NOTHING`,
     )
     .run(command.runId, key);
+  // repair → validate.pre (EvaluationRound entry after repair succeeds)
   host.db
     .prepare(
-      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'validate.final')
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'validate.pre')
        ON CONFLICT DO NOTHING`,
     )
     .run(command.runId, key);
 
-  // Re-arm validate.final so it waits for repair (MVP: skip re-seats; repair → final).
+  // Hold gate.fix + validate.final so the fix decision does not unlock final early.
+  // Do NOT re-arm validate.pre / seats / reduce yet — that happens after repair succeeds
+  // (see rearmEvaluationRoundAfterReviewRepair).
+  const gateGen = host.currentNodeGeneration(command.runId, "gate.fix");
+  if (gateGen !== undefined) {
+    try {
+      host.applyRerunAt(command.runId, "gate.fix", gateGen);
+    } catch {
+      // Already bumped — ignore.
+    }
+  }
   const finalGen = host.currentNodeGeneration(command.runId, "validate.final");
   if (finalGen !== undefined) {
-    host.applyRerunAt(command.runId, "validate.final", finalGen);
+    try {
+      host.applyRerunAt(command.runId, "validate.final", finalGen);
+    } catch {
+      // Already bumped — ignore.
+    }
   }
 
   unlockReadyNodes(host, command.runId);
@@ -177,6 +204,39 @@ export function scheduleReviewRepair(
     )
     .run(timestamp, command.runId);
   host.emit(command.runId, "node.ready");
+}
+
+/**
+ * After repair.review.N succeeds, re-arm the EvaluationRound:
+ * validate.pre → review.seat.* → review.reduce → (existing) gate.fix → validate.final.
+ *
+ * Uses selfOnly bumps so lineage does not invalidate the just-succeeded repair
+ * stage (repair consumed reduce defects/wiki and would otherwise be gen+1 invalidated).
+ */
+export function rearmEvaluationRoundAfterReviewRepair(
+  host: RepairScheduleHost,
+  runId: string,
+): void {
+  const seatKeys = asRows(
+    host.db
+      .prepare(
+        `SELECT DISTINCT node_key FROM nodes
+         WHERE run_id = ? AND kind = 'review.seat'
+         ORDER BY node_key`,
+      )
+      .all(runId),
+  ).map((row) => requiredText(row, "node_key"));
+
+  const keys = ["validate.pre", ...seatKeys, "review.reduce"];
+  for (const key of keys) {
+    const g = host.currentNodeGeneration(runId, key);
+    if (g === undefined) continue;
+    try {
+      host.applyRerunAt(runId, key, g, undefined, { selfOnly: true });
+    } catch {
+      // Already bumped by a prior key in this loop — ignore.
+    }
+  }
 }
 
 /**

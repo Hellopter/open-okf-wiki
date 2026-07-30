@@ -43,8 +43,9 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   });
   assert.equal(ws.planConfirm, true);
   assert.equal(ws.orchestration.maxDomainFanOut, 4);
-  assert.equal(ws.orchestration.reviewCouncilSize, 3);
-  assert.equal(ws.orchestration.planScoutCount, 2);
+  // Phase 7 light path defaults.
+  assert.equal(ws.orchestration.reviewCouncilSize, 1);
+  assert.equal(ws.orchestration.planScoutCount, 0);
   assert.equal(ws.orchestration.domainConcurrency, 2);
   assert.equal(ws.orchestration.leafConcurrency, 2);
   assert.deepEqual(ws.operatorTools, ["read", "grep", "find", "ls"]);
@@ -98,6 +99,9 @@ test("WorkspaceConfigSchema strips legacy orchestration MaxSteps keys", () => {
 test("resolveOrchestration fills schema defaults and preserves partials", () => {
   assert.deepEqual(resolveOrchestration(null), DEFAULT_ORCHESTRATION);
   assert.deepEqual(resolveOrchestration(undefined), DEFAULT_ORCHESTRATION);
+  // Phase 7 light path: 0 scouts, 1 review lens.
+  assert.equal(DEFAULT_ORCHESTRATION.planScoutCount, 0);
+  assert.equal(DEFAULT_ORCHESTRATION.reviewCouncilSize, 1);
   const partial = resolveOrchestration({ domainConcurrency: 4, reviewCouncilSize: 1 });
   assert.equal(partial.domainConcurrency, 4);
   assert.equal(partial.reviewCouncilSize, 1);

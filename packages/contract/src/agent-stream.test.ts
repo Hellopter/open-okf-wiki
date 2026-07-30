@@ -4,6 +4,7 @@ import type { AgentMessage } from "./agent-message.js";
 import {
   applySnapshotWithActiveTool,
   createPiStreamState,
+  deriveContextPhase,
   reducePiEvent,
   updateToolInState,
   viewMessages,
@@ -166,8 +167,8 @@ describe("wiki_produce receipt details on stream (no Session HITL)", () => {
 
 });
 
-describe("reducePiEvent agent_end", () => {
-  it("finalizes still-running tools before settling", () => {
+describe("reducePiEvent agent_end vs agent_settled", () => {
+  it("agent_end keeps turn active as between_operations (not idle)", () => {
     let state = createPiStreamState();
     state = reducePiEvent(state, "agent_start", { type: "agent_start" });
     state = reducePiEvent(state, "message_start", {
@@ -186,23 +187,80 @@ describe("reducePiEvent agent_end", () => {
     assert.equal(state.streamingMessage?.tools?.[0]?.status, "running");
 
     state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    // Fold streaming tail; keep turn active — retry/compaction/queue may follow.
     assert.equal(state.streamingMessage, null);
-    assert.equal(state.turnActive, false);
-    assert.equal(state.agentStatus, "idle");
+    assert.equal(state.turnActive, true);
+    assert.equal(state.agentStatus, "between_operations");
     const tool = state.messages.at(-1)?.tools?.[0];
     assert.equal(tool?.id, "t-run");
-    assert.equal(tool?.status, "error");
-    assert.equal(tool?.output, "Interrupted");
+    // Incomplete tools are NOT finalized on agent_end (may continue).
+    assert.equal(tool?.status, "running");
   });
 
-  it("finalizes pending tools already on durable messages", () => {
+  it("agent_settled finalizes incomplete tools and clears to idle", () => {
     let state = createPiStreamState([
       assistantWithTools("asst-1", [{ id: "left-pending", name: "read", status: "pending" }]),
     ]);
-    state = { ...state, turnActive: true, agentStatus: "streaming" };
-    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    state = { ...state, turnActive: true, agentStatus: "between_operations" };
+    state = reducePiEvent(state, "agent_settled", { type: "agent_settled" });
     assert.equal(state.messages[0]?.tools?.[0]?.status, "error");
     assert.equal(state.messages[0]?.tools?.[0]?.output, "Interrupted");
+    assert.equal(state.turnActive, false);
+    assert.equal(state.agentStatus, "idle");
+  });
+
+  it("agent_settled preserves error status", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "error", { type: "error", message: "boom" });
+    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.turnActive, true);
+    state = reducePiEvent(state, "agent_settled", { type: "agent_settled" });
+    assert.equal(state.agentStatus, "error");
+    assert.equal(state.turnActive, false);
+    assert.equal(state.errorText, "boom");
+  });
+
+  it("compaction_start sets compacting phase; compaction_end returns between_operations", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    state = reducePiEvent(state, "compaction_start", {
+      type: "compaction_start",
+      reason: "threshold",
+    });
+    assert.equal(state.agentStatus, "compacting");
+    assert.equal(state.contextPhase, "compacting");
+    assert.equal(state.turnActive, true);
+    state = reducePiEvent(state, "compaction_end", {
+      type: "compaction_end",
+      reason: "threshold",
+      willRetry: false,
+      aborted: false,
+    });
+    assert.equal(state.agentStatus, "between_operations");
+    assert.equal(state.contextPhase, "unknown");
+    assert.equal(state.turnActive, true);
+  });
+});
+
+describe("deriveContextPhase", () => {
+  it("maps compacting / thresholds / unknown", () => {
+    assert.equal(deriveContextPhase({ compacting: true }), "compacting");
+    assert.equal(deriveContextPhase({}), "unknown");
+    assert.equal(
+      deriveContextPhase({ contextTokens: 50, contextTarget: 100 }),
+      "normal",
+    );
+    assert.equal(
+      deriveContextPhase({ contextTokens: 85, contextTarget: 100 }),
+      "approaching_target",
+    );
+    assert.equal(
+      deriveContextPhase({ contextTokens: 100, contextTarget: 100 }),
+      "at_target",
+    );
   });
 });
 

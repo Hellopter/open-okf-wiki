@@ -1,12 +1,13 @@
 /**
- * wiki_produce panel — durable WikiRuns projection (ADR 0035).
+ * wiki_produce panel — durable WikiRuns projection (ADR 0035 / Phase 6).
  *
  * Tool details only carry the StartRun receipt (accepted+runId). Live status
  * and open plan/publication gates come from the shell WikiRunProjectionContext
- * (single useWikiRun for activeRunId). Plan HITL uses ResolveGate on the Run API.
+ * (single useWikiRun for URL `?run=`). Plan HITL uses ResolveGate on the Run API.
  *
  * Control chrome (full graph, failed-node retry/rerun, NodeAttemptDialog)
- * lives in RunInspectorDialog — open via run id link or "View run".
+ * lives in the shell-owned RunInspectorDialog — open via URL `?run=` /
+ * `?attempt=` (receipt only updates the run param).
  */
 
 import type {
@@ -29,7 +30,6 @@ import {
   useWikiRunProjection,
 } from "../hooks/WikiRunProjectionContext";
 import { compactSummary } from "../run-graph/compact-summary";
-import { RunInspectorDialog } from "../run-graph/RunInspectorDialog";
 import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
 import { FixGatePanel } from "./FixGatePanel";
 import { selectPrimaryOpenGate } from "./fix-gate";
@@ -47,13 +47,14 @@ function gateTitle(kind: WikiRunGateKind, t: ReturnType<typeof useI18n>["t"]): s
   if (kind === "plan") return t.planConfirm.title;
   if (kind === "publication") return t.runStatus.awaiting_publication;
   if (kind === "fix") return t.fixConfirm.title;
+  if (kind === "operator_input") return t.operatorInput.title;
   return kind;
 }
 
 export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const { t } = useI18n();
   const { id: routeWorkspaceId = "" } = useParams<{ id: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const rootPathHint = searchParams.get("rootPath") ?? undefined;
   const runId = details.runId ?? null;
 
@@ -64,10 +65,10 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const snapshot = wikiRun.snapshot;
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);
 
-  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [revising, setRevising] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [operatorAnswer, setOperatorAnswer] = useState("");
   const [commandError, setCommandError] = useState<string | null>(null);
   const [activeGateId, setActiveGateId] = useState<string | null>(null);
   const [planSpec, setPlanSpec] = useState<WikiRunSpec | null>(null);
@@ -78,6 +79,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     setSubmitting(false);
     setRevising(false);
     setFeedback("");
+    setOperatorAnswer("");
     setCommandError(null);
     setActiveGateId(null);
     setPlanSpec(null);
@@ -140,6 +142,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const decide = async (action: "approve" | "deny" | "revise") => {
     if (!primaryGate || !runId) return;
     if (primaryGate.kind === "fix") return;
+    if (primaryGate.kind === "operator_input") return;
     if (action === "revise" && !feedback.trim()) {
       setRevising(true);
       setActiveGateId(primaryGate.gateId);
@@ -162,11 +165,35 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     }
   };
 
+  const answerOperatorInput = async () => {
+    if (!primaryGate || !runId || primaryGate.kind !== "operator_input") return;
+    const answer = operatorAnswer.trim();
+    if (!answer) {
+      setCommandError(t.operatorInput.answerRequired);
+      return;
+    }
+    const ok = await dispatchCommand({
+      type: "resolve_gate",
+      commandId: crypto.randomUUID(),
+      runId,
+      gateId: primaryGate.gateId,
+      gateKind: "operator_input",
+      payloadDigest: primaryGate.payloadDigest,
+      decision: "answer",
+      answer,
+    });
+    if (ok) {
+      setOperatorAnswer("");
+      setActiveGateId(null);
+    }
+  };
+
   const resolveFixGate = async (command: ResolveGateCommand): Promise<boolean> => {
     const ok = await dispatchCommand(command);
     if (ok) {
       setRevising(false);
       setFeedback("");
+      setOperatorAnswer("");
       setActiveGateId(null);
     }
     return ok;
@@ -220,7 +247,19 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
             className="shrink-0 font-mono text-2xs text-primary underline-offset-2 hover:underline"
             title={runId}
             data-testid="wiki-produce-run-id-link"
-            onClick={() => setInspectorOpen(true)}
+            onClick={() => {
+              // Shell owns the single Inspector; receipt only updates URL run.
+              setSearchParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.delete("rootPath");
+                  next.set("run", runId);
+                  next.delete("attempt");
+                  return next;
+                },
+                { replace: true },
+              );
+            }}
           >
             {shortRunId(runId)}
           </button>
@@ -290,17 +329,22 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
             size="xs"
             variant="outline"
             data-testid="wiki-produce-view-run"
-            onClick={() => setInspectorOpen(true)}
+            onClick={() => {
+              // Shell owns the single Inspector; only update URL run param.
+              setSearchParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.delete("rootPath");
+                  next.set("run", runId);
+                  next.delete("attempt");
+                  return next;
+                },
+                { replace: true },
+              );
+            }}
           >
             {t.runInspector.viewRun}
           </Button>
-          <RunInspectorDialog
-            workspaceId={routeWorkspaceId}
-            rootPath={rootPathHint}
-            runId={runId}
-            open={inspectorOpen}
-            onOpenChange={setInspectorOpen}
-          />
         </div>
       ) : null}
 
@@ -313,6 +357,57 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
           commandError={commandError}
           onResolve={resolveFixGate}
         />
+      ) : primaryGate && runId && primaryGate.kind === "operator_input" ? (
+        <div
+          className="flex flex-col gap-2 border-t border-border/60 pt-2"
+          data-testid="agent-operator_input-gate"
+          data-gate-kind="operator_input"
+          data-gate-id={primaryGate.gateId}
+          data-gate-state={primaryGate.state}
+        >
+          <p className="text-xs font-medium">{t.operatorInput.title}</p>
+          {primaryGate.detail?.summary ? (
+            <p
+              className="whitespace-pre-wrap text-xs text-muted-foreground"
+              data-testid="agent-operator-input-question"
+            >
+              {primaryGate.detail.summary}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">{t.operatorInput.questionFallback}</p>
+          )}
+          {commandError ? (
+            <p className="text-xs text-destructive" data-testid="agent-gate-error">
+              {commandError}
+            </p>
+          ) : null}
+          <div className="flex flex-col gap-1">
+            <FieldLabel htmlFor="agent-operator-answer" className="text-xs">
+              {t.operatorInput.answerLabel}
+            </FieldLabel>
+            <Textarea
+              id="agent-operator-answer"
+              data-testid="agent-operator-answer"
+              value={operatorAnswer}
+              onChange={(event) => setOperatorAnswer(event.target.value)}
+              placeholder={t.operatorInput.answerPlaceholder}
+              disabled={submitting}
+              rows={3}
+              className="min-h-16 text-xs"
+            />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              data-testid="agent-operator-answer-submit"
+              disabled={submitting || !operatorAnswer.trim()}
+              onClick={() => void answerOperatorInput()}
+            >
+              {submitting ? t.operatorInput.working : t.operatorInput.submit}
+            </Button>
+          </div>
+        </div>
       ) : primaryGate && runId ? (
         <div
           className="flex flex-col gap-2 border-t border-border/60 pt-2"
@@ -345,21 +440,19 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
             </div>
           ) : null}
           <div className="flex flex-wrap gap-1.5">
-            {primaryGate.kind === "operator_input" ? null : (
-              <Button
-                type="button"
-                size="sm"
-                data-testid="agent-gate-approve"
-                disabled={submitting || revising}
-                onClick={() => void decide("approve")}
-              >
-                {submitting
-                  ? t.planConfirm.working
-                  : primaryGate.kind === "plan"
-                    ? t.planConfirm.approve
-                    : t.planConfirm.chipPublish}
-              </Button>
-            )}
+            <Button
+              type="button"
+              size="sm"
+              data-testid="agent-gate-approve"
+              disabled={submitting || revising}
+              onClick={() => void decide("approve")}
+            >
+              {submitting
+                ? t.planConfirm.working
+                : primaryGate.kind === "plan"
+                  ? t.planConfirm.approve
+                  : t.planConfirm.chipPublish}
+            </Button>
             {primaryGate.kind === "plan" ? (
               <Button
                 type="button"
@@ -392,7 +485,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
               >
                 {t.common.cancel}
               </Button>
-            ) : primaryGate.kind !== "operator_input" ? (
+            ) : (
               <Button
                 type="button"
                 size="sm"
@@ -405,7 +498,7 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
                   ? t.planConfirm.decline
                   : t.planConfirm.chipKeepStaging}
               </Button>
-            ) : null}
+            )}
           </div>
         </div>
       ) : null}

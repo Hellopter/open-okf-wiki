@@ -26,7 +26,7 @@ export function injectDurableOperatorMessages(
 }
 
 /**
- * Read compaction-aware durable operator history from the live handle
+ * Read full-branch durable operator history from the live handle
  * (same projection as loadOperatorSessionHistory after open).
  */
 export function readDurableOperatorBranchMessages(handle: OperatorSessionHandle): Message[] {

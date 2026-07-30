@@ -1,6 +1,7 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  type AttemptMetrics,
   CancelRunCommandSchema,
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
@@ -39,6 +40,7 @@ import {
 import {
   type AttemptSuccessHost,
   commitSuccessfulAttempt as commitSuccessfulAttemptImpl,
+  preparePlanExecutionPlan as preparePlanExecutionPlanImpl,
   recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
 } from "./wiki-runs/attempt-success.js";
 import {
@@ -380,8 +382,9 @@ class WikiRunsOwner implements WikiRuns {
     nodeKey: string,
     generation: number,
     feedback?: string,
+    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
   ): void {
-    applyRerunAtImpl(this.commandsHost(), runId, nodeKey, generation, feedback);
+    applyRerunAtImpl(this.commandsHost(), runId, nodeKey, generation, feedback, opts);
   }
 
   private withdrawOpenGates(runId: string): void {
@@ -488,8 +491,8 @@ class WikiRunsOwner implements WikiRuns {
       currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
       abortRunAttempts: (runId) => this.abortRunAttempts(runId),
       cancelPreApplyEffects: (runId) => this.cancelPreApplyEffects(runId),
-      applyRerunAt: (runId, nodeKey, generation, feedback) =>
-        this.applyRerunAt(runId, nodeKey, generation, feedback),
+      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
+        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
       recordCommand: (command, context, payloadDigest, runId, revision) =>
         this.recordCommand(command, context, payloadDigest, runId, revision),
     };
@@ -501,7 +504,11 @@ class WikiRunsOwner implements WikiRuns {
 
   /** Shared success/recovery surface: CAS host + generation for gate open / unlock. */
   private attemptSuccessHost(): AttemptSuccessHost & { transaction<T>(work: () => T): T } {
-    return this.casCtx();
+    return {
+      ...this.casCtx(),
+      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
+        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
+    };
   }
 
   private recordCommand(
@@ -568,15 +575,17 @@ class WikiRunsOwner implements WikiRuns {
       prepareUnsealedArtifact: (claim, descriptor) =>
         this.prepareUnsealedArtifact(claim, descriptor),
       sealPreparation: (runId, preparation) => this.sealPreparation(runId, preparation),
-      commitSuccessfulAttempt: (claim, preparations) =>
-        this.commitSuccessfulAttempt(claim, preparations),
+      preparePlanExecutionPlan: (claim, preparations) =>
+        this.preparePlanExecutionPlan(claim, preparations),
+      commitSuccessfulAttempt: (claim, preparations, metrics) =>
+        this.commitSuccessfulAttempt(claim, preparations, metrics),
       orphanPreparedArtifacts: (attemptId) => this.orphanPreparedArtifacts(attemptId),
       requeueFailedNode: (runId, nodeKey, generation, lastAttemptId) =>
         this.requeueFailedNode(runId, nodeKey, generation, lastAttemptId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
       attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
-      applyRerunAt: (runId, nodeKey, generation, feedback) =>
-        this.applyRerunAt(runId, nodeKey, generation, feedback),
+      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
+        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
     };
   }
 
@@ -662,11 +671,19 @@ class WikiRunsOwner implements WikiRuns {
     return prepareUnsealedArtifactImpl(this.artifactsHost(), claim, descriptor);
   }
 
+  private async preparePlanExecutionPlan(
+    claim: ClaimedNode,
+    preparations: ArtifactPreparation[],
+  ): Promise<ArtifactPreparation | undefined> {
+    return preparePlanExecutionPlanImpl(this.artifactsHost(), claim, preparations);
+  }
+
   private commitSuccessfulAttempt(
     claim: ClaimedNode,
     preparations: ArtifactPreparation[],
+    metrics?: AttemptMetrics,
   ): void {
-    commitSuccessfulAttemptImpl(this.attemptSuccessHost(), claim, preparations);
+    commitSuccessfulAttemptImpl(this.attemptSuccessHost(), claim, preparations, metrics);
   }
 
   private async executeFreeze(claim: ClaimedFreeze): Promise<void> {

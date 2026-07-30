@@ -1,11 +1,13 @@
 /**
- * Durable WikiRuns projection for one runId (ADR 0035).
+ * Durable WikiRuns projection for one runId (ADR 0035 / Phase 6).
  *
  * Truth: GET snapshot + EventSource `…/runs/:runId/events`.
+ * Shell subscribes to the URL `?run=` only (one EventSource per workspace shell).
  * Heartbeat comment frames are ignored by EventSource.
  * Each frame carries a full secret-free snapshot — replace by event id only
- * (never merge node maps in React). Optimistic UI is limited to in-flight
- * command sends in the panel, not a second control state.
+ * (never merge node maps in React). Optimistic UI is limited to resource-keyed
+ * in-flight command sends (`run:id:cancel` / `gate:id:resolve` / `node:id:retry`);
+ * HTTP accept/reject is admission only — Run SSE is truth.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

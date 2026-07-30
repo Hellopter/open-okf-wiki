@@ -171,4 +171,23 @@ test("PiAttemptOutcome rejects malformed and cross-variant results", () => {
     }).success,
     false,
   );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "succeeded",
+      unsealedArtifacts: [
+        { kind: "manifest", role: "result", sourcePath: "/work/result", directory: false },
+      ],
+      metrics: { role: "plan", wallTimeMs: 12, stopReason: "succeeded", modelId: "p/m" },
+    }).success,
+    true,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "boom",
+      failureClass: "infrastructure",
+      metrics: { role: "leaf", stopReason: "infrastructure", wallTimeMs: 3 },
+    }).success,
+    true,
+  );
 });

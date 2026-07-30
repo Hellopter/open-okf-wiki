@@ -57,7 +57,7 @@ test("close mid plan Pi attempt interrupts; RetryFailedNode reclaims the failed 
   });
 
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "chaos-close-mid-plan" },
+    { type: "start_run", commandId: "chaos-close-mid-plan" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedPlan;
@@ -124,7 +124,7 @@ test("recover() after process reopen with a running plan attempt row interrupts 
     piAttemptExecutor: fullGraphFixtureExecutor,
   });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "chaos-dirty-running-plan" },
+    { type: "start_run", commandId: "chaos-dirty-running-plan" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const atGate = await waitForRunState(owner, receipt.runId, ["waiting_for_operator"]);
@@ -315,7 +315,7 @@ test("close mid research.leaf Pi attempt fails the node; run is not auto-reclaim
   });
 
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "chaos-close-mid-leaf" },
+    { type: "start_run", commandId: "chaos-close-mid-leaf" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const atPlan = await waitForRunState(owner, receipt.runId, ["waiting_for_operator"]);

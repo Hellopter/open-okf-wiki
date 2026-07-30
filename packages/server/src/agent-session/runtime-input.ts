@@ -46,12 +46,21 @@ async function reloadWorkspace(workspace: WorkspaceConfig): Promise<WorkspaceCon
 }
 
 function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWikiRun {
-  return async ({ commandId, sessionId: sid }) => {
+  return async ({ commandId, sessionId: sid, notes }) => {
     // Always reload from disk — session may have been opened before sources/settings were saved.
     const current = await reloadWorkspace(workspace);
     const runs = await wikiRunsForWorkspace(current);
+    // Tool edge keeps free-text `notes`; hard-cut maps to RunIntent.focus at dispatch.
+    const focus = notes?.trim() ? notes.trim().slice(0, 4_000) : undefined;
     return runs.dispatch(
-      { type: "start_run", commandId },
+      {
+        type: "start_run",
+        commandId,
+        intent: {
+          mode: "generate",
+          ...(focus ? { focus } : {}),
+        },
+      },
       {
         workspaceId: current.id,
         actor: { id: sid || sessionId, kind: "operator_session" },

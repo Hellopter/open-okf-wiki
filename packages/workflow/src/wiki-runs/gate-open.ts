@@ -276,6 +276,69 @@ export function readPublicationBaseline(
   return EMPTY_PUBLICATION_DIGEST;
 }
 
+/**
+ * Open an operator_input gate on the *current Pi node* (no separate gate.* node).
+ * Payload binds question/context, producer attempt, generation, and input digest.
+ * Caller must already have set Attempt=suspended and Node=waiting.
+ */
+export function openOperatorInputGate(
+  host: Pick<GateOpenHost, "db" | "emit">,
+  claim: ClaimedNode,
+  input: {
+    question: string;
+    context?: string;
+    inputDigest: string;
+    timestamp: string;
+  },
+): string {
+  const gateId = randomUUID();
+  const question = input.question.trim().slice(0, 1_000);
+  const context =
+    input.context !== undefined ? input.context.trim().slice(0, 4_000) : undefined;
+  const payloadDigest = digest({
+    kind: "operator_input",
+    question,
+    ...(context ? { context } : {}),
+    attemptId: claim.attemptId,
+    nodeKey: claim.nodeKey,
+    generation: claim.nodeGeneration,
+    inputDigest: input.inputDigest,
+  });
+  const detailJson = JSON.stringify({
+    source: "operator_input",
+    summary: question,
+    ...(context ? { context } : {}),
+    attemptId: claim.attemptId,
+    nodeKey: claim.nodeKey,
+    generation: claim.nodeGeneration,
+  });
+  host.db
+    .prepare(
+      `INSERT INTO gates (
+        gate_id, run_id, node_key, node_generation, kind, state, payload_digest,
+        decision_json, detail_json, opened_at, opened_revision
+      ) VALUES (?, ?, ?, ?, 'operator_input', 'open', ?, NULL, ?, ?,
+        (SELECT revision FROM runs WHERE run_id = ?))`,
+    )
+    .run(
+      gateId,
+      claim.runId,
+      claim.nodeKey,
+      claim.nodeGeneration,
+      payloadDigest,
+      detailJson,
+      input.timestamp,
+      claim.runId,
+    );
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(input.timestamp, claim.runId);
+  host.emit(claim.runId, "gate.opened");
+  return gateId;
+}
+
 export function openPublicationGate(
   host: Pick<WikiRunsDbCtx, "db" | "emit"> & {
     currentNodeGeneration(runId: string, nodeKey: string): number | undefined;

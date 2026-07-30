@@ -21,16 +21,28 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
   t.after(() => runs.close());
 
   const first = await runs.dispatch(
-    { type: "start_run", commandId: "start-1" },
+    {
+      type: "start_run",
+      commandId: "start-1",
+      intent: { mode: "generate", focus: "Runtime seams" },
+    },
     context(workspaceId),
   );
   const duplicate = await runs.dispatch(
-    { type: "start_run", commandId: "start-1" },
+    {
+      type: "start_run",
+      commandId: "start-1",
+      intent: { mode: "generate", focus: "Runtime seams" },
+    },
     context(workspaceId),
   );
   assert.deepEqual(duplicate, first);
   const finished = await waitForTerminal(runs, first.runId);
   assertFreezeAdvancedToPlan(finished.snapshot);
+  assert.equal(finished.snapshot.intent?.mode, "generate");
+  assert.equal(finished.snapshot.intent?.focus, "Runtime seams");
+  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v2");
+  assert.equal(finished.snapshot.definitionVersion, 2);
   assert.ok(finished.events.some((event) => event.type === "inputs.pinned"));
   assert.ok(finished.events.some((event) => event.type === "node.ready"));
   assert.ok(finished.events.length >= 4);
@@ -42,7 +54,11 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
 
   assert.deepEqual(
     await runs.dispatch(
-      { type: "start_run", commandId: "start-1" },
+      {
+        type: "start_run",
+        commandId: "start-1",
+        intent: { mode: "generate", focus: "Runtime seams" },
+      },
       { ...context(workspaceId), sessionId: "other" },
     ),
     first,
@@ -85,7 +101,7 @@ test("close waits for an aborted executor before releasing the owner lock", asyn
     }),
   });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-close-waits" },
+    { type: "start_run", commandId: "start-close-waits" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedAttempt;
@@ -111,7 +127,7 @@ test("close aborts an active freeze and removes its unpinned run tree", async (t
     freezeRunBoundary: blockingFreeze(root, started),
   });
   const receipt = await owner.dispatch(
-    { type: "start_run", commandId: "start-close-freeze" },
+    { type: "start_run", commandId: "start-close-freeze" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await startedFreeze;
@@ -125,7 +141,7 @@ test("snapshot, cursor, and incremental replay share every revision", async (t) 
   const runs = await openWikiRuns({ rootPath: root });
   t.after(() => runs.close());
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-read" },
+    { type: "start_run", commandId: "start-read" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const terminal = await waitForTerminal(runs, receipt.runId);

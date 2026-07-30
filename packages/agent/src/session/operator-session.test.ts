@@ -10,6 +10,8 @@ import {
   listOperatorSessions,
   loadOperatorSessionHistory,
   openOperatorSession,
+  projectOperatorBranchHistoryFromManager,
+  projectOperatorContextHistoryFromManager,
 } from "./operator-session.js";
 
 const temps: string[] = [];
@@ -131,5 +133,49 @@ describe("SessionManager-owned Operator Sessions", () => {
     await access(runDir);
     assert.equal(await readFile(path.join(runDir, "staging.txt"), "utf8"), "run-owned");
     assert.equal(await readFile(publishedMarker, "utf8"), "published");
+  });
+
+  it("exposes full branch transcript and active model context as two read models", async () => {
+    const workspace = await makeWorkspace();
+    const created = await createOperatorSession({
+      workspace,
+      sessionId: "operator-dual-history",
+      wikiProduce: { startWikiRun: startWikiRunStub },
+    });
+    try {
+      const manager = created.session.sessionManager;
+      created.session.sessionManager.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "before compact" }],
+        timestamp: Date.now(),
+      } as never);
+      created.session.sessionManager.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "ack" }],
+        stopReason: "stop",
+        timestamp: Date.now(),
+      } as never);
+
+      const branch = projectOperatorBranchHistoryFromManager(manager);
+      const context = projectOperatorContextHistoryFromManager(manager);
+      // Without compaction both projections see the same leaf path messages.
+      assert.equal(branch.length, context.length);
+      assert.ok(branch.some((m) => (m as { role?: string }).role === "user"));
+
+      // Default history load uses full branch (not model-context-only).
+      created.dispose();
+      const history = await loadOperatorSessionHistory(
+        workspace.rootPath,
+        "operator-dual-history",
+      );
+      assert.ok(history);
+      assert.ok(history.messages.some((m) => m.role === "user"));
+    } finally {
+      try {
+        created.dispose();
+      } catch {
+        // already disposed
+      }
+    }
   });
 });

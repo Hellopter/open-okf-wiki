@@ -82,14 +82,16 @@ export function applyCommand(
 
   const runId = randomUUID();
   const timestamp = now();
+  // Hard-cut: StartRun always carries intent (schema-enforced).
+  const intentJson = JSON.stringify(command.intent);
   host.db
     .prepare(
       `INSERT INTO runs (
           run_id, workspace_id, operator_session_id, revision, state, cancel_requested,
-          freeze_config_json, freeze_config_digest,
+          freeze_config_json, freeze_config_digest, intent_json,
           frozen_sources_json, frozen_skill_digest,
           pinned_sources_json, skill_digest, pinned_digest, created_at, updated_at
-        ) VALUES (?, ?, ?, 0, 'queued', 0, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       runId,
@@ -97,6 +99,7 @@ export function applyCommand(
       context.sessionId ?? null,
       JSON.stringify(host.workspace),
       digest(host.workspace),
+      intentJson,
       timestamp,
       timestamp,
     );
@@ -270,6 +273,20 @@ export function rerunNode(
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
 }
 
+export type ApplyRerunAtOptions = {
+  /**
+   * When true, only bump `nodeKey` (no attempt_inputs consumer lineage).
+   * Used after repair.review to re-arm validate.pre / seats / reduce without
+   * invalidating the just-succeeded repair stage (which consumed reduce outputs).
+   */
+  selfOnly?: boolean;
+  /**
+   * Drop lineage consumers whose node_key matches this predicate.
+   * Ignored when selfOnly is true.
+   */
+  excludeConsumer?: (nodeKey: string) => boolean;
+};
+
 /**
  * Core RerunNode: generation++ on target + actual lineage consumers, withdraw
  * gates, cancel pre-apply effects, persist optional feedback on the new root gen.
@@ -281,6 +298,7 @@ export function applyRerunAt(
   nodeKey: string,
   generation: number,
   feedback?: string,
+  opts?: ApplyRerunAtOptions,
 ): void {
   const current = host.currentNodeRow(runId, nodeKey);
   if (!current) throw new Error(`node not found: ${nodeKey}`);
@@ -289,7 +307,11 @@ export function applyRerunAt(
     throw new Error("rerun target is stale: generation does not match");
 
   const timestamp = now();
-  const affected = lineageInvalidationClosure(host, runId, nodeKey, generation);
+  const affected = opts?.selfOnly
+    ? []
+    : lineageInvalidationClosure(host, runId, nodeKey, generation).filter((item) =>
+        opts?.excludeConsumer ? !opts.excludeConsumer(item.nodeKey) : true,
+      );
   // Target is always included; downstream only when they consumed old outputs.
   const targets = new Map<string, { nodeKey: string; generation: number; kind: string }>();
   targets.set(`${nodeKey}@${generation}`, {

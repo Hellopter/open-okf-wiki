@@ -4,15 +4,31 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type RunIntent,
+  RunIntentSchema,
   type WikiRunAttempt,
   type WikiRunGateDetail,
   type WikiRunNode,
   type WikiRunNodeKind,
   type WikiRunSnapshot,
   WikiRunSnapshotSchema,
+  WIKI_RUNS_SCHEMA,
 } from "@okf-wiki/contract";
+import { projectAttemptMetrics } from "./attempt-metrics.js";
 import { labelForNode, parentKeyForNode, parseNodeDetail } from "./node-label.js";
 import { asRow, asRows, parseJson, requiredNumber, requiredText } from "./sql.js";
+
+/** Parse durable runs.intent_json into secret-free RunIntent (null if missing/corrupt). */
+function parseRunIntent(raw: unknown): RunIntent | null {
+  if (raw == null || raw === "") return null;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const result = RunIntentSchema.safeParse(parsed);
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Narrow gate detail_json into secret-free WikiRunGateDetail. */
 function parseGateDetail(raw: unknown): WikiRunGateDetail | undefined {
@@ -154,6 +170,7 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
       attempt.failure_class == null || attempt.failure_class === ""
         ? undefined
         : String(attempt.failure_class).trim();
+    const metrics = projectAttemptMetrics(attempt);
     const projected: WikiRunAttempt = {
       attemptId: requiredText(attempt, "attempt_id"),
       nodeKey: requiredText(attempt, "node_key"),
@@ -165,11 +182,13 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
       ...(failureClassRaw ? { failureClass: failureClassRaw } : {}),
       startedAt: requiredText(attempt, "started_at"),
       endedAt: attempt.ended_at as string | null,
+      ...(metrics ? { metrics } : {}),
     };
     const currentGen = currentGenByNode.get(projected.nodeKey);
     const isCurrentGen = currentGen !== undefined && projected.nodeGeneration === currentGen;
     const isRunning = projected.state === "running";
-    if (isCurrentGen || isRunning) {
+    if (isCurrentGen || isRunning || projected.state === "suspended") {
+      // Always keep suspended attempts (operator_input pause audit) even after gen bump.
       selectedAttemptIds.add(projected.attemptId);
       mappedAttempts.push(projected);
       continue;
@@ -239,13 +258,14 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     candidateDigest: requiredText(effect, "candidate_digest"),
   }));
   return WikiRunSnapshotSchema.parse({
-    schema: "okf.wiki-runs/v1",
-    definitionVersion: 1,
+    schema: WIKI_RUNS_SCHEMA,
+    definitionVersion: 2,
     runId: requiredText(run, "run_id"),
     workspaceId: requiredText(run, "workspace_id"),
     revision: requiredNumber(run, "revision"),
     state: requiredText(run, "state"),
     cancelRequested: requiredNumber(run, "cancel_requested") === 1,
+    intent: parseRunIntent(run.intent_json),
     pinnedInputs:
       sources === null
         ? null

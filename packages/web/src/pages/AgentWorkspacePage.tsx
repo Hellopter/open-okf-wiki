@@ -2,8 +2,10 @@
  * Agent Workspace page — default home for a workspace (`/w/:id`).
  * Loads workspace + Pi agent sessions; wires the 3-pane shell.
  *
+ * URL ownership (Phase 6): `/w/:workspaceId?sessionId=&run=&attempt=`
  * WikiRun projection: one shell-owned subscription via WikiRunProjectionProvider
- * (activeRunId). Gate panel + Run inspector consume that context when matched.
+ * keyed by URL `run` only. Gate panel + Run inspector consume that context when
+ * matched. `wiki_produce` receipt only updates the `run` param (not control facts).
  * `recentRuns` is event-driven list refresh only — not control authority.
  */
 
@@ -16,7 +18,6 @@ import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
 import {
   type ActiveRunChrome,
   deriveOperatorChrome,
-  resolveActiveRunId,
   TERMINAL_WIKI_RUN_STATES,
 } from "../agent-workspace/hooks/derive-operator-chrome";
 import {
@@ -46,6 +47,8 @@ export function AgentWorkspacePage() {
   const { id = "" } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const urlRun = searchParams.get("run");
+
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [sessions, setSessions] = useState<PiSessionSummary[]>([]);
   // Only set after boot validates the id exists (or creates one). Starting
@@ -58,11 +61,6 @@ export function AgentWorkspacePage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const bootKeyRef = useRef<string | null>(null);
-  /** Live projection hint for resolveActiveRunId (stronger than list terminal). */
-  const [liveRunHint, setLiveRunHint] = useState<{
-    runId: string;
-    state: WikiRunListItem["state"];
-  } | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -80,19 +78,7 @@ export function AgentWorkspacePage() {
     rootPath,
   });
 
-  /**
-   * Active run: produce receipts first (skip terminal via live hint / list),
-   * then weak fallback to newest non-terminal recentRuns row.
-   */
-  const activeRunId = useMemo(
-    () =>
-      resolveActiveRunId({
-        messages: agent.messages,
-        recentRuns,
-        liveRun: liveRunHint,
-      }),
-    [agent.messages, recentRuns, liveRunHint],
-  );
+  const activeRunId = urlRun;
 
   const refreshRecentRuns = useCallback(async () => {
     if (!id || !rootPath) return;
@@ -147,6 +133,67 @@ export function AgentWorkspacePage() {
     [id, setSearchParams],
   );
 
+  /**
+   * wiki_produce receipt only updates the `run` URL param (not control facts).
+   * WikiRunStore / projection subscribe to the URL run only.
+   */
+  const syncRunIdInUrl = useCallback(
+    (runId: string, attemptId?: string | null) => {
+      const agentPath = `/w/${encodeURIComponent(id)}`;
+      if (!mountedRef.current || window.location.pathname !== agentPath) return;
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("rootPath");
+          if (prev.get("run") === runId) {
+            if (attemptId) {
+              if (prev.get("attempt") === attemptId) return prev;
+              next.set("attempt", attemptId);
+              return next;
+            }
+            if (!prev.has("attempt")) return prev;
+            next.delete("attempt");
+            return next;
+          }
+          next.set("run", runId);
+          if (attemptId) next.set("attempt", attemptId);
+          else next.delete("attempt");
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [id, setSearchParams],
+  );
+
+  // Receipt → URL only: a *new* accepted wiki_produce updates `run` (not control facts).
+  // Do not re-apply historical receipts over an operator-selected list run.
+  const lastReceiptRunIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!agent.messages.length) return;
+    let latestAccepted: string | null = null;
+    for (let i = agent.messages.length - 1; i >= 0; i--) {
+      const msg = agent.messages[i]!;
+      for (const tool of msg.tools ?? []) {
+        if (tool.name !== "wiki_produce") continue;
+        const details = tool.details;
+        if (!details || details.status !== "accepted") continue;
+        const runId = typeof details.runId === "string" ? details.runId.trim() : "";
+        if (runId) {
+          latestAccepted = runId;
+          break;
+        }
+      }
+      if (latestAccepted) break;
+    }
+    if (!latestAccepted) return;
+    if (lastReceiptRunIdRef.current === latestAccepted) return;
+    lastReceiptRunIdRef.current = latestAccepted;
+    if (latestAccepted !== urlRun) {
+      syncRunIdInUrl(latestAccepted);
+    }
+  }, [agent.messages, urlRun, syncRunIdInUrl]);
+
   const boot = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -199,8 +246,8 @@ export function AgentWorkspacePage() {
   useEffect(() => {
     if (bootKeyRef.current === id) return;
     bootKeyRef.current = id;
-    setLiveRunHint(null);
     prevActiveRunIdRef.current = undefined;
+    lastReceiptRunIdRef.current = null;
     void boot();
     // Boot once per workspace id (not on every sessionId write).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot boot
@@ -209,6 +256,7 @@ export function AgentWorkspacePage() {
   const handleSelectSession = useCallback(
     (sessionId: string) => {
       setActiveSessionId(sessionId);
+      lastReceiptRunIdRef.current = null;
       syncSessionIdInUrl(sessionId);
     },
     [syncSessionIdInUrl],
@@ -372,7 +420,6 @@ export function AgentWorkspacePage() {
             agent={agent}
             recentRuns={recentRuns}
             activeRunId={activeRunId}
-            onLiveRunHint={setLiveRunHint}
             onRefreshRecentRuns={refreshRecentRuns}
           />
         </WikiRunProjectionProvider>
@@ -395,15 +442,13 @@ type AgentWorkspaceShellWithRunChromeProps = {
   agent: ReturnType<typeof useSessionAgent>;
   recentRuns: WikiRunListItem[];
   activeRunId: string | null;
-  onLiveRunHint: (
-    hint: { runId: string; state: WikiRunListItem["state"] } | null,
-  ) => void;
   onRefreshRecentRuns: () => Promise<void>;
 };
 
 /**
  * Reads the shell WikiRun projection (inside provider) for dual-surface chrome
  * and event-driven recentRuns refresh on terminal live state.
+ * Active run is URL-owned (`?run=`); projection subscribes to that run only.
  */
 function AgentWorkspaceShellWithRunChrome({
   workspaceId,
@@ -419,20 +464,9 @@ function AgentWorkspaceShellWithRunChrome({
   agent,
   recentRuns,
   activeRunId,
-  onLiveRunHint,
   onRefreshRecentRuns,
 }: AgentWorkspaceShellWithRunChromeProps) {
   const projection = useWikiRunProjection();
-
-  // Feed live snapshot back to resolveActiveRunId (terminal skip without waiting on list).
-  // Do not clear on unsubscribe — clearing before list refresh would re-select the
-  // same accepted receipt and bounce the SSE. Overwrite only when a snapshot arrives.
-  useEffect(() => {
-    const snap = projection.snapshot;
-    if (snap && projection.runId === snap.runId) {
-      onLiveRunHint({ runId: snap.runId, state: snap.state });
-    }
-  }, [projection.snapshot, projection.runId, onLiveRunHint]);
 
   // Refresh recentRuns when live snapshot enters a terminal state.
   const terminalRefreshKeyRef = useRef<string | null>(null);

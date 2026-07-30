@@ -16,13 +16,14 @@ const digest = "b".repeat(64);
 
 function snapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v1",
-    definitionVersion: 1,
+    schema: "okf.wiki-runs/v2",
+    definitionVersion: 2,
     runId: "run-1",
     workspaceId: "ws-1",
     revision: 1,
     state: "waiting_for_operator",
     cancelRequested: false,
+    intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
     attempts: [],
@@ -75,6 +76,33 @@ describe("wiki_produce gate interactivity (WikiRuns snapshot)", () => {
     );
     assert.equal(open.length, 1);
     assert.equal(open[0]?.kind, "fix");
+  });
+
+  it("open operator_input gate is interactive source for answer UI", () => {
+    const open = openGatesFromSnapshot(
+      snapshot({
+        gates: [
+          {
+            gateId: "g-op",
+            nodeKey: "plan",
+            nodeGeneration: 0,
+            kind: "operator_input",
+            state: "open",
+            payloadDigest: digest,
+            decision: null,
+            detail: {
+              summary: "What is the primary audience?",
+              source: "operator_input",
+            },
+            openedAt: timestamp,
+          },
+        ],
+      }),
+    );
+    assert.equal(open.length, 1);
+    assert.equal(open[0]?.kind, "operator_input");
+    assert.equal(open[0]?.nodeKey, "plan");
+    assert.equal(open[0]?.detail?.summary, "What is the primary audience?");
   });
 
   it("resolved gates are not interactive", () => {

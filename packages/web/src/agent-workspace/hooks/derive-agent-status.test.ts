@@ -14,6 +14,12 @@ describe("deriveAgentStatus", () => {
     assert.equal(deriveAgentStatus("streaming", true), "streaming");
   });
 
+  it("maps between_operations / retrying / compacting to streaming UI", () => {
+    assert.equal(deriveAgentStatus("between_operations", false), "streaming");
+    assert.equal(deriveAgentStatus("retrying", true), "streaming");
+    assert.equal(deriveAgentStatus("compacting", false), "streaming");
+  });
+
   it("keeps optimistic sending over projected idle", () => {
     assert.equal(deriveAgentStatus("idle", true), "sending");
   });

@@ -100,7 +100,7 @@ test("Operator Session HTTP deletes only SessionManager data", async (t) => {
   const startedOk = await fetch(`${runsBase}/command${query}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "start_run", commandId: "session-delete-keeps-run" }),
+    body: JSON.stringify({ type: "start_run", commandId: "session-delete-keeps-run" , intent: { mode: "generate" } }),
   });
   assert.equal(startedOk.status, 202, await startedOk.clone().text());
   const receipt = (await startedOk.json()) as { receipt: { runId: string } };

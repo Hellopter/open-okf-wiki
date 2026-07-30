@@ -16,6 +16,7 @@ describe("workdir", () => {
     const prompt = runWorkdirPromptPaths(layout);
     assert.match(prompt, /sources\/main\//);
     assert.match(prompt, /wiki\//);
+    assert.match(prompt, /inputs\/operator-input\.json/);
     assert.throws(
       () => runWorkdirLayout(runWorkDir, new Map([["main", "/tmp/live-checkout"]])),
       /not mounted in the frozen Run workdir/,

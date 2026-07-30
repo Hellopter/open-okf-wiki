@@ -69,7 +69,7 @@ export function buildFixGateResolveCommand(
   };
 }
 
-/** Prefer plan, then fix, then publication, then any open gate. */
+/** Prefer plan, then fix, then operator_input, then publication, then any open gate. */
 export function selectPrimaryOpenGate(
   gates: readonly WikiRunGate[],
 ): WikiRunGate | null {
@@ -77,6 +77,7 @@ export function selectPrimaryOpenGate(
   return (
     open.find((g) => g.kind === "plan") ??
     open.find((g) => g.kind === "fix") ??
+    open.find((g) => g.kind === "operator_input") ??
     open.find((g) => g.kind === "publication") ??
     open[0] ??
     null

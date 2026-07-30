@@ -9,6 +9,7 @@
 
 import { LayoutListIcon, PanelRightIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -22,6 +23,7 @@ import { useI18n } from "../i18n";
 import { Composer } from "./composer/Composer";
 import type { AgentMessage, AgentStatus, ConnectionStatus } from "./hooks/useSessionAgent";
 import { ContextPanels } from "./panels/ContextPanels";
+import { RunInspectorDialog } from "./run-graph/RunInspectorDialog";
 import { SessionList } from "./session-list/SessionList";
 import { Transcript } from "./transcript/Transcript";
 
@@ -116,6 +118,10 @@ export function AgentWorkspaceShell({
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const inspectorRunId = searchParams.get("run");
+  const inspectorAttemptId = searchParams.get("attempt");
+  const inspectorOpen = Boolean(inspectorRunId);
   const [leftSheetOpen, setLeftSheetOpen] = useState(false);
   const [rightSheetOpen, setRightSheetOpen] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(() => readCollapsed(LEFT_STORAGE_KEY, false));
@@ -388,6 +394,28 @@ export function AgentWorkspaceShell({
           </Sheet>
         </>
       ) : null}
+
+      {/* Shell owns the single Inspector; open/attempt controlled by URL ?run=&attempt= */}
+      <RunInspectorDialog
+        workspaceId={workspaceId}
+        rootPath={workspace?.rootPath}
+        runId={inspectorRunId}
+        open={inspectorOpen}
+        attemptId={inspectorAttemptId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.delete("run");
+                next.delete("attempt");
+                return next;
+              },
+              { replace: true },
+            );
+          }
+        }}
+      />
     </div>
   );
 }

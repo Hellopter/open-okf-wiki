@@ -3,6 +3,7 @@
  */
 
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -111,23 +112,35 @@ function blockingSeatExecutor(
     if (input.node.kind === "review.seat") {
       await mkdir(path.join(input.workDir, "analysis"), { recursive: true });
       const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
+      const reviewerId = input.node.key.replace(/^review\.seat\./, "") || "general";
       // First seat only: emit one blocking defect so reduce seals dirty report.
-      const blocking = !blockingEmitted;
+      // After repair re-seats, emit clean so EvaluationRound can auto-pass.
+      const isReReview = input.node.generation > 0;
+      const blocking = !isReReview && !blockingEmitted;
       if (blocking) blockingEmitted = true;
       const body = blocking
         ? {
+            version: 1 as const,
+            reviewerId,
             clean: false,
             defects: [
               {
-                severity: "blocking",
+                severity: "blocking" as const,
                 code: "missing_citation",
                 issue: "overview lacks grounding citations",
                 path: "overview.md",
+                reviewerId,
               },
             ],
             summary: "blocking: missing citation",
           }
-        : { clean: true, defects: [], summary: "NO_DEFECTS", node: input.node.key };
+        : {
+            version: 1 as const,
+            reviewerId,
+            clean: true,
+            defects: [] as const,
+            summary: "NO_DEFECTS",
+          };
       await writeFile(receipt, `${JSON.stringify(body)}\n`, "utf8");
       const transcript = path.join(input.attemptDir, "session.jsonl");
       // Include node key so concurrent seats do not collide on identical transcript digests.
@@ -167,7 +180,7 @@ test("definition materializes gate.fix between review.reduce and validate.final"
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-def-fix" },
+    { type: "start_run", commandId: "start-def-fix" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-def-fix");
@@ -185,7 +198,7 @@ test("review.reduce with blocking seats succeeds and opens fix gate", async (t) 
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-open" },
+    { type: "start_run", commandId: "start-fix-open" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-open");
@@ -221,7 +234,7 @@ test("resolve fix pass unlocks validate.final path toward publication", async (t
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-pass" },
+    { type: "start_run", commandId: "start-fix-pass" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-pass");
@@ -293,7 +306,7 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-repair" },
+    { type: "start_run", commandId: "start-fix-repair" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-repair");
@@ -315,11 +328,11 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
     context(workspaceId),
   );
 
-  // After fix, repair runs then validate.final → publication.
-  const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 60_000);
+  // After fix: repair → validate.pre → re-seats → reduce → gate → validate.final → publication.
+  const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 90_000);
   assert.ok(
     atPub.snapshot.gates.some((g) => g.kind === "publication" && g.state === "open"),
-    "expected publication after repair.review",
+    "expected publication after repair.review EvaluationRound",
   );
 
   assert.equal(repairClaims.length, 1, `expected one repair claim, got ${repairClaims.length}`);
@@ -334,9 +347,46 @@ test("resolve fix schedules repair.review.1 claimed with kind repair and feedbac
   assert.ok(repairNode);
   assert.equal(repairNode?.kind, "repair");
   assert.equal(repairNode?.state, "succeeded");
-  // parentKey / claim bindings prove the review.reduce → repair edge path was live.
-  assert.equal(claim.hasWiki, true);
-  assert.equal(claim.hasDefects, true);
+
+  // EvaluationRound: seats re-ran after repair (generation > 0 on at least one seat).
+  const reSeated = atPub.snapshot.nodes.filter(
+    (n) => n.kind === "review.seat" && n.generation > 0 && n.state === "succeeded",
+  );
+  assert.ok(reSeated.length >= 1, "expected review seats re-armed after repair.review");
+  const reduceAfter = atPub.snapshot.nodes.find((n) => n.key === "review.reduce");
+  assert.ok(
+    reduceAfter && reduceAfter.generation > 0 && reduceAfter.state === "succeeded",
+    "review.reduce must re-run after repair (not repair→validate.final bypass)",
+  );
+
+  await runs.close();
+  const db = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
+  const edges = db
+    .prepare(
+      "SELECT from_key, to_key FROM node_edges WHERE run_id = ? AND (from_key = ? OR to_key = ?) ORDER BY from_key, to_key",
+    )
+    .all(receipt.runId, `${REVIEW_REPAIR_NODE_PREFIX}1`, `${REVIEW_REPAIR_NODE_PREFIX}1`) as Array<{
+    from_key: string;
+    to_key: string;
+  }>;
+  db.close();
+  assert.ok(
+    edges.some((e) => e.from_key === "review.reduce" && e.to_key === `${REVIEW_REPAIR_NODE_PREFIX}1`),
+    "edge review.reduce → repair.review.1",
+  );
+  assert.ok(
+    edges.some(
+      (e) => e.from_key === `${REVIEW_REPAIR_NODE_PREFIX}1` && e.to_key === "validate.pre",
+    ),
+    "edge repair.review.1 → validate.pre (EvaluationRound, not validate.final bypass)",
+  );
+  assert.equal(
+    edges.some(
+      (e) => e.from_key === `${REVIEW_REPAIR_NODE_PREFIX}1` && e.to_key === "validate.final",
+    ),
+    false,
+    "must not wire repair → validate.final bypass",
+  );
 });
 
 test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
@@ -349,7 +399,7 @@ test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-budget0" },
+    { type: "start_run", commandId: "start-fix-budget0" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-budget0");
@@ -407,7 +457,7 @@ test("clean review auto-passes gate.fix (no HITL) and reaches publication", asyn
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-clean" },
+    { type: "start_run", commandId: "start-fix-clean" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-clean");
@@ -424,6 +474,97 @@ test("clean review auto-passes gate.fix (no HITL) and reaches publication", asyn
   assert.equal(atPub.snapshot.nodes.find((n) => n.key === "gate.fix")?.state, "succeeded");
 });
 
+/**
+ * Plan with acceptance.reviewRequired=false → zero review.seat nodes →
+ * review.reduce claims without review_seat artifacts and seals clean NO_DEFECTS.
+ * Regression: NodeContract used to require review_seat and stuck the claim.
+ */
+function noReviewRequiredExecutor(): (
+  input: PiAttemptInput,
+  signal: AbortSignal,
+) => Promise<PiAttemptOutcome> {
+  return async (input, signal) => {
+    if (input.node.kind === "plan") {
+      const spec = defaultWikiRunSpec("Workflow test");
+      spec.acceptance.reviewRequired = false;
+      const specPath = path.join(input.workDir, "spec.json");
+      await mkdir(input.workDir, { recursive: true });
+      await writeFile(specPath, `${JSON.stringify(spec)}\n`, "utf8");
+      const transcript = path.join(input.attemptDir, "session.jsonl");
+      await writeFile(
+        transcript,
+        [
+          JSON.stringify({ role: "user", content: "Plan" }),
+          JSON.stringify({ role: "assistant", content: spec.summary }),
+          JSON.stringify({ schema: 1, node: "plan", mode: "fixture", summary: spec.summary }),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+      return {
+        type: "succeeded",
+        unsealedArtifacts: [
+          { kind: "spec", role: "spec", sourcePath: specPath, directory: false },
+          { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
+        ],
+        summary: spec.summary,
+      };
+    }
+    return fullGraphFixtureExecutor(input, signal);
+  };
+}
+
+test("reviewRequired=false: zero seats, review.reduce succeeds clean past claim", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: noReviewRequiredExecutor(),
+  });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-no-review", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  await approvePlanGate(runs, receipt.runId, workspaceId, "approve-no-review");
+
+  // After approve: graph must have no seats (compile skips them when reviewRequired=false).
+  const afterApprove = (await runs.read({ runId: receipt.runId })).snapshot;
+  assert.equal(
+    afterApprove.nodes.some((n) => n.kind === "review.seat"),
+    false,
+    "reviewRequired=false must materialize zero review.seat nodes",
+  );
+  assert.ok(
+    afterApprove.nodes.some((n) => n.key === "review.reduce"),
+    "review.reduce still present for mechanical clean path",
+  );
+
+  // Path must reach publication without stuck claim on reduce (no review_seat bound).
+  const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 60_000);
+  assert.ok(
+    atPub.snapshot.gates.some((g) => g.kind === "publication" && g.state === "open"),
+    "zero-seat clean path should reach publication",
+  );
+
+  const reduce = atPub.snapshot.nodes.find((n) => n.key === "review.reduce");
+  assert.equal(reduce?.state, "succeeded", "review.reduce must succeed with zero seats");
+  const reduceAttempt = atPub.snapshot.attempts.find(
+    (a) => a.nodeKey === "review.reduce" && a.state === "succeeded",
+  );
+  assert.ok(reduceAttempt, "review.reduce attempt must succeed (not stuck on claim)");
+  assert.ok(
+    reduce?.outputs.some((o) => o.role === "defects"),
+    "zero-seat path must seal clean defects receipt",
+  );
+  assert.equal(
+    atPub.snapshot.gates.some((g) => g.kind === "fix" && g.state === "open"),
+    false,
+    "clean zero-seat path must auto-pass gate.fix",
+  );
+  assert.equal(atPub.snapshot.nodes.find((n) => n.key === "gate.fix")?.state, "succeeded");
+});
+
 test("resolve fix deny marks run failed", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
@@ -434,7 +575,7 @@ test("resolve fix deny marks run failed", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-fix-deny" },
+    { type: "start_run", commandId: "start-fix-deny" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-deny");

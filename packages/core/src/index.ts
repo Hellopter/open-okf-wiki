@@ -125,6 +125,7 @@ export {
 export {
   derivePublishedWikiGraph,
   listPublishedWikiBrowse,
+  listPublishedWikiPages,
   PUBLISHED_WIKI_MAX_FILE_BYTES,
   PUBLISHED_WIKI_MAX_PAGES,
   type PublishedWikiBrowse,

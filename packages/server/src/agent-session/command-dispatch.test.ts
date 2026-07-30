@@ -10,6 +10,7 @@ import test from "node:test";
 import { createWorkspace, saveWorkspace } from "@okf-wiki/core";
 import {
   dispatchAgentCommand,
+  ensureRegistered,
   registerAgentSession,
   resetAgentSessionRegistryForTests,
 } from "../agent-session-registry.ts";
@@ -43,13 +44,21 @@ test("prompt dispatch expands slash commands and rejects unknown ones", async (t
   assert.equal(unknown.ok, false);
   assert.match(unknown.message ?? "", /unknown command: \/deploy/);
 
-  // Known command expands and completes a fixture assistant turn;
-  // the failed unknown command must not leave the session busy.
+  // Known command expands and is admitted immediately (detached turn).
+  // The failed unknown command must not leave an admission lock.
   const status = await dispatchAgentCommand(workspace, sessionId, {
     type: "prompt",
     text: "/status",
   });
   assert.equal(status.ok, true, status.message);
+  assert.ok(status.acceptedTurnId, "prompt admission returns acceptedTurnId");
+
+  // Wait for the detached fixture turn to settle before the next prompt.
+  const entry = await ensureRegistered(workspace, sessionId);
+  const deadline = Date.now() + 5_000;
+  while ((entry.admittedTurnId || entry.streamState.turnActive) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
 
   // Path-like input is not treated as a command.
   const pathLike = await dispatchAgentCommand(workspace, sessionId, {
@@ -57,6 +66,12 @@ test("prompt dispatch expands slash commands and rejects unknown ones", async (t
     text: "/home/user/repo 里有什么?",
   });
   assert.equal(pathLike.ok, true, pathLike.message);
+  assert.ok(pathLike.acceptedTurnId);
+
+  const deadline2 = Date.now() + 5_000;
+  while ((entry.admittedTurnId || entry.streamState.turnActive) && Date.now() < deadline2) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
 
   // set_model resolves through provider Settings; without a configured
   // provider it must fail gracefully, never crash the session.

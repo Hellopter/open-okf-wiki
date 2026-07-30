@@ -39,7 +39,7 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     const started = await fetch(`${runs}/command?${query}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "start_run", commandId: "list-start-1" }),
+      body: JSON.stringify({ type: "start_run", commandId: "list-start-1" , intent: { mode: "generate" } }),
     });
     assert.equal(started.status, 202, await started.clone().text());
     const receipt = (await started.json()) as { receipt: { runId: string; revision: number } };

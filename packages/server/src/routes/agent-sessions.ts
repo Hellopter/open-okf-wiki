@@ -6,6 +6,7 @@ import {
   type AgentSseEvent,
   type AgentSseSnapshot,
   CreatePiAgentSessionBodySchema,
+  deriveContextPhase,
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
 import { subscribeAgentSessionEvents } from "../agent-session-events.ts";
@@ -240,6 +241,13 @@ export async function handleAgentSessionEvents(
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  const contextPhase = history.sessionUsage
+    ? deriveContextPhase({
+        contextTokens: history.sessionUsage.contextTokens,
+        contextTarget: history.sessionUsage.contextTarget,
+        contextWindow: history.sessionUsage.contextWindow,
+      })
+    : ("unknown" as const);
   writeEvent({
     source: "server",
     kind: "snapshot",
@@ -250,6 +258,7 @@ export async function handleAgentSessionEvents(
       messages: history.messages,
       ...(activeTool ? { activeTool } : {}),
       ...(history.sessionUsage ? { sessionUsage: history.sessionUsage } : {}),
+      contextPhase,
     },
   } satisfies AgentSseSnapshot);
   ready = true;

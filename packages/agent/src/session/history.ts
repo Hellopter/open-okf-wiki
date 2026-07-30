@@ -4,10 +4,11 @@
  * Extracted from operator-session so projection stays independent of
  * session open/create/delete lifecycle.
  *
- * Two layers:
- * 1. Pi Message[] with lean wiki_produce details (durable JSONL-facing strip)
- * 2. Optional AgentMessage[] via contract projectAgentMessagesFromPiHistory
- *    (same wire shape as web SSE snapshot projection)
+ * Two read models (both from Pi JSONL — no second database):
+ * 1. **Full branch transcript** (`getBranch`) — default chat history + audit;
+ *    includes compacted messages and compaction markers.
+ * 2. **Active model context** (`buildContextEntries`) — diagnostic inspector
+ *    for "what the model sees now"; must not impersonate chat history.
  */
 
 import type { Message } from "@earendil-works/pi-ai";
@@ -41,16 +42,36 @@ export function projectOperatorHistoryMessage(message: Message): Message {
   return { ...row, details: projected } as Message;
 }
 
-/**
- * Operator UI history from a SessionManager: Pi compaction-aware context path
- * (same idea as TUI `buildContextEntries` + `sessionEntryToContextMessages`),
- * then product-side durable details strip. Does not rewrite JSONL.
- */
-export function projectOperatorHistoryFromManager(manager: SessionManager): Message[] {
-  return manager
-    .buildContextEntries()
+function projectEntries(manager: SessionManager, mode: "branch" | "context"): Message[] {
+  const entries =
+    mode === "branch" ? manager.getBranch() : manager.buildContextEntries();
+  return entries
     .flatMap((entry) => sessionEntryToContextMessages(entry) as Message[])
     .map((message) => projectOperatorHistoryMessage(message));
+}
+
+/**
+ * Full branch transcript: leaf path including pre-compaction messages and
+ * compaction markers. Default Operator chat history and audit material.
+ */
+export function projectOperatorBranchHistoryFromManager(manager: SessionManager): Message[] {
+  return projectEntries(manager, "branch");
+}
+
+/**
+ * Active model context: compaction-aware entries the model would see next.
+ * Diagnostic inspector only — not chat history.
+ */
+export function projectOperatorContextHistoryFromManager(manager: SessionManager): Message[] {
+  return projectEntries(manager, "context");
+}
+
+/**
+ * Default operator history = full branch transcript (not model context).
+ * Compaction markers appear as system rows; pre-compact messages remain.
+ */
+export function projectOperatorHistoryFromManager(manager: SessionManager): Message[] {
+  return projectOperatorBranchHistoryFromManager(manager);
 }
 
 /**
@@ -59,6 +80,13 @@ export function projectOperatorHistoryFromManager(manager: SessionManager): Mess
  */
 export function projectOperatorAgentMessagesFromManager(manager: SessionManager): AgentMessage[] {
   return projectAgentMessagesFromPiHistory(projectOperatorHistoryFromManager(manager));
+}
+
+/** Active model context as AgentMessage[] (inspector / diagnostics). */
+export function projectOperatorContextAgentMessagesFromManager(
+  manager: SessionManager,
+): AgentMessage[] {
+  return projectAgentMessagesFromPiHistory(projectOperatorContextHistoryFromManager(manager));
 }
 
 /** Project already-stripped Pi history rows into AgentMessage[]. */

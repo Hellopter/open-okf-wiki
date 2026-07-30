@@ -23,7 +23,7 @@ test("fixture e2e StartRun → plan gate → full graph → publication gate →
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-e2e-full" },
+    { type: "start_run", commandId: "start-e2e-full" , intent: { mode: "generate" } },
     context(workspaceId),
   );
 
@@ -85,7 +85,7 @@ test("fixture e2e publication deny yields completed_unpublished", async (t) => {
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-e2e-deny" },
+    { type: "start_run", commandId: "start-e2e-deny" , intent: { mode: "generate" } },
     context(workspaceId),
   );
   const atPlan = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);

@@ -43,6 +43,8 @@ export type RunInspectorDialogProps = {
   workspaceId: string;
   rootPath?: string;
   runId: string | null;
+  /** Optional attempt id from URL `?attempt=` — controls NodeAttemptDialog selection. */
+  attemptId?: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
@@ -51,6 +53,7 @@ export function RunInspectorDialog({
   workspaceId,
   rootPath,
   runId,
+  attemptId = null,
   open,
   onOpenChange,
 }: RunInspectorDialogProps) {
@@ -95,6 +98,18 @@ export function RunInspectorDialog({
     runId,
     snapshot,
   });
+
+  // URL `?attempt=` controls NodeAttemptDialog selection (shell-owned).
+  useEffect(() => {
+    if (!open || !attemptId || !snapshot) return;
+    const match = snapshot.attempts.find((a) => a.attemptId === attemptId);
+    if (match) {
+      actions.openNode(match.nodeKey);
+      actions.setDialogAttemptId(attemptId);
+    }
+    // Only re-sync when attempt/open/snapshot identity changes — not on every action identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, attemptId, snapshot?.revision, runId]);
 
   useEffect(() => {
     if (!open || !runId || !workspaceId || tab !== "plan") return;

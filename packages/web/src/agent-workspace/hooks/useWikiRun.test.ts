@@ -15,13 +15,14 @@ const timestamp = "2026-07-28T00:00:00.000Z";
 
 function snapshot(revision: number, extras: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v1",
-    definitionVersion: 1,
+    schema: "okf.wiki-runs/v2",
+    definitionVersion: 2,
     runId: "run-1",
     workspaceId: "ws-1",
     revision,
     state: "running",
     cancelRequested: false,
+    intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
     attempts: [],

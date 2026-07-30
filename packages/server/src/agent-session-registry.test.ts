@@ -355,7 +355,7 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   // Seed a durable WikiRun so delete can prove it does not touch Run control data.
   const wikiRuns = await openWikiRuns({ rootPath: workspace.rootPath });
   const startReceipt = await wikiRuns.dispatch(
-    { type: "start_run", commandId: "delete-open-race-run" },
+    { type: "start_run", commandId: "delete-open-race-run" , intent: { mode: "generate" } },
     { workspaceId: workspace.id, actor: { id: "test", kind: "local_operator" } },
   );
   const durableRunId = startReceipt.runId;

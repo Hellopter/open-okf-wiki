@@ -78,7 +78,8 @@ export function applyRunCancelTransitions(
   host.cancelPreApplyEffects(input.runId);
   host.db
     .prepare(
-      "UPDATE attempts SET state = 'cancelled', error = ?, ended_at = ? WHERE run_id = ? AND state = 'running'",
+      `UPDATE attempts SET state = 'cancelled', error = ?, ended_at = ?
+       WHERE run_id = ? AND state IN ('running', 'suspended')`,
     )
     .run(ATTEMPT_ERROR[input.reason], input.timestamp, input.runId);
 

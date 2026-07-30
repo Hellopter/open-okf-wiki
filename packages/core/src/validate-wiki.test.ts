@@ -132,6 +132,36 @@ test("validateWikiTree accepts a minimal valid tree", async () => {
   assert.equal(result.pageCount, 3);
 });
 
+test("validateWikiTree fails when Spec critical page is missing", async () => {
+  const root = await tempDir("okf-val-critical-");
+  await writeMd(root, "overview.md", goodPage("Overview", "Hello.", "Overview"));
+  await writeMd(root, "index.md", listingIndex);
+  const result = await validateWikiTree(root, {
+    requiredPages: [
+      { path: "overview.md", critical: true },
+      { path: "modules/missing.md", critical: true },
+      { path: "optional.md", critical: false },
+    ],
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /critical page missing: modules\/missing\.md/);
+  assert.equal(result.errors.some((e) => e.includes("optional.md")), false);
+});
+
+test("validateWikiTree accepts when all critical pages exist", async () => {
+  const root = await tempDir("okf-val-critical-ok-");
+  await writeMd(root, "overview.md", goodPage("Overview", "Hello.", "Overview"));
+  await writeMd(root, "modules/core.md", goodPage("Core", "Hello.", "Module"));
+  await writeMd(root, "index.md", listingIndex);
+  const result = await validateWikiTree(root, {
+    requiredPages: [
+      { path: "overview.md" }, // critical defaults true
+      { path: "modules/core.md", critical: true },
+    ],
+  });
+  assert.equal(result.ok, true, result.errors.join("; "));
+});
+
 test("validateWikiTree warns (non-blocking) on missing description", async () => {
   const root = await tempDir("okf-val-desc-");
   await writeMd(root, "overview.md", goodPage("Overview", "Hello.", "Overview"));

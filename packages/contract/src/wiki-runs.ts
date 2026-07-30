@@ -2,9 +2,13 @@ import { z } from "zod";
 import { Sha256HexSchema } from "./primitives.js";
 import { RepositorySnapshotSchema, WikiRunSpecSchema } from "./run.js";
 
-/** Durable WikiRuns contract version. Definition v1 is Wiki-specific, not a workflow DSL. */
-export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v1" as const;
-export const WikiRunDefinitionVersionSchema = z.literal(1);
+/**
+ * Durable WikiRuns contract version.
+ * v2: RunIntent required on StartRun; ExecutionPlan sealed at plan gate; no silent fan-out.
+ * Definition topology is Wiki-specific, not a workflow DSL.
+ */
+export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v2" as const;
+export const WikiRunDefinitionVersionSchema = z.literal(2);
 
 const IdentifierSchema = z.string().trim().min(1).max(200);
 const IsoDateTimeSchema = z.string().datetime();
@@ -97,6 +101,7 @@ export const WikiRunArtifactKindSchema = z.enum([
   "snapshot_set",
   "skill",
   "spec",
+  "execution_plan",
   "receipt",
   "wiki_tree",
   "gate_payload",
@@ -138,10 +143,29 @@ export const RunCommandContextSchema = z
 
 export type RunCommandContext = z.infer<typeof RunCommandContextSchema>;
 
+/**
+ * Operator intent for one Wiki Run (hard-cut: every StartRun carries intent).
+ * Tool edge may still expose free-text `notes`; server maps notes → `focus`.
+ */
+export const RunIntentSchema = z
+  .object({
+    /** Operator focus / emphasis (was tool `notes`). */
+    focus: z.string().trim().min(1).max(4_000).optional(),
+    mode: z.enum(["generate", "refresh"]).default("generate"),
+    objective: z.string().trim().min(1).max(4_000).optional(),
+    constraints: z.string().trim().min(1).max(4_000).optional(),
+    audience: z.string().trim().min(1).max(1_000).optional(),
+  })
+  .strict();
+
+export type RunIntent = z.infer<typeof RunIntentSchema>;
+
 export const StartRunCommandSchema = z
   .object({
     type: z.literal("start_run"),
     commandId: RunCommandIdSchema,
+    /** Required hard-cut — no bare start_run without intent. */
+    intent: RunIntentSchema,
   })
   .strict();
 
@@ -333,6 +357,31 @@ export const WikiRunSpecReadSchema = z
   })
   .strict();
 
+/**
+ * Per-attempt observation metrics (Phase 0 baseline). Optional everywhere:
+ * missing fields never block attempt completion or snapshot projection.
+ * Persisted on SQLite `attempts` columns (+ metrics_json catch-all).
+ */
+export const AttemptMetricsSchema = z
+  .object({
+    /** Graph role: plan / leaf / domain / writer / review / repair / mechanical / … */
+    role: z.string().trim().min(1).max(64).optional(),
+    modelId: z.string().trim().min(1).max(200).optional(),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    cacheTokens: z.number().int().nonnegative().optional(),
+    costEstimate: z.number().finite().nonnegative().optional(),
+    toolCalls: z.number().int().nonnegative().optional(),
+    wallTimeMs: z.number().int().nonnegative().optional(),
+    projectionBytes: z.number().int().nonnegative().optional(),
+    stopReason: z.string().trim().min(1).max(128).optional(),
+    /** Catch-all structured extras (SQLite metrics_json). */
+    extra: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+export type AttemptMetrics = z.infer<typeof AttemptMetricsSchema>;
+
 export const WikiRunAttemptSchema = z
   .object({
     attemptId: RunAttemptIdSchema,
@@ -350,6 +399,8 @@ export const WikiRunAttemptSchema = z
     failureClass: z.string().trim().min(1).max(64).optional(),
     startedAt: IsoDateTimeSchema,
     endedAt: IsoDateTimeSchema.nullable(),
+    /** Optional observation metrics when the attempt terminal path recorded them. */
+    metrics: AttemptMetricsSchema.optional(),
   })
   .strict();
 
@@ -437,6 +488,8 @@ export const WikiRunSnapshotSchema = z
     revision: z.number().int().min(0),
     state: WikiRunStateSchema,
     cancelRequested: z.boolean(),
+    /** Operator StartRun intent (null only if a pre-v2 row lacks intent_json). */
+    intent: RunIntentSchema.nullable(),
     pinnedInputs: z
       .object({
         sources: z.array(RepositorySnapshotSchema).min(1),

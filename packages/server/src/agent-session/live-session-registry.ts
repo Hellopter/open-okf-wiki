@@ -26,6 +26,16 @@ type OperatorSessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 export type RegisteredAgentSession = {
   handle: OperatorSessionHandle;
   workspaceId: string;
+  /**
+   * Admission lock for a detached prompt turn. Set on HTTP admission; cleared
+   * when the prompt promise settles (after agent_settled). Prefer this over a
+   * separate busy boolean that can disagree with Pi settled state.
+   */
+  admittedTurnId?: string;
+  /**
+   * @deprecated Use admittedTurnId / SessionRuntime.isBusy(). Kept as a mirror
+   * for idle-sweep and delete settle until callers migrate.
+   */
   busy: boolean;
   /** Wall-clock ms of last product touch (prompt, gate, open, live event). */
   lastActivityAt: number;
@@ -110,14 +120,38 @@ export function registerLive(
     // Server reduces Pi → stream view patch (redacted); web only applies.
     const advanced = projectLiveStreamEvent(handle.sessionId, entry.streamState, event);
     entry.streamState = advanced.state;
+    // Keep deprecated busy mirror aligned with admission + turnActive (no dual truth).
+    entry.busy = Boolean(entry.admittedTurnId) || entry.streamState.turnActive;
     // Context-fill chip: refresh from assistant message_end usage when present.
     const usageUpdate = sessionUsageFromPiEvent(event, entry.sessionUsage, { live: entry });
     if (usageUpdate) {
       entry.sessionUsage = usageUpdate;
       advanced.frame = {
         ...advanced.frame,
-        payload: { ...advanced.frame.payload, sessionUsage: usageUpdate },
+        payload: {
+          ...advanced.frame.payload,
+          sessionUsage: usageUpdate,
+          contextPhase: advanced.state.contextPhase,
+        },
       };
+    } else if (advanced.frame.payload.contextPhase === undefined) {
+      advanced.frame = {
+        ...advanced.frame,
+        payload: {
+          ...advanced.frame.payload,
+          contextPhase: advanced.state.contextPhase,
+        },
+      };
+    }
+    // On agent_settled, admission is already released by the detached finally;
+    // ensure busy mirror clears if stream says idle.
+    if (
+      event &&
+      typeof event === "object" &&
+      "type" in event &&
+      (event as { type: unknown }).type === "agent_settled"
+    ) {
+      entry.busy = Boolean(entry.admittedTurnId);
     }
     emitAgentSessionEvent(workspaceId, handle.sessionId, advanced.frame);
   });
@@ -144,7 +178,7 @@ export function projectLiveSession(entry: RegisteredAgentSession): LiveAgentSess
 export function sweepIdleLiveSessions(now = Date.now()): number {
   let removed = 0;
   for (const [key, entry] of liveSessions) {
-    if (entry.busy) continue;
+    if (entry.admittedTurnId || entry.busy || entry.streamState.turnActive) continue;
     try {
       if (!entry.handle.session.isIdle) continue;
     } catch {

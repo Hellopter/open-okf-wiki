@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AgentSseEventSchema, parseAgentCommand, safeParseAgentCommand } from "./agent-protocol.js";
 
-test("parseAgentCommand: prompt / steer / abort / compact", () => {
+test("parseAgentCommand: prompt / steer / follow_up / abort / compact", () => {
   assert.equal(parseAgentCommand({ type: "prompt", text: "hello" }).type, "prompt");
   assert.equal(parseAgentCommand({ type: "steer", text: "stop" }).type, "steer");
+  assert.equal(parseAgentCommand({ type: "follow_up", text: "later" }).type, "follow_up");
   assert.equal(parseAgentCommand({ type: "abort" }).type, "abort");
+  assert.equal(parseAgentCommand({ type: "clear_queue" }).type, "clear_queue");
+  assert.equal(parseAgentCommand({ type: "abort_compaction" }).type, "abort_compaction");
   assert.equal(parseAgentCommand({ type: "compact" }).type, "compact");
+  assert.equal(
+    parseAgentCommand({ type: "compact", mode: "stop_and_compact" }).type,
+    "compact",
+  );
 });
 
 test("parseAgentCommand: rejects removed start_wiki_run and resume_gate commands", () => {
@@ -27,6 +34,7 @@ test("parseAgentCommand: set_model", () => {
 });
 
 test("parseAgentCommand: rejects unknown type and empty prompt", () => {
+  // camelCase followUp is not the wire command (snake follow_up is).
   assert.equal(safeParseAgentCommand({ type: "followUp", text: "x" }).success, false);
   assert.equal(safeParseAgentCommand({ type: "prompt", text: "" }).success, false);
   assert.equal(safeParseAgentCommand({}).success, false);

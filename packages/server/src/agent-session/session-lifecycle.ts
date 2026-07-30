@@ -147,19 +147,31 @@ async function waitForSessionQuiet(
   entry: RegisteredAgentSession,
   timeoutMs: number,
 ): Promise<void> {
-  if (entry.handle.session.isIdle && !entry.busy) return;
+  // Pi isIdle + admission lock are the settle authorities. Stream turnActive is
+  // a projection that may lag briefly; do not block delete on it alone.
+  const isQuiet = () => {
+    try {
+      if (!entry.handle.session.isIdle) return false;
+    } catch {
+      return true;
+    }
+    return !entry.admittedTurnId;
+  };
+  if (isQuiet()) return;
 
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-  const waitBusyClear = async () => {
-    while (entry.busy) {
+  const waitAdmissionClear = async () => {
+    while (entry.admittedTurnId) {
       await sleep(DELETE_SETTLE_POLL_MS);
     }
   };
 
   await Promise.race([
-    Promise.all([entry.handle.session.waitForIdle(), waitBusyClear()]),
+    Promise.all([entry.handle.session.waitForIdle(), waitAdmissionClear()]),
     sleep(timeoutMs),
   ]);
+  // Mirror busy flag after settle attempt.
+  entry.busy = Boolean(entry.admittedTurnId);
 }
 
 /** History load result with optional ephemeral context-fill for SSE snapshot. */

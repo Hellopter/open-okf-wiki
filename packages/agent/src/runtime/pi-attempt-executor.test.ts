@@ -97,6 +97,12 @@ test("Pi attempt fixture plan writes an unsealed canonical spec and transcript",
   );
   assert.equal(outcome.type, "succeeded");
   if (outcome.type !== "succeeded") return;
+  // Phase 0: executor attaches best-effort metrics (role / wall / stop / model).
+  assert.ok(outcome.metrics);
+  assert.equal(outcome.metrics.role, "plan");
+  assert.equal(outcome.metrics.stopReason, "succeeded");
+  assert.equal(typeof outcome.metrics.wallTimeMs, "number");
+  assert.ok((outcome.metrics.wallTimeMs ?? -1) >= 0);
   const spec = outcome.unsealedArtifacts.find((artifact) => artifact.role === "spec");
   assert.ok(spec);
   assert.deepEqual(JSON.parse(await readFile(spec.sourcePath, "utf8")), defaultWikiRunSpec("Demo"));
@@ -151,7 +157,7 @@ test("Pi attempt fixture root writer returns a private wiki tree", async (t) => 
   await access(path.join(wiki.sourcePath, "index.md"));
 });
 
-test("Pi attempt fixture research.leaf and research.domain return receipts", async (t) => {
+test("Pi attempt fixture research.leaf and research.domain return full AnalysisReceipt", async (t) => {
   const leaf = await fixture({
     key: "research.leaf.core.1",
     kind: "research.leaf",
@@ -170,9 +176,24 @@ test("Pi attempt fixture research.leaf and research.domain return receipts", asy
   assert.equal(leafOut.type, "succeeded");
   if (leafOut.type === "succeeded") {
     assert.ok(leafOut.unsealedArtifacts.some((a) => a.role === "research" || a.kind === "receipt"));
+    const receiptArt = leafOut.unsealedArtifacts.find((a) => a.role === "research");
+    assert.ok(receiptArt);
+    const { AnalysisReceiptSchema } = await import("@okf-wiki/contract");
+    const raw = JSON.parse(await readFile(receiptArt.sourcePath, "utf8")) as unknown;
+    const parsed = AnalysisReceiptSchema.parse(raw);
+    assert.equal(parsed.nodeId, "research.leaf.core.1");
+    assert.ok(parsed.findings.length >= 1);
+    // Thin {role,summary,mode} shape must not be written.
+    assert.equal((raw as { role?: string }).role, undefined);
   }
   const domainOut = await executor(domain, new AbortController().signal);
   assert.equal(domainOut.type, "succeeded");
+  if (domainOut.type === "succeeded") {
+    const receiptArt = domainOut.unsealedArtifacts.find((a) => a.role === "research");
+    assert.ok(receiptArt);
+    const { AnalysisReceiptSchema } = await import("@okf-wiki/contract");
+    AnalysisReceiptSchema.parse(JSON.parse(await readFile(receiptArt.sourcePath, "utf8")));
+  }
 });
 
 test("Pi attempt leaf uses sealed question from node.detail (not invented Question N)", async (t) => {
@@ -392,11 +413,15 @@ test("Pi attempt reports cancellation and bad sealed specs as terminal failures"
   const controller = new AbortController();
   controller.abort();
   const executor = createPiAttemptExecutor({ fixture: true });
-  assert.deepEqual(await executor(cancelled, controller.signal), {
-    type: "failed",
-    error: "Pi attempt cancelled",
-    failureClass: "cancelled",
-  });
+  const cancelledOut = await executor(cancelled, controller.signal);
+  assert.equal(cancelledOut.type, "failed");
+  if (cancelledOut.type === "failed") {
+    assert.equal(cancelledOut.error, "Pi attempt cancelled");
+    assert.equal(cancelledOut.failureClass, "cancelled");
+    // Phase 0: best-effort metrics attached even on cancel (never blocks completion).
+    assert.equal(cancelledOut.metrics?.role, "plan");
+    assert.equal(cancelledOut.metrics?.stopReason, "cancelled");
+  }
 
   const specPath = path.join(path.dirname(path.dirname(invalidSpec.attemptDir)), "bad-spec.json");
   await writeFile(specPath, "{}\n", "utf8");

@@ -23,7 +23,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     t.after(() => removeWorkspace(root));
     const runs = await openWikiRuns({ rootPath: root });
     const receipt = await runs.dispatch(
-      { type: "start_run", commandId: "start-gate-approve-nospec" },
+      { type: "start_run", commandId: "start-gate-approve-nospec" , intent: { mode: "generate" } },
       context(workspaceId),
     );
     await waitForTerminal(runs, receipt.runId);
@@ -57,7 +57,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     t.after(() => removeWorkspace(root));
     const runs = await openWikiRuns({ rootPath: root });
     const receipt = await runs.dispatch(
-      { type: "start_run", commandId: "start-gate-approve" },
+      { type: "start_run", commandId: "start-gate-approve" , intent: { mode: "generate" } },
       context(workspaceId),
     );
     await waitForTerminal(runs, receipt.runId);
@@ -128,7 +128,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     t.after(() => removeWorkspace(root));
     const runs = await openWikiRuns({ rootPath: root });
     const receipt = await runs.dispatch(
-      { type: "start_run", commandId: "start-gate-revise" },
+      { type: "start_run", commandId: "start-gate-revise" , intent: { mode: "generate" } },
       context(workspaceId),
     );
     await waitForTerminal(runs, receipt.runId);
@@ -164,7 +164,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     t.after(() => removeWorkspace(root));
     const runs = await openWikiRuns({ rootPath: root });
     const receipt = await runs.dispatch(
-      { type: "start_run", commandId: "start-gate-deny" },
+      { type: "start_run", commandId: "start-gate-deny" , intent: { mode: "generate" } },
       context(workspaceId),
     );
     await waitForTerminal(runs, receipt.runId);
@@ -221,7 +221,7 @@ test("scheduler plan claim binds freeze sealed outputs as attempt_inputs", async
   });
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-plan-inputs" },
+    { type: "start_run", commandId: "start-plan-inputs" , intent: { mode: "generate" } },
     context(workspaceId),
   );
 
@@ -275,9 +275,12 @@ test("scheduler plan claim binds freeze sealed outputs as attempt_inputs", async
     .get(receipt.runId) as { count: number };
   db.close();
 
-  // Plan binds well-known freeze pins (sources + skill), not attempt_output noise.
+  // Plan binds freeze pins (sources + skill + frozen_run_manifest), not attempt_output noise.
   const expected = (freezeOutputs ?? [])
-    .filter((row) => row.role === "sources" || row.role === "skill")
+    .filter(
+      (row) =>
+        row.role === "sources" || row.role === "skill" || row.role === "frozen_run_manifest",
+    )
     .sort((a, b) => a.role.localeCompare(b.role));
   assert.deepEqual(
     bound.map((row) => ({ role: row.role, artifact_id: row.artifact_id })),
@@ -297,7 +300,7 @@ test("StartRun freezes, plans via executor, opens gate.plan, and ResolveGate app
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "start-plan-gate" },
+    { type: "start_run", commandId: "start-plan-gate" , intent: { mode: "generate" } },
     context(workspaceId),
   );
 

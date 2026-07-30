@@ -18,16 +18,24 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import {
+  type AttemptMetrics,
   type MergedDefectReport,
   MergedDefectReportSchema,
   type PiAttemptArtifactDescriptor,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
+import {
+  graphRoleForNodeKind,
+  mergeAttemptMetrics,
+  wallTimeMsFromStarted,
+  writeAttemptMetrics,
+} from "./attempt-metrics.js";
 import type { WikiRunsCasCtx } from "./ctx.js";
 import { artifactId, digest, now } from "./crypto-util.js";
 import { upstreamKeys } from "./dag.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
-import { asRow, asRows, requiredText } from "./sql.js";
+import { contractForNode, validateBoundInputs } from "./node-contract.js";
+import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
 /** Bytes/CAS surface — no gate open or unlock callbacks. */
@@ -52,6 +60,9 @@ export function copyAttemptInputs(
  * In the claim transaction, freeze current-generation upstream outputs into
  * immutable attempt_inputs. Also bind ambient freeze sources/skill and plan
  * spec for post-plan nodes so each Attempt has a complete sealed envelope.
+ *
+ * Phase 2: after binding, validate against NodeContract (fail closed on missing
+ * required roles — not silent empty).
  */
 export function bindAttemptInputs(
   host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
@@ -67,6 +78,22 @@ export function bindAttemptInputs(
       )
       .run(attemptId, input.role, input.artifactId);
   }
+  const kindRow = asRow(
+    host.db
+      .prepare(
+        `SELECT kind FROM nodes
+         WHERE run_id = ? AND node_key = ?
+         ORDER BY generation DESC LIMIT 1`,
+      )
+      .get(runId, nodeKey),
+  );
+  const kind = kindRow ? requiredText(kindRow, "kind") : nodeKey;
+  const boundRoles = asRows(
+    host.db
+      .prepare(`SELECT role FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`)
+      .all(attemptId),
+  ).map((row) => requiredText(row, "role"));
+  validateBoundInputs(contractForNode(kind, nodeKey), boundRoles);
 }
 
 /** Succeeded node outputs at a fixed generation (not necessarily current max). */
@@ -104,6 +131,27 @@ export function nodeOutputsAtCurrentGen(
   const generation = host.currentNodeGeneration(runId, nodeKey);
   if (generation === undefined) return [];
   return nodeOutputsAtGeneration(host, runId, nodeKey, generation);
+}
+
+/**
+ * Outputs from the latest *succeeded* generation of a node (not merely max gen).
+ * Used after re-arm when current gen is invalidated without outputs yet.
+ */
+export function latestSucceededOutputs(
+  host: Pick<ArtifactsHost, "db">,
+  runId: string,
+  nodeKey: string,
+): Array<{ role: string; artifactId: string }> {
+  const row = asRow(
+    host.db
+      .prepare(
+        `SELECT MAX(generation) AS generation FROM nodes
+         WHERE run_id = ? AND node_key = ? AND state = 'succeeded'`,
+      )
+      .get(runId, nodeKey),
+  );
+  if (!row || row.generation === null || row.generation === undefined) return [];
+  return nodeOutputsAtGeneration(host, runId, nodeKey, requiredNumber(row, "generation"));
 }
 
 /**
@@ -168,13 +216,27 @@ export function upstreamSealedOutputs(
 
   // Ambient freeze + plan pins for every post-freeze node (well-known roles only).
   for (const output of nodeOutputsAtCurrentGen(host, runId, "freeze")) {
-    if (output.role === "sources" || output.role === "skill") {
+    if (
+      output.role === "sources" ||
+      output.role === "skill" ||
+      output.role === "frozen_run_manifest" ||
+      output.role === "prior_wiki"
+    ) {
       add(output.role, output.artifactId);
     }
   }
-  if (nodeKey !== "plan") {
+  if (nodeKey === "plan") {
+    // Plan revise (generation > 0): bind prior generation Spec as prior_spec.
+    const planGen = host.currentNodeGeneration(runId, "plan");
+    if (planGen !== undefined && planGen > 0) {
+      for (const output of nodeOutputsAtGeneration(host, runId, "plan", planGen - 1)) {
+        if (output.role === "spec") add("prior_spec", output.artifactId);
+      }
+    }
+  } else {
     for (const output of nodeOutputsAtCurrentGen(host, runId, "plan")) {
       if (output.role === "spec") add(output.role, output.artifactId);
+      if (output.role === "execution_plan") add(output.role, output.artifactId);
     }
   }
 
@@ -185,9 +247,14 @@ export function upstreamSealedOutputs(
     "sources",
     "skill",
     "spec",
+    "execution_plan",
+    "prior_spec",
+    "frozen_run_manifest",
+    "prior_wiki",
     "wiki_tree",
     "defects",
     "publication_candidate",
+    "operator_input",
   ]);
   for (const fromKey of effectiveUps) {
     for (const output of nodeOutputsAtCurrentGen(host, runId, fromKey)) {
@@ -253,12 +320,22 @@ export function upstreamSealedOutputs(
 
   // repair.review.*: prefer review.reduce wiki (+ defects already via edge).
   if (nodeKey.startsWith("repair.review.")) {
-    for (const output of nodeOutputsAtCurrentGen(host, runId, "review.reduce")) {
+    for (const output of latestSucceededOutputs(host, runId, "review.reduce")) {
       if (output.role === "wiki_tree") {
         byRole.set("wiki_tree", output.artifactId);
       }
       if (output.role === "defects" && !byRole.has("defects")) {
         byRole.set("defects", output.artifactId);
+      }
+    }
+  }
+
+  // review.seat.* re-review: bind prior defects for differential priorBlocking prompts.
+  if (nodeKey.startsWith("review.seat.") && !byRole.has("defects")) {
+    for (const output of latestSucceededOutputs(host, runId, "review.reduce")) {
+      if (output.role === "defects") {
+        add("defects", output.artifactId);
+        break;
       }
     }
   }
@@ -270,6 +347,18 @@ export function upstreamSealedOutputs(
     if (generation !== undefined && writeRootNeedsPriorWiki(host, runId, generation)) {
       const prior = priorWriteWikiTree(host, runId, generation);
       if (prior) add("wiki_tree", prior.artifactId);
+    }
+  }
+
+  // Carry publication_candidate across gate.publication → publish (edge skips prepare).
+  if (
+    (nodeKey === "publish" || nodeKey === "gate.publication") &&
+    !byRole.has("publication_candidate")
+  ) {
+    for (const output of nodeOutputsAtCurrentGen(host, runId, "prepare.publication")) {
+      if (output.role === "publication_candidate") {
+        add("publication_candidate", output.artifactId);
+      }
     }
   }
 
@@ -302,7 +391,9 @@ export async function prepareUnsealedArtifact(
     const base =
       descriptor.kind === "spec"
         ? "spec.json"
-        : path.basename(descriptor.sourcePath) || `${descriptor.role}.json`;
+        : descriptor.kind === "execution_plan"
+          ? "execution-plan.json"
+          : path.basename(descriptor.sourcePath) || `${descriptor.role}.json`;
     await cp(descriptor.sourcePath, path.join(stageDir, base), { dereference: false });
   }
   const manifest = await manifestFor(stageDir);
@@ -375,11 +466,13 @@ export function loadSealedDefectsReport(
  * CAS commit of sealed artifact bytes into artifacts/node_outputs and mark
  * attempt + node succeeded. Returns false when the claim is no longer current
  * (preparations orphaned). Does not open gates or unlock — see attempt-success.
+ * Optional metrics are best-effort and never block the commit.
  */
 export function commitNodeArtifacts(
   host: Pick<ArtifactsHost, "db" | "emit" | "isCurrent">,
   claim: ClaimedNode,
   preparations: ArtifactPreparation[],
+  metrics?: AttemptMetrics,
 ): boolean {
   if (!host.isCurrent(claim)) {
     host.db
@@ -425,6 +518,12 @@ export function commitNodeArtifacts(
       "UPDATE attempts SET state = 'succeeded', ended_at = ? WHERE attempt_id = ? AND state = 'running'",
     )
     .run(timestamp, claim.attemptId);
+  const resolved = mergeAttemptMetrics(metrics, {
+    role: graphRoleForNodeKind(claim.kind),
+    wallTimeMs: wallTimeMsFromStarted(host.db, claim.attemptId, timestamp),
+    stopReason: "succeeded",
+  });
+  writeAttemptMetrics(host.db, claim.attemptId, resolved);
   host.db
     .prepare(
       `UPDATE nodes SET state = 'succeeded', current_attempt_id = NULL
