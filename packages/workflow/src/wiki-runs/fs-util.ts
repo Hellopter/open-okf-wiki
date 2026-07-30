@@ -11,8 +11,14 @@ import type { ArtifactManifest } from "./types.js";
  * Content-addressed tree manifest for WikiRuns Artifacts.
  *
  * Core is the sole authority for walk order, path form, file digests, and
- * symlink fail-closed semantics ({@link manifestPublicationTree}). The optional
- * seal-sidecar filter preserves content-only effect identity after seal.
+ * symlink fail-closed semantics ({@link manifestPublicationTree}).
+ *
+ * Prepare, seal, and verify all use content-only identity
+ * (`ignoreSealManifest=true`): the seal sidecar `.okf-artifact-manifest.json`
+ * must not affect the digest. Otherwise repair/refresh that re-seed from an
+ * already-sealed wiki_tree copy the sidecar into the stage tree, prepare
+ * embeds it in the digest, seal overwrites the sidecar, and final verify fails
+ * with "sealed artifact verification failed".
  */
 export async function manifestFor(
   directory: string,

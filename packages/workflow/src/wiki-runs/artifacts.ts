@@ -396,7 +396,11 @@ export async function prepareUnsealedArtifact(
           : path.basename(descriptor.sourcePath) || `${descriptor.role}.json`;
     await cp(descriptor.sourcePath, path.join(stageDir, base), { dereference: false });
   }
-  const manifest = await manifestFor(stageDir);
+  // Content-only identity: ignore any prior `.okf-artifact-manifest.json` that may
+  // have been copied when repair/refresh seeded from an already-sealed wiki_tree.
+  // Verify uses the same filter; including the sidecar here makes seal overwrite it
+  // and then fail final verification ("sealed artifact verification failed").
+  const manifest = await manifestFor(stageDir, true);
   const manifestDigest = digest(manifest);
   const preparation: ArtifactPreparation = {
     artifactId: artifactId(claim.runId, descriptor.kind, manifestDigest),
@@ -556,7 +560,8 @@ export async function sealPreparation(
         dereference: false,
         errorOnExist: true,
       });
-      const manifest = await manifestFor(temporary);
+      // Same content-only filter as prepare + verify (see prepareUnsealedArtifact).
+      const manifest = await manifestFor(temporary, true);
       if (digest(manifest) !== preparation.digest)
         throw new Error(`${preparation.role} changed after preparation`);
       await writeFile(

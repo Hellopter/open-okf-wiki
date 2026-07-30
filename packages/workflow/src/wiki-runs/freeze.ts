@@ -716,7 +716,9 @@ export async function prepareFreezeArtifacts(
 ): Promise<PreparedFreezeArtifacts | undefined> {
   const preparations = await Promise.all(
     candidates.map(async (candidate) => {
-      const manifest = await manifestFor(candidate.directory);
+      // Content-only: ignore seal sidecar if a candidate tree was re-staged from a
+      // previously sealed artifact (same contract as prepareUnsealedArtifact/verify).
+      const manifest = await manifestFor(candidate.directory, true);
       const manifestDigest = digest(manifest);
       return {
         artifactId: artifactId(claim.runId, candidate.kind, manifestDigest),
