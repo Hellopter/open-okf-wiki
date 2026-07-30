@@ -39,8 +39,16 @@ export type RunGraphViewNode = {
   status: NodeAttemptStatus | "idle";
 };
 
+/** A contract-provided parent relationship. No dependency is inferred by the UI. */
+export type RunGraphEdge = {
+  parentKey: string;
+  childKey: string;
+};
+
 export type RunGraphViewModel = {
   layers: Array<{ id: RunGraphLayerId; nodes: RunGraphViewNode[] }>;
+  /** Only parentKey relationships whose endpoints exist in the snapshot. */
+  edges: RunGraphEdge[];
   attempts: NodeAttempt[];
   playhead?: { nodeKey: string; attemptId: string };
   topologyVersion: number;
@@ -114,6 +122,19 @@ export function groupViewNodesIntoLayers(
 }
 
 /**
+ * Project explicit hierarchy only. `dependsOn` is deliberately not rendered
+ * here because the durable snapshot does not expose that relationship.
+ */
+export function edgesFromNodes(nodes: readonly RunGraphViewNode[]): RunGraphEdge[] {
+  const known = new Set(nodes.map((node) => node.nodeKey));
+  return nodes.flatMap((node) =>
+    node.parentKey && known.has(node.parentKey)
+      ? [{ parentKey: node.parentKey, childKey: node.nodeKey }]
+      : [],
+  );
+}
+
+/**
  * Append synthetic nodes for attempts whose nodeKey is not already present.
  * Orphans land in layer "other" with kind "validate" (canvas chip fallback).
  */
@@ -163,6 +184,7 @@ export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewMod
 
   return {
     layers: groupViewNodesIntoLayers(nodes),
+    edges: edgesFromNodes(nodes),
     attempts,
     ...(snapshot.playhead ? { playhead: snapshot.playhead } : {}),
     topologyVersion: snapshot.topologyVersion,

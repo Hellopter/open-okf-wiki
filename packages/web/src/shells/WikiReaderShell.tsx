@@ -48,6 +48,7 @@ export function WikiReaderShell({
           size="sm"
           variant="ghost"
           render={<Link to={operateHref(workspaceId)} data-testid="wiki-back-operate" />}
+          nativeButton={false}
         >
           <ArrowLeftIcon data-icon="inline-start" />
           {t.subnav.agent}

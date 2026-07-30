@@ -1,30 +1,40 @@
 /**
- * Session-owned Active Run strip — sole HITL decision surface.
+ * Compatibility Action Dock controller.
  *
- * URL `?run=` selects the subscribed run (SSE). Graph expand is local state
- * (not tied to opening a Sheet). Tool cards stay read-only.
+ * The legacy shell still mounts this component, while new Workbench hosts can
+ * reuse ActiveRunSummary, RunPicker, and GateAction independently. This file
+ * remains the one owner of the selected Run projection and Gate dispatch.
  */
 
-import type { ResolveGateCommand, WikiRunGateKind } from "@okf-wiki/contract";
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import type { ResolveGateCommand } from "@okf-wiki/contract";
+import { ExternalLinkIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { FieldLabel } from "@/components/ui/field";
-import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { dispatchWikiRunCommand, type WikiRunListItem } from "../../api";
 import { useI18n } from "../../i18n";
-import {
-  selectMatchingProjection,
-  useWikiRunProjection,
-} from "../hooks/WikiRunProjectionContext";
+import { useWikiRunProjection } from "../hooks/WikiRunProjectionContext";
+import { selectMatchingProjection } from "../hooks/wiki-run-projection";
 import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
-import { FixGatePanel } from "./FixGatePanel";
+import { ActiveRunSummary } from "./ActiveRunSummary";
+import { GateAction } from "./GateAction";
+import {
+  gateActionPresentationForWidth,
+  type GateActionPresentation,
+} from "./gate-action-presentation";
+import { gateActionTitle } from "./gate-action";
 import { selectPrimaryOpenGate } from "./fix-gate";
-import { StatusBadge } from "./StatusBadge";
+import { RunPicker } from "./RunPicker";
+import { isRunCancellable } from "./run-actions";
 
 export type ActiveRunBarProps = {
   workspaceId: string;
@@ -33,19 +43,28 @@ export type ActiveRunBarProps = {
   /** Local: whether graph/plan details are expanded under the bar. */
   graphOpen: boolean;
   onGraphOpenChange: (open: boolean) => void;
+  /** Hide when the host presents the URL-only Run picker elsewhere. */
+  showRunPicker?: boolean;
+  /** Hide when the host presents the read-only Run Cockpit trigger elsewhere. */
+  showInspectorTrigger?: boolean;
   className?: string;
 };
 
-function shortRunId(runId: string): string {
-  return runId.length > 12 ? `${runId.slice(0, 8)}…` : runId;
-}
+function useGateActionPresentation(): GateActionPresentation {
+  const [presentation, setPresentation] = useState<GateActionPresentation>(() =>
+    typeof window === "undefined" ? "dock" : gateActionPresentationForWidth(window.innerWidth),
+  );
 
-function gateTitle(kind: WikiRunGateKind, t: ReturnType<typeof useI18n>["t"]): string {
-  if (kind === "plan") return t.planConfirm.title;
-  if (kind === "publication") return t.runStatus.awaiting_publication;
-  if (kind === "fix") return t.fixConfirm.title;
-  if (kind === "operator_input") return t.operatorInput.title;
-  return kind;
+  useEffect(() => {
+    const updatePresentation = () => {
+      setPresentation(gateActionPresentationForWidth(window.innerWidth));
+    };
+    window.addEventListener("resize", updatePresentation);
+    updatePresentation();
+    return () => window.removeEventListener("resize", updatePresentation);
+  }, []);
+
+  return presentation;
 }
 
 export function ActiveRunBar({
@@ -54,42 +73,39 @@ export function ActiveRunBar({
   recentRuns = [],
   graphOpen,
   onGraphOpenChange,
+  showRunPicker = true,
+  showInspectorTrigger = true,
   className,
 }: ActiveRunBarProps) {
   const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const runId = searchParams.get("run");
-
   const shellProjection = useWikiRunProjection();
   const wikiRun = selectMatchingProjection(shellProjection, runId);
   const snapshot = wikiRun.snapshot;
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);
   const primaryGate = viewModel ? selectPrimaryOpenGate(viewModel.openGates) : null;
-
   const [submitting, setSubmitting] = useState(false);
-  const [revising, setRevising] = useState(false);
-  const [feedback, setFeedback] = useState("");
-  const [operatorAnswer, setOperatorAnswer] = useState("");
   const [commandError, setCommandError] = useState<string | null>(null);
-  const [activeGateId, setActiveGateId] = useState<string | null>(null);
-  const [runMenuOpen, setRunMenuOpen] = useState(false);
+  const [gateOpen, setGateOpen] = useState(false);
+  const gatePresentation = useGateActionPresentation();
 
   useEffect(() => {
     setSubmitting(false);
-    setRevising(false);
-    setFeedback("");
-    setOperatorAnswer("");
     setCommandError(null);
-    setActiveGateId(null);
-    setRunMenuOpen(false);
+    setGateOpen(false);
   }, [runId]);
+
+  useEffect(() => {
+    setGateOpen(false);
+  }, [gatePresentation, primaryGate?.gateId]);
 
   if (!runId) return null;
 
   const selectRun = (nextRunId: string) => {
     setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
+      (previous) => {
+        const next = new URLSearchParams(previous);
         next.delete("rootPath");
         next.set("run", nextRunId);
         next.delete("attempt");
@@ -97,7 +113,6 @@ export function ActiveRunBar({
       },
       { replace: true },
     );
-    setRunMenuOpen(false);
   };
 
   const dispatchCommand = async (
@@ -108,320 +123,143 @@ export function ActiveRunBar({
     setCommandError(null);
     try {
       await dispatchWikiRunCommand(workspaceId, command, rootPath);
-      setSubmitting(false);
       return true;
     } catch (error) {
-      setSubmitting(false);
       setCommandError(error instanceof Error ? error.message : String(error));
       return false;
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const decide = async (action: "approve" | "deny" | "revise") => {
-    if (!primaryGate || !runId) return;
-    if (primaryGate.kind === "fix" || primaryGate.kind === "operator_input") return;
-    if (action === "revise" && !feedback.trim()) {
-      setRevising(true);
-      setActiveGateId(primaryGate.gateId);
-      return;
-    }
-    const ok = await dispatchCommand({
-      type: "resolve_gate",
-      commandId: crypto.randomUUID(),
-      runId,
-      gateId: primaryGate.gateId,
-      gateKind: primaryGate.kind,
-      payloadDigest: primaryGate.payloadDigest,
-      decision: action,
-      ...(action === "revise" ? { feedback: feedback.trim() } : {}),
-    });
-    if (ok) {
-      setRevising(false);
-      setFeedback("");
-      setActiveGateId(null);
-    }
-  };
-
-  const answerOperatorInput = async () => {
-    if (!primaryGate || primaryGate.kind !== "operator_input") return;
-    const answer = operatorAnswer.trim();
-    if (!answer) {
-      setCommandError(t.operatorInput.answerRequired);
-      return;
-    }
-    const ok = await dispatchCommand({
-      type: "resolve_gate",
-      commandId: crypto.randomUUID(),
-      runId,
-      gateId: primaryGate.gateId,
-      gateKind: "operator_input",
-      payloadDigest: primaryGate.payloadDigest,
-      decision: "answer",
-      answer,
-    });
-    if (ok) {
-      setOperatorAnswer("");
-      setActiveGateId(null);
-    }
-  };
-
-  const resolveFixGate = async (command: ResolveGateCommand): Promise<boolean> => {
-    const ok = await dispatchCommand(command);
-    if (ok) {
-      setRevising(false);
-      setFeedback("");
-      setOperatorAnswer("");
-      setActiveGateId(null);
-    }
-    return ok;
-  };
-
+  const resolveGate = (command: ResolveGateCommand) => dispatchCommand(command);
+  const currentState = snapshot?.state ?? recentRuns.find((run) => run.runId === runId)?.state;
   const loading = !wikiRun.ready && !wikiRun.error;
-  const needsOperator = snapshot?.state === "waiting_for_operator" || Boolean(primaryGate);
-
-  const otherRuns = recentRuns.filter((r) => r.runId !== runId).slice(0, 8);
+  const needsOperator = currentState === "waiting_for_operator" || Boolean(primaryGate);
+  const canCancel = isRunCancellable(currentState, Boolean(wikiRun.error));
+  const gateTitle = primaryGate ? gateActionTitle(primaryGate.kind, t) : null;
+  const gateMovesToOverlay = Boolean(primaryGate && gatePresentation !== "dock");
+  const openGate = () => {
+    onGraphOpenChange(false);
+    setGateOpen(true);
+  };
+  const gateAction = primaryGate ? (
+    <GateAction
+      gate={primaryGate}
+      runId={runId}
+      snapshot={snapshot}
+      submitting={submitting}
+      commandError={commandError}
+      onResolve={resolveGate}
+    />
+  ) : null;
 
   return (
-    <div
+    <section
       className={cn(
-        "flex shrink-0 flex-col gap-2 border-t border-border bg-muted/20 px-2.5 py-2",
+        "flex shrink-0 flex-col gap-3 border-t border-border bg-muted/20 px-3 py-2.5",
         needsOperator && "border-t-primary/40 bg-primary/5",
         className,
       )}
       data-testid="active-run-bar"
       data-run-id={runId}
-      data-run-state={snapshot?.state ?? undefined}
+      data-run-state={currentState}
       data-graph-open={graphOpen ? "true" : "false"}
     >
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <div className="relative flex min-w-0 items-center gap-1.5">
-          <button
-            type="button"
-            className="flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-muted/60"
-            data-testid="active-run-switcher"
-            aria-expanded={runMenuOpen}
-            onClick={() => setRunMenuOpen((o) => !o)}
-            title={runId}
-          >
-            <span className="font-mono text-xs font-medium">{shortRunId(runId)}</span>
-            {otherRuns.length > 0 ? (
-              <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            ) : null}
-          </button>
-          {snapshot?.state ? <StatusBadge status={snapshot.state} /> : null}
-          {wikiRun.connectionStatus === "reconnecting" ? (
-            <span className="text-2xs text-muted-foreground">
-              {t.agentWorkspace.connectionReconnecting}
-            </span>
-          ) : null}
-          {runMenuOpen && otherRuns.length > 0 ? (
-            <ul
-              className="absolute bottom-full left-0 z-20 mb-1 max-h-48 min-w-[12rem] overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md"
-              data-testid="active-run-menu"
-            >
-              {otherRuns.map((run) => (
-                <li key={run.runId}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-2xs hover:bg-muted/50"
-                    onClick={() => selectRun(run.runId)}
-                  >
-                    <span className="truncate font-mono">{shortRunId(run.runId)}</span>
-                    <Badge variant="outline">{run.state}</Badge>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
+      <ActiveRunSummary
+        runId={runId}
+        state={currentState}
+        summary={primaryGate ? gateActionTitle(primaryGate.kind, t) : undefined}
+        loading={loading}
+        reconnecting={wikiRun.connectionStatus === "reconnecting"}
+        graphOpen={graphOpen}
+        onGraphOpenChange={showInspectorTrigger ? onGraphOpenChange : undefined}
+        onCancelRun={
+          canCancel && !gateMovesToOverlay
+            ? () => void dispatchCommand({ type: "cancel_run", commandId: crypto.randomUUID(), runId })
+            : undefined
+        }
+        cancelDisabled={submitting || currentState === "cancelling"}
+      >
+        {showRunPicker ? (
+          <RunPicker
+            runId={runId}
+            recentRuns={recentRuns}
+            onSelectRun={selectRun}
+            menuSide="top"
+          />
+        ) : null}
+      </ActiveRunSummary>
 
-        <div className="min-w-0 flex-1">
-          {primaryGate ? (
-            <p className="truncate text-xs font-medium" data-testid="active-run-gate-title">
-              {gateTitle(primaryGate.kind, t)}
-            </p>
-          ) : loading ? (
-            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Spinner className="size-3" />
-              {t.common.loading}
-            </span>
-          ) : (
-            <p className="truncate text-xs text-muted-foreground">
-              {t.agentWorkspace.activeRunIdle}
-            </p>
-          )}
-        </div>
+      {wikiRun.error ? (
+        <Alert variant="destructive" data-testid="active-run-error">
+          <AlertDescription>{wikiRun.error}</AlertDescription>
+        </Alert>
+      ) : null}
 
+      {gateMovesToOverlay && gateTitle ? (
         <Button
           type="button"
           size="sm"
-          variant="outline"
-          data-testid="active-run-toggle-graph"
-          onClick={() => onGraphOpenChange(!graphOpen)}
+          data-testid="active-run-open-gate"
+          aria-haspopup="dialog"
+          aria-expanded={gateOpen}
+          onClick={openGate}
         >
-          {graphOpen ? (
-            <>
-              <ChevronUpIcon className="size-3.5" />
-              {t.agentWorkspace.collapseGraph}
-            </>
-          ) : (
-            <>
-              <ChevronDownIcon className="size-3.5" />
-              {t.agentWorkspace.expandGraph}
-            </>
-          )}
+          <ExternalLinkIcon data-icon="inline-start" />
+          {t.agentWorkspace.openGate}
         </Button>
-      </div>
-
-      {wikiRun.error ? (
-        <p className="text-xs text-destructive" data-testid="active-run-error">
-          {wikiRun.error}
-        </p>
-      ) : null}
-      {commandError ? (
-        <p className="text-xs text-destructive" data-testid="agent-gate-error">
-          {commandError}
-        </p>
       ) : null}
 
-      {primaryGate && primaryGate.kind === "fix" ? (
-        <FixGatePanel
-          gate={primaryGate}
-          runId={runId}
-          snapshot={snapshot}
-          submitting={submitting}
-          commandError={commandError}
-          onResolve={resolveFixGate}
-        />
-      ) : primaryGate && primaryGate.kind === "operator_input" ? (
-        <div
-          className="flex flex-col gap-2"
-          data-testid="agent-operator_input-gate"
-          data-gate-kind="operator_input"
-          data-gate-id={primaryGate.gateId}
+      {primaryGate ? (
+        gatePresentation === "dock" ? gateAction : null
+      ) : commandError ? (
+        <Alert variant="destructive" data-testid="agent-gate-error">
+          <AlertDescription>{commandError}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {primaryGate && gatePresentation === "sheet" && gateTitle ? (
+        <Sheet
+          open={gateOpen}
+          onOpenChange={(open) => {
+            setGateOpen(open);
+            if (open) onGraphOpenChange(false);
+          }}
         >
-          {primaryGate.detail?.summary ? (
-            <p
-              className="whitespace-pre-wrap text-xs text-muted-foreground"
-              data-testid="agent-operator-input-question"
-            >
-              {primaryGate.detail.summary}
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">{t.operatorInput.questionFallback}</p>
-          )}
-          <div className="flex flex-col gap-1">
-            <FieldLabel htmlFor="active-run-operator-answer" className="text-xs">
-              {t.operatorInput.answerLabel}
-            </FieldLabel>
-            <Textarea
-              id="active-run-operator-answer"
-              data-testid="agent-operator-answer"
-              value={operatorAnswer}
-              onChange={(event) => setOperatorAnswer(event.target.value)}
-              placeholder={t.operatorInput.answerPlaceholder}
-              disabled={submitting}
-              rows={2}
-              className="min-h-14 text-xs"
-            />
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            data-testid="agent-operator-answer-submit"
-            disabled={submitting || !operatorAnswer.trim()}
-            onClick={() => void answerOperatorInput()}
+          <SheetContent
+            side="right"
+            className="w-[min(100%,34rem)] max-w-none gap-0 p-0"
+            data-testid="agent-gate-sheet"
           >
-            {submitting ? t.operatorInput.working : t.operatorInput.submit}
-          </Button>
-        </div>
-      ) : primaryGate ? (
-        <div
-          className="flex flex-col gap-2"
-          data-testid={`agent-${primaryGate.kind}-gate`}
-          data-gate-kind={primaryGate.kind}
-          data-gate-id={primaryGate.gateId}
-        >
-          {revising && primaryGate.kind === "plan" && activeGateId === primaryGate.gateId ? (
-            <div className="flex flex-col gap-1">
-              <FieldLabel htmlFor="active-run-gate-feedback" className="text-xs">
-                {t.planConfirm.reviseLabel}
-              </FieldLabel>
-              <Textarea
-                id="active-run-gate-feedback"
-                data-testid="agent-gate-feedback"
-                value={feedback}
-                onChange={(event) => setFeedback(event.target.value)}
-                placeholder={t.planConfirm.revisePlaceholder}
-                disabled={submitting}
-                rows={2}
-                className="min-h-14 text-xs"
-              />
-            </div>
-          ) : null}
-          <div className="flex flex-wrap gap-1.5">
-            <Button
-              type="button"
-              size="sm"
-              data-testid="agent-gate-approve"
-              disabled={submitting || revising}
-              onClick={() => void decide("approve")}
-            >
-              {submitting
-                ? t.planConfirm.working
-                : primaryGate.kind === "plan"
-                  ? t.planConfirm.approve
-                  : t.planConfirm.chipPublish}
-            </Button>
-            {primaryGate.kind === "plan" ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                data-testid={revising ? "agent-gate-revise-submit" : "agent-gate-revise"}
-                disabled={submitting || (revising && !feedback.trim())}
-                onClick={() => {
-                  if (!revising) {
-                    setRevising(true);
-                    setActiveGateId(primaryGate.gateId);
-                  } else void decide("revise");
-                }}
-              >
-                {revising ? t.planConfirm.reviseSubmit : t.planConfirm.revise}
-              </Button>
-            ) : null}
-            {revising ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                data-testid="agent-gate-revise-cancel"
-                disabled={submitting}
-                onClick={() => {
-                  setRevising(false);
-                  setFeedback("");
-                  setActiveGateId(null);
-                }}
-              >
-                {t.common.cancel}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                data-testid="agent-gate-deny"
-                disabled={submitting}
-                onClick={() => void decide("deny")}
-              >
-                {primaryGate.kind === "plan"
-                  ? t.planConfirm.decline
-                  : t.planConfirm.chipKeepStaging}
-              </Button>
-            )}
-          </div>
-        </div>
+            <SheetHeader className="border-b border-border">
+              <SheetTitle>{gateTitle}</SheetTitle>
+            </SheetHeader>
+            <div className="min-h-0 overflow-y-auto px-4 py-4">{gateAction}</div>
+          </SheetContent>
+        </Sheet>
       ) : null}
-    </div>
+
+      {primaryGate && gatePresentation === "drawer" && gateTitle ? (
+        <Drawer
+          open={gateOpen}
+          onOpenChange={(open) => {
+            setGateOpen(open);
+            if (open) onGraphOpenChange(false);
+          }}
+          showSwipeHandle
+        >
+          <DrawerContent
+            className="pb-[env(safe-area-inset-bottom)]"
+            data-testid="agent-gate-drawer"
+          >
+            <DrawerHeader>
+              <DrawerTitle>{gateTitle}</DrawerTitle>
+            </DrawerHeader>
+            <div className="min-h-0 overflow-y-auto px-4 pb-4">{gateAction}</div>
+          </DrawerContent>
+        </Drawer>
+      ) : null}
+    </section>
   );
 }

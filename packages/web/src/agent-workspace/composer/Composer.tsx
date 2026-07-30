@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import {
   InputGroup,
   InputGroupAddon,
@@ -49,15 +50,15 @@ export type ComposerProps = {
   modelProfileId?: string;
   /** Session-scoped model switch; resolves false when the server rejects it. */
   onSetModel?: (profileId: string) => Promise<boolean>;
-  /**
-   * Dual-surface WikiRun chrome (ADR 0035). Session Stop stays on `agent-abort`;
-   * Run cancel is a separate control so chat can continue while a Run is busy.
-   */
+  /** @deprecated Durable Run controls belong to the Action Dock. */
   showStopRun?: boolean;
+  /** @deprecated Durable Run controls belong to the Action Dock. */
   onStopRun?: () => void;
+  /** @deprecated Run state is presented by ActiveRunSummary. */
   runBusy?: boolean;
+  /** @deprecated Run state is presented by ActiveRunSummary. */
   runNeedsOperator?: boolean;
-  /** Raw WikiRun state for optional chip wording. */
+  /** @deprecated Run state is presented by ActiveRunSummary. */
   runStateLabel?: string;
   /**
    * Ephemeral session context fill (last assistant totalTokens + window).
@@ -82,11 +83,6 @@ export function Composer({
   className,
   modelProfileId,
   onSetModel,
-  showStopRun = false,
-  onStopRun,
-  runBusy = false,
-  runNeedsOperator = false,
-  runStateLabel,
   sessionUsage = null,
 }: ComposerProps) {
   const { t } = useI18n();
@@ -98,8 +94,7 @@ export function Composer({
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
   const [modelChoice, setModelChoice] = useState<string>("");
   const [modelSwitching, setModelSwitching] = useState(false);
-  // Session-only pending — Run busy must not disable Send (dual-surface chrome).
-  // Phase 6: when running, Send uses steer/follow_up queue semantics (idle-only prompt).
+  // Session-only pending. Send remains available during streaming for steer.
   const isPending = status === "sending" || status === "streaming";
   const trimmed = input.trim();
   // Allow send while streaming so the operator can steer / queue follow-up.
@@ -109,18 +104,11 @@ export function Composer({
   // set control disabled / data-disabled — that applies opacity-50 to Stop too
   // (InputGroup: has-[[data-slot=input-group-control]:disabled]:opacity-50).
   const groupDisabled = disabled;
-  const runHint =
-    runNeedsOperator
-      ? t.agentWorkspace.runWaitingOperatorHint
-      : runBusy
-        ? runStateLabel === "cancelling"
-          ? t.agentWorkspace.runCancellingHint
-          : runStateLabel === "queued"
-            ? t.agentWorkspace.runQueuedHint
-            : t.agentWorkspace.runRunningHint
-        : null;
-  const statusBusyVisual = isPending || runBusy || runNeedsOperator;
   const contextFill = useMemo(() => formatContextFill(sessionUsage), [sessionUsage]);
+  const modelItems = useMemo(
+    () => models.map((model) => ({ value: model.id, label: model.name || model.modelId })),
+    [models],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -286,74 +274,57 @@ export function Composer({
           ))}
         </div>
       ) : null}
-      <label htmlFor={inputId} className="sr-only">
-        {t.agentWorkspace.composerLabel}
-      </label>
-      <InputGroup data-disabled={groupDisabled ? true : undefined}>
-        <InputGroupTextarea
-          id={inputId}
-          name="message"
-          data-testid="agent-composer-input"
-          value={input}
-          onChange={(event) => {
-            onInputChange(event.target.value);
-            setMenuDismissed(false);
-            if (validationMessage && event.target.value.trim()) {
-              setValidationMessage(null);
-            }
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={t.agentWorkspace.placeholder}
-          disabled={groupDisabled}
-          required={true}
-          minLength={1}
-          aria-invalid={invalid || undefined}
-          aria-describedby={invalid ? `${inputId}-error` : undefined}
-          rows={2}
-          className="min-h-[2.75rem] resize-none text-sm"
-        />
-        <InputGroupAddon align="block-end" className="justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {isPending ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                data-testid="agent-abort"
-                aria-label={t.agentWorkspace.stop}
-                disabled={false}
-                className="opacity-100"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onAbort();
-                }}
-              >
-                <SquareIcon data-icon="inline-start" />
-                {t.agentWorkspace.stop}
-              </Button>
-            ) : null}
-            {showStopRun ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                data-testid="agent-stop-run"
-                aria-label={t.agentWorkspace.stopRun}
-                disabled={false}
-                className="opacity-100"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onStopRun?.();
-                }}
-              >
-                <SquareIcon data-icon="inline-start" />
-                {t.agentWorkspace.stopRun}
-              </Button>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-2">
+      <FieldGroup className="gap-2">
+        <Field data-invalid={invalid || undefined} data-disabled={groupDisabled || undefined}>
+          <FieldLabel htmlFor={inputId} className="sr-only">
+            {t.agentWorkspace.composerLabel}
+          </FieldLabel>
+          <InputGroup>
+            <InputGroupTextarea
+              id={inputId}
+              name="message"
+              data-testid="agent-composer-input"
+              value={input}
+              onChange={(event) => {
+                onInputChange(event.target.value);
+                setMenuDismissed(false);
+                if (validationMessage && event.target.value.trim()) {
+                  setValidationMessage(null);
+                }
+              }}
+              onKeyDown={handleKeyDown}
+              placeholder={t.agentWorkspace.placeholder}
+              disabled={groupDisabled}
+              required={true}
+              minLength={1}
+              aria-invalid={invalid || undefined}
+              aria-describedby={invalid ? `${inputId}-error` : undefined}
+              rows={2}
+              className="min-h-[2.75rem] resize-none text-sm"
+            />
+            <InputGroupAddon align="block-end" className="justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {isPending ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    data-testid="agent-abort"
+                    aria-label={t.agentWorkspace.stop}
+                    disabled={false}
+                    className="opacity-100"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onAbort();
+                    }}
+                  >
+                    <SquareIcon data-icon="inline-start" />
+                    {t.agentWorkspace.stop}
+                  </Button>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
             {contextFill ? (
               <span
                 data-testid="agent-context-fill"
@@ -386,12 +357,13 @@ export function Composer({
                 <span data-testid="agent-context-fill-label">{contextFill.label}</span>
               </span>
             ) : null}
-            {onSetModel && models.length > 0 ? (
-              <Select
-                value={selectedModelId || undefined}
-                onValueChange={(value) => void changeModel(value ?? "")}
-                disabled={disabled || isPending || modelSwitching}
-              >
+                {onSetModel && models.length > 0 ? (
+                  <Select
+                    items={modelItems}
+                    value={selectedModelId || null}
+                    onValueChange={(value) => void changeModel(value ?? "")}
+                    disabled={disabled || isPending || modelSwitching}
+                  >
                 <SelectTrigger
                   data-testid="agent-model-select"
                   aria-label={t.agentWorkspace.modelSelectLabel}
@@ -409,52 +381,46 @@ export function Composer({
                     ))}
                   </SelectGroup>
                 </SelectContent>
-              </Select>
-            ) : null}
-            <span
-              role="status"
-              aria-live="polite"
-              data-testid="agent-composer-status"
-              data-run-state={runStateLabel || undefined}
-              className={cn(
-                "text-2xs text-muted-foreground",
-                status === "error" && !isPending && !runHint && "text-destructive",
-                statusBusyVisual && "inline-flex items-center gap-1",
-              )}
-            >
-              {statusBusyVisual ? <Spinner className="size-3" /> : null}
-              {isPending
-                ? t.agentWorkspace.statusBusy
-                : runHint
-                  ? runHint
-                  : status === "error"
-                    ? t.agentWorkspace.statusError
-                    : t.agentWorkspace.statusReady}
-            </span>
-            <InputGroupButton
-              type="submit"
-              size="sm"
-              variant="default"
-              data-testid="agent-send"
-              disabled={!canSend}
-              aria-disabled={!canSend}
-            >
-              <SendIcon data-icon="inline-start" />
-              {t.agentWorkspace.send}
-            </InputGroupButton>
-          </div>
-        </InputGroupAddon>
-      </InputGroup>
-      {invalid ? (
-        <p
-          id={`${inputId}-error`}
-          role="alert"
-          className="mt-1.5 text-xs text-destructive"
-          data-testid="agent-composer-error"
-        >
-          {validationMessage}
-        </p>
-      ) : null}
+                  </Select>
+                ) : null}
+                <span
+                  role="status"
+                  aria-live="polite"
+                  data-testid="agent-composer-status"
+                  className={cn(
+                    "text-2xs text-muted-foreground",
+                    status === "error" && !isPending && "text-destructive",
+                    isPending && "inline-flex items-center gap-1",
+                  )}
+                >
+                  {isPending ? <Spinner className="size-3" /> : null}
+                  {isPending
+                    ? t.agentWorkspace.statusBusy
+                    : status === "error"
+                      ? t.agentWorkspace.statusError
+                      : t.agentWorkspace.statusReady}
+                </span>
+                <InputGroupButton
+                  type="submit"
+                  size="sm"
+                  variant="default"
+                  data-testid="agent-send"
+                  disabled={!canSend}
+                  aria-disabled={!canSend}
+                >
+                  <SendIcon data-icon="inline-start" />
+                  {t.agentWorkspace.send}
+                </InputGroupButton>
+              </div>
+            </InputGroupAddon>
+          </InputGroup>
+          {invalid ? (
+            <FieldError id={`${inputId}-error`} data-testid="agent-composer-error">
+              {validationMessage}
+            </FieldError>
+          ) : null}
+        </Field>
+      </FieldGroup>
     </form>
   );
 }

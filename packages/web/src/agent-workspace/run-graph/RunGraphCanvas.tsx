@@ -1,15 +1,27 @@
 /**
- * Read-only layered Run Graph canvas (CSS grid — no xyflow).
- * Pure presentation of view-model from contract snapshot.
+ * Read-only Workflow view for a projected WikiRun snapshot.
  *
- * Layered chip grid only — no edge drawing. Parent hierarchy is available on
- * nodes via `parentKey`. Contract `playhead` is a journal cursor (latest
- * upserted attempt) and is shown as a chip highlight, not AV chrome.
- *
- * Product path: WikiRunSnapshot → wikiRunToViewModel → RunGraphCanvas.
- * Accepts pre-projected `viewModel` only (no raw graph prop).
+ * The control plane exposes parentKey, not a generic dependency graph. This
+ * view therefore renders only that hierarchy and deliberately leaves every
+ * other relationship absent.
  */
 
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  CircleDashedIcon,
+  CircleIcon,
+  LoaderCircleIcon,
+} from "lucide-react";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
 import { cn } from "@/lib/utils";
 import { useI18n } from "../../i18n";
 import { StatusBadge } from "../components/StatusBadge";
@@ -25,8 +37,13 @@ export type RunGraphCanvasProps = {
   className?: string;
   /** Currently selected nodeKey (highlight). */
   selectedNodeKey?: string | null;
-  /** Click a node — parent should open a dialog, not expand inline. */
+  /** Click a node — parent should open an Attempt inspector. */
   onSelectNode?: (nodeKey: string) => void;
+};
+
+type WorkflowBranch = {
+  node: RunGraphViewNode;
+  children: WorkflowBranch[];
 };
 
 function statusClass(status: RunGraphViewNode["status"]): string {
@@ -69,21 +86,147 @@ function layerLabel(id: RunGraphLayerId, t: ReturnType<typeof useI18n>["t"]): st
   }
 }
 
-function nodeTitle(node: RunGraphViewNode): string {
-  if (node.parentKey) return `${node.label} ← ${node.parentKey}`;
-  return node.label;
+function NodeStatusIcon({ status }: { status: RunGraphViewNode["status"] }) {
+  switch (status) {
+    case "running":
+    case "awaiting":
+      return <LoaderCircleIcon className="motion-safe:animate-spin" aria-hidden />;
+    case "done":
+      return <CircleCheckIcon aria-hidden />;
+    case "error":
+    case "cancelled":
+      return <CircleAlertIcon aria-hidden />;
+    case "pending":
+    case "skipped":
+      return <CircleDashedIcon aria-hidden />;
+    case "idle":
+    default:
+      return <CircleIcon aria-hidden />;
+  }
+}
+
+function branchesFor(nodes: readonly RunGraphViewNode[]): WorkflowBranch[] {
+  const childrenByParent = new Map<string, RunGraphViewNode[]>();
+  const known = new Set(nodes.map((node) => node.nodeKey));
+
+  for (const node of nodes) {
+    if (!node.parentKey || !known.has(node.parentKey)) continue;
+    const children = childrenByParent.get(node.parentKey) ?? [];
+    children.push(node);
+    childrenByParent.set(node.parentKey, children);
+  }
+
+  const branchFor = (node: RunGraphViewNode, ancestors: ReadonlySet<string>): WorkflowBranch => {
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(node.nodeKey);
+    const children = (childrenByParent.get(node.nodeKey) ?? [])
+      .filter((child) => !nextAncestors.has(child.nodeKey))
+      .map((child) => branchFor(child, nextAncestors));
+    return { node, children };
+  };
+
+  const roots = nodes.filter((node) => !node.parentKey || !known.has(node.parentKey));
+  // A malformed cycle has no root. Show flat nodes rather than silently
+  // losing control-plane state or rendering the same node multiple times.
+  if (roots.length === 0) return nodes.map((node) => ({ node, children: [] }));
+  return roots.map((node) => branchFor(node, new Set()));
+}
+
+type WorkflowNodeProps = {
+  branch: WorkflowBranch;
+  selectedNodeKey?: string | null;
+  playheadKey?: string;
+  onSelectNode?: (nodeKey: string) => void;
+  level: number;
+};
+
+function WorkflowNode({
+  branch,
+  selectedNodeKey,
+  playheadKey,
+  onSelectNode,
+  level,
+}: WorkflowNodeProps) {
+  const { node, children } = branch;
+  const selected = selectedNodeKey === node.nodeKey;
+  const atPlayhead = playheadKey === node.nodeKey;
+  const interactive = Boolean(onSelectNode);
+  const active = atPlayhead && (node.status === "running" || node.status === "awaiting");
+
+  return (
+    <div className="relative min-w-0" data-testid="run-graph-branch">
+      <Item
+        render={<button type="button" />}
+        role="treeitem"
+        aria-level={level}
+        aria-expanded={children.length > 0 ? true : undefined}
+        aria-current={selected ? "true" : undefined}
+        aria-disabled={!interactive || undefined}
+        tabIndex={interactive ? 0 : -1}
+        onClick={() => onSelectNode?.(node.nodeKey)}
+        className={cn(
+          "min-w-0 text-left",
+          statusClass(node.status),
+          selected && "ring-1 ring-primary/60",
+          atPlayhead && !selected && "ring-2 ring-primary/35",
+          active && "motion-safe:animate-pulse",
+          interactive ? "cursor-pointer hover:bg-muted/40" : "cursor-default",
+        )}
+        data-testid="run-graph-node"
+        data-node-key={node.nodeKey}
+        data-node-status={node.status}
+        data-node-kind={node.kind}
+        data-parent-key={node.parentKey}
+        data-selected={selected ? "true" : undefined}
+        data-playhead={atPlayhead ? "true" : undefined}
+      >
+        <ItemMedia variant="icon" className="text-muted-foreground">
+          <NodeStatusIcon status={node.status} />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle>{node.label}</ItemTitle>
+          <ItemDescription className="font-mono text-2xs">{node.nodeKey}</ItemDescription>
+        </ItemContent>
+        <ItemActions>
+          {node.attemptCount > 1 ? (
+            <span className="text-2xs tabular-nums text-muted-foreground">{node.attemptCount}</span>
+          ) : null}
+          <StatusBadge status={node.status} />
+        </ItemActions>
+      </Item>
+
+      {children.length > 0 ? (
+        <ItemGroup
+          role="group"
+          className="mt-1.5 ml-3 gap-1.5 border-s border-border ps-3"
+          data-testid="run-graph-children"
+        >
+          {children.map((child) => (
+            <WorkflowNode
+              key={child.node.nodeKey}
+              branch={child}
+              selectedNodeKey={selectedNodeKey}
+              playheadKey={playheadKey}
+              onSelectNode={onSelectNode}
+              level={level + 1}
+            />
+          ))}
+        </ItemGroup>
+      ) : null}
+    </div>
+  );
 }
 
 export function RunGraphCanvas({
-  viewModel: vm,
+  viewModel: viewModel,
   className,
   selectedNodeKey,
   onSelectNode,
 }: RunGraphCanvasProps) {
   const { t } = useI18n();
-  const playheadKey = vm.playhead?.nodeKey;
+  const nodes = viewModel.layers.flatMap((layer) => layer.nodes);
 
-  if (vm.layers.length === 0 && vm.attempts.length === 0) {
+  if (nodes.length === 0 && viewModel.attempts.length === 0) {
     return (
       <p className="text-2xs text-muted-foreground" data-testid="run-graph-empty">
         {t.agentWorkspace.runGraphEmpty}
@@ -91,67 +234,47 @@ export function RunGraphCanvas({
     );
   }
 
+  const branches = branchesFor(nodes);
+  const branchesByLayer = new Map<RunGraphLayerId, WorkflowBranch[]>();
+  for (const branch of branches) {
+    const layer = branch.node.layer;
+    const existing = branchesByLayer.get(layer) ?? [];
+    existing.push(branch);
+    branchesByLayer.set(layer, existing);
+  }
+
   return (
     <div
-      className={className ?? "flex flex-col gap-2"}
+      className={cn("flex min-w-0 flex-col gap-3", className)}
       data-testid="run-graph-canvas"
-      data-topology-version={vm.topologyVersion}
-      data-playhead-node={playheadKey}
-      data-playhead-attempt={vm.playhead?.attemptId}
+      data-topology-version={viewModel.topologyVersion}
+      data-edge-count={viewModel.edges.length}
+      data-playhead-node={viewModel.playhead?.nodeKey}
+      data-playhead-attempt={viewModel.playhead?.attemptId}
     >
-      <div className="flex flex-col gap-2">
-        {vm.layers.map((layer) => (
-          <div
-            key={layer.id}
-            className="flex flex-col gap-1"
+      {[...branchesByLayer.entries()].map(([layer, layerBranches]) => (
+        <section key={layer} className="flex min-w-0 flex-col gap-1.5">
+          <p className="okf-section-label">{layerLabel(layer, t)}</p>
+          <ItemGroup
+            role="tree"
+            aria-label={layerLabel(layer, t)}
+            className="gap-1.5"
             data-testid="run-graph-layer"
-            data-layer={layer.id}
+            data-layer={layer}
           >
-            <p className="okf-section-label">{layerLabel(layer.id, t)}</p>
-            <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-              {layer.nodes.map((node) => {
-                const selected = selectedNodeKey === node.nodeKey;
-                const atPlayhead = playheadKey === node.nodeKey;
-                const interactive = Boolean(onSelectNode);
-                const active =
-                  atPlayhead && (node.status === "running" || node.status === "awaiting");
-                return (
-                  <button
-                    key={node.nodeKey}
-                    type="button"
-                    className={cn(
-                      "flex min-w-0 items-center justify-between gap-1.5 rounded-md border px-2 py-1.5 text-left text-xs leading-snug",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                      statusClass(node.status),
-                      selected && "ring-1 ring-primary/60",
-                      atPlayhead && !selected && "ring-2 ring-primary/35",
-                      active && "animate-pulse",
-                      interactive ? "cursor-pointer hover:bg-muted/40" : "cursor-default",
-                    )}
-                    data-testid="run-graph-node"
-                    data-node-key={node.nodeKey}
-                    data-node-status={node.status}
-                    data-node-kind={node.kind}
-                    data-selected={selected ? "true" : undefined}
-                    data-playhead={atPlayhead ? "true" : undefined}
-                    onClick={() => onSelectNode?.(node.nodeKey)}
-                    disabled={!interactive}
-                    title={nodeTitle(node)}
-                  >
-                    <span className="min-w-0 truncate font-medium">{node.label}</span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      {node.attemptCount > 1 ? (
-                        <span className="text-2xs text-muted-foreground">×{node.attemptCount}</span>
-                      ) : null}
-                      <StatusBadge status={node.status} />
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
+            {layerBranches.map((branch) => (
+              <WorkflowNode
+                key={branch.node.nodeKey}
+                branch={branch}
+                selectedNodeKey={selectedNodeKey}
+                playheadKey={viewModel.playhead?.nodeKey}
+                onSelectNode={onSelectNode}
+                level={1}
+              />
+            ))}
+          </ItemGroup>
+        </section>
+      ))}
     </div>
   );
 }

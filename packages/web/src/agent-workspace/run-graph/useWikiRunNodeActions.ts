@@ -1,7 +1,7 @@
 /**
  * Shared node-dialog selection + RetryFailedNode / RerunNode dispatch.
  *
- * Used by ActiveRunDetails (inline graph under the Active Run bar).
+ * Used by RunCockpit (the selected Run context surface).
  * WikiProduceGatePanel is receipt-only; HITL CTAs live on ActiveRunBar.
  *
  * Command state is resource-keyed:

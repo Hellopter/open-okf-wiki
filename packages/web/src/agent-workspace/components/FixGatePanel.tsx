@@ -9,8 +9,9 @@ import type { FixGateDecision, MergedDefectReport, WikiRunGate, WikiRunSnapshot 
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { FieldLabel } from "@/components/ui/field";
-import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { InputGroup, InputGroupTextarea } from "@/components/ui/input-group";
 import { useI18n } from "../../i18n";
 import {
   buildFixGateResolveCommand,
@@ -153,27 +154,31 @@ export function FixGatePanel({
       ) : null}
 
       {commandError ? (
-        <p className="text-xs text-destructive" data-testid="agent-gate-error">
-          {commandError}
-        </p>
+        <Alert variant="destructive" data-testid="agent-gate-error">
+          <AlertDescription>{commandError}</AlertDescription>
+        </Alert>
       ) : null}
 
       {revising ? (
-        <div className="flex flex-col gap-1">
-          <FieldLabel htmlFor="fix-gate-feedback" className="text-xs">
-            {t.fixConfirm.reviseLabel}
-          </FieldLabel>
-          <Textarea
-            id="fix-gate-feedback"
-            data-testid="agent-gate-feedback"
-            value={feedback}
-            onChange={(event) => setFeedback(event.target.value)}
-            placeholder={t.fixConfirm.revisePlaceholder}
-            disabled={submitting}
-            rows={2}
-            className="min-h-16 text-xs"
-          />
-        </div>
+        <FieldGroup className="gap-2">
+          <Field data-disabled={submitting || undefined}>
+            <FieldLabel htmlFor="fix-gate-feedback" className="text-xs">
+              {t.fixConfirm.reviseLabel}
+            </FieldLabel>
+            <InputGroup>
+              <InputGroupTextarea
+                id="fix-gate-feedback"
+                data-testid="agent-gate-feedback"
+                value={feedback}
+                onChange={(event) => setFeedback(event.target.value)}
+                placeholder={t.fixConfirm.revisePlaceholder}
+                disabled={submitting}
+                rows={2}
+                className="min-h-16 text-xs"
+              />
+            </InputGroup>
+          </Field>
+        </FieldGroup>
       ) : null}
 
       <div className="flex flex-wrap gap-1.5">

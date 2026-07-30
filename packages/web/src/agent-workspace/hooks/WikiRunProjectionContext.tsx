@@ -2,7 +2,7 @@
  * Shell-owned single WikiRun projection.
  *
  * One `useWikiRun` subscription per workspace shell, keyed by URL `?run=` only.
- * ActiveRunBar / ActiveRunDetails match by runId — no second EventSource.
+ * ActiveRunBar / RunCockpit match by runId — no second EventSource.
  * Graph expand is local UI state (not this context). Receipt only updates URL run.
  */
 
@@ -10,9 +10,6 @@ import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type { WikiRunProjectionContextValue } from "./wiki-run-projection";
 import { useWikiRun } from "./useWikiRun";
 import type { ConnectionStatus } from "./useSessionAgent";
-
-export type { WikiRunProjectionContextValue } from "./wiki-run-projection";
-export { selectMatchingProjection } from "./wiki-run-projection";
 
 const IDLE_VALUE: WikiRunProjectionContextValue = {
   runId: null,
@@ -83,6 +80,8 @@ export function WikiRunProjectionProvider({
 }
 
 /** Safe default when outside provider or with no active run. */
+// The Provider and hook must share this private Context identity.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useWikiRunProjection(): WikiRunProjectionContextValue {
   return useContext(WikiRunProjectionContext);
 }

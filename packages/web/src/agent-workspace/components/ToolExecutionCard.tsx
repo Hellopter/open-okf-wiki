@@ -137,7 +137,7 @@ export const ToolExecutionCard = memo(function ToolExecutionCard({
             isError && "text-destructive",
           )}
         >
-          {isWikiProduce ? "wiki_produce" : display.title}
+          {isWikiProduce ? t.agentWorkspace.produceWiki : display.title}
         </span>
         {isWikiProduce && wikiDetails?.status === "accepted" && wikiDetails.runId ? (
           <span className="ml-1.5 font-mono text-2xs text-muted-foreground">

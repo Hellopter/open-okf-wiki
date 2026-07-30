@@ -21,6 +21,7 @@ import type {
 } from "@okf-wiki/contract";
 import {
   appendOrphanAttemptNodes,
+  edgesFromNodes,
   groupViewNodesIntoLayers,
   layerForKind,
   latestAttemptFor,
@@ -219,6 +220,7 @@ export function wikiRunToViewModel(snapshot: WikiRunSnapshot): WikiRunGraphViewM
 
   return {
     layers: groupViewNodesIntoLayers(nodes),
+    edges: edgesFromNodes(nodes),
     attempts,
     ...(playhead ? { playhead } : {}),
     topologyVersion: snapshot.revision,

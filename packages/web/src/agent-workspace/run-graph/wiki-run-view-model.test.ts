@@ -102,6 +102,7 @@ describe("wikiRun view-model projection", () => {
     assert.equal(vm.runState, "running");
     assert.equal(vm.revision, 3);
     assert.equal(vm.topologyVersion, 3);
+    assert.deepEqual(vm.edges, []);
     assert.equal(vm.playhead?.attemptId, "a-leaf");
     const leaf = vm.layers.flatMap((l) => l.nodes).find((n) => n.nodeKey === "research.leaf.core");
     assert.equal(leaf?.status, "running");

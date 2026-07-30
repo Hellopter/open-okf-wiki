@@ -46,7 +46,7 @@ export type BuildFixGateResolveCommandInput = {
 /**
  * Build a ResolveGate command for an open fix gate.
  * Throws if revise is missing non-empty feedback.
- * `fix` may carry optional notes (workflow schedules repair.review.N).
+ * `fix` may carry optional notes (workflow schedules repair.N).
  */
 export function buildFixGateResolveCommand(
   input: BuildFixGateResolveCommandInput,

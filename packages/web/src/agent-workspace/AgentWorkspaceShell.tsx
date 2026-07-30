@@ -1,54 +1,214 @@
 /**
- * Agent Workspace shell (ADR 0032 hard-cut).
+ * Operate-route workbench.
  *
- * left: collapsible session list · center: transcript + Active Run + composer
- *
- * Right ContextPanels rail removed. Active run observation lives inline
- * (ActiveRunBar / ActiveRunDetails); URL `?run=` selects the run, local
- * `graphOpen` expands plan/graph under the bar (not a Sheet/Dialog).
+ * This is the only full-height owner for `/w/:id`. Session and WikiRun SSE
+ * projections stay page-owned; this file only composes their UI surfaces.
  */
 
-import { LayoutListIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { toast } from "sonner";
+import type { SessionUsage } from "@okf-wiki/contract";
+import { PanelRightCloseIcon, PanelRightOpenIcon } from "lucide-react";
+import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Badge } from "@/components/ui/badge";
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+} from "@/components/ui/drawer";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-import type { SessionUsage } from "@okf-wiki/contract";
 import type { PiSessionSummary, WikiRunListItem, WorkspaceConfig } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
 import { ActiveRunBar } from "./components/ActiveRunBar";
-import { ActiveRunDetails } from "./components/ActiveRunDetails";
+import { RunCockpit } from "./components/RunCockpit";
+import { RunPicker } from "./components/RunPicker";
 import { Composer } from "./composer/Composer";
 import type { AgentMessage, AgentStatus, ConnectionStatus } from "./hooks/useSessionAgent";
-import { SessionList } from "./session-list/SessionList";
+import { AgentSessionSidebar } from "./session-list/SessionList";
 import { Transcript } from "./transcript/Transcript";
 
-const CONNECTION_TOAST_ID = "agent-connection-status";
+export type WorkspaceToolbarProps = {
+  workspaceId: string;
+  workspaceName?: string;
+  connectionStatus?: ConnectionStatus;
+  runControls?: ReactNode;
+  actions?: ReactNode;
+};
 
-/** localStorage: "1" = collapsed, "0" / missing = expanded. */
-const LEFT_STORAGE_KEY = "okf-wiki.agent.left-collapsed";
-
-function readCollapsed(key: string, defaultCollapsed = false): boolean {
-  try {
-    const v = localStorage.getItem(key);
-    if (v === null) return defaultCollapsed;
-    return v === "1";
-  } catch {
-    return defaultCollapsed;
+function connectionLabel(
+  status: ConnectionStatus,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  switch (status) {
+    case "live":
+      return t.agentWorkspace.connectionLive;
+    case "connecting":
+      return t.agentWorkspace.connectionConnecting;
+    case "reconnecting":
+      return t.agentWorkspace.connectionReconnecting;
+    case "offline":
+      return t.agentWorkspace.connectionOffline;
   }
 }
 
-function writeCollapsed(key: string, collapsed: boolean) {
-  try {
-    localStorage.setItem(key, collapsed ? "1" : "0");
-  } catch {
-    // ignore quota / private mode
-  }
+function connectionVariant(status: ConnectionStatus): "secondary" | "outline" | "destructive" {
+  if (status === "live") return "secondary";
+  if (status === "offline") return "destructive";
+  return "outline";
+}
+
+/** The single Operate header; mobile no longer renders a second session header. */
+export function WorkspaceToolbar({
+  workspaceId,
+  workspaceName,
+  connectionStatus = "offline",
+  runControls,
+  actions,
+}: WorkspaceToolbarProps) {
+  const { t } = useI18n();
+  const displayName = workspaceName ?? workspaceId;
+
+  return (
+    <header
+      className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1 md:px-3"
+      data-testid="workspace-toolbar"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <SidebarTrigger
+          aria-label={t.agentWorkspace.sessions}
+          title={t.agentWorkspace.sessions}
+          data-testid="agent-mobile-sessions"
+        />
+        <Breadcrumb className="min-w-0">
+          <BreadcrumbList>
+            <BreadcrumbItem className="hidden sm:inline-flex">
+              <BreadcrumbLink render={<Link to="/workspaces" />}>
+                {t.nav.workspaces}
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator className="hidden sm:inline-flex" />
+            <BreadcrumbItem className="min-w-0">
+              <BreadcrumbPage className="block max-w-48 truncate sm:max-w-80">
+                {displayName}
+              </BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+      </div>
+
+      {runControls ? (
+        <div className="flex shrink-0 items-center gap-1" data-testid="workspace-run-controls">
+          {runControls}
+        </div>
+      ) : null}
+
+      <div className="flex shrink-0 items-center gap-2">
+        <Badge
+          variant={connectionVariant(connectionStatus)}
+          aria-live="polite"
+          data-testid="agent-connection-status"
+          data-connection-status={connectionStatus}
+        >
+          {connectionLabel(connectionStatus, t)}
+        </Badge>
+        {actions}
+      </div>
+    </header>
+  );
+}
+
+export type AgentWorkbenchProps = {
+  workspaceId: string;
+  workspaceName?: string;
+  connectionStatus?: ConnectionStatus;
+  runControls?: ReactNode;
+  toolbarActions?: ReactNode;
+  sidebar?: ReactNode;
+  error?: unknown;
+  onDismissError?: () => void;
+  children: ReactNode;
+  className?: string;
+};
+
+/**
+ * Full replacement for WorkbenchShell on the Operate route.
+ * SidebarProvider must stay at this level because Sidebar owns a fixed h-svh
+ * desktop container and its own mobile Sheet.
+ */
+export function AgentWorkbench({
+  workspaceId,
+  workspaceName,
+  connectionStatus = "offline",
+  runControls,
+  toolbarActions,
+  sidebar,
+  error,
+  onDismissError,
+  children,
+  className,
+}: AgentWorkbenchProps) {
+  const { t } = useI18n();
+  const sidebarLabels = useMemo(
+    () => ({
+      mobileTitle: t.agentWorkspace.sessions,
+      mobileDescription: t.agentWorkspace.mobileSessionsDescription,
+      toggleLabel: t.agentWorkspace.toggleSessions,
+    }),
+    [
+      t.agentWorkspace.mobileSessionsDescription,
+      t.agentWorkspace.sessions,
+      t.agentWorkspace.toggleSessions,
+    ],
+  );
+
+  return (
+    <SidebarProvider
+      className={cn("h-svh min-h-0 overflow-hidden", className)}
+      labels={sidebarLabels}
+      data-testid="agent-workspace-page"
+    >
+      {sidebar}
+      <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
+        <WorkspaceToolbar
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          connectionStatus={connectionStatus}
+          runControls={runControls}
+          actions={toolbarActions}
+        />
+        {error ? (
+          <div className="shrink-0 px-3 pt-2">
+            <ErrorBanner error={error} onDismiss={onDismissError} />
+          </div>
+        ) : null}
+        {children}
+      </SidebarInset>
+    </SidebarProvider>
+  );
 }
 
 export type AgentWorkspaceShellProps = {
@@ -66,25 +226,40 @@ export type AgentWorkspaceShellProps = {
   onInputChange: (value: string) => void;
   onSend: () => void;
   onAbort: () => void;
-  /** Session-scoped chat model switch (composer dropdown). */
   onSetModel?: (profileId: string) => Promise<boolean>;
   agentStatus: AgentStatus;
   agentReady: boolean;
-  /** SSE lifecycle — only degraded states paint chrome; live is silent. */
   connectionStatus?: ConnectionStatus;
   agentError?: unknown;
   onDismissAgentError?: () => void;
   recentRuns?: WikiRunListItem[];
-  /** Dual-surface WikiRun chrome (Session vs Run stop). */
   showStopRun?: boolean;
   onStopRun?: () => void;
   runBusy?: boolean;
   runNeedsOperator?: boolean;
   runStateLabel?: string;
-  /** Ephemeral context-fill chip (Composer); hidden when null. */
   sessionUsage?: SessionUsage | null;
+  pageError?: unknown;
+  onDismissPageError?: () => void;
+  toolbarActions?: ReactNode;
   className?: string;
 };
+
+function useWideDesktop() {
+  const [isWide, setIsWide] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
+  );
+
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 1280px)");
+    const update = () => setIsWide(media.matches);
+    media.addEventListener("change", update);
+    update();
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return isWide;
+}
 
 export function AgentWorkspaceShell({
   workspaceId,
@@ -114,219 +289,185 @@ export function AgentWorkspaceShell({
   runNeedsOperator = false,
   runStateLabel,
   sessionUsage = null,
+  pageError,
+  onDismissPageError,
+  toolbarActions,
   className,
 }: AgentWorkspaceShellProps) {
   const { t } = useI18n();
-  const isMobile = useIsMobile();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const runId = searchParams.get("run");
-  const [leftSheetOpen, setLeftSheetOpen] = useState(false);
-  const [leftCollapsed, setLeftCollapsed] = useState(() => readCollapsed(LEFT_STORAGE_KEY, false));
-  /** Local graph expand — not tied to URL `?run=`. */
-  const [graphOpen, setGraphOpen] = useState(false);
-
-  // Connection UX: sonner toast for transitions (not a permanent chrome strip / dialog).
-  // live = silent; reconnecting/offline = toast; connecting only after leaving live.
-  const prevConnectionRef = useRef<ConnectionStatus | null>(null);
-  useEffect(() => {
-    const prev = prevConnectionRef.current;
-    prevConnectionRef.current = connectionStatus;
-    if (prev === null) {
-      // Initial mount: don't toast "connecting" / "offline" before first snapshot.
-      return;
-    }
-    if (connectionStatus === "live") {
-      toast.dismiss(CONNECTION_TOAST_ID);
-      if (prev === "reconnecting" || prev === "offline") {
-        toast.success(t.agentWorkspace.connectionLive, { id: CONNECTION_TOAST_ID, duration: 2000 });
-      }
-      return;
-    }
-    if (connectionStatus === "reconnecting") {
-      toast.message(t.agentWorkspace.connectionReconnecting, {
-        id: CONNECTION_TOAST_ID,
-        duration: Infinity,
-      });
-      return;
-    }
-    if (connectionStatus === "offline") {
-      toast.error(t.agentWorkspace.connectionOffline, {
-        id: CONNECTION_TOAST_ID,
-        duration: Infinity,
-      });
-      return;
-    }
-    if (connectionStatus === "connecting" && (prev === "live" || prev === "reconnecting")) {
-      toast.message(t.agentWorkspace.connectionConnecting, {
-        id: CONNECTION_TOAST_ID,
-        duration: Infinity,
-      });
-    }
-  }, [connectionStatus, t.agentWorkspace]);
-
-  // Sticky (Infinity) connection toasts must not outlive this surface —
-  // dismiss on unmount so navigating away never leaves a stale banner.
-  useEffect(
-    () => () => {
-      toast.dismiss(CONNECTION_TOAST_ID);
-    },
-    [],
-  );
-
-  const toggleLeft = useCallback(() => {
-    setLeftCollapsed((prev) => {
-      const next = !prev;
-      writeCollapsed(LEFT_STORAGE_KEY, next);
-      return next;
-    });
-  }, []);
-
-  const sessionList = (
-    <SessionList
-      sessions={sessions}
-      activeSessionId={activeSessionId}
-      onSelect={(id) => {
-        onSelectSession(id);
-        setLeftSheetOpen(false);
-      }}
-      onCreate={onCreateSession}
-      onDelete={onDeleteSession}
-      creating={creatingSession}
-      deletingId={deletingSessionId}
-      onCollapse={!isMobile ? toggleLeft : undefined}
-    />
-  );
-
+  const isMobile = useIsMobile();
+  const isWideDesktop = useWideDesktop();
+  const [cockpitOpen, setCockpitOpen] = useState(false);
   const rootPath = workspace?.rootPath;
 
-  return (
-    <div
-      data-testid="agent-workspace-shell"
-      data-connection-status={connectionStatus}
-      className={cn("flex min-h-0 flex-1 flex-col overflow-hidden bg-background", className)}
-    >
-      {isMobile ? (
-        <header className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1">
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            aria-label={t.agentWorkspace.sessions}
-            title={t.agentWorkspace.sessions}
-            onClick={() => setLeftSheetOpen(true)}
-            data-testid="agent-mobile-sessions"
-          >
-            <LayoutListIcon />
-            <span className="sr-only">{t.agentWorkspace.sessions}</span>
-          </Button>
-          <div className="min-w-0 flex-1 truncate text-sm font-medium">
-            {workspace?.name ?? t.agentWorkspace.title}
-          </div>
-        </header>
-      ) : null}
+  useEffect(() => {
+    if (searchParams.get("attempt")) setCockpitOpen(true);
+  }, [searchParams]);
 
-      {/* Connection status is toast-only; keep a stable test hook on the shell. */}
-      <span
-        className="sr-only"
-        data-testid="agent-connection-status"
-        data-connection-status={connectionStatus}
-      >
-        {connectionStatus === "live"
-          ? t.agentWorkspace.connectionLive
-          : connectionStatus === "connecting"
-            ? t.agentWorkspace.connectionConnecting
-            : connectionStatus === "reconnecting"
-              ? t.agentWorkspace.connectionReconnecting
-              : t.agentWorkspace.connectionOffline}
-      </span>
+  const selectRun = (nextRunId: string) => {
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete("rootPath");
+        next.set("run", nextRunId);
+        next.delete("attempt");
+        return next;
+      },
+      { replace: true },
+    );
+  };
 
-      {agentError ? (
-        <div className="shrink-0 px-2.5 pt-2">
-          <ErrorBanner error={agentError} onDismiss={onDismissAgentError} />
-        </div>
-      ) : null}
-
-      <div className="flex min-h-0 flex-1">
-        {!isMobile ? (
-          leftCollapsed ? (
-            <aside
-              data-testid="agent-left-rail"
-              data-collapsed="true"
-              className="flex w-10 shrink-0 flex-col items-center border-r border-border bg-muted/20 py-2"
-            >
-              {/* One control: decorative list icon was previously not clickable. */}
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      type="button"
-                      size="icon-sm"
-                      variant="ghost"
-                      aria-label={t.agentWorkspace.expandSessions}
-                      aria-expanded={false}
-                      data-testid="agent-left-expand"
-                      onClick={toggleLeft}
-                    />
-                  }
-                >
-                  <LayoutListIcon />
-                </TooltipTrigger>
-                <TooltipContent side="right">{t.agentWorkspace.expandSessions}</TooltipContent>
-              </Tooltip>
-            </aside>
+  const cockpitLabel = cockpitOpen ? t.runInspector.close : t.runInspector.open;
+  const runControls = runId ? (
+    <>
+      <RunPicker runId={runId} recentRuns={recentRuns} onSelectRun={selectRun} />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label={cockpitLabel}
+              aria-pressed={cockpitOpen}
+              data-testid="active-run-toggle-graph"
+              onClick={() => setCockpitOpen((open) => !open)}
+            />
+          }
+        >
+          {cockpitOpen ? (
+            <PanelRightCloseIcon data-icon="inline-start" />
           ) : (
-            <aside
-              data-testid="agent-left-pane"
-              data-collapsed="false"
-              className="flex w-52 shrink-0 flex-col border-r border-border md:w-56"
-            >
-              {sessionList}
-            </aside>
-          )
+            <PanelRightOpenIcon data-icon="inline-start" />
+          )}
+          <span className="sr-only">{cockpitLabel}</span>
+        </TooltipTrigger>
+        <TooltipContent>{cockpitLabel}</TooltipContent>
+      </Tooltip>
+    </>
+  ) : null;
+
+  const conversationPanel = (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <Transcript messages={messages} />
+      <div className="shrink-0" data-testid="agent-action-dock">
+        <ActiveRunBar
+          workspaceId={workspaceId}
+          rootPath={rootPath}
+          recentRuns={recentRuns}
+          graphOpen={cockpitOpen}
+          onGraphOpenChange={setCockpitOpen}
+          showRunPicker={false}
+          showInspectorTrigger={false}
+        />
+        <Composer
+          input={input}
+          onInputChange={onInputChange}
+          onSend={onSend}
+          onAbort={onAbort}
+          status={agentStatus}
+          disabled={!activeSessionId || !agentReady}
+          modelProfileId={workspace?.model.profileId}
+          onSetModel={onSetModel}
+          showStopRun={showStopRun}
+          onStopRun={onStopRun}
+          runBusy={runBusy}
+          runNeedsOperator={runNeedsOperator}
+          runStateLabel={runStateLabel}
+          sessionUsage={sessionUsage}
+        />
+      </div>
+    </div>
+  );
+
+  const cockpit = (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="active-run-details">
+      <RunCockpit
+        key={runId}
+        workspaceId={workspaceId}
+        rootPath={rootPath}
+        onClose={() => setCockpitOpen(false)}
+      />
+    </div>
+  );
+
+  return (
+    <AgentWorkbench
+      workspaceId={workspaceId}
+      workspaceName={workspace?.name}
+      connectionStatus={connectionStatus}
+      runControls={runControls}
+      toolbarActions={toolbarActions}
+      error={pageError}
+      onDismissError={onDismissPageError}
+      sidebar={
+        <AgentSessionSidebar
+          workspaceId={workspaceId}
+          workspaceName={workspace?.name}
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          onSelect={onSelectSession}
+          onCreate={onCreateSession}
+          onDelete={onDeleteSession}
+          creating={creatingSession}
+          deletingId={deletingSessionId}
+        />
+      }
+    >
+      <div
+        data-testid="agent-workspace-shell"
+        data-connection-status={connectionStatus}
+        className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden", className)}
+      >
+        {agentError ? (
+          <div className="shrink-0 px-3 pt-2">
+            <ErrorBanner error={agentError} onDismiss={onDismissAgentError} />
+          </div>
         ) : null}
 
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <Transcript messages={messages} />
-          {/* Bar above composer; graph expands under the bar (not a right Sheet). */}
-          <ActiveRunBar
-            workspaceId={workspaceId}
-            rootPath={rootPath}
-            recentRuns={recentRuns}
-            graphOpen={graphOpen}
-            onGraphOpenChange={setGraphOpen}
-          />
-          {graphOpen && runId ? (
-            <ActiveRunDetails workspaceId={workspaceId} rootPath={rootPath} />
-          ) : null}
-          <Composer
-            input={input}
-            onInputChange={onInputChange}
-            onSend={onSend}
-            onAbort={onAbort}
-            status={agentStatus}
-            disabled={!activeSessionId || !agentReady}
-            modelProfileId={workspace?.model.profileId}
-            onSetModel={onSetModel}
-            showStopRun={showStopRun}
-            onStopRun={onStopRun}
-            runBusy={runBusy}
-            runNeedsOperator={runNeedsOperator}
-            runStateLabel={runStateLabel}
-            sessionUsage={sessionUsage}
-          />
-        </main>
+        {isWideDesktop && cockpitOpen && runId ? (
+          <ResizablePanelGroup orientation="horizontal" className="min-h-0 min-w-0 flex-1">
+            <ResizablePanel defaultSize={68} minSize={45}>
+              {conversationPanel}
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={32} minSize={24}>
+              {cockpit}
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        ) : (
+          conversationPanel
+        )}
       </div>
 
-      {isMobile ? (
-        <Sheet open={leftSheetOpen} onOpenChange={setLeftSheetOpen}>
-          <SheetContent side="left" className="w-[min(100%,18rem)] p-0">
+      {!isWideDesktop && cockpitOpen && runId && !isMobile ? (
+        <Sheet open={cockpitOpen} onOpenChange={setCockpitOpen}>
+          <SheetContent
+            side="right"
+            showCloseButton={false}
+            className="w-[min(100%,34rem)] max-w-none gap-0 p-0"
+            data-testid="run-cockpit-sheet"
+          >
             <SheetHeader className="sr-only">
-              <SheetTitle>{t.agentWorkspace.sessions}</SheetTitle>
+              <SheetTitle>{t.runInspector.title}</SheetTitle>
             </SheetHeader>
-            {sessionList}
+            {cockpit}
           </SheetContent>
         </Sheet>
       ) : null}
-    </div>
+
+      {!isWideDesktop && cockpitOpen && runId && isMobile ? (
+        <Drawer open={cockpitOpen} onOpenChange={setCockpitOpen} showSwipeHandle>
+          <DrawerContent className="pb-[env(safe-area-inset-bottom)]" data-testid="run-cockpit-drawer">
+            <DrawerHeader className="sr-only">
+              <DrawerTitle>{t.runInspector.title}</DrawerTitle>
+            </DrawerHeader>
+            {cockpit}
+          </DrawerContent>
+        </Drawer>
+      ) : null}
+    </AgentWorkbench>
   );
 }

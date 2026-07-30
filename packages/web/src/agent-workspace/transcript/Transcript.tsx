@@ -12,6 +12,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Marker, MarkerContent } from "@/components/ui/marker";
+import { Message, MessageContent } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -32,10 +33,18 @@ export type TranscriptProps = {
   className?: string;
 };
 
-function ThinkingBlock({ thinking, streaming }: { thinking: string; streaming?: boolean }) {
+function ThinkingBlock({
+  thinking,
+  streaming,
+  className,
+}: {
+  thinking: string;
+  streaming?: boolean;
+  className?: string;
+}) {
   const { t } = useI18n();
   return (
-    <Collapsible defaultOpen={streaming} className="w-full min-w-0">
+    <Collapsible defaultOpen={streaming} className={cn("w-full min-w-0", className)}>
       <CollapsibleTrigger className="group flex min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
         <ChevronRightIcon className="size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
         <span className="min-w-0 truncate">
@@ -75,29 +84,18 @@ export const TranscriptMessage = memo(function TranscriptMessage({
     />
   );
 
-  if (message.role === "system" && message.status === "aborted") {
+  if (message.role === "system" || message.role === "tool") {
     return (
       <Marker
         data-testid="agent-message"
-        data-role="system"
-        data-status="aborted"
-        variant="separator"
-        role="status"
-      >
-        <MarkerContent>{message.content}</MarkerContent>
-      </Marker>
-    );
-  }
-
-  if (message.role === "system" || message.role === "tool") {
-    return (
-      <div
-        data-testid="agent-message"
         data-role={message.role}
-        className="flex w-full justify-center"
+        data-status={message.status}
+        variant={message.status === "aborted" ? "separator" : "default"}
+        role={message.status === "aborted" ? "status" : undefined}
+        className="justify-center"
       >
-        <p className="w-full text-center text-xs text-muted-foreground">{message.content}</p>
-      </div>
+        <MarkerContent className="text-center text-xs">{message.content}</MarkerContent>
+      </Marker>
     );
   }
 
@@ -107,103 +105,114 @@ export const TranscriptMessage = memo(function TranscriptMessage({
   // User turns keep a right-aligned bubble; the bubble alone encodes the role.
   if (isUser) {
     return (
-      <div
+      <Message
         data-testid="agent-message"
         data-role="user"
         data-status={message.status}
-        className="flex w-full min-w-0 justify-end"
+        align="end"
       >
-        <Bubble variant="default" align="end" className="max-w-[85%]">
-          <BubbleContent>
-            <div className="break-words whitespace-pre-wrap">{message.content}</div>
-          </BubbleContent>
-        </Bubble>
-      </div>
+        <MessageContent className="max-w-[85%]">
+          <Bubble variant="default" align="end">
+            <BubbleContent>
+              <div className="break-words whitespace-pre-wrap">{message.content}</div>
+            </BubbleContent>
+          </Bubble>
+        </MessageContent>
+      </Message>
     );
   }
 
   // Assistant turns render directly on the canvas — no bubble, no role header.
   return (
-    <div
+    <Message
       data-testid="agent-message"
       data-role={message.role}
       data-status={message.status}
-      className="flex w-full min-w-0 flex-col gap-2"
+      align="start"
     >
-      {isError ? (
-        <span
-          role="status"
-          aria-live="assertive"
-          className="inline-flex items-center gap-1 text-xs text-destructive"
-        >
-          <CircleAlertIcon className="size-3.5" />
-          {t.agentWorkspace.statusError}
-        </span>
-      ) : null}
+      <MessageContent className="gap-2">
+        {isError ? (
+          <span
+            role="status"
+            aria-live="assertive"
+            className="inline-flex items-center gap-1 text-xs text-destructive"
+          >
+            <CircleAlertIcon className="size-3.5" />
+            {t.agentWorkspace.statusError}
+          </span>
+        ) : null}
 
-      {!useParts && message.thinking ? (
-        <ThinkingBlock
-          thinking={message.thinking}
-          streaming={message.thinkingStatus === "streaming"}
-        />
-      ) : null}
+        {!useParts && message.thinking ? (
+          <ThinkingBlock
+            thinking={message.thinking}
+            streaming={message.thinkingStatus === "streaming"}
+            className="max-w-3xl"
+          />
+        ) : null}
 
-      {useParts ? (
-        <div className="flex w-full min-w-0 flex-col gap-2" data-testid="message-parts">
-          {message.parts!.map((part, index) => {
-            if (part.type === "thinking") {
-              return (
-                <ThinkingBlock
-                  key={`thinking-${index}`}
-                  thinking={part.thinking}
-                  streaming={
-                    isStreaming &&
-                    message.thinkingStatus === "streaming" &&
-                    index === message.parts!.length - 1
-                  }
-                />
-              );
-            }
-            if (part.type === "text") {
-              return part.text.trim() ? (
-                <AgentMarkdown
-                  key={`text-${index}`}
-                  content={part.text}
-                  streaming={isStreaming && index === message.parts!.length - 1}
-                />
-              ) : null;
-            }
-            const tool = toolsById.get(part.toolId);
-            return tool ? renderTool(tool) : null;
-          })}
-        </div>
-      ) : message.content ? (
-        <AgentMarkdown content={message.content} streaming={isStreaming} />
-      ) : waiting ? (
-        <div
-          className="flex items-center gap-2 text-muted-foreground"
-          data-testid="waiting-for-events"
-        >
-          <Spinner className="size-3.5" />
-          <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
-        </div>
-      ) : null}
+        {useParts ? (
+          <div className="flex w-full min-w-0 flex-col gap-2" data-testid="message-parts">
+            {message.parts!.map((part, index) => {
+              if (part.type === "thinking") {
+                return (
+                  <ThinkingBlock
+                    key={`thinking-${index}`}
+                    thinking={part.thinking}
+                    streaming={
+                      isStreaming &&
+                      message.thinkingStatus === "streaming" &&
+                      index === message.parts!.length - 1
+                    }
+                    className="max-w-3xl"
+                  />
+                );
+              }
+              if (part.type === "text") {
+                return part.text.trim() ? (
+                  <AgentMarkdown
+                    key={`text-${index}`}
+                    content={part.text}
+                    streaming={isStreaming && index === message.parts!.length - 1}
+                    className="max-w-3xl"
+                  />
+                ) : null;
+              }
+              const tool = toolsById.get(part.toolId);
+              return tool ? renderTool(tool) : null;
+            })}
+          </div>
+        ) : message.content ? (
+          <AgentMarkdown
+            content={message.content}
+            streaming={isStreaming}
+            className="max-w-3xl"
+          />
+        ) : waiting ? (
+          <div
+            className="flex items-center gap-2 text-muted-foreground"
+            data-testid="waiting-for-events"
+          >
+            <Spinner className="size-3.5" />
+            <span className="text-xs">{t.agentWorkspace.waitingForEvents}</span>
+          </div>
+        ) : null}
 
-      {isError && (message.errorText || !message.content) ? (
-        <div
-          role="alert"
-          aria-live="assertive"
-          className="rounded-md bg-destructive/10 px-3 py-2 text-xs break-words whitespace-pre-wrap text-destructive"
-          data-testid="agent-message-error"
-        >
-          {message.errorText ?? t.agentWorkspace.statusError}
-        </div>
-      ) : null}
+        {isError && (message.errorText || !message.content) ? (
+          <div
+            role="alert"
+            aria-live="assertive"
+            className="max-w-3xl rounded-md bg-destructive/10 px-3 py-2 text-xs break-words whitespace-pre-wrap text-destructive"
+            data-testid="agent-message-error"
+          >
+            {message.errorText ?? t.agentWorkspace.statusError}
+          </div>
+        ) : null}
 
-      {!useParts && message.tools?.length ? (
-        <div className="flex w-full min-w-0 flex-col gap-1">{message.tools.map(renderTool)}</div>
-      ) : null}
-    </div>
+        {!useParts && message.tools?.length ? (
+          <div className="flex w-full min-w-0 flex-col gap-1">{message.tools.map(renderTool)}</div>
+        ) : null}
+      </MessageContent>
+    </Message>
   );
 });
 
@@ -273,7 +282,7 @@ export function Transcript({ messages, className }: TranscriptProps) {
       <MessageScrollerProvider autoScroll>
         <MessageScroller data-testid="agent-transcript" className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 px-3 py-4 md:px-4">
+            <MessageScrollerContent className="mx-auto w-full max-w-5xl gap-4 px-3 py-4 md:px-4">
               {messages.map((message) => (
                 <MessageScrollerItem
                   key={message.id}

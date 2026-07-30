@@ -138,12 +138,33 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     // Active Run bar is the sole HITL surface (agent-gate-approve lives there).
     const runBar = page.getByTestId("active-run-bar");
     await expect(runBar).toBeVisible({ timeout: 30_000 });
+    const toolbar = page.getByTestId("workspace-toolbar");
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await expect(toolbar.getByTestId("active-run-toggle-graph")).toBeVisible();
+    await toolbar.getByTestId("active-run-toggle-graph").click();
+    const cockpitSheet = page.getByTestId("run-cockpit-sheet");
+    await expect(cockpitSheet).toBeVisible();
+    await cockpitSheet.getByTestId("run-inspector-close").click();
+    await expect(cockpitSheet).toHaveCount(0);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
     await expect(runBar.getByTestId("agent-plan-gate")).toBeVisible({ timeout: 90_000 });
+    await expect(runBar).toContainText("Awaiting your action");
+    await expect(runBar).not.toContainText("waiting_for_operator");
+    const runReceipt = page.getByTestId("wiki-produce-details");
+    await expect(runReceipt).toContainText("Awaiting your action");
+    await expect(runReceipt).not.toContainText("waiting_for_operator");
+    await expect(produceCard).toContainText("Produce wiki");
+    await expect(produceCard).not.toContainText("wiki_produce");
+    await expect(toolbar.getByTestId("active-run-switcher")).toBeVisible();
+    await expect(toolbar.getByTestId("active-run-toggle-graph")).toBeVisible();
+    await expect(runBar.getByTestId("active-run-switcher")).toHaveCount(0);
+    await expect(runBar.getByTestId("active-run-toggle-graph")).toHaveCount(0);
     await expect(details).toHaveAttribute("data-wiki-run-state", "waiting_for_operator", {
       timeout: 15_000,
     });
 
-    // Sealed Spec lives under Active Run details (expand graph → plan tab).
+    // Sealed Spec lives in the read-only Run Cockpit (expand graph → plan tab).
     const toggleGraph = page.getByTestId("active-run-toggle-graph");
     if ((await page.getByTestId("active-run-details").count()) === 0) {
       await toggleGraph.click();
@@ -151,6 +172,39 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     await expect(page.getByTestId("active-run-details")).toBeVisible({ timeout: 15_000 });
     await page.getByTestId("run-inspector-tab-plan").click();
     await expect(page.getByTestId("spec-review")).toBeVisible({ timeout: 30_000 });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId("run-inspector-close").click();
+    await expect(page.getByTestId("active-run-details")).toHaveCount(0);
+
+    // GateAction is never duplicated: desktop keeps it in the Action Dock,
+    // tablet moves it to a Sheet, and mobile moves it to a Drawer.
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await toolbar.getByTestId("active-run-toggle-graph").click();
+    await expect(cockpitSheet).toBeVisible();
+    await cockpitSheet.getByTestId("run-inspector-close").click();
+    await expect(cockpitSheet).toHaveCount(0);
+    await expect(runBar.getByTestId("agent-plan-gate")).toHaveCount(0);
+    await expect(runBar.getByTestId("active-run-open-gate")).toBeVisible();
+    await runBar.getByTestId("active-run-open-gate").click();
+    const gateSheet = page.getByTestId("agent-gate-sheet");
+    await expect(gateSheet).toBeVisible();
+    await expect(gateSheet.getByTestId("agent-plan-gate")).toHaveCount(1);
+    await expect(page.getByTestId("agent-plan-gate")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(gateSheet).toHaveCount(0);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(runBar.getByTestId("agent-plan-gate")).toHaveCount(0);
+    await runBar.getByTestId("active-run-open-gate").click();
+    const gateDrawer = page.getByTestId("agent-gate-drawer");
+    await expect(gateDrawer).toBeVisible();
+    await expect(gateDrawer.getByTestId("agent-plan-gate")).toHaveCount(1);
+    await expect(page.getByTestId("agent-plan-gate")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(gateDrawer).toHaveCount(0);
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expect(runBar.getByTestId("agent-plan-gate")).toHaveCount(1);
 
     await page.reload();
     await expect(page.getByTestId("agent-workspace-page")).toBeVisible();

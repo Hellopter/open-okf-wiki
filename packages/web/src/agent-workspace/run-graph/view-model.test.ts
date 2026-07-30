@@ -51,12 +51,27 @@ describe("runGraphToViewModel", () => {
     assert.equal(domain.attemptCount, 2);
     assert.equal(domain.latestAttempt?.summary, "retry");
     assert.equal(domain.parentKey, "plan");
+    assert.deepEqual(vm.edges, [{ parentKey: "plan", childKey: "domain-core" }]);
     assert.equal(vm.playhead?.attemptId, "domain-core@1");
   });
 
   it("handles empty snapshot", () => {
     const vm = runGraphToViewModel({ topologyVersion: 0, topology: [], attempts: [] });
     assert.equal(vm.layers.length, 0);
+    assert.deepEqual(vm.edges, []);
     assert.equal(vm.attempts.length, 0);
+  });
+
+  it("does not invent edges for missing parents or dependsOn metadata", () => {
+    const vm = runGraphToViewModel({
+      topologyVersion: 1,
+      topology: [
+        { nodeKey: "child", kind: "leaf", label: "Child", parentKey: "missing" },
+        { nodeKey: "dependent", kind: "write", label: "Dependent", dependsOn: ["child"] },
+      ],
+      attempts: [],
+    });
+
+    assert.deepEqual(vm.edges, []);
   });
 });

@@ -1,21 +1,47 @@
 /**
- * Left-pane session list for Agent Workspace (Pi sessions).
- * Supports delete (pi-web SessionListDialog) and displays auto titles.
- * Desktop: optional collapse control to free transcript width.
+ * Session Navigator for the Agent Workbench.
+ *
+ * It deliberately owns only Pi session navigation. WikiRun selection and
+ * control remain in the Run surface so switching sessions cannot alter the
+ * workspace-level Run subscription.
  */
 
-import { MessageSquareIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import {
+  BookOpenIcon,
+  LayoutListIcon,
+  MessageSquareIcon,
+  PlusIcon,
+  SettingsIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia } from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarRail,
+  SidebarSeparator,
+  useSidebar,
+} from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import type { PiSessionSummary } from "../../api";
 import { formatMessage, useI18n } from "../../i18n";
-import { PaneCollapseButton } from "../components/PaneCollapseButton";
+import { configureHref, operateHref, wikiHref } from "../../lib/workspace-path";
 
-export type SessionListProps = {
+export type AgentSessionSidebarProps = {
+  workspaceId: string;
+  workspaceName?: string;
   sessions: PiSessionSummary[];
   activeSessionId: string | null;
   onSelect: (sessionId: string) => void;
@@ -23,19 +49,16 @@ export type SessionListProps = {
   onDelete?: (sessionId: string) => void | Promise<void>;
   creating?: boolean;
   deletingId?: string | null;
-  /** Desktop: collapse the session pane to a rail. */
-  onCollapse?: () => void;
   className?: string;
 };
 
 function formatLabel(session: PiSessionSummary): string {
   const title = session.title?.trim();
-  if (title) return title;
-  return session.id.slice(0, 10);
+  return title || session.id.slice(0, 10);
 }
 
 function formatUpdated(iso?: string, locale?: string): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   try {
     const date = new Date(iso);
     const intlLocale = locale === "zh" ? "zh-CN" : locale || undefined;
@@ -57,7 +80,18 @@ function formatUpdated(iso?: string, locale?: string): string {
   }
 }
 
-export function SessionList({
+function uniqueSessions(sessions: PiSessionSummary[]): PiSessionSummary[] {
+  const seenIds = new Set<string>();
+  return sessions.filter((session) => {
+    if (seenIds.has(session.id)) return false;
+    seenIds.add(session.id);
+    return true;
+  });
+}
+
+export function AgentSessionSidebar({
+  workspaceId,
+  workspaceName,
   sessions,
   activeSessionId,
   onSelect,
@@ -65,117 +99,168 @@ export function SessionList({
   onDelete,
   creating = false,
   deletingId = null,
-  onCollapse,
   className,
-}: SessionListProps) {
+}: AgentSessionSidebarProps) {
   const { t, locale } = useI18n();
+  const { isMobile, setOpenMobile } = useSidebar();
   const [deleteTarget, setDeleteTarget] = useState<PiSessionSummary | null>(null);
+  const items = uniqueSessions(sessions);
 
-  // Server should already dedupe; keep first-seen id so React keys stay unique
-  // if a stale API ever returns both `{id}.json` and `{id}/` for one session.
-  const uniqueSessions: PiSessionSummary[] = [];
-  const seenIds = new Set<string>();
-  for (const session of sessions) {
-    if (seenIds.has(session.id)) continue;
-    seenIds.add(session.id);
-    uniqueSessions.push(session);
-  }
+  const selectSession = (sessionId: string) => {
+    onSelect(sessionId);
+    if (isMobile) setOpenMobile(false);
+  };
 
   return (
-    <div data-testid="agent-session-list" className={cn("flex h-full min-h-0 flex-col", className)}>
-      <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium tracking-tight">
-          {t.agentWorkspace.sessions}
-        </span>
-        <Button
-          type="button"
-          size="xs"
-          variant="outline"
-          data-testid="agent-session-new"
-          disabled={creating}
-          onClick={() => onCreate()}
-        >
-          <PlusIcon data-icon="inline-start" />
-          {creating ? t.agentWorkspace.creatingSession : t.agentWorkspace.newSession}
-        </Button>
-        {onCollapse ? (
-          <PaneCollapseButton
-            onCollapse={onCollapse}
-            label={t.agentWorkspace.collapseSessions}
-          />
-        ) : null}
-      </div>
+    <>
+      <Sidebar
+        collapsible="icon"
+        data-testid="agent-left-pane"
+        className={cn(className)}
+      >
+        <SidebarHeader>
+          <SidebarGroupLabel title={workspaceName ?? workspaceId}>
+            {workspaceName ?? workspaceId}
+          </SidebarGroupLabel>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                type="button"
+                tooltip={t.agentWorkspace.newSession}
+                data-testid="agent-session-new"
+                disabled={creating}
+                onClick={onCreate}
+              >
+                <PlusIcon />
+                <span>{creating ? t.agentWorkspace.creatingSession : t.agentWorkspace.newSession}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarHeader>
 
-      <ScrollArea className="min-h-0 flex-1">
-        {uniqueSessions.length === 0 ? (
-          <Empty className="border-0 px-3 py-8">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <MessageSquareIcon aria-hidden />
-              </EmptyMedia>
-              <EmptyDescription className="text-xs">{t.agentWorkspace.noSessions}</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ul className="flex flex-col gap-0.5 p-1.5">
-            {uniqueSessions.map((session) => {
-              const active = session.id === activeSessionId;
-              const deleting = deletingId === session.id;
-              return (
-                <li key={session.id} className="group relative">
-                  <button
-                    type="button"
-                    data-testid="agent-session-item"
-                    data-session-id={session.id}
-                    data-active={active ? "true" : "false"}
-                    disabled={deleting}
-                    className={cn(
-                      "flex w-full flex-col gap-0.5 rounded-md border px-2 py-2 pr-8 text-left transition-colors",
-                      "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                      active
-                        ? "border-border bg-muted shadow-sm"
-                        : "border-transparent hover:bg-muted/60",
-                      deleting && "opacity-50",
-                    )}
-                    onClick={() => onSelect(session.id)}
-                  >
-                    <div className="truncate text-xs font-medium leading-snug">
-                      {formatLabel(session)}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-2xs tabular-nums text-muted-foreground">
-                        {formatUpdated(session.updatedAt, locale)}
-                      </span>
-                    </div>
-                  </button>
-                  {onDelete ? (
-                    <button
-                      type="button"
-                      data-testid="agent-session-delete"
-                      data-session-id={session.id}
-                      title={t.agentWorkspace.deleteSession}
-                      aria-label={t.agentWorkspace.deleteSession}
-                      disabled={deleting}
-                      className={cn(
-                        "absolute top-1.5 right-1.5 rounded-md p-1 text-muted-foreground",
-                        "opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100",
-                        "hover:bg-destructive/10 hover:text-destructive",
-                        "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                      )}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget(session);
-                      }}
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </button>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </ScrollArea>
+        <SidebarSeparator />
+
+        <SidebarContent data-testid="agent-session-list">
+          <SidebarGroup>
+            <SidebarGroupLabel>{t.agentWorkspace.sessions}</SidebarGroupLabel>
+            <SidebarGroupContent>
+              {items.length === 0 ? (
+                <Empty className="border-0 px-3 py-8">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <MessageSquareIcon aria-hidden />
+                    </EmptyMedia>
+                    <EmptyDescription className="text-xs">
+                      {t.agentWorkspace.noSessions}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              ) : (
+                <SidebarMenu>
+                  {items.map((session) => {
+                    const active = session.id === activeSessionId;
+                    const deleting = deletingId === session.id;
+                    return (
+                      <SidebarMenuItem
+                        key={session.id}
+                        data-testid="agent-session-item"
+                        data-session-id={session.id}
+                        data-active={active ? "true" : "false"}
+                        onClick={() => {
+                          if (!deleting) selectSession(session.id);
+                        }}
+                      >
+                        <SidebarMenuButton
+                          isActive={active}
+                          size="lg"
+                          tooltip={formatLabel(session)}
+                          disabled={deleting}
+                        >
+                          <MessageSquareIcon />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">{formatLabel(session)}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {formatUpdated(session.updatedAt, locale)}
+                            </span>
+                          </span>
+                        </SidebarMenuButton>
+                        {onDelete ? (
+                          <SidebarMenuAction
+                            type="button"
+                            showOnHover={false}
+                            data-testid="agent-session-delete"
+                            data-session-id={session.id}
+                            title={t.agentWorkspace.deleteSession}
+                            aria-label={t.agentWorkspace.deleteSession}
+                            disabled={deleting}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeleteTarget(session);
+                            }}
+                          >
+                            <Trash2Icon />
+                          </SidebarMenuAction>
+                        ) : null}
+                      </SidebarMenuItem>
+                    );
+                  })}
+                </SidebarMenu>
+              )}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+
+        <SidebarSeparator />
+
+        <SidebarFooter>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link to="/workspaces" data-testid="workbench-back-workspaces" />}
+                tooltip={t.nav.workspaces}
+              >
+                <LayoutListIcon />
+                <span>{t.nav.workspaces}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive
+                render={<Link to={operateHref(workspaceId)} data-testid="workspace-subnav-agent" />}
+                tooltip={t.subnav.agent}
+              >
+                <MessageSquareIcon />
+                <span>{t.subnav.agent}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link to={wikiHref(workspaceId)} data-testid="workspace-subnav-wiki" />}
+                tooltip={t.subnav.wiki}
+              >
+                <BookOpenIcon />
+                <span>{t.subnav.wiki}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={
+                  <Link to={configureHref(workspaceId)} data-testid="workspace-subnav-settings" />
+                }
+                tooltip={t.subnav.settings}
+              >
+                <SettingsIcon />
+                <span>{t.subnav.settings}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+        <SidebarRail
+          data-testid="agent-left-rail"
+          aria-label={t.agentWorkspace.toggleSessions}
+          title={t.agentWorkspace.toggleSessions}
+        />
+      </Sidebar>
 
       <ConfirmDialog
         open={deleteTarget != null}
@@ -203,6 +288,9 @@ export function SessionList({
           await onDelete(id);
         }}
       />
-    </div>
+    </>
   );
 }
+
+/** @deprecated Use AgentSessionSidebar. */
+export const SessionList = AgentSessionSidebar;

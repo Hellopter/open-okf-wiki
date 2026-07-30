@@ -14,11 +14,10 @@ import { useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { useI18n } from "../../i18n";
-import {
-  selectMatchingProjection,
-  useWikiRunProjection,
-} from "../hooks/WikiRunProjectionContext";
+import { useWikiRunProjection } from "../hooks/WikiRunProjectionContext";
+import { selectMatchingProjection } from "../hooks/wiki-run-projection";
 import { compactSummary } from "../run-graph/compact-summary";
+import { StatusBadge } from "./StatusBadge";
 
 export type WikiProduceGatePanelProps = {
   details: WikiProduceToolDetails;
@@ -37,12 +36,6 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
   const shellProjection = useWikiRunProjection();
   const wikiRun = selectMatchingProjection(shellProjection, runId);
   const snapshot = wikiRun.snapshot;
-
-  const statusLabel = snapshot
-    ? snapshot.state
-    : details.status === "accepted"
-      ? "accepted"
-      : details.status;
 
   const oneLineSummary =
     compactSummary(details.summary, 96) ||
@@ -74,7 +67,11 @@ export function WikiProduceGatePanel({ details }: WikiProduceGatePanelProps) {
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <Badge variant="secondary">{statusLabel}</Badge>
+          {snapshot ? (
+            <StatusBadge status={snapshot.state} />
+          ) : (
+            <Badge variant="secondary">{t.agentWorkspace.wikiRunStarted}</Badge>
+          )}
           {wikiRun.matches && wikiRun.connectionStatus === "reconnecting" ? (
             <span className="text-2xs text-muted-foreground">
               {t.agentWorkspace.connectionReconnecting}

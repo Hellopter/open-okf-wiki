@@ -10,12 +10,13 @@
  * `recentRuns` is list refresh for the bar switcher — not control authority.
  */
 
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
+import { AgentWorkbench, AgentWorkspaceShell } from "../agent-workspace/AgentWorkspaceShell";
 import {
   type ActiveRunChrome,
   deriveOperatorChrome,
@@ -41,7 +42,6 @@ import {
 } from "../api";
 import { LoadingState } from "../components/LoadingState";
 import { useI18n } from "../i18n";
-import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 export function AgentWorkspacePage() {
   const { t } = useI18n();
@@ -49,6 +49,7 @@ export function AgentWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const urlRun = searchParams.get("run");
+  const urlSessionId = searchParams.get("sessionId");
 
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [sessions, setSessions] = useState<PiSessionSummary[]>([]);
@@ -170,6 +171,19 @@ export function AgentWorkspacePage() {
   // Receipt → URL only: a *new* accepted wiki_produce updates `run` (not control facts).
   // Do not re-apply historical receipts over an operator-selected list run.
   const lastReceiptRunIdRef = useRef<string | null>(null);
+
+  // Browser history and external links can change the selected Session after
+  // boot. Keep the live Pi projection aligned with the validated URL state.
+  useEffect(() => {
+    if (loading || !urlSessionId || urlSessionId === activeSessionId) return;
+    if (sessions.some((session) => session.id === urlSessionId)) {
+      lastReceiptRunIdRef.current = null;
+      setActiveSessionId(urlSessionId);
+      return;
+    }
+    if (activeSessionId) syncSessionIdInUrl(activeSessionId);
+  }, [activeSessionId, loading, sessions, syncSessionIdInUrl, urlSessionId]);
+
   useEffect(() => {
     if (!agent.messages.length) return;
     let latestAccepted: string | null = null;
@@ -367,65 +381,67 @@ export function AgentWorkspacePage() {
     [id, workspace, savingPlanConfirm, t],
   );
 
-  return (
-    <WorkbenchShell
-      workspaceId={id}
-      workspaceName={workspace?.name}
-      mode="operate"
-      error={bootError}
-      onDismissError={() => setBootError(null)}
-      immersive
-      testId="agent-workspace-page"
-      statusSlot={
-        workspace ? (
-          <div
-            className="flex items-center gap-1.5"
-            title={t.settings.planConfirmHint}
-            data-testid="agent-plan-confirm"
-          >
-            <Label
-              htmlFor="agent-plan-confirm-switch"
-              className="text-xs font-normal text-muted-foreground"
-            >
-              {t.settings.planConfirm}
-            </Label>
-            <Switch
-              id="agent-plan-confirm-switch"
-              size="sm"
-              checked={planConfirmOn}
-              disabled={savingPlanConfirm}
-              onCheckedChange={(checked) => void handleTogglePlanConfirm(checked === true)}
-              data-testid="agent-plan-confirm-switch"
-            />
-          </div>
-        ) : undefined
-      }
+  const toolbarActions = workspace ? (
+    <div
+      className="flex items-center gap-1.5"
+      title={t.settings.planConfirmHint}
+      data-testid="agent-plan-confirm"
     >
-      {loading || !workspace ? (
+      <Label
+        htmlFor="agent-plan-confirm-switch"
+        className="text-xs font-normal text-muted-foreground"
+      >
+        {t.settings.planConfirm}
+      </Label>
+      <Switch
+        id="agent-plan-confirm-switch"
+        size="sm"
+        checked={planConfirmOn}
+        disabled={savingPlanConfirm}
+        onCheckedChange={(checked) => void handleTogglePlanConfirm(checked === true)}
+        data-testid="agent-plan-confirm-switch"
+      />
+    </div>
+  ) : undefined;
+
+  if (loading || !workspace) {
+    return (
+      <AgentWorkbench
+        workspaceId={id}
+        workspaceName={workspace?.name}
+        toolbarActions={toolbarActions}
+        error={bootError}
+        onDismissError={() => setBootError(null)}
+      >
         <div className="flex min-h-0 flex-1 items-center justify-center">
           <LoadingState label={t.agentWorkspace.loading} />
         </div>
-      ) : (
-        <WikiRunProjectionProvider workspaceId={id} rootPath={rootPath} runId={activeRunId}>
-          <AgentWorkspaceShellWithRunChrome
-            workspaceId={id}
-            rootPath={rootPath}
-            workspace={workspace}
-            sessions={sessions}
-            activeSessionId={activeSessionId}
-            onSelectSession={handleSelectSession}
-            onCreateSession={() => void handleCreateSession()}
-            onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
-            creatingSession={creating}
-            deletingSessionId={deletingId}
-            agent={agent}
-            recentRuns={recentRuns}
-            activeRunId={activeRunId}
-            onRefreshRecentRuns={refreshRecentRuns}
-          />
-        </WikiRunProjectionProvider>
-      )}
-    </WorkbenchShell>
+      </AgentWorkbench>
+    );
+  }
+
+  return (
+    <WikiRunProjectionProvider workspaceId={id} rootPath={rootPath} runId={activeRunId}>
+      <AgentWorkspaceShellWithRunChrome
+        workspaceId={id}
+        rootPath={rootPath}
+        workspace={workspace}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onCreateSession={() => void handleCreateSession()}
+        onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
+        creatingSession={creating}
+        deletingSessionId={deletingId}
+        agent={agent}
+        recentRuns={recentRuns}
+        activeRunId={activeRunId}
+        onRefreshRecentRuns={refreshRecentRuns}
+        pageError={bootError}
+        onDismissPageError={() => setBootError(null)}
+        toolbarActions={toolbarActions}
+      />
+    </WikiRunProjectionProvider>
   );
 }
 
@@ -444,6 +460,9 @@ type AgentWorkspaceShellWithRunChromeProps = {
   recentRuns: WikiRunListItem[];
   activeRunId: string | null;
   onRefreshRecentRuns: () => Promise<void>;
+  pageError?: unknown;
+  onDismissPageError?: () => void;
+  toolbarActions?: ReactNode;
 };
 
 /**
@@ -466,6 +485,9 @@ function AgentWorkspaceShellWithRunChrome({
   recentRuns,
   activeRunId,
   onRefreshRecentRuns,
+  pageError,
+  onDismissPageError,
+  toolbarActions,
 }: AgentWorkspaceShellWithRunChromeProps) {
   const projection = useWikiRunProjection();
 
@@ -558,6 +580,9 @@ function AgentWorkspaceShellWithRunChrome({
       runNeedsOperator={operatorChrome.runNeedsOperator}
       runStateLabel={operatorChrome.runStatusLabel}
       sessionUsage={agent.sessionUsage}
+      pageError={pageError}
+      onDismissPageError={onDismissPageError}
+      toolbarActions={toolbarActions}
     />
   );
 }

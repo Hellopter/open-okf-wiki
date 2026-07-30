@@ -56,6 +56,7 @@ export function AppShell({ children, className, testId }: AppShellProps) {
           <Button
             variant="ghost"
             size="sm"
+            nativeButton={false}
             render={
               <NavLink
                 to="/workspaces"
@@ -69,6 +70,7 @@ export function AppShell({ children, className, testId }: AppShellProps) {
           <Button
             variant="ghost"
             size="sm"
+            nativeButton={false}
             render={
               <NavLink
                 to="/settings"

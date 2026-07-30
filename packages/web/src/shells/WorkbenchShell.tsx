@@ -98,6 +98,7 @@ export function WorkbenchShell({
                 size="xs"
                 variant={mode === item.id ? "secondary" : "ghost"}
                 render={<NavLink to={item.to} data-testid={item.testId} />}
+                nativeButton={false}
                 className="text-xs"
               >
                 {item.label}

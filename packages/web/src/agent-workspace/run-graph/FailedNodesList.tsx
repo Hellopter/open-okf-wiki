@@ -1,6 +1,6 @@
 /**
  * Failed-node list with RetryFailedNode / RerunNode actions.
- * Control chrome for ActiveRunDetails only — not the produce receipt card.
+ * Control chrome for RunCockpit only — not the produce receipt card.
  */
 
 import type { WikiRunAttempt, WikiRunNode } from "@okf-wiki/contract";
