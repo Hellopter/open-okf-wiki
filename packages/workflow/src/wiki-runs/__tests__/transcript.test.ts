@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { openWikiRuns } from "../../wiki-runs.js";
+import { appendAttemptFailureTranscript } from "../transcript-io.js";
+import { TRANSCRIPT_MAX_BYTES } from "../types.js";
 import {
   context,
   freezeAndPlanExecutor,
@@ -36,17 +38,22 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
   assert.equal(transcript.attemptId, planAttempt.attemptId);
   assert.equal(transcript.nodeKey, "plan");
   assert.equal(transcript.state, planAttempt.state);
-  assert.ok(Array.isArray(transcript.messages));
-  assert.ok(transcript.messages.length >= 2, "plan transcript should be multi-row conversation");
-  const first = transcript.messages[0] as Record<string, unknown> | undefined;
-  assert.equal(first?.role, "user");
+  assert.ok(Array.isArray(transcript.events));
+  assert.ok(transcript.events.length >= 2, "plan transcript should be multi-row conversation");
+  const first = transcript.events[0];
+  assert.equal(first?.kind, "legacy");
+  assert.equal(
+    first?.kind === "legacy" ? (first.message as { role?: string }).role : undefined,
+    "user",
+  );
   assert.ok(
-    transcript.messages.some(
-      (row) =>
-        typeof row === "object" &&
-        row !== null &&
-        ((row as { role?: string }).role === "assistant" ||
-          (row as { type?: string }).type === "text"),
+    transcript.events.some(
+      (event) =>
+        event.kind === "legacy" &&
+        typeof event.message === "object" &&
+        event.message !== null &&
+        ((event.message as { role?: string }).role === "assistant" ||
+          (event.message as { type?: string }).type === "text"),
     ),
     "expected assistant/text content in plan transcript",
   );
@@ -90,11 +97,149 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
   });
   assert.equal(emptyTx.attemptId, freezeAttempt.attemptId);
   assert.equal(emptyTx.nodeKey, "freeze");
-  assert.ok(Array.isArray(emptyTx.messages));
+  assert.ok(Array.isArray(emptyTx.events));
   // Failed freeze may still synthesize an error row from attempts.error.
   if (freezeAttempt.state === "failed" && freezeAttempt.error) {
-    assert.ok(emptyTx.messages.length >= 1);
+    assert.ok(emptyTx.events.length >= 1);
   }
+});
+
+test("readAttemptTranscript returns the newest page and cursor-pages older trace entries", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({ rootPath: root });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-transcript-page", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  const finished = await waitForTerminal(runs, receipt.runId);
+  const attempt = finished.snapshot.attempts[0];
+  assert.ok(attempt);
+  const sessionPath = path.join(
+    root,
+    ".okf-wiki",
+    "runs",
+    receipt.runId,
+    "attempts",
+    attempt.attemptId,
+    "session.jsonl",
+  );
+  await mkdir(path.dirname(sessionPath), { recursive: true });
+  const rows = Array.from({ length: 205 }, (_, index) =>
+    JSON.stringify({
+      trace: 1,
+      ordinal: index + 1,
+      at: new Date().toISOString(),
+      kind: "assistant",
+      content: `event ${index + 1}`,
+    }),
+  );
+  await writeFile(sessionPath, `${rows.join("\n")}\n`, "utf8");
+
+  const newest = await runs.readAttemptTranscript({
+    runId: receipt.runId,
+    attemptId: attempt.attemptId,
+    limit: 100,
+  });
+  assert.equal(newest.events.length, 100);
+  assert.equal(newest.events[0]?.ordinal, 106);
+  assert.equal(newest.cursor, 205);
+  assert.equal(newest.hasEarlier, true);
+  assert.equal(newest.nextBefore, 106);
+
+  const earlier = await runs.readAttemptTranscript({
+    runId: receipt.runId,
+    attemptId: attempt.attemptId,
+    beforeSequence: newest.nextBefore,
+    limit: 100,
+  });
+  assert.equal(earlier.events.length, 100);
+  assert.equal(earlier.events[0]?.ordinal, 6);
+  assert.equal(earlier.cursor, 105);
+  assert.equal(earlier.hasEarlier, true);
+
+  await writeFile(
+    sessionPath,
+    [
+      JSON.stringify({ role: "assistant", content: "legacy preface" }),
+      JSON.stringify({
+        trace: 1,
+        ordinal: 1,
+        at: "2026-07-31T00:00:00.000Z",
+        kind: "tool_call",
+        toolCallId: "read-1",
+        name: "read",
+      }),
+      JSON.stringify({
+        trace: 1,
+        ordinal: 2,
+        at: "2026-07-31T00:00:01.000Z",
+        kind: "tool_result",
+        toolCallId: "read-1",
+        name: "read",
+        output: "result stays typed",
+        status: "done",
+      }),
+    ].join("\n") + "\n",
+    "utf8",
+  );
+  const mixed = await runs.readAttemptTranscript({
+    runId: receipt.runId,
+    attemptId: attempt.attemptId,
+  });
+  assert.deepEqual(
+    mixed.events.map((event) => event.kind),
+    ["legacy", "tool_call", "tool_result"],
+  );
+  assert.deepEqual(
+    mixed.events.map((event) => event.ordinal),
+    [1, 2, 3],
+  );
+});
+
+test("appendAttemptFailureTranscript preserves a trace that is already at its retention cap", async (t) => {
+  const { root } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const sessionPath = path.join(root, "session.jsonl");
+  const rows: string[] = [];
+  let size = 0;
+  for (let ordinal = 1; ordinal <= 31; ordinal += 1) {
+    const line = `${JSON.stringify({
+      trace: 1,
+      ordinal,
+      at: "2026-07-31T00:00:00.000Z",
+      kind: "assistant",
+      content: "x".repeat(64 * 1024),
+    })}\n`;
+    rows.push(line);
+    size += Buffer.byteLength(line, "utf8");
+  }
+  const emptyFinal = `${JSON.stringify({
+    trace: 1,
+    ordinal: 32,
+    at: "2026-07-31T00:00:00.000Z",
+    kind: "assistant",
+    content: "",
+  })}\n`;
+  const finalContentLength =
+    TRANSCRIPT_MAX_BYTES - 48 - size - Buffer.byteLength(emptyFinal, "utf8");
+  assert.ok(finalContentLength > 0 && finalContentLength <= 64 * 1024);
+  const finalLine = `${JSON.stringify({
+    trace: 1,
+    ordinal: 32,
+    at: "2026-07-31T00:00:00.000Z",
+    kind: "assistant",
+    content: "x".repeat(finalContentLength),
+  })}\n`;
+  rows.push(finalLine);
+  const before = rows.join("");
+  assert.ok(Buffer.byteLength(before, "utf8") > TRANSCRIPT_MAX_BYTES - 128);
+  await writeFile(sessionPath, before, "utf8");
+
+  await appendAttemptFailureTranscript({ sessionPath, summary: "Attempt failed." });
+  assert.equal(await readFile(sessionPath, "utf8"), before);
 });
 
 test("readAttemptTranscript refuses oversized transcripts", async (t) => {

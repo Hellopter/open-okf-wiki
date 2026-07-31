@@ -4,6 +4,7 @@
  */
 
 import type {
+  AttemptTraceEvent,
   PiAttemptExecutor,
   PiAttemptInput,
   PiAttemptOutcome,
@@ -80,14 +81,21 @@ export type WikiRunListItem = {
 };
 
 /**
- * Secret-free Attempt transcript for Node details UI.
- * Messages are raw JSONL entries (or a single JSON document wrapped as one entry).
+ * Secret-free, cursor-paged Attempt trace for Node details UI.
  */
 export type WikiRunAttemptTranscript = {
   attemptId: string;
   nodeKey: string;
   state: WikiRunAttempt["state"];
-  messages: unknown[];
+  events: AttemptTraceEvent[];
+  /** There are older entries before the first event in this page. */
+  hasEarlier: boolean;
+  /** There are newer entries after this page (used by incremental SSE). */
+  hasMore: boolean;
+  /** Exclusive cursor for requesting the preceding page. */
+  nextBefore?: number;
+  /** Last event sequence returned, used to subscribe to incremental SSE. */
+  cursor: number;
 };
 
 export interface WikiRuns {
@@ -102,6 +110,11 @@ export interface WikiRuns {
   readAttemptTranscript(input: {
     runId: string;
     attemptId: string;
+    /** Exclusive cursor: return the newest page before this sequence. */
+    beforeSequence?: number;
+    /** Exclusive cursor: return entries after this sequence for SSE. */
+    afterSequence?: number;
+    limit?: number;
   }): Promise<WikiRunAttemptTranscript>;
   /**
    * Sealed plan Spec for operator review (GET …/runs/:runId/spec).
@@ -136,6 +149,8 @@ export class CommandIdCollision extends Error {
 
 /** Fail-closed cap for Attempt transcript reads (Node details UI). */
 export const TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
+export const TRANSCRIPT_PAGE_DEFAULT_LIMIT = 100;
+export const TRANSCRIPT_PAGE_MAX_LIMIT = 200;
 
 export const DATABASE_FILE_NAME = "workflow.sqlite";
 

@@ -2,8 +2,10 @@
  * Attempt session.jsonl write/parse for Node details (secret-free).
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AttemptTraceEvent } from "@okf-wiki/contract";
+import { TRANSCRIPT_MAX_BYTES } from "./types.js";
 
 /**
  * Write conversation-shaped attempt session.jsonl for Node details UI.
@@ -51,6 +53,58 @@ export async function writeConversationTranscript(input: {
     `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
     "utf8",
   );
+  return input.sessionPath;
+}
+
+/**
+ * Append one safe terminal record without rewriting an active Attempt trace.
+ *
+ * Mechanical attempts still use historic conversation JSONL. Keep those files
+ * in that shape, but start a new failure file as trace JSONL. A full trace may
+ * be at its retention limit already; in that case preserving readable history
+ * matters more than forcing one final row past the reader's hard cap.
+ */
+export async function appendAttemptFailureTranscript(input: {
+  sessionPath: string;
+  summary: string;
+}): Promise<string> {
+  await mkdir(path.dirname(input.sessionPath), { recursive: true });
+  const raw = await readFile(input.sessionPath, "utf8").catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  });
+  const bytes = Buffer.byteLength(raw, "utf8");
+  if (bytes >= TRANSCRIPT_MAX_BYTES) return input.sessionPath;
+
+  let hasTrace = false;
+  let nextOrdinal = 1;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as Record<string, unknown>;
+      if (row.trace !== 1 || !Number.isSafeInteger(row.ordinal)) continue;
+      hasTrace = true;
+      nextOrdinal = Math.max(nextOrdinal, Number(row.ordinal) + 1);
+    } catch {
+      // Keep old/corrupt rows intact. The reader has a defensive projection.
+    }
+  }
+
+  const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, 4_000) || "Attempt failed.";
+  const record: AttemptTraceEvent | { role: "assistant"; content: string } =
+    hasTrace || !raw.trim()
+      ? {
+          trace: 1,
+          ordinal: nextOrdinal,
+          at: new Date().toISOString(),
+          kind: "terminal",
+          status: "error",
+          summary,
+        }
+      : { role: "assistant", content: summary };
+  const line = `${JSON.stringify(record)}\n`;
+  if (bytes + Buffer.byteLength(line, "utf8") > TRANSCRIPT_MAX_BYTES) return input.sessionPath;
+  await appendFile(input.sessionPath, line, "utf8");
   return input.sessionPath;
 }
 

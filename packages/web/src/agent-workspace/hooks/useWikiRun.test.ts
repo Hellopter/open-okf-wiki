@@ -15,8 +15,8 @@ const timestamp = "2026-07-28T00:00:00.000Z";
 
 function snapshot(revision: number, extras: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v2",
-    definitionVersion: 2,
+    schema: "okf.wiki-runs/v3",
+    definitionVersion: 3,
     runId: "run-1",
     workspaceId: "ws-1",
     revision,
@@ -25,9 +25,11 @@ function snapshot(revision: number, extras: Partial<WikiRunSnapshot> = {}): Wiki
     intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
+    edges: [],
     attempts: [],
     gates: [],
     effects: [],
+    candidates: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     ...extras,

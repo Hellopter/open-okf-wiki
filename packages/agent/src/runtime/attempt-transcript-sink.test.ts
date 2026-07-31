@@ -4,104 +4,158 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import {
-  buildTranscriptRows,
+  ATTEMPT_TRACE_MAX_BYTES,
   createAttemptTranscriptSink,
   finalizeAttemptTranscript,
-  rowsFromProgress,
 } from "./attempt-transcript-sink.js";
 
-describe("buildTranscriptRows", () => {
-  it("includes user task, tools, and terminal assistant summary", () => {
-    const rows = buildTranscriptRows({
-      task: "plan the wiki",
-      items: [
-        { type: "toolCall", name: "read", status: "done", argsSummary: '{"path":"a.ts"}' },
-        { type: "text", text: "looking at sources" },
-      ],
-      summary: "Submitted Spec",
-      terminal: "done",
-    });
-    assert.equal(rows.length, 4);
-    assert.deepEqual(rows[0], { role: "user", content: "plan the wiki" });
-    assert.equal((rows[1] as { type: string }).type, "toolCall");
-    assert.equal((rows[2] as { type: string }).type, "text");
-    assert.equal((rows[3] as { role: string }).role, "assistant");
-    assert.match((rows[3] as { content: string }).content, /Submitted Spec/);
-  });
+type TraceRow = Record<string, unknown>;
 
-  it("marks error terminal lines", () => {
-    const rows = buildTranscriptRows({
-      task: "x",
-      summary: "boom",
-      terminal: "error",
-    });
-    assert.equal(rows.length, 2);
-    assert.match((rows[1] as { content: string }).content, /^Error:/);
-  });
-});
+async function traceRows(filePath: string): Promise<TraceRow[]> {
+  return (await readFile(filePath, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as TraceRow);
+}
 
-describe("rowsFromProgress", () => {
-  it("maps NodeAttempt status to terminal", () => {
-    const rows = rowsFromProgress(
-      {
-        status: "done",
-        summary: "ok",
-        items: [{ type: "text", text: "hi" }],
-      },
-      "task",
+describe("Attempt transcript trace sink", () => {
+  it("keeps more than the 20-item live tail in append-only ordinal order", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-trace-"));
+    const sessionPath = path.join(dir, "session.jsonl");
+    const sink = createAttemptTranscriptSink(sessionPath, "plan the wiki");
+    await sink.start();
+
+    for (let i = 0; i < 25; i += 1) {
+      await sink.writeSessionEvent({
+        type: "tool_execution_start",
+        toolCallId: `call-${i}`,
+        toolName: "read",
+        args: { path: `source-${i}.md` },
+      });
+      await sink.writeSessionEvent({
+        type: "tool_execution_end",
+        toolCallId: `call-${i}`,
+        toolName: "read",
+        result: { content: [{ type: "text", text: `result ${i}` }] },
+      });
+    }
+    await sink.appendTerminal({ terminal: "done", summary: "complete" });
+    await sink.flush();
+
+    const rows = await traceRows(sessionPath);
+    assert.equal(rows[0]?.kind, "input");
+    assert.ok(rows.length > 50, "full trace must not use the 20-item live tail");
+    assert.equal(rows[1]?.toolCallId, "call-0");
+    assert.equal(rows.at(-2)?.toolCallId, "call-24");
+    assert.equal(rows.at(-1)?.kind, "terminal");
+    assert.deepEqual(
+      rows.map((row) => row.ordinal),
+      rows.map((_row, index) => index + 1),
     );
-    assert.ok(rows.some((r) => "role" in r && (r as { role: string }).role === "assistant"));
   });
-});
 
-describe("createAttemptTranscriptSink", () => {
-  it("writes replaceable JSONL to disk", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-tx-"));
+  it("records redacted tool output and marks field truncation explicitly", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-trace-output-"));
     const sessionPath = path.join(dir, "session.jsonl");
-    const sink = createAttemptTranscriptSink(sessionPath);
-
-    await sink.writeProgress({
-      task: "plan",
-      items: [{ type: "toolCall", name: "ls", status: "running" }],
-      summary: "listing",
+    const sink = createAttemptTranscriptSink(sessionPath, "inspect");
+    await sink.start();
+    await sink.writeSessionEvent({
+      type: "tool_execution_start",
+      toolCallId: "secret-call",
+      toolName: "read",
+      args: { authorization: "Bearer sk-secret-token-123456" },
     });
-    let raw = await readFile(sessionPath, "utf8");
-    assert.match(raw, /"role":"user"/);
-    assert.match(raw, /"name":"ls"/);
-
-    await sink.writeProgress({
-      task: "plan",
-      items: [{ type: "toolCall", name: "ls", status: "done" }],
-      summary: "done listing",
-      terminal: "done",
+    await sink.writeSessionEvent({
+      type: "tool_execution_end",
+      toolCallId: "secret-call",
+      toolName: "read",
+      result: { content: [{ type: "text", text: `${"x".repeat(70_000)} sk-secret-token-123456` }] },
     });
-    raw = await readFile(sessionPath, "utf8");
-    const lines = raw
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { status?: string; role?: string });
-    assert.ok(lines.some((l) => l.status === "done"));
-    assert.ok(lines.some((l) => l.role === "assistant"));
+    await sink.flush();
+
+    const output = (await traceRows(sessionPath)).find((row) => row.kind === "tool_result");
+    assert.ok(typeof output?.output === "string");
+    assert.equal((output!.output as string).includes("sk-secret-token-123456"), false);
+    assert.match(output!.output as string, /\.\.\.\[truncated \d+ chars\]/);
   });
-});
 
-describe("finalizeAttemptTranscript", () => {
-  it("writes conversation plus optional meta row", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-fin-"));
+  it("ends at the 2 MiB cap with a durable truncation marker", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-trace-cap-"));
     const sessionPath = path.join(dir, "session.jsonl");
+    const sink = createAttemptTranscriptSink(sessionPath, "inspect");
+    await sink.start();
+    for (let i = 0; i < 40; i += 1) {
+      await sink.writeSessionEvent({
+        type: "tool_execution_end",
+        toolCallId: `call-${i}`,
+        toolName: "read",
+        result: `${"x".repeat(64 * 1024)}-${i}`,
+      });
+    }
+    await sink.flush();
+
+    const raw = await readFile(sessionPath, "utf8");
+    assert.ok(Buffer.byteLength(raw, "utf8") <= ATTEMPT_TRACE_MAX_BYTES);
+    assert.ok((await traceRows(sessionPath)).some((row) => row.kind === "truncated"));
+  });
+
+  it("flushes uninterrupted assistant deltas in bounded chunks", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-trace-deltas-"));
+    const sessionPath = path.join(dir, "session.jsonl");
+    const sink = createAttemptTranscriptSink(sessionPath, "stream");
+    await sink.start();
+
+    for (let i = 0; i < 48; i += 1) {
+      await sink.writeSessionEvent({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          delta: `${String(i).padStart(2, "0")}:${"x".repeat(1_024)}`,
+        },
+      });
+    }
+    await sink.flush();
+
+    const assistant = (await traceRows(sessionPath)).filter((row) => row.kind === "assistant");
+    assert.ok(assistant.length >= 3, "16 KiB threshold should flush before terminal cleanup");
+    assert.equal(
+      assistant
+        .map((row) => row.content)
+        .join("")
+        .includes("47:"),
+      true,
+      "all streamed deltas should remain durable",
+    );
+  });
+
+  it("finalize only appends terminal evidence to an existing trace", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-trace-final-"));
+    const sessionPath = path.join(dir, "session.jsonl");
+    const sink = createAttemptTranscriptSink(sessionPath, "plan wiki");
+    await sink.start();
+    await sink.writeSessionEvent({
+      type: "tool_execution_start",
+      toolCallId: "read-1",
+      toolName: "read",
+      args: { path: "a.md" },
+    });
+    await sink.flush();
+
     await finalizeAttemptTranscript(sessionPath, {
       task: "plan wiki",
+      items: [{ type: "text", text: "live tail must not be duplicated" }],
       summary: "spec ready",
       terminal: "done",
-      meta: { node: "plan", mode: "fixture" },
     });
-    const lines = (await readFile(sessionPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    assert.equal(lines[0]?.role, "user");
-    assert.equal(lines[1]?.role, "assistant");
-    assert.equal(lines[2]?.schema, 1);
-    assert.equal(lines[2]?.node, "plan");
+
+    const rows = await traceRows(sessionPath);
+    assert.equal(rows.filter((row) => row.kind === "input").length, 1);
+    assert.equal(rows[1]?.kind, "tool_call");
+    assert.equal(
+      rows.some((row) => row.content === "live tail must not be duplicated"),
+      false,
+    );
+    assert.equal(rows.at(-1)?.kind, "terminal");
   });
 });

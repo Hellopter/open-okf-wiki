@@ -57,6 +57,8 @@ export const PiAttemptNodeDetailSchema = z
     /** Council seat index for reviewer roleModels.reviewers[i] rotation. */
     seatIndex: z.number().int().min(0).max(16).optional(),
     critical: z.boolean().optional(),
+    workUnitId: z.string().trim().min(1).max(120).optional(),
+    adaptRound: z.number().int().min(1).max(2).optional(),
     feedback: z.string().trim().min(1).max(4_000).optional(),
     /**
      * Structured repair envelope from scheduleMechanicalRepair / scheduleOperatorRepair.
@@ -177,6 +179,11 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
       type: z.literal("failed"),
       error: BoundedTextSchema,
       failureClass: PiAttemptFailureClassSchema,
+      /**
+       * Failure evidence that must be sealed before the Attempt becomes
+       * terminal. Validation uses this for its complete MechanicalReport.
+       */
+      unsealedArtifacts: z.array(PiAttemptArtifactDescriptorSchema).min(1).max(64).optional(),
       ...PiAttemptOutcomeMetricsField,
     })
     .strict(),

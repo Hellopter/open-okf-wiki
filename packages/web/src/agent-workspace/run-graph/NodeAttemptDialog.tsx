@@ -13,9 +13,11 @@
  * Scroll: flex column shell + native overflow-y body.
  */
 
-import type { NodeAttempt } from "@okf-wiki/contract";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import type { AttemptTraceEvent, NodeAttempt } from "@okf-wiki/contract";
+import { ChevronUpIcon } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -23,6 +25,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -33,7 +43,7 @@ import {
 } from "../../api";
 import { useI18n } from "../../i18n";
 import { AgentMarkdown } from "../transcript/AgentMarkdown";
-import { TranscriptMessageList } from "../transcript/Transcript";
+import { TranscriptMessage } from "../transcript/Transcript";
 import { isAttemptTranscriptLive, projectAttemptTranscriptMessages } from "./attempt-transcript";
 
 export type NodeAttemptDialogProps = {
@@ -58,7 +68,11 @@ export type NodeAttemptDialogProps = {
 type TranscriptFetchState = {
   loading: boolean;
   error: string | null;
-  messages: unknown[];
+  events: AttemptTraceEvent[];
+  hasEarlier: boolean;
+  nextBefore?: number;
+  cursor: number;
+  loadingEarlier: boolean;
   /** True once at least one successful fetch completed for the current attempt. */
   ready: boolean;
 };
@@ -66,9 +80,78 @@ type TranscriptFetchState = {
 const EMPTY_FETCH: TranscriptFetchState = {
   loading: false,
   error: null,
-  messages: [],
+  events: [],
+  hasEarlier: false,
+  cursor: 0,
+  loadingEarlier: false,
   ready: false,
 };
+
+function mergeTraceEvents(
+  previous: readonly AttemptTraceEvent[],
+  incoming: readonly AttemptTraceEvent[],
+): AttemptTraceEvent[] {
+  const byOrdinal = new Map(previous.map((event) => [event.ordinal, event]));
+  for (const event of incoming) byOrdinal.set(event.ordinal, event);
+  return [...byOrdinal.values()].toSorted((a, b) => a.ordinal - b.ordinal);
+}
+
+function AttemptTraceScroller({
+  messages,
+  streaming,
+  hasEarlier,
+  loadingEarlier,
+  onLoadEarlier,
+  jumpToLatestLabel,
+  loadEarlierLabel,
+}: {
+  messages: ReturnType<typeof projectAttemptTranscriptMessages>;
+  streaming: boolean;
+  hasEarlier: boolean;
+  loadingEarlier: boolean;
+  onLoadEarlier: () => void;
+  jumpToLatestLabel: string;
+  loadEarlierLabel: string;
+}) {
+  return (
+    <MessageScrollerProvider autoScroll={streaming}>
+      <MessageScroller data-testid="attempt-trace-scroller" className="min-h-0 flex-1">
+        <MessageScrollerViewport>
+          <MessageScrollerContent className="gap-3 px-1 py-1">
+            {hasEarlier ? (
+              <div className="flex justify-center py-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={loadingEarlier}
+                  onClick={onLoadEarlier}
+                  data-testid="attempt-trace-load-earlier"
+                >
+                  <ChevronUpIcon data-icon="inline-start" />
+                  {loadEarlierLabel}
+                </Button>
+              </div>
+            ) : null}
+            {messages.map((message) => (
+              <MessageScrollerItem
+                key={message.id}
+                messageId={message.id}
+                scrollAnchor={message.role === "user"}
+              >
+                <TranscriptMessage message={message} />
+              </MessageScrollerItem>
+            ))}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton
+          aria-label={jumpToLatestLabel}
+          data-testid="attempt-trace-jump-latest"
+        />
+      </MessageScroller>
+    </MessageScrollerProvider>
+  );
+}
 
 export function NodeAttemptDialog({
   open,
@@ -111,148 +194,146 @@ export function NodeAttemptDialog({
     }
 
     let cancelled = false;
-    setFetchState({ loading: true, error: null, messages: [], ready: false });
+    setFetchState({ ...EMPTY_FETCH, loading: true });
     setStreamingLive(false);
 
-    // Completed (or unknown idle): one-shot GET, normal render — no SSE.
-    if (!isAttemptTranscriptLive(effectiveState)) {
-      void (async () => {
-        try {
-          const data = await getWikiRunAttemptTranscript(workspaceId, runId, effectiveAttemptId);
-          if (cancelled) return;
-          setFetchState({
-            loading: false,
-            error: null,
-            messages: Array.isArray(data.messages) ? data.messages : [],
-            ready: true,
-          });
-        } catch (error) {
-          if (cancelled) return;
-          if (error instanceof ApiError && error.status === 404) {
-            setFetchState({ loading: false, error: null, messages: [], ready: true });
-            return;
-          }
-          setFetchState({
-            loading: false,
-            error: error instanceof Error ? error.message : String(error),
-            messages: [],
-            ready: true,
-          });
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    // Live attempt: open dialog → Attempt transcript SSE (not Run control SSE).
-    if (typeof EventSource === "undefined") {
-      setFetchState({
-        loading: false,
-        error: "EventSource is not available",
-        messages: [],
-        ready: true,
-      });
-      return;
-    }
-
-    const url = wikiRunAttemptTranscriptEventsUrl(workspaceId, runId, effectiveAttemptId);
-    const source = new EventSource(url);
-    setStreamingLive(true);
-
-    const onTranscript = (ev: MessageEvent<string>) => {
-      if (cancelled) return;
+    let source: EventSource | undefined;
+    const closeSource = (): void => {
       try {
-        const data = JSON.parse(ev.data) as {
-          messages?: unknown[];
-          live?: boolean;
-          state?: string;
-        };
+        source?.close();
+      } catch {
+        // Browser transport cleanup is best effort.
+      }
+    };
+
+    void (async () => {
+      try {
+        // Load the newest page first. Earlier evidence is fetched only when the
+        // operator asks, while new entries arrive through this dialog-scoped SSE.
+        const data = await getWikiRunAttemptTranscript(workspaceId, runId, effectiveAttemptId);
+        if (cancelled) return;
         setFetchState({
           loading: false,
           error: null,
-          messages: Array.isArray(data.messages) ? data.messages : [],
+          events: data.events,
+          hasEarlier: data.hasEarlier,
+          ...(data.nextBefore !== undefined ? { nextBefore: data.nextBefore } : {}),
+          cursor: data.cursor,
+          loadingEarlier: false,
           ready: true,
         });
-        if (data.live === false) setStreamingLive(false);
-      } catch {
-        // ignore malformed frame
-      }
-    };
 
-    const onDone = () => {
-      if (cancelled) return;
-      setStreamingLive(false);
-      try {
-        source.close();
-      } catch {
-        // ignore
-      }
-    };
-
-    const onTranscriptError = (ev: MessageEvent<string>) => {
-      if (cancelled) return;
-      try {
-        const data = JSON.parse(ev.data) as { message?: string };
-        setFetchState((prev) => ({
-          loading: false,
-          error: data.message?.trim() || "transcript stream error",
-          messages: prev.messages,
-          ready: true,
-        }));
-      } catch {
-        setFetchState((prev) => ({
-          loading: false,
-          error: "transcript stream error",
-          messages: prev.messages,
-          ready: true,
-        }));
-      }
-      setStreamingLive(false);
-      try {
-        source.close();
-      } catch {
-        // ignore
-      }
-    };
-
-    source.addEventListener("transcript", onTranscript as EventListener);
-    source.addEventListener("done", onDone as EventListener);
-    source.addEventListener("transcript_error", onTranscriptError as EventListener);
-    source.onerror = () => {
-      if (cancelled) return;
-      if (source.readyState === EventSource.CLOSED) {
-        setStreamingLive(false);
-        setFetchState((prev) =>
-          prev.ready
-            ? { ...prev, loading: false }
-            : { loading: false, error: null, messages: prev.messages, ready: true },
+        if (!isAttemptTranscriptLive(data.state) || typeof EventSource === "undefined") return;
+        source = new EventSource(
+          wikiRunAttemptTranscriptEventsUrl(workspaceId, runId, effectiveAttemptId, {
+            after: data.cursor,
+          }),
         );
+        setStreamingLive(true);
+
+        source.addEventListener("trace", ((ev: MessageEvent<string>) => {
+          if (cancelled) return;
+          try {
+            const update = JSON.parse(ev.data) as {
+              events?: AttemptTraceEvent[];
+              cursor?: number;
+              live?: boolean;
+            };
+            if (!Array.isArray(update.events)) return;
+            setFetchState((prev) => ({
+              ...prev,
+              error: null,
+              events: mergeTraceEvents(prev.events, update.events),
+              cursor:
+                typeof update.cursor === "number"
+                  ? Math.max(prev.cursor, update.cursor)
+                  : prev.cursor,
+              ready: true,
+            }));
+            if (update.live === false) setStreamingLive(false);
+          } catch {
+            // Ignore malformed diagnostic frames; the next cursor page repairs it.
+          }
+        }) as EventListener);
+        source.addEventListener("done", (() => {
+          if (!cancelled) setStreamingLive(false);
+          closeSource();
+        }) as EventListener);
+        source.addEventListener("transcript_error", ((ev: MessageEvent<string>) => {
+          if (cancelled) return;
+          let message = "trace stream error";
+          try {
+            const data = JSON.parse(ev.data) as { message?: string };
+            message = data.message?.trim() || message;
+          } catch {
+            // use the safe fallback above
+          }
+          setFetchState((prev) => ({ ...prev, loading: false, error: message, ready: true }));
+          setStreamingLive(false);
+          closeSource();
+        }) as EventListener);
+        source.onerror = () => {
+          if (cancelled || source?.readyState !== EventSource.CLOSED) return;
+          setStreamingLive(false);
+        };
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 404) {
+          setFetchState({ ...EMPTY_FETCH, ready: true });
+          return;
+        }
+        setFetchState({
+          ...EMPTY_FETCH,
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+          ready: true,
+        });
       }
-    };
+    })();
 
     return () => {
       cancelled = true;
       setStreamingLive(false);
-      source.removeEventListener("transcript", onTranscript as EventListener);
-      source.removeEventListener("done", onDone as EventListener);
-      source.removeEventListener("transcript_error", onTranscriptError as EventListener);
-      source.close();
+      closeSource();
     };
   }, [canFetch, workspaceId, runId, effectiveAttemptId, effectiveState]);
 
+  const loadEarlier = useCallback(async () => {
+    if (!workspaceId || !runId || !effectiveAttemptId || !fetchState.hasEarlier) return;
+    setFetchState((prev) => ({ ...prev, loadingEarlier: true, error: null }));
+    try {
+      const data = await getWikiRunAttemptTranscript(workspaceId, runId, effectiveAttemptId, {
+        before: fetchState.nextBefore ?? fetchState.events[0]?.ordinal,
+      });
+      setFetchState((prev) => ({
+        ...prev,
+        events: mergeTraceEvents(prev.events, data.events),
+        hasEarlier: data.hasEarlier,
+        ...(data.nextBefore !== undefined ? { nextBefore: data.nextBefore } : {}),
+        loadingEarlier: false,
+      }));
+    } catch (error) {
+      setFetchState((prev) => ({
+        ...prev,
+        loadingEarlier: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }, [workspaceId, runId, effectiveAttemptId, fetchState]);
+
   const projected = useMemo(
-    () => projectAttemptTranscriptMessages(fetchState.messages),
-    [fetchState.messages],
+    () => projectAttemptTranscriptMessages(fetchState.events),
+    [fetchState.events],
   );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          // Wider than default sm:max-w-sm / max-w-lg — room for path trails + MD.
-          "flex max-h-[min(85vh,44rem)] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl",
+          // Trace is a first-class inspector pane, not a short nested wall.
+          "z-[60] flex h-[calc(100dvh-1rem)] w-full max-h-[60rem] flex-col gap-0 overflow-hidden p-0 sm:h-[min(92vh,60rem)] sm:max-w-5xl",
         )}
+        overlayClassName="z-[60]"
         data-testid="run-graph-node-dialog"
         data-node-key={nodeKey}
       >
@@ -290,10 +371,13 @@ export function NodeAttemptDialog({
         ) : null}
 
         <div
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3"
+          className="flex min-h-0 flex-1 flex-col px-4 py-3"
           data-testid="run-graph-dialog-scroll"
         >
-          <div className="flex flex-col gap-3" data-testid="run-graph-attempt-inspector">
+          <div
+            className="flex min-h-0 flex-1 flex-col gap-3"
+            data-testid="run-graph-attempt-inspector"
+          >
             {!attempt ? (
               <p
                 className="text-sm text-muted-foreground"
@@ -371,7 +455,7 @@ export function NodeAttemptDialog({
                 {canFetch ? (
                   <>
                     <Separator />
-                    <div className="flex min-w-0 flex-col gap-1.5">
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1.5">
                       <p className="okf-section-label">
                         {t.agentWorkspace.attemptTranscript}
                         {streamingLive || isAttemptTranscriptLive(effectiveState) ? (
@@ -381,7 +465,7 @@ export function NodeAttemptDialog({
                         ) : null}
                       </p>
                       <div
-                        className="flex min-w-0 flex-col gap-0.5 rounded-md border border-border/60 bg-muted/10 px-2.5 py-2"
+                        className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 rounded-md border border-border/60 bg-muted/10 px-2.5 py-2"
                         data-testid="attempt-transcript"
                         data-attempt-id={effectiveAttemptId ?? undefined}
                         data-attempt-state={effectiveState ?? undefined}
@@ -394,23 +478,34 @@ export function NodeAttemptDialog({
                             <Spinner className="size-3.5" />
                             {t.common.loading}
                           </div>
-                        ) : fetchState.error ? (
+                        ) : null}
+                        {fetchState.error ? (
                           <p
                             className="text-xs text-destructive"
                             data-testid="attempt-transcript-error"
                           >
                             {fetchState.error}
                           </p>
-                        ) : projected.length === 0 ? (
+                        ) : null}
+                        {fetchState.ready && projected.length === 0 ? (
                           <p
                             className="text-xs text-muted-foreground"
                             data-testid="attempt-transcript-empty"
                           >
                             {t.agentWorkspace.attemptTranscriptEmpty}
                           </p>
-                        ) : (
-                          <TranscriptMessageList messages={projected} streaming={streamingLive} />
-                        )}
+                        ) : null}
+                        {projected.length > 0 ? (
+                          <AttemptTraceScroller
+                            messages={projected}
+                            streaming={streamingLive}
+                            hasEarlier={fetchState.hasEarlier}
+                            loadingEarlier={fetchState.loadingEarlier}
+                            onLoadEarlier={() => void loadEarlier()}
+                            jumpToLatestLabel={t.agentWorkspace.jumpToLatest}
+                            loadEarlierLabel={t.agentWorkspace.attemptTranscriptLoadEarlier}
+                          />
+                        ) : null}
                       </div>
                     </div>
                   </>

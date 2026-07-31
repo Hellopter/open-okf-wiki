@@ -477,6 +477,14 @@ export function commitFreezeArtifacts(
       )
       .run(claim.runId);
   }
+  // This bootstrap dependency used to exist only in unlockReadyNodes. Persist
+  // it so the operator snapshot remains the complete, actual DAG.
+  host.db
+    .prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'freeze', 'plan')
+       ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+    )
+    .run(claim.runId);
   host.db
     .prepare(
       "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",

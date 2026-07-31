@@ -16,8 +16,8 @@ const digest = "b".repeat(64);
 
 function snapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v2",
-    definitionVersion: 2,
+    schema: "okf.wiki-runs/v3",
+    definitionVersion: 3,
     runId: "run-1",
     workspaceId: "ws-1",
     revision: 1,
@@ -26,9 +26,11 @@ function snapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
     intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
+    edges: [],
     attempts: [],
     gates: [],
     effects: [],
+    candidates: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     ...partial,

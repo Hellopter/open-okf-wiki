@@ -32,9 +32,13 @@ import { digest, now } from "./crypto-util.js";
 import type { WikiRunsCasCtx } from "./ctx.js";
 import { unlockReadyNodes } from "./dag.js";
 import { openOperatorInputGate } from "./gate-open.js";
-import { scheduleMechanicalRepair, shouldAutoMechanicalRepair } from "./repair-schedule.js";
+import {
+  openMechanicalEvaluationRecovery,
+  scheduleMechanicalRepair,
+  shouldAutoMechanicalRepair,
+} from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
-import { writeConversationTranscript } from "./transcript-io.js";
+import { appendAttemptFailureTranscript } from "./transcript-io.js";
 import type {
   ArtifactPreparation,
   ClaimedFreeze,
@@ -76,6 +80,8 @@ export type SchedulerHost = WikiRunsCasCtx & {
     preparations: ArtifactPreparation[],
     metrics?: AttemptMetrics,
   ): void;
+  /** Persist sealed failure evidence without falsely succeeding the Attempt. */
+  commitFailedAttemptArtifacts(claim: ClaimedNode, preparations: ArtifactPreparation[]): void;
   orphanPreparedArtifacts(attemptId: string): void;
   requeueFailedNode(
     runId: string,
@@ -517,9 +523,27 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
       "metrics" in outcome ? outcome.metrics : undefined,
     );
     if (outcome.type === "failed") {
+      const preparations: ArtifactPreparation[] = [];
+      for (const descriptor of outcome.unsealedArtifacts ?? []) {
+        const preparation = await host.prepareUnsealedArtifact(claim, descriptor);
+        if (!preparation) return;
+        await host.sealPreparation(claim.runId, preparation);
+        preparations.push(preparation);
+      }
+      if (host.closed || !host.isCurrent(claim)) return;
+      if (preparations.length > 0) {
+        host.transaction(() => host.commitFailedAttemptArtifacts(claim, preparations));
+      }
       // Preserve typed failureClass + optional metrics for L_control / observation.
       throw Object.assign(new Error(outcome.error), {
         failureClass: outcome.failureClass,
+        ...(preparations.length > 0
+          ? {
+              failureArtifacts: Object.fromEntries(
+                preparations.map((preparation) => [preparation.role, preparation.artifactId]),
+              ),
+            }
+          : {}),
         ...(outcomeMetrics ? { metrics: outcomeMetrics } : {}),
       });
     }
@@ -561,7 +585,7 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
     if (host.closed) return;
     // Best-effort: leave a readable conversation row when Pi/mechanical failed
     // without sealing a transcript (mechanical cancel, missing executor, …).
-    await ensureAttemptFailureTranscript(host, claim, error).catch(() => undefined);
+    await ensureAttemptFailureTranscript(host, claim).catch(() => undefined);
     host.transaction(() => failNode(host, claim, error));
   } finally {
     host.activeAttempts.delete(claim.attemptId);
@@ -570,28 +594,24 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
 }
 
 /**
- * Ensure session.jsonl exists for failed attempts so Node details is not empty.
- * Preserves any live JSONL already written by the Pi sink.
+ * Ensure session.jsonl contains a terminal record for failed attempts without
+ * rewriting the append-only Pi trace or crossing its reader retention limit.
  */
 async function ensureAttemptFailureTranscript(
   host: SchedulerHost,
   claim: ClaimedNode,
-  error: unknown,
 ): Promise<void> {
-  const message =
-    error instanceof Error ? error.message.slice(0, 4_000) : `${claim.nodeKey} failed`;
   const sessionPath = path.join(
     runWorkDir(host.workspace.rootPath, claim.runId),
     "attempts",
     claim.attemptId,
     "session.jsonl",
   );
-  await writeConversationTranscript({
+  await appendAttemptFailureTranscript({
     sessionPath,
-    nodeKey: claim.nodeKey,
-    summary: `Error: ${message}`,
-    preserveExisting: true,
-    meta: { mode: "failed", kind: claim.kind, error: message },
+    // Error text is already stored on the Attempt outcome. Keep this durable
+    // transcript fallback secret-free even for custom executor errors.
+    summary: "Attempt failed.",
   });
 }
 
@@ -654,6 +674,8 @@ export function loadPiAttemptNodeDetail(
   if (typeof rowObj.lens === "string") candidate.lens = rowObj.lens;
   if (typeof rowObj.seatIndex === "number") candidate.seatIndex = rowObj.seatIndex;
   if (typeof rowObj.critical === "boolean") candidate.critical = rowObj.critical;
+  if (typeof rowObj.workUnitId === "string") candidate.workUnitId = rowObj.workUnitId;
+  if (typeof rowObj.adaptRound === "number") candidate.adaptRound = rowObj.adaptRound;
   if (typeof rowObj.feedback === "string") candidate.feedback = rowObj.feedback;
   // Structured RepairRequest from scheduleMechanicalRepair / scheduleOperatorRepair.
   if (rowObj.repairRequest != null && typeof rowObj.repairRequest === "object") {
@@ -717,17 +739,24 @@ function requireDynamicNodeDetail(
   if (kind === "repair" && !detail.repairRequest) {
     dynamicDetailError(kind, nodeKey, "missing detail.repairRequest");
   }
+  if (kind === "plan.adapt") {
+    const round = /^plan\.adapt\.([1-2])$/.exec(nodeKey)?.[1];
+    if (!round || detail.adaptRound !== Number(round)) {
+      dynamicDetailError(kind, nodeKey, "missing or mismatched detail.adaptRound");
+    }
+  }
   return detail;
 }
 
 function isDynamicPiNodeKind(
   kind: PiAttemptInput["node"]["kind"],
-): kind is "research.leaf" | "research.domain" | "review.seat" | "repair" {
+): kind is "research.leaf" | "research.domain" | "review.seat" | "repair" | "plan.adapt" {
   return (
     kind === "research.leaf" ||
     kind === "research.domain" ||
     kind === "review.seat" ||
-    kind === "repair"
+    kind === "repair" ||
+    kind === "plan.adapt"
   );
 }
 
@@ -815,6 +844,14 @@ export function failureClassOf(error: unknown): string | undefined {
   return undefined;
 }
 
+function failureArtifactIdOf(error: unknown, role: string): string | undefined {
+  if (!error || typeof error !== "object" || !("failureArtifacts" in error)) return undefined;
+  const artifacts = (error as { failureArtifacts?: unknown }).failureArtifacts;
+  if (!artifacts || typeof artifacts !== "object" || Array.isArray(artifacts)) return undefined;
+  const artifactId = (artifacts as Record<string, unknown>)[role];
+  return typeof artifactId === "string" && artifactId.trim() ? artifactId : undefined;
+}
+
 /**
  * Classes L_control may auto-requeue for research.leaf/domain (same input_digest).
  * Transport after L0 exhaustion maps to infrastructure (or transient when present).
@@ -841,6 +878,7 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
   const message =
     error instanceof Error ? error.message.slice(0, 4_000) : `${claim.nodeKey} failed`;
   const failureClass = failureClassOf(error);
+  const mechanicalReportArtifactId = failureArtifactIdOf(error, "validate_report");
   host.db
     .prepare(
       `UPDATE attempts SET state = 'failed', error = ?, failure_class = ?, ended_at = ?
@@ -878,7 +916,7 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
   // (default 0; host autofix preferred). Independent of research L_control and council.
   // Does NOT disguise fix as write.root (write stays at its successful generation).
   if (shouldAutoMechanicalRepair(host, claim, message, failureClass)) {
-    if (scheduleMechanicalRepair(host, claim, message)) {
+    if (scheduleMechanicalRepair(host, claim, message, mechanicalReportArtifactId)) {
       host.emit(claim.runId, "node.ready");
       return;
     }
@@ -901,9 +939,17 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
       .get(claim.runId),
   );
   if (!hasWork) {
+    const recovery = openMechanicalEvaluationRecovery(
+      host,
+      claim,
+      message,
+      failureClass,
+      mechanicalReportArtifactId,
+    );
     host.db
       .prepare("UPDATE runs SET state = 'failed', updated_at = ? WHERE run_id = ?")
       .run(timestamp, claim.runId);
+    if (recovery) host.emit(claim.runId, "evaluation.recovery_available");
   } else {
     // Re-evaluate unlock in case other branches can proceed without this node.
     unlockReadyNodes(host, claim.runId);

@@ -74,17 +74,20 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   const run = asRow(db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId));
   if (!run) throw new Error(`run not found: ${runId}`);
   const definitionVersion = requiredNumber(run, "definition_version");
-  if (definitionVersion !== 2) {
+  if (definitionVersion !== 3) {
     throw new Error(`unsupported WikiRuns definition version for run ${runId}`);
   }
 
+  const edges = asRows(
+    db
+      .prepare("SELECT from_key, to_key FROM node_edges WHERE run_id = ? ORDER BY from_key, to_key")
+      .all(runId),
+  ).map((edge) => ({ from: requiredText(edge, "from_key"), to: requiredText(edge, "to_key") }));
+
   // Inbound edges: to_key → from_key[] (for parentKey projection).
   const inboundByTo = new Map<string, string[]>();
-  for (const edge of asRows(
-    db.prepare("SELECT from_key, to_key FROM node_edges WHERE run_id = ?").all(runId),
-  )) {
-    const from = requiredText(edge, "from_key");
-    const to = requiredText(edge, "to_key");
+  for (const edge of edges) {
+    const { from, to } = edge;
     const list = inboundByTo.get(to) ?? [];
     list.push(from);
     inboundByTo.set(to, list);
@@ -286,6 +289,37 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   } catch {
     candidates = [];
   }
+  let evaluationRecoveries: WikiRunSnapshot["evaluationRecoveries"];
+  try {
+    evaluationRecoveries = asRows(
+      db
+        .prepare(
+          `SELECT recovery_id, candidate_id, source, repair_request_json, report_artifact_id, reason, created_at
+           FROM evaluation_recoveries WHERE run_id = ? AND state = 'open' ORDER BY created_at`,
+        )
+        .all(runId),
+    ).map((row) => {
+      const repairRequest = parseJson<{ requestId?: unknown }>(
+        requiredText(row, "repair_request_json"),
+      );
+      return {
+        recoveryId: requiredText(row, "recovery_id"),
+        candidateId: requiredText(row, "candidate_id"),
+        source: requiredText(row, "source") as "mechanical" | "semantic",
+        repairRequestId:
+          typeof repairRequest.requestId === "string" && repairRequest.requestId.trim()
+            ? repairRequest.requestId
+            : "unknown",
+        ...(row.report_artifact_id != null && String(row.report_artifact_id).trim()
+          ? { reportArtifactId: String(row.report_artifact_id).trim() }
+          : {}),
+        reason: requiredText(row, "reason"),
+        createdAt: requiredText(row, "created_at"),
+      };
+    });
+  } catch {
+    evaluationRecoveries = undefined;
+  }
   return WikiRunSnapshotSchema.parse({
     schema: WIKI_RUNS_SCHEMA,
     definitionVersion,
@@ -304,9 +338,11 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
             digest: requiredText(run, "pinned_digest"),
           },
     nodes,
+    edges,
     attempts,
     gates,
     candidates,
+    ...(evaluationRecoveries && evaluationRecoveries.length > 0 ? { evaluationRecoveries } : {}),
     effects,
     createdAt: requiredText(run, "created_at"),
     updatedAt: requiredText(run, "updated_at"),

@@ -14,6 +14,7 @@ test("buildExecutionGraph orders leaves before domains and ends at publish", () 
   assert.ok(keys.includes("research.leaf.core.1"));
   assert.ok(keys.includes("research.leaf.core.2"));
   assert.ok(keys.includes("research.domain.core"));
+  assert.ok(keys.includes("plan.adapt.1"));
   assert.ok(keys.includes("write.root"));
   assert.ok(keys.includes("validate.pre"));
   assert.ok(keys.includes("review.seat.grounding"));
@@ -28,6 +29,8 @@ test("buildExecutionGraph orders leaves before domains and ends at publish", () 
     graph.edges.some((e) => e.from === "research.leaf.core.1" && e.to === "research.domain.core"),
   );
   assert.ok(graph.edges.some((e) => e.from === "research.domain.core" && e.to === "write.root"));
+  assert.ok(graph.edges.some((e) => e.from === "research.domain.core" && e.to === "plan.adapt.1"));
+  assert.ok(graph.edges.some((e) => e.from === "plan.adapt.1" && e.to === "write.root"));
   assert.ok(graph.edges.some((e) => e.from === "review.reduce" && e.to === "gate.fix"));
   assert.ok(graph.edges.some((e) => e.from === "gate.fix" && e.to === "validate.final"));
   assert.ok(graph.edges.some((e) => e.from === "gate.publication" && e.to === "publish"));
@@ -53,11 +56,12 @@ test("reviewRequired=false compiles empty lenses and skips seats", () => {
   assert.ok(graph.edges.some((e) => e.from === "validate.pre" && e.to === "review.reduce"));
 });
 
-test("buildExecutionGraph without domains wires plan → write.root", () => {
+test("buildExecutionGraph without domains routes plan through bounded adaptation", () => {
   const spec = defaultWikiRunSpec("Empty");
   spec.domains = [];
   const graph = buildExecutionGraph(spec);
   assert.ok(graph.edges.some((e) => e.from === "plan" && e.to === "write.root"));
+  assert.ok(graph.edges.some((e) => e.from === "plan" && e.to === "plan.adapt.1"));
   assert.equal(
     graph.nodes.some((n) => n.kind === "research.domain"),
     false,
@@ -106,7 +110,7 @@ test("compileExecutionPlan throws when questions exceed maxLeafFanOut", () => {
 test("compileExecutionPlan within caps builds workUnits and reductions", () => {
   const spec = defaultWikiRunSpec("Ok");
   const plan = compileExecutionPlan(spec, { maxDomainFanOut: 4, maxLeafFanOut: 6 });
-  assert.equal(plan.version, 2);
+  assert.equal(plan.version, 3);
   assert.equal(plan.fanOut.domainCount, 1);
   assert.equal(plan.fanOut.leafCount, 2);
   assert.equal(plan.workUnits.length, 2);
@@ -117,6 +121,7 @@ test("compileExecutionPlan within caps builds workUnits and reductions", () => {
     maxRepairRounds: 2,
     maxHardValidateRepairRounds: 0,
   });
+  assert.deepEqual(plan.adaptation, { maxRounds: 2 });
 });
 
 test("buildExecutionGraph omitted options use DEFAULT_ORCHESTRATION (4/6/1)", () => {

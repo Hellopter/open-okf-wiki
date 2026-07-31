@@ -4,6 +4,7 @@
  */
 
 import type {
+  AttemptTraceEvent,
   RunCommand,
   RunCommandReceipt,
   WikiRunSnapshot,
@@ -45,21 +46,41 @@ export function getWikiRunSpec(workspaceId: string, runId: string): Promise<Wiki
   );
 }
 
-/** Secret-free Attempt transcript for Node details UI (JSONL messages). */
+/** Secret-free cursor-paged Attempt trace for Node details UI. */
 export type WikiRunAttemptTranscript = {
   attemptId: string;
   nodeKey: string;
   state: string;
-  messages: unknown[];
+  events: AttemptTraceEvent[];
+  hasEarlier: boolean;
+  hasMore: boolean;
+  nextBefore?: number;
+  cursor: number;
 };
+
+type AttemptTranscriptPageOptions = {
+  before?: number;
+  after?: number;
+  limit?: number;
+};
+
+function attemptTranscriptQuery(options: AttemptTranscriptPageOptions = {}): string {
+  const query = new URLSearchParams();
+  if (options.before !== undefined) query.set("before", String(options.before));
+  if (options.after !== undefined) query.set("after", String(options.after));
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  const value = query.toString();
+  return value ? `?${value}` : "";
+}
 
 export function getWikiRunAttemptTranscript(
   workspaceId: string,
   runId: string,
   attemptId: string,
+  options?: AttemptTranscriptPageOptions,
 ): Promise<WikiRunAttemptTranscript> {
   return request(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript`,
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript${attemptTranscriptQuery(options)}`,
   );
 }
 
@@ -72,8 +93,9 @@ export function wikiRunAttemptTranscriptEventsUrl(
   workspaceId: string,
   runId: string,
   attemptId: string,
+  options?: Pick<AttemptTranscriptPageOptions, "after">,
 ): string {
-  return `${getApiBase()}/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript/events`;
+  return `${getApiBase()}/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript/events${attemptTranscriptQuery(options)}`;
 }
 
 /** Dispatch a durable WikiRuns command (StartRun / ResolveGate / Cancel / …). */

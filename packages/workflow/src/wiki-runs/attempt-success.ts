@@ -35,6 +35,7 @@ import {
   readPublicationBaseline,
 } from "./gate-open.js";
 import { onPlanAccepted } from "./gate-resolve.js";
+import { materializePlanAdaptation, validatePlanAdaptation } from "./plan-adapt.js";
 import {
   isRepairNodeKey,
   loadAcceptance,
@@ -190,6 +191,7 @@ export function onAttemptSucceeded(
   claim: ClaimedNode,
   preparations: ArtifactPreparation[],
   timestamp: string = now(),
+  planDelta?: ReturnType<typeof validatePlanAdaptation>,
 ): void {
   if (claim.kind === "plan") {
     const specPrep = preparations.find((item) => item.role === "spec" || item.kind === "spec");
@@ -255,6 +257,11 @@ export function onAttemptSucceeded(
       .run(timestamp, claim.runId);
     host.emit(claim.runId, "run.published");
     return;
+  }
+
+  if (claim.kind === "plan.adapt") {
+    if (!planDelta) throw new Error("plan adaptation succeeded without a validated delta");
+    materializePlanAdaptation(host, claim, planDelta);
   }
 
   // ANY repair.N success → full EvaluationRound re-arm (validate.pre + seats + reduce).
@@ -339,11 +346,13 @@ export function commitSuccessfulAttempt(
   preparations: ArtifactPreparation[],
   metrics?: AttemptMetrics,
 ): void {
+  const planDelta =
+    claim.kind === "plan.adapt" ? validatePlanAdaptation(host, claim, preparations) : undefined;
   const committed = commitNodeArtifacts(host, claim, preparations, metrics);
   if (!committed) return;
   // commitNodeArtifacts already stamped ended_at; reuse now() for run-state updates
   // (same second granularity as before when control flow lived inside commit).
-  onAttemptSucceeded(host, claim, preparations);
+  onAttemptSucceeded(host, claim, preparations, undefined, planDelta);
 }
 
 /**

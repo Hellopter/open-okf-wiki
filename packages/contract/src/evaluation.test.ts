@@ -12,7 +12,7 @@ import { WikiRunSpecAcceptanceSchema } from "./run.js";
 test("EvaluationPolicySchema applies defaults on empty parse", () => {
   const policy = EvaluationPolicySchema.parse({});
   assert.equal(policy.maxCandidates, 4);
-  assert.equal(policy.onExhausted, "fail");
+  assert.equal(policy.onExhausted, "operator");
   assert.equal(policy.mechanical.requireCitations, true);
   assert.equal(policy.mechanical.requireCriticalPages, true);
   assert.equal(policy.mechanical.modelRepairBudget, 0);
@@ -47,7 +47,7 @@ test("evaluationPolicyFromAcceptance maps budgets and review knobs", () => {
   assert.equal(policy.maxCandidates, 4);
   assert.equal(policy.mechanical.requireCitations, true);
   assert.equal(policy.repair.defaultMode, "patch");
-  assert.equal(policy.onExhausted, "fail");
+  assert.equal(policy.onExhausted, "operator");
 });
 
 test("evaluationPolicyFromAcceptance honors maxCandidates and nested overrides", () => {

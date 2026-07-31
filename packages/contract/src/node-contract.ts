@@ -148,6 +148,15 @@ const DEFECTS: InputRequirement = {
   mountPath: "defects.json",
 };
 
+/** Full sealed validation evidence for a mechanically-triggered repair. */
+const MECHANICAL_REPORT: InputRequirement = {
+  role: "mechanical_report",
+  artifactKind: "receipt",
+  required: false,
+  projection: "mounted",
+  mountPath: "mechanical-report.json",
+};
+
 const TRANSCRIPT_AUDIT: InputRequirement = {
   role: "transcript",
   artifactKind: "transcript",
@@ -213,6 +222,21 @@ const CONTRACTS: Record<string, NodeContract> = {
     outputs: [{ role: "research", artifactKind: "receipt" }],
     execution: "pi",
   },
+  "plan.adapt": {
+    kind: "plan.adapt",
+    requiredInputs: [
+      SOURCES,
+      SKILL,
+      SPEC,
+      { ...EXECUTION_PLAN, required: true },
+      RESEARCH_OPTIONAL,
+      FROZEN_MANIFEST,
+      TRANSCRIPT_AUDIT,
+      OPERATOR_INPUT,
+    ],
+    outputs: [{ role: "plan_delta", artifactKind: "receipt" }],
+    execution: "pi",
+  },
   "write.root": {
     kind: "write.root",
     requiredInputs: [
@@ -265,6 +289,7 @@ const CONTRACTS: Record<string, NodeContract> = {
       WIKI_TREE,
       SPEC,
       DEFECTS,
+      MECHANICAL_REPORT,
       SOURCES,
       SKILL,
       FROZEN_MANIFEST,
@@ -340,6 +365,8 @@ function hasValidKey(kind: string, nodeKey: string): boolean {
       return /^research\.leaf\..+\.\d+$/.test(nodeKey);
     case "research.domain":
       return /^research\.domain\..+$/.test(nodeKey);
+    case "plan.adapt":
+      return /^plan\.adapt\.[1-2]$/.test(nodeKey);
     case "review.seat":
       return /^review\.seat\..+$/.test(nodeKey);
     default:
@@ -361,6 +388,7 @@ export function contractForNode(kind: string, nodeKey: string): NodeContract {
         SOURCES,
         SKILL,
         DEFECTS,
+        MECHANICAL_REPORT,
         FROZEN_MANIFEST,
         TRANSCRIPT_AUDIT,
         OPERATOR_INPUT,

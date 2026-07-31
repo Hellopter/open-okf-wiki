@@ -153,7 +153,7 @@ export function createSubmitDefectReportTool(
       "After lens-scoped review, call submit_defect_report with clean/defects/summary.",
       "Do not paste the full DefectReport as chat text; the tool is the handoff.",
       "clean=true only with empty defects; clean=false requires ≥1 defect with severity/code/issue.",
-      "Prefer few high-signal defects over long lists. severity is blocking | major | minor.",
+      "Report every blocking defect supported by this lens; keep major/minor findings high-signal. severity is blocking | major | minor.",
     ],
     parameters: submitDefectReportParameters,
     executionMode: "sequential",

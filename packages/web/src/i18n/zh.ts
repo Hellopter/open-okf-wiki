@@ -589,10 +589,13 @@ export const zh: MessageTree = {
     runGraphEmpty: "尚无拓扑或尝试记录。",
     runGraphAttempt: "摘要",
     runGraphAttemptEmpty: "该节点暂无尝试数据。",
+    runGraphDependencies: "依赖",
+    runGraphNoDependencies: "无已记录依赖",
     /** 节点详情中的 Attempt 会话 transcript（无密钥）。 */
     attemptTranscript: "对话记录",
     attemptTranscriptEmpty: "尚无对话记录。",
     attemptTranscriptLive: "实时",
+    attemptTranscriptLoadEarlier: "加载更早记录",
 
     runGraphLayers: {
       plan: "规划",
@@ -612,6 +615,11 @@ export const zh: MessageTree = {
     failedNodes: "失败节点",
     retryFailedNode: "重试",
     rerunNode: "重跑",
+    runAttention: "需要处理",
+    evaluationRecovery: "评估恢复",
+    continueEvaluation: "继续评估",
+    candidateLineage: "候选谱系",
+    attemptHistory: "尝试记录",
     /** Active Run 条 — 无打开门闸；仅观察。 */
     activeRunIdle: "无需操作",
     openGate: "处理操作",

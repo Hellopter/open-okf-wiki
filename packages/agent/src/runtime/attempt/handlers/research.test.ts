@@ -62,12 +62,13 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
   await writeFile(
     path.join(executionPlan, "execution-plan.json"),
     `${JSON.stringify({
-      version: 2,
+      version: 3,
       workUnits: [],
       reductions: [],
       reviewLenses: [],
       budgets: { maxRepairRounds: 2, maxHardValidateRepairRounds: 0 },
       fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+      adaptation: { maxRounds: 2 },
     })}\n`,
     "utf8",
   );

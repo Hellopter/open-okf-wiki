@@ -56,7 +56,6 @@ export {
 export {
   extractPagesFromValidationMessage,
   extractPathFromValidateError,
-  MECHANICAL_REPAIR_PAGE_CAP,
   mechanicalIssuesFromErrors,
   toMechanicalReport,
 } from "./mechanical-report.js";

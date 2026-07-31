@@ -204,4 +204,13 @@ describe("failure", () => {
       assert.equal(out.failureClass, "cancelled");
     }
   });
+
+  it("redacts sensitive error text before it becomes durable Attempt evidence", () => {
+    const out = failure(new Error("provider rejected Bearer sk-secret-token-123456"), openSignal());
+    assert.equal(out.type, "failed");
+    if (out.type === "failed") {
+      assert.equal(out.error.includes("sk-secret-token-123456"), false);
+      assert.match(out.error, /Bearer \[redacted\]/);
+    }
+  });
 });

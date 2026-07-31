@@ -125,13 +125,16 @@ export async function mechanicalValidate(
   await writeFile(reportPath, `${JSON.stringify(reportBody, null, 2)}\n`, "utf8");
 
   if (!result.ok) {
-    // Quality / mechanical dirty — not missing infrastructure. Scheduler may
-    // auto-schedule repair.N under EvaluationPolicy.mechanical.modelRepairBudget.
-    // Issue summary is already in errors; mechanical report is on disk under workDir.
+    // Quality / mechanical dirty — not missing infrastructure. The Scheduler seals
+    // this full report before making the Attempt terminal, then hands its typed
+    // issues to repair.N under EvaluationPolicy.mechanical.modelRepairBudget.
     return {
       type: "failed",
-      error: `validation failed: ${result.errors.slice(0, 8).join("; ")}`.slice(0, 4_000),
+      error: `validation failed: ${mechanical.issues.length} issue(s); see sealed validate_report`,
       failureClass: "schema",
+      unsealedArtifacts: [
+        { kind: "receipt", role: "validate_report", sourcePath: reportPath, directory: false },
+      ],
     };
   }
   const validateSummary = `${claim.kind} ok (${result.pageCount ?? 0} pages)`;

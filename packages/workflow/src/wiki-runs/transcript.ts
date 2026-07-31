@@ -5,12 +5,21 @@
 
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { WikiRunAttempt } from "@okf-wiki/contract";
+import {
+  type AttemptTraceEvent,
+  AttemptTraceEventSchema,
+  type WikiRunAttempt,
+} from "@okf-wiki/contract";
 import { isPathInside, runWorkDir } from "@okf-wiki/core";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { asRow, asRows, requiredText, type SqlRow } from "./sql.js";
 import { parseTranscriptMessages } from "./transcript-io.js";
-import { TRANSCRIPT_MAX_BYTES, type WikiRunAttemptTranscript } from "./types.js";
+import {
+  TRANSCRIPT_MAX_BYTES,
+  TRANSCRIPT_PAGE_DEFAULT_LIMIT,
+  TRANSCRIPT_PAGE_MAX_LIMIT,
+  type WikiRunAttemptTranscript,
+} from "./types.js";
 
 export type TranscriptHost = Pick<WikiRunsDbCtx, "workspace" | "db">;
 
@@ -20,12 +29,30 @@ export type TranscriptHost = Pick<WikiRunsDbCtx, "workspace" | "db">;
  */
 export async function readAttemptTranscript(
   host: TranscriptHost,
-  input: { runId: string; attemptId: string },
+  input: {
+    runId: string;
+    attemptId: string;
+    beforeSequence?: number;
+    afterSequence?: number;
+    limit?: number;
+  },
 ): Promise<WikiRunAttemptTranscript> {
   const runId = input.runId.trim();
   const attemptId = input.attemptId.trim();
   if (!runId) throw new Error("runId is required");
   if (!attemptId) throw new Error("attemptId is required");
+  if (input.beforeSequence !== undefined && input.afterSequence !== undefined) {
+    throw new Error("transcript cursor cannot specify before and after");
+  }
+  for (const cursor of [input.beforeSequence, input.afterSequence]) {
+    if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 0)) {
+      throw new Error("transcript cursor is invalid");
+    }
+  }
+  const limit = input.limit ?? TRANSCRIPT_PAGE_DEFAULT_LIMIT;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > TRANSCRIPT_PAGE_MAX_LIMIT) {
+    throw new Error("transcript page limit is invalid");
+  }
 
   host.db.exec("BEGIN DEFERRED");
   let attempt: SqlRow | undefined;
@@ -92,37 +119,41 @@ export async function readAttemptTranscript(
   const transcriptPath = await firstExistingTranscriptFile(runDir, candidates);
 
   // Attempt exists but no file yet (running) or never sealed (legacy / wipe):
-  // return 200-shaped empty/synthetic messages — never "transcript not found" 404.
+  // return an empty/synthetic page — never "transcript not found" 404.
   // Only run/attempt missing stay 404 for the HTTP adapter.
   if (!transcriptPath) {
-    const messages: unknown[] = attemptError
+    const events: AttemptTraceEvent[] = attemptError
       ? [
-          { role: "assistant", content: `Error: ${attemptError.slice(0, 4_000)}` },
           {
-            schema: 1,
-            node: nodeKey,
-            mode: "missing_transcript",
+            trace: 1,
+            ordinal: 1,
+            at: new Date(0).toISOString(),
+            kind: "terminal",
+            status: "error",
             summary: attemptError.slice(0, 4_000),
-            error: attemptError.slice(0, 4_000),
           },
         ]
       : [];
-    return {
+    return pageTranscript({
       attemptId: requiredText(attempt, "attempt_id"),
       nodeKey,
       state,
-      messages,
-    };
+      events,
+      input,
+      limit,
+    });
   }
 
   const info = await lstat(transcriptPath);
   if (!info.isFile()) {
-    return {
+    return pageTranscript({
       attemptId: requiredText(attempt, "attempt_id"),
       nodeKey,
       state,
-      messages: [],
-    };
+      events: [],
+      input,
+      limit,
+    });
   }
   if (info.size > TRANSCRIPT_MAX_BYTES) {
     throw new Error(`transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`);
@@ -133,20 +164,102 @@ export async function readAttemptTranscript(
     throw new Error(`transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`);
   }
 
-  let messages: unknown[];
+  let rows: unknown[];
   try {
-    messages = parseTranscriptMessages(raw);
+    rows = parseTranscriptMessages(raw);
   } catch (error) {
     throw new Error(
       `transcript is not valid JSON/JSONL: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
-  return {
+  return pageTranscript({
     attemptId: requiredText(attempt, "attempt_id"),
     nodeKey,
     state,
-    messages,
+    events: traceEventsFromRows(rows),
+    input,
+    limit,
+  });
+}
+
+function traceEventsFromRows(rows: unknown[]): AttemptTraceEvent[] {
+  const parsed = rows.map((row) => AttemptTraceEventSchema.safeParse(row));
+  if (parsed.every((entry) => entry.success)) {
+    return parsed.map((entry) => entry.data);
+  }
+
+  const hasTrace = parsed.some((entry) => entry.success);
+  if (hasTrace) {
+    // A trace may have an older legacy prefix (or a partially written row).
+    // Preserve each valid trace event's kind so tool call/result correlation
+    // survives. Normalize the cursor to physical JSONL order for this mixed
+    // legacy shape; pure trace files retain their writer-assigned ordinal.
+    const epoch = new Date(0).toISOString();
+    return rows.map((message, index) => {
+      const entry = parsed[index];
+      if (entry?.success) return { ...entry.data, ordinal: index + 1 };
+      return {
+        trace: 1,
+        ordinal: index + 1,
+        at: epoch,
+        kind: "legacy",
+        message,
+      };
+    });
+  }
+
+  // Historic JSONL was a list of opaque conversation rows. Preserve its file
+  // order under synthesized sequences; new trace JSONL always takes the branch
+  // above and retains its writer-assigned ordinal ids.
+  const epoch = new Date(0).toISOString();
+  return rows.map((message, index) => ({
+    trace: 1,
+    ordinal: index + 1,
+    at: epoch,
+    kind: "legacy",
+    message,
+  }));
+}
+
+function pageTranscript(input: {
+  attemptId: string;
+  nodeKey: string;
+  state: WikiRunAttempt["state"];
+  events: AttemptTraceEvent[];
+  input: { beforeSequence?: number; afterSequence?: number };
+  limit: number;
+}): WikiRunAttemptTranscript {
+  const { events, limit } = input;
+  if (input.input.afterSequence !== undefined) {
+    const eligible = events.filter((event) => event.ordinal > input.input.afterSequence!);
+    const page = eligible.slice(0, limit);
+    return {
+      attemptId: input.attemptId,
+      nodeKey: input.nodeKey,
+      state: input.state,
+      events: page,
+      hasEarlier: false,
+      hasMore: eligible.length > page.length,
+      cursor: page.at(-1)?.ordinal ?? input.input.afterSequence,
+    };
+  }
+
+  const eligible =
+    input.input.beforeSequence === undefined
+      ? events
+      : events.filter((event) => event.ordinal < input.input.beforeSequence!);
+  const start = Math.max(0, eligible.length - limit);
+  const page = eligible.slice(start);
+  return {
+    attemptId: input.attemptId,
+    nodeKey: input.nodeKey,
+    state: input.state,
+    events: page,
+    hasEarlier: start > 0,
+    hasMore: false,
+    ...(start > 0 && page[0] ? { nextBefore: page[0].ordinal } : {}),
+    cursor: page.at(-1)?.ordinal ?? 0,
   };
 }
 

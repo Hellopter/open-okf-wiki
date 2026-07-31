@@ -120,9 +120,7 @@ test.describe("UI shell a11y and polish", () => {
     await expect(sessions).toHaveAttribute("aria-label", /session/i);
 
     // Target size ≥ 24 CSS px (WCAG 2.5.8)
-    const box = await sessions.boundingBox();
-    expect(box).toBeTruthy();
-    expect(Math.min(box!.width, box!.height)).toBeGreaterThanOrEqual(24);
+    await expectVisibleBox(sessions, { minWidth: 24, minHeight: 24 });
 
     await sessions.click();
     const sessionsDialog = page.getByRole("dialog");

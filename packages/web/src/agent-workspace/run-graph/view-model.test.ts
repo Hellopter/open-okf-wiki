@@ -51,7 +51,7 @@ describe("runGraphToViewModel", () => {
     assert.equal(domain.attemptCount, 2);
     assert.equal(domain.latestAttempt?.summary, "retry");
     assert.equal(domain.parentKey, "plan");
-    assert.deepEqual(vm.edges, [{ parentKey: "plan", childKey: "domain-core" }]);
+    assert.deepEqual(vm.edges, [{ from: "plan", to: "domain-core" }]);
     assert.equal(vm.playhead?.attemptId, "domain-core@1");
   });
 

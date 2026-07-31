@@ -63,6 +63,11 @@ function formatRepairRequestBlock(request: RepairRequest): string {
     lines.push(`Repair scope pages: ${request.scope.pages.join(", ")}`);
   }
   lines.push(`Baseline candidate: ${request.baselineCandidateId}`);
+  if (request.mechanicalReportArtifactId) {
+    lines.push(
+      "Read the complete sealed MechanicalReport at inputs/mechanical-report.json before editing; it is authoritative over this summary.",
+    );
+  }
   if (request.scope.pages.length > 0) {
     lines.push(
       "Only edit the listed scope pages unless a consistency fix on another page is strictly required.",

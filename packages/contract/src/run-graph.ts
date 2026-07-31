@@ -7,7 +7,12 @@
 
 import { z } from "zod";
 
-/** Bounded display item from an in-process scoped session (not Operator Session history). */
+/**
+ * Bounded live display item from an in-process scoped session.
+ *
+ * This is a 20-item Run Graph tail, never the durable Attempt trace. The full,
+ * ordered, secret-free trace is read through the Attempt transcript API.
+ */
 export const AttemptItemSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("text"),
@@ -22,6 +27,68 @@ export const AttemptItemSchema = z.discriminatedUnion("type", [
 ]);
 
 export type AttemptItem = z.infer<typeof AttemptItemSchema>;
+
+const AttemptTraceEventBaseSchema = z.object({
+  trace: z.literal(1),
+  ordinal: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  at: z.string().datetime({ offset: true }),
+});
+
+/**
+ * One ordered, secret-free entry in the durable Attempt trace JSONL.
+ * Text fields are individually bounded; the writer enforces the 2 MiB trace
+ * budget and adds an explicit `truncated` event when it is exhausted.
+ */
+export const AttemptTraceEventSchema = z.discriminatedUnion("kind", [
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("input"),
+    content: z.string().max(64 * 1024),
+  }),
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("assistant"),
+    content: z.string().max(64 * 1024),
+  }),
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("tool_call"),
+    toolCallId: z.string().trim().min(1).max(200).optional(),
+    name: z.string().trim().min(1).max(120),
+    /** Redacted JSON text, retained for display rather than control flow. */
+    args: z
+      .string()
+      .max(64 * 1024)
+      .optional(),
+  }),
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("tool_result"),
+    toolCallId: z.string().trim().min(1).max(200).optional(),
+    name: z.string().trim().min(1).max(120),
+    output: z
+      .string()
+      .max(64 * 1024)
+      .optional(),
+    status: z.enum(["done", "error"]),
+  }),
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("terminal"),
+    status: z.enum(["done", "error", "cancelled"]),
+    summary: z
+      .string()
+      .max(64 * 1024)
+      .optional(),
+  }),
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("truncated"),
+    reason: z.literal("trace_limit"),
+    limitBytes: z.number().int().positive(),
+  }),
+  // Reader-only wrapper for historic transcript rows that predate trace JSONL.
+  AttemptTraceEventBaseSchema.extend({
+    kind: z.literal("legacy"),
+    message: z.unknown(),
+  }),
+]);
+
+export type AttemptTraceEvent = z.infer<typeof AttemptTraceEventSchema>;
 
 export const GraphNodeKindSchema = z.enum([
   "plan",

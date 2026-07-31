@@ -119,7 +119,7 @@ test("writeAttemptMetrics + snapshot project metrics when set", () => {
     `INSERT INTO runs (
       run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
       freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
-    ) VALUES (?, ?, NULL, 2, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+    ) VALUES (?, ?, NULL, 3, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   ).run("run-1", "ws-1", digest, ts, ts);
   db.prepare(
     `INSERT INTO nodes (
@@ -176,7 +176,7 @@ test("listNonTerminalRuns returns only non-terminal states", () => {
     `INSERT INTO runs (
       run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
       freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
-    ) VALUES (?, 'ws', NULL, 2, 1, ?, 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+    ) VALUES (?, 'ws', NULL, 3, 1, ?, 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   );
   insert.run("run-running", "running", digest, ts, ts);
   insert.run("run-queued", "queued", digest, ts, ts);

@@ -1,9 +1,9 @@
 /**
  * Read-only Workflow view for a projected WikiRun snapshot.
  *
- * The control plane exposes parentKey, not a generic dependency graph. This
- * view therefore renders only that hierarchy and deliberately leaves every
- * other relationship absent.
+ * The control plane exposes the directed dependency DAG. A node is rendered
+ * once in its execution layer; incoming edges remain visible beside it rather
+ * than being collapsed into a misleading parent-child tree.
  */
 
 import {
@@ -18,7 +18,6 @@ import {
   ItemActions,
   ItemContent,
   ItemDescription,
-  ItemGroup,
   ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
@@ -35,11 +34,6 @@ export type RunGraphCanvasProps = {
   selectedNodeKey?: string | null;
   /** Click a node — parent should open an Attempt inspector. */
   onSelectNode?: (nodeKey: string) => void;
-};
-
-type WorkflowBranch = {
-  node: RunGraphViewNode;
-  children: WorkflowBranch[];
 };
 
 function statusClass(status: RunGraphViewNode["status"]): string {
@@ -101,61 +95,32 @@ function NodeStatusIcon({ status }: { status: RunGraphViewNode["status"] }) {
   }
 }
 
-function branchesFor(nodes: readonly RunGraphViewNode[]): WorkflowBranch[] {
-  const childrenByParent = new Map<string, RunGraphViewNode[]>();
-  const known = new Set(nodes.map((node) => node.nodeKey));
-
-  for (const node of nodes) {
-    if (!node.parentKey || !known.has(node.parentKey)) continue;
-    const children = childrenByParent.get(node.parentKey) ?? [];
-    children.push(node);
-    childrenByParent.set(node.parentKey, children);
-  }
-
-  const branchFor = (node: RunGraphViewNode, ancestors: ReadonlySet<string>): WorkflowBranch => {
-    const nextAncestors = new Set(ancestors);
-    nextAncestors.add(node.nodeKey);
-    const children = (childrenByParent.get(node.nodeKey) ?? [])
-      .filter((child) => !nextAncestors.has(child.nodeKey))
-      .map((child) => branchFor(child, nextAncestors));
-    return { node, children };
-  };
-
-  const roots = nodes.filter((node) => !node.parentKey || !known.has(node.parentKey));
-  // A malformed cycle has no root. Show flat nodes rather than silently
-  // losing control-plane state or rendering the same node multiple times.
-  if (roots.length === 0) return nodes.map((node) => ({ node, children: [] }));
-  return roots.map((node) => branchFor(node, new Set()));
-}
-
 type WorkflowNodeProps = {
-  branch: WorkflowBranch;
+  node: RunGraphViewNode;
+  dependencies: string[];
   selectedNodeKey?: string | null;
   playheadKey?: string;
   onSelectNode?: (nodeKey: string) => void;
-  level: number;
 };
 
 function WorkflowNode({
-  branch,
+  node,
+  dependencies,
   selectedNodeKey,
   playheadKey,
   onSelectNode,
-  level,
 }: WorkflowNodeProps) {
-  const { node, children } = branch;
+  const { t } = useI18n();
   const selected = selectedNodeKey === node.nodeKey;
   const atPlayhead = playheadKey === node.nodeKey;
   const interactive = Boolean(onSelectNode);
   const active = atPlayhead && (node.status === "running" || node.status === "awaiting");
 
   return (
-    <div className="relative min-w-0" data-testid="run-graph-branch">
+    <div className="relative min-w-0" data-testid="run-graph-node-wrap">
       <Item
         render={<button type="button" />}
-        role="treeitem"
-        aria-level={level}
-        aria-expanded={children.length > 0 ? true : undefined}
+        role="listitem"
         aria-current={selected ? "true" : undefined}
         aria-disabled={!interactive || undefined}
         tabIndex={interactive ? 0 : -1}
@@ -172,7 +137,7 @@ function WorkflowNode({
         data-node-key={node.nodeKey}
         data-node-status={node.status}
         data-node-kind={node.kind}
-        data-parent-key={node.parentKey}
+        data-dependencies={dependencies.join(",") || undefined}
         data-selected={selected ? "true" : undefined}
         data-playhead={atPlayhead ? "true" : undefined}
       >
@@ -190,27 +155,32 @@ function WorkflowNode({
           <StatusBadge status={node.status} />
         </ItemActions>
       </Item>
-
-      {children.length > 0 ? (
-        <ItemGroup
-          role="group"
-          className="mt-1.5 ml-3 gap-1.5 border-s border-border ps-3"
-          data-testid="run-graph-children"
-        >
-          {children.map((child) => (
-            <WorkflowNode
-              key={child.node.nodeKey}
-              branch={child}
-              selectedNodeKey={selectedNodeKey}
-              playheadKey={playheadKey}
-              onSelectNode={onSelectNode}
-              level={level + 1}
-            />
-          ))}
-        </ItemGroup>
-      ) : null}
+      <p className="mt-1 ms-9 min-w-0 break-words text-2xs text-muted-foreground">
+        <span className="me-1 uppercase tracking-wide">
+          {t.agentWorkspace.runGraphDependencies}
+        </span>
+        <span className="font-mono">
+          {dependencies.length ? dependencies.join(" · ") : t.agentWorkspace.runGraphNoDependencies}
+        </span>
+      </p>
     </div>
   );
+}
+
+function incomingDependencies(
+  nodes: readonly RunGraphViewNode[],
+  edges: RunGraphViewModel["edges"],
+): Map<string, string[]> {
+  const labels = new Map(nodes.map((node) => [node.nodeKey, node.label]));
+  const incoming = new Map<string, string[]>();
+  for (const edge of edges) {
+    const from = labels.get(edge.from);
+    if (!from || !labels.has(edge.to)) continue;
+    const dependencies = incoming.get(edge.to) ?? [];
+    dependencies.push(from);
+    incoming.set(edge.to, dependencies);
+  }
+  return incoming;
 }
 
 export function RunGraphCanvas({
@@ -230,14 +200,7 @@ export function RunGraphCanvas({
     );
   }
 
-  const branches = branchesFor(nodes);
-  const branchesByLayer = new Map<RunGraphLayerId, WorkflowBranch[]>();
-  for (const branch of branches) {
-    const layer = branch.node.layer;
-    const existing = branchesByLayer.get(layer) ?? [];
-    existing.push(branch);
-    branchesByLayer.set(layer, existing);
-  }
+  const dependenciesByNode = incomingDependencies(nodes, viewModel.edges);
 
   return (
     <div
@@ -248,27 +211,27 @@ export function RunGraphCanvas({
       data-playhead-node={viewModel.playhead?.nodeKey}
       data-playhead-attempt={viewModel.playhead?.attemptId}
     >
-      {[...branchesByLayer.entries()].map(([layer, layerBranches]) => (
+      {viewModel.layers.map(({ id: layer, nodes: layerNodes }) => (
         <section key={layer} className="flex min-w-0 flex-col gap-1.5">
           <p className="okf-section-label">{layerLabel(layer, t)}</p>
-          <ItemGroup
-            role="tree"
+          <div
+            role="list"
             aria-label={layerLabel(layer, t)}
-            className="gap-1.5"
+            className="flex min-w-0 flex-col gap-1.5"
             data-testid="run-graph-layer"
             data-layer={layer}
           >
-            {layerBranches.map((branch) => (
+            {layerNodes.map((node) => (
               <WorkflowNode
-                key={branch.node.nodeKey}
-                branch={branch}
+                key={node.nodeKey}
+                node={node}
+                dependencies={dependenciesByNode.get(node.nodeKey) ?? []}
                 selectedNodeKey={selectedNodeKey}
                 playheadKey={viewModel.playhead?.nodeKey}
                 onSelectNode={onSelectNode}
-                level={1}
               />
             ))}
-          </ItemGroup>
+          </div>
         </section>
       ))}
     </div>

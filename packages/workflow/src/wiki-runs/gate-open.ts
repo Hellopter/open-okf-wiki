@@ -89,6 +89,12 @@ export function openPlanGate(
   }
   host.db
     .prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, ?)
+       ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+    )
+    .run(claim.runId, claim.nodeKey, gateNodeKey);
+  host.db
+    .prepare(
       `INSERT INTO gates (
         gate_id, run_id, node_key, node_generation, kind, state, payload_digest,
         decision_json, detail_json, opened_at, opened_revision

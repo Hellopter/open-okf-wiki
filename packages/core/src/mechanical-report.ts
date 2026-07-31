@@ -14,9 +14,6 @@ import {
 } from "@okf-wiki/contract";
 import type { ValidateWikiResult } from "./validate-wiki.js";
 
-/** Max pages listed on a mechanical RepairRequest scope. */
-export const MECHANICAL_REPAIR_PAGE_CAP = 8;
-
 /**
  * Extract a wiki-relative path prefix when the error looks like `path.md: …`.
  * Returns undefined for free-form messages (caps, missing critical page, …).
@@ -112,12 +109,10 @@ export function toMechanicalReport(
 
 /**
  * Extract unique wiki page paths from a validation / feedback message
- * (segments shaped like `path.md: …`), capped for repair scope.
+ * (segments shaped like `path.md: …`). The complete report remains the
+ * authority; this helper only derives its deterministic page index.
  */
-export function extractPagesFromValidationMessage(
-  message: string,
-  cap: number = MECHANICAL_REPAIR_PAGE_CAP,
-): string[] {
+export function extractPagesFromValidationMessage(message: string): string[] {
   const pages: string[] = [];
   const seen = new Set<string>();
   // Split on common joiners used when packing validate errors into one string.
@@ -127,19 +122,15 @@ export function extractPagesFromValidationMessage(
     if (!path || seen.has(path)) continue;
     seen.add(path);
     pages.push(path);
-    if (pages.length >= cap) break;
   }
   // Also scan whole message for `foo.md:` tokens when joiners are absent.
-  if (pages.length < cap) {
-    const re = /((?:[\w.-]+\/)*[\w.-]+\.md)\s*:/gi;
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(message)) !== null) {
-      const path = match[1]!.replace(/\\/g, "/");
-      if (seen.has(path)) continue;
-      seen.add(path);
-      pages.push(path);
-      if (pages.length >= cap) break;
-    }
+  const re = /((?:[\w.-]+\/)*[\w.-]+\.md)\s*:/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(message)) !== null) {
+    const path = match[1]!.replace(/\\/g, "/");
+    if (seen.has(path)) continue;
+    seen.add(path);
+    pages.push(path);
   }
   return pages;
 }

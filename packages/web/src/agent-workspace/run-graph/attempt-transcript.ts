@@ -15,7 +15,7 @@ import {
   projectAgentMessagesFromPiHistory,
 } from "@okf-wiki/contract";
 
-const CONTENT_MAX = 12_000;
+const CONTENT_MAX = 64 * 1024;
 
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -154,6 +154,136 @@ function assistantWithTools(tools: AgentToolCall[], index: number, text?: string
   };
 }
 
+function traceToolMessage(ordinal: number, at: string, tool: AgentToolCall): AgentMessage {
+  return {
+    id: `att_trace_${ordinal}`,
+    role: "assistant",
+    content: "",
+    createdAt: at,
+    status: "done",
+    tools: [tool],
+    parts: [{ type: "tool", toolId: tool.id }],
+  };
+}
+
+function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessage[] {
+  const out: AgentMessage[] = [];
+  const toolIndexesByKey = new Map<string, number[]>();
+
+  for (const row of rows) {
+    const ordinal = typeof row.ordinal === "number" ? row.ordinal : out.length + 1;
+    const createdAt = typeof row.at === "string" ? row.at : new Date().toISOString();
+    const kind = row.kind;
+    if (kind === "legacy") {
+      const legacy = projectAttemptTranscriptMessages([row.message]);
+      for (const message of legacy) {
+        out.push({ ...message, id: `att_trace_legacy_${ordinal}_${message.id}` });
+      }
+      continue;
+    }
+    if (kind === "input" && typeof row.content === "string") {
+      out.push({
+        id: `att_trace_input_${ordinal}`,
+        role: "user",
+        content: row.content,
+        createdAt,
+        status: "done",
+      });
+      continue;
+    }
+    if (kind === "assistant" && typeof row.content === "string") {
+      out.push({
+        id: `att_trace_assistant_${ordinal}`,
+        role: "assistant",
+        content: row.content,
+        createdAt,
+        status: "done",
+        parts: [{ type: "text", text: row.content }],
+      });
+      continue;
+    }
+    if (kind === "tool_call" && typeof row.name === "string") {
+      const key =
+        typeof row.toolCallId === "string" && row.toolCallId.trim()
+          ? row.toolCallId
+          : `name:${row.name}`;
+      const tool: AgentToolCall = {
+        id: `att_trace_tool_${ordinal}`,
+        name: row.name,
+        ...(row.args !== undefined ? { args: parseArgs(row.args) } : {}),
+        status: "running",
+      };
+      const indexes = toolIndexesByKey.get(key) ?? [];
+      indexes.push(out.length);
+      toolIndexesByKey.set(key, indexes);
+      out.push(traceToolMessage(ordinal, createdAt, tool));
+      continue;
+    }
+    if (kind === "tool_result" && typeof row.name === "string") {
+      const key =
+        typeof row.toolCallId === "string" && row.toolCallId.trim()
+          ? row.toolCallId
+          : `name:${row.name}`;
+      const indexes = toolIndexesByKey.get(key);
+      const index = indexes?.shift();
+      const status = row.status === "error" ? "error" : "done";
+      if (index !== undefined) {
+        const message = out[index];
+        const current = message?.tools?.[0];
+        if (message && current) {
+          out[index] = {
+            ...message,
+            tools: [
+              {
+                ...current,
+                ...(typeof row.output === "string" ? { output: row.output } : {}),
+                status,
+              },
+            ],
+          };
+          if (!indexes || indexes.length === 0) toolIndexesByKey.delete(key);
+          continue;
+        }
+      }
+      out.push(
+        traceToolMessage(ordinal, createdAt, {
+          id: `att_trace_tool_${ordinal}`,
+          name: row.name,
+          ...(typeof row.output === "string" ? { output: row.output } : {}),
+          status,
+        }),
+      );
+      continue;
+    }
+    if (kind === "terminal") {
+      const summary = typeof row.summary === "string" ? row.summary : "";
+      if (!summary) continue;
+      const cancelled = row.status === "cancelled";
+      const failed = row.status === "error";
+      const text = `${cancelled ? "Cancelled: " : failed ? "Error: " : ""}${summary}`;
+      out.push({
+        id: `att_trace_terminal_${ordinal}`,
+        role: "assistant",
+        content: text,
+        createdAt,
+        status: failed ? "error" : "done",
+        ...(text ? { parts: [{ type: "text", text }] } : {}),
+      });
+      continue;
+    }
+    if (kind === "truncated") {
+      out.push({
+        id: `att_trace_truncated_${ordinal}`,
+        role: "system",
+        content: "Trace reached its 2 MiB retention limit; later events were not stored.",
+        createdAt,
+        status: "done",
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Map opaque transcript rows to AgentMessage[] (Session wire shape).
  *
@@ -163,6 +293,13 @@ function assistantWithTools(tools: AgentToolCall[], index: number, text?: string
  * - legacy metadata stubs with `summary`
  */
 export function projectAttemptTranscriptMessages(messages: unknown[]): AgentMessage[] {
+  const traceRows = messages.filter(
+    (row): row is Record<string, unknown> => isRecord(row) && row.trace === 1,
+  );
+  if (traceRows.length === messages.length && traceRows.length > 0) {
+    return projectAttemptTraceEvents(traceRows);
+  }
+
   // Fast path: pure Pi Session history rows.
   const looksLikePiHistory =
     messages.length > 0 &&

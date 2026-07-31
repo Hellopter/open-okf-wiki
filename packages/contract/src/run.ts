@@ -204,9 +204,62 @@ export const ExecutionPlanReductionSchema = z
 
 export type ExecutionPlanReduction = z.infer<typeof ExecutionPlanReductionSchema>;
 
+/** A bounded research gap found after the initial plan's evidence has landed. */
+export const ExecutionPlanDeltaWorkUnitSchema = z
+  .object({
+    /** Stable planner-supplied id, unique for the lifetime of this Run. */
+    id: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+    domainId: z.string().trim().min(1).max(80),
+    question: z.string().trim().min(1).max(500),
+    scope: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+
+export type ExecutionPlanDeltaWorkUnit = z.infer<typeof ExecutionPlanDeltaWorkUnitSchema>;
+
+/**
+ * A proposal, never an editable graph: WikiRuns validates and materializes
+ * research nodes/edges from it under the frozen plan caps.
+ */
+export const ExecutionPlanDeltaSchema = z
+  .object({
+    version: z.literal(1),
+    complete: z.boolean(),
+    additions: z.array(ExecutionPlanDeltaWorkUnitSchema).max(16),
+    reason: z.string().trim().min(1).max(2_000).optional(),
+  })
+  .strict()
+  .superRefine((delta, ctx) => {
+    if (!delta.complete && delta.additions.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "an incomplete adaptation must add at least one research work unit",
+        path: ["additions"],
+      });
+    }
+    const ids = new Set<string>();
+    for (const [index, addition] of delta.additions.entries()) {
+      if (ids.has(addition.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate adaptation work unit id: ${addition.id}`,
+          path: ["additions", index, "id"],
+        });
+      }
+      ids.add(addition.id);
+    }
+  });
+
+export type ExecutionPlanDelta = z.infer<typeof ExecutionPlanDeltaSchema>;
+
 export const ExecutionPlanSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     workUnits: z.array(ExecutionPlanWorkUnitSchema),
     reductions: z.array(ExecutionPlanReductionSchema),
     /**
@@ -227,6 +280,12 @@ export const ExecutionPlanSchema = z
         leafCount: z.number().int().min(0),
         maxDomainFanOut: z.number().int().min(1).max(16),
         maxLeafFanOut: z.number().int().min(1).max(16),
+      })
+      .strict(),
+    /** Two bounded evidence-gap decisions are enough before writing starts. */
+    adaptation: z
+      .object({
+        maxRounds: z.number().int().min(1).max(2),
       })
       .strict(),
     /** Optional link back to the Spec digest that produced this plan. */

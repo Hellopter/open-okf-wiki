@@ -119,6 +119,12 @@ export const RepairRequestSchema = z
     sources: z.array(RepairSourceSchema).min(1),
     issues: z.array(RepairIssueSchema).default([]),
     scope: RepairScopeSchema,
+    /**
+     * Sealed mechanical validation evidence. The repairer mounts this artifact
+     * and treats it as authoritative rather than reconstructing defects from
+     * a shortened Attempt error.
+     */
+    mechanicalReportArtifactId: z.string().trim().min(1).max(200).optional(),
     /** Prior-round blocking defects kept sticky across re-review when policy allows. */
     priorBlocking: z.array(z.union([DefectItemSchema, z.unknown()])).optional(),
   })
@@ -192,7 +198,7 @@ export const EvaluationPolicySchema = z
       SemanticEvaluationPolicySchema.parse({}),
     ),
     repair: RepairEvaluationPolicySchema.default(() => RepairEvaluationPolicySchema.parse({})),
-    onExhausted: EvaluationOnExhaustedSchema.default("fail"),
+    onExhausted: EvaluationOnExhaustedSchema.default("operator"),
   })
   .strict();
 

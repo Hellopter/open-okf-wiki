@@ -229,37 +229,14 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
   const projector = createAttemptProjectorState();
   const sink: AttemptTranscriptSink | undefined = input.transcriptPath
-    ? createAttemptTranscriptSink(input.transcriptPath)
+    ? createAttemptTranscriptSink(input.transcriptPath, input.task)
     : undefined;
-
-  const flushTranscript = (status: ScopedAgentProgress["status"], summary?: string): void => {
-    if (!sink) return;
-    const items = attemptItemsSnapshot(projector);
-    const terminal =
-      status === "done"
-        ? "done"
-        : status === "error"
-          ? "error"
-          : status === "cancelled"
-            ? "cancelled"
-            : undefined;
-    // Fire-and-forget; sink serializes writes. Failures must not kill the agent.
-    void sink
-      .writeProgress({
-        task: input.task,
-        items,
-        summary,
-        terminal,
-      })
-      .catch(() => undefined);
-  };
 
   const snapshot = (
     status: ScopedAgentProgress["status"],
     summary?: string,
   ): ScopedAgentProgress => {
     const items = attemptItemsSnapshot(projector);
-    flushTranscript(status, summary);
     return {
       attemptId,
       nodeKey,
@@ -278,6 +255,9 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
   };
 
   try {
+    // Persist the input before Pi emits any lifecycle events. The sink serializes
+    // subsequent writes and is drained in finally before its owner seals output.
+    await sink?.start();
     emitProgress(input.onProgress, snapshot("running", `${input.role} started`));
 
     handle = await createWikiSession({
@@ -309,6 +289,8 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
     const unsub = handle.session.subscribe((event) => {
       applyAttemptSessionEvent(projector, event);
+      // Durable trace is separate from the compact AttemptItem progress tail.
+      void sink?.writeSessionEvent(event).catch(() => undefined);
       const note = progressNoteFromSessionEvent(event);
       emitProgress(input.onProgress, snapshot("running", note));
     });
@@ -359,7 +341,6 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      flushTranscript("cancelled", "Wiki Run cancelled");
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -371,6 +352,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       input.abortSignal.removeEventListener("abort", onAbort);
     }
     handle?.dispose();
+    await sink?.flush().catch(() => undefined);
   }
 }
 

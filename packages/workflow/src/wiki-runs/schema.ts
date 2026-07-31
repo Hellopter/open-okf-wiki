@@ -32,7 +32,7 @@ export function migrate(db: DatabaseSync): void {
       run_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       operator_session_id TEXT,
-      definition_version INTEGER NOT NULL CHECK (definition_version = 2),
+      definition_version INTEGER NOT NULL CHECK (definition_version = 3),
       revision INTEGER NOT NULL,
       state TEXT NOT NULL,
       cancel_requested INTEGER NOT NULL,
@@ -181,6 +181,20 @@ export function migrate(db: DatabaseSync): void {
       PRIMARY KEY (run_id, candidate_id)
     ) STRICT;
     CREATE INDEX IF NOT EXISTS idx_wiki_candidates_run ON wiki_candidates(run_id, round);
+    CREATE TABLE IF NOT EXISTS evaluation_recoveries (
+      recovery_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id),
+      state TEXT NOT NULL CHECK (state IN ('open', 'continued')),
+      source TEXT NOT NULL CHECK (source IN ('mechanical', 'semantic')),
+      candidate_id TEXT NOT NULL,
+      report_artifact_id TEXT,
+      repair_request_json TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      continued_at TEXT
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_evaluation_recoveries_run_state
+      ON evaluation_recoveries(run_id, state);
   `);
   const runColumns = asRows(db.prepare("PRAGMA table_info(runs)").all()).map((row) =>
     requiredText(row, "name"),
@@ -197,7 +211,7 @@ export function migrate(db: DatabaseSync): void {
   const unsupportedRun = asRow(
     db
       .prepare(
-        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 2 LIMIT 1",
+        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 3 LIMIT 1",
       )
       .get(),
   );

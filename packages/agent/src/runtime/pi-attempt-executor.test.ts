@@ -50,12 +50,13 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
   await writeFile(
     path.join(executionPlan, "execution-plan.json"),
     `${JSON.stringify({
-      version: 2,
+      version: 3,
       workUnits: [],
       reductions: [],
       reviewLenses: [],
       budgets: { maxRepairRounds: 2, maxHardValidateRepairRounds: 0 },
       fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+      adaptation: { maxRounds: 2 },
     })}\n`,
     "utf8",
   );
@@ -224,21 +225,21 @@ test("Pi attempt fixture plan writes an unsealed canonical spec and transcript",
   assert.ok(spec);
   assert.deepEqual(JSON.parse(await readFile(spec.sourcePath, "utf8")), defaultWikiRunSpec("Demo"));
   await access(input.sessionPath);
-  // Conversation-shaped JSONL (not metadata-only stub) for Node details UI.
+  // Ordered trace JSONL for Node details UI (not a bounded AttemptItem snapshot).
   const transcriptLines = (await readFile(input.sessionPath, "utf8"))
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  assert.ok(transcriptLines.length >= 2, "expected multi-row conversation transcript");
-  assert.equal(transcriptLines[0]?.role, "user");
+  assert.ok(transcriptLines.length >= 2, "expected multi-row attempt trace");
+  assert.equal(transcriptLines[0]?.kind, "input");
+  assert.equal(transcriptLines[0]?.trace, 1);
   assert.ok(
     transcriptLines.some(
       (row) =>
-        row.role === "assistant" ||
-        row.type === "text" ||
-        (typeof row.summary === "string" && row.summary.length > 0),
+        row.kind === "assistant" ||
+        (row.kind === "terminal" && typeof row.summary === "string" && row.summary.length > 0),
     ),
-    "expected assistant/text/summary content in plan transcript",
+    "expected assistant or terminal evidence in plan trace",
   );
   assert.equal(
     await readFile(path.join(input.workDir, "sources", "main", "README.md"), "utf8"),
@@ -788,13 +789,10 @@ test("Pi attempt writes a readable failure transcript on cancel and infrastructu
   assert.equal(cancelledOut.type, "failed");
   await access(cancelled.sessionPath);
   const cancelledRows = parseTranscriptJsonl(await readFile(cancelled.sessionPath, "utf8"));
-  assert.ok(cancelledRows.some((row) => row.role === "assistant"));
-  const cancelledMeta = cancelledRows.find((row) => row.mode === "failed");
-  assert.ok(cancelledMeta, "expected failed meta row");
-  assert.equal(cancelledMeta.failureClass, "cancelled");
-  assert.equal(cancelledMeta.error, "Pi attempt cancelled");
-  assert.equal(cancelledMeta.attemptId, cancelled.attemptId);
-  assert.equal(cancelledMeta.node, "plan");
+  const cancelledTerminal = cancelledRows.find((row) => row.kind === "terminal");
+  assert.ok(cancelledTerminal, "expected terminal trace row");
+  assert.equal(cancelledTerminal.status, "cancelled");
+  assert.equal(cancelledTerminal.summary, "Pi attempt cancelled");
 
   const specPath = path.join(path.dirname(path.dirname(invalidSpec.attemptDir)), "bad-spec.json");
   await writeFile(specPath, "{}\n", "utf8");
@@ -807,10 +805,9 @@ test("Pi attempt writes a readable failure transcript on cancel and infrastructu
   assert.equal(failed.type, "failed");
   await access(invalidSpec.sessionPath);
   const failedRows = parseTranscriptJsonl(await readFile(invalidSpec.sessionPath, "utf8"));
-  assert.ok(failedRows.some((row) => row.role === "assistant"));
-  const failedMeta = failedRows.find((row) => row.mode === "failed");
-  assert.ok(failedMeta, "expected failed meta row");
-  assert.equal(failedMeta.failureClass, "infrastructure");
-  assert.equal(typeof failedMeta.error, "string");
-  assert.ok(String(failedMeta.error).length > 0);
+  const failedTerminal = failedRows.find((row) => row.kind === "terminal");
+  assert.ok(failedTerminal, "expected terminal trace row");
+  assert.equal(failedTerminal.status, "error");
+  assert.equal(typeof failedTerminal.summary, "string");
+  assert.ok(String(failedTerminal.summary).length > 0);
 });

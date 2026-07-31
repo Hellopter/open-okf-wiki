@@ -26,6 +26,7 @@ export type CommandKey =
   | `gate:${string}:resolve`
   | `node:${string}:retry`
   | `node:${string}:rerun`
+  | `recovery:${string}:continue`
   | string;
 
 function commandKeyFor(command: RunCommand): CommandKey {
@@ -38,6 +39,8 @@ function commandKeyFor(command: RunCommand): CommandKey {
       return `node:${command.nodeKey}:retry`;
     case "rerun_node":
       return `node:${command.nodeKey}:rerun`;
+    case "continue_evaluation":
+      return `recovery:${command.recoveryId}:continue`;
     default:
       return `run:${"runId" in command ? String(command.runId) : "unknown"}:${command.type}`;
   }
@@ -67,6 +70,7 @@ export type UseWikiRunNodeActionsResult = {
   clearCommandError: () => void;
   retryFailed: (node: WikiRunNode, attempt: WikiRunAttempt) => Promise<boolean>;
   rerunNode: (node: WikiRunNode) => Promise<boolean>;
+  continueEvaluation: (recoveryId: string) => Promise<boolean>;
   dispatchCommand: (command: RunCommand) => Promise<boolean>;
 };
 
@@ -204,6 +208,19 @@ export function useWikiRunNodeActions({
     [runId, dispatchCommand],
   );
 
+  const continueEvaluation = useCallback(
+    async (recoveryId: string): Promise<boolean> => {
+      if (!runId) return false;
+      return dispatchCommand({
+        type: "continue_evaluation",
+        commandId: crypto.randomUUID(),
+        runId,
+        recoveryId,
+      });
+    },
+    [runId, dispatchCommand],
+  );
+
   const canRetryDialog = Boolean(
     dialogNode &&
       dialogWikiAttempt &&
@@ -237,6 +254,7 @@ export function useWikiRunNodeActions({
     clearCommandError,
     retryFailed,
     rerunNode,
+    continueEvaluation,
     dispatchCommand,
   };
 }

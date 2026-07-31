@@ -208,17 +208,20 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     attemptId: string;
     nodeKey: string;
     state: string;
-    messages: unknown[];
+    events: Array<{ kind: string; message?: unknown }>;
+    cursor: number;
   };
   assert.equal(transcript.attemptId, attemptId);
   assert.equal(transcript.nodeKey, nodeKey);
   assert.ok(typeof transcript.state === "string" && transcript.state.length > 0);
-  assert.ok(transcript.messages.length >= 2);
-  assert.deepEqual(transcript.messages[0], { role: "user", content: "plan the wiki" });
-  assert.deepEqual(transcript.messages[1], {
+  assert.ok(transcript.events.length >= 2);
+  assert.equal(transcript.events[0]?.kind, "legacy");
+  assert.deepEqual(transcript.events[0]?.message, { role: "user", content: "plan the wiki" });
+  assert.deepEqual(transcript.events[1]?.message, {
     role: "assistant",
     content: "drafting overview",
   });
+  assert.equal(transcript.cursor, 2);
 
   const missing = await fetch(`${base}/${receipt.runId}/attempts/no-such-attempt/transcript`);
   assert.equal(missing.status, 404);
@@ -232,9 +235,9 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   }).catch(() => undefined);
   const emptyRes = await fetch(`${base}/${receipt.runId}/attempts/${attemptId}/transcript`);
   assert.equal(emptyRes.status, 200, await emptyRes.clone().text());
-  const emptyBody = (await emptyRes.json()) as { messages: unknown[]; attemptId: string };
+  const emptyBody = (await emptyRes.json()) as { events: unknown[]; attemptId: string };
   assert.equal(emptyBody.attemptId, attemptId);
-  assert.ok(Array.isArray(emptyBody.messages));
+  assert.ok(Array.isArray(emptyBody.events));
 });
 
 test("GET attempt transcript events streams snapshot then done for terminal attempt", async (t) => {
@@ -314,14 +317,28 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   // Share buffer: both frames may arrive in one TCP chunk.
   const sseBuf = { buffer: "" };
   const first = await nextFrame(reader, sseBuf);
-  assert.equal(first.event, "transcript");
+  assert.equal(first.event, "trace");
   assert.ok(first.data && typeof first.data === "object");
-  const payload = first.data as { messages: unknown[]; live?: boolean };
-  assert.ok(Array.isArray(payload.messages));
-  assert.ok(payload.messages.length >= 1);
+  const payload = first.data as { events: unknown[]; live?: boolean; cursor?: number };
+  assert.ok(Array.isArray(payload.events));
+  assert.ok(payload.events.length >= 1);
+  assert.equal(payload.cursor, 1);
 
   // Terminal attempt should also emit done and end the stream.
   const second = await nextFrame(reader, sseBuf);
   assert.equal(second.event, "done");
   abort.abort();
+
+  // EventSource sends Last-Event-ID after a transport reconnect. The trace
+  // endpoint must honor it rather than replaying the prior batch from `after=0`.
+  const replayAbort = new AbortController();
+  const replay = await fetch(`${base}/${receipt.runId}/attempts/${attemptId}/transcript/events`, {
+    headers: { "Last-Event-ID": "1" },
+    signal: replayAbort.signal,
+  });
+  assert.equal(replay.status, 200, await replay.clone().text());
+  assert.ok(replay.body);
+  const replayFirst = await nextFrame(replay.body.getReader(), { buffer: "" });
+  assert.equal(replayFirst.event, "done");
+  replayAbort.abort();
 });

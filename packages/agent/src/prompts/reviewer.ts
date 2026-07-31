@@ -65,7 +65,7 @@ export function reviewerPrompt(input: {
     "Read wiki/ pages and relevant sources/ with read-only tools when needed.",
     "Submit a typed DefectReport via the submit_defect_report tool (required handoff).",
     "Fields: { reviewerId, clean, defects: [{ severity, code, path, issue }], summary }.",
-    "severity is blocking | major | minor. Prefer few high-signal defects over long lists.",
+    "severity is blocking | major | minor. Report every blocking defect supported by this lens; keep major/minor findings high-signal.",
     "clean=true only with empty defects; clean=false requires ≥1 defect.",
     `Pages present: ${input.pages.join(", ") || "(none)"}`,
     prior,

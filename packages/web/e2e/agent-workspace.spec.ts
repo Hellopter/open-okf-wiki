@@ -78,7 +78,9 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
     }
   });
 
-  test("prompt drives the genuine wiki_produce gates and publishes the Wiki", async ({ page }) => {
+  test("prompt drives the genuine wiki_produce gates and publishes the Wiki", async ({
+    page,
+  }, testInfo) => {
     test.setTimeout(120_000);
     const { name } = await createWorkspaceViaUi(page, "E2E Agent Produce");
     const source = createTempGitRepo("agent-produce");
@@ -170,6 +172,67 @@ test.describe("agent workspace operator surface (ADR 0035 WikiRuns)", () => {
       await toggleGraph.click();
     }
     await expect(page.getByTestId("active-run-details")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("run-cockpit-attention")).toBeVisible();
+    await expect(page.getByTestId("run-cockpit-dag")).toBeVisible();
+    await expect(page.getByTestId("run-graph-node")).not.toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("run-cockpit-desktop.png") });
+
+    for (const width of [320, 375, 414, 768]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(
+        page.getByTestId(width < 768 ? "run-cockpit-drawer" : "run-cockpit-sheet"),
+      ).toBeVisible();
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+        .toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`run-cockpit-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // The inspector is a desktop pane at this point. Opening an Attempt, then
+    // crossing the responsive breakpoint, mounts the cockpit Drawer beneath it.
+    // The dialog must remain the topmost modal surface.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByTestId("run-inspector-attempts-toggle").click();
+    const attemptRow = page.getByTestId("run-inspector-attempt").first();
+    await expect(attemptRow).toBeVisible({ timeout: 15_000 });
+    await attemptRow.click();
+    const attemptDialog = page.getByTestId("run-graph-node-dialog");
+    await expect(attemptDialog).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId("run-cockpit-drawer")).toBeVisible();
+    await expect(attemptDialog).toBeVisible();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const dialog = document.querySelector<HTMLElement>(
+              '[data-testid="run-graph-node-dialog"]',
+            );
+            const drawer = document.querySelector<HTMLElement>(
+              '[data-testid="run-cockpit-drawer"]',
+            );
+            if (!dialog || !drawer) return false;
+
+            const dialogRect = dialog.getBoundingClientRect();
+            const drawerRect = drawer.getBoundingClientRect();
+            const left = Math.max(dialogRect.left, drawerRect.left);
+            const right = Math.min(dialogRect.right, drawerRect.right);
+            const top = Math.max(dialogRect.top, drawerRect.top);
+            const bottom = Math.min(dialogRect.bottom, drawerRect.bottom);
+            if (left >= right || top >= bottom) return false;
+
+            const topmost = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+            return topmost != null && dialog.contains(topmost);
+          }),
+        { message: "Attempt Dialog should be topmost where it overlaps the Cockpit Drawer" },
+      )
+      .toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(attemptDialog).toHaveCount(0);
+    await expect(page.getByTestId("run-cockpit-drawer")).toBeVisible();
+
     await page.getByTestId("run-inspector-tab-plan").click();
     await expect(page.getByTestId("spec-review")).toBeVisible({ timeout: 30_000 });
     await page.setViewportSize({ width: 1440, height: 900 });

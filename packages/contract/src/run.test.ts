@@ -3,17 +3,18 @@ import test from "node:test";
 import { AnalysisReceiptSchema } from "./receipt.js";
 import { ExecutionPlanSchema, MergedDefectReportSchema, WikiRunSpecSchema } from "./run.js";
 
-test("ExecutionPlan requires v2", () => {
+test("ExecutionPlan requires v3 with a bounded adaptation policy", () => {
   const plan = {
-    version: 2,
+    version: 3,
     workUnits: [],
     reductions: [],
     reviewLenses: [],
     budgets: { maxRepairRounds: 0, maxHardValidateRepairRounds: 0 },
     fanOut: { domainCount: 0, leafCount: 0, maxDomainFanOut: 1, maxLeafFanOut: 1 },
+    adaptation: { maxRounds: 2 },
   };
   assert.equal(ExecutionPlanSchema.safeParse(plan).success, true);
-  assert.equal(ExecutionPlanSchema.safeParse({ ...plan, version: 1 }).success, false);
+  assert.equal(ExecutionPlanSchema.safeParse({ ...plan, version: 2 }).success, false);
   const { version: _version, ...withoutVersion } = plan;
   assert.equal(ExecutionPlanSchema.safeParse(withoutVersion).success, false);
 });

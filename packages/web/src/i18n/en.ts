@@ -608,10 +608,13 @@ export const en = {
     runGraphEmpty: "No topology or attempts yet.",
     runGraphAttempt: "Summary",
     runGraphAttemptEmpty: "No attempt data for this node.",
+    runGraphDependencies: "Depends on",
+    runGraphNoDependencies: "No recorded dependencies",
     /** Secret-free Attempt session transcript (Node details). */
     attemptTranscript: "Transcript",
     attemptTranscriptEmpty: "No transcript messages yet.",
     attemptTranscriptLive: "live",
+    attemptTranscriptLoadEarlier: "Load earlier",
 
     runGraphLayers: {
       plan: "Plan",
@@ -631,6 +634,11 @@ export const en = {
     failedNodes: "Failed nodes",
     retryFailedNode: "Retry",
     rerunNode: "Rerun",
+    runAttention: "Needs attention",
+    evaluationRecovery: "Evaluation recovery",
+    continueEvaluation: "Continue evaluation",
+    candidateLineage: "Candidate lineage",
+    attemptHistory: "Attempt history",
     /** Active Run bar — no open gate; observation only. */
     activeRunIdle: "No action needed",
     openGate: "Review action",

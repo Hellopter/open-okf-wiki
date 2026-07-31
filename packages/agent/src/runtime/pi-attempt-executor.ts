@@ -26,6 +26,7 @@ export { classifyPiFailureClass, failure };
 
 import { handleFreeze } from "./attempt/handlers/freeze.js";
 import { handlePlan } from "./attempt/handlers/plan.js";
+import { handlePlanAdapt } from "./attempt/handlers/plan-adapt.js";
 import { handleRepair } from "./attempt/handlers/repair.js";
 import { handleResearchDomain, handleResearchLeaf } from "./attempt/handlers/research.js";
 import { handleReviewSeat } from "./attempt/handlers/review.js";
@@ -57,6 +58,8 @@ function graphRoleForKind(kind: string): string {
   switch (kind) {
     case "plan":
       return "plan";
+    case "plan.adapt":
+      return "plan_adapt";
     case "research.leaf":
       return "leaf";
     case "research.domain":
@@ -141,6 +144,9 @@ export function createPiAttemptExecutor(
         case "plan":
           outcome = await handlePlan(ctx);
           break;
+        case "plan.adapt":
+          outcome = await handlePlanAdapt(ctx);
+          break;
         case "write.root":
           outcome = await handleWriteRoot(ctx);
           break;
@@ -176,8 +182,8 @@ export function createPiAttemptExecutor(
     } catch (error) {
       const outcome = failure(error, signal);
       // Best-effort: leave a readable session transcript for the transcript API
-      // even when the attempt fails or is cancelled. Prefer appending over wipe
-      // when live JSONL already exists — sealTranscript rebuilds from summary.
+      // even when the attempt fails or is cancelled. The finalizer appends to
+      // the live trace rather than rebuilding it.
       if (input && outcome.type === "failed") {
         try {
           if (!isPathInside(input.attemptDir, input.sessionPath)) {
@@ -187,7 +193,6 @@ export function createPiAttemptExecutor(
           await finalizeAttemptTranscript(input.sessionPath, {
             summary: outcome.error,
             terminal: outcome.failureClass === "cancelled" ? "cancelled" : "error",
-            preserveExisting: true,
             meta: {
               node: input.node.key,
               attemptId: input.attemptId,

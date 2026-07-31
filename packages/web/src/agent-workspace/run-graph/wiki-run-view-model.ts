@@ -21,7 +21,6 @@ import type {
 } from "@okf-wiki/contract";
 import {
   appendOrphanAttemptNodes,
-  edgesFromNodes,
   groupViewNodesIntoLayers,
   latestAttemptFor,
   layerForKind,
@@ -215,12 +214,17 @@ export function wikiRunToViewModel(snapshot: WikiRunSnapshot): WikiRunGraphViewM
   });
 
   appendOrphanAttemptNodes(nodes, attempts);
+  const knownNodeKeys = new Set(nodes.map((node) => node.nodeKey));
 
   const playhead = playheadFromWikiAttempts(snapshot.attempts);
 
   return {
     layers: groupViewNodesIntoLayers(nodes),
-    edges: edgesFromNodes(nodes),
+    // The control plane owns topology. Never infer dependencies from labels
+    // or parentKey: adaptive work has multiple real predecessors.
+    edges: snapshot.edges.filter(
+      (edge) => knownNodeKeys.has(edge.from) && knownNodeKeys.has(edge.to),
+    ),
     attempts,
     ...(playhead ? { playhead } : {}),
     topologyVersion: snapshot.revision,

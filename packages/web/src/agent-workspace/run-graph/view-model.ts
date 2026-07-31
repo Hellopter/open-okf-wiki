@@ -5,8 +5,8 @@
  * Product canvas path uses WikiRunSnapshot → wikiRunToViewModel (no dual hop).
  * runGraphToViewModel remains for unit tests / legacy snapshot shapes.
  *
- * Edges are not projected here — the canvas is a layered chip grid; parent
- * hierarchy is available on each node via `parentKey` when needed.
+ * Edges are projected as directed dependencies. The legacy RunGraph shape
+ * only exposes parentKey; durable WikiRuns supplies its actual DAG separately.
  */
 
 import type {
@@ -41,13 +41,13 @@ export type RunGraphViewNode = {
 
 /** A contract-provided parent relationship. No dependency is inferred by the UI. */
 export type RunGraphEdge = {
-  parentKey: string;
-  childKey: string;
+  from: string;
+  to: string;
 };
 
 export type RunGraphViewModel = {
   layers: Array<{ id: RunGraphLayerId; nodes: RunGraphViewNode[] }>;
-  /** Only parentKey relationships whose endpoints exist in the snapshot. */
+  /** Directed dependencies whose endpoints exist in the snapshot. */
   edges: RunGraphEdge[];
   attempts: NodeAttempt[];
   playhead?: { nodeKey: string; attemptId: string };
@@ -128,9 +128,7 @@ export function groupViewNodesIntoLayers(
 export function edgesFromNodes(nodes: readonly RunGraphViewNode[]): RunGraphEdge[] {
   const known = new Set(nodes.map((node) => node.nodeKey));
   return nodes.flatMap((node) =>
-    node.parentKey && known.has(node.parentKey)
-      ? [{ parentKey: node.parentKey, childKey: node.nodeKey }]
-      : [],
+    node.parentKey && known.has(node.parentKey) ? [{ from: node.parentKey, to: node.nodeKey }] : [],
   );
 }
 

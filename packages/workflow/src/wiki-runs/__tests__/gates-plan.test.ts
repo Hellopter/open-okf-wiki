@@ -313,6 +313,18 @@ test("StartRun freezes, plans via executor, opens gate.plan, and ResolveGate app
     atPlanGate.snapshot.nodes.find((node) => node.key === "gate.plan")?.state,
     "waiting",
   );
+  assert.deepEqual(
+    atPlanGate.snapshot.edges.filter(
+      (edge) =>
+        (edge.from === "freeze" && edge.to === "plan") ||
+        (edge.from === "plan" && edge.to === "gate.plan"),
+    ),
+    [
+      { from: "freeze", to: "plan" },
+      { from: "plan", to: "gate.plan" },
+    ],
+    "bootstrap and plan-gate dependencies must be durable snapshot edges",
+  );
 
   const approved = await runs.dispatch(
     {

@@ -1,13 +1,21 @@
 /**
- * Contextual read-only Run observation surface.
+ * Operator Run Cockpit.
  *
- * It consumes the shell's single WikiRun projection. Gate decisions remain in
- * GateAction, so moving this component between a desktop dock, Sheet, and
- * Drawer never creates a second mutation authority.
+ * The durable control-plane projection is organised by what an operator needs
+ * to decide: attention first, the actual execution DAG next, and audit detail
+ * after that. Gate decisions remain in GateAction; this surface owns only
+ * retry, rerun, and one-time evaluation recovery commands.
  */
 
-import type { WikiRunGate, WikiRunSpec } from "@okf-wiki/contract";
-import { CircleAlertIcon, CircleCheckIcon, CircleDotIcon, XIcon } from "lucide-react";
+import type { WikiRunGate, WikiRunSnapshot, WikiRunSpec } from "@okf-wiki/contract";
+import {
+  CircleAlertIcon,
+  CircleDotIcon,
+  GitForkIcon,
+  HistoryIcon,
+  NetworkIcon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Accordion,
@@ -15,6 +23,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Item,
@@ -22,12 +31,10 @@ import {
   ItemContent,
   ItemDescription,
   ItemGroup,
-  ItemMedia,
   ItemTitle,
 } from "@/components/ui/item";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { getWikiRunSpec } from "../../api";
@@ -41,8 +48,6 @@ import { useWikiRunNodeActions } from "../run-graph/useWikiRunNodeActions";
 import { wikiRunToViewModel } from "../run-graph/wiki-run-view-model";
 import { SpecReviewView } from "./SpecReviewView";
 import { StatusBadge } from "./StatusBadge";
-
-type RunCockpitTab = "overview" | "plan" | "workflow" | "attempts";
 
 export type RunCockpitProps = {
   workspaceId: string;
@@ -93,6 +98,124 @@ function progressForNodes(viewModel: ReturnType<typeof wikiRunToViewModel> | nul
   return { completed, total: nodes.length, value: (completed / nodes.length) * 100 };
 }
 
+function CandidateLineage({ snapshot }: { snapshot: WikiRunSnapshot }) {
+  const { t } = useI18n();
+  if (snapshot.candidates.length === 0) return null;
+
+  return (
+    <section className="border-t border-border pt-3" data-testid="run-cockpit-candidates">
+      <div className="mb-2 flex items-center gap-2">
+        <GitForkIcon className="size-3.5 text-muted-foreground" aria-hidden />
+        <p className="okf-section-label">{t.agentWorkspace.candidateLineage}</p>
+      </div>
+      <ol className="flex min-w-0 flex-col gap-2 border-s border-border ps-3">
+        {snapshot.candidates.map((candidate) => (
+          <li key={candidate.candidateId} className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+              <span className="font-mono font-medium">{candidate.candidateId}</span>
+              <span className="text-muted-foreground">{candidate.producedBy}</span>
+              <span className="text-muted-foreground">#{candidate.round}</span>
+            </div>
+            {candidate.parentCandidateId ? (
+              <p className="mt-0.5 font-mono text-2xs text-muted-foreground">
+                {candidate.parentCandidateId}
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function RunAttention({
+  snapshot,
+  viewModel,
+  submitting,
+  onOpenNode,
+  onRetry,
+  onRerun,
+  onContinueEvaluation,
+}: {
+  snapshot: WikiRunSnapshot;
+  viewModel: ReturnType<typeof wikiRunToViewModel>;
+  submitting: boolean;
+  onOpenNode: (nodeKey: string) => void;
+  onRetry: (
+    node: (typeof viewModel.failedNodes)[number]["node"],
+    attempt: (typeof viewModel.failedNodes)[number]["attempt"],
+  ) => void;
+  onRerun: (node: (typeof viewModel.failedNodes)[number]["node"]) => void;
+  onContinueEvaluation: (recoveryId: string) => void;
+}) {
+  const { t } = useI18n();
+  const recoveries = snapshot.evaluationRecoveries ?? [];
+  const hasAttention =
+    recoveries.length > 0 || viewModel.openGates.length > 0 || viewModel.failedNodes.length > 0;
+
+  return (
+    <section className="border-b border-border pb-3" data-testid="run-cockpit-attention">
+      <div className="mb-2 flex items-center gap-2">
+        <CircleAlertIcon
+          className={cn("size-3.5", hasAttention ? "text-warning" : "text-muted-foreground")}
+          aria-hidden
+        />
+        <p className="okf-section-label">{t.agentWorkspace.runAttention}</p>
+      </div>
+      {!hasAttention ? (
+        <p className="text-xs text-muted-foreground">{t.agentWorkspace.activeRunIdle}</p>
+      ) : null}
+      {recoveries.map((recovery) => (
+        <Alert
+          key={recovery.recoveryId}
+          className="mb-2 border-warning/35 bg-warning/5"
+          data-testid="run-cockpit-evaluation-recovery"
+        >
+          <CircleAlertIcon aria-hidden />
+          <AlertTitle>{t.agentWorkspace.evaluationRecovery}</AlertTitle>
+          <AlertDescription>{recovery.reason}</AlertDescription>
+          <div className="col-start-2 mt-2 flex flex-wrap items-center gap-2">
+            <span className="font-mono text-2xs text-muted-foreground">
+              {recovery.candidateId} · {recovery.source}
+            </span>
+            <Button
+              type="button"
+              size="xs"
+              disabled={submitting}
+              data-testid="run-cockpit-continue-evaluation"
+              data-recovery-id={recovery.recoveryId}
+              onClick={() => onContinueEvaluation(recovery.recoveryId)}
+            >
+              {t.agentWorkspace.continueEvaluation}
+            </Button>
+          </div>
+        </Alert>
+      ))}
+      {viewModel.openGates.length > 0 ? (
+        <ul className="mb-2 flex flex-col gap-1.5" data-testid="run-inspector-open-gates">
+          {viewModel.openGates.map((gate) => (
+            <li
+              key={gate.gateId}
+              className="flex min-w-0 items-center justify-between gap-2 border-s border-primary/40 ps-2 text-xs"
+            >
+              <span className="min-w-0 truncate">{gateLabel(gate, t)}</span>
+              <StatusBadge status={gate.state} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <FailedNodesList
+        failedNodes={viewModel.failedNodes}
+        submitting={submitting}
+        onOpenNode={onOpenNode}
+        onRetry={onRetry}
+        onRerun={onRerun}
+        className="flex flex-col gap-1"
+      />
+    </section>
+  );
+}
+
 export function RunCockpit({
   workspaceId,
   runId,
@@ -107,16 +230,11 @@ export function RunCockpit({
   const snapshot = matched.snapshot;
   const viewModel = useMemo(() => (snapshot ? wikiRunToViewModel(snapshot) : null), [snapshot]);
   const progress = progressForNodes(viewModel);
-  const [tab, setTab] = useState<RunCockpitTab>("overview");
   const [planSpec, setPlanSpec] = useState<WikiRunSpec | null>(null);
   const [planSpecLoading, setPlanSpecLoading] = useState(false);
   const [planSpecError, setPlanSpecError] = useState<string | null>(null);
 
-  const actions = useWikiRunNodeActions({
-    workspaceId,
-    runId,
-    snapshot,
-  });
+  const actions = useWikiRunNodeActions({ workspaceId, runId, snapshot });
 
   const openNode = (nodeKey: string) => {
     actions.openNode(nodeKey);
@@ -131,7 +249,6 @@ export function RunCockpit({
     if (!attemptId || !snapshot) return;
     const attempt = snapshot.attempts.find((item) => item.attemptId === attemptId);
     if (!attempt) return;
-    setTab("attempts");
     actions.openNode(attempt.nodeKey);
     actions.setDialogAttemptId(attemptId);
     // Snapshot revision is the durable truth for deep-link restoration.
@@ -139,7 +256,7 @@ export function RunCockpit({
   }, [attemptId, snapshot?.revision, runId]);
 
   useEffect(() => {
-    if (!runId || !workspaceId || tab !== "plan") return;
+    if (!runId || !workspaceId) return;
     let cancelled = false;
     setPlanSpecLoading(true);
     setPlanSpecError(null);
@@ -158,7 +275,7 @@ export function RunCockpit({
     return () => {
       cancelled = true;
     };
-  }, [runId, snapshot?.revision, tab, workspaceId]);
+  }, [runId, workspaceId]);
 
   if (!runId) return null;
 
@@ -172,7 +289,7 @@ export function RunCockpit({
       data-testid="run-inspector"
       data-run-id={runId}
     >
-      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+      <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <CircleDotIcon className="text-muted-foreground" aria-hidden />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{t.runInspector.title}</span>
         {snapshot?.state ? <StatusBadge status={snapshot.state} /> : null}
@@ -195,123 +312,44 @@ export function RunCockpit({
             <TooltipContent>{t.runInspector.close}</TooltipContent>
           </Tooltip>
         ) : null}
-      </div>
+      </header>
 
-      <Tabs
-        value={tab}
-        onValueChange={(value) => setTab(value as RunCockpitTab)}
-        className="min-h-0 flex-1"
-      >
-        <div className="shrink-0 border-b border-border px-3 pt-1">
-          <TabsList variant="line" className="w-full justify-start overflow-x-auto">
-            <TabsTrigger value="overview">{t.runInspector.overviewTab}</TabsTrigger>
-            <TabsTrigger value="plan" data-testid="run-inspector-tab-plan">
-              {t.runInspector.planTab}
-            </TabsTrigger>
-            <TabsTrigger value="workflow" data-testid="run-inspector-tab-graph">
-              {t.runInspector.graphTab}
-            </TabsTrigger>
-            <TabsTrigger value="attempts">{t.runInspector.attemptsTab}</TabsTrigger>
-          </TabsList>
-        </div>
-
-        <TabsContent value="overview" className="min-h-0 overflow-y-auto px-3 py-3">
-          <ItemGroup className="gap-2">
-            <Item variant="outline" size="sm">
-              <ItemMedia variant="icon">
-                {snapshot?.state === "failed" ? (
-                  <CircleAlertIcon aria-hidden />
-                ) : (
-                  <CircleCheckIcon aria-hidden />
-                )}
-              </ItemMedia>
-              <ItemContent>
-                <ItemTitle className="font-mono text-xs">{runId}</ItemTitle>
-                <ItemDescription>{connectionLabel(matched.connectionStatus, t)}</ItemDescription>
-              </ItemContent>
-              <ItemActions>
-                {snapshot?.state ? <StatusBadge status={snapshot.state} /> : null}
-              </ItemActions>
-            </Item>
-            {progress ? (
-              <Progress
-                value={progress.value}
-                aria-label={`${progress.completed} / ${progress.total}`}
-              >
-                <ProgressLabel>{t.runInspector.graphTab}</ProgressLabel>
-                <ProgressValue>{() => `${progress.completed} / ${progress.total}`}</ProgressValue>
-              </Progress>
-            ) : null}
-            {viewModel?.openGates.length ? (
-              <ItemGroup className="gap-1.5" data-testid="run-inspector-open-gates">
-                {viewModel.openGates.map((gate) => (
-                  <Item key={gate.gateId} size="xs" variant="muted">
-                    <ItemContent>
-                      <ItemTitle>{gateLabel(gate, t)}</ItemTitle>
-                      {gate.detail?.summary ? (
-                        <ItemDescription>{gate.detail.summary}</ItemDescription>
-                      ) : null}
-                    </ItemContent>
-                    <ItemActions>
-                      <StatusBadge status={gate.state} />
-                    </ItemActions>
-                  </Item>
-                ))}
-              </ItemGroup>
-            ) : null}
-          </ItemGroup>
-        </TabsContent>
-
-        <TabsContent value="plan" className="min-h-0 overflow-y-auto px-3 py-3">
-          {planSpecLoading ? (
-            <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
-              <Spinner />
-              {t.common.loading}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3">
+        {matched.error ? (
+          <Alert variant="destructive" className="mb-3">
+            <CircleAlertIcon aria-hidden />
+            <AlertDescription>{matched.error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {loading ? (
+          <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
+            <Spinner />
+            {t.common.loading}
+          </div>
+        ) : snapshot && viewModel ? (
+          <div className="flex min-w-0 flex-col gap-4">
+            <div className="flex min-w-0 flex-col gap-2">
+              <div className="flex min-w-0 items-center justify-between gap-3">
+                <p className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{runId}</p>
+                <span className="shrink-0 text-2xs text-muted-foreground">
+                  {connectionLabel(matched.connectionStatus, t)}
+                </span>
+              </div>
+              {progress ? (
+                <Progress
+                  value={progress.value}
+                  aria-label={`${progress.completed} / ${progress.total}`}
+                >
+                  <ProgressLabel>{t.agentWorkspace.runGraph}</ProgressLabel>
+                  <ProgressValue>{() => `${progress.completed} / ${progress.total}`}</ProgressValue>
+                </Progress>
+              ) : null}
             </div>
-          ) : planSpec ? (
-            <Accordion defaultValue={["spec"]}>
-              <AccordionItem value="spec">
-                <AccordionTrigger>{t.runInspector.planTab}</AccordionTrigger>
-                <AccordionContent>
-                  <SpecReviewView spec={planSpec} />
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          ) : (
-            <p className="py-4 text-xs text-muted-foreground" data-testid="run-inspector-no-spec">
-              {planSpecError?.trim() || t.runInspector.noSpec}
-            </p>
-          )}
-        </TabsContent>
 
-        <TabsContent value="workflow" className="min-h-0 overflow-y-auto px-3 py-3">
-          {loading ? (
-            <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
-              <Spinner />
-              {t.common.loading}
-            </div>
-          ) : hasWorkflow && viewModel ? (
-            <RunGraphCanvas
+            <RunAttention
+              snapshot={snapshot}
               viewModel={viewModel}
-              selectedNodeKey={actions.dialogNodeKey}
-              onSelectNode={openNode}
-            />
-          ) : (
-            <p className="py-4 text-xs text-muted-foreground">{t.runInspector.noGraph}</p>
-          )}
-        </TabsContent>
-
-        <TabsContent value="attempts" className="min-h-0 overflow-y-auto px-3 py-3">
-          <div className="flex flex-col gap-3">
-            {actions.commandError ? (
-              <p className="text-xs text-destructive" data-testid="run-inspector-command-error">
-                {actions.commandError}
-              </p>
-            ) : null}
-            <FailedNodesList
-              failedNodes={viewModel?.failedNodes ?? []}
               submitting={actions.submitting}
-              disabled={!runId}
               onOpenNode={openNode}
               onRetry={(node, attempt) => {
                 void actions.retryFailed(node, attempt);
@@ -319,38 +357,105 @@ export function RunCockpit({
               onRerun={(node) => {
                 void actions.rerunNode(node);
               }}
+              onContinueEvaluation={(recoveryId) => {
+                void actions.continueEvaluation(recoveryId);
+              }}
             />
-            {orderedAttempts.length ? (
-              <ItemGroup className="gap-1.5">
-                {orderedAttempts.map((attempt) => (
-                  <Item
-                    key={attempt.attemptId}
-                    render={<button type="button" />}
-                    size="xs"
-                    variant="outline"
-                    onClick={() => {
-                      actions.openNode(attempt.nodeKey);
-                      onSelectAttempt(attempt.attemptId);
-                    }}
-                    data-testid="run-inspector-attempt"
-                    data-attempt-id={attempt.attemptId}
-                  >
-                    <ItemContent>
-                      <ItemTitle className="font-mono text-xs">{attempt.nodeKey}</ItemTitle>
-                      <ItemDescription>{attempt.summary || attempt.attemptId}</ItemDescription>
-                    </ItemContent>
-                    <ItemActions>
-                      <StatusBadge status={attempt.status} />
-                    </ItemActions>
-                  </Item>
-                ))}
-              </ItemGroup>
-            ) : (
-              <p className="text-xs text-muted-foreground">{t.runInspector.noAttempts}</p>
-            )}
+
+            {actions.commandError ? (
+              <p className="text-xs text-destructive" data-testid="run-inspector-command-error">
+                {actions.commandError}
+              </p>
+            ) : null}
+
+            <section className="min-w-0" data-testid="run-cockpit-dag">
+              <div className="mb-2 flex items-center gap-2">
+                <NetworkIcon className="size-3.5 text-muted-foreground" aria-hidden />
+                <p className="okf-section-label">{t.agentWorkspace.runGraph}</p>
+              </div>
+              {hasWorkflow ? (
+                <RunGraphCanvas
+                  viewModel={viewModel}
+                  selectedNodeKey={actions.dialogNodeKey}
+                  onSelectNode={openNode}
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">{t.runInspector.noGraph}</p>
+              )}
+            </section>
+
+            <CandidateLineage snapshot={snapshot} />
+
+            <Accordion defaultValue={[] as string[]} className="border-t border-border">
+              <AccordionItem value="attempts">
+                <AccordionTrigger data-testid="run-inspector-attempts-toggle">
+                  <span className="flex items-center gap-2">
+                    <HistoryIcon className="size-3.5 text-muted-foreground" aria-hidden />
+                    {t.agentWorkspace.attemptHistory}
+                    {orderedAttempts.length ? ` · ${orderedAttempts.length}` : ""}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  {orderedAttempts.length ? (
+                    <ItemGroup className="gap-1.5">
+                      {orderedAttempts.map((attempt) => (
+                        <Item
+                          key={attempt.attemptId}
+                          render={<button type="button" />}
+                          size="xs"
+                          variant="outline"
+                          onClick={() => {
+                            actions.openNode(attempt.nodeKey);
+                            onSelectAttempt(attempt.attemptId);
+                          }}
+                          data-testid="run-inspector-attempt"
+                          data-attempt-id={attempt.attemptId}
+                        >
+                          <ItemContent>
+                            <ItemTitle className="font-mono text-xs">{attempt.nodeKey}</ItemTitle>
+                            <ItemDescription>
+                              {attempt.summary || attempt.attemptId}
+                            </ItemDescription>
+                          </ItemContent>
+                          <ItemActions>
+                            <StatusBadge status={attempt.status} />
+                          </ItemActions>
+                        </Item>
+                      ))}
+                    </ItemGroup>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">{t.runInspector.noAttempts}</p>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+              <AccordionItem value="plan">
+                <AccordionTrigger data-testid="run-inspector-tab-plan">
+                  {t.runInspector.planTab}
+                </AccordionTrigger>
+                <AccordionContent>
+                  {planSpecLoading ? (
+                    <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                      <Spinner />
+                      {t.common.loading}
+                    </div>
+                  ) : planSpec ? (
+                    <SpecReviewView spec={planSpec} />
+                  ) : (
+                    <p
+                      className="text-xs text-muted-foreground"
+                      data-testid="run-inspector-no-spec"
+                    >
+                      {planSpecError?.trim() || t.runInspector.noSpec}
+                    </p>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           </div>
-        </TabsContent>
-      </Tabs>
+        ) : (
+          <p className="py-4 text-xs text-muted-foreground">{t.runInspector.noGraph}</p>
+        )}
+      </div>
 
       <NodeAttemptDialog
         open={actions.dialogNodeKey != null}

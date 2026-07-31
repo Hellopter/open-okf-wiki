@@ -4,7 +4,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PiAttemptNodeDetailSchema, RepairRequestSchema } from "@okf-wiki/contract";
+import {
+  MechanicalReportSchema,
+  PiAttemptNodeDetailSchema,
+  RepairRequestSchema,
+} from "@okf-wiki/contract";
 import {
   buildMechanicalRepairRequest,
   buildSemanticRepairRequest,
@@ -41,7 +45,7 @@ test("buildMechanicalRepairRequest extracts pages from validation message", () =
   assert.equal(parsed.issues[0]!.kind, "mechanical");
 });
 
-test("buildMechanicalRepairRequest caps pages at 8", () => {
+test("buildMechanicalRepairRequest does not cap fallback mechanical pages", () => {
   const segments = Array.from({ length: 12 }, (_, i) => `page${i}.md: err ${i}`);
   const req = buildMechanicalRepairRequest({
     runId: "run-x",
@@ -49,10 +53,41 @@ test("buildMechanicalRepairRequest caps pages at 8", () => {
     validationMessage: `validation failed: ${segments.join("; ")}`,
     baselineCandidateId: "cand-write-1",
   });
-  assert.equal(req.scope.pages.length, 8);
+  assert.equal(req.scope.pages.length, 12);
   assert.equal(req.scope.pages[0], "page0.md");
-  assert.equal(req.scope.pages[7], "page7.md");
+  assert.equal(req.scope.pages[11], "page11.md");
   assert.equal(req.baselineCandidateId, "cand-write-1");
+});
+
+test("buildMechanicalRepairRequest preserves every issue and path from a sealed report", () => {
+  const issues = Array.from({ length: 12 }, (_, i) => ({
+    code: "missing_frontmatter" as const,
+    message: `page${i}.md: missing YAML frontmatter`,
+    raw: `page${i}.md: missing YAML frontmatter`,
+    path: `page${i}.md`,
+    autoFixable: false,
+  }));
+  const report = MechanicalReportSchema.parse({
+    ok: false,
+    issues,
+    warnings: [],
+    errors: issues.map((issue) => issue.raw),
+  });
+  const request = buildMechanicalRepairRequest({
+    runId: "run-full-report",
+    round: 1,
+    validationMessage: "validation failed: 12 issue(s); see sealed validate_report",
+    baselineCandidateId: "candidate-write-1",
+    mechanicalReport: report,
+    mechanicalReportArtifactId: "artifact-validate-report",
+  });
+
+  assert.equal(request.issues.length, 12);
+  assert.deepEqual(
+    request.scope.pages,
+    issues.map((issue) => issue.path),
+  );
+  assert.equal(request.mechanicalReportArtifactId, "artifact-validate-report");
 });
 
 test("buildMechanicalRepairRequest allows empty pages when no path prefixes", () => {

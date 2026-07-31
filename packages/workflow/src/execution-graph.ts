@@ -41,6 +41,7 @@ export type ExecutionGraph = {
  * plan ──► research.leaf.* ──► research.domain.* ──► write.root  (multi-leaf cluster)
  * plan ──► research.leaf.* ─────────────────────────► write.root  (single-cluster direct)
  *   ╰───────────────────────────────────────────────► write.root (no domains)
+ * research frontier ──► plan.adapt.1 ──► write.root (bounded gap discovery)
  * write.root → validate.pre → review.seat.* → review.reduce
  *   → gate.fix → validate.final → prepare.publication → gate.publication → publish
  * ```
@@ -153,6 +154,21 @@ export function buildExecutionGraphFromPlan(
   }
   // single-cluster leaves already edged to write.root above.
 
+  // The planner may expose a bounded evidence gap after the first research
+  // frontier. It proposes only work units; WikiRuns validates/materializes
+  // their nodes and actual edges before Writer can run.
+  addNode({ key: "plan.adapt.1", kind: "plan.adapt", detail: { adaptRound: 1 } });
+  if (multiDomainKeys.length > 0) {
+    for (const domainKey of multiDomainKeys) addEdge(domainKey, "plan.adapt.1");
+  } else if (leavesByDomain.size === 0) {
+    addEdge("plan", "plan.adapt.1");
+  } else {
+    for (const leaves of leavesByDomain.values()) {
+      for (const leaf of leaves) addEdge(leaf.key, "plan.adapt.1");
+    }
+  }
+  addEdge("plan.adapt.1", "write.root");
+
   addNode({ key: "validate.pre", kind: "validate.pre" });
   addEdge("write.root", "validate.pre");
 
@@ -217,6 +233,7 @@ export function buildExecutionGraph(
 /** Node kinds executed by the optional PiAttemptExecutor (model / fixture agent). */
 export const PI_ATTEMPT_KINDS: ReadonlySet<WikiRunNodeKind> = new Set([
   "plan",
+  "plan.adapt",
   "research.leaf",
   "research.domain",
   "write.root",

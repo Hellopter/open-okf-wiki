@@ -127,5 +127,14 @@ export function parseNodeDetail(raw: unknown): WikiRunNodeDetail | undefined {
     out.scope = row.scope.trim().slice(0, 2_000);
   if (typeof row.lens === "string" && row.lens.trim()) out.lens = row.lens.trim().slice(0, 100);
   if (typeof row.critical === "boolean") out.critical = row.critical;
+  if (typeof row.workUnitId === "string" && row.workUnitId.trim())
+    out.workUnitId = row.workUnitId.trim().slice(0, 120);
+  if (
+    typeof row.adaptRound === "number" &&
+    Number.isInteger(row.adaptRound) &&
+    row.adaptRound >= 1 &&
+    row.adaptRound <= 2
+  )
+    out.adaptRound = row.adaptRound;
   return Object.keys(out).length > 0 ? out : undefined;
 }

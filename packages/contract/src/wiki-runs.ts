@@ -4,11 +4,11 @@ import { RepositorySnapshotSchema, WikiRunSpecSchema } from "./run.js";
 
 /**
  * Durable WikiRuns contract version.
- * v2: RunIntent required on StartRun; ExecutionPlan sealed at plan gate; no silent fan-out.
+ * v3: RunIntent plus bounded plan.adapt.N evidence-gap decisions; no silent fan-out.
  * Definition topology is Wiki-specific, not a workflow DSL.
  */
-export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v2" as const;
-export const WikiRunDefinitionVersionSchema = z.literal(2);
+export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v3" as const;
+export const WikiRunDefinitionVersionSchema = z.literal(3);
 
 const IdentifierSchema = z.string().trim().min(1).max(200);
 const IsoDateTimeSchema = z.string().datetime();
@@ -36,6 +36,7 @@ export const WikiRunNodeKindSchema = z.enum([
   "freeze",
   "plan",
   "gate.plan",
+  "plan.adapt",
   "research.leaf",
   "research.domain",
   "write.root",
@@ -191,6 +192,20 @@ export const RerunNodeCommandSchema = z
   })
   .strict();
 
+/**
+ * Resume one operator-approved evaluation recovery without recreating its Run.
+ * The recovery record binds the original Candidate and sealed defect evidence.
+ */
+export const ContinueEvaluationCommandSchema = z
+  .object({
+    type: z.literal("continue_evaluation"),
+    commandId: RunCommandIdSchema,
+    runId: WikiRunIdSchema,
+    recoveryId: IdentifierSchema,
+    feedback: z.string().trim().min(1).max(4_000).optional(),
+  })
+  .strict();
+
 export const CancelRunCommandSchema = z
   .object({
     type: z.literal("cancel_run"),
@@ -276,6 +291,7 @@ export const RunCommandSchema = z.discriminatedUnion("type", [
   StartRunCommandSchema,
   RetryFailedNodeCommandSchema,
   RerunNodeCommandSchema,
+  ContinueEvaluationCommandSchema,
   CancelRunCommandSchema,
   ResolveGateCommandSchema,
 ]);
@@ -283,6 +299,7 @@ export const RunCommandSchema = z.discriminatedUnion("type", [
 export type StartRunCommand = z.infer<typeof StartRunCommandSchema>;
 export type RetryFailedNodeCommand = z.infer<typeof RetryFailedNodeCommandSchema>;
 export type RerunNodeCommand = z.infer<typeof RerunNodeCommandSchema>;
+export type ContinueEvaluationCommand = z.infer<typeof ContinueEvaluationCommandSchema>;
 export type CancelRunCommand = z.infer<typeof CancelRunCommandSchema>;
 export type ResolveGateCommand = z.infer<typeof ResolveGateCommandSchema>;
 export type RunCommand = z.infer<typeof RunCommandSchema>;
@@ -322,6 +339,8 @@ export const WikiRunNodeDetailSchema = z
     scope: z.string().trim().max(2_000).optional(),
     lens: z.string().trim().min(1).max(100).optional(),
     critical: z.boolean().optional(),
+    workUnitId: z.string().trim().min(1).max(120).optional(),
+    adaptRound: z.number().int().min(1).max(2).optional(),
   })
   .strict();
 
@@ -475,6 +494,19 @@ export const WikiRunEffectSchema = z
   })
   .strict();
 
+/** Secret-free operator projection of a recoverable exhausted EvaluationRound. */
+export const WikiRunEvaluationRecoverySchema = z
+  .object({
+    recoveryId: IdentifierSchema,
+    candidateId: IdentifierSchema,
+    source: z.enum(["mechanical", "semantic"]),
+    repairRequestId: IdentifierSchema,
+    reportArtifactId: IdentifierSchema.optional(),
+    reason: z.string().trim().min(1).max(4_000),
+    createdAt: IsoDateTimeSchema,
+  })
+  .strict();
+
 export const WikiRunSnapshotSchema = z
   .object({
     schema: z.literal(WIKI_RUNS_SCHEMA),
@@ -495,6 +527,8 @@ export const WikiRunSnapshotSchema = z
       .strict()
       .nullable(),
     nodes: z.array(WikiRunNodeSchema),
+    /** Actual durable DAG edges. Parent hierarchy is a secondary UI projection. */
+    edges: z.array(z.object({ from: RunNodeKeySchema, to: RunNodeKeySchema }).strict()).default([]),
     attempts: z.array(WikiRunAttemptSchema),
     gates: z.array(WikiRunGateSchema),
     effects: z.array(WikiRunEffectSchema),
@@ -517,6 +551,8 @@ export const WikiRunSnapshotSchema = z
           .strict(),
       )
       .default([]),
+    /** Present only while a failed Run has an operator-continuable evaluation recovery. */
+    evaluationRecoveries: z.array(WikiRunEvaluationRecoverySchema).optional(),
     createdAt: IsoDateTimeSchema,
     updatedAt: IsoDateTimeSchema,
   })
@@ -529,6 +565,7 @@ export const WikiRunEventTypeSchema = z.enum([
   "attempt.started",
   "attempt.succeeded",
   "attempt.failed",
+  "evaluation.recovery_available",
   "attempt.interrupted",
   "gate.opened",
   "gate.resolved",
@@ -589,6 +626,7 @@ export type WikiRunNodeDetail = z.infer<typeof WikiRunNodeDetailSchema>;
 export type WikiRunAttempt = z.infer<typeof WikiRunAttemptSchema>;
 export type WikiRunGate = z.infer<typeof WikiRunGateSchema>;
 export type WikiRunEffect = z.infer<typeof WikiRunEffectSchema>;
+export type WikiRunEvaluationRecovery = z.infer<typeof WikiRunEvaluationRecoverySchema>;
 export type WikiRunSnapshot = z.infer<typeof WikiRunSnapshotSchema>;
 export type WikiRunEvent = z.infer<typeof WikiRunEventSchema>;
 export type WikiRunEventType = z.infer<typeof WikiRunEventTypeSchema>;

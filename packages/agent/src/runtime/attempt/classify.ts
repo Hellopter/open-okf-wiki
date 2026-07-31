@@ -32,6 +32,7 @@
 
 import type { PiAttemptFailureClass } from "@okf-wiki/contract";
 import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract";
+import { redactSensitiveText } from "../../redact/index.js";
 import { classifyError } from "../../workflow/retry-policy.js";
 import { bounded } from "./shared.js";
 
@@ -106,7 +107,9 @@ export function classifyPiFailureClass(error: unknown, signal: AbortSignal): PiA
 
 /** Build a typed failed PiAttemptOutcome from a thrown value + abort signal. */
 export function failure(error: unknown, signal: AbortSignal): PiAttemptOutcome {
-  const message = bounded(error instanceof Error ? error.message : error);
+  const message = bounded(
+    redactSensitiveText(error instanceof Error ? error.message : String(error)),
+  );
   const failureClass = classifyPiFailureClass(error, signal);
   return PiAttemptOutcomeSchema.parse({ type: "failed", error: message, failureClass });
 }

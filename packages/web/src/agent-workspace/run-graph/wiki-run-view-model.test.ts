@@ -14,8 +14,8 @@ const digest = "a".repeat(64);
 
 function baseSnapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
   return {
-    schema: "okf.wiki-runs/v2",
-    definitionVersion: 2,
+    schema: "okf.wiki-runs/v3",
+    definitionVersion: 3,
     runId: "run-1",
     workspaceId: "ws-1",
     revision: 3,
@@ -24,9 +24,11 @@ function baseSnapshot(partial: Partial<WikiRunSnapshot> = {}): WikiRunSnapshot {
     intent: { mode: "generate" },
     pinnedInputs: null,
     nodes: [],
+    edges: [],
     attempts: [],
     gates: [],
     effects: [],
+    candidates: [],
     createdAt: timestamp,
     updatedAt: timestamp,
     ...partial,
@@ -111,6 +113,53 @@ describe("wikiRun view-model projection", () => {
     const write = vm.layers.flatMap((l) => l.nodes).find((n) => n.nodeKey === "write.root");
     assert.equal(write?.status, "idle");
     assert.equal(write?.attemptCount, 0);
+  });
+
+  it("keeps the control-plane DAG instead of inferring parent hierarchy", () => {
+    const snapshot = baseSnapshot({
+      nodes: [
+        {
+          key: "plan.adapt.1",
+          kind: "plan.adapt",
+          state: "succeeded",
+          generation: 0,
+          currentAttemptId: null,
+          lastAttemptId: null,
+          outputs: [],
+          label: "Evidence gap review",
+        },
+        {
+          key: "research.leaf.core.adapt.1.1",
+          kind: "research.leaf",
+          state: "ready",
+          generation: 0,
+          currentAttemptId: null,
+          lastAttemptId: null,
+          outputs: [],
+          label: "Core gap",
+        },
+        {
+          key: "write.root",
+          kind: "write.root",
+          state: "blocked",
+          generation: 0,
+          currentAttemptId: null,
+          lastAttemptId: null,
+          outputs: [],
+          label: "Write wiki",
+        },
+      ],
+      edges: [
+        { from: "plan.adapt.1", to: "research.leaf.core.adapt.1.1" },
+        { from: "research.leaf.core.adapt.1.1", to: "write.root" },
+        { from: "missing", to: "write.root" },
+      ],
+    });
+
+    assert.deepEqual(wikiRunToViewModel(snapshot).edges, [
+      { from: "plan.adapt.1", to: "research.leaf.core.adapt.1.1" },
+      { from: "research.leaf.core.adapt.1.1", to: "write.root" },
+    ]);
   });
 
   it("overlays nodeStatusFromWiki when node has no attempts", () => {

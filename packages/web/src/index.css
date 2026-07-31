@@ -146,10 +146,10 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply min-h-svh bg-background text-foreground antialiased;
+    @apply min-h-svh overflow-x-clip bg-background text-foreground antialiased;
   }
   html {
-    @apply font-sans;
+    @apply overflow-x-clip font-sans;
   }
   #root {
     @apply min-h-svh;

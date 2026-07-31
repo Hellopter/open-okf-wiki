@@ -311,6 +311,17 @@ async function projectSealedInputs(
       continue;
     }
 
+    if (requirement.role === "mechanical_report") {
+      const file = await resolveSealedFile(sealed.readOnlyPath, ["validate-report.json"]);
+      if (!file) throw new Error("sealed mechanical_report artifact is unreadable");
+      const raw = await readFile(file, "utf8");
+      await writeReadOnlyFile(
+        mountedInputPath(inputsDir, requirement),
+        raw.endsWith("\n") ? raw : `${raw}\n`,
+      );
+      continue;
+    }
+
     if (requirement.role === "operator_input") {
       const file = await resolveSealedFile(sealed.readOnlyPath, ["operator-input.json"]);
       if (!file) throw new Error("sealed operator_input artifact is unreadable");

@@ -126,8 +126,8 @@ test("gate commands admit only their typed decisions", () => {
 
 test("run events carry one matching full snapshot", () => {
   const snapshot = {
-    schema: "okf.wiki-runs/v2",
-    definitionVersion: 2,
+    schema: "okf.wiki-runs/v3",
+    definitionVersion: 3,
     runId: "run-1",
     workspaceId: "workspace-1",
     revision: 2,

@@ -75,6 +75,7 @@ async function writeSucceeded(
 /** One seat emits blocking defects; others clean. */
 function blockingSeatExecutor(options?: {
   maxRepairRounds?: number;
+  onExhausted?: "fail" | "operator";
 }): (input: PiAttemptInput, signal: AbortSignal) => Promise<PiAttemptOutcome> {
   let blockingEmitted = false;
   return async (input, signal) => {
@@ -82,6 +83,9 @@ function blockingSeatExecutor(options?: {
       const spec = defaultWikiRunSpec("Workflow test");
       if (options?.maxRepairRounds !== undefined) {
         spec.acceptance.maxRepairRounds = options.maxRepairRounds;
+      }
+      if (options?.onExhausted !== undefined) {
+        spec.acceptance.evaluationPolicy = { onExhausted: options.onExhausted };
       }
       const specPath = path.join(input.workDir, "spec.json");
       await mkdir(input.workDir, { recursive: true });
@@ -375,7 +379,7 @@ test("resolve fix schedules repair.1 claimed with kind repair and feedback", asy
   );
 });
 
-test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
+test("semantic budget exhaustion opens one operator recovery and continues through repair", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({
@@ -393,12 +397,62 @@ test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
   const fixGate = atFix.snapshot.gates.find((g) => g.kind === "fix" && g.state === "open");
   assert.ok(fixGate);
 
+  await runs.dispatch(
+    {
+      type: "resolve_gate",
+      commandId: "fix-budget0",
+      runId: receipt.runId,
+      gateId: fixGate.gateId,
+      gateKind: "fix",
+      payloadDigest: fixGate.payloadDigest,
+      decision: "fix",
+    },
+    context(workspaceId),
+  );
+
+  const failed = await waitForRunState(runs, receipt.runId, ["failed"], 60_000);
+  const recovery = failed.snapshot.evaluationRecoveries?.[0];
+  assert.ok(recovery, "semantic exhaustion must expose a durable recovery");
+  assert.equal(recovery.source, "semantic");
+  assert.ok(recovery.reportArtifactId, "recovery must bind the sealed defects report");
+
+  await runs.dispatch(
+    {
+      type: "continue_evaluation",
+      commandId: "continue-semantic-budget0",
+      runId: receipt.runId,
+      recoveryId: recovery.recoveryId,
+    },
+    context(workspaceId),
+  );
+  const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 60_000);
+  assert.ok(atPub.snapshot.gates.some((g) => g.kind === "publication" && g.state === "open"));
+});
+
+test("semantic budget exhaustion fails explicitly when policy is fail", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: blockingSeatExecutor({ maxRepairRounds: 0, onExhausted: "fail" }),
+  });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-fix-budget0-fail", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  await approvePlanGate(runs, receipt.runId, workspaceId, "approve-fix-budget0-fail");
+  const atFix = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 60_000);
+  const fixGate = atFix.snapshot.gates.find((g) => g.kind === "fix" && g.state === "open");
+  assert.ok(fixGate);
+
   await assert.rejects(
     () =>
       runs.dispatch(
         {
           type: "resolve_gate",
-          commandId: "fix-budget0",
+          commandId: "fix-budget0-fail",
           runId: receipt.runId,
           gateId: fixGate.gateId,
           gateKind: "fix",
@@ -407,27 +461,11 @@ test("maxRepairRounds=0 rejects fix decision; pass still works", async (t) => {
         },
         context(workspaceId),
       ),
-    /budget is 0|only pass or deny/i,
+    /budget exhausted/i,
   );
-
-  // Gate must remain open after rejected fix (transaction rolled back).
   const stillOpen = (await runs.read({ runId: receipt.runId })).snapshot;
   assert.equal(stillOpen.gates.find((g) => g.gateId === fixGate.gateId)?.state, "open");
-
-  await runs.dispatch(
-    {
-      type: "resolve_gate",
-      commandId: "pass-budget0",
-      runId: receipt.runId,
-      gateId: fixGate.gateId,
-      gateKind: "fix",
-      payloadDigest: fixGate.payloadDigest,
-      decision: "pass",
-    },
-    context(workspaceId),
-  );
-  const atPub = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"], 60_000);
-  assert.ok(atPub.snapshot.gates.some((g) => g.kind === "publication" && g.state === "open"));
+  assert.equal(stillOpen.evaluationRecoveries, undefined);
 });
 
 test("clean review auto-passes gate.fix (no HITL) and reaches publication", async (t) => {

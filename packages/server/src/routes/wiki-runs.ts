@@ -29,6 +29,8 @@ function statusFor(error: unknown): number {
     return 413;
   if (error instanceof Error && error.message.startsWith("transcript path escaped")) return 400;
   if (error instanceof Error && error.message.startsWith("transcript is not valid")) return 400;
+  if (error instanceof Error && error.message.startsWith("transcript cursor")) return 400;
+  if (error instanceof Error && error.message.startsWith("transcript page limit")) return 400;
   return 500;
 }
 
@@ -55,6 +57,24 @@ function delay(milliseconds: number): Promise<void> {
 
 function isLiveAttemptState(state: string): boolean {
   return state === "running" || state === "suspended";
+}
+
+function readTranscriptCursor(url: URL, key: "before" | "after"): number | undefined {
+  const raw = url.searchParams.get(key);
+  if (raw === null || raw === "") return undefined;
+  if (!/^\d+$/.test(raw)) throw new Error("transcript cursor is invalid");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("transcript cursor is invalid");
+  return value;
+}
+
+function readTranscriptLimit(url: URL): number | undefined {
+  const raw = url.searchParams.get("limit");
+  if (raw === null || raw === "") return undefined;
+  if (!/^\d+$/.test(raw)) throw new Error("transcript page limit is invalid");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) throw new Error("transcript page limit is invalid");
+  return value;
 }
 
 /** POST typed command. Actor and workspace are derived from the trusted route. */
@@ -128,7 +148,7 @@ export async function handleGetAttemptTranscript(
   id: string,
   runId: string,
   attemptId: string,
-  _url: URL,
+  url: URL,
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
@@ -136,6 +156,9 @@ export async function handleGetAttemptTranscript(
     const transcript = await (await wikiRunsForWorkspace(workspace)).readAttemptTranscript({
       runId,
       attemptId,
+      beforeSequence: readTranscriptCursor(url, "before"),
+      afterSequence: readTranscriptCursor(url, "after"),
+      limit: readTranscriptLimit(url),
     });
     sendJson(res, 200, transcript);
   } catch (error) {
@@ -146,9 +169,9 @@ export async function handleGetAttemptTranscript(
 /**
  * Attempt transcript SSE for Node details while an Attempt is live.
  *
- * - First frame: `transcript` (full secret-free messages snapshot)
- * - While running/suspended: re-read session.jsonl and emit `transcript` on change
- * - On terminal state: final `transcript` + `done`, then close
+ * - Emits only entries after `?after=<sequence>` in ordered `trace` batches.
+ * - While running/suspended: poll the bounded trace file for later entries.
+ * - On terminal state: final trace batch + `done`, then close.
  *
  * Separate from Run control SSE and Session Pi SSE (ADR 0035). Dialog-scoped only.
  */
@@ -158,7 +181,7 @@ export async function handleAttemptTranscriptEvents(
   id: string,
   runId: string,
   attemptId: string,
-  _url: URL,
+  url: URL,
   dependencies: { heartbeatMs?: number; pollMs?: number } = {},
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
@@ -167,6 +190,20 @@ export async function handleAttemptTranscriptEvents(
   let runs;
   try {
     runs = await wikiRunsForWorkspace(workspace);
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+    return;
+  }
+  let afterSequence: number;
+  try {
+    const queryAfter = readTranscriptCursor(url, "after") ?? 0;
+    // EventSource sends the last frame id when reconnecting. Keep a caller's
+    // explicit cursor as the lower bound, then advance from the acknowledged
+    // trace batch rather than replaying it on every transport reconnect.
+    afterSequence = Math.max(
+      queryAfter,
+      parseLastEventId(req.headers["last-event-id"] as string | undefined) ?? 0,
+    );
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
     return;
@@ -199,13 +236,16 @@ export async function handleAttemptTranscriptEvents(
     () => writeHeartbeat(res),
     dependencies.heartbeatMs ?? TRANSCRIPT_SSE_HEARTBEAT_MS,
   );
-  let lastFingerprint = "";
-  let seq = 0;
   try {
     while (!closed) {
       let transcript;
       try {
-        transcript = await runs.readAttemptTranscript({ runId, attemptId });
+        transcript = await runs.readAttemptTranscript({
+          runId,
+          attemptId,
+          afterSequence,
+          limit: 200,
+        });
       } catch (error) {
         if (!closed) {
           // Named `transcript_error` so it does not collide with EventSource's
@@ -216,39 +256,33 @@ export async function handleAttemptTranscriptEvents(
       }
 
       const live = isLiveAttemptState(transcript.state);
-      const fingerprint = `${transcript.state}:${transcript.messages.length}:${JSON.stringify(transcript.messages)}`;
-      if (fingerprint !== lastFingerprint) {
-        lastFingerprint = fingerprint;
-        seq += 1;
+      if (transcript.events.length > 0) {
+        afterSequence = transcript.cursor;
         writeSse(
           res,
-          "transcript",
+          "trace",
           {
             attemptId: transcript.attemptId,
             nodeKey: transcript.nodeKey,
             state: transcript.state,
-            messages: transcript.messages,
+            events: transcript.events,
+            cursor: transcript.cursor,
             live,
           },
-          seq,
+          transcript.cursor,
         );
       }
 
       if (!live) {
-        seq += 1;
-        writeSse(
-          res,
-          "done",
-          {
-            attemptId: transcript.attemptId,
-            state: transcript.state,
-          },
-          seq,
-        );
+        writeSse(res, "done", {
+          attemptId: transcript.attemptId,
+          state: transcript.state,
+          cursor: afterSequence,
+        });
         break;
       }
 
-      await delay(pollMs);
+      if (!transcript.hasMore) await delay(pollMs);
     }
   } catch (error) {
     if (!closed) writeSse(res, "transcript_error", { message: redactErrorMessage(error) });

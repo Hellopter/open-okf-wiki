@@ -40,8 +40,8 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
   assertFreezeAdvancedToPlan(finished.snapshot);
   assert.equal(finished.snapshot.intent?.mode, "generate");
   assert.equal(finished.snapshot.intent?.focus, "Runtime seams");
-  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v2");
-  assert.equal(finished.snapshot.definitionVersion, 2);
+  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v3");
+  assert.equal(finished.snapshot.definitionVersion, 3);
   assert.ok(finished.events.some((event) => event.type === "inputs.pinned"));
   assert.ok(finished.events.some((event) => event.type === "node.ready"));
   assert.ok(finished.events.length >= 4);

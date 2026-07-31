@@ -286,7 +286,7 @@ test("auto mechanical repair schedules repair.1 then reaches publication", async
   );
 });
 
-test("auto mechanical repair exhausts budget and fails the run", async (t) => {
+test("mechanical budget exhaustion exposes one executable operator continuation", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
 
@@ -341,6 +341,50 @@ test("auto mechanical repair exhausts budget and fails the run", async (t) => {
   assert.ok(
     validateFailed.length >= 2,
     `expected ≥2 failed validates after budget exhaust, got ${validateFailed.length}`,
+  );
+
+  const recovery = failed.snapshot.evaluationRecoveries?.[0];
+  assert.ok(recovery, "default operator policy must expose recovery after budget exhaustion");
+  assert.equal(recovery.source, "mechanical");
+  assert.ok(recovery.reportArtifactId, "recovery must preserve sealed validation evidence");
+  const candidateId = recovery.candidateId;
+
+  await runs.dispatch(
+    {
+      type: "continue_evaluation",
+      commandId: "continue-mech-exhaust",
+      runId: receipt.runId,
+      recoveryId: recovery.recoveryId,
+    },
+    context(workspaceId),
+  );
+
+  const afterContinuation = await waitForRunState(runs, receipt.runId, ["failed"], 60_000);
+  assert.equal(repairCount, 2, "one explicit continuation schedules exactly one additional repair");
+  assert.equal(
+    afterContinuation.snapshot.evaluationRecoveries,
+    undefined,
+    "a consumed continuation cannot create another recovery",
+  );
+  const latestCandidate = afterContinuation.snapshot.candidates.at(-1);
+  assert.ok(latestCandidate);
+  assert.notEqual(
+    latestCandidate.candidateId,
+    candidateId,
+    "continuation must advance candidate lineage",
+  );
+  await assert.rejects(
+    () =>
+      runs.dispatch(
+        {
+          type: "continue_evaluation",
+          commandId: "continue-mech-exhaust-again",
+          runId: receipt.runId,
+          recoveryId: recovery.recoveryId,
+        },
+        context(workspaceId),
+      ),
+    /stale or unavailable/i,
   );
 });
 

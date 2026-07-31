@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   type AttemptMetrics,
   CancelRunCommandSchema,
+  ContinueEvaluationCommandSchema,
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
   type PiAttemptOutcome,
@@ -31,6 +32,7 @@ import {
 import {
   type ArtifactsHost,
   bindAttemptInputs as bindAttemptInputsImpl,
+  commitFailedAttemptArtifacts as commitFailedAttemptArtifactsImpl,
   copyAttemptInputs as copyAttemptInputsImpl,
   orphanPreparedArtifacts as orphanPreparedArtifactsImpl,
   prepareUnsealedArtifact as prepareUnsealedArtifactImpl,
@@ -131,6 +133,8 @@ function parseRunCommand(value: unknown): RunCommand {
       return RetryFailedNodeCommandSchema.parse(value);
     case "rerun_node":
       return RerunNodeCommandSchema.parse(value);
+    case "continue_evaluation":
+      return ContinueEvaluationCommandSchema.parse(value);
     case "cancel_run":
       return CancelRunCommandSchema.parse(value);
     case "resolve_gate":
@@ -246,6 +250,9 @@ class WikiRunsOwner implements WikiRuns {
   async readAttemptTranscript(input: {
     runId: string;
     attemptId: string;
+    beforeSequence?: number;
+    afterSequence?: number;
+    limit?: number;
   }): Promise<WikiRunAttemptTranscript> {
     this.assertOpen();
     return readAttemptTranscriptImpl(this.transcriptHost(), input);
@@ -510,6 +517,8 @@ class WikiRunsOwner implements WikiRuns {
       activeAttempts: this.activeAttempts,
       currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
       currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
+      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
+        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
       upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
       abortRunAttempts: (runId) => this.abortRunAttempts(runId),
       withdrawOpenGates: (runId) => this.withdrawOpenGates(runId),
@@ -555,6 +564,8 @@ class WikiRunsOwner implements WikiRuns {
         this.preparePlanExecutionPlan(claim, preparations),
       commitSuccessfulAttempt: (claim, preparations, metrics) =>
         this.commitSuccessfulAttempt(claim, preparations, metrics),
+      commitFailedAttemptArtifacts: (claim, preparations) =>
+        this.commitFailedAttemptArtifacts(claim, preparations),
       orphanPreparedArtifacts: (attemptId) => this.orphanPreparedArtifacts(attemptId),
       requeueFailedNode: (runId, nodeKey, generation, lastAttemptId) =>
         this.requeueFailedNode(runId, nodeKey, generation, lastAttemptId),
@@ -658,6 +669,13 @@ class WikiRunsOwner implements WikiRuns {
     metrics?: AttemptMetrics,
   ): void {
     commitSuccessfulAttemptImpl(this.attemptSuccessHost(), claim, preparations, metrics);
+  }
+
+  private commitFailedAttemptArtifacts(
+    claim: ClaimedNode,
+    preparations: ArtifactPreparation[],
+  ): void {
+    commitFailedAttemptArtifactsImpl(this.artifactsHost(), claim, preparations);
   }
 
   private async executeFreeze(claim: ClaimedFreeze): Promise<void> {

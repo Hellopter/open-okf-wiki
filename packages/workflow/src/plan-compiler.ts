@@ -128,7 +128,7 @@ export function compileExecutionPlan(
   }
 
   return ExecutionPlanSchema.parse({
-    version: 2,
+    version: 3,
     workUnits,
     reductions,
     reviewLenses,
@@ -142,6 +142,7 @@ export function compileExecutionPlan(
       maxDomainFanOut,
       maxLeafFanOut,
     },
+    adaptation: { maxRounds: 2 },
     ...(caps?.specDigest ? { specDigest: caps.specDigest } : {}),
   });
 }

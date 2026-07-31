@@ -12,6 +12,7 @@ import {
 } from "@okf-wiki/contract";
 import { digest, now } from "./crypto-util.js";
 import type { WikiRunsDbCtx } from "./ctx.js";
+import { continueEvaluationRecovery } from "./repair-schedule.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { CommandIdCollision } from "./types.js";
@@ -25,6 +26,13 @@ export type CommandsHost = WikiRunsDbCtx & {
   activeAttempts: Map<string, AbortController>;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
+  applyRerunAt(
+    runId: string,
+    nodeKey: string,
+    generation: number,
+    feedback?: string,
+    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
+  ): void;
   upstreamSealedOutputs(
     runId: string,
     nodeKey: string,
@@ -73,6 +81,9 @@ export function applyCommand(
   if (command.type === "retry_failed_node")
     return retryFailedNode(host, command, context, payloadDigest);
   if (command.type === "rerun_node") return rerunNode(host, command, context, payloadDigest);
+  if (command.type === "continue_evaluation") {
+    return continueEvaluation(host, command, context, payloadDigest);
+  }
   if (command.type === "resolve_gate") return host.resolveGate(command, context, payloadDigest);
   if (command.type === "cancel_run") return cancelRun(host, command, context, payloadDigest);
   if (command.type !== "start_run") {
@@ -93,7 +104,7 @@ export function applyCommand(
           freeze_config_json, freeze_config_digest, intent_json,
           frozen_sources_json, frozen_skill_digest,
           pinned_sources_json, skill_digest, pinned_digest, created_at, updated_at
-        ) VALUES (?, ?, ?, 2, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, 3, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       runId,
@@ -269,6 +280,17 @@ export function rerunNode(
 
   applyRerunAt(host, command.runId, command.nodeKey, command.generation, command.feedback);
   const revision = host.emit(command.runId, "node.ready");
+  recordCommand(host, command, context, payloadDigest, command.runId, revision);
+  return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
+}
+
+export function continueEvaluation(
+  host: CommandsHost,
+  command: Extract<RunCommand, { type: "continue_evaluation" }>,
+  context: RunCommandContext,
+  payloadDigest: string,
+): RunCommandReceipt {
+  const revision = continueEvaluationRecovery(host, command);
   recordCommand(host, command, context, payloadDigest, command.runId, revision);
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
 }

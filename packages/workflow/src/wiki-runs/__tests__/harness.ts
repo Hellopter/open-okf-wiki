@@ -94,6 +94,18 @@ export async function fullGraphFixtureExecutor(
   if (input.node.kind === "plan") {
     return succeededPlan(input);
   }
+  if (input.node.kind === "plan.adapt") {
+    const delta = path.join(input.workDir, "analysis", "execution-plan-delta.json");
+    await writeFile(delta, '{"version":1,"complete":true,"additions":[]}\n', "utf8");
+    return {
+      type: "succeeded",
+      unsealedArtifacts: [
+        { kind: "receipt", role: "plan_delta", sourcePath: delta, directory: false },
+        { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
+      ],
+      summary: "fixture research complete",
+    };
+  }
   if (input.node.kind === "research.leaf" || input.node.kind === "research.domain") {
     const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
     // Phase 2: full AnalysisReceipt shape (no thin {role,summary,mode}).

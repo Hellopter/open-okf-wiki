@@ -24,6 +24,7 @@ import {
   type MergedDefectReport,
   MergedDefectReportSchema,
   type PiAttemptArtifactDescriptor,
+  RepairRequestSchema,
   validateBoundInputs,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
@@ -444,6 +445,44 @@ export function upstreamSealedOutputs(
     }
   }
 
+  // A failed validate node has no succeeded generation to traverse. Repair.N
+  // therefore binds its explicit sealed report reference from RepairRequest.
+  if (isRepairNodeKey(nodeKey)) {
+    const generation = host.currentNodeGeneration(runId, nodeKey);
+    const detail =
+      generation === undefined
+        ? undefined
+        : asRow(
+            host.db
+              .prepare(
+                "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+              )
+              .get(runId, nodeKey, generation),
+          );
+    if (detail?.detail_json) {
+      try {
+        const parsed = JSON.parse(String(detail.detail_json)) as { repairRequest?: unknown };
+        const request = RepairRequestSchema.parse(parsed.repairRequest);
+        if (request.mechanicalReportArtifactId) {
+          const report = asRow(
+            host.db
+              .prepare(
+                "SELECT artifact_id FROM artifacts WHERE run_id = ? AND artifact_id = ? AND kind = 'receipt'",
+              )
+              .get(runId, request.mechanicalReportArtifactId),
+          );
+          if (!report)
+            throw new Error("repair references an unavailable mechanical report artifact");
+          add("mechanical_report", request.mechanicalReportArtifactId);
+        }
+      } catch (error) {
+        throw new Error(
+          `repair has invalid sealed MechanicalReport reference: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
   return [...byRole.entries()]
     .map(([role, artifactId]) => ({ role, artifactId }))
     .sort((a, b) => a.role.localeCompare(b.role));
@@ -638,6 +677,62 @@ export function commitNodeArtifacts(
     )
     .run(claim.attemptId);
   host.emit(claim.runId, "attempt.succeeded");
+  return true;
+}
+
+/**
+ * Commit sealed evidence produced by a failed Attempt without changing its
+ * terminal state. Validation reports are evidence, not successful validation.
+ */
+export function commitFailedAttemptArtifacts(
+  host: Pick<ArtifactsHost, "db" | "isCurrent">,
+  claim: ClaimedNode,
+  preparations: ArtifactPreparation[],
+): boolean {
+  if (!host.isCurrent(claim)) {
+    host.db
+      .prepare(
+        "UPDATE artifact_preparations SET state = 'orphaned' WHERE attempt_id = ? AND state = 'prepared'",
+      )
+      .run(claim.attemptId);
+    return false;
+  }
+  const timestamp = now();
+  for (const preparation of preparations) {
+    host.db
+      .prepare(
+        `INSERT INTO artifacts (artifact_id, run_id, kind, digest, relative_path, producer_attempt_id, sealed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(artifact_id) DO NOTHING`,
+      )
+      .run(
+        preparation.artifactId,
+        claim.runId,
+        preparation.kind,
+        preparation.digest,
+        preparation.relativePath,
+        claim.attemptId,
+        timestamp,
+      );
+    host.db
+      .prepare(
+        `INSERT INTO node_outputs (run_id, node_key, node_generation, role, artifact_id)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(run_id, node_key, node_generation, role) DO NOTHING`,
+      )
+      .run(
+        claim.runId,
+        claim.nodeKey,
+        claim.nodeGeneration,
+        preparation.role,
+        preparation.artifactId,
+      );
+  }
+  host.db
+    .prepare(
+      "UPDATE artifact_preparations SET state = 'committed' WHERE attempt_id = ? AND state = 'prepared'",
+    )
+    .run(claim.attemptId);
   return true;
 }
 

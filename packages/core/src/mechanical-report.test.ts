@@ -115,17 +115,16 @@ test("toMechanicalReport ok true yields empty issues", () => {
   assert.deepEqual(report.errors, []);
 });
 
-test("extractPagesFromValidationMessage caps and dedupes path.md segments", () => {
+test("extractPagesFromValidationMessage preserves every unique path", () => {
   const message =
     "validation failed: overview.md: missing type; architecture.md: missing title; overview.md: again; deep/x.md: boom";
-  const pages = extractPagesFromValidationMessage(message, 8);
+  const pages = extractPagesFromValidationMessage(message);
   assert.deepEqual(pages, ["overview.md", "architecture.md", "deep/x.md"]);
 
-  const capped = extractPagesFromValidationMessage(
+  const paths = extractPagesFromValidationMessage(
     Array.from({ length: 12 }, (_, i) => `p${i}.md: err`).join("; "),
-    8,
   );
-  assert.equal(capped.length, 8);
-  assert.equal(capped[0], "p0.md");
-  assert.equal(capped[7], "p7.md");
+  assert.equal(paths.length, 12);
+  assert.equal(paths[0], "p0.md");
+  assert.equal(paths[11], "p11.md");
 });

@@ -61,6 +61,87 @@ describe("projectAttemptTranscriptMessages", () => {
     assert.deepEqual(out[1]?.tools?.[0]?.args, { path: "a.ts" });
   });
 
+  it("joins append-only trace tool call and result rows without dropping output", () => {
+    const out = projectAttemptTranscriptMessages([
+      {
+        trace: 1,
+        ordinal: 1,
+        at: "2026-07-31T00:00:00.000Z",
+        kind: "input",
+        content: "inspect sources",
+      },
+      {
+        trace: 1,
+        ordinal: 2,
+        at: "2026-07-31T00:00:01.000Z",
+        kind: "tool_call",
+        toolCallId: "read-1",
+        name: "read",
+        args: '{"path":"a.ts"}',
+      },
+      {
+        trace: 1,
+        ordinal: 3,
+        at: "2026-07-31T00:00:02.000Z",
+        kind: "tool_result",
+        toolCallId: "read-1",
+        name: "read",
+        output: "export const answer = 42;",
+        status: "done",
+      },
+    ]);
+    assert.equal(out.length, 2);
+    assert.equal(out[0]?.role, "user");
+    assert.equal(out[1]?.tools?.[0]?.name, "read");
+    assert.equal(out[1]?.tools?.[0]?.output, "export const answer = 42;");
+    assert.deepEqual(out[1]?.tools?.[0]?.args, { path: "a.ts" });
+  });
+
+  it("pairs same-name tool calls without ids in call order", () => {
+    const out = projectAttemptTranscriptMessages([
+      { trace: 1, ordinal: 1, at: "2026-07-31T00:00:00.000Z", kind: "tool_call", name: "read" },
+      { trace: 1, ordinal: 2, at: "2026-07-31T00:00:01.000Z", kind: "tool_call", name: "read" },
+      {
+        trace: 1,
+        ordinal: 3,
+        at: "2026-07-31T00:00:02.000Z",
+        kind: "tool_result",
+        name: "read",
+        output: "first output",
+        status: "done",
+      },
+      {
+        trace: 1,
+        ordinal: 4,
+        at: "2026-07-31T00:00:03.000Z",
+        kind: "tool_result",
+        name: "read",
+        output: "second output",
+        status: "done",
+      },
+    ]);
+    assert.equal(out.length, 2);
+    assert.equal(out[0]?.tools?.[0]?.output, "first output");
+    assert.equal(out[0]?.tools?.[0]?.status, "done");
+    assert.equal(out[1]?.tools?.[0]?.output, "second output");
+    assert.equal(out[1]?.tools?.[0]?.status, "done");
+  });
+
+  it("surfaces an explicit trace-limit marker", () => {
+    const out = projectAttemptTranscriptMessages([
+      {
+        trace: 1,
+        ordinal: 1,
+        at: "2026-07-31T00:00:00.000Z",
+        kind: "truncated",
+        reason: "trace_limit",
+        limitBytes: 2 * 1024 * 1024,
+      },
+    ]);
+    assert.equal(out[0]?.role, "system");
+    assert.match(out[0]?.content ?? "", /2 MiB retention limit/);
+  });
+
   it("projects legacy metadata stubs as assistant summary", () => {
     const out = projectAttemptTranscriptMessages([
       { schema: 1, node: "plan", mode: "fixture", summary: "Fixture default WikiRunSpec" },
