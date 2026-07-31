@@ -230,17 +230,23 @@ class WikiRunsOwner implements WikiRuns {
       const rows = asRows(
         this.db
           .prepare(
-            "SELECT run_id, state, updated_at, revision FROM runs ORDER BY updated_at DESC, run_id DESC",
+            `SELECT run_id, state, updated_at, revision, operator_session_id
+             FROM runs
+             ORDER BY updated_at DESC, run_id DESC`,
           )
           .all(),
       );
       this.db.exec("COMMIT");
-      return rows.map((row) => ({
-        runId: requiredText(row, "run_id"),
-        state: requiredText(row, "state") as WikiRunSnapshot["state"],
-        updatedAt: requiredText(row, "updated_at"),
-        revision: requiredNumber(row, "revision"),
-      }));
+      return rows.map((row) => {
+        const sessionRaw = row.operator_session_id;
+        return {
+          runId: requiredText(row, "run_id"),
+          state: requiredText(row, "state") as WikiRunSnapshot["state"],
+          updatedAt: requiredText(row, "updated_at"),
+          revision: requiredNumber(row, "revision"),
+          sessionId: typeof sessionRaw === "string" && sessionRaw.length > 0 ? sessionRaw : null,
+        };
+      });
     } catch (error) {
       this.rollback();
       throw error;

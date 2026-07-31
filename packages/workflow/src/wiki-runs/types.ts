@@ -78,6 +78,11 @@ export type WikiRunListItem = {
   state: WikiRunSnapshot["state"];
   updatedAt: string;
   revision: number;
+  /**
+   * Operator Session that dispatched StartRun (audit link).
+   * Null when started outside a Session (e.g. headless HTTP).
+   */
+  sessionId: string | null;
 };
 
 /**

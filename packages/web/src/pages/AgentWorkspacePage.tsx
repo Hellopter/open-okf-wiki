@@ -7,7 +7,8 @@
  * - `attempt` = optional node attempt dialog selection.
  * WikiRunProjectionProvider is shell-owned, keyed by `run` only.
  * `wiki_produce` receipt only updates `run` (not control facts / not graphOpen).
- * `recentRuns` is list refresh for the bar switcher — not control authority.
+ * Boot / Session switch rebinds `run` from WikiRuns list `sessionId` (ADR 0026 I6).
+ * `recentRuns` is the Session-scoped switcher list — not control authority.
  */
 
 import type { ReactNode } from "react";
@@ -25,7 +26,11 @@ import {
   useWikiRunProjection,
   WikiRunProjectionProvider,
 } from "../agent-workspace/hooks/WikiRunProjectionContext";
-import { reconcileAcceptedReceipt } from "../agent-workspace/hooks/workspace-route";
+import {
+  filterRunsForSession,
+  pickRunForSession,
+  reconcileAcceptedReceipt,
+} from "../agent-workspace/hooks/workspace-route";
 import {
   createAgentSession,
   deleteAgentSession,
@@ -46,6 +51,7 @@ export function AgentWorkspacePage() {
   const {
     runId: activeRunId,
     sessionId: urlSessionId,
+    clearRun,
     focusRun,
     selectSession,
   } = useAgentWorkspaceRoute();
@@ -128,27 +134,57 @@ export function AgentWorkspacePage() {
    * WikiRunStore / projection subscribe to the URL run only.
    */
   const syncRunIdInUrl = useCallback(
-    (runId: string, attemptId?: string | null) => {
+    (runId: string | null, attemptId?: string | null) => {
       const agentPath = `/w/${encodeURIComponent(id)}`;
       if (!mountedRef.current || window.location.pathname !== agentPath) return;
-      focusRun(runId, attemptId);
+      if (runId) focusRun(runId, attemptId);
+      else clearRun();
     },
-    [id, focusRun],
+    [id, focusRun, clearRun],
+  );
+
+  /**
+   * Rebind `?run=` from durable WikiRuns `sessionId` links (ADR 0026 I5/I6).
+   * Not message-derived — list rows carry operator_session_id from StartRun.
+   */
+  const rebindRunForSession = useCallback(
+    (
+      sessionId: string | null,
+      runs: WikiRunListItem[],
+      options?: { preferredRunId?: string | null; allowPreferredOutsideSession?: boolean },
+    ) => {
+      const nextRunId = pickRunForSession(runs, sessionId, options);
+      syncRunIdInUrl(nextRunId);
+    },
+    [syncRunIdInUrl],
   );
 
   const receiptBaselineRef = useRef<string | null | undefined>(undefined);
 
   // Browser history and external links can change the selected Session after
-  // boot. Keep the live Pi projection aligned with the validated URL state.
+  // boot. Keep the live Pi projection + linked WikiRun aligned with URL state.
   useEffect(() => {
     if (loading || !urlSessionId || urlSessionId === activeSessionId) return;
     if (sessions.some((session) => session.id === urlSessionId)) {
       activeSessionIdRef.current = urlSessionId;
       setActiveSessionId(urlSessionId);
+      rebindRunForSession(urlSessionId, recentRuns, {
+        preferredRunId: activeRunId,
+        allowPreferredOutsideSession: false,
+      });
       return;
     }
     if (activeSessionId) syncSessionIdInUrl(activeSessionId);
-  }, [activeSessionId, loading, sessions, syncSessionIdInUrl, urlSessionId]);
+  }, [
+    activeSessionId,
+    activeRunId,
+    loading,
+    recentRuns,
+    rebindRunForSession,
+    sessions,
+    syncSessionIdInUrl,
+    urlSessionId,
+  ]);
 
   useEffect(() => {
     if (!agent.ready) {
@@ -210,20 +246,27 @@ export function AgentWorkspacePage() {
         sessionId = created.session.id;
       }
 
+      const runs = runsRes.runs ?? [];
       sessionsRef.current = list;
       activeSessionIdRef.current = sessionId;
       setSessions(list);
       setActiveSessionId(sessionId);
-      setRecentRuns(runsRes.runs ?? []);
+      setRecentRuns(runs);
       if (sessionId) {
         syncSessionIdInUrl(sessionId);
       }
+      // Refresh / re-open Session restores linked WikiRun (ADR 0026 I6).
+      // Honor an explicit `?run=` deep-link when that run still exists.
+      rebindRunForSession(sessionId, runs, {
+        preferredRunId: activeRunId,
+        allowPreferredOutsideSession: true,
+      });
     } catch (err) {
       setBootError(err);
     } finally {
       setLoading(false);
     }
-  }, [id, urlSessionId, syncSessionIdInUrl]);
+  }, [id, urlSessionId, activeRunId, syncSessionIdInUrl, rebindRunForSession]);
 
   useEffect(() => {
     if (bootKeyRef.current === id) return;
@@ -240,8 +283,10 @@ export function AgentWorkspacePage() {
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
       syncSessionIdInUrl(sessionId);
+      // Switcher rebinds Run to this Session's linked WikiRuns only.
+      rebindRunForSession(sessionId, recentRuns);
     },
-    [syncSessionIdInUrl],
+    [syncSessionIdInUrl, rebindRunForSession, recentRuns],
   );
 
   const handleCreateSession = useCallback(async () => {
@@ -265,12 +310,13 @@ export function AgentWorkspacePage() {
       activeSessionIdRef.current = created.session.id;
       setActiveSessionId(created.session.id);
       syncSessionIdInUrl(created.session.id);
+      rebindRunForSession(created.session.id, recentRuns);
     } catch (err) {
       setBootError(err);
     } finally {
       setCreating(false);
     }
-  }, [id, creating, workspace?.name, syncSessionIdInUrl]);
+  }, [id, creating, workspace?.name, syncSessionIdInUrl, rebindRunForSession, recentRuns]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -301,14 +347,19 @@ export function AgentWorkspacePage() {
         activeSessionIdRef.current = nextActive;
         setSessions(nextList);
         setActiveSessionId(nextActive);
-        if (nextActive) syncSessionIdInUrl(nextActive);
+        if (nextActive) {
+          syncSessionIdInUrl(nextActive);
+          rebindRunForSession(nextActive, recentRuns);
+        } else {
+          syncRunIdInUrl(null);
+        }
       } catch (err) {
         setBootError(err);
       } finally {
         setDeletingId(null);
       }
     },
-    [id, deletingId, syncSessionIdInUrl],
+    [id, deletingId, syncSessionIdInUrl, rebindRunForSession, recentRuns, syncRunIdInUrl],
   );
 
   // Refresh session list titles after first prompt auto-titles the active session.
@@ -393,6 +444,8 @@ export function AgentWorkspacePage() {
     );
   }
 
+  const sessionRuns = filterRunsForSession(recentRuns, activeSessionId, activeRunId);
+
   return (
     <WikiRunProjectionProvider workspaceId={id} runId={activeRunId}>
       <AgentWorkspaceShellWithRunChrome
@@ -406,7 +459,7 @@ export function AgentWorkspacePage() {
         creatingSession={creating}
         deletingSessionId={deletingId}
         agent={agent}
-        recentRuns={recentRuns}
+        recentRuns={sessionRuns}
         activeRunId={activeRunId}
         onRefreshRecentRuns={refreshRecentRuns}
         pageError={bootError}

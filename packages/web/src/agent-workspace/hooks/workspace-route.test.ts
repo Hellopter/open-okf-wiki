@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  clearAgentWorkspaceRun,
+  filterRunsForSession,
   focusAgentWorkspaceRun,
+  pickRunForSession,
   readAgentWorkspaceRoute,
   reconcileAcceptedReceipt,
   selectAgentWorkspaceAttempt,
@@ -55,6 +58,13 @@ describe("Agent Workspace route", () => {
       "sessionId=s1&run=r2",
     );
   });
+
+  it("clears Run and Attempt selection", () => {
+    assert.equal(
+      clearAgentWorkspaceRun(search("sessionId=s1&run=r1&attempt=a1&rootPath=%2Ftmp")).toString(),
+      "sessionId=s1",
+    );
+  });
 });
 
 describe("reconcileAcceptedReceipt", () => {
@@ -74,5 +84,85 @@ describe("reconcileAcceptedReceipt", () => {
       seenRunId: "r2",
       focusRunId: "r2",
     });
+  });
+});
+
+describe("pickRunForSession", () => {
+  const runs = [
+    { runId: "r-live", state: "running", sessionId: "s1" },
+    { runId: "r-done", state: "published", sessionId: "s1" },
+    { runId: "r-other", state: "running", sessionId: "s2" },
+    { runId: "r-orphan", state: "queued", sessionId: null },
+  ] as const;
+
+  it("restores the non-terminal linked run after refresh (no preferred)", () => {
+    // Bug: page refresh lost ?run=; Session re-entry must rebind from list.
+    assert.equal(pickRunForSession(runs, "s1"), "r-live");
+  });
+
+  it("falls back to the first linked terminal run when nothing is live", () => {
+    // Caller orders newest-first (GET /runs); pick the head of that list.
+    assert.equal(
+      pickRunForSession(
+        [
+          { runId: "newest-done", state: "published", sessionId: "s1" },
+          { runId: "older-failed", state: "failed", sessionId: "s1" },
+        ],
+        "s1",
+      ),
+      "newest-done",
+    );
+  });
+
+  it("honors boot deep-link preferred run even outside the Session", () => {
+    assert.equal(
+      pickRunForSession(runs, "s1", {
+        preferredRunId: "r-other",
+        allowPreferredOutsideSession: true,
+      }),
+      "r-other",
+    );
+  });
+
+  it("drops preferred run from another Session on switch", () => {
+    assert.equal(
+      pickRunForSession(runs, "s1", {
+        preferredRunId: "r-other",
+        allowPreferredOutsideSession: false,
+      }),
+      "r-live",
+    );
+  });
+
+  it("keeps preferred when it belongs to the Session", () => {
+    assert.equal(
+      pickRunForSession(runs, "s1", {
+        preferredRunId: "r-done",
+        allowPreferredOutsideSession: false,
+      }),
+      "r-done",
+    );
+  });
+
+  it("returns null when the Session has no linked runs", () => {
+    assert.equal(pickRunForSession(runs, "s-empty"), null);
+  });
+});
+
+describe("filterRunsForSession", () => {
+  const runs = [
+    { runId: "r1", state: "running", sessionId: "s1" },
+    { runId: "r2", state: "published", sessionId: "s2" },
+  ];
+
+  it("keeps only Session-linked runs plus the current selection", () => {
+    assert.deepEqual(
+      filterRunsForSession(runs, "s1", "r2").map((r) => r.runId),
+      ["r1", "r2"],
+    );
+    assert.deepEqual(
+      filterRunsForSession(runs, "s1").map((r) => r.runId),
+      ["r1"],
+    );
   });
 });

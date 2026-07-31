@@ -13,6 +13,36 @@ import {
   waitForTerminal,
 } from "./harness.js";
 
+test("list projects operator sessionId so Session refresh can rebind runs", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({ rootPath: root });
+  t.after(() => runs.close());
+
+  const linked = await runs.dispatch(
+    {
+      type: "start_run",
+      commandId: "start-session-link",
+      intent: { mode: "generate" },
+    },
+    { ...context(workspaceId), sessionId: "operator-sess-1" },
+  );
+  const headless = await runs.dispatch(
+    {
+      type: "start_run",
+      commandId: "start-headless",
+      intent: { mode: "generate" },
+    },
+    context(workspaceId),
+  );
+
+  const listed = await runs.list();
+  const linkedRow = listed.find((row) => row.runId === linked.runId);
+  const headlessRow = listed.find((row) => row.runId === headless.runId);
+  assert.equal(linkedRow?.sessionId, "operator-sess-1");
+  assert.equal(headlessRow?.sessionId, null);
+});
+
 test("start receipt and replay are durable, and duplicate commands de-duplicate", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));

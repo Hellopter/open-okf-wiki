@@ -52,7 +52,13 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     assert.equal(list.status, 200, await list.clone().text());
     const listed = (await list.json()) as {
       workspaceId: string;
-      runs: Array<{ runId: string; state: string; updatedAt: string; revision: number }>;
+      runs: Array<{
+        runId: string;
+        state: string;
+        updatedAt: string;
+        revision: number;
+        sessionId: string | null;
+      }>;
     };
     assert.equal(listed.workspaceId, workspace.id);
     assert.equal(listed.runs.length, 1);
@@ -60,6 +66,8 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
     assert.ok(listed.runs[0]?.state);
     assert.ok(listed.runs[0]?.updatedAt);
     assert.ok(typeof listed.runs[0]?.revision === "number");
+    // Headless HTTP StartRun has no Operator Session — still projects the field.
+    assert.equal(listed.runs[0]?.sessionId, null);
 
     // GET /runs/:runId and /events are durable WikiRuns routes (ADR 0035).
     const got = await fetch(`${runs}/${receipt.receipt.runId}`);

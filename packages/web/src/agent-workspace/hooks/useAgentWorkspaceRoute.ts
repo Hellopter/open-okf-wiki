@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
+  clearAgentWorkspaceRun,
   focusAgentWorkspaceRun,
   readAgentWorkspaceRoute,
   selectAgentWorkspaceAttempt,
@@ -38,6 +39,10 @@ export function useAgentWorkspaceRoute() {
     [setSearchParams],
   );
 
+  const clearRun = useCallback(() => {
+    setSearchParams((previous) => clearAgentWorkspaceRun(previous), { replace: true });
+  }, [setSearchParams]);
+
   const selectAttempt = useCallback(
     (attemptId: string | null) => {
       setSearchParams((previous) => selectAgentWorkspaceAttempt(previous, attemptId), {
@@ -47,5 +52,5 @@ export function useAgentWorkspaceRoute() {
     [setSearchParams],
   );
 
-  return { ...route, selectSession, selectRun, focusRun, selectAttempt };
+  return { ...route, selectSession, selectRun, focusRun, clearRun, selectAttempt };
 }

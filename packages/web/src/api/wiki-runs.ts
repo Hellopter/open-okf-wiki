@@ -21,6 +21,8 @@ export type WikiRunListItem = {
   state: WikiRunState;
   updatedAt: string;
   revision: number;
+  /** Operator Session that started this run, when known. */
+  sessionId: string | null;
 };
 
 export function listRuns(
