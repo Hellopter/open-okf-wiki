@@ -30,7 +30,6 @@ import {
   SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarRail,
   SidebarSeparator,
   useSidebar,
 } from "@/components/ui/sidebar";
@@ -115,7 +114,7 @@ export function AgentSessionSidebar({
     <>
       <Sidebar collapsible="icon" data-testid="agent-left-pane" className={cn(className)}>
         <SidebarHeader>
-          <SidebarGroupLabel title={workspaceName ?? workspaceId}>
+          <SidebarGroupLabel className="pr-10 md:pr-2" title={workspaceName ?? workspaceId}>
             {workspaceName ?? workspaceId}
           </SidebarGroupLabel>
           <SidebarMenu>
@@ -164,15 +163,15 @@ export function AgentSessionSidebar({
                         data-testid="agent-session-item"
                         data-session-id={session.id}
                         data-active={active ? "true" : "false"}
-                        onClick={() => {
-                          if (!deleting) selectSession(session.id);
-                        }}
                       >
                         <SidebarMenuButton
                           isActive={active}
                           size="lg"
                           tooltip={formatLabel(session)}
                           disabled={deleting}
+                          onClick={() => {
+                            if (!deleting) selectSession(session.id);
+                          }}
                         >
                           <MessageSquareIcon />
                           <span className="min-w-0 flex-1">
@@ -253,11 +252,6 @@ export function AgentSessionSidebar({
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarFooter>
-        <SidebarRail
-          data-testid="agent-left-rail"
-          aria-label={t.agentWorkspace.toggleSessions}
-          title={t.agentWorkspace.toggleSessions}
-        />
       </Sidebar>
 
       <ConfirmDialog

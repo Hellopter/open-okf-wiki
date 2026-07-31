@@ -83,11 +83,7 @@ export function WorkspaceToolbar({
       data-testid="workspace-toolbar"
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <SidebarTrigger
-          aria-label={t.agentWorkspace.sessions}
-          title={t.agentWorkspace.sessions}
-          data-testid="agent-mobile-sessions"
-        />
+        <SidebarTrigger data-testid="agent-mobile-sessions" />
         <Breadcrumb className="min-w-0">
           <BreadcrumbList>
             <BreadcrumbItem className="hidden sm:inline-flex">
@@ -160,8 +156,12 @@ export function AgentWorkbench({
       mobileTitle: t.agentWorkspace.sessions,
       mobileDescription: t.agentWorkspace.mobileSessionsDescription,
       toggleLabel: t.agentWorkspace.toggleSessions,
+      expandLabel: t.agentWorkspace.expandSessions,
+      collapseLabel: t.agentWorkspace.collapseSessions,
     }),
     [
+      t.agentWorkspace.collapseSessions,
+      t.agentWorkspace.expandSessions,
       t.agentWorkspace.mobileSessionsDescription,
       t.agentWorkspace.sessions,
       t.agentWorkspace.toggleSessions,

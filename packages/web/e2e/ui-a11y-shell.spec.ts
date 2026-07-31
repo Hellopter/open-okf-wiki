@@ -128,8 +128,67 @@ test.describe("UI shell a11y and polish", () => {
     // SheetTitle is sr-only — assert accessible name, not visual heading.
     await expect(sessionsDialog).toHaveAttribute("aria-labelledby", /.+/);
     await expect(sessionsDialog.locator('[data-slot="sheet-title"]')).toHaveText(/sessions/i);
-    await page.keyboard.press("Escape");
+    await expect(sessionsDialog.getByRole("button", { name: /close/i })).toBeVisible();
+    await sessionsDialog.getByRole("button", { name: /close/i }).click();
     await expect(sessionsDialog).toBeHidden();
+  });
+
+  test("desktop session navigation has a persistent, centered compact state", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await createWorkspaceViaUi(
+      page,
+      "DesktopSessionNavigationWithAnIntentionallyLongUnbrokenWorkspaceName",
+    );
+
+    const trigger = page.getByTestId("agent-mobile-sessions");
+    const desktopSidebar = page.locator('[data-slot="sidebar"][data-state]').first();
+    const session = page.getByTestId("agent-session-item").first();
+    const workspaceLabel = page.locator('[data-slot="sidebar-group-label"]').first();
+
+    await expect(session).toBeVisible({ timeout: 15_000 });
+    const workspaceLabelLayout = await workspaceLabel.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const sidebar = element.closest('[data-slot="sidebar"]');
+      const labelBox = element.getBoundingClientRect();
+      const sidebarBox = sidebar?.getBoundingClientRect();
+
+      return {
+        staysWithinSidebar: !sidebarBox || labelBox.right <= sidebarBox.right + 1,
+        truncatesLongText:
+          element.scrollWidth > element.clientWidth &&
+          style.overflowX === "hidden" &&
+          style.textOverflow === "ellipsis" &&
+          style.whiteSpace === "nowrap",
+      };
+    });
+    expect(workspaceLabelLayout.staysWithinSidebar).toBe(true);
+    expect(workspaceLabelLayout.truncatesLongText).toBe(true);
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(trigger).toHaveAttribute("aria-label", /collapse sessions/i);
+
+    await trigger.click();
+    await expect(desktopSidebar).toHaveAttribute("data-state", "collapsed");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(trigger).toHaveAttribute("aria-label", /expand sessions/i);
+
+    const compactButton = session.locator('[data-slot="sidebar-menu-button"]');
+    await expect
+      .poll(() => compactButton.evaluate((element) => element.getBoundingClientRect().width))
+      .toBeLessThanOrEqual(32);
+
+    const compactLayout = await compactButton.evaluate((element) => {
+      const icon = element.querySelector("svg");
+      if (!icon) return null;
+      const row = element.getBoundingClientRect();
+      const glyph = icon.getBoundingClientRect();
+      return Math.abs(row.left + row.width / 2 - (glyph.left + glyph.width / 2));
+    });
+    expect(compactLayout).not.toBeNull();
+    expect(compactLayout!).toBeLessThanOrEqual(1);
+
+    await page.reload();
+    await expect(desktopSidebar).toHaveAttribute("data-state", "collapsed", { timeout: 15_000 });
+    await expect(trigger).toHaveAttribute("aria-label", /expand sessions/i);
   });
 
   test("primary interactive chrome has usable pointer targets on desktop", async ({ page }) => {
