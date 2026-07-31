@@ -26,8 +26,9 @@ import type { WikiRunsDbCtx } from "./ctx.js";
 import { loadSpecFromArtifact, unlockReadyNodes } from "./dag.js";
 import {
   assertUnderMaxCandidates,
-  countWikiCandidates,
+  countModelWikiCandidates,
   latestWikiCandidate,
+  wikiCandidateById,
 } from "./evaluation/candidate.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import type { ClaimedNode } from "./types.js";
@@ -217,10 +218,18 @@ export function countRepairsBySource(
   const rows = asRows(
     host.db
       .prepare(
-        `SELECT node_key, detail_json FROM nodes
-         WHERE run_id = ? AND node_key LIKE 'repair.%' AND detail_json IS NOT NULL`,
+        `SELECT current.node_key, current.detail_json
+         FROM nodes AS current
+         JOIN (
+           SELECT node_key, MAX(generation) AS generation
+           FROM nodes
+           WHERE run_id = ? AND node_key LIKE 'repair.%'
+           GROUP BY node_key
+         ) AS latest
+           ON latest.node_key = current.node_key AND latest.generation = current.generation
+         WHERE current.run_id = ? AND current.detail_json IS NOT NULL`,
       )
-      .all(runId),
+      .all(runId, runId),
   );
   let count = 0;
   for (const row of rows) {
@@ -237,15 +246,6 @@ export function countRepairsBySource(
           count += 1;
           continue;
         }
-      }
-      // Fallback: top-level source field (including transitional labels).
-      const top = parsed.source;
-      if (
-        top === source ||
-        (top === "hard_validate" && source === "mechanical") ||
-        (top === "review" && source === "semantic")
-      ) {
-        count += 1;
       }
     } catch {
       // ignore corrupt detail
@@ -302,6 +302,36 @@ export type ScheduleRepairInput = {
 };
 
 /**
+ * Repair requests name their baseline by candidate identity. Reject stale or
+ * malformed declarations while scheduling so a ready repair can never fall
+ * back to an unrelated wiki_tree during claim.
+ */
+function assertSealedRepairBaseline(
+  host: Pick<RepairScheduleHost, "db">,
+  runId: string,
+  candidateId: string,
+): void {
+  if (!candidateId || candidateId === "pending") {
+    throw new Error("repair requires a resolved baseline candidate");
+  }
+  const candidate = wikiCandidateById(host, runId, candidateId);
+  if (!candidate) {
+    throw new Error(`repair baseline candidate is unavailable: ${candidateId}`);
+  }
+  const artifact = asRow(
+    host.db
+      .prepare(
+        `SELECT artifact_id FROM artifacts
+         WHERE run_id = ? AND artifact_id = ? AND kind = 'wiki_tree'`,
+      )
+      .get(runId, candidate.artifactId),
+  );
+  if (!artifact) {
+    throw new Error(`repair baseline candidate is not a sealed wiki_tree: ${candidateId}`);
+  }
+}
+
+/**
  * Insert `repair.N`, wire edges, hold publication path until EvaluationRound re-runs.
  * Single product entry for mechanical auto-repair and operator/council fix.
  */
@@ -343,11 +373,13 @@ export function scheduleRepair(host: RepairScheduleHost, input: ScheduleRepairIn
     input.repairRequest.baselineCandidateId !== "pending"
       ? input.repairRequest.baselineCandidateId
       : latestWikiCandidate(host, input.runId)?.candidateId;
+  const baselineCandidateId = baseline?.trim() ?? "";
+  assertSealedRepairBaseline(host, input.runId, baselineCandidateId);
 
   const repairRequest = RepairRequestSchema.parse({
     ...input.repairRequest,
     round,
-    baselineCandidateId: baseline?.trim() || input.repairRequest.baselineCandidateId,
+    baselineCandidateId,
     requestId: input.repairRequest.requestId.includes(`:${round}`)
       ? input.repairRequest.requestId
       : `repair:${input.runId}:${round}`,
@@ -547,7 +579,7 @@ export function scheduleMechanicalRepair(
   const budget = policy.mechanical.modelRepairBudget;
   const prior = countRepairsBySource(host, claim.runId, "mechanical");
   if (budget <= 0 || prior >= budget) return false;
-  if (countWikiCandidates(host, claim.runId) >= policy.maxCandidates) return false;
+  if (countModelWikiCandidates(host, claim.runId) >= policy.maxCandidates) return false;
 
   const round = countRepairs(host, claim.runId) + 1;
   const baseline = latestWikiCandidate(host, claim.runId);
@@ -599,7 +631,7 @@ export function openMechanicalEvaluationRecovery(
   if (failureClass !== "schema" || !mechanicalReportArtifactId) return undefined;
   const policy = loadEvaluationPolicy(host, claim.runId);
   if (policy.onExhausted !== "operator") return undefined;
-  if (countWikiCandidates(host, claim.runId) >= policy.maxCandidates) return undefined;
+  if (countModelWikiCandidates(host, claim.runId) >= policy.maxCandidates) return undefined;
 
   const used = countRepairsBySource(host, claim.runId, "mechanical");
   const budget = policy.mechanical.modelRepairBudget;
@@ -664,7 +696,7 @@ function openSemanticEvaluationRecovery(
 ): string | undefined {
   const policy = loadEvaluationPolicy(host, runId);
   if (policy.onExhausted !== "operator") return undefined;
-  if (countWikiCandidates(host, runId) >= policy.maxCandidates) return undefined;
+  if (countModelWikiCandidates(host, runId) >= policy.maxCandidates) return undefined;
   const existing = asRow(
     host.db
       .prepare(
@@ -839,7 +871,7 @@ export function shouldAutoMechanicalRepair(
   ) {
     return false;
   }
-  if (countWikiCandidates(host, claim.runId) >= policy.maxCandidates) return false;
+  if (countModelWikiCandidates(host, claim.runId) >= policy.maxCandidates) return false;
 
   return true;
 }

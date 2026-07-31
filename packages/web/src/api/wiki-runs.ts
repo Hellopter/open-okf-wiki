@@ -4,62 +4,47 @@
  */
 
 import type {
-  AttemptTraceEvent,
   RunCommand,
-  RunCommandReceipt,
-  WikiRunSnapshot,
+  WikiRunAttemptTranscript,
+  WikiRunCommandResponse,
+  WikiRunGetResponse,
+  WikiRunListItem,
+  WikiRunListResponse,
   WikiRunSpecRead,
   WikiRunState,
 } from "@okf-wiki/contract";
+import {
+  WikiRunAttemptTranscriptSchema,
+  WikiRunCommandResponseSchema,
+  WikiRunGetResponseSchema,
+  WikiRunListResponseSchema,
+  WikiRunSpecReadSchema,
+} from "@okf-wiki/contract";
 import { getApiBase, request } from "./client";
 
-export type { WikiRunState };
+export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunState };
 
-/** Slim GET /runs row — WikiRuns control plane, not the deleted v2 file record. */
-export type WikiRunListItem = {
-  runId: string;
-  state: WikiRunState;
-  updatedAt: string;
-  revision: number;
-  /** Operator Session that started this run, when known. */
-  sessionId: string | null;
-};
-
-export function listRuns(
-  workspaceId: string,
-): Promise<{ workspaceId: string; runs: WikiRunListItem[] }> {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`);
+export function listRuns(workspaceId: string): Promise<WikiRunListResponse> {
+  return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`).then(
+    WikiRunListResponseSchema.parse,
+  );
 }
 
 /** Durable WikiRuns snapshot + cursor (ADR 0035). */
-export function getWikiRun(
-  workspaceId: string,
-  runId: string,
-): Promise<{ snapshot: WikiRunSnapshot; cursor: number }> {
-  return request(
+export function getWikiRun(workspaceId: string, runId: string): Promise<WikiRunGetResponse> {
+  return request<unknown>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
-  );
+  ).then(WikiRunGetResponseSchema.parse);
 }
 
 /** Sealed plan Spec for operator review (not on Run SSE). */
 export function getWikiRunSpec(workspaceId: string, runId: string): Promise<WikiRunSpecRead> {
-  return request(
+  return request<unknown>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,
-  );
+  ).then(WikiRunSpecReadSchema.parse);
 }
 
 /** Secret-free cursor-paged Attempt trace for Node details UI. */
-export type WikiRunAttemptTranscript = {
-  attemptId: string;
-  nodeKey: string;
-  state: string;
-  events: AttemptTraceEvent[];
-  hasEarlier: boolean;
-  hasMore: boolean;
-  nextBefore?: number;
-  cursor: number;
-};
-
 type AttemptTranscriptPageOptions = {
   before?: number;
   after?: number;
@@ -81,9 +66,9 @@ export function getWikiRunAttemptTranscript(
   attemptId: string,
   options?: AttemptTranscriptPageOptions,
 ): Promise<WikiRunAttemptTranscript> {
-  return request(
+  return request<unknown>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript${attemptTranscriptQuery(options)}`,
-  );
+  ).then(WikiRunAttemptTranscriptSchema.parse);
 }
 
 /**
@@ -104,12 +89,12 @@ export function wikiRunAttemptTranscriptEventsUrl(
 export function dispatchWikiRunCommand(
   workspaceId: string,
   command: RunCommand,
-): Promise<{ receipt: RunCommandReceipt }> {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, {
+): Promise<WikiRunCommandResponse> {
+  return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(command),
-  });
+  }).then(WikiRunCommandResponseSchema.parse);
 }
 
 /**

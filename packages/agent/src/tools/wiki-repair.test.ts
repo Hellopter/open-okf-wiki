@@ -25,7 +25,7 @@ function workspace() {
     skillPath: "/tmp/skill",
     model: { id: "openai/test" },
     publicationPath: "/tmp/out",
-    limits: { requestTimeoutSeconds: 60, maxSteps: 8 },
+    limits: { requestTimeoutSeconds: 60 },
     planConfirm: false,
     wikiLanguage: "en",
     createdAt: new Date().toISOString(),
@@ -89,6 +89,39 @@ describe("wiki_repair tool", () => {
     assert.equal(calls[0]?.runId, "run-repair");
     assert.equal(calls[0]?.feedback, "fix citations");
     assert.equal(calls[0]?.generation, 2);
+  });
+
+  it("resolves an explicitly requested node before dispatching its current generation", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const tool = createWikiRepairTool({
+      workspace: workspace(),
+      sessionId: "sess-1",
+      resolveRepairTarget: async (input: { runId: string; nodeKey?: string }) => {
+        assert.equal(input.runId, "run-repair");
+        assert.equal(input.nodeKey, "research.leaf.core.1");
+        return { nodeKey: "research.leaf.core.1", generation: 7 };
+      },
+      rerunWikiNode: async (input) => {
+        calls.push(input);
+        return {
+          commandId: input.commandId,
+          runId: input.runId,
+          revision: 9,
+          accepted: true,
+        };
+      },
+    });
+    const execute = tool.execute as unknown as ExecuteRepair;
+    const result = await execute("tc-target", {
+      runId: "run-repair",
+      nodeKey: "research.leaf.core.1",
+    });
+
+    assert.equal(result.details.status, "accepted");
+    assert.equal(result.details.nodeKey, "research.leaf.core.1");
+    assert.equal(result.details.generation, 7);
+    assert.equal(calls[0]?.nodeKey, "research.leaf.core.1");
+    assert.equal(calls[0]?.generation, 7);
   });
 
   it("fails when resolveRepairTarget returns null", async () => {

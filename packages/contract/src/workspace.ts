@@ -115,10 +115,6 @@ export const WorkspaceLimitsSchema = z.object({
    * profile maxContextTokens × 0.85 when available.
    */
   contextTargetTokens: z.number().int().positive().max(10_000_000).optional(),
-  inputTokensLimit: z.number().int().positive().optional(),
-  outputTokensLimit: z.number().int().positive().optional(),
-  totalTokensLimit: z.number().int().positive().optional(),
-  maxSteps: z.number().int().positive().optional(),
   /** Retry policy for provider/transient failures (Pi settings.retry shape). */
   retry: RetryLimitsSchema.default(() => RetryLimitsSchema.parse({})),
   /**
@@ -139,10 +135,6 @@ export const WorkspaceLimitsPatchSchema = z
   .object({
     requestTimeoutSeconds: z.number().positive().max(86_400).optional(),
     contextTargetTokens: z.number().int().positive().max(10_000_000).optional(),
-    inputTokensLimit: z.number().int().positive().optional(),
-    outputTokensLimit: z.number().int().positive().optional(),
-    totalTokensLimit: z.number().int().positive().optional(),
-    maxSteps: z.number().int().positive().optional(),
     gateTimeoutSeconds: z.number().int().min(0).max(604_800).optional(),
     retry: z
       .object({
@@ -187,7 +179,7 @@ export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
 
 /**
  * Supervisor-tree budgets: fan-out/council enforced by produce / WikiRuns.
- * There is no per-role maxSteps API on Pi AgentSession; turn budgets are abort/timeout only.
+ * Turn budgets are abort/timeout only.
  * Unknown legacy keys (e.g. rootMaxSteps) are stripped on parse.
  */
 export const WorkspaceOrchestrationSchema = z

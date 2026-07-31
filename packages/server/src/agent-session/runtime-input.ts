@@ -42,7 +42,7 @@ async function reloadWorkspace(workspace: WorkspaceConfig): Promise<WorkspaceCon
 }
 
 function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWikiRun {
-  return async ({ commandId, sessionId: sid, notes }) => {
+  return async ({ commandId, sessionId: sid, mode, notes }) => {
     // Always reload from disk — session may have been opened before sources/settings were saved.
     const current = await reloadWorkspace(workspace);
     const runs = await wikiRunsForWorkspace(current);
@@ -53,7 +53,7 @@ function startWikiRunFor(workspace: WorkspaceConfig, sessionId: string): StartWi
         type: "start_run",
         commandId,
         intent: {
-          mode: "generate",
+          mode,
           ...(focus ? { focus } : {}),
         },
       },
@@ -89,15 +89,30 @@ function rerunWikiNodeFor(workspace: WorkspaceConfig, sessionId: string): RerunW
   };
 }
 
-/** Resolve current generation for the default repair target (write.root). */
+/** Resolve the current generation for an explicit repair target, or the default write.root. */
 async function resolveRepairTargetFor(
   workspace: WorkspaceConfig,
-  input: { runId: string },
+  input: { runId: string; nodeKey?: string },
 ): Promise<{ nodeKey: string; generation: number } | null> {
   const current = await reloadWorkspace(workspace);
   const runs = await wikiRunsForWorkspace(current);
   try {
     const { snapshot } = await runs.read({ runId: input.runId });
+    const requestedNodeKey = input.nodeKey?.trim();
+    if (requestedNodeKey) {
+      const requested = snapshot.nodes.find((node) => node.key === requestedNodeKey);
+      if (
+        !requested ||
+        requested.kind === "freeze" ||
+        ["cancelled", "blocked"].includes(requested.state) ||
+        requested.key === "gate.plan" ||
+        requested.key === "gate.fix" ||
+        requested.key === "gate.publication"
+      ) {
+        return null;
+      }
+      return { nodeKey: requested.key, generation: requested.generation };
+    }
     const write = snapshot.nodes.find((node) => node.key === "write.root");
     if (write) return { nodeKey: write.key, generation: write.generation };
     // Fall back to any non-terminal node the operator can still rerun.

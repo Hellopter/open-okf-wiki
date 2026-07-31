@@ -48,7 +48,7 @@ Copy [`.env.example`](.env.example) to an untracked `.env` (or export vars in th
 | `@okf-wiki/agent` | Pi sessions, real `wiki_produce` → `StartRun` receipt, Semantic Workflow (no Mastra/AI SDK) |
 | `@okf-wiki/workflow` | Durable WikiRuns control plane (`workflow.sqlite`, commands, gates, events) |
 | `@okf-wiki/core` | Run Boundary (git probe, path policy, publish, stores) |
-| `@okf-wiki/contract` | Shared Zod schemas + agent protocol + `okf.wiki-runs/v1` |
+| `@okf-wiki/contract` | Shared Zod schemas + agent protocol + `okf.wiki-runs/v3` |
 | `@okf-wiki/skill` | Bundled Producer Skill assets |
 
 **Architecture guard:** `pnpm check:architecture` rejects retired packages/protocols and forbidden product dependencies (`@mastra/*`, `ai`, `@ai-sdk/*`).

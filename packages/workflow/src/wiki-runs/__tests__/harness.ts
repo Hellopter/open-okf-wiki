@@ -20,28 +20,29 @@ export function succeededProbe(workDir: string): PiAttemptOutcome {
   };
 }
 
+function fixtureTrace(events: Array<{ kind: "input" | "assistant"; content: string }>): string {
+  const at = "2026-07-31T00:00:00.000Z";
+  return `${events
+    .map((event, index) => JSON.stringify({ trace: 1, ordinal: index + 1, at, ...event }))
+    .join("\n")}\n`;
+}
+
 /** Plan success with a sealed-ready Spec so freeze-only executors do not fail the run. */
 export async function succeededPlan(
   input: PiAttemptInput,
   workspaceName = "Workflow test",
+  spec = defaultWikiRunSpec(workspaceName),
 ): Promise<PiAttemptOutcome> {
-  const spec = defaultWikiRunSpec(workspaceName);
   const specPath = path.join(input.workDir, "spec.json");
   await mkdir(input.workDir, { recursive: true });
   await writeFile(specPath, `${JSON.stringify(spec)}\n`, "utf8");
   const transcript = path.join(input.attemptDir, "session.jsonl");
   await writeFile(
     transcript,
-    [
-      JSON.stringify({ role: "user", content: `Plan WikiRunSpec for ${workspaceName}` }),
-      JSON.stringify({ role: "assistant", content: spec.summary || "Fixture default WikiRunSpec" }),
-      JSON.stringify({
-        schema: 1,
-        node: "plan",
-        mode: "fixture",
-        summary: spec.summary || "Fixture default WikiRunSpec",
-      }),
-    ].join("\n") + "\n",
+    fixtureTrace([
+      { kind: "input", content: `Plan WikiRunSpec for ${workspaceName}` },
+      { kind: "assistant", content: spec.summary || "Fixture default WikiRunSpec" },
+    ]),
     "utf8",
   );
   return {
@@ -79,14 +80,7 @@ export async function fullGraphFixtureExecutor(
   const transcript = path.join(input.attemptDir, "session.jsonl");
   await mkdir(path.dirname(transcript), { recursive: true });
   const nodeSummary = `fixture ${input.node.key}`;
-  await writeFile(
-    transcript,
-    [
-      JSON.stringify({ role: "assistant", content: nodeSummary }),
-      JSON.stringify({ schema: 1, node: input.node.key, summary: nodeSummary }),
-    ].join("\n") + "\n",
-    "utf8",
-  );
+  await writeFile(transcript, fixtureTrace([{ kind: "assistant", content: nodeSummary }]), "utf8");
 
   if (input.node.kind === "freeze") {
     return succeededProbe(input.workDir);

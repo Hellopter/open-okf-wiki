@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { loadWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   context,
@@ -15,6 +16,83 @@ import {
   waitForRunState,
   waitForTerminal,
 } from "./harness.js";
+
+async function setGateTimeout(root: string, seconds: number) {
+  const workspace = await loadWorkspace(root);
+  workspace.limits = { ...workspace.limits, gateTimeoutSeconds: seconds };
+  await saveWorkspace(workspace);
+  return workspace;
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+test("an unattended plan gate expires without a later command or read", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  await setGateTimeout(root, 1);
+  const runs = await openWikiRuns({ rootPath: root, piAttemptExecutor: fullGraphFixtureExecutor });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-idle-gate-timeout", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  const waiting = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);
+  const gate = waiting.snapshot.gates.find((candidate) => candidate.kind === "plan");
+  assert.equal(gate?.state, "open");
+
+  // No command or read runs during this interval. The owner deadline must wake itself.
+  await wait(1_200);
+
+  const expired = await runs.read({ runId: receipt.runId });
+  const timedOutGate = expired.snapshot.gates.find(
+    (candidate) => candidate.gateId === gate?.gateId,
+  );
+  assert.equal(timedOutGate?.state, "resolved");
+  assert.equal(timedOutGate?.decision?.decision, "deny");
+  assert.equal(expired.snapshot.state, "cancelled");
+});
+
+test("gate timeout timer follows replaced workspace configuration", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const timed = await setGateTimeout(root, 1);
+  const runs = await openWikiRuns({ rootPath: root, piAttemptExecutor: fullGraphFixtureExecutor });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-rearm-gate-timeout", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  const waiting = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);
+  const gate = waiting.snapshot.gates.find((candidate) => candidate.kind === "plan");
+  assert.equal(gate?.state, "open");
+
+  // Disabling the setting clears the pending deadline even though the gate stays open.
+  runs.replaceWorkspace({
+    ...timed,
+    limits: { ...timed.limits, gateTimeoutSeconds: 0 },
+  });
+  await wait(1_200);
+  assert.equal(
+    (await runs.read({ runId: receipt.runId })).snapshot.gates.find(
+      (candidate) => candidate.gateId === gate?.gateId,
+    )?.state,
+    "open",
+  );
+
+  // Re-enabling re-arms immediately; this gate is already older than the deadline.
+  runs.replaceWorkspace(timed);
+  await wait(100);
+  assert.equal(
+    (await runs.read({ runId: receipt.runId })).snapshot.gates.find(
+      (candidate) => candidate.gateId === gate?.gateId,
+    )?.decision?.decision,
+    "deny",
+  );
+});
 
 test("ResolveGate plan approve, revise, and deny follow the ADR decision table", async (t) => {
   // approve without Spec fails closed (honest until T3 graph materialization)

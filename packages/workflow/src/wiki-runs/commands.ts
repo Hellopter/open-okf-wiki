@@ -12,7 +12,12 @@ import {
 } from "@okf-wiki/contract";
 import { digest, now } from "./crypto-util.js";
 import type { WikiRunsDbCtx } from "./ctx.js";
-import { continueEvaluationRecovery } from "./repair-schedule.js";
+import { countModelWikiCandidates } from "./evaluation/candidate.js";
+import {
+  continueEvaluationRecovery,
+  isRepairNodeKey,
+  loadEvaluationPolicy,
+} from "./repair-schedule.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { CommandIdCollision } from "./types.js";
@@ -277,11 +282,49 @@ export function rerunNode(
   const runState = requiredText(run, "state");
   if (runState === "published") throw new Error("cannot rerun a published run; start a new run");
   if (runState === "cancelled") throw new Error("cannot rerun a node on a cancelled run");
+  if (isRepairNodeKey(command.nodeKey)) {
+    throw new Error(
+      "cannot rerun a repair node; retry a failed repair or schedule a new repair through evaluation",
+    );
+  }
+  if (command.nodeKey === "write.root") {
+    const policy = loadEvaluationPolicy(host, command.runId);
+    const candidates = countModelWikiCandidates(host, command.runId);
+    if (candidates >= policy.maxCandidates) {
+      throw new Error(
+        `cannot rerun write.root: wiki candidate cap reached (${candidates}/${policy.maxCandidates})`,
+      );
+    }
+  }
+  if (command.nodeKey === "plan" && hasMaterializedExecutionTopology(host, command.runId)) {
+    throw new Error(
+      "cannot rerun plan after execution topology is materialized; start a new run instead",
+    );
+  }
+  if (command.nodeKey === "plan") {
+    host.withdrawOpenGatesForNode(command.runId, "gate.plan", command.generation);
+    supersedeClaimableNode(host, command.runId, "gate.plan", command.generation);
+  }
 
   applyRerunAt(host, command.runId, command.nodeKey, command.generation, command.feedback);
   const revision = host.emit(command.runId, "node.ready");
   recordCommand(host, command, context, payloadDigest, command.runId, revision);
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
+}
+
+function hasMaterializedExecutionTopology(host: Pick<CommandsHost, "db">, runId: string): boolean {
+  // Before approval, the durable bootstrap contains only freeze, plan, and gate.plan.
+  return Boolean(
+    asRow(
+      host.db
+        .prepare(
+          `SELECT 1 AS present FROM nodes
+           WHERE run_id = ? AND node_key NOT IN ('freeze', 'plan', 'gate.plan')
+           LIMIT 1`,
+        )
+        .get(runId),
+    ),
+  );
 }
 
 export function continueEvaluation(

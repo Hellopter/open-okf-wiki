@@ -11,6 +11,7 @@ import {
   FrozenRunManifestSchema,
   RepositorySnapshotSchema,
   RunIntentSchema,
+  validateNodeOutputs,
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import {
@@ -392,6 +393,17 @@ export function commitFreezeArtifacts(
   }
   const inputs = trustedFrozenInputs(host, claim.runId);
   if (!inputs) throw new Error("freeze inputs were not durably recorded");
+  const outputs = preparations.map((preparation) => ({
+    role: preparation.role,
+    kind: preparation.kind,
+  }));
+  validateNodeOutputs(contractForNode("freeze", "freeze"), outputs);
+  if (
+    loadRunIntent(host, claim.runId).mode === "refresh" &&
+    !outputs.some((output) => output.role === "prior_wiki" && output.kind === "wiki_tree")
+  ) {
+    throw new Error("refresh freeze is missing declared prior_wiki output");
+  }
   const timestamp = now();
   for (const preparation of preparations) {
     host.db

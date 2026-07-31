@@ -8,7 +8,7 @@ Domain vocabulary: [CONTEXT.md](../../CONTEXT.md). Package map: [packages/README
 |---|---|
 | [0038](0038-single-repair-evaluation-round.md) | **Single repair kind `repair.N`:** one scheduleRepair entry; mechanical/semantic only via RepairRequest.sources; full EvaluationRound re-arm after every repair; no `repair.hv` / `repair.review` product paths |
 | [0037](0037-wiki-candidate-evaluation-round.md) | **WikiCandidate + EvaluationPolicy mechanical slice:** candidate lineage, host citation autofix, RepairRequest, unified budgets (`maxHardValidateRepairRounds` default 0) |
-| [0036](0036-semantic-artifact-plane-and-execution-plan.md) | **Semantic execution contract:** NodeContract, RunIntent/WikiSpec/ExecutionPlan, EvaluationRound, operator_input HITL, SessionRuntime, URL-owned run selection (`okf.wiki-runs/v2`) |
+| [0036](0036-semantic-artifact-plane-and-execution-plan.md) | **Semantic execution contract:** NodeContract, RunIntent/WikiSpec/ExecutionPlan, EvaluationRound, operator_input HITL, SessionRuntime, URL-owned run selection (`okf.wiki-runs/v3`) |
 | [0035](0035-durable-wikiruns-control-plane.md) | **Run control plane:** durable WikiRuns, typed commands/gates/events, generation CAS, immutable artifacts, separate Run SSE (fixed Definition v1 topology as product ceiling superseded by 0036) |
 | [0034](0034-deep-modules-thin-tools-single-projection.md) | **Deep modules / real ports / thin Pi tools / single web projection / Run SSE fan-out / bounded repair budgets** (ProgressSink historical) |
 | [0033](0033-run-graph-and-agent-layering.md) | **Agent layering / ports DIP** (`AgentRunner` + `SpecStore`); ProgressSink/GatePort/GraphStore/ReceiptStore/run-wiki **DELETED** → WikiRuns (0035) |

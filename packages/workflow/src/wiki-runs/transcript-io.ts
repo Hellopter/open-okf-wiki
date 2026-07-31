@@ -4,12 +4,11 @@
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AttemptTraceEvent } from "@okf-wiki/contract";
+import { type AttemptTraceEvent, AttemptTraceEventSchema } from "@okf-wiki/contract";
 import { TRANSCRIPT_MAX_BYTES } from "./types.js";
 
 /**
- * Write conversation-shaped attempt session.jsonl for Node details UI.
- * Always includes at least one `{ role, content }` row so the dialog is not empty.
+ * Write canonical trace JSONL for Node details UI.
  */
 export async function writeConversationTranscript(input: {
   sessionPath: string;
@@ -22,7 +21,7 @@ export async function writeConversationTranscript(input: {
   const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, 4_000) || input.nodeKey;
   await mkdir(path.dirname(input.sessionPath), { recursive: true });
 
-  let existing: unknown[] = [];
+  let existing: AttemptTraceEvent[] = [];
   if (input.preserveExisting) {
     try {
       const raw = (await readFile(input.sessionPath, "utf8")).trim();
@@ -30,24 +29,27 @@ export async function writeConversationTranscript(input: {
         existing = raw
           .split(/\r?\n/)
           .filter((line) => line.trim())
-          .map((line) => JSON.parse(line) as unknown);
+          .map((line) => AttemptTraceEventSchema.parse(JSON.parse(line) as unknown));
       }
-    } catch {
-      // missing file — rebuild
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
 
-  const rows: unknown[] =
-    existing.length > 0
-      ? [
-          ...existing,
-          { role: "assistant", content: summary },
-          { schema: 1, node: input.nodeKey, summary, ...input.meta },
-        ]
-      : [
-          { role: "assistant", content: summary },
-          { schema: 1, node: input.nodeKey, summary, ...input.meta },
-        ];
+  const nextOrdinal = Math.max(0, ...existing.map((event) => event.ordinal)) + 1;
+  const at = new Date().toISOString();
+  const rows: AttemptTraceEvent[] = [
+    ...existing,
+    { trace: 1, ordinal: nextOrdinal, at, kind: "assistant", content: summary },
+    {
+      trace: 1,
+      ordinal: nextOrdinal + 1,
+      at,
+      kind: "terminal",
+      status: input.meta?.mode === "failed" ? "error" : "done",
+      summary,
+    },
+  ];
   await writeFile(
     input.sessionPath,
     `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
@@ -59,10 +61,10 @@ export async function writeConversationTranscript(input: {
 /**
  * Append one safe terminal record without rewriting an active Attempt trace.
  *
- * Mechanical attempts still use historic conversation JSONL. Keep those files
- * in that shape, but start a new failure file as trace JSONL. A full trace may
- * be at its retention limit already; in that case preserving readable history
- * matters more than forcing one final row past the reader's hard cap.
+ * A full trace may be at its retention limit already; in that case preserving
+ * readable history matters more than forcing one final row past the reader's
+ * hard cap. Retired non-trace files are left untouched and rejected by the
+ * reader rather than being reinterpreted as current protocol data.
  */
 export async function appendAttemptFailureTranscript(input: {
   sessionPath: string;
@@ -76,32 +78,30 @@ export async function appendAttemptFailureTranscript(input: {
   const bytes = Buffer.byteLength(raw, "utf8");
   if (bytes >= TRANSCRIPT_MAX_BYTES) return input.sessionPath;
 
-  let hasTrace = false;
   let nextOrdinal = 1;
+  let validTrace = true;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
-      const row = JSON.parse(line) as Record<string, unknown>;
-      if (row.trace !== 1 || !Number.isSafeInteger(row.ordinal)) continue;
-      hasTrace = true;
-      nextOrdinal = Math.max(nextOrdinal, Number(row.ordinal) + 1);
+      const row = AttemptTraceEventSchema.parse(JSON.parse(line) as unknown);
+      nextOrdinal = Math.max(nextOrdinal, row.ordinal + 1);
     } catch {
-      // Keep old/corrupt rows intact. The reader has a defensive projection.
+      validTrace = false;
+      break;
     }
   }
 
+  if (raw.trim() && !validTrace) return input.sessionPath;
+
   const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, 4_000) || "Attempt failed.";
-  const record: AttemptTraceEvent | { role: "assistant"; content: string } =
-    hasTrace || !raw.trim()
-      ? {
-          trace: 1,
-          ordinal: nextOrdinal,
-          at: new Date().toISOString(),
-          kind: "terminal",
-          status: "error",
-          summary,
-        }
-      : { role: "assistant", content: summary };
+  const record: AttemptTraceEvent = {
+    trace: 1,
+    ordinal: nextOrdinal,
+    at: new Date().toISOString(),
+    kind: "terminal",
+    status: "error",
+    summary,
+  };
   const line = `${JSON.stringify(record)}\n`;
   if (bytes + Buffer.byteLength(line, "utf8") > TRANSCRIPT_MAX_BYTES) return input.sessionPath;
   await appendFile(input.sessionPath, line, "utf8");
@@ -109,10 +109,8 @@ export async function appendAttemptFailureTranscript(input: {
 }
 
 /**
- * Parse Attempt transcript file content.
- * Prefer JSONL (one JSON value per non-empty line). If the file is a single
- * JSON object/array (including pretty-printed multi-line), wrap/return as messages.
- * Tolerates mixed/corrupt tails from concurrent writers (live sink + finalize).
+ * Parse canonical Attempt trace JSONL. Every non-empty line is one complete
+ * JSON value; a corrupt tail is an audit-integrity failure, not a partial page.
  */
 export function parseTranscriptMessages(raw: string): unknown[] {
   const trimmed = raw.replace(/^\uFEFF/, "").trim();
@@ -120,37 +118,11 @@ export function parseTranscriptMessages(raw: string): unknown[] {
 
   const lines = trimmed.split(/\r?\n/).filter((line) => line.trim() !== "");
 
-  // Fast path: pure JSONL (every non-empty line is one JSON value).
-  if (lines.length > 0) {
-    const rows: unknown[] = [];
-    let jsonlOk = true;
-    for (const line of lines) {
-      try {
-        rows.push(JSON.parse(line) as unknown);
-      } catch {
-        jsonlOk = false;
-        break;
-      }
+  return lines.map((line, index) => {
+    try {
+      return JSON.parse(line) as unknown;
+    } catch {
+      throw new Error(`transcript JSONL line ${index + 1} is invalid`);
     }
-    if (jsonlOk) return rows;
-  }
-
-  // Pretty-printed single JSON document (object or array).
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) return parsed;
-    return [parsed];
-  } catch {
-    // Best-effort: keep any lines that still parse (partial concurrent write).
-    const partial: unknown[] = [];
-    for (const line of lines) {
-      try {
-        partial.push(JSON.parse(line) as unknown);
-      } catch {
-        // skip corrupt line
-      }
-    }
-    if (partial.length > 0) return partial;
-    throw new Error("transcript is not valid JSON/JSONL");
-  }
+  });
 }

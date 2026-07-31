@@ -1,74 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isAttemptTranscriptLive, projectAttemptTranscriptMessages } from "./attempt-transcript.ts";
+import {
+  isAttemptTranscriptLive,
+  parseAttemptTranscriptErrorFrame,
+  parseAttemptTranscriptTraceFrame,
+  projectAttemptTranscriptMessages,
+} from "./attempt-transcript.ts";
 
 describe("projectAttemptTranscriptMessages", () => {
-  it("projects Pi-ish role + content rows as AgentMessage[]", () => {
-    const out = projectAttemptTranscriptMessages([
-      { role: "user", content: "plan the wiki" },
-      { role: "assistant", content: "drafting overview" },
-    ]);
-    assert.equal(out.length, 2);
-    assert.equal(out[0]?.role, "user");
-    assert.equal(out[0]?.content, "plan the wiki");
-    assert.equal(out[1]?.role, "assistant");
-    assert.equal(out[1]?.content, "drafting overview");
-  });
-
-  it("flattens content part arrays", () => {
-    const out = projectAttemptTranscriptMessages([
-      {
-        role: "assistant",
-        content: [
-          { type: "text", text: "hello" },
-          { type: "text", text: "world" },
-        ],
-      },
-    ]);
-    assert.equal(out.length, 1);
-    assert.equal(out[0]?.role, "assistant");
-    // Same join as contract projectAgentMessagesFromPiHistory / extractMessageText.
-    assert.equal(out[0]?.content, "helloworld");
-  });
-
-  it("projects tool-ish rows as assistant tools for ToolExecutionCard", () => {
-    const out = projectAttemptTranscriptMessages([
-      { toolName: "read", status: "ok", arguments: { path: "a.ts" } },
-      { type: "toolCall", name: "bash", args: { command: "ls" }, status: "done" },
-      { name: "write", arguments: { path: "out.md" } },
-    ]);
-    assert.equal(out.length, 3);
-    for (const msg of out) {
-      assert.equal(msg.role, "assistant");
-      assert.ok(msg.tools && msg.tools.length === 1);
-    }
-    assert.equal(out[0]?.tools?.[0]?.name, "read");
-    assert.equal(out[0]?.tools?.[0]?.status, "done");
-    assert.equal(out[1]?.tools?.[0]?.name, "bash");
-    assert.equal(out[2]?.tools?.[0]?.name, "write");
-  });
-
-  it("projects AttemptItem text and toolCall rows", () => {
-    const out = projectAttemptTranscriptMessages([
-      { type: "text", text: "scouting sources" },
-      { type: "toolCall", name: "read", status: "done", argsSummary: '{"path":"a.ts"}' },
-    ]);
-    assert.equal(out.length, 2);
-    assert.equal(out[0]?.role, "assistant");
-    assert.equal(out[0]?.content, "scouting sources");
-    assert.equal(out[1]?.role, "assistant");
-    assert.equal(out[1]?.tools?.[0]?.name, "read");
-    assert.deepEqual(out[1]?.tools?.[0]?.args, { path: "a.ts" });
-  });
-
-  it("joins append-only trace tool call and result rows without dropping output", () => {
-    const out = projectAttemptTranscriptMessages([
+  it("projects canonical text and correlates tool result to its call", () => {
+    const messages = projectAttemptTranscriptMessages([
       {
         trace: 1,
         ordinal: 1,
         at: "2026-07-31T00:00:00.000Z",
         kind: "input",
-        content: "inspect sources",
+        content: "Investigate the cache.",
       },
       {
         trace: 1,
@@ -77,7 +24,7 @@ describe("projectAttemptTranscriptMessages", () => {
         kind: "tool_call",
         toolCallId: "read-1",
         name: "read",
-        args: '{"path":"a.ts"}',
+        args: '{"path":"cache.ts"}',
       },
       {
         trace: 1,
@@ -86,99 +33,64 @@ describe("projectAttemptTranscriptMessages", () => {
         kind: "tool_result",
         toolCallId: "read-1",
         name: "read",
-        output: "export const answer = 42;",
+        output: "cache source",
         status: "done",
       },
     ]);
-    assert.equal(out.length, 2);
-    assert.equal(out[0]?.role, "user");
-    assert.equal(out[1]?.tools?.[0]?.name, "read");
-    assert.equal(out[1]?.tools?.[0]?.output, "export const answer = 42;");
-    assert.deepEqual(out[1]?.tools?.[0]?.args, { path: "a.ts" });
+
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0]?.role, "user");
+    assert.equal(messages[1]?.tools?.[0]?.name, "read");
+    assert.deepEqual(messages[1]?.tools?.[0]?.args, { path: "cache.ts" });
+    assert.equal(messages[1]?.tools?.[0]?.output, "cache source");
+    assert.equal(messages[1]?.tools?.[0]?.status, "done");
   });
 
-  it("pairs same-name tool calls without ids in call order", () => {
-    const out = projectAttemptTranscriptMessages([
-      { trace: 1, ordinal: 1, at: "2026-07-31T00:00:00.000Z", kind: "tool_call", name: "read" },
-      { trace: 1, ordinal: 2, at: "2026-07-31T00:00:01.000Z", kind: "tool_call", name: "read" },
-      {
-        trace: 1,
-        ordinal: 3,
-        at: "2026-07-31T00:00:02.000Z",
-        kind: "tool_result",
-        name: "read",
-        output: "first output",
-        status: "done",
-      },
-      {
-        trace: 1,
-        ordinal: 4,
-        at: "2026-07-31T00:00:03.000Z",
-        kind: "tool_result",
-        name: "read",
-        output: "second output",
-        status: "done",
-      },
-    ]);
-    assert.equal(out.length, 2);
-    assert.equal(out[0]?.tools?.[0]?.output, "first output");
-    assert.equal(out[0]?.tools?.[0]?.status, "done");
-    assert.equal(out[1]?.tools?.[0]?.output, "second output");
-    assert.equal(out[1]?.tools?.[0]?.status, "done");
-  });
-
-  it("surfaces an explicit trace-limit marker", () => {
-    const out = projectAttemptTranscriptMessages([
-      {
-        trace: 1,
-        ordinal: 1,
-        at: "2026-07-31T00:00:00.000Z",
-        kind: "truncated",
-        reason: "trace_limit",
-        limitBytes: 2 * 1024 * 1024,
-      },
-    ]);
-    assert.equal(out[0]?.role, "system");
-    assert.match(out[0]?.content ?? "", /2 MiB retention limit/);
-  });
-
-  it("projects legacy metadata stubs as assistant summary", () => {
-    const out = projectAttemptTranscriptMessages([
-      { schema: 1, node: "plan", mode: "fixture", summary: "Fixture default WikiRunSpec" },
-    ]);
-    assert.equal(out.length, 1);
-    assert.equal(out[0]?.role, "assistant");
-    assert.match(out[0]!.content, /Fixture default/);
-  });
-
-  it("falls back to system row for opaque rows without summary", () => {
-    const out = projectAttemptTranscriptMessages([{ schema: 1, node: "plan", noise: true }]);
-    assert.equal(out.length, 1);
-    assert.equal(out[0]?.role, "system");
-    assert.ok(out[0]!.content.includes("schema"));
-    assert.ok(out[0]!.content.includes("plan"));
-  });
-
-  it("stringifies non-object rows as system", () => {
-    const out = projectAttemptTranscriptMessages(["hello", 42, null]);
-    assert.equal(out.length, 3);
-    assert.equal(out[0]?.role, "system");
-    assert.equal(out[0]?.content, '"hello"');
-    assert.equal(out[1]?.content, "42");
-    assert.equal(out[2]?.content, "null");
-  });
-
-  it("returns empty list for empty input", () => {
-    assert.deepEqual(projectAttemptTranscriptMessages([]), []);
+  it("does not reinterpret retired transcript rows", () => {
+    assert.deepEqual(projectAttemptTranscriptMessages([{ role: "assistant", content: "old" }]), []);
   });
 });
 
 describe("isAttemptTranscriptLive", () => {
-  it("is live only for running/suspended", () => {
+  it("opens SSE only for active attempt states", () => {
     assert.equal(isAttemptTranscriptLive("running"), true);
     assert.equal(isAttemptTranscriptLive("suspended"), true);
     assert.equal(isAttemptTranscriptLive("succeeded"), false);
-    assert.equal(isAttemptTranscriptLive("failed"), false);
-    assert.equal(isAttemptTranscriptLive(undefined), false);
+  });
+});
+
+describe("Attempt transcript SSE frames", () => {
+  it("accepts a canonical trace frame and rejects malformed frames", () => {
+    const valid = JSON.stringify({
+      attemptId: "attempt-1",
+      nodeKey: "plan",
+      state: "running",
+      events: [
+        {
+          trace: 1,
+          ordinal: 1,
+          at: "2026-07-31T00:00:00.000Z",
+          kind: "assistant",
+          content: "Working",
+        },
+      ],
+      cursor: 1,
+      live: true,
+    });
+    assert.equal(parseAttemptTranscriptTraceFrame(valid)?.events.length, 1);
+    assert.equal(
+      parseAttemptTranscriptTraceFrame(
+        JSON.stringify({
+          ...JSON.parse(valid),
+          events: [{ role: "assistant", content: "legacy" }],
+        }),
+      ),
+      undefined,
+    );
+    assert.equal(
+      parseAttemptTranscriptErrorFrame('{"message":"trace failed"}')?.message,
+      "trace failed",
+    );
+    assert.equal(parseAttemptTranscriptErrorFrame('{"message":"","extra":true}'), undefined);
   });
 });

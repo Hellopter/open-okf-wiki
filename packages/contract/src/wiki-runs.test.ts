@@ -6,8 +6,15 @@ import {
   RunCommandKeySchema,
   RunCommandSchema,
   WikiRunAttemptSchema,
+  WikiRunAttemptTranscriptDoneFrameSchema,
+  WikiRunAttemptTranscriptErrorFrameSchema,
+  WikiRunAttemptTranscriptSchema,
+  WikiRunAttemptTranscriptTraceFrameSchema,
+  WikiRunCommandResponseSchema,
   WikiRunEffectSchema,
   WikiRunEventSchema,
+  WikiRunGetResponseSchema,
+  WikiRunListResponseSchema,
 } from "./wiki-runs.js";
 
 const digest = "a".repeat(64);
@@ -220,4 +227,99 @@ test("WikiRunAttempt may include optional metrics", () => {
     }).success,
     true,
   );
+});
+
+test("WikiRuns HTTP response and transcript SSE frames are strict", () => {
+  const snapshot = {
+    schema: "okf.wiki-runs/v3",
+    definitionVersion: 3,
+    runId: "run-1",
+    workspaceId: "workspace-1",
+    revision: 2,
+    state: "queued",
+    cancelRequested: false,
+    intent: { mode: "generate" as const },
+    pinnedInputs: null,
+    nodes: [],
+    attempts: [],
+    gates: [],
+    effects: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  assert.equal(
+    WikiRunListResponseSchema.safeParse({
+      workspaceId: "workspace-1",
+      runs: [
+        {
+          runId: "run-1",
+          state: "queued",
+          updatedAt: timestamp,
+          revision: 2,
+          sessionId: null,
+        },
+      ],
+    }).success,
+    true,
+  );
+  assert.equal(
+    WikiRunListResponseSchema.safeParse({ workspaceId: "workspace-1", runs: [], extra: true })
+      .success,
+    false,
+  );
+  assert.equal(WikiRunGetResponseSchema.safeParse({ snapshot, cursor: 2 }).success, true);
+  assert.equal(WikiRunGetResponseSchema.safeParse({ snapshot, cursor: -1 }).success, false);
+  const traceEvent = {
+    trace: 1,
+    ordinal: 1,
+    at: timestamp,
+    kind: "assistant",
+    content: "Working",
+  };
+  const transcript = {
+    attemptId: "attempt-1",
+    nodeKey: "plan",
+    state: "succeeded",
+    events: [traceEvent],
+    hasEarlier: false,
+    hasMore: false,
+    cursor: 1,
+  };
+  assert.equal(WikiRunAttemptTranscriptSchema.safeParse(transcript).success, true);
+  assert.equal(
+    WikiRunAttemptTranscriptSchema.safeParse({ ...transcript, extra: true }).success,
+    false,
+  );
+  assert.equal(
+    WikiRunCommandResponseSchema.safeParse({
+      receipt: { commandId: "command-1", runId: "run-1", revision: 2, accepted: true },
+    }).success,
+    true,
+  );
+  const trace = {
+    attemptId: "attempt-1",
+    nodeKey: "plan",
+    state: "running",
+    events: [traceEvent],
+    cursor: 1,
+    live: true,
+  };
+  assert.equal(WikiRunAttemptTranscriptTraceFrameSchema.safeParse(trace).success, true);
+  assert.equal(
+    WikiRunAttemptTranscriptTraceFrameSchema.safeParse({ ...trace, extra: true }).success,
+    false,
+  );
+  assert.equal(
+    WikiRunAttemptTranscriptDoneFrameSchema.safeParse({
+      attemptId: "attempt-1",
+      state: "succeeded",
+      cursor: 1,
+    }).success,
+    true,
+  );
+  assert.equal(
+    WikiRunAttemptTranscriptErrorFrameSchema.safeParse({ message: "trace failed" }).success,
+    true,
+  );
+  assert.equal(WikiRunAttemptTranscriptErrorFrameSchema.safeParse({ message: "" }).success, false);
 });

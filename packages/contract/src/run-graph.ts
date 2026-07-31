@@ -1,8 +1,7 @@
 /**
  * Run Graph — observation model for one Wiki Run (not an execution engine).
  *
- * Shape authority for topology + append-only attempts. Live projection rides
- * wiki_produce tool details; durable copy lives under the Run Boundary.
+ * Shared observation types for bounded attempt display and durable trace JSONL.
  */
 
 import { z } from "zod";
@@ -81,11 +80,6 @@ export const AttemptTraceEventSchema = z.discriminatedUnion("kind", [
     reason: z.literal("trace_limit"),
     limitBytes: z.number().int().positive(),
   }),
-  // Reader-only wrapper for historic transcript rows that predate trace JSONL.
-  AttemptTraceEventBaseSchema.extend({
-    kind: z.literal("legacy"),
-    message: z.unknown(),
-  }),
 ]);
 
 export type AttemptTraceEvent = z.infer<typeof AttemptTraceEventSchema>;
@@ -102,16 +96,6 @@ export const GraphNodeKindSchema = z.enum([
 ]);
 
 export type GraphNodeKind = z.infer<typeof GraphNodeKindSchema>;
-
-export const GraphNodeDefSchema = z.object({
-  nodeKey: z.string().trim().min(1).max(200),
-  kind: GraphNodeKindSchema,
-  label: z.string().trim().min(1).max(200),
-  parentKey: z.string().trim().min(1).max(200).optional(),
-  dependsOn: z.array(z.string().trim().min(1).max(200)).max(32).optional(),
-});
-
-export type GraphNodeDef = z.infer<typeof GraphNodeDefSchema>;
 
 export const NodeAttemptStatusSchema = z.enum([
   "pending",
@@ -179,47 +163,3 @@ export const NodeAttemptSchema = z.object({
 });
 
 export type NodeAttempt = z.infer<typeof NodeAttemptSchema>;
-
-export const RunGraphSnapshotSchema = z.object({
-  topologyVersion: z.number().int().nonnegative(),
-  topology: z.array(GraphNodeDefSchema).max(128),
-  /** Append-only attempt log (capped for live SSE). */
-  attempts: z.array(NodeAttemptSchema).max(256),
-  playhead: z
-    .object({
-      nodeKey: z.string().trim().min(1).max(200),
-      attemptId: z.string().trim().min(1).max(200),
-    })
-    .optional(),
-});
-
-export type RunGraphSnapshot = z.infer<typeof RunGraphSnapshotSchema>;
-
-export const ControlReturnStatusSchema = z.enum(["complete", "partial", "failed", "cancelled"]);
-
-export type ControlReturnStatus = z.infer<typeof ControlReturnStatusSchema>;
-
-/**
- * Short control-plane handoff from a scoped agent loop.
- * Full evidence lives on disk via receiptPath (Run Boundary).
- */
-export const ControlReturnSchema = z.object({
-  attemptId: z.string().trim().min(1).max(200),
-  nodeKey: z.string().trim().min(1).max(200),
-  role: AttemptRoleSchema,
-  status: ControlReturnStatusSchema,
-  summary: z.string().max(4000),
-  receiptPath: z.string().max(500).optional(),
-  errorClass: ErrorClassSchema.optional(),
-  pages: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
-});
-
-export type ControlReturn = z.infer<typeof ControlReturnSchema>;
-
-export function emptyRunGraphSnapshot(topologyVersion = 0): RunGraphSnapshot {
-  return {
-    topologyVersion,
-    topology: [],
-    attempts: [],
-  };
-}

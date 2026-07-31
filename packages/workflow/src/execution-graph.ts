@@ -87,7 +87,6 @@ export function buildExecutionGraphFromPlan(
     Array<{ key: string; unit: ExecutionPlan["workUnits"][number] }>
   >();
   for (const unit of plan.workUnits) {
-    if (unit.kind !== "leaf") continue;
     const domainId = unit.domainId?.trim();
     if (!domainId) continue;
     const questionIndex = (() => {
@@ -154,20 +153,21 @@ export function buildExecutionGraphFromPlan(
   }
   // single-cluster leaves already edged to write.root above.
 
-  // The planner may expose a bounded evidence gap after the first research
-  // frontier. It proposes only work units; WikiRuns validates/materializes
-  // their nodes and actual edges before Writer can run.
-  addNode({ key: "plan.adapt.1", kind: "plan.adapt", detail: { adaptRound: 1 } });
-  if (multiDomainKeys.length > 0) {
-    for (const domainKey of multiDomainKeys) addEdge(domainKey, "plan.adapt.1");
-  } else if (leavesByDomain.size === 0) {
-    addEdge("plan", "plan.adapt.1");
-  } else {
-    for (const leaves of leavesByDomain.values()) {
-      for (const leaf of leaves) addEdge(leaf.key, "plan.adapt.1");
+  // Adaptation is an explicit plan decision. Light paths retain their direct
+  // writer edges and avoid an otherwise needless model-backed attempt.
+  if (plan.adaptation.required) {
+    addNode({ key: "plan.adapt.1", kind: "plan.adapt", detail: { adaptRound: 1 } });
+    if (multiDomainKeys.length > 0) {
+      for (const domainKey of multiDomainKeys) addEdge(domainKey, "plan.adapt.1");
+    } else if (leavesByDomain.size === 0) {
+      addEdge("plan", "plan.adapt.1");
+    } else {
+      for (const leaves of leavesByDomain.values()) {
+        for (const leaf of leaves) addEdge(leaf.key, "plan.adapt.1");
+      }
     }
+    addEdge("plan.adapt.1", "write.root");
   }
-  addEdge("plan.adapt.1", "write.root");
 
   addNode({ key: "validate.pre", kind: "validate.pre" });
   addEdge("write.root", "validate.pre");

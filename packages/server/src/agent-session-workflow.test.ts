@@ -7,6 +7,7 @@ import test from "node:test";
 import type { WikiProduceToolDetails } from "@okf-wiki/contract";
 import { addSource, createWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { dispatchAgentCommand, registerAgentSession } from "./agent-session/index.ts";
+import { runtimeInput } from "./agent-session/runtime-input.ts";
 import { resetAgentSessionRegistryForTests } from "./agent-session/test-seams.ts";
 import { subscribeAgentSessionEvents } from "./agent-session-events.ts";
 import { resetWikiRunsRegistryForTests, wikiRunsForWorkspace } from "./wiki-runs-registry.ts";
@@ -144,4 +145,94 @@ test("fixture prompt dispatches wiki_produce StartRun receipt (T2 hard-cut)", as
     `WikiRuns should advance freeze after StartRun receipt (state=${lastState} freeze=${freezeState})`,
   );
   assert.ok(events.every((event) => event.source === "server" && event.kind === "stream"));
+});
+
+test("runtime input preserves refresh intent and resolves an explicit repair node", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-runtime-input-wiki-tools-"));
+  const source = path.join(root, "source");
+  const skill = path.join(root, "skill");
+  const oldMode = process.env.OKF_WIKI_AGENT_MODE;
+  process.env.OKF_WIKI_AGENT_MODE = "fixture";
+  t.after(async () => {
+    resetAgentSessionRegistryForTests();
+    await resetWikiRunsRegistryForTests();
+    if (oldMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
+    else process.env.OKF_WIKI_AGENT_MODE = oldMode;
+    await removeRunRoot(root);
+  });
+
+  await mkdir(source, { recursive: true });
+  await mkdir(skill, { recursive: true });
+  git(source, "init");
+  git(source, "config", "user.email", "fixture@example.test");
+  git(source, "config", "user.name", "Fixture");
+  await writeFile(path.join(source, "README.md"), "# Fixture\n", "utf8");
+  await writeFile(path.join(skill, "SKILL.md"), "---\nname: fixture\n---\n# skill\n", "utf8");
+  git(source, "add", "README.md");
+  git(source, "commit", "-m", "fixture");
+
+  let workspace = await createWorkspace({
+    name: "Runtime Input Wiki Tools",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    resolvedModelId: "openai/test",
+  });
+  workspace.skillPath = skill;
+  workspace = {
+    ...(await addSource(workspace, { id: "main", path: source })).config,
+    planConfirm: true,
+  };
+  await saveWorkspace(workspace);
+
+  const runtime = await runtimeInput(workspace, "runtime-input-tools");
+  const { startWikiRun, resolveRepairTarget } = runtime.input.wikiProduce;
+  assert.ok(resolveRepairTarget, "server runtime must compose a repair target resolver");
+
+  const generated = await startWikiRun({
+    commandId: "runtime-input-generate",
+    sessionId: "runtime-input-tools",
+    mode: "generate",
+  });
+  const runs = await wikiRunsForWorkspace(workspace);
+  let planGate: Awaited<ReturnType<typeof runs.read>>["snapshot"]["gates"][number] | undefined;
+  for (let i = 0; i < 240; i += 1) {
+    const { snapshot } = await runs.read({ runId: generated.runId });
+    planGate = snapshot.gates.find((gate) => gate.kind === "plan" && gate.state === "open");
+    if (planGate) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(planGate, "fixture run should open a plan gate");
+  await runs.dispatch(
+    {
+      type: "resolve_gate",
+      commandId: "runtime-input-approve-plan",
+      runId: generated.runId,
+      gateId: planGate.gateId,
+      gateKind: "plan",
+      payloadDigest: planGate.payloadDigest,
+      decision: "approve",
+    },
+    {
+      workspaceId: workspace.id,
+      actor: { id: "runtime-input-tools", kind: "operator_session" },
+      sessionId: "runtime-input-tools",
+    },
+  );
+
+  const defaultTarget = await resolveRepairTarget({ runId: generated.runId });
+  const planTarget = await resolveRepairTarget({ runId: generated.runId, nodeKey: "plan" });
+  assert.deepEqual(defaultTarget?.nodeKey, "write.root");
+  assert.deepEqual(planTarget, { nodeKey: "plan", generation: 0 });
+
+  const refreshed = await startWikiRun({
+    commandId: "runtime-input-refresh",
+    sessionId: "runtime-input-tools",
+    mode: "refresh",
+    notes: "Update the public API page.",
+  });
+  const refreshSnapshot = (await runs.read({ runId: refreshed.runId })).snapshot;
+  assert.deepEqual(refreshSnapshot.intent, {
+    mode: "refresh",
+    focus: "Update the public API page.",
+  });
 });

@@ -3,7 +3,7 @@
  * view-model the canvas renders directly.
  *
  * Product path: WikiRunSnapshot → wikiRunToViewModel → RunGraphCanvas.
- * No dual hop through RunGraphSnapshot for live UI.
+ * No compatibility projection for retired graph snapshots in the live UI.
  */
 
 import type {
@@ -191,7 +191,7 @@ export function failedNodesFromSnapshot(snapshot: WikiRunSnapshot): WikiRunFaile
 
 /**
  * Direct product projection: WikiRunSnapshot → canvas view-model.
- * Builds layers from nodes + attempts without RunGraphSnapshot intermediate.
+ * Builds layers directly from durable nodes + attempts.
  */
 export function wikiRunToViewModel(snapshot: WikiRunSnapshot): WikiRunGraphViewModel {
   const attempts = snapshot.attempts.map(projectWikiAttempt);

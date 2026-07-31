@@ -20,6 +20,13 @@ export type InputRequirement = {
 export type OutputRequirement = {
   role: string;
   artifactKind: string;
+  /** Optional business evidence, required only for the applicable run mode. */
+  required?: boolean;
+};
+
+export type ProducedArtifact = {
+  role: string;
+  kind: string;
 };
 
 export type NodeContract = {
@@ -66,6 +73,54 @@ export function validateBoundInputs(contract: NodeContract, boundRoles: readonly
     throw new Error(
       `node ${contract.kind} missing required sealed input role(s): ${missing.join(", ")} ` +
         `(bound: ${boundRoles.length ? boundRoles.join(", ") : "(none)"})`,
+    );
+  }
+}
+
+/**
+ * Validate business artifacts before a successful attempt is committed. Every
+ * required declared output must be present; transcripts are universal audit evidence and
+ * intentionally optional so an implementation fault cannot hide a business
+ * contract violation behind transcript plumbing.
+ */
+export function validateNodeOutputs(
+  contract: NodeContract,
+  outputs: readonly ProducedArtifact[],
+): void {
+  const duplicateRoles = [...new Set(outputs.map((output) => output.role))].filter(
+    (role) => outputs.filter((output) => output.role === role).length > 1,
+  );
+  if (duplicateRoles.length > 0) {
+    throw new Error(
+      `node ${contract.kind} produced duplicate output role(s): ${duplicateRoles.join(", ")}`,
+    );
+  }
+  const businessOutputs = outputs.filter(
+    (output) => !(output.role === "transcript" && output.kind === "transcript"),
+  );
+  const missing = contract.outputs.filter(
+    (required) =>
+      required.required !== false &&
+      !businessOutputs.some(
+        (output) => output.role === required.role && output.kind === required.artifactKind,
+      ),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `node ${contract.kind} missing declared output(s): ` +
+        missing.map((output) => `${output.role}:${output.artifactKind}`).join(", "),
+    );
+  }
+  const unexpected = businessOutputs.filter(
+    (output) =>
+      !contract.outputs.some(
+        (required) => output.role === required.role && output.kind === required.artifactKind,
+      ),
+  );
+  if (unexpected.length > 0) {
+    throw new Error(
+      `node ${contract.kind} produced undeclared output(s): ` +
+        unexpected.map((output) => `${output.role}:${output.kind}`).join(", "),
     );
   }
 }
@@ -172,6 +227,11 @@ const OPERATOR_INPUT: InputRequirement = {
   mountPath: "operator-input.json",
 };
 
+const VALIDATE_REPORT_OUTPUT: OutputRequirement = {
+  role: "validate_report",
+  artifactKind: "receipt",
+};
+
 const CONTRACTS: Record<string, NodeContract> = {
   freeze: {
     kind: "freeze",
@@ -180,7 +240,8 @@ const CONTRACTS: Record<string, NodeContract> = {
       { role: "sources", artifactKind: "snapshot_set" },
       { role: "skill", artifactKind: "skill" },
       { role: "frozen_run_manifest", artifactKind: "manifest" },
-      { role: "prior_wiki", artifactKind: "wiki_tree" },
+      { role: "prior_wiki", artifactKind: "wiki_tree", required: false },
+      { role: "attempt_output", artifactKind: "manifest" },
     ],
     execution: "mechanical",
   },
@@ -280,6 +341,7 @@ const CONTRACTS: Record<string, NodeContract> = {
     outputs: [
       { role: "defects", artifactKind: "receipt" },
       { role: "wiki_tree", artifactKind: "wiki_tree" },
+      { role: "evaluation_round", artifactKind: "receipt" },
     ],
     execution: "mechanical",
   },
@@ -302,19 +364,22 @@ const CONTRACTS: Record<string, NodeContract> = {
   "validate.pre": {
     kind: "validate.pre",
     requiredInputs: [WIKI_TREE, SPEC],
-    outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
+    outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }, VALIDATE_REPORT_OUTPUT],
     execution: "mechanical",
   },
   "validate.final": {
     kind: "validate.final",
     requiredInputs: [WIKI_TREE, SPEC],
-    outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
+    outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }, VALIDATE_REPORT_OUTPUT],
     execution: "mechanical",
   },
   "prepare.publication": {
     kind: "prepare.publication",
     requiredInputs: [WIKI_TREE],
-    outputs: [{ role: "publication_candidate", artifactKind: "publication_candidate" }],
+    outputs: [
+      { role: "publication_candidate", artifactKind: "publication_candidate" },
+      { role: "candidate_meta", artifactKind: "receipt" },
+    ],
     execution: "mechanical",
   },
   publish: {
@@ -327,7 +392,7 @@ const CONTRACTS: Record<string, NodeContract> = {
         projection: "handle",
       },
     ],
-    outputs: [],
+    outputs: [{ role: "publish_receipt", artifactKind: "receipt" }],
     execution: "mechanical",
   },
   "gate.plan": {
@@ -376,27 +441,6 @@ function hasValidKey(kind: string, nodeKey: string): boolean {
 
 /** Resolve the fixed contract for a valid WikiRuns node kind/key. */
 export function contractForNode(kind: string, nodeKey: string): NodeContract {
-  if (kind === "repair") {
-    if (!hasValidKey(kind, nodeKey)) {
-      throw new Error(`unknown WikiRuns node key for repair: ${nodeKey}`);
-    }
-    return {
-      kind: "repair",
-      requiredInputs: [
-        WIKI_TREE,
-        SPEC,
-        SOURCES,
-        SKILL,
-        DEFECTS,
-        MECHANICAL_REPORT,
-        FROZEN_MANIFEST,
-        TRANSCRIPT_AUDIT,
-        OPERATOR_INPUT,
-      ],
-      outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }],
-      execution: "pi",
-    };
-  }
   const exact = CONTRACTS[kind];
   if (!exact) throw new Error(`unknown WikiRuns node kind: ${kind}`);
   if (!hasValidKey(kind, nodeKey)) {

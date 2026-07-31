@@ -47,10 +47,10 @@ test.describe("agent composer layout with run cockpit", () => {
     await expect(composer).toBeVisible();
     await expect(dock).toBeVisible();
 
-    // Resizable split is the wide-desktop path (not Sheet/Drawer).
+    // Wide desktop keeps the inspector inline, rather than mounting a Sheet/Drawer.
+    // The panel primitive's DOM data attributes are implementation details.
     await expect(page.getByTestId("run-cockpit-sheet")).toHaveCount(0);
     await expect(page.getByTestId("run-cockpit-drawer")).toHaveCount(0);
-    await expect(page.locator('[data-slot="resizable-panel-group"]')).toBeVisible();
 
     const open = await page.evaluate(() => {
       const shellEl = document.querySelector('[data-testid="agent-workspace-shell"]');

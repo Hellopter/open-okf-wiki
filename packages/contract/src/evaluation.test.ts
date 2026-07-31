@@ -22,12 +22,7 @@ test("EvaluationPolicySchema applies defaults on empty parse", () => {
   assert.equal(policy.mechanical.autoFix.regenerateIndexes, true);
   assert.equal(policy.semantic.reviewRequired, true);
   assert.equal(policy.semantic.modelRepairBudget, 2);
-  assert.equal(policy.semantic.reReview, "always");
-  assert.equal(policy.semantic.stickyPriorBlocking, true);
   assert.equal(policy.semantic.blockingSeverities, undefined);
-  assert.equal(policy.repair.defaultMode, "patch");
-  assert.equal(policy.repair.allowFullTreeRewrite, false);
-  assert.equal(policy.repair.maxPagesPerRepair, 8);
 });
 
 test("evaluationPolicyFromAcceptance maps budgets and review knobs", () => {
@@ -46,7 +41,6 @@ test("evaluationPolicyFromAcceptance maps budgets and review knobs", () => {
   // Unmapped fields keep defaults.
   assert.equal(policy.maxCandidates, 4);
   assert.equal(policy.mechanical.requireCitations, true);
-  assert.equal(policy.repair.defaultMode, "patch");
   assert.equal(policy.onExhausted, "operator");
 });
 
@@ -61,7 +55,6 @@ test("evaluationPolicyFromAcceptance honors maxCandidates and nested overrides",
         requireCitations: false,
         autoFix: { clampLineSlack: 2 },
       },
-      repair: { maxPagesPerRepair: 12 },
     },
   });
 
@@ -74,8 +67,6 @@ test("evaluationPolicyFromAcceptance honors maxCandidates and nested overrides",
   assert.equal(policy.mechanical.autoFix.clampLineSlack, 2);
   // Un-overridden autoFix fields preserved.
   assert.equal(policy.mechanical.autoFix.canonicalizeCitations, true);
-  assert.equal(policy.repair.maxPagesPerRepair, 12);
-  assert.equal(policy.repair.defaultMode, "patch");
 });
 
 test("MechanicalReport round-trip preserves issues and compat errors", () => {

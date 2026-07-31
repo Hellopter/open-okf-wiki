@@ -7,6 +7,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   type RunCommandReceipt,
+  type RunIntent,
   type WikiProduceToolDetails,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
@@ -17,6 +18,7 @@ export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 export type StartWikiRun = (input: {
   commandId: string;
   sessionId: string;
+  mode: RunIntent["mode"];
   notes?: string;
 }) => Promise<RunCommandReceipt>;
 
@@ -33,6 +35,12 @@ export type CreateWikiProduceToolInput = {
 
 const wikiProduceParameters = Type.Object(
   {
+    mode: Type.Optional(
+      Type.Union([Type.Literal("generate"), Type.Literal("refresh")], {
+        description:
+          "Run mode. Use refresh only when the operator explicitly asks to update the existing published Wiki; otherwise omit or use generate.",
+      }),
+    ),
     notes: Type.Optional(
       Type.String({
         description:
@@ -82,6 +90,7 @@ export function createWikiProduceTool(
     promptSnippet: "Produce/refresh Wiki (explicit operator request only)",
     promptGuidelines: [
       "Call wiki_produce only on explicit Wiki produce/refresh intent.",
+      "For an existing published Wiki refresh, pass mode: refresh; omit mode or use generate for a new Wiki Run.",
       "For questions about context window, tokens, session status, or configuration: answer in text or use session_status — never wiki_produce.",
       "To fix or repair an existing Wiki Run staging, call wiki_repair (never bash).",
       "Pass operator focus via notes; do not invent a run for exploratory chat.",
@@ -118,6 +127,7 @@ export function createWikiProduceTool(
         const receipt = await input.startWikiRun({
           commandId,
           sessionId: input.sessionId,
+          mode: args.mode ?? "generate",
           ...(args.notes?.trim() ? { notes: args.notes.trim() } : {}),
         });
         const details: WikiProduceToolDetails = {

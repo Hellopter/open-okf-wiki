@@ -132,9 +132,6 @@ export const RepairRequestSchema = z
 
 export type RepairRequest = z.infer<typeof RepairRequestSchema>;
 
-export const EvaluationReReviewSchema = z.enum(["always", "affected_lenses"]);
-export type EvaluationReReview = z.infer<typeof EvaluationReReviewSchema>;
-
 export const EvaluationOnExhaustedSchema = z.enum(["fail", "operator"]);
 export type EvaluationOnExhausted = z.infer<typeof EvaluationOnExhaustedSchema>;
 
@@ -166,23 +163,11 @@ export const SemanticEvaluationPolicySchema = z
     reviewRequired: z.boolean().default(true),
     /** Council / semantic repair budget (maps from maxRepairRounds). */
     modelRepairBudget: z.number().int().min(0).max(8).default(2),
-    reReview: EvaluationReReviewSchema.default("always"),
-    stickyPriorBlocking: z.boolean().default(true),
     blockingSeverities: z.array(DefectSeveritySchema).optional(),
   })
   .strict();
 
 export type SemanticEvaluationPolicy = z.infer<typeof SemanticEvaluationPolicySchema>;
-
-export const RepairEvaluationPolicySchema = z
-  .object({
-    defaultMode: RepairScopeModeSchema.default("patch"),
-    allowFullTreeRewrite: z.boolean().default(false),
-    maxPagesPerRepair: z.number().int().min(1).max(50).default(8),
-  })
-  .strict();
-
-export type RepairEvaluationPolicy = z.infer<typeof RepairEvaluationPolicySchema>;
 
 /**
  * Host evaluation / repair budgets and behaviour for candidate rounds.
@@ -197,7 +182,6 @@ export const EvaluationPolicySchema = z
     semantic: SemanticEvaluationPolicySchema.default(() =>
       SemanticEvaluationPolicySchema.parse({}),
     ),
-    repair: RepairEvaluationPolicySchema.default(() => RepairEvaluationPolicySchema.parse({})),
     onExhausted: EvaluationOnExhaustedSchema.default("operator"),
   })
   .strict();
@@ -205,9 +189,8 @@ export const EvaluationPolicySchema = z
 export type EvaluationPolicy = z.infer<typeof EvaluationPolicySchema>;
 
 /**
- * Optional acceptance-side policy overrides (backward-compatible; all optional).
- * Nested under WikiRunSpec.acceptance when operators want richer control without
- * a full EvaluationPolicy document.
+ * Optional acceptance-side policy overrides. Nested under
+ * WikiRunSpec.acceptance so bounded runtime controls stay close to the Spec.
  */
 export const EvaluationPolicyOverridesSchema = z
   .object({
@@ -219,7 +202,6 @@ export const EvaluationPolicyOverridesSchema = z
       .strict()
       .optional(),
     semantic: SemanticEvaluationPolicySchema.partial().strict().optional(),
-    repair: RepairEvaluationPolicySchema.partial().strict().optional(),
     onExhausted: EvaluationOnExhaustedSchema.optional(),
   })
   .strict();
@@ -271,13 +253,10 @@ export function evaluationPolicyFromAcceptance(
     ? { ...base.semantic, ...overrides.semantic }
     : base.semantic;
 
-  const mergedRepair = overrides?.repair ? { ...base.repair, ...overrides.repair } : base.repair;
-
   return EvaluationPolicySchema.parse({
     maxCandidates: overrides?.maxCandidates ?? maxCandidates ?? base.maxCandidates,
     mechanical: mergedMechanical,
     semantic: mergedSemantic,
-    repair: mergedRepair,
     onExhausted: overrides?.onExhausted ?? base.onExhausted,
   });
 }

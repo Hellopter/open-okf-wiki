@@ -30,11 +30,12 @@ export type CreateWikiRepairToolInput = {
    */
   rerunWikiNode?: RerunWikiNode;
   /**
-   * Resolve the current generation for a repair target (typically write.root).
-   * Server should read WikiRuns snapshot; tests may stub.
+   * Resolve the current generation for a repair target. A supplied nodeKey must
+   * resolve that exact current node; when omitted, the server selects a default.
    */
   resolveRepairTarget?: (input: {
     runId: string;
+    nodeKey?: string;
   }) => Promise<{ nodeKey: string; generation: number } | null>;
 };
 
@@ -164,10 +165,14 @@ export function createWikiRepairTool(
 
       if (input.resolveWorkspace) await input.resolveWorkspace();
 
-      const preferredKey = args.nodeKey?.trim() || "write.root";
+      const requestedNodeKey = args.nodeKey?.trim();
+      const preferredKey = requestedNodeKey || "write.root";
       let target = { nodeKey: preferredKey, generation: 0 };
       if (input.resolveRepairTarget) {
-        const resolved = await input.resolveRepairTarget({ runId });
+        const resolved = await input.resolveRepairTarget({
+          runId,
+          ...(requestedNodeKey ? { nodeKey: requestedNodeKey } : {}),
+        });
         if (!resolved) {
           return toRepairToolResult(
             {
@@ -181,9 +186,20 @@ export function createWikiRepairTool(
             { isError: true },
           );
         }
-        target = args.nodeKey?.trim()
-          ? { nodeKey: preferredKey, generation: resolved.generation }
-          : resolved;
+        if (requestedNodeKey && resolved.nodeKey !== requestedNodeKey) {
+          return toRepairToolResult(
+            {
+              status: "failed",
+              runId,
+              nodeKey: requestedNodeKey,
+              summary:
+                `The current generation for ${requestedNodeKey} could not be resolved. ` +
+                "Refresh the Run status and retry with a listed node key; do not rerun a different node.",
+            },
+            { isError: true },
+          );
+        }
+        target = resolved;
       }
 
       const commandId = `wiki_repair:${runId}:${target.nodeKey}:${Date.now()}`;

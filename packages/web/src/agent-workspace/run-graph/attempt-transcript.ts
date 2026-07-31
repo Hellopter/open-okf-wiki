@@ -1,54 +1,67 @@
 /**
- * Project opaque Attempt transcript messages into AgentMessage[] for Node details.
+ * Project canonical Attempt trace events into AgentMessage[] for Node details.
  *
- * Same wire shape Session uses — render with TranscriptMessage / TranscriptMessageList
- * (AgentMarkdown + ToolExecutionCard). Do not reimplement markdown chrome here.
- *
- * Messages come from GET transcript (done) or Attempt transcript SSE (live).
+ * Transcripts are a single current wire protocol. The server validates each
+ * persisted page; this projection defensively ignores malformed SSE payloads.
  */
 
-import type { AgentMessage, AgentToolCall, AgentToolCallStatus } from "@okf-wiki/contract";
 import {
-  extractMessageText,
-  isRecord,
-  makeId,
-  projectAgentMessagesFromPiHistory,
+  type AgentMessage,
+  type AgentToolCall,
+  type AgentToolCallStatus,
+  type WikiRunAttemptTranscriptDoneFrame,
+  WikiRunAttemptTranscriptDoneFrameSchema,
+  type WikiRunAttemptTranscriptErrorFrame,
+  WikiRunAttemptTranscriptErrorFrameSchema,
+  type WikiRunAttemptTranscriptTraceFrame,
+  WikiRunAttemptTranscriptTraceFrameSchema,
 } from "@okf-wiki/contract";
 
-const CONTENT_MAX = 64 * 1024;
+type TraceRow = Record<string, unknown> & { trace: 1; ordinal: number; at: string; kind: string };
 
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(1, max - 1))}…`;
+function parseFrame<T>(
+  raw: string,
+  parser: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+): T | undefined {
+  try {
+    const result = parser.safeParse(JSON.parse(raw));
+    return result.success ? result.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-function contentToText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const parts: string[] = [];
-    for (const part of content) {
-      if (typeof part === "string") {
-        parts.push(part);
-        continue;
-      }
-      if (!isRecord(part)) continue;
-      if (typeof part.text === "string") parts.push(part.text);
-    }
-    return parts.join("\n").trim();
-  }
-  if (content == null) return "";
-  try {
-    return JSON.stringify(content);
-  } catch {
-    return String(content);
-  }
+export function parseAttemptTranscriptTraceFrame(
+  raw: string,
+): WikiRunAttemptTranscriptTraceFrame | undefined {
+  return parseFrame(raw, WikiRunAttemptTranscriptTraceFrameSchema);
+}
+
+export function parseAttemptTranscriptDoneFrame(
+  raw: string,
+): WikiRunAttemptTranscriptDoneFrame | undefined {
+  return parseFrame(raw, WikiRunAttemptTranscriptDoneFrameSchema);
+}
+
+export function parseAttemptTranscriptErrorFrame(
+  raw: string,
+): WikiRunAttemptTranscriptErrorFrame | undefined {
+  return parseFrame(raw, WikiRunAttemptTranscriptErrorFrameSchema);
+}
+
+function isTraceRow(value: unknown): value is TraceRow {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { trace?: unknown }).trace === 1 &&
+    typeof (value as { ordinal?: unknown }).ordinal === "number" &&
+    typeof (value as { at?: unknown }).at === "string" &&
+    typeof (value as { kind?: unknown }).kind === "string"
+  );
 }
 
 function mapToolStatus(raw: unknown): AgentToolCallStatus {
-  if (raw === "running" || raw === "pending" || raw === "error" || raw === "done") return raw;
-  if (raw === "ok" || raw === "succeeded" || raw === "success") return "done";
-  if (raw === "failed") return "error";
-  return "done";
+  return raw === "error" ? "error" : raw === "running" ? "running" : "done";
 }
 
 function parseArgs(raw: unknown): unknown {
@@ -69,91 +82,6 @@ function parseArgs(raw: unknown): unknown {
   return trimmed;
 }
 
-const TOOL_TYPES = new Set([
-  "tool",
-  "toolCall",
-  "tool_call",
-  "toolResult",
-  "tool_result",
-  "tool_use",
-  "function_call",
-  "functionCall",
-]);
-
-function isToolish(entry: Record<string, unknown>): boolean {
-  if (typeof entry.toolName === "string" && entry.toolName.trim()) return true;
-  if (typeof entry.type === "string" && TOOL_TYPES.has(entry.type)) return true;
-  if (entry.role === "toolResult" || entry.role === "tool") return true;
-  if (
-    typeof entry.name === "string" &&
-    entry.name.trim() &&
-    !("role" in entry && "content" in entry) &&
-    ("arguments" in entry || "args" in entry || "input" in entry || "argsSummary" in entry)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Legacy metadata-only stub from early WikiRuns attempts:
- * `{ schema: 1, node, summary, mode, … }` without role/content.
- */
-function isLegacyMetadataStub(row: Record<string, unknown>): boolean {
-  if (typeof row.role === "string" && "content" in row) return false;
-  if (row.type === "text" || row.type === "toolCall") return false;
-  if (isToolish(row)) return false;
-  return (
-    (row.schema === 1 || typeof row.node === "string" || typeof row.attemptId === "string") &&
-    (typeof row.summary === "string" ||
-      typeof row.error === "string" ||
-      typeof row.mode === "string")
-  );
-}
-
-function toolFromRow(row: Record<string, unknown>, index: number): AgentToolCall {
-  const name =
-    (typeof row.toolName === "string" && row.toolName.trim()) ||
-    (typeof row.name === "string" && row.name.trim()) ||
-    "tool";
-  const id =
-    (typeof row.id === "string" && row.id.trim()) ||
-    (typeof row.toolCallId === "string" && row.toolCallId.trim()) ||
-    `att_tool_${index + 1}`;
-  const args = parseArgs(row.arguments ?? row.args ?? row.input ?? row.argsSummary);
-  const status = mapToolStatus(row.status);
-  const output =
-    typeof row.output === "string"
-      ? row.output
-      : typeof row.result === "string"
-        ? row.result
-        : undefined;
-  return {
-    id,
-    name,
-    ...(args !== undefined ? { args } : {}),
-    ...(output !== undefined ? { output } : {}),
-    status,
-  };
-}
-
-function assistantWithTools(tools: AgentToolCall[], index: number, text?: string): AgentMessage {
-  const createdAt = new Date().toISOString();
-  const content = text?.trim() ?? "";
-  const parts: AgentMessage["parts"] = [];
-  if (content) parts.push({ type: "text", text: content });
-  for (const tool of tools) parts.push({ type: "tool", toolId: tool.id });
-  return {
-    id: `att_asst_${index + 1}_${makeId("t")}`,
-    role: "assistant",
-    content,
-    createdAt,
-    status: "done",
-    tools,
-    ...(parts.length > 0 ? { parts } : {}),
-  };
-}
-
 function traceToolMessage(ordinal: number, at: string, tool: AgentToolCall): AgentMessage {
   return {
     id: `att_trace_${ordinal}`,
@@ -166,27 +94,18 @@ function traceToolMessage(ordinal: number, at: string, tool: AgentToolCall): Age
   };
 }
 
-function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessage[] {
+function projectTraceRows(rows: TraceRow[]): AgentMessage[] {
   const out: AgentMessage[] = [];
   const toolIndexesByKey = new Map<string, number[]>();
 
   for (const row of rows) {
-    const ordinal = typeof row.ordinal === "number" ? row.ordinal : out.length + 1;
-    const createdAt = typeof row.at === "string" ? row.at : new Date().toISOString();
-    const kind = row.kind;
-    if (kind === "legacy") {
-      const legacy = projectAttemptTranscriptMessages([row.message]);
-      for (const message of legacy) {
-        out.push({ ...message, id: `att_trace_legacy_${ordinal}_${message.id}` });
-      }
-      continue;
-    }
+    const { ordinal, at, kind } = row;
     if (kind === "input" && typeof row.content === "string") {
       out.push({
         id: `att_trace_input_${ordinal}`,
         role: "user",
         content: row.content,
-        createdAt,
+        createdAt: at,
         status: "done",
       });
       continue;
@@ -196,7 +115,7 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
         id: `att_trace_assistant_${ordinal}`,
         role: "assistant",
         content: row.content,
-        createdAt,
+        createdAt: at,
         status: "done",
         parts: [{ type: "text", text: row.content }],
       });
@@ -216,7 +135,7 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
       const indexes = toolIndexesByKey.get(key) ?? [];
       indexes.push(out.length);
       toolIndexesByKey.set(key, indexes);
-      out.push(traceToolMessage(ordinal, createdAt, tool));
+      out.push(traceToolMessage(ordinal, at, tool));
       continue;
     }
     if (kind === "tool_result" && typeof row.name === "string") {
@@ -226,7 +145,6 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
           : `name:${row.name}`;
       const indexes = toolIndexesByKey.get(key);
       const index = indexes?.shift();
-      const status = row.status === "error" ? "error" : "done";
       if (index !== undefined) {
         const message = out[index];
         const current = message?.tools?.[0];
@@ -237,7 +155,7 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
               {
                 ...current,
                 ...(typeof row.output === "string" ? { output: row.output } : {}),
-                status,
+                status: mapToolStatus(row.status),
               },
             ],
           };
@@ -246,28 +164,26 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
         }
       }
       out.push(
-        traceToolMessage(ordinal, createdAt, {
+        traceToolMessage(ordinal, at, {
           id: `att_trace_tool_${ordinal}`,
           name: row.name,
           ...(typeof row.output === "string" ? { output: row.output } : {}),
-          status,
+          status: mapToolStatus(row.status),
         }),
       );
       continue;
     }
-    if (kind === "terminal") {
-      const summary = typeof row.summary === "string" ? row.summary : "";
-      if (!summary) continue;
-      const cancelled = row.status === "cancelled";
-      const failed = row.status === "error";
-      const text = `${cancelled ? "Cancelled: " : failed ? "Error: " : ""}${summary}`;
+    if (kind === "terminal" && typeof row.summary === "string" && row.summary) {
+      const prefix =
+        row.status === "cancelled" ? "Cancelled: " : row.status === "error" ? "Error: " : "";
+      const content = `${prefix}${row.summary}`;
       out.push({
         id: `att_trace_terminal_${ordinal}`,
         role: "assistant",
-        content: text,
-        createdAt,
-        status: failed ? "error" : "done",
-        ...(text ? { parts: [{ type: "text", text }] } : {}),
+        content,
+        createdAt: at,
+        status: row.status === "error" ? "error" : "done",
+        parts: [{ type: "text", text: content }],
       });
       continue;
     }
@@ -276,7 +192,7 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
         id: `att_trace_truncated_${ordinal}`,
         role: "system",
         content: "Trace reached its 2 MiB retention limit; later events were not stored.",
-        createdAt,
+        createdAt: at,
         status: "done",
       });
     }
@@ -284,160 +200,10 @@ function projectAttemptTraceEvents(rows: Record<string, unknown>[]): AgentMessag
   return out;
 }
 
-/**
- * Map opaque transcript rows to AgentMessage[] (Session wire shape).
- *
- * Recognises:
- * - Pi history `{ role, content }` / toolResult (via projectAgentMessagesFromPiHistory)
- * - AttemptItem `{ type: "text" | "toolCall", … }` from attempt-transcript-sink
- * - legacy metadata stubs with `summary`
- */
+/** Project an already-validated canonical trace page into UI messages. */
 export function projectAttemptTranscriptMessages(messages: unknown[]): AgentMessage[] {
-  const traceRows = messages.filter(
-    (row): row is Record<string, unknown> => isRecord(row) && row.trace === 1,
-  );
-  if (traceRows.length === messages.length && traceRows.length > 0) {
-    return projectAttemptTraceEvents(traceRows);
-  }
-
-  // Fast path: pure Pi Session history rows.
-  const looksLikePiHistory =
-    messages.length > 0 &&
-    messages.every((row) => {
-      if (!isRecord(row)) return false;
-      const role = typeof row.role === "string" ? row.role : null;
-      return role === "user" || role === "assistant" || role === "toolResult" || role === "tool";
-    });
-  if (looksLikePiHistory) {
-    const projected = projectAgentMessagesFromPiHistory(messages);
-    if (projected.length > 0) return projected;
-  }
-
-  const out: AgentMessage[] = [];
-  const createdAt = new Date().toISOString();
-
-  for (let index = 0; index < messages.length; index += 1) {
-    const row = messages[index];
-    if (!isRecord(row)) {
-      out.push({
-        id: `att_raw_${index + 1}`,
-        role: "system",
-        content: truncate(
-          (() => {
-            try {
-              return JSON.stringify(row);
-            } catch {
-              return String(row);
-            }
-          })(),
-          240,
-        ),
-        createdAt,
-        status: "done",
-      });
-      continue;
-    }
-
-    // AttemptItem text row from attempt-transcript-sink.
-    if (row.type === "text" && typeof row.text === "string") {
-      const text = truncate(row.text, CONTENT_MAX);
-      if (!text) continue;
-      out.push({
-        id: `att_text_${index + 1}`,
-        role: "assistant",
-        content: text,
-        createdAt,
-        status: "done",
-        parts: [{ type: "text", text }],
-      });
-      continue;
-    }
-
-    // AttemptItem toolCall row or loose tool-ish object.
-    if (
-      (row.type === "toolCall" && typeof row.name === "string") ||
-      (isToolish(row) && !(typeof row.role === "string" && "content" in row))
-    ) {
-      out.push(assistantWithTools([toolFromRow(row, index)], index));
-      continue;
-    }
-
-    // Pi-ish chat: role + content.
-    if (typeof row.role === "string" && "content" in row) {
-      const role = row.role;
-      if (role === "user") {
-        out.push({
-          id: `att_user_${index + 1}`,
-          role: "user",
-          content: truncate(contentToText(row.content) || extractMessageText(row), CONTENT_MAX),
-          createdAt,
-          status: "done",
-        });
-        continue;
-      }
-      if (role === "assistant") {
-        const text = truncate(contentToText(row.content) || extractMessageText(row), CONTENT_MAX);
-        out.push({
-          id: `att_asst_${index + 1}`,
-          role: "assistant",
-          content: text || "(empty)",
-          createdAt,
-          status: "done",
-          ...(text ? { parts: [{ type: "text" as const, text }] } : {}),
-        });
-        continue;
-      }
-      if (role === "system" || role === "tool") {
-        out.push({
-          id: `att_sys_${index + 1}`,
-          role: role === "tool" ? "tool" : "system",
-          content: truncate(contentToText(row.content), CONTENT_MAX) || "(empty)",
-          createdAt,
-          status: "done",
-        });
-        continue;
-      }
-    }
-
-    // Old metadata-only session.jsonl stubs → readable assistant summary.
-    if (isLegacyMetadataStub(row)) {
-      const summary =
-        (typeof row.summary === "string" && row.summary.trim()) ||
-        (typeof row.error === "string" && row.error.trim()) ||
-        "";
-      if (summary) {
-        const text = truncate(summary, CONTENT_MAX);
-        out.push({
-          id: `att_meta_${index + 1}`,
-          role: "assistant",
-          content: text,
-          createdAt,
-          status: "done",
-          parts: [{ type: "text", text }],
-        });
-        continue;
-      }
-    }
-
-    out.push({
-      id: `att_raw_${index + 1}`,
-      role: "system",
-      content: truncate(
-        (() => {
-          try {
-            return JSON.stringify(row);
-          } catch {
-            return String(row);
-          }
-        })(),
-        240,
-      ),
-      createdAt,
-      status: "done",
-    });
-  }
-
-  return out;
+  if (!messages.every(isTraceRow)) return [];
+  return projectTraceRows(messages);
 }
 
 /** Attempt states that open transcript SSE (dialog live stream). */

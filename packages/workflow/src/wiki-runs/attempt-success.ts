@@ -391,6 +391,7 @@ export async function preparePlanExecutionPlan(
     maxDomainFanOut: orch.maxDomainFanOut,
     maxLeafFanOut: orch.maxLeafFanOut,
     reviewCouncilSize: orch.reviewCouncilSize,
+    adaptationRequired: !adaptive.lightPath,
     specDigest: specPrep.digest,
   });
 

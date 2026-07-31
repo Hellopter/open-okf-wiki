@@ -9,12 +9,13 @@
 **Index:** [docs/adr/README.md](README.md)
 
 > **Status note / Superseded clauses (read first)**  
-> Under [ADR 0035](0035-durable-wikiruns-control-plane.md), the durable Run control plane is **WikiRuns**, not the in-process museum below. Treat as **DELETED / historical** (do not reintroduce):
+> Under [ADR 0035](0035-durable-wikiruns-control-plane.md), the durable Run control plane is **WikiRuns**, not the in-process museum below. The `RunGraphSnapshot` contract was hard-deleted in protocol v3. Treat as **DELETED / historical** (do not reintroduce):
 >
 > | Historical (0033 era) | Current (0035) |
 > |-----------------------|----------------|
 > | `ProgressSink` live fan-out on `wiki_produce` details | **Run SSE** (secret-free Snapshot + durable events) |
 > | `GraphStore` + `analysis/run-graph.json` | WikiRuns Nodes / Attempts / lineage in control store |
+> | `RunGraphSnapshot` + `runGraphToViewModel` | WikiRuns snapshot + direct `wikiRunToViewModel` projection |
 > | `GatePort` in-process HITL wait | WikiRuns typed Gates + `ResolveGate` |
 > | `ReceiptStore` port as produce I/O seam | Analysis receipts remain Run Boundary artifacts; not a required agent port |
 > | `workflow/run-wiki.ts` freeze→plan→gates shell | WikiRuns definition DAG + thin Pi tools (`StartRun` / `RerunNode` receipt) |
@@ -38,7 +39,7 @@ This is a **no-compat** layout move (ADR 0029): relocate modules and fix imports
 
 ### 1. Run Graph is observation only
 
-- Shape authority: contract `RunGraphSnapshot` (topology + attempts + optional playhead).  
+- ~~Shape authority: contract `RunGraphSnapshot` (topology + attempts + optional playhead).~~ **Historical / DELETED:** WikiRuns snapshot is the sole control read model.
 - ~~Live projection rides `wiki_produce` tool details via `ProgressSink` + `AttemptJournal`.~~ **Historical:** live Run progress is **Run SSE** under ADR 0035.  
 - ~~Durable copy lives under the Run Boundary (`analysis/run-graph.json`) through `GraphStore`.~~ **Historical:** durable topology is WikiRuns control records.  
 - The graph does **not** schedule agents, own HITL, or replace the Run Record.

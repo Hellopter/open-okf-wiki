@@ -18,7 +18,7 @@ What was insufficient as a *product* boundary was equating “Definition v1 fixe
 ### 1. Keep WikiRuns; version the execution contract
 
 - Durable control remains WikiRuns SQLite + immutable filesystem Artifacts + separate Run SSE.
-- Schema is `okf.wiki-runs/v2` (`definitionVersion: 2`).
+- This ADR introduced `okf.wiki-runs/v2` (`definitionVersion: 2`). The current hard-cut contract is `okf.wiki-runs/v3` (`definitionVersion: 3`); old in-flight runs are not dual-executed.
 - **Hard cut:** in-flight prior-version runs are not dual-executed. Operators cancel non-terminal runs before upgrade ([hard-cut prep](../research/wiki-workflow-hard-cut-prep-2026-07-30.md)). Helper: `listNonTerminalRuns`.
 
 ### 2. NodeContract (internal registry, not a DSL)

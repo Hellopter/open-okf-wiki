@@ -37,7 +37,6 @@ test("single-leaf domain has no reduction entry", () => {
   spec.domains = [{ id: "solo", title: "Solo", scope: "s", critical: true, questions: ["only"] }];
   const plan = compileExecutionPlan(spec, { maxDomainFanOut: 4, maxLeafFanOut: 6 });
   assert.equal(plan.workUnits.length, 1);
-  assert.equal(plan.reductions.length, 0);
   assert.equal(plan.fanOut.leafCount, 1);
 });
 
@@ -49,5 +48,4 @@ test("zero-question domain still yields one leaf work unit", () => {
   const plan = compileExecutionPlan(spec);
   assert.equal(plan.workUnits.length, 1);
   assert.equal(plan.workUnits[0]?.scope, "whole repo");
-  assert.equal(plan.reductions.length, 0);
 });

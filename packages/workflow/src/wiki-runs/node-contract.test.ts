@@ -4,7 +4,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contractForNode, isResearchRole, validateBoundInputs } from "@okf-wiki/contract";
+import {
+  contractForNode,
+  isResearchRole,
+  validateBoundInputs,
+  validateNodeOutputs,
+} from "@okf-wiki/contract";
 
 test("contractForNode: plan requires sources+skill; research optional on write", () => {
   const plan = contractForNode("plan", "plan");
@@ -99,4 +104,50 @@ test("isResearchRole matches exact and namespaced forms", () => {
   assert.equal(isResearchRole("research.domain.core:research"), true);
   assert.equal(isResearchRole("transcript"), false);
   assert.equal(isResearchRole("spec"), false);
+});
+
+test("validateNodeOutputs rejects missing and undeclared business artifacts", () => {
+  const writer = contractForNode("write.root", "write.root");
+  assert.throws(() => validateNodeOutputs(writer, []), /missing declared output/);
+  assert.throws(
+    () => validateNodeOutputs(writer, [{ role: "research", kind: "receipt" }]),
+    /missing declared output/,
+  );
+  assert.throws(
+    () =>
+      validateNodeOutputs(writer, [
+        { role: "wiki_tree", kind: "wiki_tree" },
+        { role: "defects", kind: "receipt" },
+      ]),
+    /undeclared output/,
+  );
+  assert.throws(
+    () =>
+      validateNodeOutputs(writer, [
+        { role: "wiki_tree", kind: "wiki_tree" },
+        { role: "wiki_tree", kind: "wiki_tree" },
+      ]),
+    /duplicate output role/,
+  );
+  validateNodeOutputs(writer, [{ role: "wiki_tree", kind: "wiki_tree" }]);
+});
+
+test("freeze contract accepts generate outputs and marks prior_wiki optional", () => {
+  const freeze = contractForNode("freeze", "freeze");
+  assert.equal(freeze.outputs.find((output) => output.role === "prior_wiki")?.required, false);
+  validateNodeOutputs(freeze, [
+    { role: "sources", kind: "snapshot_set" },
+    { role: "skill", kind: "skill" },
+    { role: "frozen_run_manifest", kind: "manifest" },
+    { role: "attempt_output", kind: "manifest" },
+  ]);
+  assert.throws(
+    () =>
+      validateNodeOutputs(freeze, [
+        { role: "sources", kind: "snapshot_set" },
+        { role: "skill", kind: "skill" },
+        { role: "frozen_run_manifest", kind: "manifest" },
+      ]),
+    /attempt_output:manifest/,
+  );
 });

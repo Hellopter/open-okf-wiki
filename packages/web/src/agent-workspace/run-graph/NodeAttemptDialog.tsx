@@ -44,7 +44,13 @@ import {
 import { useI18n } from "../../i18n";
 import { AgentMarkdown } from "../transcript/AgentMarkdown";
 import { TranscriptMessage } from "../transcript/Transcript";
-import { isAttemptTranscriptLive, projectAttemptTranscriptMessages } from "./attempt-transcript";
+import {
+  isAttemptTranscriptLive,
+  parseAttemptTranscriptDoneFrame,
+  parseAttemptTranscriptErrorFrame,
+  parseAttemptTranscriptTraceFrame,
+  projectAttemptTranscriptMessages,
+} from "./attempt-transcript";
 
 export type NodeAttemptDialogProps = {
   open: boolean;
@@ -233,41 +239,44 @@ export function NodeAttemptDialog({
 
         source.addEventListener("trace", ((ev: MessageEvent<string>) => {
           if (cancelled) return;
-          try {
-            const update = JSON.parse(ev.data) as {
-              events?: AttemptTraceEvent[];
-              cursor?: number;
-              live?: boolean;
-            };
-            if (!Array.isArray(update.events)) return;
+          const update = parseAttemptTranscriptTraceFrame(ev.data);
+          if (!update) {
             setFetchState((prev) => ({
               ...prev,
-              error: null,
-              events: mergeTraceEvents(prev.events, update.events),
-              cursor:
-                typeof update.cursor === "number"
-                  ? Math.max(prev.cursor, update.cursor)
-                  : prev.cursor,
+              loading: false,
+              error: "invalid trace stream payload",
               ready: true,
             }));
-            if (update.live === false) setStreamingLive(false);
-          } catch {
-            // Ignore malformed diagnostic frames; the next cursor page repairs it.
+            setStreamingLive(false);
+            closeSource();
+            return;
           }
+          setFetchState((prev) => ({
+            ...prev,
+            error: null,
+            events: mergeTraceEvents(prev.events, update.events),
+            cursor: Math.max(prev.cursor, update.cursor),
+            ready: true,
+          }));
+          if (update.live === false) setStreamingLive(false);
         }) as EventListener);
-        source.addEventListener("done", (() => {
-          if (!cancelled) setStreamingLive(false);
+        source.addEventListener("done", ((ev: MessageEvent<string>) => {
+          if (cancelled) return;
+          if (!parseAttemptTranscriptDoneFrame(ev.data)) {
+            setFetchState((prev) => ({
+              ...prev,
+              loading: false,
+              error: "invalid trace stream payload",
+              ready: true,
+            }));
+          }
+          setStreamingLive(false);
           closeSource();
         }) as EventListener);
         source.addEventListener("transcript_error", ((ev: MessageEvent<string>) => {
           if (cancelled) return;
-          let message = "trace stream error";
-          try {
-            const data = JSON.parse(ev.data) as { message?: string };
-            message = data.message?.trim() || message;
-          } catch {
-            // use the safe fallback above
-          }
+          const message =
+            parseAttemptTranscriptErrorFrame(ev.data)?.message ?? "trace stream error";
           setFetchState((prev) => ({ ...prev, loading: false, error: message, ready: true }));
           setStreamingLive(false);
           closeSource();

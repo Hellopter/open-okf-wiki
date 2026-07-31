@@ -16,12 +16,14 @@ jobs:
           node-version: "22.23.x"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Unit tests (contract / core / agent / workflow)
+      - name: Unit tests (contract / core / agent / workflow / server / web)
         run: |
           pnpm --filter @okf-wiki/contract test
           pnpm --filter @okf-wiki/core test
           pnpm --filter @okf-wiki/agent test
           pnpm --filter @okf-wiki/workflow test
+          pnpm --filter @okf-wiki/server test
+          pnpm --filter @okf-wiki/web test
       - name: Static checks
         run: pnpm check
 

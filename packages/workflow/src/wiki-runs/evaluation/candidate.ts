@@ -88,6 +88,29 @@ export function countWikiCandidates(host: WikiCandidateHost, runId: string): num
 }
 
 /**
+ * Count model-produced Wiki candidates that consume the bounded repair budget.
+ * Mechanical validation/review re-seals remain auditable candidate rows, but
+ * they do not represent another model proposal and must not consume this cap.
+ */
+export function countModelWikiCandidates(host: WikiCandidateHost, runId: string): number {
+  try {
+    const row = asRow(
+      host.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM wiki_candidates
+           WHERE run_id = ? AND produced_by IN ('write', 'repair')`,
+        )
+        .get(runId),
+    );
+    return requiredNumber(row ?? { count: 0 }, "count");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/no such table:\s*wiki_candidates/i.test(message)) return 0;
+    throw error;
+  }
+}
+
+/**
  * Next evaluation round index (0-based): current count, which equals max(round)+1
  * when rounds are assigned sequentially without gaps.
  */
@@ -101,7 +124,7 @@ export function assertUnderMaxCandidates(
   runId: string,
   maxCandidates: number,
 ): void {
-  const count = countWikiCandidates(host, runId);
+  const count = countModelWikiCandidates(host, runId);
   if (count >= maxCandidates) {
     throw new Error(
       `wiki candidate cap reached (${count}/${maxCandidates}); cannot schedule another repair round`,
@@ -123,6 +146,26 @@ export function latestWikiCandidate(
          LIMIT 1`,
       )
       .get(runId),
+  );
+  return row ? rowToCandidate(row) : undefined;
+}
+
+/**
+ * A candidate identity is scoped to one durable run. Repair requests use this
+ * lookup to bind their declared baseline rather than selecting a newer tree.
+ */
+export function wikiCandidateById(
+  host: WikiCandidateHost,
+  runId: string,
+  candidateId: string,
+): WikiCandidate | undefined {
+  const row = asRow(
+    host.db
+      .prepare(
+        `SELECT * FROM wiki_candidates
+         WHERE run_id = ? AND candidate_id = ?`,
+      )
+      .get(runId, candidateId),
   );
   return row ? rowToCandidate(row) : undefined;
 }

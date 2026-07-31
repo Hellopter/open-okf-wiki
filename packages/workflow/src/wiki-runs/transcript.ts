@@ -188,38 +188,7 @@ function traceEventsFromRows(rows: unknown[]): AttemptTraceEvent[] {
   if (parsed.every((entry) => entry.success)) {
     return parsed.map((entry) => entry.data);
   }
-
-  const hasTrace = parsed.some((entry) => entry.success);
-  if (hasTrace) {
-    // A trace may have an older legacy prefix (or a partially written row).
-    // Preserve each valid trace event's kind so tool call/result correlation
-    // survives. Normalize the cursor to physical JSONL order for this mixed
-    // legacy shape; pure trace files retain their writer-assigned ordinal.
-    const epoch = new Date(0).toISOString();
-    return rows.map((message, index) => {
-      const entry = parsed[index];
-      if (entry?.success) return { ...entry.data, ordinal: index + 1 };
-      return {
-        trace: 1,
-        ordinal: index + 1,
-        at: epoch,
-        kind: "legacy",
-        message,
-      };
-    });
-  }
-
-  // Historic JSONL was a list of opaque conversation rows. Preserve its file
-  // order under synthesized sequences; new trace JSONL always takes the branch
-  // above and retains its writer-assigned ordinal ids.
-  const epoch = new Date(0).toISOString();
-  return rows.map((message, index) => ({
-    trace: 1,
-    ordinal: index + 1,
-    at: epoch,
-    kind: "legacy",
-    message,
-  }));
+  throw new Error("transcript is not valid canonical trace JSONL");
 }
 
 function pageTranscript(input: {

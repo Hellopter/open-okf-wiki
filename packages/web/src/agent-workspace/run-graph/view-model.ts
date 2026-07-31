@@ -1,21 +1,13 @@
 /**
- * Pure view-model: RunGraphSnapshot → layered nodes for read-only canvas.
+ * Shared layered canvas view-model primitives for durable WikiRuns.
  * Depends only on @okf-wiki/contract.
  *
- * Product canvas path uses WikiRunSnapshot → wikiRunToViewModel (no dual hop).
- * runGraphToViewModel remains for unit tests / legacy snapshot shapes.
- *
- * Edges are projected as directed dependencies. The legacy RunGraph shape
- * only exposes parentKey; durable WikiRuns supplies its actual DAG separately.
+ * Product canvas path uses WikiRunSnapshot → wikiRunToViewModel. Durable
+ * WikiRuns exposes its own DAG; this module only supplies shared projection
+ * helpers for that one model.
  */
 
-import type {
-  GraphNodeDef,
-  GraphNodeKind,
-  NodeAttempt,
-  NodeAttemptStatus,
-  RunGraphSnapshot,
-} from "@okf-wiki/contract";
+import type { GraphNodeKind, NodeAttempt, NodeAttemptStatus } from "@okf-wiki/contract";
 
 export type RunGraphLayerId =
   | "plan"
@@ -155,36 +147,4 @@ export function appendOrphanAttemptNodes(
       status: statusFromAttempt(latest),
     });
   }
-}
-
-/**
- * Project a contract RunGraphSnapshot into layered canvas nodes.
- * Prefer wikiRunToViewModel for product WikiRuns UI.
- */
-export function runGraphToViewModel(snapshot: RunGraphSnapshot): RunGraphViewModel {
-  const attempts = [...snapshot.attempts];
-  const nodes: RunGraphViewNode[] = snapshot.topology.map((def: GraphNodeDef) => {
-    const latest = latestAttemptFor(def.nodeKey, attempts);
-    const attemptCount = attempts.filter((a) => a.nodeKey === def.nodeKey).length;
-    return {
-      nodeKey: def.nodeKey,
-      kind: def.kind,
-      label: def.label,
-      layer: layerForKind(def.kind),
-      ...(def.parentKey ? { parentKey: def.parentKey } : {}),
-      ...(latest ? { latestAttempt: latest } : {}),
-      attemptCount,
-      status: statusFromAttempt(latest),
-    };
-  });
-
-  appendOrphanAttemptNodes(nodes, attempts);
-
-  return {
-    layers: groupViewNodesIntoLayers(nodes),
-    edges: edgesFromNodes(nodes),
-    attempts,
-    ...(snapshot.playhead ? { playhead: snapshot.playhead } : {}),
-    topologyVersion: snapshot.topologyVersion,
-  };
 }

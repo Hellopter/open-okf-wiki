@@ -653,11 +653,12 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
       db.exec(`
         CREATE TABLE wiki_candidates (
           run_id TEXT NOT NULL,
-          candidate_id TEXT NOT NULL
+          candidate_id TEXT NOT NULL,
+          produced_by TEXT NOT NULL
         ) STRICT;
       `);
       const insert = db.prepare(
-        "INSERT INTO wiki_candidates (run_id, candidate_id) VALUES ('run-1', ?)",
+        "INSERT INTO wiki_candidates (run_id, candidate_id, produced_by) VALUES ('run-1', ?, 'write')",
       );
       for (let i = 0; i < opts.wikiCandidateCount; i += 1) {
         insert.run(`cand-${i + 1}`);
@@ -823,6 +824,26 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
     assert.equal(countRepairsBySource({ db }, "run-1", "mechanical"), 2);
     assert.equal(countRepairsBySource({ db }, "run-1", "semantic"), 0);
   });
+
+  it("counts only the current generation when a repair node is rerun", () => {
+    const db = openPolicyDb({ repairKeys: [repairNodeKey(1)] });
+    db.prepare(
+      "INSERT INTO nodes (run_id, node_key, generation, detail_json) VALUES ('run-1', ?, 1, ?)",
+    ).run(
+      repairNodeKey(1),
+      JSON.stringify({
+        repairRequest: {
+          requestId: "repair:run-1:1",
+          baselineCandidateId: "pending",
+          round: 1,
+          sources: ["mechanical"],
+          issues: [{ kind: "mechanical", message: "retry" }],
+          scope: { pages: [], mode: "patch" },
+        },
+      }),
+    );
+    assert.equal(countRepairsBySource({ db }, "run-1", "mechanical"), 1);
+  });
 });
 
 describe("baselineWikiForRepair / upstreamSealedOutputs (unit)", () => {
@@ -850,6 +871,25 @@ describe("baselineWikiForRepair / upstreamSealedOutputs (unit)", () => {
         to_key TEXT NOT NULL,
         PRIMARY KEY (run_id, from_key, to_key)
       ) STRICT;
+      CREATE TABLE artifacts (
+        run_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        PRIMARY KEY (run_id, artifact_id)
+      ) STRICT;
+      CREATE TABLE wiki_candidates (
+        run_id TEXT NOT NULL,
+        candidate_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        parent_candidate_id TEXT,
+        produced_by TEXT NOT NULL,
+        round INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        producer_node_key TEXT,
+        producer_attempt_id TEXT,
+        PRIMARY KEY (run_id, candidate_id)
+      ) STRICT;
     `);
     return db;
   }
@@ -868,6 +908,43 @@ describe("baselineWikiForRepair / upstreamSealedOutputs (unit)", () => {
       `INSERT INTO node_outputs (run_id, node_key, node_generation, role, artifact_id)
        VALUES ('run-1', ?, ?, 'wiki_tree', ?)`,
     ).run(nodeKey, generation, artifactId);
+  }
+
+  function seedCandidate(
+    db: DatabaseSync,
+    candidateId: string,
+    artifactId: string,
+    round: number,
+  ): void {
+    db.prepare(
+      `INSERT INTO artifacts (run_id, artifact_id, kind)
+       VALUES ('run-1', ?, 'wiki_tree')`,
+    ).run(artifactId);
+    db.prepare(
+      `INSERT INTO wiki_candidates (
+        run_id, candidate_id, digest, artifact_id, parent_candidate_id,
+        produced_by, round, created_at, producer_node_key, producer_attempt_id
+      ) VALUES ('run-1', ?, ?, ?, NULL, 'repair', ?, '2026-08-01T00:00:00.000Z', NULL, NULL)`,
+    ).run(candidateId, `digest-${candidateId}`, artifactId, round);
+  }
+
+  function seedRepair(db: DatabaseSync, nodeKey: string, baselineCandidateId: string): void {
+    db.prepare(
+      `INSERT INTO nodes (run_id, node_key, generation, state, kind, detail_json)
+       VALUES ('run-1', ?, 0, 'ready', 'repair', ?)`,
+    ).run(
+      nodeKey,
+      JSON.stringify({
+        repairRequest: {
+          requestId: `repair:mechanical:run-1:${nodeKey}`,
+          baselineCandidateId,
+          round: parseRepairRound(nodeKey),
+          sources: ["mechanical"],
+          issues: [{ kind: "mechanical", message: "repair fixture" }],
+          scope: { pages: [], mode: "patch" },
+        },
+      }),
+    );
   }
 
   function host(db: DatabaseSync) {
@@ -897,40 +974,63 @@ describe("baselineWikiForRepair / upstreamSealedOutputs (unit)", () => {
     assert.equal(REPAIR_NODE_PREFIX, "repair.");
   });
 
-  it("baseline leaves repair.1 to edges; prefers prior repair for N≥2", () => {
+  it("baseline uses the persisted candidate even when a newer candidate exists", () => {
     const db = openBindingDb();
-    seedSucceededWiki(db, "write.root", "art-write", 0);
-    // overwrite kind for write.root
-    db.prepare("UPDATE nodes SET kind = 'write.root' WHERE node_key = 'write.root'").run();
-    seedSucceededWiki(db, repairNodeKey(1), "art-r1", 0);
+    seedCandidate(db, "candidate-a", "art-a", 1);
+    seedCandidate(db, "candidate-b", "art-b-newer", 2);
+    seedRepair(db, repairNodeKey(1), "candidate-a");
 
     const h = host(db);
-    // Round 1: no prior repair / candidate → undefined so edge-bound wiki is kept
-    // (write.root for mechanical, review.reduce for operator).
     const round1 = baselineWikiForRepair(h, "run-1", repairNodeKey(1));
-    assert.equal(round1, undefined);
-
-    const round2 = baselineWikiForRepair(h, "run-1", repairNodeKey(2));
-    assert.equal(round2?.artifactId, "art-r1");
+    assert.equal(round1?.artifactId, "art-a");
   });
 
-  it("upstreamSealedOutputs for repair.2 does not force write.root over repair.1", () => {
+  it("upstreamSealedOutputs for repair uses its declared candidate over a newer tree", () => {
     const db = openBindingDb();
     seedSucceededWiki(db, "write.root", "art-write", 0);
     db.prepare("UPDATE nodes SET kind = 'write.root' WHERE node_key = 'write.root'").run();
     seedSucceededWiki(db, repairNodeKey(1), "art-r1", 0);
-    // repair.2 node exists (ready) with only write.root edge — mirrors scheduleMechanicalRepair.
-    db.prepare(
-      `INSERT INTO nodes (run_id, node_key, generation, state, kind)
-       VALUES ('run-1', ?, 0, 'ready', 'repair')`,
-    ).run(repairNodeKey(2));
+    seedCandidate(db, "candidate-r1", "art-r1", 1);
+    seedCandidate(db, "candidate-newer", "art-newer", 2);
+    seedRepair(db, repairNodeKey(2), "candidate-r1");
     db.prepare(
       `INSERT INTO node_edges (run_id, from_key, to_key) VALUES ('run-1', 'write.root', ?)`,
     ).run(repairNodeKey(2));
 
     const bound = upstreamSealedOutputs(host(db), "run-1", repairNodeKey(2));
     const wiki = bound.find((item) => item.role === "wiki_tree");
-    assert.equal(wiki?.artifactId, "art-r1", "must prefer repair.1 wiki over write.root");
+    assert.equal(
+      wiki?.artifactId,
+      "art-r1",
+      "must use the declared candidate, not the newest tree",
+    );
+  });
+
+  it("repair binding fails closed when its declared baseline is unavailable", () => {
+    const db = openBindingDb();
+    seedSucceededWiki(db, "write.root", "art-write", 0);
+    db.prepare("UPDATE nodes SET kind = 'write.root' WHERE node_key = 'write.root'").run();
+    seedRepair(db, repairNodeKey(1), "candidate-missing");
+    db.prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES ('run-1', 'write.root', ?)`,
+    ).run(repairNodeKey(1));
+
+    assert.throws(
+      () => upstreamSealedOutputs(host(db), "run-1", repairNodeKey(1)),
+      /references unavailable baseline candidate candidate-missing/,
+    );
+  });
+
+  it("repair binding fails closed when its candidate no longer references a sealed wiki tree", () => {
+    const db = openBindingDb();
+    seedCandidate(db, "candidate-invalid", "art-invalid", 1);
+    db.prepare("UPDATE artifacts SET kind = 'receipt' WHERE artifact_id = 'art-invalid'").run();
+    seedRepair(db, repairNodeKey(1), "candidate-invalid");
+
+    assert.throws(
+      () => upstreamSealedOutputs(host(db), "run-1", repairNodeKey(1)),
+      /does not reference a sealed wiki_tree/,
+    );
   });
 
   it("upstreamSealedOutputs for validate.pre prefers highest-N repair wiki", () => {

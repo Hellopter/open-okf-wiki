@@ -148,6 +148,8 @@ class WikiRunsOwner implements WikiRuns {
   private closed = false;
   private closing: Promise<void> | undefined;
   private scheduler: Promise<void> | undefined;
+  private gateExpiryTimer: ReturnType<typeof setTimeout> | undefined;
+  private gateExpiryRefreshQueued = false;
   private readonly activeAttempts = new Map<string, AbortController>();
   private readonly activeExecutions = new Map<string, Promise<void>>();
 
@@ -167,6 +169,7 @@ class WikiRunsOwner implements WikiRuns {
       throw new Error("replaceWorkspace rootPath must match the open owner");
     }
     this.workspace = workspace;
+    this.refreshGateExpiryTimer();
   }
 
   async dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt> {
@@ -311,6 +314,7 @@ class WikiRunsOwner implements WikiRuns {
   async close(): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true;
+    this.clearGateExpiryTimer();
     this.closing = (async () => {
       this.abortActiveAttempts();
       this.transaction(() => this.interruptRunningAttempts());
@@ -583,14 +587,17 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private schedule(): void {
-    if (this.closed || this.scheduler) return;
+    if (this.closed) return;
     try {
       this.transaction(() => expireStaleOpenGatesImpl(this.gatesHost()));
     } catch {
       // Expiry best-effort; do not block the scheduler on a single bad gate.
     }
+    this.refreshGateExpiryTimer();
+    if (this.scheduler) return;
     this.scheduler = runScheduler(this.schedulerHost()).finally(() => {
       this.scheduler = undefined;
+      this.refreshGateExpiryTimer();
     });
   }
 
@@ -817,7 +824,58 @@ class WikiRunsOwner implements WikiRuns {
         "INSERT INTO run_events (run_id, event_id, revision, type, occurred_at, event_json) VALUES (?, ?, ?, ?, ?, ?)",
       )
       .run(runId, eventId, revision, type, timestamp, JSON.stringify(event));
+    if (type === "gate.opened" || type === "gate.resolved" || type === "gate.withdrawn") {
+      this.requestGateExpiryTimerRefresh();
+    }
     return revision;
+  }
+
+  /** Re-arm after the enclosing transaction commits; gate state changes happen inside it. */
+  private requestGateExpiryTimerRefresh(): void {
+    if (this.closed || this.gateExpiryRefreshQueued) return;
+    this.gateExpiryRefreshQueued = true;
+    queueMicrotask(() => {
+      this.gateExpiryRefreshQueued = false;
+      this.refreshGateExpiryTimer();
+    });
+  }
+
+  private clearGateExpiryTimer(): void {
+    if (!this.gateExpiryTimer) return;
+    clearTimeout(this.gateExpiryTimer);
+    this.gateExpiryTimer = undefined;
+  }
+
+  /** Keep one unref'd wake-up for the earliest auto-expiring gate. */
+  private refreshGateExpiryTimer(): void {
+    this.clearGateExpiryTimer();
+    if (this.closed) return;
+
+    const timeoutSec = this.workspace.limits?.gateTimeoutSeconds ?? 0;
+    if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return;
+
+    const row = asRow(
+      this.db
+        .prepare(
+          `SELECT opened_at FROM gates
+           WHERE state = 'open' AND kind IN ('plan', 'publication', 'fix')
+           ORDER BY opened_at, gate_id
+           LIMIT 1`,
+        )
+        .get(),
+    );
+    if (!row) return;
+
+    const openedAt = requiredText(row, "opened_at");
+    const openedMs = Date.parse(openedAt);
+    if (!Number.isFinite(openedMs)) return;
+
+    const delayMs = Math.max(0, openedMs + timeoutSec * 1_000 - Date.now());
+    this.gateExpiryTimer = setTimeout(() => {
+      this.gateExpiryTimer = undefined;
+      if (!this.closed) this.schedule();
+    }, delayMs);
+    this.gateExpiryTimer.unref();
   }
 
   private snapshot(runId: string): WikiRunSnapshot {

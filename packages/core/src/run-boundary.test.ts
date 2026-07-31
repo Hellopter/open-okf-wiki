@@ -58,7 +58,7 @@ async function makeWorkspace(opts?: {
     skillPath: skillDir,
     model: { id: "openai/test" },
     publicationPath: path.join(root, "wiki-out"),
-    limits: { requestTimeoutSeconds: 60, maxSteps: 8 },
+    limits: { requestTimeoutSeconds: 60 },
     planConfirm: false,
     wikiLanguage: "en",
     createdAt: new Date().toISOString(),

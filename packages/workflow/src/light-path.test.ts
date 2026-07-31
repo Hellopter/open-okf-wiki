@@ -37,7 +37,6 @@ test("single-cluster (one leaf) direct to Writer — no domain reducer", () => {
   ];
   const plan = compileExecutionPlan(spec, { reviewCouncilSize: 1 });
   assert.equal(plan.workUnits.length, 1);
-  assert.equal(plan.reductions.length, 0);
   const graph = buildExecutionGraphFromPlan(plan, spec);
   assert.equal(
     graph.nodes.some((n) => n.kind === "research.domain"),
@@ -49,6 +48,10 @@ test("single-cluster (one leaf) direct to Writer — no domain reducer", () => {
     "leaf must edge directly to write.root",
   );
   assert.equal(graph.nodes.filter((n) => n.kind === "review.seat").length, 1);
+  assert.equal(
+    graph.nodes.some((n) => n.kind === "plan.adapt"),
+    false,
+  );
 });
 
 test("multi-leaf domain still uses domain reducer", () => {

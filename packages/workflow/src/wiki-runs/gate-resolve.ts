@@ -571,8 +571,8 @@ export function applyFixGateDecision(
 
 /**
  * Auto-deny open plan/publication/fix gates older than workspace.limits.gateTimeoutSeconds.
- * 0 / unset disables. Called from owner schedule/dispatch/read so long waits still expire
- * when any control activity (or Run poll) occurs.
+ * 0 / unset disables. The owner invokes this from dispatch/scheduling and its deadline timer,
+ * so an idle gate expires without an external control request or poll.
  */
 export function expireStaleOpenGates(host: GatesHost): number {
   const timeoutSec = host.workspace.limits?.gateTimeoutSeconds ?? 0;

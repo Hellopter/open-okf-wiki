@@ -5,7 +5,7 @@
 **Supersedes:** [ADR 0032](0032-pi-tool-owned-wiki-runs.md) only for whole-Run Pi-tool ownership and the prohibition on durable Run commands/events  
 **Refines:** [ADR 0034](0034-deep-modules-thin-tools-single-projection.md), [ADR 0033](0033-run-graph-and-agent-layering.md)  
 **Retains:** Pi-only Operator Session conversation events, `SessionManager` authority for conversations, `@okf-wiki/core` Run Boundary, and no-compat cleanup  
-**Narrowly superseded by:** [ADR 0036](0036-semantic-artifact-plane-and-execution-plan.md) for fixed Definition v1 topology as the product semantic ceiling (control plane ownership, artifacts, gates, effects, and Run SSE remain)
+**Narrowly superseded by:** [ADR 0036](0036-semantic-artifact-plane-and-execution-plan.md) for fixed Definition v1 topology as the product semantic ceiling; current contract is `okf.wiki-runs/v3` (control plane ownership, artifacts, gates, effects, and Run SSE remain)
 
 ## Context
 
@@ -15,7 +15,7 @@ A Wiki Run must survive server restarts, Pi Attempt loss, and SSE disconnection;
 
 `WikiRuns` is the durable control authority for one Workspace. It owns Runs, Nodes, Attempts, Gates, Artifacts, Effects, and low-frequency Run Events. Pi executes a single discardable Attempt. `wiki_produce` dispatches `StartRun` and returns a receipt; it does not wait for the Run or own its lifecycle.
 
-`@okf-wiki/contract` fixes `okf.wiki-runs/v1`: definition version 1, strict Run commands, secret-free snapshots, durable events, typed gates, attempts, artifacts, and effects. Commands are idempotent by `(workspaceId, commandId)`. HTTP and Pi adapters derive workspace and actor context from their authenticated route/session and never accept either in a command body.
+At acceptance this ADR fixed `okf.wiki-runs/v1`: definition version 1, strict Run commands, secret-free snapshots, durable events, typed gates, attempts, artifacts, and effects. The current hard-cut contract is `okf.wiki-runs/v3`; commands remain idempotent by `(workspaceId, commandId)`. HTTP and Pi adapters derive workspace and actor context from their authenticated route/session and never accept either in a command body.
 
 Definition v1 is Wiki-specific, not a general workflow DSL:
 

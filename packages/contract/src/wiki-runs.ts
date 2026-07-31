@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Sha256HexSchema } from "./primitives.js";
 import { RepositorySnapshotSchema, WikiRunSpecSchema } from "./run.js";
+import { AttemptTraceEventSchema } from "./run-graph.js";
 
 /**
  * Durable WikiRuns contract version.
@@ -620,6 +621,74 @@ export const RunCommandReceiptSchema = z
   })
   .strict();
 
+/** GET …/runs list response. Shared by server and Web transport adapters. */
+export const WikiRunListItemSchema = z
+  .object({
+    runId: WikiRunIdSchema,
+    state: WikiRunStateSchema,
+    updatedAt: IsoDateTimeSchema,
+    revision: z.number().int().min(0),
+    sessionId: IdentifierSchema.nullable(),
+  })
+  .strict();
+
+export const WikiRunListResponseSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    runs: z.array(WikiRunListItemSchema),
+  })
+  .strict();
+
+/** GET …/runs/:runId response. Run SSE carries the event stream separately. */
+export const WikiRunGetResponseSchema = z
+  .object({
+    snapshot: WikiRunSnapshotSchema,
+    cursor: z.number().int().min(0),
+  })
+  .strict();
+
+/** GET Attempt trace page for Node details. Only canonical trace JSONL is admitted. */
+export const WikiRunAttemptTranscriptSchema = z
+  .object({
+    attemptId: RunAttemptIdSchema,
+    nodeKey: RunNodeKeySchema,
+    state: WikiRunAttemptStateSchema,
+    events: z.array(AttemptTraceEventSchema),
+    hasEarlier: z.boolean(),
+    hasMore: z.boolean(),
+    nextBefore: z.number().int().positive().optional(),
+    cursor: z.number().int().min(0),
+  })
+  .strict();
+
+/** `trace` EventSource frame for an active Attempt transcript. */
+export const WikiRunAttemptTranscriptTraceFrameSchema = z
+  .object({
+    attemptId: RunAttemptIdSchema,
+    nodeKey: RunNodeKeySchema,
+    state: WikiRunAttemptStateSchema,
+    events: z.array(AttemptTraceEventSchema),
+    cursor: z.number().int().min(0),
+    live: z.boolean(),
+  })
+  .strict();
+
+/** Terminal EventSource frame for an Attempt transcript. */
+export const WikiRunAttemptTranscriptDoneFrameSchema = z
+  .object({
+    attemptId: RunAttemptIdSchema,
+    state: WikiRunAttemptStateSchema,
+    cursor: z.number().int().min(0),
+  })
+  .strict();
+
+/** Error EventSource frame for an Attempt transcript. */
+export const WikiRunAttemptTranscriptErrorFrameSchema = z
+  .object({ message: z.string().trim().min(1).max(4_000) })
+  .strict();
+
+export const WikiRunCommandResponseSchema = z.object({ receipt: RunCommandReceiptSchema }).strict();
+
 export type WikiRunArtifact = z.infer<typeof WikiRunArtifactSchema>;
 export type WikiRunNode = z.infer<typeof WikiRunNodeSchema>;
 export type WikiRunNodeDetail = z.infer<typeof WikiRunNodeDetailSchema>;
@@ -632,3 +701,17 @@ export type WikiRunEvent = z.infer<typeof WikiRunEventSchema>;
 export type WikiRunEventType = z.infer<typeof WikiRunEventTypeSchema>;
 export type WikiRunSpecRead = z.infer<typeof WikiRunSpecReadSchema>;
 export type RunCommandReceipt = z.infer<typeof RunCommandReceiptSchema>;
+export type WikiRunListItem = z.infer<typeof WikiRunListItemSchema>;
+export type WikiRunListResponse = z.infer<typeof WikiRunListResponseSchema>;
+export type WikiRunGetResponse = z.infer<typeof WikiRunGetResponseSchema>;
+export type WikiRunAttemptTranscript = z.infer<typeof WikiRunAttemptTranscriptSchema>;
+export type WikiRunAttemptTranscriptTraceFrame = z.infer<
+  typeof WikiRunAttemptTranscriptTraceFrameSchema
+>;
+export type WikiRunAttemptTranscriptDoneFrame = z.infer<
+  typeof WikiRunAttemptTranscriptDoneFrameSchema
+>;
+export type WikiRunAttemptTranscriptErrorFrame = z.infer<
+  typeof WikiRunAttemptTranscriptErrorFrameSchema
+>;
+export type WikiRunCommandResponse = z.infer<typeof WikiRunCommandResponseSchema>;

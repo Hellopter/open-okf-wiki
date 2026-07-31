@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import type { PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract";
+import { defaultWikiRunSpec, type PiAttemptInput, type PiAttemptOutcome } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   approvePlanGate,
@@ -10,6 +10,7 @@ import {
   fullGraphFixtureExecutor,
   makeWorkspace,
   removeWorkspace,
+  succeededPlan,
   waitForRunState,
 } from "./harness.js";
 
@@ -41,6 +42,18 @@ test("plan.adapt derives bounded research edges before writer unlocks", async (t
   const runs = await openWikiRuns({
     rootPath: root,
     piAttemptExecutor: async (input, signal) => {
+      if (input.node.key === "plan") {
+        const spec = defaultWikiRunSpec("Workflow test");
+        spec.openQuestions = [
+          "Which authorization boundaries remain uncertain?",
+          "Which module owns authentication?",
+          "Which callers enforce authorization?",
+          "How do authorization failures surface?",
+          "Which tests cover boundary decisions?",
+          "Which documentation explains the boundary?",
+        ];
+        return succeededPlan(input, "Workflow test", spec);
+      }
       if (input.node.key === "plan.adapt.1") {
         return deltaOutcome(input, {
           version: 1,

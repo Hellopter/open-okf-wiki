@@ -1,7 +1,18 @@
 /** HTTP adapter for the durable WikiRuns control plane (ADR 0035). */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { redactErrorMessage } from "@okf-wiki/agent";
-import { RunCommandSchema, type WikiRunEvent, type WikiRunSnapshot } from "@okf-wiki/contract";
+import {
+  RunCommandSchema,
+  WikiRunAttemptTranscriptDoneFrameSchema,
+  WikiRunAttemptTranscriptErrorFrameSchema,
+  WikiRunAttemptTranscriptSchema,
+  WikiRunAttemptTranscriptTraceFrameSchema,
+  WikiRunCommandResponseSchema,
+  type WikiRunEvent,
+  WikiRunGetResponseSchema,
+  type WikiRunSnapshot,
+  WikiRunSpecReadSchema,
+} from "@okf-wiki/contract";
 import { CommandIdCollision, WorkflowInUseError } from "@okf-wiki/workflow";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
@@ -51,6 +62,11 @@ function writeHeartbeat(res: ServerResponse): void {
   if (!res.writableEnded && !res.destroyed) res.write(": heartbeat\n\n");
 }
 
+function transcriptErrorFrame(error: unknown): { message: string } {
+  const message = redactErrorMessage(error).trim() || "trace stream error";
+  return WikiRunAttemptTranscriptErrorFrameSchema.parse({ message });
+}
+
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -96,7 +112,7 @@ export async function handleWikiRunCommand(
       parsed.data,
       actorContext(workspace.id),
     );
-    sendJson(res, 202, { receipt });
+    sendJson(res, 202, WikiRunCommandResponseSchema.parse({ receipt }));
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
   }
@@ -114,7 +130,7 @@ export async function handleGetWikiRun(
   if (!workspace) return;
   try {
     const { snapshot, cursor } = await (await wikiRunsForWorkspace(workspace)).read({ runId });
-    sendJson(res, 200, { snapshot, cursor });
+    sendJson(res, 200, WikiRunGetResponseSchema.parse({ snapshot, cursor }));
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
   }
@@ -132,7 +148,7 @@ export async function handleGetWikiRunSpec(
   if (!workspace) return;
   try {
     const body = await (await wikiRunsForWorkspace(workspace)).readPlanSpec({ runId });
-    sendJson(res, 200, body);
+    sendJson(res, 200, WikiRunSpecReadSchema.parse(body));
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
   }
@@ -160,7 +176,7 @@ export async function handleGetAttemptTranscript(
       afterSequence: readTranscriptCursor(url, "after"),
       limit: readTranscriptLimit(url),
     });
-    sendJson(res, 200, transcript);
+    sendJson(res, 200, WikiRunAttemptTranscriptSchema.parse(transcript));
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
   }
@@ -250,7 +266,7 @@ export async function handleAttemptTranscriptEvents(
         if (!closed) {
           // Named `transcript_error` so it does not collide with EventSource's
           // native connection `error` event on the client.
-          writeSse(res, "transcript_error", { message: redactErrorMessage(error) });
+          writeSse(res, "transcript_error", transcriptErrorFrame(error));
         }
         break;
       }
@@ -261,31 +277,35 @@ export async function handleAttemptTranscriptEvents(
         writeSse(
           res,
           "trace",
-          {
+          WikiRunAttemptTranscriptTraceFrameSchema.parse({
             attemptId: transcript.attemptId,
             nodeKey: transcript.nodeKey,
             state: transcript.state,
             events: transcript.events,
             cursor: transcript.cursor,
             live,
-          },
+          }),
           transcript.cursor,
         );
       }
 
       if (!live) {
-        writeSse(res, "done", {
-          attemptId: transcript.attemptId,
-          state: transcript.state,
-          cursor: afterSequence,
-        });
+        writeSse(
+          res,
+          "done",
+          WikiRunAttemptTranscriptDoneFrameSchema.parse({
+            attemptId: transcript.attemptId,
+            state: transcript.state,
+            cursor: afterSequence,
+          }),
+        );
         break;
       }
 
       if (!transcript.hasMore) await delay(pollMs);
     }
   } catch (error) {
-    if (!closed) writeSse(res, "transcript_error", { message: redactErrorMessage(error) });
+    if (!closed) writeSse(res, "transcript_error", transcriptErrorFrame(error));
   } finally {
     cleanup();
     if (!res.writableEnded && !res.destroyed) res.end();

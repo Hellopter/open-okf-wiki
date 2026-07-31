@@ -39,8 +39,8 @@ export type WikiRunSpecPage = z.infer<typeof WikiRunSpecPageSchema>;
  * Acceptance knobs on WikiSpec. Budgets map into EvaluationPolicy via
  * `evaluationPolicyFromAcceptance` (contract/evaluation).
  *
- * Optional `maxCandidates` and `evaluationPolicy` are backward-compatible
- * overrides; omitted fields keep EvaluationPolicy defaults.
+ * Optional `maxCandidates` and `evaluationPolicy` tune the bounded policy
+ * that the runtime actually enforces.
  */
 export const WikiRunSpecAcceptanceSchema = z.object({
   reviewRequired: z.boolean().default(true),
@@ -58,9 +58,8 @@ export const WikiRunSpecAcceptanceSchema = z.object({
   /** Cap on WikiCandidate versions in one run (EvaluationPolicy.maxCandidates). */
   maxCandidates: z.number().int().min(1).max(16).optional(),
   /**
-   * Optional nested EvaluationPolicy overrides (partial).
-   * Shape is intentionally loose here to avoid a run↔evaluation import cycle;
-   * `evaluationPolicyFromAcceptance` validates/merges against EvaluationPolicySchema.
+   * Optional nested EvaluationPolicy overrides (partial). The shape mirrors
+   * only runtime-enforced controls to avoid offering inert configuration.
    */
   evaluationPolicy: z
     .object({
@@ -86,17 +85,7 @@ export const WikiRunSpecAcceptanceSchema = z.object({
         .object({
           reviewRequired: z.boolean().optional(),
           modelRepairBudget: z.number().int().min(0).max(8).optional(),
-          reReview: z.enum(["always", "affected_lenses"]).optional(),
-          stickyPriorBlocking: z.boolean().optional(),
           blockingSeverities: z.array(z.enum(["blocking", "major", "minor"])).optional(),
-        })
-        .strict()
-        .optional(),
-      repair: z
-        .object({
-          defaultMode: z.enum(["mechanical_only", "patch", "rewrite_scoped"]).optional(),
-          allowFullTreeRewrite: z.boolean().optional(),
-          maxPagesPerRepair: z.number().int().min(1).max(50).optional(),
         })
         .strict()
         .optional(),
@@ -188,21 +177,10 @@ export const ExecutionPlanWorkUnitSchema = z
     domainId: z.string().trim().min(1).max(80).optional(),
     questions: z.array(z.string().trim().min(1).max(500)).default([]),
     scope: z.string().trim().min(1).max(2_000),
-    kind: z.enum(["leaf", "cluster"]),
   })
   .strict();
 
 export type ExecutionPlanWorkUnit = z.infer<typeof ExecutionPlanWorkUnitSchema>;
-
-export const ExecutionPlanReductionSchema = z
-  .object({
-    id: z.string().trim().min(1).max(200),
-    childWorkUnitIds: z.array(z.string().trim().min(1).max(200)).min(1),
-    domainId: z.string().trim().min(1).max(80),
-  })
-  .strict();
-
-export type ExecutionPlanReduction = z.infer<typeof ExecutionPlanReductionSchema>;
 
 /** A bounded research gap found after the initial plan's evidence has landed. */
 export const ExecutionPlanDeltaWorkUnitSchema = z
@@ -259,21 +237,13 @@ export type ExecutionPlanDelta = z.infer<typeof ExecutionPlanDeltaSchema>;
 
 export const ExecutionPlanSchema = z
   .object({
-    version: z.literal(3),
+    version: z.literal(4),
     workUnits: z.array(ExecutionPlanWorkUnitSchema),
-    reductions: z.array(ExecutionPlanReductionSchema),
     /**
      * Review council lenses. Empty only when Spec acceptance.reviewRequired is false
      * (compile may emit zero seats). When reviewRequired, host requires ≥1 seat.
      */
     reviewLenses: z.array(z.string().trim().min(1).max(100)).max(4),
-    budgets: z
-      .object({
-        maxRepairRounds: z.number().int().min(0).max(8),
-        maxHardValidateRepairRounds: z.number().int().min(0).max(8),
-      })
-      .strict(),
-    roleModels: z.record(z.string(), z.unknown()).optional(),
     fanOut: z
       .object({
         domainCount: z.number().int().min(0),
@@ -282,10 +252,11 @@ export const ExecutionPlanSchema = z
         maxLeafFanOut: z.number().int().min(1).max(16),
       })
       .strict(),
-    /** Two bounded evidence-gap decisions are enough before writing starts. */
+    /** Evidence-gap adaptation is explicit; simple plans have no adapt node. */
     adaptation: z
       .object({
-        maxRounds: z.number().int().min(1).max(2),
+        required: z.boolean(),
+        maxRounds: z.number().int().min(0).max(2),
       })
       .strict(),
     /** Optional link back to the Spec digest that produced this plan. */

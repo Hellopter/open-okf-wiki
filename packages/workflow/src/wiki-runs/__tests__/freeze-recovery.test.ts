@@ -6,6 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { loadWorkspace, saveWorkspace } from "@okf-wiki/core";
 import { openWikiRuns, WorkflowInUseError } from "../../wiki-runs.js";
+import { commitFreezeArtifacts } from "../freeze.js";
+import type { ArtifactPreparation } from "../types.js";
 import {
   assertFreezeAdvancedToPlan,
   context,
@@ -67,6 +69,116 @@ test("freeze pins real Git and Skill inputs", async (t) => {
     ).schema,
     1,
   );
+});
+
+test("freeze output contract fails before it mutates the durable run", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({ rootPath: root });
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-freeze-contract", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  const completed = await waitForTerminal(runs, receipt.runId);
+  const attempt = completed.snapshot.attempts.find((entry) => entry.nodeKey === "freeze");
+  assert.ok(attempt);
+  await runs.close();
+
+  const db = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
+  db.exec("PRAGMA foreign_keys=ON");
+  const rows = db
+    .prepare(
+      `SELECT preparation_id, artifact_id, manifest_digest, kind, role, relative_path
+       FROM artifact_preparations WHERE attempt_id = ? ORDER BY preparation_id`,
+    )
+    .all(attempt.attemptId) as Array<{
+    preparation_id: string;
+    artifact_id: string;
+    manifest_digest: string;
+    kind: ArtifactPreparation["kind"];
+    role: string;
+    relative_path: string;
+  }>;
+  const preparations: ArtifactPreparation[] = rows.map((row) => ({
+    preparationId: row.preparation_id,
+    artifactId: row.artifact_id,
+    digest: row.manifest_digest,
+    kind: row.kind,
+    role: row.role,
+    relativePath: row.relative_path,
+    sourceDirectory: "",
+  }));
+  const before = {
+    artifacts: Number(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM artifacts WHERE run_id = ?")
+          .get(receipt.runId) as {
+          count: number;
+        }
+      ).count,
+    ),
+    outputs: Number(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM node_outputs WHERE run_id = ? AND node_key = 'freeze'",
+          )
+          .get(receipt.runId) as { count: number }
+      ).count,
+    ),
+    attemptState: String(
+      (
+        db.prepare("SELECT state FROM attempts WHERE attempt_id = ?").get(attempt.attemptId) as {
+          state: string;
+        }
+      ).state,
+    ),
+  };
+  assert.throws(
+    () =>
+      commitFreezeArtifacts(
+        { db, isCurrent: () => true, emit: () => 0 },
+        {
+          attemptId: attempt.attemptId,
+          runId: receipt.runId,
+          nodeKey: "freeze",
+          nodeGeneration: 0,
+          kind: "freeze",
+        },
+        preparations.filter((preparation) => preparation.role !== "attempt_output"),
+      ),
+    /attempt_output:manifest/,
+  );
+  const after = {
+    artifacts: Number(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM artifacts WHERE run_id = ?")
+          .get(receipt.runId) as {
+          count: number;
+        }
+      ).count,
+    ),
+    outputs: Number(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM node_outputs WHERE run_id = ? AND node_key = 'freeze'",
+          )
+          .get(receipt.runId) as { count: number }
+      ).count,
+    ),
+    attemptState: String(
+      (
+        db.prepare("SELECT state FROM attempts WHERE attempt_id = ?").get(attempt.attemptId) as {
+          state: string;
+        }
+      ).state,
+    ),
+  };
+  db.close();
+  assert.deepEqual(after, before);
 });
 
 test("Pi receives canonical sealed source and skill artifacts", async (t) => {

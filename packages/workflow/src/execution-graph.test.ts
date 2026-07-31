@@ -56,12 +56,15 @@ test("reviewRequired=false compiles empty lenses and skips seats", () => {
   assert.ok(graph.edges.some((e) => e.from === "validate.pre" && e.to === "review.reduce"));
 });
 
-test("buildExecutionGraph without domains routes plan through bounded adaptation", () => {
+test("buildExecutionGraph without domains uses the direct light path", () => {
   const spec = defaultWikiRunSpec("Empty");
   spec.domains = [];
   const graph = buildExecutionGraph(spec);
   assert.ok(graph.edges.some((e) => e.from === "plan" && e.to === "write.root"));
-  assert.ok(graph.edges.some((e) => e.from === "plan" && e.to === "plan.adapt.1"));
+  assert.equal(
+    graph.nodes.some((n) => n.kind === "plan.adapt"),
+    false,
+  );
   assert.equal(
     graph.nodes.some((n) => n.kind === "research.domain"),
     false,
@@ -107,21 +110,15 @@ test("compileExecutionPlan throws when questions exceed maxLeafFanOut", () => {
   );
 });
 
-test("compileExecutionPlan within caps builds workUnits and reductions", () => {
+test("compileExecutionPlan within caps builds the executable work-unit plan", () => {
   const spec = defaultWikiRunSpec("Ok");
   const plan = compileExecutionPlan(spec, { maxDomainFanOut: 4, maxLeafFanOut: 6 });
-  assert.equal(plan.version, 3);
+  assert.equal(plan.version, 4);
   assert.equal(plan.fanOut.domainCount, 1);
   assert.equal(plan.fanOut.leafCount, 2);
   assert.equal(plan.workUnits.length, 2);
-  assert.equal(plan.reductions.length, 1);
-  assert.equal(plan.reductions[0]?.domainId, "core");
   assert.equal(plan.reviewLenses.length, 1);
-  assert.deepEqual(plan.budgets, {
-    maxRepairRounds: 2,
-    maxHardValidateRepairRounds: 0,
-  });
-  assert.deepEqual(plan.adaptation, { maxRounds: 2 });
+  assert.deepEqual(plan.adaptation, { required: true, maxRounds: 2 });
 });
 
 test("buildExecutionGraph omitted options use DEFAULT_ORCHESTRATION (4/6/1)", () => {

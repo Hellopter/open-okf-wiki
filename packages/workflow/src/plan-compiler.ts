@@ -18,6 +18,8 @@ export type CompileExecutionPlanCaps = {
   maxDomainFanOut?: number;
   maxLeafFanOut?: number;
   reviewCouncilSize?: number;
+  /** Whether the frozen plan needs a bounded evidence-gap adaptation pass. */
+  adaptationRequired?: boolean;
   /** Optional Spec content digest to record on the plan. */
   specDigest?: string;
 };
@@ -70,7 +72,6 @@ export function compileExecutionPlan(
   }
 
   const workUnits: ExecutionPlan["workUnits"] = [];
-  const reductions: ExecutionPlan["reductions"] = [];
   let leafCount = 0;
 
   for (const domain of domains) {
@@ -88,61 +89,47 @@ export function compileExecutionPlan(
     }
 
     const scope = (domain.scope?.trim() || domain.title?.trim() || domainId).slice(0, 2_000);
-    const leafIds: string[] = [];
-
     if (questions.length === 0) {
       // Domains without questions still get one leaf so domain reduce has input.
       const id = `leaf:${domainId}:1`;
-      leafIds.push(id);
       workUnits.push({
         id,
         domainId,
         questions: [],
         scope,
-        kind: "leaf",
       });
       leafCount += 1;
     } else {
       questions.forEach((question, index) => {
         const id = `leaf:${domainId}:${index + 1}`;
-        leafIds.push(id);
         workUnits.push({
           id,
           domainId,
           questions: [question],
           scope,
-          kind: "leaf",
         });
         leafCount += 1;
       });
     }
-
-    // Record reduction structure when a domain has multiple leaves.
-    if (leafIds.length > 1) {
-      reductions.push({
-        id: `reduce:${domainId}`,
-        childWorkUnitIds: leafIds,
-        domainId,
-      });
-    }
   }
 
+  // In the live path this is derived from inventory + planner uncertainty.
+  // Direct compiler consumers retain a deterministic, evidence-shaped default.
+  const adaptationRequired =
+    caps?.adaptationRequired ??
+    (leafCount > 1 || (spec.openQuestions ?? []).some((question) => question.trim().length > 0));
+
   return ExecutionPlanSchema.parse({
-    version: 3,
+    version: 4,
     workUnits,
-    reductions,
     reviewLenses,
-    budgets: {
-      maxRepairRounds: spec.acceptance?.maxRepairRounds ?? 2,
-      maxHardValidateRepairRounds: spec.acceptance?.maxHardValidateRepairRounds ?? 0,
-    },
     fanOut: {
       domainCount: domains.length,
       leafCount,
       maxDomainFanOut,
       maxLeafFanOut,
     },
-    adaptation: { maxRounds: 2 },
+    adaptation: { required: adaptationRequired, maxRounds: adaptationRequired ? 2 : 0 },
     ...(caps?.specDigest ? { specDigest: caps.specDigest } : {}),
   });
 }

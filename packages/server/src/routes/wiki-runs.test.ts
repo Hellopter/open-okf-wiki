@@ -4,6 +4,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {
+  WikiRunAttemptTranscriptDoneFrameSchema,
+  WikiRunAttemptTranscriptTraceFrameSchema,
+} from "@okf-wiki/contract";
 import { createWorkspace, registerWorkspaceInAppIndex, saveWorkspace } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 import { resetWikiRunsRegistryForTests } from "../wiki-runs-registry.ts";
@@ -197,8 +201,20 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   );
   await mkdir(path.dirname(sessionPath), { recursive: true });
   const expectedLines = [
-    JSON.stringify({ role: "user", content: "plan the wiki" }),
-    JSON.stringify({ role: "assistant", content: "drafting overview" }),
+    JSON.stringify({
+      trace: 1,
+      ordinal: 1,
+      at: "2026-07-31T00:00:00.000Z",
+      kind: "input",
+      content: "plan the wiki",
+    }),
+    JSON.stringify({
+      trace: 1,
+      ordinal: 2,
+      at: "2026-07-31T00:00:01.000Z",
+      kind: "assistant",
+      content: "drafting overview",
+    }),
   ];
   await writeFile(sessionPath, `${expectedLines.join("\n")}\n`, "utf8");
 
@@ -208,19 +224,17 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
     attemptId: string;
     nodeKey: string;
     state: string;
-    events: Array<{ kind: string; message?: unknown }>;
+    events: Array<{ kind: string; content?: unknown }>;
     cursor: number;
   };
   assert.equal(transcript.attemptId, attemptId);
   assert.equal(transcript.nodeKey, nodeKey);
   assert.ok(typeof transcript.state === "string" && transcript.state.length > 0);
   assert.ok(transcript.events.length >= 2);
-  assert.equal(transcript.events[0]?.kind, "legacy");
-  assert.deepEqual(transcript.events[0]?.message, { role: "user", content: "plan the wiki" });
-  assert.deepEqual(transcript.events[1]?.message, {
-    role: "assistant",
-    content: "drafting overview",
-  });
+  assert.equal(transcript.events[0]?.kind, "input");
+  assert.equal(transcript.events[0]?.content, "plan the wiki");
+  assert.equal(transcript.events[1]?.kind, "assistant");
+  assert.equal(transcript.events[1]?.content, "drafting overview");
   assert.equal(transcript.cursor, 2);
 
   const missing = await fetch(`${base}/${receipt.runId}/attempts/no-such-attempt/transcript`);
@@ -303,7 +317,13 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   await mkdir(path.dirname(sessionPath), { recursive: true });
   await writeFile(
     sessionPath,
-    `${JSON.stringify({ role: "assistant", content: "stream me" })}\n`,
+    `${JSON.stringify({
+      trace: 1,
+      ordinal: 1,
+      at: "2026-07-31T00:00:00.000Z",
+      kind: "assistant",
+      content: "stream me",
+    })}\n`,
     "utf8",
   );
 
@@ -319,14 +339,14 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   const first = await nextFrame(reader, sseBuf);
   assert.equal(first.event, "trace");
   assert.ok(first.data && typeof first.data === "object");
-  const payload = first.data as { events: unknown[]; live?: boolean; cursor?: number };
-  assert.ok(Array.isArray(payload.events));
+  const payload = WikiRunAttemptTranscriptTraceFrameSchema.parse(first.data);
   assert.ok(payload.events.length >= 1);
   assert.equal(payload.cursor, 1);
 
   // Terminal attempt should also emit done and end the stream.
   const second = await nextFrame(reader, sseBuf);
   assert.equal(second.event, "done");
+  WikiRunAttemptTranscriptDoneFrameSchema.parse(second.data);
   abort.abort();
 
   // EventSource sends Last-Event-ID after a transport reconnect. The trace

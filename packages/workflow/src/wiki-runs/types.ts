@@ -4,7 +4,8 @@
  */
 
 import type {
-  AttemptTraceEvent,
+  WikiRunAttemptTranscript as ContractWikiRunAttemptTranscript,
+  WikiRunListItem as ContractWikiRunListItem,
   PiAttemptExecutor,
   PiAttemptInput,
   PiAttemptOutcome,
@@ -12,7 +13,6 @@ import type {
   RunCommandContext,
   RunCommandReceipt,
   WikiRunArtifactKind,
-  WikiRunAttempt,
   WikiRunEvent,
   WikiRunSnapshot,
   WikiRunSpecRead,
@@ -72,36 +72,9 @@ export type WikiRunRead = {
   cursor: number;
 };
 
-/** Slim list projection for Agent Workspace / HTTP GET /runs (not full snapshots). */
-export type WikiRunListItem = {
-  runId: string;
-  state: WikiRunSnapshot["state"];
-  updatedAt: string;
-  revision: number;
-  /**
-   * Operator Session that dispatched StartRun (audit link).
-   * Null when started outside a Session (e.g. headless HTTP).
-   */
-  sessionId: string | null;
-};
-
-/**
- * Secret-free, cursor-paged Attempt trace for Node details UI.
- */
-export type WikiRunAttemptTranscript = {
-  attemptId: string;
-  nodeKey: string;
-  state: WikiRunAttempt["state"];
-  events: AttemptTraceEvent[];
-  /** There are older entries before the first event in this page. */
-  hasEarlier: boolean;
-  /** There are newer entries after this page (used by incremental SSE). */
-  hasMore: boolean;
-  /** Exclusive cursor for requesting the preceding page. */
-  nextBefore?: number;
-  /** Last event sequence returned, used to subscribe to incremental SSE. */
-  cursor: number;
-};
+/** Contract-owned projections shared by workflow, server, and Web adapters. */
+export type WikiRunListItem = ContractWikiRunListItem;
+export type WikiRunAttemptTranscript = ContractWikiRunAttemptTranscript;
 
 export interface WikiRuns {
   dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt>;

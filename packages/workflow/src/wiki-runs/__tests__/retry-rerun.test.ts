@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   approvePlanGate,
@@ -10,11 +11,12 @@ import {
   fullGraphFixtureExecutor,
   makeWorkspace,
   removeWorkspace,
+  succeededPlan,
   waitForRunState,
   waitForTerminal,
 } from "./harness.js";
 
-test("RerunNode bumps generation, invalidates lineage consumers, and rejects stale generation", async (t) => {
+test("RerunNode rejects a plan after execution topology is materialized", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
@@ -78,59 +80,35 @@ test("RerunNode bumps generation, invalidates lineage consumers, and rejects sta
   db.close();
 
   const reopened = await openWikiRuns({ rootPath: root });
-  const rerun = await reopened.dispatch(
-    {
-      type: "rerun_node",
-      commandId: "rerun-plan",
-      runId: receipt.runId,
-      nodeKey: "plan",
-      generation: 0,
-      feedback: "Re-plan with tighter leaf scope.",
-    },
-    context(workspaceId),
-  );
-  assert.equal(rerun.accepted, true);
-  const snapshot = (await reopened.read({ runId: receipt.runId })).snapshot;
-  const plan = snapshot.nodes.find((node) => node.key === "plan");
-  const research = snapshot.nodes.find((node) => node.key === "research.domain.main");
-  const other = snapshot.nodes.find((node) => node.key === "research.leaf.other");
-  assert.equal(plan?.generation, 1);
-  assert.equal(plan?.state, "ready");
-  assert.equal(research?.generation, 1);
-  assert.equal(research?.state, "invalidated");
-  assert.equal(other?.generation, 0);
-  assert.equal(other?.state, "succeeded");
-  assert.equal(snapshot.state, "queued");
-
   await assert.rejects(
     () =>
       reopened.dispatch(
         {
           type: "rerun_node",
-          commandId: "rerun-plan-stale",
+          commandId: "rerun-plan-after-materialization",
           runId: receipt.runId,
           nodeKey: "plan",
           generation: 0,
+          feedback: "Re-plan with tighter leaf scope.",
         },
         context(workspaceId),
       ),
-    /stale/,
+    /plan.*topology.*materialized|new run/i,
   );
+  const snapshot = (await reopened.read({ runId: receipt.runId })).snapshot;
+  const plan = snapshot.nodes.find((node) => node.key === "plan");
+  const research = snapshot.nodes.find((node) => node.key === "research.domain.main");
+  const other = snapshot.nodes.find((node) => node.key === "research.leaf.other");
+  assert.equal(plan?.generation, 0);
+  assert.equal(plan?.state, "succeeded");
+  assert.equal(research?.generation, 0);
+  assert.equal(research?.state, "succeeded");
+  assert.equal(other?.generation, 0);
+  assert.equal(other?.state, "succeeded");
   await reopened.close();
-
-  const dbAfter = new DatabaseSync(path.join(root, ".okf-wiki", "workflow.sqlite"));
-  const planDetail = dbAfter
-    .prepare(
-      "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = 1",
-    )
-    .get(receipt.runId) as { detail_json: string | null };
-  assert.deepEqual(JSON.parse(planDetail.detail_json ?? "null"), {
-    feedback: "Re-plan with tighter leaf scope.",
-  });
-  dbAfter.close();
 });
 
-test("RerunNode on a ready node leaves only one claimable generation", async (t) => {
+test("RerunNode permits plan revision before execution topology is materialized", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root });
@@ -181,6 +159,51 @@ test("RerunNode on a ready node leaves only one claimable generation", async (t)
   );
   assert.equal(claimable.length, 1);
   assert.equal(claimable[0]?.generation, 1);
+});
+
+test("RerunNode replaces the open plan gate before execution topology is materialized", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: fullGraphFixtureExecutor,
+  });
+  t.after(() => runs.close());
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-rerun-open-plan", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  const atPlanGate = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);
+  const firstGate = atPlanGate.snapshot.gates.find(
+    (gate) => gate.kind === "plan" && gate.state === "open",
+  );
+  assert.ok(firstGate, "first plan execution must open a plan gate");
+
+  await runs.dispatch(
+    {
+      type: "rerun_node",
+      commandId: "rerun-open-plan",
+      runId: receipt.runId,
+      nodeKey: "plan",
+      generation: 0,
+      feedback: "Use a narrower scope.",
+    },
+    context(workspaceId),
+  );
+
+  let after = await runs.read({ runId: receipt.runId });
+  for (let i = 0; i < 240; i += 1) {
+    after = await runs.read({ runId: receipt.runId });
+    if (after.snapshot.nodes.find((node) => node.key === "plan")?.generation === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(after.snapshot.nodes.find((node) => node.key === "plan")?.generation, 1);
+  assert.equal(
+    after.snapshot.gates.find((gate) => gate.gateId === firstGate.gateId)?.state,
+    "withdrawn",
+  );
+  assert.equal(after.snapshot.nodes.find((node) => node.key === "gate.plan")?.generation, 0);
+  assert.equal(after.snapshot.nodes.find((node) => node.key === "gate.plan")?.state, "cancelled");
 });
 
 test("failed leaf Retry reuses input_digest and does not re-run succeeded sibling leaves", async (t) => {
@@ -360,6 +383,81 @@ test("RerunNode on write.root invalidates validate/review lineage and unlocks af
   assert.deepEqual(JSON.parse(detail.detail_json ?? "null"), {
     feedback: "Tighten overview citations.",
   });
+});
+
+test("RerunNode rejects write.root after its model candidate budget is exhausted", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: async (input, signal) => {
+      if (input.node.kind === "plan") {
+        const spec = defaultWikiRunSpec("Workflow test");
+        spec.acceptance.maxCandidates = 1;
+        return succeededPlan(input, "Workflow test", spec);
+      }
+      return fullGraphFixtureExecutor(input, signal);
+    },
+  });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-rerun-candidate-cap", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  await approvePlanGate(runs, receipt.runId, workspaceId, "approve-rerun-candidate-cap");
+  const atPublication = await waitForRunState(
+    runs,
+    receipt.runId,
+    ["waiting_for_operator"],
+    60_000,
+  );
+  const writer = atPublication.snapshot.nodes.find((node) => node.key === "write.root");
+  assert.equal(writer?.state, "succeeded");
+  assert.equal(writer?.generation, 0);
+
+  await assert.rejects(
+    () =>
+      runs.dispatch(
+        {
+          type: "rerun_node",
+          commandId: "rerun-write-after-candidate-cap",
+          runId: receipt.runId,
+          nodeKey: "write.root",
+          generation: 0,
+        },
+        context(workspaceId),
+      ),
+    /write\.root.*candidate cap reached \(1\/1\)/,
+  );
+  const after = (await runs.read({ runId: receipt.runId })).snapshot;
+  assert.equal(after.nodes.find((node) => node.key === "write.root")?.generation, 0);
+});
+
+test("RerunNode rejects repair node keys before they can mint an unbudgeted candidate", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({ rootPath: root });
+  t.after(() => runs.close());
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-rerun-repair", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+
+  await assert.rejects(
+    () =>
+      runs.dispatch(
+        {
+          type: "rerun_node",
+          commandId: "rerun-repair-1",
+          runId: receipt.runId,
+          nodeKey: "repair.1",
+          generation: 0,
+        },
+        context(workspaceId),
+      ),
+    /cannot rerun a repair node/,
+  );
 });
 
 test("research auto-retry re-queues once on infrastructure; further failure stays manual", async (t) => {

@@ -41,21 +41,14 @@ test("readAttemptTranscript returns JSONL messages from live session or sealed a
   assert.ok(Array.isArray(transcript.events));
   assert.ok(transcript.events.length >= 2, "plan transcript should be multi-row conversation");
   const first = transcript.events[0];
-  assert.equal(first?.kind, "legacy");
+  assert.equal(first?.kind, "input");
   assert.equal(
-    first?.kind === "legacy" ? (first.message as { role?: string }).role : undefined,
-    "user",
+    first?.kind === "input" ? first.content : undefined,
+    "Plan WikiRunSpec for Workflow test",
   );
   assert.ok(
-    transcript.events.some(
-      (event) =>
-        event.kind === "legacy" &&
-        typeof event.message === "object" &&
-        event.message !== null &&
-        ((event.message as { role?: string }).role === "assistant" ||
-          (event.message as { type?: string }).type === "text"),
-    ),
-    "expected assistant/text content in plan transcript",
+    transcript.events.some((event) => event.kind === "assistant" && event.content.length > 0),
+    "expected canonical assistant content in plan transcript",
   );
 
   await assert.rejects(
@@ -185,17 +178,26 @@ test("readAttemptTranscript returns the newest page and cursor-pages older trace
     ].join("\n") + "\n",
     "utf8",
   );
-  const mixed = await runs.readAttemptTranscript({
-    runId: receipt.runId,
-    attemptId: attempt.attemptId,
-  });
-  assert.deepEqual(
-    mixed.events.map((event) => event.kind),
-    ["legacy", "tool_call", "tool_result"],
+  await assert.rejects(
+    () => runs.readAttemptTranscript({ runId: receipt.runId, attemptId: attempt.attemptId }),
+    /canonical trace JSONL/,
   );
-  assert.deepEqual(
-    mixed.events.map((event) => event.ordinal),
-    [1, 2, 3],
+
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      trace: 1,
+      ordinal: 1,
+      at: "2026-07-31T00:00:00.000Z",
+      kind: "assistant",
+      content: "valid prefix",
+    })}\n{"trace":1`,
+    "utf8",
+  );
+  await assert.rejects(
+    () => runs.readAttemptTranscript({ runId: receipt.runId, attemptId: attempt.attemptId }),
+    /not valid JSON\/JSONL/,
+    "a corrupt JSONL tail must not silently truncate the audit trace",
   );
 });
 

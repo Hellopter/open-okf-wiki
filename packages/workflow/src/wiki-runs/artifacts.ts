@@ -26,6 +26,7 @@ import {
   type PiAttemptArtifactDescriptor,
   RepairRequestSchema,
   validateBoundInputs,
+  validateNodeOutputs,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
 import {
@@ -38,9 +39,9 @@ import { artifactId, digest, now } from "./crypto-util.js";
 import type { WikiRunsCasCtx } from "./ctx.js";
 import { upstreamKeys } from "./dag.js";
 import {
-  latestWikiCandidate,
   producedByForNode,
   registerWikiCandidate,
+  wikiCandidateById,
 } from "./evaluation/candidate.js";
 import { durableFsyncPath, manifestFor } from "./fs-util.js";
 import { isRepairNodeKey, REPAIR_NODE_PREFIX } from "./repair-schedule.js";
@@ -262,42 +263,77 @@ function repairKeysDesc(
 }
 
 /**
- * Baseline wiki_tree for a repair stage `repair.N`.
+ * Load the current repair generation's durable request. The request is the
+ * run-local provenance declaration for its exact wiki_tree baseline.
+ */
+function repairRequestForNode(
+  host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
+  runId: string,
+  nodeKey: string,
+) {
+  const generation = host.currentNodeGeneration(runId, nodeKey);
+  if (generation === undefined) {
+    throw new Error(`repair ${nodeKey} has no current generation`);
+  }
+  const row = asRow(
+    host.db
+      .prepare(
+        `SELECT detail_json FROM nodes
+         WHERE run_id = ? AND node_key = ? AND generation = ?`,
+      )
+      .get(runId, nodeKey, generation),
+  );
+  if (!row?.detail_json) {
+    throw new Error(`repair ${nodeKey} is missing its persisted repair request`);
+  }
+  try {
+    const parsed = JSON.parse(String(row.detail_json)) as { repairRequest?: unknown };
+    return RepairRequestSchema.parse(parsed.repairRequest);
+  } catch (error) {
+    throw new Error(
+      `repair ${nodeKey} has an invalid persisted repair request: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Exact sealed wiki_tree baseline for a repair stage `repair.N`.
  *
- * Priority:
- * 1. latest succeeded prior repair.M (M < N) wiki (numeric DESC) — progressive multi-round
- * 2. latestWikiCandidate artifact if resolvable
- * 3. undefined — caller keeps edge-bound wiki (write.root or review.reduce) or falls back
- *
- * Does not bind the node's own outputs — only upstream baselines.
+ * The RepairRequest's baselineCandidateId is the sole source of truth. The
+ * candidate table and artifacts table make that relationship both durable and
+ * inspectable before it is frozen again in attempt_inputs at claim time.
  */
 export function baselineWikiForRepair(
   host: Pick<ArtifactsHost, "db" | "currentNodeGeneration">,
   runId: string,
   nodeKey: string,
 ): { role: string; artifactId: string } | undefined {
-  const round = parseRepairRound(nodeKey);
-  if (round === undefined) return undefined;
-
-  // 1. Prior repair.M (M < N), highest first — multi-round progressive seed.
-  for (const key of repairKeysDesc(host, runId, round)) {
-    const found = wikiTreeFromLatestSucceeded(host, runId, key);
-    if (found) return found;
+  if (!isRepairNodeKey(nodeKey)) return undefined;
+  const request = repairRequestForNode(host, runId, nodeKey);
+  const candidateId = request.baselineCandidateId.trim();
+  if (!candidateId || candidateId === "pending") {
+    throw new Error(`repair ${nodeKey} has no resolved baseline candidate`);
   }
-
-  // 2. Durable candidate registry (when present).
-  try {
-    const cand = latestWikiCandidate(host, runId);
-    if (cand?.artifactId?.trim()) {
-      return { role: "wiki_tree", artifactId: cand.artifactId };
-    }
-  } catch {
-    // wiki_candidates may be absent in partial unit fixtures
+  const candidate = wikiCandidateById(host, runId, candidateId);
+  if (!candidate) {
+    throw new Error(`repair ${nodeKey} references unavailable baseline candidate ${candidateId}`);
   }
-
-  // 3. No forced write.root — preserve edge-bound wiki (mechanical: write.root,
-  // operator: review.reduce). Caller falls back when wiki_tree is still missing.
-  return undefined;
+  const artifact = asRow(
+    host.db
+      .prepare(
+        `SELECT artifact_id FROM artifacts
+         WHERE run_id = ? AND artifact_id = ? AND kind = 'wiki_tree'`,
+      )
+      .get(runId, candidate.artifactId),
+  );
+  if (!artifact) {
+    throw new Error(
+      `repair ${nodeKey} baseline candidate ${candidateId} does not reference a sealed wiki_tree`,
+    );
+  }
+  return { role: "wiki_tree", artifactId: candidate.artifactId };
 }
 
 export function upstreamSealedOutputs(
@@ -357,6 +393,14 @@ export function upstreamSealedOutputs(
     }
   }
 
+  // Repair input is selected only by its persisted baseline candidate. Do not
+  // let the generic carry-forward scan replace that durable provenance with a
+  // newer, unrelated tree.
+  if (isRepairNodeKey(nodeKey)) {
+    const baseline = baselineWikiForRepair(host, runId, nodeKey);
+    if (baseline) byRole.set("wiki_tree", baseline.artifactId);
+  }
+
   // Carry forward the latest wiki_tree for validate/review/prepare/publish when
   // edges only reference intermediate nodes that re-emit it.
   // Prefer refined trees (repair.N / validate) over write.root so model repair
@@ -379,25 +423,6 @@ export function upstreamSealedOutputs(
         if (output.role === "wiki_tree") add("wiki_tree", output.artifactId);
       }
       if (byRole.has("wiki_tree")) break;
-    }
-  }
-
-  // repair.N: progressive seed — prior repair.M (M < N), else candidate / write.root.
-  // Edges wire write.root or review.reduce → repair.N; without this multi-round
-  // repair would discard progress from repair.(N-1).
-  if (isRepairNodeKey(nodeKey)) {
-    const baseline = baselineWikiForRepair(host, runId, nodeKey);
-    if (baseline) {
-      byRole.set("wiki_tree", baseline.artifactId);
-    } else if (!byRole.has("wiki_tree")) {
-      // Fall through: review.reduce (operator) or write.root via edges already tried.
-      for (const key of ["review.reduce", "write.root"]) {
-        const found = wikiTreeFromLatestSucceeded(host, runId, key);
-        if (found) {
-          byRole.set("wiki_tree", found.artifactId);
-          break;
-        }
-      }
     }
   }
 
@@ -610,6 +635,10 @@ export function commitNodeArtifacts(
       .run(claim.attemptId);
     return false;
   }
+  validateNodeOutputs(
+    contractForNode(claim.kind, claim.nodeKey),
+    preparations.map((preparation) => ({ role: preparation.role, kind: preparation.kind })),
+  );
   const timestamp = now();
   for (const preparation of preparations) {
     host.db

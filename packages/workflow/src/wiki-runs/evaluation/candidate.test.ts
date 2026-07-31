@@ -8,12 +8,14 @@ import { test } from "node:test";
 import { configureOwner, migrate } from "../schema.js";
 import {
   assertUnderMaxCandidates,
+  countModelWikiCandidates,
   countWikiCandidates,
   latestWikiCandidate,
   listWikiCandidates,
   nextCandidateRound,
   producedByForNode,
   registerWikiCandidate,
+  wikiCandidateById,
 } from "./candidate.js";
 
 function openMigratedDb(): DatabaseSync {
@@ -111,9 +113,12 @@ test("register two candidates with parent chain, count, latest, list", () => {
   assert.equal(mech.parentCandidateId, repaired.candidateId);
 
   assert.equal(countWikiCandidates(host, "run-1"), 3);
+  assert.equal(countModelWikiCandidates(host, "run-1"), 2);
   const latest = latestWikiCandidate(host, "run-1");
   assert.ok(latest);
   assert.equal(latest!.candidateId, mech.candidateId);
+  assert.equal(wikiCandidateById(host, "run-1", write.candidateId)?.artifactId, write.artifactId);
+  assert.equal(wikiCandidateById(host, "run-2", write.candidateId), undefined);
 
   const listed = listWikiCandidates(host, "run-1");
   assert.deepEqual(
@@ -124,7 +129,7 @@ test("register two candidates with parent chain, count, latest, list", () => {
   db.close();
 });
 
-test("assertUnderMaxCandidates throws at cap; register still allowed past cap", () => {
+test("candidate cap counts model proposals rather than mechanical re-seals", () => {
   const db = openMigratedDb();
   seedRun(db);
   const host = { db };
@@ -148,7 +153,7 @@ test("assertUnderMaxCandidates throws at cap; register still allowed past cap", 
     /wiki candidate cap reached \(2\/2\)/,
   );
 
-  // Commit path always registers (truth) even when over scheduling cap.
+  // Mechanical re-seals remain durable evidence without consuming the model cap.
   const extra = registerWikiCandidate(host, {
     runId: "run-1",
     digest: "3333333333333333333333333333333333333333333333333333333333333333",
@@ -157,6 +162,11 @@ test("assertUnderMaxCandidates throws at cap; register still allowed past cap", 
   });
   assert.equal(extra.round, 2);
   assert.equal(countWikiCandidates(host, "run-1"), 3);
+  assert.equal(countModelWikiCandidates(host, "run-1"), 2);
+  assert.throws(
+    () => assertUnderMaxCandidates(host, "run-1", 2),
+    /wiki candidate cap reached \(2\/2\)/,
+  );
 
   db.close();
 });

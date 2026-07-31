@@ -30,7 +30,6 @@ export function contextBudgetFields(input: {
   }
   const budget = resolveContextBudget({
     contextTargetTokens: input.workspace?.limits?.contextTargetTokens,
-    maxContextTokens: input.workspace?.limits?.inputTokensLimit,
   });
   return {
     contextWindow: budget.contextWindow,
