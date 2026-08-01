@@ -10,6 +10,7 @@ import {
   RunCommandContext,
   RunCommandReceipt,
 } from "@okf-wiki/contract";
+import { CandidateReview } from "./candidate-review.js";
 import { digest, now } from "./crypto-util.js";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { countModelWikiCandidates } from "./evaluation/candidate.js";
@@ -18,6 +19,7 @@ import {
   isRepairNodeKey,
   loadEvaluationPolicy,
 } from "./repair-schedule.js";
+import { pauseRun, resumeRun, submitRunRevision } from "./run-revision-coordinator.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { CommandIdCollision } from "./types.js";
@@ -83,11 +85,35 @@ export function applyCommand(
     };
   }
 
+  if (command.type !== "start_run") {
+    const run = asRow(
+      host.db.prepare("SELECT revision FROM runs WHERE run_id = ?").get(command.runId),
+    );
+    if (!run) throw new Error(`run not found: ${command.runId}`);
+    if (requiredNumber(run, "revision") !== command.expectedRevision) {
+      throw new Error("stale control revision");
+    }
+  }
+
   if (command.type === "retry_failed_node")
     return retryFailedNode(host, command, context, payloadDigest);
   if (command.type === "rerun_node") return rerunNode(host, command, context, payloadDigest);
   if (command.type === "continue_evaluation") {
     return continueEvaluation(host, command, context, payloadDigest);
+  }
+  if (command.type === "submit_run_revision") {
+    return submitRunRevision(host, command, context, payloadDigest);
+  }
+  if (command.type === "pause_run") return pauseRun(host, command, context, payloadDigest);
+  if (command.type === "resume_run") return resumeRun(host, command, context, payloadDigest);
+  if (command.type === "create_review_thread") {
+    return new CandidateReview(host).createThread(command, context, payloadDigest);
+  }
+  if (command.type === "resolve_review_thread") {
+    return new CandidateReview(host).resolveThread(command, context, payloadDigest);
+  }
+  if (command.type === "request_repair") {
+    return new CandidateReview(host).requestRepair(command, context, payloadDigest);
   }
   if (command.type === "resolve_gate") return host.resolveGate(command, context, payloadDigest);
   if (command.type === "cancel_run") return cancelRun(host, command, context, payloadDigest);
@@ -109,7 +135,7 @@ export function applyCommand(
           freeze_config_json, freeze_config_digest, intent_json,
           frozen_sources_json, frozen_skill_digest,
           pinned_sources_json, skill_digest, pinned_digest, created_at, updated_at
-        ) VALUES (?, ?, ?, 3, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, 4, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       runId,
@@ -128,6 +154,12 @@ export function applyCommand(
         ) VALUES (?, 'freeze', 'freeze', 'ready', 0, NULL, NULL, NULL)`,
     )
     .run(runId);
+  host.db
+    .prepare(
+      `INSERT INTO execution_epochs (epoch_id, run_id, ordinal, scope_revision_id, state, created_at)
+       VALUES (?, ?, 1, NULL, 'active', ?)`,
+    )
+    .run(randomUUID(), runId, timestamp);
   const revision = host.emit(runId, "run.started");
   host.db
     .prepare(
@@ -251,7 +283,11 @@ export function cancelRun(
   );
   if (!run) throw new Error(`run not found: ${command.runId}`);
   const state = requiredText(run, "state");
-  if (!["queued", "running", "waiting_for_operator", "cancelling"].includes(state))
+  if (
+    !["queued", "running", "waiting_for_operator", "pausing", "paused", "cancelling"].includes(
+      state,
+    )
+  )
     throw new Error(`cannot cancel run in terminal state: ${state}`);
   const timestamp = now();
   const result = applyRunCancelTransitions(host, {

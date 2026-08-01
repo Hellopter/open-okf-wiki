@@ -74,7 +74,7 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   const run = asRow(db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId));
   if (!run) throw new Error(`run not found: ${runId}`);
   const definitionVersion = requiredNumber(run, "definition_version");
-  if (definitionVersion !== 3) {
+  if (definitionVersion !== 4) {
     throw new Error(`unsupported WikiRuns definition version for run ${runId}`);
   }
 
@@ -265,8 +265,18 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     candidates = asRows(
       db
         .prepare(
-          `SELECT candidate_id, digest, artifact_id, parent_candidate_id, produced_by, round, created_at
-           FROM wiki_candidates WHERE run_id = ?
+          `SELECT wiki_candidates.candidate_id, wiki_candidates.digest, wiki_candidates.artifact_id,
+                  wiki_candidates.parent_candidate_id, wiki_candidates.produced_by,
+                  wiki_candidates.round, wiki_candidates.created_at,
+                  candidate_review_artifacts.baseline_digest,
+                  candidate_review_artifacts.baseline_artifact_id,
+                  candidate_review_artifacts.evidence_digest,
+                  candidate_review_artifacts.evidence_artifact_id
+           FROM wiki_candidates
+           LEFT JOIN candidate_review_artifacts
+             ON candidate_review_artifacts.run_id = wiki_candidates.run_id
+            AND candidate_review_artifacts.candidate_digest = wiki_candidates.digest
+           WHERE wiki_candidates.run_id = ?
            ORDER BY round ASC, created_at ASC`,
         )
         .all(runId),
@@ -284,6 +294,18 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
         : {}),
       ...(row.created_at != null && String(row.created_at).trim()
         ? { createdAt: String(row.created_at).trim() }
+        : {}),
+      ...(row.baseline_digest != null && String(row.baseline_digest).trim()
+        ? { baselineDigest: String(row.baseline_digest).trim() }
+        : {}),
+      ...(row.baseline_artifact_id != null && String(row.baseline_artifact_id).trim()
+        ? { baselineArtifactId: String(row.baseline_artifact_id).trim() }
+        : {}),
+      ...(row.evidence_digest != null && String(row.evidence_digest).trim()
+        ? { evidenceDigest: String(row.evidence_digest).trim() }
+        : {}),
+      ...(row.evidence_artifact_id != null && String(row.evidence_artifact_id).trim()
+        ? { evidenceArtifactId: String(row.evidence_artifact_id).trim() }
         : {}),
     }));
   } catch {
@@ -320,6 +342,58 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   } catch {
     evaluationRecoveries = undefined;
   }
+  const revisions = asRows(
+    db
+      .prepare(
+        `SELECT revision_id, kind, content, command_id, actor_id, created_at, applied_at, epoch_id
+         FROM run_revisions WHERE run_id = ? ORDER BY created_at, revision_id`,
+      )
+      .all(runId),
+  ).map((row) => ({
+    revisionId: requiredText(row, "revision_id"),
+    kind: requiredText(row, "kind") as "guidance" | "scope_change",
+    content: requiredText(row, "content"),
+    commandId: requiredText(row, "command_id"),
+    actorId: requiredText(row, "actor_id"),
+    createdAt: requiredText(row, "created_at"),
+    ...(row.applied_at != null ? { appliedAt: String(row.applied_at) } : {}),
+    ...(row.epoch_id != null ? { epochId: String(row.epoch_id) } : {}),
+  }));
+  const epochs = asRows(
+    db
+      .prepare(
+        `SELECT epoch_id, ordinal, scope_revision_id, state, created_at
+         FROM execution_epochs WHERE run_id = ? ORDER BY ordinal`,
+      )
+      .all(runId),
+  ).map((row) => ({
+    epochId: requiredText(row, "epoch_id"),
+    ordinal: requiredNumber(row, "ordinal"),
+    state: requiredText(row, "state") as "active" | "superseded" | "completed",
+    createdAt: requiredText(row, "created_at"),
+    ...(row.scope_revision_id != null ? { scopeRevisionId: String(row.scope_revision_id) } : {}),
+  }));
+  const reviewThreads = asRows(
+    db
+      .prepare(
+        `SELECT thread_id, candidate_digest, page_path, start_line, end_line, selected_text_digest,
+                body, state, author_id, created_at, resolved_at
+         FROM review_threads WHERE run_id = ? ORDER BY created_at, thread_id`,
+      )
+      .all(runId),
+  ).map((row) => ({
+    threadId: requiredText(row, "thread_id"),
+    candidateDigest: requiredText(row, "candidate_digest"),
+    pagePath: requiredText(row, "page_path"),
+    startLine: requiredNumber(row, "start_line"),
+    endLine: requiredNumber(row, "end_line"),
+    selectedTextDigest: requiredText(row, "selected_text_digest"),
+    body: requiredText(row, "body"),
+    state: requiredText(row, "state") as "open" | "resolved" | "superseded",
+    authorId: requiredText(row, "author_id"),
+    createdAt: requiredText(row, "created_at"),
+    ...(row.resolved_at != null ? { resolvedAt: String(row.resolved_at) } : {}),
+  }));
   return WikiRunSnapshotSchema.parse({
     schema: WIKI_RUNS_SCHEMA,
     definitionVersion,
@@ -342,6 +416,9 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     attempts,
     gates,
     candidates,
+    revisions,
+    epochs,
+    reviewThreads,
     ...(evaluationRecoveries && evaluationRecoveries.length > 0 ? { evaluationRecoveries } : {}),
     effects,
     createdAt: requiredText(run, "created_at"),

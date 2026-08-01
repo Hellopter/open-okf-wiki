@@ -65,6 +65,8 @@ export function WorkspaceSettingsPage({
   const [providerMaxRetryDelayMs, setProviderMaxRetryDelayMs] = useState("60000");
   const [maxDomainFanOut, setMaxDomainFanOut] = useState("4");
   const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
+  const [maxActiveRuns, setMaxActiveRuns] = useState("2");
+  const [maxConcurrentAttempts, setMaxConcurrentAttempts] = useState("4");
   const [planScoutCount, setPlanScoutCount] = useState("2");
   const [reviewCouncilSize, setReviewCouncilSize] = useState("3");
   const [reviewConcurrency, setReviewConcurrency] = useState("");
@@ -102,6 +104,8 @@ export function WorkspaceSettingsPage({
       setProviderMaxRetryDelayMs(String(ws.limits?.retry?.provider?.maxRetryDelayMs ?? 60_000));
       setMaxDomainFanOut(String(ws.orchestration?.maxDomainFanOut ?? 4));
       setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
+      setMaxActiveRuns(String(ws.orchestration.maxActiveRuns));
+      setMaxConcurrentAttempts(String(ws.orchestration.maxConcurrentAttempts));
       setPlanScoutCount(String(ws.orchestration?.planScoutCount ?? 2));
       setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 3));
       setReviewConcurrency(
@@ -286,6 +290,8 @@ export function WorkspaceSettingsPage({
         ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
         : undefined;
       const orchestration = {
+        maxActiveRuns: Math.min(32, Math.max(1, Number(maxActiveRuns) || 1)),
+        maxConcurrentAttempts: Math.min(128, Math.max(1, Number(maxConcurrentAttempts) || 1)),
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
         planScoutCount: Math.min(4, Math.max(0, Number(planScoutCount) || 0)),
@@ -382,6 +388,10 @@ export function WorkspaceSettingsPage({
               setMaxDomainFanOut={setMaxDomainFanOut}
               maxLeafFanOut={maxLeafFanOut}
               setMaxLeafFanOut={setMaxLeafFanOut}
+              maxActiveRuns={maxActiveRuns}
+              setMaxActiveRuns={setMaxActiveRuns}
+              maxConcurrentAttempts={maxConcurrentAttempts}
+              setMaxConcurrentAttempts={setMaxConcurrentAttempts}
               planScoutCount={planScoutCount}
               setPlanScoutCount={setPlanScoutCount}
               reviewCouncilSize={reviewCouncilSize}

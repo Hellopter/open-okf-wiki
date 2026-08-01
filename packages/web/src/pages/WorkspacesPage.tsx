@@ -55,6 +55,8 @@ export function WorkspacesPage() {
   const [name, setName] = useState("");
   const [rootPath, setRootPath] = useState("");
   const [modelProfileId, setModelProfileId] = useState("");
+  const [maxActiveRuns, setMaxActiveRuns] = useState("");
+  const [maxConcurrentAttempts, setMaxConcurrentAttempts] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceSummary | null>(null);
@@ -105,13 +107,18 @@ export function WorkspacesPage() {
     setError(null);
     try {
       const root = rootPath.trim();
+      const activeRuns = Number(maxActiveRuns);
+      const concurrentAttempts = Number(maxConcurrentAttempts);
       const { workspace } = await createWorkspace({
         name: name.trim(),
         rootPath: root,
         ...(modelProfileId ? { modelProfileId } : {}),
+        orchestration: { maxActiveRuns: activeRuns, maxConcurrentAttempts: concurrentAttempts },
       });
       setName("");
       setRootPath("");
+      setMaxActiveRuns("");
+      setMaxConcurrentAttempts("");
       setShowForm(false);
       navigate(operateHref(workspace.id));
     } catch (err) {
@@ -206,6 +213,36 @@ export function WorkspacesPage() {
                   />
                   <FieldDescription>{t.workspaces.rootHint}</FieldDescription>
                 </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field>
+                    <FieldLabel htmlFor="workspace-max-active-runs">Active Runs</FieldLabel>
+                    <Input
+                      id="workspace-max-active-runs"
+                      type="number"
+                      min="1"
+                      max="32"
+                      value={maxActiveRuns}
+                      onChange={(event) => setMaxActiveRuns(event.target.value)}
+                      required
+                      data-testid="workspace-max-active-runs-input"
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="workspace-max-concurrent-attempts">
+                      Concurrent attempts
+                    </FieldLabel>
+                    <Input
+                      id="workspace-max-concurrent-attempts"
+                      type="number"
+                      min="1"
+                      max="128"
+                      value={maxConcurrentAttempts}
+                      onChange={(event) => setMaxConcurrentAttempts(event.target.value)}
+                      required
+                      data-testid="workspace-max-concurrent-attempts-input"
+                    />
+                  </Field>
+                </div>
                 <ModelSelect
                   models={models}
                   value={modelProfileId}
@@ -225,6 +262,10 @@ export function WorkspacesPage() {
                     isSubmitting ||
                     !name.trim() ||
                     !rootPath.trim() ||
+                    !Number.isInteger(Number(maxActiveRuns)) ||
+                    Number(maxActiveRuns) < 1 ||
+                    !Number.isInteger(Number(maxConcurrentAttempts)) ||
+                    Number(maxConcurrentAttempts) < 1 ||
                     (models.length > 0 && !modelProfileId)
                   }
                   data-testid="workspace-create-submit"

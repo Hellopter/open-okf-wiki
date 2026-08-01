@@ -120,12 +120,44 @@ export async function mechanicalPublish(
             ),
             effectKey,
           );
+        host.db
+          .prepare(
+            `UPDATE gates
+             SET state = 'open', decision_json = NULL, detail_json = ?, opened_at = ?,
+                 opened_revision = (SELECT revision FROM runs WHERE run_id = ?)
+             WHERE gate_id = ? AND run_id = ? AND kind = 'publication' AND state = 'resolved'`,
+          )
+          .run(
+            JSON.stringify({
+              summary:
+                "Publication conflict: the published Wiki changed after this candidate was sealed.",
+              expectedLiveDigest: result.expectedLiveDigest,
+              observedLiveDigest: result.liveDigest,
+            }),
+            new Date().toISOString(),
+            claim.runId,
+            gateId,
+            claim.runId,
+          );
+        host.db
+          .prepare(
+            `UPDATE nodes SET state = 'waiting', current_attempt_id = NULL
+             WHERE run_id = ? AND node_key = 'gate.publication'
+               AND generation = (SELECT node_generation FROM gates WHERE gate_id = ?)`,
+          )
+          .run(claim.runId, gateId);
+        host.db
+          .prepare(
+            "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+          )
+          .run(new Date().toISOString(), claim.runId);
         host.emit(claim.runId, "effect.conflict");
+        host.emit(claim.runId, "gate.opened");
       });
       return {
         type: "failed",
         error: new PublicationConflictError(result.liveDigest, result.expectedLiveDigest).message,
-        failureClass: "infrastructure",
+        failureClass: "publication_conflict",
       };
     }
 

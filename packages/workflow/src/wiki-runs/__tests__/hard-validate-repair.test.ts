@@ -354,6 +354,7 @@ test("mechanical budget exhaustion exposes one executable operator continuation"
       type: "continue_evaluation",
       commandId: "continue-mech-exhaust",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       recoveryId: recovery.recoveryId,
     },
     context(workspaceId),
@@ -373,6 +374,7 @@ test("mechanical budget exhaustion exposes one executable operator continuation"
     candidateId,
     "continuation must advance candidate lineage",
   );
+  const exhaustedRevision = (await runs.read({ runId: receipt.runId })).snapshot.revision;
   await assert.rejects(
     () =>
       runs.dispatch(
@@ -380,6 +382,7 @@ test("mechanical budget exhaustion exposes one executable operator continuation"
           type: "continue_evaluation",
           commandId: "continue-mech-exhaust-again",
           runId: receipt.runId,
+          expectedRevision: exhaustedRevision,
           recoveryId: recovery.recoveryId,
         },
         context(workspaceId),

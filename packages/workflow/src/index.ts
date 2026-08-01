@@ -34,6 +34,7 @@ export {
   NON_TERMINAL_RUN_STATES,
   type NonTerminalRunRow,
 } from "./wiki-runs/attempt-metrics.js";
+export { RunWorkspaceReader } from "./wiki-runs/run-workspace-reader.js";
 export {
   CommandIdCollision,
   type OpenWikiRunsInput,

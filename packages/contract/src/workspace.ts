@@ -184,6 +184,10 @@ export type WorkspaceRoleModels = z.infer<typeof WorkspaceRoleModelsSchema>;
  */
 export const WorkspaceOrchestrationSchema = z
   .object({
+    /** Workspace-wide scheduler ceiling. Must be explicitly configured in v3. */
+    maxActiveRuns: z.number().int().min(1).max(32),
+    /** Workspace-wide in-flight Attempt ceiling. Must be explicitly configured in v3. */
+    maxConcurrentAttempts: z.number().int().min(1).max(128),
     /** Cap domains materialized from Spec (topology). */
     maxDomainFanOut: z.number().int().min(1).max(16).default(4),
     /**
@@ -232,7 +236,12 @@ export const WorkspaceOrchestrationSchema = z
 export type WorkspaceOrchestration = z.infer<typeof WorkspaceOrchestrationSchema>;
 
 /** Schema defaults are the sole authority for orchestration budgets. */
-export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = WorkspaceOrchestrationSchema.parse({});
+export const DEFAULT_ORCHESTRATION: WorkspaceOrchestration = WorkspaceOrchestrationSchema.parse({
+  // These are used only by legacy-free internal topology helpers. WorkspaceConfig
+  // deliberately has no orchestration default and must persist an explicit choice.
+  maxActiveRuns: 1,
+  maxConcurrentAttempts: 1,
+});
 
 /**
  * Canonical merge of partial orchestration onto schema defaults.
@@ -246,6 +255,8 @@ export function resolveOrchestration(
   const reviewCouncilSize = o.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize;
   const planScoutCount = o.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount;
   return {
+    maxActiveRuns: o.maxActiveRuns ?? DEFAULT_ORCHESTRATION.maxActiveRuns,
+    maxConcurrentAttempts: o.maxConcurrentAttempts ?? DEFAULT_ORCHESTRATION.maxConcurrentAttempts,
     maxDomainFanOut: o.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut,
     maxLeafFanOut: o.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut,
     reviewCouncilSize,
@@ -337,7 +348,7 @@ export const IGNORE_PRESETS: Readonly<
  */
 export const WorkspaceConfigSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     id: z.string().trim().min(1),
     name: z.string().trim().min(1).max(120),
     /** Absolute path to the workspace root directory. */
@@ -354,7 +365,8 @@ export const WorkspaceConfigSchema = z
      */
     roleModels: WorkspaceRoleModelsSchema.default(() => WorkspaceRoleModelsSchema.parse({})),
     /** Supervisor tree fan-out, concurrency, and review council size. */
-    orchestration: WorkspaceOrchestrationSchema.default(() => ({ ...DEFAULT_ORCHESTRATION })),
+    /** Required in v3: no hidden scheduling defaults may start a Run. */
+    orchestration: WorkspaceOrchestrationSchema,
     /**
      * When true, interactive Wiki Runs pause for operator Spec confirmation
      * before produce. Headless/autoApprove skips this gate.

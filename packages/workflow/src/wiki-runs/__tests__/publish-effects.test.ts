@@ -36,6 +36,7 @@ test("fixture e2e StartRun → plan gate → full graph → publication gate →
       type: "resolve_gate",
       commandId: "approve-e2e-plan",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: planGate.gateId,
       gateKind: "plan",
       payloadDigest: planGate.payloadDigest,
@@ -61,6 +62,7 @@ test("fixture e2e StartRun → plan gate → full graph → publication gate →
       type: "resolve_gate",
       commandId: "approve-e2e-pub",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -95,6 +97,7 @@ test("fixture e2e publication deny yields completed_unpublished", async (t) => {
       type: "resolve_gate",
       commandId: "approve-deny-plan",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: planGate.gateId,
       gateKind: "plan",
       payloadDigest: planGate.payloadDigest,
@@ -109,6 +112,7 @@ test("fixture e2e publication deny yields completed_unpublished", async (t) => {
       type: "resolve_gate",
       commandId: "deny-e2e-pub",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -151,6 +155,7 @@ test("T5 ResolveGate approve advances only the bound prepared effect to candidat
       type: "resolve_gate",
       commandId: "t5-approve-pub",
       runId,
+      expectedRevision: (await runs.read({ runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -199,6 +204,7 @@ test("T5 PublicationConflict when live baseline changes before apply", async (t)
       type: "resolve_gate",
       commandId: "t5-approve-conflict",
       runId,
+      expectedRevision: (await runs.read({ runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -212,6 +218,13 @@ test("T5 PublicationConflict when live baseline changes before apply", async (t)
     const e = snap.effects.find((row) => row.effectKey === effect.effectKey);
     if (e?.state === "conflict") {
       assert.equal(e.expectedLiveDigest, effect.expectedLiveDigest);
+      const reopened = snap.gates.find((gate) => gate.gateId === pubGate.gateId);
+      assert.equal(
+        reopened?.state,
+        "open",
+        "conflict must return to an explicit publication decision",
+      );
+      assert.equal(snap.state, "waiting_for_operator");
       // Live must not have been overwritten by the stale candidate.
       const body = await readFile(path.join(publicationPath, "intruder.md"), "utf8");
       assert.match(body, /Intruder/);
@@ -233,7 +246,12 @@ test("T5 CancelRun before applying cancels prepared effect; applying is never ca
   assert.equal(effect.state, "prepared");
 
   await runs.dispatch(
-    { type: "cancel_run", commandId: "t5-cancel-pre-apply", runId },
+    {
+      type: "cancel_run",
+      commandId: "t5-cancel-pre-apply",
+      runId,
+      expectedRevision: (await runs.read({ runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
   const cancelled = await waitForRunState(runs, runId, ["cancelled"]);
@@ -278,6 +296,7 @@ test("T5 reconcile applying→applied when live already matches sealed candidate
       type: "resolve_gate",
       commandId: "t5-reconcile-approve",
       runId,
+      expectedRevision: (await runs.read({ runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -359,7 +378,12 @@ test("T5 CancelRun after candidate_ready (pre-apply) cancels effect; post-apply 
   assert.equal(atReady?.state, "candidate_ready");
 
   await mid.dispatch(
-    { type: "cancel_run", commandId: "t5-cancel-after-ready", runId },
+    {
+      type: "cancel_run",
+      commandId: "t5-cancel-after-ready",
+      runId,
+      expectedRevision: (await mid.read({ runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
   const cancelled = await waitForRunState(mid, runId, ["cancelled"], 10_000);
@@ -408,6 +432,7 @@ test("T5 happy path: approval does not rewrite candidate bytes (content-only ide
       type: "resolve_gate",
       commandId: "t5-bytes-approve",
       runId,
+      expectedRevision: (await runs.read({ runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -454,6 +479,7 @@ test("T5 effect state machine reaches applied only via candidate_ready→applyin
       type: "resolve_gate",
       commandId: "t5-sm-approve",
       runId,
+      expectedRevision: (await runs.read({ runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,

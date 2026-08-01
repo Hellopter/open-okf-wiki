@@ -16,6 +16,17 @@ export function configureOwner(db: DatabaseSync): void {
 }
 
 export function migrate(db: DatabaseSync): void {
+  const existingRuns = asRow(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'").get(),
+  );
+  // This is an intentional hard cut. An old v3 store is not partly migrated,
+  // even when it happens to be empty: its table layout cannot attest to v4
+  // revision/epoch semantics.
+  if (existingRuns?.sql != null && !String(existingRuns.sql).includes("definition_version = 4")) {
+    throw new Error(
+      "unsupported WikiRuns v3 control store; clear the control store before opening v4",
+    );
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS commands (
       workspace_id TEXT NOT NULL,
@@ -32,7 +43,7 @@ export function migrate(db: DatabaseSync): void {
       run_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       operator_session_id TEXT,
-      definition_version INTEGER NOT NULL CHECK (definition_version = 3),
+      definition_version INTEGER NOT NULL CHECK (definition_version = 4),
       revision INTEGER NOT NULL,
       state TEXT NOT NULL,
       cancel_requested INTEGER NOT NULL,
@@ -195,29 +206,77 @@ export function migrate(db: DatabaseSync): void {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS idx_evaluation_recoveries_run_state
       ON evaluation_recoveries(run_id, state);
+    CREATE TABLE IF NOT EXISTS run_revisions (
+      revision_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id),
+      kind TEXT NOT NULL CHECK (kind IN ('guidance', 'scope_change')),
+      content TEXT NOT NULL,
+      command_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      applied_at TEXT,
+      epoch_id TEXT
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_run_revisions_run ON run_revisions(run_id, created_at);
+    CREATE TABLE IF NOT EXISTS execution_epochs (
+      epoch_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id),
+      ordinal INTEGER NOT NULL,
+      scope_revision_id TEXT REFERENCES run_revisions(revision_id),
+      state TEXT NOT NULL CHECK (state IN ('active', 'superseded', 'completed')),
+      created_at TEXT NOT NULL,
+      UNIQUE(run_id, ordinal)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS review_threads (
+      thread_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id),
+      candidate_digest TEXT NOT NULL,
+      page_path TEXT NOT NULL,
+      start_line INTEGER NOT NULL,
+      end_line INTEGER NOT NULL,
+      selected_text_digest TEXT NOT NULL,
+      body TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('open', 'resolved', 'superseded')),
+      author_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_review_threads_run ON review_threads(run_id, state, created_at);
+    CREATE TABLE IF NOT EXISTS candidate_review_artifacts (
+      run_id TEXT NOT NULL REFERENCES runs(run_id),
+      candidate_digest TEXT NOT NULL,
+      baseline_digest TEXT NOT NULL,
+      baseline_artifact_id TEXT,
+      evidence_digest TEXT,
+      evidence_artifact_id TEXT,
+      PRIMARY KEY(run_id, candidate_digest)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS run_index_events (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id TEXT NOT NULL,
+      occurred_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_run_index_events_workspace
+      ON run_index_events(workspace_id, event_id);
   `);
   const runColumns = asRows(db.prepare("PRAGMA table_info(runs)").all()).map((row) =>
     requiredText(row, "name"),
   );
   if (!runColumns.includes("definition_version")) {
-    const count = asRow(db.prepare("SELECT COUNT(*) AS count FROM runs").get());
-    if (requiredNumber(count ?? {}, "count") > 0) {
-      throw new Error(
-        "unsupported WikiRuns database: existing runs have no definition_version; clear the control store before upgrading",
-      );
-    }
-    db.exec("ALTER TABLE runs ADD COLUMN definition_version INTEGER");
+    throw new Error(
+      "unsupported WikiRuns v3 control store; clear the control store before opening v4",
+    );
   }
   const unsupportedRun = asRow(
     db
       .prepare(
-        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 3 LIMIT 1",
+        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 4 LIMIT 1",
       )
       .get(),
   );
   if (unsupportedRun) {
     throw new Error(
-      `unsupported WikiRuns definition version for run ${requiredText(unsupportedRun, "run_id")}; clear the control store before upgrading`,
+      `unsupported WikiRuns definition version for run ${requiredText(unsupportedRun, "run_id")}; clear the control store before opening v4`,
     );
   }
   if (!runColumns.includes("frozen_sources_json")) {
@@ -225,6 +284,15 @@ export function migrate(db: DatabaseSync): void {
   }
   if (!runColumns.includes("frozen_skill_digest")) {
     db.exec("ALTER TABLE runs ADD COLUMN frozen_skill_digest TEXT");
+  }
+  const candidateReviewColumns = asRows(
+    db.prepare("PRAGMA table_info(candidate_review_artifacts)").all(),
+  ).map((row) => requiredText(row, "name"));
+  if (!candidateReviewColumns.includes("baseline_artifact_id")) {
+    db.exec("ALTER TABLE candidate_review_artifacts ADD COLUMN baseline_artifact_id TEXT");
+  }
+  if (!candidateReviewColumns.includes("evidence_artifact_id")) {
+    db.exec("ALTER TABLE candidate_review_artifacts ADD COLUMN evidence_artifact_id TEXT");
   }
   // A v2 Run always carries its StartRun intent; no recovery default exists.
   if (!runColumns.includes("intent_json")) {

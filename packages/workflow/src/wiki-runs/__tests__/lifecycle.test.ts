@@ -70,8 +70,8 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
   assertFreezeAdvancedToPlan(finished.snapshot);
   assert.equal(finished.snapshot.intent?.mode, "generate");
   assert.equal(finished.snapshot.intent?.focus, "Runtime seams");
-  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v3");
-  assert.equal(finished.snapshot.definitionVersion, 3);
+  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v4");
+  assert.equal(finished.snapshot.definitionVersion, 4);
   assert.ok(finished.events.some((event) => event.type === "inputs.pinned"));
   assert.ok(finished.events.some((event) => event.type === "node.ready"));
   assert.ok(finished.events.length >= 4);
@@ -92,10 +92,16 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
     ),
     first,
   );
+  const mismatchedCommandRevision = (await runs.read({ runId: first.runId })).snapshot.revision;
   await assert.rejects(
     () =>
       runs.dispatch(
-        { type: "cancel_run", commandId: "start-1", runId: first.runId },
+        {
+          type: "cancel_run",
+          commandId: "start-1",
+          runId: first.runId,
+          expectedRevision: mismatchedCommandRevision,
+        },
         context(workspaceId),
       ),
     /different payload/,

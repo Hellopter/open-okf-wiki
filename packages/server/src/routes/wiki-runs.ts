@@ -2,6 +2,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { redactErrorMessage } from "@okf-wiki/agent";
 import {
+  CandidateDiffReadSchema,
+  CandidatePageReadSchema,
+  CandidateTreeReadSchema,
   RunCommandSchema,
   WikiRunAttemptTranscriptDoneFrameSchema,
   WikiRunAttemptTranscriptErrorFrameSchema,
@@ -10,10 +13,12 @@ import {
   WikiRunCommandResponseSchema,
   type WikiRunEvent,
   WikiRunGetResponseSchema,
+  WikiRunIndexEventSchema,
+  WikiRunIndexGetResponseSchema,
   type WikiRunSnapshot,
   WikiRunSpecReadSchema,
 } from "@okf-wiki/contract";
-import { CommandIdCollision, WorkflowInUseError } from "@okf-wiki/workflow";
+import { CommandIdCollision, RunWorkspaceReader, WorkflowInUseError } from "@okf-wiki/workflow";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
@@ -30,9 +35,22 @@ function actorContext(workspaceId: string) {
 
 function statusFor(error: unknown): number {
   if (error instanceof CommandIdCollision || error instanceof WorkflowInUseError) return 409;
+  if (error instanceof Error && error.message === "stale control revision") return 409;
+  if (error instanceof Error && error.message.includes("while run is paused")) return 409;
+  if (error instanceof Error && error.message.includes("is stale")) return 409;
   if (error instanceof Error && error.message.startsWith("run not found:")) return 404;
   if (error instanceof Error && error.message.startsWith("attempt not found:")) return 404;
   if (error instanceof Error && error.message.startsWith("spec not found:")) return 404;
+  if (error instanceof Error && error.message === "candidate is unavailable") return 404;
+  if (error instanceof Error && error.message === "candidate page is unavailable") return 404;
+  if (error instanceof Error && error.message.startsWith("candidate evidence map is unavailable"))
+    return 404;
+  if (error instanceof Error && error.message.startsWith("candidate evidence map is invalid"))
+    return 409;
+  if (error instanceof Error && error.message.startsWith("candidate page no longer matches"))
+    return 409;
+  if (error instanceof Error && error.message.startsWith("candidate page path")) return 400;
+  if (error instanceof Error && error.message.startsWith("review anchor")) return 409;
   // Missing transcript *file* is no longer an error (empty messages). Keep this
   // mapping only for any residual throw sites.
   if (error instanceof Error && error.message === "transcript not found") return 404;
@@ -149,6 +167,109 @@ export async function handleGetWikiRunSpec(
   try {
     const body = await (await wikiRunsForWorkspace(workspace)).readPlanSpec({ runId });
     sendJson(res, 200, WikiRunSpecReadSchema.parse(body));
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+  }
+}
+
+/** GET the compact workspace-scoped Run index projection. */
+export async function handleGetWikiRunIndex(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  _url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id);
+  if (!workspace) return;
+  try {
+    const reader = new RunWorkspaceReader(await wikiRunsForWorkspace(workspace));
+    const index = await reader.index();
+    sendJson(
+      res,
+      200,
+      WikiRunIndexGetResponseSchema.parse({ workspaceId: workspace.id, ...index }),
+    );
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+  }
+}
+
+/** Candidate page read never exposes a control-store artifact path. */
+export async function handleGetCandidatePage(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id);
+  if (!workspace) return;
+  const candidateDigest = url.searchParams.get("candidate")?.trim() ?? "";
+  const pagePath = url.searchParams.get("page")?.trim() ?? "";
+  if (!candidateDigest || !pagePath) {
+    sendError(res, 400, "candidate and page query parameters are required");
+    return;
+  }
+  try {
+    const page = await new RunWorkspaceReader(await wikiRunsForWorkspace(workspace)).candidatePage({
+      runId,
+      candidateDigest,
+      pagePath,
+    });
+    sendJson(res, 200, CandidatePageReadSchema.parse(page));
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+  }
+}
+
+/** GET the sealed candidate page tree without leaking artifact locations. */
+export async function handleGetCandidateTree(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id);
+  if (!workspace) return;
+  const candidateDigest = url.searchParams.get("candidate")?.trim() ?? "";
+  if (!candidateDigest) {
+    sendError(res, 400, "candidate query parameter is required");
+    return;
+  }
+  try {
+    const tree = await new RunWorkspaceReader(await wikiRunsForWorkspace(workspace)).candidateTree({
+      runId,
+      candidateDigest,
+    });
+    sendJson(res, 200, CandidateTreeReadSchema.parse(tree));
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+  }
+}
+
+export async function handleGetCandidateDiff(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id);
+  if (!workspace) return;
+  const candidateDigest = url.searchParams.get("candidate")?.trim() ?? "";
+  const pagePath = url.searchParams.get("page")?.trim() ?? "";
+  if (!candidateDigest || !pagePath) {
+    sendError(res, 400, "candidate and page query parameters are required");
+    return;
+  }
+  try {
+    const diff = await new RunWorkspaceReader(await wikiRunsForWorkspace(workspace)).candidateDiff({
+      runId,
+      candidateDigest,
+      pagePath,
+    });
+    sendJson(res, 200, CandidateDiffReadSchema.parse(diff));
   } catch (error) {
     sendError(res, statusFor(error), redactErrorMessage(error));
   }
@@ -391,6 +512,87 @@ export async function handleWikiRunEvents(
     }
   } catch (error) {
     if (!closed) writeSse(res, "snapshot", { error: redactErrorMessage(error) });
+  } finally {
+    cleanup();
+    if (!res.writableEnded && !res.destroyed) res.end();
+  }
+}
+
+/** Workspace-scoped compact index SSE for concurrently active Runs. */
+export async function handleWikiRunIndexEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  _url: URL,
+  dependencies: { heartbeatMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id);
+  if (!workspace) return;
+  let reader: RunWorkspaceReader;
+  let initial: { runs: Awaited<ReturnType<RunWorkspaceReader["list"]>>; cursor: number };
+  try {
+    reader = new RunWorkspaceReader(await wikiRunsForWorkspace(workspace));
+    initial = await reader.index();
+  } catch (error) {
+    sendError(res, statusFor(error), redactErrorMessage(error));
+    return;
+  }
+  let cursor = initial.cursor;
+  let closed = false;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  const heartbeat = setInterval(
+    () => writeHeartbeat(res),
+    dependencies.heartbeatMs ?? HEARTBEAT_MS,
+  );
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    req.off("close", onRequestClose);
+    res.off("close", cleanup);
+  };
+  const onRequestClose = (): void => {
+    if (req.aborted || !req.complete) cleanup();
+  };
+  req.once("close", onRequestClose);
+  res.once("close", cleanup);
+  writeSse(
+    res,
+    "index",
+    WikiRunIndexEventSchema.parse({
+      workspaceId: workspace.id,
+      eventId: initial.cursor,
+      occurredAt: new Date().toISOString(),
+      runs: initial.runs,
+    }),
+    initial.cursor,
+  );
+  try {
+    while (!closed) {
+      const update = await reader.index({ afterEventId: cursor });
+      if (update.runs.length > 0) {
+        cursor = update.cursor;
+        writeSse(
+          res,
+          "index",
+          WikiRunIndexEventSchema.parse({
+            workspaceId: workspace.id,
+            eventId: cursor,
+            occurredAt: new Date().toISOString(),
+            runs: update.runs,
+          }),
+          cursor,
+        );
+      }
+      await delay(dependencies.pollMs ?? POLL_MS);
+    }
+  } catch (error) {
+    if (!closed) writeSse(res, "index", { error: redactErrorMessage(error) });
   } finally {
     cleanup();
     if (!res.writableEnded && !res.destroyed) res.end();

@@ -11,6 +11,8 @@ test.describe("relative path rejected", () => {
 
     await page.getByTestId("workspace-name-input").fill("Relative Root WS");
     await page.getByTestId("workspace-root-input").fill("relative/not-absolute");
+    await page.getByTestId("workspace-max-active-runs-input").fill("1");
+    await page.getByTestId("workspace-max-concurrent-attempts-input").fill("1");
     await page.getByTestId("workspace-create-submit").click();
 
     await expect(page.getByTestId("error-banner")).toBeVisible({ timeout: 15_000 });

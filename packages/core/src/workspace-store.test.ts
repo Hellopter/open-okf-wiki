@@ -58,6 +58,7 @@ test("create/load/save workspace roundtrip", async () => {
   let config = await createWorkspace({
     name: "Demo Workspace",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     modelProfileId: "corp-profile",
     resolvedModelId: "openai/corp-model",
   });
@@ -65,7 +66,7 @@ test("create/load/save workspace roundtrip", async () => {
   assert.equal(config.name, "Demo Workspace");
   assert.equal(config.rootPath, path.resolve(root));
   assert.equal(config.publicationPath, path.join(path.resolve(root), "wiki"));
-  assert.equal(config.version, 2);
+  assert.equal(config.version, 3);
   assert.equal(config.model.id, "openai/corp-model");
   assert.equal(config.model.profileId, "corp-profile");
   assert.equal(config.sources.length, 0);
@@ -84,7 +85,7 @@ test("create/load/save workspace roundtrip", async () => {
   await saveWorkspace(config);
 
   const onDisk = await readFile(workspaceConfigPath(root), "utf8");
-  assert.match(onDisk, /"version": 2/);
+  assert.match(onDisk, /"version": 3/);
   assert.doesNotMatch(onDisk, /api[_-]?key/i);
 
   const loaded = await loadWorkspace(root);
@@ -100,7 +101,11 @@ test("create/load/save workspace roundtrip", async () => {
 
 test("saveWorkspace allows empty sources (draft workspace)", async () => {
   const root = await tempDir("okf-wiki-ws-draft-");
-  const config = await createWorkspace({ name: "Empty", rootPath: root });
+  const config = await createWorkspace({
+    name: "Empty",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   await saveWorkspace(config);
   const loaded = await loadWorkspace(root);
   assert.equal(loaded.sources.length, 0);
@@ -138,6 +143,7 @@ test("loadWorkspace rejects historical sources without origin", async () => {
       id: "legacy-ws",
       name: "Legacy",
       rootPath: root,
+      orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
       sources: [{ id: "application", path: sourceRoot }],
       model: { id: "openai/corp-model" },
       publicationPath: path.join(root, "wiki"),
@@ -156,7 +162,11 @@ test("addSource fails for non-git and dirty when requireClean", async () => {
   await initGitRepo(dirtyRepo);
   await writeFile(path.join(dirtyRepo, "dirty.txt"), "x\n");
 
-  const config = await createWorkspace({ name: "Src", rootPath: root });
+  const config = await createWorkspace({
+    name: "Src",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
 
   await assert.rejects(
     () => addSource(config, { id: "application", path: plain }),
@@ -179,7 +189,11 @@ test("addSource rejects duplicate source ids", async () => {
   const sourceRoot = await tempDir("okf-wiki-src-dup-");
   await initGitRepo(sourceRoot);
 
-  const config = await createWorkspace({ name: "Dup", rootPath: root });
+  const config = await createWorkspace({
+    name: "Dup",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   const first = await addSource(config, { id: "application", path: sourceRoot });
   await assert.rejects(
     () => addSource(first.config, { id: "application", path: sourceRoot }),
@@ -210,9 +224,21 @@ test("registerWorkspaceInAppIndex and listRecentWorkspaces", async () => {
 
 test("createWorkspace rejects existing workspace.json", async () => {
   const root = await tempDir("okf-wiki-ws-exists-");
-  const first = await createWorkspace({ name: "One", rootPath: root });
+  const first = await createWorkspace({
+    name: "One",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   await saveWorkspace(first);
-  await assert.rejects(() => createWorkspace({ name: "Two", rootPath: root }), /already exists/);
+  await assert.rejects(
+    () =>
+      createWorkspace({
+        name: "Two",
+        rootPath: root,
+        orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+      }),
+    /already exists/,
+  );
 });
 
 test("createWorkspace honors custom publicationPath", async () => {
@@ -221,6 +247,7 @@ test("createWorkspace honors custom publicationPath", async () => {
   const config = await createWorkspace({
     name: "Pub",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath,
   });
   assert.equal(config.publicationPath, path.resolve(publicationPath));
@@ -238,9 +265,22 @@ test("assertAbsolutePath rejects relative and empty paths", () => {
 });
 
 test("createWorkspace rejects relative rootPath", async () => {
-  await assert.rejects(() => createWorkspace({ name: "Rel", rootPath: "relative/ws" }), /absolute/);
   await assert.rejects(
-    () => createWorkspace({ name: "Rel", rootPath: "./relative-ws" }),
+    () =>
+      createWorkspace({
+        name: "Rel",
+        rootPath: "relative/ws",
+        orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+      }),
+    /absolute/,
+  );
+  await assert.rejects(
+    () =>
+      createWorkspace({
+        name: "Rel",
+        rootPath: "./relative-ws",
+        orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+      }),
     /absolute/,
   );
 });
@@ -252,6 +292,7 @@ test("createWorkspace rejects relative publicationPath", async () => {
       createWorkspace({
         name: "RelPub",
         rootPath: root,
+        orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
         publicationPath: "relative/wiki",
       }),
     /absolute/,
@@ -261,12 +302,24 @@ test("createWorkspace rejects relative publicationPath", async () => {
 test("createWorkspace treats only ENOENT as missing config", async () => {
   // Happy path: no workspace.json yet → ENOENT from access → create succeeds.
   const root = await tempDir("okf-wiki-ws-enoent-");
-  const config = await createWorkspace({ name: "Enoent", rootPath: root });
+  const config = await createWorkspace({
+    name: "Enoent",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   assert.equal(config.name, "Enoent");
   assert.equal(config.rootPath, path.resolve(root));
   // After save, access finds the file and createWorkspace must reject.
   await saveWorkspace(config);
-  await assert.rejects(() => createWorkspace({ name: "Again", rootPath: root }), /already exists/);
+  await assert.rejects(
+    () =>
+      createWorkspace({
+        name: "Again",
+        rootPath: root,
+        orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+      }),
+    /already exists/,
+  );
 });
 
 test("updateSource updates ignore policy", async () => {
@@ -274,7 +327,11 @@ test("updateSource updates ignore policy", async () => {
   const sourceRoot = await tempDir("okf-wiki-src-");
   await initGitRepo(sourceRoot);
 
-  let ws = await createWorkspace({ name: "UpdateSrc", rootPath: root });
+  let ws = await createWorkspace({
+    name: "UpdateSrc",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   const added = await addSource(ws, { id: "app", path: sourceRoot }, { requireClean: false });
   ws = added.config;
   assert.equal(ws.sources[0]!.applyDefaultIgnores, true);
@@ -290,7 +347,11 @@ test("updateSource updates ignore policy", async () => {
 
 test("addSource rejects relative path", async () => {
   const root = await tempDir("okf-wiki-ws-rel-src-");
-  const config = await createWorkspace({ name: "RelSrc", rootPath: root });
+  const config = await createWorkspace({
+    name: "RelSrc",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   await assert.rejects(
     () => addSource(config, { id: "application", path: "relative/repo" }),
     /absolute/,

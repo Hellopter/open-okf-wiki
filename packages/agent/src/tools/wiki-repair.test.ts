@@ -9,7 +9,7 @@ import {
 
 function workspace() {
   return WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "ws",
     name: "X",
     rootPath: "/tmp",
@@ -25,6 +25,7 @@ function workspace() {
     skillPath: "/tmp/skill",
     model: { id: "openai/test" },
     publicationPath: "/tmp/out",
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     limits: { requestTimeoutSeconds: 60 },
     planConfirm: false,
     wikiLanguage: "en",

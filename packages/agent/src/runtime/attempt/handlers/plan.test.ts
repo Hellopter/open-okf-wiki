@@ -12,7 +12,7 @@ import { handlePlan } from "./plan.js";
 
 function baseWorkspace(rootPath: string) {
   return WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "ws",
     name: "Plan Handler Test",
     rootPath,
@@ -27,6 +27,7 @@ function baseWorkspace(rootPath: string) {
     ],
     model: { id: "openai/test" },
     publicationPath: path.join(rootPath, "published"),
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     limits: { requestTimeoutSeconds: 60 },
     planConfirm: true,
     wikiLanguage: "en",

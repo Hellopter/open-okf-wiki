@@ -34,6 +34,7 @@ test("wiki list returns page summaries and wiki-graph returns the link graph", a
   const workspace = await createWorkspace({
     name: "Wiki Routes",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: publication,
     resolvedModelId: "openai/test",
   });

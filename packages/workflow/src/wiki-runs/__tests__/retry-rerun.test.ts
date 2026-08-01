@@ -80,6 +80,7 @@ test("RerunNode rejects a plan after execution topology is materialized", async 
   db.close();
 
   const reopened = await openWikiRuns({ rootPath: root });
+  const reopenedRevision = (await reopened.read({ runId: receipt.runId })).snapshot.revision;
   await assert.rejects(
     () =>
       reopened.dispatch(
@@ -87,6 +88,7 @@ test("RerunNode rejects a plan after execution topology is materialized", async 
           type: "rerun_node",
           commandId: "rerun-plan-after-materialization",
           runId: receipt.runId,
+          expectedRevision: reopenedRevision,
           nodeKey: "plan",
           generation: 0,
           feedback: "Re-plan with tighter leaf scope.",
@@ -127,6 +129,7 @@ test("RerunNode permits plan revision before execution topology is materialized"
       type: "rerun_node",
       commandId: "rerun-ready-plan",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       nodeKey: "plan",
       generation: 0,
       feedback: "Bump before claim.",
@@ -184,6 +187,7 @@ test("RerunNode replaces the open plan gate before execution topology is materia
       type: "rerun_node",
       commandId: "rerun-open-plan",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       nodeKey: "plan",
       generation: 0,
       feedback: "Use a narrower scope.",
@@ -264,6 +268,7 @@ test("failed leaf Retry reuses input_digest and does not re-run succeeded siblin
       type: "retry_failed_node",
       commandId: "retry-leaf-1",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       nodeKey: "research.leaf.core.1",
       generation: 0,
       attemptId: failedLeafAttemptId,
@@ -334,6 +339,7 @@ test("RerunNode on write.root invalidates validate/review lineage and unlocks af
       type: "rerun_node",
       commandId: "rerun-write-root",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       nodeKey: "write.root",
       generation: writeGen,
       feedback: "Tighten overview citations.",
@@ -423,6 +429,7 @@ test("RerunNode rejects write.root after its model candidate budget is exhausted
           type: "rerun_node",
           commandId: "rerun-write-after-candidate-cap",
           runId: receipt.runId,
+          expectedRevision: atPublication.snapshot.revision,
           nodeKey: "write.root",
           generation: 0,
         },
@@ -443,6 +450,7 @@ test("RerunNode rejects repair node keys before they can mint an unbudgeted cand
     { type: "start_run", commandId: "start-rerun-repair", intent: { mode: "generate" } },
     context(workspaceId),
   );
+  const repairNodeRevision = (await runs.read({ runId: receipt.runId })).snapshot.revision;
 
   await assert.rejects(
     () =>
@@ -451,6 +459,7 @@ test("RerunNode rejects repair node keys before they can mint an unbudgeted cand
           type: "rerun_node",
           commandId: "rerun-repair-1",
           runId: receipt.runId,
+          expectedRevision: repairNodeRevision,
           nodeKey: "repair.1",
           generation: 0,
         },
@@ -611,6 +620,7 @@ test("pre-pin freeze Retry remains banned; post-pin plan Retry works for any fai
       type: "retry_failed_node",
       commandId: "retry-plan",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       nodeKey: "plan",
       generation: 0,
       attemptId: planAttemptId,

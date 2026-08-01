@@ -90,6 +90,18 @@ export const PiAttemptInputSchema = z
     attemptId: RunAttemptIdSchema,
     node: PiAttemptNodeSchema,
     inputDigest: Sha256HexSchema,
+    /** Immutable, safe-boundary-applied Run guidance visible to this fresh Attempt. */
+    revisions: z
+      .array(
+        z
+          .object({
+            revisionId: z.string().trim().min(1),
+            kind: z.enum(["guidance", "scope_change"]),
+            content: z.string().trim().min(1).max(8_000),
+          })
+          .strict(),
+      )
+      .optional(),
     workspace: WorkspaceConfigSchema.strict(),
     sealedInputs: z.array(PiAttemptInputArtifactSchema).min(1).max(64),
     attemptDir: LocalAbsolutePathSchema,
@@ -141,6 +153,8 @@ export const PiAttemptFailureClassSchema = z.enum([
   "budget",
   "infrastructure",
   "cancelled",
+  /** Publication CAS rejected a stale baseline; operator must rebase or abandon. */
+  "publication_conflict",
   /** Mechanical / product quality defects (e.g. hard-validate dirty wiki). */
   "schema",
 ]);

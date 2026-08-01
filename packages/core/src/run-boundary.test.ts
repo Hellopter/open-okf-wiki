@@ -50,7 +50,7 @@ async function makeWorkspace(opts?: {
   }
 
   const workspace = WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "ws1",
     name: "Freeze WS",
     rootPath: root,
@@ -59,6 +59,7 @@ async function makeWorkspace(opts?: {
     model: { id: "openai/test" },
     publicationPath: path.join(root, "wiki-out"),
     limits: { requestTimeoutSeconds: 60 },
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     planConfirm: false,
     wikiLanguage: "en",
     createdAt: new Date().toISOString(),
@@ -67,7 +68,7 @@ async function makeWorkspace(opts?: {
   return { root, workspace, skillDir };
 }
 
-test("freezeRunBoundary freezes sources and Skill without creating a v2 Run Record", async () => {
+test("freezeRunBoundary freezes sources and Skill without creating a durable Run Record", async () => {
   const { root, workspace } = await makeWorkspace();
   const runId = "allocated-run";
   const frozen = await freezeRunBoundary({ workspace, runId });

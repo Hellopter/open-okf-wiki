@@ -117,6 +117,7 @@ test("gate_requested suspends attempt, opens operator_input, answer spawns new g
     type: "resolve_gate" as const,
     commandId: "resolve-op-answer",
     runId: receipt.runId,
+    expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
     gateId: gate!.gateId,
     gateKind: "operator_input" as const,
     payloadDigest: gate!.payloadDigest,
@@ -194,7 +195,12 @@ test("cancel_run while waiting for operator_input withdraws gate", async (t) => 
   assert.ok(gate);
 
   const cancelled = await runs.dispatch(
-    { type: "cancel_run", commandId: "cancel-op-wait", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "cancel-op-wait",
+      runId: receipt.runId,
+      expectedRevision: waiting.snapshot.revision,
+    },
     context(workspaceId),
   );
   assert.equal(cancelled.accepted, true);
@@ -216,6 +222,7 @@ test("cancel_run while waiting for operator_input withdraws gate", async (t) => 
           type: "resolve_gate",
           commandId: "resolve-after-cancel",
           runId: receipt.runId,
+          expectedRevision: snapshot.revision,
           gateId: gate!.gateId,
           gateKind: "operator_input",
           payloadDigest: gate!.payloadDigest,
@@ -287,6 +294,7 @@ test("restart does not resume old Pi worker — new attempt after answer", async
       type: "resolve_gate",
       commandId: "resolve-after-restart",
       runId: receipt.runId,
+      expectedRevision: still.revision,
       gateId: gate!.gateId,
       gateKind: "operator_input",
       payloadDigest: gate!.payloadDigest,

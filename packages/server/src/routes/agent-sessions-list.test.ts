@@ -24,6 +24,7 @@ test("Operator Session HTTP deletes only SessionManager data", async (t) => {
   const workspace = await createWorkspace({
     name: "Session HTTP",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

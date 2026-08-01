@@ -46,6 +46,7 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   const workspace = await createWorkspace({
     name: "Durable HTTP Run",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -98,6 +99,26 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   assert.equal(body.snapshot.runId, receipt.receipt.runId);
   assert.ok(body.cursor >= receipt.receipt.revision);
 
+  const index = await fetch(`${base}/index`);
+  assert.equal(index.status, 200, await index.clone().text());
+  const indexBody = (await index.json()) as {
+    workspaceId: string;
+    cursor: number;
+    runs: Array<{ runId: string; attention: string; completedNodes: number; totalNodes: number }>;
+  };
+  assert.equal(indexBody.workspaceId, workspace.id);
+  assert.ok(indexBody.cursor >= receipt.receipt.revision);
+  assert.ok(indexBody.runs.some((run) => run.runId === receipt.receipt.runId));
+
+  const unavailableCandidate = await fetch(
+    `${base}/${receipt.receipt.runId}/candidate/page?candidate=${"a".repeat(64)}&page=index.md`,
+  );
+  assert.equal(unavailableCandidate.status, 404, await unavailableCandidate.clone().text());
+  const escapedCandidatePath = await fetch(
+    `${base}/${receipt.receipt.runId}/candidate/page?candidate=${"a".repeat(64)}&page=..%2Fworkspace.json`,
+  );
+  assert.equal(escapedCandidatePath.status, 400, await escapedCandidatePath.clone().text());
+
   const abort = new AbortController();
   const stream = await fetch(`${base}/${receipt.receipt.runId}/events`, {
     signal: abort.signal,
@@ -135,6 +156,7 @@ test("GET attempt transcript returns secret-free messages from session.jsonl", a
   const workspace = await createWorkspace({
     name: "Transcript HTTP Run",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -259,6 +281,7 @@ test("GET attempt transcript events streams snapshot then done for terminal atte
   const workspace = await createWorkspace({
     name: "Transcript SSE Run",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

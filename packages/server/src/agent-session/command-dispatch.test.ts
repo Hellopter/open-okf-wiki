@@ -25,6 +25,7 @@ test("prompt dispatch expands slash commands and rejects unknown ones", async (t
   const workspace = await createWorkspace({
     name: "Command Dispatch",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

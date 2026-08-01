@@ -4,18 +4,24 @@ import {
   type AttemptMetrics,
   CancelRunCommandSchema,
   ContinueEvaluationCommandSchema,
+  CreateReviewThreadCommandSchema,
+  PauseRunCommandSchema,
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
   type PiAttemptOutcome,
   RepositorySnapshotSchema,
+  RequestRepairCommandSchema,
   RerunNodeCommandSchema,
   ResolveGateCommandSchema,
+  ResolveReviewThreadCommandSchema,
+  ResumeRunCommandSchema,
   RetryFailedNodeCommandSchema,
   type RunCommand,
   type RunCommandContext,
   RunCommandContextSchema,
   type RunCommandReceipt,
   StartRunCommandSchema,
+  SubmitRunRevisionCommandSchema,
   type WikiRunEvent,
   WikiRunEventSchema,
   type WikiRunSnapshot,
@@ -45,6 +51,7 @@ import {
   preparePlanExecutionPlan as preparePlanExecutionPlanImpl,
   recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
 } from "./wiki-runs/attempt-success.js";
+import { CandidateReview } from "./wiki-runs/candidate-review.js";
 import {
   applyCommand as applyCommandImpl,
   applyRerunAt as applyRerunAtImpl,
@@ -76,6 +83,7 @@ import {
   resolveGate as resolveGateImpl,
 } from "./wiki-runs/gate-resolve.js";
 import { executeMechanical, type MechanicalHost } from "./wiki-runs/mechanical/index.js";
+import { applyPendingGuidanceAtSafeBoundary } from "./wiki-runs/run-revision-coordinator.js";
 import {
   abortActiveAttempts as abortActiveAttemptsImpl,
   abortRunAttempts as abortRunAttemptsImpl,
@@ -137,6 +145,18 @@ function parseRunCommand(value: unknown): RunCommand {
       return ContinueEvaluationCommandSchema.parse(value);
     case "cancel_run":
       return CancelRunCommandSchema.parse(value);
+    case "submit_run_revision":
+      return SubmitRunRevisionCommandSchema.parse(value);
+    case "pause_run":
+      return PauseRunCommandSchema.parse(value);
+    case "resume_run":
+      return ResumeRunCommandSchema.parse(value);
+    case "create_review_thread":
+      return CreateReviewThreadCommandSchema.parse(value);
+    case "resolve_review_thread":
+      return ResolveReviewThreadCommandSchema.parse(value);
+    case "request_repair":
+      return RequestRepairCommandSchema.parse(value);
     case "resolve_gate":
       return ResolveGateCommandSchema.parse(value);
     default:
@@ -241,19 +261,116 @@ class WikiRunsOwner implements WikiRuns {
       );
       this.db.exec("COMMIT");
       return rows.map((row) => {
+        const runId = requiredText(row, "run_id");
+        const progress = asRow(
+          this.db
+            .prepare(
+              `SELECT
+                 SUM(CASE WHEN state = 'succeeded' THEN 1 ELSE 0 END) AS completed,
+                 COUNT(*) AS total
+               FROM nodes
+               WHERE run_id = ?
+                 AND generation = (
+                   SELECT MAX(n2.generation) FROM nodes n2
+                   WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
+                 )`,
+            )
+            .get(runId),
+        );
+        const attentionRow = asRow(
+          this.db
+            .prepare("SELECT 1 AS present FROM gates WHERE run_id = ? AND state = 'open' LIMIT 1")
+            .get(runId),
+        );
+        const reviewRow = asRow(
+          this.db
+            .prepare(
+              "SELECT 1 AS present FROM review_threads WHERE run_id = ? AND state = 'open' LIMIT 1",
+            )
+            .get(runId),
+        );
+        const state = requiredText(row, "state") as WikiRunSnapshot["state"];
         const sessionRaw = row.operator_session_id;
         return {
-          runId: requiredText(row, "run_id"),
-          state: requiredText(row, "state") as WikiRunSnapshot["state"],
+          runId,
+          state,
           updatedAt: requiredText(row, "updated_at"),
           revision: requiredNumber(row, "revision"),
           sessionId: typeof sessionRaw === "string" && sessionRaw.length > 0 ? sessionRaw : null,
+          attention:
+            state === "paused"
+              ? "paused"
+              : attentionRow
+                ? "gate"
+                : reviewRow
+                  ? "review"
+                  : state === "failed"
+                    ? "failure"
+                    : "none",
+          completedNodes: requiredNumber(progress ?? { completed: 0 }, "completed"),
+          totalNodes: requiredNumber(progress ?? { total: 0 }, "total"),
         };
       });
     } catch (error) {
       this.rollback();
       throw error;
     }
+  }
+
+  async readIndex(input: { afterEventId?: number; limit?: number } = {}): Promise<{
+    runs: WikiRunListItem[];
+    cursor: number;
+  }> {
+    this.assertOpen();
+    const afterEventId = input.afterEventId ?? 0;
+    const limit = input.limit ?? 1_000;
+    if (!Number.isSafeInteger(afterEventId) || afterEventId < 0)
+      throw new Error("afterEventId must be a non-negative integer");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000)
+      throw new Error("limit must be between 1 and 1000");
+    this.db.exec("BEGIN DEFERRED");
+    try {
+      const cursor = requiredNumber(
+        asRow(
+          this.db
+            .prepare(
+              "SELECT COALESCE(MAX(event_id), 0) AS cursor FROM run_index_events WHERE workspace_id = ?",
+            )
+            .get(this.workspace.id),
+        ) ?? {},
+        "cursor",
+      );
+      // The compact index is a projection. Its SSE cursor tells clients whether
+      // it changed; consumers replace the full list rather than replay deltas.
+      const changed = asRow(
+        this.db
+          .prepare(
+            `SELECT 1 AS present FROM run_index_events
+             WHERE workspace_id = ? AND event_id > ? ORDER BY event_id LIMIT ?`,
+          )
+          .get(this.workspace.id, afterEventId, limit),
+      );
+      this.db.exec("COMMIT");
+      return { runs: changed || afterEventId === 0 ? await this.list() : [], cursor };
+    } catch (error) {
+      this.rollback();
+      throw error;
+    }
+  }
+
+  async readCandidatePage(input: { runId: string; candidateDigest: string; pagePath: string }) {
+    this.assertOpen();
+    return new CandidateReview(this.commandsHost()).readPage(input);
+  }
+
+  async readCandidateTree(input: { runId: string; candidateDigest: string }) {
+    this.assertOpen();
+    return new CandidateReview(this.commandsHost()).readTree(input);
+  }
+
+  async readCandidateDiff(input: { runId: string; candidateDigest: string; pagePath: string }) {
+    this.assertOpen();
+    return new CandidateReview(this.commandsHost()).readDiff(input);
   }
 
   async readAttemptTranscript(input: {
@@ -581,6 +698,7 @@ class WikiRunsOwner implements WikiRuns {
         this.requeueFailedNode(runId, nodeKey, generation, lastAttemptId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
       attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
+      applyPendingGuidance: () => applyPendingGuidanceAtSafeBoundary(this.commandsHost()),
       applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
         this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
     };
@@ -589,7 +707,10 @@ class WikiRunsOwner implements WikiRuns {
   private schedule(): void {
     if (this.closed) return;
     try {
-      this.transaction(() => expireStaleOpenGatesImpl(this.gatesHost()));
+      this.transaction(() => {
+        expireStaleOpenGatesImpl(this.gatesHost());
+        applyPendingGuidanceAtSafeBoundary(this.commandsHost());
+      });
     } catch {
       // Expiry best-effort; do not block the scheduler on a single bad gate.
     }
@@ -824,6 +945,12 @@ class WikiRunsOwner implements WikiRuns {
         "INSERT INTO run_events (run_id, event_id, revision, type, occurred_at, event_json) VALUES (?, ?, ?, ?, ?, ?)",
       )
       .run(runId, eventId, revision, type, timestamp, JSON.stringify(event));
+    this.db
+      .prepare(
+        `INSERT INTO run_index_events (workspace_id, occurred_at)
+         SELECT workspace_id, ? FROM runs WHERE run_id = ?`,
+      )
+      .run(timestamp, runId);
     if (type === "gate.opened" || type === "gate.resolved" || type === "gate.withdrawn") {
       this.requestGateExpiryTimerRefresh();
     }

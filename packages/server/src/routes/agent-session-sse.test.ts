@@ -60,6 +60,7 @@ test("Operator Session SSE starts with a durable snapshot then forwards genuine 
   const workspace = await createWorkspace({
     name: "Session SSE",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -201,6 +202,7 @@ test("a live Pi Session supports SSE before its first assistant message is persi
   const workspace = await createWorkspace({
     name: "Live Session SSE",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -247,6 +249,7 @@ test("SSE snapshots precede queued live events and include the genuine active to
   const workspace = await createWorkspace({
     name: "Ordered Session SSE",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -375,6 +378,7 @@ test("SSE disconnect during history load unsubscribes exactly once", async () =>
   const workspace = await createWorkspace({
     name: "Early Close SSE",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

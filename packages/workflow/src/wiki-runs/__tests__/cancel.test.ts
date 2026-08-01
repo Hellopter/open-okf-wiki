@@ -32,11 +32,17 @@ test("cancel before the executor starts prevents its invocation", async (t) => {
     context(workspaceId),
   );
   await runs.dispatch(
-    { type: "cancel_run", commandId: "cancel-before-pi", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "cancel-before-pi",
+      runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
   assert.equal(invocations, 0);
-  assert.equal((await runs.read({ runId: receipt.runId })).snapshot.state, "cancelled");
+  const terminal = (await runs.read({ runId: receipt.runId })).snapshot;
+  assert.equal(terminal.state, "cancelled");
 });
 
 test("cancel aborts an executing Pi attempt and its late result cannot commit", async (t) => {
@@ -64,13 +70,24 @@ test("cancel aborts an executing Pi attempt and its late result cannot commit", 
     context(workspaceId),
   );
   await startedAttempt;
+  const cancelRevision = (await runs.read({ runId: receipt.runId })).snapshot.revision;
   const cancelled = await runs.dispatch(
-    { type: "cancel_run", commandId: "cancel-1", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "cancel-1",
+      runId: receipt.runId,
+      expectedRevision: cancelRevision,
+    },
     context(workspaceId),
   );
   assert.deepEqual(
     await runs.dispatch(
-      { type: "cancel_run", commandId: "cancel-1", runId: receipt.runId },
+      {
+        type: "cancel_run",
+        commandId: "cancel-1",
+        runId: receipt.runId,
+        expectedRevision: cancelRevision,
+      },
       context(workspaceId),
     ),
     cancelled,
@@ -101,10 +118,16 @@ test("cancel aborts an active freeze and removes its unpinned run tree", async (
   );
   await startedFreeze;
   await runs.dispatch(
-    { type: "cancel_run", commandId: "cancel-freeze", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "cancel-freeze",
+      runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
-  assert.equal((await runs.read({ runId: receipt.runId })).snapshot.state, "cancelled");
+  const terminalSnapshot = (await runs.read({ runId: receipt.runId })).snapshot;
+  assert.equal(terminalSnapshot.state, "cancelled");
   await assert.rejects(() => lstat(path.join(root, ".okf-wiki", "runs", receipt.runId)), /ENOENT/);
 });
 
@@ -120,14 +143,25 @@ test("terminal runs reject a new cancellation command", async (t) => {
   // Freeze advances to plan-ready (still active); cancel is allowed, then terminal.
   await waitForTerminal(runs, receipt.runId);
   await runs.dispatch(
-    { type: "cancel_run", commandId: "cancel-after-freeze", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "cancel-after-freeze",
+      runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
-  assert.equal((await runs.read({ runId: receipt.runId })).snapshot.state, "cancelled");
+  const terminalAfterCancel = (await runs.read({ runId: receipt.runId })).snapshot;
+  assert.equal(terminalAfterCancel.state, "cancelled");
   await assert.rejects(
     () =>
       runs.dispatch(
-        { type: "cancel_run", commandId: "cancel-terminal", runId: receipt.runId },
+        {
+          type: "cancel_run",
+          commandId: "cancel-terminal",
+          runId: receipt.runId,
+          expectedRevision: terminalAfterCancel.revision,
+        },
         context(workspaceId),
       ),
     /terminal state: cancelled/,
@@ -149,7 +183,12 @@ test("CancelRun withdraws open gates", async (t) => {
   t.after(() => reopened.close());
   assert.equal((await reopened.read({ runId: receipt.runId })).snapshot.gates[0]?.state, "open");
   await reopened.dispatch(
-    { type: "cancel_run", commandId: "cancel-with-gate", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "cancel-with-gate",
+      runId: receipt.runId,
+      expectedRevision: (await reopened.read({ runId: receipt.runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
   const snapshot = (await reopened.read({ runId: receipt.runId })).snapshot;

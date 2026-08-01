@@ -15,9 +15,8 @@ export const en = {
   },
   subnav: {
     aria: "Workspace sections",
-    agent: "Agent",
     sources: "Sources",
-    runs: "Jobs",
+    runs: "Runs",
     wiki: "Wiki",
     settings: "Settings",
     openMenu: "Open workspace sections",

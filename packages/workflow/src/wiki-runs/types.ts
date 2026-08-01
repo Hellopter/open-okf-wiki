@@ -4,6 +4,9 @@
  */
 
 import type {
+  CandidateDiffRead,
+  CandidatePageRead,
+  CandidateTreeRead,
   WikiRunAttemptTranscript as ContractWikiRunAttemptTranscript,
   WikiRunListItem as ContractWikiRunListItem,
   PiAttemptExecutor,
@@ -77,10 +80,16 @@ export type WikiRunListItem = ContractWikiRunListItem;
 export type WikiRunAttemptTranscript = ContractWikiRunAttemptTranscript;
 
 export interface WikiRuns {
+  /** Every existing-Run mutation carries its observed control revision. */
   dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt>;
   read(input: { runId: string; afterEventId?: number; limit?: number }): Promise<WikiRunRead>;
   /** All runs for this workspace, newest `updatedAt` first. */
   list(): Promise<WikiRunListItem[]>;
+  /** Workspace-wide compact Run projection for the index SSE. */
+  readIndex(input?: { afterEventId?: number; limit?: number }): Promise<{
+    runs: WikiRunListItem[];
+    cursor: number;
+  }>;
   /**
    * Read-only Attempt transcript for Node details.
    * Resolves live `attempts/<id>/session.jsonl` or a sealed transcript artifact under the run.
@@ -99,6 +108,18 @@ export interface WikiRuns {
    * Throws `spec not found: <runId>` when no sealed plan output exists.
    */
   readPlanSpec(input: { runId: string }): Promise<WikiRunSpecRead>;
+  /** Operator-safe candidate inspection; no artifact paths cross this boundary. */
+  readCandidatePage(input: {
+    runId: string;
+    candidateDigest: string;
+    pagePath: string;
+  }): Promise<CandidatePageRead>;
+  readCandidateTree(input: { runId: string; candidateDigest: string }): Promise<CandidateTreeRead>;
+  readCandidateDiff(input: {
+    runId: string;
+    candidateDigest: string;
+    pagePath: string;
+  }): Promise<CandidateDiffRead>;
   /** Replace in-memory workspace config (new StartRun uses updated limits). */
   replaceWorkspace(workspace: WorkspaceConfig): void;
   close(): Promise<void>;

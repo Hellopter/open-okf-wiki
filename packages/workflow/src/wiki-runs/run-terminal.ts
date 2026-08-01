@@ -37,7 +37,8 @@ const ATTEMPT_ERROR: Record<TerminalCancelReason, string> = {
   plan_denied: "plan denied",
 };
 
-const ACTIVE_CANCEL_STATES = "('queued', 'running', 'waiting_for_operator', 'cancelling')";
+const ACTIVE_CANCEL_STATES =
+  "('queued', 'running', 'waiting_for_operator', 'pausing', 'paused', 'cancelling')";
 
 /**
  * Apply the durable cancel sequence used by CancelRun and plan-gate deny.

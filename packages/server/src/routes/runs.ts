@@ -7,7 +7,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { redactErrorMessage } from "@okf-wiki/agent";
 import { WikiRunListResponseSchema } from "@okf-wiki/contract";
-import { WorkflowInUseError } from "@okf-wiki/workflow";
+import { RunWorkspaceReader, WorkflowInUseError } from "@okf-wiki/workflow";
 import { sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
@@ -22,7 +22,7 @@ export async function handleListRuns(
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   try {
-    const runs = await (await wikiRunsForWorkspace(workspace)).list();
+    const runs = await new RunWorkspaceReader(await wikiRunsForWorkspace(workspace)).list();
     sendJson(res, 200, WikiRunListResponseSchema.parse({ workspaceId: workspace.id, runs }));
   } catch (error) {
     const status = error instanceof WorkflowInUseError ? 409 : 500;

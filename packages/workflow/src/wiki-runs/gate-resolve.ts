@@ -58,6 +58,9 @@ export function resolveGate(
   if (!run) throw new Error(`run not found: ${command.runId}`);
   if (requiredNumber(run, "cancel_requested") === 1)
     throw new Error("cannot resolve gate on a cancelled run");
+  if (["pausing", "paused"].includes(requiredText(run, "state"))) {
+    throw new Error("cannot resolve gate while run is paused");
+  }
   const gate = asRow(
     host.db
       .prepare(
@@ -389,7 +392,24 @@ export function applyPublicationGateDecision(
         )
         .get(command.runId, command.gateId),
     );
-    if (!effect) throw new Error("publication effect not found for approved gate");
+    if (!effect) {
+      const conflict = asRow(
+        host.db
+          .prepare(
+            `SELECT effect_key, state, publication_node_key, publication_node_generation
+             FROM effects WHERE run_id = ? AND gate_id = ? AND state = 'conflict'`,
+          )
+          .get(command.runId, command.gateId),
+      );
+      if (!conflict) throw new Error("publication effect not found for approved gate");
+      restartPublicationCandidate(
+        host,
+        command,
+        conflict,
+        "Refresh publication baseline and rebase candidate.",
+      );
+      return;
+    }
     const pubKey = requiredText(effect, "publication_node_key");
     const pubGen = requiredNumber(effect, "publication_node_generation");
     const liveGen = host.currentNodeGeneration(command.runId, pubKey);
@@ -428,34 +448,15 @@ export function applyPublicationGateDecision(
         )
         .get(command.runId, command.gateId),
     );
-    if (effect) {
-      if (["prepared", "candidate_ready"].includes(requiredText(effect, "state"))) {
-        host.db
-          .prepare(
-            "UPDATE effects SET state = 'cancelled' WHERE effect_key = ? AND state IN ('prepared', 'candidate_ready')",
-          )
-          .run(requiredText(effect, "effect_key"));
-      }
-    }
-    const writeGen = host.currentNodeGeneration(command.runId, "write.root");
-    if (writeGen !== undefined) {
-      host.applyRerunAt(command.runId, "write.root", writeGen, command.feedback);
-    } else if (effect) {
-      // Fallback when write.root is absent: bump the publication-owning node alone.
-      const pubKey = requiredText(effect, "publication_node_key");
-      const pubGen = requiredNumber(effect, "publication_node_generation");
-      host.applyRerunAt(command.runId, pubKey, pubGen, command.feedback);
-    } else {
-      throw new Error("publication revise requires write.root or a publication effect");
-    }
-    host.emit(command.runId, "node.ready");
+    if (!effect) throw new Error("publication revise requires a publication effect");
+    restartPublicationCandidate(host, command, effect, command.feedback);
     return;
   }
   if (command.decision === "deny") {
     host.db
       .prepare(
         `UPDATE effects SET state = 'cancelled'
-         WHERE run_id = ? AND gate_id = ? AND state IN ('prepared', 'candidate_ready')`,
+         WHERE run_id = ? AND gate_id = ? AND state IN ('prepared', 'candidate_ready', 'conflict')`,
       )
       .run(command.runId, command.gateId);
     host.db
@@ -465,6 +466,31 @@ export function applyPublicationGateDecision(
     return;
   }
   throw new Error(`unsupported publication gate decision: ${command.decision}`);
+}
+
+/** A conflict cannot safely retry its bytes. Re-run the candidate-producing path instead. */
+function restartPublicationCandidate(
+  host: GatesHost,
+  command: Extract<RunCommand, { type: "resolve_gate" }>,
+  effect: SqlRow,
+  feedback?: string,
+): void {
+  host.db
+    .prepare(
+      `UPDATE effects SET state = 'cancelled'
+       WHERE effect_key = ? AND state IN ('prepared', 'candidate_ready', 'conflict')`,
+    )
+    .run(requiredText(effect, "effect_key"));
+  const writeGen = host.currentNodeGeneration(command.runId, "write.root");
+  if (writeGen !== undefined) {
+    host.applyRerunAt(command.runId, "write.root", writeGen, feedback);
+  } else {
+    // Fallback when write.root is absent: bump the publication-owning node alone.
+    const pubKey = requiredText(effect, "publication_node_key");
+    const pubGen = requiredNumber(effect, "publication_node_generation");
+    host.applyRerunAt(command.runId, pubKey, pubGen, feedback);
+  }
+  host.emit(command.runId, "node.ready");
 }
 
 /**
@@ -581,8 +607,10 @@ export function expireStaleOpenGates(host: GatesHost): number {
   const open = asRows(
     host.db
       .prepare(
-        `SELECT gate_id, run_id, kind, payload_digest, opened_at
-         FROM gates WHERE state = 'open' AND kind IN ('plan', 'publication', 'fix')
+        `SELECT gates.gate_id, gates.run_id, gates.kind, gates.payload_digest, gates.opened_at,
+                runs.revision
+         FROM gates JOIN runs ON runs.run_id = gates.run_id
+         WHERE gates.state = 'open' AND gates.kind IN ('plan', 'publication', 'fix')
          ORDER BY opened_at, gate_id`,
       )
       .all(),
@@ -602,6 +630,7 @@ export function expireStaleOpenGates(host: GatesHost): number {
       type: "resolve_gate" as const,
       commandId,
       runId,
+      expectedRevision: requiredNumber(row, "revision"),
       gateId,
       gateKind: kind,
       decision: "deny" as const,

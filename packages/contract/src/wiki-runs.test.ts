@@ -62,6 +62,7 @@ test("gate commands admit only their typed decisions", () => {
     type: "resolve_gate",
     commandId: "command-1",
     runId: "run-1",
+    expectedRevision: 2,
     gateId: "gate-1",
     payloadDigest: digest,
   } as const;
@@ -129,12 +130,25 @@ test("gate commands admit only their typed decisions", () => {
     ResolveGateCommandSchema.safeParse({ ...base, gateKind: "plan", decision: "pass" }).success,
     false,
   );
+  assert.equal(
+    ResolveGateCommandSchema.safeParse({
+      type: "resolve_gate",
+      commandId: "command-1",
+      runId: "run-1",
+      gateId: "gate-1",
+      gateKind: "plan",
+      payloadDigest: digest,
+      decision: "approve",
+    }).success,
+    false,
+    "existing-Run commands require an expected control revision",
+  );
 });
 
 test("run events carry one matching full snapshot", () => {
   const snapshot = {
-    schema: "okf.wiki-runs/v3",
-    definitionVersion: 3,
+    schema: "okf.wiki-runs/v4",
+    definitionVersion: 4,
     runId: "run-1",
     workspaceId: "workspace-1",
     revision: 2,
@@ -146,6 +160,7 @@ test("run events carry one matching full snapshot", () => {
     attempts: [],
     gates: [],
     effects: [],
+    epochs: [{ epochId: "epoch-1", ordinal: 1, state: "active", createdAt: timestamp }],
     createdAt: timestamp,
     updatedAt: timestamp,
   } as const;
@@ -231,8 +246,8 @@ test("WikiRunAttempt may include optional metrics", () => {
 
 test("WikiRuns HTTP response and transcript SSE frames are strict", () => {
   const snapshot = {
-    schema: "okf.wiki-runs/v3",
-    definitionVersion: 3,
+    schema: "okf.wiki-runs/v4",
+    definitionVersion: 4,
     runId: "run-1",
     workspaceId: "workspace-1",
     revision: 2,
@@ -244,6 +259,7 @@ test("WikiRuns HTTP response and transcript SSE frames are strict", () => {
     attempts: [],
     gates: [],
     effects: [],
+    epochs: [{ epochId: "epoch-1", ordinal: 1, state: "active", createdAt: timestamp }],
     createdAt: timestamp,
     updatedAt: timestamp,
   };

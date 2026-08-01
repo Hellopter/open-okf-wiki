@@ -80,6 +80,7 @@ test("fixture prompt dispatches wiki_produce StartRun receipt (T2 hard-cut)", as
   let workspace = await createWorkspace({
     name: "Fixture Workflow",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -174,6 +175,7 @@ test("runtime input preserves refresh intent and resolves an explicit repair nod
   let workspace = await createWorkspace({
     name: "Runtime Input Wiki Tools",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -202,11 +204,13 @@ test("runtime input preserves refresh intent and resolves an explicit repair nod
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.ok(planGate, "fixture run should open a plan gate");
+  const planRevision = (await runs.read({ runId: generated.runId })).snapshot.revision;
   await runs.dispatch(
     {
       type: "resolve_gate",
       commandId: "runtime-input-approve-plan",
       runId: generated.runId,
+      expectedRevision: planRevision,
       gateId: planGate.gateId,
       gateKind: "plan",
       payloadDigest: planGate.payloadDigest,

@@ -19,7 +19,7 @@ type ExecuteWikiProduce = (
 }>;
 
 const workspace = WorkspaceConfigSchema.parse({
-  version: 2,
+  version: 3,
   id: "workspace",
   name: "Tool Workspace",
   rootPath: "/tmp/okf-wiki-produce-tool",
@@ -34,6 +34,7 @@ const workspace = WorkspaceConfigSchema.parse({
   ],
   model: { id: "openai/test" },
   publicationPath: "/tmp/published",
+  orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
   limits: { requestTimeoutSeconds: 60 },
   planConfirm: true,
   wikiLanguage: "en",

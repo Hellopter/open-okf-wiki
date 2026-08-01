@@ -71,11 +71,13 @@ function rerunWikiNodeFor(workspace: WorkspaceConfig, sessionId: string): RerunW
   return async ({ commandId, runId, nodeKey, generation, feedback, sessionId: sid }) => {
     const current = await reloadWorkspace(workspace);
     const runs = await wikiRunsForWorkspace(current);
+    const expectedRevision = (await runs.read({ runId })).snapshot.revision;
     return runs.dispatch(
       {
         type: "rerun_node",
         commandId,
         runId,
+        expectedRevision,
         nodeKey,
         generation,
         ...(feedback !== undefined ? { feedback } : {}),

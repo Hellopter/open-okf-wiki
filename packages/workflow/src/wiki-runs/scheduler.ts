@@ -91,6 +91,8 @@ export type SchedulerHost = WikiRunsCasCtx & {
   ): void;
   trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
   attemptInputDigest(attemptId: string): string;
+  /** Apply queued guidance before a fresh claim observes its input envelope. */
+  applyPendingGuidance?(): void;
   /**
    * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
    * Used by auto mechanical repair to re-arm validate.* + downstream after scheduling repair.N.
@@ -127,7 +129,10 @@ export async function runScheduler(host: SchedulerHost): Promise<void> {
   while (!host.closed) {
     // Fill free concurrency slots while ready work remains.
     while (!host.closed) {
-      const claim = host.transaction(() => claimReadyNode(host));
+      const claim = host.transaction(() => {
+        host.applyPendingGuidance?.();
+        return claimReadyNode(host);
+      });
       if (!claim) break;
       launch(claim);
     }
@@ -174,6 +179,13 @@ export function runningCountByKind(host: SchedulerHost): Map<string, number> {
  * Skips kinds already at workspace.orchestration concurrency.
  */
 export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
+  const activeAttemptCount = requiredNumber(
+    asRow(
+      host.db.prepare("SELECT COUNT(*) AS count FROM attempts WHERE state = 'running'").get(),
+    ) ?? {},
+    "count",
+  );
+  if (activeAttemptCount >= host.workspace.orchestration.maxConcurrentAttempts) return undefined;
   const running = runningCountByKind(host);
 
   if (canClaimKind(host.workspace, "freeze", running)) {
@@ -193,7 +205,7 @@ export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
              SELECT MAX(n2.generation) FROM nodes n2
              WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
            )
-         ORDER BY runs.created_at, nodes.node_key`,
+         ORDER BY runs.updated_at, runs.created_at, nodes.node_key`,
       )
       .all(),
   );
@@ -209,6 +221,24 @@ export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
     if (isGateKind(kind)) continue;
     if (isPiAttemptKind(kind) && !host.piAttemptExecutor) continue;
     if (!canClaimKind(host.workspace, kind, running)) continue;
+    const activeRuns = requiredNumber(
+      asRow(
+        host.db
+          .prepare(`SELECT COUNT(DISTINCT run_id) AS count FROM attempts WHERE state = 'running'`)
+          .get(),
+      ) ?? {},
+      "count",
+    );
+    const runHasAttempt = Boolean(
+      asRow(
+        host.db
+          .prepare(
+            "SELECT 1 AS present FROM attempts WHERE run_id = ? AND state = 'running' LIMIT 1",
+          )
+          .get(requiredText(row, "run_id")),
+      ),
+    );
+    if (!runHasAttempt && activeRuns >= host.workspace.orchestration.maxActiveRuns) continue;
     if (!host.upstreamsSucceeded(requiredText(row, "run_id"), nodeKey)) continue;
     const claim = claimPreparedRow(host, row);
     if (claim) {
@@ -242,6 +272,25 @@ export function claimNodeByKey(
       .get(nodeKey, kind, nodeKey),
   );
   if (!node) return undefined;
+  const runId = requiredText(node, "run_id");
+  const activeRuns = requiredNumber(
+    asRow(
+      host.db
+        .prepare("SELECT COUNT(DISTINCT run_id) AS count FROM attempts WHERE state = 'running'")
+        .get(),
+    ) ?? {},
+    "count",
+  );
+  const runHasAttempt = Boolean(
+    asRow(
+      host.db
+        .prepare("SELECT 1 AS present FROM attempts WHERE run_id = ? AND state = 'running' LIMIT 1")
+        .get(runId),
+    ),
+  );
+  if (!runHasAttempt && activeRuns >= host.workspace.orchestration.maxActiveRuns) {
+    return undefined;
+  }
   if (nodeKey !== "freeze" && !host.upstreamsSucceeded(requiredText(node, "run_id"), nodeKey)) {
     return undefined;
   }
@@ -339,7 +388,8 @@ function retrySourceAttempt(
   );
   if (!attempt) return undefined;
   if (requiredNumber(attempt, "node_generation") !== generation) return undefined;
-  if (!["failed", "interrupted"].includes(requiredText(attempt, "state"))) return undefined;
+  if (!["failed", "interrupted", "suspended"].includes(requiredText(attempt, "state")))
+    return undefined;
   const inputs = asRows(
     host.db
       .prepare(`SELECT role, artifact_id FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`)
@@ -814,6 +864,19 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
     claim.nodeGeneration,
     kind,
   );
+  const revisions = asRows(
+    host.db
+      .prepare(
+        `SELECT revision_id, kind, content FROM run_revisions
+         WHERE run_id = ? AND applied_at IS NOT NULL
+         ORDER BY created_at, revision_id`,
+      )
+      .all(claim.runId),
+  ).map((row) => ({
+    revisionId: requiredText(row, "revision_id"),
+    kind: requiredText(row, "kind") as "guidance" | "scope_change",
+    content: requiredText(row, "content"),
+  }));
   return {
     runId: claim.runId,
     attemptId: claim.attemptId,
@@ -825,6 +888,7 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
       ...(detail ? { detail } : {}),
     },
     inputDigest: host.attemptInputDigest(claim.attemptId),
+    revisions,
     workspace: host.workspace,
     sealedInputs,
     attemptDir,
@@ -903,6 +967,19 @@ export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown
     )
     .run(claim.attemptId);
   host.emit(claim.runId, "attempt.failed");
+
+  // A publication CAS conflict is an explicit operator decision point, not a
+  // failed Run. mechanicalPublish has reopened the payload-bound gate and
+  // preserved the candidate; leave publish blocked until that decision.
+  if (claim.kind === "publish" && failureClass === "publication_conflict") {
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
+         WHERE run_id = ? AND node_key = ? AND generation = ?`,
+      )
+      .run(claim.runId, claim.nodeKey, claim.nodeGeneration);
+    return;
+  }
 
   // Research read-only auto-retry: re-queue same generation with exact input digest.
   if (shouldAutoRetryResearch(host, claim, message, failureClass)) {

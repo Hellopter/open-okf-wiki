@@ -179,6 +179,7 @@ test("trajectory golden: approve plan → full graph → publication gate → pu
       type: "resolve_gate",
       commandId: "traj-publish-approve-plan",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: planGate.gateId,
       gateKind: "plan",
       payloadDigest: planGate.payloadDigest,
@@ -213,6 +214,7 @@ test("trajectory golden: approve plan → full graph → publication gate → pu
       type: "resolve_gate",
       commandId: "traj-publish-approve-pub",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -296,7 +298,12 @@ test("trajectory golden: cancel mid-flight → cancelled, no further claims", as
   await startedAttempt;
 
   await runs.dispatch(
-    { type: "cancel_run", commandId: "traj-cancel-1", runId: receipt.runId },
+    {
+      type: "cancel_run",
+      commandId: "traj-cancel-1",
+      runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
+    },
     context(workspaceId),
   );
   cancelSeen = true;

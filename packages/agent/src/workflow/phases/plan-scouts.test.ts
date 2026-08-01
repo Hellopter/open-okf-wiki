@@ -32,6 +32,8 @@ const orch = (partial: Partial<WorkspaceOrchestration> = {}): WorkspaceOrchestra
   domainConcurrency: 2,
   leafConcurrency: 2,
   ...partial,
+  maxActiveRuns: partial.maxActiveRuns ?? 2,
+  maxConcurrentAttempts: partial.maxConcurrentAttempts ?? 4,
 });
 
 describe("runPlanScouts", () => {

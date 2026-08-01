@@ -210,11 +210,13 @@ test("RerunNode copies prior detail_json and merges feedback on the root target"
   db.close();
 
   const reopened = await openWikiRuns({ rootPath: root });
+  const rerunRevision = (await reopened.read({ runId: receipt.runId })).snapshot.revision;
   await reopened.dispatch(
     {
       type: "rerun_node",
       commandId: "rerun-leaf-detail",
       runId: receipt.runId,
+      expectedRevision: rerunRevision,
       nodeKey: leafKey,
       generation: 0,
       feedback: "Narrow to runtime entry points only.",

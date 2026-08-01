@@ -12,7 +12,7 @@ import { applyWorkspacePatch } from "./workspace-patch.js";
 
 function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
   return {
-    version: 2,
+    version: 3,
     id: "ws-1",
     name: "Demo",
     rootPath: "/tmp/ws",
@@ -21,7 +21,10 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
     publicationPath: "/tmp/ws/wiki",
     limits: WorkspaceLimitsSchema.parse({}),
     roleModels: WorkspaceRoleModelsSchema.parse({}),
-    orchestration: WorkspaceOrchestrationSchema.parse({}),
+    orchestration: WorkspaceOrchestrationSchema.parse({
+      maxActiveRuns: 2,
+      maxConcurrentAttempts: 4,
+    }),
     planConfirm: false,
     operatorTools: ["read", "grep", "find", "ls"],
     wikiLanguage: "en",

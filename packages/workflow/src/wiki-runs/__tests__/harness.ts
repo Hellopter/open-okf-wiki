@@ -227,7 +227,11 @@ export async function makeWorkspace(): Promise<{ root: string; workspaceId: stri
   spawnSync("git", ["commit", "-m", "initial"], { cwd: source, stdio: "ignore" });
   await writeFile(path.join(skill, "SKILL.md"), "---\nname: workflow-test\n---\n# skill\n", "utf8");
 
-  const workspace = await createWorkspace({ name: "Workflow test", rootPath: root });
+  const workspace = await createWorkspace({
+    name: "Workflow test",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
   workspace.sources = [
     { id: "main", path: source, applyDefaultIgnores: true, ignore: [], origin: { type: "path" } },
   ];
@@ -485,6 +489,7 @@ export async function approvePlanGate(
       type: "resolve_gate",
       commandId,
       runId,
+      expectedRevision: atPlan.snapshot.revision,
       gateId: planGate.gateId,
       gateKind: "plan",
       payloadDigest: planGate.payloadDigest,

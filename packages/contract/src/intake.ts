@@ -12,8 +12,8 @@ import {
 /**
  * HTTP body: create workspace.
  * Model selection comes from the provider catalog (`modelProfileId`); the
- * server resolves the denormalized model ref. Other workspace settings are
- * configured via PATCH after creation.
+ * server resolves the denormalized model ref. Run capacity is selected at
+ * creation time because v3 never infers a scheduler ceiling.
  */
 export const WorkspaceCreateSchema = z
   .object({
@@ -21,6 +21,7 @@ export const WorkspaceCreateSchema = z
     rootPath: z.string().trim().min(1),
     publicationPath: z.string().trim().min(1).optional(),
     modelProfileId: z.string().trim().min(1).optional(),
+    orchestration: WorkspaceOrchestrationSchema,
   })
   .strict();
 

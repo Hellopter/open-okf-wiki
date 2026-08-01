@@ -6,6 +6,7 @@ import {
   type WorkspaceConfig,
   WorkspaceConfigSchema,
   WorkspaceLimitsSchema,
+  type WorkspaceOrchestration,
   WorkspaceOrchestrationSchema,
   WorkspaceRoleModelsSchema,
 } from "@okf-wiki/contract";
@@ -37,6 +38,9 @@ export type CreateWorkspaceOptions = {
    * Must be resolved from catalog profile — not free-text API input.
    */
   resolvedModelId?: string;
+  /** Required v3 scheduler capacity selected by the operator. */
+  orchestration: Pick<WorkspaceOrchestration, "maxActiveRuns" | "maxConcurrentAttempts"> &
+    Partial<WorkspaceOrchestration>;
 };
 
 /**
@@ -80,7 +84,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
 
   const now = new Date().toISOString();
   return {
-    version: 2,
+    version: 3,
     id: randomUUID(),
     name: options.name.trim(),
     rootPath,
@@ -92,7 +96,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
     publicationPath,
     limits: WorkspaceLimitsSchema.parse({}),
     roleModels: WorkspaceRoleModelsSchema.parse({}),
-    orchestration: WorkspaceOrchestrationSchema.parse({}),
+    orchestration: WorkspaceOrchestrationSchema.parse(options.orchestration),
     // Match WorkspaceConfigSchema default — HITL plan gate on unless operator opts out.
     planConfirm: true,
     operatorTools: [...DEFAULT_OPERATOR_TOOLS],

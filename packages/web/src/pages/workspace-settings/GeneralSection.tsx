@@ -60,6 +60,10 @@ export type GeneralSectionProps = {
   setMaxDomainFanOut: (value: string) => void;
   maxLeafFanOut: string;
   setMaxLeafFanOut: (value: string) => void;
+  maxActiveRuns: string;
+  setMaxActiveRuns: (value: string) => void;
+  maxConcurrentAttempts: string;
+  setMaxConcurrentAttempts: (value: string) => void;
   planScoutCount: string;
   setPlanScoutCount: (value: string) => void;
   reviewCouncilSize: string;
@@ -120,6 +124,10 @@ export function GeneralSection(props: GeneralSectionProps) {
     setMaxDomainFanOut,
     maxLeafFanOut,
     setMaxLeafFanOut,
+    maxActiveRuns,
+    setMaxActiveRuns,
+    maxConcurrentAttempts,
+    setMaxConcurrentAttempts,
     planScoutCount,
     setPlanScoutCount,
     reviewCouncilSize,
@@ -477,6 +485,44 @@ export function GeneralSection(props: GeneralSectionProps) {
                 <FieldLabel>{t.settings.orchestrationTitle}</FieldLabel>
                 <FieldDescription>{t.settings.orchestrationHint}</FieldDescription>
                 <div className="mt-2 flex flex-wrap gap-3">
+                  <div className="flex flex-col gap-1">
+                    <FieldLabel
+                      htmlFor="settings-max-active-runs"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Active Runs
+                    </FieldLabel>
+                    <Input
+                      id="settings-max-active-runs"
+                      type="number"
+                      min={1}
+                      max={32}
+                      value={maxActiveRuns}
+                      onChange={(e) => setMaxActiveRuns(e.target.value)}
+                      className="font-mono w-24"
+                      data-testid="settings-max-active-runs"
+                      required
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <FieldLabel
+                      htmlFor="settings-max-concurrent-attempts"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Concurrent attempts
+                    </FieldLabel>
+                    <Input
+                      id="settings-max-concurrent-attempts"
+                      type="number"
+                      min={1}
+                      max={128}
+                      value={maxConcurrentAttempts}
+                      onChange={(e) => setMaxConcurrentAttempts(e.target.value)}
+                      className="font-mono w-24"
+                      data-testid="settings-max-concurrent-attempts"
+                      required
+                    />
+                  </div>
                   <div className="flex flex-col gap-1">
                     <FieldLabel
                       htmlFor="settings-max-domain-fanout"

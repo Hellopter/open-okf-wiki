@@ -8,9 +8,17 @@ import {
   WorkspacePatchSchema,
 } from "./intake.js";
 
-test("WorkspaceCreateSchema requires name and rootPath", () => {
+test("WorkspaceCreateSchema requires name, rootPath, and explicit Run capacity", () => {
   assert.equal(WorkspaceCreateSchema.safeParse({}).success, false);
-  assert.equal(WorkspaceCreateSchema.safeParse({ name: "w", rootPath: "/tmp/ws" }).success, true);
+  assert.equal(WorkspaceCreateSchema.safeParse({ name: "w", rootPath: "/tmp/ws" }).success, false);
+  assert.equal(
+    WorkspaceCreateSchema.safeParse({
+      name: "w",
+      rootPath: "/tmp/ws",
+      orchestration: { maxActiveRuns: 1, maxConcurrentAttempts: 1 },
+    }).success,
+    true,
+  );
 });
 
 test("WorkspacePatchSchema rejects unknown keys", () => {

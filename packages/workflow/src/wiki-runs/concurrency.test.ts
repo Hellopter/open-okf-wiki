@@ -13,7 +13,7 @@ import {
 
 function workspace(orchestration?: Partial<WorkspaceConfig["orchestration"]>): WorkspaceConfig {
   return {
-    version: 2,
+    version: 3,
     id: "ws",
     name: "Test",
     rootPath: "/tmp/ws",

@@ -6,7 +6,7 @@ import { createSessionStatusTool, SESSION_STATUS_TOOL_NAME } from "./session-sta
 describe("session_status tool", () => {
   it("reports context budget and sources without starting a run", async () => {
     const workspace = WorkspaceConfigSchema.parse({
-      version: 2,
+      version: 3,
       id: "ws-status",
       name: "Status WS",
       rootPath: "/tmp/ws",
@@ -21,6 +21,7 @@ describe("session_status tool", () => {
       ],
       model: { id: "openai/gpt-test" },
       publicationPath: "/tmp/wiki",
+      orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
       limits: { requestTimeoutSeconds: 60, contextTargetTokens: 50_000 },
       planConfirm: true,
       wikiLanguage: "en",
@@ -52,13 +53,14 @@ describe("session_status tool", () => {
 
   it("reports planConfirm ON by default, matching the run gate default", async () => {
     const workspace = WorkspaceConfigSchema.parse({
-      version: 2,
+      version: 3,
       id: "ws-status-default",
       name: "Status WS",
       rootPath: "/tmp/ws",
       sources: [],
       model: { id: "openai/gpt-test" },
       publicationPath: "/tmp/wiki",
+      orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
       createdAt: new Date().toISOString(),
     });
     // planConfirm omitted on input: the schema defaults it to true (HITL by

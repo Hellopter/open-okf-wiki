@@ -13,6 +13,7 @@ test("Run HTTP list projects WikiRuns rows; graph route is gone", async () => {
   const workspace = await createWorkspace({
     name: "Read-only Run Surface",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

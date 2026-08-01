@@ -109,6 +109,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     const gateId = seedOpenPlanGate(root, receipt.runId, { gateId: "gate-approve-nospec" });
     const reopened = await openWikiRuns({ rootPath: root });
     t.after(() => reopened.close());
+    const reopenedRevision = (await reopened.read({ runId: receipt.runId })).snapshot.revision;
     await assert.rejects(
       () =>
         reopened.dispatch(
@@ -116,6 +117,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
             type: "resolve_gate",
             commandId: "resolve-approve-nospec",
             runId: receipt.runId,
+            expectedRevision: reopenedRevision,
             gateId,
             gateKind: "plan",
             payloadDigest: PLAN_PAYLOAD_DIGEST,
@@ -143,11 +145,13 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     const gateId = seedOpenPlanGate(root, receipt.runId, { gateId: "gate-approve" });
     await seedPlanSpecArtifact(root, receipt.runId);
     const reopened = await openWikiRuns({ rootPath: root });
+    const approveRevision = (await reopened.read({ runId: receipt.runId })).snapshot.revision;
     const approved = await reopened.dispatch(
       {
         type: "resolve_gate",
         commandId: "resolve-approve",
         runId: receipt.runId,
+        expectedRevision: approveRevision,
         gateId,
         gateKind: "plan",
         payloadDigest: PLAN_PAYLOAD_DIGEST,
@@ -162,6 +166,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
           type: "resolve_gate",
           commandId: "resolve-approve",
           runId: receipt.runId,
+          expectedRevision: approveRevision,
           gateId,
           gateKind: "plan",
           payloadDigest: PLAN_PAYLOAD_DIGEST,
@@ -188,6 +193,7 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
             type: "resolve_gate",
             commandId: "resolve-approve-stale",
             runId: receipt.runId,
+            expectedRevision: snapshot.revision,
             gateId,
             gateKind: "plan",
             payloadDigest: PLAN_PAYLOAD_DIGEST,
@@ -213,11 +219,13 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     await runs.close();
     const gateId = seedOpenPlanGate(root, receipt.runId, { gateId: "gate-revise" });
     const reopened = await openWikiRuns({ rootPath: root });
+    const reviseRevision = (await reopened.read({ runId: receipt.runId })).snapshot.revision;
     await reopened.dispatch(
       {
         type: "resolve_gate",
         commandId: "resolve-revise",
         runId: receipt.runId,
+        expectedRevision: reviseRevision,
         gateId,
         gateKind: "plan",
         payloadDigest: PLAN_PAYLOAD_DIGEST,
@@ -249,11 +257,13 @@ test("ResolveGate plan approve, revise, and deny follow the ADR decision table",
     await runs.close();
     const gateId = seedOpenPlanGate(root, receipt.runId, { gateId: "gate-deny" });
     const reopened = await openWikiRuns({ rootPath: root });
+    const denyRevision = (await reopened.read({ runId: receipt.runId })).snapshot.revision;
     await reopened.dispatch(
       {
         type: "resolve_gate",
         commandId: "resolve-deny",
         runId: receipt.runId,
+        expectedRevision: denyRevision,
         gateId,
         gateKind: "plan",
         payloadDigest: PLAN_PAYLOAD_DIGEST,
@@ -409,6 +419,7 @@ test("StartRun freezes, plans via executor, opens gate.plan, and ResolveGate app
       type: "resolve_gate",
       commandId: "approve-plan-gate",
       runId: receipt.runId,
+      expectedRevision: (await runs.read({ runId: receipt.runId })).snapshot.revision,
       gateId: openGate.gateId,
       gateKind: "plan",
       payloadDigest: openGate.payloadDigest,

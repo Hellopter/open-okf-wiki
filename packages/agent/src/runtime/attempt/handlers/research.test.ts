@@ -76,7 +76,7 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
     node,
     inputDigest: digest,
     workspace: {
-      version: 2,
+      version: 3,
       id: "workspace-1",
       name: "Demo",
       rootPath: root,
@@ -91,6 +91,7 @@ async function fixture(node: PiAttemptInput["node"]): Promise<PiAttemptInput> {
       ],
       model: { id: "fixture/model" },
       publicationPath: path.join(root, "published"),
+      orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
       createdAt: timestamp,
     },
     sealedInputs: [

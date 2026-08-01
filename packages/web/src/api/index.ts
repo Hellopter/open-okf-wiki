@@ -63,6 +63,10 @@ export {
 } from "./wiki";
 export {
   dispatchWikiRunCommand,
+  getCandidateDiff,
+  getCandidatePage,
+  getCandidateTree,
+  getRunIndex,
   getWikiRun,
   getWikiRunAttemptTranscript,
   getWikiRunSpec,
@@ -72,6 +76,7 @@ export {
   type WikiRunState,
   wikiRunAttemptTranscriptEventsUrl,
   wikiRunEventsUrl,
+  wikiRunIndexEventsUrl,
 } from "./wiki-runs";
 export {
   type AddSourceInput,

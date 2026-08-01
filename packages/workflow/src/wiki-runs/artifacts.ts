@@ -3,8 +3,8 @@
  * Control-flow after success (gates, unlock, plan accept) lives in attempt-success.ts.
  */
 
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   cp,
   lstat,
@@ -28,7 +28,7 @@ import {
   validateBoundInputs,
   validateNodeOutputs,
 } from "@okf-wiki/contract";
-import { runWorkDir } from "@okf-wiki/core";
+import { EMPTY_PUBLICATION_DIGEST, runWorkDir } from "@okf-wiki/core";
 import {
   graphRoleForNodeKind,
   mergeAttemptMetrics,
@@ -50,6 +50,57 @@ import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
 /** Bytes/CAS surface — no gate open or unlock callbacks. */
 export type ArtifactsHost = WikiRunsCasCtx;
+
+type CandidateEvidenceMap = {
+  version: 1;
+  candidateDigest: string;
+  pages: Array<{
+    pagePath: string;
+    contentDigest: string;
+    evidence: Array<{ line: number; source: string }>;
+  }>;
+};
+
+function contentDigest(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function evidenceForPage(content: string): Array<{ line: number; source: string }> {
+  const evidence: Array<{ line: number; source: string }> = [];
+  for (const [index, line] of content.replace(/\r\n/g, "\n").split("\n").entries()) {
+    for (const source of line.matchAll(/(?:repo:[^\s)\]]+|https?:\/\/[^\s)\]]+)/g)) {
+      evidence.push({ line: index + 1, source: source[0] });
+    }
+  }
+  return evidence;
+}
+
+function evidenceMapForCandidate(root: string, candidateDigest: string): CandidateEvidenceMap {
+  const pages: CandidateEvidenceMap["pages"] = [];
+  const visit = (directory: string, relativeDirectory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        visit(path.join(directory, entry.name), relativePath);
+      } else if (entry.isFile() && relativePath.endsWith(".md")) {
+        const content = readFileSync(path.join(directory, entry.name), "utf8");
+        pages.push({
+          pagePath: relativePath,
+          contentDigest: contentDigest(content),
+          evidence: evidenceForPage(content),
+        });
+        if (pages.length > 2_000) throw new Error("candidate tree exceeds page limit");
+      }
+    }
+  };
+  visit(root, "");
+  return {
+    version: 1,
+    candidateDigest,
+    pages: pages.sort((left, right) => left.pagePath.localeCompare(right.pagePath)),
+  };
+}
 
 export function copyAttemptInputs(
   host: Pick<ArtifactsHost, "db">,
@@ -622,7 +673,7 @@ export function loadSealedDefectsReport(
  * Optional metrics are best-effort and never block the commit.
  */
 export function commitNodeArtifacts(
-  host: Pick<ArtifactsHost, "db" | "emit" | "isCurrent">,
+  host: Pick<ArtifactsHost, "db" | "emit" | "isCurrent" | "workspace">,
   claim: ClaimedNode,
   preparations: ArtifactPreparation[],
   metrics?: AttemptMetrics,
@@ -672,7 +723,7 @@ export function commitNodeArtifacts(
     // Always register WikiCandidate identity when a wiki_tree is committed (truth).
     // maxCandidates is enforced when scheduling repair, not here.
     if (preparation.role === "wiki_tree" || preparation.kind === "wiki_tree") {
-      registerWikiCandidate(host, {
+      const candidate = registerWikiCandidate(host, {
         runId: claim.runId,
         digest: preparation.digest,
         artifactId: preparation.artifactId,
@@ -681,6 +732,64 @@ export function commitNodeArtifacts(
         producerNodeKey: claim.nodeKey,
         producerAttemptId: claim.attemptId,
       });
+      const parent = candidate.parentCandidateId
+        ? asRow(
+            host.db
+              .prepare(
+                `SELECT digest, artifact_id FROM wiki_candidates WHERE run_id = ? AND candidate_id = ?`,
+              )
+              .get(claim.runId, candidate.parentCandidateId),
+          )
+        : undefined;
+      const candidateRoot = path.resolve(
+        runWorkDir(host.workspace.rootPath, claim.runId),
+        preparation.relativePath,
+      );
+      const evidenceMap = evidenceMapForCandidate(candidateRoot, candidate.digest);
+      const evidenceDigest = digest(evidenceMap);
+      const evidenceArtifactId = artifactId(claim.runId, "evidence_map", evidenceDigest);
+      const evidenceRelativePath = `artifacts/evidence-map-${evidenceDigest}`;
+      const evidenceDirectory = path.join(
+        runWorkDir(host.workspace.rootPath, claim.runId),
+        evidenceRelativePath,
+      );
+      mkdirSync(evidenceDirectory, { recursive: true });
+      writeFileSync(
+        path.join(evidenceDirectory, "evidence-map.json"),
+        `${JSON.stringify(evidenceMap)}\n`,
+        "utf8",
+      );
+      host.db
+        .prepare(
+          `INSERT INTO artifacts (artifact_id, run_id, kind, digest, relative_path, producer_attempt_id, sealed_at)
+           VALUES (?, ?, 'evidence_map', ?, ?, ?, ?)
+           ON CONFLICT(artifact_id) DO NOTHING`,
+        )
+        .run(
+          evidenceArtifactId,
+          claim.runId,
+          evidenceDigest,
+          evidenceRelativePath,
+          claim.attemptId,
+          timestamp,
+        );
+      // A parent wiki_tree is the baseline artifact. The initial candidate is
+      // anchored to the empty published digest and therefore has no local baseline artifact.
+      host.db
+        .prepare(
+          `INSERT INTO candidate_review_artifacts (
+             run_id, candidate_digest, baseline_digest, baseline_artifact_id, evidence_digest, evidence_artifact_id
+           ) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(run_id, candidate_digest) DO NOTHING`,
+        )
+        .run(
+          claim.runId,
+          candidate.digest,
+          parent ? requiredText(parent, "digest") : EMPTY_PUBLICATION_DIGEST,
+          parent ? requiredText(parent, "artifact_id") : null,
+          evidenceDigest,
+          evidenceArtifactId,
+        );
     }
   }
   host.db

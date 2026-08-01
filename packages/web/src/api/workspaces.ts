@@ -39,6 +39,7 @@ export type CreateWorkspaceInput = {
   publicationPath?: string;
   /** Catalog model profile id (required when Settings has models). */
   modelProfileId?: string;
+  orchestration: Pick<WorkspaceConfig["orchestration"], "maxActiveRuns" | "maxConcurrentAttempts">;
 };
 
 export type PatchWorkspaceInput = {

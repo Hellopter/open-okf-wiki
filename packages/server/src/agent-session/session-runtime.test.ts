@@ -28,6 +28,7 @@ test("prompt returns acceptedTurnId before the turn fully settles", async (t) =>
   const workspace = await createWorkspace({
     name: "Session Runtime",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -72,6 +73,7 @@ test("SessionRuntime.cancel scopes map to abort / clear_queue / abort_compaction
   const workspace = await createWorkspace({
     name: "Cancel Scopes",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -135,6 +137,7 @@ test("SessionRuntime rejects steer and follow_up without an active turn", async 
   const workspace = await createWorkspace({
     name: "Idle Commands",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

@@ -4,19 +4,27 @@
  */
 
 import type {
+  CandidateDiffRead,
+  CandidatePageRead,
+  CandidateTreeRead,
   RunCommand,
   WikiRunAttemptTranscript,
   WikiRunCommandResponse,
   WikiRunGetResponse,
+  WikiRunIndexGetResponse,
   WikiRunListItem,
   WikiRunListResponse,
   WikiRunSpecRead,
   WikiRunState,
 } from "@okf-wiki/contract";
 import {
+  CandidateDiffReadSchema,
+  CandidatePageReadSchema,
+  CandidateTreeReadSchema,
   WikiRunAttemptTranscriptSchema,
   WikiRunCommandResponseSchema,
   WikiRunGetResponseSchema,
+  WikiRunIndexGetResponseSchema,
   WikiRunListResponseSchema,
   WikiRunSpecReadSchema,
 } from "@okf-wiki/contract";
@@ -27,6 +35,12 @@ export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunState };
 export function listRuns(workspaceId: string): Promise<WikiRunListResponse> {
   return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`).then(
     WikiRunListResponseSchema.parse,
+  );
+}
+
+export function getRunIndex(workspaceId: string): Promise<WikiRunIndexGetResponse> {
+  return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/index`).then(
+    WikiRunIndexGetResponseSchema.parse,
   );
 }
 
@@ -42,6 +56,41 @@ export function getWikiRunSpec(workspaceId: string, runId: string): Promise<Wiki
   return request<unknown>(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,
   ).then(WikiRunSpecReadSchema.parse);
+}
+
+export function getCandidatePage(
+  workspaceId: string,
+  runId: string,
+  candidateDigest: string,
+  pagePath: string,
+): Promise<CandidatePageRead> {
+  const query = new URLSearchParams({ candidate: candidateDigest, page: pagePath });
+  return request<unknown>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/candidate/page?${query}`,
+  ).then(CandidatePageReadSchema.parse);
+}
+
+export function getCandidateTree(
+  workspaceId: string,
+  runId: string,
+  candidateDigest: string,
+): Promise<CandidateTreeRead> {
+  const query = new URLSearchParams({ candidate: candidateDigest });
+  return request<unknown>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/candidate/tree?${query}`,
+  ).then(CandidateTreeReadSchema.parse);
+}
+
+export function getCandidateDiff(
+  workspaceId: string,
+  runId: string,
+  candidateDigest: string,
+  pagePath: string,
+): Promise<CandidateDiffRead> {
+  const query = new URLSearchParams({ candidate: candidateDigest, page: pagePath });
+  return request<unknown>(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/candidate/diff?${query}`,
+  ).then(CandidateDiffReadSchema.parse);
 }
 
 /** Secret-free cursor-paged Attempt trace for Node details UI. */
@@ -104,4 +153,8 @@ export function dispatchWikiRunCommand(
  */
 export function wikiRunEventsUrl(workspaceId: string, runId: string): string {
   return `${getApiBase()}/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/events`;
+}
+
+export function wikiRunIndexEventsUrl(workspaceId: string): string {
+  return `${getApiBase()}/api/workspaces/${encodeURIComponent(workspaceId)}/runs/index/events`;
 }

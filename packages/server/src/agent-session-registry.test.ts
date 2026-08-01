@@ -85,6 +85,7 @@ async function fixtureWorkspace(root: string) {
   let workspace = await createWorkspace({
     name: "Registry Fixture",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -115,6 +116,7 @@ test("H1: history snapshot redacts secrets while Pi storage stays intact", async
   const workspace = await createWorkspace({
     name: "History Redact",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -229,6 +231,7 @@ test("H1: live Pi subscribe emits redacted SSE payloads", async (t) => {
   const workspace = await createWorkspace({
     name: "SSE Redact",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -273,6 +276,7 @@ test("H2: deleted live runtime ignores late Pi events", async (t) => {
   const workspace = await createWorkspace({
     name: "Late Event",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -309,6 +313,7 @@ test("H2: a closing runtime rejects commands before touching Pi", async (t) => {
   const workspace = await createWorkspace({
     name: "Closing Command",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -337,6 +342,7 @@ test("H2: concurrent ensureRegistered opens a single live SessionManager", async
   const workspace = await createWorkspace({
     name: "Open Race",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -399,6 +405,7 @@ test("H2: concurrent create admits one Operator Session", async (t) => {
   const workspace = await createWorkspace({
     name: "Create Race",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -441,6 +448,7 @@ test("H2: delete wins over concurrent cold ensureRegistered (no reanimation)", a
   const workspace = await createWorkspace({
     name: "Delete Open Race",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -590,6 +598,7 @@ test("H2: concurrent delete is single-flight; create and command blocked mid-cas
   const workspace = await createWorkspace({
     name: "Delete Flight",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });
@@ -739,6 +748,7 @@ test("idle sweep disposes live handle without deleting Session JSONL", async (t)
   const workspace = await createWorkspace({
     name: "Idle Sweep",
     rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     publicationPath: path.join(root, "published"),
     resolvedModelId: "openai/test",
   });

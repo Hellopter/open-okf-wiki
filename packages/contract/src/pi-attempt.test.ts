@@ -5,13 +5,14 @@ import { PiAttemptInputSchema, PiAttemptOutcomeSchema } from "./pi-attempt.js";
 const digest = "a".repeat(64);
 const timestamp = "2026-07-28T00:00:00.000Z";
 const workspace = {
-  version: 2,
+  version: 3,
   id: "workspace-1",
   name: "Demo",
   rootPath: "/workspace",
   sources: [{ id: "source", path: "/source", origin: { type: "path" } }],
   model: { id: "provider/model" },
   publicationPath: "/workspace/wiki",
+  orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
   createdAt: timestamp,
 };
 

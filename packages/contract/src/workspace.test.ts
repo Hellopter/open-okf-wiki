@@ -40,13 +40,14 @@ test("WorkspaceSourceSchema accepts clone origin", () => {
 
 test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict parse of known fields", () => {
   const ws = WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
     sources: [{ id: "application", path: "D:/src/app", origin: { type: "path" } }],
     model: { id: "openai/corp-model" },
     publicationPath: "D:/ws/demo/wiki",
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     createdAt: new Date().toISOString(),
   });
   assert.equal(ws.planConfirm, true);
@@ -58,20 +59,21 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   assert.equal(ws.orchestration.leafConcurrency, 2);
   assert.deepEqual(ws.operatorTools, ["read", "grep", "find", "ls"]);
   assert.deepEqual(ws.roleModels.reviewers, []);
-  assert.equal(ws.version, 2);
+  assert.equal(ws.version, 3);
   assert.equal(ws.wikiLanguage, "en");
   assert.deepEqual(ws.sources[0]?.origin, { type: "path" });
 });
 
 test("WorkspaceConfigSchema accepts wikiLanguage zh", () => {
   const ws = WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
     sources: [],
     model: { id: "openai/corp-model" },
     publicationPath: "D:/ws/demo/wiki",
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     wikiLanguage: "zh",
     createdAt: new Date().toISOString(),
   });
@@ -123,7 +125,7 @@ test("leafConcurrency defaults to 2 and accepts overrides", () => {
   assert.equal(resolveOrchestration({}).leafConcurrency, 2);
   assert.equal(resolveOrchestration({ leafConcurrency: 4 }).leafConcurrency, 4);
   const ws = WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "ws_1",
     name: "Demo",
     rootPath: "D:/ws/demo",
@@ -131,7 +133,7 @@ test("leafConcurrency defaults to 2 and accepts overrides", () => {
     model: { id: "openai/corp-model" },
     publicationPath: "D:/ws/demo/wiki",
     createdAt: new Date().toISOString(),
-    orchestration: { leafConcurrency: 8 },
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4, leafConcurrency: 8 },
   });
   assert.equal(ws.orchestration.leafConcurrency, 8);
 });

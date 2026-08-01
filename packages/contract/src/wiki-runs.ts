@@ -5,11 +5,12 @@ import { AttemptTraceEventSchema } from "./run-graph.js";
 
 /**
  * Durable WikiRuns contract version.
- * v3: RunIntent plus bounded plan.adapt.N evidence-gap decisions; no silent fan-out.
+ * v4: independent Run Workspace with durable revisions, execution epochs, and
+ * operator-owned candidate review. v3 control stores are deliberately unsupported.
  * Definition topology is Wiki-specific, not a workflow DSL.
  */
-export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v3" as const;
-export const WikiRunDefinitionVersionSchema = z.literal(3);
+export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v4" as const;
+export const WikiRunDefinitionVersionSchema = z.literal(4);
 
 const IdentifierSchema = z.string().trim().min(1).max(200);
 const IsoDateTimeSchema = z.string().datetime();
@@ -20,10 +21,15 @@ export const RunCommandIdSchema = IdentifierSchema;
 export const RunNodeKeySchema = z.string().trim().min(1).max(200);
 export const RunAttemptIdSchema = IdentifierSchema;
 export const RunGateIdSchema = IdentifierSchema;
+export const RunRevisionIdSchema = IdentifierSchema;
+export const ExecutionEpochIdSchema = IdentifierSchema;
+export const ReviewThreadIdSchema = IdentifierSchema;
 
 export const WikiRunStateSchema = z.enum([
   "queued",
   "running",
+  "pausing",
+  "paused",
   "waiting_for_operator",
   "failed",
   "publication_declined",
@@ -111,11 +117,19 @@ export const WikiRunArtifactKindSchema = z.enum([
   "manifest",
   "operator_input",
   "publication_candidate",
+  "candidate_baseline",
+  "candidate_diff",
+  "evidence_map",
+  "review_thread",
+  "repair_request",
 ]);
 
 export type WorkspaceId = z.infer<typeof WorkspaceIdSchema>;
 export type WikiRunId = z.infer<typeof WikiRunIdSchema>;
 export type RunCommandId = z.infer<typeof RunCommandIdSchema>;
+export type RunRevisionId = z.infer<typeof RunRevisionIdSchema>;
+export type ExecutionEpochId = z.infer<typeof ExecutionEpochIdSchema>;
+export type ReviewThreadId = z.infer<typeof ReviewThreadIdSchema>;
 export type WikiRunDefinitionVersion = z.infer<typeof WikiRunDefinitionVersionSchema>;
 export type WikiRunState = z.infer<typeof WikiRunStateSchema>;
 export type WikiRunNodeKind = z.infer<typeof WikiRunNodeKindSchema>;
@@ -171,49 +185,106 @@ export const StartRunCommandSchema = z
   })
   .strict();
 
-export const RetryFailedNodeCommandSchema = z
+/** Optimistic concurrency guard for an existing Run's control projection. */
+export const ExpectedControlRevisionSchema = z.number().int().min(0);
+
+const ExistingRunCommandSchema = z
   .object({
-    type: z.literal("retry_failed_node"),
     commandId: RunCommandIdSchema,
     runId: WikiRunIdSchema,
-    nodeKey: RunNodeKeySchema,
-    generation: z.number().int().min(0),
-    attemptId: RunAttemptIdSchema,
+    expectedRevision: ExpectedControlRevisionSchema,
   })
   .strict();
 
-export const RerunNodeCommandSchema = z
-  .object({
-    type: z.literal("rerun_node"),
-    commandId: RunCommandIdSchema,
-    runId: WikiRunIdSchema,
-    nodeKey: RunNodeKeySchema,
-    generation: z.number().int().min(0),
-    feedback: z.string().trim().min(1).max(4_000).optional(),
-  })
-  .strict();
+export const RetryFailedNodeCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("retry_failed_node"),
+  nodeKey: RunNodeKeySchema,
+  generation: z.number().int().min(0),
+  attemptId: RunAttemptIdSchema,
+}).strict();
+
+export const RerunNodeCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("rerun_node"),
+  nodeKey: RunNodeKeySchema,
+  generation: z.number().int().min(0),
+  feedback: z.string().trim().min(1).max(4_000).optional(),
+}).strict();
 
 /**
  * Resume one operator-approved evaluation recovery without recreating its Run.
  * The recovery record binds the original Candidate and sealed defect evidence.
  */
-export const ContinueEvaluationCommandSchema = z
-  .object({
-    type: z.literal("continue_evaluation"),
-    commandId: RunCommandIdSchema,
-    runId: WikiRunIdSchema,
-    recoveryId: IdentifierSchema,
-    feedback: z.string().trim().min(1).max(4_000).optional(),
-  })
-  .strict();
+export const ContinueEvaluationCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("continue_evaluation"),
+  recoveryId: IdentifierSchema,
+  feedback: z.string().trim().min(1).max(4_000).optional(),
+}).strict();
 
-export const CancelRunCommandSchema = z
+export const CancelRunCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("cancel_run"),
+}).strict();
+
+export const RunRevisionKindSchema = z.enum(["guidance", "scope_change"]);
+export type RunRevisionKind = z.infer<typeof RunRevisionKindSchema>;
+
+/** Durable input. Guidance applies at a safe boundary; scope starts a new epoch. */
+export const SubmitRunRevisionCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("submit_run_revision"),
+  kind: RunRevisionKindSchema,
+  content: z.string().trim().min(1).max(8_000),
+}).strict();
+
+export const PauseRunCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("pause_run"),
+}).strict();
+
+export const ResumeRunCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("resume_run"),
+}).strict();
+
+export const CandidatePagePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(1_000)
+  .refine(
+    (value) =>
+      !value.startsWith("/") &&
+      !value.includes("\\") &&
+      !value.split("/").some((part) => part === "" || part === "." || part === ".."),
+    "page path must be a relative POSIX path",
+  );
+
+const CandidateReviewAnchorSchema = z
   .object({
-    type: z.literal("cancel_run"),
-    commandId: RunCommandIdSchema,
-    runId: WikiRunIdSchema,
+    candidateDigest: Sha256HexSchema,
+    pagePath: CandidatePagePathSchema,
+    startLine: z.number().int().positive(),
+    endLine: z.number().int().positive(),
+    selectedTextDigest: Sha256HexSchema,
   })
-  .strict();
+  .strict()
+  .refine((anchor) => anchor.endLine >= anchor.startLine, {
+    message: "endLine must not precede startLine",
+    path: ["endLine"],
+  });
+
+export const CreateReviewThreadCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("create_review_thread"),
+  anchor: CandidateReviewAnchorSchema,
+  body: z.string().trim().min(1).max(4_000),
+}).strict();
+
+export const ResolveReviewThreadCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("resolve_review_thread"),
+  threadId: ReviewThreadIdSchema,
+}).strict();
+
+/** Explicit batch request; review comments never schedule model work themselves. */
+export const RequestRepairCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("request_repair"),
+  threadIds: z.array(ReviewThreadIdSchema).min(1).max(100),
+}).strict();
 
 function decisionAllowedForGateKind(
   gateKind: z.infer<typeof WikiRunGateKindSchema>,
@@ -239,18 +310,15 @@ function decisionAllowedForGateKind(
  *   - `fix` — schedule repair.N (optional feedback notes)
  *   - `revise` — operator suggestions; re-open gate with new payload digest (requires feedback)
  */
-export const ResolveGateCommandSchema = z
-  .object({
-    type: z.literal("resolve_gate"),
-    commandId: RunCommandIdSchema,
-    runId: WikiRunIdSchema,
-    gateId: RunGateIdSchema,
-    gateKind: WikiRunGateKindSchema,
-    payloadDigest: Sha256HexSchema,
-    decision: WikiRunGateDecisionValueSchema,
-    feedback: z.string().trim().min(1).max(4_000).optional(),
-    answer: z.string().trim().min(1).max(4_000).optional(),
-  })
+export const ResolveGateCommandSchema = ExistingRunCommandSchema.extend({
+  type: z.literal("resolve_gate"),
+  gateId: RunGateIdSchema,
+  gateKind: WikiRunGateKindSchema,
+  payloadDigest: Sha256HexSchema,
+  decision: WikiRunGateDecisionValueSchema,
+  feedback: z.string().trim().min(1).max(4_000).optional(),
+  answer: z.string().trim().min(1).max(4_000).optional(),
+})
   .strict()
   .superRefine((command, ctx) => {
     const expectsAnswer = command.gateKind === "operator_input" && command.decision === "answer";
@@ -294,6 +362,12 @@ export const RunCommandSchema = z.discriminatedUnion("type", [
   RerunNodeCommandSchema,
   ContinueEvaluationCommandSchema,
   CancelRunCommandSchema,
+  SubmitRunRevisionCommandSchema,
+  PauseRunCommandSchema,
+  ResumeRunCommandSchema,
+  CreateReviewThreadCommandSchema,
+  ResolveReviewThreadCommandSchema,
+  RequestRepairCommandSchema,
   ResolveGateCommandSchema,
 ]);
 
@@ -302,6 +376,12 @@ export type RetryFailedNodeCommand = z.infer<typeof RetryFailedNodeCommandSchema
 export type RerunNodeCommand = z.infer<typeof RerunNodeCommandSchema>;
 export type ContinueEvaluationCommand = z.infer<typeof ContinueEvaluationCommandSchema>;
 export type CancelRunCommand = z.infer<typeof CancelRunCommandSchema>;
+export type SubmitRunRevisionCommand = z.infer<typeof SubmitRunRevisionCommandSchema>;
+export type PauseRunCommand = z.infer<typeof PauseRunCommandSchema>;
+export type ResumeRunCommand = z.infer<typeof ResumeRunCommandSchema>;
+export type CreateReviewThreadCommand = z.infer<typeof CreateReviewThreadCommandSchema>;
+export type ResolveReviewThreadCommand = z.infer<typeof ResolveReviewThreadCommandSchema>;
+export type RequestRepairCommand = z.infer<typeof RequestRepairCommandSchema>;
 export type ResolveGateCommand = z.infer<typeof ResolveGateCommandSchema>;
 export type RunCommand = z.infer<typeof RunCommandSchema>;
 
@@ -508,6 +588,67 @@ export const WikiRunEvaluationRecoverySchema = z
   })
   .strict();
 
+/** Immutable operator input bound into all later Attempt envelopes. */
+export const RunRevisionSchema = z
+  .object({
+    revisionId: RunRevisionIdSchema,
+    kind: RunRevisionKindSchema,
+    content: z.string().trim().min(1).max(8_000),
+    commandId: RunCommandIdSchema,
+    actorId: IdentifierSchema,
+    createdAt: IsoDateTimeSchema,
+    appliedAt: IsoDateTimeSchema.optional(),
+    epochId: ExecutionEpochIdSchema.optional(),
+  })
+  .strict();
+
+/** A scope change creates a fresh plan boundary without erasing prior work. */
+export const ExecutionEpochSchema = z
+  .object({
+    epochId: ExecutionEpochIdSchema,
+    ordinal: z.number().int().positive(),
+    scopeRevisionId: RunRevisionIdSchema.optional(),
+    state: z.enum(["active", "superseded", "completed"]),
+    createdAt: IsoDateTimeSchema,
+  })
+  .strict();
+
+export const ReviewThreadStateSchema = z.enum(["open", "resolved", "superseded"]);
+export type ReviewThreadState = z.infer<typeof ReviewThreadStateSchema>;
+
+/** Safe anchored review projection. It never exposes the artifact location on disk. */
+export const ReviewThreadSchema = z
+  .object({
+    threadId: ReviewThreadIdSchema,
+    candidateDigest: Sha256HexSchema,
+    pagePath: z.string().trim().min(1).max(1_000),
+    startLine: z.number().int().positive(),
+    endLine: z.number().int().positive(),
+    selectedTextDigest: Sha256HexSchema,
+    body: z.string().trim().min(1).max(4_000),
+    state: ReviewThreadStateSchema,
+    authorId: IdentifierSchema,
+    createdAt: IsoDateTimeSchema,
+    resolvedAt: IsoDateTimeSchema.optional(),
+  })
+  .strict();
+
+export const WikiRunCandidateSchema = z
+  .object({
+    candidateId: IdentifierSchema,
+    digest: Sha256HexSchema,
+    artifactId: IdentifierSchema,
+    parentCandidateId: IdentifierSchema.optional(),
+    producedBy: z.enum(["write", "repair", "mechanical_fix"]),
+    round: z.number().int().min(0),
+    createdAt: IsoDateTimeSchema.optional(),
+    baselineDigest: Sha256HexSchema.optional(),
+    baselineArtifactId: IdentifierSchema.optional(),
+    evidenceDigest: Sha256HexSchema.optional(),
+    evidenceArtifactId: IdentifierSchema.optional(),
+  })
+  .strict();
+
 export const WikiRunSnapshotSchema = z
   .object({
     schema: z.literal(WIKI_RUNS_SCHEMA),
@@ -537,21 +678,10 @@ export const WikiRunSnapshotSchema = z
      * WikiCandidate lineage for evaluation (write / repair / mechanical_fix).
      * Empty when the run has not sealed a wiki_tree yet or on older DBs.
      */
-    candidates: z
-      .array(
-        z
-          .object({
-            candidateId: z.string().min(1),
-            digest: z.string().min(1),
-            artifactId: z.string().min(1),
-            parentCandidateId: z.string().min(1).optional(),
-            producedBy: z.enum(["write", "repair", "mechanical_fix"]),
-            round: z.number().int().min(0),
-            createdAt: z.string().optional(),
-          })
-          .strict(),
-      )
-      .default([]),
+    candidates: z.array(WikiRunCandidateSchema).default([]),
+    revisions: z.array(RunRevisionSchema).default([]),
+    epochs: z.array(ExecutionEpochSchema).min(1),
+    reviewThreads: z.array(ReviewThreadSchema).default([]),
     /** Present only while a failed Run has an operator-continuable evaluation recovery. */
     evaluationRecoveries: z.array(WikiRunEvaluationRecoverySchema).optional(),
     createdAt: IsoDateTimeSchema,
@@ -572,6 +702,15 @@ export const WikiRunEventTypeSchema = z.enum([
   "gate.resolved",
   "gate.withdrawn",
   "run.cancel_requested",
+  "run.pausing",
+  "run.paused",
+  "run.resumed",
+  "revision.submitted",
+  "revision.applied",
+  "epoch.created",
+  "review_thread.created",
+  "review_thread.resolved",
+  "repair.requested",
   "run.cancelled",
   "run.completed_unpublished",
   "effect.prepared",
@@ -629,6 +768,10 @@ export const WikiRunListItemSchema = z
     updatedAt: IsoDateTimeSchema,
     revision: z.number().int().min(0),
     sessionId: IdentifierSchema.nullable(),
+    attention: z.enum(["none", "gate", "review", "failure", "paused"]).default("none"),
+    phase: z.string().trim().min(1).max(100).optional(),
+    completedNodes: z.number().int().nonnegative().default(0),
+    totalNodes: z.number().int().nonnegative().default(0),
   })
   .strict();
 
@@ -644,6 +787,71 @@ export const WikiRunGetResponseSchema = z
   .object({
     snapshot: WikiRunSnapshotSchema,
     cursor: z.number().int().min(0),
+  })
+  .strict();
+
+/** Workspace-scoped index SSE; a compact update for every concurrent Run. */
+export const WikiRunIndexEventSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    eventId: z.number().int().min(0),
+    occurredAt: IsoDateTimeSchema,
+    runs: z.array(WikiRunListItemSchema),
+  })
+  .strict();
+
+export const WikiRunIndexGetResponseSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    runs: z.array(WikiRunListItemSchema),
+    cursor: z.number().int().min(0),
+  })
+  .strict();
+
+export const CandidatePageReadSchema = z
+  .object({
+    runId: WikiRunIdSchema,
+    candidateDigest: Sha256HexSchema,
+    pagePath: CandidatePagePathSchema,
+    content: z.string().max(2_000_000),
+    evidence: z
+      .array(
+        z
+          .object({
+            line: z.number().int().positive(),
+            source: z.string().trim().min(1).max(1_000),
+          })
+          .strict(),
+      )
+      .default([]),
+  })
+  .strict();
+
+/** Candidate tree projection lists only relative page paths, never artifact locations. */
+export const CandidateTreeReadSchema = z
+  .object({
+    runId: WikiRunIdSchema,
+    candidateDigest: Sha256HexSchema,
+    pages: z.array(CandidatePagePathSchema).max(2_000),
+  })
+  .strict();
+
+export const CandidateDiffReadSchema = z
+  .object({
+    runId: WikiRunIdSchema,
+    candidateDigest: Sha256HexSchema,
+    pagePath: CandidatePagePathSchema,
+    baselineDigest: Sha256HexSchema,
+    lines: z.array(
+      z
+        .object({
+          kind: z.enum(["context", "add", "remove"]),
+          oldLine: z.number().int().positive().optional(),
+          newLine: z.number().int().positive().optional(),
+          text: z.string().max(20_000),
+        })
+        .strict(),
+    ),
   })
   .strict();
 
@@ -696,6 +904,10 @@ export type WikiRunAttempt = z.infer<typeof WikiRunAttemptSchema>;
 export type WikiRunGate = z.infer<typeof WikiRunGateSchema>;
 export type WikiRunEffect = z.infer<typeof WikiRunEffectSchema>;
 export type WikiRunEvaluationRecovery = z.infer<typeof WikiRunEvaluationRecoverySchema>;
+export type RunRevision = z.infer<typeof RunRevisionSchema>;
+export type ExecutionEpoch = z.infer<typeof ExecutionEpochSchema>;
+export type ReviewThread = z.infer<typeof ReviewThreadSchema>;
+export type WikiRunCandidate = z.infer<typeof WikiRunCandidateSchema>;
 export type WikiRunSnapshot = z.infer<typeof WikiRunSnapshotSchema>;
 export type WikiRunEvent = z.infer<typeof WikiRunEventSchema>;
 export type WikiRunEventType = z.infer<typeof WikiRunEventTypeSchema>;
@@ -704,6 +916,11 @@ export type RunCommandReceipt = z.infer<typeof RunCommandReceiptSchema>;
 export type WikiRunListItem = z.infer<typeof WikiRunListItemSchema>;
 export type WikiRunListResponse = z.infer<typeof WikiRunListResponseSchema>;
 export type WikiRunGetResponse = z.infer<typeof WikiRunGetResponseSchema>;
+export type WikiRunIndexEvent = z.infer<typeof WikiRunIndexEventSchema>;
+export type WikiRunIndexGetResponse = z.infer<typeof WikiRunIndexGetResponseSchema>;
+export type CandidatePageRead = z.infer<typeof CandidatePageReadSchema>;
+export type CandidateTreeRead = z.infer<typeof CandidateTreeReadSchema>;
+export type CandidateDiffRead = z.infer<typeof CandidateDiffReadSchema>;
 export type WikiRunAttemptTranscript = z.infer<typeof WikiRunAttemptTranscriptSchema>;
 export type WikiRunAttemptTranscriptTraceFrame = z.infer<
   typeof WikiRunAttemptTranscriptTraceFrameSchema

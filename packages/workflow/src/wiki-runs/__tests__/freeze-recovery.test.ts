@@ -247,6 +247,7 @@ test("a pre-pin freeze failure requires a new run instead of reusing mutable sel
           type: "retry_failed_node",
           commandId: "retry-unpinned",
           runId: receipt.runId,
+          expectedRevision: result.snapshot.revision,
           nodeKey: "freeze",
           generation: 0,
           attemptId: attempt.attemptId,

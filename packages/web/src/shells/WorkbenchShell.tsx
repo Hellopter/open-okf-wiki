@@ -45,13 +45,13 @@ export function WorkbenchShell({
   const { t } = useI18n();
   const displayName = workspaceName ?? workspaceId;
 
-  // data-testid values keep e2e selectors (workspace-subnav-*) stable across shells.
+  // data-testid values keep workspace navigation selectors stable across shells.
   const modes: { id: WorkbenchMode; label: string; to: string; testId: string }[] = [
     {
       id: "operate",
-      label: t.subnav.agent,
+      label: t.subnav.runs,
       to: operateHref(workspaceId),
-      testId: "workspace-subnav-agent",
+      testId: "workspace-subnav-runs",
     },
     {
       id: "wiki",
@@ -82,13 +82,15 @@ export function WorkbenchShell({
           >
             {t.nav.workspaces}
           </Link>
-          <span className="text-muted-foreground/50" aria-hidden>
+          <span className="hidden text-muted-foreground/50 sm:inline" aria-hidden>
             /
           </span>
-          <h1 className="min-w-0 truncate text-sm font-semibold tracking-tight">{displayName}</h1>
+          <h1 className="max-w-24 min-w-0 truncate text-sm font-semibold tracking-tight sm:max-w-80">
+            {displayName}
+          </h1>
 
           <nav
-            className="ml-1 flex min-w-0 items-center gap-0.5 rounded-md border border-border/70 p-0.5"
+            className="ml-1 flex shrink-0 items-center gap-0.5 rounded-md border border-border/70 p-0.5"
             aria-label={t.subnav.aria}
             data-testid="workbench-mode-nav"
           >

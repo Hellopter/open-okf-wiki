@@ -91,6 +91,7 @@ test("close mid plan Pi attempt interrupts; RetryFailedNode reclaims the failed 
       type: "retry_failed_node",
       commandId: "chaos-retry-plan",
       runId: receipt.runId,
+      expectedRevision: interrupted.snapshot.revision,
       nodeKey: "plan",
       generation: 0,
       attemptId: plan!.lastAttemptId!,
@@ -220,12 +221,14 @@ test("double recover on applying publication effect is idempotent", async (t) =>
     workspaceId,
     "chaos-double-recover",
   );
+  const publicationRevision = (await runs.read({ runId })).snapshot.revision;
 
   await runs.dispatch(
     {
       type: "resolve_gate",
       commandId: "chaos-double-recover-approve",
       runId,
+      expectedRevision: publicationRevision,
       gateId: pubGate.gateId,
       gateKind: "publication",
       payloadDigest: pubGate.payloadDigest,
@@ -321,6 +324,7 @@ test("close mid research.leaf Pi attempt fails the node; run is not auto-reclaim
       type: "resolve_gate",
       commandId: "chaos-close-mid-leaf-approve",
       runId: receipt.runId,
+      expectedRevision: atPlan.snapshot.revision,
       gateId: planGate.gateId,
       gateKind: "plan",
       payloadDigest: planGate.payloadDigest,

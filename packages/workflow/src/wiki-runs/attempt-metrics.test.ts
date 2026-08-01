@@ -38,7 +38,7 @@ function attemptColumnNames(db: DatabaseSync): string[] {
   );
 }
 
-test("migrate adds attempt metric columns on fresh and legacy schemas", () => {
+test("migrate adds attempt metric columns on a fresh v4 control store", () => {
   const fresh = openMigratedDb();
   const freshCols = attemptColumnNames(fresh);
   for (const col of [
@@ -59,7 +59,7 @@ test("migrate adds attempt metric columns on fresh and legacy schemas", () => {
   }
   fresh.close();
 
-  // Legacy-shaped attempts table → migrate ALTERs metric columns.
+  // v3 stores are deliberately not migrated by the v4 hard cut.
   const legacy = new DatabaseSync(":memory:");
   configureOwner(legacy);
   legacy.exec(`
@@ -93,12 +93,7 @@ test("migrate adds attempt metric columns on fresh and legacy schemas", () => {
       ended_at TEXT
     ) STRICT;
   `);
-  migrate(legacy);
-  const legacyCols = attemptColumnNames(legacy);
-  assert.ok(legacyCols.includes("failure_class"));
-  assert.ok(legacyCols.includes("wall_time_ms"));
-  assert.ok(legacyCols.includes("role"));
-  assert.ok(legacyCols.includes("metrics_json"));
+  assert.throws(() => migrate(legacy), /unsupported WikiRuns v3 control store/);
   legacy.close();
 });
 
@@ -107,7 +102,7 @@ test("migrate rejects persisted runs with no definition version", () => {
   configureOwner(legacy);
   legacy.exec("CREATE TABLE runs (run_id TEXT PRIMARY KEY) STRICT");
   legacy.prepare("INSERT INTO runs (run_id) VALUES ('old-run')").run();
-  assert.throws(() => migrate(legacy), /existing runs have no definition_version/);
+  assert.throws(() => migrate(legacy), /unsupported WikiRuns v3 control store/);
   legacy.close();
 });
 
@@ -119,8 +114,12 @@ test("writeAttemptMetrics + snapshot project metrics when set", () => {
     `INSERT INTO runs (
       run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
       freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
-    ) VALUES (?, ?, NULL, 3, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+    ) VALUES (?, ?, NULL, 4, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   ).run("run-1", "ws-1", digest, ts, ts);
+  db.prepare(
+    `INSERT INTO execution_epochs (epoch_id, run_id, ordinal, scope_revision_id, state, created_at)
+     VALUES ('epoch-1', 'run-1', 1, NULL, 'active', ?)`,
+  ).run(ts);
   db.prepare(
     `INSERT INTO nodes (
       run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
@@ -176,7 +175,7 @@ test("listNonTerminalRuns returns only non-terminal states", () => {
     `INSERT INTO runs (
       run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
       freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
-    ) VALUES (?, 'ws', NULL, 3, 1, ?, 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+    ) VALUES (?, 'ws', NULL, 4, 1, ?, 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   );
   insert.run("run-running", "running", digest, ts, ts);
   insert.run("run-queued", "queued", digest, ts, ts);

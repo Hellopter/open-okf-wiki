@@ -51,7 +51,7 @@ export function WikiReaderShell({
           nativeButton={false}
         >
           <ArrowLeftIcon data-icon="inline-start" />
-          {t.subnav.agent}
+          {t.subnav.runs}
         </Button>
         <span className="text-muted-foreground/50" aria-hidden>
           /

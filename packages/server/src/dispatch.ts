@@ -41,10 +41,15 @@ import {
 import {
   handleAttemptTranscriptEvents,
   handleGetAttemptTranscript,
+  handleGetCandidateDiff,
+  handleGetCandidatePage,
+  handleGetCandidateTree,
   handleGetWikiRun,
+  handleGetWikiRunIndex,
   handleGetWikiRunSpec,
   handleWikiRunCommand,
   handleWikiRunEvents,
+  handleWikiRunIndexEvents,
 } from "./routes/wiki-runs.ts";
 import {
   handleAddSource,
@@ -278,6 +283,20 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
         return;
       }
     }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/index/events");
+      if (params && method === "GET") {
+        await handleWikiRunIndexEvents(req, res, params.id!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/index");
+      if (params && method === "GET") {
+        await handleGetWikiRunIndex(req, res, params.id!, url);
+        return;
+      }
+    }
     // More-specific run subpaths before generic `/runs/:runId`.
     {
       const params = matchRoute(
@@ -324,6 +343,27 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/spec");
       if (params && method === "GET") {
         await handleGetWikiRunSpec(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/candidate/tree");
+      if (params && method === "GET") {
+        await handleGetCandidateTree(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/candidate/page");
+      if (params && method === "GET") {
+        await handleGetCandidatePage(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/candidate/diff");
+      if (params && method === "GET") {
+        await handleGetCandidateDiff(req, res, params.id!, params.runId!, url);
         return;
       }
     }

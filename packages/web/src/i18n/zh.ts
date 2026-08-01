@@ -16,9 +16,8 @@ export const zh: MessageTree = {
   },
   subnav: {
     aria: "工作区分区",
-    agent: "智能体",
     sources: "源码",
-    runs: "任务",
+    runs: "运行",
     wiki: "Wiki",
     settings: "设置",
     openMenu: "打开工作区分区",

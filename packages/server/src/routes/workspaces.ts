@@ -67,6 +67,7 @@ export async function handleCreateWorkspace(
       publicationPath: body.publicationPath,
       modelProfileId: model.profileId,
       resolvedModelId: model.id,
+      orchestration: body.orchestration,
     });
     await saveWorkspace(workspace);
     await registerWorkspaceInAppIndex(workspace.rootPath);

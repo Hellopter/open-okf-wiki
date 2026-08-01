@@ -27,7 +27,7 @@ async function makeWorkspace() {
   await mkdir(skill, { recursive: true });
   await writeFile(path.join(skill, "SKILL.md"), "# skill\n", "utf8");
   return WorkspaceConfigSchema.parse({
-    version: 2,
+    version: 3,
     id: "workspace",
     name: "Operator Workspace",
     rootPath: root,
@@ -35,6 +35,7 @@ async function makeWorkspace() {
     skillPath: skill,
     model: { id: "openai/test" },
     publicationPath: path.join(root, "published"),
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
     limits: { requestTimeoutSeconds: 60 },
     planConfirm: true,
     wikiLanguage: "en",
