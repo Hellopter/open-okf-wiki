@@ -14,6 +14,16 @@ import type {
   WorkspaceSource,
   WorkspaceSummary,
 } from "@okf-wiki/contract";
+import {
+  GitProbeSchema,
+  SkillFileContentSchema,
+  SkillFileEntrySchema,
+  SkillInfoSchema,
+  WorkspaceConfigSchema,
+  WorkspaceSourceSchema,
+  WorkspaceSummarySchema,
+} from "@okf-wiki/contract";
+import { z } from "zod";
 import { request } from "./client";
 
 export type {
@@ -56,8 +66,6 @@ export type PatchWorkspaceInput = {
   roleModels?: WorkspaceConfig["roleModels"];
   /** Supervisor tree budgets (partial; server fills schema defaults). */
   orchestration?: Partial<WorkspaceConfig["orchestration"]>;
-  /** Operator Session tool selection (read/grep/find/ls/bash subset). */
-  operatorTools?: WorkspaceConfig["operatorTools"];
 };
 
 export type UpdateSourceInput = {
@@ -77,31 +85,60 @@ export type CloneSourceInput = {
   ref?: string;
 };
 
+const WorkspacesResponseSchema = z.object({ workspaces: z.array(WorkspaceSummarySchema) });
+const WorkspaceResponseSchema = z.object({ workspace: WorkspaceConfigSchema });
+const DeleteWorkspaceResponseSchema = z.object({
+  ok: z.literal(true),
+  id: z.string(),
+  removedFromIndex: z.boolean(),
+  deletedMeta: z.boolean(),
+  rootPath: z.string(),
+});
+const SourceResponseSchema = WorkspaceResponseSchema.extend({ source: WorkspaceSourceSchema });
+const SourceWithProbeResponseSchema = SourceResponseSchema.extend({ probe: GitProbeSchema });
+const SkillResponseSchema = z.object({ skill: SkillInfoSchema });
+const WorkspaceSkillResponseSchema = WorkspaceResponseSchema.extend({ skill: SkillInfoSchema });
+const SkillFilesResponseSchema = z.object({
+  skillPath: z.string(),
+  path: z.string(),
+  entries: z.array(SkillFileEntrySchema),
+  writable: z.boolean(),
+});
+const SkillFileResponseSchema = z.object({ file: SkillFileContentSchema, writable: z.boolean() });
+const WriteSkillFileResponseSchema = z.object({
+  file: SkillFileContentSchema,
+  skill: SkillInfoSchema,
+});
+const SourceProbesResponseSchema = z.object({
+  workspaceId: z.string(),
+  probes: z.array(z.object({ sourceId: z.string(), probe: GitProbeSchema })),
+});
+
 export function listWorkspaces(): Promise<{ workspaces: WorkspaceSummary[] }> {
-  return request<{ workspaces: WorkspaceSummary[] }>("/api/workspaces");
+  return request("/api/workspaces").then(WorkspacesResponseSchema.parse);
 }
 
 export function getWorkspace(id: string): Promise<{ workspace: WorkspaceConfig }> {
-  return request<{ workspace: WorkspaceConfig }>(`/api/workspaces/${encodeURIComponent(id)}`);
+  return request(`/api/workspaces/${encodeURIComponent(id)}`).then(WorkspaceResponseSchema.parse);
 }
 
 export function createWorkspace(
   input: CreateWorkspaceInput,
 ): Promise<{ workspace: WorkspaceConfig }> {
-  return request<{ workspace: WorkspaceConfig }>("/api/workspaces", {
+  return request("/api/workspaces", {
     method: "POST",
     body: JSON.stringify(input),
-  });
+  }).then(WorkspaceResponseSchema.parse);
 }
 
 export function patchWorkspace(
   id: string,
   input: PatchWorkspaceInput,
 ): Promise<{ workspace: WorkspaceConfig }> {
-  return request<{ workspace: WorkspaceConfig }>(`/api/workspaces/${encodeURIComponent(id)}`, {
+  return request(`/api/workspaces/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(input),
-  });
+  }).then(WorkspaceResponseSchema.parse);
 }
 
 /**
@@ -120,7 +157,7 @@ export function deleteWorkspace(
 }> {
   const base = `/api/workspaces/${encodeURIComponent(id)}`;
   const url = options?.deleteFiles ? `${base}?deleteFiles=true` : base;
-  return request(url, { method: "DELETE" });
+  return request(url, { method: "DELETE" }).then(DeleteWorkspaceResponseSchema.parse);
 }
 
 export function updateSource(
@@ -134,7 +171,7 @@ export function updateSource(
       method: "PATCH",
       body: JSON.stringify(input),
     },
-  );
+  ).then(SourceResponseSchema.parse);
 }
 
 export function addSource(
@@ -148,7 +185,7 @@ export function addSource(
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources`, {
     method: "POST",
     body: JSON.stringify(input),
-  });
+  }).then(SourceWithProbeResponseSchema.parse);
 }
 
 /** Clone a remote git repo into the workspace and register it as a source. */
@@ -163,11 +200,13 @@ export function cloneSource(
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/clone`, {
     method: "POST",
     body: JSON.stringify(input),
-  });
+  }).then(SourceWithProbeResponseSchema.parse);
 }
 
 export function getWorkspaceSkill(workspaceId: string): Promise<{ skill: SkillInfo }> {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill`);
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill`).then(
+    SkillResponseSchema.parse,
+  );
 }
 
 export function createWorkspaceSkillFork(
@@ -176,7 +215,7 @@ export function createWorkspaceSkillFork(
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`, {
     method: "POST",
     body: JSON.stringify({}),
-  });
+  }).then(WorkspaceSkillResponseSchema.parse);
 }
 
 export function resetWorkspaceSkill(
@@ -185,7 +224,7 @@ export function resetWorkspaceSkill(
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`, {
     method: "POST",
     body: JSON.stringify({}),
-  });
+  }).then(WorkspaceSkillResponseSchema.parse);
 }
 
 export function listWorkspaceSkillFiles(
@@ -200,7 +239,7 @@ export function listWorkspaceSkillFiles(
   const base = `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`;
   const url =
     dirPath && dirPath.trim() ? `${base}?path=${encodeURIComponent(dirPath.trim())}` : base;
-  return request(url);
+  return request(url).then(SkillFilesResponseSchema.parse);
 }
 
 export function readWorkspaceSkillFile(
@@ -209,7 +248,7 @@ export function readWorkspaceSkillFile(
 ): Promise<{ file: SkillFileContent; writable: boolean }> {
   return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/skill/file?path=${encodeURIComponent(filePath)}`,
-  );
+  ).then(SkillFileResponseSchema.parse);
 }
 
 export function writeWorkspaceSkillFile(
@@ -219,7 +258,7 @@ export function writeWorkspaceSkillFile(
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`, {
     method: "PUT",
     body: JSON.stringify(input),
-  });
+  }).then(WriteSkillFileResponseSchema.parse);
 }
 
 export function deleteSource(
@@ -229,7 +268,7 @@ export function deleteSource(
   return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" },
-  );
+  ).then(WorkspaceResponseSchema.parse);
 }
 
 export function probeSources(
@@ -237,5 +276,5 @@ export function probeSources(
 ): Promise<{ workspaceId: string; probes: SourceProbeResult[] }> {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/sources/probe`, {
     method: "POST",
-  });
+  }).then(SourceProbesResponseSchema.parse);
 }

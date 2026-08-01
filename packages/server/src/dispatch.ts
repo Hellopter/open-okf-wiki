@@ -10,14 +10,6 @@ import {
   rejectUntrustedRequest,
   sendError,
 } from "./http-util.ts";
-import {
-  handleAgentSessionCommand,
-  handleAgentSessionEvents,
-  handleCreateAgentSession,
-  handleDeleteAgentSession,
-  handleListAgentSessions,
-  handleListOperatorCommands,
-} from "./routes/agent-sessions.ts";
 import { handleGetAppSettings, handlePatchAppSettings } from "./routes/app-settings.ts";
 import { handleDoctor, handleHealth } from "./routes/health.ts";
 import {
@@ -31,7 +23,6 @@ import {
   handleUpdateModel,
   handleUpdateProvider,
 } from "./routes/provider.ts";
-import { handleListRuns } from "./routes/runs.ts";
 import {
   handleListWiki,
   handleReadWiki,
@@ -101,10 +92,6 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     }
     if (method === "GET" && pathname === "/api/doctor") {
       await handleDoctor(req, res);
-      return;
-    }
-    if (method === "GET" && pathname === "/api/agent/commands") {
-      handleListOperatorCommands(req, res);
       return;
     }
     if (method === "GET" && pathname === "/api/app-settings") {
@@ -242,40 +229,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
         return;
       }
     }
-    // Pi agent sessions (ADR 0032) — sole conversational entry.
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/command");
-      if (params && method === "POST") {
-        await handleAgentSessionCommand(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/events");
-      if (params && method === "GET") {
-        await handleAgentSessionEvents(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId");
-      if (params && method === "DELETE") {
-        await handleDeleteAgentSession(req, res, params.id!, params.sessionId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions");
-      if (params && method === "GET") {
-        await handleListAgentSessions(req, res, params.id!, url);
-        return;
-      }
-      if (params && method === "POST") {
-        await handleCreateAgentSession(req, res, params.id!, url);
-        return;
-      }
-    }
-    // ADR 0035 durable WikiRuns control surface (+ slim list projection).
+    // ADR 0035 durable WikiRuns control surface.
     {
       const params = matchRoute(pathname, "/api/workspaces/:id/runs/command");
       if (params && method === "POST") {
@@ -371,13 +325,6 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId");
       if (params && method === "GET") {
         await handleGetWikiRun(req, res, params.id!, params.runId!, url);
-        return;
-      }
-    }
-    {
-      const params = matchRoute(pathname, "/api/workspaces/:id/runs");
-      if (params && method === "GET") {
-        await handleListRuns(req, res, params.id!, url);
         return;
       }
     }

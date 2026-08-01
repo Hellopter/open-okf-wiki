@@ -83,7 +83,6 @@ import {
   resolveGate as resolveGateImpl,
 } from "./wiki-runs/gate-resolve.js";
 import { executeMechanical, type MechanicalHost } from "./wiki-runs/mechanical/index.js";
-import { applyPendingGuidanceAtSafeBoundary } from "./wiki-runs/run-revision-coordinator.js";
 import {
   abortActiveAttempts as abortActiveAttemptsImpl,
   abortRunAttempts as abortRunAttemptsImpl,
@@ -117,6 +116,7 @@ import {
   type WikiRunListItem,
   type WikiRunRead,
   type WikiRuns,
+  WikiRunsRequestError,
   WorkflowInUseError,
 } from "./wiki-runs/types.js";
 
@@ -130,7 +130,12 @@ export type {
   WikiRunRead,
   WikiRuns,
 } from "./wiki-runs/types.js";
-export { CommandIdCollision, WorkflowInUseError } from "./wiki-runs/types.js";
+export {
+  CommandIdCollision,
+  WikiRunsRequestError,
+  type WikiRunsRequestErrorCode,
+  WorkflowInUseError,
+} from "./wiki-runs/types.js";
 
 function parseRunCommand(value: unknown): RunCommand {
   const type = (value as { type?: unknown } | null)?.type;
@@ -246,14 +251,14 @@ class WikiRunsOwner implements WikiRuns {
     }
   }
 
-  async list(): Promise<WikiRunListItem[]> {
+  private async readRunIndexItems(): Promise<WikiRunListItem[]> {
     this.assertOpen();
     this.db.exec("BEGIN DEFERRED");
     try {
       const rows = asRows(
         this.db
           .prepare(
-            `SELECT run_id, state, updated_at, revision, operator_session_id
+            `SELECT run_id, state, updated_at, revision
              FROM runs
              ORDER BY updated_at DESC, run_id DESC`,
           )
@@ -290,13 +295,11 @@ class WikiRunsOwner implements WikiRuns {
             .get(runId),
         );
         const state = requiredText(row, "state") as WikiRunSnapshot["state"];
-        const sessionRaw = row.operator_session_id;
         return {
           runId,
           state,
           updatedAt: requiredText(row, "updated_at"),
           revision: requiredNumber(row, "revision"),
-          sessionId: typeof sessionRaw === "string" && sessionRaw.length > 0 ? sessionRaw : null,
           attention:
             state === "paused"
               ? "paused"
@@ -351,7 +354,7 @@ class WikiRunsOwner implements WikiRuns {
           .get(this.workspace.id, afterEventId, limit),
       );
       this.db.exec("COMMIT");
-      return { runs: changed || afterEventId === 0 ? await this.list() : [], cursor };
+      return { runs: changed || afterEventId === 0 ? await this.readRunIndexItems() : [], cursor };
     } catch (error) {
       this.rollback();
       throw error;
@@ -390,7 +393,7 @@ class WikiRunsOwner implements WikiRuns {
     this.db.exec("BEGIN DEFERRED");
     try {
       const run = asRow(this.db.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId));
-      if (!run) throw new Error(`run not found: ${runId}`);
+      if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${runId}`);
       const row = asRow(
         this.db
           .prepare(
@@ -410,10 +413,10 @@ class WikiRunsOwner implements WikiRuns {
           )
           .get(runId, runId),
       );
-      if (!row) throw new Error(`spec not found: ${runId}`);
+      if (!row) throw new WikiRunsRequestError("not_found", `spec not found: ${runId}`);
       const relativePath = requiredText(row, "relative_path");
       const spec = loadSpecFromArtifact({ workspace: this.workspace }, runId, relativePath);
-      if (!spec) throw new Error(`spec not found: ${runId}`);
+      if (!spec) throw new WikiRunsRequestError("not_found", `spec not found: ${runId}`);
       const result = WikiRunSpecReadSchema.parse({
         runId,
         artifactId: requiredText(row, "artifact_id"),
@@ -698,7 +701,6 @@ class WikiRunsOwner implements WikiRuns {
         this.requeueFailedNode(runId, nodeKey, generation, lastAttemptId),
       trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
       attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
-      applyPendingGuidance: () => applyPendingGuidanceAtSafeBoundary(this.commandsHost()),
       applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
         this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
     };
@@ -709,7 +711,6 @@ class WikiRunsOwner implements WikiRuns {
     try {
       this.transaction(() => {
         expireStaleOpenGatesImpl(this.gatesHost());
-        applyPendingGuidanceAtSafeBoundary(this.commandsHost());
       });
     } catch {
       // Expiry best-effort; do not block the scheduler on a single bad gate.

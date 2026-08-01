@@ -19,6 +19,7 @@ import {
   getCandidateTree,
   getWikiRun,
   getWorkspace,
+  hasApiErrorCode,
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
@@ -102,11 +103,7 @@ export function RunReviewPage() {
           await dispatchWikiRunCommand(id, build(latest));
           break;
         } catch (nextError) {
-          if (
-            attempt === 0 &&
-            nextError instanceof Error &&
-            nextError.message.includes("stale control revision")
-          ) {
+          if (attempt === 0 && hasApiErrorCode(nextError, "stale_revision")) {
             latest = (await getWikiRun(id, runId)).snapshot;
             setSnapshot(latest);
             continue;

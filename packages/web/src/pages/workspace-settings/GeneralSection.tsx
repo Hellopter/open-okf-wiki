@@ -1,4 +1,3 @@
-import { type OperatorToolName } from "@okf-wiki/contract";
 import { type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -80,10 +79,6 @@ export type GeneralSectionProps = {
   setWorkerProfileId: (value: string) => void;
   writerProfileId: string;
   setWriterProfileId: (value: string) => void;
-  operatorTools: OperatorToolName[];
-  setOperatorTools: (
-    value: OperatorToolName[] | ((current: OperatorToolName[]) => OperatorToolName[]),
-  ) => void;
 };
 
 export function GeneralSection(props: GeneralSectionProps) {
@@ -144,8 +139,6 @@ export function GeneralSection(props: GeneralSectionProps) {
     setWorkerProfileId,
     writerProfileId,
     setWriterProfileId,
-    operatorTools,
-    setOperatorTools,
   } = props;
 
   const selectedModel = models.find((m) => m.id === modelProfileId);
@@ -263,39 +256,6 @@ export function GeneralSection(props: GeneralSectionProps) {
                   }}
                   data-testid="settings-plan-confirm"
                 />
-              </Field>
-
-              <Field>
-                <FieldLabel>Operator tools</FieldLabel>
-                <FieldDescription>
-                  Tools available to the chat agent. File tools are read-only and cannot touch
-                  product meta; bash runs unrestricted shell commands in the workspace — enable it
-                  only for workspaces you fully trust.
-                </FieldDescription>
-                <div className="flex flex-wrap gap-4" data-testid="settings-operator-tools">
-                  {(["read", "grep", "find", "ls", "bash"] as OperatorToolName[]).map((tool) => (
-                    <label
-                      key={tool}
-                      className="flex items-center gap-1.5 text-sm"
-                      data-testid={`settings-operator-tool-${tool}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={operatorTools.includes(tool)}
-                        onChange={(e) => {
-                          setOperatorTools((current) =>
-                            e.target.checked
-                              ? [...current, tool]
-                              : current.filter((name) => name !== tool),
-                          );
-                        }}
-                      />
-                      <span className={tool === "bash" ? "text-destructive" : undefined}>
-                        {tool}
-                      </span>
-                    </label>
-                  ))}
-                </div>
               </Field>
 
               <Field>
@@ -618,7 +578,7 @@ export function GeneralSection(props: GeneralSectionProps) {
                       type="number"
                       min={1}
                       max={4}
-                      placeholder={reviewCouncilSize || "3"}
+                      placeholder={reviewCouncilSize || "1"}
                       value={reviewConcurrency}
                       onChange={(e) => {
                         setReviewConcurrency(e.target.value);

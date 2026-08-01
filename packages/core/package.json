@@ -14,7 +14,7 @@
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
-    "test": "tsc -p tsconfig.json && node --test dist/**/*.test.js"
+    "test": "tsc -b tsconfig.json --force && node --test $(find src -name '*.test.ts' | sed 's|^src/|dist/|; s|\\.ts$|.js|' | sort)"
   },
   "dependencies": {
     "@okf-wiki/contract": "workspace:*",

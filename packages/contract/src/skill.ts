@@ -31,16 +31,24 @@ export const SkillInfoSchema = z.object({
 export type SkillInfo = z.infer<typeof SkillInfoSchema>;
 
 /** One skill file entry for the fork editor (outbound API DTO). */
-export type SkillFileEntry = {
-  /** Skill-relative POSIX path. */
-  path: string;
-  kind: "file" | "directory";
-};
+export const SkillFileEntrySchema = z
+  .object({
+    /** Skill-relative POSIX path. */
+    path: z.string().min(1),
+    kind: z.enum(["file", "directory"]),
+  })
+  .strict();
+
+export type SkillFileEntry = z.infer<typeof SkillFileEntrySchema>;
 
 /** Skill file body for the fork editor (outbound API DTO). */
-export type SkillFileContent = {
-  path: string;
-  content: string;
-  /** Bytes of content (UTF-8). */
-  bytes: number;
-};
+export const SkillFileContentSchema = z
+  .object({
+    path: z.string().min(1),
+    content: z.string(),
+    /** Bytes of content (UTF-8). */
+    bytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type SkillFileContent = z.infer<typeof SkillFileContentSchema>;

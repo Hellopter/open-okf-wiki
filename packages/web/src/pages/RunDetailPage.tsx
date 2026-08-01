@@ -1,10 +1,5 @@
-import type {
-  RunCommand,
-  WikiRunEvent,
-  WikiRunSnapshot,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
-import { Activity, FileSearch, Pause, Play, Send, Square, TriangleAlert } from "lucide-react";
+import type { RunCommand, WikiRunSnapshot, WorkspaceConfig } from "@okf-wiki/contract";
+import { Activity, FileSearch, Pause, Play, Square, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -15,6 +10,9 @@ import {
   getWikiRun,
   getWikiRunSpec,
   getWorkspace,
+  hasApiErrorCode,
+  parseWikiRunEvent,
+  parseWikiRunSnapshotEvent,
   wikiRunEventsUrl,
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -45,7 +43,6 @@ export function RunDetailPage() {
   const { id = "", runId = "" } = useParams<{ id: string; runId: string }>();
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [snapshot, setSnapshot] = useState<WikiRunSnapshot | null>(null);
-  const [guidance, setGuidance] = useState("");
   const [scopeChange, setScopeChange] = useState("");
   const [feedback, setFeedback] = useState("");
   const [operatorAnswer, setOperatorAnswer] = useState("");
@@ -80,18 +77,24 @@ export function RunDetailPage() {
   useEffect(() => {
     if (!id || !runId) return;
     const source = new EventSource(wikiRunEventsUrl(id, runId));
-    const apply = (event: MessageEvent<string>) => {
+    const applySnapshot = (event: MessageEvent<string>) => {
       try {
-        const data = JSON.parse(event.data) as { snapshot?: WikiRunSnapshot } | WikiRunEvent;
-        const next = "snapshot" in data ? data.snapshot : data.snapshot;
-        if (next) setSnapshot(next);
+        setSnapshot(parseWikiRunSnapshotEvent(event.data));
         setConnection("live");
       } catch {
         setConnection("reconnecting");
       }
     };
-    source.addEventListener("snapshot", apply as EventListener);
-    source.addEventListener("run.event", apply as EventListener);
+    const applyEvent = (event: MessageEvent<string>) => {
+      try {
+        setSnapshot(parseWikiRunEvent(event.data).snapshot);
+        setConnection("live");
+      } catch {
+        setConnection("reconnecting");
+      }
+    };
+    source.addEventListener("snapshot", applySnapshot as EventListener);
+    source.addEventListener("run.event", applyEvent as EventListener);
     source.onerror = () => setConnection("reconnecting");
     return () => source.close();
   }, [id, runId]);
@@ -122,11 +125,7 @@ export function RunDetailPage() {
           await dispatchWikiRunCommand(id, build(latest));
           break;
         } catch (nextError) {
-          if (
-            attempt === 0 &&
-            nextError instanceof Error &&
-            nextError.message.includes("stale control revision")
-          ) {
+          if (attempt === 0 && hasApiErrorCode(nextError, "stale_revision")) {
             latest = (await getWikiRun(id, runId)).snapshot;
             setSnapshot(latest);
             continue;
@@ -168,7 +167,7 @@ export function RunDetailPage() {
     });
   };
 
-  const submitRevision = (kind: "guidance" | "scope_change", content: string) => {
+  const submitScopeChange = (content: string) => {
     if (!snapshot || !content.trim()) return;
     const revisionContent = content.trim();
     void dispatch((latest) => ({
@@ -176,11 +175,10 @@ export function RunDetailPage() {
       commandId: crypto.randomUUID(),
       runId: latest.runId,
       expectedRevision: latest.revision,
-      kind,
+      kind: "scope_change",
       content: revisionContent,
     }));
-    if (kind === "guidance") setGuidance("");
-    else setScopeChange("");
+    setScopeChange("");
   };
 
   const stage = useMemo(() => (snapshot ? titleFor(snapshot) : "Run"), [snapshot]);
@@ -389,32 +387,16 @@ export function RunDetailPage() {
           <aside className="min-h-0 overflow-y-auto border-t border-border px-4 py-5 xl:border-t-0 xl:border-l">
             <h3 className="text-sm font-medium">Run control</h3>
             <Textarea
-              value={guidance}
-              onChange={(event) => setGuidance(event.target.value)}
-              className="mt-3 min-h-20 resize-none"
-              placeholder="Guidance for the next safe boundary"
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-2"
-              onClick={() => submitRevision("guidance", guidance)}
-              disabled={submitting || !guidance.trim()}
-            >
-              <Send />
-              Submit guidance
-            </Button>
-            <Textarea
               value={scopeChange}
               onChange={(event) => setScopeChange(event.target.value)}
-              className="mt-5 min-h-20 resize-none"
+              className="mt-3 min-h-20 resize-none"
               placeholder="Scope change"
             />
             <Button
               variant="outline"
               size="sm"
               className="mt-2"
-              onClick={() => submitRevision("scope_change", scopeChange)}
+              onClick={() => submitScopeChange(scopeChange)}
               disabled={submitting || !scopeChange.trim()}
             >
               Replan scope

@@ -62,7 +62,17 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  const base = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}/runs`;
+  const workspaceApi = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}`;
+  const base = `${workspaceApi}/runs`;
+
+  const [legacyRuns, legacySessions, legacyCommands] = await Promise.all([
+    fetch(base),
+    fetch(`${workspaceApi}/agent/sessions`),
+    fetch(`http://127.0.0.1:${address.port}/api/agent/commands`),
+  ]);
+  assert.equal(legacyRuns.status, 404);
+  assert.equal(legacySessions.status, 404);
+  assert.equal(legacyCommands.status, 404);
 
   const started = await fetch(`${base}/command`, {
     method: "POST",
@@ -76,6 +86,11 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
     }),
   });
   assert.equal(started.status, 400);
+  const invalidCommandBody = await started.json();
+  assert.ok(invalidCommandBody && typeof invalidCommandBody === "object");
+  assert.deepEqual((invalidCommandBody as Record<string, unknown>).details, {
+    code: "invalid_request",
+  });
 
   const accepted = await fetch(`${base}/command`, {
     method: "POST",
@@ -88,6 +103,21 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   });
   assert.equal(accepted.status, 202, await accepted.clone().text());
   const receipt = (await accepted.json()) as { receipt: { runId: string; revision: number } };
+
+  const stale = await fetch(`${base}/command`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "cancel_run",
+      commandId: "stale-control-over-http",
+      runId: receipt.receipt.runId,
+      expectedRevision: 1_000_000_000,
+    }),
+  });
+  assert.equal(stale.status, 409, await stale.clone().text());
+  const staleBody = await stale.json();
+  assert.ok(staleBody && typeof staleBody === "object");
+  assert.deepEqual((staleBody as Record<string, unknown>).details, { code: "stale_revision" });
 
   const read = await fetch(`${base}/${receipt.receipt.runId}`);
   assert.equal(read.status, 200, await read.clone().text());
@@ -109,6 +139,14 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   assert.equal(indexBody.workspaceId, workspace.id);
   assert.ok(indexBody.cursor >= receipt.receipt.revision);
   assert.ok(indexBody.runs.some((run) => run.runId === receipt.receipt.runId));
+
+  const missingCandidateParams = await fetch(`${base}/${receipt.receipt.runId}/candidate/page`);
+  assert.equal(missingCandidateParams.status, 400, await missingCandidateParams.clone().text());
+  const missingCandidateBody = await missingCandidateParams.json();
+  assert.ok(missingCandidateBody && typeof missingCandidateBody === "object");
+  assert.deepEqual((missingCandidateBody as Record<string, unknown>).details, {
+    code: "invalid_request",
+  });
 
   const unavailableCandidate = await fetch(
     `${base}/${receipt.receipt.runId}/candidate/page?candidate=${"a".repeat(64)}&page=index.md`,

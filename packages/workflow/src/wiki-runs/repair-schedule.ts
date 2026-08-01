@@ -31,7 +31,7 @@ import {
   wikiCandidateById,
 } from "./evaluation/candidate.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
-import type { ClaimedNode } from "./types.js";
+import { type ClaimedNode, WikiRunsRequestError } from "./types.js";
 
 /** Product repair node keys: `repair.1`, `repair.2`, … */
 export const REPAIR_NODE_PREFIX = "repair.";
@@ -765,12 +765,12 @@ export function continueEvaluationRecovery(
   const run = asRow(
     host.db.prepare("SELECT state, cancel_requested FROM runs WHERE run_id = ?").get(command.runId),
   );
-  if (!run) throw new Error(`run not found: ${command.runId}`);
+  if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${command.runId}`);
   if (requiredNumber(run, "cancel_requested") === 1) {
-    throw new Error("cannot continue evaluation on a cancelled run");
+    throw new WikiRunsRequestError("conflict", "cannot continue evaluation on a cancelled run");
   }
   if (requiredText(run, "state") !== "failed") {
-    throw new Error("continue_evaluation requires a failed run");
+    throw new WikiRunsRequestError("conflict", "continue_evaluation requires a failed run");
   }
   const recovery = asRow(
     host.db
@@ -781,7 +781,8 @@ export function continueEvaluationRecovery(
       )
       .get(command.recoveryId, command.runId),
   );
-  if (!recovery) throw new Error("evaluation recovery is stale or unavailable");
+  if (!recovery)
+    throw new WikiRunsRequestError("stale_revision", "evaluation recovery is stale or unavailable");
   const source = requiredText(recovery, "source");
   if (source !== "mechanical" && source !== "semantic")
     throw new Error("unsupported evaluation recovery source");
@@ -791,11 +792,14 @@ export function continueEvaluationRecovery(
   );
   const candidate = latestWikiCandidate(host, command.runId);
   if (!candidate || candidate.candidateId !== requiredText(recovery, "candidate_id")) {
-    throw new Error("evaluation recovery candidate is no longer available");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "evaluation recovery candidate is no longer available",
+    );
   }
   const reportArtifactId = requiredText(recovery, "report_artifact_id");
   if (source === "mechanical" && !loadMechanicalReport(host, command.runId, reportArtifactId))
-    throw new Error("evaluation recovery report is unavailable");
+    throw new WikiRunsRequestError("stale_revision", "evaluation recovery report is unavailable");
   if (source === "semantic") {
     const report = asRow(
       host.db
@@ -810,7 +814,9 @@ export function continueEvaluationRecovery(
         )
         .get(command.runId, reportArtifactId),
     );
-    if (!report) throw new Error("evaluation recovery report is unavailable");
+    if (!report) {
+      throw new WikiRunsRequestError("stale_revision", "evaluation recovery report is unavailable");
+    }
   }
 
   const feedback =

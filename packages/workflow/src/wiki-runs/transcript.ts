@@ -19,6 +19,7 @@ import {
   TRANSCRIPT_PAGE_DEFAULT_LIMIT,
   TRANSCRIPT_PAGE_MAX_LIMIT,
   type WikiRunAttemptTranscript,
+  WikiRunsRequestError,
 } from "./types.js";
 
 export type TranscriptHost = Pick<WikiRunsDbCtx, "workspace" | "db">;
@@ -39,19 +40,22 @@ export async function readAttemptTranscript(
 ): Promise<WikiRunAttemptTranscript> {
   const runId = input.runId.trim();
   const attemptId = input.attemptId.trim();
-  if (!runId) throw new Error("runId is required");
-  if (!attemptId) throw new Error("attemptId is required");
+  if (!runId) throw new WikiRunsRequestError("invalid_request", "runId is required");
+  if (!attemptId) throw new WikiRunsRequestError("invalid_request", "attemptId is required");
   if (input.beforeSequence !== undefined && input.afterSequence !== undefined) {
-    throw new Error("transcript cursor cannot specify before and after");
+    throw new WikiRunsRequestError(
+      "invalid_request",
+      "transcript cursor cannot specify before and after",
+    );
   }
   for (const cursor of [input.beforeSequence, input.afterSequence]) {
     if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 0)) {
-      throw new Error("transcript cursor is invalid");
+      throw new WikiRunsRequestError("invalid_request", "transcript cursor is invalid");
     }
   }
   const limit = input.limit ?? TRANSCRIPT_PAGE_DEFAULT_LIMIT;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > TRANSCRIPT_PAGE_MAX_LIMIT) {
-    throw new Error("transcript page limit is invalid");
+    throw new WikiRunsRequestError("invalid_request", "transcript page limit is invalid");
   }
 
   host.db.exec("BEGIN DEFERRED");
@@ -59,7 +63,7 @@ export async function readAttemptTranscript(
   let sealedRelativePaths: string[];
   try {
     const run = asRow(host.db.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId));
-    if (!run) throw new Error(`run not found: ${runId}`);
+    if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${runId}`);
     attempt = asRow(
       host.db
         .prepare(
@@ -68,7 +72,7 @@ export async function readAttemptTranscript(
         )
         .get(attemptId, runId),
     );
-    if (!attempt) throw new Error(`attempt not found: ${attemptId}`);
+    if (!attempt) throw new WikiRunsRequestError("not_found", `attempt not found: ${attemptId}`);
     sealedRelativePaths = asRows(
       host.db
         .prepare(
@@ -156,19 +160,26 @@ export async function readAttemptTranscript(
     });
   }
   if (info.size > TRANSCRIPT_MAX_BYTES) {
-    throw new Error(`transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`);
+    throw new WikiRunsRequestError(
+      "payload_too_large",
+      `transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`,
+    );
   }
 
   const raw = await readFile(transcriptPath, "utf8");
   if (Buffer.byteLength(raw, "utf8") > TRANSCRIPT_MAX_BYTES) {
-    throw new Error(`transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`);
+    throw new WikiRunsRequestError(
+      "payload_too_large",
+      `transcript exceeds size limit (${TRANSCRIPT_MAX_BYTES} bytes)`,
+    );
   }
 
   let rows: unknown[];
   try {
     rows = parseTranscriptMessages(raw);
   } catch (error) {
-    throw new Error(
+    throw new WikiRunsRequestError(
+      "invalid_request",
       `transcript is not valid JSON/JSONL: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
@@ -188,7 +199,10 @@ function traceEventsFromRows(rows: unknown[]): AttemptTraceEvent[] {
   if (parsed.every((entry) => entry.success)) {
     return parsed.map((entry) => entry.data);
   }
-  throw new Error("transcript is not valid canonical trace JSONL");
+  throw new WikiRunsRequestError(
+    "invalid_request",
+    "transcript is not valid canonical trace JSONL",
+  );
 }
 
 function pageTranscript(input: {
@@ -263,7 +277,7 @@ export async function firstExistingTranscriptFile(
   for (const candidate of candidates) {
     const resolved = path.resolve(candidate);
     if (!isPathInside(runDir, resolved)) {
-      throw new Error("transcript path escaped run work dir");
+      throw new WikiRunsRequestError("invalid_request", "transcript path escaped run work dir");
     }
     const info = await lstat(resolved).catch((error: unknown) => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;

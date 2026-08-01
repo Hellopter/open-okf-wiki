@@ -21,7 +21,6 @@ import {
   type PiAttemptOutcome,
   type WikiRunSpecAcceptance,
 } from "@okf-wiki/contract";
-import { computeUniqueDefectYield } from "../../run-economy-metrics.js";
 import { loadAcceptance } from "../repair-schedule.js";
 import { asRows, requiredText } from "../sql.js";
 import { writeConversationTranscript } from "../transcript-io.js";
@@ -426,12 +425,6 @@ async function sealReduceSuccess(
     meta: { defects: merged, evaluationRound: { round, result: evaluationRound.result } },
   });
 
-  // Phase 7: unique defect yield across seats (economy dashboard).
-  const seatDefectIds = findings.map((f) =>
-    f.defects.map((d) => `${d.severity}:${d.code}:${d.path ?? ""}:${d.issue}`),
-  );
-  const yieldStats = computeUniqueDefectYield(seatDefectIds);
-
   return {
     type: "succeeded",
     unsealedArtifacts: [
@@ -441,15 +434,6 @@ async function sealReduceSuccess(
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: summaryText,
-    metrics: {
-      role: "review",
-      extra: {
-        uniqueDefectYield: yieldStats.uniqueRatio,
-        uniqueDefectCount: yieldStats.uniqueCount,
-        sharedDefectCount: yieldStats.sharedCount,
-        totalDistinctDefects: yieldStats.totalDistinct,
-        receiptBytes: Buffer.byteLength(JSON.stringify(merged), "utf8"),
-      },
-    },
+    metrics: { role: "review" },
   };
 }

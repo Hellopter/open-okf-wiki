@@ -14,7 +14,6 @@ import {
   WikiRunEffectSchema,
   WikiRunEventSchema,
   WikiRunGetResponseSchema,
-  WikiRunListResponseSchema,
 } from "./wiki-runs.js";
 
 const digest = "a".repeat(64);
@@ -147,8 +146,8 @@ test("gate commands admit only their typed decisions", () => {
 
 test("run events carry one matching full snapshot", () => {
   const snapshot = {
-    schema: "okf.wiki-runs/v4",
-    definitionVersion: 4,
+    schema: "okf.wiki-runs/v5",
+    definitionVersion: 5,
     runId: "run-1",
     workspaceId: "workspace-1",
     revision: 2,
@@ -160,7 +159,6 @@ test("run events carry one matching full snapshot", () => {
     attempts: [],
     gates: [],
     effects: [],
-    epochs: [{ epochId: "epoch-1", ordinal: 1, state: "active", createdAt: timestamp }],
     createdAt: timestamp,
     updatedAt: timestamp,
   } as const;
@@ -246,8 +244,8 @@ test("WikiRunAttempt may include optional metrics", () => {
 
 test("WikiRuns HTTP response and transcript SSE frames are strict", () => {
   const snapshot = {
-    schema: "okf.wiki-runs/v4",
-    definitionVersion: 4,
+    schema: "okf.wiki-runs/v5",
+    definitionVersion: 5,
     runId: "run-1",
     workspaceId: "workspace-1",
     revision: 2,
@@ -259,30 +257,9 @@ test("WikiRuns HTTP response and transcript SSE frames are strict", () => {
     attempts: [],
     gates: [],
     effects: [],
-    epochs: [{ epochId: "epoch-1", ordinal: 1, state: "active", createdAt: timestamp }],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  assert.equal(
-    WikiRunListResponseSchema.safeParse({
-      workspaceId: "workspace-1",
-      runs: [
-        {
-          runId: "run-1",
-          state: "queued",
-          updatedAt: timestamp,
-          revision: 2,
-          sessionId: null,
-        },
-      ],
-    }).success,
-    true,
-  );
-  assert.equal(
-    WikiRunListResponseSchema.safeParse({ workspaceId: "workspace-1", runs: [], extra: true })
-      .success,
-    false,
-  );
   assert.equal(WikiRunGetResponseSchema.safeParse({ snapshot, cursor: 2 }).success, true);
   assert.equal(WikiRunGetResponseSchema.safeParse({ snapshot, cursor: -1 }).success, false);
   const traceEvent = {

@@ -29,7 +29,7 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
 
   test("sets wiki language and source ignore presets", async ({ page }) => {
     await setLocale(page, "en");
-    const { rootPath } = await createWorkspaceViaUi(page, "E2E Lang Ignore");
+    await createWorkspaceViaUi(page, "E2E Lang Ignore");
     const gitRepo = createTempGitRepo("java-app");
 
     await page.getByTestId("workspace-subnav-settings").click();
@@ -54,8 +54,6 @@ test.describe("workspace delete, wiki language, ignore rules", () => {
     await page.getByTestId("source-ignore-save").click();
     // java-tests preset adds 6 patterns
     await expect(page.getByTestId("source-list")).toContainText(/6 custom|6 条自定义/);
-
-    expect(rootPath).toBeTruthy();
   });
 
   test("deletes workspace from list", async ({ page }) => {

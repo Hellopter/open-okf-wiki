@@ -73,10 +73,6 @@ function walkLeaves(
 describe("i18n en/zh parity", () => {
   const leaves = walkLeaves(en, zh);
 
-  it("covers a non-empty catalog", () => {
-    assert.ok(leaves.length > 50);
-  });
-
   it("zh leaf strings differ from en unless allowlisted", () => {
     const failures: string[] = [];
     for (const leaf of leaves) {

@@ -13,36 +13,6 @@ import {
   waitForTerminal,
 } from "./harness.js";
 
-test("list projects operator sessionId so Session refresh can rebind runs", async (t) => {
-  const { root, workspaceId } = await makeWorkspace();
-  t.after(() => removeWorkspace(root));
-  const runs = await openWikiRuns({ rootPath: root });
-  t.after(() => runs.close());
-
-  const linked = await runs.dispatch(
-    {
-      type: "start_run",
-      commandId: "start-session-link",
-      intent: { mode: "generate" },
-    },
-    { ...context(workspaceId), sessionId: "operator-sess-1" },
-  );
-  const headless = await runs.dispatch(
-    {
-      type: "start_run",
-      commandId: "start-headless",
-      intent: { mode: "generate" },
-    },
-    context(workspaceId),
-  );
-
-  const listed = await runs.list();
-  const linkedRow = listed.find((row) => row.runId === linked.runId);
-  const headlessRow = listed.find((row) => row.runId === headless.runId);
-  assert.equal(linkedRow?.sessionId, "operator-sess-1");
-  assert.equal(headlessRow?.sessionId, null);
-});
-
 test("start receipt and replay are durable, and duplicate commands de-duplicate", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
@@ -70,8 +40,8 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
   assertFreezeAdvancedToPlan(finished.snapshot);
   assert.equal(finished.snapshot.intent?.mode, "generate");
   assert.equal(finished.snapshot.intent?.focus, "Runtime seams");
-  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v4");
-  assert.equal(finished.snapshot.definitionVersion, 4);
+  assert.equal(finished.snapshot.schema, "okf.wiki-runs/v5");
+  assert.equal(finished.snapshot.definitionVersion, 5);
   assert.ok(finished.events.some((event) => event.type === "inputs.pinned"));
   assert.ok(finished.events.some((event) => event.type === "node.ready"));
   assert.ok(finished.events.length >= 4);

@@ -20,6 +20,7 @@ import { withdrawOpenGates } from "./gate-open.js";
 import { scheduleOperatorRepair } from "./repair-schedule.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
+import { WikiRunsRequestError } from "./types.js";
 
 /**
  * Full resolve surface: decision handlers need rerun/cancel/command recording.
@@ -55,11 +56,12 @@ export function resolveGate(
   const run = asRow(
     host.db.prepare("SELECT cancel_requested, state FROM runs WHERE run_id = ?").get(command.runId),
   );
-  if (!run) throw new Error(`run not found: ${command.runId}`);
-  if (requiredNumber(run, "cancel_requested") === 1)
-    throw new Error("cannot resolve gate on a cancelled run");
+  if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${command.runId}`);
+  if (requiredNumber(run, "cancel_requested") === 1) {
+    throw new WikiRunsRequestError("conflict", "cannot resolve gate on a cancelled run");
+  }
   if (["pausing", "paused"].includes(requiredText(run, "state"))) {
-    throw new Error("cannot resolve gate while run is paused");
+    throw new WikiRunsRequestError("conflict", "cannot resolve gate while run is paused");
   }
   const gate = asRow(
     host.db
@@ -69,16 +71,28 @@ export function resolveGate(
       )
       .get(command.gateId, command.runId),
   );
-  if (!gate) throw new Error(`gate not found: ${command.gateId}`);
-  if (requiredText(gate, "state") !== "open") throw new Error("gate is stale or already closed");
-  if (requiredText(gate, "kind") !== command.gateKind)
-    throw new Error("gate kind does not match the open gate");
-  if (requiredText(gate, "payload_digest") !== command.payloadDigest)
-    throw new Error("gate payload digest does not match the open gate");
+  if (!gate) {
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      `gate is stale or unavailable: ${command.gateId}`,
+    );
+  }
+  if (requiredText(gate, "state") !== "open")
+    throw new WikiRunsRequestError("stale_revision", "gate is stale or already closed");
+  if (requiredText(gate, "kind") !== command.gateKind) {
+    throw new WikiRunsRequestError("stale_revision", "gate kind does not match the open gate");
+  }
+  if (requiredText(gate, "payload_digest") !== command.payloadDigest) {
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "gate payload digest does not match the open gate",
+    );
+  }
   const nodeKey = requiredText(gate, "node_key");
   const nodeGeneration = requiredNumber(gate, "node_generation");
   const currentGen = host.currentNodeGeneration(command.runId, nodeKey);
-  if (currentGen !== nodeGeneration) throw new Error("gate is stale: node generation was replaced");
+  if (currentGen !== nodeGeneration)
+    throw new WikiRunsRequestError("stale_revision", "gate is stale: node generation was replaced");
 
   const timestamp = now();
   const decision = {
@@ -103,7 +117,7 @@ export function resolveGate(
     host.db.prepare("SELECT state FROM gates WHERE gate_id = ?").get(command.gateId),
   );
   if (!updated || requiredText(updated, "state") !== "resolved")
-    throw new Error("gate is stale or already closed");
+    throw new WikiRunsRequestError("stale_revision", "gate is stale or already closed");
 
   // Plan/fix/publication gates own dedicated gate.* nodes that succeed on resolve.
   // operator_input attaches to the Pi node: gen N stays non-succeeded (waiting) so
@@ -169,7 +183,9 @@ export function applyPlanGateDecision(
   if (command.decision === "approve") {
     const planKey = planNodeKeyForGate(host, command.runId, gateNodeKey);
     const planGen = host.currentNodeGeneration(command.runId, planKey);
-    if (planGen === undefined) throw new Error("plan node not found for approve");
+    if (planGen === undefined) {
+      throw new WikiRunsRequestError("stale_revision", "plan node is stale or unavailable");
+    }
     const spec = asRow(
       host.db
         .prepare(
@@ -185,7 +201,10 @@ export function applyPlanGateDecision(
         .get(command.runId, planKey, planGen),
     );
     if (!spec) {
-      throw new Error("plan approve requires a sealed Spec artifact");
+      throw new WikiRunsRequestError(
+        "stale_revision",
+        "plan approve requires a sealed Spec artifact",
+      );
     }
     onPlanAccepted(host, command.runId, requiredText(spec, "relative_path"), timestamp);
     return;
@@ -193,13 +212,17 @@ export function applyPlanGateDecision(
   if (command.decision === "revise") {
     const planKey = planNodeKeyForGate(host, command.runId, gateNodeKey);
     const planGen = host.currentNodeGeneration(command.runId, planKey);
-    if (planGen === undefined) throw new Error("plan node not found for revise");
+    if (planGen === undefined) {
+      throw new WikiRunsRequestError("stale_revision", "plan node is stale or unavailable");
+    }
     const plan = asRow(
       host.db
         .prepare("SELECT kind FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
         .get(command.runId, planKey, planGen),
     );
-    if (!plan) throw new Error("plan node not found for revise");
+    if (!plan) {
+      throw new WikiRunsRequestError("stale_revision", "plan node is stale or unavailable");
+    }
     contractForNode(requiredText(plan, "kind"), planKey);
     host.db
       .prepare(
@@ -242,7 +265,7 @@ export function applyPlanGateDecision(
     );
     return;
   }
-  throw new Error(`unsupported plan gate decision: ${command.decision}`);
+  throw new WikiRunsRequestError("conflict", `unsupported plan gate decision: ${command.decision}`);
 }
 
 /**
@@ -257,19 +280,36 @@ export function applyOperatorInputGateDecision(
   gateNodeGeneration: number,
   timestamp: string,
 ): void {
-  if (command.decision !== "answer")
-    throw new Error(`unsupported operator_input decision: ${command.decision}`);
+  if (command.decision !== "answer") {
+    throw new WikiRunsRequestError(
+      "conflict",
+      `unsupported operator_input decision: ${command.decision}`,
+    );
+  }
   const answer = command.answer?.trim();
-  if (!answer) throw new Error("operator_input answer requires non-empty answer text");
+  if (!answer) {
+    throw new WikiRunsRequestError(
+      "invalid_request",
+      "operator_input answer requires non-empty answer text",
+    );
+  }
 
   const current = host.currentNodeRow(command.runId, gateNodeKey);
-  if (!current) throw new Error("operator_input node not found");
+  if (!current) {
+    throw new WikiRunsRequestError("stale_revision", "operator_input node is stale or unavailable");
+  }
   const generation = requiredNumber(current, "generation");
   if (generation !== gateNodeGeneration) {
-    throw new Error("operator_input gate is stale: node generation was replaced");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "operator_input gate is stale: node generation was replaced",
+    );
   }
   if (requiredText(current, "state") !== "waiting") {
-    throw new Error("operator_input node is not waiting for an answer");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "operator_input node is no longer waiting for an answer",
+    );
   }
 
   // Parent Attempt must remain suspended (not re-run / not failed).
@@ -277,17 +317,28 @@ export function applyOperatorInputGateDecision(
     (current.last_attempt_id != null && String(current.last_attempt_id).trim()) ||
     (current.current_attempt_id != null && String(current.current_attempt_id).trim()) ||
     "";
-  if (!parentAttemptId) throw new Error("operator_input parent attempt not found");
+  if (!parentAttemptId) {
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "operator_input parent attempt is stale or unavailable",
+    );
+  }
   const parentAttempt = asRow(
     host.db
       .prepare(`SELECT attempt_id, state, node_generation FROM attempts WHERE attempt_id = ?`)
       .get(parentAttemptId),
   );
   if (!parentAttempt || requiredText(parentAttempt, "state") !== "suspended") {
-    throw new Error("operator_input parent attempt is not suspended");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "operator_input parent attempt is no longer suspended",
+    );
   }
   if (requiredNumber(parentAttempt, "node_generation") !== gateNodeGeneration) {
-    throw new Error("operator_input parent attempt generation mismatch");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "operator_input parent attempt generation mismatch",
+    );
   }
 
   const nextGen = generation + 1;
@@ -299,7 +350,10 @@ export function applyOperatorInputGateDecision(
       .get(command.runId, gateNodeKey, nextGen),
   );
   if (existingNext) {
-    throw new Error("operator_input answer is stale: newer generation already exists");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "operator_input answer is stale: newer generation already exists",
+    );
   }
 
   // Seal answer bytes under run artifacts/ (sync: resolveGate runs inside BEGIN IMMEDIATE).
@@ -401,7 +455,12 @@ export function applyPublicationGateDecision(
           )
           .get(command.runId, command.gateId),
       );
-      if (!conflict) throw new Error("publication effect not found for approved gate");
+      if (!conflict) {
+        throw new WikiRunsRequestError(
+          "stale_revision",
+          "publication effect is stale or unavailable",
+        );
+      }
       restartPublicationCandidate(
         host,
         command,
@@ -414,7 +473,8 @@ export function applyPublicationGateDecision(
     const pubGen = requiredNumber(effect, "publication_node_generation");
     const liveGen = host.currentNodeGeneration(command.runId, pubKey);
     if (liveGen !== pubGen) {
-      throw new Error(
+      throw new WikiRunsRequestError(
+        "stale_revision",
         `publication effect generation ${pubGen} is stale (current ${liveGen ?? "none"})`,
       );
     }
@@ -425,7 +485,10 @@ export function applyPublicationGateDecision(
       )
       .run(requiredText(effect, "effect_key"));
     if (cas.changes !== 1) {
-      throw new Error("publication effect could not transition to candidate_ready");
+      throw new WikiRunsRequestError(
+        "stale_revision",
+        "publication effect could not transition to candidate_ready",
+      );
     }
     // Unlock publish after gate.publication is already marked succeeded above.
     unlockReadyNodes(host, command.runId);
@@ -448,7 +511,12 @@ export function applyPublicationGateDecision(
         )
         .get(command.runId, command.gateId),
     );
-    if (!effect) throw new Error("publication revise requires a publication effect");
+    if (!effect) {
+      throw new WikiRunsRequestError(
+        "stale_revision",
+        "publication effect is stale or unavailable",
+      );
+    }
     restartPublicationCandidate(host, command, effect, command.feedback);
     return;
   }
@@ -465,7 +533,10 @@ export function applyPublicationGateDecision(
     host.emit(command.runId, "run.completed_unpublished");
     return;
   }
-  throw new Error(`unsupported publication gate decision: ${command.decision}`);
+  throw new WikiRunsRequestError(
+    "conflict",
+    `unsupported publication gate decision: ${command.decision}`,
+  );
 }
 
 /** A conflict cannot safely retry its bytes. Re-run the candidate-producing path instead. */
@@ -527,7 +598,7 @@ export function applyFixGateDecision(
 
   if (command.decision === "revise") {
     if (!command.feedback?.trim()) {
-      throw new Error("fix gate revise requires feedback");
+      throw new WikiRunsRequestError("invalid_request", "fix gate revise requires feedback");
     }
     const nextGen = gateNodeGeneration + 1;
     const existingNext = asRow(
@@ -537,7 +608,11 @@ export function applyFixGateDecision(
         )
         .get(command.runId, gateNodeKey, nextGen),
     );
-    if (existingNext) throw new Error("fix gate revise is stale: newer generation already exists");
+    if (existingNext)
+      throw new WikiRunsRequestError(
+        "stale_revision",
+        "fix gate revise is stale: newer generation already exists",
+      );
 
     const newPayloadDigest = digest({
       priorPayloadDigest: command.payloadDigest,
@@ -592,7 +667,7 @@ export function applyFixGateDecision(
     return;
   }
 
-  throw new Error(`unsupported fix gate decision: ${command.decision}`);
+  throw new WikiRunsRequestError("conflict", `unsupported fix gate decision: ${command.decision}`);
 }
 
 /**

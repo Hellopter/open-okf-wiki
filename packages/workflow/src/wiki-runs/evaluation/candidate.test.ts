@@ -32,7 +32,7 @@ function seedRun(db: DatabaseSync, runId = "run-1"): void {
     `INSERT INTO runs (
        run_id, workspace_id, definition_version, revision, state, cancel_requested,
        freeze_config_json, freeze_config_digest, created_at, updated_at
-     ) VALUES (?, 'ws-1', 4, 0, 'running', 0, '{}', 'deadbeef', ?, ?)`,
+     ) VALUES (?, 'ws-1', 5, 0, 'running', 0, '{}', 'deadbeef', ?, ?)`,
   ).run(runId, ts, ts);
 }
 

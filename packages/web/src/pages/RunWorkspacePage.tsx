@@ -1,10 +1,16 @@
-import type { WikiRunIndexEvent, WikiRunListItem, WorkspaceConfig } from "@okf-wiki/contract";
+import type { WikiRunListItem, WorkspaceConfig } from "@okf-wiki/contract";
 import { Play, Plus, Radio, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { dispatchWikiRunCommand, getRunIndex, getWorkspace, wikiRunIndexEventsUrl } from "../api";
+import {
+  dispatchWikiRunCommand,
+  getRunIndex,
+  getWorkspace,
+  parseWikiRunIndexEvent,
+  wikiRunIndexEventsUrl,
+} from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
@@ -61,7 +67,7 @@ export function RunWorkspacePage() {
     const source = new EventSource(wikiRunIndexEventsUrl(id));
     source.addEventListener("index", (event) => {
       try {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as WikiRunIndexEvent;
+        const payload = parseWikiRunIndexEvent((event as MessageEvent<string>).data);
         setRuns(payload.runs);
         setConnection("live");
       } catch {

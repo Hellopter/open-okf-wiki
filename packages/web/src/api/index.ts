@@ -6,22 +6,9 @@
  */
 
 export {
-  type AgentCommand,
-  type AgentCommandResponse,
-  agentSessionCommand,
-  agentSessionEventsUrl,
-  type CreatePiAgentSessionBody,
-  type CreatePiAgentSessionResponse,
-  createAgentSession,
-  deleteAgentSession,
-  listAgentSessions,
-  listOperatorCommands,
-  type OperatorCommandInfo,
-  type PiSessionSummary,
-} from "./agent-sessions";
-export {
   ApiError,
   getApiBase,
+  hasApiErrorCode,
   messageFromErrorBody,
   request,
 } from "./client";
@@ -70,7 +57,6 @@ export {
   getWikiRun,
   getWikiRunAttemptTranscript,
   getWikiRunSpec,
-  listRuns,
   type WikiRunAttemptTranscript,
   type WikiRunListItem,
   type WikiRunState,
@@ -78,6 +64,11 @@ export {
   wikiRunEventsUrl,
   wikiRunIndexEventsUrl,
 } from "./wiki-runs";
+export {
+  parseWikiRunEvent,
+  parseWikiRunIndexEvent,
+  parseWikiRunSnapshotEvent,
+} from "./wiki-runs-events";
 export {
   type AddSourceInput,
   addSource,

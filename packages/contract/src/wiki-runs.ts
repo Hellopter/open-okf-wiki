@@ -5,12 +5,12 @@ import { AttemptTraceEventSchema } from "./run-graph.js";
 
 /**
  * Durable WikiRuns contract version.
- * v4: independent Run Workspace with durable revisions, execution epochs, and
- * operator-owned candidate review. v3 control stores are deliberately unsupported.
+ * v5: independent Run Workspace with scope revisions and operator-owned candidate review.
+ * Older control stores are deliberately unsupported.
  * Definition topology is Wiki-specific, not a workflow DSL.
  */
-export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v4" as const;
-export const WikiRunDefinitionVersionSchema = z.literal(4);
+export const WIKI_RUNS_SCHEMA = "okf.wiki-runs/v5" as const;
+export const WikiRunDefinitionVersionSchema = z.literal(5);
 
 const IdentifierSchema = z.string().trim().min(1).max(200);
 const IsoDateTimeSchema = z.string().datetime();
@@ -22,7 +22,6 @@ export const RunNodeKeySchema = z.string().trim().min(1).max(200);
 export const RunAttemptIdSchema = IdentifierSchema;
 export const RunGateIdSchema = IdentifierSchema;
 export const RunRevisionIdSchema = IdentifierSchema;
-export const ExecutionEpochIdSchema = IdentifierSchema;
 export const ReviewThreadIdSchema = IdentifierSchema;
 
 export const WikiRunStateSchema = z.enum([
@@ -128,7 +127,6 @@ export type WorkspaceId = z.infer<typeof WorkspaceIdSchema>;
 export type WikiRunId = z.infer<typeof WikiRunIdSchema>;
 export type RunCommandId = z.infer<typeof RunCommandIdSchema>;
 export type RunRevisionId = z.infer<typeof RunRevisionIdSchema>;
-export type ExecutionEpochId = z.infer<typeof ExecutionEpochIdSchema>;
 export type ReviewThreadId = z.infer<typeof ReviewThreadIdSchema>;
 export type WikiRunDefinitionVersion = z.infer<typeof WikiRunDefinitionVersionSchema>;
 export type WikiRunState = z.infer<typeof WikiRunStateSchema>;
@@ -224,13 +222,10 @@ export const CancelRunCommandSchema = ExistingRunCommandSchema.extend({
   type: z.literal("cancel_run"),
 }).strict();
 
-export const RunRevisionKindSchema = z.enum(["guidance", "scope_change"]);
-export type RunRevisionKind = z.infer<typeof RunRevisionKindSchema>;
-
-/** Durable input. Guidance applies at a safe boundary; scope starts a new epoch. */
+/** Durable scope change that reopens the plan boundary. */
 export const SubmitRunRevisionCommandSchema = ExistingRunCommandSchema.extend({
   type: z.literal("submit_run_revision"),
-  kind: RunRevisionKindSchema,
+  kind: z.literal("scope_change"),
   content: z.string().trim().min(1).max(8_000),
 }).strict();
 
@@ -588,28 +583,16 @@ export const WikiRunEvaluationRecoverySchema = z
   })
   .strict();
 
-/** Immutable operator input bound into all later Attempt envelopes. */
+/** Durable operator scope change. */
 export const RunRevisionSchema = z
   .object({
     revisionId: RunRevisionIdSchema,
-    kind: RunRevisionKindSchema,
+    kind: z.literal("scope_change"),
     content: z.string().trim().min(1).max(8_000),
     commandId: RunCommandIdSchema,
     actorId: IdentifierSchema,
     createdAt: IsoDateTimeSchema,
     appliedAt: IsoDateTimeSchema.optional(),
-    epochId: ExecutionEpochIdSchema.optional(),
-  })
-  .strict();
-
-/** A scope change creates a fresh plan boundary without erasing prior work. */
-export const ExecutionEpochSchema = z
-  .object({
-    epochId: ExecutionEpochIdSchema,
-    ordinal: z.number().int().positive(),
-    scopeRevisionId: RunRevisionIdSchema.optional(),
-    state: z.enum(["active", "superseded", "completed"]),
-    createdAt: IsoDateTimeSchema,
   })
   .strict();
 
@@ -680,7 +663,6 @@ export const WikiRunSnapshotSchema = z
      */
     candidates: z.array(WikiRunCandidateSchema).default([]),
     revisions: z.array(RunRevisionSchema).default([]),
-    epochs: z.array(ExecutionEpochSchema).min(1),
     reviewThreads: z.array(ReviewThreadSchema).default([]),
     /** Present only while a failed Run has an operator-continuable evaluation recovery. */
     evaluationRecoveries: z.array(WikiRunEvaluationRecoverySchema).optional(),
@@ -707,7 +689,6 @@ export const WikiRunEventTypeSchema = z.enum([
   "run.resumed",
   "revision.submitted",
   "revision.applied",
-  "epoch.created",
   "review_thread.created",
   "review_thread.resolved",
   "repair.requested",
@@ -760,25 +741,17 @@ export const RunCommandReceiptSchema = z
   })
   .strict();
 
-/** GET …/runs list response. Shared by server and Web transport adapters. */
+/** Compact Run Workspace index projection shared by server and Web adapters. */
 export const WikiRunListItemSchema = z
   .object({
     runId: WikiRunIdSchema,
     state: WikiRunStateSchema,
     updatedAt: IsoDateTimeSchema,
     revision: z.number().int().min(0),
-    sessionId: IdentifierSchema.nullable(),
     attention: z.enum(["none", "gate", "review", "failure", "paused"]).default("none"),
     phase: z.string().trim().min(1).max(100).optional(),
     completedNodes: z.number().int().nonnegative().default(0),
     totalNodes: z.number().int().nonnegative().default(0),
-  })
-  .strict();
-
-export const WikiRunListResponseSchema = z
-  .object({
-    workspaceId: WorkspaceIdSchema,
-    runs: z.array(WikiRunListItemSchema),
   })
   .strict();
 
@@ -905,7 +878,6 @@ export type WikiRunGate = z.infer<typeof WikiRunGateSchema>;
 export type WikiRunEffect = z.infer<typeof WikiRunEffectSchema>;
 export type WikiRunEvaluationRecovery = z.infer<typeof WikiRunEvaluationRecoverySchema>;
 export type RunRevision = z.infer<typeof RunRevisionSchema>;
-export type ExecutionEpoch = z.infer<typeof ExecutionEpochSchema>;
 export type ReviewThread = z.infer<typeof ReviewThreadSchema>;
 export type WikiRunCandidate = z.infer<typeof WikiRunCandidateSchema>;
 export type WikiRunSnapshot = z.infer<typeof WikiRunSnapshotSchema>;
@@ -914,7 +886,6 @@ export type WikiRunEventType = z.infer<typeof WikiRunEventTypeSchema>;
 export type WikiRunSpecRead = z.infer<typeof WikiRunSpecReadSchema>;
 export type RunCommandReceipt = z.infer<typeof RunCommandReceiptSchema>;
 export type WikiRunListItem = z.infer<typeof WikiRunListItemSchema>;
-export type WikiRunListResponse = z.infer<typeof WikiRunListResponseSchema>;
 export type WikiRunGetResponse = z.infer<typeof WikiRunGetResponseSchema>;
 export type WikiRunIndexEvent = z.infer<typeof WikiRunIndexEventSchema>;
 export type WikiRunIndexGetResponse = z.infer<typeof WikiRunIndexGetResponseSchema>;

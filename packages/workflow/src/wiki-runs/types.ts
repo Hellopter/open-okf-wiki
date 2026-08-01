@@ -83,8 +83,6 @@ export interface WikiRuns {
   /** Every existing-Run mutation carries its observed control revision. */
   dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt>;
   read(input: { runId: string; afterEventId?: number; limit?: number }): Promise<WikiRunRead>;
-  /** All runs for this workspace, newest `updatedAt` first. */
-  list(): Promise<WikiRunListItem[]>;
   /** Workspace-wide compact Run projection for the index SSE. */
   readIndex(input?: { afterEventId?: number; limit?: number }): Promise<{
     runs: WikiRunListItem[];
@@ -143,6 +141,24 @@ export class CommandIdCollision extends Error {
   constructor(commandId: string) {
     super(`command id was already used with a different payload: ${commandId}`);
     this.name = "CommandIdCollision";
+  }
+}
+
+/** Expected operator-facing failures at the WikiRuns boundary. */
+export type WikiRunsRequestErrorCode =
+  | "not_found"
+  | "conflict"
+  | "stale_revision"
+  | "invalid_request"
+  | "payload_too_large";
+
+export class WikiRunsRequestError extends Error {
+  constructor(
+    readonly code: WikiRunsRequestErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WikiRunsRequestError";
   }
 }
 

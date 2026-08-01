@@ -9,6 +9,8 @@
 **Index:** [docs/adr/README.md](README.md)
 
 > **Status note:** ~~WikiRunShell owns plan/publish job phases~~ ([§1](#1-runtime-stack), invariant P4) is **historical**. **Current:** WikiRuns owns durable phases/gates; Pi owns conversation; thin tools dispatch commands.
+>
+> **2026-08-01 status note:** The Agent Workspace and Operator Session HTTP/browser transport described in §5 are historical. The direct operator surface is the Run Workspace; Pi is retained for disposable Attempt execution.
 
 ## Context
 
@@ -69,7 +71,7 @@ Domain / Leaf / Reviewer = **in-process child `AgentSession`s** with read-only t
 ### 5. Operator UI
 
 - Vite + React + **shadcn (Base UI)** kit retained.
-- **IA/UX redesigned**: Agent Workspace (session-home, panels for sources/wiki/run), not multi-tab peer pages.
+- **Historical IA/UX:** Agent Workspace (session-home, panels for sources/wiki/run), not multi-tab peer pages. Current browser IA is the Run Workspace.
 - Patterns from pi-web (SSE, tool cards, tree, context meter); not Next.js / pi-web as host.
 
 ### 6. No-compat cutover

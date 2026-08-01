@@ -13,7 +13,6 @@ import type {
   WikiRunGetResponse,
   WikiRunIndexGetResponse,
   WikiRunListItem,
-  WikiRunListResponse,
   WikiRunSpecRead,
   WikiRunState,
 } from "@okf-wiki/contract";
@@ -25,35 +24,28 @@ import {
   WikiRunCommandResponseSchema,
   WikiRunGetResponseSchema,
   WikiRunIndexGetResponseSchema,
-  WikiRunListResponseSchema,
   WikiRunSpecReadSchema,
 } from "@okf-wiki/contract";
 import { getApiBase, request } from "./client";
 
 export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunState };
 
-export function listRuns(workspaceId: string): Promise<WikiRunListResponse> {
-  return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`).then(
-    WikiRunListResponseSchema.parse,
-  );
-}
-
 export function getRunIndex(workspaceId: string): Promise<WikiRunIndexGetResponse> {
-  return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/index`).then(
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/index`).then(
     WikiRunIndexGetResponseSchema.parse,
   );
 }
 
 /** Durable WikiRuns snapshot + cursor (ADR 0035). */
 export function getWikiRun(workspaceId: string, runId: string): Promise<WikiRunGetResponse> {
-  return request<unknown>(
+  return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`,
   ).then(WikiRunGetResponseSchema.parse);
 }
 
 /** Sealed plan Spec for operator review (not on Run SSE). */
 export function getWikiRunSpec(workspaceId: string, runId: string): Promise<WikiRunSpecRead> {
-  return request<unknown>(
+  return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,
   ).then(WikiRunSpecReadSchema.parse);
 }
@@ -65,7 +57,7 @@ export function getCandidatePage(
   pagePath: string,
 ): Promise<CandidatePageRead> {
   const query = new URLSearchParams({ candidate: candidateDigest, page: pagePath });
-  return request<unknown>(
+  return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/candidate/page?${query}`,
   ).then(CandidatePageReadSchema.parse);
 }
@@ -76,7 +68,7 @@ export function getCandidateTree(
   candidateDigest: string,
 ): Promise<CandidateTreeRead> {
   const query = new URLSearchParams({ candidate: candidateDigest });
-  return request<unknown>(
+  return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/candidate/tree?${query}`,
   ).then(CandidateTreeReadSchema.parse);
 }
@@ -88,7 +80,7 @@ export function getCandidateDiff(
   pagePath: string,
 ): Promise<CandidateDiffRead> {
   const query = new URLSearchParams({ candidate: candidateDigest, page: pagePath });
-  return request<unknown>(
+  return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/candidate/diff?${query}`,
   ).then(CandidateDiffReadSchema.parse);
 }
@@ -115,7 +107,7 @@ export function getWikiRunAttemptTranscript(
   attemptId: string,
   options?: AttemptTranscriptPageOptions,
 ): Promise<WikiRunAttemptTranscript> {
-  return request<unknown>(
+  return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/attempts/${encodeURIComponent(attemptId)}/transcript${attemptTranscriptQuery(options)}`,
   ).then(WikiRunAttemptTranscriptSchema.parse);
 }
@@ -139,7 +131,7 @@ export function dispatchWikiRunCommand(
   workspaceId: string,
   command: RunCommand,
 ): Promise<WikiRunCommandResponse> {
-  return request<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/command`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(command),

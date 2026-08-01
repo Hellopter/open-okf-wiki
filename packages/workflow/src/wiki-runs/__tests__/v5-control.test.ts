@@ -22,17 +22,17 @@ async function waitForSnapshot(
     if (predicate(snapshot)) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error(`timed out waiting for v4 Run condition: ${runId}`);
+  throw new Error(`timed out waiting for v5 Run condition: ${runId}`);
 }
 
-test("v4 rejects stale controls and preserves guidance/scope epoch history", async (t) => {
+test("v5 rejects stale controls and replans an applied scope change", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   const runs = await openWikiRuns({ rootPath: root, piAttemptExecutor: fullGraphFixtureExecutor });
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "v4-revision-start", intent: { mode: "generate" } },
+    { type: "start_run", commandId: "v5-revision-start", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const initial = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);
@@ -46,7 +46,7 @@ test("v4 rejects stale controls and preserves guidance/scope epoch history", asy
       runs.dispatch(
         {
           type: "pause_run",
-          commandId: "v4-stale-pause",
+          commandId: "v5-stale-pause",
           runId: receipt.runId,
           expectedRevision: initial.snapshot.revision - 1,
         },
@@ -58,43 +58,20 @@ test("v4 rejects stale controls and preserves guidance/scope epoch history", asy
   await runs.dispatch(
     {
       type: "submit_run_revision",
-      commandId: "v4-guidance",
+      commandId: "v5-scope",
       runId: receipt.runId,
       expectedRevision: initial.snapshot.revision,
-      kind: "guidance",
-      content: "Prioritize references in the public overview.",
-    },
-    context(workspaceId),
-  );
-  const guided = await waitForSnapshot(runs, receipt.runId, (snapshot) =>
-    snapshot.revisions.some(
-      (revision) => revision.commandId === "v4-guidance" && revision.appliedAt,
-    ),
-  );
-
-  await runs.dispatch(
-    {
-      type: "submit_run_revision",
-      commandId: "v4-scope",
-      runId: receipt.runId,
-      expectedRevision: guided.revision,
       kind: "scope_change",
       content: "Limit the wiki to the runtime and publication path.",
     },
     context(workspaceId),
   );
-  const replanned = await waitForSnapshot(
-    runs,
-    receipt.runId,
-    (snapshot) =>
-      snapshot.epochs.length === 2 &&
-      snapshot.epochs.some((epoch) => epoch.state === "superseded") &&
-      snapshot.gates.some((gate) => gate.kind === "plan" && gate.state === "open"),
+  const replanned = await waitForSnapshot(runs, receipt.runId, (snapshot) =>
+    snapshot.gates.some((gate) => gate.kind === "plan" && gate.state === "open"),
   );
-  const scope = replanned.revisions.find((revision) => revision.commandId === "v4-scope");
+  const scope = replanned.revisions.find((revision) => revision.commandId === "v5-scope");
   assert.ok(scope?.appliedAt);
-  assert.ok(scope?.epochId);
-  assert.equal(replanned.epochs.find((epoch) => epoch.epochId === scope?.epochId)?.state, "active");
+  assert.equal("epochs" in replanned, false);
 });
 
 test("pause/resume starts a fresh Attempt from the frozen input envelope", async (t) => {
@@ -122,7 +99,7 @@ test("pause/resume starts a fresh Attempt from the frozen input envelope", async
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "v4-pause-start", intent: { mode: "generate" } },
+    { type: "start_run", commandId: "v5-pause-start", intent: { mode: "generate" } },
     context(workspaceId),
   );
   await firstPlan;
@@ -130,7 +107,7 @@ test("pause/resume starts a fresh Attempt from the frozen input envelope", async
   await runs.dispatch(
     {
       type: "pause_run",
-      commandId: "v4-pause",
+      commandId: "v5-pause",
       runId: receipt.runId,
       expectedRevision: running.revision,
     },
@@ -148,7 +125,7 @@ test("pause/resume starts a fresh Attempt from the frozen input envelope", async
   await runs.dispatch(
     {
       type: "resume_run",
-      commandId: "v4-resume",
+      commandId: "v5-resume",
       runId: receipt.runId,
       expectedRevision: paused.revision,
     },
@@ -172,7 +149,7 @@ test("candidate review validates paths and anchors before scheduling one repair 
   t.after(() => runs.close());
 
   const receipt = await runs.dispatch(
-    { type: "start_run", commandId: "v4-review-start", intent: { mode: "generate" } },
+    { type: "start_run", commandId: "v5-review-start", intent: { mode: "generate" } },
     context(workspaceId),
   );
   const planned = await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);
@@ -183,7 +160,7 @@ test("candidate review validates paths and anchors before scheduling one repair 
   await runs.dispatch(
     {
       type: "resolve_gate",
-      commandId: "v4-review-approve-plan",
+      commandId: "v5-review-approve-plan",
       runId: receipt.runId,
       expectedRevision: planned.snapshot.revision,
       gateId: planGate!.gateId,
@@ -225,7 +202,7 @@ test("candidate review validates paths and anchors before scheduling one repair 
   await runs.dispatch(
     {
       type: "create_review_thread",
-      commandId: "v4-review-comment",
+      commandId: "v5-review-comment",
       runId: receipt.runId,
       expectedRevision: candidateSnapshot.revision,
       anchor: {
@@ -249,7 +226,7 @@ test("candidate review validates paths and anchors before scheduling one repair 
   await runs.dispatch(
     {
       type: "request_repair",
-      commandId: "v4-review-repair",
+      commandId: "v5-review-repair",
       runId: receipt.runId,
       expectedRevision: threaded.revision,
       threadIds: [thread!.threadId],

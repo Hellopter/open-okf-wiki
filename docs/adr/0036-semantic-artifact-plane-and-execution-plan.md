@@ -7,6 +7,8 @@
 **Does not introduce:** knowledge graph, multi-writer wiki, generic workflow DSL, dual executors, museum store ports  
 **Research basis:** [current-wiki-workflow-optimization-2026-07-29](../research/current-wiki-workflow-optimization-2026-07-29.md), [wiki-workflow-fullstack-pi-architecture-2026-07-30](../research/wiki-workflow-fullstack-pi-architecture-2026-07-30.md), [hard-cut prep](../research/wiki-workflow-hard-cut-prep-2026-07-30.md)
 
+> **2026-08-01 status note:** The current hard-cut contract is `okf.wiki-runs/v5` (`definitionVersion: 5`). The separate Agent Session HTTP/browser surface, `SessionRuntime`, execution-epoch history, pending-guidance revisions, and economy-metric helpers were deleted. The direct browser operator surface is the Run Workspace.
+
 ## Context
 
 ADR 0035 correctly established **WikiRuns** as the durable control authority and Pi as a discardable Attempt executor. That control plane stays.
@@ -18,8 +20,8 @@ What was insufficient as a *product* boundary was equating “Definition v1 fixe
 ### 1. Keep WikiRuns; version the execution contract
 
 - Durable control remains WikiRuns SQLite + immutable filesystem Artifacts + separate Run SSE.
-- This ADR introduced `okf.wiki-runs/v2` (`definitionVersion: 2`). The current hard-cut contract is `okf.wiki-runs/v3` (`definitionVersion: 3`); old in-flight runs are not dual-executed.
-- **Hard cut:** in-flight prior-version runs are not dual-executed. Operators cancel non-terminal runs before upgrade ([hard-cut prep](../research/wiki-workflow-hard-cut-prep-2026-07-30.md)). Helper: `listNonTerminalRuns`.
+- This ADR introduced `okf.wiki-runs/v2` (`definitionVersion: 2`). The current hard-cut contract is `okf.wiki-runs/v5` (`definitionVersion: 5`); old in-flight runs are not dual-executed.
+- **Hard cut:** in-flight prior-version runs are not dual-executed. Operators clear prior-version control stores before opening v5.
 
 ### 2. NodeContract (internal registry, not a DSL)
 
@@ -56,28 +58,16 @@ Review seats submit `DefectReportSchema` (fail closed). Reduce merges only valid
 
 `gate_requested` → Attempt `suspended`, Gate `operator_input` open, Run `waiting_for_operator`. Answer seals `operator_input` artifact; new generation Attempt binds frozen inputs + answer. Restart does not resume the old Pi worker.
 
-### 7. SessionRuntime
+### 7. Operator surface
 
-Internal deep module over Pi Operator Session:
-
-- Admission returns HTTP 202 + `acceptedTurnId`; turn runs detached.
-- `agent_end` → `between_operations` (turn still active); only `agent_settled` is terminal idle/error.
-- Commands: prompt / steer / follow_up / abort / clear_queue / abort_compaction / compact.
-- Full branch transcript vs active model context are separate read models.
-- Web session identity epoch prevents stale SSE pollution.
-
-### 8. Operator surface
-
-- URL owns `?sessionId=&run=&attempt=`.
-- Shell owns a single Run Inspector.
+- The browser owns Run Workspace paths: `/w/:id/runs`, `/w/:id/runs/:runId`, and review at `/w/:id/runs/:runId/review`.
 - Resource-keyed command state (`run:…:cancel`, `gate:…:resolve`, `node:…:retry`).
-- Composer: idle → prompt; running → steer/follow_up queue semantics.
+- There is no browser-facing Operator Session, session route, or Session SSE adapter.
 
-### 9. Economy and light path
+### 8. Light path
 
 - Default: `planScoutCount=0`, `reviewCouncilSize=1`; adaptive raise from inventory/uncertainty only.
 - Single-leaf domains edge leaf → write.root (no forced domain reducer).
-- Attempt metrics + run economy helpers (overlap, unique defect yield, receipt bytes).
 - Shared sealed source mount via hardlink-first (copy fallback).
 
 ## Consequences

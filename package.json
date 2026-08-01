@@ -11,7 +11,7 @@
     "build": "pnpm -r run build",
     "build:libs": "tsc -b tsconfig.libs.json --pretty false",
     "dev:libs": "tsc -b tsconfig.libs.json --watch --preserveWatchOutput --pretty false",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r --sort --workspace-concurrency=1 run test",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

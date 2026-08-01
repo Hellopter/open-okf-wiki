@@ -105,53 +105,71 @@ export const ProviderConfigSchema = z.object({
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
 /** Safe public view of one model (no raw secrets). Outbound HTTP DTO only. */
-export type ModelProfilePublic = {
-  id: string;
-  name: string;
-  providerKind: ProviderKind;
-  providerId?: string;
-  providerName?: string;
-  modelId: string;
-  baseUrl: string;
-  apiKeySet: boolean;
-  apiKeyMasked: string | null;
-  apiShape: ProviderApiShape;
-  maxContextTokens?: number;
-  headers?: Record<string, string>;
-  supportsDeveloperRole?: boolean;
-};
+export const ModelProfilePublicSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    providerKind: ProviderKindSchema,
+    providerId: z.string().trim().min(1).optional(),
+    providerName: z.string().trim().min(1).optional(),
+    modelId: z.string().trim().min(1),
+    baseUrl: z.string(),
+    apiKeySet: z.boolean(),
+    apiKeyMasked: z.string().nullable(),
+    apiShape: ProviderApiShapeSchema,
+    maxContextTokens: z.number().int().positive().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    supportsDeveloperRole: z.boolean().optional(),
+  })
+  .strict();
+
+export type ModelProfilePublic = z.infer<typeof ModelProfilePublicSchema>;
 
 /** Safe public view of one provider endpoint. Outbound HTTP DTO only. */
-export type ProviderEntryPublic = {
-  id: string;
-  name: string;
-  kind: ProviderKind;
-  baseUrl: string;
-  apiKeySet: boolean;
-  apiKeyMasked: string | null;
-  apiShape: ProviderApiShape;
-  headers?: Record<string, string>;
-  supportsDeveloperRole: boolean;
-  models: Array<{
-    id: string;
-    name: string;
-    modelId: string;
-    maxContextTokens?: number;
-    headers?: Record<string, string>;
-  }>;
-};
+export const ProviderEntryPublicSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    kind: ProviderKindSchema,
+    baseUrl: z.string(),
+    apiKeySet: z.boolean(),
+    apiKeyMasked: z.string().nullable(),
+    apiShape: ProviderApiShapeSchema,
+    headers: z.record(z.string(), z.string()).optional(),
+    supportsDeveloperRole: z.boolean(),
+    models: z.array(
+      z
+        .object({
+          id: z.string().trim().min(1),
+          name: z.string().trim().min(1),
+          modelId: z.string().trim().min(1),
+          maxContextTokens: z.number().int().positive().optional(),
+          headers: z.record(z.string(), z.string()).optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+export type ProviderEntryPublic = z.infer<typeof ProviderEntryPublicSchema>;
 
 /** Safe public catalog for operator UI. Outbound HTTP DTO only. */
-export type ProviderPublic = {
-  version: 3;
-  models: ModelProfilePublic[];
-  providers: ProviderEntryPublic[];
-  defaultModelProfileId?: string;
-  envFallback: {
-    openaiBaseUrlSet: boolean;
-    openaiApiKeySet: boolean;
-  };
-};
+export const ProviderPublicSchema = z
+  .object({
+    version: z.literal(3),
+    models: z.array(ModelProfilePublicSchema),
+    providers: z.array(ProviderEntryPublicSchema),
+    defaultModelProfileId: z.string().trim().min(1).optional(),
+    envFallback: z
+      .object({
+        openaiBaseUrlSet: z.boolean(),
+        openaiApiKeySet: z.boolean(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export type ProviderPublic = z.infer<typeof ProviderPublicSchema>;
 
 /**
  * Create / update a catalog model (may include provider connection fields).
@@ -198,10 +216,14 @@ export const ProviderEntryWriteSchema = z.object({
 export type ProviderEntryWrite = z.infer<typeof ProviderEntryWriteSchema>;
 
 /** Outbound provider probe result — typed only. */
-export type ProviderTestResult = {
-  ok: boolean;
-  apiShape: ProviderApiShape;
-  status?: number;
-  message: string;
-  latencyMs?: number;
-};
+export const ProviderTestResultSchema = z
+  .object({
+    ok: z.boolean(),
+    apiShape: ProviderApiShapeSchema,
+    status: z.number().int().optional(),
+    message: z.string(),
+    latencyMs: z.number().nonnegative().optional(),
+  })
+  .strict();
+
+export type ProviderTestResult = z.infer<typeof ProviderTestResultSchema>;

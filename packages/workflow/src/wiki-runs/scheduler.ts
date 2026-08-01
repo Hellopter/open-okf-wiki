@@ -91,8 +91,6 @@ export type SchedulerHost = WikiRunsCasCtx & {
   ): void;
   trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
   attemptInputDigest(attemptId: string): string;
-  /** Apply queued guidance before a fresh claim observes its input envelope. */
-  applyPendingGuidance?(): void;
   /**
    * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
    * Used by auto mechanical repair to re-arm validate.* + downstream after scheduling repair.N.
@@ -130,7 +128,6 @@ export async function runScheduler(host: SchedulerHost): Promise<void> {
     // Fill free concurrency slots while ready work remains.
     while (!host.closed) {
       const claim = host.transaction(() => {
-        host.applyPendingGuidance?.();
         return claimReadyNode(host);
       });
       if (!claim) break;
@@ -864,19 +861,6 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
     claim.nodeGeneration,
     kind,
   );
-  const revisions = asRows(
-    host.db
-      .prepare(
-        `SELECT revision_id, kind, content FROM run_revisions
-         WHERE run_id = ? AND applied_at IS NOT NULL
-         ORDER BY created_at, revision_id`,
-      )
-      .all(claim.runId),
-  ).map((row) => ({
-    revisionId: requiredText(row, "revision_id"),
-    kind: requiredText(row, "kind") as "guidance" | "scope_change",
-    content: requiredText(row, "content"),
-  }));
   return {
     runId: claim.runId,
     attemptId: claim.attemptId,
@@ -888,7 +872,6 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
       ...(detail ? { detail } : {}),
     },
     inputDigest: host.attemptInputDigest(claim.attemptId),
-    revisions,
     workspace: host.workspace,
     sealedInputs,
     attemptDir,

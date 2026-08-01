@@ -19,12 +19,11 @@ export function migrate(db: DatabaseSync): void {
   const existingRuns = asRow(
     db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'").get(),
   );
-  // This is an intentional hard cut. An old v3 store is not partly migrated,
-  // even when it happens to be empty: its table layout cannot attest to v4
-  // revision/epoch semantics.
-  if (existingRuns?.sql != null && !String(existingRuns.sql).includes("definition_version = 4")) {
+  // This is an intentional hard cut. Older stores are not partly migrated,
+  // even when empty: their revision/epoch layout cannot attest to v5 semantics.
+  if (existingRuns?.sql != null && !String(existingRuns.sql).includes("definition_version = 5")) {
     throw new Error(
-      "unsupported WikiRuns v3 control store; clear the control store before opening v4",
+      "unsupported WikiRuns control store; clear the control store before opening v5",
     );
   }
   db.exec(`
@@ -43,7 +42,7 @@ export function migrate(db: DatabaseSync): void {
       run_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       operator_session_id TEXT,
-      definition_version INTEGER NOT NULL CHECK (definition_version = 4),
+      definition_version INTEGER NOT NULL CHECK (definition_version = 5),
       revision INTEGER NOT NULL,
       state TEXT NOT NULL,
       cancel_requested INTEGER NOT NULL,
@@ -209,24 +208,14 @@ export function migrate(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS run_revisions (
       revision_id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL REFERENCES runs(run_id),
-      kind TEXT NOT NULL CHECK (kind IN ('guidance', 'scope_change')),
+      kind TEXT NOT NULL CHECK (kind = 'scope_change'),
       content TEXT NOT NULL,
       command_id TEXT NOT NULL,
       actor_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      applied_at TEXT,
-      epoch_id TEXT
+      applied_at TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS idx_run_revisions_run ON run_revisions(run_id, created_at);
-    CREATE TABLE IF NOT EXISTS execution_epochs (
-      epoch_id TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL REFERENCES runs(run_id),
-      ordinal INTEGER NOT NULL,
-      scope_revision_id TEXT REFERENCES run_revisions(revision_id),
-      state TEXT NOT NULL CHECK (state IN ('active', 'superseded', 'completed')),
-      created_at TEXT NOT NULL,
-      UNIQUE(run_id, ordinal)
-    ) STRICT;
     CREATE TABLE IF NOT EXISTS review_threads (
       thread_id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -264,19 +253,19 @@ export function migrate(db: DatabaseSync): void {
   );
   if (!runColumns.includes("definition_version")) {
     throw new Error(
-      "unsupported WikiRuns v3 control store; clear the control store before opening v4",
+      "unsupported WikiRuns control store; clear the control store before opening v5",
     );
   }
   const unsupportedRun = asRow(
     db
       .prepare(
-        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 4 LIMIT 1",
+        "SELECT run_id FROM runs WHERE definition_version IS NULL OR definition_version <> 5 LIMIT 1",
       )
       .get(),
   );
   if (unsupportedRun) {
     throw new Error(
-      `unsupported WikiRuns definition version for run ${requiredText(unsupportedRun, "run_id")}; clear the control store before opening v4`,
+      `unsupported WikiRuns definition version for run ${requiredText(unsupportedRun, "run_id")}; clear the control store before opening v5`,
     );
   }
   if (!runColumns.includes("frozen_sources_json")) {

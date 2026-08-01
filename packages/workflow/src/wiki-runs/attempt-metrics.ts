@@ -9,45 +9,7 @@ import {
   AttemptMetricsSchema,
   type WikiRunNodeKind,
 } from "@okf-wiki/contract";
-import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
-
-/** Run states that still hold control-plane work (must cancel before hard-cut upgrade). */
-export const NON_TERMINAL_RUN_STATES = [
-  "queued",
-  "running",
-  "waiting_for_operator",
-  "cancelling",
-] as const;
-
-export type NonTerminalRunRow = {
-  runId: string;
-  state: (typeof NON_TERMINAL_RUN_STATES)[number];
-  updatedAt: string;
-  revision: number;
-};
-
-/**
- * List runs that are not yet terminal. Operators must cancel these before a
- * schema-breaking WikiRuns upgrade (no dual executor / no in-flight v1 migration).
- */
-export function listNonTerminalRuns(db: DatabaseSync): NonTerminalRunRow[] {
-  const placeholders = NON_TERMINAL_RUN_STATES.map(() => "?").join(", ");
-  const rows = asRows(
-    db
-      .prepare(
-        `SELECT run_id, state, updated_at, revision FROM runs
-         WHERE state IN (${placeholders})
-         ORDER BY updated_at DESC, run_id DESC`,
-      )
-      .all(...NON_TERMINAL_RUN_STATES),
-  );
-  return rows.map((row) => ({
-    runId: requiredText(row, "run_id"),
-    state: requiredText(row, "state") as NonTerminalRunRow["state"],
-    updatedAt: requiredText(row, "updated_at"),
-    revision: requiredNumber(row, "revision"),
-  }));
-}
+import { asRow, requiredText } from "./sql.js";
 
 /** Map durable node kind → short graph role for metrics / cost attribution. */
 export function graphRoleForNodeKind(kind: string): string {

@@ -34,6 +34,17 @@ export class ApiError extends Error {
   }
 }
 
+/** Test a structured error code returned by an API adapter without parsing text. */
+export function hasApiErrorCode(error: unknown, code: string): boolean {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") return false;
+  const details = (error.body as Record<string, unknown>).details;
+  return (
+    details !== null &&
+    typeof details === "object" &&
+    (details as Record<string, unknown>).code === code
+  );
+}
+
 export function messageFromErrorBody(body: unknown, fallback: string): string {
   if (body && typeof body === "object") {
     const record = body as Record<string, unknown>;
@@ -55,7 +66,11 @@ export function messageFromErrorBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * Read JSON at the transport boundary. API modules must decode this `unknown`
+ * with their endpoint schema before exposing it to React.
+ */
+export async function request(path: string, init?: RequestInit): Promise<unknown> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -91,7 +106,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
-  return body as T;
+  return body;
 }
 
 export function getApiBase(): string {

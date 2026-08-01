@@ -14,14 +14,14 @@ Vite + React operator UI for OKF Wiki. It talks to `@okf-wiki/server` over local
 
 ## Operator surface
 
-The Agent Workspace (`/w/:id`) is the only operate surface. Sources, Published Wiki, and Workspace settings remain supporting read/configuration pages; there is no independent Run page or Run command UI beyond the in-transcript Run inspector.
+The Run Workspace (`/w/:id/runs`) is the operator surface. Sources, Published Wiki, and Workspace settings remain supporting read/configuration pages. Runs start from this workspace and open their own durable detail and review views.
 
 The workspace uses two projection paths:
 
-1. **Operator Session SSE** — current server snapshot, then genuine parent Pi `AgentSession` events for the transcript.
-2. **WikiRuns SSE** (`useWikiRun`) — after `wiki_produce` returns `accepted+runId`, the tool card and Run inspector subscribe to `GET …/runs/:runId` + EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect; heartbeats ignored). Full snapshots replace projection by event id.
+1. **WikiRuns index SSE** — `RunWorkspacePage` loads `GET …/runs/index` then subscribes to EventSource `…/runs/index/events`.
+2. **WikiRuns detail SSE** — a Run detail view loads `GET …/runs/:runId` then subscribes to EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect; heartbeats ignored). Full snapshots replace projection by event id.
 
-Plan/publication gates and failed-node retry/rerun dispatch durable WikiRuns commands (`ResolveGate`, `RetryFailedNode`, `RerunNode`). Do **not** use Session-owned gate resume.
+Plan/publication gates and failed-node retry/rerun dispatch durable WikiRuns commands (`ResolveGate`, `RetryFailedNode`, `RerunNode`). There is no Agent Session HTTP or browser route surface.
 
 UI primitives live under `src/components/ui/` (shadcn/Base UI). Workspace pages reuse `WorkspaceShell` and `WorkspaceSubnav`; destructive actions use `ConfirmDialog`, and toasts use `sonner`.
 

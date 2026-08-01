@@ -1,4 +1,4 @@
-import { DEFAULT_OPERATOR_TOOLS, type OperatorToolName } from "@okf-wiki/contract";
+import { DEFAULT_ORCHESTRATION } from "@okf-wiki/contract";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -67,17 +67,18 @@ export function WorkspaceSettingsPage({
   const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
   const [maxActiveRuns, setMaxActiveRuns] = useState("2");
   const [maxConcurrentAttempts, setMaxConcurrentAttempts] = useState("4");
-  const [planScoutCount, setPlanScoutCount] = useState("2");
-  const [reviewCouncilSize, setReviewCouncilSize] = useState("3");
+  const [planScoutCount, setPlanScoutCount] = useState(
+    String(DEFAULT_ORCHESTRATION.planScoutCount),
+  );
+  const [reviewCouncilSize, setReviewCouncilSize] = useState(
+    String(DEFAULT_ORCHESTRATION.reviewCouncilSize),
+  );
   const [reviewConcurrency, setReviewConcurrency] = useState("");
   const [domainConcurrency, setDomainConcurrency] = useState("2");
   const [leafConcurrency, setLeafConcurrency] = useState("2");
   const [plannerProfileId, setPlannerProfileId] = useState("");
   const [workerProfileId, setWorkerProfileId] = useState("");
   const [writerProfileId, setWriterProfileId] = useState("");
-  const [operatorTools, setOperatorTools] = useState<OperatorToolName[]>([
-    ...DEFAULT_OPERATOR_TOOLS,
-  ]);
   const [skill, setSkill] = useState<SkillInfo | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [skillFilePath, setSkillFilePath] = useState("SKILL.md");
@@ -106,8 +107,12 @@ export function WorkspaceSettingsPage({
       setMaxLeafFanOut(String(ws.orchestration?.maxLeafFanOut ?? 6));
       setMaxActiveRuns(String(ws.orchestration.maxActiveRuns));
       setMaxConcurrentAttempts(String(ws.orchestration.maxConcurrentAttempts));
-      setPlanScoutCount(String(ws.orchestration?.planScoutCount ?? 2));
-      setReviewCouncilSize(String(ws.orchestration?.reviewCouncilSize ?? 3));
+      setPlanScoutCount(
+        String(ws.orchestration?.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount),
+      );
+      setReviewCouncilSize(
+        String(ws.orchestration?.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize),
+      );
       setReviewConcurrency(
         ws.orchestration?.reviewConcurrency !== undefined
           ? String(ws.orchestration.reviewConcurrency)
@@ -118,7 +123,6 @@ export function WorkspaceSettingsPage({
       setPlannerProfileId(ws.roleModels?.planner?.profileId ?? "");
       setWorkerProfileId(ws.roleModels?.worker?.profileId ?? "");
       setWriterProfileId(ws.roleModels?.writer?.profileId ?? "");
-      setOperatorTools([...(ws.operatorTools ?? DEFAULT_OPERATOR_TOOLS)] as OperatorToolName[]);
 
       // Prefer profileId; else match denormalized model id; else keep empty.
       if (ws.model.profileId && catalog.some((m) => m.id === ws.model.profileId)) {
@@ -284,7 +288,10 @@ export function WorkspaceSettingsPage({
         ...(profileToRef(writerProfileId) ? { writer: profileToRef(writerProfileId) } : {}),
         reviewers: workspace?.roleModels?.reviewers ?? [],
       };
-      const council = Math.min(4, Math.max(1, Number(reviewCouncilSize) || 3));
+      const council = Math.min(
+        4,
+        Math.max(1, Number(reviewCouncilSize) || DEFAULT_ORCHESTRATION.reviewCouncilSize),
+      );
       const reviewConcRaw = reviewConcurrency.trim();
       const reviewConc = reviewConcRaw
         ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
@@ -309,7 +316,6 @@ export function WorkspaceSettingsPage({
         limits: nextLimits,
         roleModels,
         orchestration,
-        operatorTools,
       });
       skipWorkspaceReloadRef.current = result.workspace.id;
       applyWorkspace(result.workspace, models);
@@ -408,8 +414,6 @@ export function WorkspaceSettingsPage({
               setWorkerProfileId={setWorkerProfileId}
               writerProfileId={writerProfileId}
               setWriterProfileId={setWriterProfileId}
-              operatorTools={operatorTools}
-              setOperatorTools={setOperatorTools}
             />
           ) : null}
           {section === "skill" ? (

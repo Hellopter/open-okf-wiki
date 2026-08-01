@@ -415,9 +415,9 @@ export function WorkspaceWikiPage() {
               <Link
                 to={operateHref(id)}
                 className={cn(buttonVariants())}
-                data-testid="wiki-open-agent"
+                data-testid="wiki-open-runs"
               >
-                {t.wiki.goToAgent}
+                {t.wiki.goToRuns}
               </Link>
             </EmptyContent>
           </Empty>

@@ -16,7 +16,6 @@ import {
 } from "./__tests__/harness.js";
 import {
   graphRoleForNodeKind,
-  listNonTerminalRuns,
   mergeAttemptMetrics,
   projectAttemptMetrics,
   writeAttemptMetrics,
@@ -38,7 +37,7 @@ function attemptColumnNames(db: DatabaseSync): string[] {
   );
 }
 
-test("migrate adds attempt metric columns on a fresh v4 control store", () => {
+test("migrate adds attempt metric columns on a fresh v5 control store", () => {
   const fresh = openMigratedDb();
   const freshCols = attemptColumnNames(fresh);
   for (const col of [
@@ -59,7 +58,7 @@ test("migrate adds attempt metric columns on a fresh v4 control store", () => {
   }
   fresh.close();
 
-  // v3 stores are deliberately not migrated by the v4 hard cut.
+  // Older stores are deliberately not migrated by the v5 hard cut.
   const legacy = new DatabaseSync(":memory:");
   configureOwner(legacy);
   legacy.exec(`
@@ -93,7 +92,7 @@ test("migrate adds attempt metric columns on a fresh v4 control store", () => {
       ended_at TEXT
     ) STRICT;
   `);
-  assert.throws(() => migrate(legacy), /unsupported WikiRuns v3 control store/);
+  assert.throws(() => migrate(legacy), /unsupported WikiRuns control store/);
   legacy.close();
 });
 
@@ -102,7 +101,7 @@ test("migrate rejects persisted runs with no definition version", () => {
   configureOwner(legacy);
   legacy.exec("CREATE TABLE runs (run_id TEXT PRIMARY KEY) STRICT");
   legacy.prepare("INSERT INTO runs (run_id) VALUES ('old-run')").run();
-  assert.throws(() => migrate(legacy), /unsupported WikiRuns v3 control store/);
+  assert.throws(() => migrate(legacy), /unsupported WikiRuns control store/);
   legacy.close();
 });
 
@@ -114,12 +113,8 @@ test("writeAttemptMetrics + snapshot project metrics when set", () => {
     `INSERT INTO runs (
       run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
       freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
-    ) VALUES (?, ?, NULL, 4, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+    ) VALUES (?, ?, NULL, 5, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
   ).run("run-1", "ws-1", digest, ts, ts);
-  db.prepare(
-    `INSERT INTO execution_epochs (epoch_id, run_id, ordinal, scope_revision_id, state, created_at)
-     VALUES ('epoch-1', 'run-1', 1, NULL, 'active', ?)`,
-  ).run(ts);
   db.prepare(
     `INSERT INTO nodes (
       run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
@@ -164,29 +159,6 @@ test("writeAttemptMetrics + snapshot project metrics when set", () => {
   assert.equal(attempt.metrics.role, "plan");
   assert.equal(attempt.metrics.wallTimeMs, 1500);
   assert.equal(attempt.metrics.inputTokens, 11);
-  db.close();
-});
-
-test("listNonTerminalRuns returns only non-terminal states", () => {
-  const db = openMigratedDb();
-  const ts = "2026-07-30T12:00:00.000Z";
-  const digest = "b".repeat(64);
-  const insert = db.prepare(
-    `INSERT INTO runs (
-      run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
-      freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
-    ) VALUES (?, 'ws', NULL, 4, 1, ?, 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
-  );
-  insert.run("run-running", "running", digest, ts, ts);
-  insert.run("run-queued", "queued", digest, ts, ts);
-  insert.run("run-done", "published", digest, ts, ts);
-  insert.run("run-failed", "failed", digest, ts, ts);
-  insert.run("run-wait", "waiting_for_operator", digest, ts, ts);
-
-  const open = listNonTerminalRuns(db)
-    .map((r) => r.runId)
-    .sort();
-  assert.deepEqual(open, ["run-queued", "run-running", "run-wait"]);
   db.close();
 });
 

@@ -22,7 +22,7 @@ import {
 import { pauseRun, resumeRun, submitRunRevision } from "./run-revision-coordinator.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
-import { CommandIdCollision } from "./types.js";
+import { CommandIdCollision, WikiRunsRequestError } from "./types.js";
 
 /**
  * Command application always runs under the owner's outer BEGIN IMMEDIATE
@@ -89,9 +89,9 @@ export function applyCommand(
     const run = asRow(
       host.db.prepare("SELECT revision FROM runs WHERE run_id = ?").get(command.runId),
     );
-    if (!run) throw new Error(`run not found: ${command.runId}`);
+    if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${command.runId}`);
     if (requiredNumber(run, "revision") !== command.expectedRevision) {
-      throw new Error("stale control revision");
+      throw new WikiRunsRequestError("stale_revision", "stale control revision");
     }
   }
 
@@ -118,7 +118,8 @@ export function applyCommand(
   if (command.type === "resolve_gate") return host.resolveGate(command, context, payloadDigest);
   if (command.type === "cancel_run") return cancelRun(host, command, context, payloadDigest);
   if (command.type !== "start_run") {
-    throw new Error(
+    throw new WikiRunsRequestError(
+      "invalid_request",
       `unknown WikiRuns command type: ${String((command as { type?: unknown }).type)}`,
     );
   }
@@ -135,7 +136,7 @@ export function applyCommand(
           freeze_config_json, freeze_config_digest, intent_json,
           frozen_sources_json, frozen_skill_digest,
           pinned_sources_json, skill_digest, pinned_digest, created_at, updated_at
-        ) VALUES (?, ?, ?, 4, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, 5, 0, 'queued', 0, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       runId,
@@ -154,12 +155,6 @@ export function applyCommand(
         ) VALUES (?, 'freeze', 'freeze', 'ready', 0, NULL, NULL, NULL)`,
     )
     .run(runId);
-  host.db
-    .prepare(
-      `INSERT INTO execution_epochs (epoch_id, run_id, ordinal, scope_revision_id, state, created_at)
-       VALUES (?, ?, 1, NULL, 'active', ?)`,
-    )
-    .run(randomUUID(), runId, timestamp);
   const revision = host.emit(runId, "run.started");
   host.db
     .prepare(
@@ -187,7 +182,10 @@ export function retryFailedNode(
 ): RunCommandReceipt {
   const currentGeneration = host.currentNodeGeneration(command.runId, command.nodeKey);
   if (currentGeneration === undefined || currentGeneration !== command.generation) {
-    throw new Error("retry target is stale: generation is not current");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "retry target is stale: generation is not current",
+    );
   }
   const node = asRow(
     host.db
@@ -206,16 +204,27 @@ export function retryFailedNode(
     requiredText(node, "state") !== "failed" ||
     !["failed", "interrupted"].includes(requiredText(node, "attempt_state"))
   ) {
-    throw new Error("retry target is stale or not a failed attempt");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "retry target is stale or not a failed attempt",
+    );
   }
   const runState = requiredText(node, "run_state");
   if (runState === "published")
-    throw new Error("cannot retry a node on a published run; start a new run");
-  if (runState === "cancelled") throw new Error("cannot retry a node on a cancelled run");
+    throw new WikiRunsRequestError(
+      "conflict",
+      "cannot retry a node on a published run; start a new run",
+    );
+  if (runState === "cancelled") {
+    throw new WikiRunsRequestError("conflict", "cannot retry a node on a cancelled run");
+  }
   // A pre-pin freeze has only live selectors, not immutable inputs. Retrying it
   // under the old digest would falsely claim reproducibility.
   if (command.nodeKey === "freeze" && node.pinned_digest === null)
-    throw new Error("cannot retry a freeze before its inputs are pinned; start a new run");
+    throw new WikiRunsRequestError(
+      "conflict",
+      "cannot retry a freeze before its inputs are pinned; start a new run",
+    );
   // If any downstream Attempt already bound this generation's outputs, same-input
   // retry is no longer valid — operator must RerunNode (generation++ + invalidation).
   const consumers = lineageInvalidationClosure(
@@ -225,7 +234,8 @@ export function retryFailedNode(
     command.generation,
   );
   if (consumers.length > 0) {
-    throw new Error(
+    throw new WikiRunsRequestError(
+      "conflict",
       "downstream already consumed this node's outputs; use RerunNode instead of RetryFailedNode",
     );
   }
@@ -235,7 +245,10 @@ export function retryFailedNode(
     const priorDigest = requiredText(node, "input_digest");
     const liveDigest = liveInputDigest(host, command.runId, command.nodeKey);
     if (liveDigest !== priorDigest) {
-      throw new Error("retry inputs are stale: sealed upstream lineage changed; use RerunNode");
+      throw new WikiRunsRequestError(
+        "stale_revision",
+        "retry inputs are stale: sealed upstream lineage changed; use RerunNode",
+      );
     }
   }
   requeueFailedNode(host, command.runId, command.nodeKey, command.generation, command.attemptId);
@@ -281,14 +294,14 @@ export function cancelRun(
   const run = asRow(
     host.db.prepare("SELECT cancel_requested, state FROM runs WHERE run_id = ?").get(command.runId),
   );
-  if (!run) throw new Error(`run not found: ${command.runId}`);
+  if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${command.runId}`);
   const state = requiredText(run, "state");
   if (
     !["queued", "running", "waiting_for_operator", "pausing", "paused", "cancelling"].includes(
       state,
     )
   )
-    throw new Error(`cannot cancel run in terminal state: ${state}`);
+    throw new WikiRunsRequestError("conflict", `cannot cancel run in terminal state: ${state}`);
   const timestamp = now();
   const result = applyRunCancelTransitions(host, {
     runId: command.runId,
@@ -312,14 +325,19 @@ export function rerunNode(
   const run = asRow(
     host.db.prepare("SELECT cancel_requested, state FROM runs WHERE run_id = ?").get(command.runId),
   );
-  if (!run) throw new Error(`run not found: ${command.runId}`);
+  if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${command.runId}`);
   if (requiredNumber(run, "cancel_requested") === 1)
-    throw new Error("cannot rerun a node on a cancelled run");
+    throw new WikiRunsRequestError("conflict", "cannot rerun a node on a cancelled run");
   const runState = requiredText(run, "state");
-  if (runState === "published") throw new Error("cannot rerun a published run; start a new run");
-  if (runState === "cancelled") throw new Error("cannot rerun a node on a cancelled run");
+  if (runState === "published") {
+    throw new WikiRunsRequestError("conflict", "cannot rerun a published run; start a new run");
+  }
+  if (runState === "cancelled") {
+    throw new WikiRunsRequestError("conflict", "cannot rerun a node on a cancelled run");
+  }
   if (isRepairNodeKey(command.nodeKey)) {
-    throw new Error(
+    throw new WikiRunsRequestError(
+      "conflict",
       "cannot rerun a repair node; retry a failed repair or schedule a new repair through evaluation",
     );
   }
@@ -327,13 +345,15 @@ export function rerunNode(
     const policy = loadEvaluationPolicy(host, command.runId);
     const candidates = countModelWikiCandidates(host, command.runId);
     if (candidates >= policy.maxCandidates) {
-      throw new Error(
+      throw new WikiRunsRequestError(
+        "conflict",
         `cannot rerun write.root: wiki candidate cap reached (${candidates}/${policy.maxCandidates})`,
       );
     }
   }
   if (command.nodeKey === "plan" && hasMaterializedExecutionTopology(host, command.runId)) {
-    throw new Error(
+    throw new WikiRunsRequestError(
+      "conflict",
       "cannot rerun plan after execution topology is materialized; start a new run instead",
     );
   }
@@ -402,10 +422,18 @@ export function applyRerunAt(
   opts?: ApplyRerunAtOptions,
 ): void {
   const current = host.currentNodeRow(runId, nodeKey);
-  if (!current) throw new Error(`node not found: ${nodeKey}`);
+  if (!current) {
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      `rerun target is stale: node not found: ${nodeKey}`,
+    );
+  }
   const liveGeneration = requiredNumber(current, "generation");
   if (liveGeneration !== generation)
-    throw new Error("rerun target is stale: generation does not match");
+    throw new WikiRunsRequestError(
+      "stale_revision",
+      "rerun target is stale: generation does not match",
+    );
 
   const timestamp = now();
   const affected = opts?.selfOnly
@@ -440,7 +468,11 @@ export function applyRerunAt(
         )
         .get(runId, target.nodeKey, nextGeneration),
     );
-    if (existingNext) throw new Error("rerun target is stale: newer generation already exists");
+    if (existingNext)
+      throw new WikiRunsRequestError(
+        "stale_revision",
+        "rerun target is stale: newer generation already exists",
+      );
 
     // Copy prior generation detail so definition question/lens/… survive gen bumps.
     // Root target: merge optional operator feedback into that detail (do not replace).

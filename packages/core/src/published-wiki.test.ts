@@ -10,7 +10,6 @@ import {
   readPublishedWikiPage,
   resolvePublishedWikiPath,
 } from "./published-wiki.js";
-import { parseWikiFrontmatter } from "./wiki-tree.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -24,15 +23,6 @@ async function writeMd(root: string, rel: string, body: string): Promise<void> {
 
 const page = (title: string, body = "Hello.", type = "Concept") =>
   `---\ntype: ${type}\ntitle: ${title}\n---\n\n# ${title}\n\n${body}\n`;
-
-test("parseWikiFrontmatter reads plain and quoted titles", () => {
-  assert.equal(parseWikiFrontmatter("---\ntitle: Hello\n---\n\n# H\n")?.values.title, "Hello");
-  assert.equal(
-    parseWikiFrontmatter('---\ntitle: "Quoted Title"\n---\n\nx\n')?.values.title,
-    "Quoted Title",
-  );
-  assert.equal(parseWikiFrontmatter("# No frontmatter\n"), null);
-});
 
 test("listPublishedWikiPages returns sorted posix relative paths", async () => {
   const root = await tempDir("okf-pubwiki-list-");

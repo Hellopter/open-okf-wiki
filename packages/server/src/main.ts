@@ -2,10 +2,6 @@
  * OKF Wiki localhost server entry.
  */
 import { createServer } from "node:http";
-import {
-  disposeAllLiveSessions,
-  sweepIdleLiveSessions,
-} from "./agent-session/live-session-registry.ts";
 import { dispatch } from "./dispatch.ts";
 import { allowLan, assertBindPolicy, host, port } from "./server-config.ts";
 import { closeWikiRuns } from "./wiki-runs-registry.ts";
@@ -38,23 +34,13 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
-// Idle live-session TTL is otherwise only swept opportunistically on registry
-// calls; a quiescent server would retain idle Pi handles forever.
-const idleSweep = setInterval(() => {
-  sweepIdleLiveSessions();
-}, 60_000);
-idleSweep.unref();
-
-// Graceful shutdown: dispose live Pi handles (flush session state) and stop
-// accepting connections before exiting.
+// Graceful shutdown: stop accepting connections before exiting.
 let shuttingDown = false;
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   process.stdout.write(`received ${signal}, shutting down…\n`);
-  clearInterval(idleSweep);
   server.close();
-  disposeAllLiveSessions();
   // SSE keep-alive sockets would otherwise hold the process open.
   server.closeAllConnections?.();
   await closeWikiRuns();

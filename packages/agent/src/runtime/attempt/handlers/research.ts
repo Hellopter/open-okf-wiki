@@ -207,7 +207,6 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
     summary: result.summary || `Leaf research for: ${question}`,
   });
   const receiptPath = await writeAnalysisJson(layout, `${input.node.key}.json`, receipt);
-  const receiptBytes = Buffer.byteLength(JSON.stringify(receipt), "utf8");
 
   const transcript = await sealTranscript(input, {
     task: leafTask,
@@ -223,16 +222,7 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(result.summary),
-    // Phase 7: receipt size for economy dashboards (AttemptMetrics.extra).
-    metrics: {
-      role: "leaf",
-      extra: {
-        receiptBytes,
-        sourceReadPaths: evidenceFromSummary(result.summary || "").map(
-          (e) => `${e.repositoryId}:${e.path}`,
-        ),
-      },
-    },
+    metrics: { role: "leaf" },
   });
 }
 
@@ -333,7 +323,6 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
     childReceipts: childIds,
   });
   const receiptPath = await writeAnalysisJson(layout, `${input.node.key}.json`, receipt);
-  const receiptBytes = Buffer.byteLength(JSON.stringify(receipt), "utf8");
 
   const transcript = await sealTranscript(input, {
     task: domainTask,
@@ -354,12 +343,6 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(result.summary || summary),
-    metrics: {
-      role: "domain",
-      extra: {
-        receiptBytes,
-        sourceReadPaths: evidenceFromSummary(summary).map((e) => `${e.repositoryId}:${e.path}`),
-      },
-    },
+    metrics: { role: "domain" },
   });
 }

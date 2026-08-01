@@ -18,7 +18,6 @@ import {
 
 test("independent research.leaf nodes run concurrently under domainConcurrency", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
-  t.after(() => removeWorkspace(root));
 
   // domainConcurrency=2, leafConcurrency=2 → leaf pool = 2 * min(2, maxLeafFanOut) = 4 slots.
   const workspace = await loadWorkspace(root);
@@ -114,7 +113,10 @@ test("independent research.leaf nodes run concurrently under domainConcurrency",
       return fullGraphFixtureExecutor(input, signal);
     },
   });
-  t.after(() => runs.close());
+  t.after(async () => {
+    await runs.close();
+    await removeWorkspace(root);
+  });
 
   const receipt = await runs.dispatch(
     { type: "start_run", commandId: "start-parallel-leaves", intent: { mode: "generate" } },

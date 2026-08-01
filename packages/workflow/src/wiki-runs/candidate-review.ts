@@ -24,6 +24,7 @@ import type { CommandsHost } from "./commands.js";
 import { digest, now } from "./crypto-util.js";
 import { scheduleRepair } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
+import { WikiRunsRequestError } from "./types.js";
 
 type CandidateRecord = {
   artifactId: string;
@@ -50,7 +51,7 @@ function assertPagePath(pagePath: string): string {
     value.includes("\\") ||
     value.split("/").some((part) => part === "" || part === "." || part === "..")
   ) {
-    throw new Error("candidate page path is invalid");
+    throw new WikiRunsRequestError("invalid_request", "candidate page path is invalid");
   }
   return value;
 }
@@ -72,7 +73,7 @@ function candidateForDigest(
       )
       .get(runId, digestValue),
   );
-  if (!row) throw new Error("candidate is unavailable");
+  if (!row) throw new WikiRunsRequestError("not_found", "candidate is unavailable");
   return {
     candidateId: requiredText(row, "candidate_id"),
     digest: requiredText(row, "digest"),
@@ -85,7 +86,7 @@ function candidateRoot(host: CommandsHost, runId: string, candidate: CandidateRe
   const runRoot = path.resolve(runWorkDir(host.workspace.rootPath, runId));
   const root = path.resolve(runRoot, candidate.relativePath);
   if (path.relative(runRoot, root).startsWith("..") || path.relative(runRoot, root) === "") {
-    throw new Error("candidate is unavailable");
+    throw new WikiRunsRequestError("not_found", "candidate is unavailable");
   }
   return root;
 }
@@ -99,9 +100,13 @@ function candidatePagePath(
   const root = candidateRoot(host, runId, candidate);
   const file = path.resolve(root, assertPagePath(pagePath));
   if (path.relative(root, file).startsWith("..") || path.relative(root, file) === "") {
-    throw new Error("candidate page path escapes its sealed tree");
+    throw new WikiRunsRequestError(
+      "invalid_request",
+      "candidate page path escapes its sealed tree",
+    );
   }
-  if (!existsSync(file)) throw new Error("candidate page is unavailable");
+  if (!existsSync(file))
+    throw new WikiRunsRequestError("not_found", "candidate page is unavailable");
   return file;
 }
 
@@ -134,20 +139,20 @@ function evidenceMapForCandidate(
       )
       .get(runId, candidate.digest),
   );
-  if (!row) throw new Error("candidate evidence map is unavailable");
+  if (!row) throw new WikiRunsRequestError("not_found", "candidate evidence map is unavailable");
   const runRoot = path.resolve(runWorkDir(host.workspace.rootPath, runId));
   const mapPath = path.resolve(runRoot, requiredText(row, "relative_path"), "evidence-map.json");
   if (path.relative(runRoot, mapPath).startsWith("..")) {
-    throw new Error("candidate evidence map is unavailable");
+    throw new WikiRunsRequestError("not_found", "candidate evidence map is unavailable");
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(mapPath, "utf8"));
   } catch {
-    throw new Error("candidate evidence map is unavailable");
+    throw new WikiRunsRequestError("not_found", "candidate evidence map is unavailable");
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("candidate evidence map is invalid");
+    throw new WikiRunsRequestError("conflict", "candidate evidence map is invalid");
   }
   const map = parsed as CandidateEvidenceMap;
   if (
@@ -156,7 +161,7 @@ function evidenceMapForCandidate(
     !Array.isArray(map.pages) ||
     digest(map) !== requiredText(row, "evidence_digest")
   ) {
-    throw new Error("candidate evidence map is invalid");
+    throw new WikiRunsRequestError("conflict", "candidate evidence map is invalid");
   }
   for (const page of map.pages) {
     if (
@@ -166,7 +171,7 @@ function evidenceMapForCandidate(
       !/^[a-f0-9]{64}$/.test(page.contentDigest) ||
       !Array.isArray(page.evidence)
     ) {
-      throw new Error("candidate evidence map is invalid");
+      throw new WikiRunsRequestError("conflict", "candidate evidence map is invalid");
     }
     assertPagePath(page.pagePath);
   }
@@ -181,10 +186,13 @@ function sealedPage(
 ): { content: string; evidence: CandidatePageRead["evidence"] } {
   const map = evidenceMapForCandidate(host, runId, candidate);
   const entry = map.pages.find((page) => page.pagePath === pagePath);
-  if (!entry) throw new Error("candidate page is unavailable");
+  if (!entry) throw new WikiRunsRequestError("not_found", "candidate page is unavailable");
   const content = readFileSync(candidatePagePath(host, runId, candidate, pagePath), "utf8");
   if (contentDigest(content) !== entry.contentDigest) {
-    throw new Error("candidate page no longer matches its sealed evidence map");
+    throw new WikiRunsRequestError(
+      "conflict",
+      "candidate page no longer matches its sealed evidence map",
+    );
   }
   return { content, evidence: entry.evidence };
 }
@@ -301,10 +309,13 @@ export class CandidateReview {
     });
     const lines = splitLines(page.content);
     if (command.anchor.endLine > lines.length)
-      throw new Error("review anchor is outside the candidate page");
+      throw new WikiRunsRequestError("conflict", "review anchor is outside the candidate page");
     const selected = lines.slice(command.anchor.startLine - 1, command.anchor.endLine).join("\n");
     if (selectedTextDigest(selected) !== command.anchor.selectedTextDigest) {
-      throw new Error("review anchor no longer matches the sealed candidate text");
+      throw new WikiRunsRequestError(
+        "conflict",
+        "review anchor no longer matches the sealed candidate text",
+      );
     }
     const timestamp = now();
     const threadId = randomUUID();
@@ -344,7 +355,8 @@ export class CandidateReview {
          WHERE thread_id = ? AND run_id = ? AND state = 'open'`,
       )
       .run(timestamp, command.threadId, command.runId) as { changes?: number };
-    if ((result.changes ?? 0) !== 1) throw new Error("review thread is stale or unavailable");
+    if ((result.changes ?? 0) !== 1)
+      throw new WikiRunsRequestError("conflict", "review thread is stale or unavailable");
     const revision = this.host.emit(command.runId, "review_thread.resolved");
     recordCommand(this.host, command.commandId, payloadDigest, context, command.runId, revision);
     return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
@@ -366,10 +378,10 @@ export class CandidateReview {
         .all(command.runId, ...command.threadIds),
     );
     if (rows.length !== command.threadIds.length)
-      throw new Error("repair request includes a stale review thread");
+      throw new WikiRunsRequestError("conflict", "repair request includes a stale review thread");
     const candidateDigest = requiredText(rows[0]!, "candidate_digest");
     if (rows.some((row) => requiredText(row, "candidate_digest") !== candidateDigest)) {
-      throw new Error("one repair request must target one candidate");
+      throw new WikiRunsRequestError("conflict", "one repair request must target one candidate");
     }
     const candidate = candidateForDigest(this.host, command.runId, candidateDigest);
     const pages = [...new Set(rows.map((row) => requiredText(row, "page_path")))];

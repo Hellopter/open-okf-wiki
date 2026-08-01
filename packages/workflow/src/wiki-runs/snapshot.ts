@@ -17,6 +17,7 @@ import {
 import { projectAttemptMetrics } from "./attempt-metrics.js";
 import { labelForNode, parentKeyForNode, parseNodeDetail } from "./node-label.js";
 import { asRow, asRows, parseJson, requiredNumber, requiredText } from "./sql.js";
+import { WikiRunsRequestError } from "./types.js";
 
 /** Parse the required StartRun intent from the durable run record. */
 function parseRunIntent(raw: unknown): RunIntent {
@@ -72,9 +73,9 @@ function pickParentFromEdges(
 /** Build a validated WikiRunSnapshot for one run from the control-plane DB. */
 export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot {
   const run = asRow(db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId));
-  if (!run) throw new Error(`run not found: ${runId}`);
+  if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${runId}`);
   const definitionVersion = requiredNumber(run, "definition_version");
-  if (definitionVersion !== 4) {
+  if (definitionVersion !== 5) {
     throw new Error(`unsupported WikiRuns definition version for run ${runId}`);
   }
 
@@ -345,33 +346,18 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
   const revisions = asRows(
     db
       .prepare(
-        `SELECT revision_id, kind, content, command_id, actor_id, created_at, applied_at, epoch_id
+        `SELECT revision_id, kind, content, command_id, actor_id, created_at, applied_at
          FROM run_revisions WHERE run_id = ? ORDER BY created_at, revision_id`,
       )
       .all(runId),
   ).map((row) => ({
     revisionId: requiredText(row, "revision_id"),
-    kind: requiredText(row, "kind") as "guidance" | "scope_change",
+    kind: "scope_change" as const,
     content: requiredText(row, "content"),
     commandId: requiredText(row, "command_id"),
     actorId: requiredText(row, "actor_id"),
     createdAt: requiredText(row, "created_at"),
     ...(row.applied_at != null ? { appliedAt: String(row.applied_at) } : {}),
-    ...(row.epoch_id != null ? { epochId: String(row.epoch_id) } : {}),
-  }));
-  const epochs = asRows(
-    db
-      .prepare(
-        `SELECT epoch_id, ordinal, scope_revision_id, state, created_at
-         FROM execution_epochs WHERE run_id = ? ORDER BY ordinal`,
-      )
-      .all(runId),
-  ).map((row) => ({
-    epochId: requiredText(row, "epoch_id"),
-    ordinal: requiredNumber(row, "ordinal"),
-    state: requiredText(row, "state") as "active" | "superseded" | "completed",
-    createdAt: requiredText(row, "created_at"),
-    ...(row.scope_revision_id != null ? { scopeRevisionId: String(row.scope_revision_id) } : {}),
   }));
   const reviewThreads = asRows(
     db
@@ -417,7 +403,6 @@ export function buildSnapshot(db: DatabaseSync, runId: string): WikiRunSnapshot 
     gates,
     candidates,
     revisions,
-    epochs,
     reviewThreads,
     ...(evaluationRecoveries && evaluationRecoveries.length > 0 ? { evaluationRecoveries } : {}),
     effects,

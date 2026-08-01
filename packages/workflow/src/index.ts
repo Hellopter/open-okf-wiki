@@ -18,23 +18,7 @@ export {
   ExecutionPlanCompileError,
   REVIEW_LENSES,
 } from "./plan-compiler.js";
-export {
-  computeSourceReadOverlap,
-  computeUniqueDefectYield,
-  ECONOMY_METRIC_KEYS,
-  type EconomyMetricKey,
-  type SourceReadOverlap,
-  summarizeRunEconomy,
-  type UniqueDefectYield,
-  withEconomyMetrics,
-} from "./run-economy-metrics.js";
-export {
-  graphRoleForNodeKind,
-  listNonTerminalRuns,
-  NON_TERMINAL_RUN_STATES,
-  type NonTerminalRunRow,
-} from "./wiki-runs/attempt-metrics.js";
-export { RunWorkspaceReader } from "./wiki-runs/run-workspace-reader.js";
+export { graphRoleForNodeKind } from "./wiki-runs/attempt-metrics.js";
 export {
   CommandIdCollision,
   type OpenWikiRunsInput,
@@ -44,6 +28,8 @@ export {
   type WikiRunListItem,
   type WikiRunRead,
   type WikiRuns,
+  WikiRunsRequestError,
+  type WikiRunsRequestErrorCode,
   WorkflowInUseError,
 } from "./wiki-runs.js";
 // ClaimedNode is intentionally not re-exported (internal scheduler envelope).

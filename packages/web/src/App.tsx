@@ -2,7 +2,6 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { ConfigurePage } from "./pages/ConfigurePage";
 import { RunDetailPage } from "./pages/RunDetailPage";
 import { RunReviewPage } from "./pages/RunReviewPage";
-import { RunSessionPage } from "./pages/RunSessionPage";
 import { RunWorkspacePage } from "./pages/RunWorkspacePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { WorkspacesPage } from "./pages/WorkspacesPage";
@@ -21,7 +20,6 @@ export default function App() {
       <Route path="/w/:id/runs" element={<RunWorkspacePage />} />
       <Route path="/w/:id/runs/:runId" element={<RunDetailPage />} />
       <Route path="/w/:id/runs/:runId/review" element={<RunReviewPage />} />
-      <Route path="/w/:id/sessions/:sessionId" element={<RunSessionPage />} />
       <Route path="/w/:id/wiki/*" element={<WorkspaceWikiPage />} />
       <Route path="/w/:id/wiki" element={<WorkspaceWikiPage />} />
       <Route path="/w/:id/configure" element={<ConfigurePage />} />
