@@ -21,8 +21,9 @@ import { killTree, pidsListeningOnPort, portKillHint, spawnResolved } from "./pr
 const monorepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiPort = Number(process.env.OKF_WIKI_PORT ?? "8787");
 const apiHost = process.env.OKF_WIKI_HOST ?? "127.0.0.1";
+const apiProbeHost = apiProbeHostForBind(apiHost);
 const vitePort = Number(process.env.VITE_DEV_PORT ?? "5173");
-const healthUrl = `http://${apiHost}:${apiPort}/api/health`;
+const healthUrl = `http://${formatHttpHost(apiProbeHost)}:${apiPort}/api/health`;
 const healthTimeoutMs = Number(process.env.OKF_DEV_HEALTH_TIMEOUT_MS ?? "90000");
 /** Default true: free stale listeners so re-running `pnpm dev` is reliable. Set 0 to refuse. */
 const killBusyPorts = process.env.OKF_DEV_KILL_PORTS !== "0";
@@ -36,6 +37,17 @@ let shuttingDown = false;
 /** @typedef {'full' | 'server' | 'web'} DevProfile */
 
 export { killTree, pidsListeningOnPort };
+
+/** A wildcard bind address cannot be used as a local client destination. */
+export function apiProbeHostForBind(bindHost) {
+  if (bindHost === "0.0.0.0") return "127.0.0.1";
+  if (bindHost === "::" || bindHost === "[::]") return "::1";
+  return bindHost;
+}
+
+function formatHttpHost(host) {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
 
 function killChild(child, signal = "SIGTERM") {
   if (child.killed || !child.pid) return;
@@ -272,8 +284,6 @@ async function main() {
     );
     process.exit(0);
   }
-
-  const apiProbeHost = apiHost === "0.0.0.0" ? "127.0.0.1" : apiHost;
 
   process.stdout.write(
     `[dev-stack] profile=${profile} api=${apiPort} vite=${vitePort} health=${healthUrl}\n`,

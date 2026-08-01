@@ -186,6 +186,19 @@ pnpm dev
 
 Open `/workspaces`, create a workspace, then open `/w/<id>/runs` Run Workspace.
 
+### Private LAN (UI and API)
+
+```bash
+OKF_WIKI_ALLOW_LAN=1 OKF_WIKI_HOST=0.0.0.0 pnpm dev
+# → UI  http://<this-machine-private-ip>:5173
+# → API http://<this-machine-private-ip>:8787
+```
+
+`OKF_WIKI_ALLOW_LAN=1` is required before the API will bind beyond loopback.
+It accepts private-network host and browser-origin headers only; use this only
+on a trusted private network and allow TCP ports `5173` and `8787` through the
+machine firewall when direct API access is needed.
+
 ## License
 
 See repository license file when present.

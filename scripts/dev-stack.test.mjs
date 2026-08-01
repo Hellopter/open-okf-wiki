@@ -5,7 +5,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { describe, it } from "node:test";
-import { ensurePortFree, isPortOpen, parseProfile, waitForUrl } from "./dev-stack.mjs";
+import {
+  apiProbeHostForBind,
+  ensurePortFree,
+  isPortOpen,
+  parseProfile,
+  waitForUrl,
+} from "./dev-stack.mjs";
 import { isWin, resolveCommand } from "./process-compat.mjs";
 
 describe("dev-stack waitForUrl", () => {
@@ -36,6 +42,19 @@ describe("dev-stack waitForUrl", () => {
       () => waitForUrl("http://127.0.0.1:1/api/health", 400),
       /Timed out waiting/,
     );
+  });
+});
+
+describe("dev-stack API probe host", () => {
+  it("uses loopback for wildcard API binds", () => {
+    assert.equal(apiProbeHostForBind("0.0.0.0"), "127.0.0.1");
+    assert.equal(apiProbeHostForBind("::"), "::1");
+    assert.equal(apiProbeHostForBind("[::]"), "::1");
+  });
+
+  it("keeps an explicit address unchanged", () => {
+    assert.equal(apiProbeHostForBind("127.0.0.1"), "127.0.0.1");
+    assert.equal(apiProbeHostForBind("192.168.1.20"), "192.168.1.20");
   });
 });
 
