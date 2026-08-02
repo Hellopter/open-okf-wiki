@@ -93,13 +93,12 @@ export type GeneralSectionProps = {
   setWriterProfileId: (value: string) => void;
 };
 
-export function GeneralSection(props: GeneralSectionProps) {
+export function GeneralSection({ isSubmitting, ...props }: GeneralSectionProps) {
   const { t } = useI18n();
   const {
     workspace,
     models,
     defaultModelProfileId,
-    isSubmitting,
     onSubmit,
     fieldErrors = {},
     onClearFieldError,
@@ -304,9 +303,15 @@ export function GeneralSection(props: GeneralSectionProps) {
                   className="font-mono max-w-xs"
                   data-testid="settings-context-target"
                   aria-invalid={contextTargetInvalid || undefined}
+                  aria-describedby={
+                    contextTargetInvalid ? "settings-context-target-error" : undefined
+                  }
+                  aria-errormessage="settings-context-target-error"
                 />
                 {fieldErrors.contextTargetTokens ? (
-                  <FieldError>{fieldErrors.contextTargetTokens}</FieldError>
+                  <FieldError id="settings-context-target-error">
+                    {fieldErrors.contextTargetTokens}
+                  </FieldError>
                 ) : null}
                 <FieldDescription>
                   {t.settings.contextTargetTokensHint}
@@ -340,9 +345,12 @@ export function GeneralSection(props: GeneralSectionProps) {
                   data-testid="settings-request-timeout"
                   required
                   aria-invalid={requestTimeoutInvalid || undefined}
+                  aria-errormessage="settings-request-timeout-error"
                 />
                 {fieldErrors.requestTimeoutSeconds ? (
-                  <FieldError>{fieldErrors.requestTimeoutSeconds}</FieldError>
+                  <FieldError id="settings-request-timeout-error">
+                    {fieldErrors.requestTimeoutSeconds}
+                  </FieldError>
                 ) : null}
                 <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
               </Field>
@@ -365,9 +373,12 @@ export function GeneralSection(props: GeneralSectionProps) {
                   className="font-mono max-w-xs"
                   data-testid="settings-gate-timeout"
                   aria-invalid={gateTimeoutInvalid || undefined}
+                  aria-errormessage="settings-gate-timeout-error"
                 />
                 {fieldErrors.gateTimeoutSeconds ? (
-                  <FieldError>{fieldErrors.gateTimeoutSeconds}</FieldError>
+                  <FieldError id="settings-gate-timeout-error">
+                    {fieldErrors.gateTimeoutSeconds}
+                  </FieldError>
                 ) : null}
                 <FieldDescription>{t.settings.gateTimeoutSecondsHint}</FieldDescription>
               </Field>
@@ -412,9 +423,12 @@ export function GeneralSection(props: GeneralSectionProps) {
                         disabled={!retryEnabled}
                         title={t.settings.retryMaxRetriesHint}
                         aria-invalid={retryMaxInvalid || undefined}
+                        aria-errormessage="settings-retry-max-error"
                       />
                       {fieldErrors.retryMaxRetries ? (
-                        <FieldError>{fieldErrors.retryMaxRetries}</FieldError>
+                        <FieldError id="settings-retry-max-error">
+                          {fieldErrors.retryMaxRetries}
+                        </FieldError>
                       ) : null}
                     </Field>
                     <Field
@@ -442,9 +456,12 @@ export function GeneralSection(props: GeneralSectionProps) {
                         disabled={!retryEnabled}
                         title={t.settings.retryBaseDelayMsHint}
                         aria-invalid={retryBaseDelayInvalid || undefined}
+                        aria-errormessage="settings-retry-base-delay-error"
                       />
                       {fieldErrors.retryBaseDelayMs ? (
-                        <FieldError>{fieldErrors.retryBaseDelayMs}</FieldError>
+                        <FieldError id="settings-retry-base-delay-error">
+                          {fieldErrors.retryBaseDelayMs}
+                        </FieldError>
                       ) : null}
                     </Field>
                     <Field
@@ -471,9 +488,12 @@ export function GeneralSection(props: GeneralSectionProps) {
                         disabled={!retryEnabled}
                         title={t.settings.providerMaxRetriesHint}
                         aria-invalid={providerMaxRetriesInvalid || undefined}
+                        aria-errormessage="settings-provider-max-retries-error"
                       />
                       {fieldErrors.providerMaxRetries ? (
-                        <FieldError>{fieldErrors.providerMaxRetries}</FieldError>
+                        <FieldError id="settings-provider-max-retries-error">
+                          {fieldErrors.providerMaxRetries}
+                        </FieldError>
                       ) : null}
                     </Field>
                     <Field
@@ -504,9 +524,12 @@ export function GeneralSection(props: GeneralSectionProps) {
                         disabled={!retryEnabled}
                         title={t.settings.providerMaxRetryDelayMsHint}
                         aria-invalid={providerMaxRetryDelayInvalid || undefined}
+                        aria-errormessage="settings-provider-max-retry-delay-error"
                       />
                       {fieldErrors.providerMaxRetryDelayMs ? (
-                        <FieldError>{fieldErrors.providerMaxRetryDelayMs}</FieldError>
+                        <FieldError id="settings-provider-max-retry-delay-error">
+                          {fieldErrors.providerMaxRetryDelayMs}
+                        </FieldError>
                       ) : null}
                     </Field>
                   </div>

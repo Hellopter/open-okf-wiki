@@ -6,7 +6,7 @@
 import { ArrowLeftIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useI18n } from "../i18n";
@@ -44,15 +44,14 @@ export function WikiReaderShell({
       data-testid={testId ?? "wiki-reader-shell"}
     >
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-        <Button
-          size="sm"
-          variant="ghost"
-          render={<Link to={operateHref(workspaceId)} data-testid="wiki-back-operate" />}
-          nativeButton={false}
+        <Link
+          to={operateHref(workspaceId)}
+          className={buttonVariants({ variant: "ghost", size: "sm" })}
+          data-testid="wiki-back-operate"
         >
           <ArrowLeftIcon data-icon="inline-start" />
           {t.subnav.runs}
-        </Button>
+        </Link>
         <span className="text-muted-foreground/50" aria-hidden>
           /
         </span>

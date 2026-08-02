@@ -138,7 +138,7 @@ export function RunWorkspacePage() {
               <RefreshCw />
             </Button>
             <Button onClick={() => void startRun()} disabled={starting}>
-              <Plus />
+              <Plus data-icon="inline-start" />
               Start Run
             </Button>
           </div>
@@ -196,7 +196,7 @@ export function RunWorkspacePage() {
               placeholder="Objective or operating guidance"
             />
             <Button className="mt-3 w-full" onClick={() => void startRun()} disabled={starting}>
-              <Play />
+              <Play data-icon="inline-start" />
               {starting ? "Starting" : "Start Run"}
             </Button>
             <div className="mt-5 space-y-1 border-t border-border pt-4 text-xs text-muted-foreground">

@@ -475,6 +475,7 @@ export function AttemptObservation({
             value={rerunFeedback}
             onChange={(event) => setRerunFeedback(event.target.value)}
             placeholder={t.workbench.rerunFeedbackPlaceholder}
+            aria-label={t.workbench.rerunFeedbackPlaceholder}
             data-testid="rerun-feedback"
           />
         </div>

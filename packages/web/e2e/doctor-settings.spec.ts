@@ -66,4 +66,29 @@ test.describe("doctor / global settings", () => {
     });
     await expect(page.getByTestId("provider-panel")).toContainText(/responses/i);
   });
+
+  test("associates a model validation error with its invalid input", async ({ page }) => {
+    await page.goto("/settings");
+    await page.getByTestId("provider-add").click();
+    await page.getByTestId("provider-name-input").fill(`Validation Gateway ${Date.now()}`);
+    await page.getByTestId("provider-base-url").fill("https://validation-gateway.example.com/v1");
+    await setChecked(page, "provider-shape-responses", true);
+    await page.getByTestId("provider-api-key").fill("sk-e2e-test-key-not-real");
+    await page.getByTestId("provider-save").click();
+    await expect(page.getByTestId("provider-add-model").first()).toBeVisible({ timeout: 10_000 });
+
+    await page.getByTestId("provider-add-model").first().click();
+    await page.getByTestId("model-name-input").fill("Invalid Context Model");
+    await page.getByTestId("model-id-input").fill("openai/invalid-context-model");
+    await page.getByTestId("model-max-context").fill("0");
+    await page.getByTestId("model-editor").locator("form").evaluate((form) => {
+      form.noValidate = true;
+    });
+    await page.getByTestId("model-save").click();
+
+    const input = page.getByTestId("model-max-context");
+    await expect(input).toHaveAttribute("aria-invalid", "true");
+    await expect(input).toHaveAttribute("aria-describedby", "model-max-context-error");
+    await expect(page.locator("#model-max-context-error")).toBeVisible();
+  });
 });

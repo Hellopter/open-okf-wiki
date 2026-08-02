@@ -236,7 +236,7 @@ export function RunDetailPage() {
                 }
                 disabled={submitting}
               >
-                <Play />
+                <Play data-icon="inline-start" />
                 Resume
               </Button>
             ) : (
@@ -310,6 +310,7 @@ export function RunDetailPage() {
                     onChange={(event) => setFeedback(event.target.value)}
                     className="mt-3 min-h-24 max-w-2xl"
                     placeholder="Decision notes"
+                    aria-label="Decision notes"
                   />
                 ) : null}
                 {gate.kind === "operator_input" ? (
@@ -318,6 +319,7 @@ export function RunDetailPage() {
                     onChange={(event) => setOperatorAnswer(event.target.value)}
                     className="mt-3 min-h-24 max-w-2xl"
                     placeholder="Answer for this Run"
+                    aria-label="Answer for this Run"
                   />
                 ) : null}
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -418,6 +420,7 @@ export function RunDetailPage() {
               onChange={(event) => setScopeChange(event.target.value)}
               className="mt-3 min-h-20 resize-none"
               placeholder="Scope change"
+              aria-label="Scope change"
             />
             <Button
               variant="outline"

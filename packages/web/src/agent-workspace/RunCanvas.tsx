@@ -260,6 +260,7 @@ export function RunCanvas({
                 value={answer}
                 onChange={(event) => setAnswer(event.target.value)}
                 placeholder={t.workbench.answerPlaceholder}
+                aria-label={t.workbench.answerPlaceholder}
               />
             ) : (
               <Textarea
@@ -267,6 +268,7 @@ export function RunCanvas({
                 value={feedback}
                 onChange={(event) => setFeedback(event.target.value)}
                 placeholder={t.workbench.guidancePlaceholder}
+                aria-label={t.workbench.guidancePlaceholder}
               />
             )}
           </GateActionShell>

@@ -14,6 +14,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -368,17 +369,19 @@ export function WorkspacesPage() {
                           <EllipsisVertical />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            variant="destructive"
-                            data-testid="workspace-delete"
-                            disabled={deletingId === ws.id}
-                            onClick={() => {
-                              setDeleteTarget(ws);
-                              setDeleteMeta(false);
-                            }}
-                          >
-                            {t.workspaces.delete}
-                          </DropdownMenuItem>
+                          <DropdownMenuGroup>
+                            <DropdownMenuItem
+                              variant="destructive"
+                              data-testid="workspace-delete"
+                              disabled={deletingId === ws.id}
+                              onClick={() => {
+                                setDeleteTarget(ws);
+                                setDeleteMeta(false);
+                              }}
+                            >
+                              {t.workspaces.delete}
+                            </DropdownMenuItem>
+                          </DropdownMenuGroup>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>

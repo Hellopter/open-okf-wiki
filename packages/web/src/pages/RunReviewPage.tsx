@@ -299,6 +299,7 @@ export function RunReviewPage() {
               onChange={(event) => setComment(event.target.value)}
               className="mt-2 min-h-24 resize-none"
               placeholder="Review note"
+              aria-label="Review note"
             />
             <Button
               size="sm"
@@ -306,7 +307,7 @@ export function RunReviewPage() {
               onClick={() => void createThread()}
               disabled={submitting || !comment.trim()}
             >
-              <MessageSquarePlus />
+              <MessageSquarePlus data-icon="inline-start" />
               Add comment
             </Button>
             <h3 className="mt-7 text-sm font-medium">Evidence</h3>
@@ -345,7 +346,7 @@ export function RunReviewPage() {
                           }))
                         }
                       >
-                        <Check />
+                        <Check data-icon="inline-start" />
                         Resolve
                       </Button>
                     ) : null}
@@ -361,7 +362,7 @@ export function RunReviewPage() {
               onClick={requestRepair}
               disabled={submitting || !threads.some((thread) => thread.state === "open")}
             >
-              <Wrench />
+              <Wrench data-icon="inline-start" />
               Request repair
             </Button>
           </aside>

@@ -1,11 +1,12 @@
 import { SendIcon, SquareIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupTextarea,
 } from "@/components/ui/input-group";
+import { Spinner } from "@/components/ui/spinner";
 import type { MessageTree } from "../i18n";
 import { SessionTranscript } from "./SessionTranscript";
 import type { SessionRunLink } from "./session-run-links";
@@ -31,12 +32,23 @@ export function ConversationPanel({
   t,
 }: ConversationPanelProps) {
   const [prompt, setPrompt] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   const submitPrompt = async () => {
-    const submitted = prompt;
-    if (!(await conversation.send(submitted))) return;
-    setPrompt("");
-    onPromptSubmitted(submitted);
+    const submitted = prompt.trim();
+    if (!submitted || submittingRef.current) return;
+
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      if (!(await conversation.send(submitted))) return;
+      setPrompt("");
+      onPromptSubmitted(submitted);
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+    }
   };
 
   const isBusy = BUSY_STATUSES.has(conversation.status);
@@ -62,12 +74,14 @@ export function ConversationPanel({
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  if (hasPrompt) void submitPrompt();
+                  event.currentTarget.form?.requestSubmit();
                 }
               }}
               placeholder={isBusy ? t.workbench.promptBusy : t.workbench.promptIdle}
               rows={2}
-              aria-busy={isBusy || undefined}
+              required={true}
+              disabled={isSubmitting}
+              aria-busy={isBusy || isSubmitting || undefined}
               aria-keyshortcuts="Enter"
               title={t.workbench.send}
             />
@@ -76,11 +90,11 @@ export function ConversationPanel({
                 type="submit"
                 size="icon-sm"
                 variant={emphasizeStop ? "outline" : "default"}
-                disabled={!hasPrompt}
+                disabled={isSubmitting || !hasPrompt}
                 aria-label={t.workbench.send}
                 title={t.workbench.send}
               >
-                <SendIcon />
+                {isSubmitting ? <Spinner /> : <SendIcon />}
               </InputGroupButton>
               {isBusy ? (
                 <InputGroupButton

@@ -93,8 +93,12 @@ export function ModelEditor({
                 className="font-mono max-w-xs"
                 data-testid="model-max-context"
                 aria-invalid={maxContextInvalid || undefined}
+                aria-describedby={maxContextInvalid ? "model-max-context-error" : undefined}
+                aria-errormessage="model-max-context-error"
               />
-              {maxContextTokensError ? <FieldError>{maxContextTokensError}</FieldError> : null}
+              {maxContextTokensError ? (
+                <FieldError id="model-max-context-error">{maxContextTokensError}</FieldError>
+              ) : null}
               <FieldDescription>{t.globalSettings.maxContextTokensHint}</FieldDescription>
             </Field>
             {form.providerId ? (
