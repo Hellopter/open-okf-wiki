@@ -10,7 +10,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   dispatchWikiRunCommand,
   getWikiRun,
-  getWikiRunSpec,
   getWorkspace,
   hasApiErrorCode,
   parseWikiRunEvent,
@@ -19,8 +18,10 @@ import {
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
+import { useI18n } from "../i18n";
 import { newCommandId } from "../lib/command-id";
 import { notifyError, notifySuccess } from "../lib/notify";
+import { PlanGateReviewPanel } from "../run-workspace/plan-review/PlanGateReviewPanel";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 function currentGate(snapshot: WikiRunSnapshot): WikiRunSnapshot["gates"][number] | undefined {
@@ -50,8 +51,8 @@ export function RunDetailPage() {
   const [scopeChange, setScopeChange] = useState("");
   const [feedback, setFeedback] = useState("");
   const [operatorAnswer, setOperatorAnswer] = useState("");
-  const [specSummary, setSpecSummary] = useState<string | null>(null);
   const [connection, setConnection] = useState<"live" | "reconnecting" | "offline">("offline");
+  const { t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -108,15 +109,6 @@ export function RunDetailPage() {
   const publicationConflict =
     gate?.kind === "publication" && gate.detail?.summary?.startsWith("Publication conflict");
   const controlsPaused = snapshot?.state === "paused" || snapshot?.state === "pausing";
-  useEffect(() => {
-    if (!gate || gate.kind !== "plan" || !id || !runId) {
-      setSpecSummary(null);
-      return;
-    }
-    void getWikiRunSpec(id, runId)
-      .then((result) => setSpecSummary(result.spec.summary))
-      .catch(() => setSpecSummary(null));
-  }, [gate, id, runId]);
 
   const dispatch = async (build: (latest: WikiRunSnapshot) => RunCommand) => {
     if (!id || !runId || submitting) return;
@@ -299,16 +291,23 @@ export function RunDetailPage() {
 
         <div className="grid min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <section className="min-h-0 overflow-y-auto px-4 py-5 lg:px-6">
-            {gate ? (
+            {gate?.kind === "plan" ? (
+              <PlanGateReviewPanel
+                className="max-w-3xl"
+                workspaceId={id}
+                snapshot={snapshot}
+                gate={gate}
+                onRunCommand={(build) => void dispatch(build)}
+                t={t}
+              />
+            ) : gate ? (
               <Alert className="max-w-3xl">
                 <TriangleAlert />
                 <AlertTitle>{stage}</AlertTitle>
                 <AlertDescription className="whitespace-pre-wrap">
-                  {gate.detail?.summary ??
-                    specSummary ??
-                    "This Run is waiting for an explicit operator decision."}
+                  {gate.detail?.summary ?? "This Run is waiting for an explicit operator decision."}
                 </AlertDescription>
-                {gate.kind === "plan" || gate.kind === "publication" || gate.kind === "fix" ? (
+                {gate.kind === "publication" || gate.kind === "fix" ? (
                   <Textarea
                     value={feedback}
                     onChange={(event) => setFeedback(event.target.value)}
@@ -355,7 +354,7 @@ export function RunDetailPage() {
                       </Button>
                     </>
                   ) : null}
-                  {gate.kind !== "operator_input" && gate.kind !== "fix" ? (
+                  {gate.kind === "publication" ? (
                     <Button
                       size="sm"
                       onClick={() => resolveGate("approve")}
@@ -364,7 +363,7 @@ export function RunDetailPage() {
                       {publicationConflict ? "Refresh and rebase" : "Approve"}
                     </Button>
                   ) : null}
-                  {gate.kind !== "operator_input" ? (
+                  {gate.kind === "publication" || gate.kind === "fix" ? (
                     <Button
                       size="sm"
                       variant="outline"
@@ -374,7 +373,7 @@ export function RunDetailPage() {
                       {publicationConflict ? "Rebase with notes" : "Revise"}
                     </Button>
                   ) : null}
-                  {gate.kind !== "operator_input" ? (
+                  {gate.kind === "publication" ? (
                     <Button
                       size="sm"
                       variant="destructive"

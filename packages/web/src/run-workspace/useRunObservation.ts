@@ -1,4 +1,4 @@
-import type { WikiRunAttempt, WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiRunAttempt, WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract";
 import {
   WikiRunAttemptTranscriptTraceFrameSchema,
   WikiRunEventSchema,
@@ -8,7 +8,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getWikiRun,
   getWikiRunAttemptTranscript,
-  getWikiRunSpec,
   wikiRunAttemptTranscriptEventsUrl,
   wikiRunEventsUrl,
 } from "../api";
@@ -25,6 +24,7 @@ import {
   setTimelineError,
   setTimelineLoadingEarlier,
 } from "./observation-state";
+import { usePlanReview } from "./plan-review/usePlanReview";
 
 export type RunObservationConnection = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -34,30 +34,23 @@ export function useRunObservation(
   routeAttemptId: string | null,
 ) {
   const [state, setState] = useState<RunObservationState>(() => createRunObservationState());
-  const [spec, setSpec] = useState<WikiRunSpec | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [connection, setConnection] = useState<RunObservationConnection>("offline");
 
   useEffect(() => {
     if (!workspaceId || !runId) {
       setState(createRunObservationState());
-      setSpec(null);
       setConnection("offline");
       return;
     }
     let active = true;
     setState(createRunObservationState());
-    setSpec(null);
     setError(null);
     setConnection("connecting");
-    void Promise.all([
-      getWikiRun(workspaceId, runId),
-      getWikiRunSpec(workspaceId, runId).catch(() => null),
-    ])
-      .then(([run, plan]) => {
+    void getWikiRun(workspaceId, runId)
+      .then((run) => {
         if (!active) return;
         setState((current) => setObservationSnapshot(current, run.snapshot));
-        setSpec(plan?.spec ?? null);
       })
       .catch((nextError) => {
         if (active) setError(nextError);
@@ -96,6 +89,10 @@ export function useRunObservation(
       source.close();
     };
   }, [runId, workspaceId]);
+
+  const planReview = usePlanReview(workspaceId, runId, state.snapshot, Boolean(runId));
+  const spec: WikiRunSpec | null = planReview.review?.spec ?? null;
+  const planReviewMaterials: WikiRunPlanReview | null = planReview.review;
 
   useEffect(() => {
     if (!routeAttemptId) return;
@@ -210,7 +207,12 @@ export function useRunObservation(
 
   return {
     snapshot: state.snapshot,
+    /** Sealed Spec when plan-review materials are ready (null while pending/error). */
     spec,
+    /** Full plan-review DTO (Spec + execution summary); preferred for Plan tab. */
+    planReview: planReviewMaterials,
+    planReviewStatus: planReview.status,
+    planReviewRetry: planReview.retry,
     error,
     setError,
     connection,

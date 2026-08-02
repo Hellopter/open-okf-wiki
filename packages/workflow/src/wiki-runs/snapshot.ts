@@ -45,6 +45,12 @@ function parseGateDetail(raw: unknown): WikiRunGateDetail | undefined {
   }
   if (typeof row.feedback === "string" && row.feedback.trim())
     out.feedback = row.feedback.trim().slice(0, 4_000);
+  for (const key of ["domainCount", "pageCount", "openQuestionCount"] as const) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+      out[key] = value;
+    }
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

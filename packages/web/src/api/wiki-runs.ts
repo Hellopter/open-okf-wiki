@@ -13,6 +13,7 @@ import type {
   WikiRunGetResponse,
   WikiRunIndexGetResponse,
   WikiRunListItem,
+  WikiRunPlanReview,
   WikiRunSpecRead,
   WikiRunState,
 } from "@okf-wiki/contract";
@@ -24,11 +25,12 @@ import {
   WikiRunCommandResponseSchema,
   WikiRunGetResponseSchema,
   WikiRunIndexGetResponseSchema,
+  WikiRunPlanReviewSchema,
   WikiRunSpecReadSchema,
 } from "@okf-wiki/contract";
 import { getApiBase, request } from "./client";
 
-export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunState };
+export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunPlanReview, WikiRunState };
 
 export function getRunIndex(
   workspaceId: string,
@@ -46,7 +48,22 @@ export function getWikiRun(workspaceId: string, runId: string): Promise<WikiRunG
   ).then(WikiRunGetResponseSchema.parse);
 }
 
-/** Sealed plan Spec for operator review (not on Run SSE). */
+/**
+ * Spec + ExecutionPlan summary for plan-gate document review (not on Run SSE).
+ * Prefer this over {@link getWikiRunSpec} for operator UI.
+ */
+export function getWikiRunPlanReview(
+  workspaceId: string,
+  runId: string,
+  init?: Pick<RequestInit, "signal">,
+): Promise<WikiRunPlanReview> {
+  return request(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/plan-review`,
+    init,
+  ).then(WikiRunPlanReviewSchema.parse);
+}
+
+/** Sealed plan Spec only (compat thin read). */
 export function getWikiRunSpec(workspaceId: string, runId: string): Promise<WikiRunSpecRead> {
   return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/spec`,

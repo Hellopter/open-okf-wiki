@@ -15,6 +15,8 @@ import {
   shouldShowNoAutoRetryHint,
   truncateAttemptError,
 } from "../run-workspace/node-recovery";
+import { PlanGateReviewPanel } from "../run-workspace/plan-review/PlanGateReviewPanel";
+import type { PlanReviewState } from "../run-workspace/plan-review/plan-review-utils";
 import { RunGraph } from "../run-workspace/RunGraph";
 import type { WorkflowStageId } from "../run-workspace/workflow-topology";
 import { localizedLabel } from "./workbench-utils";
@@ -24,22 +26,27 @@ function openGate(snapshot: WikiRunSnapshot) {
 }
 
 type RunCanvasProps = {
+  workspaceId: string;
   snapshot: WikiRunSnapshot;
   selectedNodeKey: string | null;
   focusedStage: WorkflowStageId | null;
   onFocusedStageChange: (stage: WorkflowStageId | null) => void;
   onSelectNode: (nodeKey: string) => void;
   onRunCommand: (command: (snapshot: WikiRunSnapshot) => RunCommand) => void;
+  /** Shared plan-review owner from useRunObservation (avoids double fetch). */
+  planReviewState?: PlanReviewState & { retry: () => void };
   t: MessageTree;
 };
 
 export function RunCanvas({
+  workspaceId,
   snapshot,
   selectedNodeKey,
   focusedStage,
   onFocusedStageChange,
   onSelectNode,
   onRunCommand,
+  planReviewState,
   t,
 }: RunCanvasProps) {
   const gate = openGate(snapshot);
@@ -226,7 +233,17 @@ export function RunCanvas({
             ) : null}
           </Alert>
         ) : null}
-        {gate ? (
+        {gate?.kind === "plan" ? (
+          <PlanGateReviewPanel
+            className="mb-5"
+            workspaceId={workspaceId}
+            snapshot={snapshot}
+            gate={gate}
+            t={t}
+            reviewState={planReviewState}
+            onRunCommand={onRunCommand}
+          />
+        ) : gate ? (
           <GateActionShell
             className="mb-5"
             title={formatMessage(t.workbench.decisionTitle, {

@@ -60,10 +60,30 @@ export function openPlanGate(
   claim: ClaimedNode,
   specPayloadDigest: string,
   timestamp: string,
+  detail?: {
+    summary?: string;
+    domainCount?: number;
+    pageCount?: number;
+    openQuestionCount?: number;
+  },
 ): void {
   const gateId = randomUUID();
   const gateNodeKey = "gate.plan";
   contractForNode("gate.plan", gateNodeKey);
+  const detailJson =
+    detail !== undefined
+      ? JSON.stringify({
+          source: "plan",
+          ...(typeof detail.summary === "string" && detail.summary.trim()
+            ? { summary: detail.summary.trim().slice(0, 4_000) }
+            : {}),
+          ...(typeof detail.domainCount === "number" ? { domainCount: detail.domainCount } : {}),
+          ...(typeof detail.pageCount === "number" ? { pageCount: detail.pageCount } : {}),
+          ...(typeof detail.openQuestionCount === "number"
+            ? { openQuestionCount: detail.openQuestionCount }
+            : {}),
+        })
+      : null;
   const existingGateNode = asRow(
     host.db
       .prepare(
@@ -76,16 +96,16 @@ export function openPlanGate(
       .prepare(
         `INSERT INTO nodes (
           run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
-        ) VALUES (?, ?, 'gate.plan', 'waiting', ?, NULL, NULL, NULL)`,
+        ) VALUES (?, ?, 'gate.plan', 'waiting', ?, NULL, NULL, ?)`,
       )
-      .run(claim.runId, gateNodeKey, claim.nodeGeneration);
+      .run(claim.runId, gateNodeKey, claim.nodeGeneration, detailJson);
   } else {
     host.db
       .prepare(
-        `UPDATE nodes SET state = 'waiting', current_attempt_id = NULL
+        `UPDATE nodes SET state = 'waiting', current_attempt_id = NULL, detail_json = COALESCE(?, detail_json)
          WHERE run_id = ? AND node_key = ? AND generation = ?`,
       )
-      .run(claim.runId, gateNodeKey, claim.nodeGeneration);
+      .run(detailJson, claim.runId, gateNodeKey, claim.nodeGeneration);
   }
   host.db
     .prepare(
@@ -98,7 +118,7 @@ export function openPlanGate(
       `INSERT INTO gates (
         gate_id, run_id, node_key, node_generation, kind, state, payload_digest,
         decision_json, detail_json, opened_at, opened_revision
-      ) VALUES (?, ?, ?, ?, 'plan', 'open', ?, NULL, NULL, ?,
+      ) VALUES (?, ?, ?, ?, 'plan', 'open', ?, NULL, ?, ?,
         (SELECT revision FROM runs WHERE run_id = ?))`,
     )
     .run(
@@ -107,6 +127,7 @@ export function openPlanGate(
       gateNodeKey,
       claim.nodeGeneration,
       specPayloadDigest,
+      detailJson,
       timestamp,
       claim.runId,
     );

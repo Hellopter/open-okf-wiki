@@ -86,7 +86,26 @@ export function WorkspaceAgentPage() {
   });
   const conversation = useSessionConversation(id, activeSessionId);
   const observation = useRunObservation(id, activeRunId, activeAttemptId);
-  const { snapshot, spec, selectedAttempt, selectedNode, timeline } = observation;
+  const {
+    snapshot,
+    spec,
+    planReview,
+    planReviewStatus,
+    planReviewRetry,
+    selectedAttempt,
+    selectedNode,
+    timeline,
+  } = observation;
+  const planReviewState = {
+    status: planReviewStatus,
+    review: planReview,
+    error: null as unknown,
+    expectedPayloadDigest:
+      snapshot?.gates.find((g) => g.state === "open" && g.kind === "plan")?.payloadDigest ??
+      planReview?.payloadDigest ??
+      null,
+    retry: planReviewRetry,
+  };
   const selectedNodeKey = selectedNode?.key ?? null;
   const activeSessionRuns = sessionRunLinks(activity.runs, activeSessionId);
   const activeConnection =
@@ -238,11 +257,13 @@ export function WorkspaceAgentPage() {
             />
           ) : snapshot && surface === "run" ? (
             <RunCanvas
+              workspaceId={id}
               snapshot={snapshot}
               selectedNodeKey={selectedNodeKey}
               focusedStage={graphStage}
               onFocusedStageChange={(stage) => updateSelection({ stage })}
               t={t}
+              planReviewState={planReviewState}
               onSelectNode={selectNode}
               onRunCommand={(command) => void dispatchRun(command)}
             />
@@ -253,6 +274,9 @@ export function WorkspaceAgentPage() {
               selectedAttempt={selectedAttempt}
               trace={timeline?.events ?? []}
               spec={spec}
+              planReview={planReview}
+              planReviewStatus={planReviewStatus}
+              planReviewRetry={planReviewRetry}
               onBack={() => {
                 updateSelection({ attempt: null });
                 setSurface("run");

@@ -3,6 +3,7 @@ import type {
   RunCommand,
   WikiRunAttempt,
   WikiRunNode,
+  WikiRunPlanReview,
   WikiRunSnapshot,
   WikiRunSpec,
 } from "@okf-wiki/contract";
@@ -25,9 +26,9 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { PlanDocument, SpecSections } from "./plan-review/PlanDocument";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import type { MessageTree } from "../i18n";
@@ -203,7 +204,50 @@ function ActivityFeed({
   );
 }
 
-export function RunPlanDetails({ spec, t }: { spec: WikiRunSpec | null; t: MessageTree }) {
+/** Plan tab body with load/error states from the shared plan-review owner. */
+export function RunPlanDetails({
+  spec,
+  planReview,
+  planReviewStatus = "idle",
+  planReviewRetry,
+  t,
+}: {
+  spec: WikiRunSpec | null;
+  planReview?: WikiRunPlanReview | null;
+  planReviewStatus?: import("./plan-review/plan-review-utils").PlanReviewStatus;
+  planReviewRetry?: () => void;
+  t: MessageTree;
+}) {
+  if (planReviewStatus === "loading" || planReviewStatus === "stale") {
+    return (
+      <p
+        className="flex items-center justify-center gap-2 px-4 py-12 text-sm text-muted-foreground"
+        data-testid="plan-review-loading"
+      >
+        <LoaderCircleIcon className="size-4 animate-spin" />
+        {planReviewStatus === "stale" ? t.specReview.refreshing : t.specReview.loading}
+      </p>
+    );
+  }
+  if (planReviewStatus === "error") {
+    return (
+      <div className="space-y-3 px-4 py-12 text-center" data-testid="plan-review-error">
+        <p className="text-sm text-destructive">{t.specReview.loadError}</p>
+        {planReviewRetry ? (
+          <Button size="sm" variant="outline" onClick={planReviewRetry}>
+            {t.specReview.retry}
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+  if (planReview) {
+    return (
+      <div className="px-4 py-5 md:px-6">
+        <PlanDocument review={planReview} t={t} />
+      </div>
+    );
+  }
   if (!spec)
     return (
       <p className="px-4 py-12 text-center text-sm text-muted-foreground">
@@ -212,82 +256,7 @@ export function RunPlanDetails({ spec, t }: { spec: WikiRunSpec | null; t: Messa
     );
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 py-5 md:px-6">
-      <section>
-        <h3 className="text-sm font-medium">{t.specReview.audience}</h3>
-        <p className="mt-2 text-sm text-muted-foreground">{spec.audience}</p>
-        <p className="mt-3 max-w-4xl text-sm">{spec.summary}</p>
-      </section>
-      <section>
-        <h3 className="text-sm font-medium">{t.specReview.domains}</h3>
-        <div className="mt-3 divide-y divide-border border-y border-border">
-          {spec.domains.map((domain) => (
-            <div key={domain.id} className="py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-medium">{domain.title}</p>
-                <Badge variant="outline">
-                  {domain.critical ? t.specReview.blocking : t.specReview.optional}
-                </Badge>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">{domain.scope}</p>
-              {domain.questions.length > 0 ? (
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                  {domain.questions.map((question) => (
-                    <li key={question}>{question}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      </section>
-      <section>
-        <h3 className="text-sm font-medium">{t.specReview.pages}</h3>
-        <div className="mt-3 divide-y divide-border border-y border-border">
-          {spec.pages.map((page) => (
-            <div key={page.path} className="py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="font-mono text-xs">{page.path}</p>
-                {page.template ? <Badge variant="outline">{page.template}</Badge> : null}
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">{page.purpose}</p>
-              {page.questions.length > 0 ? (
-                <p className="mt-2 text-xs text-muted-foreground">{page.questions.join(" · ")}</p>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      </section>
-      {spec.openQuestions.length > 0 ? (
-        <section>
-          <h3 className="text-sm font-medium">{t.specReview.openQuestions}</h3>
-          <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-muted-foreground">
-            {spec.openQuestions.map((question) => (
-              <li key={question}>{question}</li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-      <section>
-        <h3 className="text-sm font-medium">{t.specReview.acceptance}</h3>
-        <dl className="mt-3 grid gap-x-6 gap-y-3 border-y border-border py-3 text-sm sm:grid-cols-2">
-          <div>
-            <dt className="text-xs text-muted-foreground">{t.workbench.reviewEnabled}</dt>
-            <dd className="mt-1">{spec.acceptance.reviewRequired ? t.common.on : t.common.off}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t.workbench.autoRepair}</dt>
-            <dd className="mt-1">{spec.acceptance.autoRepair ? t.common.on : t.common.off}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t.workbench.semanticRepairRounds}</dt>
-            <dd className="mt-1">{spec.acceptance.maxRepairRounds}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t.workbench.mechanicalRepairRounds}</dt>
-            <dd className="mt-1">{spec.acceptance.maxHardValidateRepairRounds}</dd>
-          </div>
-        </dl>
-      </section>
+      <SpecSections spec={spec} t={t} />
     </div>
   );
 }
@@ -298,6 +267,9 @@ export function AttemptObservation({
   selectedAttempt,
   trace,
   spec,
+  planReview = null,
+  planReviewStatus = "idle",
+  planReviewRetry,
   onBack,
   onSelectAttempt,
   onLoadEarlier,
@@ -313,6 +285,9 @@ export function AttemptObservation({
   selectedAttempt: WikiRunAttempt | null;
   trace: AttemptTraceEvent[];
   spec: WikiRunSpec | null;
+  planReview?: WikiRunPlanReview | null;
+  planReviewStatus?: import("./plan-review/plan-review-utils").PlanReviewStatus;
+  planReviewRetry?: () => void;
   onBack: () => void;
   onSelectAttempt: (attempt: WikiRunAttempt) => void;
   onLoadEarlier: () => void;
@@ -607,7 +582,13 @@ export function AttemptObservation({
               )}
             </TabsContent>
             <TabsContent value="plan" className="min-h-0 flex-1 overflow-y-auto">
-              <RunPlanDetails spec={spec} t={t} />
+              <RunPlanDetails
+                spec={spec}
+                planReview={planReview}
+                planReviewStatus={planReviewStatus}
+                planReviewRetry={planReviewRetry}
+                t={t}
+              />
             </TabsContent>
             <TabsContent value="events" className="min-h-0 flex-1 overflow-y-auto">
               <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 py-5 md:px-6">

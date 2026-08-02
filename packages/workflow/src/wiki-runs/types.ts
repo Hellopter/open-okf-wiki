@@ -17,6 +17,7 @@ import type {
   RunCommandReceipt,
   WikiRunArtifactKind,
   WikiRunEvent,
+  WikiRunPlanReview,
   WikiRunSnapshot,
   WikiRunSpecRead,
   WorkspaceConfig,
@@ -104,8 +105,14 @@ export interface WikiRuns {
   /**
    * Sealed plan Spec for operator review (GET …/runs/:runId/spec).
    * Throws `spec not found: <runId>` when no sealed plan output exists.
+   * Prefer {@link readPlanReview} for plan-gate document UI.
    */
   readPlanSpec(input: { runId: string }): Promise<WikiRunSpecRead>;
+  /**
+   * Spec + ExecutionPlan summary for plan-gate document review
+   * (GET …/runs/:runId/plan-review). Bound by open plan gate payloadDigest when present.
+   */
+  readPlanReview(input: { runId: string }): Promise<WikiRunPlanReview>;
   /** Operator-safe candidate inspection; no artifact paths cross this boundary. */
   readCandidatePage(input: {
     runId: string;

@@ -35,6 +35,7 @@ import {
   readPublicationBaseline,
 } from "./gate-open.js";
 import { onPlanAccepted } from "./gate-resolve.js";
+import { planGateDetailFromSpec, planGatePayloadDigest } from "./plan-review.js";
 import { materializePlanAdaptation, validatePlanAdaptation } from "./plan-adapt.js";
 import {
   isRepairNodeKey,
@@ -204,16 +205,23 @@ export function onAttemptSucceeded(
       throw new Error("plan attempt succeeded without an ExecutionPlan artifact");
     }
     // Gate payload binds Spec digest + ExecutionPlan digest (Phase 1 hard-cut).
-    const payloadDigest = digest({
-      specDigest: specPrep.digest,
-      planDigest: planPrep.digest,
-    });
+    const payloadDigest = planGatePayloadDigest(specPrep.digest, planPrep.digest);
     // planConfirm=false: auto-approve — same onPlanAccepted path as ResolveGate approve.
     if (host.workspaceForRun(claim.runId).planConfirm === false) {
       onPlanAccepted(host, claim.runId, specPrep.relativePath, timestamp);
       return;
     }
-    openPlanGate(host, claim, payloadDigest, timestamp);
+    const workspace = host.workspaceForRun(claim.runId);
+    let planDetail: ReturnType<typeof planGateDetailFromSpec> | undefined;
+    try {
+      const runDir = runWorkDir(workspace.rootPath, claim.runId);
+      const raw = readFileSync(path.join(runDir, specPrep.relativePath, "spec.json"), "utf8");
+      const sealedSpec = WikiRunSpecSchema.parse(JSON.parse(raw));
+      planDetail = planGateDetailFromSpec(sealedSpec);
+    } catch {
+      // Gate still opens; operator loads full Spec via plan-review API.
+    }
+    openPlanGate(host, claim, payloadDigest, timestamp, planDetail);
     return;
   }
   if (claim.kind === "prepare.publication") {

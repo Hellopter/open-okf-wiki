@@ -16,6 +16,7 @@ import {
   WikiRunIndexEventSchema,
   WikiRunIndexGetResponseSchema,
   type WikiRunSnapshot,
+  WikiRunPlanReviewSchema,
   WikiRunSpecReadSchema,
 } from "@okf-wiki/contract";
 import {
@@ -206,7 +207,28 @@ export async function handleGetWikiRun(
   }
 }
 
-/** GET sealed plan Spec for operator review (not embedded on Run SSE). */
+/**
+ * GET sealed plan Spec + ExecutionPlan summary for operator document review
+ * (not embedded on Run SSE). Prefer this for plan-gate UI.
+ */
+export async function handleGetWikiRunPlanReview(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  runId: string,
+  _url: URL,
+): Promise<void> {
+  const workspace = await loadWorkspaceOr404(res, id);
+  if (!workspace) return;
+  try {
+    const body = await (await wikiRunsForWorkspace(workspace)).readPlanReview({ runId });
+    sendJson(res, 200, WikiRunPlanReviewSchema.parse(body));
+  } catch (error) {
+    sendWikiRunsError(res, error);
+  }
+}
+
+/** GET sealed plan Spec only (compat); implemented via plan-review materials. */
 export async function handleGetWikiRunSpec(
   _req: IncomingMessage,
   res: ServerResponse,

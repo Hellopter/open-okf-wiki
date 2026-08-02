@@ -25,6 +25,7 @@ import {
   type WikiRunEvent,
   WikiRunEventSchema,
   type WikiRunSnapshot,
+  type WikiRunPlanReview,
   type WikiRunSpecRead,
   WikiRunSpecReadSchema,
   type WorkspaceConfig,
@@ -62,10 +63,8 @@ import {
 } from "./wiki-runs/commands.js";
 import { now } from "./wiki-runs/crypto-util.js";
 import type { WikiRunsCasCtx, WikiRunsDbCtx, WikiRunsTxCtx } from "./wiki-runs/ctx.js";
-import {
-  loadSpecFromArtifact,
-  upstreamsSucceeded as upstreamsSucceededImpl,
-} from "./wiki-runs/dag.js";
+import { upstreamsSucceeded as upstreamsSucceededImpl } from "./wiki-runs/dag.js";
+import { readPlanReviewMaterials } from "./wiki-runs/plan-review.js";
 import {
   cancelPreApplyEffectsForPublication as cancelPreApplyEffectsForPublicationImpl,
   cancelPreApplyEffects as cancelPreApplyEffectsImpl,
@@ -392,48 +391,36 @@ class WikiRunsOwner implements WikiRuns {
     return readAttemptTranscriptImpl(this.transcriptHost(), input);
   }
 
-  async readPlanSpec(input: { runId: string }): Promise<WikiRunSpecRead> {
+  /**
+   * Full plan-gate review materials (Spec + ExecutionPlan summary).
+   * Prefer this over {@link readPlanSpec} for operator document review.
+   */
+  async readPlanReview(input: { runId: string }): Promise<WikiRunPlanReview> {
     this.assertOpen();
     const runId = input.runId;
     this.db.exec("BEGIN DEFERRED");
     try {
-      const run = asRow(this.db.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId));
-      if (!run) throw new WikiRunsRequestError("not_found", `run not found: ${runId}`);
-      const row = asRow(
-        this.db
-          .prepare(
-            `SELECT artifacts.artifact_id, artifacts.digest, artifacts.relative_path
-             FROM node_outputs
-             JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
-             JOIN (
-               SELECT node_key, MAX(generation) AS generation FROM nodes
-               WHERE run_id = ? AND node_key = 'plan' GROUP BY node_key
-             ) cur ON cur.node_key = node_outputs.node_key
-                  AND cur.generation = node_outputs.node_generation
-             WHERE node_outputs.run_id = ?
-               AND node_outputs.node_key = 'plan'
-               AND node_outputs.role = 'spec'
-             ORDER BY artifacts.sealed_at DESC
-             LIMIT 1`,
-          )
-          .get(runId, runId),
-      );
-      if (!row) throw new WikiRunsRequestError("not_found", `spec not found: ${runId}`);
-      const relativePath = requiredText(row, "relative_path");
-      const spec = loadSpecFromArtifact({ workspace: this.workspace }, runId, relativePath);
-      if (!spec) throw new WikiRunsRequestError("not_found", `spec not found: ${runId}`);
-      const result = WikiRunSpecReadSchema.parse({
+      const result = readPlanReviewMaterials(
+        { db: this.db, workspace: this.workspace },
         runId,
-        artifactId: requiredText(row, "artifact_id"),
-        digest: requiredText(row, "digest"),
-        spec,
-      });
+      );
       this.db.exec("COMMIT");
       return result;
     } catch (error) {
       this.rollback();
       throw error;
     }
+  }
+
+  /** Thin Spec-only read; implemented via {@link readPlanReview} for one load path. */
+  async readPlanSpec(input: { runId: string }): Promise<WikiRunSpecRead> {
+    const review = await this.readPlanReview(input);
+    return WikiRunSpecReadSchema.parse({
+      runId: review.runId,
+      artifactId: review.artifact.specArtifactId,
+      digest: review.specDigest,
+      spec: review.spec,
+    });
   }
 
   async close(): Promise<void> {

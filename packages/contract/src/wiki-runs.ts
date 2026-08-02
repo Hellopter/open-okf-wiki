@@ -439,6 +439,7 @@ export const WikiRunNodeSchema = z
 
 /**
  * GET …/runs/:runId/spec — sealed plan Spec for operator review (not on snapshot SSE).
+ * Prefer {@link WikiRunPlanReviewSchema} for plan-gate UI (includes ExecutionPlan summary).
  */
 export const WikiRunSpecReadSchema = z
   .object({
@@ -448,6 +449,61 @@ export const WikiRunSpecReadSchema = z
     spec: WikiRunSpecSchema,
   })
   .strict();
+
+/**
+ * Host ExecutionPlan projection for plan-gate review (not the full sealed plan JSON
+ * unless work unit rows are included for operator scan).
+ */
+export const WikiRunPlanReviewExecutionSchema = z
+  .object({
+    workUnitCount: z.number().int().min(0),
+    domainCount: z.number().int().min(0),
+    leafCount: z.number().int().min(0),
+    maxDomainFanOut: z.number().int().min(1).max(16),
+    maxLeafFanOut: z.number().int().min(1).max(16),
+    reviewLenses: z.array(z.string().trim().min(1).max(100)).max(4),
+    workUnits: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1).max(200),
+            domainId: z.string().trim().min(1).max(80).optional(),
+            scope: z.string().trim().min(1).max(2_000),
+            questionCount: z.number().int().min(0).max(10_000),
+          })
+          .strict(),
+      )
+      .max(32)
+      .default([]),
+  })
+  .strict();
+
+export type WikiRunPlanReviewExecution = z.infer<typeof WikiRunPlanReviewExecutionSchema>;
+
+/**
+ * GET …/runs/:runId/plan-review — full operator materials for plan-gate document review.
+ * Bound by payloadDigest (same formula as open plan gate). Not embedded on Run SSE.
+ */
+export const WikiRunPlanReviewSchema = z
+  .object({
+    runId: WikiRunIdSchema,
+    /** digest({ specDigest, planDigest }) — must match open plan gate when present. */
+    payloadDigest: Sha256HexSchema,
+    specDigest: Sha256HexSchema,
+    planDigest: Sha256HexSchema,
+    spec: WikiRunSpecSchema,
+    execution: WikiRunPlanReviewExecutionSchema,
+    artifact: z
+      .object({
+        specArtifactId: IdentifierSchema.optional(),
+        planArtifactId: IdentifierSchema.optional(),
+      })
+      .strict()
+      .default({}),
+  })
+  .strict();
+
+export type WikiRunPlanReview = z.infer<typeof WikiRunPlanReviewSchema>;
 
 /**
  * Per-attempt observation metrics (Phase 0 baseline). Optional everywhere:
@@ -507,7 +563,8 @@ export const WikiRunGateDecisionSchema = z
 
 /**
  * Optional operator-facing detail sealed when a gate opens (e.g. fix gate
- * blocking count / summary). Never carries full defect bodies or secrets.
+ * blocking count / summary, plan gate domain/page counts). Never carries full
+ * Spec bodies, defect lists, or secrets — those load via explicit read APIs.
  */
 export const WikiRunGateDetailSchema = z
   .object({
@@ -516,6 +573,12 @@ export const WikiRunGateDetailSchema = z
     clean: z.boolean().optional(),
     blockingCount: z.number().int().min(0).max(10_000).optional(),
     feedback: z.string().trim().max(4_000).optional(),
+    /** Plan gate: domain count from sealed Spec (snapshot fallback). */
+    domainCount: z.number().int().min(0).max(10_000).optional(),
+    /** Plan gate: page count from sealed Spec (snapshot fallback). */
+    pageCount: z.number().int().min(0).max(10_000).optional(),
+    /** Plan gate: openQuestions length from sealed Spec. */
+    openQuestionCount: z.number().int().min(0).max(10_000).optional(),
   })
   .strict();
 

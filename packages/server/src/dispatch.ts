@@ -46,6 +46,7 @@ import {
   handleGetCandidateTree,
   handleGetWikiRun,
   handleGetWikiRunIndex,
+  handleGetWikiRunPlanReview,
   handleGetWikiRunSpec,
   handleWikiRunCommand,
   handleWikiRunEvents,
@@ -357,6 +358,13 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/events");
       if (params && method === "GET") {
         await handleWikiRunEvents(req, res, params.id!, params.runId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/runs/:runId/plan-review");
+      if (params && method === "GET") {
+        await handleGetWikiRunPlanReview(req, res, params.id!, params.runId!, url);
         return;
       }
     }
