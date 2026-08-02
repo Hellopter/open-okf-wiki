@@ -147,6 +147,84 @@ export function researchDomainLeafGroups(
   return groups;
 }
 
+/** Kind rank for non-research pipeline nodes (after domain clusters). */
+function layoutTailKindRank(kind: string): number {
+  if (kind === "plan.adapt") return 0;
+  if (kind === "write.root" || kind === "validate.pre") return 1;
+  if (kind === "review.seat" || kind === "review.reduce") return 2;
+  if (kind === "gate.fix" || kind === "repair" || kind === "validate.final") return 3;
+  return 4;
+}
+
+/**
+ * Stable ELK model order: plan boundary → per-domain leaf clusters → orphans →
+ * adapt / write / quality / publication. When `expandedDomainKeys` is provided
+ * (collapse active), only expanded domains place their leaves before the domain
+ * card; collapsed domains contribute the domain alone.
+ */
+export function orderedNodesForLayout(
+  topology: FocusTopology,
+  options?: { expandedDomainKeys?: ReadonlySet<string> },
+): WikiRunNode[] {
+  const byKey = new Map(topology.nodes.map((node) => [node.key, node]));
+  const remaining = new Set(topology.nodes.map((node) => node.key));
+  const ordered: WikiRunNode[] = [];
+
+  const take = (key: string) => {
+    if (!remaining.has(key)) return;
+    const node = byKey.get(key);
+    if (!node) return;
+    remaining.delete(key);
+    ordered.push(node);
+  };
+
+  const planBoundary = topology.nodes
+    .filter((node) => node.kind === "freeze" || node.kind === "plan" || node.kind === "gate.plan")
+    .sort((a, b) => a.key.localeCompare(b.key));
+  for (const node of planBoundary) take(node.key);
+
+  const groups = researchDomainLeafGroups(topology);
+  const collapseActive = options?.expandedDomainKeys !== undefined;
+  const domains = topology.nodes
+    .filter((node) => node.kind === "research.domain")
+    .sort((a, b) => a.key.localeCompare(b.key));
+
+  // When collapse is active, place expanded domain clusters first so partial
+  // expand stays contiguous; both groups remain alpha-sorted within themselves.
+  const orderedDomains = collapseActive
+    ? [
+        ...domains.filter((domain) => options?.expandedDomainKeys?.has(domain.key)),
+        ...domains.filter((domain) => !options?.expandedDomainKeys?.has(domain.key)),
+      ]
+    : domains;
+
+  for (const domain of orderedDomains) {
+    const expanded =
+      !collapseActive || (options?.expandedDomainKeys?.has(domain.key) ?? false);
+    if (expanded) {
+      for (const leafKey of groups.get(domain.key) ?? []) take(leafKey);
+    }
+    take(domain.key);
+  }
+
+  const orphans = [...remaining]
+    .map((key) => byKey.get(key)!)
+    .filter((node) => node.kind === "research.leaf")
+    .sort((a, b) => a.key.localeCompare(b.key));
+  for (const node of orphans) take(node.key);
+
+  const tail = [...remaining]
+    .map((key) => byKey.get(key)!)
+    .sort(
+      (a, b) =>
+        layoutTailKindRank(a.kind) - layoutTailKindRank(b.kind) ||
+        a.key.localeCompare(b.key),
+    );
+  for (const node of tail) take(node.key);
+
+  return ordered;
+}
+
 /** Collapse only when fan-out is dense enough that domain cards are clearer. */
 export function shouldCollapseResearchLeaves(topology: FocusTopology): boolean {
   const groups = researchDomainLeafGroups(topology);

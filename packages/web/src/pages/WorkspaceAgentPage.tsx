@@ -263,6 +263,7 @@ export function WorkspaceAgentPage() {
               loadingEarlier={Boolean(timeline?.loadingEarlier)}
               followMode={observation.followMode}
               onFollowModeChange={observation.setFollowMode}
+              onRunCommand={(command) => void dispatchRun(command)}
               t={t}
             />
           ) : null}

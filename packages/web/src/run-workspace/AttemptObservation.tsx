@@ -1,5 +1,6 @@
 import type {
   AttemptTraceEvent,
+  RunCommand,
   WikiRunAttempt,
   WikiRunNode,
   WikiRunSnapshot,
@@ -9,9 +10,10 @@ import {
   ArrowLeftIcon,
   Clock3Icon,
   LoaderCircleIcon,
+  RotateCcwIcon,
   TerminalIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityCollapsible,
   attemptToolToViewModel,
@@ -20,13 +22,17 @@ import {
   StatusBadge,
   ToolExecutionItem,
 } from "@/components/agent-ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import type { MessageTree } from "../i18n";
+import { newCommandId } from "../lib/command-id";
 import { MarkdownDocument } from "../shared/MarkdownDocument";
+import { canRerunNode, canRetryFailedNode } from "./node-recovery";
 import type { FollowMode } from "./observation-state";
 
 function elapsed(attempt: WikiRunAttempt): string | null {
@@ -302,6 +308,7 @@ export function AttemptObservation({
   loadingEarlier,
   followMode,
   onFollowModeChange,
+  onRunCommand,
   t,
 }: {
   snapshot: WikiRunSnapshot;
@@ -316,8 +323,13 @@ export function AttemptObservation({
   loadingEarlier: boolean;
   followMode: FollowMode;
   onFollowModeChange: (mode: FollowMode) => void;
+  /** Dispatch a typed Run command using the latest snapshot + revision. */
+  onRunCommand?: (build: (latest: WikiRunSnapshot) => RunCommand) => void;
   t: MessageTree;
 }) {
+  const [rerunFeedback, setRerunFeedback] = useState("");
+  const [confirmRerunOpen, setConfirmRerunOpen] = useState(false);
+
   const attempts = selectedNode
     ? snapshot.attempts
         .filter((attempt) => attempt.nodeKey === selectedNode.key)
@@ -328,6 +340,73 @@ export function AttemptObservation({
         )
     : [];
   const live = selectedAttempt?.state === "running" || selectedAttempt?.state === "suspended";
+
+  const retry = selectedNode ? canRetryFailedNode(snapshot, selectedNode.key) : null;
+  const rerun = selectedNode ? canRerunNode(snapshot, selectedNode.key) : null;
+  const showRecovery = Boolean(onRunCommand && selectedNode && (retry || rerun));
+
+  const retryTitle =
+    retry?.ok === false
+      ? (t.workbench.cannotRetryReason[retry.reasonKey] ?? t.workbench.retryNodeHint)
+      : t.workbench.retryNodeHint;
+  const rerunTitle =
+    rerun?.ok === false
+      ? (t.workbench.cannotRerunReason[rerun.reasonKey] ?? t.workbench.rerunNodeHint)
+      : t.workbench.rerunNodeHint;
+
+  const dispatchRetry = () => {
+    if (!onRunCommand || !selectedNode || retry?.ok !== true) return;
+    const nodeKey = selectedNode.key;
+    onRunCommand((latest) => {
+      const fresh = canRetryFailedNode(latest, nodeKey);
+      if (fresh.ok !== true) {
+        throw new Error(
+          t.workbench.cannotRetryReason[fresh.reasonKey] ?? t.workbench.retryNodeHint,
+        );
+      }
+      return {
+        type: "retry_failed_node",
+        commandId: newCommandId(),
+        runId: latest.runId,
+        expectedRevision: latest.revision,
+        nodeKey,
+        generation: fresh.generation,
+        attemptId: fresh.attemptId,
+      };
+    });
+  };
+
+  const dispatchRerun = () => {
+    if (!onRunCommand || !selectedNode || rerun?.ok !== true) return;
+    const nodeKey = selectedNode.key;
+    const feedback = rerunFeedback.trim();
+    onRunCommand((latest) => {
+      const fresh = canRerunNode(latest, nodeKey);
+      if (fresh.ok !== true) {
+        throw new Error(
+          t.workbench.cannotRerunReason[fresh.reasonKey] ?? t.workbench.rerunNodeHint,
+        );
+      }
+      return {
+        type: "rerun_node",
+        commandId: newCommandId(),
+        runId: latest.runId,
+        expectedRevision: latest.revision,
+        nodeKey,
+        generation: fresh.generation,
+        ...(feedback ? { feedback } : {}),
+      };
+    });
+    setRerunFeedback("");
+    setConfirmRerunOpen(false);
+  };
+
+  const requestRerun = () => {
+    if (!rerun?.ok) return;
+    // Always confirm rerun — it bumps generation and may invalidate consumers.
+    setConfirmRerunOpen(true);
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="attempt-observation">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 md:px-6">
@@ -345,16 +424,76 @@ export function AttemptObservation({
             </p>
           </div>
         </div>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Switch
-            size="sm"
-            checked={followMode === "selected-live"}
-            disabled={!live}
-            onCheckedChange={(checked) => onFollowModeChange(checked ? "selected-live" : "pinned")}
-          />
-          {t.workbench.followLive}
-        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          {showRecovery ? (
+            <div
+              className="flex flex-wrap items-center gap-1"
+              data-testid="node-recovery-actions"
+            >
+              <Button
+                size="sm"
+                variant={retry?.ok ? "default" : "outline"}
+                disabled={!retry?.ok}
+                title={retryTitle}
+                aria-label={t.workbench.retryNode}
+                data-testid="retry-node"
+                onClick={dispatchRetry}
+              >
+                <RotateCcwIcon data-icon="inline-start" />
+                {t.workbench.retryNode}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!rerun?.ok}
+                title={rerunTitle}
+                aria-label={t.workbench.rerunNode}
+                data-testid="rerun-node"
+                onClick={requestRerun}
+              >
+                {t.workbench.rerunNode}
+              </Button>
+            </div>
+          ) : null}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              size="sm"
+              checked={followMode === "selected-live"}
+              disabled={!live}
+              onCheckedChange={(checked) =>
+                onFollowModeChange(checked ? "selected-live" : "pinned")
+              }
+            />
+            {t.workbench.followLive}
+          </label>
+        </div>
       </header>
+      {showRecovery && rerun?.ok ? (
+        <div className="border-b border-border px-4 py-2 md:px-6">
+          <Textarea
+            className="min-h-16 max-w-xl"
+            value={rerunFeedback}
+            onChange={(event) => setRerunFeedback(event.target.value)}
+            placeholder={t.workbench.rerunFeedbackPlaceholder}
+            data-testid="rerun-feedback"
+          />
+        </div>
+      ) : null}
+      <ConfirmDialog
+        open={confirmRerunOpen}
+        onOpenChange={setConfirmRerunOpen}
+        title={t.workbench.rerunNodeConfirmTitle}
+        description={
+          rerun?.ok && rerun.warnConsumers
+            ? t.workbench.rerunNodeConfirmConsumers
+            : t.workbench.rerunNodeConfirm
+        }
+        confirmLabel={t.workbench.rerunNode}
+        onConfirm={dispatchRerun}
+        destructive={Boolean(rerun?.ok && rerun.warnConsumers)}
+        data-testid="rerun-confirm-dialog"
+        confirmTestId="rerun-confirm"
+      />
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <aside className="shrink-0 border-b border-border bg-muted/15 md:w-64 md:border-r md:border-b-0">
           <div className="flex items-center gap-2 px-4 py-3 text-xs font-medium text-muted-foreground">

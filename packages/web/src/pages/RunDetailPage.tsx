@@ -3,6 +3,7 @@ import { Activity, FileSearch, Pause, Play, Square, TriangleAlert } from "lucide
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { describeConnectionStatus, statusToneTextClass } from "@/components/agent-ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -54,6 +55,7 @@ export function RunDetailPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!id || !runId) return;
@@ -252,7 +254,7 @@ export function RunDetailPage() {
                 disabled={
                   submitting || ["published", "cancelled", "failed"].includes(snapshot.state)
                 }
-                title="Pause Run"
+                title="Soft-stop: the Run can be resumed later."
                 aria-label="Pause Run"
               >
                 <Pause />
@@ -261,14 +263,7 @@ export function RunDetailPage() {
             <Button
               size="icon-sm"
               variant="destructive"
-              onClick={() =>
-                void dispatch((latest) => ({
-                  type: "cancel_run",
-                  commandId: newCommandId(),
-                  runId: latest.runId,
-                  expectedRevision: latest.revision,
-                }))
-              }
+              onClick={() => setConfirmCancelOpen(true)}
               disabled={submitting || ["published", "cancelled", "failed"].includes(snapshot.state)}
               title="Cancel Run"
               aria-label="Cancel Run"
@@ -277,6 +272,24 @@ export function RunDetailPage() {
             </Button>
           </div>
         </header>
+        <ConfirmDialog
+          open={confirmCancelOpen}
+          onOpenChange={setConfirmCancelOpen}
+          title="Cancel Run"
+          description="Cancel this Run? Cancellation is terminal — you cannot resume a cancelled Run."
+          confirmLabel="Cancel Run"
+          onConfirm={() =>
+            void dispatch((latest) => ({
+              type: "cancel_run",
+              commandId: newCommandId(),
+              runId: latest.runId,
+              expectedRevision: latest.revision,
+            }))
+          }
+          destructive
+          data-testid="cancel-run-dialog"
+          confirmTestId="cancel-run-confirm"
+        />
 
         {error ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
 

@@ -1,15 +1,21 @@
 import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract";
-import { PauseIcon, PlayIcon, SendIcon, SquareIcon } from "lucide-react";
+import { PauseIcon, PlayIcon, SendIcon, SquareIcon, TriangleAlertIcon } from "lucide-react";
 import { useState } from "react";
 import {
   describeRunStatus,
   GateActionShell,
   StatusBadge,
 } from "@/components/agent-ui";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMessage, type MessageTree } from "../i18n";
 import { newCommandId } from "../lib/command-id";
+import {
+  listRecoveryTargetNodes,
+  needsRecoveryBanner,
+} from "../run-workspace/node-recovery";
 import { RunGraph } from "../run-workspace/RunGraph";
 import type { WorkflowStageId } from "../run-workspace/workflow-topology";
 import { localizedLabel } from "./workbench-utils";
@@ -40,9 +46,14 @@ export function RunCanvas({
   const gate = openGate(snapshot);
   const [feedback, setFeedback] = useState("");
   const [answer, setAnswer] = useState("");
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const activeNode =
     snapshot.nodes.find((node) => node.state === "running") ??
     snapshot.nodes.find((node) => node.state === "ready");
+  const recoveryTargets = listRecoveryTargetNodes(snapshot);
+  const showRecovery = needsRecoveryBanner(snapshot);
+  const primaryRecovery = recoveryTargets[0] ?? null;
+
   const resolve = (decision: "approve" | "deny" | "revise" | "pass" | "fix" | "answer") => {
     if (!gate) return;
     onRunCommand(
@@ -62,6 +73,15 @@ export function RunCanvas({
             : {}),
         }) as RunCommand,
     );
+  };
+
+  const cancelRun = () => {
+    onRunCommand((current) => ({
+      type: "cancel_run",
+      commandId: newCommandId(),
+      runId: current.runId,
+      expectedRevision: current.revision,
+    }));
   };
 
   return (
@@ -108,7 +128,7 @@ export function RunCanvas({
               }
               disabled={["published", "failed", "cancelled"].includes(snapshot.state)}
               aria-label={t.workbench.pauseRun}
-              title={t.workbench.pauseRun}
+              title={t.workbench.pauseRunHint}
             >
               <PauseIcon />
             </Button>
@@ -116,14 +136,7 @@ export function RunCanvas({
           <Button
             size="icon-sm"
             variant="destructive"
-            onClick={() =>
-              onRunCommand((current) => ({
-                type: "cancel_run",
-                commandId: newCommandId(),
-                runId: current.runId,
-                expectedRevision: current.revision,
-              }))
-            }
+            onClick={() => setConfirmCancelOpen(true)}
             disabled={["published", "failed", "cancelled"].includes(snapshot.state)}
             aria-label={t.workbench.cancelRun}
             title={t.workbench.cancelRun}
@@ -132,7 +145,63 @@ export function RunCanvas({
           </Button>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmCancelOpen}
+        onOpenChange={setConfirmCancelOpen}
+        title={t.workbench.cancelRun}
+        description={t.workbench.cancelRunConfirm}
+        confirmLabel={t.workbench.cancelRun}
+        onConfirm={cancelRun}
+        destructive
+        data-testid="cancel-run-dialog"
+        confirmTestId="cancel-run-confirm"
+      />
       <div className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-6">
+        {showRecovery ? (
+          <Alert className="mb-5" data-testid="recovery-banner">
+            <TriangleAlertIcon />
+            <AlertTitle>{t.workbench.recoveryBannerTitle}</AlertTitle>
+            <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                {primaryRecovery
+                  ? formatMessage(t.workbench.recoveryBanner, {
+                      node: primaryRecovery.label || primaryRecovery.key,
+                      count: recoveryTargets.length,
+                    })
+                  : t.workbench.recoveryBannerGeneric}
+              </span>
+              {primaryRecovery ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 self-start"
+                  data-testid="recovery-open-node"
+                  onClick={() => onSelectNode(primaryRecovery.key)}
+                >
+                  {formatMessage(t.workbench.recoveryOpenNode, {
+                    node: primaryRecovery.label || primaryRecovery.key,
+                  })}
+                </Button>
+              ) : null}
+            </AlertDescription>
+            {recoveryTargets.length > 1 ? (
+              <ul className="mt-2 flex flex-wrap gap-2 text-xs">
+                {recoveryTargets.map((node) => (
+                  <li key={node.key}>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className="h-auto px-2 py-1 font-mono"
+                      onClick={() => onSelectNode(node.key)}
+                    >
+                      {node.label || node.key}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </Alert>
+        ) : null}
         {gate ? (
           <GateActionShell
             className="mb-5"

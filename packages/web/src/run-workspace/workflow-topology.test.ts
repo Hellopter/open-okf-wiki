@@ -4,6 +4,7 @@ import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract";
 import {
   buildFocusTopology,
   buildWorkflowStages,
+  orderedNodesForLayout,
   projectCollapsedResearchLeaves,
   relationForEdge,
   researchDomainLeafGroups,
@@ -200,4 +201,88 @@ test("small research graphs stay fully expanded", () => {
   assert.equal(shouldCollapseResearchLeaves(topology), false);
   const projected = projectCollapsedResearchLeaves(topology, new Set());
   assert.equal(projected.nodes.length, topology.nodes.length);
+});
+
+test("layout order clusters collapsed domains without leaf fan-out", () => {
+  const topology = denseResearchTopology();
+  const collapsed = projectCollapsedResearchLeaves(topology, new Set());
+  const keys = orderedNodesForLayout(collapsed, {
+    expandedDomainKeys: new Set(),
+  }).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "plan",
+    "research.domain.a",
+    "research.domain.b",
+    "plan.adapt.1",
+    "write.root",
+  ]);
+});
+
+test("layout order clusters leaves under a partially expanded domain", () => {
+  const topology = denseResearchTopology();
+  const expanded = new Set(["research.domain.a"]);
+  const partial = projectCollapsedResearchLeaves(topology, expanded);
+  const keys = orderedNodesForLayout(partial, {
+    expandedDomainKeys: expanded,
+  }).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "plan",
+    "research.leaf.a.1",
+    "research.leaf.a.2",
+    "research.leaf.a.3",
+    "research.domain.a",
+    "research.domain.b",
+    "plan.adapt.1",
+    "write.root",
+  ]);
+});
+
+test("layout order clusters leaves under each domain when fully expanded", () => {
+  const topology = denseResearchTopology();
+  const expanded = new Set(["research.domain.a", "research.domain.b"]);
+  const full = projectCollapsedResearchLeaves(topology, expanded);
+  const keys = orderedNodesForLayout(full, {
+    expandedDomainKeys: expanded,
+  }).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "plan",
+    "research.leaf.a.1",
+    "research.leaf.a.2",
+    "research.leaf.a.3",
+    "research.domain.a",
+    "research.leaf.b.1",
+    "research.leaf.b.2",
+    "research.leaf.b.3",
+    "research.domain.b",
+    "plan.adapt.1",
+    "write.root",
+  ]);
+});
+
+test("layout order places orphan research leaves after domain clusters", () => {
+  const plan = node("plan", "plan");
+  const domain = node("research.domain.a", "research.domain");
+  const leaf = node("research.leaf.a.1", "research.leaf");
+  const orphan = node("research.leaf.orphan.1", "research.leaf");
+  const adapt = node("plan.adapt.1", "plan.adapt");
+  const topology = buildFocusTopology(
+    snapshot(
+      [plan, leaf, domain, orphan, adapt],
+      [
+        { from: plan.key, to: leaf.key },
+        { from: plan.key, to: orphan.key },
+        { from: leaf.key, to: domain.key },
+        { from: domain.key, to: adapt.key },
+      ],
+    ),
+    "research",
+  );
+  const keys = orderedNodesForLayout(topology).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "plan",
+    "research.leaf.a.1",
+    "research.domain.a",
+    "research.leaf.orphan.1",
+    "plan.adapt.1",
+  ]);
 });

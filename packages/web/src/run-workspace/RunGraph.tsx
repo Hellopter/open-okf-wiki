@@ -28,9 +28,22 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatMessage, type MessageTree } from "../i18n";
 import {
+  allNodesPositioned,
+  buildElkLayoutInput,
+  buildHandlePlan,
+  contentNodeHeight,
+  degreeMaps,
+  elkLayoutOptions,
+  FOCUS_NODE_HEIGHT,
+  FOCUS_NODE_WIDTH,
+  layoutResearchFocus,
+  packPositionsByModelOrder,
+  simplifyDisplayEdges,
+} from "./graph-layout";
+import {
   buildFocusTopology,
   buildWorkflowStages,
-  type FocusTopology,
+  orderedNodesForLayout,
   projectCollapsedResearchLeaves,
   researchDomainLeafGroups,
   shouldCollapseResearchLeaves,
@@ -41,16 +54,13 @@ import {
 
 /**
  * Layout + chrome follow React Flow / ELK guidance:
- * - measure (or fix) node size for ELK; spacing ≫ defaults
+ * - content-sized nodes (capped); multi-handles use % top on the card
  * - multi-handles + port order for fan-out/join (elkjs-multiple-handles)
  * - edge stroke beats background; marker color matches stroke
  * - assign handles by laid-out Y so orthogonal edges stay parallel, not center-bundled
  * @see https://reactflow.dev/examples/layout/elkjs
  * @see https://reactflow.dev/examples/layout/elkjs-multiple-handles
  */
-const FOCUS_NODE_WIDTH = 220;
-const FOCUS_NODE_HEIGHT = 72;
-const PORT_SLOT = 20;
 const OVERVIEW_NODE_WIDTH = 216;
 const OVERVIEW_NODE_GAP = 64;
 const OVERVIEW_STEP_X = OVERVIEW_NODE_WIDTH + OVERVIEW_NODE_GAP;
@@ -89,16 +99,6 @@ type FocusNodeData = {
 type OverviewNode = Node<OverviewNodeData, "overview">;
 type FocusNode = Node<FocusNodeData, "focus">;
 
-type TopologyEdge = FocusTopology["edges"][number];
-
-type HandlePlan = {
-  sourceHandleByEdge: Map<string, string>;
-  targetHandleByEdge: Map<string, string>;
-  sourceHandleIdsByNode: Map<string, string[]>;
-  targetHandleIdsByNode: Map<string, string[]>;
-  heightByNode: Map<string, number>;
-};
-
 function stateClass(state: string): string {
   return describeNodeStatus(state).surfaceClass;
 }
@@ -112,17 +112,6 @@ function handleClassName(dense: boolean): string {
 function handleTopPercent(index: number, total: number): string {
   if (total <= 1) return "50%";
   return `${((index + 1) / (total + 1)) * 100}%`;
-}
-
-function baseNodeHeight(node: WikiRunNode): number {
-  return node.generation > 0 ? FOCUS_NODE_HEIGHT + 14 : FOCUS_NODE_HEIGHT;
-}
-
-function degreeHeight(node: WikiRunNode, degree: number): number {
-  const base = baseNodeHeight(node);
-  if (degree <= 2) return base;
-  // Room for one port slot per incident edge so multi-handles do not stack.
-  return Math.max(base, degree * PORT_SLOT + 28);
 }
 
 function OverviewCard({ data }: NodeProps<OverviewNode>) {
@@ -182,7 +171,7 @@ function FocusCard({ data }: NodeProps<FocusNode>) {
   return (
     <div
       title={data.displayLabel}
-      className={`relative flex h-full w-full flex-col justify-center rounded-lg border px-3 py-2.5 shadow-sm transition-shadow ${
+      className={`relative flex h-full w-full flex-col justify-center overflow-hidden rounded-lg border px-3 py-2.5 shadow-sm transition-shadow ${
         data.context
           ? "border-dashed border-muted-foreground/40 bg-muted/40 opacity-90"
           : stateClass(node.state)
@@ -340,141 +329,6 @@ function edgeStyle(
   };
 }
 
-/** Kind rank keeps model order ≈ left-to-right pipeline for ELK. */
-function kindRank(kind: string): number {
-  if (kind === "freeze" || kind === "plan" || kind === "gate.plan") return 0;
-  if (kind === "research.leaf") return 1;
-  if (kind === "research.domain") return 2;
-  if (kind === "plan.adapt") return 3;
-  if (kind === "write.root" || kind === "validate.pre") return 4;
-  if (kind === "review.seat" || kind === "review.reduce") return 5;
-  if (kind === "gate.fix" || kind === "repair" || kind === "validate.final") return 6;
-  return 7;
-}
-
-function orderedTopologyNodes(nodes: WikiRunNode[]): WikiRunNode[] {
-  return [...nodes].sort(
-    (a, b) => kindRank(a.kind) - kindRank(b.kind) || a.key.localeCompare(b.key),
-  );
-}
-
-function degreeMaps(edges: TopologyEdge[]): {
-  outDegree: Map<string, number>;
-  inDegree: Map<string, number>;
-} {
-  const outDegree = new Map<string, number>();
-  const inDegree = new Map<string, number>();
-  for (const edge of edges) {
-    outDegree.set(edge.source, (outDegree.get(edge.source) ?? 0) + 1);
-    inDegree.set(edge.target, (inDegree.get(edge.target) ?? 0) + 1);
-  }
-  return { outDegree, inDegree };
-}
-
-/**
- * Drop length-2 transitive forward edges for display (A→C when A→B→C exists).
- * Keeps the real control-plane snapshot intact; only the React Flow projection
- * simplifies so domain→write does not pile on top of domain→adapt→write.
- */
-function simplifyDisplayEdges(edges: TopologyEdge[]): TopologyEdge[] {
-  const adj = new Map<string, Set<string>>();
-  for (const edge of edges) {
-    const targets = adj.get(edge.source) ?? new Set<string>();
-    targets.add(edge.target);
-    adj.set(edge.source, targets);
-  }
-  return edges.filter((edge) => {
-    if (edge.relation === "feedback" || edge.relation === "control") return true;
-    for (const mid of adj.get(edge.source) ?? []) {
-      if (mid === edge.target) continue;
-      if (adj.get(mid)?.has(edge.target)) return false;
-    }
-    return true;
-  });
-}
-
-/**
- * After ELK places nodes, bind each edge to a dedicated handle ordered by the
- * counterpart's Y. That turns center-bundled fan-out into parallel orthogonal runs
- * (React Flow multi-handle + ELK model-order pattern).
- */
-function buildHandlePlan(
-  topology: FocusTopology,
-  positions: Record<string, { x: number; y: number }>,
-): HandlePlan {
-  const { outDegree, inDegree } = degreeMaps(topology.edges);
-  const heightByNode = new Map<string, number>();
-  for (const node of topology.nodes) {
-    const degree = Math.max(outDegree.get(node.key) ?? 0, inDegree.get(node.key) ?? 0, 1);
-    heightByNode.set(node.key, degreeHeight(node, degree));
-  }
-
-  const bySource = new Map<string, TopologyEdge[]>();
-  const byTarget = new Map<string, TopologyEdge[]>();
-  for (const edge of topology.edges) {
-    const outs = bySource.get(edge.source) ?? [];
-    outs.push(edge);
-    bySource.set(edge.source, outs);
-    const ins = byTarget.get(edge.target) ?? [];
-    ins.push(edge);
-    byTarget.set(edge.target, ins);
-  }
-
-  const yOf = (key: string) => positions[key]?.y ?? 0;
-
-  const sourceHandleByEdge = new Map<string, string>();
-  const targetHandleByEdge = new Map<string, string>();
-  const sourceHandleIdsByNode = new Map<string, string[]>();
-  const targetHandleIdsByNode = new Map<string, string[]>();
-
-  for (const node of topology.nodes) {
-    const outs = [...(bySource.get(node.key) ?? [])].sort(
-      (a, b) => yOf(a.target) - yOf(b.target) || a.target.localeCompare(b.target),
-    );
-    const ins = [...(byTarget.get(node.key) ?? [])].sort(
-      (a, b) => yOf(a.source) - yOf(b.source) || a.source.localeCompare(b.source),
-    );
-    const sourceIds = outs.length > 0 ? outs.map((_, i) => `out-${i}`) : ["out-0"];
-    const targetIds = ins.length > 0 ? ins.map((_, i) => `in-${i}`) : ["in-0"];
-    sourceHandleIdsByNode.set(node.key, sourceIds);
-    targetHandleIdsByNode.set(node.key, targetIds);
-    outs.forEach((edge, i) => sourceHandleByEdge.set(edge.id, `out-${i}`));
-    ins.forEach((edge, i) => targetHandleByEdge.set(edge.id, `in-${i}`));
-  }
-
-  return {
-    sourceHandleByEdge,
-    targetHandleByEdge,
-    sourceHandleIdsByNode,
-    targetHandleIdsByNode,
-    heightByNode,
-  };
-}
-
-function elkLayoutOptions(nodeCount: number): Record<string, string> {
-  const dense = nodeCount > 10;
-  return {
-    "elk.algorithm": "layered",
-    "elk.direction": "RIGHT",
-    "elk.edgeRouting": "ORTHOGONAL",
-    "elk.spacing.nodeNode": dense ? "72" : "56",
-    "elk.spacing.edgeNode": dense ? "32" : "24",
-    "elk.spacing.edgeEdge": dense ? "18" : "14",
-    "elk.spacing.portPort": "12",
-    "elk.layered.spacing.nodeNodeBetweenLayers": dense ? "140" : "110",
-    "elk.layered.spacing.edgeNodeBetweenLayers": "32",
-    "elk.layered.spacing.edgeEdgeBetweenLayers": "20",
-    "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
-    "elk.layered.considerModelOrder.portModelOrder": "true",
-    "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
-    "elk.layered.crossingMinimization.forceNodeModelOrder": "true",
-    "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
-    "elk.layered.nodePlacement.bk.fixedAlignment": "BALANCED",
-    "elk.layered.nodePlacement.favorStraightEdges": "true",
-    "elk.layered.unnecessaryBendpoints": "true",
-  };
-}
-
 function focusGraphMinHeight(nodeCount: number): string {
   if (nodeCount > 16) return "min-h-[56rem]";
   if (nodeCount > 10) return "min-h-[48rem]";
@@ -540,82 +394,64 @@ function FocusGraph({
     () => simplifyDisplayEdges(topology.edges),
     [topology.edges],
   );
-  const orderedNodes = useMemo(() => orderedTopologyNodes(topology.nodes), [topology.nodes]);
+  const domainCollapseKeys = useMemo(() => {
+    if (!collapseEnabled) return undefined;
+    return new Set(
+      [...domainGroups.keys()].filter((key) =>
+        topology.nodes.some((node) => node.key === key && node.kind === "research.domain"),
+      ),
+    );
+  }, [collapseEnabled, domainGroups, topology.nodes]);
+
+  const orderedNodes = useMemo(
+    () =>
+      orderedNodesForLayout(
+        topology,
+        collapseEnabled ? { expandedDomainKeys: expandedDomains } : undefined,
+      ),
+    [topology, collapseEnabled, expandedDomains],
+  );
   const { outDegree, inDegree } = useMemo(() => degreeMaps(displayEdges), [displayEdges]);
 
-  const layoutInput = useMemo(() => {
-    // Pre-size high-degree nodes so ELK reserves vertical room for multi-handles.
-    // Domain cards with collapse chrome need a little extra height.
-    const children = orderedNodes.map((node) => {
-      const degree = Math.max(outDegree.get(node.key) ?? 0, inDegree.get(node.key) ?? 0, 1);
-      let height = degreeHeight(node, degree);
-      if (collapseEnabled && node.kind === "research.domain" && domainGroups.has(node.key)) {
-        height = Math.max(height, FOCUS_NODE_HEIGHT + 28);
-      }
-      const portCountOut = Math.max(outDegree.get(node.key) ?? 0, 1);
-      const portCountIn = Math.max(inDegree.get(node.key) ?? 0, 1);
-      const ports = [
-        ...Array.from({ length: portCountIn }, (_, i) => ({
-          id: `${node.key}:in-${i}`,
-          width: 6,
-          height: 6,
-          layoutOptions: { "elk.port.side": "WEST", "elk.port.index": String(i) },
-        })),
-        ...Array.from({ length: portCountOut }, (_, i) => ({
-          id: `${node.key}:out-${i}`,
-          width: 6,
-          height: 6,
-          layoutOptions: { "elk.port.side": "EAST", "elk.port.index": String(i) },
-        })),
-      ];
-      return {
-        id: node.key,
-        width: FOCUS_NODE_WIDTH,
-        height,
-        ports,
-        layoutOptions: {
-          "elk.portConstraints": "FIXED_ORDER",
-        },
-      };
-    });
+  const layoutInput = useMemo(
+    () =>
+      buildElkLayoutInput(orderedNodes, displayEdges, {
+        outDegree,
+        inDegree,
+        domainCollapseKeys,
+      }),
+    [orderedNodes, displayEdges, outDegree, inDegree, domainCollapseKeys],
+  );
 
-    const edges = [...displayEdges].sort((a, b) => {
-      const sa = orderedNodes.findIndex((n) => n.key === a.source);
-      const sb = orderedNodes.findIndex((n) => n.key === b.source);
-      return sa - sb || a.target.localeCompare(b.target);
-    });
-
-    const outIndex = new Map<string, number>();
-    const inIndex = new Map<string, number>();
-    const elkEdges = edges.map((edge) => {
-      const oi = outIndex.get(edge.source) ?? 0;
-      outIndex.set(edge.source, oi + 1);
-      const ii = inIndex.get(edge.target) ?? 0;
-      inIndex.set(edge.target, ii + 1);
-      return {
-        id: edge.id,
-        sources: [`${edge.source}:out-${oi}`],
-        targets: [`${edge.target}:in-${ii}`],
-      };
-    });
-
-    return { children, edges: elkEdges };
-  }, [
-    orderedNodes,
-    displayEdges,
-    outDegree,
-    inDegree,
-    collapseEnabled,
-    domainGroups,
-  ]);
-
-  const topologyNodeCount = topology.nodes.length;
+  const topologyNodeKeys = useMemo(
+    () => topology.nodes.map((node) => node.key),
+    [topology.nodes],
+  );
+  const topologyNodeCount = topologyNodeKeys.length;
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
 
+  // Stage / base run change: drop stale coords. Expand/collapse keeps prior positions
+  // until ELK returns so the graph does not flash to a grid fallback.
   useEffect(() => {
-    let active = true;
     setPositions({});
+  }, [stage, baseTopology.topologyKey]);
+
+  useEffect(() => {
+    // Research collapse (full/partial/collapsed): deterministic columns so leaf
+    // clusters share vertical space with their domain (ELK layers cannot).
+    if (collapseEnabled && stage === "research") {
+      setPositions(
+        layoutResearchFocus(orderedNodes, displayEdges, {
+          domainGroups,
+          expandedDomainKeys: expandedDomains,
+          domainCollapseKeys,
+        }),
+      );
+      return;
+    }
+
+    let active = true;
     const elk = new ELK();
     void elk
       .layout({
@@ -625,33 +461,51 @@ function FocusGraph({
       })
       .then((layout) => {
         if (!active) return;
-        setPositions(
-          Object.fromEntries(
-            (layout.children ?? []).map((node) => [node.id, { x: node.x ?? 0, y: node.y ?? 0 }]),
-          ),
+        const raw = Object.fromEntries(
+          (layout.children ?? []).map((node) => [node.id, { x: node.x ?? 0, y: node.y ?? 0 }]),
         );
-      });
+        // Restack each X-layer in model order so expanded domain clusters stay on top.
+        const orderedNodeKeys = layoutInput.children.map((child) => child.id);
+        const heightByNode = Object.fromEntries(
+          layoutInput.children.map((child) => [child.id, child.height]),
+        );
+        const next = packPositionsByModelOrder(orderedNodeKeys, raw, heightByNode);
+        // Full ELK result replaces coords; do not clear beforehand (keeps prior layout stable).
+        setPositions(next);
+      })
+      .catch(() => {});
     return () => {
       active = false;
     };
-  }, [layoutInput, topologyNodeCount]);
+  }, [
+    collapseEnabled,
+    stage,
+    orderedNodes,
+    displayEdges,
+    domainGroups,
+    expandedDomains,
+    domainCollapseKeys,
+    layoutInput,
+    topologyNodeCount,
+  ]);
 
   const handlePlan = useMemo(() => {
-    if (Object.keys(positions).length !== topologyNodeCount) return null;
-    const plan = buildHandlePlan({ ...topology, edges: displayEdges }, positions);
-    // Match ELK height for domain collapse chrome.
-    if (collapseEnabled) {
-      for (const node of topology.nodes) {
-        if (node.kind !== "research.domain" || !domainGroups.has(node.key)) continue;
-        const current = plan.heightByNode.get(node.key) ?? baseNodeHeight(node);
-        plan.heightByNode.set(node.key, Math.max(current, FOCUS_NODE_HEIGHT + 28));
-      }
-    }
-    return plan;
-  }, [positions, topology, displayEdges, topologyNodeCount, collapseEnabled, domainGroups]);
+    if (!allNodesPositioned(topologyNodeKeys, positions)) return null;
+    return buildHandlePlan({ ...topology, edges: displayEdges }, positions, {
+      domainCollapseKeys,
+    });
+  }, [positions, topology, displayEdges, topologyNodeKeys, domainCollapseKeys]);
+
+  const layoutSettled =
+    handlePlan != null && allNodesPositioned(topologyNodeKeys, positions);
+
+  // Fit only on stage / base topology change — not every expand/collapse.
+  const fitSignature = `${stage}:${baseTopology.topologyKey}`;
+  const [fittedSignature, setFittedSignature] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!flow || !handlePlan || Object.keys(positions).length !== topologyNodeCount) return;
+    if (!flow || !layoutSettled) return;
+    if (fittedSignature === fitSignature) return;
     const frame = requestAnimationFrame(() => {
       flow.fitView({
         padding: topologyNodeCount > 12 ? 0.08 : 0.14,
@@ -659,13 +513,14 @@ function FocusGraph({
         maxZoom: 1.05,
         duration: 180,
       });
+      setFittedSignature(fitSignature);
     });
     return () => cancelAnimationFrame(frame);
-  }, [flow, handlePlan, positions, topologyNodeCount, topology.topologyKey]);
+  }, [flow, layoutSettled, fitSignature, fittedSignature, topologyNodeCount]);
 
   const nodes: FocusNode[] = useMemo(() => {
     const plan = handlePlan;
-    return topology.nodes.map((node, index) => {
+    return orderedNodes.map((node, index) => {
       const sourceHandleIds = plan?.sourceHandleIdsByNode.get(node.key) ?? ["out-0"];
       const targetHandleIds = plan?.targetHandleIdsByNode.get(node.key) ?? ["in-0"];
       const leafCount = domainGroups.get(node.key)?.length ?? 0;
@@ -694,7 +549,11 @@ function FocusGraph({
         targetPosition: Position.Left,
         style: {
           width: FOCUS_NODE_WIDTH,
-          height: plan?.heightByNode.get(node.key) ?? baseNodeHeight(node),
+          height:
+            plan?.heightByNode.get(node.key) ??
+            contentNodeHeight(node, {
+              domainCollapseChrome: domainCollapseKeys?.has(node.key) ?? false,
+            }),
         },
         data: {
           node,
@@ -709,7 +568,7 @@ function FocusGraph({
       };
     });
   }, [
-    topology.nodes,
+    orderedNodes,
     topology.contextNodeKeys,
     positions,
     handlePlan,
@@ -717,6 +576,7 @@ function FocusGraph({
     t,
     collapseEnabled,
     domainGroups,
+    domainCollapseKeys,
     expandedDomains,
     toggleDomain,
   ]);
@@ -764,7 +624,7 @@ function FocusGraph({
       ) : null}
       <div className="min-h-0 flex-1">
         <ReactFlow
-          key={`${stage}:${topology.topologyKey}`}
+          key={stage}
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
