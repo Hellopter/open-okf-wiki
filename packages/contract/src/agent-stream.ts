@@ -401,7 +401,25 @@ export function reducePiEvent(state: PiStreamState, kind: string, payload: unkno
   }
 
   if (kind === "message_end") {
-    if (role === "user") return state;
+    if (role === "user") {
+      // Append finalized user rows on end only (message_start is a no-op for user)
+      // so live session state includes the operator prompt without double-append.
+      const content = extractMessageText(message);
+      if (!content.trim()) return state;
+      const id = piMessageId(message) ?? makeId("user");
+      if (state.messages.some((m) => m.id === id)) return state;
+      const userMessage: AgentMessage = {
+        id,
+        role: "user",
+        content,
+        createdAt: ts,
+        status: "done",
+      };
+      return {
+        ...state,
+        messages: [...state.messages, userMessage],
+      };
+    }
     if (role === "toolResult" || role === "tool") {
       if (isRecord(message) && typeof message.toolCallId === "string") {
         const toolCallId = message.toolCallId;

@@ -287,3 +287,104 @@ describe("reducePiEvent tool_execution_start wiki_produce", () => {
     assert.equal(tools.find((t) => t.id === "new-produce")?.name, "wiki_produce");
   });
 });
+
+describe("reducePiEvent user message_end", () => {
+  it("agent_start then user message_end appends user to viewMessages", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    // message_start for user is intentionally a no-op
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: {
+        id: "user-1",
+        role: "user",
+        content: [{ type: "text", text: "Hello operator" }],
+      },
+    });
+    assert.equal(viewMessages(state).length, 0);
+
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        id: "user-1",
+        role: "user",
+        content: [{ type: "text", text: "Hello operator" }],
+      },
+    });
+
+    const view = viewMessages(state);
+    assert.equal(view.length, 1);
+    assert.equal(view[0]?.role, "user");
+    assert.equal(view[0]?.id, "user-1");
+    assert.equal(view[0]?.content, "Hello operator");
+    assert.equal(view[0]?.status, "done");
+  });
+
+  it("user then assistant stream + settle preserves user-then-assistant order", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        id: "user-1",
+        role: "user",
+        content: [{ type: "text", text: "What is status?" }],
+      },
+    });
+    state = reducePiEvent(state, "message_start", {
+      type: "message_start",
+      message: {
+        id: "asst-1",
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+      },
+    });
+    state = reducePiEvent(state, "message_update", {
+      type: "message_update",
+      message: {
+        id: "asst-1",
+        role: "assistant",
+        content: [{ type: "text", text: "All green." }],
+      },
+    });
+    state = reducePiEvent(state, "message_end", {
+      type: "message_end",
+      message: {
+        id: "asst-1",
+        role: "assistant",
+        content: [{ type: "text", text: "All green." }],
+      },
+    });
+    state = reducePiEvent(state, "agent_end", { type: "agent_end" });
+    state = reducePiEvent(state, "agent_settled", { type: "agent_settled" });
+
+    const view = viewMessages(state);
+    assert.equal(view.length, 2);
+    assert.equal(view[0]?.role, "user");
+    assert.equal(view[0]?.content, "What is status?");
+    assert.equal(view[1]?.role, "assistant");
+    assert.equal(view[1]?.content, "All green.");
+    assert.equal(view[1]?.status, "done");
+    assert.equal(state.agentStatus, "idle");
+  });
+
+  it("duplicate user message_end with same id is idempotent", () => {
+    let state = createPiStreamState();
+    state = reducePiEvent(state, "agent_start", { type: "agent_start" });
+    const payload = {
+      type: "message_end",
+      message: {
+        id: "user-dup",
+        role: "user",
+        content: [{ type: "text", text: "Once only" }],
+      },
+    };
+    state = reducePiEvent(state, "message_end", payload);
+    state = reducePiEvent(state, "message_end", payload);
+
+    const users = viewMessages(state).filter((m) => m.role === "user");
+    assert.equal(users.length, 1);
+    assert.equal(users[0]?.id, "user-dup");
+    assert.equal(users[0]?.content, "Once only");
+  });
+});

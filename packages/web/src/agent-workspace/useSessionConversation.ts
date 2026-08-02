@@ -2,7 +2,7 @@ import { createPiStreamState, type PiStreamState, viewMessages } from "@okf-wiki
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl, parseAgentSessionEvent } from "../api";
 import { useI18n } from "../i18n";
-import { reduceSessionStreamEvent } from "./session-stream-state";
+import { appendOptimisticUser, reduceSessionStreamEvent } from "./session-stream-state";
 
 export type SessionConnection = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -52,14 +52,17 @@ export function useSessionConversation(workspaceId: string, sessionId: string | 
     async (text: string) => {
       if (!sessionId || !text.trim()) return false;
       setError(null);
+      const trimmed = text.trim();
       const active = ["streaming", "between_operations", "retrying", "compacting"].includes(status);
       try {
         const result = await agentSessionCommand(
           workspaceId,
           sessionId,
-          active ? { type: "steer", text: text.trim() } : { type: "prompt", text: text.trim() },
+          active ? { type: "steer", text: trimmed } : { type: "prompt", text: trimmed },
         );
         if (!result.ok) throw new Error(result.message ?? t.workbench.commandRejected);
+        // Instant UX: show user bubble before SSE delivers the real row (prompt + steer).
+        setStreamState((previous) => appendOptimisticUser(previous, trimmed));
         return true;
       } catch (nextError) {
         setError(nextError);

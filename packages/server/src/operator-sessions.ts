@@ -30,12 +30,26 @@ import {
   type AgentSseStream,
   createPiStreamState,
   diffStreamState,
+  PAYLOAD_TEXT_MAX,
   type PiStreamState,
   reducePiEvent,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { loadWorkspace, resolveWikiSkillPaths } from "@okf-wiki/core";
 import { wikiRunsForWorkspace } from "./wiki-runs-registry.ts";
+
+/** Compact tool args for the browser wire: JSON + redact + hard cap. */
+const OPERATOR_TOOL_ARGS_MAX = 4_000;
+
+function formatToolArgsForOperator(args: unknown): string {
+  let raw: string;
+  try {
+    raw = typeof args === "string" ? args : JSON.stringify(args);
+  } catch {
+    raw = String(args);
+  }
+  return redactSensitiveText(raw).slice(0, OPERATOR_TOOL_ARGS_MAX);
+}
 
 type SessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 type Listener = (event: AgentSseEvent) => void;
@@ -191,9 +205,9 @@ function emit(live: LiveSession, event: AgentSseEvent): void {
 }
 
 /**
- * Pi holds the authoritative conversation record, including provider reasoning
- * and raw tool payloads. The browser is an operator surface, not a Pi mirror:
- * expose only text, a tool lifecycle, and the bounded WikiRun receipt.
+ * Pi holds the authoritative conversation record. The browser is an operator
+ * surface: project thinking, tool args/output, and WikiRun receipts with
+ * secret redaction and size caps — never system/tool role rows.
  */
 function projectOperatorMessage(message: AgentMessage): AgentMessage | null {
   if (message.role === "system" || message.role === "tool") return null;
@@ -210,23 +224,26 @@ function projectOperatorMessage(message: AgentMessage): AgentMessage | null {
           },
         }
       : {}),
-    ...(tool.name === "wiki_repair" && tool.args && typeof tool.args === "object"
-      ? (() => {
-          const runId = (tool.args as Record<string, unknown>).runId;
-          return typeof runId === "string" && runId.trim() ? { args: { runId: runId.trim() } } : {};
-        })()
+    ...(tool.args !== undefined ? { args: formatToolArgsForOperator(tool.args) } : {}),
+    ...(tool.output !== undefined
+      ? { output: redactSensitiveText(tool.output).slice(0, PAYLOAD_TEXT_MAX) }
       : {}),
   }));
-  const parts = message.parts
-    ?.filter((part) => part.type !== "thinking")
-    .map((part) =>
-      part.type === "text" ? { ...part, text: redactSensitiveText(part.text) } : part,
-    );
+  const parts = message.parts?.map((part) => {
+    if (part.type === "text") return { ...part, text: redactSensitiveText(part.text) };
+    if (part.type === "thinking")
+      return { ...part, thinking: redactSensitiveText(part.thinking) };
+    return part;
+  });
   return {
     id: message.id,
     role: message.role,
     content: redactSensitiveText(message.content),
     createdAt: message.createdAt,
+    ...(message.thinking !== undefined
+      ? { thinking: redactSensitiveText(message.thinking) }
+      : {}),
+    ...(message.thinkingStatus ? { thinkingStatus: message.thinkingStatus } : {}),
     ...(tools?.length ? { tools } : {}),
     ...(parts?.length ? { parts } : {}),
     ...(message.status ? { status: message.status } : {}),

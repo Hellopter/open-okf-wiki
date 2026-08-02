@@ -81,6 +81,17 @@ export function AssistantTurn({
   };
 
   const parts = message.parts;
+  const hasTextPart = parts?.some((part) => part.type === "text" && part.text) ?? false;
+  // Visible prose: text parts or top-level content (content-fallback / no-parts path).
+  const hasVisibleText = hasTextPart || Boolean(message.content);
+  const hasThinkingParts = parts?.some((part) => part.type === "thinking") ?? false;
+  // Suppress "Generating…" when thinking or tools already provide visible activity.
+  const showGenerating =
+    streaming &&
+    !hasVisibleText &&
+    !message.thinking &&
+    !(message.tools?.length) &&
+    !hasThinkingParts;
   let body: ReactNode;
 
   if (parts && parts.length > 0) {
@@ -91,10 +102,18 @@ export function AssistantTurn({
     let toolGroupIdx = 0;
     let thinkingPartIdx = 0;
     const renderedToolIds = new Set<string>();
-    const hasThinkingParts = parts.some((part) => part.type === "thinking");
     const lastThinkingPartIndex = (() => {
       for (let i = parts.length - 1; i >= 0; i--) {
         if (parts[i]?.type === "thinking") return i;
+      }
+      return -1;
+    })();
+    // Caret tracks the last text part with content, not merely the last part in the array
+    // (which may be a tool after prose has already started streaming).
+    const lastTextPartWithContentIndex = (() => {
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const part = parts[i];
+        if (part?.type === "text" && part.text) return i;
       }
       return -1;
     })();
@@ -148,7 +167,7 @@ export function AssistantTurn({
           nodes.push(
             <span key={`text-${textIdx++}`} className="relative inline-block w-full">
               <MarkdownDocument content={part.text} mode={mdMode} />
-              {streaming && partIndex === parts.length - 1 ? (
+              {streaming && partIndex === lastTextPartWithContentIndex ? (
                 <span
                   className="ml-0.5 inline-block h-3 w-0.5 translate-y-0.5 animate-pulse bg-foreground"
                   aria-hidden
@@ -176,7 +195,6 @@ export function AssistantTurn({
       );
     }
 
-    const hasTextPart = parts.some((part) => part.type === "text" && part.text);
     if (!hasTextPart && message.content) {
       // Append prose after thinking/tools — coherent fallback when no text parts exist.
       nodes.push(
@@ -224,7 +242,7 @@ export function AssistantTurn({
       className={cn("flex w-full min-w-0 flex-col gap-2.5", className)}
       data-slot="assistant-turn"
     >
-      {streaming ? (
+      {showGenerating ? (
         <p
           className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
           role="status"

@@ -44,28 +44,28 @@ function fixtureWorkspace(root: string, skillPath: string) {
   });
 }
 
-test("Operator Session browser projection excludes Pi thinking and raw tool payloads", () => {
+test("Operator Session browser projection keeps thinking and tool bodies with redaction", () => {
   const projected = projectOperatorStreamState(
     createPiStreamState([
       {
         id: "assistant-private",
         role: "assistant",
-        content: "Public answer",
-        thinking: "private chain of thought",
+        content: "Public answer with sk-super-secret",
+        thinking: "chain of thought with sk-super-secret",
         thinkingStatus: "done",
         createdAt: "2026-08-02T00:00:00.000Z",
         status: "done",
         parts: [
-          { type: "thinking", thinking: "private chain of thought" },
-          { type: "text", text: "Public answer" },
+          { type: "thinking", thinking: "chain of thought with sk-super-secret" },
+          { type: "text", text: "Public answer with sk-super-secret" },
           { type: "tool", toolId: "tool-private" },
         ],
         tools: [
           {
             id: "tool-private",
             name: "wiki_repair",
-            args: { runId: "run-safe", path: "/private/path" },
-            output: "private file content",
+            args: { runId: "run-safe", path: "/private/path", token: "sk-super-secret" },
+            output: "tool result containing sk-super-secret and useful detail",
             status: "done",
           },
         ],
@@ -73,19 +73,61 @@ test("Operator Session browser projection excludes Pi thinking and raw tool payl
     ]),
   );
 
+  const message = projected.messages[0];
+  assert.ok(message);
+  assert.equal(message.thinking, "chain of thought with [redacted-key]");
+  assert.equal(message.thinkingStatus, "done");
+  assert.equal(message.content, "Public answer with [redacted-key]");
+  assert.ok(message.parts?.some((part) => part.type === "thinking"));
+  const thinkingPart = message.parts?.find((part) => part.type === "thinking");
+  assert.ok(thinkingPart && thinkingPart.type === "thinking");
+  assert.equal(thinkingPart.thinking, "chain of thought with [redacted-key]");
+
+  const tool = message.tools?.[0];
+  assert.ok(tool);
+  assert.equal(tool.id, "tool-private");
+  assert.equal(tool.name, "wiki_repair");
+  assert.equal(tool.status, "done");
+  assert.equal(typeof tool.args, "string");
+  assert.ok(String(tool.args).includes("run-safe"));
+  assert.ok(String(tool.args).includes("[redacted-path]"));
+  assert.equal(String(tool.args).includes("sk-super-secret"), false);
+  assert.ok(tool.output?.includes("useful detail"));
+  assert.equal(tool.output?.includes("sk-super-secret"), false);
+  assert.ok(tool.output?.includes("[redacted-key]"));
+
   const wire = JSON.stringify(projected);
-  assert.equal(wire.includes("private chain of thought"), false);
-  assert.equal(wire.includes("private file content"), false);
-  assert.equal(wire.includes("/private/path"), false);
-  assert.equal(projected.messages[0]?.content, "Public answer");
-  assert.deepEqual(projected.messages[0]?.tools, [
-    {
-      id: "tool-private",
-      name: "wiki_repair",
-      args: { runId: "run-safe" },
-      status: "done",
-    },
-  ]);
+  assert.equal(wire.includes("sk-super-secret"), false);
+});
+
+test("Operator Session browser projection truncates large tool output", () => {
+  const huge = `prefix ${"x".repeat(20_000)} suffix`;
+  const projected = projectOperatorStreamState(
+    createPiStreamState([
+      {
+        id: "assistant-huge-tool",
+        role: "assistant",
+        content: "done",
+        createdAt: "2026-08-02T00:00:00.000Z",
+        status: "done",
+        tools: [
+          {
+            id: "tool-huge",
+            name: "read_file",
+            args: { path: "docs/big.md" },
+            output: huge,
+            status: "done",
+          },
+        ],
+      },
+    ]),
+  );
+
+  const output = projected.messages[0]?.tools?.[0]?.output;
+  assert.ok(output);
+  assert.ok(output.length <= 12_000);
+  assert.ok(output.startsWith("prefix "));
+  assert.equal(output.includes("suffix"), false);
 });
 
 test("rejected detached prompt emits a redacted error patch", async (t) => {

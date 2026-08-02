@@ -15,7 +15,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
-import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
+import { Message, MessageContent } from "@/components/ui/message";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -117,16 +117,13 @@ function TranscriptRow({
     );
   }
   return (
-    <Message data-testid="session-message-agent" className="group/assistant-row">
+    <Message data-testid="session-message-agent">
       <MessageContent>
         <AssistantTurn
           message={message}
           labels={assistantLabels(t)}
           onOpenRun={onOpenRun}
         />
-        <MessageFooter className="px-0 opacity-0 transition-opacity group-hover/assistant-row:opacity-100 group-focus-within/assistant-row:opacity-100">
-          {new Date(message.createdAt).toLocaleTimeString()}
-        </MessageFooter>
       </MessageContent>
     </Message>
   );
@@ -149,7 +146,7 @@ export function SessionTranscript({
       <MessageScrollerProvider autoScroll={hasStreamingMessage}>
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-4xl px-4 py-5 md:px-6">
+            <MessageScrollerContent className="mx-auto w-full max-w-4xl gap-3 px-4 py-5 md:px-6">
               {messages.length === 0 ? (
                 <Empty className="min-h-48 border-0 py-12" data-testid="session-transcript-empty">
                   <EmptyHeader>
