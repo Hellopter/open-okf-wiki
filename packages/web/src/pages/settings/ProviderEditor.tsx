@@ -1,5 +1,6 @@
+import { CircleAlert, CircleCheck } from "lucide-react";
 import { type Dispatch, type FormEvent, type SetStateAction } from "react";
-import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -237,19 +238,19 @@ export function ProviderEditor({
               </Button>
             </div>
             {testResult ? (
-              <div
-                className={testResult.ok ? "provider-test-result ok" : "provider-test-result fail"}
+              <Alert
+                variant={testResult.ok ? "default" : "destructive"}
                 data-testid="provider-test-result"
-                role="status"
               >
-                <Badge variant={testResult.ok ? "secondary" : "destructive"}>
+                {testResult.ok ? <CircleCheck /> : <CircleAlert />}
+                <AlertTitle>
                   {testResult.ok ? t.globalSettings.testOk : t.globalSettings.testFail}
-                </Badge>
-                <span className="mono small">
+                </AlertTitle>
+                <AlertDescription className="font-mono">
                   {testResult.message}
                   {testResult.latencyMs !== undefined ? ` · ${testResult.latencyMs}ms` : ""}
-                </span>
-              </div>
+                </AlertDescription>
+              </Alert>
             ) : null}
           </FieldGroup>
         </form>

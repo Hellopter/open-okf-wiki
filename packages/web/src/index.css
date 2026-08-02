@@ -187,18 +187,6 @@
   @apply text-2xs font-medium uppercase tracking-wide text-muted-foreground;
 }
 
-.provider-test-result {
-  @apply mt-1 flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2;
-}
-
-.provider-test-result.ok {
-  @apply border-primary/30 bg-primary/5;
-}
-
-.provider-test-result.fail {
-  @apply border-destructive/30 bg-destructive/5;
-}
-
 .form-actions {
   @apply mt-1 flex flex-wrap items-center gap-3;
 }

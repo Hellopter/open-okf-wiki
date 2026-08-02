@@ -3,6 +3,7 @@ import { Activity, FileSearch, Pause, Play, Square, TriangleAlert } from "lucide
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -270,21 +271,19 @@ export function RunDetailPage() {
         <div className="grid min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <section className="min-h-0 overflow-y-auto px-4 py-5 lg:px-6">
             {gate ? (
-              <div className="max-w-3xl">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <TriangleAlert className="size-4 text-amber-600" />
-                  {stage}
-                </div>
-                <p className="mt-3 whitespace-pre-wrap text-sm text-muted-foreground">
+              <Alert className="max-w-3xl">
+                <TriangleAlert />
+                <AlertTitle>{stage}</AlertTitle>
+                <AlertDescription className="whitespace-pre-wrap">
                   {gate.detail?.summary ??
                     specSummary ??
                     "This Run is waiting for an explicit operator decision."}
-                </p>
+                </AlertDescription>
                 {gate.kind === "plan" || gate.kind === "publication" || gate.kind === "fix" ? (
                   <Textarea
                     value={feedback}
                     onChange={(event) => setFeedback(event.target.value)}
-                    className="mt-5 min-h-24 max-w-2xl"
+                    className="mt-3 min-h-24 max-w-2xl"
                     placeholder="Decision notes"
                   />
                 ) : null}
@@ -292,13 +291,14 @@ export function RunDetailPage() {
                   <Textarea
                     value={operatorAnswer}
                     onChange={(event) => setOperatorAnswer(event.target.value)}
-                    className="mt-5 min-h-24 max-w-2xl"
+                    className="mt-3 min-h-24 max-w-2xl"
                     placeholder="Answer for this Run"
                   />
                 ) : null}
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="mt-3 flex flex-wrap gap-2">
                   {gate.kind === "operator_input" ? (
                     <Button
+                      size="sm"
                       onClick={() => resolveGate("answer")}
                       disabled={submitting || controlsPaused || !operatorAnswer.trim()}
                     >
@@ -308,12 +308,14 @@ export function RunDetailPage() {
                   {gate.kind === "fix" ? (
                     <>
                       <Button
+                        size="sm"
                         onClick={() => resolveGate("pass")}
                         disabled={submitting || controlsPaused}
                       >
                         Pass
                       </Button>
                       <Button
+                        size="sm"
                         variant="outline"
                         onClick={() => resolveGate("fix")}
                         disabled={submitting || controlsPaused}
@@ -324,6 +326,7 @@ export function RunDetailPage() {
                   ) : null}
                   {gate.kind !== "operator_input" && gate.kind !== "fix" ? (
                     <Button
+                      size="sm"
                       onClick={() => resolveGate("approve")}
                       disabled={submitting || controlsPaused}
                     >
@@ -332,6 +335,7 @@ export function RunDetailPage() {
                   ) : null}
                   {gate.kind !== "operator_input" ? (
                     <Button
+                      size="sm"
                       variant="outline"
                       onClick={() => resolveGate("revise")}
                       disabled={submitting || controlsPaused || !feedback.trim()}
@@ -341,6 +345,7 @@ export function RunDetailPage() {
                   ) : null}
                   {gate.kind !== "operator_input" ? (
                     <Button
+                      size="sm"
                       variant="destructive"
                       onClick={() => resolveGate("deny")}
                       disabled={submitting || controlsPaused}
@@ -349,7 +354,7 @@ export function RunDetailPage() {
                     </Button>
                   ) : null}
                 </div>
-              </div>
+              </Alert>
             ) : snapshot.candidates.length > 0 ? (
               <div className="max-w-3xl">
                 <div className="flex items-center gap-2 text-sm font-medium">

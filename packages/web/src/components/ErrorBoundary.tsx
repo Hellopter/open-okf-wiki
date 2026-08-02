@@ -1,4 +1,6 @@
+import { CircleAlert } from "lucide-react";
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
 type Props = {
@@ -41,20 +43,20 @@ class ErrorBoundaryInner extends Component<Props, State> {
 
     return (
       <div
-        role="alert"
-        className="flex min-h-svh flex-col items-center justify-center gap-4 bg-background p-6 text-center text-foreground"
+        className="flex min-h-svh flex-col items-center justify-center gap-4 bg-background p-6 text-foreground"
         data-testid="app-error-boundary"
       >
-        <div className="flex max-w-md flex-col gap-2">
-          <h1 className="text-xl font-semibold tracking-tight">Something went wrong</h1>
-          <p className="text-sm text-muted-foreground">
+        <Alert variant="destructive" className="max-w-md">
+          <CircleAlert />
+          <AlertTitle>Something went wrong</AlertTitle>
+          <AlertDescription>
             The operator UI hit an unexpected error. You can retry rendering or return to the home
             page.
-          </p>
-          <pre className="mt-2 max-h-40 overflow-auto rounded-md border bg-muted/40 p-3 text-left font-mono text-xs text-destructive">
+          </AlertDescription>
+          <pre className="col-start-2 mt-2 max-h-40 overflow-auto rounded-md border bg-muted/40 p-3 text-left font-mono text-xs text-destructive">
             {error.message}
           </pre>
-        </div>
+        </Alert>
         <div className="flex flex-wrap items-center justify-center gap-2">
           <Button type="button" variant="outline" onClick={this.handleRetry}>
             Try again

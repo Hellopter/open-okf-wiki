@@ -1,3 +1,5 @@
+import { CircleAlert } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -14,13 +16,11 @@ export function DangerSection({ deleting, onRequestDelete }: DangerSectionProps)
   return (
     <Card>
       <CardContent className="flex flex-col gap-6">
-        <section
-          className="flex flex-col gap-3 rounded-md border border-destructive/30 p-4"
-          data-testid="settings-danger-zone"
-        >
-          <h2 className="text-base font-semibold text-destructive">{t.settings.dangerTitle}</h2>
-          <p className="muted small">{t.settings.dangerDescription}</p>
-          <div className="form-actions">
+        <Alert variant="destructive" data-testid="settings-danger-zone">
+          <CircleAlert />
+          <AlertTitle>{t.settings.dangerTitle}</AlertTitle>
+          <AlertDescription>{t.settings.dangerDescription}</AlertDescription>
+          <div className="form-actions col-start-2">
             <Button
               type="button"
               variant="destructive"
@@ -32,7 +32,7 @@ export function DangerSection({ deleting, onRequestDelete }: DangerSectionProps)
               {deleting ? t.common.deleting : t.settings.deleteWorkspace}
             </Button>
           </div>
-        </section>
+        </Alert>
       </CardContent>
     </Card>
   );

@@ -1,5 +1,6 @@
 import type { AgentMessage, AgentToolCall } from "@okf-wiki/contract";
-import { BotIcon, ChevronRightIcon, WorkflowIcon, WrenchIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, CircleAlert, WorkflowIcon, WrenchIcon } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
@@ -148,7 +149,12 @@ function TranscriptRow({
         {message.tools?.map((tool) => (
           <ToolTrace key={tool.id} tool={tool} onOpenRun={onOpenRun} />
         ))}
-        {message.errorText ? <p className="text-xs text-destructive">{message.errorText}</p> : null}
+        {message.errorText ? (
+          <Alert variant="destructive" className="mt-2 max-w-3xl">
+            <CircleAlert />
+            <AlertDescription>{message.errorText}</AlertDescription>
+          </Alert>
+        ) : null}
         <MessageFooter className="px-0">
           {new Date(message.createdAt).toLocaleTimeString()}
         </MessageFooter>
