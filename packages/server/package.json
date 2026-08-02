@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --experimental-strip-types --watch src/main.ts",
+    "dev": "node --experimental-strip-types --watch --watch-path=src src/main.ts",
     "start": "node --experimental-strip-types src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",

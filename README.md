@@ -96,7 +96,7 @@ orphaned `5173`/`8787` listeners from a previous crash.
 | Process (full profile) | Hot reload |
 |---|---|
 | `@okf-wiki/web` | Vite HMR; `@okf-wiki/contract` resolves to **src** in dev |
-| `@okf-wiki/server` | `node --watch` on server src; imports **lib dist** |
+| `@okf-wiki/server` | `node --watch --watch-path=src` only (not lib `dist`); imports **lib dist** — restart server after lib changes |
 | libs | single `tsc -b --watch` → `packages/{contract,core,agent}/dist` |
 
 Env: `OKF_DEV_KILL_PORTS=0` refuses busy ports (default frees them);
