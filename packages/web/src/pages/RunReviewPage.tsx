@@ -8,7 +8,6 @@ import type {
 import { Check, FileDiff, MessageSquarePlus, Wrench } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,12 +22,15 @@ import {
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
+import { useI18n } from "../i18n";
 import { newCommandId } from "../lib/command-id";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 export function RunReviewPage() {
   const { id = "", runId = "" } = useParams<{ id: string; runId: string }>();
   const [params, setParams] = useSearchParams();
+  const { t } = useI18n();
   const candidateDigest = params.get("candidate") ?? "";
   const pagePath = params.get("page") ?? "index.md";
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
@@ -89,7 +91,6 @@ export function RunReviewPage() {
   const dispatch = async (build: (latest: WikiRunSnapshot) => RunCommand) => {
     if (!id || !runId || submitting) return;
     setSubmitting(true);
-    setError(null);
     try {
       let latest = (await getWikiRun(id, runId)).snapshot;
       setSnapshot(latest);
@@ -107,9 +108,9 @@ export function RunReviewPage() {
         }
       }
       await refresh();
-      toast.success("Review updated");
+      notifySuccess("Review updated");
     } catch (nextError) {
-      setError(nextError);
+      notifyError(nextError);
     } finally {
       setSubmitting(false);
     }
@@ -127,7 +128,7 @@ export function RunReviewPage() {
       endLine < startLine ||
       endLine > lines.length
     ) {
-      setError(new Error("Choose a valid line range."));
+      notifyError(t.validation.lineRange);
       return;
     }
     const body = comment.trim();

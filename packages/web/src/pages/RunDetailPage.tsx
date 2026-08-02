@@ -2,7 +2,6 @@ import type { RunCommand, WikiRunSnapshot, WorkspaceConfig } from "@okf-wiki/con
 import { Activity, FileSearch, Pause, Play, Square, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { toast } from "sonner";
 import { describeConnectionStatus, statusToneTextClass } from "@/components/agent-ui";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -20,6 +19,7 @@ import {
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { newCommandId } from "../lib/command-id";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 function currentGate(snapshot: WikiRunSnapshot): WikiRunSnapshot["gates"][number] | undefined {
@@ -119,7 +119,6 @@ export function RunDetailPage() {
   const dispatch = async (build: (latest: WikiRunSnapshot) => RunCommand) => {
     if (!id || !runId || submitting) return;
     setSubmitting(true);
-    setError(null);
     try {
       let latest = (await getWikiRun(id, runId)).snapshot;
       setSnapshot(latest);
@@ -136,9 +135,9 @@ export function RunDetailPage() {
           throw nextError;
         }
       }
-      toast.success("Command accepted");
+      notifySuccess("Command accepted");
     } catch (nextError) {
-      setError(nextError);
+      notifyError(nextError);
     } finally {
       setSubmitting(false);
     }
@@ -185,7 +184,19 @@ export function RunDetailPage() {
   };
 
   const stage = useMemo(() => (snapshot ? titleFor(snapshot) : "Run"), [snapshot]);
-  if (loading || !snapshot) return <LoadingState />;
+  if (loading) return <LoadingState />;
+  if (!snapshot) {
+    return (
+      <WorkbenchShell workspaceId={id} workspaceName={workspace?.name} mode="operate" immersive>
+        <main
+          className="flex min-h-0 flex-1 flex-col bg-background"
+          data-testid="run-workspace-detail"
+        >
+          {error ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : <LoadingState />}
+        </main>
+      </WorkbenchShell>
+    );
+  }
 
   return (
     <WorkbenchShell workspaceId={id} workspaceName={workspace?.name} mode="operate" immersive>

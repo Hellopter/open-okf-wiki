@@ -43,8 +43,8 @@ import {
   type WorkspaceSource,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { ErrorBanner } from "../components/ErrorBanner";
 import { formatMessage, useI18n } from "../i18n";
+import { notifyError } from "../lib/notify";
 
 type SourcesMessages = ReturnType<typeof useI18n>["t"]["sources"];
 
@@ -84,7 +84,6 @@ export type WorkspaceSourcesPageProps = {
 export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: WorkspaceSourcesPageProps) {
   const { t } = useI18n();
   const { id = "" } = useParams<{ id: string }>();
-  const [error, setError] = useState<unknown>(null);
   const [path, setPath] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [remoteUrl, setRemoteUrl] = useState("");
@@ -124,7 +123,6 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       return;
     }
     setSavingIgnores(true);
-    setError(null);
     try {
       const result = await updateSource(id, editingSourceId, {
         applyDefaultIgnores: editApplyDefaults,
@@ -133,7 +131,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       onWorkspaceChange(result.workspace);
       setEditingSourceId(null);
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setSavingIgnores(false);
     }
@@ -145,7 +143,6 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       return;
     }
     setIsSubmitting(true);
-    setError(null);
     try {
       const result = await addSource(id, {
         path: path.trim(),
@@ -156,7 +153,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       setPath("");
       setSourceId("");
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -168,7 +165,6 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       return;
     }
     setIsPending(true);
-    setError(null);
     try {
       const result = await cloneSource(id, {
         remoteUrl: remoteUrl.trim(),
@@ -181,7 +177,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       setCloneId("");
       setCloneRef("");
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setIsPending(false);
     }
@@ -193,7 +189,6 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
     }
     const sourceIdToDelete = deleteTargetId;
     setDeletingId(sourceIdToDelete);
-    setError(null);
     try {
       const result = await deleteSource(id, sourceIdToDelete);
       onWorkspaceChange(result.workspace);
@@ -206,7 +201,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
         setEditingSourceId(null);
       }
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setDeletingId(null);
     }
@@ -217,7 +212,6 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       return;
     }
     setProbing(true);
-    setError(null);
     try {
       const result = await probeSources(id);
       const map: Record<string, GitProbe> = {};
@@ -226,7 +220,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       }
       setProbes(map);
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setProbing(false);
     }
@@ -243,7 +237,6 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
 
   return (
     <div data-testid="sources-page" className="flex flex-col gap-5">
-      <ErrorBanner error={error} onDismiss={() => setError(null)} />
       <ConfirmDialog
         open={deleteTargetId != null}
         onOpenChange={(open) => {

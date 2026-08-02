@@ -1,7 +1,6 @@
 import { DEFAULT_ORCHESTRATION } from "@okf-wiki/contract";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { toast } from "sonner";
 import {
   deleteWorkspace,
   getProvider,
@@ -17,8 +16,12 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { formatMessage, useI18n } from "../i18n";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { DangerSection } from "./workspace-settings/DangerSection";
-import { GeneralSection } from "./workspace-settings/GeneralSection";
+import {
+  type GeneralFieldErrorKey,
+  GeneralSection,
+} from "./workspace-settings/GeneralSection";
 import { SkillSection } from "./workspace-settings/SkillSection";
 
 export type SettingsSection = "general" | "skill" | "danger";
@@ -40,7 +43,10 @@ export function WorkspaceSettingsPage({
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
   const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<GeneralFieldErrorKey, string>>>(
+    {},
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteMeta, setDeleteMeta] = useState(false);
@@ -85,6 +91,15 @@ export function WorkspaceSettingsPage({
   const [skillFileContent, setSkillFileContent] = useState("");
   const [skillFileDirty, setSkillFileDirty] = useState(false);
   const skipWorkspaceReloadRef = useRef<string | null>(null);
+
+  const clearFieldError = useCallback((key: GeneralFieldErrorKey) => {
+    setFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
 
   const applyWorkspace = useCallback(
     (ws: WorkspaceConfig, catalog: ModelProfilePublic[]) => {
@@ -150,8 +165,9 @@ export function WorkspaceSettingsPage({
           // Editor is optional if read fails.
         }
       }
-    } catch {
+    } catch (err) {
       setSkill(null);
+      throw err;
     }
   }, []);
 
@@ -162,7 +178,7 @@ export function WorkspaceSettingsPage({
     }
     let cancelled = false;
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     void (async () => {
       try {
         const providerData = await getProvider().catch(() => null);
@@ -174,7 +190,7 @@ export function WorkspaceSettingsPage({
         await loadSkill(workspace);
       } catch (err) {
         if (!cancelled) {
-          setError(err);
+          setLoadError(err);
           setSkill(null);
         }
       } finally {
@@ -192,18 +208,17 @@ export function WorkspaceSettingsPage({
       return;
     }
     setIsSubmitting(true);
-    setError(null);
+    const nextFieldErrors: Partial<Record<GeneralFieldErrorKey, string>> = {};
     try {
       const contextRaw = contextTargetTokens.trim();
       let nextContextTarget: number | undefined;
       if (contextRaw !== "") {
         const parsed = Number(contextRaw);
         if (!Number.isInteger(parsed) || parsed <= 0) {
-          setError(new Error("contextTargetTokens must be a positive integer"));
-          setIsSubmitting(false);
-          return;
+          nextFieldErrors.contextTargetTokens = t.validation.contextTargetTokens;
+        } else {
+          nextContextTarget = parsed;
         }
-        nextContextTarget = parsed;
       }
       const timeoutRaw = requestTimeoutSeconds.trim();
       const nextTimeoutSeconds = Number(timeoutRaw);
@@ -212,21 +227,15 @@ export function WorkspaceSettingsPage({
         nextTimeoutSeconds <= 0 ||
         nextTimeoutSeconds > 86_400
       ) {
-        setError(new Error("requestTimeoutSeconds must be between 1 and 86400"));
-        setIsSubmitting(false);
-        return;
+        nextFieldErrors.requestTimeoutSeconds = t.validation.requestTimeoutSeconds;
       }
       const nextMaxRetries = Number(retryMaxRetries.trim());
       if (!Number.isInteger(nextMaxRetries) || nextMaxRetries < 0 || nextMaxRetries > 10) {
-        setError(new Error("retry.maxRetries must be an integer from 0 to 10"));
-        setIsSubmitting(false);
-        return;
+        nextFieldErrors.retryMaxRetries = t.validation.retryMaxRetries;
       }
       const nextBaseDelay = Number(retryBaseDelayMs.trim());
       if (!Number.isInteger(nextBaseDelay) || nextBaseDelay < 100 || nextBaseDelay > 60_000) {
-        setError(new Error("retry.baseDelayMs must be an integer from 100 to 60000"));
-        setIsSubmitting(false);
-        return;
+        nextFieldErrors.retryBaseDelayMs = t.validation.retryBaseDelayMs;
       }
       const nextProviderMaxRetries = Number(providerMaxRetries.trim());
       if (
@@ -234,9 +243,7 @@ export function WorkspaceSettingsPage({
         nextProviderMaxRetries < 0 ||
         nextProviderMaxRetries > 5
       ) {
-        setError(new Error("retry.provider.maxRetries must be an integer from 0 to 5"));
-        setIsSubmitting(false);
-        return;
+        nextFieldErrors.providerMaxRetries = t.validation.providerMaxRetries;
       }
       const nextProviderMaxDelay = Number(providerMaxRetryDelayMs.trim());
       if (
@@ -244,16 +251,20 @@ export function WorkspaceSettingsPage({
         nextProviderMaxDelay < 0 ||
         nextProviderMaxDelay > 600_000
       ) {
-        setError(new Error("retry.provider.maxRetryDelayMs must be an integer from 0 to 600000"));
-        setIsSubmitting(false);
-        return;
+        nextFieldErrors.providerMaxRetryDelayMs = t.validation.providerMaxRetryDelayMs;
       }
       const nextGateTimeout = Number(gateTimeoutSeconds.trim() || "0");
       if (!Number.isInteger(nextGateTimeout) || nextGateTimeout < 0 || nextGateTimeout > 604_800) {
-        setError(new Error("gateTimeoutSeconds must be an integer from 0 to 604800"));
+        nextFieldErrors.gateTimeoutSeconds = t.validation.gateTimeoutSeconds;
+      }
+
+      if (Object.keys(nextFieldErrors).length > 0) {
+        setFieldErrors(nextFieldErrors);
         setIsSubmitting(false);
         return;
       }
+      setFieldErrors({});
+
       const baseLimits = workspace?.limits ?? { requestTimeoutSeconds: 600 };
       // Spread through an explicit optional so the fallback `{ requestTimeoutSeconds }`
       // is still destructurable under WorkspaceLimits | bare-timeout union.
@@ -319,9 +330,9 @@ export function WorkspaceSettingsPage({
       });
       skipWorkspaceReloadRef.current = result.workspace.id;
       applyWorkspace(result.workspace, models);
-      toast.success(t.settings.saved);
+      notifySuccess(t.settings.saved);
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -333,14 +344,13 @@ export function WorkspaceSettingsPage({
     }
     const deleteFiles = deleteMeta;
     setDeleting(true);
-    setError(null);
     try {
       await deleteWorkspace(id, {
         deleteFiles,
       });
       navigate("/workspaces");
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setDeleting(false);
     }
@@ -352,7 +362,7 @@ export function WorkspaceSettingsPage({
         {t.settings.descriptionPrefix} <Link to="/settings">{t.settings.descriptionLink}</Link>
         {t.settings.descriptionSuffix}
       </p>
-      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <ErrorBanner error={loadError} onDismiss={() => setLoadError(null)} />
       {loading ? (
         <LoadingState label={t.settings.loading} />
       ) : workspace ? (
@@ -364,6 +374,8 @@ export function WorkspaceSettingsPage({
               defaultModelProfileId={defaultModelProfileId}
               isSubmitting={isSubmitting}
               onSubmit={handleSubmit}
+              fieldErrors={fieldErrors}
+              onClearFieldError={clearFieldError}
               name={name}
               setName={setName}
               modelProfileId={modelProfileId}
@@ -430,7 +442,6 @@ export function WorkspaceSettingsPage({
               setSkillFilePath={setSkillFilePath}
               setSkillFileContent={setSkillFileContent}
               setSkillFileDirty={setSkillFileDirty}
-              setError={setError}
               applyWorkspace={applyWorkspace}
             />
           ) : null}

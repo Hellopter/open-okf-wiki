@@ -11,7 +11,10 @@ import { useTheme } from "../../theme/use-theme"
 
 /**
  * App toaster bound to ThemeProvider. Sonner provides accessible live regions
- * for status and error announcements (toast.success / toast.error).
+ * for status and error announcements.
+ *
+ * Prefer `notifySuccess` / `notifyError` from `lib/notify` for action results
+ * (errors use a longer duration). Keep page load failures on ErrorBanner.
  */
 const Toaster = ({ ...props }: ToasterProps) => {
   const { resolvedTheme } = useTheme()
@@ -19,6 +22,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={resolvedTheme}
       className="toaster group"
+      position="top-right"
       icons={{
         success: <CircleCheckIcon className="size-4" />,
         info: <InfoIcon className="size-4" />,

@@ -2,6 +2,7 @@ import { createPiStreamState, type PiStreamState, viewMessages } from "@okf-wiki
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl, parseAgentSessionEvent } from "../api";
 import { useI18n } from "../i18n";
+import { notifyError } from "../lib/notify";
 import { appendOptimisticUser, reduceSessionStreamEvent } from "./session-stream-state";
 
 export type SessionConnection = "connecting" | "live" | "reconnecting" | "offline";
@@ -10,7 +11,6 @@ export function useSessionConversation(workspaceId: string, sessionId: string | 
   const { t } = useI18n();
   const [streamState, setStreamState] = useState<PiStreamState>(() => createPiStreamState());
   const [connection, setConnection] = useState<SessionConnection>("offline");
-  const [error, setError] = useState<unknown>(null);
   const messages = useMemo(() => viewMessages(streamState), [streamState]);
   const status = streamState.agentStatus;
 
@@ -22,21 +22,17 @@ export function useSessionConversation(workspaceId: string, sessionId: string | 
     }
     let active = true;
     setConnection("connecting");
-    setError(null);
     const source = new EventSource(agentSessionEventsUrl(workspaceId, sessionId));
     source.onmessage = (event) => {
       if (!active) return;
       try {
         const frame = parseAgentSessionEvent(event.data);
         setStreamState((previous) => reduceSessionStreamEvent(previous, frame));
-        if (frame.kind === "snapshot") setError(null);
-        else if (frame.kind === "stream") {
-          setError(frame.payload.errorText ? new Error(frame.payload.errorText) : null);
-        }
+        // Stream errorText is rendered on the assistant turn; parse failures only affect
+        // connection status so the shell banner stays reserved for page-level load errors.
         setConnection("live");
-      } catch (nextError) {
+      } catch {
         setConnection("reconnecting");
-        setError(nextError);
       }
     };
     source.onerror = () => {
@@ -51,7 +47,6 @@ export function useSessionConversation(workspaceId: string, sessionId: string | 
   const send = useCallback(
     async (text: string) => {
       if (!sessionId || !text.trim()) return false;
-      setError(null);
       const trimmed = text.trim();
       const active = ["streaming", "between_operations", "retrying", "compacting"].includes(status);
       try {
@@ -65,7 +60,7 @@ export function useSessionConversation(workspaceId: string, sessionId: string | 
         setStreamState((previous) => appendOptimisticUser(previous, trimmed));
         return true;
       } catch (nextError) {
-        setError(nextError);
+        notifyError(nextError);
         return false;
       }
     },
@@ -78,9 +73,9 @@ export function useSessionConversation(workspaceId: string, sessionId: string | 
       const result = await agentSessionCommand(workspaceId, sessionId, { type: "abort" });
       if (!result.ok) throw new Error(result.message ?? t.workbench.stopFailed);
     } catch (nextError) {
-      setError(nextError);
+      notifyError(nextError);
     }
   }, [sessionId, t.workbench.stopFailed, workspaceId]);
 
-  return { messages, status, connection, error, setError, send, abort };
+  return { messages, status, connection, send, abort };
 }

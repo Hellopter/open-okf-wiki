@@ -2,7 +2,6 @@ import type { RunCommand, WikiRunAttempt, WikiRunSnapshot } from "@okf-wiki/cont
 import { LanguagesIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { toast } from "sonner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +25,7 @@ import { promptTitle } from "../agent-workspace/workbench-utils";
 import { dispatchWikiRunCommand, getWikiRun } from "../api";
 import { LoadingState } from "../components/LoadingState";
 import { formatMessage, useI18n } from "../i18n";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { AttemptObservation } from "../run-workspace/AttemptObservation";
 import { latestAttemptForNode } from "../run-workspace/observation-state";
 import { useRunObservation } from "../run-workspace/useRunObservation";
@@ -108,9 +108,9 @@ export function WorkspaceAgentPage() {
     try {
       const latest = (await getWikiRun(id, snapshot.runId)).snapshot;
       await dispatchWikiRunCommand(id, build(latest));
-      toast.success(t.workbench.runCommandAccepted);
+      notifySuccess(t.workbench.runCommandAccepted);
     } catch (nextError) {
-      activity.setError(nextError);
+      notifyError(nextError);
     }
   };
 
@@ -153,10 +153,10 @@ export function WorkspaceAgentPage() {
       workspaceName={activity.workspace?.name}
       mode="operate"
       immersive
-      error={activity.error ?? observation.error ?? conversation.error}
+      error={activity.error ?? observation.error}
       onDismissError={() => {
         activity.setError(null);
-        conversation.setError(null);
+        observation.setError(null);
       }}
       actions={
         <>
@@ -174,7 +174,7 @@ export function WorkspaceAgentPage() {
           <Button
             size="icon-sm"
             variant="ghost"
-            onClick={() => void activity.refresh()}
+            onClick={() => void activity.refresh().catch(notifyError)}
             aria-label={t.workbench.refresh}
             title={t.workbench.refresh}
           >

@@ -11,6 +11,7 @@ import {
   type WikiRunListItem,
   wikiRunIndexEventsUrl,
 } from "../api";
+import { notifyError } from "../lib/notify";
 
 type UseWorkspaceActivityOptions = {
   workspaceId: string;
@@ -102,7 +103,7 @@ export function useWorkspaceActivity({
       setSessions(nextSessions);
       return session;
     } catch (nextError) {
-      setError(nextError);
+      notifyError(nextError);
       return null;
     } finally {
       setCreating(false);
@@ -119,7 +120,7 @@ export function useWorkspaceActivity({
         setSessions(nextSessions);
         return nextSessions;
       } catch (nextError) {
-        setError(nextError);
+        notifyError(nextError);
         return null;
       }
     },

@@ -18,7 +18,9 @@ import {
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
+import { useI18n } from "../i18n";
 import { newCommandId } from "../lib/command-id";
+import { notifyError } from "../lib/notify";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 function stateLabel(state: WikiRunListItem["state"]): string {
@@ -32,13 +34,14 @@ function stateColor(state: WikiRunListItem["state"]): string {
 export function RunWorkspacePage() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [workspace, setWorkspace] = useState<WorkspaceConfig | null>(null);
   const [runs, setRuns] = useState<WikiRunListItem[]>([]);
   const [objective, setObjective] = useState("");
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [connection, setConnection] = useState<"live" | "reconnecting" | "offline">("offline");
-  const [error, setError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -50,10 +53,10 @@ export function RunWorkspacePage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     void refresh()
       .catch((nextError) => {
-        if (!cancelled) setError(nextError);
+        if (!cancelled) setLoadError(nextError);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -82,11 +85,10 @@ export function RunWorkspacePage() {
   const startRun = async () => {
     if (!id || starting) return;
     if (!workspace?.orchestration.maxActiveRuns || !workspace.orchestration.maxConcurrentAttempts) {
-      setError(new Error("Set workspace Run capacity before starting a Run."));
+      notifyError(t.validation.runCapacity);
       return;
     }
     setStarting(true);
-    setError(null);
     try {
       const receipt = await dispatchWikiRunCommand(id, {
         type: "start_run",
@@ -98,7 +100,7 @@ export function RunWorkspacePage() {
       });
       navigate(`/w/${encodeURIComponent(id)}/runs/${encodeURIComponent(receipt.receipt.runId)}`);
     } catch (nextError) {
-      setError(nextError);
+      notifyError(nextError);
     } finally {
       setStarting(false);
     }
@@ -129,7 +131,7 @@ export function RunWorkspacePage() {
             <Button
               variant="outline"
               size="icon"
-              onClick={() => void refresh()}
+              onClick={() => void refresh().catch(notifyError)}
               aria-label="Refresh Runs"
               title="Refresh Runs"
             >
@@ -142,7 +144,7 @@ export function RunWorkspacePage() {
           </div>
         </section>
 
-        {error ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
+        {loadError ? <ErrorBanner error={loadError} onDismiss={() => setLoadError(null)} /> : null}
 
         <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-h-0 overflow-y-auto">

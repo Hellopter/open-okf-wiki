@@ -12,6 +12,7 @@ import {
   wikiRunAttemptTranscriptEventsUrl,
   wikiRunEventsUrl,
 } from "../api";
+import { notifyError } from "../lib/notify";
 import {
   createRunObservationState,
   type FollowMode,
@@ -185,7 +186,8 @@ export function useRunObservation(
       });
       setState((current) => hydrateAttemptTimeline(current, transcript, "earlier"));
     } catch (nextError) {
-      setError(nextError);
+      // Pagination is a user action — toast, don't replace page-level load banner.
+      notifyError(nextError);
       setState((current) => setTimelineError(current, attemptId, nextError));
     }
   }, [runId, state.selectedAttemptId, state.timelines, workspaceId]);
@@ -210,6 +212,7 @@ export function useRunObservation(
     snapshot: state.snapshot,
     spec,
     error,
+    setError,
     connection,
     selectedNode,
     selectedAttempt,

@@ -518,6 +518,18 @@ export const en = {
     dismiss: "Dismiss",
     unknown: "Unknown error",
   },
+  validation: {
+    maxContextTokens: "maxContextTokens must be a positive integer",
+    contextTargetTokens: "contextTargetTokens must be a positive integer",
+    requestTimeoutSeconds: "requestTimeoutSeconds must be between 1 and 86400",
+    retryMaxRetries: "retry.maxRetries must be an integer from 0 to 10",
+    retryBaseDelayMs: "retry.baseDelayMs must be an integer from 100 to 60000",
+    providerMaxRetries: "retry.provider.maxRetries must be an integer from 0 to 5",
+    providerMaxRetryDelayMs: "retry.provider.maxRetryDelayMs must be an integer from 0 to 600000",
+    gateTimeoutSeconds: "gateTimeoutSeconds must be an integer from 0 to 604800",
+    lineRange: "Choose a valid line range.",
+    runCapacity: "Set workspace Run capacity before starting a Run.",
+  },
   runStatus: {
     queued: "Queued",
     running: "Running",

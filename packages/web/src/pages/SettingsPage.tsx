@@ -1,5 +1,4 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -28,6 +27,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { formatMessage, useI18n } from "../i18n";
+import { notifyError, notifySuccess } from "../lib/notify";
 import { AppShell } from "../shells/AppShell";
 import { AppSettingsPanel } from "./settings/AppSettingsPanel";
 import { DiagnosticsPanel } from "./settings/DiagnosticsPanel";
@@ -50,12 +50,13 @@ export function SettingsPage() {
   const [appSettings, setAppSettings] = useState<AppSettingsPublic | null>(null);
   const [skillsSaving, setSkillsSaving] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
 
   const [editorMode, setEditorMode] = useState<EditorMode>("closed");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ModelFormState>(emptyModelForm);
+  const [maxContextTokensError, setMaxContextTokensError] = useState<string | null>(null);
   const [providerEditorMode, setProviderEditorMode] = useState<EditorMode>("closed");
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [providerForm, setProviderForm] = useState<ProviderFormState>(emptyProviderForm);
@@ -67,13 +68,10 @@ export function SettingsPage() {
   const [deleteTarget, setDeleteTarget] = useState<ModelProfilePublic | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ProviderTestResult | null>(null);
-  function setStatus(message: string) {
-    toast.success(message);
-  }
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const [doctorData, providerData, settingsData] = await Promise.all([
         getDoctor(),
@@ -84,7 +82,7 @@ export function SettingsPage() {
       setProvider(providerData.provider);
       setAppSettings(settingsData.settings);
     } catch (err) {
-      setError(err);
+      setLoadError(err);
       setDoctor(null);
       setProvider(null);
       setAppSettings(null);
@@ -95,13 +93,12 @@ export function SettingsPage() {
 
   async function handleToggleHomeSkills(next: boolean) {
     setSkillsSaving(true);
-    setError(null);
     try {
       const result = await patchAppSettings({ loadHomeSkills: next });
       setAppSettings(result.settings);
-      setStatus(t.globalSettings.skillsSaved);
+      notifySuccess(t.globalSettings.skillsSaved);
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setSkillsSaving(false);
     }
@@ -114,6 +111,7 @@ export function SettingsPage() {
   function openEdit(model: ModelProfilePublic) {
     setEditorMode("edit");
     setEditingId(model.id);
+    setMaxContextTokensError(null);
     setForm({
       name: model.name,
       modelId: model.modelId,
@@ -125,6 +123,7 @@ export function SettingsPage() {
   function openCreateUnderProvider(providerId: string) {
     setEditorMode("create");
     setEditingId(null);
+    setMaxContextTokensError(null);
     setForm({ ...emptyModelForm, providerId });
   }
 
@@ -132,6 +131,7 @@ export function SettingsPage() {
     setEditorMode("closed");
     setEditingId(null);
     setForm(emptyModelForm);
+    setMaxContextTokensError(null);
   }
 
   function openProviderCreate() {
@@ -165,12 +165,11 @@ export function SettingsPage() {
 
   async function handleHealthCheck() {
     setCheckingHealth(true);
-    setError(null);
     try {
       setHealth(await getHealth());
     } catch (err) {
       setHealth(null);
-      setError(err);
+      notifyError(err);
     } finally {
       setCheckingHealth(false);
     }
@@ -179,8 +178,8 @@ export function SettingsPage() {
   async function handleSave(event: FormEvent) {
     event.preventDefault();
     setIsSubmitting(true);
-    setError(null);
     setTestResult(null);
+    setMaxContextTokensError(null);
     try {
       const maxContextRaw = form.maxContextTokens.trim();
       let maxContextTokens: number | null | undefined;
@@ -190,7 +189,7 @@ export function SettingsPage() {
       } else {
         const parsed = Number(maxContextRaw);
         if (!Number.isInteger(parsed) || parsed <= 0) {
-          setError(new Error("maxContextTokens must be a positive integer"));
+          setMaxContextTokensError(t.validation.maxContextTokens);
           setIsSubmitting(false);
           return;
         }
@@ -214,7 +213,7 @@ export function SettingsPage() {
           ? await updateModelProfile(editingId, payload)
           : await createModelProfile(payload);
       setProvider(result.provider);
-      setStatus(
+      notifySuccess(
         editorMode === "edit"
           ? t.globalSettings.statusModelUpdated
           : t.globalSettings.statusModelAdded,
@@ -226,7 +225,7 @@ export function SettingsPage() {
         // non-fatal
       }
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -238,35 +237,32 @@ export function SettingsPage() {
     }
     const model = deleteTarget;
     setDeletingId(model.id);
-    setError(null);
     try {
       const result = await deleteModelProfile(model.id);
       setProvider(result.provider);
       if (editingId === model.id) {
         closeEditor();
       }
-      setStatus(t.globalSettings.statusModelDeleted);
+      notifySuccess(t.globalSettings.statusModelDeleted);
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setDeletingId(null);
     }
   }
 
   async function handleSetDefault(model: ModelProfilePublic) {
-    setError(null);
     try {
       const result = await setDefaultModelProfile(model.id);
       setProvider(result.provider);
-      setStatus(formatMessage(t.globalSettings.statusDefault, { name: model.name }));
+      notifySuccess(formatMessage(t.globalSettings.statusDefault, { name: model.name }));
     } catch (err) {
-      setError(err);
+      notifyError(err);
     }
   }
 
   async function handleTest() {
     setTesting(true);
-    setError(null);
     setTestResult(null);
     try {
       const ua = providerForm.userAgent.trim();
@@ -286,7 +282,7 @@ export function SettingsPage() {
       });
       setTestResult(result.result);
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setTesting(false);
     }
@@ -295,7 +291,6 @@ export function SettingsPage() {
   async function handleProviderSave(event: FormEvent) {
     event.preventDefault();
     setIsSubmitting(true);
-    setError(null);
     try {
       const ua = providerForm.userAgent.trim();
       const payload = {
@@ -315,14 +310,14 @@ export function SettingsPage() {
           ? await updateProvider(editingProviderId, payload)
           : await createProvider(payload);
       setProvider(result.provider);
-      setStatus(
+      notifySuccess(
         providerEditorMode === "edit"
           ? t.globalSettings.statusProviderUpdated
           : t.globalSettings.statusProviderAdded,
       );
       closeProviderEditor();
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -331,15 +326,14 @@ export function SettingsPage() {
   async function handleProviderDeleteConfirm() {
     if (!providerDeleteTarget) return;
     const entry = providerDeleteTarget;
-    setError(null);
     try {
       const result = await deleteProvider(entry.id);
       setProvider(result.provider);
       setProviderDeleteTarget(null);
       if (editingProviderId === entry.id) closeProviderEditor();
-      setStatus(t.globalSettings.statusProviderDeleted);
+      notifySuccess(t.globalSettings.statusProviderDeleted);
     } catch (err) {
-      setError(err);
+      notifyError(err);
       setProviderDeleteTarget(null);
     }
   }
@@ -379,7 +373,7 @@ export function SettingsPage() {
           </div>
         </header>
 
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        <ErrorBanner error={loadError} onDismiss={() => setLoadError(null)} />
 
         {loading ? (
           <LoadingState label={t.globalSettings.loading} />
@@ -426,6 +420,8 @@ export function SettingsPage() {
                     form={form}
                     setForm={setForm}
                     isSubmitting={isSubmitting}
+                    maxContextTokensError={maxContextTokensError}
+                    onClearMaxContextTokensError={() => setMaxContextTokensError(null)}
                     onClose={closeEditor}
                     onSave={handleSave}
                   />

@@ -500,6 +500,18 @@ export const zh: MessageTree = {
     dismiss: "关闭",
     unknown: "未知错误",
   },
+  validation: {
+    maxContextTokens: "maxContextTokens 必须为正整数",
+    contextTargetTokens: "contextTargetTokens 必须为正整数",
+    requestTimeoutSeconds: "requestTimeoutSeconds 必须在 1 到 86400 之间",
+    retryMaxRetries: "retry.maxRetries 必须为 0 到 10 的整数",
+    retryBaseDelayMs: "retry.baseDelayMs 必须为 100 到 60000 的整数",
+    providerMaxRetries: "retry.provider.maxRetries 必须为 0 到 5 的整数",
+    providerMaxRetryDelayMs: "retry.provider.maxRetryDelayMs 必须为 0 到 600000 的整数",
+    gateTimeoutSeconds: "gateTimeoutSeconds 必须为 0 到 604800 的整数",
+    lineRange: "请选择有效的行号范围。",
+    runCapacity: "启动 Run 前请先设置工作区 Run 容量。",
+  },
   runStatus: {
     queued: "排队中",
     running: "运行中",

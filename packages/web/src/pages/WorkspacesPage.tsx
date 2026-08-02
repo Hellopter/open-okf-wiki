@@ -40,6 +40,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
 import { ModelSelect } from "../components/ModelSelect";
 import { formatMessage, useI18n } from "../i18n";
+import { notifyError } from "../lib/notify";
 import { operateHref } from "../lib/workspace-path";
 import { AppShell } from "../shells/AppShell";
 
@@ -50,7 +51,7 @@ export function WorkspacesPage() {
   const [models, setModels] = useState<ModelProfilePublic[]>([]);
   const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [rootPath, setRootPath] = useState("");
@@ -64,7 +65,7 @@ export function WorkspacesPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
     try {
       const [wsData, providerData] = await Promise.all([
         listWorkspaces(),
@@ -82,7 +83,7 @@ export function WorkspacesPage() {
           : (catalogModels[0]?.id ?? "");
       setModelProfileId((prev) => prev || preferred);
     } catch (err) {
-      setError(err);
+      setLoadError(err);
     } finally {
       setLoading(false);
     }
@@ -94,7 +95,6 @@ export function WorkspacesPage() {
 
   function openCreateForm() {
     setShowForm(true);
-    setError(null);
   }
 
   function closeCreateForm() {
@@ -104,7 +104,6 @@ export function WorkspacesPage() {
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
     setIsSubmitting(true);
-    setError(null);
     try {
       const root = rootPath.trim();
       const activeRuns = Number(maxActiveRuns);
@@ -122,7 +121,7 @@ export function WorkspacesPage() {
       setShowForm(false);
       navigate(operateHref(workspace.id));
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -136,14 +135,13 @@ export function WorkspacesPage() {
     const target = deleteTarget;
     const deleteFiles = deleteMeta;
     setDeletingId(target.id);
-    setError(null);
     try {
       await deleteWorkspace(target.id, {
         deleteFiles,
       });
       await load();
     } catch (err) {
-      setError(err);
+      notifyError(err);
     } finally {
       setDeletingId(null);
     }
@@ -166,7 +164,7 @@ export function WorkspacesPage() {
           </Button>
         </header>
 
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        <ErrorBanner error={loadError} onDismiss={() => setLoadError(null)} />
 
         <Dialog
           open={showForm}

@@ -5,6 +5,7 @@ import {
   Field,
   FieldContent,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
@@ -23,12 +24,23 @@ import type { ModelProfilePublic, WikiLanguage, WorkspaceConfig } from "../../ap
 import { ModelSelect } from "../../components/ModelSelect";
 import { formatMessage, useI18n } from "../../i18n";
 
+export type GeneralFieldErrorKey =
+  | "contextTargetTokens"
+  | "requestTimeoutSeconds"
+  | "gateTimeoutSeconds"
+  | "retryMaxRetries"
+  | "retryBaseDelayMs"
+  | "providerMaxRetries"
+  | "providerMaxRetryDelayMs";
+
 export type GeneralSectionProps = {
   workspace: WorkspaceConfig;
   models: ModelProfilePublic[];
   defaultModelProfileId: string | undefined;
   isSubmitting: boolean;
   onSubmit: (event: FormEvent) => void;
+  fieldErrors?: Partial<Record<GeneralFieldErrorKey, string>>;
+  onClearFieldError?: (key: GeneralFieldErrorKey) => void;
   name: string;
   setName: (value: string) => void;
   modelProfileId: string;
@@ -89,6 +101,8 @@ export function GeneralSection(props: GeneralSectionProps) {
     defaultModelProfileId,
     isSubmitting,
     onSubmit,
+    fieldErrors = {},
+    onClearFieldError,
     name,
     setName,
     modelProfileId,
@@ -151,6 +165,21 @@ export function GeneralSection(props: GeneralSectionProps) {
     !contextTargetTokens.trim() && selectedModel?.maxContextTokens !== undefined
       ? Math.floor(selectedModel.maxContextTokens * 0.85)
       : undefined;
+
+  function editField(key: GeneralFieldErrorKey, setter: (value: string) => void) {
+    return (value: string) => {
+      onClearFieldError?.(key);
+      setter(value);
+    };
+  }
+
+  const contextTargetInvalid = Boolean(fieldErrors.contextTargetTokens);
+  const requestTimeoutInvalid = Boolean(fieldErrors.requestTimeoutSeconds);
+  const gateTimeoutInvalid = Boolean(fieldErrors.gateTimeoutSeconds);
+  const retryMaxInvalid = Boolean(fieldErrors.retryMaxRetries);
+  const retryBaseDelayInvalid = Boolean(fieldErrors.retryBaseDelayMs);
+  const providerMaxRetriesInvalid = Boolean(fieldErrors.providerMaxRetries);
+  const providerMaxRetryDelayInvalid = Boolean(fieldErrors.providerMaxRetryDelayMs);
 
   return (
     <div className="flex flex-col gap-6">
@@ -258,7 +287,7 @@ export function GeneralSection(props: GeneralSectionProps) {
                 />
               </Field>
 
-              <Field>
+              <Field data-invalid={contextTargetInvalid || undefined}>
                 <FieldLabel htmlFor="settings-context-target">
                   {t.settings.contextTargetTokens}
                 </FieldLabel>
@@ -269,12 +298,16 @@ export function GeneralSection(props: GeneralSectionProps) {
                   step={1}
                   value={contextTargetTokens}
                   onChange={(e) => {
-                    setContextTargetTokens(e.target.value);
+                    editField("contextTargetTokens", setContextTargetTokens)(e.target.value);
                   }}
                   placeholder={t.settings.contextTargetTokensPlaceholder}
                   className="font-mono max-w-xs"
                   data-testid="settings-context-target"
+                  aria-invalid={contextTargetInvalid || undefined}
                 />
+                {fieldErrors.contextTargetTokens ? (
+                  <FieldError>{fieldErrors.contextTargetTokens}</FieldError>
+                ) : null}
                 <FieldDescription>
                   {t.settings.contextTargetTokensHint}
                   {derivedContextTarget !== undefined ? (
@@ -288,7 +321,7 @@ export function GeneralSection(props: GeneralSectionProps) {
                 </FieldDescription>
               </Field>
 
-              <Field>
+              <Field data-invalid={requestTimeoutInvalid || undefined}>
                 <FieldLabel htmlFor="settings-request-timeout">
                   {t.settings.requestTimeoutSeconds}
                 </FieldLabel>
@@ -300,17 +333,21 @@ export function GeneralSection(props: GeneralSectionProps) {
                   step={1}
                   value={requestTimeoutSeconds}
                   onChange={(e) => {
-                    setRequestTimeoutSeconds(e.target.value);
+                    editField("requestTimeoutSeconds", setRequestTimeoutSeconds)(e.target.value);
                   }}
                   placeholder={t.settings.requestTimeoutSecondsPlaceholder}
                   className="font-mono max-w-xs"
                   data-testid="settings-request-timeout"
                   required
+                  aria-invalid={requestTimeoutInvalid || undefined}
                 />
+                {fieldErrors.requestTimeoutSeconds ? (
+                  <FieldError>{fieldErrors.requestTimeoutSeconds}</FieldError>
+                ) : null}
                 <FieldDescription>{t.settings.requestTimeoutSecondsHint}</FieldDescription>
               </Field>
 
-              <Field>
+              <Field data-invalid={gateTimeoutInvalid || undefined}>
                 <FieldLabel htmlFor="settings-gate-timeout">
                   {t.settings.gateTimeoutSeconds}
                 </FieldLabel>
@@ -322,12 +359,16 @@ export function GeneralSection(props: GeneralSectionProps) {
                   step={1}
                   value={gateTimeoutSeconds}
                   onChange={(e) => {
-                    setGateTimeoutSeconds(e.target.value);
+                    editField("gateTimeoutSeconds", setGateTimeoutSeconds)(e.target.value);
                   }}
                   placeholder={t.settings.gateTimeoutSecondsPlaceholder}
                   className="font-mono max-w-xs"
                   data-testid="settings-gate-timeout"
+                  aria-invalid={gateTimeoutInvalid || undefined}
                 />
+                {fieldErrors.gateTimeoutSeconds ? (
+                  <FieldError>{fieldErrors.gateTimeoutSeconds}</FieldError>
+                ) : null}
                 <FieldDescription>{t.settings.gateTimeoutSecondsHint}</FieldDescription>
               </Field>
 
@@ -347,7 +388,10 @@ export function GeneralSection(props: GeneralSectionProps) {
                     </FieldLabel>
                   </div>
                   <div className="flex flex-wrap gap-3">
-                    <div className="flex flex-col gap-1">
+                    <Field
+                      data-invalid={retryMaxInvalid || undefined}
+                      className="w-auto flex-col gap-1"
+                    >
                       <FieldLabel
                         htmlFor="settings-retry-max"
                         className="text-xs text-muted-foreground"
@@ -361,15 +405,22 @@ export function GeneralSection(props: GeneralSectionProps) {
                         max={10}
                         value={retryMaxRetries}
                         onChange={(e) => {
-                          setRetryMaxRetries(e.target.value);
+                          editField("retryMaxRetries", setRetryMaxRetries)(e.target.value);
                         }}
                         className="font-mono w-24"
                         data-testid="settings-retry-max"
                         disabled={!retryEnabled}
                         title={t.settings.retryMaxRetriesHint}
+                        aria-invalid={retryMaxInvalid || undefined}
                       />
-                    </div>
-                    <div className="flex flex-col gap-1">
+                      {fieldErrors.retryMaxRetries ? (
+                        <FieldError>{fieldErrors.retryMaxRetries}</FieldError>
+                      ) : null}
+                    </Field>
+                    <Field
+                      data-invalid={retryBaseDelayInvalid || undefined}
+                      className="w-auto flex-col gap-1"
+                    >
                       <FieldLabel
                         htmlFor="settings-retry-base-delay"
                         className="text-xs text-muted-foreground"
@@ -384,15 +435,22 @@ export function GeneralSection(props: GeneralSectionProps) {
                         step={100}
                         value={retryBaseDelayMs}
                         onChange={(e) => {
-                          setRetryBaseDelayMs(e.target.value);
+                          editField("retryBaseDelayMs", setRetryBaseDelayMs)(e.target.value);
                         }}
                         className="font-mono w-28"
                         data-testid="settings-retry-base-delay"
                         disabled={!retryEnabled}
                         title={t.settings.retryBaseDelayMsHint}
+                        aria-invalid={retryBaseDelayInvalid || undefined}
                       />
-                    </div>
-                    <div className="flex flex-col gap-1">
+                      {fieldErrors.retryBaseDelayMs ? (
+                        <FieldError>{fieldErrors.retryBaseDelayMs}</FieldError>
+                      ) : null}
+                    </Field>
+                    <Field
+                      data-invalid={providerMaxRetriesInvalid || undefined}
+                      className="w-auto flex-col gap-1"
+                    >
                       <FieldLabel
                         htmlFor="settings-provider-max-retries"
                         className="text-xs text-muted-foreground"
@@ -406,15 +464,22 @@ export function GeneralSection(props: GeneralSectionProps) {
                         max={5}
                         value={providerMaxRetries}
                         onChange={(e) => {
-                          setProviderMaxRetries(e.target.value);
+                          editField("providerMaxRetries", setProviderMaxRetries)(e.target.value);
                         }}
                         className="font-mono w-24"
                         data-testid="settings-provider-max-retries"
                         disabled={!retryEnabled}
                         title={t.settings.providerMaxRetriesHint}
+                        aria-invalid={providerMaxRetriesInvalid || undefined}
                       />
-                    </div>
-                    <div className="flex flex-col gap-1">
+                      {fieldErrors.providerMaxRetries ? (
+                        <FieldError>{fieldErrors.providerMaxRetries}</FieldError>
+                      ) : null}
+                    </Field>
+                    <Field
+                      data-invalid={providerMaxRetryDelayInvalid || undefined}
+                      className="w-auto flex-col gap-1"
+                    >
                       <FieldLabel
                         htmlFor="settings-provider-max-retry-delay"
                         className="text-xs text-muted-foreground"
@@ -429,14 +494,21 @@ export function GeneralSection(props: GeneralSectionProps) {
                         step={1000}
                         value={providerMaxRetryDelayMs}
                         onChange={(e) => {
-                          setProviderMaxRetryDelayMs(e.target.value);
+                          editField(
+                            "providerMaxRetryDelayMs",
+                            setProviderMaxRetryDelayMs,
+                          )(e.target.value);
                         }}
                         className="font-mono w-28"
                         data-testid="settings-provider-max-retry-delay"
                         disabled={!retryEnabled}
                         title={t.settings.providerMaxRetryDelayMsHint}
+                        aria-invalid={providerMaxRetryDelayInvalid || undefined}
                       />
-                    </div>
+                      {fieldErrors.providerMaxRetryDelayMs ? (
+                        <FieldError>{fieldErrors.providerMaxRetryDelayMs}</FieldError>
+                      ) : null}
+                    </Field>
                   </div>
                 </div>
               </Field>

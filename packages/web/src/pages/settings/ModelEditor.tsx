@@ -1,7 +1,7 @@
 import { type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { formatMessage, useI18n } from "../../i18n";
@@ -12,6 +12,8 @@ export type ModelEditorProps = {
   form: ModelFormState;
   setForm: Dispatch<SetStateAction<ModelFormState>>;
   isSubmitting: boolean;
+  maxContextTokensError?: string | null;
+  onClearMaxContextTokensError?: () => void;
   onClose: () => void;
   onSave: (event: FormEvent) => void;
 };
@@ -21,10 +23,13 @@ export function ModelEditor({
   form,
   setForm,
   isSubmitting,
+  maxContextTokensError = null,
+  onClearMaxContextTokensError,
   onClose,
   onSave,
 }: ModelEditorProps) {
   const { t } = useI18n();
+  const maxContextInvalid = Boolean(maxContextTokensError);
 
   return (
     <Card data-testid="model-editor">
@@ -67,7 +72,7 @@ export function ModelEditor({
               />
               <FieldDescription>{t.globalSettings.modelIdHint}</FieldDescription>
             </Field>
-            <Field>
+            <Field data-invalid={maxContextInvalid || undefined}>
               <FieldLabel htmlFor="model-max-context">
                 {t.globalSettings.maxContextTokens}
               </FieldLabel>
@@ -77,16 +82,19 @@ export function ModelEditor({
                 min={1}
                 step={1}
                 value={form.maxContextTokens}
-                onChange={(e) =>
+                onChange={(e) => {
+                  onClearMaxContextTokensError?.();
                   setForm((f) => ({
                     ...f,
                     maxContextTokens: e.target.value,
-                  }))
-                }
+                  }));
+                }}
                 placeholder={t.globalSettings.maxContextTokensPlaceholder}
                 className="font-mono max-w-xs"
                 data-testid="model-max-context"
+                aria-invalid={maxContextInvalid || undefined}
               />
+              {maxContextTokensError ? <FieldError>{maxContextTokensError}</FieldError> : null}
               <FieldDescription>{t.globalSettings.maxContextTokensHint}</FieldDescription>
             </Field>
             {form.providerId ? (

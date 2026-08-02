@@ -1,4 +1,3 @@
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -16,6 +15,7 @@ import {
   writeWorkspaceSkillFile,
 } from "../../api";
 import { useI18n } from "../../i18n";
+import { notifyError, notifySuccess } from "../../lib/notify";
 
 export type SkillSectionProps = {
   workspaceId: string;
@@ -30,7 +30,6 @@ export type SkillSectionProps = {
   setSkillFilePath: (path: string) => void;
   setSkillFileContent: (content: string) => void;
   setSkillFileDirty: (dirty: boolean) => void;
-  setError: (error: unknown) => void;
   applyWorkspace: (ws: WorkspaceConfig, catalog: ModelProfilePublic[]) => void;
 };
 
@@ -47,7 +46,6 @@ export function SkillSection({
   setSkillFilePath,
   setSkillFileContent,
   setSkillFileDirty,
-  setError,
   applyWorkspace,
 }: SkillSectionProps) {
   const { t } = useI18n();
@@ -96,7 +94,6 @@ export function SkillSection({
                     return;
                   }
                   setSkillBusy(true);
-                  setError(null);
                   try {
                     const result = await createWorkspaceSkillFork(workspaceId);
                     applyWorkspace(result.workspace, models);
@@ -105,9 +102,9 @@ export function SkillSection({
                     setSkillFilePath("SKILL.md");
                     setSkillFileContent(file.file.content);
                     setSkillFileDirty(false);
-                    toast.success(t.settings.skillForked);
+                    notifySuccess(t.settings.skillForked);
                   } catch (err) {
-                    setError(err);
+                    notifyError(err);
                   } finally {
                     setSkillBusy(false);
                   }
@@ -128,7 +125,6 @@ export function SkillSection({
                     return;
                   }
                   setSkillBusy(true);
-                  setError(null);
                   try {
                     const result = await resetWorkspaceSkill(workspaceId);
                     applyWorkspace(result.workspace, models);
@@ -136,7 +132,7 @@ export function SkillSection({
                     setSkillFileContent("");
                     setSkillFileDirty(false);
                   } catch (err) {
-                    setError(err);
+                    notifyError(err);
                   } finally {
                     setSkillBusy(false);
                   }
@@ -156,13 +152,12 @@ export function SkillSection({
                     return;
                   }
                   setSkillBusy(true);
-                  setError(null);
                   try {
                     const file = await readWorkspaceSkillFile(workspaceId, skillFilePath.trim());
                     setSkillFileContent(file.file.content);
                     setSkillFileDirty(false);
                   } catch (err) {
-                    setError(err);
+                    notifyError(err);
                   } finally {
                     setSkillBusy(false);
                   }
@@ -183,7 +178,6 @@ export function SkillSection({
                     return;
                   }
                   setSkillBusy(true);
-                  setError(null);
                   try {
                     const result = await writeWorkspaceSkillFile(workspaceId, {
                       path: skillFilePath.trim(),
@@ -191,9 +185,9 @@ export function SkillSection({
                     });
                     setSkill(result.skill);
                     setSkillFileDirty(false);
-                    toast.success(t.settings.skillSaved);
+                    notifySuccess(t.settings.skillSaved);
                   } catch (err) {
-                    setError(err);
+                    notifyError(err);
                   } finally {
                     setSkillBusy(false);
                   }
@@ -253,7 +247,7 @@ export function SkillSection({
                           setSkillFilePath(firstMd.path);
                         }
                       } catch (err) {
-                        setError(err);
+                        notifyError(err);
                       }
                     })();
                   }}
