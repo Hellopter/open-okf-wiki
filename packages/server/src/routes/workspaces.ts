@@ -37,6 +37,7 @@ import {
 import { trySendCoreDomainError } from "../core-http-error.ts";
 import { httpStatusForWorkspaceCode } from "../http-status.ts";
 import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
+import { getLogger } from "../logging/index.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 
 export async function handleListWorkspaces(
@@ -71,8 +72,20 @@ export async function handleCreateWorkspace(
     });
     await saveWorkspace(workspace);
     await registerWorkspaceInAppIndex(workspace.rootPath);
+    getLogger().info(
+      {
+        event: "workspace.create",
+        workspaceId: workspace.id,
+        rootPath: workspace.rootPath,
+      },
+      "workspace created",
+    );
     sendJson(res, 201, { workspace });
   } catch (error) {
+    getLogger().warn(
+      { event: "workspace.create", err: redactErrorMessage(error) },
+      "workspace create failed",
+    );
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -114,8 +127,16 @@ export async function handlePatchWorkspace(
     });
     await saveWorkspace(next);
     await registerWorkspaceInAppIndex(next.rootPath);
+    getLogger().info(
+      { event: "workspace.patch", workspaceId: next.id },
+      "workspace patched",
+    );
     sendJson(res, 200, { workspace: next });
   } catch (error) {
+    getLogger().warn(
+      { event: "workspace.patch", workspaceId: workspace.id, err: redactErrorMessage(error) },
+      "workspace patch failed",
+    );
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -149,6 +170,16 @@ export async function handleDeleteWorkspace(
     }
   }
 
+  getLogger().info(
+    {
+      event: "workspace.delete",
+      workspaceId: id,
+      rootPath: workspace.rootPath,
+      deleteFiles,
+      deletedMeta,
+    },
+    "workspace removed from index",
+  );
   sendJson(res, 200, {
     ok: true,
     id,
@@ -191,12 +222,29 @@ export async function handleAddSource(
       { requireClean: false },
     );
     await saveWorkspace(result.config);
+    getLogger().info(
+      {
+        event: "source.add",
+        workspaceId: workspace.id,
+        sourceId: result.source.id,
+      },
+      "source added",
+    );
     sendJson(res, 201, {
       workspace: result.config,
       source: result.source,
       probe: result.probe,
     });
   } catch (error) {
+    getLogger().warn(
+      {
+        event: "source.add",
+        workspaceId: workspace.id,
+        sourceId,
+        err: redactErrorMessage(error),
+      },
+      "source add failed",
+    );
     // Attach probe for non-git so the client can show git status details.
     if (error instanceof WorkspaceIntakeError && error.code === "source_not_git") {
       const probe = await probeLocalGit(sourcePath);
@@ -221,8 +269,21 @@ export async function handleDeleteSource(
   try {
     const next = removeSource(workspace, sourceId);
     await saveWorkspace(next);
+    getLogger().info(
+      { event: "source.delete", workspaceId: workspace.id, sourceId },
+      "source removed",
+    );
     sendJson(res, 200, { workspace: next });
   } catch (error) {
+    getLogger().warn(
+      {
+        event: "source.delete",
+        workspaceId: workspace.id,
+        sourceId,
+        err: redactErrorMessage(error),
+      },
+      "source delete failed",
+    );
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -299,6 +360,18 @@ export async function handleCloneSource(
       : undefined;
   const ref = parsed.data.ref;
 
+  getLogger().info(
+    {
+      event: "source.clone",
+      workspaceId: workspace.id,
+      sourceId,
+      phase: "start",
+      // remote host only — avoid logging credentials embedded in URLs
+      remoteHost: safeRemoteHost(remoteUrl),
+      ref: ref ?? null,
+    },
+    "source clone started",
+  );
   try {
     const cloned = await cloneIntoWorkspace({
       workspaceRoot: workspace.rootPath,
@@ -324,15 +397,49 @@ export async function handleCloneSource(
       { requireClean: false },
     );
     await saveWorkspace(result.config);
+    getLogger().info(
+      {
+        event: "source.clone",
+        workspaceId: workspace.id,
+        sourceId: result.source.id,
+        phase: "end",
+      },
+      "source clone completed",
+    );
     sendJson(res, 201, {
       workspace: result.config,
       source: result.source,
       probe: result.probe,
     });
   } catch (error) {
+    getLogger().error(
+      {
+        event: "source.clone",
+        workspaceId: workspace.id,
+        sourceId,
+        phase: "end",
+        err: redactErrorMessage(error),
+      },
+      "source clone failed",
+    );
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
+}
+
+/** Hostname (or truncated path) for logs — never the full URL with secrets. */
+function safeRemoteHost(remoteUrl: string): string {
+  try {
+    if (remoteUrl.includes("://")) {
+      return new URL(remoteUrl).host || "unknown";
+    }
+    // git@host:path form
+    const m = /^[^@]+@([^:]+):/.exec(remoteUrl);
+    if (m?.[1]) return m[1];
+  } catch {
+    // fall through
+  }
+  return "unknown";
 }
 
 export async function handleGetSkill(

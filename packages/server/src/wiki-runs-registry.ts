@@ -2,6 +2,7 @@
 import { createPiAttemptExecutor, shouldUsePiFixtureMode } from "@okf-wiki/agent";
 import type { WorkspaceConfig } from "@okf-wiki/contract";
 import { openWikiRuns, type WikiRuns } from "@okf-wiki/workflow";
+import { getLogger } from "./logging/index.ts";
 
 const owners = new Map<string, WikiRuns>();
 const opening = new Map<string, Promise<WikiRuns>>();
@@ -27,6 +28,15 @@ export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<
   }
 
   const fixture = shouldUsePiFixtureMode({});
+  getLogger().info(
+    {
+      event: "workflow.owner.open",
+      workspaceId: workspace.id,
+      rootPath: workspace.rootPath,
+      fixture,
+    },
+    "opening WikiRuns owner",
+  );
   const owner = openWikiRuns({
     rootPath: workspace.rootPath,
     piAttemptExecutor: createPiAttemptExecutor({ fixture }),
@@ -35,6 +45,18 @@ export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<
       runs.replaceWorkspace(workspace);
       owners.set(key, runs);
       return runs;
+    })
+    .catch((error) => {
+      getLogger().error(
+        {
+          event: "workflow.owner.open",
+          workspaceId: workspace.id,
+          rootPath: workspace.rootPath,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "WikiRuns owner open failed",
+      );
+      throw error;
     })
     .finally(() => opening.delete(key));
   opening.set(key, owner);
@@ -45,7 +67,11 @@ export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<
 export async function closeWikiRuns(): Promise<void> {
   await Promise.all([...opening.values()].map((owner) => owner.catch(() => undefined)));
   const live = [...owners.values()];
+  const count = live.length;
   owners.clear();
+  if (count > 0) {
+    getLogger().info({ event: "workflow.owner.close", count }, "closing WikiRuns owners");
+  }
   await Promise.all(live.map((owner) => owner.close()));
 }
 

@@ -121,9 +121,21 @@ Agent Session browser endpoints are **removed**. Each Pi Attempt keeps only its 
 | `OPENAI_BASE_URL` | Optional API root (usually ends with `/v1`) |
 | `OKF_WIKI_AGENT_MODE` | Optional `fixture` for no-LLM smoke only; default is live |
 | `OKF_WIKI_HOST` / `OKF_WIKI_PORT` | API bind (default `127.0.0.1:8787`) |
-| `OKF_WIKI_HOME` | Machine-local product home (model catalog, app index) — not skills |
+| `OKF_WIKI_HOME` | Machine-local product home (model catalog, app index, **server logs**) — not skills |
 | `OKF_WIKI_ALLOW_LAN` | Opt-in LAN bind / CORS for private origins |
+| `OKF_LOG_LEVEL` | Server log level (`debug` default in dev, `info` in production) |
+| `OKF_LOG_DIR` / `OKF_LOG_FILE` | Override log directory or file; `OKF_LOG_FILE=0` disables file sink |
+| `OKF_LOG_HTTP` / `OKF_LOG_HTTP_HEALTH` | HTTP access lines (health skipped by default) |
 | `VITE_API_BASE` | Only if UI and API are **not** same-origin |
+
+**Server runtime logs** (HTTP, session/run commands, workspace/source/provider events, lifecycle)
+go to stdout and, by default, `$OKF_WIKI_HOME/logs/server.jsonl` (Linux/macOS:
+`~/.okf-wiki/logs/server.jsonl`; Windows: `%USERPROFILE%\.okf-wiki\logs\server.jsonl`). Agent
+attempt transcripts stay under each Workspace `rootPath` at
+`.okf-wiki/runs/<runId>/attempts/…` — not in the server log file.
+
+Copy [`.env.example`](.env.example) to **`.env`** at the monorepo root; `pnpm dev` and the server
+load it automatically (existing shell env always wins).
 
 Model identity stays provider-prefixed (for example `openai:<served-model-name>`) even on third-party gateways. Full template: [`.env.example`](.env.example).
 

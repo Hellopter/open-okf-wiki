@@ -5,14 +5,18 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 import {
   AGENTS_DIR_NAME,
+  defaultServerLogDir,
   homeProducerSkillPath,
   homeSkillsDir,
   isUnderHomeSkills,
   isUnderWorkspaceSkills,
+  PRODUCT_LOGS_DIR_NAME,
+  productHomeDir,
   SKILLS_DIR_NAME,
   workspaceProducerSkillPath,
   workspaceSkillsDir,
 } from "./product-home.js";
+import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 import { copySkillTree, skillForkDir } from "./skill-fork.js";
 import {
   type AppState,
@@ -23,6 +27,7 @@ import {
 } from "./workspace-app-state.js";
 
 const prevHome = process.env.HOME;
+const prevOkfHome = process.env.OKF_WIKI_HOME;
 
 afterEach(() => {
   if (prevHome === undefined) {
@@ -30,6 +35,31 @@ afterEach(() => {
   } else {
     process.env.HOME = prevHome;
   }
+  if (prevOkfHome === undefined) {
+    delete process.env.OKF_WIKI_HOME;
+  } else {
+    process.env.OKF_WIKI_HOME = prevOkfHome;
+  }
+});
+
+test("productHomeDir uses OKF_WIKI_HOME when set", async () => {
+  const custom = await mkdtemp(path.join(tmpdir(), "okf-product-home-"));
+  assert.equal(productHomeDir({ OKF_WIKI_HOME: custom }), path.resolve(custom));
+  assert.equal(
+    defaultServerLogDir({ OKF_WIKI_HOME: custom }),
+    path.join(path.resolve(custom), PRODUCT_LOGS_DIR_NAME),
+  );
+});
+
+test("productHomeDir falls back to {homedir}/.okf-wiki", async () => {
+  const fakeHome = await mkdtemp(path.join(tmpdir(), "okf-home-product-"));
+  process.env.HOME = fakeHome;
+  delete process.env.OKF_WIKI_HOME;
+  assert.equal(productHomeDir({}), path.join(fakeHome, WORKSPACE_DIR_NAME));
+  assert.equal(
+    defaultServerLogDir({}),
+    path.join(fakeHome, WORKSPACE_DIR_NAME, PRODUCT_LOGS_DIR_NAME),
+  );
 });
 
 test("home skills use portable ~/.agents/skills", async () => {

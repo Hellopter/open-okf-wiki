@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 /**
  * Ordered monorepo dev stack (no Turbo).
@@ -12,6 +13,9 @@ import { access } from "node:fs/promises";
  * (was 5: contract/core/agent tsc-w + server + vite)
  *
  * Windows-compatible: shell spawn for pnpm.cmd, taskkill, netstat (process-compat.mjs).
+ *
+ * Loads monorepo-root `.env` into process.env (does not override existing keys)
+ * before reading ports so `pnpm dev` picks up OKF_WIKI_PORT / OKF_LOG_* etc.
  */
 import net from "node:net";
 import path from "node:path";
@@ -19,6 +23,43 @@ import { fileURLToPath } from "node:url";
 import { killTree, pidsListeningOnPort, portKillHint, spawnResolved } from "./process-compat.mjs";
 
 const monorepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Minimal dotenv apply (sync; process env wins). Mirrors packages/server/src/load-env.ts. */
+function loadRootEnvFile(root = monorepoRoot) {
+  const filePath = path.join(root, ".env");
+  if (!existsSync(filePath)) return false;
+  let content;
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch {
+    return false;
+  }
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const body = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const eq = body.indexOf("=");
+    if (eq <= 0) continue;
+    const key = body.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (process.env[key] !== undefined) continue;
+    let value = body.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+  return true;
+}
+
+const envLoaded = loadRootEnvFile();
+if (envLoaded) {
+  process.stdout.write(`[dev-stack] loaded ${path.join(monorepoRoot, ".env")}\n`);
+}
+
 const apiPort = Number(process.env.OKF_WIKI_PORT ?? "8787");
 const apiHost = process.env.OKF_WIKI_HOST ?? "127.0.0.1";
 const apiProbeHost = apiProbeHostForBind(apiHost);

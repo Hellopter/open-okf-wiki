@@ -10,6 +10,7 @@ import {
   rejectUntrustedRequest,
   sendError,
 } from "./http-util.ts";
+import { beginRequestLog, logHttpReject } from "./logging/index.ts";
 import {
   handleAgentSessionCommand,
   handleAgentSessionEvents,
@@ -72,7 +73,28 @@ import { host, port } from "./server-config.ts";
 
 export async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
   applyCors(req, res);
+
+  // Pathname for access log before full URL parse (trust gate may reject first).
+  let pathnameForLog: string;
+  try {
+    pathnameForLog = new URL(req.url ?? "/", `http://${host}:${port}`).pathname;
+  } catch {
+    pathnameForLog = req.url?.split("?")[0] || "/";
+  }
+  const { requestId, log } = beginRequestLog(req, res, pathnameForLog);
+
   if (rejectUntrustedRequest(req, res)) {
+    const hostHeader = req.headers.host ?? "";
+    const origin = req.headers.origin;
+    if (!hostHeader || origin) {
+      logHttpReject(
+        log,
+        origin && hostHeader ? "origin" : "host",
+        origin && hostHeader ? `Origin ${origin}` : `Host ${hostHeader}`,
+      );
+    } else {
+      logHttpReject(log, "host", `Host ${hostHeader}`);
+    }
     return;
   }
 
@@ -425,8 +447,13 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
       sendError(res, 413, error.message);
       return;
     }
-    process.stderr.write(
-      `request error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    log.error(
+      {
+        event: "http.request",
+        requestId,
+        err: error instanceof Error ? error : { message: String(error) },
+      },
+      "request error",
     );
     sendError(res, 500, "internal server error");
   }

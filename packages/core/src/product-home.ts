@@ -10,6 +10,7 @@
 
 import { homedir } from "node:os";
 import path from "node:path";
+import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 
 /** Frontmatter / directory name of the product Producer Skill. */
 export const DEFAULT_PRODUCER_SKILL_NAME = "repository-wiki-producer";
@@ -19,6 +20,28 @@ export const AGENTS_DIR_NAME = ".agents";
 
 /** Skills subdirectory under `.agents` (Agent Skills convention). */
 export const SKILLS_DIR_NAME = "skills";
+
+/** Subdirectory under product home for server runtime logs. */
+export const PRODUCT_LOGS_DIR_NAME = "logs";
+
+/**
+ * Machine-local product home (app index, provider catalog, server logs).
+ * `$OKF_WIKI_HOME` when set, otherwise `{homedir}/.okf-wiki`.
+ * Cross-platform via `os.homedir()` + `path.join` (Windows: `%USERPROFILE%\.okf-wiki`).
+ */
+export function productHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env.OKF_WIKI_HOME?.trim();
+  if (home) return path.resolve(home);
+  return path.join(homedir(), WORKSPACE_DIR_NAME);
+}
+
+/**
+ * Default directory for server runtime logs: `{productHome}/logs`.
+ * Not under a Workspace rootPath — agent traces stay workspace-local.
+ */
+export function defaultServerLogDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(productHomeDir(env), PRODUCT_LOGS_DIR_NAME);
+}
 
 /**
  * User-level skills directory: `~/.agents/skills`.

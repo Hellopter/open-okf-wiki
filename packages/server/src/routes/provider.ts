@@ -19,6 +19,7 @@ import {
 } from "@okf-wiki/core";
 import { trySendCoreDomainError } from "../core-http-error.ts";
 import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
+import { getLogger } from "../logging/index.ts";
 
 export async function handleGetProvider(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const config = await loadProviderConfig();
@@ -246,6 +247,13 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
+  // Never log apiKey. baseUrl host only.
+  let baseHost: string;
+  try {
+    baseHost = new URL(baseUrl.includes("://") ? baseUrl : `https://${baseUrl}`).host;
+  } catch {
+    baseHost = "invalid";
+  }
   try {
     const result = await testProviderConnection({
       baseUrl,
@@ -255,7 +263,32 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
       headers: extraHeaders,
       signal: controller.signal,
     });
+    const ok = Boolean(result?.ok);
+    getLogger()[ok ? "info" : "warn"](
+      {
+        event: "provider.test",
+        modelId,
+        apiShape,
+        baseHost,
+        ok,
+        message: !ok && result && "message" in result ? String(result.message) : undefined,
+      },
+      ok ? "provider connection test ok" : "provider connection test failed",
+    );
     sendJson(res, 200, { result });
+  } catch (error) {
+    getLogger().warn(
+      {
+        event: "provider.test",
+        modelId,
+        apiShape,
+        baseHost,
+        ok: false,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      "provider connection test threw",
+    );
+    throw error;
   } finally {
     clearTimeout(timer);
   }

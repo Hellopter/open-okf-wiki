@@ -31,6 +31,7 @@ import {
   sendError,
   sendJson,
 } from "../http-util.ts";
+import { getLogger } from "../logging/index.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
@@ -149,13 +150,39 @@ export async function handleWikiRunCommand(
     sendWikiRunsRequestError(res, "invalid_request", "invalid WikiRuns command");
     return;
   }
+  const commandType = parsed.data.type;
+  const commandId = parsed.data.commandId;
   try {
     const receipt = await (await wikiRunsForWorkspace(workspace)).dispatch(
       parsed.data,
       actorContext(workspace.id),
     );
+    getLogger().info(
+      {
+        event: "run.command",
+        workspaceId: workspace.id,
+        command: commandType,
+        commandId: receipt.commandId,
+        runId: receipt.runId,
+      },
+      "wiki run command accepted",
+    );
     sendJson(res, 202, WikiRunCommandResponseSchema.parse({ receipt }));
   } catch (error) {
+    const status = statusFor(error);
+    const message = redactErrorMessage(error);
+    getLogger()[status >= 500 ? "error" : "warn"](
+      {
+        event: "run.command",
+        workspaceId: workspace.id,
+        command: commandType,
+        commandId,
+        runId: "runId" in parsed.data ? parsed.data.runId : undefined,
+        err: message,
+        code: error instanceof WikiRunsRequestError ? error.code : undefined,
+      },
+      "wiki run command failed",
+    );
     sendWikiRunsError(res, error);
   }
 }
@@ -398,6 +425,16 @@ export async function handleAttemptTranscriptEvents(
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  getLogger().debug(
+    {
+      event: "attempt.transcript.sse",
+      workspaceId: workspace.id,
+      runId,
+      attemptId,
+      phase: "open",
+    },
+    "attempt transcript SSE open",
+  );
 
   const pollMs = dependencies.pollMs ?? TRANSCRIPT_SSE_POLL_MS;
   lifecycle.heartbeat = setInterval(
@@ -460,6 +497,16 @@ export async function handleAttemptTranscriptEvents(
     if (!closed) writeSse(res, "transcript_error", transcriptErrorFrame(error));
   } finally {
     cleanup();
+    getLogger().debug(
+      {
+        event: "attempt.transcript.sse",
+        workspaceId: workspace.id,
+        runId,
+        attemptId,
+        phase: "close",
+      },
+      "attempt transcript SSE closed",
+    );
     if (!res.writableEnded && !res.destroyed) res.end();
   }
 }
@@ -514,6 +561,10 @@ export async function handleWikiRunEvents(
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  getLogger().debug(
+    { event: "run.sse", workspaceId: workspace.id, runId, phase: "open" },
+    "run SSE open",
+  );
 
   // A first connection, invalid cursor, or future cursor receives a complete reset snapshot.
   if (reset)
@@ -545,6 +596,10 @@ export async function handleWikiRunEvents(
     if (!closed) writeSse(res, "snapshot", { error: redactErrorMessage(error) });
   } finally {
     cleanup();
+    getLogger().debug(
+      { event: "run.sse", workspaceId: workspace.id, runId, phase: "close" },
+      "run SSE closed",
+    );
     if (!res.writableEnded && !res.destroyed) res.end();
   }
 }

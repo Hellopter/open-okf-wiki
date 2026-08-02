@@ -7,6 +7,7 @@ import {
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
+import { getLogger } from "../logging/index.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import {
   createLiveSession,
@@ -53,6 +54,10 @@ export async function handleCreateAgentSession(
     return sendError(res, 400, "invalid create session body", parsed.error.flatten());
   try {
     const session = await createLiveSession(workspace, parsed.data.title, parsed.data.sessionId);
+    getLogger().info(
+      { event: "session.create", workspaceId: workspace.id, sessionId: session.id },
+      "operator session created",
+    );
     sendJson(res, 201, {
       session: {
         id: session.id,
@@ -63,7 +68,12 @@ export async function handleCreateAgentSession(
     });
   } catch (error) {
     const message = redactErrorMessage(error);
-    sendError(res, /exists|duplicate/i.test(message) ? 409 : 500, message);
+    const status = /exists|duplicate/i.test(message) ? 409 : 500;
+    getLogger()[status >= 500 ? "error" : "warn"](
+      { event: "session.create", workspaceId: workspace.id, err: message },
+      "operator session create failed",
+    );
+    sendError(res, status, message);
   }
 }
 
@@ -79,8 +89,21 @@ export async function handleDeleteAgentSession(
   try {
     const result = await deleteLiveSession(workspace, sessionId);
     if (result.removed === 0) return sendError(res, 404, `agent session not found: ${sessionId}`);
+    getLogger().info(
+      { event: "session.delete", workspaceId: workspace.id, sessionId },
+      "operator session deleted",
+    );
     sendJson(res, 200, { ok: true, ...result });
   } catch (error) {
+    getLogger().error(
+      {
+        event: "session.delete",
+        workspaceId: workspace.id,
+        sessionId,
+        err: redactErrorMessage(error),
+      },
+      "operator session delete failed",
+    );
     sendError(res, 500, redactErrorMessage(error));
   }
 }
@@ -96,11 +119,33 @@ export async function handleAgentSessionCommand(
   if (!workspace) return;
   const parsed = safeParseAgentCommand(await readJsonBody(req));
   if (!parsed.success) return sendError(res, 400, "invalid agent command", parsed.error.flatten());
+  const commandName = parsed.data.type;
   try {
-    sendJson(res, 202, await dispatchSessionCommand(workspace, sessionId, parsed.data));
+    const result = await dispatchSessionCommand(workspace, sessionId, parsed.data);
+    getLogger().info(
+      {
+        event: "session.command",
+        workspaceId: workspace.id,
+        sessionId,
+        command: commandName,
+      },
+      "operator session command accepted",
+    );
+    sendJson(res, 202, result);
   } catch (error) {
     const message = redactErrorMessage(error);
-    sendError(res, /not found/i.test(message) ? 404 : 500, message);
+    const status = /not found/i.test(message) ? 404 : 500;
+    getLogger()[status >= 500 ? "error" : "warn"](
+      {
+        event: "session.command",
+        workspaceId: workspace.id,
+        sessionId,
+        command: commandName,
+        err: message,
+      },
+      "operator session command failed",
+    );
+    sendError(res, status, message);
   }
 }
 
@@ -126,6 +171,10 @@ export async function handleAgentSessionEvents(
     if (heartbeat) clearInterval(heartbeat);
     unsubscribe();
     if (!res.writableEnded && !res.destroyed) res.end();
+    getLogger().debug(
+      { event: "session.sse", workspaceId: workspace.id, sessionId, phase: "close" },
+      "session SSE closed",
+    );
   };
   try {
     const pending: AgentSseEvent[] = [];
@@ -141,6 +190,10 @@ export async function handleAgentSessionEvents(
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
+    getLogger().debug(
+      { event: "session.sse", workspaceId: workspace.id, sessionId, phase: "open" },
+      "session SSE open",
+    );
     writeSse(res, snapshot);
     for (const event of pending.splice(0)) writeSse(res, event);
     // The same subscriber crosses the snapshot cut, so a Pi event cannot be lost.

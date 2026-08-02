@@ -80,10 +80,13 @@ export {
 export {
   AGENTS_DIR_NAME,
   DEFAULT_PRODUCER_SKILL_NAME,
+  defaultServerLogDir,
   homeProducerSkillPath,
   homeSkillsDir,
   isUnderHomeSkills,
   isUnderWorkspaceSkills,
+  PRODUCT_LOGS_DIR_NAME,
+  productHomeDir,
   SKILLS_DIR_NAME,
   workspaceProducerSkillPath,
   workspaceSkillsDir,

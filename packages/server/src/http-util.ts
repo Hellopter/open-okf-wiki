@@ -75,6 +75,8 @@ export function applyCors(req: IncomingMessage, res: ServerResponse): void {
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+    // Allow browser clients to read request correlation id from responses.
+    res.setHeader("Access-Control-Expose-Headers", "x-request-id");
     res.setHeader("Access-Control-Max-Age", "86400");
   }
 }
