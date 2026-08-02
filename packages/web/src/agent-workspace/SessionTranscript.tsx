@@ -1,7 +1,15 @@
 import type { AgentMessage, AgentToolCall } from "@okf-wiki/contract";
-import { BotIcon, ChevronRightIcon, CircleAlert, WorkflowIcon, WrenchIcon } from "lucide-react";
+import { BotIcon, CircleAlert, WorkflowIcon } from "lucide-react";
+import { type ReactNode } from "react";
+import {
+  agentToolCallToViewModel,
+  describeRunStatus,
+  StatusBadge,
+  ThinkingDisclosure,
+  ToolExecutionGroup,
+  type ToolItemVM,
+} from "@/components/agent-ui";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
@@ -14,64 +22,180 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import { useI18n } from "../i18n";
+import { useI18n, type MessageTree } from "../i18n";
 import { MarkdownDocument } from "../shared/MarkdownDocument";
-import { runIdFromToolReceipt, type SessionRunLink } from "./session-run-links";
-
-function toolLabel(tool: AgentToolCall, completed: string, failed: string): string {
-  const status =
-    tool.status === "done" ? completed : tool.status === "error" ? failed : tool.status;
-  return `${tool.name.replaceAll("_", " ")} · ${status}`;
-}
+import type { SessionRunLink } from "./session-run-links";
 
 function runStateLabel(run: SessionRunLink, labels: Record<string, string>): string {
   return labels[run.state] ?? run.state.replaceAll("_", " ");
 }
 
-function runBadgeVariant(run: SessionRunLink): "default" | "secondary" | "outline" | "destructive" {
-  if (run.state === "failed" || run.state === "cancelled") return "destructive";
-  if (run.attention === "gate" || run.attention === "review" || run.attention === "paused")
-    return "outline";
-  return run.state === "published" ? "default" : "secondary";
+function toolNameLabels(t: MessageTree) {
+  return {
+    wikiProduce: t.workbench.toolNames.wiki_produce,
+    status: {
+      pending: t.workbench.toolPending,
+      running: t.workbench.toolRunning,
+      done: t.workbench.toolCompleted,
+      error: t.workbench.toolFailed,
+    },
+  };
 }
 
-function ToolTrace({
-  tool,
+function toolsToViewModels(tools: AgentToolCall[], t: MessageTree): ToolItemVM[] {
+  const labels = toolNameLabels(t);
+  return tools.map((tool) => agentToolCallToViewModel(tool, labels));
+}
+
+function ToolGroup({
+  tools,
   onOpenRun,
 }: {
-  tool: AgentToolCall;
+  tools: AgentToolCall[];
   onOpenRun?: (runId: string) => void;
 }) {
   const { t } = useI18n();
-  const runId = runIdFromToolReceipt(tool);
-  const text =
-    tool.details?.summary ??
-    tool.output ??
-    (tool.args ? JSON.stringify(tool.args, null, 2) : undefined);
+  if (tools.length === 0) return null;
+  const items = toolsToViewModels(tools, t);
   return (
-    <div className="flex max-w-3xl items-start gap-2" data-testid={`agent-tool-${tool.name}`}>
-      <details className="min-w-0 flex-1 border-y border-border py-2">
-        <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium text-muted-foreground">
-          <WrenchIcon data-icon="inline-start" />
-          <span className="min-w-0 flex-1 truncate">
-            {toolLabel(tool, t.workbench.toolCompleted, t.workbench.toolFailed)}
-          </span>
-          <ChevronRightIcon className="transition-transform group-open:rotate-90" />
-        </summary>
-        {text ? <pre className="okf-code-snippet mt-2">{text}</pre> : null}
-      </details>
-      {runId && onOpenRun ? (
-        <Button
-          size="xs"
-          variant="ghost"
-          className="mt-1 shrink-0"
-          onClick={() => onOpenRun(runId)}
-        >
-          <WorkflowIcon data-icon="inline-start" />
-          {t.workbench.openRun}
-        </Button>
-      ) : null}
-    </div>
+    <ToolExecutionGroup
+      items={items}
+      inputLabel={t.workbench.toolInput}
+      outputLabel={t.workbench.toolOutput}
+      errorLabel={t.workbench.toolError}
+      openRunLabel={t.workbench.openRun}
+      toolCallsSummaryLabel={t.workbench.toolCallsSummary}
+      copyLabel={t.workbench.copy}
+      copiedLabel={t.workbench.copied}
+      onOpenRun={onOpenRun}
+    />
+  );
+}
+
+function AssistantContent({
+  message,
+  onOpenRun,
+}: {
+  message: AgentMessage;
+  onOpenRun?: (runId: string) => void;
+}) {
+  const { t } = useI18n();
+  const streaming = message.status === "streaming";
+  const mdMode = streaming ? "streaming" : "static";
+
+  const thinkingBlock =
+    message.thinking ? (
+      <ThinkingDisclosure
+        text={message.thinking}
+        status={message.thinkingStatus}
+        streamingLabel={t.workbench.thinking}
+        doneLabel={t.workbench.thought}
+      />
+    ) : null;
+
+  const parts = message.parts;
+  if (parts && parts.length > 0) {
+    const toolsById = new Map((message.tools ?? []).map((tool) => [tool.id, tool] as const));
+    const nodes: ReactNode[] = [];
+    let toolBuffer: AgentToolCall[] = [];
+    let textIdx = 0;
+    let toolGroupIdx = 0;
+    let thinkingPartIdx = 0;
+    const renderedToolIds = new Set<string>();
+    const hasThinkingParts = parts.some((part) => part.type === "thinking");
+    const lastThinkingPartIndex = (() => {
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (parts[i]?.type === "thinking") return i;
+      }
+      return -1;
+    })();
+
+    // Top-level thinking only when parts have no thinking entries (parts-first otherwise).
+    if (message.thinking && !hasThinkingParts) {
+      nodes.push(
+        <ThinkingDisclosure
+          key="thinking-top-level"
+          text={message.thinking}
+          status={message.thinkingStatus}
+          streamingLabel={t.workbench.thinking}
+          doneLabel={t.workbench.thought}
+        />,
+      );
+    }
+
+    const flushTools = () => {
+      if (toolBuffer.length === 0) return;
+      const key = `tools-${toolGroupIdx++}`;
+      nodes.push(<ToolGroup key={key} tools={toolBuffer} onOpenRun={onOpenRun} />);
+      toolBuffer = [];
+    };
+
+    for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+      const part = parts[partIndex]!;
+      if (part.type === "thinking") {
+        flushTools();
+        if (part.thinking) {
+          const thinkingStatus =
+            message.thinkingStatus === "streaming" || partIndex === lastThinkingPartIndex
+              ? message.thinkingStatus
+              : "done";
+          nodes.push(
+            <ThinkingDisclosure
+              key={`thinking-part-${thinkingPartIdx++}`}
+              text={part.thinking}
+              status={thinkingStatus}
+              streamingLabel={t.workbench.thinking}
+              doneLabel={t.workbench.thought}
+            />,
+          );
+        }
+        continue;
+      }
+      if (part.type === "text") {
+        flushTools();
+        if (part.text) {
+          nodes.push(
+            <MarkdownDocument key={`text-${textIdx++}`} content={part.text} mode={mdMode} />,
+          );
+        }
+        continue;
+      }
+      if (part.type === "tool") {
+        const tool = toolsById.get(part.toolId);
+        if (tool && !renderedToolIds.has(tool.id)) {
+          toolBuffer.push(tool);
+          renderedToolIds.add(tool.id);
+        }
+      }
+    }
+    flushTools();
+
+    const remaining = (message.tools ?? []).filter((tool) => !renderedToolIds.has(tool.id));
+    if (remaining.length > 0) {
+      nodes.push(<ToolGroup key="tools-remaining" tools={remaining} onOpenRun={onOpenRun} />);
+    }
+
+    const hasTextPart = parts.some((part) => part.type === "text" && part.text);
+    if (!hasTextPart && message.content) {
+      // Insert content after any leading thinking, before other parts.
+      const insertAt = nodes.length > 0 && message.thinking && !hasThinkingParts ? 1 : 0;
+      nodes.splice(
+        insertAt,
+        0,
+        <MarkdownDocument key="content-fallback" content={message.content} mode={mdMode} />,
+      );
+    }
+
+    // Parts own chronological order — do not hoist top-level thinking ahead of them.
+    return <>{nodes}</>;
+  }
+
+  return (
+    <>
+      {thinkingBlock}
+      {message.content ? <MarkdownDocument content={message.content} mode={mdMode} /> : null}
+      <ToolGroup tools={message.tools ?? []} onOpenRun={onOpenRun} />
+    </>
   );
 }
 
@@ -91,15 +215,17 @@ function SessionRunLinks({
       </MarkerIcon>
       <MarkerContent className="flex flex-1 flex-wrap items-center gap-2">
         <span className="font-medium text-foreground">{t.workbench.sessionRuns}</span>
-        {runs.map((run) => (
-          <Button key={run.runId} size="sm" variant="outline" onClick={() => onOpenRun(run.runId)}>
-            <WorkflowIcon data-icon="inline-start" />
-            <span className="font-mono">{run.runId.slice(0, 12)}</span>
-            <Badge variant={runBadgeVariant(run)}>
-              {runStateLabel(run, t.workbench.runStates)}
-            </Badge>
-          </Button>
-        ))}
+        {runs.map((run) => {
+          const descriptor = describeRunStatus(run.state);
+          const label = runStateLabel(run, t.workbench.runStates);
+          return (
+            <Button key={run.runId} size="sm" variant="outline" onClick={() => onOpenRun(run.runId)}>
+              <WorkflowIcon data-icon="inline-start" />
+              <span className="font-mono">{run.runId.slice(0, 12)}</span>
+              <StatusBadge descriptor={descriptor}>{label}</StatusBadge>
+            </Button>
+          );
+        })}
       </MarkerContent>
     </Marker>
   );
@@ -140,15 +266,7 @@ function TranscriptRow({
           <BotIcon data-icon="inline-start" />
           {t.workbench.agent}
         </MessageHeader>
-        {message.content ? (
-          <MarkdownDocument
-            content={message.content}
-            mode={message.status === "streaming" ? "streaming" : "static"}
-          />
-        ) : null}
-        {message.tools?.map((tool) => (
-          <ToolTrace key={tool.id} tool={tool} onOpenRun={onOpenRun} />
-        ))}
+        <AssistantContent message={message} onOpenRun={onOpenRun} />
         {message.errorText ? (
           <Alert variant="destructive" className="mt-2 max-w-3xl">
             <CircleAlert />

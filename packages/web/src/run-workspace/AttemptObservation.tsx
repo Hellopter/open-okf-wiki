@@ -8,13 +8,18 @@ import type {
 import {
   ArrowLeftIcon,
   BotIcon,
-  ChevronRightIcon,
   Clock3Icon,
   LoaderCircleIcon,
   TerminalIcon,
-  WrenchIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
+import {
+  attemptToolToViewModel,
+  CodeSurface,
+  describeAttemptStatus,
+  StatusBadge,
+  ToolExecutionItem,
+} from "@/components/agent-ui";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,12 +28,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { MessageTree } from "../i18n";
 import { MarkdownDocument } from "../shared/MarkdownDocument";
 import type { FollowMode } from "./observation-state";
-
-function statusVariant(state: string): "default" | "secondary" | "outline" | "destructive" {
-  if (state === "failed" || state === "cancelled") return "destructive";
-  if (state === "running" || state === "suspended") return "default";
-  return "outline";
-}
 
 function elapsed(attempt: WikiRunAttempt): string | null {
   const end = attempt.endedAt ? new Date(attempt.endedAt).getTime() : Date.now();
@@ -43,62 +42,6 @@ function attemptStateLabel(state: string, t: MessageTree): string {
   return (
     t.workbench.nodeStates[state as keyof typeof t.workbench.nodeStates] ??
     state.replaceAll("_", " ")
-  );
-}
-
-function ToolTransaction({
-  call,
-  result,
-  t,
-}: {
-  call?: Extract<AttemptTraceEvent, { kind: "tool_call" }>;
-  result?: Extract<AttemptTraceEvent, { kind: "tool_result" }>;
-  t: MessageTree;
-}) {
-  const failed = result?.status === "error";
-  const title = call?.name ?? result?.name ?? t.workbench.traceKinds.tool_result;
-  const status = result
-    ? failed
-      ? t.workbench.toolFailed
-      : t.workbench.toolCompleted
-    : t.workbench.toolCalled;
-  const request = call?.args;
-  const response = result?.output;
-  return (
-    <details className="border-y border-border py-3" open={failed}>
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
-        <WrenchIcon className="size-4 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate">{title}</span>
-        <Badge variant={failed ? "destructive" : "outline"}>{status}</Badge>
-        <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-open:rotate-90" />
-      </summary>
-      <div className="mt-3 grid gap-3 xl:grid-cols-2">
-        {request ? (
-          <section>
-            <p className="mb-1 text-xs font-medium text-muted-foreground">
-              {t.workbench.toolInput}
-            </p>
-            <pre className="okf-code-snippet max-h-80 overflow-auto">{request}</pre>
-          </section>
-        ) : null}
-        {response ? (
-          <section>
-            <p className="mb-1 text-xs font-medium text-muted-foreground">
-              {t.workbench.toolOutput}
-            </p>
-            <pre className="okf-code-snippet max-h-80 overflow-auto">{response}</pre>
-          </section>
-        ) : null}
-      </div>
-    </details>
-  );
-}
-
-function RawEvent({ event }: { event: AttemptTraceEvent }) {
-  return (
-    <pre className="okf-code-snippet max-h-[34rem] overflow-auto">
-      {JSON.stringify(event, null, 2)}
-    </pre>
   );
 }
 
@@ -155,15 +98,29 @@ function ActivityFeed({
     <div ref={scrollRef} className="h-full overflow-y-auto">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 py-5 md:px-6">
         {rendered.map((item) => {
-          if (item.kind === "tool")
+          if (item.kind === "tool") {
+            const vm = attemptToolToViewModel(item.call, item.result, {
+              wikiProduce: t.workbench.toolNames.wiki_produce,
+              status: {
+                pending: t.workbench.toolPending,
+                running: t.workbench.toolRunning,
+                done: t.workbench.toolCompleted,
+                error: t.workbench.toolFailed,
+              },
+            });
             return (
-              <ToolTransaction
+              <ToolExecutionItem
                 key={item.call?.ordinal ?? item.result?.ordinal}
-                call={item.call}
-                result={item.result}
-                t={t}
+                item={vm}
+                openRunLabel={t.workbench.openRun}
+                inputLabel={t.workbench.toolInput}
+                outputLabel={t.workbench.toolOutput}
+                errorLabel={t.workbench.toolError}
+                copyLabel={t.workbench.copy}
+                copiedLabel={t.workbench.copied}
               />
             );
+          }
           const event = item.event;
           if (event.kind === "input") {
             return (
@@ -174,15 +131,20 @@ function ActivityFeed({
                     {new Date(event.at).toLocaleTimeString()}
                   </time>
                 </summary>
-                <pre className="okf-code-snippet mt-3 max-h-[36rem] overflow-auto">
-                  {event.content}
-                </pre>
+                <CodeSurface
+                  className="mt-3"
+                  value={event.content}
+                  maxHeightClass="max-h-[36rem]"
+                  copyable
+                  copyLabel={t.workbench.copy}
+                  copiedLabel={t.workbench.copied}
+                />
               </details>
             );
           }
           if (event.kind === "assistant") {
             return (
-              <article key={event.ordinal} className="border-l-2 border-primary/35 pl-4">
+              <article key={event.ordinal}>
                 <div className="mb-2 flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
                   <span className="flex items-center gap-2">
                     <BotIcon className="size-3.5" />
@@ -408,9 +370,9 @@ export function AttemptObservation({
                     {attempt.failureClass ? ` · ${attempt.failureClass}` : ""}
                   </span>
                 </span>
-                <Badge variant={statusVariant(attempt.state)}>
+                <StatusBadge descriptor={describeAttemptStatus(attempt.state)}>
                   {attemptStateLabel(attempt.state, t)}
-                </Badge>
+                </StatusBadge>
               </Button>
             ))}
             {attempts.length === 0 ? (
@@ -454,7 +416,14 @@ export function AttemptObservation({
                   </Button>
                 ) : null}
                 {trace.map((event) => (
-                  <RawEvent key={event.ordinal} event={event} />
+                  <CodeSurface
+                    key={event.ordinal}
+                    value={JSON.stringify(event, null, 2)}
+                    maxHeightClass="max-h-[34rem]"
+                    copyable
+                    copyLabel={t.workbench.copy}
+                    copiedLabel={t.workbench.copied}
+                  />
                 ))}
               </div>
             </TabsContent>

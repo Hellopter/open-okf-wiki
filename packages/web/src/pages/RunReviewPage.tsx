@@ -264,9 +264,9 @@ export function RunReviewPage() {
                   key={`${line.kind}-${index}`}
                   className={
                     line.kind === "add"
-                      ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
+                      ? "bg-success/10 text-success"
                       : line.kind === "remove"
-                        ? "bg-red-500/10 text-red-800 dark:text-red-200"
+                        ? "bg-destructive/10 text-destructive"
                         : "text-muted-foreground"
                   }
                 >

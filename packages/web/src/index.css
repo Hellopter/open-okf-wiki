@@ -170,18 +170,6 @@
   @apply flex items-start justify-between gap-4;
 }
 
-/**
- * Shared mono payload surface (tool I/O, thinking, sheet peeks).
- * Matches Streamdown code density without nested borders.
- *
- * Width chain: every flex ancestor up to this pre needs min-w-0, otherwise
- * long JSON/code expands the bubble and "crushes" into one horizontal line
- * with no wrap and no local scroll. Prefer CSS over measuring in JS.
- */
-.okf-code-snippet {
-  @apply m-0 block max-h-64 min-w-0 w-full max-w-full overflow-x-auto overflow-y-auto rounded-md border border-border/70 bg-muted/40 p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere];
-}
-
 /* Micro section label for dense panels (run graph, gate panel, dialogs) */
 .okf-section-label {
   @apply text-2xs font-medium uppercase tracking-wide text-muted-foreground;
@@ -360,7 +348,8 @@ code.mono {
 
 .wiki-markdown [data-streamdown="code-block"],
 .agent-markdown [data-streamdown="code-block"] {
-  @apply my-3 min-w-0 max-w-full gap-0 overflow-hidden rounded-lg border border-border bg-muted/30 p-0;
+  /* rounded-md matches CodeSurface mono payload radius */
+  @apply my-3 min-w-0 max-w-full gap-0 overflow-hidden rounded-md border border-border bg-muted/30 p-0;
 }
 
 .wiki-markdown [data-streamdown="code-block-header"],
@@ -411,7 +400,7 @@ code.mono {
 /* Bare <pre> fallbacks — overridden inside Streamdown code-block (more specific). */
 .wiki-markdown pre,
 .agent-markdown pre {
-  @apply my-3 max-w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[0.85em];
+  @apply my-3 max-w-full min-w-0 overflow-x-auto rounded-md border border-border bg-muted p-3 text-[0.85em];
 }
 
 .wiki-markdown pre code,
@@ -589,5 +578,14 @@ code.mono {
 @media (max-width: 720px) {
   .row-between {
     @apply flex-col;
+  }
+}
+
+/* Soften continuous utility animations for users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin,
+  .animate-pulse {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

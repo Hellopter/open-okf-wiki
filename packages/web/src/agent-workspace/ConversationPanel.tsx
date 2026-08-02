@@ -21,6 +21,8 @@ type ConversationPanelProps = {
   t: MessageTree;
 };
 
+const BUSY_STATUSES = new Set(["streaming", "between_operations", "retrying", "compacting"]);
+
 export function ConversationPanel({
   conversation,
   runs,
@@ -37,6 +39,11 @@ export function ConversationPanel({
     onPromptSubmitted(submitted);
   };
 
+  const isBusy = BUSY_STATUSES.has(conversation.status);
+  const hasPrompt = Boolean(prompt.trim());
+  /** When the agent is busy and the composer is empty, promote Stop as the primary action. */
+  const emphasizeStop = isBusy && !hasPrompt;
+
   return (
     <>
       <SessionTranscript messages={conversation.messages} runs={runs} onOpenRun={onOpenRun} />
@@ -51,26 +58,26 @@ export function ConversationPanel({
           <InputGroupTextarea
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder={
-              conversation.status === "idle" ? t.workbench.promptIdle : t.workbench.promptBusy
-            }
+            placeholder={isBusy ? t.workbench.promptBusy : t.workbench.promptIdle}
             rows={2}
+            aria-busy={isBusy || undefined}
           />
-          <InputGroupAddon align="block-end" className="justify-end">
+          <InputGroupAddon align="block-end" className="justify-end gap-1">
             <InputGroupButton
               type="submit"
               size="icon-sm"
-              variant="default"
-              disabled={!prompt.trim()}
+              variant={emphasizeStop ? "outline" : "default"}
+              disabled={!hasPrompt}
               aria-label={t.workbench.send}
               title={t.workbench.send}
             >
               <SendIcon />
             </InputGroupButton>
-            {conversation.status !== "idle" ? (
+            {isBusy ? (
               <InputGroupButton
+                type="button"
                 size="icon-sm"
-                variant="outline"
+                variant={emphasizeStop ? "default" : "outline"}
                 onClick={() => void conversation.abort()}
                 aria-label={t.workbench.stop}
                 title={t.workbench.stop}

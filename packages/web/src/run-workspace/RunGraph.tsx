@@ -23,6 +23,7 @@ import {
   PlayIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { describeNodeStatus } from "@/components/agent-ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatMessage, type MessageTree } from "../i18n";
@@ -99,11 +100,7 @@ type HandlePlan = {
 };
 
 function stateClass(state: string): string {
-  if (state === "running") return "border-primary/70 bg-primary/8 shadow-primary/10";
-  if (state === "failed") return "border-destructive/60 bg-destructive/8";
-  if (state === "waiting") return "border-amber-500/55 bg-amber-500/8";
-  if (state === "succeeded") return "border-emerald-600/45 bg-emerald-600/8";
-  return "border-border bg-card";
+  return describeNodeStatus(state).surfaceClass;
 }
 
 function handleClassName(dense: boolean): string {
@@ -131,7 +128,7 @@ function degreeHeight(node: WikiRunNode, degree: number): number {
 function OverviewCard({ data }: NodeProps<OverviewNode>) {
   return (
     <div
-      className={`flex h-[4.75rem] w-[216px] flex-col justify-between rounded-lg border bg-card px-3.5 py-3 shadow-sm ${stateClass(data.stage.state)}`}
+      className={`flex h-[4.75rem] w-[216px] flex-col justify-between rounded-lg border px-3.5 py-3 shadow-sm ${stateClass(data.stage.state)}`}
     >
       <Handle
         id="left"

@@ -3,6 +3,7 @@ import { Activity, FileSearch, Pause, Play, Square, TriangleAlert } from "lucide
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
+import { describeConnectionStatus, statusToneTextClass } from "@/components/agent-ui";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -203,7 +204,7 @@ export function RunDetailPage() {
             <h2 className="mt-1 truncate text-base font-semibold">{stage}</h2>
             <div className="mt-1 flex items-center gap-2 font-mono text-xs text-muted-foreground">
               <span>{snapshot.runId}</span>
-              <span className={connection === "live" ? "text-emerald-600" : "text-amber-700"}>
+              <span className={statusToneTextClass(describeConnectionStatus(connection).tone)}>
                 {connection}
               </span>
             </div>

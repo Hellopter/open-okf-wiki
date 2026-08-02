@@ -2,6 +2,11 @@ import type { WikiRunListItem, WorkspaceConfig } from "@okf-wiki/contract";
 import { Play, Plus, Radio, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  describeConnectionStatus,
+  describeRunStatus,
+  statusToneTextClass,
+} from "@/components/agent-ui";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -21,12 +26,7 @@ function stateLabel(state: WikiRunListItem["state"]): string {
 }
 
 function stateColor(state: WikiRunListItem["state"]): string {
-  if (state === "failed" || state === "cancelled") return "text-destructive";
-  if (state === "paused" || state === "waiting_for_operator")
-    return "text-amber-700 dark:text-amber-300";
-  if (state === "published" || state === "completed_unpublished")
-    return "text-emerald-700 dark:text-emerald-300";
-  return "text-muted-foreground";
+  return statusToneTextClass(describeRunStatus(state).tone);
 }
 
 export function RunWorkspacePage() {
@@ -115,7 +115,9 @@ export function RunWorkspacePage() {
         <section className="grid shrink-0 gap-4 border-b border-border px-4 py-4 lg:grid-cols-[minmax(0,1fr)_22rem] lg:px-6">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Radio className={connection === "live" ? "size-3 text-emerald-600" : "size-3"} />
+              <Radio
+                className={`size-3 ${statusToneTextClass(describeConnectionStatus(connection).tone)}`}
+              />
               <span>{connection === "live" ? "Live index" : "Reconnecting"}</span>
             </div>
             <h2 className="mt-1 text-lg font-semibold">Runs</h2>
@@ -167,9 +169,7 @@ export function RunWorkspacePage() {
                           {run.completedNodes}/{run.totalNodes} stages
                         </span>
                         {run.attention !== "none" ? (
-                          <span className="text-amber-700 dark:text-amber-300">
-                            {run.attention}
-                          </span>
+                          <span className={statusToneTextClass("warning")}>{run.attention}</span>
                         ) : null}
                       </div>
                     </div>

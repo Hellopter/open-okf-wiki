@@ -1,8 +1,11 @@
 import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract";
-import { FileTextIcon, PauseIcon, PlayIcon, SendIcon, SquareIcon } from "lucide-react";
+import { PauseIcon, PlayIcon, SendIcon, SquareIcon } from "lucide-react";
 import { useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import {
+  describeRunStatus,
+  GateActionShell,
+  StatusBadge,
+} from "@/components/agent-ui";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMessage, type MessageTree } from "../i18n";
@@ -69,9 +72,9 @@ export function RunCanvas({
             <h2 className="truncate text-sm font-semibold">
               {activeNode?.label ?? t.runInspector.title}
             </h2>
-            <Badge variant={snapshot.state === "failed" ? "destructive" : "secondary"}>
+            <StatusBadge descriptor={describeRunStatus(snapshot.state)}>
               {localizedLabel(t.workbench.runStates, snapshot.state)}
-            </Badge>
+            </StatusBadge>
           </div>
           <p className="mt-1 font-mono text-xs text-muted-foreground">{snapshot.runId}</p>
         </div>
@@ -131,68 +134,73 @@ export function RunCanvas({
       </div>
       <div className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-6">
         {gate ? (
-          <Alert className="mb-5">
-            <FileTextIcon />
-            <AlertTitle>
-              {formatMessage(t.workbench.decisionTitle, {
-                kind: localizedLabel(t.workbench.gateKinds, gate.kind),
-              })}
-            </AlertTitle>
-            <AlertDescription>
-              {gate.detail?.summary ?? t.workbench.decisionFallback}
-            </AlertDescription>
+          <GateActionShell
+            className="mb-5"
+            title={formatMessage(t.workbench.decisionTitle, {
+              kind: localizedLabel(t.workbench.gateKinds, gate.kind),
+            })}
+            detail={gate.detail?.summary ?? t.workbench.decisionFallback}
+            technicalDetailsLabel={t.workbench.technicalDetails}
+            meta={
+              <p className="font-mono text-xs text-muted-foreground">
+                {gate.gateId}
+              </p>
+            }
+            actions={
+              <>
+                {gate.kind === "operator_input" ? (
+                  <Button size="sm" onClick={() => resolve("answer")} disabled={!answer.trim()}>
+                    <SendIcon data-icon="inline-start" />
+                    {t.workbench.sendAnswer}
+                  </Button>
+                ) : null}
+                {gate.kind === "fix" ? (
+                  <>
+                    <Button size="sm" onClick={() => resolve("pass")}>
+                      {t.workbench.acceptCandidate}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => resolve("fix")}>
+                      {t.workbench.repairAutomatically}
+                    </Button>
+                  </>
+                ) : null}
+                {["plan", "publication"].includes(gate.kind) ? (
+                  <>
+                    <Button size="sm" onClick={() => resolve("approve")}>
+                      {t.workbench.approve}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => resolve("revise")}
+                      disabled={!feedback.trim()}
+                    >
+                      {t.workbench.revise}
+                    </Button>
+                    <Button size="sm" variant="destructive" onClick={() => resolve("deny")}>
+                      {t.workbench.decline}
+                    </Button>
+                  </>
+                ) : null}
+              </>
+            }
+          >
             {gate.kind === "operator_input" ? (
               <Textarea
-                className="mt-3 min-h-20"
+                className="min-h-20"
                 value={answer}
                 onChange={(event) => setAnswer(event.target.value)}
                 placeholder={t.workbench.answerPlaceholder}
               />
             ) : (
               <Textarea
-                className="mt-3 min-h-20"
+                className="min-h-20"
                 value={feedback}
                 onChange={(event) => setFeedback(event.target.value)}
                 placeholder={t.workbench.guidancePlaceholder}
               />
             )}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {gate.kind === "operator_input" ? (
-                <Button size="sm" onClick={() => resolve("answer")} disabled={!answer.trim()}>
-                  <SendIcon data-icon="inline-start" />
-                  {t.workbench.sendAnswer}
-                </Button>
-              ) : null}
-              {gate.kind === "fix" ? (
-                <>
-                  <Button size="sm" onClick={() => resolve("pass")}>
-                    {t.workbench.acceptCandidate}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => resolve("fix")}>
-                    {t.workbench.repairAutomatically}
-                  </Button>
-                </>
-              ) : null}
-              {["plan", "publication"].includes(gate.kind) ? (
-                <>
-                  <Button size="sm" onClick={() => resolve("approve")}>
-                    {t.workbench.approve}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => resolve("revise")}
-                    disabled={!feedback.trim()}
-                  >
-                    {t.workbench.revise}
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => resolve("deny")}>
-                    {t.workbench.decline}
-                  </Button>
-                </>
-              ) : null}
-            </div>
-          </Alert>
+          </GateActionShell>
         ) : null}
         <RunGraph
           snapshot={snapshot}
