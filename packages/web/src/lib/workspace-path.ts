@@ -42,12 +42,19 @@ export function wikiHref(
   return withQuery(`${base}/${segments}`, extraQuery);
 }
 
-/** Configure surface (`/w/:id/configure`). Optional hash: sources|models|skill|danger */
+/**
+ * Configure surface (`/w/:id/configure`).
+ * Optional hash: sources | general | models (legacy write alias → #general) | skill | danger.
+ * Readers still accept #models as general (see ConfigurePage sectionFromHash).
+ */
 export function configureHref(
   workspaceId: string,
-  section?: "sources" | "models" | "skill" | "danger",
+  section?: "sources" | "general" | "models" | "skill" | "danger",
   extraQuery?: Record<string, string>,
 ): string {
   const base = withQuery(`/w/${encodeURIComponent(workspaceId)}/configure`, extraQuery);
-  return section ? `${base}#${section}` : base;
+  if (!section) return base;
+  // Canonical write target for models/general is #general.
+  const hash = section === "models" ? "general" : section;
+  return `${base}#${hash}`;
 }

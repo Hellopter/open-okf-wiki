@@ -1,6 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -45,19 +52,19 @@ export function ProviderPanel({
 
   return (
     <Card data-testid="provider-panel">
-      <CardHeader className="row-between items-center">
-        <div className="flex flex-col gap-1">
-          <CardTitle>{t.globalSettings.modelsTitle}</CardTitle>
-          <p className="muted small max-w-2xl">{t.globalSettings.providersHint}</p>
-        </div>
-        <span className="muted small shrink-0">
-          {formatMessage(t.globalSettings.modelsCount, { n: models.length })}
-          {provider?.defaultModelProfileId
-            ? ` · ${t.globalSettings.defaultSet}`
-            : models.length > 0
-              ? ` · ${t.globalSettings.noDefault}`
-              : ""}
-        </span>
+      <CardHeader>
+        <CardTitle>{t.globalSettings.modelsTitle}</CardTitle>
+        <CardDescription className="max-w-2xl">{t.globalSettings.providersHint}</CardDescription>
+        <CardAction>
+          <span className="text-sm text-muted-foreground">
+            {formatMessage(t.globalSettings.modelsCount, { n: models.length })}
+            {provider?.defaultModelProfileId
+              ? ` · ${t.globalSettings.defaultSet}`
+              : models.length > 0
+                ? ` · ${t.globalSettings.noDefault}`
+                : ""}
+          </span>
+        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {catalogEmpty ? (
@@ -75,52 +82,57 @@ export function ProviderPanel({
                 data-testid="provider-card"
                 data-provider-id={entry.id}
               >
-                <CardHeader className="row-between items-start py-3">
-                  <div className="min-w-0 flex flex-col gap-0.5">
-                    <CardTitle className="text-base">{entry.name}</CardTitle>
-                    <p className="mono small muted truncate">{entry.baseUrl || "—"}</p>
-                    <p className="small muted">
+                <CardHeader>
+                  <CardTitle className="text-base">{entry.name}</CardTitle>
+                  <CardDescription className="flex min-w-0 flex-col gap-0.5">
+                    <span className="truncate font-mono text-sm">{entry.baseUrl || "—"}</span>
+                    <span>
                       {entry.apiShape}
                       {" · "}
                       {entry.apiKeySet ? (entry.apiKeyMasked ?? t.globalSettings.keySet) : "—"}
                       {entry.headers?.["User-Agent"] ? ` · UA=${entry.headers["User-Agent"]}` : ""}
                       {entry.supportsDeveloperRole ? ` · ${t.globalSettings.developerRoleOn}` : ""}
-                    </p>
-                  </div>
-                  <div className="row-actions shrink-0">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => onAddModel(entry.id)}
-                      data-testid="provider-add-model"
-                    >
-                      {t.globalSettings.addModelUnderProvider}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => onEditProvider(entry)}
-                      data-testid="provider-edit"
-                    >
-                      {t.globalSettings.edit}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => onDeleteProvider(entry)}
-                      data-testid="provider-delete"
-                    >
-                      {t.globalSettings.delete}
-                    </Button>
-                  </div>
+                    </span>
+                  </CardDescription>
+                  <CardAction>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onAddModel(entry.id)}
+                        data-testid="provider-add-model"
+                      >
+                        {t.globalSettings.addModelUnderProvider}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onEditProvider(entry)}
+                        data-testid="provider-edit"
+                      >
+                        {t.globalSettings.edit}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => onDeleteProvider(entry)}
+                        data-testid="provider-delete"
+                      >
+                        {t.globalSettings.delete}
+                      </Button>
+                    </div>
+                  </CardAction>
                 </CardHeader>
                 <CardContent className="pt-0">
                   {entry.models.length === 0 ? (
-                    <p className="muted small py-2" data-testid="provider-models-empty">
+                    <p
+                      className="py-2 text-sm text-muted-foreground"
+                      data-testid="provider-models-empty"
+                    >
                       {t.globalSettings.providerModelsEmpty}
                     </p>
                   ) : (
@@ -154,14 +166,14 @@ export function ProviderPanel({
                                   </Badge>
                                 ) : null}
                               </TableCell>
-                              <TableCell className="mono small">{model.modelId}</TableCell>
-                              <TableCell className="mono small">
+                              <TableCell className="font-mono text-sm">{model.modelId}</TableCell>
+                              <TableCell className="font-mono text-sm">
                                 {model.maxContextTokens !== undefined
                                   ? model.maxContextTokens.toLocaleString()
                                   : "—"}
                               </TableCell>
-                              <TableCell className="actions-cell">
-                                <div className="row-actions justify-end">
+                              <TableCell className="text-right whitespace-nowrap">
+                                <div className="flex flex-wrap items-center justify-end gap-2">
                                   {!isDefault ? (
                                     <Button
                                       type="button"
@@ -223,8 +235,8 @@ export function ProviderPanel({
                   {models.map((model) => (
                     <TableRow key={model.id} data-testid="model-row">
                       <TableCell>{model.name}</TableCell>
-                      <TableCell className="mono small">{model.modelId}</TableCell>
-                      <TableCell className="mono small">{model.baseUrl}</TableCell>
+                      <TableCell className="font-mono text-sm">{model.modelId}</TableCell>
+                      <TableCell className="font-mono text-sm">{model.baseUrl}</TableCell>
                       <TableCell className="text-right">
                         <Button
                           type="button"
@@ -244,7 +256,7 @@ export function ProviderPanel({
         )}
 
         {provider ? (
-          <p className="muted small">
+          <p className="text-sm text-muted-foreground">
             {formatMessage(t.globalSettings.envFallback, {
               base: provider.envFallback.openaiBaseUrlSet
                 ? t.globalSettings.envSet

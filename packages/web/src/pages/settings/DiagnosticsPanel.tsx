@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { type DoctorResponse, getApiBase, type HealthResponse } from "../../api";
 import { formatMessage, useI18n } from "../../i18n";
@@ -26,15 +26,17 @@ export function DiagnosticsPanel({
         <CardHeader>
           <CardTitle>{t.globalSettings.healthTitle}</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <dl className="kv">
-            <div>
-              <dt>{t.globalSettings.apiBase}</dt>
-              <dd className="mono">{getApiBase() || t.globalSettings.apiBaseSameOrigin}</dd>
+        <CardContent>
+          <dl className="m-0 flex flex-col gap-4">
+            <div className="grid gap-1">
+              <dt className="text-xs text-muted-foreground">{t.globalSettings.apiBase}</dt>
+              <dd className="m-0 break-words font-mono">
+                {getApiBase() || t.globalSettings.apiBaseSameOrigin}
+              </dd>
             </div>
-            <div>
-              <dt>{t.globalSettings.health}</dt>
-              <dd>
+            <div className="grid gap-1">
+              <dt className="text-xs text-muted-foreground">{t.globalSettings.health}</dt>
+              <dd className="m-0 break-words">
                 {health ? (
                   <Badge
                     variant={health.ok ? "secondary" : "destructive"}
@@ -47,18 +49,18 @@ export function DiagnosticsPanel({
                       : t.globalSettings.healthNotOk}
                   </Badge>
                 ) : (
-                  <span className="muted">{t.globalSettings.healthNotChecked}</span>
+                  <span className="text-muted-foreground">{t.globalSettings.healthNotChecked}</span>
                 )}
               </dd>
             </div>
           </dl>
-          <div className="form-actions">
-            <Button type="button" onClick={() => void onHealthCheck()} disabled={checkingHealth}>
-              {checkingHealth ? <Spinner data-icon="inline-start" /> : null}
-              {checkingHealth ? t.globalSettings.checking : t.globalSettings.runHealthCheck}
-            </Button>
-          </div>
         </CardContent>
+        <CardFooter>
+          <Button type="button" onClick={() => void onHealthCheck()} disabled={checkingHealth}>
+            {checkingHealth ? <Spinner data-icon="inline-start" /> : null}
+            {checkingHealth ? t.globalSettings.checking : t.globalSettings.runHealthCheck}
+          </Button>
+        </CardFooter>
       </Card>
 
       {doctor ? (
@@ -66,11 +68,11 @@ export function DiagnosticsPanel({
           <CardHeader>
             <CardTitle>{t.globalSettings.doctorTitle}</CardTitle>
           </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <dl className="kv kv-grid">
-              <div>
-                <dt>{t.globalSettings.status}</dt>
-                <dd>
+          <CardContent>
+            <dl className="m-0 grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">{t.globalSettings.status}</dt>
+                <dd className="m-0 break-words">
                   <Badge
                     variant={doctor.ok ? "secondary" : "destructive"}
                     data-testid="doctor-status"
@@ -79,19 +81,19 @@ export function DiagnosticsPanel({
                   </Badge>
                 </dd>
               </div>
-              <div>
-                <dt>{t.globalSettings.node}</dt>
-                <dd className="mono">{doctor.node}</dd>
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">{t.globalSettings.node}</dt>
+                <dd className="m-0 break-words font-mono">{doctor.node}</dd>
               </div>
-              <div>
-                <dt>{t.globalSettings.platform}</dt>
-                <dd className="mono">
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">{t.globalSettings.platform}</dt>
+                <dd className="m-0 break-words font-mono">
                   {doctor.platform}/{doctor.arch}
                 </dd>
               </div>
-              <div>
-                <dt>{t.globalSettings.git}</dt>
-                <dd>
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">{t.globalSettings.git}</dt>
+                <dd className="m-0 break-words">
                   {doctor.git.available ? (
                     <Badge variant="secondary">
                       {t.globalSettings.gitAvailable}
@@ -102,9 +104,9 @@ export function DiagnosticsPanel({
                   )}
                 </dd>
               </div>
-              <div>
-                <dt>{t.globalSettings.doctorModels}</dt>
-                <dd>
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">{t.globalSettings.doctorModels}</dt>
+                <dd className="m-0 break-words">
                   {doctor.provider ? (
                     <Badge
                       variant={doctor.provider.configured ? "secondary" : "outline"}
@@ -118,7 +120,7 @@ export function DiagnosticsPanel({
                         : ` · ${t.globalSettings.doctorNoCredentials}`}
                     </Badge>
                   ) : (
-                    <span className="muted">—</span>
+                    <span className="text-muted-foreground">—</span>
                   )}
                 </dd>
               </div>

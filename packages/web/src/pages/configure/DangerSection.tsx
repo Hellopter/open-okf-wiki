@@ -1,7 +1,13 @@
 import { CircleAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { useI18n } from "../../i18n";
 
@@ -14,13 +20,17 @@ export function DangerSection({ deleting, onRequestDelete }: DangerSectionProps)
   const { t } = useI18n();
 
   return (
-    <Card>
+    <Card className="w-full max-w-3xl">
+      <CardHeader>
+        <CardTitle>{t.settings.dangerTitle}</CardTitle>
+        <CardDescription>{t.settings.dangerDescription}</CardDescription>
+      </CardHeader>
       <CardContent className="flex flex-col gap-6">
         <Alert variant="destructive" data-testid="settings-danger-zone">
           <CircleAlert />
-          <AlertTitle>{t.settings.dangerTitle}</AlertTitle>
+          <AlertTitle className="sr-only">{t.settings.dangerTitle}</AlertTitle>
           <AlertDescription>{t.settings.dangerDescription}</AlertDescription>
-          <div className="form-actions col-start-2">
+          <div className="col-start-2 flex flex-wrap gap-2">
             <Button
               type="button"
               variant="destructive"

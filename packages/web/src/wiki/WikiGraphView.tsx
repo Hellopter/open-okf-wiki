@@ -93,10 +93,10 @@ export function WikiGraphView({
     return (
       <div className="flex min-h-0 flex-1 flex-col" data-testid="wiki-graph-view">
         {nodes.length === 0 ? (
-          <p className="muted p-6">{emptyLabel}</p>
+          <p className="p-6 text-muted-foreground">{emptyLabel}</p>
         ) : (
           <>
-            <p className="muted px-6 pt-4 text-sm">{emptyLabel}</p>
+            <p className="px-6 pt-4 text-sm text-muted-foreground">{emptyLabel}</p>
             <GraphSvg
               nodes={nodes}
               edges={edges}

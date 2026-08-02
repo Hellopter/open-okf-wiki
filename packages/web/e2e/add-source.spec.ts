@@ -27,6 +27,7 @@ test.describe("add git source", () => {
     await page.getByTestId("workspace-subnav-sources").click();
     await expect(page.getByTestId("sources-page")).toBeVisible();
 
+    await page.getByTestId("source-add-open").click();
     await page.getByTestId("source-path-input").fill(gitRepo);
     await page.getByTestId("source-id-input").fill(sourceId);
     await page.getByTestId("source-add-submit").click();

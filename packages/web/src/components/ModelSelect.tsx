@@ -21,10 +21,17 @@ type Props = {
   required?: boolean;
   disabled?: boolean;
   "data-testid"?: string;
+  /** Override the default "Model" field label (e.g. role-specific labels). */
+  label?: string;
+  /** Hide the settings-link description under the select. */
+  hideDescription?: boolean;
   /** Show empty option for optional selection. */
   allowEmpty?: boolean;
   emptyLabel?: string;
 };
+
+/** Sentinel for optional clear — Select item values cannot be empty string. */
+const EMPTY_PROFILE_VALUE = "__none__";
 
 function modelLabel(
   m: ModelProfilePublic,
@@ -44,28 +51,33 @@ export function ModelSelect({
   required,
   disabled,
   "data-testid": testId = "model-profile-select",
+  label,
+  hideDescription,
   allowEmpty,
   emptyLabel,
 }: Props) {
   const { t } = useI18n();
+  const fieldLabel = label ?? t.modelSelect.label;
   const placeholder = emptyLabel ?? t.modelSelect.selectPlaceholder;
 
-  const items = useMemo(
-    () =>
-      models.map((m) => ({
-        value: m.id,
-        label: modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix),
-      })),
-    [models, defaultModelProfileId, t.modelSelect.defaultSuffix],
-  );
+  const items = useMemo(() => {
+    const mapped = models.map((m) => ({
+      value: m.id,
+      label: modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix),
+    }));
+    if (allowEmpty) {
+      return [{ value: EMPTY_PROFILE_VALUE, label: placeholder }, ...mapped];
+    }
+    return mapped;
+  }, [models, defaultModelProfileId, t.modelSelect.defaultSuffix, allowEmpty, placeholder]);
 
   if (models.length === 0) {
     return (
       <Field data-testid="model-select-empty">
-        <FieldLabel htmlFor={id}>{t.modelSelect.label}</FieldLabel>
+        <FieldLabel htmlFor={id}>{fieldLabel}</FieldLabel>
         <FieldDescription>
           {t.modelSelect.emptyBefore}
-          <Link to="/settings" className="inline-link ml-0">
+          <Link to="/settings" className="text-primary no-underline hover:underline">
             {t.modelSelect.emptyLink}
           </Link>
           {t.modelSelect.emptyAfter}
@@ -74,16 +86,22 @@ export function ModelSelect({
     );
   }
 
+  const selectValue = value
+    ? value
+    : allowEmpty
+      ? EMPTY_PROFILE_VALUE
+      : null;
+
   return (
     <Field>
-      <FieldLabel htmlFor={id}>{t.modelSelect.label}</FieldLabel>
+      <FieldLabel htmlFor={id}>{fieldLabel}</FieldLabel>
       <Select
-        value={value || null}
+        value={selectValue}
         onValueChange={(next) => {
-          if (typeof next === "string") {
-            onChange(next);
-          } else if (allowEmpty && next == null) {
+          if (next === EMPTY_PROFILE_VALUE || (allowEmpty && next == null)) {
             onChange("");
+          } else if (typeof next === "string") {
+            onChange(next);
           }
         }}
         items={items}
@@ -99,6 +117,9 @@ export function ModelSelect({
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
+            {allowEmpty ? (
+              <SelectItem value={EMPTY_PROFILE_VALUE}>{placeholder}</SelectItem>
+            ) : null}
             {models.map((m) => (
               <SelectItem key={m.id} value={m.id}>
                 {modelLabel(m, defaultModelProfileId, t.modelSelect.defaultSuffix)}
@@ -107,11 +128,13 @@ export function ModelSelect({
           </SelectGroup>
         </SelectContent>
       </Select>
-      <FieldDescription>
-        {t.modelSelect.hintBefore}
-        <Link to="/settings">{t.modelSelect.hintLink}</Link>
-        {t.modelSelect.hintAfter}
-      </FieldDescription>
+      {hideDescription ? null : (
+        <FieldDescription>
+          {t.modelSelect.hintBefore}
+          <Link to="/settings">{t.modelSelect.hintLink}</Link>
+          {t.modelSelect.hintAfter}
+        </FieldDescription>
+      )}
     </Field>
   );
 }

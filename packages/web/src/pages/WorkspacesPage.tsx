@@ -152,10 +152,10 @@ export function WorkspacesPage() {
   return (
     <AppShell>
       <div data-testid="workspaces-page" className="flex flex-col gap-5">
-        <header className="page-header row-between">
-          <div>
-            <h1>{t.workspaces.title}</h1>
-            <p>
+        <header className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <h1 className="text-2xl font-semibold tracking-tight">{t.workspaces.title}</h1>
+            <p className="max-w-3xl text-sm text-muted-foreground">
               {t.workspaces.descriptionBefore}
               <Link to="/settings">{t.workspaces.settingsLink}</Link>
               {t.workspaces.descriptionAfter}
@@ -215,7 +215,9 @@ export function WorkspacesPage() {
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field>
-                    <FieldLabel htmlFor="workspace-max-active-runs">Active Runs</FieldLabel>
+                    <FieldLabel htmlFor="workspace-max-active-runs">
+                      {t.settings.maxActiveRuns}
+                    </FieldLabel>
                     <Input
                       id="workspace-max-active-runs"
                       type="number"
@@ -229,7 +231,7 @@ export function WorkspacesPage() {
                   </Field>
                   <Field>
                     <FieldLabel htmlFor="workspace-max-concurrent-attempts">
-                      Concurrent attempts
+                      {t.settings.maxConcurrentAttempts}
                     </FieldLabel>
                     <Input
                       id="workspace-max-concurrent-attempts"
@@ -317,7 +319,7 @@ export function WorkspacesPage() {
                   <EmptyDescription>{t.workspaces.emptyDescription}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
-                  <ul className="checklist text-left">
+                  <ul className="mt-4 flex list-disc flex-col gap-1.5 pl-5 text-left text-sm text-muted-foreground">
                     <li>
                       {t.workspaces.checklistModels}{" "}
                       <Link to="/settings">{t.workspaces.settingsLink}</Link>
@@ -349,7 +351,7 @@ export function WorkspacesPage() {
                       {/* Stretched link: the whole card navigates; menu stays above it. */}
                       <Link
                         to={href}
-                        className="row-link truncate text-sm after:absolute after:inset-0"
+                        className="truncate text-sm font-semibold text-foreground no-underline after:absolute after:inset-0 hover:underline"
                         data-workspace-id={ws.id}
                       >
                         {ws.name}

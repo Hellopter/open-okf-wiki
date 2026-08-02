@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import type { AppSettingsPublic } from "../../api";
@@ -21,9 +21,9 @@ export function AppSettingsPanel({
     <Card data-testid="home-skills-panel">
       <CardHeader>
         <CardTitle>{t.globalSettings.skillsTitle}</CardTitle>
+        <CardDescription>{t.globalSettings.skillsDescription}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <p className="muted small">{t.globalSettings.skillsDescription}</p>
         {appSettings ? (
           <>
             <Field orientation="horizontal">
@@ -43,23 +43,29 @@ export function AppSettingsPanel({
                 }}
               />
             </Field>
-            <dl className="kv">
-              <div>
-                <dt>{t.globalSettings.homeSkillsPath}</dt>
-                <dd className="mono small whitespace-normal">{appSettings.homeSkillsDir}</dd>
+            <dl className="m-0 flex flex-col gap-4">
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">{t.globalSettings.homeSkillsPath}</dt>
+                <dd className="m-0 break-words font-mono text-sm whitespace-normal">
+                  {appSettings.homeSkillsDir}
+                </dd>
               </div>
-              <div>
-                <dt>{t.globalSettings.workspaceSkillsPath}</dt>
-                <dd className="mono small whitespace-normal">
+              <div className="grid gap-1">
+                <dt className="text-xs text-muted-foreground">
+                  {t.globalSettings.workspaceSkillsPath}
+                </dt>
+                <dd className="m-0 break-words font-mono text-sm whitespace-normal">
                   {"{workspace}/"}
                   {appSettings.workspaceSkillsRelative}
                 </dd>
               </div>
             </dl>
-            {skillsSaving ? <p className="muted small">{t.globalSettings.skillsSaving}</p> : null}
+            {skillsSaving ? (
+              <p className="text-sm text-muted-foreground">{t.globalSettings.skillsSaving}</p>
+            ) : null}
           </>
         ) : (
-          <p className="muted small">{t.globalSettings.appSettingsUnavailable}</p>
+          <p className="text-sm text-muted-foreground">{t.globalSettings.appSettingsUnavailable}</p>
         )}
       </CardContent>
     </Card>

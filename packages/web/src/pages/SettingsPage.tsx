@@ -109,6 +109,7 @@ export function SettingsPage() {
   }, [loadAll]);
 
   function openEdit(model: ModelProfilePublic) {
+    closeProviderEditor();
     setEditorMode("edit");
     setEditingId(model.id);
     setMaxContextTokensError(null);
@@ -121,6 +122,7 @@ export function SettingsPage() {
   }
 
   function openCreateUnderProvider(providerId: string) {
+    closeProviderEditor();
     setEditorMode("create");
     setEditingId(null);
     setMaxContextTokensError(null);
@@ -135,6 +137,7 @@ export function SettingsPage() {
   }
 
   function openProviderCreate() {
+    closeEditor();
     setProviderEditorMode("create");
     setEditingProviderId(null);
     setProviderForm(emptyProviderForm);
@@ -142,6 +145,7 @@ export function SettingsPage() {
   }
 
   function openProviderEdit(entry: ProviderEntryPublic) {
+    closeEditor();
     setProviderEditorMode("edit");
     setEditingProviderId(entry.id);
     setProviderForm({
@@ -348,12 +352,14 @@ export function SettingsPage() {
   return (
     <AppShell>
       <div data-testid="global-settings-page" className="flex flex-col gap-5">
-        <header className="page-header row-between">
-          <div>
-            <h1>{t.globalSettings.title}</h1>
-            <p>{t.globalSettings.description}</p>
+        <header className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <h1 className="text-2xl font-semibold tracking-tight">{t.globalSettings.title}</h1>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              {t.globalSettings.description}
+            </p>
           </div>
-          <div className="row-actions">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="outline"
@@ -413,33 +419,6 @@ export function SettingsPage() {
                   onDeleteModel={setDeleteTarget}
                   onSetDefault={handleSetDefault}
                 />
-
-                {editorMode !== "closed" ? (
-                  <ModelEditor
-                    editorMode={editorMode}
-                    form={form}
-                    setForm={setForm}
-                    isSubmitting={isSubmitting}
-                    maxContextTokensError={maxContextTokensError}
-                    onClearMaxContextTokensError={() => setMaxContextTokensError(null)}
-                    onClose={closeEditor}
-                    onSave={handleSave}
-                  />
-                ) : null}
-
-                {providerEditorMode !== "closed" ? (
-                  <ProviderEditor
-                    providerEditorMode={providerEditorMode}
-                    providerForm={providerForm}
-                    setProviderForm={setProviderForm}
-                    isSubmitting={isSubmitting}
-                    testing={testing}
-                    testResult={testResult}
-                    onClose={closeProviderEditor}
-                    onSave={handleProviderSave}
-                    onTest={handleTest}
-                  />
-                ) : null}
               </TabsContent>
 
               <TabsContent value="diagnostics" className="flex flex-col gap-4 outline-none">
@@ -451,6 +430,29 @@ export function SettingsPage() {
                 />
               </TabsContent>
             </Tabs>
+
+            <ModelEditor
+              editorMode={editorMode}
+              form={form}
+              setForm={setForm}
+              isSubmitting={isSubmitting}
+              maxContextTokensError={maxContextTokensError}
+              onClearMaxContextTokensError={() => setMaxContextTokensError(null)}
+              onClose={closeEditor}
+              onSave={handleSave}
+            />
+
+            <ProviderEditor
+              providerEditorMode={providerEditorMode}
+              providerForm={providerForm}
+              setProviderForm={setProviderForm}
+              isSubmitting={isSubmitting}
+              testing={testing}
+              testResult={testResult}
+              onClose={closeProviderEditor}
+              onSave={handleProviderSave}
+              onTest={handleTest}
+            />
 
             <ConfirmDialog
               open={providerDeleteTarget != null}

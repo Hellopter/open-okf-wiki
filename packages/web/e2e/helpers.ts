@@ -63,6 +63,7 @@ export async function addSourceViaUi(
   await expect(page.getByTestId("configure-page")).toBeVisible({ timeout: 15_000 });
   await page.getByTestId("workspace-subnav-sources").click();
   await expect(page.getByTestId("sources-page")).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("source-add-open").click();
   await page.getByTestId("source-path-input").fill(gitRepo);
   await page.getByTestId("source-id-input").fill(sourceId);
   await page.getByTestId("source-add-submit").click();

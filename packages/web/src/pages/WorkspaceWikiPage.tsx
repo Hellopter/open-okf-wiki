@@ -490,7 +490,7 @@ export function WorkspaceWikiPage() {
                       {page.title}
                     </h1>
                   ) : (
-                    <h1 className="wiki-page-title muted">{page.path}</h1>
+                    <h1 className="wiki-page-title text-muted-foreground">{page.path}</h1>
                   )}
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span className="wiki-page-path font-mono">{page.path}</span>
@@ -557,7 +557,7 @@ export function WorkspaceWikiPage() {
                   ) : null}
                 </article>
               ) : (
-                <p className="muted">{t.wiki.selectPage}</p>
+                <p className="text-muted-foreground">{t.wiki.selectPage}</p>
               )}
             </div>
           )}

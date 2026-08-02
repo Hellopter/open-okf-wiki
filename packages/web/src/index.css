@@ -156,87 +156,9 @@
   }
 }
 
-/* Operator layout helpers (semantic tokens) */
-
-.page-header h1 {
-  @apply mb-1 text-2xl font-semibold tracking-tight;
-}
-
-.page-header p {
-  @apply m-0 max-w-3xl text-sm text-muted-foreground;
-}
-
-.row-between {
-  @apply flex items-start justify-between gap-4;
-}
-
 /* Micro section label for dense panels (run graph, gate panel, dialogs) */
 .okf-section-label {
   @apply text-2xs font-medium uppercase tracking-wide text-muted-foreground;
-}
-
-.form-actions {
-  @apply mt-1 flex flex-wrap items-center gap-3;
-}
-
-.kv {
-  @apply m-0 flex flex-col gap-4;
-}
-
-.kv-grid {
-  @apply grid gap-4 sm:grid-cols-2;
-}
-
-.kv div {
-  @apply grid gap-1;
-}
-
-.kv dt {
-  @apply text-xs text-muted-foreground;
-}
-
-.kv dd {
-  @apply m-0 break-words;
-}
-
-.muted-block {
-  @apply mt-6 border-t border-border pt-5;
-}
-
-.muted {
-  @apply text-muted-foreground;
-}
-
-.mono {
-  @apply font-mono text-[0.9rem];
-}
-
-.small {
-  @apply text-sm;
-}
-
-code.mono {
-  @apply text-[0.85em];
-}
-
-.row-actions {
-  @apply flex flex-wrap items-center gap-2;
-}
-
-.row-link {
-  @apply font-semibold text-foreground no-underline hover:underline;
-}
-
-.inline-link {
-  @apply ml-1 text-primary no-underline hover:underline;
-}
-
-.actions-cell {
-  @apply text-right whitespace-nowrap;
-}
-
-.checklist {
-  @apply mt-4 flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted-foreground;
 }
 
 /* Two-pane reader: TOC tree | article (full height, no sticky card stack). */
@@ -573,12 +495,6 @@ code.mono {
 .wiki-markdown [data-streamdown="table"] thead,
 .agent-markdown [data-streamdown="table"] thead {
   @apply bg-transparent;
-}
-
-@media (max-width: 720px) {
-  .row-between {
-    @apply flex-col;
-  }
 }
 
 /* Soften continuous utility animations for users who prefer reduced motion. */

@@ -12,4 +12,8 @@ test("wiki and configure hrefs live under /w/:id", () => {
   assert.equal(wikiHref("ws1", "a/b.md"), "/w/ws1/wiki/a/b.md");
   assert.equal(configureHref("ws1"), "/w/ws1/configure");
   assert.equal(configureHref("ws1", "sources"), "/w/ws1/configure#sources");
+  assert.equal(configureHref("ws1", "general"), "/w/ws1/configure#general");
+  assert.equal(configureHref("ws1", "models"), "/w/ws1/configure#general");
+  assert.equal(configureHref("ws1", "skill"), "/w/ws1/configure#skill");
+  assert.equal(configureHref("ws1", "danger"), "/w/ws1/configure#danger");
 });
