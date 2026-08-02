@@ -287,6 +287,7 @@ export {
   writeAppState,
 } from "./workspace-app-state.js";
 export {
+  acquireWikiRunsControlStoreLease,
   type CreateWorkspaceOptions,
   createWorkspace,
   DEFAULT_MODEL_ID,
@@ -298,9 +299,12 @@ export {
   resetWikiRunsControlStore,
   saveWorkspace,
   WIKI_RUNS_CONTROL_STORE_FILE_NAME,
+  WikiRunsControlStoreInUseError,
+  type WikiRunsControlStoreLease,
   WORKSPACE_FILE_NAME,
   type WorkspaceMutation,
   WorkspaceRevisionConflictError,
+  withWorkspaceRevision,
   workspaceConfigPath,
   workspaceMetaDir,
 } from "./workspace-config.js";

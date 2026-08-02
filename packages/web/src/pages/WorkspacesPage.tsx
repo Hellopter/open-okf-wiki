@@ -139,6 +139,7 @@ export function WorkspacesPage() {
     try {
       await deleteWorkspace(target.id, {
         deleteFiles,
+        expectedRevision: target.revision,
       });
       await load();
     } catch (err) {

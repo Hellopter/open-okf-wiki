@@ -28,7 +28,7 @@ export function createTempGitRepo(label = "source"): string {
   return root;
 }
 
-/** Create a v3 workspace via UI; lands on its independent Run Workspace. */
+/** Create a v3 workspace via UI; lands on its linked Session and Run workbench. */
 export async function createWorkspaceViaUi(
   page: Page,
   namePrefix: string,
@@ -45,7 +45,7 @@ export async function createWorkspaceViaUi(
   await page.getByTestId("workspace-max-active-runs-input").fill("2");
   await page.getByTestId("workspace-max-concurrent-attempts-input").fill("4");
   await page.getByTestId("workspace-create-submit").click();
-  await expect(page.getByTestId("run-workspace-index")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("workspace-agent-page")).toBeVisible({ timeout: 20_000 });
   return { rootPath, name };
 }
 

@@ -167,7 +167,7 @@ export function patchWorkspace(
  */
 export function deleteWorkspace(
   id: string,
-  options?: { deleteFiles?: boolean },
+  options: { deleteFiles?: boolean; expectedRevision: number },
 ): Promise<{
   ok: boolean;
   id: string;
@@ -176,7 +176,9 @@ export function deleteWorkspace(
   rootPath: string;
 }> {
   const base = `/api/workspaces/${encodeURIComponent(id)}`;
-  const url = options?.deleteFiles ? `${base}?deleteFiles=true` : base;
+  const params = new URLSearchParams({ expectedRevision: String(options.expectedRevision) });
+  if (options.deleteFiles) params.set("deleteFiles", "true");
+  const url = `${base}?${params}`;
   return request(url, { method: "DELETE" }).then(DeleteWorkspaceResponseSchema.parse);
 }
 

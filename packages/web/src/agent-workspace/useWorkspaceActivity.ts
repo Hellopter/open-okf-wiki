@@ -99,7 +99,7 @@ export function useWorkspaceActivity({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [refresh]);
+  }, [refresh, workspaceId]);
 
   useEffect(() => {
     if (!workspaceId) return;

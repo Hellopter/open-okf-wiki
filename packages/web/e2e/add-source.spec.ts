@@ -19,7 +19,7 @@ test.describe("add git source", () => {
     await page.getByTestId("workspace-max-active-runs-input").fill("2");
     await page.getByTestId("workspace-max-concurrent-attempts-input").fill("4");
     await page.getByTestId("workspace-create-submit").click();
-    await expect(page.getByTestId("run-workspace-index")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("workspace-agent-page")).toBeVisible({ timeout: 20_000 });
 
     // Configure → Sources (no top-level sources mode on WorkbenchShell).
     await page.getByTestId("workspace-subnav-settings").click();

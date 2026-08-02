@@ -4,7 +4,7 @@ OKF Wiki turns a pinned **Repository Snapshot Set** into a source-grounded Markd
 
 The product is a **local Web UI**, a **localhost Node server**, and a **Pi agent harness**, with a trusted **Run Boundary** in TypeScript (`@okf-wiki/core`) and a durable **WikiRuns** control plane (`@okf-wiki/workflow`). The operator configures a **Workspace** of local Git checkouts (link existing paths or clone into the workspace). The agent follows a versioned Producer Skill; each Attempt writes pages into isolated Staging. The Run Boundary freezes snapshots and the Skill, enforces path policy, validates Markdown mechanically, and publishes the whole Wiki atomically.
 
-The **Run Workspace** (`/w/:id/runs`) is the direct browser operator surface. It reads and controls **WikiRuns** through durable commands, gates, snapshots, and Run SSE. Pi executes disposable Attempts; it does not own a Run or await gates. There is no Agent Session HTTP or browser surface ([ADR 0035](docs/adr/0035-durable-wikiruns-control-plane.md)).
+The linked **Operator Session and Run Workspace** (`/w/:id`) is the direct browser operator surface. Its redacted Session SSE supports conversation and `wiki_produce` receipts; **WikiRuns** remains the authority for durable commands, gates, snapshots, and Run SSE. Pi executes disposable Attempts; it does not own a Run or await gates ([ADR 0039](docs/adr/0039-browser-operator-session-and-run-observation.md)).
 
 | Doc | Purpose |
 |---|---|
@@ -43,7 +43,7 @@ Copy [`.env.example`](.env.example) to an untracked `.env` (or export vars in th
 
 | Package | Role |
 |---|---|
-| `@okf-wiki/web` | Run Workspace Web UI (Vite + React + shadcn) |
+| `@okf-wiki/web` | Linked Operator Session and Run Workspace UI (Vite + React + shadcn) |
 | `@okf-wiki/server` | Localhost HTTP API + durable WikiRuns command and SSE routes |
 | `@okf-wiki/agent` | Pi Attempt runtime and Semantic Workflow tool host (no Mastra/AI SDK) |
 | `@okf-wiki/workflow` | Durable WikiRuns control plane (`workflow.sqlite`, commands, gates, events) |
@@ -107,11 +107,11 @@ health gate: `pnpm dev:stack:parallel`.
 
 1. Open **Workspaces** → create a workspace with an **absolute** `rootPath`.
 2. **Settings** → configure model catalog endpoints if needed (secrets stay machine-local / env).
-3. Open **Operate** to enter the **Run Workspace** (`/w/:id/runs`).
-4. Start or refresh a Wiki Run, then approve plan/publication gates on that durable Run. **Stop Run** cancels the Run.
+3. Open **Operate** to enter the linked **Operator Session and Run Workspace** (`/w/:id`).
+4. Use the Session to request a Wiki Run, then approve plan/publication gates on that durable Run. **Stop Run** cancels the Run; stopping a Session only aborts its current Pi turn.
 5. Browse published Markdown under the Wiki view or `/w/:id/wiki`.
 
-Agent Session browser endpoints are **removed**. Each Pi Attempt keeps only its run-scoped trace and sealed artifacts.
+Session endpoints expose only the redacted browser projection; provider reasoning, raw tool payloads, credentials, system prompts, and filesystem paths remain server-side. Each Pi Attempt keeps its run-scoped trace and sealed artifacts.
 
 ### Provider and server environment
 
@@ -150,7 +150,7 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 | `pnpm format` / `pnpm format:check` | Biome format (+ import assist); lint stays ESLint | Local; staged pre-commit; **CI** |
 | `pnpm check` | `typecheck` + `lint` + `format:check` + architecture guard | Convenient full static check |
 | `pnpm check:architecture` | Reject retired packages, protocols, routes, and dependency edges | Local / **CI**; part of `check` |
-| `pnpm reset-control-store -- --workspace <absolute-path> --yes` | Explicitly removes one Workspace's WikiRuns database, WAL/SHM, and Run-owned files; preserves `workspace.json` and Pi Session JSONL | Only after stopping the local Server; required for an unsupported WikiRuns store hard cut |
+| `pnpm reset-control-store -- --workspace <absolute-path> --yes` | Explicitly removes one Workspace's WikiRuns database, WAL/SHM, and Run-owned files; preserves `workspace.json` and Pi Session JSONL | Only after stopping the local Server; the command refuses an active WikiRuns Owner |
 | `pnpm test` | Package unit tests (`node:test` where present) | Local; **CI** |
 | `pnpm test:e2e` | Playwright Web e2e (`@okf-wiki/web`) | Local when touching UI/API; **CI job** |
 
@@ -178,7 +178,7 @@ pnpm --filter @okf-wiki/web exec playwright install chromium
 pnpm test:e2e
 ```
 
-Run Workspace coverage lives under `packages/web/e2e/run-workspace.spec.ts`. Specs live under `packages/web/e2e/`. Playwright is not a pre-commit gate.
+Linked Session and Run Workspace coverage lives under `packages/web/e2e/`. Playwright is not a pre-commit gate.
 
 ### CI
 
@@ -197,7 +197,7 @@ pnpm dev
 # → API http://127.0.0.1:8787
 ```
 
-Open `/workspaces`, create a workspace, then open `/w/<id>/runs` Run Workspace.
+Open `/workspaces`, create a workspace, then open the linked Operator Session and Run Workspace at `/w/<id>`.
 
 ### Private LAN (UI and API)
 

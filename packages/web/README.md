@@ -14,14 +14,15 @@ Vite + React operator UI for OKF Wiki. It talks to `@okf-wiki/server` over local
 
 ## Operator surface
 
-The Run Workspace (`/w/:id/runs`) is the operator surface. Sources, Published Wiki, and Workspace settings remain supporting read/configuration pages. Runs start from this workspace and open their own durable detail and review views.
+The linked Operator Session and Run Workspace (`/w/:id`) is the operator surface. Sources, Published Wiki, and Workspace settings remain supporting read/configuration pages. A Session can invoke `wiki_produce` repeatedly; its receipts link to durable Run detail and review views.
 
-The workspace uses two projection paths:
+The workbench uses three independent projection paths:
 
-1. **WikiRuns index SSE** — `WorkspaceAgentPage` loads `GET …/runs/index` then subscribes to EventSource `…/runs/index/events`.
-2. **WikiRuns detail SSE** — a Run detail view loads `GET …/runs/:runId` then subscribes to EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect; heartbeats ignored). Full snapshots replace projection by event id.
+1. **Session SSE** — a redacted Session snapshot and stream carry user-visible text, tool lifecycle, and bounded `wiki_produce` receipts; provider reasoning and raw tool payloads never reach the browser.
+2. **WikiRuns index SSE** — `WorkspaceAgentPage` loads `GET …/runs/index` then subscribes to EventSource `…/runs/index/events`.
+3. **WikiRuns detail SSE** — a Run detail view loads `GET …/runs/:runId` then subscribes to EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect; heartbeats ignored). Full snapshots replace projection by event id.
 
-Plan/publication gates and failed-node retry/rerun dispatch durable WikiRuns commands (`ResolveGate`, `RetryFailedNode`, `RerunNode`). There is no Agent Session HTTP or browser route surface.
+Plan/publication gates and failed-node retry/rerun dispatch durable WikiRuns commands (`ResolveGate`, `RetryFailedNode`, `RerunNode`). Session state never replaces Run state, and Session events never synthesize Run state.
 
 UI primitives live under `src/components/ui/` (shadcn/Base UI). Workspace pages reuse `WorkspaceShell` and `WorkspaceSubnav`; destructive actions use `ConfirmDialog`, and toasts use `sonner`.
 

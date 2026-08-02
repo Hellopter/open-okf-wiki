@@ -15,6 +15,7 @@ export async function listWorkspaceSummaries(appStatePath?: string): Promise<Wor
         id: ws.id,
         name: ws.name,
         rootPath: ws.rootPath,
+        revision: ws.revision,
         lastOpenedAt: ws.lastOpenedAt,
         sourceCount: ws.sources.length,
       });

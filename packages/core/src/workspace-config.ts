@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rm } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   DEFAULT_OPERATOR_TOOLS,
@@ -20,6 +20,7 @@ import { WorkspaceIntakeError } from "./workspace-errors.js";
 export const WORKSPACE_FILE_NAME = "workspace.json";
 export const DEFAULT_MODEL_ID = "openai/default";
 export const WIKI_RUNS_CONTROL_STORE_FILE_NAME = "workflow.sqlite";
+const WIKI_RUNS_CONTROL_STORE_LOCK_FILE_NAME = `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}.lock`;
 
 const workspaceConfigQueues = new Map<string, Promise<unknown>>();
 
@@ -43,6 +44,28 @@ export type WorkspaceMutation = (
 export type ResetWikiRunsControlStoreResult = {
   rootPath: string;
   removed: string[];
+};
+
+/** Raised when a process already owns the durable WikiRuns store for a Workspace. */
+export class WikiRunsControlStoreInUseError extends Error {
+  readonly code = "control_store_in_use";
+
+  constructor(
+    readonly rootPath: string,
+    readonly pid?: number,
+  ) {
+    super(
+      pid === undefined
+        ? `WikiRuns control store is in use for ${rootPath}`
+        : `WikiRuns control store is in use for ${rootPath} by process ${pid}`,
+    );
+    this.name = "WikiRunsControlStoreInUseError";
+  }
+}
+
+/** Lease held by a server-side WikiRuns owner while its SQLite connection is live. */
+export type WikiRunsControlStoreLease = {
+  release(): Promise<void>;
 };
 
 /** Absolute path to `{root}/.okf-wiki/workspace.json`. */
@@ -225,6 +248,24 @@ export async function mutateWorkspace(
   expectedRevision: number,
   mutate: WorkspaceMutation,
 ): Promise<WorkspaceConfig> {
+  return withWorkspaceRevision(rootPath, expectedRevision, async (current) => {
+    const proposed = normalizeWorkspaceForWrite(await mutate(current));
+    assertSameWorkspace(current, proposed);
+    const next = { ...proposed, revision: current.revision + 1 };
+    await writeWorkspaceAtRoot(next);
+    return next;
+  });
+}
+
+/**
+ * Serialize an operation that depends on the current Workspace revision without
+ * requiring that operation to persist another Workspace document.
+ */
+export async function withWorkspaceRevision<T>(
+  rootPath: string,
+  expectedRevision: number,
+  operation: (workspace: WorkspaceConfig) => T | Promise<T>,
+): Promise<T> {
   const revision = WorkspaceRevisionSchema.safeParse(expectedRevision);
   if (!revision.success) {
     throw new Error("expectedRevision must be a non-negative integer");
@@ -237,13 +278,62 @@ export async function mutateWorkspace(
     if (current.revision !== revision.data) {
       throw new WorkspaceRevisionConflictError(revision.data, current);
     }
-
-    const proposed = normalizeWorkspaceForWrite(await mutate(current));
-    assertSameWorkspace(current, proposed);
-    const next = { ...proposed, revision: current.revision + 1 };
-    await writeWorkspaceAtRoot(next);
-    return next;
+    return operation(current);
   });
+}
+
+/**
+ * Acquire the cross-process lease for a live WikiRuns owner. Reset holds the
+ * same lease, so it cannot unlink a control store beneath an active SQLite
+ * connection. A dead process leaves a reclaimable marker.
+ */
+export async function acquireWikiRunsControlStoreLease(
+  rootPath: string,
+): Promise<WikiRunsControlStoreLease> {
+  const absoluteRoot = assertAbsolutePath(rootPath, "workspace root");
+  const resolvedRoot = await resolveExistingDir(absoluteRoot);
+  await loadWorkspaceAtRoot(resolvedRoot);
+  const lockPath = path.join(
+    workspaceMetaDir(resolvedRoot),
+    WIKI_RUNS_CONTROL_STORE_LOCK_FILE_NAME,
+  );
+  const token = randomUUID();
+
+  for (;;) {
+    try {
+      const handle = await open(lockPath, "wx");
+      try {
+        await handle.writeFile(JSON.stringify({ pid: process.pid, token }), "utf8");
+      } finally {
+        await handle.close();
+      }
+      return {
+        release: async () => {
+          try {
+            const current = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
+            if (current.token === token) await rm(lockPath, { force: true });
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error;
+          }
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") throw error;
+    }
+
+    const holder = await readControlStoreLock(lockPath);
+    if (holder.pid !== undefined && isProcessAlive(holder.pid)) {
+      throw new WikiRunsControlStoreInUseError(resolvedRoot, holder.pid);
+    }
+
+    const stalePath = `${lockPath}.stale-${randomUUID()}`;
+    try {
+      await rename(lockPath, stalePath);
+      await rm(stalePath, { force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error;
+    }
+  }
 }
 
 /**
@@ -253,30 +343,34 @@ export async function mutateWorkspace(
 export async function resetWikiRunsControlStore(
   rootPath: string,
 ): Promise<ResetWikiRunsControlStoreResult> {
+  const lease = await acquireWikiRunsControlStoreLease(rootPath);
   const absoluteRoot = assertAbsolutePath(rootPath, "workspace root");
   const resolvedRoot = await resolveExistingDir(absoluteRoot);
-  await loadWorkspaceAtRoot(resolvedRoot);
 
-  const metaDir = workspaceMetaDir(resolvedRoot);
-  const targets = [
-    path.join(metaDir, WIKI_RUNS_CONTROL_STORE_FILE_NAME),
-    path.join(metaDir, `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}-wal`),
-    path.join(metaDir, `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}-shm`),
-    path.join(metaDir, "runs"),
-  ];
+  try {
+    const metaDir = workspaceMetaDir(resolvedRoot);
+    const targets = [
+      path.join(metaDir, WIKI_RUNS_CONTROL_STORE_FILE_NAME),
+      path.join(metaDir, `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}-wal`),
+      path.join(metaDir, `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}-shm`),
+      path.join(metaDir, "runs"),
+    ];
 
-  for (const target of targets) {
-    if (!isPathInside(resolvedRoot, target) || path.dirname(target) !== metaDir) {
-      throw new Error("refusing to reset outside workspace control paths");
+    for (const target of targets) {
+      if (!isPathInside(resolvedRoot, target) || path.dirname(target) !== metaDir) {
+        throw new Error("refusing to reset outside workspace control paths");
+      }
     }
-  }
 
-  const removed: string[] = [];
-  for (const target of targets) {
-    await rm(target, { recursive: true, force: true });
-    removed.push(path.basename(target));
+    const removed: string[] = [];
+    for (const target of targets) {
+      await rm(target, { recursive: true, force: true });
+      removed.push(path.basename(target));
+    }
+    return { rootPath: resolvedRoot, removed };
+  } finally {
+    await lease.release();
   }
-  return { rootPath: resolvedRoot, removed };
 }
 
 /** Parse the strict, confirmation-gated reset command arguments. */
@@ -337,6 +431,26 @@ function assertSameWorkspace(current: WorkspaceConfig, proposed: WorkspaceConfig
 async function writeWorkspaceAtRoot(config: WorkspaceConfig): Promise<void> {
   const filePath = workspaceConfigPath(config.rootPath);
   await atomicWriteJson(filePath, config);
+}
+
+async function readControlStoreLock(lockPath: string): Promise<{ pid?: number }> {
+  try {
+    const parsed = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown };
+    return Number.isInteger(parsed.pid) && (parsed.pid as number) > 0
+      ? { pid: parsed.pid as number }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
 }
 
 /**

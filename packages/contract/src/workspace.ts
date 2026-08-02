@@ -415,6 +415,7 @@ export const WorkspaceSummarySchema = z
     id: z.string().trim().min(1),
     name: z.string().trim().min(1),
     rootPath: z.string().trim().min(1),
+    revision: WorkspaceRevisionSchema,
     lastOpenedAt: z.string().datetime().optional(),
     sourceCount: z.number().int().nonnegative(),
   })

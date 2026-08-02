@@ -57,7 +57,7 @@ test.describe("workspace settings", () => {
     await page.getByTestId("workspace-max-concurrent-attempts-input").fill("4");
     await chooseOption(page, "model-profile-select", /Beta Model/);
     await page.getByTestId("workspace-create-submit").click();
-    await expect(page.getByTestId("run-workspace-index")).toBeVisible({
+    await expect(page.getByTestId("workspace-agent-page")).toBeVisible({
       timeout: 20_000,
     });
 

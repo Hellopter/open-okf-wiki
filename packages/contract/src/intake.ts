@@ -107,5 +107,16 @@ export const WorkspaceRevisionRequestSchema = z
 
 export type WorkspaceRevisionRequest = z.infer<typeof WorkspaceRevisionRequestSchema>;
 
+/** Strict HTTP body for writing one file in the active editable Skill Fork. */
+export const WorkspaceSkillFileWriteSchema = z
+  .object({
+    expectedRevision: WorkspaceRevisionSchema,
+    path: z.string().trim().min(1).max(1000),
+    content: z.string(),
+  })
+  .strict();
+
+export type WorkspaceSkillFileWrite = z.infer<typeof WorkspaceSkillFileWriteSchema>;
+
 /** Re-export source shape for intake consumers. */
 export { WorkspaceSourceSchema };

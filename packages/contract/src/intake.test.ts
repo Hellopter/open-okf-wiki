@@ -7,6 +7,7 @@ import {
   WorkspaceCreateSchema,
   WorkspacePatchRequestSchema,
   WorkspacePatchSchema,
+  WorkspaceSkillFileWriteSchema,
 } from "./intake.js";
 
 test("WorkspaceCreateSchema requires name, rootPath, and explicit Run capacity", () => {
@@ -64,4 +65,25 @@ test("SourceUpdateSchema requires at least one field", () => {
   );
   assert.equal(SourceUpdateSchema.safeParse({ expectedRevision: 0, ignore: [1] }).success, false);
   assert.equal(SourceUpdateSchema.safeParse({ expectedRevision: 0, path: "/nope" }).success, false);
+});
+
+test("WorkspaceSkillFileWriteSchema requires a revision and rejects unknown keys", () => {
+  assert.equal(WorkspaceSkillFileWriteSchema.safeParse({}).success, false);
+  assert.equal(
+    WorkspaceSkillFileWriteSchema.safeParse({
+      expectedRevision: 0,
+      path: "SKILL.md",
+      content: "# x",
+    }).success,
+    true,
+  );
+  assert.equal(
+    WorkspaceSkillFileWriteSchema.safeParse({
+      expectedRevision: 0,
+      path: "SKILL.md",
+      content: "# x",
+      ignored: true,
+    }).success,
+    false,
+  );
 });

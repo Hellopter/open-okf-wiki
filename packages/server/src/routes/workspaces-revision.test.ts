@@ -65,3 +65,48 @@ test("Workspace PATCH serializes revisioned writes and returns the authoritative
   assert.equal(staleBody.details.workspace.revision, 1);
   assert.equal(staleBody.details.workspace.name, "Saved once");
 });
+
+test("Workspace DELETE requires the current revision before removing its index entry", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-workspace-delete-route-"));
+  const workspace = await createWorkspace({
+    name: "Revisioned delete",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
+
+  const server = createServer((req, res) => void dispatch(req, res));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    await removeWorkspaceFromAppIndex(root);
+    await rm(root, { recursive: true, force: true });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const endpoint = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}`;
+
+  const missing = await fetch(endpoint, { method: "DELETE" });
+  assert.equal(missing.status, 400, await missing.clone().text());
+
+  const updated = await fetch(endpoint, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedRevision: 0, name: "Changed before deletion" }),
+  });
+  assert.equal(updated.status, 200, await updated.clone().text());
+
+  const stale = await fetch(`${endpoint}?expectedRevision=0`, { method: "DELETE" });
+  assert.equal(stale.status, 409, await stale.clone().text());
+
+  const deleted = await fetch(`${endpoint}?expectedRevision=1`, { method: "DELETE" });
+  assert.equal(deleted.status, 200, await deleted.clone().text());
+  const deleteBody = (await deleted.json()) as { deletedMeta: boolean };
+  assert.equal(deleteBody.deletedMeta, false);
+
+  const gone = await fetch(endpoint);
+  assert.equal(gone.status, 404, await gone.clone().text());
+});

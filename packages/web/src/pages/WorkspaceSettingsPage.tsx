@@ -346,6 +346,7 @@ export function WorkspaceSettingsPage({
     try {
       await deleteWorkspace(id, {
         deleteFiles,
+        expectedRevision: workspace.revision,
       });
       navigate("/workspaces");
     } catch (err) {

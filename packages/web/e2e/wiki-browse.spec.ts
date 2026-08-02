@@ -16,7 +16,7 @@ test.describe("wiki browse", () => {
     await page.getByTestId("workspace-max-active-runs-input").fill("2");
     await page.getByTestId("workspace-max-concurrent-attempts-input").fill("4");
     await page.getByTestId("workspace-create-submit").click();
-    await expect(page.getByTestId("run-workspace-index")).toBeVisible({
+    await expect(page.getByTestId("workspace-agent-page")).toBeVisible({
       timeout: 20_000,
     });
 

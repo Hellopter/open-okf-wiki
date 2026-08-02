@@ -9,6 +9,8 @@ import {
   WorkspaceCreateSchema,
   WorkspacePatchRequestSchema,
   WorkspaceRevisionRequestSchema,
+  WorkspaceRevisionSchema,
+  WorkspaceSkillFileWriteSchema,
 } from "@okf-wiki/contract";
 import {
   addSource,
@@ -35,6 +37,7 @@ import {
   updateSource,
   WorkspaceIntakeError,
   WorkspaceRevisionConflictError,
+  withWorkspaceRevision,
   writeWorkspaceSkillFile,
 } from "@okf-wiki/core";
 import { trySendCoreDomainError } from "../core-http-error.ts";
@@ -168,42 +171,49 @@ export async function handleDeleteWorkspace(
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
-  await removeWorkspaceFromAppIndex(workspace.rootPath);
-
-  const deleteFiles = url.searchParams.get("deleteFiles") === "true";
-  let deletedMeta = false;
-  if (deleteFiles) {
-    try {
-      await deleteWorkspaceMeta(workspace.rootPath);
-      deletedMeta = true;
-    } catch (error) {
-      sendError(
-        res,
-        500,
-        "removed from index but failed to delete .okf-wiki",
-        redactErrorMessage(error),
-      );
-      return;
-    }
+  const rawRevision = url.searchParams.get("expectedRevision");
+  const expectedRevision = WorkspaceRevisionSchema.safeParse(
+    rawRevision !== null && /^\d+$/.test(rawRevision) ? Number(rawRevision) : undefined,
+  );
+  if (!expectedRevision.success) {
+    sendError(res, 400, "expectedRevision query parameter is required");
+    return;
   }
 
-  getLogger().info(
-    {
-      event: "workspace.delete",
-      workspaceId: id,
-      rootPath: workspace.rootPath,
-      deleteFiles,
-      deletedMeta,
-    },
-    "workspace removed from index",
-  );
-  sendJson(res, 200, {
-    ok: true,
-    id,
-    removedFromIndex: true,
-    deletedMeta,
-    rootPath: workspace.rootPath,
-  });
+  const deleteFiles = url.searchParams.get("deleteFiles") === "true";
+  try {
+    const result = await withWorkspaceRevision(
+      workspace.rootPath,
+      expectedRevision.data,
+      async (current) => {
+        await invalidateOperatorSessions(current.id, "workspace deleted");
+        await removeWorkspaceFromAppIndex(current.rootPath);
+        if (deleteFiles) await deleteWorkspaceMeta(current.rootPath);
+        return { rootPath: current.rootPath, deletedMeta: deleteFiles };
+      },
+    );
+
+    getLogger().info(
+      {
+        event: "workspace.delete",
+        workspaceId: id,
+        rootPath: result.rootPath,
+        deleteFiles,
+        deletedMeta: result.deletedMeta,
+      },
+      "workspace removed from index",
+    );
+    sendJson(res, 200, {
+      ok: true,
+      id,
+      removedFromIndex: true,
+      deletedMeta: result.deletedMeta,
+      rootPath: result.rootPath,
+    });
+  } catch (error) {
+    if (sendWorkspaceRevisionConflict(res, error)) return;
+    sendCaughtError(res, 500, error);
+  }
 }
 
 export async function handleAddSource(
@@ -652,35 +662,22 @@ export async function handleWriteSkillFile(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
-  const body = (await readJsonBody(req)) as {
-    expectedRevision?: unknown;
-    path?: unknown;
-    content?: unknown;
-  };
-  const revision = WorkspaceRevisionRequestSchema.safeParse({
-    expectedRevision: body.expectedRevision,
-  });
-  if (!revision.success) {
-    sendError(res, 400, "invalid write skill file revision", revision.error.flatten());
+  const parsed = WorkspaceSkillFileWriteSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid write skill file body", parsed.error.flatten());
     return;
   }
-  if (typeof body.path !== "string" || !body.path.trim()) {
-    sendError(res, 400, "path is required");
-    return;
-  }
-  if (typeof body.content !== "string") {
-    sendError(res, 400, "content must be a string");
-    return;
-  }
-  const filePath = body.path.trim();
-  const content = body.content;
   try {
     let written: Awaited<ReturnType<typeof writeWorkspaceSkillFile>> | undefined;
     const next = await mutateWorkspace(
       workspace.rootPath,
-      revision.data.expectedRevision,
+      parsed.data.expectedRevision,
       async (current) => {
-        const result = await writeWorkspaceSkillFile(current, filePath, content);
+        const result = await writeWorkspaceSkillFile(
+          current,
+          parsed.data.path,
+          parsed.data.content,
+        );
         written = result;
         return current;
       },

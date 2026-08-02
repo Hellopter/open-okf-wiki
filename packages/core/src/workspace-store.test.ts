@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { assertAbsolutePath, resolveExistingDir } from "./paths.js";
 import { listRecentWorkspaces, registerWorkspaceInAppIndex } from "./workspace-app-state.js";
 import {
+  acquireWikiRunsControlStoreLease,
   createWorkspace,
   loadWorkspace,
   mutateWorkspace,
@@ -14,6 +15,7 @@ import {
   resetWikiRunsControlStore,
   saveWorkspace,
   WIKI_RUNS_CONTROL_STORE_FILE_NAME,
+  WikiRunsControlStoreInUseError,
   WorkspaceRevisionConflictError,
   workspaceConfigPath,
 } from "./workspace-config.js";
@@ -226,6 +228,25 @@ test("resetWikiRunsControlStore removes only explicit durable Run state", async 
   assert.equal(await readFile(unrelated, "utf8"), "keep");
   await assert.rejects(() => access(control));
   await assert.rejects(() => access(path.join(meta, "runs")));
+});
+
+test("resetWikiRunsControlStore rejects while a WikiRuns owner holds its lease", async () => {
+  const root = await tempDir("okf-wiki-ws-reset-lease-");
+  const config = await createWorkspace({
+    name: "Reset lease",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+  const lease = await acquireWikiRunsControlStoreLease(root);
+
+  await assert.rejects(
+    () => resetWikiRunsControlStore(root),
+    (error: unknown) => error instanceof WikiRunsControlStoreInUseError,
+  );
+
+  await lease.release();
+  await resetWikiRunsControlStore(root);
 });
 
 test("reset control store CLI parser requires an absolute target and confirmation", () => {

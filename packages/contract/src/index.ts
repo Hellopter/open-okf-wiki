@@ -146,6 +146,8 @@ export {
   WorkspacePatchSchema,
   type WorkspaceRevisionRequest,
   WorkspaceRevisionRequestSchema,
+  type WorkspaceSkillFileWrite,
+  WorkspaceSkillFileWriteSchema,
 } from "./intake.js";
 export {
   allNodeContracts,
