@@ -80,11 +80,17 @@ export async function appendAttemptFailureTranscript(input: {
 
   let nextOrdinal = 1;
   let validTrace = true;
+  let lastTerminal:
+    | { status: "done" | "error" | "cancelled"; summary?: string }
+    | undefined;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const row = AttemptTraceEventSchema.parse(JSON.parse(line) as unknown);
       nextOrdinal = Math.max(nextOrdinal, row.ordinal + 1);
+      if (row.kind === "terminal") {
+        lastTerminal = { status: row.status, summary: row.summary };
+      }
     } catch {
       validTrace = false;
       break;
@@ -92,6 +98,15 @@ export async function appendAttemptFailureTranscript(input: {
   }
 
   if (raw.trim() && !validTrace) return input.sessionPath;
+
+  // Idempotent: a prior error terminal with a real summary is already readable.
+  if (
+    lastTerminal?.status === "error" &&
+    typeof lastTerminal.summary === "string" &&
+    lastTerminal.summary.trim().length > 0
+  ) {
+    return input.sessionPath;
+  }
 
   const summary = input.summary.replace(/\s+/g, " ").trim().slice(0, 4_000) || "Attempt failed.";
   const record: AttemptTraceEvent = {

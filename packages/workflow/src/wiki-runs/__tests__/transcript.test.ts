@@ -244,6 +244,112 @@ test("appendAttemptFailureTranscript preserves a trace that is already at its re
   assert.equal(await readFile(sessionPath, "utf8"), before);
 });
 
+test("appendAttemptFailureTranscript writes the real error summary", async (t) => {
+  const { root } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const sessionPath = path.join(root, "session-real.jsonl");
+
+  await appendAttemptFailureTranscript({
+    sessionPath,
+    summary: "WikiRunSpec has 5 domains but maxDomainFanOut is 4",
+  });
+
+  const raw = await readFile(sessionPath, "utf8");
+  const lines = raw
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
+  assert.equal(lines.length, 1);
+  const row = JSON.parse(lines[0]!) as {
+    kind: string;
+    status: string;
+    summary: string;
+    ordinal: number;
+  };
+  assert.equal(row.kind, "terminal");
+  assert.equal(row.status, "error");
+  assert.equal(row.summary, "WikiRunSpec has 5 domains but maxDomainFanOut is 4");
+  assert.equal(row.ordinal, 1);
+});
+
+test("appendAttemptFailureTranscript skips when last terminal is already error with summary", async (t) => {
+  const { root } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const sessionPath = path.join(root, "session-idempotent.jsonl");
+  const existing = [
+    JSON.stringify({
+      trace: 1,
+      ordinal: 1,
+      at: "2026-07-31T00:00:00.000Z",
+      kind: "assistant",
+      content: "working…",
+    }),
+    JSON.stringify({
+      trace: 1,
+      ordinal: 2,
+      at: "2026-07-31T00:00:01.000Z",
+      kind: "terminal",
+      status: "error",
+      summary: "provider rate limited",
+    }),
+  ].join("\n") + "\n";
+  await writeFile(sessionPath, existing, "utf8");
+
+  await appendAttemptFailureTranscript({
+    sessionPath,
+    summary: "second failure should not append",
+  });
+  assert.equal(await readFile(sessionPath, "utf8"), existing);
+});
+
+test("appendAttemptFailureTranscript falls back to Attempt failed. when summary is empty", async (t) => {
+  const { root } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const sessionPath = path.join(root, "session-empty.jsonl");
+
+  await appendAttemptFailureTranscript({ sessionPath, summary: "   \n\t  " });
+
+  const raw = await readFile(sessionPath, "utf8");
+  const row = JSON.parse(raw.trim()) as { kind: string; status: string; summary: string };
+  assert.equal(row.kind, "terminal");
+  assert.equal(row.status, "error");
+  assert.equal(row.summary, "Attempt failed.");
+});
+
+test("appendAttemptFailureTranscript appends after a done terminal", async (t) => {
+  const { root } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const sessionPath = path.join(root, "session-done-then-fail.jsonl");
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      trace: 1,
+      ordinal: 1,
+      at: "2026-07-31T00:00:00.000Z",
+      kind: "terminal",
+      status: "done",
+      summary: "completed",
+    })}\n`,
+    "utf8",
+  );
+
+  await appendAttemptFailureTranscript({
+    sessionPath,
+    summary: "late host failure after partial success path",
+  });
+
+  const lines = (await readFile(sessionPath, "utf8"))
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
+  assert.equal(lines.length, 2);
+  const last = JSON.parse(lines[1]!) as { kind: string; status: string; summary: string; ordinal: number };
+  assert.equal(last.kind, "terminal");
+  assert.equal(last.status, "error");
+  assert.equal(last.summary, "late host failure after partial success path");
+  assert.equal(last.ordinal, 2);
+});
+
 test("readAttemptTranscript refuses oversized transcripts", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));

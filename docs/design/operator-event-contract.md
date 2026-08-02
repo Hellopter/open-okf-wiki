@@ -19,6 +19,26 @@ WikiRuns (workflow.sqlite + sealed artifacts)
 - **Run SSE** (`GET …/runs/:runId/events`) is the durable control projection: full secret-free snapshots.
 - Web never invents control state from Session mirrors. Live plan/publication HITL uses **ResolveGate** on the Run command API.
 
+## Failure observability (all node kinds)
+
+When an Attempt fails, operators must see a real reason without reading SQLite.
+
+```text
+Pi / mechanical outcome
+  → attempts.error + attempts.failure_class   (control truth)
+  → session.jsonl terminal status=error      (same redacted summary)
+  → snapshot.attempts[]                      (SSE / GET run)
+  → Web: recovery banner + attempt error alert + activity terminal
+```
+
+| Rule | Detail |
+|------|--------|
+| Source of truth | `WikiRunAttempt.error` on the Run snapshot |
+| Transcript | Real redacted message; append only if no prior `terminal/error` with summary |
+| Fallback `"Attempt failed."` | Only when the message is empty after redact |
+| Auto-retry | Unchanged: research L_control for `infrastructure`/`transient` only; product/`schema` failures stay manual (ADR 0013) |
+| Plan fan-out | `assertSpecWithinFanOutCaps` at `submit_wiki_run_spec` + host `compileExecutionPlan` (fail-closed thrice with prompt caps) |
+
 ## `wiki_produce`
 
 `wiki_produce` is a Pi custom tool. Its `execute()` **dispatches `StartRun` and returns immediately** with a receipt:

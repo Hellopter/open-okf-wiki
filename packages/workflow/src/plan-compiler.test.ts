@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultWikiRunSpec } from "@okf-wiki/contract";
 import { compileExecutionPlan, ExecutionPlanCompileError } from "./plan-compiler.js";
+import { failureClassOf } from "./wiki-runs/scheduler.js";
 
 test("compileExecutionPlan throws when domains > maxDomainFanOut", () => {
   const spec = defaultWikiRunSpec("D");
@@ -16,6 +17,32 @@ test("compileExecutionPlan throws when domains > maxDomainFanOut", () => {
     () => compileExecutionPlan(spec, { maxDomainFanOut: 2 }),
     ExecutionPlanCompileError,
   );
+});
+
+test("ExecutionPlanCompileError carries failureClass schema for failNode", () => {
+  const err = new ExecutionPlanCompileError(
+    "WikiRunSpec has 5 domains but maxDomainFanOut is 4; reduce domains",
+  );
+  assert.equal(err.failureClass, "schema");
+  assert.equal(err.code, "EXECUTION_PLAN_COMPILE");
+  assert.equal(failureClassOf(err), "schema");
+
+  // Thrown compile path must also surface schema (preparePlanExecutionPlan catch → failNode).
+  try {
+    const spec = defaultWikiRunSpec("D");
+    spec.domains = Array.from({ length: 3 }, (_, i) => ({
+      id: `d${i}`,
+      title: `D${i}`,
+      scope: `s${i}`,
+      critical: true,
+      questions: ["q"],
+    }));
+    compileExecutionPlan(spec, { maxDomainFanOut: 2 });
+    assert.fail("expected compile to throw");
+  } catch (error) {
+    assert.ok(error instanceof ExecutionPlanCompileError);
+    assert.equal(failureClassOf(error), "schema");
+  }
 });
 
 test("compileExecutionPlan throws when questions > maxLeafFanOut", () => {

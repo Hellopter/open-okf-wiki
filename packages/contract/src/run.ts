@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { GitObjectIdSchema } from "./primitives.js";
-import { IgnorePatternSchema, SourceIdSchema } from "./workspace.js";
+import { DEFAULT_ORCHESTRATION, IgnorePatternSchema, SourceIdSchema } from "./workspace.js";
 
 /** Page template hints from the Producer Skill. */
 export const WikiPageTemplateSchema = z.enum([
@@ -167,6 +167,72 @@ export type WikiRunSpec = z.infer<typeof WikiRunSpecSchema>;
 /** Semantic alias: content Spec only (not host ExecutionPlan). */
 export const WikiSpecSchema = WikiRunSpecSchema;
 export type WikiSpec = WikiRunSpec;
+
+/**
+ * Topology fan-out caps shared by host `compileExecutionPlan` and the planner
+ * `submit_wiki_run_spec` tool. Fail-closed — never silent truncation.
+ */
+export type SpecFanOutCaps = {
+  maxDomainFanOut?: number;
+  maxLeafFanOut?: number;
+};
+
+/** Clamp fan-out caps to the same 1..16 range used by host compile. */
+export function resolveSpecFanOutCaps(caps?: SpecFanOutCaps): {
+  maxDomainFanOut: number;
+  maxLeafFanOut: number;
+} {
+  return {
+    maxDomainFanOut: Math.max(
+      1,
+      Math.min(16, Math.floor(caps?.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut)),
+    ),
+    maxLeafFanOut: Math.max(
+      1,
+      Math.min(16, Math.floor(caps?.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut)),
+    ),
+  };
+}
+
+export class SpecFanOutCapError extends Error {
+  readonly code = "SPEC_FAN_OUT_CAP";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SpecFanOutCapError";
+  }
+}
+
+/**
+ * Assert a WikiRunSpec stays within domain / per-domain leaf fan-out caps.
+ * Used by plan-compiler (host) and submit_wiki_run_spec (agent tool) so the
+ * planner is rejected in-session with the same messages host compile uses.
+ */
+export function assertSpecWithinFanOutCaps(
+  spec: Pick<WikiRunSpec, "domains">,
+  caps?: SpecFanOutCaps,
+): void {
+  const { maxDomainFanOut, maxLeafFanOut } = resolveSpecFanOutCaps(caps);
+  const domains = spec.domains ?? [];
+  if (domains.length > maxDomainFanOut) {
+    throw new SpecFanOutCapError(
+      `WikiRunSpec has ${domains.length} domains but maxDomainFanOut is ${maxDomainFanOut}; ` +
+        `reduce domains in the Spec or raise workspace.orchestration.maxDomainFanOut ` +
+        `(silent truncation is not allowed)`,
+    );
+  }
+  for (const domain of domains) {
+    const domainId = domain.id.trim();
+    const questions = (domain.questions ?? []).map((q) => q.trim()).filter((q) => q.length > 0);
+    if (questions.length > maxLeafFanOut) {
+      throw new SpecFanOutCapError(
+        `Domain "${domainId}" has ${questions.length} questions but maxLeafFanOut is ${maxLeafFanOut}; ` +
+          `reduce questions or raise workspace.orchestration.maxLeafFanOut ` +
+          `(silent truncation is not allowed)`,
+      );
+    }
+  }
+}
 
 /**
  * Host-compiled execution topology (not planner product output).

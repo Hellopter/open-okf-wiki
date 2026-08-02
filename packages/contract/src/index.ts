@@ -229,6 +229,7 @@ export {
   ReceiptStatusSchema,
 } from "./receipt.js";
 export {
+  assertSpecWithinFanOutCaps,
   type DefectItem,
   DefectItemSchema,
   type DefectReport,
@@ -250,6 +251,9 @@ export {
   MergedDefectReportSchema,
   type RepositorySnapshot,
   RepositorySnapshotSchema,
+  resolveSpecFanOutCaps,
+  type SpecFanOutCaps,
+  SpecFanOutCapError,
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiPageTemplate,

@@ -8,7 +8,13 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMessage, type MessageTree } from "../i18n";
 import { newCommandId } from "../lib/command-id";
-import { listRecoveryTargetNodes, needsRecoveryBanner } from "../run-workspace/node-recovery";
+import {
+  lastFailedAttemptForNode,
+  listRecoveryTargetNodes,
+  needsRecoveryBanner,
+  shouldShowNoAutoRetryHint,
+  truncateAttemptError,
+} from "../run-workspace/node-recovery";
 import { RunGraph } from "../run-workspace/RunGraph";
 import type { WorkflowStageId } from "../run-workspace/workflow-topology";
 import { localizedLabel } from "./workbench-utils";
@@ -46,6 +52,17 @@ export function RunCanvas({
   const recoveryTargets = listRecoveryTargetNodes(snapshot);
   const showRecovery = needsRecoveryBanner(snapshot);
   const primaryRecovery = recoveryTargets[0] ?? null;
+  const primaryFailedAttempt = primaryRecovery
+    ? lastFailedAttemptForNode(snapshot, primaryRecovery.key)
+    : null;
+  const primaryErrorPreview =
+    primaryFailedAttempt?.error != null && primaryFailedAttempt.error.length > 0
+      ? truncateAttemptError(primaryFailedAttempt.error)
+      : null;
+  const showNoAutoRetryHint = Boolean(
+    primaryRecovery &&
+      shouldShowNoAutoRetryHint(primaryFailedAttempt?.failureClass, primaryRecovery.kind),
+  );
 
   const resolve = (decision: "approve" | "deny" | "revise" | "pass" | "fix" | "answer") => {
     if (!gate) return;
@@ -157,10 +174,16 @@ export function RunCanvas({
             <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <span>
                 {primaryRecovery
-                  ? formatMessage(t.workbench.recoveryBanner, {
-                      node: primaryRecovery.label || primaryRecovery.key,
-                      count: recoveryTargets.length,
-                    })
+                  ? primaryErrorPreview
+                    ? formatMessage(t.workbench.recoveryBannerWithReason, {
+                        node: primaryRecovery.label || primaryRecovery.key,
+                        count: recoveryTargets.length,
+                        reason: primaryErrorPreview,
+                      })
+                    : formatMessage(t.workbench.recoveryBanner, {
+                        node: primaryRecovery.label || primaryRecovery.key,
+                        count: recoveryTargets.length,
+                      })
                   : t.workbench.recoveryBannerGeneric}
               </span>
               {primaryRecovery ? (
@@ -177,6 +200,14 @@ export function RunCanvas({
                 </Button>
               ) : null}
             </AlertDescription>
+            {showNoAutoRetryHint ? (
+              <p
+                className="col-start-2 mt-1 text-xs text-muted-foreground"
+                data-testid="recovery-no-auto-retry-hint"
+              >
+                {t.workbench.noAutoRetryHint}
+              </p>
+            ) : null}
             {recoveryTargets.length > 1 ? (
               <ul className="mt-2 flex flex-wrap gap-2 text-xs">
                 {recoveryTargets.map((node) => (

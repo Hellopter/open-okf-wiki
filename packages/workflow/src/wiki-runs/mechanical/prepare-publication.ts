@@ -9,6 +9,7 @@ import { capturePublicationBaseline, materializePublicationCandidate } from "@ok
 import { now } from "../crypto-util.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
+import { mechanicalFailed } from "./failed.js";
 import { type MechanicalHost, sealedInputPath } from "./host.js";
 
 export async function mechanicalPreparePublication(
@@ -19,11 +20,12 @@ export async function mechanicalPreparePublication(
 ): Promise<PiAttemptOutcome> {
   const wikiPath = sealedInputPath(host, claim, runDir, "wiki_tree");
   if (!wikiPath) {
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error: "prepare.publication requires sealed wiki_tree",
       failureClass: "infrastructure",
-    };
+    });
   }
   // Drop prior seal manifest so materialize digests content only.
   const wikiStaging = path.join(workDir, "wiki-source");
@@ -40,7 +42,12 @@ export async function mechanicalPreparePublication(
     expectedLiveDigest = await capturePublicationBaseline(publicationPath);
   } catch (error) {
     const message = error instanceof Error ? error.message : "baseline capture failed";
-    return { type: "failed", error: message.slice(0, 4_000), failureClass: "infrastructure" };
+    return mechanicalFailed({
+      claim,
+      runDir,
+      error: message.slice(0, 4_000),
+      failureClass: "infrastructure",
+    });
   }
 
   const sourcesPath = sealedInputPath(host, claim, runDir, "sources");
@@ -69,7 +76,12 @@ export async function mechanicalPreparePublication(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "candidate materialize failed";
-    return { type: "failed", error: message.slice(0, 4_000), failureClass: "infrastructure" };
+    return mechanicalFailed({
+      claim,
+      runDir,
+      error: message.slice(0, 4_000),
+      failureClass: "infrastructure",
+    });
   }
 
   const metaPath = path.join(workDir, "candidate-meta.json");

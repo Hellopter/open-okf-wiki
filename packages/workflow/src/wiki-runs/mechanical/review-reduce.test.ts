@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { ClaimedNode } from "../types.js";
+import type { MechanicalHost } from "./host.js";
 import {
   hasGateBlockingDefects,
+  mechanicalReviewReduce,
   mergeSeatFindings,
   parseSeatDefectReport,
   parseSeatFinding,
@@ -139,4 +146,107 @@ test("hasGateBlockingDefects respects blockingSeverities major", () => {
   ]);
   assert.equal(hasGateBlockingDefects(merged, ["blocking"]), false);
   assert.equal(hasGateBlockingDefects(merged, ["blocking", "major"]), true);
+});
+
+function stubReduceHost(): MechanicalHost {
+  const workspace = {
+    version: 3,
+    id: "ws",
+    name: "Reduce Test",
+    rootPath: "/tmp",
+    sources: [],
+    model: { id: "fixture/model" },
+    publicationPath: "/tmp/published",
+    orchestration: { maxActiveRuns: 1, maxConcurrentAttempts: 1 },
+    createdAt: "2026-07-30T00:00:00.000Z",
+  } as unknown as WorkspaceConfig;
+  return {
+    workspace,
+    workspaceForRun: () => workspace,
+    db: {
+      prepare: () => ({
+        get: () => undefined,
+        all: () => [],
+        run: () => ({ changes: 0 }),
+      }),
+    } as unknown as MechanicalHost["db"],
+    emit: () => 0,
+    transaction: <T>(work: () => T) => work(),
+    trustedPinnedInputs: () => undefined,
+    currentNodeGeneration: () => 0,
+    reconcileApplyingEffect: async () => undefined,
+  };
+}
+
+test("review.reduce missing wiki_tree writes terminal error transcript", async (t) => {
+  const runDir = await mkdtemp(path.join(tmpdir(), "okf-reduce-fail-"));
+  t.after(() => rm(runDir, { recursive: true, force: true }));
+  const claim: ClaimedNode = {
+    attemptId: "attempt-reduce-1",
+    nodeGeneration: 0,
+    nodeKey: "review.reduce",
+    kind: "review.reduce",
+    runId: "run-1",
+  };
+  const workDir = path.join(runDir, "attempts", claim.attemptId, "work");
+  await mkdir(workDir, { recursive: true });
+
+  const outcome = await mechanicalReviewReduce(stubReduceHost(), claim, workDir, runDir);
+  assert.equal(outcome.type, "failed");
+  if (outcome.type === "failed") {
+    assert.equal(outcome.failureClass, "infrastructure");
+    assert.match(outcome.error, /wiki_tree/i);
+  }
+
+  const sessionPath = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
+  const raw = await readFile(sessionPath, "utf8");
+  assert.match(raw, /wiki_tree/i);
+  assert.match(raw, /"status"\s*:\s*"error"/);
+});
+
+test("review.reduce missing seats writes schema error transcript", async (t) => {
+  const runDir = await mkdtemp(path.join(tmpdir(), "okf-reduce-seats-"));
+  t.after(() => rm(runDir, { recursive: true, force: true }));
+  const claim: ClaimedNode = {
+    attemptId: "attempt-reduce-2",
+    nodeGeneration: 0,
+    nodeKey: "review.reduce",
+    kind: "review.reduce",
+    runId: "run-1",
+  };
+  const workDir = path.join(runDir, "attempts", claim.attemptId, "work");
+  await mkdir(workDir, { recursive: true });
+
+  const wikiRel = "artifacts/wiki";
+  await mkdir(path.join(runDir, wikiRel), { recursive: true });
+
+  const host = stubReduceHost();
+  host.db = {
+    prepare: (sql: string) => ({
+      get: (...params: unknown[]) => {
+        if (params[1] === "wiki_tree") return { relative_path: wikiRel };
+        return undefined;
+      },
+      all: () => {
+        // Configured seats only — zero bound seat artifacts → schema fail.
+        if (sql.includes("kind = 'review.seat'")) {
+          return [{ node_key: "review.seat.grounding" }];
+        }
+        return [];
+      },
+      run: () => ({ changes: 0 }),
+    }),
+  } as unknown as MechanicalHost["db"];
+
+  const outcome = await mechanicalReviewReduce(host, claim, workDir, runDir);
+  assert.equal(outcome.type, "failed");
+  if (outcome.type === "failed") {
+    assert.equal(outcome.failureClass, "schema");
+    assert.match(outcome.error, /no seat artifacts|never NO_DEFECTS|reviewRequired/i);
+  }
+
+  const sessionPath = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
+  const raw = await readFile(sessionPath, "utf8");
+  assert.match(raw, /seat|NO_DEFECTS|reviewRequired/i);
+  assert.match(raw, /"status"\s*:\s*"error"/);
 });

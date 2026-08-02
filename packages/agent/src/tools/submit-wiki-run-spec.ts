@@ -6,6 +6,9 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+  assertSpecWithinFanOutCaps,
+  SpecFanOutCapError,
+  type SpecFanOutCaps,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
   WikiRunSpecSchema,
@@ -196,6 +199,12 @@ export type SubmitWikiRunSpecDetails = {
 
 export type CreateSubmitWikiRunSpecToolInput = {
   runWorkDir: string;
+  /**
+   * Topology fan-out caps (from adaptive orchestration). When set, over-cap
+   * Specs are rejected at tool time so the planner can fix in-session.
+   * Host compile remains fail-closed as defense in depth.
+   */
+  caps?: SpecFanOutCaps;
   /** Optional test hook; defaults to defaultSpecStore.writePlanDraft. */
   writeDraft?: (runWorkDir: string, spec: WikiRunSpec) => Promise<string>;
 };
@@ -246,6 +255,14 @@ export function createSubmitWikiRunSpecTool(
             "(pages min 1, include critical overview.md; never index.md/log.md). " +
             "Do not write wiki page bodies or bypass via bash.",
         );
+      }
+      try {
+        assertSpecWithinFanOutCaps(parsed.data, input.caps);
+      } catch (err) {
+        if (err instanceof SpecFanOutCapError) {
+          throw new Error(`submit_wiki_run_spec rejected: ${err.message}`);
+        }
+        throw err;
       }
       const absolutePath = await writeDraft(input.runWorkDir, parsed.data);
       const details: SubmitWikiRunSpecDetails = {

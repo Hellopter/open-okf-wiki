@@ -19,6 +19,7 @@ import {
 import { regenerateWikiIndexes, toMechanicalReport, validateWikiTree } from "@okf-wiki/core";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
+import { mechanicalFailed } from "./failed.js";
 import { type MechanicalHost, sealedInputPath } from "./host.js";
 
 async function loadSealedSpec(
@@ -58,11 +59,12 @@ export async function mechanicalValidate(
 ): Promise<PiAttemptOutcome> {
   const wikiPath = sealedInputPath(host, claim, runDir, "wiki_tree");
   if (!wikiPath) {
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error: "validate requires sealed wiki_tree input",
       failureClass: "infrastructure",
-    };
+    });
   }
   const stagingWiki = path.join(workDir, "wiki");
   await cp(wikiPath, stagingWiki, { recursive: true, dereference: false });
@@ -120,22 +122,24 @@ export async function mechanicalValidate(
     autofixCitations: wantAutofix,
     requireCitations: hasSources ? policy.mechanical.requireCitations : false,
   };
-  // Always write the report on disk (success seals it; failure keeps the path for
-  // operator diagnostics — PiAttemptOutcome.failed cannot carry unsealedArtifacts).
+  // Always write the report on disk (success seals it; failure carries it via
+  // unsealedArtifacts so the Scheduler can seal before the Attempt is terminal).
   await writeFile(reportPath, `${JSON.stringify(reportBody, null, 2)}\n`, "utf8");
 
   if (!result.ok) {
     // Quality / mechanical dirty — not missing infrastructure. The Scheduler seals
     // this full report before making the Attempt terminal, then hands its typed
     // issues to repair.N under EvaluationPolicy.mechanical.modelRepairBudget.
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error: `validation failed: ${mechanical.issues.length} issue(s); see sealed validate_report`,
       failureClass: "schema",
       unsealedArtifacts: [
         { kind: "receipt", role: "validate_report", sourcePath: reportPath, directory: false },
       ],
-    };
+      meta: { kind: claim.kind, ok: false, issueCount: mechanical.issues.length },
+    });
   }
   const validateSummary = `${claim.kind} ok (${result.pageCount ?? 0} pages)`;
   const transcript = await writeConversationTranscript({

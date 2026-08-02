@@ -182,6 +182,8 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     workspaceName: input.workspaceName,
     wikiLanguage: input.wikiLanguage,
     operatorNotes: input.operatorNotes,
+    maxDomainFanOut: orch.maxDomainFanOut,
+    maxLeafFanOut: orch.maxLeafFanOut,
   });
   const revisionPrompt = input.revisionFeedback?.trim()
     ? [

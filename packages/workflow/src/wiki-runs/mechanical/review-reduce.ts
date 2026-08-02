@@ -25,6 +25,7 @@ import { loadAcceptance } from "../repair-schedule.js";
 import { asRows, requiredText } from "../sql.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
+import { mechanicalFailed } from "./failed.js";
 import { type MechanicalHost, sealedInputPath } from "./host.js";
 
 export type SeatFinding = {
@@ -253,11 +254,12 @@ export async function mechanicalReviewReduce(
 ): Promise<PiAttemptOutcome> {
   const wikiPath = sealedInputPath(host, claim, runDir, "wiki_tree");
   if (!wikiPath) {
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error: "review.reduce requires sealed wiki_tree input",
       failureClass: "infrastructure",
-    };
+    });
   }
   const stagingWiki = path.join(workDir, "wiki");
   await cp(wikiPath, stagingWiki, { recursive: true, dereference: false });
@@ -291,14 +293,15 @@ export async function mechanicalReviewReduce(
 
   if (seatRows.length === 0) {
     if (reviewRequired || configuredSeats.length > 0) {
-      return {
-        type: "failed",
+      return mechanicalFailed({
+        claim,
+        runDir,
         error:
           configuredSeats.length > 0
             ? `review.reduce: ${configuredSeats.length} review.seat node(s) configured but no seat artifacts bound (fail-closed; never NO_DEFECTS)`
             : "review.reduce: reviewRequired=true but zero review seats are configured or bound (fail-closed; never NO_DEFECTS)",
         failureClass: "schema",
-      };
+      });
     }
     // reviewRequired=false and no seats: clean path without council.
     const merged = MergedDefectReportSchema.parse({
@@ -325,15 +328,16 @@ export async function mechanicalReviewReduce(
   }
 
   if (errors.length > 0) {
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error:
         `review.reduce: ${errors.length} invalid seat report(s): ${errors.slice(0, 4).join("; ")}`.slice(
           0,
           4_000,
         ),
       failureClass: "schema",
-    };
+    });
   }
 
   // When seats are configured on the graph, require every configured seat to be present.
@@ -350,11 +354,12 @@ export async function mechanicalReviewReduce(
     }
     const missing = configuredSeats.filter((key) => !present.has(key));
     if (missing.length > 0) {
-      return {
-        type: "failed",
+      return mechanicalFailed({
+        claim,
+        runDir,
         error: `review.reduce: missing required seat artifact(s): ${missing.join(", ")} (fail-closed)`,
         failureClass: "schema",
-      };
+      });
     }
   }
 

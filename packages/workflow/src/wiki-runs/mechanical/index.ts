@@ -6,8 +6,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { PiAttemptOutcome } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
-import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
+import { mechanicalFailed } from "./failed.js";
 import type { MechanicalHost } from "./host.js";
 import { mechanicalPreparePublication } from "./prepare-publication.js";
 import { mechanicalPublish } from "./publish.js";
@@ -26,13 +26,12 @@ export async function executeMechanical(
   const workDir = path.join(attemptDir, "work");
   await mkdir(workDir, { recursive: true });
   if (signal.aborted) {
-    await writeConversationTranscript({
-      sessionPath: path.join(attemptDir, "session.jsonl"),
-      nodeKey: claim.nodeKey,
-      summary: "Error: attempt cancelled",
-      meta: { mode: "failed", failureClass: "cancelled", kind: claim.kind },
+    return mechanicalFailed({
+      claim,
+      runDir,
+      error: "attempt cancelled",
+      failureClass: "cancelled",
     });
-    return { type: "failed", error: "attempt cancelled", failureClass: "cancelled" };
   }
 
   if (claim.kind === "validate.pre" || claim.kind === "validate.final") {
@@ -47,17 +46,10 @@ export async function executeMechanical(
   if (claim.kind === "publish") {
     return mechanicalPublish(host, claim, workDir, runDir);
   }
-  // Unknown mechanical kind: still leave a transcript for the dialog.
-  const sessionPath = path.join(runDir, "attempts", claim.attemptId, "session.jsonl");
-  await writeConversationTranscript({
-    sessionPath,
-    nodeKey: claim.nodeKey,
-    summary: `Error: unsupported mechanical kind: ${claim.kind}`,
-    meta: { mode: "failed", kind: claim.kind },
-  });
-  return {
-    type: "failed",
+  return mechanicalFailed({
+    claim,
+    runDir,
     error: `unsupported mechanical kind: ${claim.kind}`,
     failureClass: "infrastructure",
-  };
+  });
 }

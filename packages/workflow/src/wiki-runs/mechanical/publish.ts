@@ -9,6 +9,7 @@ import { applySealedPublicationCandidate, PublicationConflictError } from "@okf-
 import { asRow, parseJson, requiredNumber, requiredText } from "../sql.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
+import { mechanicalFailed } from "./failed.js";
 import type { MechanicalHost } from "./host.js";
 
 export async function mechanicalPublish(
@@ -29,11 +30,12 @@ export async function mechanicalPublish(
       .get(claim.runId),
   );
   if (!effect) {
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error: "publish requires a candidate_ready effect",
       failureClass: "infrastructure",
-    };
+    });
   }
   const effectKey = requiredText(effect, "effect_key");
   const candidateId = requiredText(effect, "candidate_artifact_id");
@@ -46,11 +48,12 @@ export async function mechanicalPublish(
     host.db.prepare("SELECT relative_path FROM artifacts WHERE artifact_id = ?").get(candidateId),
   );
   if (!candidateRow) {
-    return {
-      type: "failed",
+    return mechanicalFailed({
+      claim,
+      runDir,
       error: "publication candidate artifact missing",
       failureClass: "infrastructure",
-    };
+    });
   }
   const candidatePath = path.join(runDir, requiredText(candidateRow, "relative_path"));
   const workspace = host.workspaceForRun(claim.runId);
@@ -155,11 +158,12 @@ export async function mechanicalPublish(
         host.emit(claim.runId, "effect.conflict");
         host.emit(claim.runId, "gate.opened");
       });
-      return {
-        type: "failed",
+      return mechanicalFailed({
+        claim,
+        runDir,
         error: new PublicationConflictError(result.liveDigest, result.expectedLiveDigest).message,
         failureClass: "publication_conflict",
-      };
+      });
     }
 
     if (result.status === "aborted") {
@@ -168,11 +172,12 @@ export async function mechanicalPublish(
         host.db.prepare("SELECT state FROM effects WHERE effect_key = ?").get(effectKey),
       );
       const state = current ? requiredText(current, "state") : "unknown";
-      return {
-        type: "failed",
+      return mechanicalFailed({
+        claim,
+        runDir,
         error: `publish apply aborted (effect state=${state}; cancel or stale generation/gate)`,
         failureClass: "cancelled",
-      };
+      });
     }
 
     host.transaction(() => {
@@ -198,7 +203,12 @@ export async function mechanicalPublish(
           .run(message.slice(0, 4_000), effectKey);
         host.emit(claim.runId, "effect.failed");
       });
-      return { type: "failed", error: message.slice(0, 4_000), failureClass: "infrastructure" };
+      return mechanicalFailed({
+        claim,
+        runDir,
+        error: message.slice(0, 4_000),
+        failureClass: "infrastructure",
+      });
     }
     if (state === "applying") {
       // Crash window after CAS: never guess cancelled/failed. Reconcile against
@@ -227,14 +237,20 @@ export async function mechanicalPublish(
           after && typeof after.observed_outcome === "string" && after.observed_outcome
             ? after.observed_outcome
             : message;
-        return {
-          type: "failed",
+        return mechanicalFailed({
+          claim,
+          runDir,
           error: `publish apply ${afterState}: ${detail}`.slice(0, 4_000),
           failureClass: "infrastructure",
-        };
+        });
       }
     } else {
-      return { type: "failed", error: message.slice(0, 4_000), failureClass: "infrastructure" };
+      return mechanicalFailed({
+        claim,
+        runDir,
+        error: message.slice(0, 4_000),
+        failureClass: "infrastructure",
+      });
     }
   }
 

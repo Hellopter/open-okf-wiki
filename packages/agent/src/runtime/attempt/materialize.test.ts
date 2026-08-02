@@ -360,7 +360,7 @@ test("materialize rejects a Pi envelope missing NodeContract-required inputs", a
 
   await assert.rejects(
     () => materializeInputs(input),
-    /research\.leaf missing required sealed input role\(s\): execution_plan/,
+    /research\.leaf missing required sealed input\(s\): execution_plan/,
   );
 });
 

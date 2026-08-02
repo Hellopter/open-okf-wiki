@@ -6,12 +6,17 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type AttemptItem,
+  type PiAttemptArtifactDescriptor,
+  type PiAttemptFailureClass,
   type PiAttemptInput,
+  type PiAttemptOutcome,
+  PiAttemptOutcomeSchema,
   type WikiRunSpec,
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import { effectiveIgnoresForSource, isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../../ports/agent-runner.js";
+import { redactSensitiveText } from "../../redact/index.js";
 import { finalizeAttemptTranscript } from "../attempt-transcript-sink.js";
 import { resolveWorkspacePiModel } from "../model/provider-model.js";
 import { resolveModelSelection } from "../model/role-model.js";
@@ -70,6 +75,53 @@ export async function sealTranscript(
       attemptId: input.attemptId,
       ...parts.meta,
     },
+  });
+}
+
+/**
+ * Uniform failed PiAttemptOutcome: redact/bound the message, seal an error
+ * terminal on session.jsonl, then return a typed failed outcome.
+ *
+ * Prefer this over bare `{ type: "failed" }` returns that skip transcripts.
+ * Throw paths still go through the executor catch (which finalizes similarly).
+ */
+export async function failAttempt(
+  input: PiAttemptInput,
+  parts: {
+    error: unknown;
+    failureClass: PiAttemptFailureClass;
+    unsealedArtifacts?: PiAttemptArtifactDescriptor[];
+    task?: string;
+    items?: AttemptItem[];
+    meta?: Record<string, unknown>;
+  },
+): Promise<PiAttemptOutcome> {
+  const message = bounded(
+    redactSensitiveText(
+      parts.error instanceof Error ? parts.error.message : String(parts.error ?? "Pi attempt failed"),
+    ),
+  );
+  const transcript = await sealTranscript(input, {
+    task: parts.task,
+    items: parts.items,
+    summary: message,
+    terminal: parts.failureClass === "cancelled" ? "cancelled" : "error",
+    meta: {
+      mode: "failed",
+      failureClass: parts.failureClass,
+      error: message,
+      ...parts.meta,
+    },
+  });
+  const unsealedArtifacts: PiAttemptArtifactDescriptor[] = [
+    ...(parts.unsealedArtifacts ?? []),
+    { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
+  ];
+  return PiAttemptOutcomeSchema.parse({
+    type: "failed",
+    error: message,
+    failureClass: parts.failureClass,
+    unsealedArtifacts,
   });
 }
 

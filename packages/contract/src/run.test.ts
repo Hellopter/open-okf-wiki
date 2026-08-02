@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AnalysisReceiptSchema } from "./receipt.js";
-import { ExecutionPlanSchema, MergedDefectReportSchema, WikiRunSpecSchema } from "./run.js";
+import {
+  assertSpecWithinFanOutCaps,
+  ExecutionPlanSchema,
+  MergedDefectReportSchema,
+  SpecFanOutCapError,
+  WikiRunSpecSchema,
+} from "./run.js";
 
 test("ExecutionPlan requires v4 with an explicit adaptation decision", () => {
   const plan = {
@@ -19,6 +25,59 @@ test("ExecutionPlan requires v4 with an explicit adaptation decision", () => {
   );
   const { version: _version, ...withoutVersion } = plan;
   assert.equal(ExecutionPlanSchema.safeParse(withoutVersion).success, false);
+});
+
+test("assertSpecWithinFanOutCaps rejects over domain and leaf caps", () => {
+  assert.throws(
+    () =>
+      assertSpecWithinFanOutCaps(
+        {
+          domains: Array.from({ length: 3 }, (_, i) => ({
+            id: `d${i}`,
+            title: `D${i}`,
+            scope: "s",
+            critical: true,
+            questions: ["q"],
+          })),
+        },
+        { maxDomainFanOut: 2 },
+      ),
+    SpecFanOutCapError,
+  );
+  assert.throws(
+    () =>
+      assertSpecWithinFanOutCaps(
+        {
+          domains: [
+            {
+              id: "core",
+              title: "Core",
+              scope: "s",
+              critical: true,
+              questions: ["a", "b", "c"],
+            },
+          ],
+        },
+        { maxLeafFanOut: 2 },
+      ),
+    /maxLeafFanOut is 2/,
+  );
+  assert.doesNotThrow(() =>
+    assertSpecWithinFanOutCaps(
+      {
+        domains: [
+          {
+            id: "core",
+            title: "Core",
+            scope: "s",
+            critical: true,
+            questions: ["a", "b"],
+          },
+        ],
+      },
+      { maxDomainFanOut: 4, maxLeafFanOut: 2 },
+    ),
+  );
 });
 
 test("WikiRunSpec bidirectional domain↔page (ok / orphan / empty / unknown)", () => {

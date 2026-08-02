@@ -652,6 +652,58 @@ test("Pi attempt fixture review.seat needs wiki_tree and returns seat receipt", 
   }
 });
 
+test("Pi attempt review.seat schema fail writes error terminal with real message", async (t) => {
+  const input = await fixture({
+    key: "review.seat.coverage",
+    kind: "review.seat",
+    generation: 0,
+    runIndex: 1,
+    detail: { lens: "coverage", seatIndex: 1 },
+  });
+  t.after(() => cleanup(input));
+  const wikiRoot = path.join(path.dirname(path.dirname(input.attemptDir)), "sealed-wiki");
+  await mkdir(wikiRoot, { recursive: true });
+  await writeFile(
+    path.join(wikiRoot, "overview.md"),
+    "---\ntype: Overview\ntitle: Demo\n---\n\n# Demo\n\nBody.\n",
+    "utf8",
+  );
+  input.sealedInputs.push({
+    role: "wiki_tree",
+    artifact: { artifactId: "wiki", kind: "wiki_tree", digest, sealedAt: timestamp },
+    readOnlyPath: wikiRoot,
+  });
+  // Reviewer free-text that is not a DefectReport — fail-closed schema path.
+  const runtime = createFixtureProduceRuntime({
+    onAgent: async (req) => {
+      if (req.role !== "reviewer") return undefined;
+      return {
+        role: "reviewer",
+        mode: "fixture",
+        summary: "NO_DEFECTS looks fine to me",
+        items: [{ type: "text" as const, text: "NO_DEFECTS looks fine to me" }],
+      };
+    },
+  });
+  const outcome = await createPiAttemptExecutor({ runtime })(input, new AbortController().signal);
+  assert.equal(outcome.type, "failed");
+  if (outcome.type === "failed") {
+    assert.equal(outcome.failureClass, "schema");
+    assert.match(outcome.error, /missing validated DefectReport|never treated as clean/i);
+    assert.ok(
+      outcome.unsealedArtifacts?.some((a) => a.role === "transcript"),
+      "failed outcome should carry transcript artifact",
+    );
+  }
+  const raw = await readFile(input.sessionPath, "utf8");
+  const terminals = parseTranscriptJsonl(raw).filter((row) => row.kind === "terminal");
+  assert.ok(
+    terminals.some((row) => row.status === "error"),
+    "session.jsonl must include a terminal error row",
+  );
+  assert.match(raw, /missing validated DefectReport|never treated as clean/i);
+});
+
 test("Pi attempt reports cancellation and bad sealed specs as terminal failures", async (t) => {
   const cancelled = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });
   const invalidSpec = await fixture({

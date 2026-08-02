@@ -86,7 +86,15 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     abortSignal: signal,
     operatorNotes,
     ...(revisionFeedback ? { revisionFeedback } : {}),
-    customTools: [createSubmitWikiRunSpecTool({ runWorkDir: input.workDir })],
+    customTools: [
+      createSubmitWikiRunSpecTool({
+        runWorkDir: input.workDir,
+        caps: {
+          maxDomainFanOut: adaptive.orchestration.maxDomainFanOut,
+          maxLeafFanOut: adaptive.orchestration.maxLeafFanOut,
+        },
+      }),
+    ],
     transcriptPath: input.sessionPath,
   });
   const specPath = path.join(layout.analysisDir, "spec.json");

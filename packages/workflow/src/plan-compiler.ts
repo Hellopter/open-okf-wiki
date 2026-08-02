@@ -6,9 +6,12 @@
  */
 
 import {
+  assertSpecWithinFanOutCaps,
   DEFAULT_ORCHESTRATION,
   type ExecutionPlan,
   ExecutionPlanSchema,
+  resolveSpecFanOutCaps,
+  SpecFanOutCapError,
   type WikiRunSpec,
 } from "@okf-wiki/contract";
 
@@ -26,6 +29,8 @@ export type CompileExecutionPlanCaps = {
 
 export class ExecutionPlanCompileError extends Error {
   readonly code = "EXECUTION_PLAN_COMPILE";
+  /** Typed for failNode / L_control — fan-out and domain id product errors are schema. */
+  readonly failureClass = "schema" as const;
 
   constructor(message: string) {
     super(message);
@@ -41,14 +46,7 @@ export function compileExecutionPlan(
   spec: WikiRunSpec,
   caps?: CompileExecutionPlanCaps,
 ): ExecutionPlan {
-  const maxDomainFanOut = Math.max(
-    1,
-    Math.min(16, Math.floor(caps?.maxDomainFanOut ?? DEFAULT_ORCHESTRATION.maxDomainFanOut)),
-  );
-  const maxLeafFanOut = Math.max(
-    1,
-    Math.min(16, Math.floor(caps?.maxLeafFanOut ?? DEFAULT_ORCHESTRATION.maxLeafFanOut)),
-  );
+  const { maxDomainFanOut, maxLeafFanOut } = resolveSpecFanOutCaps(caps);
   const reviewRequired = spec.acceptance?.reviewRequired !== false;
   const councilSize = reviewRequired
     ? Math.max(
@@ -63,12 +61,13 @@ export function compileExecutionPlan(
   const reviewLenses = REVIEW_LENSES.slice(0, councilSize).map((lens) => lens);
 
   const domains = spec.domains ?? [];
-  if (domains.length > maxDomainFanOut) {
-    throw new ExecutionPlanCompileError(
-      `WikiRunSpec has ${domains.length} domains but maxDomainFanOut is ${maxDomainFanOut}; ` +
-        `reduce domains in the Spec or raise workspace.orchestration.maxDomainFanOut ` +
-        `(silent truncation is not allowed)`,
-    );
+  try {
+    assertSpecWithinFanOutCaps(spec, { maxDomainFanOut, maxLeafFanOut });
+  } catch (err) {
+    if (err instanceof SpecFanOutCapError) {
+      throw new ExecutionPlanCompileError(err.message);
+    }
+    throw err;
   }
 
   const workUnits: ExecutionPlan["workUnits"] = [];
@@ -80,13 +79,6 @@ export function compileExecutionPlan(
       throw new ExecutionPlanCompileError("WikiRunSpec domain id must be non-empty");
     }
     const questions = (domain.questions ?? []).map((q) => q.trim()).filter((q) => q.length > 0);
-    if (questions.length > maxLeafFanOut) {
-      throw new ExecutionPlanCompileError(
-        `Domain "${domainId}" has ${questions.length} questions but maxLeafFanOut is ${maxLeafFanOut}; ` +
-          `reduce questions or raise workspace.orchestration.maxLeafFanOut ` +
-          `(silent truncation is not allowed)`,
-      );
-    }
 
     const scope = (domain.scope?.trim() || domain.title?.trim() || domainId).slice(0, 2_000);
     if (questions.length === 0) {

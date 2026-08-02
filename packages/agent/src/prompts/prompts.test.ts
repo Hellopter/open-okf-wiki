@@ -28,4 +28,17 @@ describe("planner prompt", () => {
     assert.match(prompt, /submit_wiki_run_spec/);
     assert.match(prompt, /plan-draft\.json/);
   });
+
+  it("includes fan-out cap numbers when provided", () => {
+    const prompt = plannerPrompt({
+      layout,
+      workspaceName: "Demo",
+      maxDomainFanOut: 4,
+      maxLeafFanOut: 6,
+    });
+    assert.match(prompt, /At most 4 domain/);
+    assert.match(prompt, /maxDomainFanOut/);
+    assert.match(prompt, /At most 6 question/);
+    assert.match(prompt, /maxLeafFanOut/);
+  });
 });

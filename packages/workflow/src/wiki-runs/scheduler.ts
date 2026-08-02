@@ -643,7 +643,7 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
     if (host.closed) return;
     // Best-effort: leave a readable conversation row when Pi/mechanical failed
     // without sealing a transcript (mechanical cancel, missing executor, …).
-    await ensureAttemptFailureTranscript(host, claim).catch(() => undefined);
+    await ensureAttemptFailureTranscript(host, claim, error).catch(() => undefined);
     host.transaction(() => failNode(host, claim, error));
   } finally {
     host.activeAttempts.delete(claim.attemptId);
@@ -654,10 +654,12 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
 /**
  * Ensure session.jsonl contains a terminal record for failed attempts without
  * rewriting the append-only Pi trace or crossing its reader retention limit.
+ * Uses the real error message so operators see why the Attempt failed.
  */
 async function ensureAttemptFailureTranscript(
   host: SchedulerHost,
   claim: ClaimedNode,
+  error: unknown,
 ): Promise<void> {
   const sessionPath = path.join(
     runWorkDir(host.workspace.rootPath, claim.runId),
@@ -665,11 +667,12 @@ async function ensureAttemptFailureTranscript(
     claim.attemptId,
     "session.jsonl",
   );
+  // Host product errors are secret-free; generic Error.message is sliced.
+  const message =
+    error instanceof Error ? error.message : error !== undefined ? String(error) : "";
   await appendAttemptFailureTranscript({
     sessionPath,
-    // Error text is already stored on the Attempt outcome. Keep this durable
-    // transcript fallback secret-free even for custom executor errors.
-    summary: "Attempt failed.",
+    summary: message.slice(0, 4_000),
   });
 }
 

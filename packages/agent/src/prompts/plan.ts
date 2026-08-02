@@ -11,9 +11,25 @@ export function plannerPrompt(input: {
   workspaceName: string;
   wikiLanguage?: WikiLanguage;
   operatorNotes?: string;
+  /** Topology caps — when set, listed in Rules so the planner stays under budget. */
+  maxDomainFanOut?: number;
+  maxLeafFanOut?: number;
 }): string {
   const paths = runWorkdirPromptPaths(input.layout);
   const operatorNotes = input.operatorNotes?.trim();
+  const fanOutRules: string[] = [];
+  if (input.maxDomainFanOut != null) {
+    fanOutRules.push(
+      `- At most ${input.maxDomainFanOut} domain(s) (workspace.orchestration.maxDomainFanOut). ` +
+        "Merge related concerns rather than exceeding the cap; over-cap Specs are rejected.",
+    );
+  }
+  if (input.maxLeafFanOut != null) {
+    fanOutRules.push(
+      `- At most ${input.maxLeafFanOut} question(s) per domain (workspace.orchestration.maxLeafFanOut). ` +
+        "Split into fewer, broader questions if needed; over-cap Specs are rejected.",
+    );
+  }
   return [
     "You are planning a source-grounded repository wiki (WikiRunSpec).",
     paths,
@@ -42,6 +58,7 @@ export function plannerPrompt(input: {
     "",
     "Rules:",
     "- Prefer few domains that isolate independent evidence.",
+    ...fanOutRules,
     "- Always include a critical overview.md (or Spec equivalent) with template overview.",
     "- Prefer directory paths when multiple related pages share a theme: modules/*.md, flows/*.md, deeper as needed.",
     "- index.md is not a concept page and is not written by the planner. The product regenerates every directory's index.md mechanically as a progressive-disclosure listing.",

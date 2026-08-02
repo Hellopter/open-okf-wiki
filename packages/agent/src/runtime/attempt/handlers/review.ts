@@ -30,6 +30,7 @@ import {
 import {
   type AttemptHandlerContext,
   bounded,
+  failAttempt,
   liveModel,
   parseNodeDetail,
   resolveReviewSeatIndex,
@@ -216,10 +217,12 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
     summaryText: result.summary,
   });
   if (!resolvedReport.ok) {
-    return PiAttemptOutcomeSchema.parse({
-      type: "failed",
+    return failAttempt(input, {
       error: resolvedReport.error,
       failureClass: "schema",
+      task: reviewTask,
+      items: result.items,
+      meta: { lens, seatIndex, defectSource: "missing" },
     });
   }
 

@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WikiRunSnapshot } from "@okf-wiki/contract";
 import {
+  ATTEMPT_ERROR_PREVIEW_CHARS,
   canRerunNode,
   canRetryFailedNode,
   hasLikelyDownstreamConsumers,
   hasMaterializedExecutionTopology,
   isRepairNodeKey,
+  lastFailedAttemptForNode,
   listRecoveryTargetNodes,
   listRetryableNodeKeys,
   needsRecoveryBanner,
+  shouldShowNoAutoRetryHint,
+  truncateAttemptError,
 } from "./node-recovery.ts";
 
 const DIGEST = "a".repeat(64);
@@ -506,4 +510,92 @@ test("recovery banner helpers list failed nodes and retryable keys", () => {
     ["research.leaf.a"],
   );
   assert.deepEqual(listRetryableNodeKeys(snapshot), ["research.leaf.a"]);
+});
+
+test("truncateAttemptError respects default preview length", () => {
+  assert.equal(truncateAttemptError("short"), "short");
+  assert.equal(truncateAttemptError("  padded  "), "padded");
+  const long = "e".repeat(ATTEMPT_ERROR_PREVIEW_CHARS + 20);
+  const truncated = truncateAttemptError(long);
+  assert.equal(truncated.length, ATTEMPT_ERROR_PREVIEW_CHARS);
+  assert.equal(truncated.endsWith("…"), true);
+  assert.equal(truncateAttemptError(long, 10).length, 10);
+});
+
+test("lastFailedAttemptForNode returns failed/interrupted last attempt only", () => {
+  const snapshot = baseSnapshot({
+    nodes: [
+      {
+        key: "research.leaf.a",
+        kind: "research",
+        state: "failed",
+        generation: 0,
+        currentAttemptId: null,
+        lastAttemptId: "att-1",
+        outputs: [],
+        label: "Leaf A",
+      },
+      {
+        key: "research.leaf.b",
+        kind: "research",
+        state: "succeeded",
+        generation: 0,
+        currentAttemptId: null,
+        lastAttemptId: "att-2",
+        outputs: [],
+        label: "Leaf B",
+      },
+    ],
+    attempts: [
+      {
+        attemptId: "att-1",
+        nodeKey: "research.leaf.a",
+        nodeGeneration: 0,
+        runIndex: 1,
+        state: "failed",
+        inputDigest: DIGEST,
+        error: "provider timeout after L0",
+        failureClass: "infrastructure",
+        startedAt: "2026-08-02T00:00:00.000Z",
+        endedAt: "2026-08-02T00:01:00.000Z",
+      },
+      {
+        attemptId: "att-2",
+        nodeKey: "research.leaf.b",
+        nodeGeneration: 0,
+        runIndex: 2,
+        state: "succeeded",
+        inputDigest: DIGEST,
+        error: null,
+        startedAt: "2026-08-02T00:00:00.000Z",
+        endedAt: "2026-08-02T00:01:00.000Z",
+      },
+    ],
+  });
+
+  const failed = lastFailedAttemptForNode(snapshot, "research.leaf.a");
+  assert.equal(failed?.attemptId, "att-1");
+  assert.equal(failed?.error, "provider timeout after L0");
+  assert.equal(failed?.failureClass, "infrastructure");
+  assert.equal(lastFailedAttemptForNode(snapshot, "research.leaf.b"), null);
+  assert.equal(lastFailedAttemptForNode(snapshot, "missing"), null);
+});
+
+test("shouldShowNoAutoRetryHint covers product failures and non-research nodes", () => {
+  // Research kinds use real WikiRunNodeKind values (research.leaf / research.domain).
+  assert.equal(shouldShowNoAutoRetryHint("schema", "research.leaf"), true);
+  assert.equal(shouldShowNoAutoRetryHint("quality", "research.domain"), true);
+  assert.equal(shouldShowNoAutoRetryHint("provider", "research.leaf"), true);
+  assert.equal(shouldShowNoAutoRetryHint("capacity", "research.leaf"), true);
+  assert.equal(shouldShowNoAutoRetryHint("budget", "research.domain"), true);
+  assert.equal(shouldShowNoAutoRetryHint("cancelled", "research.leaf"), true);
+  assert.equal(shouldShowNoAutoRetryHint("infrastructure", "write.root"), true);
+  assert.equal(shouldShowNoAutoRetryHint("infrastructure", "plan"), true);
+  // Research + infrastructure/transient: may auto-retry — no "will not" hint.
+  assert.equal(shouldShowNoAutoRetryHint("infrastructure", "research.leaf"), false);
+  assert.equal(shouldShowNoAutoRetryHint("transient", "research.domain"), false);
+  assert.equal(shouldShowNoAutoRetryHint(undefined, "research.leaf"), false);
+  assert.equal(shouldShowNoAutoRetryHint(undefined, "plan"), true);
+  // Bare "research" is not a real kind — treat as non-research for safety.
+  assert.equal(shouldShowNoAutoRetryHint("infrastructure", "research"), true);
 });

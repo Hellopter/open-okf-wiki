@@ -173,3 +173,72 @@ export function needsRecoveryBanner(snapshot: WikiRunSnapshot): boolean {
   if (snapshot.state === "failed") return true;
   return listRecoveryTargetNodes(snapshot).length > 0;
 }
+
+/** Default truncation for recovery-banner / sidebar error previews. */
+export const ATTEMPT_ERROR_PREVIEW_CHARS = 240;
+
+/**
+ * Truncate a control-plane attempt error for compact UI surfaces.
+ * Full text stays on the Activity sticky alert.
+ */
+export function truncateAttemptError(
+  error: string,
+  maxChars: number = ATTEMPT_ERROR_PREVIEW_CHARS,
+): string {
+  const trimmed = error.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  if (maxChars <= 1) return "…";
+  return `${trimmed.slice(0, maxChars - 1)}…`;
+}
+
+/**
+ * Last failed/interrupted attempt for a node key (prefers `lastAttemptId`).
+ * Returns null when the node is missing or its last attempt is not failed/interrupted.
+ */
+export function lastFailedAttemptForNode(
+  snapshot: WikiRunSnapshot,
+  nodeKey: string,
+): WikiRunAttempt | null {
+  const node = findNode(snapshot, nodeKey);
+  if (!node) return null;
+  const attempt = lastAttemptForNode(snapshot, node);
+  if (!attempt) return null;
+  if (!["failed", "interrupted"].includes(attempt.state)) return null;
+  return attempt;
+}
+
+/**
+ * Failure classes that never auto-requeue (ADR 0013 / L_control policy).
+ * Operator must Retry/Rerun or fix config.
+ */
+const NO_AUTO_RETRY_FAILURE_CLASSES = new Set([
+  "schema",
+  "quality",
+  "provider",
+  "capacity",
+  "budget",
+  "policy",
+  "cancelled",
+  "cancel",
+  "publication_conflict",
+]);
+
+/** L_control auto-requeue only applies to research.leaf / research.domain. */
+function isResearchAutoRetryKind(nodeKind: string | undefined): boolean {
+  return nodeKind === "research.leaf" || nodeKind === "research.domain";
+}
+
+/**
+ * Whether to show the “will not auto-retry” operator hint.
+ * Auto-retry is research-only for infrastructure/transient; product/schema and
+ * non-research nodes need manual Retry/Rerun.
+ */
+export function shouldShowNoAutoRetryHint(
+  failureClass: string | undefined,
+  nodeKind: string | undefined,
+): boolean {
+  // Non-research kinds never L_control auto-requeue.
+  if (nodeKind != null && !isResearchAutoRetryKind(nodeKind)) return true;
+  if (failureClass != null && NO_AUTO_RETRY_FAILURE_CLASSES.has(failureClass)) return true;
+  return false;
+}
