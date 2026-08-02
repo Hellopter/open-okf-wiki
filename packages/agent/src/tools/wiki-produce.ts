@@ -3,6 +3,7 @@
  * WikiRuns owns freeze/plan/gates; this tool does not await the Run.
  */
 
+import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
@@ -123,7 +124,7 @@ export function createWikiProduceTool(
         if (input.resolveWorkspace) {
           await input.resolveWorkspace();
         }
-        const commandId = crypto.randomUUID();
+        const commandId = randomUUID();
         const receipt = await input.startWikiRun({
           commandId,
           sessionId: input.sessionId,

@@ -17,6 +17,7 @@ import {
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
+import { newCommandId } from "../lib/command-id";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 function currentGate(snapshot: WikiRunSnapshot): WikiRunSnapshot["gates"][number] | undefined {
@@ -150,7 +151,7 @@ export function RunDetailPage() {
         throw new Error("This gate has already changed. Refresh the Run before deciding.");
       return {
         type: "resolve_gate",
-        commandId: crypto.randomUUID(),
+        commandId: newCommandId(),
         runId: latest.runId,
         expectedRevision: latest.revision,
         gateId: current.gateId,
@@ -172,7 +173,7 @@ export function RunDetailPage() {
     const revisionContent = content.trim();
     void dispatch((latest) => ({
       type: "submit_run_revision",
-      commandId: crypto.randomUUID(),
+      commandId: newCommandId(),
       runId: latest.runId,
       expectedRevision: latest.revision,
       kind: "scope_change",
@@ -213,7 +214,7 @@ export function RunDetailPage() {
                 onClick={() =>
                   void dispatch((latest) => ({
                     type: "resume_run",
-                    commandId: crypto.randomUUID(),
+                    commandId: newCommandId(),
                     runId: latest.runId,
                     expectedRevision: latest.revision,
                   }))
@@ -230,7 +231,7 @@ export function RunDetailPage() {
                 onClick={() =>
                   void dispatch((latest) => ({
                     type: "pause_run",
-                    commandId: crypto.randomUUID(),
+                    commandId: newCommandId(),
                     runId: latest.runId,
                     expectedRevision: latest.revision,
                   }))
@@ -250,7 +251,7 @@ export function RunDetailPage() {
               onClick={() =>
                 void dispatch((latest) => ({
                   type: "cancel_run",
-                  commandId: crypto.randomUUID(),
+                  commandId: newCommandId(),
                   runId: latest.runId,
                   expectedRevision: latest.revision,
                 }))
@@ -264,11 +265,7 @@ export function RunDetailPage() {
           </div>
         </header>
 
-        {error ? (
-          <div className="shrink-0 px-4 pt-3 lg:px-6">
-            <ErrorBanner error={error} onDismiss={() => setError(null)} />
-          </div>
-        ) : null}
+        {error ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
 
         <div className="grid min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
           <section className="min-h-0 overflow-y-auto px-4 py-5 lg:px-6">

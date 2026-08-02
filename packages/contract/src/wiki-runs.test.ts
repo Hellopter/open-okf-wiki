@@ -144,6 +144,25 @@ test("gate commands admit only their typed decisions", () => {
   );
 });
 
+test("review commands allow the server to compute the selected text digest", () => {
+  assert.equal(
+    RunCommandSchema.safeParse({
+      type: "create_review_thread",
+      commandId: "command-review",
+      runId: "run-1",
+      expectedRevision: 2,
+      anchor: {
+        candidateDigest: digest,
+        pagePath: "overview.md",
+        startLine: 1,
+        endLine: 1,
+      },
+      body: "Clarify the introductory example.",
+    }).success,
+    true,
+  );
+});
+
 test("run events carry one matching full snapshot", () => {
   const snapshot = {
     schema: "okf.wiki-runs/v5",

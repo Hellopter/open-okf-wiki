@@ -75,12 +75,16 @@ async function writeSucceeded(
 /** One seat emits blocking defects; others clean. */
 function blockingSeatExecutor(options?: {
   maxRepairRounds?: number;
+  autoRepair?: boolean;
   onExhausted?: "fail" | "operator";
 }): (input: PiAttemptInput, signal: AbortSignal) => Promise<PiAttemptOutcome> {
   let blockingEmitted = false;
   return async (input, signal) => {
     if (input.node.kind === "plan") {
       const spec = defaultWikiRunSpec("Workflow test");
+      // Most tests below exercise the explicit recovery gate. The product
+      // default is automatic repair, covered by the dedicated test below.
+      spec.acceptance.autoRepair = options?.autoRepair ?? false;
       if (options?.maxRepairRounds !== undefined) {
         spec.acceptance.maxRepairRounds = options.maxRepairRounds;
       }
@@ -218,6 +222,44 @@ test("review.reduce with blocking seats succeeds and opens fix gate", async (t) 
   assert.ok(
     reduce?.outputs.some((o) => o.role === "defects"),
     "defects receipt must be sealed on review.reduce",
+  );
+});
+
+test("blocking review defects automatically schedule repair within the sealed budget", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: blockingSeatExecutor({ maxRepairRounds: 1, autoRepair: true }),
+  });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "start-auto-semantic-repair", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  await approvePlanGate(runs, receipt.runId, workspaceId, "approve-auto-semantic-repair");
+
+  const atPublication = await waitForRunState(
+    runs,
+    receipt.runId,
+    ["waiting_for_operator"],
+    60_000,
+  );
+  assert.ok(
+    atPublication.snapshot.nodes.some(
+      (node) => node.key === repairNodeKey(1) && node.state === "succeeded",
+    ),
+    "the first blocking review should schedule repair.1 without a fix gate",
+  );
+  assert.equal(
+    atPublication.snapshot.gates.some((gate) => gate.kind === "fix" && gate.state === "open"),
+    false,
+  );
+  assert.ok(
+    atPublication.snapshot.gates.some(
+      (gate) => gate.kind === "publication" && gate.state === "open",
+    ),
   );
 });
 

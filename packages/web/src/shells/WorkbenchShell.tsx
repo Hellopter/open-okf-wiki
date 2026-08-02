@@ -116,11 +116,7 @@ export function WorkbenchShell({
         ) : null}
       </header>
 
-      {error ? (
-        <div className="shrink-0 px-3 pt-2">
-          <ErrorBanner error={error} onDismiss={onDismissError} />
-        </div>
-      ) : null}
+      {error ? <ErrorBanner error={error} onDismiss={onDismissError} /> : null}
 
       <div
         className={cn(

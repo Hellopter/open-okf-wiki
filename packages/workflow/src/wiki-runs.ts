@@ -258,7 +258,7 @@ class WikiRunsOwner implements WikiRuns {
       const rows = asRows(
         this.db
           .prepare(
-            `SELECT run_id, state, updated_at, revision
+            `SELECT run_id, operator_session_id, state, updated_at, revision
              FROM runs
              ORDER BY updated_at DESC, run_id DESC`,
           )
@@ -295,8 +295,13 @@ class WikiRunsOwner implements WikiRuns {
             .get(runId),
         );
         const state = requiredText(row, "state") as WikiRunSnapshot["state"];
+        const sessionId =
+          typeof row.operator_session_id === "string" && row.operator_session_id.trim()
+            ? row.operator_session_id
+            : undefined;
         return {
           runId,
+          ...(sessionId ? { sessionId } : {}),
           state,
           updatedAt: requiredText(row, "updated_at"),
           revision: requiredNumber(row, "revision"),

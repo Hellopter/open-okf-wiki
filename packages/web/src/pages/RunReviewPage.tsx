@@ -23,13 +23,8 @@ import {
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
+import { newCommandId } from "../lib/command-id";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
-
-async function sha256(value: string): Promise<string> {
-  const data = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(digest)].map((part) => part.toString(16).padStart(2, "0")).join("");
-}
 
 export function RunReviewPage() {
   const { id = "", runId = "" } = useParams<{ id: string; runId: string }>();
@@ -135,11 +130,10 @@ export function RunReviewPage() {
       setError(new Error("Choose a valid line range."));
       return;
     }
-    const selectedTextDigest = await sha256(lines.slice(startLine - 1, endLine).join("\n"));
     const body = comment.trim();
     await dispatch((latest) => ({
       type: "create_review_thread",
-      commandId: crypto.randomUUID(),
+      commandId: newCommandId(),
       runId: latest.runId,
       expectedRevision: latest.revision,
       anchor: {
@@ -147,7 +141,6 @@ export function RunReviewPage() {
         pagePath,
         startLine,
         endLine,
-        selectedTextDigest,
       },
       body,
     }));
@@ -169,7 +162,7 @@ export function RunReviewPage() {
         throw new Error("The selected review threads have already changed.");
       return {
         type: "request_repair",
-        commandId: crypto.randomUUID(),
+        commandId: newCommandId(),
         runId: latest.runId,
         expectedRevision: latest.revision,
         threadIds: currentThreadIds,
@@ -241,11 +234,7 @@ export function RunReviewPage() {
             </Button>
           </div>
         </header>
-        {error ? (
-          <div className="shrink-0 px-4 pt-3 lg:px-6">
-            <ErrorBanner error={error} onDismiss={() => setError(null)} />
-          </div>
-        ) : null}
+        {error ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
         <div className="grid min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_22rem]">
           <section className="min-h-0 overflow-y-auto px-4 py-5 lg:px-6">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -348,7 +337,7 @@ export function RunReviewPage() {
                         onClick={() =>
                           void dispatch((latest) => ({
                             type: "resolve_review_thread",
-                            commandId: crypto.randomUUID(),
+                            commandId: newCommandId(),
                             runId: latest.runId,
                             expectedRevision: latest.revision,
                             threadId: thread.threadId,

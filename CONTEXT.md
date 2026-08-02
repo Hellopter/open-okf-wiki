@@ -4,7 +4,7 @@ This context defines the language for deriving a source-grounded Markdown wiki f
 
 **Implementation note:** The live product is the TypeScript monorepo (`packages/*`: Web UI, localhost server, durable WikiRuns control plane, **Pi agent harness** (`@earendil-works/pi-*`), and the `@okf-wiki/core` Run Boundary). See [ADR 0035](docs/adr/0035-durable-wikiruns-control-plane.md), [ADR 0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md), and [ADR 0021](docs/adr/0021-retire-python-primary-path.md). Terms below remain domain vocabulary; older ADRs may still name historical Python/Mastra packages.
 
-**Operator chrome:** The browser exposes the Run Workspace. **Stop Run** cancels the durable WikiRun; gates and review actions apply only to that Run. Pi Attempts are disposable workers, not browser sessions.
+**Operator chrome:** The browser provides a linked **Operator Session** and **Run Workspace**. A Session hosts a Pi conversation and can start multiple WikiRuns through `wiki_produce`; **Stop Run** cancels only the durable WikiRun, while stopping a conversation aborts only its current Pi turn. Gates and review actions apply only to the Run. Pi Attempts are disposable workers, not browser sessions.
 
 ## Language
 
@@ -84,6 +84,10 @@ _Avoid_: Treating Run Plan as a separate durable product object
 One disposable model execution for a Run node. Its trace and outputs are run-scoped evidence; it has no independent browser route, HTTP session, or durable control authority.
 _Avoid_: Product session metadata, AI SDK UIMessage history, Mastra workflow snapshots, a second conversation stream
 
+**Operator Session**:
+One browser-visible Pi conversation backed by `SessionManager` history. It may issue multiple `wiki_produce` calls, each returning a linked durable WikiRun receipt. Browser Session SSE is a redacted conversation projection, while the Run graph, gates, and Attempt traces remain on WikiRuns APIs.
+_Avoid_: treating Session state as Run state, resuming a discarded Pi Attempt, merging Session and Run SSE, exposing provider reasoning or raw tool payloads
+
 **Wiki Reviewer** / **Review council**:
 Independent, read-only agent role(s) that inspect the Staging Wiki against sources and Skill review guidance. The `wiki_produce` runtime merges outputs into `defects.json`; Root repairs; the Run Boundary **fail-closes** publication when blocking defects remain. Reviewers never write Wiki pages or publish.
 _Avoid_: Optional soft review, Skill self-review alone as the only gate, open-loop receipts that do not block publish
@@ -157,4 +161,4 @@ Index and current-stack shortlist: [docs/adr/README.md](docs/adr/README.md).
 - Pre-[0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md): Mastra / AI SDK / UIMessage Session → Pi AgentSession + JSONL.
 - [0035](docs/adr/0035-durable-wikiruns-control-plane.md): durable WikiRuns control plane; typed commands/events, generation CAS, typed gates, immutable Artifacts, and separate Run SSE. It supersedes ADR 0032 only where 0032 made Pi own the whole Run or forbade durable Run commands/events. Control-store choice (localhost `workflow.sqlite` vs Pi Session SQLite vs alternatives): [docs/research/pi-sqlite-and-wikiruns-control-store-2026-07.md](docs/research/pi-sqlite-and-wikiruns-control-store-2026-07.md).
 - [0020](docs/adr/0020-typescript-mastra-web-workspace.md) §6 originally forbade product clone; **operator clone** is allowed per [0022](docs/adr/0022-source-clone-into-workspace.md) (Semantic Workflow still never clones).
-- Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) are historical. Current browser control follows [0035](docs/adr/0035-durable-wikiruns-control-plane.md); Pi remains the disposable Attempt runtime from [0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md).
+- Session stream / single write path: [0024](docs/adr/0024-session-as-conversational-workspace.md) + [0025](docs/adr/0025-mastra-wiki-workflow-and-ai-sdk-bridge.md) are historical. Current browser Session and Run projection follows [0039](docs/adr/0039-browser-operator-session-and-run-observation.md); Pi remains the disposable Attempt runtime from [0030](docs/adr/0030-pi-agent-harness-for-semantic-workflow.md).

@@ -65,14 +65,19 @@ test("WikiRuns routes derive context server-side and replay durable events", asy
   const workspaceApi = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}`;
   const base = `${workspaceApi}/runs`;
 
-  const [legacyRuns, legacySessions, legacyCommands] = await Promise.all([
+  const [legacyRuns, agentSessions, operatorCommands] = await Promise.all([
     fetch(base),
     fetch(`${workspaceApi}/agent/sessions`),
     fetch(`http://127.0.0.1:${address.port}/api/agent/commands`),
   ]);
   assert.equal(legacyRuns.status, 404);
-  assert.equal(legacySessions.status, 404);
-  assert.equal(legacyCommands.status, 404);
+  assert.equal(agentSessions.status, 200);
+  assert.deepEqual(await agentSessions.json(), { sessions: [] });
+  assert.equal(operatorCommands.status, 200);
+  const operatorCommandBody = (await operatorCommands.json()) as {
+    commands: Array<{ name: string }>;
+  };
+  assert.ok(operatorCommandBody.commands.some((command) => command.name === "wiki"));
 
   const started = await fetch(`${base}/command`, {
     method: "POST",

@@ -78,6 +78,21 @@ test("start receipt and replay are durable, and duplicate commands de-duplicate"
   );
 });
 
+test("Run index preserves the Operator Session that created a Run", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({ rootPath: root });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "session-index", intent: { mode: "generate" } },
+    { ...context(workspaceId), sessionId: "session-42" },
+  );
+
+  const item = (await runs.readIndex()).runs.find((candidate) => candidate.runId === receipt.runId);
+  assert.equal(item?.sessionId, "session-42");
+});
+
 test("close waits for an aborted executor before releasing the owner lock", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));

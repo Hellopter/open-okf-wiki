@@ -69,11 +69,7 @@ export function WikiReaderShell({
         {actions}
       </header>
 
-      {error ? (
-        <div className="shrink-0 px-3 pt-2">
-          <ErrorBanner error={error} onDismiss={onDismissError} />
-        </div>
-      ) : null}
+      {error ? <ErrorBanner error={error} onDismiss={onDismissError} /> : null}
 
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
     </div>

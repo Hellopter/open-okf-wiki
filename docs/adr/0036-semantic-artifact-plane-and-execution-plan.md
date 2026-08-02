@@ -7,7 +7,7 @@
 **Does not introduce:** knowledge graph, multi-writer wiki, generic workflow DSL, dual executors, museum store ports  
 **Research basis:** [current-wiki-workflow-optimization-2026-07-29](../research/current-wiki-workflow-optimization-2026-07-29.md), [wiki-workflow-fullstack-pi-architecture-2026-07-30](../research/wiki-workflow-fullstack-pi-architecture-2026-07-30.md), [hard-cut prep](../research/wiki-workflow-hard-cut-prep-2026-07-30.md)
 
-> **2026-08-01 status note:** The current hard-cut contract is `okf.wiki-runs/v5` (`definitionVersion: 5`). The separate Agent Session HTTP/browser surface, `SessionRuntime`, execution-epoch history, pending-guidance revisions, and economy-metric helpers were deleted. The direct browser operator surface is the Run Workspace.
+> **2026-08-01 status note:** The current hard-cut contract is `okf.wiki-runs/v5` (`definitionVersion: 5`). `SessionRuntime`, execution-epoch history, pending-guidance revisions, and economy-metric helpers were deleted. **2026-08-02:** [ADR 0039](0039-browser-operator-session-and-run-observation.md) restores a bounded browser Operator Session with a redacted Pi SSE projection; the Run Workspace remains the durable execution and observation surface.
 
 ## Context
 
@@ -60,9 +60,9 @@ Review seats submit `DefectReportSchema` (fail closed). Reduce merges only valid
 
 ### 7. Operator surface
 
-- The browser owns Run Workspace paths: `/w/:id/runs`, `/w/:id/runs/:runId`, and review at `/w/:id/runs/:runId/review`.
+- The browser owns a linked Operator Session and Run Workspace at `/w/:id`, with durable Run selection in query state.
 - Resource-keyed command state (`run:…:cancel`, `gate:…:resolve`, `node:…:retry`).
-- There is no browser-facing Operator Session, session route, or Session SSE adapter.
+- Per [ADR 0039](0039-browser-operator-session-and-run-observation.md), Session SSE is a redacted Pi conversation projection only; Run SSE and Attempt transcript APIs remain the sole Run control and observation streams.
 
 ### 8. Light path
 

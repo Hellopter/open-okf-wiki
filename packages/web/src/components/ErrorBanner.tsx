@@ -1,3 +1,4 @@
+import { CircleAlert } from "lucide-react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import type { ApiError } from "../api";
@@ -38,7 +39,8 @@ export function ErrorBanner({ error, onDismiss }: Props) {
       : undefined;
 
   return (
-    <Alert variant="destructive" data-testid="error-banner">
+    <Alert variant="destructive" data-testid="error-banner" className="m-3 shrink-0 md:mx-4">
+      <CircleAlert />
       <AlertTitle>
         {t.errorBanner.title}
         {status ? ` (${status})` : ""}

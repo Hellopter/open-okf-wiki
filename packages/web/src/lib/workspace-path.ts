@@ -1,7 +1,7 @@
 /**
  * Workspace-scoped paths (id-only URLs; no rootPath query).
  *
- *   /w/:id/runs         Run Workspace
+ *   /w/:id              Session and WikiRun workbench
  *   /w/:id/wiki[/*]     Wiki reader
  *   /w/:id/configure    Configure (sources · models · skill · danger)
  */
@@ -18,9 +18,9 @@ function withQuery(base: string, extraQuery?: Record<string, string>): string {
   return qs ? `${base}?${qs}` : base;
 }
 
-/** Operate surface — Run Workspace (`/w/:id/runs`). */
+/** Operate surface — unified Session and WikiRun workbench (`/w/:id`). */
 export function operateHref(workspaceId: string, extraQuery?: Record<string, string>): string {
-  return withQuery(`/w/${encodeURIComponent(workspaceId)}/runs`, extraQuery);
+  return withQuery(`/w/${encodeURIComponent(workspaceId)}`, extraQuery);
 }
 
 /** Wiki reader (`/w/:id/wiki` or `/w/:id/wiki/{page…}`). */

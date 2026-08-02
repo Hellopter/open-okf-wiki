@@ -6,6 +6,20 @@
  */
 
 export {
+  type AgentCommand,
+  type AgentCommandResponse,
+  type AgentSseEvent,
+  agentSessionCommand,
+  agentSessionEventsUrl,
+  type CreatePiAgentSessionBody,
+  createAgentSession,
+  deleteAgentSession,
+  listAgentSessions,
+  listOperatorCommands,
+  type PiSessionSummary,
+  parseAgentSessionEvent,
+} from "./agent-sessions";
+export {
   ApiError,
   getApiBase,
   hasApiErrorCode,

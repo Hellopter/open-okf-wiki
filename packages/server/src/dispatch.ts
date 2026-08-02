@@ -10,6 +10,14 @@ import {
   rejectUntrustedRequest,
   sendError,
 } from "./http-util.ts";
+import {
+  handleAgentSessionCommand,
+  handleAgentSessionEvents,
+  handleCreateAgentSession,
+  handleDeleteAgentSession,
+  handleListAgentSessions,
+  handleListOperatorCommands,
+} from "./routes/agent-sessions.ts";
 import { handleGetAppSettings, handlePatchAppSettings } from "./routes/app-settings.ts";
 import { handleDoctor, handleHealth } from "./routes/health.ts";
 import {
@@ -155,6 +163,43 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse): Promi
     if (method === "POST" && pathname === "/api/workspaces") {
       await handleCreateWorkspace(req, res);
       return;
+    }
+    if (method === "GET" && pathname === "/api/agent/commands") {
+      handleListOperatorCommands(req, res);
+      return;
+    }
+
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/events");
+      if (params && method === "GET") {
+        await handleAgentSessionEvents(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId/command");
+      if (params && method === "POST") {
+        await handleAgentSessionCommand(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions/:sessionId");
+      if (params && method === "DELETE") {
+        await handleDeleteAgentSession(req, res, params.id!, params.sessionId!, url);
+        return;
+      }
+    }
+    {
+      const params = matchRoute(pathname, "/api/workspaces/:id/agent/sessions");
+      if (params && method === "GET") {
+        await handleListAgentSessions(req, res, params.id!, url);
+        return;
+      }
+      if (params && method === "POST") {
+        await handleCreateAgentSession(req, res, params.id!, url);
+        return;
+      }
     }
 
     // More specific source/run routes before generic :id

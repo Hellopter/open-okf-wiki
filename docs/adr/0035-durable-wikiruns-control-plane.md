@@ -7,7 +7,7 @@
 **Retains:** Pi-only Operator Session conversation events, `SessionManager` authority for conversations, `@okf-wiki/core` Run Boundary, and no-compat cleanup  
 **Narrowly superseded by:** [ADR 0036](0036-semantic-artifact-plane-and-execution-plan.md) for fixed Definition v1 topology as the product semantic ceiling; current contract is `okf.wiki-runs/v5` (control plane ownership, artifacts, gates, effects, and Run SSE remain)
 
-> **2026-08-01 status note:** References to a separate Operator Session HTTP/SSE surface are historical. The browser operates durable Runs directly; Pi is used only for disposable Attempt execution.
+> **2026-08-01 status note:** References to a separate Operator Session HTTP/SSE surface were historical after the v5 hard cut. **2026-08-02:** [ADR 0039](0039-browser-operator-session-and-run-observation.md) restores a bounded Session projection that can invoke `wiki_produce`; WikiRuns remain the sole durable Run control and observation authority.
 
 ## Context
 

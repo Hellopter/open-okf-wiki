@@ -40,6 +40,7 @@ import {
   isRepairNodeKey,
   loadAcceptance,
   rearmEvaluationRoundAfterRepair,
+  scheduleAutomaticSemanticRepair,
 } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import type { ArtifactPreparation, ClaimedFreeze, ClaimedNode } from "./types.js";
@@ -238,6 +239,24 @@ export function onAttemptSucceeded(
     const blocking = report?.defects.filter((d) => severitySet.has(d.severity)) ?? [];
     if (blocking.length === 0) {
       autoPassFixGate(host, claim.runId, timestamp);
+      return;
+    }
+    if (
+      acceptance?.autoRepair !== false &&
+      typeof host.applyRerunAt === "function" &&
+      scheduleAutomaticSemanticRepair(
+        {
+          db: host.db,
+          workspace: host.workspace,
+          emit: host.emit,
+          currentNodeGeneration: (runId, nodeKey) => host.currentNodeGeneration(runId, nodeKey),
+          applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
+            host.applyRerunAt!(runId, nodeKey, generation, feedback, opts),
+        },
+        claim,
+        timestamp,
+      )
+    ) {
       return;
     }
     const payloadDigest =

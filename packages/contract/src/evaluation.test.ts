@@ -180,7 +180,8 @@ test("WikiRunSpecAcceptance remains backward compatible without new fields", () 
   const acceptance = WikiRunSpecAcceptanceSchema.parse({});
   assert.equal(acceptance.reviewRequired, true);
   assert.equal(acceptance.maxRepairRounds, 2);
-  assert.equal(acceptance.maxHardValidateRepairRounds, 0);
+  assert.equal(acceptance.maxHardValidateRepairRounds, 1);
+  assert.equal(acceptance.autoRepair, true);
   assert.deepEqual(acceptance.blockingSeverities, ["blocking"]);
   assert.equal(acceptance.maxCandidates, undefined);
   assert.equal(acceptance.evaluationPolicy, undefined);

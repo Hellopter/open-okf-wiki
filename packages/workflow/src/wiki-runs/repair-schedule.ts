@@ -519,6 +519,54 @@ export function scheduleOperatorRepair(
 }
 
 /**
+ * Review defects should use the sealed semantic repair budget before asking an
+ * operator to intervene. The later fix gate remains the recovery path when
+ * the budget is exhausted or no safe candidate can be scheduled.
+ */
+export function scheduleAutomaticSemanticRepair(
+  host: RepairScheduleHost,
+  claim: Pick<ClaimedNode, "runId">,
+  timestamp: string,
+): boolean {
+  const policy = loadEvaluationPolicy(host, claim.runId);
+  const budget = policy.semantic.modelRepairBudget;
+  const prior = countRepairsBySource(host, claim.runId, "semantic");
+  if (budget <= 0 || prior >= budget) return false;
+  if (countModelWikiCandidates(host, claim.runId) >= policy.maxCandidates) return false;
+
+  const round = countRepairs(host, claim.runId) + 1;
+  const baseline = latestWikiCandidate(host, claim.runId);
+  if (!baseline) return false;
+  const feedback = `Automatic repair (round ${round}/${budget}): address sealed blocking review defects.`;
+  const repairRequest = buildSemanticRepairRequest({
+    runId: claim.runId,
+    round,
+    feedback,
+    source: "semantic",
+    baselineCandidateId: baseline.candidateId,
+  });
+
+  // This caller is already inside the successful-attempt transaction. Once
+  // scheduling begins, failure must escape so partial repair lineage cannot be
+  // committed alongside a fallback gate.fix.
+  scheduleRepair(host, {
+    runId: claim.runId,
+    repairRequest,
+    feedback,
+    wikiUpstreamKey: "review.reduce",
+    autoRepair: true,
+  });
+  unlockReadyNodes(host, claim.runId);
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(timestamp, claim.runId);
+  host.emit(claim.runId, "node.ready");
+  return true;
+}
+
+/**
  * After any repair.N succeeds, re-arm full EvaluationRound:
  * validate.pre → review.seat.* → review.reduce.
  * selfOnly so the repair node is not lineage-invalidated.

@@ -256,7 +256,7 @@ const CandidateReviewAnchorSchema = z
     pagePath: CandidatePagePathSchema,
     startLine: z.number().int().positive(),
     endLine: z.number().int().positive(),
-    selectedTextDigest: Sha256HexSchema,
+    selectedTextDigest: Sha256HexSchema.optional(),
   })
   .strict()
   .refine((anchor) => anchor.endLine >= anchor.startLine, {
@@ -745,6 +745,8 @@ export const RunCommandReceiptSchema = z
 export const WikiRunListItemSchema = z
   .object({
     runId: WikiRunIdSchema,
+    /** Operator Session that created this Run; absent for direct local starts. */
+    sessionId: IdentifierSchema.optional(),
     state: WikiRunStateSchema,
     updatedAt: IsoDateTimeSchema,
     revision: z.number().int().min(0),

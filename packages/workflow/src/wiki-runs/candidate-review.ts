@@ -311,7 +311,8 @@ export class CandidateReview {
     if (command.anchor.endLine > lines.length)
       throw new WikiRunsRequestError("conflict", "review anchor is outside the candidate page");
     const selected = lines.slice(command.anchor.startLine - 1, command.anchor.endLine).join("\n");
-    if (selectedTextDigest(selected) !== command.anchor.selectedTextDigest) {
+    const digest = selectedTextDigest(selected);
+    if (command.anchor.selectedTextDigest && digest !== command.anchor.selectedTextDigest) {
       throw new WikiRunsRequestError(
         "conflict",
         "review anchor no longer matches the sealed candidate text",
@@ -333,7 +334,7 @@ export class CandidateReview {
         command.anchor.pagePath,
         command.anchor.startLine,
         command.anchor.endLine,
-        command.anchor.selectedTextDigest,
+        digest,
         command.body,
         context.actor.id,
         timestamp,

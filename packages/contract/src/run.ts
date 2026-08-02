@@ -46,13 +46,15 @@ export const WikiRunSpecAcceptanceSchema = z.object({
   reviewRequired: z.boolean().default(true),
   /** Council review repair budget only (blocking defects from review seats). */
   maxRepairRounds: z.number().int().min(0).max(8).default(2),
+  /** Automatically consume the bounded repair budgets before opening a fix gate. */
+  autoRepair: z.boolean().default(true),
   /**
    * Mechanical hard-validate *model* repair budget only (missing critical pages,
    * non-autoFixable citation defects, …). Independent of `maxRepairRounds`.
-   * Default 0: host citation autofix (clamp/canonicalize) is preferred; raise
-   * only when model repair of mechanical defects is required.
+   * Default 1: host citation autofix runs first, then one bounded model repair
+   * is available for defects that need generated content changes.
    */
-  maxHardValidateRepairRounds: z.number().int().min(0).max(8).default(0),
+  maxHardValidateRepairRounds: z.number().int().min(0).max(8).default(1),
   /** Severities that block publish when present after final review. */
   blockingSeverities: z.array(z.enum(["blocking", "major", "minor"])).default(["blocking"]),
   /** Cap on WikiCandidate versions in one run (EvaluationPolicy.maxCandidates). */
@@ -427,7 +429,7 @@ export function defaultWikiRunSpec(workspaceName: string): WikiRunSpec {
     acceptance: {
       reviewRequired: true,
       maxRepairRounds: 2,
-      maxHardValidateRepairRounds: 0,
+      maxHardValidateRepairRounds: 1,
       blockingSeverities: ["blocking"],
     },
     changelog: [],

@@ -159,7 +159,7 @@ test("auto mechanical repair schedules repair.1 then reaches publication", async
 
   const runs = await openWikiRuns({
     rootPath: root,
-    // Explicit mechanical model budget: product default is 0 (host autofix preferred).
+    // Explicit budget covers the multi-round mechanical repair path.
     piAttemptExecutor: async (input, signal) => {
       if (input.node.kind === "plan") return planWithHvBudget(2)(input, signal);
       if (input.node.kind === "write.root") {
@@ -701,8 +701,8 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
     runId: "run-1",
   };
 
-  it("denies auto mechanical when mechanical model budget defaults to 0 (no sealed Spec)", () => {
-    // Product default: host autofix preferred; model mechanical budget is 0 without explicit Spec.
+  it("allows one auto mechanical repair by default when no sealed Spec overrides it", () => {
+    // Product default: one model repair gives normal runs a bounded self-heal path.
     assert.equal(
       shouldAutoMechanicalRepair(
         host({}),
@@ -710,7 +710,7 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
         "validation failed: overview.md: missing type",
         "schema",
       ),
-      false,
+      true,
     );
   });
 

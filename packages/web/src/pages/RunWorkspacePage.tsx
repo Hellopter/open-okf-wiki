@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingState } from "../components/LoadingState";
+import { newCommandId } from "../lib/command-id";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
 function stateLabel(state: WikiRunListItem["state"]): string {
@@ -89,7 +90,7 @@ export function RunWorkspacePage() {
     try {
       const receipt = await dispatchWikiRunCommand(id, {
         type: "start_run",
-        commandId: crypto.randomUUID(),
+        commandId: newCommandId(),
         intent: {
           mode: "generate",
           ...(objective.trim() ? { objective: objective.trim() } : {}),
@@ -139,11 +140,7 @@ export function RunWorkspacePage() {
           </div>
         </section>
 
-        {error ? (
-          <div className="px-4 pt-3 lg:px-6">
-            <ErrorBanner error={error} onDismiss={() => setError(null)} />
-          </div>
-        ) : null}
+        {error ? <ErrorBanner error={error} onDismiss={() => setError(null)} /> : null}
 
         <section className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="min-h-0 overflow-y-auto">

@@ -210,7 +210,6 @@ test("candidate review validates paths and anchors before scheduling one repair 
         pagePath: "overview.md",
         startLine: 1,
         endLine: 1,
-        selectedTextDigest: createHash("sha256").update(selectedText).digest("hex"),
       },
       body: "Clarify the page metadata for readers.",
     },
@@ -223,6 +222,7 @@ test("candidate review validates paths and anchors before scheduling one repair 
   );
   const thread = threaded.reviewThreads[0];
   assert.ok(thread);
+  assert.equal(thread.selectedTextDigest, createHash("sha256").update(selectedText).digest("hex"));
   await runs.dispatch(
     {
       type: "request_repair",

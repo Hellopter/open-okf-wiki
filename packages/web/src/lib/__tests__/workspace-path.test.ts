@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { configureHref, operateHref, wikiHref } from "../workspace-path.ts";
 
-test("operate href targets the independent Run Workspace", () => {
-  assert.equal(operateHref("team/wiki"), "/w/team%2Fwiki/runs");
+test("operate href targets the unified Session and WikiRun workbench", () => {
+  assert.equal(operateHref("team/wiki"), "/w/team%2Fwiki");
 });
 
 test("wiki and configure hrefs live under /w/:id", () => {

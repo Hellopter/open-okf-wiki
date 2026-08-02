@@ -20,7 +20,7 @@ Every sealed `wiki_tree` commit registers a row in `wiki_candidates` (`producedB
 `evaluationPolicyFromAcceptance` maps:
 
 - `maxRepairRounds` → `semantic.modelRepairBudget`
-- `maxHardValidateRepairRounds` → `mechanical.modelRepairBudget` (**default 0** — host autofix preferred)
+- `maxHardValidateRepairRounds` → `mechanical.modelRepairBudget` (**default 1** — host autofix runs first, then one bounded model repair when it cannot resolve the defect)
 - plus `requireCitations`, autoFix (canonicalize, clamp slack default 1, indexes), `maxCandidates` (default 4)
 
 Scheduler repair budgets and mechanical validate both load this policy (no dual readers).
@@ -43,7 +43,7 @@ Validate reports include a typed `mechanical` block (`MechanicalIssue` codes/hin
 
 ## Consequences
 
-- Product default no longer auto-spawns model HV rounds for citation nits; raise `maxHardValidateRepairRounds` only when model mechanical repair is required.
+- Product default runs host autofix first and may auto-spawn one bounded model mechanical-repair round when the sealed defect remains; operators can lower `maxHardValidateRepairRounds` to `0` for host-only operation.
 - Full EvaluationRound composite node (α) remains future work; β topology (validate / seats / reduce / repair) remains with candidate + policy semantics.
 - Knowledge graph, multi-writer, and generic workflow engines remain out of scope.
 
