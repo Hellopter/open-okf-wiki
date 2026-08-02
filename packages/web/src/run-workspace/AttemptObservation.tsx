@@ -7,13 +7,13 @@ import type {
 } from "@okf-wiki/contract";
 import {
   ArrowLeftIcon,
-  BotIcon,
   Clock3Icon,
   LoaderCircleIcon,
   TerminalIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import {
+  ActivityCollapsible,
   attemptToolToViewModel,
   CodeSurface,
   describeAttemptStatus,
@@ -113,8 +113,8 @@ function ActivityFeed({
                 key={item.call?.ordinal ?? item.result?.ordinal}
                 item={vm}
                 openRunLabel={t.workbench.openRun}
-                inputLabel={t.workbench.toolInput}
-                outputLabel={t.workbench.toolOutput}
+                inputLabel={t.workbench.rawInput}
+                outputLabel={t.workbench.rawOutput}
                 errorLabel={t.workbench.toolError}
                 copyLabel={t.workbench.copy}
                 copiedLabel={t.workbench.copied}
@@ -124,36 +124,45 @@ function ActivityFeed({
           const event = item.event;
           if (event.kind === "input") {
             return (
-              <details key={event.ordinal} className="border-y border-border py-3">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium">
-                  <span>{t.workbench.attemptInput}</span>
-                  <time className="shrink-0 font-mono text-xs font-normal text-muted-foreground">
-                    {new Date(event.at).toLocaleTimeString()}
-                  </time>
-                </summary>
-                <CodeSurface
-                  className="mt-3"
-                  value={event.content}
-                  maxHeightClass="max-h-[36rem]"
-                  copyable
-                  copyLabel={t.workbench.copy}
-                  copiedLabel={t.workbench.copied}
-                />
-              </details>
+              <div
+                key={event.ordinal}
+                className="rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2"
+              >
+                <ActivityCollapsible
+                  defaultOpen={false}
+                  className="w-full min-w-0"
+                  trigger={
+                    <>
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+                        {t.workbench.attemptInput}
+                      </span>
+                      <time className="shrink-0 font-mono text-[11px] font-normal text-muted-foreground">
+                        {new Date(event.at).toLocaleTimeString()}
+                      </time>
+                    </>
+                  }
+                  contentClassName="mt-2 border-t border-border/50 pt-2"
+                >
+                  <CodeSurface
+                    value={event.content}
+                    maxHeightClass="max-h-[36rem]"
+                    copyable
+                    copyLabel={t.workbench.copy}
+                    copiedLabel={t.workbench.copied}
+                  />
+                </ActivityCollapsible>
+              </div>
             );
           }
           if (event.kind === "assistant") {
             return (
-              <article key={event.ordinal}>
-                <div className="mb-2 flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
-                  <span className="flex items-center gap-2">
-                    <BotIcon className="size-3.5" />
-                    {t.workbench.agent}
-                  </span>
-                  <time className="font-mono font-normal">
-                    {new Date(event.at).toLocaleTimeString()}
-                  </time>
-                </div>
+              <article
+                key={event.ordinal}
+                className="group/attempt-assistant space-y-1.5"
+              >
+                <time className="block font-mono text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover/attempt-assistant:opacity-100 group-focus-within/attempt-assistant:opacity-100">
+                  {new Date(event.at).toLocaleTimeString()}
+                </time>
                 <MarkdownDocument content={event.content} />
               </article>
             );

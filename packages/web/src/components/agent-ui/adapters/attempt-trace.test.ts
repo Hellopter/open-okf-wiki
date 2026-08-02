@@ -49,20 +49,28 @@ test("attemptToolToViewModel pairs call + done result", () => {
   assert.equal(vm.id, "tc-1");
   assert.equal(vm.title, "Generate wiki");
   assert.equal(vm.status, "done");
-  assert.equal(vm.inputText, '{"goal":"docs"}');
+  assert.match(vm.inputText ?? "", /docs/);
   assert.equal(vm.outputText, "accepted");
   assert.equal(vm.defaultOpen, false);
   assert.equal(vm.kind, "wiki_produce");
+  assert.equal(vm.headline, "docs");
+  assert.ok(vm.primaryFields?.some((f) => f.label === "goal"));
 });
 
 test("attemptToolToViewModel treats missing result as running", () => {
   const vm = attemptToolToViewModel(
-    call({ ordinal: 3, name: "read_file", toolCallId: "tc-2", args: "{}" }),
+    call({
+      ordinal: 3,
+      name: "read_file",
+      toolCallId: "tc-2",
+      args: '{"path":"README.md"}',
+    }),
   );
   assert.equal(vm.status, "running");
   assert.equal(vm.defaultOpen, true);
   assert.equal(vm.title, "read file");
   assert.equal(vm.kind, "read");
+  assert.equal(vm.headline, "README.md");
 });
 
 test("attemptToolToViewModel maps error results and opens by default", () => {
@@ -97,4 +105,26 @@ test("attemptToolToViewModel supports orphan tool_result", () => {
   assert.equal(vm.status, "done");
   assert.equal(vm.outputText, "hits");
   assert.equal(vm.title, "search");
+  assert.equal(vm.defaultOpen, false);
+});
+
+test("attemptToolToViewModel parses string JSON args for headline", () => {
+  const vm = attemptToolToViewModel(
+    call({
+      ordinal: 10,
+      name: "grep",
+      toolCallId: "tc-grep",
+      args: '{"pattern":"defaultOpen","path":"src/adapters"}',
+    }),
+    result({
+      ordinal: 11,
+      name: "grep",
+      toolCallId: "tc-grep",
+      status: "done",
+      output: "ok",
+    }),
+  );
+  assert.equal(vm.kind, "search");
+  assert.equal(vm.headline, "src/adapters");
+  assert.equal(vm.defaultOpen, false);
 });

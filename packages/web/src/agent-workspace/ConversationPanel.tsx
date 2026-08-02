@@ -54,39 +54,49 @@ export function ConversationPanel({
           void submitPrompt();
         }}
       >
-        <InputGroup>
-          <InputGroupTextarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder={isBusy ? t.workbench.promptBusy : t.workbench.promptIdle}
-            rows={2}
-            aria-busy={isBusy || undefined}
-          />
-          <InputGroupAddon align="block-end" className="justify-end gap-1">
-            <InputGroupButton
-              type="submit"
-              size="icon-sm"
-              variant={emphasizeStop ? "outline" : "default"}
-              disabled={!hasPrompt}
-              aria-label={t.workbench.send}
+        <div className="rounded-xl border border-border bg-muted/20 p-2 shadow-sm">
+          <InputGroup className="border-0 bg-transparent shadow-none">
+            <InputGroupTextarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (hasPrompt) void submitPrompt();
+                }
+              }}
+              placeholder={isBusy ? t.workbench.promptBusy : t.workbench.promptIdle}
+              rows={2}
+              aria-busy={isBusy || undefined}
+              aria-keyshortcuts="Enter"
               title={t.workbench.send}
-            >
-              <SendIcon />
-            </InputGroupButton>
-            {isBusy ? (
+            />
+            <InputGroupAddon align="block-end" className="justify-end gap-1">
               <InputGroupButton
-                type="button"
+                type="submit"
                 size="icon-sm"
-                variant={emphasizeStop ? "default" : "outline"}
-                onClick={() => void conversation.abort()}
-                aria-label={t.workbench.stop}
-                title={t.workbench.stop}
+                variant={emphasizeStop ? "outline" : "default"}
+                disabled={!hasPrompt}
+                aria-label={t.workbench.send}
+                title={t.workbench.send}
               >
-                <SquareIcon />
+                <SendIcon />
               </InputGroupButton>
-            ) : null}
-          </InputGroupAddon>
-        </InputGroup>
+              {isBusy ? (
+                <InputGroupButton
+                  type="button"
+                  size="icon-sm"
+                  variant={emphasizeStop ? "default" : "outline"}
+                  onClick={() => void conversation.abort()}
+                  aria-label={t.workbench.stop}
+                  title={t.workbench.stop}
+                >
+                  <SquareIcon />
+                </InputGroupButton>
+              ) : null}
+            </InputGroupAddon>
+          </InputGroup>
+        </div>
       </form>
     </>
   );

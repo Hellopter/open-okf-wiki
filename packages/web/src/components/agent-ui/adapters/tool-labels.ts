@@ -3,7 +3,7 @@
  * Labels are injected by the caller (i18n) so adapters stay pure.
  */
 
-import type { ToolItemStatus } from "./types.ts";
+import type { ToolItemKind, ToolItemStatus } from "./types.ts";
 
 export type ToolNameLabels = {
   /** Product title for the wiki_produce tool. */
@@ -28,12 +28,50 @@ export function toolStatusLabel(
   return labels.status?.[status];
 }
 
-export function inferToolKind(
-  name: string,
-): "generic" | "wiki_produce" | "read" | "write" | "search" {
-  if (name === "wiki_produce") return "wiki_produce";
-  if (name === "read" || name.startsWith("read_")) return "read";
-  if (name === "write" || name.startsWith("write_")) return "write";
-  if (name === "search" || name.startsWith("search_")) return "search";
+export function inferToolKind(name: string): ToolItemKind {
+  const lower = name.toLowerCase();
+  if (lower === "wiki_produce") return "wiki_produce";
+
+  // Search / find
+  if (
+    lower === "search" ||
+    lower === "grep" ||
+    lower === "glob" ||
+    lower.startsWith("search_") ||
+    lower.includes("grep") ||
+    lower.includes("glob") ||
+    lower.includes("find")
+  ) {
+    return "search";
+  }
+
+  // Read / list
+  if (
+    lower === "read" ||
+    lower === "ls" ||
+    lower === "list" ||
+    lower === "list_dir" ||
+    lower === "cat" ||
+    lower.startsWith("read_") ||
+    lower.startsWith("list_") ||
+    lower.includes("read_file")
+  ) {
+    return "read";
+  }
+
+  // Write / edit
+  if (
+    lower === "write" ||
+    lower === "edit" ||
+    lower === "apply_patch" ||
+    lower.startsWith("write_") ||
+    lower.startsWith("edit_") ||
+    lower.includes("write_file") ||
+    lower.includes("search_replace")
+  ) {
+    return "write";
+  }
+
+  // bash/shell stay generic (command execution)
   return "generic";
 }

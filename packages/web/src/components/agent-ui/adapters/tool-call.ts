@@ -1,20 +1,17 @@
 import type { AgentToolCall } from "@okf-wiki/contract";
 import {
+  extractPrimaryFields,
+  extractToolHeadline,
+  formatRawArgs,
+  toolDefaultOpen,
+} from "./tool-fields.ts";
+import {
   inferToolKind,
   type ToolNameLabels,
   toolProductTitle,
   toolStatusLabel,
 } from "./tool-labels.ts";
 import type { ToolItemStatus, ToolItemVM } from "./types.ts";
-
-function formatArgs(args: unknown): string | undefined {
-  if (args === undefined) return undefined;
-  try {
-    return JSON.stringify(args, null, 2);
-  } catch {
-    return String(args);
-  }
-}
 
 function openRunIdFromTool(tool: AgentToolCall): string | undefined {
   if (tool.name === "wiki_produce") {
@@ -28,10 +25,6 @@ function openRunIdFromTool(tool: AgentToolCall): string | undefined {
   return undefined;
 }
 
-function isOpenByDefault(status: ToolItemStatus, errorText?: string): boolean {
-  return status === "pending" || status === "running" || status === "error" || Boolean(errorText);
-}
-
 /** Project a live AgentToolCall into the shared tool row view model. */
 export function agentToolCallToViewModel(
   tool: AgentToolCall,
@@ -39,11 +32,13 @@ export function agentToolCallToViewModel(
 ): ToolItemVM {
   const status = tool.status as ToolItemStatus;
   const summary = tool.details?.summary;
-  const inputText = formatArgs(tool.args);
+  const inputText = formatRawArgs(tool.args);
   const outputText = tool.output;
   // Keep summary separate; item UI dedupes when summary equals error/output.
   const errorText = status === "error" ? tool.output : undefined;
   const openRunId = openRunIdFromTool(tool);
+  const headline = extractToolHeadline(tool.args, tool.details);
+  const primaryFields = extractPrimaryFields(tool.args);
 
   return {
     id: tool.id,
@@ -52,12 +47,14 @@ export function agentToolCallToViewModel(
     status,
     statusLabel: toolStatusLabel(status, labels),
     summary,
+    headline,
+    primaryFields,
     inputText,
     outputText,
     errorText,
     kind: inferToolKind(tool.name),
     openRunId,
-    defaultOpen: isOpenByDefault(status, errorText),
+    defaultOpen: toolDefaultOpen(status),
     testId: `agent-tool-${tool.name}`,
   };
 }

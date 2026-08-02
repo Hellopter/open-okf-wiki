@@ -581,6 +581,9 @@ export const en = {
     toolInput: "Input",
     toolOutput: "Output",
     toolError: "Error",
+    rawInput: "Raw input",
+    rawOutput: "Raw output",
+
     sessionRuns: "Wiki Runs from this session",
     openRun: "Open Run",
     decisionTitle: "{kind} requires a decision",
@@ -676,7 +679,10 @@ export const en = {
     rawEvents: "Raw events",
     thinking: "Thinking",
     thought: "Thought",
+    thinkingElapsed: "{seconds}s",
+    generating: "Generating…",
     toolCallsSummary: "{count} tool calls",
+
     toolNames: {
       wiki_produce: "Generate wiki",
     },

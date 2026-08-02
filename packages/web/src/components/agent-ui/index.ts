@@ -22,11 +22,21 @@ export { CodeSurface, type CodeSurfaceProps } from "./CodeSurface";
 export { ThinkingDisclosure, type ThinkingDisclosureProps } from "./ThinkingDisclosure";
 export { ToolExecutionItem, type ToolExecutionItemProps } from "./ToolExecutionItem";
 export { ToolExecutionGroup, type ToolExecutionGroupProps } from "./ToolExecutionGroup";
+export {
+  AssistantTurn,
+  type AssistantTurnProps,
+  type AssistantTurnLabels,
+} from "./AssistantTurn";
 export { AgentTaskRow, type AgentTaskRowProps } from "./AgentTaskRow";
 export { GateActionShell, type GateActionShellProps } from "./GateActionShell";
 export { DiffSurface, type DiffSurfaceProps } from "./DiffSurface";
 
-export type { ToolItemStatus, ToolItemKind, ToolItemVM } from "./adapters/types";
+export type {
+  ToolItemStatus,
+  ToolItemKind,
+  ToolItemVM,
+  ToolItemField,
+} from "./adapters/types";
 export {
   type ToolNameLabels,
   toolProductTitle,
@@ -39,3 +49,10 @@ export {
   type AttemptToolResultEvent,
   attemptToolToViewModel,
 } from "./adapters/attempt-trace";
+export {
+  parseToolArgs,
+  extractToolHeadline,
+  extractPrimaryFields,
+  formatRawArgs,
+  toolDefaultOpen,
+} from "./adapters/tool-fields";

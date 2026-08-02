@@ -30,7 +30,7 @@ function formatCount(template: string, count: number): string {
 /**
  * Renders one or many tool rows.
  * Single item: bare ToolExecutionItem.
- * Multiple settled: aggregate collapsible chrome.
+ * Multiple settled: aggregate chip-style collapsible → list of compact items.
  * Multiple with live work: expand each item individually.
  */
 export function ToolExecutionGroup({
@@ -69,23 +69,29 @@ export function ToolExecutionGroup({
   const hasActive = items.some((item) => item.status === "pending" || item.status === "running");
 
   if (allSettled && !hasActive) {
+    const hasError = items.some((item) => item.status === "error");
+
     return (
       <div className={className} data-slot="tool-execution-group">
         <ActivityCollapsible
           defaultOpen={false}
-          className="w-full min-w-0 border-y border-border py-2"
+          className="w-full min-w-0 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2"
           trigger={
             <>
-              <WrenchIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">
+              <WrenchIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
                 {formatCount(toolCallsSummaryLabel, items.length)}
               </span>
-              <StatusBadge kind="tool" status="done">
+              <StatusBadge
+                kind="tool"
+                status={hasError ? "error" : "done"}
+                className="text-[10px]"
+              >
                 {items.length}
               </StatusBadge>
             </>
           }
-          contentClassName="mt-1 space-y-0"
+          contentClassName="mt-2 space-y-1.5 border-t border-border/50 pt-2"
         >
           {items.map((item) => (
             <ToolExecutionItem key={item.id} item={item} {...shared} />
@@ -96,7 +102,7 @@ export function ToolExecutionGroup({
   }
 
   return (
-    <div className={cn("space-y-0", className)} data-slot="tool-execution-group">
+    <div className={cn("space-y-1.5", className)} data-slot="tool-execution-group">
       {items.map((item) => (
         <ToolExecutionItem
           key={item.id}

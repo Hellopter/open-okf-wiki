@@ -562,6 +562,9 @@ export const zh: MessageTree = {
     toolInput: "输入",
     toolOutput: "输出",
     toolError: "错误",
+    rawInput: "原始输入",
+    rawOutput: "原始输出",
+
     sessionRuns: "此会话创建的 Wiki 运行",
     openRun: "打开运行",
     decisionTitle: "{kind} 需要决策",
@@ -657,7 +660,10 @@ export const zh: MessageTree = {
     rawEvents: "原始事件",
     thinking: "思考中",
     thought: "已思考",
+    thinkingElapsed: "{seconds}秒",
+    generating: "生成中…",
     toolCallsSummary: "{count} 次工具调用",
+
     toolNames: {
       wiki_produce: "生成 Wiki",
     },

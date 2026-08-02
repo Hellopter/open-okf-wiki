@@ -2,12 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentToolCall } from "@okf-wiki/contract";
 import { agentToolCallToViewModel } from "./tool-call.ts";
-import { toolProductTitle } from "./tool-labels.ts";
+import { inferToolKind, toolProductTitle } from "./tool-labels.ts";
 
 test("toolProductTitle maps wiki_produce and falls back to spaced names", () => {
   assert.equal(toolProductTitle("wiki_produce"), "Generate wiki");
   assert.equal(toolProductTitle("wiki_produce", { wikiProduce: "生成 Wiki" }), "生成 Wiki");
   assert.equal(toolProductTitle("read_file"), "read file");
+});
+
+test("inferToolKind maps common tool names", () => {
+  assert.equal(inferToolKind("grep"), "search");
+  assert.equal(inferToolKind("glob"), "search");
+  assert.equal(inferToolKind("ls"), "read");
+  assert.equal(inferToolKind("edit"), "write");
+  assert.equal(inferToolKind("bash"), "generic");
+  assert.equal(inferToolKind("wiki_produce"), "wiki_produce");
 });
 
 test("agentToolCallToViewModel projects a running wiki_produce receipt", () => {
@@ -26,8 +35,10 @@ test("agentToolCallToViewModel projects a running wiki_produce receipt", () => {
   assert.equal(vm.kind, "wiki_produce");
   assert.equal(vm.openRunId, "run-abc");
   assert.equal(vm.summary, "Run started");
+  assert.equal(vm.headline, "Run started");
   assert.equal(vm.defaultOpen, true);
   assert.match(vm.inputText ?? "", /build docs/);
+  assert.ok(vm.primaryFields?.some((f) => f.label === "goal"));
   assert.equal(vm.testId, "agent-tool-wiki_produce");
 });
 
@@ -44,8 +55,25 @@ test("agentToolCallToViewModel keeps done tools collapsed unless errored", () =>
   assert.equal(vm.kind, "read");
   assert.equal(vm.status, "done");
   assert.equal(vm.defaultOpen, false);
+  assert.equal(vm.headline, "README.md");
   assert.equal(vm.outputText, "hello");
   assert.equal(vm.openRunId, undefined);
+});
+
+test("agentToolCallToViewModel does not open done tools merely because args exist", () => {
+  const tool: AgentToolCall = {
+    id: "t2b",
+    name: "grep",
+    status: "done",
+    args: { pattern: "foo", path: "src/" },
+    output: "hits",
+  };
+  const vm = agentToolCallToViewModel(tool);
+  assert.equal(vm.defaultOpen, false);
+  assert.equal(vm.kind, "search");
+  // path wins over pattern for headline when both present
+  assert.equal(vm.headline, "src/");
+  assert.ok(vm.inputText?.includes("pattern"));
 });
 
 test("agentToolCallToViewModel opens error tools and surfaces error text", () => {
@@ -73,6 +101,7 @@ test("agentToolCallToViewModel keeps summary separate from errorText", () => {
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.errorText, "permission denied");
   assert.equal(vm.summary, "permission denied");
+  assert.equal(vm.headline, "permission denied");
   // Item UI dedupes identical summary/error; adapter must not drop summary into errorText alone.
 });
 
@@ -86,6 +115,7 @@ test("agentToolCallToViewModel does not promote summary to errorText when output
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.errorText, undefined);
   assert.equal(vm.summary, "failed quietly");
+  assert.equal(vm.headline, "failed quietly");
 });
 
 test("agentToolCallToViewModel applies localized status labels", () => {
@@ -110,5 +140,19 @@ test("agentToolCallToViewModel extracts wiki_repair runId from args", () => {
   };
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.openRunId, "run-fix");
+  assert.equal(vm.defaultOpen, false);
+  assert.ok(vm.primaryFields?.some((f) => f.label === "runId" && f.value === "run-fix"));
+});
+
+test("agentToolCallToViewModel uses pattern as headline when no path", () => {
+  const tool: AgentToolCall = {
+    id: "t5",
+    name: "grep",
+    status: "done",
+    args: { pattern: "ToolItemVM", query: "ignored-when-pattern" },
+    output: "ok",
+  };
+  const vm = agentToolCallToViewModel(tool);
+  assert.equal(vm.headline, "ToolItemVM");
   assert.equal(vm.defaultOpen, false);
 });
