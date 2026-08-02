@@ -31,6 +31,7 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
     createdAt: "2026-01-01T00:00:00.000Z",
     lastOpenedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
+    revision: overrides.revision ?? 0,
   };
 }
 

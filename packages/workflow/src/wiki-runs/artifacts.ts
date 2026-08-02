@@ -19,6 +19,7 @@ import {
 import path from "node:path";
 import {
   type AttemptMetrics,
+  type BoundInput,
   contractForNode,
   inputRoleMatches,
   type MergedDefectReport,
@@ -153,12 +154,18 @@ export function bindAttemptInputs(
       )
       .run(attemptId, input.role, input.artifactId);
   }
-  const boundRoles = asRows(
+  const boundInputs: BoundInput[] = asRows(
     host.db
-      .prepare(`SELECT role FROM attempt_inputs WHERE attempt_id = ? ORDER BY role`)
+      .prepare(
+        `SELECT attempt_inputs.role, artifacts.kind
+         FROM attempt_inputs
+         JOIN artifacts ON artifacts.artifact_id = attempt_inputs.artifact_id
+         WHERE attempt_inputs.attempt_id = ?
+         ORDER BY attempt_inputs.role`,
+      )
       .all(attemptId),
-  ).map((row) => requiredText(row, "role"));
-  validateBoundInputs(contract, boundRoles);
+  ).map((row) => ({ role: requiredText(row, "role"), kind: requiredText(row, "kind") }));
+  validateBoundInputs(contract, boundInputs);
 }
 
 /** Succeeded node outputs at a fixed generation (not necessarily current max). */

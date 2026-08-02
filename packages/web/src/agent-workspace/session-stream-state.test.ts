@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  type AgentMessage,
   type AgentSseEvent,
-  createPiStreamState,
-  viewMessages,
+  createSessionStreamState,
+  type SessionMessage,
+  viewSessionMessages,
 } from "@okf-wiki/contract";
 import {
   appendOptimisticUser,
@@ -17,12 +17,12 @@ const timestamp = "2026-08-02T00:00:00.000Z";
 function assistant(
   id: string,
   content: string,
-  status: AgentMessage["status"] = "done",
-): AgentMessage {
+  status: SessionMessage["status"] = "done",
+): SessionMessage {
   return { id, role: "assistant", content, createdAt: timestamp, status };
 }
 
-function user(id: string, content: string): AgentMessage {
+function user(id: string, content: string): SessionMessage {
   return { id, role: "user", content, createdAt: timestamp, status: "done" };
 }
 
@@ -46,10 +46,10 @@ test("session stream patches retain historical messages while a live tail change
     },
   };
 
-  const next = reduceSessionStreamEvent(createPiStreamState([history]), stream);
+  const next = reduceSessionStreamEvent(createSessionStreamState([history]), stream);
 
   assert.deepEqual(
-    viewMessages(next).map((message) => [message.id, message.content]),
+    viewSessionMessages(next).map((message) => [message.id, message.content]),
     [
       ["history", "Published plan"],
       ["live", "Drafting"],
@@ -62,11 +62,11 @@ test("dedupeOptimisticUsers drops optimistic rows when real user with same conte
   const real = user("user_server_42", "Hello agent");
   const history = assistant("asst_1", "Prior reply");
 
-  const withBoth = createPiStreamState([history, optimistic, real]);
+  const withBoth = createSessionStreamState([history, optimistic, real]);
   const deduped = dedupeOptimisticUsers(withBoth);
 
   assert.deepEqual(
-    viewMessages(deduped).map((message) => [message.id, message.role, message.content]),
+    viewSessionMessages(deduped).map((message) => [message.id, message.role, message.content]),
     [
       ["asst_1", "assistant", "Prior reply"],
       ["user_server_42", "user", "Hello agent"],
@@ -80,9 +80,9 @@ test("dedupeOptimisticUsers is one-to-one for identical prompts", () => {
   const opt2 = user("optimistic_user_2", "retry me");
   const real1 = user("user_server_1", "retry me");
 
-  const partial = createPiStreamState([opt1, opt2, real1]);
+  const partial = createSessionStreamState([opt1, opt2, real1]);
   const afterOne = dedupeOptimisticUsers(partial);
-  const usersAfterOne = viewMessages(afterOne).filter((m) => m.role === "user");
+  const usersAfterOne = viewSessionMessages(afterOne).filter((m) => m.role === "user");
 
   assert.equal(usersAfterOne.length, 2);
   assert.equal(usersAfterOne.filter((m) => m.id.startsWith("optimistic_")).length, 1);
@@ -90,9 +90,9 @@ test("dedupeOptimisticUsers is one-to-one for identical prompts", () => {
 
   // Second real arrives → both optimistics gone.
   const real2 = user("user_server_2", "retry me");
-  const full = createPiStreamState([...viewMessages(afterOne), real2]);
+  const full = createSessionStreamState([...viewSessionMessages(afterOne), real2]);
   const afterTwo = dedupeOptimisticUsers(full);
-  const usersAfterTwo = viewMessages(afterTwo).filter((m) => m.role === "user");
+  const usersAfterTwo = viewSessionMessages(afterTwo).filter((m) => m.role === "user");
 
   assert.equal(usersAfterTwo.length, 2);
   assert.ok(usersAfterTwo.every((m) => !m.id.startsWith("optimistic_")));
@@ -103,9 +103,9 @@ test("dedupeOptimisticUsers is one-to-one for identical prompts", () => {
 });
 
 test("reduceSessionStreamEvent stream append replaces optimistic user with real row", () => {
-  const optimisticState = appendOptimisticUser(createPiStreamState(), "Ship the plan");
-  assert.equal(viewMessages(optimisticState).length, 1);
-  assert.ok(viewMessages(optimisticState)[0]!.id.startsWith("optimistic_"));
+  const optimisticState = appendOptimisticUser(createSessionStreamState(), "Ship the plan");
+  assert.equal(viewSessionMessages(optimisticState).length, 1);
+  assert.ok(viewSessionMessages(optimisticState)[0]!.id.startsWith("optimistic_"));
 
   const realUser = user("pi_user_9", "Ship the plan");
   const stream: AgentSseEvent = {
@@ -126,7 +126,7 @@ test("reduceSessionStreamEvent stream append replaces optimistic user with real 
   };
 
   const next = reduceSessionStreamEvent(optimisticState, stream);
-  const users = viewMessages(next).filter((message) => message.role === "user");
+  const users = viewSessionMessages(next).filter((message) => message.role === "user");
 
   assert.equal(users.length, 1);
   assert.equal(users[0]!.id, "pi_user_9");
@@ -134,15 +134,15 @@ test("reduceSessionStreamEvent stream append replaces optimistic user with real 
 });
 
 test("appendOptimisticUser ignores blank text and keeps distinct content", () => {
-  let state = createPiStreamState();
+  let state = createSessionStreamState();
   state = appendOptimisticUser(state, "   ");
-  assert.equal(viewMessages(state).length, 0);
+  assert.equal(viewSessionMessages(state).length, 0);
 
   state = appendOptimisticUser(state, " first ");
   state = appendOptimisticUser(state, "second");
   assert.deepEqual(
-    viewMessages(state).map((message) => message.content),
+    viewSessionMessages(state).map((message) => message.content),
     ["first", "second"],
   );
-  assert.ok(viewMessages(state).every((message) => message.id.startsWith("optimistic_")));
+  assert.ok(viewSessionMessages(state).every((message) => message.id.startsWith("optimistic_")));
 });

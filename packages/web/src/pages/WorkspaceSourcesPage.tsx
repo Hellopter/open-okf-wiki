@@ -41,6 +41,7 @@ import {
   updateSource,
   type WorkspaceConfig,
   type WorkspaceSource,
+  workspaceFromRevisionConflict,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { formatMessage, useI18n } from "../i18n";
@@ -125,12 +126,15 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
     setSavingIgnores(true);
     try {
       const result = await updateSource(id, editingSourceId, {
+        expectedRevision: workspace.revision,
         applyDefaultIgnores: editApplyDefaults,
         ignore: textToPatterns(editIgnoreText),
       });
       onWorkspaceChange(result.workspace);
       setEditingSourceId(null);
     } catch (err) {
+      const latest = workspaceFromRevisionConflict(err);
+      if (latest) onWorkspaceChange(latest);
       notifyError(err);
     } finally {
       setSavingIgnores(false);
@@ -145,6 +149,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
     setIsSubmitting(true);
     try {
       const result = await addSource(id, {
+        expectedRevision: workspace.revision,
         path: path.trim(),
         id: sourceId.trim() || undefined,
       });
@@ -153,6 +158,8 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       setPath("");
       setSourceId("");
     } catch (err) {
+      const latest = workspaceFromRevisionConflict(err);
+      if (latest) onWorkspaceChange(latest);
       notifyError(err);
     } finally {
       setIsSubmitting(false);
@@ -167,6 +174,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
     setIsPending(true);
     try {
       const result = await cloneSource(id, {
+        expectedRevision: workspace.revision,
         remoteUrl: remoteUrl.trim(),
         id: cloneId.trim() || undefined,
         ref: cloneRef.trim() || undefined,
@@ -177,6 +185,8 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
       setCloneId("");
       setCloneRef("");
     } catch (err) {
+      const latest = workspaceFromRevisionConflict(err);
+      if (latest) onWorkspaceChange(latest);
       notifyError(err);
     } finally {
       setIsPending(false);
@@ -190,7 +200,7 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
     const sourceIdToDelete = deleteTargetId;
     setDeletingId(sourceIdToDelete);
     try {
-      const result = await deleteSource(id, sourceIdToDelete);
+      const result = await deleteSource(id, sourceIdToDelete, workspace.revision);
       onWorkspaceChange(result.workspace);
       setProbes((prev) => {
         const next = { ...prev };
@@ -201,6 +211,8 @@ export function WorkspaceSourcesPage({ workspace, onWorkspaceChange }: Workspace
         setEditingSourceId(null);
       }
     } catch (err) {
+      const latest = workspaceFromRevisionConflict(err);
+      if (latest) onWorkspaceChange(latest);
       notifyError(err);
     } finally {
       setDeletingId(null);

@@ -1,5 +1,5 @@
-import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { useI18n } from "../i18n";
 
 export type LoadingStateProps = {

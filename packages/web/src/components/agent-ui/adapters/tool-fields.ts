@@ -39,7 +39,11 @@ function firstShortStringField(obj: Record<string, unknown>): string | undefined
     if (key === "runId" || key === "run_id") continue;
     if (typeof value === "string" && value.trim()) {
       const trimmed = value.trim();
-      if (trimmed.length <= SHORT_STRING_MAX && !trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+      if (
+        trimmed.length <= SHORT_STRING_MAX &&
+        !trimmed.startsWith("{") &&
+        !trimmed.startsWith("[")
+      ) {
         return trimmed;
       }
     }

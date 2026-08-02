@@ -1,9 +1,8 @@
 import {
-  type AgentMessage,
   type AgentSseEvent,
-  applyStreamPatch,
-  createPiStreamState,
-  type PiStreamState,
+  applySessionStreamPatch,
+  type SessionMessage,
+  type SessionStreamState,
 } from "@okf-wiki/contract";
 
 function isOptimisticUserId(id: string): boolean {
@@ -17,10 +16,8 @@ function isOptimisticUserId(id: string): boolean {
  * same content (so two identical prompts keep one optimistic until the second
  * real arrives).
  */
-export function dedupeOptimisticUsers(state: PiStreamState): PiStreamState {
-  const realUsers = state.messages.filter(
-    (m) => m.role === "user" && !isOptimisticUserId(m.id),
-  );
+export function dedupeOptimisticUsers(state: SessionStreamState): SessionStreamState {
+  const realUsers = state.messages.filter((m) => m.role === "user" && !isOptimisticUserId(m.id));
   const drop = new Set<string>();
   for (const real of realUsers) {
     const opt = state.messages.find(
@@ -37,10 +34,10 @@ export function dedupeOptimisticUsers(state: PiStreamState): PiStreamState {
 }
 
 /** Append a local user bubble immediately after a successful prompt/steer send. */
-export function appendOptimisticUser(state: PiStreamState, text: string): PiStreamState {
+export function appendOptimisticUser(state: SessionStreamState, text: string): SessionStreamState {
   const content = text.trim();
   if (!content) return state;
-  const userMessage: AgentMessage = {
+  const userMessage: SessionMessage = {
     id: `optimistic_user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     role: "user",
     content,
@@ -55,18 +52,14 @@ export function appendOptimisticUser(state: PiStreamState, text: string): PiStre
 
 /** Keep durable session history separate from the latest live stream patch. */
 export function reduceSessionStreamEvent(
-  state: PiStreamState,
+  state: SessionStreamState,
   event: AgentSseEvent,
-): PiStreamState {
+): SessionStreamState {
   if (event.kind === "snapshot") {
-    const snapshot = createPiStreamState(event.payload.messages);
-    return dedupeOptimisticUsers({
-      ...snapshot,
-      contextPhase: event.payload.contextPhase ?? snapshot.contextPhase,
-    });
+    return dedupeOptimisticUsers(event.payload.state);
   }
   if (event.kind === "stream") {
-    return dedupeOptimisticUsers(applyStreamPatch(state, event.payload));
+    return dedupeOptimisticUsers(applySessionStreamPatch(state, event.payload));
   }
   return state;
 }

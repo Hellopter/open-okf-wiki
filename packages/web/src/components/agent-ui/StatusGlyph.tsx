@@ -6,7 +6,12 @@ import {
   Loader2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { STATUS_TONE_TEXT, type StatusDescriptor, type StatusMotion, type StatusTone } from "./status";
+import {
+  STATUS_TONE_TEXT,
+  type StatusDescriptor,
+  type StatusMotion,
+  type StatusTone,
+} from "./status";
 
 export type StatusGlyphProps = {
   tone?: StatusTone;
@@ -32,7 +37,9 @@ export function StatusGlyph({
     : ({ "aria-hidden": true } as const);
 
   if (motion === "spin") {
-    return <Loader2Icon className={cn(shared, "animate-spin")} data-slot="status-glyph" {...a11y} />;
+    return (
+      <Loader2Icon className={cn(shared, "animate-spin")} data-slot="status-glyph" {...a11y} />
+    );
   }
 
   if (tone === "success") {

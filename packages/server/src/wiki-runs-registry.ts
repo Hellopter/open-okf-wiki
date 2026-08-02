@@ -9,21 +9,21 @@ const opening = new Map<string, Promise<WikiRuns>>();
 
 /**
  * Return the WikiRuns owner for this workspace root.
- * Always applies the latest `workspace` config onto a warm owner so subsequent
- * StartRun / attempts see saved timeout/retry/orchestration (ADR 0035 follow-up).
+ * Records the latest Workspace config only for newly started Runs. Existing
+ * Runs use their durable freeze config rather than a warm-owner hot swap.
  */
 export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<WikiRuns> {
   const key = workspace.rootPath;
   const existing = owners.get(key);
   if (existing) {
-    existing.replaceWorkspace(workspace);
+    existing.setWorkspaceForNewRuns(workspace);
     return existing;
   }
 
   const pending = opening.get(key);
   if (pending) {
     const runs = await pending;
-    runs.replaceWorkspace(workspace);
+    runs.setWorkspaceForNewRuns(workspace);
     return runs;
   }
 
@@ -42,7 +42,7 @@ export async function wikiRunsForWorkspace(workspace: WorkspaceConfig): Promise<
     piAttemptExecutor: createPiAttemptExecutor({ fixture }),
   })
     .then((runs) => {
-      runs.replaceWorkspace(workspace);
+      runs.setWorkspaceForNewRuns(workspace);
       owners.set(key, runs);
       return runs;
     })

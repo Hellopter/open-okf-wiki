@@ -19,8 +19,10 @@ function assistant(ordinal: number, content: string): AttemptTraceEvent {
 
 function snapshot(
   attempts: Array<{ attemptId: string; nodeKey: string; nodeGeneration: number; runIndex: number }>,
+  revision = 0,
 ): WikiRunSnapshot {
   return {
+    revision,
     attempts: attempts.map((attempt) => ({
       ...attempt,
       state: "succeeded",
@@ -31,6 +33,21 @@ function snapshot(
     })),
   } as unknown as WikiRunSnapshot;
 }
+
+test("an older snapshot cannot overwrite a newer durable revision", () => {
+  const newest = snapshot(
+    [{ attemptId: "new", nodeKey: "write.root", nodeGeneration: 1, runIndex: 2 }],
+    2,
+  );
+  const stale = snapshot(
+    [{ attemptId: "old", nodeKey: "plan", nodeGeneration: 0, runIndex: 1 }],
+    1,
+  );
+  const state = setObservationSnapshot(createRunObservationState(newest), stale);
+
+  assert.equal(state.snapshot?.revision, 2);
+  assert.equal(state.snapshot?.attempts[0]?.attemptId, "new");
+});
 
 function transcript(
   attemptId: string,

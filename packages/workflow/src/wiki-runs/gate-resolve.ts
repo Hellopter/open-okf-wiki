@@ -671,14 +671,11 @@ export function applyFixGateDecision(
 }
 
 /**
- * Auto-deny open plan/publication/fix gates older than workspace.limits.gateTimeoutSeconds.
+ * Auto-deny open plan/publication/fix gates older than each Run's sealed gate timeout.
  * 0 / unset disables. The owner invokes this from dispatch/scheduling and its deadline timer,
  * so an idle gate expires without an external control request or poll.
  */
 export function expireStaleOpenGates(host: GatesHost): number {
-  const timeoutSec = host.workspace.limits?.gateTimeoutSeconds ?? 0;
-  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return 0;
-  const cutoffMs = Date.now() - timeoutSec * 1_000;
   const open = asRows(
     host.db
       .prepare(
@@ -692,11 +689,14 @@ export function expireStaleOpenGates(host: GatesHost): number {
   );
   let expired = 0;
   for (const row of open) {
+    const runId = requiredText(row, "run_id");
+    const timeoutSec = host.workspaceForRun(runId).limits?.gateTimeoutSeconds ?? 0;
+    if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) continue;
+    const cutoffMs = Date.now() - timeoutSec * 1_000;
     const openedAt = requiredText(row, "opened_at");
     const openedMs = Date.parse(openedAt);
     if (!Number.isFinite(openedMs) || openedMs > cutoffMs) continue;
     const gateId = requiredText(row, "gate_id");
-    const runId = requiredText(row, "run_id");
     const kind = requiredText(row, "kind") as "plan" | "publication" | "fix";
     const payloadDigest = requiredText(row, "payload_digest");
     const commandId = `gate-timeout:${gateId}`;

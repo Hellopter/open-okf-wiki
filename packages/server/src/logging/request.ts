@@ -64,10 +64,6 @@ export function beginRequestLog(
 }
 
 /** Log untrusted Host/Origin rejection. */
-export function logHttpReject(
-  log: Logger,
-  reason: "host" | "origin",
-  detail: string,
-): void {
+export function logHttpReject(log: Logger, reason: "host" | "origin", detail: string): void {
   log.warn({ event: "http.reject", reason, detail }, "untrusted request rejected");
 }

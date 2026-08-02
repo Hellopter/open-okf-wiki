@@ -22,6 +22,7 @@ import {
 import { runWorkDir } from "@okf-wiki/core";
 import type { CommandsHost } from "./commands.js";
 import { digest, now } from "./crypto-util.js";
+import type { WikiRunsDbCtx } from "./ctx.js";
 import { scheduleRepair } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import { WikiRunsRequestError } from "./types.js";
@@ -43,6 +44,14 @@ type CandidateEvidenceMap = {
   }>;
 };
 
+/** Read-only candidate inspection surface. It deliberately excludes all command callbacks. */
+export type CandidateReadHost = Pick<WikiRunsDbCtx, "db" | "workspace">;
+
+/** Narrow write surface retained only by review-thread and repair commands. */
+type CandidateReviewCommandHost = CandidateReadHost &
+  Pick<WikiRunsDbCtx, "emit"> &
+  Pick<CommandsHost, "currentNodeGeneration" | "applyRerunAt">;
+
 function assertPagePath(pagePath: string): string {
   const value = pagePath.trim();
   if (
@@ -57,7 +66,7 @@ function assertPagePath(pagePath: string): string {
 }
 
 function candidateForDigest(
-  host: { db: CommandsHost["db"] },
+  host: Pick<CandidateReadHost, "db">,
   runId: string,
   digestValue: string,
 ): CandidateRecord {
@@ -82,7 +91,7 @@ function candidateForDigest(
   };
 }
 
-function candidateRoot(host: CommandsHost, runId: string, candidate: CandidateRecord): string {
+function candidateRoot(host: CandidateReadHost, runId: string, candidate: CandidateRecord): string {
   const runRoot = path.resolve(runWorkDir(host.workspace.rootPath, runId));
   const root = path.resolve(runRoot, candidate.relativePath);
   if (path.relative(runRoot, root).startsWith("..") || path.relative(runRoot, root) === "") {
@@ -92,7 +101,7 @@ function candidateRoot(host: CommandsHost, runId: string, candidate: CandidateRe
 }
 
 function candidatePagePath(
-  host: CommandsHost,
+  host: CandidateReadHost,
   runId: string,
   candidate: CandidateRecord,
   pagePath: string,
@@ -123,7 +132,7 @@ function contentDigest(content: string): string {
 }
 
 function evidenceMapForCandidate(
-  host: CommandsHost,
+  host: CandidateReadHost,
   runId: string,
   candidate: CandidateRecord,
 ): CandidateEvidenceMap {
@@ -179,7 +188,7 @@ function evidenceMapForCandidate(
 }
 
 function sealedPage(
-  host: CommandsHost,
+  host: CandidateReadHost,
   runId: string,
   candidate: CandidateRecord,
   pagePath: string,
@@ -216,7 +225,7 @@ function lineDiff(before: string, after: string): CandidateDiffRead["lines"] {
 }
 
 function recordCommand(
-  host: CommandsHost,
+  host: CandidateReviewCommandHost,
   commandId: string,
   payloadDigest: string,
   context: RunCommandContext,
@@ -242,7 +251,7 @@ function recordCommand(
 
 /** Deep module boundary for all candidate/read review behavior. */
 export class CandidateReview {
-  constructor(private readonly host: CommandsHost) {}
+  constructor(protected readonly host: CandidateReadHost) {}
 
   readPage(input: { runId: string; candidateDigest: string; pagePath: string }): CandidatePageRead {
     const pagePath = assertPagePath(input.pagePath);
@@ -296,6 +305,13 @@ export class CandidateReview {
       lines: lineDiff(before, page.content),
     });
   }
+}
+
+/** Command-side companion. Read paths never instantiate this wider host. */
+export class CandidateReviewCommands extends CandidateReview {
+  constructor(private readonly commandHost: CandidateReviewCommandHost) {
+    super(commandHost);
+  }
 
   createThread(
     command: CreateReviewThreadCommand,
@@ -320,7 +336,7 @@ export class CandidateReview {
     }
     const timestamp = now();
     const threadId = randomUUID();
-    this.host.db
+    this.commandHost.db
       .prepare(
         `INSERT INTO review_threads (
           thread_id, run_id, candidate_digest, page_path, start_line, end_line,
@@ -339,8 +355,15 @@ export class CandidateReview {
         context.actor.id,
         timestamp,
       );
-    const revision = this.host.emit(command.runId, "review_thread.created");
-    recordCommand(this.host, command.commandId, payloadDigest, context, command.runId, revision);
+    const revision = this.commandHost.emit(command.runId, "review_thread.created");
+    recordCommand(
+      this.commandHost,
+      command.commandId,
+      payloadDigest,
+      context,
+      command.runId,
+      revision,
+    );
     return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
   }
 
@@ -350,7 +373,7 @@ export class CandidateReview {
     payloadDigest: string,
   ): RunCommandReceipt {
     const timestamp = now();
-    const result = this.host.db
+    const result = this.commandHost.db
       .prepare(
         `UPDATE review_threads SET state = 'resolved', resolved_at = ?
          WHERE thread_id = ? AND run_id = ? AND state = 'open'`,
@@ -358,8 +381,15 @@ export class CandidateReview {
       .run(timestamp, command.threadId, command.runId) as { changes?: number };
     if ((result.changes ?? 0) !== 1)
       throw new WikiRunsRequestError("conflict", "review thread is stale or unavailable");
-    const revision = this.host.emit(command.runId, "review_thread.resolved");
-    recordCommand(this.host, command.commandId, payloadDigest, context, command.runId, revision);
+    const revision = this.commandHost.emit(command.runId, "review_thread.resolved");
+    recordCommand(
+      this.commandHost,
+      command.commandId,
+      payloadDigest,
+      context,
+      command.runId,
+      revision,
+    );
     return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
   }
 
@@ -370,7 +400,7 @@ export class CandidateReview {
   ): RunCommandReceipt {
     const placeholders = command.threadIds.map(() => "?").join(", ");
     const rows = asRows(
-      this.host.db
+      this.commandHost.db
         .prepare(
           `SELECT thread_id, candidate_digest, page_path, start_line, end_line, body
            FROM review_threads
@@ -396,7 +426,7 @@ export class CandidateReview {
     }));
     const round = requiredNumber(
       asRow(
-        this.host.db
+        this.commandHost.db
           .prepare("SELECT COUNT(*) + 1 AS round FROM nodes WHERE run_id = ? AND kind = 'repair'")
           .get(command.runId),
       ) ?? {},
@@ -411,7 +441,7 @@ export class CandidateReview {
       scope: { pages, mode: "patch" },
     });
     const wikiUpstream = asRow(
-      this.host.db
+      this.commandHost.db
         .prepare(
           "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = 'review.reduce' LIMIT 1",
         )
@@ -419,15 +449,22 @@ export class CandidateReview {
     )
       ? "review.reduce"
       : "write.root";
-    scheduleRepair(this.host, {
+    scheduleRepair(this.commandHost, {
       runId: command.runId,
       repairRequest,
       feedback: rows.map((row) => requiredText(row, "body")).join("\n\n"),
       wikiUpstreamKey: wikiUpstream,
       autoRepair: false,
     });
-    const revision = this.host.emit(command.runId, "repair.requested");
-    recordCommand(this.host, command.commandId, payloadDigest, context, command.runId, revision);
+    const revision = this.commandHost.emit(command.runId, "repair.requested");
+    recordCommand(
+      this.commandHost,
+      command.commandId,
+      payloadDigest,
+      context,
+      command.runId,
+      revision,
+    );
     return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
   }
 }

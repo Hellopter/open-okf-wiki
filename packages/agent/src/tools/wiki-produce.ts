@@ -25,7 +25,6 @@ export type StartWikiRun = (input: {
 
 export type CreateWikiProduceToolInput = {
   workspace: WorkspaceConfig;
-  resolveWorkspace?: () => Promise<WorkspaceConfig>;
   sessionId: string;
   /**
    * Server injects WikiRuns StartRun dispatch. Required on the product path.
@@ -120,10 +119,6 @@ export function createWikiProduceTool(
       }
 
       try {
-        // Fresh workspace snapshot so long-lived sessions see saved edits.
-        if (input.resolveWorkspace) {
-          await input.resolveWorkspace();
-        }
         const commandId = randomUUID();
         const receipt = await input.startWikiRun({
           commandId,

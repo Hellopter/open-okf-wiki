@@ -9,14 +9,7 @@ import { defaultServerLogDir } from "@okf-wiki/core";
 
 const LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace", "silent"]);
 
-export type ServerLogLevel =
-  | "fatal"
-  | "error"
-  | "warn"
-  | "info"
-  | "debug"
-  | "trace"
-  | "silent";
+export type ServerLogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
 
 export type ServerLogConfig = {
   level: ServerLogLevel;

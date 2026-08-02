@@ -1,21 +1,14 @@
 import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract";
 import { PauseIcon, PlayIcon, SendIcon, SquareIcon, TriangleAlertIcon } from "lucide-react";
 import { useState } from "react";
-import {
-  describeRunStatus,
-  GateActionShell,
-  StatusBadge,
-} from "@/components/agent-ui";
+import { describeRunStatus, GateActionShell, StatusBadge } from "@/components/agent-ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMessage, type MessageTree } from "../i18n";
 import { newCommandId } from "../lib/command-id";
-import {
-  listRecoveryTargetNodes,
-  needsRecoveryBanner,
-} from "../run-workspace/node-recovery";
+import { listRecoveryTargetNodes, needsRecoveryBanner } from "../run-workspace/node-recovery";
 import { RunGraph } from "../run-workspace/RunGraph";
 import type { WorkflowStageId } from "../run-workspace/workflow-topology";
 import { localizedLabel } from "./workbench-utils";
@@ -210,11 +203,7 @@ export function RunCanvas({
             })}
             detail={gate.detail?.summary ?? t.workbench.decisionFallback}
             technicalDetailsLabel={t.workbench.technicalDetails}
-            meta={
-              <p className="font-mono text-xs text-muted-foreground">
-                {gate.gateId}
-              </p>
-            }
+            meta={<p className="font-mono text-xs text-muted-foreground">{gate.gateId}</p>}
             actions={
               <>
                 {gate.kind === "operator_input" ? (

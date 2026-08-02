@@ -139,7 +139,10 @@ function denseResearchTopology() {
     edges.push({ from: domain.key, to: adapt.key });
   }
   edges.push({ from: adapt.key, to: write.key });
-  return buildFocusTopology(snapshot([plan, ...leaves, ...domains, adapt, write], edges), "research");
+  return buildFocusTopology(
+    snapshot([plan, ...leaves, ...domains, adapt, write], edges),
+    "research",
+  );
 }
 
 test("research domain leaf groups map leaves under each domain", () => {
@@ -165,23 +168,29 @@ test("collapsed research projects plan onto domains and hides leaves", () => {
       .sort(),
     ["research.domain.a", "research.domain.b"],
   );
-  assert.ok(collapsed.edges.some((edge) => edge.source === "research.domain.a" && edge.target === "plan.adapt.1"));
+  assert.ok(
+    collapsed.edges.some(
+      (edge) => edge.source === "research.domain.a" && edge.target === "plan.adapt.1",
+    ),
+  );
 });
 
 test("expanding one domain restores only its leaves", () => {
   const topology = denseResearchTopology();
   const partial = projectCollapsedResearchLeaves(topology, new Set(["research.domain.a"]));
-  const leafKeys = partial.nodes.filter((item) => item.kind === "research.leaf").map((item) => item.key);
+  const leafKeys = partial.nodes
+    .filter((item) => item.kind === "research.leaf")
+    .map((item) => item.key);
   assert.deepEqual(
     leafKeys.sort(),
-    [
-      "research.leaf.a.1",
-      "research.leaf.a.2",
-      "research.leaf.a.3",
-    ].sort(),
+    ["research.leaf.a.1", "research.leaf.a.2", "research.leaf.a.3"].sort(),
   );
-  assert.ok(partial.edges.some((edge) => edge.source === "plan" && edge.target === "research.leaf.a.1"));
-  assert.ok(partial.edges.some((edge) => edge.source === "plan" && edge.target === "research.domain.b"));
+  assert.ok(
+    partial.edges.some((edge) => edge.source === "plan" && edge.target === "research.leaf.a.1"),
+  );
+  assert.ok(
+    partial.edges.some((edge) => edge.source === "plan" && edge.target === "research.domain.b"),
+  );
 });
 
 test("small research graphs stay fully expanded", () => {

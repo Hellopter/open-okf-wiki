@@ -8,6 +8,7 @@ import "./load-env.ts";
 import { createServer } from "node:http";
 import { dispatch } from "./dispatch.ts";
 import { getLogger } from "./logging/index.ts";
+import { closeOperatorSessions } from "./operator-sessions.ts";
 import { allowLan, assertBindPolicy, host, port } from "./server-config.ts";
 import { closeWikiRuns } from "./wiki-runs-registry.ts";
 
@@ -50,6 +51,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info({ event: "server.shutdown", signal }, `received ${signal}, shutting down`);
+  await closeOperatorSessions();
   server.close();
   // SSE keep-alive sockets would otherwise hold the process open.
   server.closeAllConnections?.();

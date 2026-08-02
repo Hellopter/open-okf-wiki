@@ -5,6 +5,7 @@ import {
   WikiLanguageSchema,
   WorkspaceLimitsPatchSchema,
   WorkspaceOrchestrationSchema,
+  WorkspaceRevisionSchema,
   WorkspaceRoleModelsSchema,
   WorkspaceSourceSchema,
 } from "./workspace.js";
@@ -49,30 +50,46 @@ export const WorkspacePatchSchema = z
 
 export type WorkspacePatch = z.infer<typeof WorkspacePatchSchema>;
 
+/** HTTP wrapper for a Workspace patch with its optimistic concurrency token. */
+export const WorkspacePatchRequestSchema = WorkspacePatchSchema.extend({
+  expectedRevision: WorkspaceRevisionSchema,
+}).strict();
+
+export type WorkspacePatchRequest = z.infer<typeof WorkspacePatchRequestSchema>;
+
 /** HTTP body: add existing local path as source. */
-export const SourceAddSchema = z.object({
-  id: SourceIdSchema.optional(),
-  path: z.string().trim().min(1),
-  applyDefaultIgnores: z.boolean().optional(),
-  ignore: z.array(z.string()).optional(),
-});
+export const SourceAddSchema = z
+  .object({
+    expectedRevision: WorkspaceRevisionSchema,
+    id: SourceIdSchema.optional(),
+    path: z.string().trim().min(1),
+    applyDefaultIgnores: z.boolean().optional(),
+    ignore: z.array(z.string()).optional(),
+  })
+  .strict();
 
 export type SourceAdd = z.infer<typeof SourceAddSchema>;
 
 /** HTTP body: clone remote into workspace sources. */
-export const SourceCloneSchema = z.object({
-  id: SourceIdSchema.optional(),
-  remoteUrl: z.string().trim().min(1).max(2000),
-  ref: z.string().trim().min(1).max(200).optional(),
-  applyDefaultIgnores: z.boolean().optional(),
-  ignore: z.array(z.string()).optional(),
-});
+export const SourceCloneSchema = z
+  .object({
+    expectedRevision: WorkspaceRevisionSchema,
+    id: SourceIdSchema.optional(),
+    remoteUrl: z.string().trim().min(1).max(2000),
+    /** Workspace-relative destination directory for a cloned source. */
+    relativeDir: z.string().trim().min(1).max(500).optional(),
+    ref: z.string().trim().min(1).max(200).optional(),
+    applyDefaultIgnores: z.boolean().optional(),
+    ignore: z.array(z.string()).optional(),
+  })
+  .strict();
 
 export type SourceClone = z.infer<typeof SourceCloneSchema>;
 
 /** HTTP body: update source ignore policy (path and id are immutable). */
 export const SourceUpdateSchema = z
   .object({
+    expectedRevision: WorkspaceRevisionSchema,
     applyDefaultIgnores: z.boolean().optional(),
     ignore: z.array(z.string()).optional(),
   })
@@ -82,6 +99,13 @@ export const SourceUpdateSchema = z
   });
 
 export type SourceUpdate = z.infer<typeof SourceUpdateSchema>;
+
+/** Version token required by write routes whose only change is server-side state. */
+export const WorkspaceRevisionRequestSchema = z
+  .object({ expectedRevision: WorkspaceRevisionSchema })
+  .strict();
+
+export type WorkspaceRevisionRequest = z.infer<typeof WorkspaceRevisionRequestSchema>;
 
 /** Re-export source shape for intake consumers. */
 export { WorkspaceSourceSchema };

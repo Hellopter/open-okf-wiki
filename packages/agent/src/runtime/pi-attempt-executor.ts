@@ -11,6 +11,7 @@
 
 import {
   type AttemptMetrics,
+  metricsRoleForNodeKind,
   type PiAttemptExecutor,
   type PiAttemptInput,
   PiAttemptInputSchema,
@@ -52,30 +53,6 @@ export type CreatePiAttemptExecutorOptions = {
 };
 
 export type { PiAttemptExecutor };
-
-/** Graph role for metrics attribution (mirrors workflow graphRoleForNodeKind). */
-function graphRoleForKind(kind: string): string {
-  switch (kind) {
-    case "plan":
-      return "plan";
-    case "plan.adapt":
-      return "plan_adapt";
-    case "research.leaf":
-      return "leaf";
-    case "research.domain":
-      return "domain";
-    case "write.root":
-      return "writer";
-    case "review.seat":
-      return "review";
-    case "repair":
-      return "repair";
-    case "freeze":
-      return "mechanical";
-    default:
-      return kind.slice(0, 64) || "unknown";
-  }
-}
 
 /**
  * Attach best-effort observation metrics without blocking on missing token counts.
@@ -174,7 +151,7 @@ export function createPiAttemptExecutor(
             ? outcome.failureClass
             : "gate_requested";
       return withAttemptMetrics(outcome, {
-        role: graphRoleForKind(input.node.kind),
+        role: metricsRoleForNodeKind(input.node.kind),
         wallTimeMs: Math.max(0, Date.now() - startedMs),
         modelId: input.workspace.model?.id,
         stopReason,
@@ -206,7 +183,7 @@ export function createPiAttemptExecutor(
         }
       }
       return withAttemptMetrics(outcome, {
-        role: input ? graphRoleForKind(input.node.kind) : "unknown",
+        role: input ? metricsRoleForNodeKind(input.node.kind) : "unknown",
         wallTimeMs: Math.max(0, Date.now() - startedMs),
         modelId: input?.workspace.model?.id,
         stopReason: outcome.type === "failed" ? outcome.failureClass : "failed",

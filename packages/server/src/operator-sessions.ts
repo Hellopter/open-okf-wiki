@@ -5,7 +5,7 @@
  * remains the durable workflow store. This module only owns live handles and
  * projects genuine Pi events to the browser.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createOperatorFixtureModel,
   createOperatorSession,
@@ -28,31 +28,26 @@ import {
   type AgentSseEvent,
   type AgentSseSnapshot,
   type AgentSseStream,
+  buildSessionUsage,
   createPiStreamState,
-  diffStreamState,
-  PAYLOAD_TEXT_MAX,
+  diffSessionStreamState,
+  extractContextTokensFromPiMessage,
   type PiStreamState,
   reducePiEvent,
+  type SessionMessage,
+  type SessionStreamState,
+  type SessionUsage,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { loadWorkspace, resolveWikiSkillPaths } from "@okf-wiki/core";
+import { resolveWikiSkillPaths } from "@okf-wiki/core";
 import { wikiRunsForWorkspace } from "./wiki-runs-registry.ts";
-
-/** Compact tool args for the browser wire: JSON + redact + hard cap. */
-const OPERATOR_TOOL_ARGS_MAX = 4_000;
-
-function formatToolArgsForOperator(args: unknown): string {
-  let raw: string;
-  try {
-    raw = typeof args === "string" ? args : JSON.stringify(args);
-  } catch {
-    raw = String(args);
-  }
-  return redactSensitiveText(raw).slice(0, OPERATOR_TOOL_ARGS_MAX);
-}
 
 type SessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
 type Listener = (event: AgentSseEvent) => void;
+type ListenerSubscription = {
+  onEvent: Listener;
+  onClosed?: () => void;
+};
 type FixtureTurnQueue = (text: string, canProduce: boolean) => void;
 type BuiltHandle = {
   handle: SessionHandle;
@@ -64,11 +59,12 @@ type LiveSession = {
   sessionId: string;
   handle: SessionHandle;
   state: PiStreamState;
-  listeners: Set<Listener>;
+  listeners: Set<ListenerSubscription>;
   busy: boolean;
   createdAt: string;
   updatedAt: string;
   unsubscribe: () => void;
+  sessionUsage?: SessionUsage;
   queueFixtureTurn?: FixtureTurnQueue;
 };
 
@@ -95,15 +91,14 @@ function titleFromPrompt(text: string): string | undefined {
 
 function runStarter(workspace: WorkspaceConfig, defaultSessionId: string): StartWikiRun {
   return async ({ commandId, sessionId, mode, notes }) => {
-    const current = await loadWorkspace(workspace.rootPath);
-    return (await wikiRunsForWorkspace(current)).dispatch(
+    return (await wikiRunsForWorkspace(workspace)).dispatch(
       {
         type: "start_run",
         commandId,
         intent: { mode, ...(notes?.trim() ? { focus: notes.trim().slice(0, 4_000) } : {}) },
       },
       {
-        workspaceId: current.id,
+        workspaceId: workspace.id,
         actor: { id: sessionId || defaultSessionId, kind: "operator_session" },
         sessionId: sessionId || defaultSessionId,
       },
@@ -113,8 +108,7 @@ function runStarter(workspace: WorkspaceConfig, defaultSessionId: string): Start
 
 function repairRunner(workspace: WorkspaceConfig, defaultSessionId: string): RerunWikiNode {
   return async ({ commandId, runId, nodeKey, generation, feedback, sessionId }) => {
-    const current = await loadWorkspace(workspace.rootPath);
-    const runs = await wikiRunsForWorkspace(current);
+    const runs = await wikiRunsForWorkspace(workspace);
     const { snapshot } = await runs.read({ runId });
     return runs.dispatch(
       {
@@ -127,7 +121,7 @@ function repairRunner(workspace: WorkspaceConfig, defaultSessionId: string): Rer
         ...(feedback ? { feedback } : {}),
       },
       {
-        workspaceId: current.id,
+        workspaceId: workspace.id,
         actor: { id: sessionId || defaultSessionId, kind: "operator_session" },
         sessionId: sessionId || defaultSessionId,
       },
@@ -140,8 +134,7 @@ async function resolveRepairTarget(
   input: { runId: string; nodeKey?: string },
 ): Promise<{ nodeKey: string; generation: number } | null> {
   try {
-    const current = await loadWorkspace(workspace.rootPath);
-    const { snapshot } = await (await wikiRunsForWorkspace(current)).read({ runId: input.runId });
+    const { snapshot } = await (await wikiRunsForWorkspace(workspace)).read({ runId: input.runId });
     const key = input.nodeKey?.trim() || "write.root";
     const node = snapshot.nodes.find((candidate) => candidate.key === key);
     return node && !["freeze", "gate.plan", "gate.fix", "gate.publication"].includes(node.key)
@@ -181,7 +174,6 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
       rerunWikiNode: repairRunner(workspace, sessionIdentity),
       resolveRepairTarget: (target: { runId: string; nodeKey?: string }) =>
         resolveRepairTarget(workspace, target),
-      resolveWorkspace: () => loadWorkspace(workspace.rootPath),
     },
   };
   const handle = sessionId
@@ -201,58 +193,67 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
 }
 
 function emit(live: LiveSession, event: AgentSseEvent): void {
-  for (const listener of live.listeners) listener(event);
+  for (const listener of live.listeners) listener.onEvent(event);
+}
+
+/** Remove all absolute filesystem paths, including paths outside common home dirs. */
+function redactSessionText(text: string): string {
+  return redactSensitiveText(text).replace(
+    /(^|[\s"'`=(])\/(?:[^\s"'`)]+)/g,
+    (_match, prefix: string) => `${prefix}[redacted-path]`,
+  );
+}
+
+/** Keep wire identifiers stable while preventing malformed provider ids from leaking paths. */
+function safeSessionId(value: string, kind: "message" | "tool"): string {
+  if (/^[A-Za-z0-9_-]{1,200}$/.test(value)) return value;
+  return `${kind}_${createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
 }
 
 /**
- * Pi holds the authoritative conversation record. The browser is an operator
- * surface: project thinking, tool args/output, and WikiRun receipts with
- * secret redaction and size caps — never system/tool role rows.
+ * Pi holds the authoritative conversation record. The browser only receives
+ * ADR 0039's Session DTO: user-visible prose, tool lifecycle, and bounded
+ * wiki_produce receipts. Thought, raw tools, system rows, and paths remain in
+ * the server-side Pi state and JSONL history.
  */
-function projectOperatorMessage(message: AgentMessage): AgentMessage | null {
-  if (message.role === "system" || message.role === "tool") return null;
+function projectOperatorMessage(message: AgentMessage): SessionMessage | null {
+  if (message.role !== "user" && message.role !== "assistant") return null;
   const tools = message.tools?.map((tool) => ({
-    id: tool.id,
-    name: tool.name,
+    id: safeSessionId(tool.id, "tool"),
+    name: /^[a-z][a-z0-9_]{0,99}$/.test(tool.name) ? tool.name : "tool",
     status: tool.status,
-    ...(tool.details
+    ...(tool.name === "wiki_produce" && tool.details
       ? {
-          details: {
+          receipt: {
             status: tool.details.status,
-            ...(tool.details.runId ? { runId: tool.details.runId } : {}),
-            ...(tool.details.summary ? { summary: redactSensitiveText(tool.details.summary) } : {}),
+            ...(tool.details.runId && /^[A-Za-z0-9_-]{1,200}$/.test(tool.details.runId)
+              ? { runId: tool.details.runId }
+              : {}),
+            ...(tool.details.summary
+              ? { summary: redactSessionText(tool.details.summary).slice(0, 4_000) }
+              : {}),
           },
         }
       : {}),
-    ...(tool.args !== undefined ? { args: formatToolArgsForOperator(tool.args) } : {}),
-    ...(tool.output !== undefined
-      ? { output: redactSensitiveText(tool.output).slice(0, PAYLOAD_TEXT_MAX) }
-      : {}),
   }));
-  const parts = message.parts?.map((part) => {
-    if (part.type === "text") return { ...part, text: redactSensitiveText(part.text) };
-    if (part.type === "thinking")
-      return { ...part, thinking: redactSensitiveText(part.thinking) };
-    return part;
-  });
   return {
-    id: message.id,
+    id: safeSessionId(message.id, "message"),
     role: message.role,
-    content: redactSensitiveText(message.content),
+    content: redactSessionText(message.content),
     createdAt: message.createdAt,
-    ...(message.thinking !== undefined
-      ? { thinking: redactSensitiveText(message.thinking) }
-      : {}),
-    ...(message.thinkingStatus ? { thinkingStatus: message.thinkingStatus } : {}),
     ...(tools?.length ? { tools } : {}),
-    ...(parts?.length ? { parts } : {}),
     ...(message.status ? { status: message.status } : {}),
-    ...(message.errorText ? { errorText: redactErrorMessage(message.errorText) } : {}),
+    ...(message.errorText
+      ? { errorText: redactSessionText(redactErrorMessage(message.errorText)) }
+      : {}),
   };
 }
 
 /** A dedicated, secret-free wire projection for the browser Session SSE. */
-export function projectOperatorStreamState(state: PiStreamState): PiStreamState {
+export function projectOperatorStreamState(
+  state: PiStreamState,
+  sessionUsage?: SessionUsage,
+): SessionStreamState {
   const messages = state.messages.flatMap((message) => {
     const projected = projectOperatorMessage(message);
     return projected ? [projected] : [];
@@ -263,24 +264,28 @@ export function projectOperatorStreamState(state: PiStreamState): PiStreamState 
   const lastAssistantId =
     [...messages].reverse().find((message) => message.role === "assistant")?.id ?? null;
   return {
-    ...state,
     messages,
     streamingMessage,
     lastAssistantId,
-    errorText: state.errorText ? redactErrorMessage(state.errorText) : null,
+    turnActive: state.turnActive,
+    agentStatus: state.agentStatus,
+    errorText: state.errorText ? redactSessionText(redactErrorMessage(state.errorText)) : null,
+    contextPhase: state.contextPhase,
+    ...(sessionUsage ? { sessionUsage } : {}),
   };
 }
 
-function emitStatePatch(live: LiveSession, previous: PiStreamState, next: PiStreamState): void {
+function emitStatePatch(
+  live: LiveSession,
+  previous: SessionStreamState,
+  next: SessionStreamState,
+): void {
   emit(live, {
     source: "server",
     kind: "stream",
     sessionId: live.sessionId,
     timestamp: live.updatedAt,
-    payload: diffStreamState(
-      projectOperatorStreamState(previous),
-      projectOperatorStreamState(next),
-    ),
+    payload: diffSessionStreamState(previous, next),
   } satisfies AgentSseStream);
 }
 
@@ -288,8 +293,13 @@ function attachLive(
   workspace: WorkspaceConfig,
   built: BuiltHandle,
   seed: PiStreamState,
+  contextTokens?: number,
 ): LiveSession {
   const { handle, queueFixtureTurn } = built;
+  const initialUsage = buildSessionUsage({
+    contextTokens,
+    contextTarget: workspace.limits.contextTargetTokens,
+  });
   const live: LiveSession = {
     workspaceId: workspace.id,
     sessionId: handle.sessionId,
@@ -300,6 +310,7 @@ function attachLive(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     unsubscribe: () => undefined,
+    ...(initialUsage ? { sessionUsage: initialUsage } : {}),
     ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
   };
   live.unsubscribe = handle.session.subscribe((raw: unknown) => {
@@ -308,10 +319,19 @@ function attachLive(
         ? raw.type
         : "error";
     const previous = live.state;
+    const previousView = projectOperatorStreamState(previous, live.sessionUsage);
     const next = reducePiEvent(previous, type, raw);
     live.state = next;
+    const body = raw && typeof raw === "object" && "message" in raw ? raw.message : undefined;
+    const contextTokens = extractContextTokensFromPiMessage(body);
+    if (contextTokens !== undefined) {
+      live.sessionUsage = buildSessionUsage({
+        contextTokens,
+        contextTarget: live.sessionUsage?.contextTarget,
+      });
+    }
     live.updatedAt = new Date().toISOString();
-    emitStatePatch(live, previous, next);
+    emitStatePatch(live, previousView, projectOperatorStreamState(next, live.sessionUsage));
   });
   liveSessions.set(key(workspace.id, handle.sessionId), live);
   return live;
@@ -326,6 +346,7 @@ async function openLive(workspace: WorkspaceConfig, sessionId: string): Promise<
     workspace,
     await makeHandle(workspace, sessionId),
     createPiStreamState(history.messages),
+    history.lastContextTokens,
   );
 }
 
@@ -366,11 +387,7 @@ export async function listSessions(
 
 export async function deleteLiveSession(workspace: WorkspaceConfig, sessionId: string) {
   const live = liveSessions.get(key(workspace.id, sessionId));
-  if (live) {
-    live.unsubscribe();
-    live.handle.dispose();
-    liveSessions.delete(key(workspace.id, sessionId));
-  }
+  if (live) await releaseLive(live);
   const deleted = await deleteOperatorSession(workspace.rootPath, sessionId);
   return { sessionId, removed: deleted.deleted || Boolean(live) ? 1 : 0 };
 }
@@ -450,13 +467,14 @@ export async function dispatchSessionCommand(
       .prompt(effectiveText)
       .catch((error) => {
         const previous = live.state;
+        const previousView = projectOperatorStreamState(previous, live.sessionUsage);
         const next = reducePiEvent(previous, "error", {
           type: "error",
           message: redactErrorMessage(error),
         });
         live.state = next;
         live.updatedAt = new Date().toISOString();
-        emitStatePatch(live, previous, next);
+        emitStatePatch(live, previousView, projectOperatorStreamState(next, live.sessionUsage));
       })
       .finally(() => {
         live.busy = false;
@@ -473,7 +491,7 @@ export async function sessionSnapshot(
   sessionId: string,
 ): Promise<AgentSseSnapshot> {
   const live = await openLive(workspace, sessionId);
-  const projected = projectOperatorStreamState(live.state);
+  const projected = projectOperatorStreamState(live.state, live.sessionUsage);
   return {
     source: "server",
     kind: "snapshot",
@@ -484,8 +502,7 @@ export async function sessionSnapshot(
       // `live.state` includes the durable branch plus finalized messages that
       // arrived after the session file was last flushed. The subsequent SSE
       // patches are diffed from this exact baseline.
-      messages: projected.messages,
-      contextPhase: projected.contextPhase,
+      state: projected,
     },
   };
 }
@@ -494,16 +511,44 @@ export async function subscribeSession(
   workspace: WorkspaceConfig,
   sessionId: string,
   listener: Listener,
+  onClosed?: () => void,
 ): Promise<() => void> {
   const live = await openLive(workspace, sessionId);
-  live.listeners.add(listener);
-  return () => live.listeners.delete(listener);
+  const subscription: ListenerSubscription = {
+    onEvent: listener,
+    ...(onClosed ? { onClosed } : {}),
+  };
+  live.listeners.add(subscription);
+  return () => live.listeners.delete(subscription);
 }
 
-export function closeOperatorSessions(): void {
-  for (const live of liveSessions.values()) {
-    live.unsubscribe();
-    live.handle.dispose();
+async function releaseLive(live: LiveSession): Promise<void> {
+  if (live.busy) {
+    await live.handle.session.abort().catch(() => undefined);
+    live.busy = false;
   }
-  liveSessions.clear();
+  live.unsubscribe();
+  live.handle.dispose();
+  liveSessions.delete(key(live.workspaceId, live.sessionId));
+  for (const listener of [...live.listeners]) listener.onClosed?.();
+  live.listeners.clear();
+}
+
+/**
+ * Abort and close all active Session handles for one changed Workspace.
+ * Pi JSONL stays untouched; a following request reopens it with a fresh
+ * Workspace configuration snapshot.
+ */
+export async function invalidateOperatorSessions(
+  workspaceId: string,
+  _reason = "workspace configuration changed",
+): Promise<number> {
+  const targets = [...liveSessions.values()].filter((live) => live.workspaceId === workspaceId);
+  await Promise.all(targets.map((live) => releaseLive(live)));
+  return targets.length;
+}
+
+/** Graceful process shutdown closes Pi handles and all Session SSE subscribers. */
+export async function closeOperatorSessions(): Promise<void> {
+  await Promise.all([...liveSessions.values()].map((live) => releaseLive(live)));
 }

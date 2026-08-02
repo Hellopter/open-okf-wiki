@@ -10,8 +10,8 @@ export {
   createRootLogger,
   getLogConfig,
   getLogger,
-  setLoggerForTests,
   type Logger,
+  setLoggerForTest,
 } from "./logger.ts";
 export {
   beginRequestLog,

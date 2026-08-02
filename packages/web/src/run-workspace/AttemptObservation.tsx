@@ -162,10 +162,7 @@ function ActivityFeed({
           }
           if (event.kind === "assistant") {
             return (
-              <article
-                key={event.ordinal}
-                className="group/attempt-assistant space-y-1.5"
-              >
+              <article key={event.ordinal} className="group/attempt-assistant space-y-1.5">
                 <time className="block font-mono text-[11px] text-muted-foreground opacity-0 transition-opacity group-hover/attempt-assistant:opacity-100 group-focus-within/attempt-assistant:opacity-100">
                   {new Date(event.at).toLocaleTimeString()}
                 </time>
@@ -426,10 +423,7 @@ export function AttemptObservation({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {showRecovery ? (
-            <div
-              className="flex flex-wrap items-center gap-1"
-              data-testid="node-recovery-actions"
-            >
+            <div className="flex flex-wrap items-center gap-1" data-testid="node-recovery-actions">
               <Button
                 size="sm"
                 variant={retry?.ok ? "default" : "outline"}

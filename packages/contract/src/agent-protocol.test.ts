@@ -45,35 +45,33 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
     timestamp: "2026-07-24T00:00:00.000Z",
     payload: {
       session: { id: "s1", workspaceId: "w1" },
-      messages: [
-        {
-          id: "user-1",
-          role: "user",
-          content: "hello",
-          createdAt: "2026-07-24T00:00:00.000Z",
-          status: "done",
+      state: {
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            content: "hello",
+            createdAt: "2026-07-24T00:00:00.000Z",
+            status: "done",
+          },
+        ],
+        streamingMessage: null,
+        lastAssistantId: null,
+        turnActive: false,
+        agentStatus: "idle",
+        errorText: null,
+        contextPhase: "normal",
+        sessionUsage: {
+          contextTokens: 12_400,
+          contextWindow: 128_000,
+          contextTarget: 108_800,
         },
-      ],
-      activeTool: {
-        toolCallId: "tool-1",
-        toolName: "wiki_produce",
-        details: {
-          status: "accepted",
-          runId: "run-1",
-          summary: "Wiki Run accepted",
-        },
-      },
-      sessionUsage: {
-        contextTokens: 12_400,
-        contextWindow: 128_000,
-        contextTarget: 108_800,
       },
     },
   });
   assert.equal(snapshot.kind, "snapshot");
   if (snapshot.source === "server" && snapshot.kind === "snapshot") {
-    assert.equal(snapshot.payload.activeTool?.details.status, "accepted");
-    assert.equal(snapshot.payload.sessionUsage?.contextTokens, 12_400);
+    assert.equal(snapshot.payload.state.sessionUsage?.contextTokens, 12_400);
     assert.equal("pendingGate" in snapshot.payload, false);
   }
 
@@ -90,6 +88,7 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
       streamingMessage: null,
       appended: [],
       updated: [],
+      contextPhase: "normal",
       sessionUsage: { contextTokens: 2500, contextWindow: 128_000 },
     },
   });

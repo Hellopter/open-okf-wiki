@@ -53,7 +53,6 @@ export {
   type AgentFollowUpCommand,
   type AgentPromptCommand,
   type AgentSetModelCommand,
-  type AgentSseActiveTool,
   type AgentSseEvent,
   AgentSseEventSchema,
   type AgentSseHeartbeat,
@@ -142,15 +141,21 @@ export {
   type WorkspaceCreate,
   WorkspaceCreateSchema,
   type WorkspacePatch,
+  type WorkspacePatchRequest,
+  WorkspacePatchRequestSchema,
   WorkspacePatchSchema,
+  type WorkspaceRevisionRequest,
+  WorkspaceRevisionRequestSchema,
 } from "./intake.js";
 export {
   allNodeContracts,
+  type BoundInput,
   contractForNode,
   type InputRequirement,
   inputRoleMatches,
   isResearchRole,
   isReviewSeatRole,
+  metricsRoleForNodeKind,
   type NodeContract,
   type OutputRequirement,
   type ProducedArtifact,
@@ -280,6 +285,25 @@ export {
   type WikiProduceToolStatus,
   WikiProduceToolStatusSchema,
 } from "./run-phase.js";
+/** Browser-safe Operator Session wire projection (ADR 0039). */
+export {
+  applySessionStreamPatch,
+  createSessionStreamState,
+  diffSessionStreamState,
+  type SessionMessage,
+  type SessionMessageRole,
+  SessionMessageRoleSchema,
+  SessionMessageSchema,
+  type SessionMessageStatus,
+  SessionMessageStatusSchema,
+  type SessionStreamPatch,
+  SessionStreamPatchSchema,
+  type SessionStreamState,
+  SessionStreamStateSchema,
+  type SessionTool,
+  SessionToolSchema,
+  viewSessionMessages,
+} from "./session-stream.js";
 /** Ephemeral Operator Session context-fill (UI only; not control truth). */
 export {
   buildSessionUsage,
@@ -465,6 +489,7 @@ export {
   WorkspaceLimitsSchema,
   type WorkspaceOrchestration,
   WorkspaceOrchestrationSchema,
+  WorkspaceRevisionSchema,
   type WorkspaceRoleModels,
   WorkspaceRoleModelsSchema,
   type WorkspaceSource,

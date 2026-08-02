@@ -118,8 +118,8 @@ export interface WikiRuns {
     candidateDigest: string;
     pagePath: string;
   }): Promise<CandidateDiffRead>;
-  /** Replace in-memory workspace config (new StartRun uses updated limits). */
-  replaceWorkspace(workspace: WorkspaceConfig): void;
+  /** Update the config captured by future StartRun commands; existing Runs remain sealed. */
+  setWorkspaceForNewRuns(workspace: WorkspaceConfig): void;
   close(): Promise<void>;
 }
 

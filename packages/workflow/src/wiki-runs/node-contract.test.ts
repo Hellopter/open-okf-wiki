@@ -7,9 +7,14 @@ import test from "node:test";
 import {
   contractForNode,
   isResearchRole,
+  metricsRoleForNodeKind,
   validateBoundInputs,
   validateNodeOutputs,
 } from "@okf-wiki/contract";
+
+function inputs(...entries: Array<[string, string]>) {
+  return entries.map(([role, kind]) => ({ role, kind }));
+}
 
 test("contractForNode: plan requires sources+skill; research optional on write", () => {
   const plan = contractForNode("plan", "plan");
@@ -56,23 +61,56 @@ test("contractForNode rejects unknown kinds and malformed dynamic keys", () => {
 test("validateBoundInputs: fails closed on missing required research for domain", () => {
   const domain = contractForNode("research.domain", "research.domain.core");
   assert.throws(
-    () => validateBoundInputs(domain, ["sources", "skill", "spec"]),
-    /missing required sealed input role\(s\): research/,
+    () =>
+      validateBoundInputs(
+        domain,
+        inputs(["sources", "snapshot_set"], ["skill", "skill"], ["spec", "spec"]),
+      ),
+    /research:receipt/,
   );
   // Namespaced leaf research satisfies the research requirement.
-  validateBoundInputs(domain, [
-    "sources",
-    "skill",
-    "research.leaf.core.1:research",
-    "execution_plan",
-    "frozen_run_manifest",
-  ]);
+  validateBoundInputs(
+    domain,
+    inputs(
+      ["sources", "snapshot_set"],
+      ["skill", "skill"],
+      ["research.leaf.core.1:research", "receipt"],
+      ["execution_plan", "execution_plan"],
+      ["frozen_run_manifest", "manifest"],
+    ),
+  );
+  assert.throws(
+    () =>
+      validateBoundInputs(
+        domain,
+        inputs(
+          ["sources", "snapshot_set"],
+          ["skill", "skill"],
+          ["research.leaf.core.1:research", "spec"],
+          ["execution_plan", "execution_plan"],
+          ["frozen_run_manifest", "manifest"],
+        ),
+      ),
+    /research:receipt/,
+  );
 });
 
 test("validateBoundInputs: review.seat requires wiki_tree + spec", () => {
   const seat = contractForNode("review.seat", "review.seat.grounding");
-  assert.throws(() => validateBoundInputs(seat, ["sources", "skill"]), /wiki_tree/);
-  validateBoundInputs(seat, ["sources", "skill", "wiki_tree", "spec", "frozen_run_manifest"]);
+  assert.throws(
+    () => validateBoundInputs(seat, inputs(["sources", "snapshot_set"], ["skill", "skill"])),
+    /wiki_tree/,
+  );
+  validateBoundInputs(
+    seat,
+    inputs(
+      ["sources", "snapshot_set"],
+      ["skill", "skill"],
+      ["wiki_tree", "wiki_tree"],
+      ["spec", "spec"],
+      ["frozen_run_manifest", "manifest"],
+    ),
+  );
 });
 
 test("contractForNode: review.reduce treats review_seat as optional (zero-seat clean path)", () => {
@@ -83,19 +121,32 @@ test("contractForNode: review.reduce treats review_seat as optional (zero-seat c
   assert.ok(reduce.requiredInputs.some((r) => r.role === "wiki_tree" && r.required));
   assert.ok(reduce.requiredInputs.some((r) => r.role === "spec" && r.required));
   // Zero-seat envelope (reviewRequired=false): only wiki_tree + ambient spec.
-  validateBoundInputs(reduce, ["wiki_tree", "spec"]);
+  validateBoundInputs(reduce, inputs(["wiki_tree", "wiki_tree"], ["spec", "spec"]));
   // With seats bound still valid.
-  validateBoundInputs(reduce, ["wiki_tree", "spec", "review.seat.grounding:review_seat"]);
-  assert.throws(() => validateBoundInputs(reduce, ["spec"]), /wiki_tree/);
+  validateBoundInputs(
+    reduce,
+    inputs(
+      ["wiki_tree", "wiki_tree"],
+      ["spec", "spec"],
+      ["review.seat.grounding:review_seat", "receipt"],
+    ),
+  );
+  assert.throws(() => validateBoundInputs(reduce, inputs(["spec", "spec"])), /wiki_tree/);
 });
 
 test("contractForNode: validate.pre/final require Spec", () => {
   for (const key of ["validate.pre", "validate.final"] as const) {
     const c = contractForNode(key, key);
     assert.ok(c.requiredInputs.some((r) => r.role === "spec" && r.required));
-    assert.throws(() => validateBoundInputs(c, ["wiki_tree"]), /spec/);
-    validateBoundInputs(c, ["wiki_tree", "spec"]);
+    assert.throws(() => validateBoundInputs(c, inputs(["wiki_tree", "wiki_tree"])), /spec/);
+    validateBoundInputs(c, inputs(["wiki_tree", "wiki_tree"], ["spec", "spec"]));
   }
+});
+
+test("metrics role mapping is shared by all execution adapters", () => {
+  assert.equal(metricsRoleForNodeKind("plan.adapt"), "plan_adapt");
+  assert.equal(metricsRoleForNodeKind("research.leaf"), "leaf");
+  assert.equal(metricsRoleForNodeKind("validate.final"), "mechanical");
 });
 
 test("isResearchRole matches exact and namespaced forms", () => {

@@ -32,12 +32,39 @@ const productSourceFiles = sourceFiles.filter(
   (file) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file) && !file.includes("/fixtures/"),
 );
 
+const skillInstructionRules = [
+  [
+    "Skill must submit a plan draft instead of writing the sealed Spec",
+    "packages/skill/references/plan.md",
+    /Write this Plan Attempt's Spec to `analysis\/spec\.json`/,
+  ],
+  [
+    "Skill must not ask models to create Domain or Leaf topology",
+    "packages/skill/references/domain-research.md",
+    /(?:delegate only to|retry a given Leaf|maintain a concise Run Plan)/,
+  ],
+  [
+    "Leaf Skill must be Workflow-assigned rather than Domain-assigned",
+    "packages/skill/references/leaf-research.md",
+    /Domain parent assigned/,
+  ],
+];
+
+for (const [label, file, pattern] of skillInstructionRules) {
+  const content = readFileSync(path.join(root, file), "utf8");
+  const match = pattern.exec(content);
+  if (!match) continue;
+  const line = content.slice(0, match.index).split("\n").length;
+  failures.push(`${file}:${line}: ${label}: ${JSON.stringify(match[0])}`);
+}
+
 for (const file of [...filesUnder("packages/cli"), ...filesUnder("apps/desktop")]) {
   failures.push(`${file}: CLI/Desktop operator package must stay deleted`);
 }
 
 const removedModulePaths = [
   /\/WorkspaceRunPage\./,
+  /\/RunWorkspacePage\./,
   /\/agent\/src\/(?:wiki-run|shell\/wiki-run-shell)\./,
   /\/session-run-transition\./,
   /\/server\/src\/session\/product-inject\./,
@@ -84,7 +111,7 @@ const forbiddenSourceRules = [
   ["legacy WikiRunPlan contract", /\bWikiRunPlan\b/],
   [
     "hand-rolled legacy agent protocol",
-    /\b(?:toAISdkStream|SessionMessageSchema|SessionMessagePart|appendSessionMessages)\b|["'](?:list_source|read_source|write_wiki)["']/,
+    /\b(?:toAISdkStream|SessionMessagePart|appendSessionMessages)\b|["'](?:list_source|read_source|write_wiki)["']/,
   ],
   [
     "removed Run Graph predecessor (children spans)",

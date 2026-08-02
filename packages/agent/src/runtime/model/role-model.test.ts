@@ -6,6 +6,7 @@ import { modelRefForRole, resolveModelSelection } from "./role-model.js";
 function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
   return {
     version: 3,
+    revision: 0,
     id: "ws1",
     name: "Test",
     rootPath: "/tmp/ws",

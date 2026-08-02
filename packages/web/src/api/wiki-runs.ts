@@ -30,8 +30,11 @@ import { getApiBase, request } from "./client";
 
 export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunState };
 
-export function getRunIndex(workspaceId: string): Promise<WikiRunIndexGetResponse> {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/index`).then(
+export function getRunIndex(
+  workspaceId: string,
+  init?: Pick<RequestInit, "signal">,
+): Promise<WikiRunIndexGetResponse> {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs/index`, init).then(
     WikiRunIndexGetResponseSchema.parse,
   );
 }

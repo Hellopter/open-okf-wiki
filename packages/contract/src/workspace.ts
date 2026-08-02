@@ -342,6 +342,9 @@ export const IGNORE_PRESETS: Readonly<
   }),
 });
 
+/** Revision token required to mutate an existing Workspace document. */
+export const WorkspaceRevisionSchema = z.number().int().nonnegative();
+
 /**
  * Operator project (Workspace). Distinct from run-local analysis scratch.
  * Secrets must never appear in this document.
@@ -349,6 +352,12 @@ export const IGNORE_PRESETS: Readonly<
 export const WorkspaceConfigSchema = z
   .object({
     version: z.literal(3),
+    /**
+     * Monotonic Workspace document revision. Legacy v3 documents without this
+     * field are read as revision zero; the first successful mutation persists
+     * the field and advances it.
+     */
+    revision: WorkspaceRevisionSchema.default(0),
     id: z.string().trim().min(1),
     name: z.string().trim().min(1).max(120),
     /** Absolute path to the workspace root directory. */

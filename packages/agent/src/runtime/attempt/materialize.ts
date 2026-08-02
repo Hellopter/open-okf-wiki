@@ -23,6 +23,7 @@ import path from "node:path";
 import {
   type AnalysisReceipt,
   AnalysisReceiptSchema,
+  type BoundInput,
   contractForNode,
   ExecutionPlanSchema,
   type FrozenRunManifest,
@@ -575,7 +576,9 @@ export async function materializeInputs(input: PiAttemptInput): Promise<RunWorkd
   }
   validateBoundInputs(
     contract,
-    input.sealedInputs.map((sealed) => sealed.role),
+    input.sealedInputs.map(
+      (sealed): BoundInput => ({ role: sealed.role, kind: sealed.artifact.kind }),
+    ),
   );
   await mkdir(input.workDir, { recursive: true });
   const sourceMounts = new Map<string, string>();

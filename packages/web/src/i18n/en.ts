@@ -593,7 +593,8 @@ export const en = {
     recoveryBannerTitle: "Recovery needed",
     recoveryBanner:
       "{count} node(s) need attention (including “{node}”). Open a failed node to Retry or Rerun.",
-    recoveryBannerGeneric: "This Run has failed or interrupted work. Open a node to Retry or Rerun.",
+    recoveryBannerGeneric:
+      "This Run has failed or interrupted work. Open a node to Retry or Rerun.",
     recoveryOpenNode: "Open {node}",
     cannotRetryReason: {
       runPublished: "Cannot retry on a published Run; start a new Run.",

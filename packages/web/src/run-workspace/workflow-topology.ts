@@ -125,9 +125,7 @@ export function buildFocusTopology(
 }
 
 /** domain key → sorted research.leaf keys that join into it. */
-export function researchDomainLeafGroups(
-  topology: FocusTopology,
-): Map<string, string[]> {
+export function researchDomainLeafGroups(topology: FocusTopology): Map<string, string[]> {
   const byKey = new Map(topology.nodes.map((node) => [node.key, node]));
   const groups = new Map<string, string[]>();
   for (const edge of topology.edges) {
@@ -199,8 +197,7 @@ export function orderedNodesForLayout(
     : domains;
 
   for (const domain of orderedDomains) {
-    const expanded =
-      !collapseActive || (options?.expandedDomainKeys?.has(domain.key) ?? false);
+    const expanded = !collapseActive || (options?.expandedDomainKeys?.has(domain.key) ?? false);
     if (expanded) {
       for (const leafKey of groups.get(domain.key) ?? []) take(leafKey);
     }
@@ -217,8 +214,7 @@ export function orderedNodesForLayout(
     .map((key) => byKey.get(key)!)
     .sort(
       (a, b) =>
-        layoutTailKindRank(a.kind) - layoutTailKindRank(b.kind) ||
-        a.key.localeCompare(b.key),
+        layoutTailKindRank(a.kind) - layoutTailKindRank(b.kind) || a.key.localeCompare(b.key),
     );
   for (const node of tail) take(node.key);
 

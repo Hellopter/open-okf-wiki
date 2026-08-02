@@ -3,10 +3,10 @@ import test from "node:test";
 import type { WikiRunNode } from "@okf-wiki/contract";
 import {
   contentNodeHeight,
-  layoutResearchFocus,
-  packPositionsByModelOrder,
   FOCUS_NODE_HEIGHT,
   FOCUS_NODE_WIDTH,
+  layoutResearchFocus,
+  packPositionsByModelOrder,
   RESEARCH_FOCUS_DOMAIN_GAP,
   RESEARCH_FOCUS_LAYER_GAP,
   RESEARCH_FOCUS_LEAF_GAP,
@@ -24,13 +24,7 @@ function layoutNode(key: string, kind: string, generation = 0): WikiRunNode {
 
 test("packPositionsByModelOrder restacks a layer into model order top-to-bottom", () => {
   // Simulates ELK placing other domains above expanded leaves in the same X column.
-  const orderedNodeKeys = [
-    "leaf.a",
-    "leaf.b",
-    "domain.expanded",
-    "domain.other",
-    "domain.z",
-  ];
+  const orderedNodeKeys = ["leaf.a", "leaf.b", "domain.expanded", "domain.other", "domain.z"];
   const height = 72;
   const positions = {
     "domain.other": { x: 400, y: 12 },
@@ -39,16 +33,12 @@ test("packPositionsByModelOrder restacks a layer into model order top-to-bottom"
     "leaf.b": { x: 405, y: 520 },
     "domain.expanded": { x: 398, y: 640 },
   };
-  const heightByNode = Object.fromEntries(
-    orderedNodeKeys.map((key) => [key, height]),
-  );
+  const heightByNode = Object.fromEntries(orderedNodeKeys.map((key) => [key, height]));
 
   const packed = packPositionsByModelOrder(orderedNodeKeys, positions, heightByNode, 56);
 
   // Same approximate layer; model order becomes top-to-bottom.
-  const layerOrder = orderedNodeKeys
-    .slice()
-    .sort((a, b) => packed[a]!.y - packed[b]!.y);
+  const layerOrder = orderedNodeKeys.slice().sort((a, b) => packed[a]!.y - packed[b]!.y);
   assert.deepEqual(layerOrder, orderedNodeKeys);
 
   // Stacked with height + gap from the layer's original min y.
@@ -70,11 +60,10 @@ test("packPositionsByModelOrder leaves single-node layers at original y", () => 
     write: { x: 800, y: 40 },
   };
   const orderedNodeKeys = ["plan", "write"];
-  const packed = packPositionsByModelOrder(
-    orderedNodeKeys,
-    positions,
-    { plan: FOCUS_NODE_HEIGHT, write: FOCUS_NODE_HEIGHT },
-  );
+  const packed = packPositionsByModelOrder(orderedNodeKeys, positions, {
+    plan: FOCUS_NODE_HEIGHT,
+    write: FOCUS_NODE_HEIGHT,
+  });
 
   assert.equal(packed.plan!.x, 0);
   assert.equal(packed.plan!.y, 120);
@@ -118,10 +107,7 @@ test("layoutResearchFocus partial expand keeps leaves aligned with their domain"
   const orderedNodes = [plan, leafA1, leafA2, leafA3, domainA, domainB, adapt, write];
   const domainGroups = new Map<string, string[]>([
     ["research.domain.a", ["research.leaf.a.1", "research.leaf.a.2", "research.leaf.a.3"]],
-    [
-      "research.domain.b",
-      ["research.leaf.b.1", "research.leaf.b.2", "research.leaf.b.3"],
-    ],
+    ["research.domain.b", ["research.leaf.b.1", "research.leaf.b.2", "research.leaf.b.3"]],
   ]);
   const expandedDomainKeys = new Set(["research.domain.a"]);
   const domainCollapseKeys = new Set(["research.domain.a", "research.domain.b"]);
@@ -155,18 +141,11 @@ test("layoutResearchFocus partial expand keeps leaves aligned with their domain"
 
   // Leaves stacked with leaf gap
   assert.equal(positions["research.leaf.a.1"]!.y, 0);
-  assert.equal(
-    positions["research.leaf.a.2"]!.y,
-    leafH + RESEARCH_FOCUS_LEAF_GAP,
-  );
-  assert.equal(
-    positions["research.leaf.a.3"]!.y,
-    2 * (leafH + RESEARCH_FOCUS_LEAF_GAP),
-  );
+  assert.equal(positions["research.leaf.a.2"]!.y, leafH + RESEARCH_FOCUS_LEAF_GAP);
+  assert.equal(positions["research.leaf.a.3"]!.y, 2 * (leafH + RESEARCH_FOCUS_LEAF_GAP));
 
   const leafStackTop = positions["research.leaf.a.1"]!.y;
-  const leafStackBottom =
-    positions["research.leaf.a.3"]!.y + leafH;
+  const leafStackBottom = positions["research.leaf.a.3"]!.y + leafH;
   const domainATop = positions["research.domain.a"]!.y;
   const domainABottom = domainATop + domainAH;
 
@@ -185,10 +164,7 @@ test("layoutResearchFocus partial expand keeps leaves aligned with their domain"
     positions["research.domain.b"]!.y >= clusterBottom + RESEARCH_FOCUS_DOMAIN_GAP - 1e-6,
     "collapsed domain B must be below expanded cluster A",
   );
-  assert.equal(
-    positions["research.domain.b"]!.y,
-    clusterBottom + RESEARCH_FOCUS_DOMAIN_GAP,
-  );
+  assert.equal(positions["research.domain.b"]!.y, clusterBottom + RESEARCH_FOCUS_DOMAIN_GAP);
 
   // B is a single card (height only domain chrome height)
   assert.ok(positions["research.domain.b"]!.y + domainBH > positions["research.domain.b"]!.y);
@@ -212,16 +188,14 @@ test("layoutResearchFocus all-collapsed stacks domains only", () => {
     domainCollapseKeys: new Set(["research.domain.a", "research.domain.b"]),
   });
 
-  const domainX = FOCUS_NODE_WIDTH + RESEARCH_FOCUS_LAYER_GAP + FOCUS_NODE_WIDTH + RESEARCH_FOCUS_LAYER_GAP;
+  const domainX =
+    FOCUS_NODE_WIDTH + RESEARCH_FOCUS_LAYER_GAP + FOCUS_NODE_WIDTH + RESEARCH_FOCUS_LAYER_GAP;
   assert.equal(positions["research.domain.a"]!.x, domainX);
   assert.equal(positions["research.domain.b"]!.x, domainX);
   assert.equal(positions["research.domain.a"]!.y, 0);
 
   const domainAH = contentNodeHeight(domainA, { domainCollapseChrome: true });
-  assert.equal(
-    positions["research.domain.b"]!.y,
-    domainAH + RESEARCH_FOCUS_DOMAIN_GAP,
-  );
+  assert.equal(positions["research.domain.b"]!.y, domainAH + RESEARCH_FOCUS_DOMAIN_GAP);
   assert.ok(positions["research.domain.a"]!.y < positions["research.domain.b"]!.y);
   assert.equal(Object.keys(positions).filter((k) => k.includes("leaf")).length, 0);
 });

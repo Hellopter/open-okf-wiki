@@ -7,8 +7,8 @@ import {
   safeParseAgentCommand,
 } from "@okf-wiki/contract";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
-import { getLogger } from "../logging/index.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
+import { getLogger } from "../logging/index.ts";
 import {
   createLiveSession,
   deleteLiveSession,
@@ -179,10 +179,15 @@ export async function handleAgentSessionEvents(
   try {
     const pending: AgentSseEvent[] = [];
     let ready = false;
-    unsubscribe = await subscribeSession(workspace, sessionId, (event) => {
-      if (ready) writeSse(res, event);
-      else pending.push(event);
-    });
+    unsubscribe = await subscribeSession(
+      workspace,
+      sessionId,
+      (event) => {
+        if (ready) writeSse(res, event);
+        else pending.push(event);
+      },
+      close,
+    );
     const snapshot = await sessionSnapshot(workspace, sessionId);
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",

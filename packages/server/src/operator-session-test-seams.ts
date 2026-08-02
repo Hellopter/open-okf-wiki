@@ -1,5 +1,5 @@
 import { closeOperatorSessions } from "./operator-sessions.ts";
 
-export function resetOperatorSessionsForTests(): void {
-  closeOperatorSessions();
+export async function resetOperatorSessionsForTests(): Promise<void> {
+  await closeOperatorSessions();
 }

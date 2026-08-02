@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   type AttemptMetrics,
+  type BoundInput,
   contractForNode,
   type PiAttemptArtifactDescriptor,
   type PiAttemptExecutor,
@@ -15,6 +16,7 @@ import {
   type PiAttemptNodeDetail,
   PiAttemptNodeDetailSchema,
   type PiAttemptOutcome,
+  validateBoundInputs,
   type WikiRunArtifactKind,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
@@ -149,20 +151,22 @@ export async function runScheduler(host: SchedulerHost): Promise<void> {
  * Count in-flight Attempts by kind for concurrency gates.
  * Uses durable `nodes.state = 'running'` so each claim transaction sees prior claims.
  */
-export function runningCountByKind(host: SchedulerHost): Map<string, number> {
+export function runningCountByKind(host: SchedulerHost, runId?: string): Map<string, number> {
   const counts = new Map<string, number>();
+  const runFilter = runId ? "AND nodes.run_id = ?" : "";
   const rows = asRows(
     host.db
       .prepare(
         `SELECT kind, COUNT(*) AS count FROM nodes
          WHERE state = 'running'
+           ${runFilter}
            AND generation = (
              SELECT MAX(n2.generation) FROM nodes n2
              WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
            )
          GROUP BY kind`,
       )
-      .all(),
+      .all(...(runId ? [runId] : [])),
   );
   for (const row of rows) {
     counts.set(requiredText(row, "kind"), requiredNumber(row, "count"));
@@ -176,19 +180,8 @@ export function runningCountByKind(host: SchedulerHost): Map<string, number> {
  * Skips kinds already at workspace.orchestration concurrency.
  */
 export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
-  const activeAttemptCount = requiredNumber(
-    asRow(
-      host.db.prepare("SELECT COUNT(*) AS count FROM attempts WHERE state = 'running'").get(),
-    ) ?? {},
-    "count",
-  );
-  if (activeAttemptCount >= host.workspace.orchestration.maxConcurrentAttempts) return undefined;
-  const running = runningCountByKind(host);
-
-  if (canClaimKind(host.workspace, "freeze", running)) {
-    const freeze = claimNodeByKey(host, "freeze", "freeze");
-    if (freeze) return freeze;
-  }
+  const freeze = claimNodeByKey(host, "freeze", "freeze");
+  if (freeze) return freeze;
 
   const ready = asRows(
     host.db
@@ -212,12 +205,23 @@ export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
     ...ready.filter((row) => isPiAttemptKind(requiredText(row, "kind"))),
   ];
   for (const row of ordered) {
+    const runId = requiredText(row, "run_id");
     const kind = requiredText(row, "kind");
     const nodeKey = requiredText(row, "node_key");
+    const workspace = host.workspaceForRun(runId);
     if (nodeKey === "freeze") continue;
     if (isGateKind(kind)) continue;
     if (isPiAttemptKind(kind) && !host.piAttemptExecutor) continue;
-    if (!canClaimKind(host.workspace, kind, running)) continue;
+    const activeAttemptCount = requiredNumber(
+      asRow(
+        host.db
+          .prepare("SELECT COUNT(*) AS count FROM attempts WHERE run_id = ? AND state = 'running'")
+          .get(runId),
+      ) ?? {},
+      "count",
+    );
+    if (activeAttemptCount >= workspace.orchestration.maxConcurrentAttempts) continue;
+    if (!canClaimKind(workspace, kind, runningCountByKind(host, runId))) continue;
     const activeRuns = requiredNumber(
       asRow(
         host.db
@@ -232,17 +236,13 @@ export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
           .prepare(
             "SELECT 1 AS present FROM attempts WHERE run_id = ? AND state = 'running' LIMIT 1",
           )
-          .get(requiredText(row, "run_id")),
+          .get(runId),
       ),
     );
-    if (!runHasAttempt && activeRuns >= host.workspace.orchestration.maxActiveRuns) continue;
-    if (!host.upstreamsSucceeded(requiredText(row, "run_id"), nodeKey)) continue;
+    if (!runHasAttempt && activeRuns >= workspace.orchestration.maxActiveRuns) continue;
+    if (!host.upstreamsSucceeded(runId, nodeKey)) continue;
     const claim = claimPreparedRow(host, row);
-    if (claim) {
-      // Reserve the slot in this transaction fill pass so sibling claims see it.
-      running.set(kind, (running.get(kind) ?? 0) + 1);
-      return claim;
-    }
+    if (claim) return claim;
   }
   return undefined;
 }
@@ -270,6 +270,17 @@ export function claimNodeByKey(
   );
   if (!node) return undefined;
   const runId = requiredText(node, "run_id");
+  const workspace = host.workspaceForRun(runId);
+  const activeAttemptCount = requiredNumber(
+    asRow(
+      host.db
+        .prepare("SELECT COUNT(*) AS count FROM attempts WHERE run_id = ? AND state = 'running'")
+        .get(runId),
+    ) ?? {},
+    "count",
+  );
+  if (activeAttemptCount >= workspace.orchestration.maxConcurrentAttempts) return undefined;
+  if (!canClaimKind(workspace, kind, runningCountByKind(host, runId))) return undefined;
   const activeRuns = requiredNumber(
     asRow(
       host.db
@@ -285,7 +296,7 @@ export function claimNodeByKey(
         .get(runId),
     ),
   );
-  if (!runHasAttempt && activeRuns >= host.workspace.orchestration.maxActiveRuns) {
+  if (!runHasAttempt && activeRuns >= workspace.orchestration.maxActiveRuns) {
     return undefined;
   }
   if (nodeKey !== "freeze" && !host.upstreamsSucceeded(requiredText(node, "run_id"), nodeKey)) {
@@ -808,6 +819,7 @@ function isDynamicPiNodeKind(
 }
 
 export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): PiAttemptInput {
+  const workspace = host.workspaceForRun(claim.runId);
   const runDir = runWorkDir(host.workspace.rootPath, claim.runId);
   const attemptDir = path.join(runDir, "attempts", claim.attemptId);
   const workDir = path.join(attemptDir, "work");
@@ -834,6 +846,10 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
       sealedAt: requiredText(row, "sealed_at"),
     },
   }));
+  validateBoundInputs(
+    contractForNode(claim.kind, claim.nodeKey),
+    sealedInputs.map((input): BoundInput => ({ role: input.role, kind: input.artifact.kind })),
+  );
   const sourcesInput = sealedInputs.find((item) => item.role === "sources");
   const skillInput = sealedInputs.find((item) => item.role === "skill");
   if (!sourcesInput || !skillInput) {
@@ -846,7 +862,7 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
       sourcePaths[source.id] = path.join(sourcesInput.readOnlyPath, source.id);
     }
   } else {
-    for (const source of host.workspace.sources) {
+    for (const source of workspace.sources) {
       sourcePaths[source.id] = path.join(sourcesInput.readOnlyPath, source.id);
     }
   }
@@ -872,7 +888,7 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
       ...(detail ? { detail } : {}),
     },
     inputDigest: host.attemptInputDigest(claim.attemptId),
-    workspace: host.workspace,
+    workspace,
     sealedInputs,
     attemptDir,
     workDir,
@@ -1057,7 +1073,7 @@ export function shouldAutoRetryResearch(
 ): boolean {
   if (!RESEARCH_AUTO_RETRY_KINDS.has(claim.kind)) return false;
   // Align with workspace.limits.retry.enabled — off means no control-plane auto-requeue.
-  if (host.workspace.limits.retry.enabled === false) return false;
+  if (host.workspaceForRun(claim.runId).limits.retry.enabled === false) return false;
   if (host.closed) return false;
   const run = asRow(
     host.db.prepare("SELECT cancel_requested FROM runs WHERE run_id = ?").get(claim.runId),

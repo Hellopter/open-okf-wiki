@@ -6,7 +6,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import pino, { type DestinationStream, type Logger, type LoggerOptions } from "pino";
-import { type ServerLogConfig, loadServerLogConfig } from "./config.ts";
+import { loadServerLogConfig, type ServerLogConfig } from "./config.ts";
 
 const REDACT_PATHS = [
   "apiKey",
@@ -108,7 +108,7 @@ export function getLogConfig(): ServerLogConfig {
 }
 
 /** Test seam: inject a silent or mock logger; null resets to lazy env init. */
-export function setLoggerForTests(logger: Logger | null, config?: ServerLogConfig | null): void {
+export function setLoggerForTest(logger: Logger | null, config?: ServerLogConfig | null): void {
   root = logger;
   lastConfig = config === undefined ? (logger ? lastConfig : null) : config;
 }

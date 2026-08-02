@@ -28,6 +28,7 @@ import {
   type WikiRunSpecRead,
   WikiRunSpecReadSchema,
   type WorkspaceConfig,
+  WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import {
   type FreezeRunBoundaryInput,
@@ -51,7 +52,7 @@ import {
   preparePlanExecutionPlan as preparePlanExecutionPlanImpl,
   recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
 } from "./wiki-runs/attempt-success.js";
-import { CandidateReview } from "./wiki-runs/candidate-review.js";
+import { type CandidateReadHost, CandidateReview } from "./wiki-runs/candidate-review.js";
 import {
   applyCommand as applyCommandImpl,
   applyRerunAt as applyRerunAtImpl,
@@ -187,14 +188,13 @@ class WikiRunsOwner implements WikiRuns {
     ) => Promise<FrozenRunBoundary> = freezeRunBoundary,
   ) {}
 
-  /** Hot-swap workspace config for subsequent StartRun / attempts (same SQLite owner). */
-  replaceWorkspace(workspace: WorkspaceConfig): void {
+  /** Update only the snapshot used by a later StartRun; existing Runs are immutable. */
+  setWorkspaceForNewRuns(workspace: WorkspaceConfig): void {
     this.assertOpen();
     if (workspace.rootPath !== this.workspace.rootPath) {
-      throw new Error("replaceWorkspace rootPath must match the open owner");
+      throw new Error("setWorkspaceForNewRuns rootPath must match the open owner");
     }
     this.workspace = workspace;
-    this.refreshGateExpiryTimer();
   }
 
   async dispatch(command: RunCommand, context: RunCommandContext): Promise<RunCommandReceipt> {
@@ -368,17 +368,17 @@ class WikiRunsOwner implements WikiRuns {
 
   async readCandidatePage(input: { runId: string; candidateDigest: string; pagePath: string }) {
     this.assertOpen();
-    return new CandidateReview(this.commandsHost()).readPage(input);
+    return new CandidateReview(this.candidateReadHost()).readPage(input);
   }
 
   async readCandidateTree(input: { runId: string; candidateDigest: string }) {
     this.assertOpen();
-    return new CandidateReview(this.commandsHost()).readTree(input);
+    return new CandidateReview(this.candidateReadHost()).readTree(input);
   }
 
   async readCandidateDiff(input: { runId: string; candidateDigest: string; pagePath: string }) {
     this.assertOpen();
-    return new CandidateReview(this.commandsHost()).readDiff(input);
+    return new CandidateReview(this.candidateReadHost()).readDiff(input);
   }
 
   async readAttemptTranscript(input: {
@@ -573,13 +573,22 @@ class WikiRunsOwner implements WikiRuns {
     return reconcileApplyingEffectImpl(this.effectsHost(), input);
   }
 
-  /** Minimum host surface: workspace + db + emit (reads live workspace after replaceWorkspace). */
+  /** Minimum host surface: StartRun config + immutable per-Run config + db + emit. */
   private baseCtx(): WikiRunsDbCtx {
     return {
       workspace: this.workspace,
+      workspaceForRun: (runId) => this.workspaceForRun(runId),
       db: this.db,
       emit: (runId, type) => this.emit(runId, type),
     };
+  }
+
+  private workspaceForRun(runId: string): WorkspaceConfig {
+    const row = asRow(
+      this.db.prepare("SELECT freeze_config_json FROM runs WHERE run_id = ?").get(runId),
+    );
+    if (!row) throw new WikiRunsRequestError("not_found", `run not found: ${runId}`);
+    return WorkspaceConfigSchema.parse(parseJson<unknown>(requiredText(row, "freeze_config_json")));
   }
 
   /** baseCtx + owner IMMEDIATE transaction. */
@@ -669,6 +678,10 @@ class WikiRunsOwner implements WikiRuns {
       resolveGate: (command, context, payloadDigest) =>
         this.resolveGate(command, context, payloadDigest),
     };
+  }
+
+  private candidateReadHost(): CandidateReadHost {
+    return { db: this.db, workspace: this.workspace };
   }
 
   private transcriptHost(): TranscriptHost {
@@ -984,26 +997,26 @@ class WikiRunsOwner implements WikiRuns {
     this.clearGateExpiryTimer();
     if (this.closed) return;
 
-    const timeoutSec = this.workspace.limits?.gateTimeoutSeconds ?? 0;
-    if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return;
-
-    const row = asRow(
+    const rows = asRows(
       this.db
         .prepare(
-          `SELECT opened_at FROM gates
-           WHERE state = 'open' AND kind IN ('plan', 'publication', 'fix')
-           ORDER BY opened_at, gate_id
-           LIMIT 1`,
+          `SELECT gates.run_id, gates.opened_at FROM gates
+           WHERE gates.state = 'open' AND gates.kind IN ('plan', 'publication', 'fix')
+           ORDER BY gates.opened_at, gates.gate_id`,
         )
-        .get(),
+        .all(),
     );
-    if (!row) return;
-
-    const openedAt = requiredText(row, "opened_at");
-    const openedMs = Date.parse(openedAt);
-    if (!Number.isFinite(openedMs)) return;
-
-    const delayMs = Math.max(0, openedMs + timeoutSec * 1_000 - Date.now());
+    let delayMs: number | undefined;
+    for (const row of rows) {
+      const timeoutSec =
+        this.workspaceForRun(requiredText(row, "run_id")).limits?.gateTimeoutSeconds ?? 0;
+      if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) continue;
+      const openedMs = Date.parse(requiredText(row, "opened_at"));
+      if (!Number.isFinite(openedMs)) continue;
+      const candidate = Math.max(0, openedMs + timeoutSec * 1_000 - Date.now());
+      delayMs = delayMs === undefined ? candidate : Math.min(delayMs, candidate);
+    }
+    if (delayMs === undefined) return;
     this.gateExpiryTimer = setTimeout(() => {
       this.gateExpiryTimer = undefined;
       if (!this.closed) this.schedule();

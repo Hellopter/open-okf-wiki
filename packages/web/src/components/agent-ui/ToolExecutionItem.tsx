@@ -2,8 +2,8 @@ import { WorkflowIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ToolItemVM } from "./adapters/types";
 import { ActivityCollapsible } from "./ActivityCollapsible";
+import type { ToolItemVM } from "./adapters/types";
 import { CodeSurface } from "./CodeSurface";
 import { DiffSurface } from "./DiffSurface";
 import { StatusBadge } from "./StatusBadge";
@@ -103,8 +103,7 @@ export function ToolExecutionItem({
   const hasRawInput = Boolean(item.inputText);
   const hasRawOutput = showOutput;
   const hasError = Boolean(item.errorText);
-  const hasBody =
-    showSummary || showPrimaryFields || hasRawInput || hasRawOutput || hasError;
+  const hasBody = showSummary || showPrimaryFields || hasRawInput || hasRawOutput || hasError;
 
   const shellClass = cn(
     "w-full min-w-0 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2",
@@ -113,11 +112,7 @@ export function ToolExecutionItem({
 
   const openRun =
     item.openRunId && onOpenRun ? (
-      <OpenRunButton
-        openRunId={item.openRunId}
-        openRunLabel={openRunLabel}
-        onOpenRun={onOpenRun}
-      />
+      <OpenRunButton openRunId={item.openRunId} openRunLabel={openRunLabel} onOpenRun={onOpenRun} />
     ) : null;
 
   // Controlled open: expand while running/pending/error; collapse when done.
@@ -136,11 +131,7 @@ export function ToolExecutionItem({
 
   if (!hasBody) {
     return (
-      <div
-        className={shellClass}
-        data-testid={item.testId}
-        data-slot="tool-execution-item"
-      >
+      <div className={shellClass} data-testid={item.testId} data-slot="tool-execution-item">
         <div className="flex items-start gap-1">
           <HeaderRow item={item} descriptor={descriptor} showChevronSpacer />
           {openRun}
@@ -164,9 +155,7 @@ export function ToolExecutionItem({
           trigger={<HeaderRow item={item} descriptor={descriptor} />}
           contentClassName="mt-2 space-y-2 border-t border-border/50 pt-2"
         >
-          {showSummary ? (
-            <p className="text-sm text-muted-foreground">{item.summary}</p>
-          ) : null}
+          {showSummary ? <p className="text-sm text-muted-foreground">{item.summary}</p> : null}
 
           {showPrimaryFields ? (
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">

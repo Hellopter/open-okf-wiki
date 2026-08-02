@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -9,7 +9,12 @@ import { listRecentWorkspaces, registerWorkspaceInAppIndex } from "./workspace-a
 import {
   createWorkspace,
   loadWorkspace,
+  mutateWorkspace,
+  parseResetWikiRunsControlStoreArgs,
+  resetWikiRunsControlStore,
   saveWorkspace,
+  WIKI_RUNS_CONTROL_STORE_FILE_NAME,
+  WorkspaceRevisionConflictError,
   workspaceConfigPath,
 } from "./workspace-config.js";
 import { addSource, updateSource } from "./workspace-source.js";
@@ -67,6 +72,7 @@ test("create/load/save workspace roundtrip", async () => {
   assert.equal(config.rootPath, path.resolve(root));
   assert.equal(config.publicationPath, path.join(path.resolve(root), "wiki"));
   assert.equal(config.version, 3);
+  assert.equal(config.revision, 0);
   assert.equal(config.model.id, "openai/corp-model");
   assert.equal(config.model.profileId, "corp-profile");
   assert.equal(config.sources.length, 0);
@@ -97,6 +103,170 @@ test("create/load/save workspace roundtrip", async () => {
   assert.deepEqual(loaded.sources, config.sources);
   assert.equal(loaded.orchestration.maxDomainFanOut, 4);
   assert.deepEqual(loaded.roleModels.reviewers, []);
+  assert.equal(loaded.revision, 0);
+});
+
+test("loadWorkspace reads legacy v3 documents as revision zero", async () => {
+  const root = await tempDir("okf-wiki-ws-legacy-revision-");
+  const config = await createWorkspace({
+    name: "Legacy revision",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  const { revision: _revision, ...legacy } = config;
+  await writeFile(workspaceConfigPath(root), `${JSON.stringify(legacy)}\n`, "utf8");
+
+  const loaded = await loadWorkspace(root);
+  assert.equal(loaded.revision, 0);
+
+  const updated = await mutateWorkspace(root, 0, (workspace) => ({
+    ...workspace,
+    name: "Persisted revision",
+  }));
+  assert.equal(updated.revision, 1);
+  assert.equal((await loadWorkspace(root)).revision, 1);
+});
+
+test("mutateWorkspace serializes one config path and rejects stale revisions", async () => {
+  const root = await tempDir("okf-wiki-ws-mutate-");
+  const config = await createWorkspace({
+    name: "Original",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+
+  let releaseFirst: (() => void) | undefined;
+  const firstReleased = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstEntered: (() => void) | undefined;
+  const firstEnteredPromise = new Promise<void>((resolve) => {
+    firstEntered = resolve;
+  });
+
+  const first = mutateWorkspace(root, 0, async (workspace) => {
+    firstEntered?.();
+    await firstReleased;
+    return { ...workspace, name: "First" };
+  });
+  await firstEnteredPromise;
+  const stale = mutateWorkspace(root, 0, (workspace) => ({
+    ...workspace,
+    name: "Stale",
+  }));
+  releaseFirst?.();
+
+  const saved = await first;
+  assert.equal(saved.revision, 1);
+  await assert.rejects(
+    () => stale,
+    (error: unknown) =>
+      error instanceof WorkspaceRevisionConflictError &&
+      error.expectedRevision === 0 &&
+      error.current.revision === 1,
+  );
+  const final = await loadWorkspace(root);
+  assert.equal(final.name, "First");
+  assert.equal(final.revision, 1);
+});
+
+test("saveWorkspace protects legacy read-modify-write callers with revision CAS", async () => {
+  const root = await tempDir("okf-wiki-ws-save-cas-");
+  const config = await createWorkspace({
+    name: "Original",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+  const firstRead = await loadWorkspace(root);
+  const secondRead = await loadWorkspace(root);
+
+  await saveWorkspace({ ...firstRead, name: "First writer" });
+  await assert.rejects(
+    () => saveWorkspace({ ...secondRead, name: "Stale writer" }),
+    WorkspaceRevisionConflictError,
+  );
+  const final = await loadWorkspace(root);
+  assert.equal(final.name, "First writer");
+  assert.equal(final.revision, 1);
+});
+
+test("resetWikiRunsControlStore removes only explicit durable Run state", async () => {
+  const root = await tempDir("okf-wiki-ws-reset-control-");
+  const config = await createWorkspace({
+    name: "Reset control",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+
+  const meta = path.join(root, ".okf-wiki");
+  const control = path.join(meta, WIKI_RUNS_CONTROL_STORE_FILE_NAME);
+  await writeFile(control, "control");
+  await writeFile(`${control}-wal`, "wal");
+  await writeFile(`${control}-shm`, "shm");
+  await mkdir(path.join(meta, "runs", "run-1", "artifacts"), { recursive: true });
+  await writeFile(path.join(meta, "runs", "run-1", "artifacts", "sealed.txt"), "sealed");
+  await mkdir(path.join(meta, "pi-sessions"), { recursive: true });
+  const piSession = path.join(meta, "pi-sessions", "session.jsonl");
+  await writeFile(piSession, '{"role":"user"}\n');
+  const unrelated = path.join(meta, "keep.txt");
+  await writeFile(unrelated, "keep");
+
+  const result = await resetWikiRunsControlStore(root);
+  assert.deepEqual(result.removed, [
+    "workflow.sqlite",
+    "workflow.sqlite-wal",
+    "workflow.sqlite-shm",
+    "runs",
+  ]);
+  assert.equal((await loadWorkspace(root)).id, config.id);
+  assert.equal(await readFile(piSession, "utf8"), '{"role":"user"}\n');
+  assert.equal(await readFile(unrelated, "utf8"), "keep");
+  await assert.rejects(() => access(control));
+  await assert.rejects(() => access(path.join(meta, "runs")));
+});
+
+test("reset control store CLI parser requires an absolute target and confirmation", () => {
+  const root = path.resolve("/tmp/okf-wiki-reset-cli");
+  assert.deepEqual(parseResetWikiRunsControlStoreArgs(["--workspace", root, "--yes"]), {
+    rootPath: root,
+  });
+  assert.deepEqual(parseResetWikiRunsControlStoreArgs(["--", "--workspace", root, "--yes"]), {
+    rootPath: root,
+  });
+  assert.throws(() => parseResetWikiRunsControlStoreArgs(["--workspace", root]), /requires --yes/);
+  assert.throws(
+    () => parseResetWikiRunsControlStoreArgs(["--workspace", "relative", "--yes"]),
+    /absolute/,
+  );
+  assert.throws(
+    () => parseResetWikiRunsControlStoreArgs(["--workspace", root, "--yes", "--force"]),
+    /unknown/,
+  );
+});
+
+test("reset-control-store command removes only the requested Workspace control state", async () => {
+  const root = await tempDir("okf-wiki-ws-reset-cli-command-");
+  const config = await createWorkspace({
+    name: "Reset command",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+  const control = path.join(root, ".okf-wiki", WIKI_RUNS_CONTROL_STORE_FILE_NAME);
+  await writeFile(control, "control");
+
+  const command = path.resolve(process.cwd(), "../../scripts/reset-control-store.mjs");
+  const result = spawnSync(process.execPath, [command, "--workspace", root, "--yes"], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Reset WikiRuns control store/);
+  await assert.rejects(() => access(control));
+  assert.equal((await loadWorkspace(root)).id, config.id);
 });
 
 test("saveWorkspace allows empty sources (draft workspace)", async () => {

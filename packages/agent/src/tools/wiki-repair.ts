@@ -22,7 +22,6 @@ export type RerunWikiNode = (input: {
 
 export type CreateWikiRepairToolInput = {
   workspace: WorkspaceConfig;
-  resolveWorkspace?: () => Promise<WorkspaceConfig>;
   sessionId: string;
   /**
    * Optional durable RerunNode dispatch. When omitted, the tool fails closed
@@ -162,8 +161,6 @@ export function createWikiRepairTool(
           { isError: true },
         );
       }
-
-      if (input.resolveWorkspace) await input.resolveWorkspace();
 
       const requestedNodeKey = args.nodeKey?.trim();
       const preferredKey = requestedNodeKey || "write.root";

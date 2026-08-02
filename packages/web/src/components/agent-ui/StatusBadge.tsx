@@ -1,11 +1,7 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import {
-  type StatusDescriptor,
-  type StatusKind,
-  describeStatus,
-} from "./status";
+import { describeStatus, type StatusDescriptor, type StatusKind } from "./status";
 
 export type StatusBadgeProps = {
   /** Precomputed descriptor (preferred when the parent already mapped status). */

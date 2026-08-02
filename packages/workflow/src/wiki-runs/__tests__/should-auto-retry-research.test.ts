@@ -56,15 +56,17 @@ function host(opts: {
   cancelRequested?: boolean;
   failedAttemptCount?: number;
 }): SchedulerHost {
+  const config = workspace(opts.retryEnabled ?? true);
   return {
-    workspace: workspace(opts.retryEnabled ?? true),
+    workspace: config,
+    workspaceForRun: () => config,
     db: openPolicyDb({
       cancelRequested: opts.cancelRequested,
       failedAttemptCount: opts.failedAttemptCount,
     }),
     closed: opts.closed ?? false,
     // Remaining SchedulerHost fields are unused by shouldAutoRetryResearch.
-  } as SchedulerHost;
+  } as unknown as SchedulerHost;
 }
 
 const researchClaim: ClaimedNode = {

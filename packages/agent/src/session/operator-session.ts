@@ -129,7 +129,6 @@ async function buildOperatorSession(
   });
   const wikiRepair = createWikiRepairTool({
     workspace: input.workspace,
-    resolveWorkspace: input.wikiProduce.resolveWorkspace,
     sessionId,
     // Optional RerunNode wiring is composed by the Server; without it the tool
     // fails closed and points operators at durable Run commands.

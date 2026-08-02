@@ -90,6 +90,9 @@ export function setObservationSnapshot(
   state: RunObservationState,
   snapshot: WikiRunSnapshot,
 ): RunObservationState {
+  // GET and SSE race on first load and after reconnect. Run revisions are
+  // monotonic durable truth, so an older frame must never replace newer state.
+  if (state.snapshot && snapshot.revision < state.snapshot.revision) return state;
   // Do not replace a selected attempt with the newest generation. A URL may
   // point at older history and that history remains a valid observation target.
   const selectedAttemptId =

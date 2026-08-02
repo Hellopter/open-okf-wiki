@@ -36,10 +36,7 @@ export function parseEnvFile(content: string): Record<string, string> {
  * Apply env file into process.env. Existing process env always wins
  * (does not override). Returns paths that were applied.
  */
-export function applyEnvFile(
-  filePath: string,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
+export function applyEnvFile(filePath: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!existsSync(filePath)) return false;
   let content: string;
   try {
@@ -57,9 +54,7 @@ export function applyEnvFile(
 }
 
 /** Monorepo root: packages/server/src → ../../.. */
-export function monorepoRootFromServerSrc(
-  fromUrl: string = import.meta.url,
-): string {
+export function monorepoRootFromServerSrc(fromUrl: string = import.meta.url): string {
   return path.resolve(path.dirname(fileURLToPath(fromUrl)), "../../..");
 }
 
@@ -71,10 +66,7 @@ export function loadEnvFiles(
   env: NodeJS.ProcessEnv = process.env,
   root: string = monorepoRootFromServerSrc(),
 ): string[] {
-  const candidates = [
-    path.join(root, ".env"),
-    path.join(root, "packages", "server", ".env"),
-  ];
+  const candidates = [path.join(root, ".env"), path.join(root, "packages", "server", ".env")];
   const loaded: string[] = [];
   for (const file of candidates) {
     if (applyEnvFile(file, env)) loaded.push(file);

@@ -24,7 +24,7 @@ import {
   WorkspaceSummarySchema,
 } from "@okf-wiki/contract";
 import { z } from "zod";
-import { request } from "./client";
+import { ApiError, request } from "./client";
 
 export type {
   GitProbe,
@@ -43,6 +43,16 @@ export type SourceProbeResult = {
   probe: GitProbe;
 };
 
+/** Decode the authoritative Workspace returned with a stale write rejection. */
+export function workspaceFromRevisionConflict(error: unknown): WorkspaceConfig | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  if (!error.body || typeof error.body !== "object") return null;
+  const details = (error.body as Record<string, unknown>).details;
+  if (!details || typeof details !== "object") return null;
+  const parsed = WorkspaceConfigSchema.safeParse((details as Record<string, unknown>).workspace);
+  return parsed.success ? parsed.data : null;
+}
+
 export type CreateWorkspaceInput = {
   name: string;
   rootPath: string;
@@ -53,6 +63,7 @@ export type CreateWorkspaceInput = {
 };
 
 export type PatchWorkspaceInput = {
+  expectedRevision: number;
   name?: string;
   /** Catalog model profile id; denormalized model.id is resolved server-side. */
   modelProfileId?: string;
@@ -69,16 +80,19 @@ export type PatchWorkspaceInput = {
 };
 
 export type UpdateSourceInput = {
+  expectedRevision: number;
   applyDefaultIgnores?: boolean;
   ignore?: string[];
 };
 
 export type AddSourceInput = {
+  expectedRevision: number;
   path: string;
   id?: string;
 };
 
 export type CloneSourceInput = {
+  expectedRevision: number;
   remoteUrl: string;
   id?: string;
   relativeDir?: string;
@@ -106,6 +120,7 @@ const SkillFilesResponseSchema = z.object({
 });
 const SkillFileResponseSchema = z.object({ file: SkillFileContentSchema, writable: z.boolean() });
 const WriteSkillFileResponseSchema = z.object({
+  workspace: WorkspaceConfigSchema,
   file: SkillFileContentSchema,
   skill: SkillInfoSchema,
 });
@@ -118,8 +133,13 @@ export function listWorkspaces(): Promise<{ workspaces: WorkspaceSummary[] }> {
   return request("/api/workspaces").then(WorkspacesResponseSchema.parse);
 }
 
-export function getWorkspace(id: string): Promise<{ workspace: WorkspaceConfig }> {
-  return request(`/api/workspaces/${encodeURIComponent(id)}`).then(WorkspaceResponseSchema.parse);
+export function getWorkspace(
+  id: string,
+  init?: Pick<RequestInit, "signal">,
+): Promise<{ workspace: WorkspaceConfig }> {
+  return request(`/api/workspaces/${encodeURIComponent(id)}`, init).then(
+    WorkspaceResponseSchema.parse,
+  );
 }
 
 export function createWorkspace(
@@ -211,19 +231,21 @@ export function getWorkspaceSkill(workspaceId: string): Promise<{ skill: SkillIn
 
 export function createWorkspaceSkillFork(
   workspaceId: string,
+  expectedRevision: number,
 ): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/fork`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ expectedRevision }),
   }).then(WorkspaceSkillResponseSchema.parse);
 }
 
 export function resetWorkspaceSkill(
   workspaceId: string,
+  expectedRevision: number,
 ): Promise<{ workspace: WorkspaceConfig; skill: SkillInfo }> {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/reset`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ expectedRevision }),
   }).then(WorkspaceSkillResponseSchema.parse);
 }
 
@@ -253,8 +275,8 @@ export function readWorkspaceSkillFile(
 
 export function writeWorkspaceSkillFile(
   workspaceId: string,
-  input: { path: string; content: string },
-): Promise<{ file: SkillFileContent; skill: SkillInfo }> {
+  input: { expectedRevision: number; path: string; content: string },
+): Promise<{ workspace: WorkspaceConfig; file: SkillFileContent; skill: SkillInfo }> {
   return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/skill/files`, {
     method: "PUT",
     body: JSON.stringify(input),
@@ -264,10 +286,11 @@ export function writeWorkspaceSkillFile(
 export function deleteSource(
   workspaceId: string,
   sourceId: string,
+  expectedRevision: number,
 ): Promise<{ workspace: WorkspaceConfig }> {
   return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/sources/${encodeURIComponent(sourceId)}`,
-    { method: "DELETE" },
+    { method: "DELETE", body: JSON.stringify({ expectedRevision }) },
   ).then(WorkspaceResponseSchema.parse);
 }
 

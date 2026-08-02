@@ -10,7 +10,7 @@ import {
   RunCommandContext,
   RunCommandReceipt,
 } from "@okf-wiki/contract";
-import { CandidateReview } from "./candidate-review.js";
+import { CandidateReviewCommands } from "./candidate-review.js";
 import { digest, now } from "./crypto-util.js";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { countModelWikiCandidates } from "./evaluation/candidate.js";
@@ -107,13 +107,13 @@ export function applyCommand(
   if (command.type === "pause_run") return pauseRun(host, command, context, payloadDigest);
   if (command.type === "resume_run") return resumeRun(host, command, context, payloadDigest);
   if (command.type === "create_review_thread") {
-    return new CandidateReview(host).createThread(command, context, payloadDigest);
+    return new CandidateReviewCommands(host).createThread(command, context, payloadDigest);
   }
   if (command.type === "resolve_review_thread") {
-    return new CandidateReview(host).resolveThread(command, context, payloadDigest);
+    return new CandidateReviewCommands(host).resolveThread(command, context, payloadDigest);
   }
   if (command.type === "request_repair") {
-    return new CandidateReview(host).requestRepair(command, context, payloadDigest);
+    return new CandidateReviewCommands(host).requestRepair(command, context, payloadDigest);
   }
   if (command.type === "resolve_gate") return host.resolveGate(command, context, payloadDigest);
   if (command.type === "cancel_run") return cancelRun(host, command, context, payloadDigest);

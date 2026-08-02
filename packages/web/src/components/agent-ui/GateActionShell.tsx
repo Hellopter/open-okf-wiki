@@ -28,10 +28,7 @@ export function GateActionShell({
 }: GateActionShellProps) {
   return (
     <section
-      className={cn(
-        "min-w-0 border-y border-border bg-muted/20 px-3 py-3",
-        className,
-      )}
+      className={cn("min-w-0 border-y border-border bg-muted/20 px-3 py-3", className)}
       data-slot="gate-action-shell"
     >
       <h3 className="text-sm font-semibold">{title}</h3>

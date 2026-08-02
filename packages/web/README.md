@@ -18,7 +18,7 @@ The Run Workspace (`/w/:id/runs`) is the operator surface. Sources, Published Wi
 
 The workspace uses two projection paths:
 
-1. **WikiRuns index SSE** — `RunWorkspacePage` loads `GET …/runs/index` then subscribes to EventSource `…/runs/index/events`.
+1. **WikiRuns index SSE** — `WorkspaceAgentPage` loads `GET …/runs/index` then subscribes to EventSource `…/runs/index/events`.
 2. **WikiRuns detail SSE** — a Run detail view loads `GET …/runs/:runId` then subscribes to EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect; heartbeats ignored). Full snapshots replace projection by event id.
 
 Plan/publication gates and failed-node retry/rerun dispatch durable WikiRuns commands (`ResolveGate`, `RetryFailedNode`, `RerunNode`). There is no Agent Session HTTP or browser route surface.

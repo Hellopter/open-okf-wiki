@@ -11,7 +11,10 @@ import type { ClaimedNode } from "./types.js";
 
 /** Workspace + SQLite + event emit — minimum control-plane surface. */
 export type WikiRunsDbCtx = {
+  /** Latest Workspace config, used exclusively when accepting StartRun. */
   workspace: WorkspaceConfig;
+  /** Immutable configuration snapshot captured by the given Run at StartRun. */
+  workspaceForRun(runId: string): WorkspaceConfig;
   db: DatabaseSync;
   emit(runId: string, type: WikiRunEvent["type"]): number;
 };

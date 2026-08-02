@@ -65,12 +65,7 @@ function ToolGroup({
 /**
  * Denoised assistant turn: thinking → tools → prose, no Bot header / forced timestamp.
  */
-export function AssistantTurn({
-  message,
-  labels,
-  onOpenRun,
-  className,
-}: AssistantTurnProps) {
+export function AssistantTurn({ message, labels, onOpenRun, className }: AssistantTurnProps) {
   const streaming = message.status === "streaming";
   const mdMode = streaming ? "streaming" : "static";
 
@@ -90,7 +85,7 @@ export function AssistantTurn({
     streaming &&
     !hasVisibleText &&
     !message.thinking &&
-    !(message.tools?.length) &&
+    !message.tools?.length &&
     !hasThinkingParts;
   let body: ReactNode;
 
@@ -133,9 +128,7 @@ export function AssistantTurn({
     const flushTools = () => {
       if (toolBuffer.length === 0) return;
       const key = `tools-${toolGroupIdx++}`;
-      nodes.push(
-        <ToolGroup key={key} tools={toolBuffer} labels={labels} onOpenRun={onOpenRun} />,
-      );
+      nodes.push(<ToolGroup key={key} tools={toolBuffer} labels={labels} onOpenRun={onOpenRun} />);
       toolBuffer = [];
     };
 

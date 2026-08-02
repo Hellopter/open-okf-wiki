@@ -81,9 +81,12 @@ test.describe("doctor / global settings", () => {
     await page.getByTestId("model-name-input").fill("Invalid Context Model");
     await page.getByTestId("model-id-input").fill("openai/invalid-context-model");
     await page.getByTestId("model-max-context").fill("0");
-    await page.getByTestId("model-editor").locator("form").evaluate((form) => {
-      form.noValidate = true;
-    });
+    await page
+      .getByTestId("model-editor")
+      .locator("form")
+      .evaluate((form) => {
+        form.noValidate = true;
+      });
     await page.getByTestId("model-save").click();
 
     const input = page.getByTestId("model-max-context");

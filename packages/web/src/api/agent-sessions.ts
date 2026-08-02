@@ -69,8 +69,11 @@ export function listOperatorCommands(): Promise<{ commands: OperatorCommandInfo[
   return request("/api/agent/commands").then(OperatorCommandsSchema.parse);
 }
 
-export function listAgentSessions(workspaceId: string): Promise<{ sessions: PiSessionSummary[] }> {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions`).then(
+export function listAgentSessions(
+  workspaceId: string,
+  init?: Pick<RequestInit, "signal">,
+): Promise<{ sessions: PiSessionSummary[] }> {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/agent/sessions`, init).then(
     SessionListSchema.parse,
   );
 }

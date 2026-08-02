@@ -33,54 +33,84 @@ export function useWorkspaceActivity({
   const [error, setError] = useState<unknown>(null);
   const autoSessionWorkspaceId = useRef<string | null>(null);
   const sessionsRef = useRef<PiSessionSummary[]>([]);
+  const resourceKeyRef = useRef("");
+  const runCursorRef = useRef(0);
 
-  const refresh = useCallback(async () => {
-    if (!workspaceId) return;
-    const [workspaceResult, sessionResult, runResult] = await Promise.all([
-      getWorkspace(workspaceId),
-      listAgentSessions(workspaceId),
-      getRunIndex(workspaceId),
-    ]);
-    let nextSessions = sessionResult.sessions;
-    if (
-      !activeSessionId &&
-      nextSessions.length === 0 &&
-      autoSessionWorkspaceId.current !== workspaceId
-    ) {
-      autoSessionWorkspaceId.current = workspaceId;
-      try {
-        const created = await createAgentSession(workspaceId);
-        nextSessions = [
-          {
-            id: created.session.id,
-            title: created.session.title,
-            updatedAt: created.session.createdAt,
-          },
-        ];
-      } catch (nextError) {
-        autoSessionWorkspaceId.current = null;
-        throw nextError;
+  const refresh = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!workspaceId) return;
+      const resourceKey = workspaceId;
+      const current = () => !signal?.aborted && resourceKeyRef.current === resourceKey;
+      const [workspaceResult, sessionResult, runResult] = await Promise.all([
+        getWorkspace(workspaceId, { signal }),
+        listAgentSessions(workspaceId, { signal }),
+        getRunIndex(workspaceId, { signal }),
+      ]);
+      if (!current()) return;
+      let nextSessions = sessionResult.sessions;
+      if (
+        !activeSessionId &&
+        nextSessions.length === 0 &&
+        autoSessionWorkspaceId.current !== workspaceId
+      ) {
+        autoSessionWorkspaceId.current = workspaceId;
+        try {
+          const created = await createAgentSession(workspaceId);
+          if (!current()) return;
+          nextSessions = [
+            {
+              id: created.session.id,
+              title: created.session.title,
+              updatedAt: created.session.createdAt,
+            },
+          ];
+        } catch (nextError) {
+          autoSessionWorkspaceId.current = null;
+          throw nextError;
+        }
       }
-    }
-    setWorkspace(workspaceResult.workspace);
-    sessionsRef.current = nextSessions;
-    setSessions(nextSessions);
-    setRuns(runResult.runs);
-    if (!activeSessionId && nextSessions[0]) onSelectInitialSession(nextSessions[0].id);
-  }, [activeSessionId, onSelectInitialSession, workspaceId]);
+      setWorkspace(workspaceResult.workspace);
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+      if (runResult.cursor >= runCursorRef.current) {
+        runCursorRef.current = runResult.cursor;
+        setRuns(runResult.runs);
+      }
+      if (!activeSessionId && nextSessions[0]) onSelectInitialSession(nextSessions[0].id);
+    },
+    [activeSessionId, onSelectInitialSession, workspaceId],
+  );
 
   useEffect(() => {
-    void refresh()
-      .catch(setError)
-      .finally(() => setLoading(false));
+    const controller = new AbortController();
+    resourceKeyRef.current = workspaceId;
+    runCursorRef.current = 0;
+    setWorkspace(null);
+    sessionsRef.current = [];
+    setSessions([]);
+    setRuns([]);
+    setError(null);
+    setLoading(true);
+    void refresh(controller.signal)
+      .catch((nextError: unknown) => {
+        if (!controller.signal.aborted) setError(nextError);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, [refresh]);
 
   useEffect(() => {
     if (!workspaceId) return;
+    const resourceKey = workspaceId;
     const source = new EventSource(wikiRunIndexEventsUrl(workspaceId));
     source.addEventListener("index", (event) => {
       try {
-        setRuns(parseWikiRunIndexEvent((event as MessageEvent<string>).data).runs);
+        const frame = parseWikiRunIndexEvent((event as MessageEvent<string>).data);
+        if (resourceKeyRef.current !== resourceKey || frame.eventId < runCursorRef.current) return;
+        runCursorRef.current = frame.eventId;
+        setRuns(frame.runs);
       } catch {
         // The next snapshot restores the run index after a malformed stream frame.
       }

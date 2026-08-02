@@ -30,8 +30,9 @@ export async function mechanicalPreparePublication(
   await cp(wikiPath, wikiStaging, { recursive: true, dereference: false });
   await rm(path.join(wikiStaging, ".okf-artifact-manifest.json"), { force: true });
 
+  const workspace = host.workspaceForRun(claim.runId);
   const publicationPath =
-    host.workspace.publicationPath || path.join(host.workspace.rootPath, "published-wiki");
+    workspace.publicationPath || path.join(workspace.rootPath, "published-wiki");
 
   // ADR 0035: capture live baseline under the publication lock before building.
   let expectedLiveDigest: string;
@@ -48,7 +49,7 @@ export async function mechanicalPreparePublication(
     const pinned = host.trustedPinnedInputs(claim.runId);
     const ids = pinned
       ? (pinned.sources as Array<{ id: string }>).map((s) => s.id)
-      : host.workspace.sources.map((s) => s.id);
+      : workspace.sources.map((s) => s.id);
     for (const id of ids) sources.push({ id, path: path.join(sourcesPath, id) });
   }
 

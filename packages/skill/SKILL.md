@@ -61,15 +61,16 @@ layers beyond this index.
 
 ### Phase order
 
-1. **Plan.** Read `skill/references/plan.md`. Inspect `sources/`, maintain the living Spec, and
-   decide whether Domain/Leaf research is needed. **Gate:** every intended page has a clear reader
+1. **Plan.** Read `skill/references/plan.md`. Inspect `sources/`, submit the draft Spec, and
+   decide whether bounded Leaf/Domain research is needed. **Gate:** every intended page has a clear reader
    purpose and enough inspected evidence to write.
 2. **Choose write branch.** Inspect `wiki/` with `ls` / `read`. Read `skill/references/generate.md`
    when it is empty; otherwise read `skill/references/refresh.md`. **Gate:** the selected branch
    reference has been read in full before write work begins.
-3. **Optional research branch.** When plan opened Domains/Leaves, follow
-   `skill/references/domain-research.md` and `skill/references/leaf-research.md`. Children return
-   evidence only; Root synthesizes Spec + receipts and re-opens load-bearing source spans. Do not
+3. **Optional research branch.** When the sealed Spec materializes Leaf/Domain work, follow
+   `skill/references/domain-research.md` and `skill/references/leaf-research.md`. Leaves investigate
+   their assigned scope first; Domains reduce the sealed Leaf evidence. Root synthesizes receipts and
+   re-opens load-bearing source spans. Models do not create children or retry attempts. Do not
    call Reviewer until staged Wiki pages exist.
 4. **Write the Wiki.** Select only relevant files from
    `skill/templates/{overview,architecture,module,flow,concept}.md`, read them in full, and adapt
@@ -81,8 +82,8 @@ layers beyond this index.
 5. **Review and finish.** Read `skill/references/review.md`. Treat Reviewer defects as blocking:
    repair each issue, returning to earlier steps when page scope or evidence changes. Do not claim
    completion while blocking defects remain — the run fails if review is unclean after repair
-   rounds. A partial, failed, or cancelled critical branch may be retried only within the Run
-   Boundary budget; if direct fallback research cannot complete it, fail the Wiki Run and preserve
+   rounds. A partial, failed, or cancelled critical branch is handled by the Workflow retry policy;
+   if direct fallback research cannot complete it, fail the Wiki Run and preserve
    the previous Published Wiki. Internal child or budget failure is not Needs Input. Then return
    the exact Markdown page manifest. **Gate:** every review check passes, every critical planned
    scope is complete, every non-critical cancellation is explicit in the Spec, and the manifest

@@ -1,4 +1,8 @@
-import { createPiStreamState, type PiStreamState, viewMessages } from "@okf-wiki/contract";
+import {
+  createSessionStreamState,
+  type SessionStreamState,
+  viewSessionMessages,
+} from "@okf-wiki/contract";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl, parseAgentSessionEvent } from "../api";
 import { useI18n } from "../i18n";
@@ -9,14 +13,16 @@ export type SessionConnection = "connecting" | "live" | "reconnecting" | "offlin
 
 export function useSessionConversation(workspaceId: string, sessionId: string | null) {
   const { t } = useI18n();
-  const [streamState, setStreamState] = useState<PiStreamState>(() => createPiStreamState());
+  const [streamState, setStreamState] = useState<SessionStreamState>(() =>
+    createSessionStreamState(),
+  );
   const [connection, setConnection] = useState<SessionConnection>("offline");
-  const messages = useMemo(() => viewMessages(streamState), [streamState]);
+  const messages = useMemo(() => viewSessionMessages(streamState), [streamState]);
   const status = streamState.agentStatus;
 
   useEffect(() => {
     if (!workspaceId || !sessionId) {
-      setStreamState(createPiStreamState());
+      setStreamState(createSessionStreamState());
       setConnection("offline");
       return;
     }

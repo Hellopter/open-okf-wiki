@@ -209,7 +209,7 @@ export function onAttemptSucceeded(
       planDigest: planPrep.digest,
     });
     // planConfirm=false: auto-approve — same onPlanAccepted path as ResolveGate approve.
-    if (host.workspace.planConfirm === false) {
+    if (host.workspaceForRun(claim.runId).planConfirm === false) {
       onPlanAccepted(host, claim.runId, specPrep.relativePath, timestamp);
       return;
     }
@@ -247,7 +247,7 @@ export function onAttemptSucceeded(
       scheduleAutomaticSemanticRepair(
         {
           db: host.db,
-          workspace: host.workspace,
+          workspace: host.workspaceForRun(claim.runId),
           emit: host.emit,
           currentNodeGeneration: (runId, nodeKey) => host.currentNodeGeneration(runId, nodeKey),
           applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
@@ -293,7 +293,7 @@ export function onAttemptSucceeded(
     rearmEvaluationRoundAfterRepair(
       {
         db: host.db,
-        workspace: host.workspace,
+        workspace: host.workspaceForRun(claim.runId),
         emit: host.emit,
         currentNodeGeneration: (runId, nodeKey) => host.currentNodeGeneration(runId, nodeKey),
         applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
@@ -396,12 +396,13 @@ export async function preparePlanExecutionPlan(
   if (!spec) throw new Error("plan Spec artifact is not parseable");
 
   // Phase 7: adaptive lenses from inventory + Spec uncertainty (default 1).
+  const workspace = host.workspaceForRun(claim.runId);
   const adaptive = resolveAdaptiveOrchestration({
-    orchestration: host.workspace.orchestration,
+    orchestration: workspace.orchestration,
     inventory: {
-      sourceCount: host.workspace.sources?.length ?? 0,
-      multiEntry: (host.workspace.sources?.length ?? 0) >= 2,
-      large: (host.workspace.sources?.length ?? 0) >= 3,
+      sourceCount: workspace.sources?.length ?? 0,
+      multiEntry: (workspace.sources?.length ?? 0) >= 2,
+      large: (workspace.sources?.length ?? 0) >= 3,
     },
     planUncertainty: planUncertaintyFromSpec(spec),
   });

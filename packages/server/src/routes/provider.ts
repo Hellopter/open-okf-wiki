@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { testProviderConnection } from "@okf-wiki/agent";
+import { redactErrorMessage, testProviderConnection } from "@okf-wiki/agent";
 import {
   ModelProfileWriteSchema,
   ProviderApiShapeSchema,
@@ -284,7 +284,7 @@ export async function handleTestProvider(req: IncomingMessage, res: ServerRespon
         apiShape,
         baseHost,
         ok: false,
-        err: error instanceof Error ? error.message : String(error),
+        err: redactErrorMessage(error),
       },
       "provider connection test threw",
     );

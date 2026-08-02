@@ -3,10 +3,10 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { createRootLogger, setLoggerForTests } from "./logger.ts";
+import { createRootLogger, setLoggerForTest } from "./logger.ts";
 
 afterEach(() => {
-  setLoggerForTests(null);
+  setLoggerForTest(null);
 });
 
 test("createRootLogger writes JSON lines to file", async () => {

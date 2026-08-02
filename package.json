@@ -19,6 +19,7 @@
     "format:check": "biome check --formatter-enabled=true --linter-enabled=false --assist-enabled=true .",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run check:architecture",
     "check:architecture": "node scripts/check-architecture.mjs",
+    "reset-control-store": "pnpm --filter @okf-wiki/core build && node scripts/reset-control-store.mjs",
     "test:e2e": "pnpm --filter @okf-wiki/web test:e2e",
     "dev": "node scripts/dev-stack.mjs --profile=full",
     "dev:full": "node scripts/dev-stack.mjs --profile=full",

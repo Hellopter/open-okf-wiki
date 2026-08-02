@@ -29,6 +29,12 @@ export type ProducedArtifact = {
   kind: string;
 };
 
+/** Immutable attempt-input envelope retained from the sealed artifact record. */
+export type BoundInput = {
+  role: string;
+  kind: string;
+};
+
 export type NodeContract = {
   kind: string;
   requiredInputs: InputRequirement[];
@@ -54,26 +60,76 @@ export function inputRoleMatches(requirement: InputRequirement, boundRole: strin
   return boundRole.endsWith(`:${requirement.role}`);
 }
 
-/** Whether bound roles satisfy one InputRequirement (at least one match when required). */
+/** Whether sealed role+kind envelopes satisfy one InputRequirement. */
 export function roleSatisfied(
   requirement: InputRequirement,
-  boundRoles: readonly string[],
+  boundInputs: readonly BoundInput[],
 ): boolean {
-  const hit = boundRoles.some((role) => inputRoleMatches(requirement, role));
+  const hit = boundInputs.some(
+    (input) =>
+      inputRoleMatches(requirement, input.role) &&
+      (requirement.artifactKind === undefined || requirement.artifactKind === input.kind),
+  );
   return requirement.required ? hit : true;
 }
 
-/** Throw if any required input role is missing from the bound attempt envelope. */
-export function validateBoundInputs(contract: NodeContract, boundRoles: readonly string[]): void {
+/** Throw if any required role and artifact kind is missing from the sealed input envelope. */
+export function validateBoundInputs(
+  contract: NodeContract,
+  boundInputs: readonly BoundInput[],
+): void {
   const missing: string[] = [];
   for (const req of contract.requiredInputs) {
-    if (req.required && !roleSatisfied(req, boundRoles)) missing.push(req.role);
+    if (req.required && !roleSatisfied(req, boundInputs)) {
+      missing.push(`${req.role}:${req.artifactKind ?? "*"}`);
+    }
   }
   if (missing.length > 0) {
     throw new Error(
-      `node ${contract.kind} missing required sealed input role(s): ${missing.join(", ")} ` +
-        `(bound: ${boundRoles.length ? boundRoles.join(", ") : "(none)"})`,
+      `node ${contract.kind} missing required sealed input(s): ${missing.join(", ")} ` +
+        `(bound: ${
+          boundInputs.length
+            ? boundInputs.map((input) => `${input.role}:${input.kind}`).join(", ")
+            : "(none)"
+        })`,
     );
+  }
+}
+
+/** Canonical metrics/cost-attribution role for a durable WikiRuns node kind. */
+export function metricsRoleForNodeKind(kind: string): string {
+  switch (kind) {
+    case "plan":
+      return "plan";
+    case "plan.adapt":
+      return "plan_adapt";
+    case "research.leaf":
+      return "leaf";
+    case "research.domain":
+      return "domain";
+    case "write.root":
+      return "writer";
+    case "review.seat":
+      return "review";
+    case "repair":
+      return "repair";
+    case "freeze":
+    case "validate.pre":
+    case "validate.final":
+    case "review.reduce":
+    case "prepare.publication":
+    case "publish":
+    case "gate.plan":
+    case "gate.fix":
+    case "gate.publication":
+      return "mechanical";
+    default:
+      if (kind.startsWith("research.leaf")) return "leaf";
+      if (kind.startsWith("research.domain")) return "domain";
+      if (kind.startsWith("review.seat")) return "review";
+      if (kind.startsWith("repair")) return "repair";
+      if (kind.startsWith("gate.")) return "mechanical";
+      return kind.slice(0, 64) || "unknown";
   }
 }
 

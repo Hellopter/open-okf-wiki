@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   DEFAULT_OPERATOR_TOOLS,
@@ -8,14 +8,42 @@ import {
   WorkspaceLimitsSchema,
   type WorkspaceOrchestration,
   WorkspaceOrchestrationSchema,
+  WorkspaceRevisionSchema,
   WorkspaceRoleModelsSchema,
 } from "@okf-wiki/contract";
+import { atomicWriteJson } from "./atomic-write.js";
+import { withPerKeyMutex } from "./atomicity.js";
 import { assertAbsolutePath, isPathInside, resolveExistingDir } from "./paths.js";
 import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 import { WorkspaceIntakeError } from "./workspace-errors.js";
 
 export const WORKSPACE_FILE_NAME = "workspace.json";
 export const DEFAULT_MODEL_ID = "openai/default";
+export const WIKI_RUNS_CONTROL_STORE_FILE_NAME = "workflow.sqlite";
+
+const workspaceConfigQueues = new Map<string, Promise<unknown>>();
+
+/** Raised when a caller tries to write against an old Workspace revision. */
+export class WorkspaceRevisionConflictError extends Error {
+  readonly code = "stale_revision";
+
+  constructor(
+    readonly expectedRevision: number,
+    readonly current: WorkspaceConfig,
+  ) {
+    super(`workspace revision conflict: expected ${expectedRevision}, current ${current.revision}`);
+    this.name = "WorkspaceRevisionConflictError";
+  }
+}
+
+export type WorkspaceMutation = (
+  workspace: WorkspaceConfig,
+) => WorkspaceConfig | Promise<WorkspaceConfig>;
+
+export type ResetWikiRunsControlStoreResult = {
+  rootPath: string;
+  removed: string[];
+};
 
 /** Absolute path to `{root}/.okf-wiki/workspace.json`. */
 export function workspaceConfigPath(rootPath: string): string {
@@ -85,6 +113,7 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
   const now = new Date().toISOString();
   return {
     version: 3,
+    revision: 0,
     id: randomUUID(),
     name: options.name.trim(),
     rootPath,
@@ -109,6 +138,10 @@ export async function createWorkspace(options: CreateWorkspaceOptions): Promise<
 /** Load and validate `{rootPath}/.okf-wiki/workspace.json`. */
 export async function loadWorkspace(rootPath: string): Promise<WorkspaceConfig> {
   const resolvedRoot = await resolveExistingDir(rootPath);
+  return loadWorkspaceAtRoot(resolvedRoot);
+}
+
+async function loadWorkspaceAtRoot(resolvedRoot: string): Promise<WorkspaceConfig> {
   const filePath = workspaceConfigPath(resolvedRoot);
 
   // Path containment: only ever read workspace.json under <root>/.okf-wiki/
@@ -148,27 +181,162 @@ export async function loadWorkspace(rootPath: string): Promise<WorkspaceConfig> 
   return { ...parsed.data, rootPath: resolvedRoot };
 }
 
-/** Validate and write `{config.rootPath}/.okf-wiki/workspace.json`. */
+/**
+ * Persist a complete Workspace document with a compare-and-swap revision check.
+ *
+ * New Workspace documents retain revision zero. For existing documents the
+ * supplied revision is the expected revision and a successful save advances it.
+ * New production writes should prefer {@link mutateWorkspace}, which owns the
+ * read-modify-write cycle in one serialized operation.
+ */
 export async function saveWorkspace(config: WorkspaceConfig): Promise<void> {
+  const valid = normalizeWorkspaceForWrite(config);
+  const filePath = workspaceConfigPath(valid.rootPath);
+
+  await withPerKeyMutex(workspaceConfigQueues, filePath, async () => {
+    let current: WorkspaceConfig | undefined;
+    try {
+      current = await loadWorkspaceAtRoot(valid.rootPath);
+    } catch (error) {
+      if (!(error instanceof WorkspaceIntakeError) || error.code !== "workspace_not_found") {
+        throw error;
+      }
+    }
+
+    if (!current) {
+      await writeWorkspaceAtRoot(valid);
+      return;
+    }
+
+    assertSameWorkspace(current, valid);
+    if (valid.revision !== current.revision) {
+      throw new WorkspaceRevisionConflictError(valid.revision, current);
+    }
+    await writeWorkspaceAtRoot({ ...valid, revision: current.revision + 1 });
+  });
+}
+
+/**
+ * Serialize a Workspace read-modify-write cycle for one canonical config path.
+ * A stale expected revision is rejected before the mutation callback runs.
+ */
+export async function mutateWorkspace(
+  rootPath: string,
+  expectedRevision: number,
+  mutate: WorkspaceMutation,
+): Promise<WorkspaceConfig> {
+  const revision = WorkspaceRevisionSchema.safeParse(expectedRevision);
+  if (!revision.success) {
+    throw new Error("expectedRevision must be a non-negative integer");
+  }
+
+  const resolvedRoot = await resolveExistingDir(rootPath);
+  const filePath = workspaceConfigPath(resolvedRoot);
+  return withPerKeyMutex(workspaceConfigQueues, filePath, async () => {
+    const current = await loadWorkspaceAtRoot(resolvedRoot);
+    if (current.revision !== revision.data) {
+      throw new WorkspaceRevisionConflictError(revision.data, current);
+    }
+
+    const proposed = normalizeWorkspaceForWrite(await mutate(current));
+    assertSameWorkspace(current, proposed);
+    const next = { ...proposed, revision: current.revision + 1 };
+    await writeWorkspaceAtRoot(next);
+    return next;
+  });
+}
+
+/**
+ * Remove only the durable WikiRuns control state after an explicit operator
+ * action. Workspace configuration and Pi Session JSONL stay intact.
+ */
+export async function resetWikiRunsControlStore(
+  rootPath: string,
+): Promise<ResetWikiRunsControlStoreResult> {
+  const absoluteRoot = assertAbsolutePath(rootPath, "workspace root");
+  const resolvedRoot = await resolveExistingDir(absoluteRoot);
+  await loadWorkspaceAtRoot(resolvedRoot);
+
+  const metaDir = workspaceMetaDir(resolvedRoot);
+  const targets = [
+    path.join(metaDir, WIKI_RUNS_CONTROL_STORE_FILE_NAME),
+    path.join(metaDir, `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}-wal`),
+    path.join(metaDir, `${WIKI_RUNS_CONTROL_STORE_FILE_NAME}-shm`),
+    path.join(metaDir, "runs"),
+  ];
+
+  for (const target of targets) {
+    if (!isPathInside(resolvedRoot, target) || path.dirname(target) !== metaDir) {
+      throw new Error("refusing to reset outside workspace control paths");
+    }
+  }
+
+  const removed: string[] = [];
+  for (const target of targets) {
+    await rm(target, { recursive: true, force: true });
+    removed.push(path.basename(target));
+  }
+  return { rootPath: resolvedRoot, removed };
+}
+
+/** Parse the strict, confirmation-gated reset command arguments. */
+export function parseResetWikiRunsControlStoreArgs(args: readonly string[]): { rootPath: string } {
+  let rootPath: string | undefined;
+  let confirmed = false;
+  const commandArgs = args[0] === "--" ? args.slice(1) : args;
+
+  for (let index = 0; index < commandArgs.length; index += 1) {
+    const arg = commandArgs[index];
+    if (arg === "--yes") {
+      if (confirmed) throw new Error("--yes may be provided only once");
+      confirmed = true;
+      continue;
+    }
+    if (arg === "--workspace") {
+      if (rootPath !== undefined) throw new Error("--workspace may be provided only once");
+      const value = commandArgs[index + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--workspace requires an absolute path");
+      }
+      rootPath = assertAbsolutePath(value, "workspace root");
+      index += 1;
+      continue;
+    }
+    throw new Error(`unknown reset-control-store argument: ${arg}`);
+  }
+
+  if (!confirmed) throw new Error("reset-control-store requires --yes");
+  if (!rootPath) throw new Error("reset-control-store requires --workspace <absolute-path>");
+  return { rootPath };
+}
+
+function normalizeWorkspaceForWrite(config: WorkspaceConfig): WorkspaceConfig {
   const parsed = WorkspaceConfigSchema.safeParse(config);
   if (!parsed.success) {
     throw new Error(`invalid workspace config: ${parsed.error.message}`);
   }
 
-  const valid = parsed.data;
-  const rootPath = path.resolve(valid.rootPath);
-  const okfDir = path.join(rootPath, WORKSPACE_DIR_NAME);
-  if (!isPathInside(rootPath, okfDir) || path.basename(okfDir) !== WORKSPACE_DIR_NAME) {
+  const rootPath = assertAbsolutePath(parsed.data.rootPath, "workspace root");
+  const resolvedRoot = path.resolve(rootPath);
+  const okfDir = path.join(resolvedRoot, WORKSPACE_DIR_NAME);
+  if (!isPathInside(resolvedRoot, okfDir) || path.basename(okfDir) !== WORKSPACE_DIR_NAME) {
     throw new Error("refusing to write outside workspace meta directory");
   }
-  await mkdir(okfDir, { recursive: true });
+  return { ...parsed.data, rootPath: resolvedRoot };
+}
 
-  const filePath = path.join(okfDir, WORKSPACE_FILE_NAME);
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const body = `${JSON.stringify({ ...valid, rootPath }, null, 2)}\n`;
+function assertSameWorkspace(current: WorkspaceConfig, proposed: WorkspaceConfig): void {
+  if (current.id !== proposed.id) {
+    throw new Error("workspace id is immutable");
+  }
+  if (current.rootPath !== proposed.rootPath) {
+    throw new Error("workspace rootPath is immutable");
+  }
+}
 
-  await writeFile(tempPath, body, "utf8");
-  await rename(tempPath, filePath);
+async function writeWorkspaceAtRoot(config: WorkspaceConfig): Promise<void> {
+  const filePath = workspaceConfigPath(config.rootPath);
+  await atomicWriteJson(filePath, config);
 }
 
 /**

@@ -60,6 +60,7 @@ test("WorkspaceConfigSchema rejects secrets-shaped extra keys only via strict pa
   assert.deepEqual(ws.operatorTools, ["read", "grep", "find", "ls"]);
   assert.deepEqual(ws.roleModels.reviewers, []);
   assert.equal(ws.version, 3);
+  assert.equal(ws.revision, 0);
   assert.equal(ws.wikiLanguage, "en");
   assert.deepEqual(ws.sources[0]?.origin, { type: "path" });
 });

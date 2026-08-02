@@ -53,8 +53,9 @@ export async function mechanicalPublish(
     };
   }
   const candidatePath = path.join(runDir, requiredText(candidateRow, "relative_path"));
+  const workspace = host.workspaceForRun(claim.runId);
   const publicationPath =
-    host.workspace.publicationPath || path.join(host.workspace.rootPath, "published-wiki");
+    workspace.publicationPath || path.join(workspace.rootPath, "published-wiki");
 
   /**
    * Under the publication lock (inside applySealedPublicationCandidate):

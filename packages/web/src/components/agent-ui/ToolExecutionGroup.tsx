@@ -1,7 +1,7 @@
 import { WrenchIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ToolItemVM } from "./adapters/types";
 import { ActivityCollapsible } from "./ActivityCollapsible";
+import type { ToolItemVM } from "./adapters/types";
 import { StatusBadge } from "./StatusBadge";
 import { ToolExecutionItem } from "./ToolExecutionItem";
 
@@ -82,11 +82,7 @@ export function ToolExecutionGroup({
               <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
                 {formatCount(toolCallsSummaryLabel, items.length)}
               </span>
-              <StatusBadge
-                kind="tool"
-                status={hasError ? "error" : "done"}
-                className="text-[10px]"
-              >
+              <StatusBadge kind="tool" status={hasError ? "error" : "done"} className="text-[10px]">
                 {items.length}
               </StatusBadge>
             </>
@@ -109,8 +105,7 @@ export function ToolExecutionGroup({
           item={{
             ...item,
             // Keep in-flight rows open so operators can watch live I/O.
-            defaultOpen:
-              item.defaultOpen || item.status === "pending" || item.status === "running",
+            defaultOpen: item.defaultOpen || item.status === "pending" || item.status === "running",
           }}
           {...shared}
         />

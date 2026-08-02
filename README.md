@@ -150,6 +150,7 @@ Model identity stays provider-prefixed (for example `openai:<served-model-name>`
 | `pnpm format` / `pnpm format:check` | Biome format (+ import assist); lint stays ESLint | Local; staged pre-commit; **CI** |
 | `pnpm check` | `typecheck` + `lint` + `format:check` + architecture guard | Convenient full static check |
 | `pnpm check:architecture` | Reject retired packages, protocols, routes, and dependency edges | Local / **CI**; part of `check` |
+| `pnpm reset-control-store -- --workspace <absolute-path> --yes` | Explicitly removes one Workspace's WikiRuns database, WAL/SHM, and Run-owned files; preserves `workspace.json` and Pi Session JSONL | Only after stopping the local Server; required for an unsupported WikiRuns store hard cut |
 | `pnpm test` | Package unit tests (`node:test` where present) | Local; **CI** |
 | `pnpm test:e2e` | Playwright Web e2e (`@okf-wiki/web`) | Local when touching UI/API; **CI job** |
 

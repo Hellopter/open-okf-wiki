@@ -566,8 +566,7 @@ export const zh: MessageTree = {
     rerunNodeHint: "提升 generation，并使下游消费者失效。",
     rerunNodeConfirmTitle: "重新运行此节点？",
     rerunNodeConfirm: "重新运行会提升节点 generation。依赖此节点的下游工作可能被失效。",
-    rerunNodeConfirmConsumers:
-      "下游节点已推进。重新运行会使消费者失效并重新排队血缘工作。",
+    rerunNodeConfirmConsumers: "下游节点已推进。重新运行会使消费者失效并重新排队血缘工作。",
     rerunFeedbackPlaceholder: "可选：给新 generation 的指导说明",
     recoveryBannerTitle: "需要恢复",
     recoveryBanner: "有 {count} 个节点需要处理（包括“{node}”）。打开失败节点以重试或重新运行。",

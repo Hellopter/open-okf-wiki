@@ -89,14 +89,15 @@ export async function reconcileApplyingEffect(
   },
 ): Promise<void> {
   if (host.closed) return;
-  const runDir = runWorkDir(host.workspace.rootPath, input.runId);
+  const workspace = host.workspaceForRun(input.runId);
+  const runDir = runWorkDir(workspace.rootPath, input.runId);
   const artifact = asRow(
     host.db
       .prepare("SELECT relative_path FROM artifacts WHERE artifact_id = ?")
       .get(input.candidateArtifactId),
   );
   const publicationPath =
-    host.workspace.publicationPath || path.join(host.workspace.rootPath, "published-wiki");
+    workspace.publicationPath || path.join(workspace.rootPath, "published-wiki");
 
   let outcome: "applied" | "failed" | "unknown" = "unknown";
   let detail = "applying effect recovered without filesystem evidence";

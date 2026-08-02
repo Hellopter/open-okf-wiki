@@ -12,6 +12,7 @@ import {
   resetWorkspaceSkill,
   type SkillInfo,
   type WorkspaceConfig,
+  workspaceFromRevisionConflict,
   writeWorkspaceSkillFile,
 } from "../../api";
 import { useI18n } from "../../i18n";
@@ -19,6 +20,7 @@ import { notifyError, notifySuccess } from "../../lib/notify";
 
 export type SkillSectionProps = {
   workspaceId: string;
+  expectedRevision: number;
   models: ModelProfilePublic[];
   skill: SkillInfo | null;
   skillBusy: boolean;
@@ -35,6 +37,7 @@ export type SkillSectionProps = {
 
 export function SkillSection({
   workspaceId,
+  expectedRevision,
   models,
   skill,
   skillBusy,
@@ -95,7 +98,7 @@ export function SkillSection({
                   }
                   setSkillBusy(true);
                   try {
-                    const result = await createWorkspaceSkillFork(workspaceId);
+                    const result = await createWorkspaceSkillFork(workspaceId, expectedRevision);
                     applyWorkspace(result.workspace, models);
                     setSkill(result.skill);
                     const file = await readWorkspaceSkillFile(workspaceId, "SKILL.md");
@@ -104,6 +107,8 @@ export function SkillSection({
                     setSkillFileDirty(false);
                     notifySuccess(t.settings.skillForked);
                   } catch (err) {
+                    const latest = workspaceFromRevisionConflict(err);
+                    if (latest) applyWorkspace(latest, models);
                     notifyError(err);
                   } finally {
                     setSkillBusy(false);
@@ -126,12 +131,14 @@ export function SkillSection({
                   }
                   setSkillBusy(true);
                   try {
-                    const result = await resetWorkspaceSkill(workspaceId);
+                    const result = await resetWorkspaceSkill(workspaceId, expectedRevision);
                     applyWorkspace(result.workspace, models);
                     setSkill(result.skill);
                     setSkillFileContent("");
                     setSkillFileDirty(false);
                   } catch (err) {
+                    const latest = workspaceFromRevisionConflict(err);
+                    if (latest) applyWorkspace(latest, models);
                     notifyError(err);
                   } finally {
                     setSkillBusy(false);
@@ -157,6 +164,8 @@ export function SkillSection({
                     setSkillFileContent(file.file.content);
                     setSkillFileDirty(false);
                   } catch (err) {
+                    const latest = workspaceFromRevisionConflict(err);
+                    if (latest) applyWorkspace(latest, models);
                     notifyError(err);
                   } finally {
                     setSkillBusy(false);
@@ -180,13 +189,17 @@ export function SkillSection({
                   setSkillBusy(true);
                   try {
                     const result = await writeWorkspaceSkillFile(workspaceId, {
+                      expectedRevision,
                       path: skillFilePath.trim(),
                       content: skillFileContent,
                     });
+                    applyWorkspace(result.workspace, models);
                     setSkill(result.skill);
                     setSkillFileDirty(false);
                     notifySuccess(t.settings.skillSaved);
                   } catch (err) {
+                    const latest = workspaceFromRevisionConflict(err);
+                    if (latest) applyWorkspace(latest, models);
                     notifyError(err);
                   } finally {
                     setSkillBusy(false);

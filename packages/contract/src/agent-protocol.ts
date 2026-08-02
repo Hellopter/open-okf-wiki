@@ -7,10 +7,7 @@
  */
 
 import { z } from "zod";
-import { AgentMessageSchema } from "./agent-message.js";
-import { AgentStreamViewPatchSchema, ContextPhaseSchema } from "./agent-stream.js";
-import { SessionUsageSchema } from "./session-usage.js";
-import { WikiProduceToolDetailsSchema } from "./wiki-produce.js";
+import { SessionStreamPatchSchema, SessionStreamStateSchema } from "./session-stream.js";
 
 /** Relative dir under workspace meta: `{root}/.okf-wiki/pi-sessions/`. */
 export const PI_SESSIONS_DIR = "pi-sessions" as const;
@@ -123,18 +120,7 @@ export const AgentSseHeartbeatSchema = z
 
 export type AgentSseHeartbeat = z.infer<typeof AgentSseHeartbeatSchema>;
 
-/** Current live Pi tool projection carried beside the durable SessionManager branch. */
-export const AgentSseActiveToolSchema = z
-  .object({
-    toolCallId: z.string().min(1),
-    toolName: z.string().min(1).max(100),
-    details: WikiProduceToolDetailsSchema,
-  })
-  .strict();
-
-export type AgentSseActiveTool = z.infer<typeof AgentSseActiveToolSchema>;
-
-/** Current SessionManager branch plus genuine live tool state, sent first on SSE. */
+/** Complete browser-safe Session state, sent first on every SSE connection. */
 export const AgentSseSnapshotSchema = z
   .object({
     source: z.literal("server"),
@@ -150,19 +136,10 @@ export const AgentSseSnapshotSchema = z
           })
           .strict(),
         /**
-         * Durable SessionManager branch, already projected to AgentMessage[]
-         * (ADR 0031: view = project(...); server owns the projection).
+         * Dedicated browser-safe DTO (ADR 0039), never a Pi message projection.
+         * A reconnect can replace its entire local Session state from this value.
          */
-        messages: z.array(AgentMessageSchema),
-        /** Latest genuine Pi tool update; absent when no tool is live. */
-        activeTool: AgentSseActiveToolSchema.optional(),
-        /**
-         * Ephemeral context-fill proxy for Operator chrome (last assistant
-         * totalTokens + known window). Not durable control truth (ADR 0035).
-         */
-        sessionUsage: SessionUsageSchema.optional(),
-        /** Context pressure phase derived by the server. */
-        contextPhase: ContextPhaseSchema.optional(),
+        state: SessionStreamStateSchema,
       })
       .strict(),
   })
@@ -171,8 +148,8 @@ export const AgentSseSnapshotSchema = z
 export type AgentSseSnapshot = z.infer<typeof AgentSseSnapshotSchema>;
 
 /**
- * Live stream view patch (server-reduced Pi events → AgentMessage ops).
- * Web applies patches; it does not parse Pi content blocks on the live path.
+ * Live patch over the browser-safe Session DTO. Web applies it without parsing
+ * Pi content blocks or receiving Pi-native rows on the live path.
  */
 export const AgentSseStreamSchema = z
   .object({
@@ -180,7 +157,7 @@ export const AgentSseStreamSchema = z
     kind: z.literal("stream"),
     sessionId: z.string().min(1),
     timestamp: z.string().datetime(),
-    payload: AgentStreamViewPatchSchema,
+    payload: SessionStreamPatchSchema,
   })
   .strict();
 

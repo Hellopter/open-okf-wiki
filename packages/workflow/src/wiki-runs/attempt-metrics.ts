@@ -7,43 +7,13 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   type AttemptMetrics,
   AttemptMetricsSchema,
-  type WikiRunNodeKind,
+  metricsRoleForNodeKind,
 } from "@okf-wiki/contract";
 import { asRow, requiredText } from "./sql.js";
 
 /** Map durable node kind → short graph role for metrics / cost attribution. */
 export function graphRoleForNodeKind(kind: string): string {
-  switch (kind as WikiRunNodeKind | string) {
-    case "plan":
-      return "plan";
-    case "research.leaf":
-      return "leaf";
-    case "research.domain":
-      return "domain";
-    case "write.root":
-      return "writer";
-    case "review.seat":
-      return "review";
-    case "repair":
-      return "repair";
-    case "freeze":
-    case "validate.pre":
-    case "validate.final":
-    case "review.reduce":
-    case "prepare.publication":
-    case "publish":
-    case "gate.plan":
-    case "gate.fix":
-    case "gate.publication":
-      return "mechanical";
-    default:
-      if (kind.startsWith("research.leaf")) return "leaf";
-      if (kind.startsWith("research.domain")) return "domain";
-      if (kind.startsWith("review.seat")) return "review";
-      if (kind.startsWith("repair")) return "repair";
-      if (kind.startsWith("gate.")) return "mechanical";
-      return kind.slice(0, 64) || "unknown";
-  }
+  return metricsRoleForNodeKind(kind);
 }
 
 /** Wall-clock ms from attempt started_at to an ISO ended timestamp. */

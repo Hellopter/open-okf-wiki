@@ -55,7 +55,7 @@ test("an unattended plan gate expires without a later command or read", async (t
   assert.equal(expired.snapshot.state, "cancelled");
 });
 
-test("gate timeout timer follows replaced workspace configuration", async (t) => {
+test("a Run keeps its gate timeout after future StartRun config changes", async (t) => {
   const { root, workspaceId } = await makeWorkspace();
   t.after(() => removeWorkspace(root));
   const timed = await setGateTimeout(root, 1);
@@ -70,27 +70,32 @@ test("gate timeout timer follows replaced workspace configuration", async (t) =>
   const gate = waiting.snapshot.gates.find((candidate) => candidate.kind === "plan");
   assert.equal(gate?.state, "open");
 
-  // Disabling the setting clears the pending deadline even though the gate stays open.
-  runs.replaceWorkspace({
+  // A later Workspace update applies only to a later StartRun, never this open gate.
+  runs.setWorkspaceForNewRuns({
     ...timed,
     limits: { ...timed.limits, gateTimeoutSeconds: 0 },
   });
-  await wait(1_200);
+  const later = await runs.dispatch(
+    { type: "start_run", commandId: "start-later-gate-timeout", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+  const laterWaiting = await waitForRunState(runs, later.runId, ["waiting_for_operator"]);
   assert.equal(
-    (await runs.read({ runId: receipt.runId })).snapshot.gates.find(
-      (candidate) => candidate.gateId === gate?.gateId,
-    )?.state,
+    laterWaiting.snapshot.gates.find((candidate) => candidate.kind === "plan")?.state,
     "open",
   );
-
-  // Re-enabling re-arms immediately; this gate is already older than the deadline.
-  runs.replaceWorkspace(timed);
-  await wait(100);
+  await wait(1_200);
   assert.equal(
     (await runs.read({ runId: receipt.runId })).snapshot.gates.find(
       (candidate) => candidate.gateId === gate?.gateId,
     )?.decision?.decision,
     "deny",
+  );
+  assert.equal(
+    (await runs.read({ runId: later.runId })).snapshot.gates.find(
+      (candidate) => candidate.kind === "plan",
+    )?.state,
+    "open",
   );
 });
 

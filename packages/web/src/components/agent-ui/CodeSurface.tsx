@@ -43,18 +43,10 @@ export function CodeSurface({
   const showHeader = Boolean(label) || copyable;
 
   return (
-    <div
-      className={cn("min-w-0 w-full", className)}
-      data-slot="code-surface"
-      data-testid={testId}
-    >
+    <div className={cn("min-w-0 w-full", className)} data-slot="code-surface" data-testid={testId}>
       {showHeader ? (
         <div className="mb-1 flex items-center justify-between gap-2">
-          {label ? (
-            <p className="text-xs font-medium text-muted-foreground">{label}</p>
-          ) : (
-            <span />
-          )}
+          {label ? <p className="text-xs font-medium text-muted-foreground">{label}</p> : <span />}
           {copyable ? (
             <Button
               type="button"

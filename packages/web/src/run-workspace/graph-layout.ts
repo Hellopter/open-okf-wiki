@@ -92,8 +92,7 @@ export function buildHandlePlan(
       node.key,
       contentNodeHeight(node, {
         domainCollapseChrome:
-          node.kind === "research.domain" &&
-          (options?.domainCollapseKeys?.has(node.key) ?? false),
+          node.kind === "research.domain" && (options?.domainCollapseKeys?.has(node.key) ?? false),
       }),
     );
   }
@@ -201,8 +200,7 @@ export function buildElkLayoutInput(
   const children = orderedNodes.map((node) => {
     const height = contentNodeHeight(node, {
       domainCollapseChrome:
-        node.kind === "research.domain" &&
-        (options?.domainCollapseKeys?.has(node.key) ?? false),
+        node.kind === "research.domain" && (options?.domainCollapseKeys?.has(node.key) ?? false),
     });
     const portCountOut = Math.max(outDegree.get(node.key) ?? 0, 1);
     const portCountIn = Math.max(inDegree.get(node.key) ?? 0, 1);
@@ -349,8 +347,7 @@ export function layoutResearchFocus(
   const heightOf = (node: WikiRunNode): number =>
     contentNodeHeight(node, {
       domainCollapseChrome:
-        node.kind === "research.domain" &&
-        (options.domainCollapseKeys?.has(node.key) ?? false),
+        node.kind === "research.domain" && (options.domainCollapseKeys?.has(node.key) ?? false),
     });
 
   const positions: Record<string, { x: number; y: number }> = {};
@@ -374,9 +371,7 @@ export function layoutResearchFocus(
 
   for (const domain of domains) {
     const expanded = options.expandedDomainKeys.has(domain.key);
-    const leafKeys = (options.domainGroups.get(domain.key) ?? []).filter((key) =>
-      present.has(key),
-    );
+    const leafKeys = (options.domainGroups.get(domain.key) ?? []).filter((key) => present.has(key));
     const domainH = heightOf(domain);
 
     if (expanded && leafKeys.length > 0) {
@@ -405,7 +400,8 @@ export function layoutResearchFocus(
 
   // Orphan research leaves (present but not under a domain group).
   const orphanLeaves = orderedNodes.filter(
-    (node) => node.kind === "research.leaf" && !groupedLeafKeys.has(node.key) && !placed.has(node.key),
+    (node) =>
+      node.kind === "research.leaf" && !groupedLeafKeys.has(node.key) && !placed.has(node.key),
   );
   for (const leaf of orphanLeaves) {
     const h = heightOf(leaf);
@@ -444,8 +440,7 @@ export function layoutResearchFocus(
   const stackColumn = (nodes: WikiRunNode[], x: number, gap: number) => {
     if (nodes.length === 0) return;
     const heights = nodes.map(heightOf);
-    const stackH =
-      heights.reduce((sum, h) => sum + h, 0) + Math.max(0, nodes.length - 1) * gap;
+    const stackH = heights.reduce((sum, h) => sum + h, 0) + Math.max(0, nodes.length - 1) * gap;
     let y = contentTop + (contentHeight - stackH) / 2;
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i]!;

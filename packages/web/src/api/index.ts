@@ -114,5 +114,6 @@ export {
   type WorkspaceConfig,
   type WorkspaceSource,
   type WorkspaceSummary,
+  workspaceFromRevisionConflict,
   writeWorkspaceSkillFile,
 } from "./workspaces";

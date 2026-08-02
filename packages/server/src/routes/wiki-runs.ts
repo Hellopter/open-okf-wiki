@@ -31,8 +31,8 @@ import {
   sendError,
   sendJson,
 } from "../http-util.ts";
-import { getLogger } from "../logging/index.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
+import { getLogger } from "../logging/index.ts";
 import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
 const HEARTBEAT_MS = 15_000;

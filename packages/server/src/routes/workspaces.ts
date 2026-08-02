@@ -7,7 +7,8 @@ import {
   SourceCloneSchema,
   SourceUpdateSchema,
   WorkspaceCreateSchema,
-  WorkspacePatchSchema,
+  WorkspacePatchRequestSchema,
+  WorkspaceRevisionRequestSchema,
 } from "@okf-wiki/contract";
 import {
   addSource,
@@ -19,6 +20,7 @@ import {
   getSkillInfo,
   listSkillDir,
   listWorkspaceSummaries,
+  mutateWorkspace,
   probeLocalGit,
   readSkillFile,
   registerWorkspaceInAppIndex,
@@ -32,13 +34,25 @@ import {
   uniqueSourceId,
   updateSource,
   WorkspaceIntakeError,
+  WorkspaceRevisionConflictError,
   writeWorkspaceSkillFile,
 } from "@okf-wiki/core";
 import { trySendCoreDomainError } from "../core-http-error.ts";
 import { httpStatusForWorkspaceCode } from "../http-status.ts";
 import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
-import { getLogger } from "../logging/index.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
+import { getLogger } from "../logging/index.ts";
+import { invalidateOperatorSessions } from "../operator-sessions.ts";
+
+function sendWorkspaceRevisionConflict(res: ServerResponse, error: unknown): boolean {
+  if (!(error instanceof WorkspaceRevisionConflictError)) return false;
+  sendError(res, 409, "workspace revision conflict", {
+    code: error.code,
+    expectedRevision: error.expectedRevision,
+    workspace: error.current,
+  });
+  return true;
+}
 
 export async function handleListWorkspaces(
   _req: IncomingMessage,
@@ -114,29 +128,32 @@ export async function handlePatchWorkspace(
   if (!workspace) return;
 
   // Contract boundary: strict schema — unknown keys are rejected, not ignored.
-  const parsed = WorkspacePatchSchema.safeParse(await readJsonBody(req));
+  const parsed = WorkspacePatchRequestSchema.safeParse(await readJsonBody(req));
   if (!parsed.success) {
     sendError(res, 400, "invalid workspace patch body", parsed.error.flatten());
     return;
   }
 
   try {
-    const next = await applyWorkspacePatch(workspace, parsed.data, {
-      resolveModelSelection: async (profileId) =>
-        resolveWorkspaceModelSelection({ modelProfileId: profileId }),
-    });
-    await saveWorkspace(next);
-    await registerWorkspaceInAppIndex(next.rootPath);
-    getLogger().info(
-      { event: "workspace.patch", workspaceId: next.id },
-      "workspace patched",
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      parsed.data.expectedRevision,
+      (current) =>
+        applyWorkspacePatch(current, parsed.data, {
+          resolveModelSelection: async (profileId) =>
+            resolveWorkspaceModelSelection({ modelProfileId: profileId }),
+        }),
     );
+    await registerWorkspaceInAppIndex(next.rootPath);
+    await invalidateOperatorSessions(next.id);
+    getLogger().info({ event: "workspace.patch", workspaceId: next.id }, "workspace patched");
     sendJson(res, 200, { workspace: next });
   } catch (error) {
     getLogger().warn(
       { event: "workspace.patch", workspaceId: workspace.id, err: redactErrorMessage(error) },
       "workspace patch failed",
     );
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -207,31 +224,42 @@ export async function handleAddSource(
 
   const sourcePath = path.resolve(parsed.data.path);
   const desiredId = parsed.data.id?.trim() || slugFromPath(sourcePath);
-  const sourceId = uniqueSourceId(desiredId, workspace.sources);
+  let sourceId = desiredId;
+  let result: Awaited<ReturnType<typeof addSource>> | undefined;
 
   try {
     // Config editing: allow dirty trees; reject only non-git.
-    const result = await addSource(
-      workspace,
-      {
-        id: sourceId,
-        path: sourcePath,
-        applyDefaultIgnores: parsed.data.applyDefaultIgnores,
-        ignore: parsed.data.ignore,
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      parsed.data.expectedRevision,
+      async (current) => {
+        sourceId = uniqueSourceId(desiredId, current.sources);
+        const added = await addSource(
+          current,
+          {
+            id: sourceId,
+            path: sourcePath,
+            applyDefaultIgnores: parsed.data.applyDefaultIgnores,
+            ignore: parsed.data.ignore,
+          },
+          { requireClean: false },
+        );
+        result = added;
+        return added.config;
       },
-      { requireClean: false },
     );
-    await saveWorkspace(result.config);
+    if (!result) throw new Error("source add mutation did not produce a result");
+    await invalidateOperatorSessions(next.id);
     getLogger().info(
       {
         event: "source.add",
-        workspaceId: workspace.id,
+        workspaceId: next.id,
         sourceId: result.source.id,
       },
       "source added",
     );
     sendJson(res, 201, {
-      workspace: result.config,
+      workspace: next,
       source: result.source,
       probe: result.probe,
     });
@@ -245,6 +273,7 @@ export async function handleAddSource(
       },
       "source add failed",
     );
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     // Attach probe for non-git so the client can show git status details.
     if (error instanceof WorkspaceIntakeError && error.code === "source_not_git") {
       const probe = await probeLocalGit(sourcePath);
@@ -257,7 +286,7 @@ export async function handleAddSource(
 }
 
 export async function handleDeleteSource(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   id: string,
   sourceId: string,
@@ -266,9 +295,19 @@ export async function handleDeleteSource(
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
+  const parsed = WorkspaceRevisionRequestSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid delete source body", parsed.error.flatten());
+    return;
+  }
+
   try {
-    const next = removeSource(workspace, sourceId);
-    await saveWorkspace(next);
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      parsed.data.expectedRevision,
+      (current) => removeSource(current, sourceId),
+    );
+    await invalidateOperatorSessions(next.id);
     getLogger().info(
       { event: "source.delete", workspaceId: workspace.id, sourceId },
       "source removed",
@@ -284,6 +323,7 @@ export async function handleDeleteSource(
       },
       "source delete failed",
     );
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -306,11 +346,15 @@ export async function handleUpdateSource(
   }
 
   try {
-    const next = updateSource(workspace, sourceId, parsed.data);
-    await saveWorkspace(next);
+    const { expectedRevision, ...sourcePatch } = parsed.data;
+    const next = await mutateWorkspace(workspace.rootPath, expectedRevision, (current) =>
+      updateSource(current, sourceId, sourcePatch),
+    );
+    await invalidateOperatorSessions(next.id);
     const source = next.sources.find((s) => s.id === sourceId);
     sendJson(res, 200, { workspace: next, source });
   } catch (error) {
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -343,8 +387,7 @@ export async function handleCloneSource(
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
 
-  const raw = (await readJsonBody(req)) as Record<string, unknown>;
-  const parsed = SourceCloneSchema.safeParse(raw);
+  const parsed = SourceCloneSchema.safeParse(await readJsonBody(req));
   if (!parsed.success) {
     sendError(res, 400, "invalid clone source body", parsed.error.flatten());
     return;
@@ -352,12 +395,8 @@ export async function handleCloneSource(
 
   const remoteUrl = parsed.data.remoteUrl;
   const desiredId = parsed.data.id?.trim() || slugFromPath(remoteUrl.replace(/\.git$/i, ""));
-  const sourceId = uniqueSourceId(desiredId, workspace.sources);
-  // relativeDir is server-side layout, not part of SourceCloneSchema.
-  const relativeDir =
-    typeof raw.relativeDir === "string" && raw.relativeDir.trim()
-      ? raw.relativeDir.trim()
-      : undefined;
+  let sourceId = desiredId;
+  const relativeDir = parsed.data.relativeDir;
   const ref = parsed.data.ref;
 
   getLogger().info(
@@ -373,41 +412,52 @@ export async function handleCloneSource(
     "source clone started",
   );
   try {
-    const cloned = await cloneIntoWorkspace({
-      workspaceRoot: workspace.rootPath,
-      remoteUrl,
-      sourceId,
-      relativeDir,
-      ref,
-    });
-    const result = await addSource(
-      workspace,
-      {
-        id: sourceId,
-        path: cloned.path,
-        applyDefaultIgnores: parsed.data.applyDefaultIgnores,
-        ignore: parsed.data.ignore,
-        origin: {
-          type: "clone",
+    let result: Awaited<ReturnType<typeof addSource>> | undefined;
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      parsed.data.expectedRevision,
+      async (current) => {
+        sourceId = uniqueSourceId(desiredId, current.sources);
+        const cloned = await cloneIntoWorkspace({
+          workspaceRoot: current.rootPath,
           remoteUrl,
-          ...(ref ? { ref } : {}),
-          clonedAt: new Date().toISOString(),
-        },
+          sourceId,
+          relativeDir,
+          ref,
+        });
+        const added = await addSource(
+          current,
+          {
+            id: sourceId,
+            path: cloned.path,
+            applyDefaultIgnores: parsed.data.applyDefaultIgnores,
+            ignore: parsed.data.ignore,
+            origin: {
+              type: "clone",
+              remoteUrl,
+              ...(ref ? { ref } : {}),
+              clonedAt: new Date().toISOString(),
+            },
+          },
+          { requireClean: false },
+        );
+        result = added;
+        return added.config;
       },
-      { requireClean: false },
     );
-    await saveWorkspace(result.config);
+    if (!result) throw new Error("source clone mutation did not produce a result");
+    await invalidateOperatorSessions(next.id);
     getLogger().info(
       {
         event: "source.clone",
-        workspaceId: workspace.id,
+        workspaceId: next.id,
         sourceId: result.source.id,
         phase: "end",
       },
       "source clone completed",
     );
     sendJson(res, 201, {
-      workspace: result.config,
+      workspace: next,
       source: result.source,
       probe: result.probe,
     });
@@ -422,6 +472,7 @@ export async function handleCloneSource(
       },
       "source clone failed",
     );
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }
@@ -463,55 +514,78 @@ export async function handleGetSkill(
 }
 
 export async function handleCreateSkillFork(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   id: string,
   _url: URL,
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
+  const parsed = WorkspaceRevisionRequestSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid create skill fork body", parsed.error.flatten());
+    return;
+  }
   try {
     // Fork from home/package default — not from an existing project skill.
     const fallback = await resolveSkillSource({});
-    const forkPath = await createSkillFork({
-      workspaceRoot: workspace.rootPath,
-      sourceSkillPath: fallback.path,
-    });
-    const next = { ...workspace, skillPath: forkPath };
-    await saveWorkspace(next);
+    let forkPath: string | undefined;
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      parsed.data.expectedRevision,
+      async (current) => {
+        const created = await createSkillFork({
+          workspaceRoot: current.rootPath,
+          sourceSkillPath: fallback.path,
+        });
+        forkPath = created;
+        return { ...current, skillPath: created };
+      },
+    );
+    if (!forkPath) throw new Error("skill fork mutation did not produce a path");
+    await invalidateOperatorSessions(next.id);
     const skill = await getSkillInfo({ path: forkPath, kind: "fork" });
     sendJson(res, 201, { workspace: next, skill });
   } catch (error) {
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     sendCaughtError(res, 400, error);
   }
 }
 
 export async function handleResetSkill(
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   id: string,
   _url: URL,
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
-  const next = { ...workspace };
-  delete next.skillPath;
-  await saveWorkspace(next);
-  // Remove project-level `.agents/skills/<producer>` so resolution falls back
-  // to home/package (Grok-like: no project skill = not project-scoped).
-  try {
-    const projectSkill = skillForkDir(workspace.rootPath);
-    await rm(projectSkill, { recursive: true, force: true });
-  } catch {
-    // best-effort
+  const parsed = WorkspaceRevisionRequestSchema.safeParse(await readJsonBody(req));
+  if (!parsed.success) {
+    sendError(res, 400, "invalid reset skill body", parsed.error.flatten());
+    return;
   }
   try {
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      parsed.data.expectedRevision,
+      async (current) => {
+        // Remove the project fork before committing the selector reset. If this
+        // cannot complete, retain the prior selector instead of a half-reset.
+        await rm(skillForkDir(current.rootPath), { recursive: true, force: true });
+        const proposed = { ...current };
+        delete proposed.skillPath;
+        return proposed;
+      },
+    );
+    await invalidateOperatorSessions(next.id);
     const active = await resolveSkillSource({
       workspaceRoot: next.rootPath,
     });
     const skill = await getSkillInfo(active);
     sendJson(res, 200, { workspace: next, skill });
   } catch (error) {
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     sendCaughtError(res, 400, error);
   }
 }
@@ -578,7 +652,18 @@ export async function handleWriteSkillFile(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
-  const body = (await readJsonBody(req)) as { path?: unknown; content?: unknown };
+  const body = (await readJsonBody(req)) as {
+    expectedRevision?: unknown;
+    path?: unknown;
+    content?: unknown;
+  };
+  const revision = WorkspaceRevisionRequestSchema.safeParse({
+    expectedRevision: body.expectedRevision,
+  });
+  if (!revision.success) {
+    sendError(res, 400, "invalid write skill file revision", revision.error.flatten());
+    return;
+  }
   if (typeof body.path !== "string" || !body.path.trim()) {
     sendError(res, 400, "path is required");
     return;
@@ -587,15 +672,30 @@ export async function handleWriteSkillFile(
     sendError(res, 400, "content must be a string");
     return;
   }
+  const filePath = body.path.trim();
+  const content = body.content;
   try {
-    const { file, skillRoot } = await writeWorkspaceSkillFile(
-      workspace,
-      body.path.trim(),
-      body.content,
+    let written: Awaited<ReturnType<typeof writeWorkspaceSkillFile>> | undefined;
+    const next = await mutateWorkspace(
+      workspace.rootPath,
+      revision.data.expectedRevision,
+      async (current) => {
+        const result = await writeWorkspaceSkillFile(current, filePath, content);
+        written = result;
+        return current;
+      },
     );
-    const skill = await getSkillInfo({ path: skillRoot, kind: "fork" });
-    sendJson(res, 200, { file, skill, expectedFork: skillForkDir(workspace.rootPath) });
+    if (!written) throw new Error("skill file mutation did not produce a file");
+    await invalidateOperatorSessions(next.id);
+    const skill = await getSkillInfo({ path: written.skillRoot, kind: "fork" });
+    sendJson(res, 200, {
+      workspace: next,
+      file: written.file,
+      skill,
+      expectedFork: skillForkDir(next.rootPath),
+    });
   } catch (error) {
+    if (sendWorkspaceRevisionConflict(res, error)) return;
     if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 400, error);
   }

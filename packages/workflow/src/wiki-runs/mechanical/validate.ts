@@ -75,7 +75,7 @@ export async function mechanicalValidate(
     const ids =
       pinned?.sources && Array.isArray(pinned.sources)
         ? (pinned.sources as Array<{ id: string }>).map((s) => s.id)
-        : host.workspace.sources.map((s) => s.id);
+        : host.workspaceForRun(claim.runId).sources.map((s) => s.id);
     for (const id of ids) {
       sources.push({ id, path: path.join(sourcesPath, id) });
     }

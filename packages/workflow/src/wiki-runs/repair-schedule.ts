@@ -43,7 +43,7 @@ const AUTO_MECHANICAL_REPAIR_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Shared surface for loading sealed Spec acceptance and scheduling repairs. */
-export type RepairScheduleHost = WikiRunsDbCtx & {
+export type RepairScheduleHost = Pick<WikiRunsDbCtx, "db" | "workspace" | "emit"> & {
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
   applyRerunAt(
     runId: string,

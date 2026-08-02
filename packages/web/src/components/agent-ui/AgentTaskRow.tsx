@@ -3,11 +3,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { StatusBadge } from "./StatusBadge";
 import { StatusGlyph } from "./StatusGlyph";
-import {
-  type StatusDescriptor,
-  type StatusKind,
-  describeStatus,
-} from "./status";
+import { describeStatus, type StatusDescriptor, type StatusKind } from "./status";
 
 export type AgentTaskRowProps = {
   title: string;

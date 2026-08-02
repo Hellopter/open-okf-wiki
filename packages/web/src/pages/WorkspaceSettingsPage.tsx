@@ -11,6 +11,7 @@ import {
   type SkillInfo,
   type WikiLanguage,
   type WorkspaceConfig,
+  workspaceFromRevisionConflict,
 } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -18,10 +19,7 @@ import { LoadingState } from "../components/LoadingState";
 import { formatMessage, useI18n } from "../i18n";
 import { notifyError, notifySuccess } from "../lib/notify";
 import { DangerSection } from "./workspace-settings/DangerSection";
-import {
-  type GeneralFieldErrorKey,
-  GeneralSection,
-} from "./workspace-settings/GeneralSection";
+import { type GeneralFieldErrorKey, GeneralSection } from "./workspace-settings/GeneralSection";
 import { SkillSection } from "./workspace-settings/SkillSection";
 
 export type SettingsSection = "general" | "skill" | "danger";
@@ -44,9 +42,7 @@ export function WorkspaceSettingsPage({
   const [defaultModelProfileId, setDefaultModelProfileId] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
-  const [fieldErrors, setFieldErrors] = useState<Partial<Record<GeneralFieldErrorKey, string>>>(
-    {},
-  );
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<GeneralFieldErrorKey, string>>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteMeta, setDeleteMeta] = useState(false);
@@ -319,6 +315,7 @@ export function WorkspaceSettingsPage({
         leafConcurrency: Math.min(16, Math.max(1, Number(leafConcurrency) || 2)),
       };
       const result = await patchWorkspace(id, {
+        expectedRevision: workspace.revision,
         name: name.trim(),
         ...(modelProfileId ? { modelProfileId } : {}),
         publicationPath: publicationPath.trim(),
@@ -332,6 +329,8 @@ export function WorkspaceSettingsPage({
       applyWorkspace(result.workspace, models);
       notifySuccess(t.settings.saved);
     } catch (err) {
+      const latest = workspaceFromRevisionConflict(err);
+      if (latest) applyWorkspace(latest, models);
       notifyError(err);
     } finally {
       setIsSubmitting(false);
@@ -431,6 +430,7 @@ export function WorkspaceSettingsPage({
           {section === "skill" ? (
             <SkillSection
               workspaceId={id}
+              expectedRevision={workspace.revision}
               models={models}
               skill={skill}
               skillBusy={skillBusy}

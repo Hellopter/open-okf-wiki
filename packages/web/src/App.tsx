@@ -17,7 +17,6 @@ export default function App() {
       <Route path="/workspaces" element={<WorkspacesPage />} />
       <Route path="/settings" element={<SettingsPage />} />
       <Route path="/w/:id" element={<WorkspaceAgentPage />} />
-      <Route path="/w/:id/runs" element={<WorkspaceAgentPage />} />
       <Route path="/w/:id/runs/:runId" element={<RunDetailPage />} />
       <Route path="/w/:id/runs/:runId/review" element={<RunReviewPage />} />
       <Route path="/w/:id/wiki/*" element={<WorkspaceWikiPage />} />

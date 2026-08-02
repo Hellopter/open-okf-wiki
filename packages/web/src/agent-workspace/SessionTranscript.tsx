@@ -1,10 +1,7 @@
-import type { AgentMessage } from "@okf-wiki/contract";
+import type { SessionMessage } from "@okf-wiki/contract";
 import { MessageSquareIcon, WorkflowIcon } from "lucide-react";
-import {
-  AssistantTurn,
-  describeRunStatus,
-  StatusBadge,
-} from "@/components/agent-ui";
+import { describeRunStatus, StatusBadge, ToolExecutionGroup } from "@/components/agent-ui";
+import type { ToolItemVM } from "@/components/agent-ui/adapters/types";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,36 +21,12 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
-import { useI18n, type MessageTree } from "../i18n";
+import { type MessageTree, useI18n } from "../i18n";
+import { MarkdownDocument } from "../shared/MarkdownDocument";
 import type { SessionRunLink } from "./session-run-links";
 
 function runStateLabel(run: SessionRunLink, labels: Record<string, string>): string {
   return labels[run.state] ?? run.state.replaceAll("_", " ");
-}
-
-function assistantLabels(t: MessageTree) {
-  return {
-    thinking: t.workbench.thinking,
-    thought: t.workbench.thought,
-    thinkingElapsed: t.workbench.thinkingElapsed,
-    generating: t.workbench.generating,
-    toolInput: t.workbench.rawInput,
-    toolOutput: t.workbench.rawOutput,
-    toolError: t.workbench.toolError,
-    openRun: t.workbench.openRun,
-    toolCallsSummary: t.workbench.toolCallsSummary,
-    copy: t.workbench.copy,
-    copied: t.workbench.copied,
-    toolNames: {
-      wikiProduce: t.workbench.toolNames.wiki_produce,
-      status: {
-        pending: t.workbench.toolPending,
-        running: t.workbench.toolRunning,
-        done: t.workbench.toolCompleted,
-        error: t.workbench.toolFailed,
-      },
-    },
-  };
 }
 
 function SessionRunLinks({
@@ -76,7 +49,12 @@ function SessionRunLinks({
           const descriptor = describeRunStatus(run.state);
           const label = runStateLabel(run, t.workbench.runStates);
           return (
-            <Button key={run.runId} size="sm" variant="outline" onClick={() => onOpenRun(run.runId)}>
+            <Button
+              key={run.runId}
+              size="sm"
+              variant="outline"
+              onClick={() => onOpenRun(run.runId)}
+            >
               <WorkflowIcon data-icon="inline-start" />
               <span className="font-mono">{run.runId.slice(0, 12)}</span>
               <StatusBadge descriptor={descriptor}>{label}</StatusBadge>
@@ -88,21 +66,33 @@ function SessionRunLinks({
   );
 }
 
+function sessionToolItems(message: SessionMessage, t: MessageTree): ToolItemVM[] {
+  const labels = {
+    pending: t.workbench.toolPending,
+    running: t.workbench.toolRunning,
+    done: t.workbench.toolCompleted,
+    error: t.workbench.toolFailed,
+  };
+  return (message.tools ?? []).map((tool) => ({
+    id: tool.id,
+    title: tool.name === "wiki_produce" ? t.workbench.toolNames.wiki_produce : tool.name,
+    status: tool.status,
+    statusLabel: labels[tool.status],
+    ...(tool.receipt?.summary ? { summary: tool.receipt.summary } : {}),
+    ...(tool.receipt?.runId ? { openRunId: tool.receipt.runId } : {}),
+    kind: tool.name === "wiki_produce" ? "wiki_produce" : "generic",
+    defaultOpen: tool.status === "pending" || tool.status === "running" || tool.status === "error",
+  }));
+}
+
 function TranscriptRow({
   message,
   onOpenRun,
 }: {
-  message: AgentMessage;
+  message: SessionMessage;
   onOpenRun?: (runId: string) => void;
 }) {
   const { t } = useI18n();
-  if (message.role === "system") {
-    return (
-      <Marker variant="separator">
-        <MarkerContent>{message.content}</MarkerContent>
-      </Marker>
-    );
-  }
   if (message.role === "user") {
     return (
       <Message align="end" data-testid="session-message-user">
@@ -116,14 +106,30 @@ function TranscriptRow({
       </Message>
     );
   }
+  const tools = sessionToolItems(message, t);
   return (
     <Message data-testid="session-message-agent">
       <MessageContent>
-        <AssistantTurn
-          message={message}
-          labels={assistantLabels(t)}
-          onOpenRun={onOpenRun}
-        />
+        <div className="flex min-w-0 flex-col gap-2">
+          <ToolExecutionGroup
+            items={tools}
+            openRunLabel={t.workbench.openRun}
+            inputLabel={t.workbench.toolInput}
+            outputLabel={t.workbench.toolOutput}
+            errorLabel={t.workbench.toolError}
+            toolCallsSummaryLabel={t.workbench.toolCallsSummary}
+            onOpenRun={onOpenRun}
+          />
+          {message.content ? (
+            <MarkdownDocument
+              content={message.content}
+              mode={message.status === "streaming" ? "streaming" : "static"}
+            />
+          ) : null}
+          {message.errorText ? (
+            <p className="text-sm text-destructive">{message.errorText}</p>
+          ) : null}
+        </div>
       </MessageContent>
     </Message>
   );
@@ -134,7 +140,7 @@ export function SessionTranscript({
   runs = [],
   onOpenRun,
 }: {
-  messages: AgentMessage[];
+  messages: SessionMessage[];
   runs?: SessionRunLink[];
   onOpenRun?: (runId: string) => void;
 }) {

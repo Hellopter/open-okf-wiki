@@ -13,6 +13,7 @@ import { resetOperatorSessionsForTests } from "./operator-session-test-seams.ts"
 import {
   createLiveSession,
   dispatchSessionCommand,
+  invalidateOperatorSessions,
   projectOperatorStreamState,
   sessionSnapshot,
   subscribeSession,
@@ -44,13 +45,13 @@ function fixtureWorkspace(root: string, skillPath: string) {
   });
 }
 
-test("Operator Session browser projection keeps thinking and tool bodies with redaction", () => {
+test("Operator Session browser projection excludes Pi thinking and raw tool bodies", () => {
   const projected = projectOperatorStreamState(
     createPiStreamState([
       {
         id: "assistant-private",
         role: "assistant",
-        content: "Public answer with sk-super-secret",
+        content: "Public answer with sk-super-secret at /workspace/private.md",
         thinking: "chain of thought with sk-super-secret",
         thinkingStatus: "done",
         createdAt: "2026-08-02T00:00:00.000Z",
@@ -75,32 +76,26 @@ test("Operator Session browser projection keeps thinking and tool bodies with re
 
   const message = projected.messages[0];
   assert.ok(message);
-  assert.equal(message.thinking, "chain of thought with [redacted-key]");
-  assert.equal(message.thinkingStatus, "done");
-  assert.equal(message.content, "Public answer with [redacted-key]");
-  assert.ok(message.parts?.some((part) => part.type === "thinking"));
-  const thinkingPart = message.parts?.find((part) => part.type === "thinking");
-  assert.ok(thinkingPart && thinkingPart.type === "thinking");
-  assert.equal(thinkingPart.thinking, "chain of thought with [redacted-key]");
+  assert.equal("thinking" in message, false);
+  assert.equal("thinkingStatus" in message, false);
+  assert.equal(message.content, "Public answer with [redacted-key] at [redacted-path]");
+  assert.equal("parts" in message, false);
 
   const tool = message.tools?.[0];
   assert.ok(tool);
   assert.equal(tool.id, "tool-private");
   assert.equal(tool.name, "wiki_repair");
   assert.equal(tool.status, "done");
-  assert.equal(typeof tool.args, "string");
-  assert.ok(String(tool.args).includes("run-safe"));
-  assert.ok(String(tool.args).includes("[redacted-path]"));
-  assert.equal(String(tool.args).includes("sk-super-secret"), false);
-  assert.ok(tool.output?.includes("useful detail"));
-  assert.equal(tool.output?.includes("sk-super-secret"), false);
-  assert.ok(tool.output?.includes("[redacted-key]"));
+  assert.equal("args" in tool, false);
+  assert.equal("output" in tool, false);
+  assert.equal("receipt" in tool, false);
 
   const wire = JSON.stringify(projected);
   assert.equal(wire.includes("sk-super-secret"), false);
+  assert.equal(wire.includes("/workspace/private.md"), false);
 });
 
-test("Operator Session browser projection truncates large tool output", () => {
+test("Operator Session browser projection bounds wiki_produce receipt summaries", () => {
   const huge = `prefix ${"x".repeat(20_000)} suffix`;
   const projected = projectOperatorStreamState(
     createPiStreamState([
@@ -113,9 +108,8 @@ test("Operator Session browser projection truncates large tool output", () => {
         tools: [
           {
             id: "tool-huge",
-            name: "read_file",
-            args: { path: "docs/big.md" },
-            output: huge,
+            name: "wiki_produce",
+            details: { status: "accepted", summary: huge },
             status: "done",
           },
         ],
@@ -123,11 +117,11 @@ test("Operator Session browser projection truncates large tool output", () => {
     ]),
   );
 
-  const output = projected.messages[0]?.tools?.[0]?.output;
-  assert.ok(output);
-  assert.ok(output.length <= 12_000);
-  assert.ok(output.startsWith("prefix "));
-  assert.equal(output.includes("suffix"), false);
+  const summary = projected.messages[0]?.tools?.[0]?.receipt?.summary;
+  assert.ok(summary);
+  assert.ok(summary.length <= 4_000);
+  assert.ok(summary.startsWith("prefix "));
+  assert.equal(summary.includes("suffix"), false);
 });
 
 test("rejected detached prompt emits a redacted error patch", async (t) => {
@@ -136,7 +130,7 @@ test("rejected detached prompt emits a redacted error patch", async (t) => {
   await mkdir(skillPath, { recursive: true });
   await writeFile(path.join(skillPath, "SKILL.md"), "# fixture skill\n", "utf8");
   t.after(async () => {
-    resetOperatorSessionsForTests();
+    await resetOperatorSessionsForTests();
     await rm(root, { recursive: true, force: true });
   });
 
@@ -178,6 +172,65 @@ test("rejected detached prompt emits a redacted error patch", async (t) => {
   assert.equal(error.includes("sk-super-secret"), false);
 });
 
+test("workspace invalidation aborts the active turn, closes subscribers, and drops only the live handle", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-operator-session-invalidate-"));
+  const skillPath = path.join(root, "skill");
+  await mkdir(skillPath, { recursive: true });
+  await writeFile(path.join(skillPath, "SKILL.md"), "# fixture skill\n", "utf8");
+  t.after(async () => {
+    await resetOperatorSessionsForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  let aborts = 0;
+  let disposed = 0;
+  const activeHandle = {
+    sessionId: "invalidated-session",
+    session: {
+      setSessionName() {},
+      sessionManager: { getSessionName: () => "Invalidation fixture" },
+      subscribe() {
+        return () => undefined;
+      },
+      async prompt() {
+        await new Promise<void>(() => undefined);
+      },
+      async abort() {
+        aborts += 1;
+      },
+    },
+    dispose() {
+      disposed += 1;
+    },
+  } as unknown as Awaited<ReturnType<typeof createOperatorSession>>;
+  const workspace = fixtureWorkspace(root, skillPath);
+  const session = await createLiveSession(
+    workspace,
+    undefined,
+    activeHandle.sessionId,
+    async () => ({ handle: activeHandle }),
+  );
+  const response = await dispatchSessionCommand(workspace, session.id, {
+    type: "prompt",
+    text: "Keep this turn active",
+  });
+  assert.equal(response.ok, true);
+
+  let subscriberClosed = 0;
+  await subscribeSession(
+    workspace,
+    session.id,
+    () => undefined,
+    () => {
+      subscriberClosed += 1;
+    },
+  );
+  assert.equal(await invalidateOperatorSessions(workspace.id, "settings changed"), 1);
+  assert.equal(aborts, 1);
+  assert.equal(disposed, 1);
+  assert.equal(subscriberClosed, 1);
+});
+
 test("Operator Session SSE emits stream patches without replaying prior history", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-operator-session-stream-"));
   const skillPath = path.join(root, "skill");
@@ -188,7 +241,7 @@ test("Operator Session SSE emits stream patches without replaying prior history"
   t.after(async () => {
     if (originalFixtureMode === undefined) delete process.env.OKF_WIKI_AGENT_MODE;
     else process.env.OKF_WIKI_AGENT_MODE = originalFixtureMode;
-    resetOperatorSessionsForTests();
+    await resetOperatorSessionsForTests();
     await rm(root, { recursive: true, force: true });
   });
 
@@ -229,5 +282,5 @@ test("Operator Session SSE emits stream patches without replaying prior history"
   assert.ok(streams.every((event) => "messages" in event.payload === false));
 
   const snapshot = await sessionSnapshot(workspace, session.id);
-  assert.equal(snapshot.payload.messages.length, 2);
+  assert.equal(snapshot.payload.state.messages.length, 2);
 });

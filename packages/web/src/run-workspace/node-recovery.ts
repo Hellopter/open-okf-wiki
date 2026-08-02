@@ -41,25 +41,18 @@ function findNode(snapshot: WikiRunSnapshot, nodeKey: string): WikiRunNode | und
   return snapshot.nodes.find((node) => node.key === nodeKey);
 }
 
-function lastAttemptForNode(
-  snapshot: WikiRunSnapshot,
-  node: WikiRunNode,
-): WikiRunAttempt | null {
+function lastAttemptForNode(snapshot: WikiRunSnapshot, node: WikiRunNode): WikiRunAttempt | null {
   if (node.lastAttemptId) {
     const byId = snapshot.attempts.find((attempt) => attempt.attemptId === node.lastAttemptId);
     if (byId) return byId;
   }
   const matching = snapshot.attempts
-    .filter(
-      (attempt) => attempt.nodeKey === node.key && attempt.nodeGeneration === node.generation,
-    )
+    .filter((attempt) => attempt.nodeKey === node.key && attempt.nodeGeneration === node.generation)
     .sort((left, right) => right.runIndex - left.runIndex);
   return matching[0] ?? null;
 }
 
-function runBlocksRecovery(
-  snapshot: WikiRunSnapshot,
-): "runPublished" | "runCancelled" | null {
+function runBlocksRecovery(snapshot: WikiRunSnapshot): "runPublished" | "runCancelled" | null {
   if (snapshot.state === "published") return "runPublished";
   if (snapshot.state === "cancelled" || snapshot.cancelRequested) return "runCancelled";
   return null;
@@ -69,10 +62,7 @@ function runBlocksRecovery(
  * Best-effort: edges + successor progress. Snapshot does not expose attempt_inputs
  * lineage, so this can false-positive/negative; server enforces the real closure.
  */
-export function hasLikelyDownstreamConsumers(
-  snapshot: WikiRunSnapshot,
-  nodeKey: string,
-): boolean {
+export function hasLikelyDownstreamConsumers(snapshot: WikiRunSnapshot, nodeKey: string): boolean {
   const node = findNode(snapshot, nodeKey);
   const successors = snapshot.edges
     .filter((edge) => edge.from === nodeKey)
@@ -99,19 +89,14 @@ export function hasLikelyDownstreamConsumers(
 
 /** True once execution nodes beyond freeze / plan / gate.plan exist. */
 export function hasMaterializedExecutionTopology(snapshot: WikiRunSnapshot): boolean {
-  return snapshot.nodes.some(
-    (node) => !["freeze", "plan", "gate.plan"].includes(node.key),
-  );
+  return snapshot.nodes.some((node) => !["freeze", "plan", "gate.plan"].includes(node.key));
 }
 
 /**
  * Same-generation retry of a failed/interrupted attempt when no downstream
  * consumers bound this generation's outputs.
  */
-export function canRetryFailedNode(
-  snapshot: WikiRunSnapshot,
-  nodeKey: string,
-): RetryEligibility {
+export function canRetryFailedNode(snapshot: WikiRunSnapshot, nodeKey: string): RetryEligibility {
   const blocked = runBlocksRecovery(snapshot);
   if (blocked) return { ok: false, reasonKey: blocked };
 

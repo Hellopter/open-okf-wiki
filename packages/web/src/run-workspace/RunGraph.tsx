@@ -119,12 +119,7 @@ function OverviewCard({ data }: NodeProps<OverviewNode>) {
     <div
       className={`flex h-[4.75rem] w-[216px] flex-col justify-between rounded-lg border px-3.5 py-3 shadow-sm ${stateClass(data.stage.state)}`}
     >
-      <Handle
-        id="left"
-        type="target"
-        position={Position.Left}
-        className={handleClassName(false)}
-      />
+      <Handle id="left" type="target" position={Position.Left} className={handleClassName(false)} />
       {data.showFeedbackHandles && data.stage.id === "synthesis" ? (
         <Handle
           id="bottom"
@@ -350,14 +345,8 @@ function FocusGraph({
   t: MessageTree;
 }) {
   const baseTopology = useMemo(() => buildFocusTopology(snapshot, stage), [snapshot, stage]);
-  const domainGroups = useMemo(
-    () => researchDomainLeafGroups(baseTopology),
-    [baseTopology],
-  );
-  const collapseEnabled = useMemo(
-    () => shouldCollapseResearchLeaves(baseTopology),
-    [baseTopology],
-  );
+  const domainGroups = useMemo(() => researchDomainLeafGroups(baseTopology), [baseTopology]);
+  const collapseEnabled = useMemo(() => shouldCollapseResearchLeaves(baseTopology), [baseTopology]);
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
@@ -390,10 +379,7 @@ function FocusGraph({
     [baseTopology, collapseEnabled, expandedDomains],
   );
 
-  const displayEdges = useMemo(
-    () => simplifyDisplayEdges(topology.edges),
-    [topology.edges],
-  );
+  const displayEdges = useMemo(() => simplifyDisplayEdges(topology.edges), [topology.edges]);
   const domainCollapseKeys = useMemo(() => {
     if (!collapseEnabled) return undefined;
     return new Set(
@@ -423,10 +409,7 @@ function FocusGraph({
     [orderedNodes, displayEdges, outDegree, inDegree, domainCollapseKeys],
   );
 
-  const topologyNodeKeys = useMemo(
-    () => topology.nodes.map((node) => node.key),
-    [topology.nodes],
-  );
+  const topologyNodeKeys = useMemo(() => topology.nodes.map((node) => node.key), [topology.nodes]);
   const topologyNodeCount = topologyNodeKeys.length;
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
@@ -496,8 +479,7 @@ function FocusGraph({
     });
   }, [positions, topology, displayEdges, topologyNodeKeys, domainCollapseKeys]);
 
-  const layoutSettled =
-    handlePlan != null && allNodesPositioned(topologyNodeKeys, positions);
+  const layoutSettled = handlePlan != null && allNodesPositioned(topologyNodeKeys, positions);
 
   // Fit only on stage / base topology change — not every expand/collapse.
   const fitSignature = `${stage}:${baseTopology.topologyKey}`;
@@ -858,7 +840,12 @@ export function RunGraph({
               proOptions={{ hideAttribution: true }}
               className="bg-background"
             >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--border)" />
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={20}
+                size={1}
+                color="var(--border)"
+              />
               <Controls showInteractive={false} className="!rounded-md !border-border !shadow-sm" />
             </ReactFlow>
           </div>
