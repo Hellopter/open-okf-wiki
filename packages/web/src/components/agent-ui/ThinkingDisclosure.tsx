@@ -1,7 +1,7 @@
-import { CheckIcon, Loader2Icon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, Loader2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { ActivityCollapsible } from "./ActivityCollapsible";
 
 export type ThinkingDisclosureProps = {
   text: string;
@@ -20,9 +20,9 @@ function formatElapsed(template: string | undefined, seconds: number): string | 
 }
 
 /**
- * Collapsible chain-of-thought / thinking strip.
+ * Lightweight chain-of-thought strip (no card shell).
  * Streaming: open with spin glyph + live elapsed.
- * Done: always show a summary trigger row (collapsed body by default).
+ * Done: collapsed text row by default; expand shows left-rail steps.
  */
 export function ThinkingDisclosure({
   text,
@@ -37,7 +37,6 @@ export function ThinkingDisclosure({
   const startedAtRef = useRef<number>(Date.now());
   const frozenElapsedRef = useRef<number | null>(null);
 
-  // Reset timer when a new thinking stream begins.
   useEffect(() => {
     if (status === "streaming") {
       startedAtRef.current = Date.now();
@@ -45,7 +44,6 @@ export function ThinkingDisclosure({
       setElapsedSeconds(0);
       setOpen(true);
     } else {
-      // Freeze elapsed at the moment we flip to done.
       if (frozenElapsedRef.current === null) {
         const secs = Math.max(0, Math.round((Date.now() - startedAtRef.current) / 1000));
         frozenElapsedRef.current = secs;
@@ -55,7 +53,6 @@ export function ThinkingDisclosure({
     }
   }, [status]);
 
-  // Tick elapsed while streaming.
   useEffect(() => {
     if (status !== "streaming") return;
     const id = window.setInterval(() => {
@@ -64,7 +61,6 @@ export function ThinkingDisclosure({
     return () => window.clearInterval(id);
   }, [status]);
 
-  // Empty body while streaming still shows the live row; hide empty done rows.
   if (!text && status !== "streaming") return null;
 
   const label = status === "streaming" ? streamingLabel : doneLabel;
@@ -78,59 +74,64 @@ export function ThinkingDisclosure({
     .map((line) => line.trim())
     .filter(Boolean);
   const multiStep = steps.length > 1;
+  const hasBody = Boolean(text);
 
   return (
     <div
       data-slot="thinking-disclosure"
       role="status"
       aria-live="polite"
-      className={cn(
-        "w-full max-w-3xl rounded-lg border border-border/60 bg-muted/20 px-2.5 py-2",
-        className,
-      )}
+      className={cn("w-full max-w-3xl min-w-0", className)}
     >
-      <ActivityCollapsible
-        open={open}
-        onOpenChange={setOpen}
-        className="w-full min-w-0"
-        trigger={
-          <>
-            {status === "streaming" ? (
-              <Loader2Icon
-                className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-                aria-hidden
-              />
-            ) : (
-              <CheckIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-            )}
-            <span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">
-              {label}
+      <Collapsible open={open} onOpenChange={setOpen} className="min-w-0">
+        <CollapsibleTrigger
+          className={cn(
+            "-mx-1.5 flex w-fit max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left",
+            "text-[12.5px] text-muted-foreground outline-none transition-colors duration-100",
+            "hover:bg-muted/50 hover:text-foreground",
+            "focus-visible:ring-3 focus-visible:ring-ring/50",
+          )}
+          disabled={!hasBody && status !== "streaming"}
+        >
+          {status === "streaming" ? (
+            <Loader2Icon className="size-3 shrink-0 animate-spin" aria-hidden />
+          ) : hasBody ? (
+            <ChevronDownIcon
+              className={cn(
+                "size-3 shrink-0 transition-transform duration-200",
+                open ? "rotate-0" : "-rotate-90",
+              )}
+              aria-hidden
+            />
+          ) : (
+            <CheckIcon className="size-3 shrink-0" aria-hidden />
+          )}
+          <span className="min-w-0 truncate font-medium">{label}</span>
+          {displayElapsed ? (
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/80">
+              {displayElapsed}
             </span>
-            {displayElapsed ? (
-              <span className="shrink-0 font-mono text-[11px] text-muted-foreground/80">
-                {displayElapsed}
-              </span>
-            ) : null}
-          </>
-        }
-        contentClassName="mt-2"
-      >
-        <div className="max-h-48 overflow-y-auto border-l-2 border-border/70 pl-3">
-          {multiStep ? (
-            <ul className="space-y-1.5 text-sm text-muted-foreground">
-              {steps.map((step, index) => (
-                <li key={`${index}-${step.slice(0, 24)}`} className="leading-relaxed">
-                  {step}
-                </li>
-              ))}
-            </ul>
-          ) : text ? (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-              {text}
-            </p>
           ) : null}
-        </div>
-      </ActivityCollapsible>
+        </CollapsibleTrigger>
+
+        {hasBody ? (
+          <CollapsibleContent className="min-w-0 overflow-hidden">
+            <div className="mt-0.5 mb-1 ml-2 max-h-48 overflow-y-auto border-l border-border py-0.5 pl-3.5">
+              {multiStep ? (
+                <ul className="space-y-1 text-[12.5px] leading-relaxed text-muted-foreground">
+                  {steps.map((step, index) => (
+                    <li key={`${index}-${step.slice(0, 24)}`}>{step}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-muted-foreground">
+                  {text}
+                </p>
+              )}
+            </div>
+          </CollapsibleContent>
+        ) : null}
+      </Collapsible>
     </div>
   );
 }

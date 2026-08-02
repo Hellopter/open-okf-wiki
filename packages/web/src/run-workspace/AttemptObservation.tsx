@@ -12,16 +12,17 @@ import {
   LoaderCircleIcon,
   RotateCcwIcon,
   TerminalIcon,
+  TriangleAlertIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityCollapsible,
   attemptToolToViewModel,
   CodeSurface,
   describeAttemptStatus,
   StatusBadge,
-  ToolExecutionItem,
+  ToolChipRow,
 } from "@/components/agent-ui";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -32,8 +33,16 @@ import { Textarea } from "@/components/ui/textarea";
 import type { MessageTree } from "../i18n";
 import { newCommandId } from "../lib/command-id";
 import { MarkdownDocument } from "../shared/MarkdownDocument";
-import { canRerunNode, canRetryFailedNode } from "./node-recovery";
+import {
+  canRerunNode,
+  canRetryFailedNode,
+  shouldShowNoAutoRetryHint,
+  truncateAttemptError,
+} from "./node-recovery";
 import type { FollowMode } from "./observation-state";
+
+/** Compact preview length for attempt-history sidebar rows. */
+const HISTORY_ERROR_PREVIEW_CHARS = 96;
 
 function elapsed(attempt: WikiRunAttempt): string | null {
   const end = attempt.endedAt ? new Date(attempt.endedAt).getTime() : Date.now();
@@ -102,7 +111,7 @@ function ActivityFeed({
     return <p className="py-12 text-center text-sm text-muted-foreground">{t.workbench.noTrace}</p>;
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 py-5 md:px-6">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 px-4 py-5 md:px-6">
         {rendered.map((item) => {
           if (item.kind === "tool") {
             const vm = attemptToolToViewModel(item.call, item.result, {
@@ -115,49 +124,40 @@ function ActivityFeed({
               },
             });
             return (
-              <ToolExecutionItem
+              <ToolChipRow
                 key={item.call?.ordinal ?? item.result?.ordinal}
                 item={vm}
                 openRunLabel={t.workbench.openRun}
                 inputLabel={t.workbench.rawInput}
                 outputLabel={t.workbench.rawOutput}
                 errorLabel={t.workbench.toolError}
-                copyLabel={t.workbench.copy}
-                copiedLabel={t.workbench.copied}
               />
             );
           }
           const event = item.event;
           if (event.kind === "input") {
             return (
-              <div
-                key={event.ordinal}
-                className="rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2"
-              >
-                <ActivityCollapsible
-                  defaultOpen={false}
-                  className="w-full min-w-0"
-                  trigger={
-                    <>
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
-                        {t.workbench.attemptInput}
-                      </span>
-                      <time className="shrink-0 font-mono text-[11px] font-normal text-muted-foreground">
-                        {new Date(event.at).toLocaleTimeString()}
-                      </time>
-                    </>
-                  }
-                  contentClassName="mt-2 border-t border-border/50 pt-2"
-                >
-                  <CodeSurface
-                    value={event.content}
-                    maxHeightClass="max-h-[36rem]"
-                    copyable
-                    copyLabel={t.workbench.copy}
-                    copiedLabel={t.workbench.copied}
-                  />
-                </ActivityCollapsible>
-              </div>
+              <Collapsible key={event.ordinal} className="min-w-0" defaultOpen={false}>
+                <CollapsibleTrigger className="-mx-1 flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1 text-left text-[12.5px] text-muted-foreground outline-none transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                    {t.workbench.attemptInput}
+                  </span>
+                  <time className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
+                    {new Date(event.at).toLocaleTimeString()}
+                  </time>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="min-w-0 overflow-hidden">
+                  <div className="mt-1 mb-1 ml-2 border-l border-border pl-3.5">
+                    <CodeSurface
+                      value={event.content}
+                      maxHeightClass="max-h-[36rem]"
+                      copyable
+                      copyLabel={t.workbench.copy}
+                      copiedLabel={t.workbench.copied}
+                    />
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
             );
           }
           if (event.kind === "assistant") {
@@ -342,6 +342,16 @@ export function AttemptObservation({
   const rerun = selectedNode ? canRerunNode(snapshot, selectedNode.key) : null;
   const showRecovery = Boolean(onRunCommand && selectedNode && (retry || rerun));
 
+  const showAttemptErrorAlert = Boolean(
+    selectedAttempt &&
+      ["failed", "interrupted"].includes(selectedAttempt.state) &&
+      selectedAttempt.error != null &&
+      selectedAttempt.error.length > 0,
+  );
+  const showNoAutoRetry =
+    showAttemptErrorAlert &&
+    shouldShowNoAutoRetryHint(selectedAttempt?.failureClass, selectedNode?.kind);
+
   const retryTitle =
     retry?.ok === false
       ? (t.workbench.cannotRetryReason[retry.reasonKey] ?? t.workbench.retryNodeHint)
@@ -496,28 +506,54 @@ export function AttemptObservation({
             {t.workbench.attemptHistory}
           </div>
           <div className="flex max-h-40 gap-2 overflow-x-auto px-2 pb-2 md:max-h-none md:flex-col md:overflow-y-auto md:px-2">
-            {attempts.map((attempt) => (
-              <Button
-                key={attempt.attemptId}
-                size="sm"
-                variant={attempt.attemptId === selectedAttempt?.attemptId ? "secondary" : "ghost"}
-                className="h-auto min-w-48 shrink-0 justify-start px-3 py-2 text-left md:min-w-0"
-                onClick={() => onSelectAttempt(attempt)}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-mono text-xs">
-                    #{attempt.nodeGeneration} · {attempt.runIndex}
+            {attempts.map((attempt) => {
+              const failedish =
+                attempt.state === "failed" || attempt.state === "interrupted";
+              const historyMeta = [
+                elapsed(attempt),
+                failedish && attempt.failureClass ? attempt.failureClass : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              const historyError =
+                failedish && attempt.error
+                  ? truncateAttemptError(attempt.error, HISTORY_ERROR_PREVIEW_CHARS)
+                  : null;
+              return (
+                <Button
+                  key={attempt.attemptId}
+                  size="sm"
+                  variant={
+                    attempt.attemptId === selectedAttempt?.attemptId ? "secondary" : "ghost"
+                  }
+                  className="h-auto min-w-48 shrink-0 justify-start px-3 py-2 text-left md:min-w-0"
+                  onClick={() => onSelectAttempt(attempt)}
+                  title={historyError ?? undefined}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-xs">
+                      #{attempt.nodeGeneration} · {attempt.runIndex}
+                    </span>
+                    {historyMeta ? (
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        {historyMeta}
+                      </span>
+                    ) : null}
+                    {historyError ? (
+                      <span
+                        className="mt-0.5 block line-clamp-2 text-[11px] text-destructive/90"
+                        data-testid="attempt-history-error"
+                      >
+                        {historyError}
+                      </span>
+                    ) : null}
                   </span>
-                  <span className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-                    {elapsed(attempt)}
-                    {attempt.failureClass ? ` · ${attempt.failureClass}` : ""}
-                  </span>
-                </span>
-                <StatusBadge descriptor={describeAttemptStatus(attempt.state)}>
-                  {attemptStateLabel(attempt.state, t)}
-                </StatusBadge>
-              </Button>
-            ))}
+                  <StatusBadge descriptor={describeAttemptStatus(attempt.state)}>
+                    {attemptStateLabel(attempt.state, t)}
+                  </StatusBadge>
+                </Button>
+              );
+            })}
             {attempts.length === 0 ? (
               <p className="px-2 py-3 text-xs text-muted-foreground">
                 {t.workbench.noAttemptStarted}
@@ -534,7 +570,36 @@ export function AttemptObservation({
             </TabsList>
             <TabsContent value="activity" className="min-h-0 flex-1 overflow-hidden">
               {selectedAttempt ? (
-                <ActivityFeed trace={trace} t={t} followMode={followMode} />
+                <div className="flex h-full min-h-0 flex-col">
+                  {showAttemptErrorAlert ? (
+                    <Alert
+                      variant="destructive"
+                      className="sticky top-0 z-10 shrink-0 rounded-none border-x-0 border-t-0"
+                      data-testid="attempt-error-alert"
+                    >
+                      <TriangleAlertIcon />
+                      <AlertTitle>
+                        {selectedAttempt.failureClass
+                          ? `${t.workbench.attemptErrorTitle} · ${selectedAttempt.failureClass}`
+                          : t.workbench.attemptErrorTitle}
+                      </AlertTitle>
+                      <AlertDescription className="whitespace-pre-wrap break-words font-mono text-xs">
+                        {selectedAttempt.error}
+                      </AlertDescription>
+                      {showNoAutoRetry ? (
+                        <p
+                          className="col-start-2 mt-1 text-xs text-muted-foreground"
+                          data-testid="attempt-no-auto-retry-hint"
+                        >
+                          {t.workbench.noAutoRetryHint}
+                        </p>
+                      ) : null}
+                    </Alert>
+                  ) : null}
+                  <div className="min-h-0 flex-1 overflow-hidden">
+                    <ActivityFeed trace={trace} t={t} followMode={followMode} />
+                  </div>
+                </div>
               ) : (
                 <p className="px-4 py-12 text-center text-sm text-muted-foreground">
                   {t.workbench.noAttemptStarted}

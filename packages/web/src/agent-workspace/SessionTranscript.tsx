@@ -1,6 +1,13 @@
-import type { SessionMessage } from "@okf-wiki/contract";
+import type { SessionMessage, SessionTool } from "@okf-wiki/contract";
 import { MessageSquareIcon, WorkflowIcon } from "lucide-react";
-import { describeRunStatus, StatusBadge, ToolExecutionGroup } from "@/components/agent-ui";
+import {
+  describeRunStatus,
+  inferToolKind,
+  StatusBadge,
+  ToolChipGroup,
+  toolDefaultOpen,
+  toolProductTitle,
+} from "@/components/agent-ui";
 import type { ToolItemVM } from "@/components/agent-ui/adapters/types";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
@@ -66,23 +73,40 @@ function SessionRunLinks({
   );
 }
 
-function sessionToolItems(message: SessionMessage, t: MessageTree): ToolItemVM[] {
-  const labels = {
+/** Project browser-safe SessionTool (no raw args) into chip-row VM. */
+function sessionToolToViewModel(tool: SessionTool, t: MessageTree): ToolItemVM {
+  const statusLabels = {
     pending: t.workbench.toolPending,
     running: t.workbench.toolRunning,
     done: t.workbench.toolCompleted,
     error: t.workbench.toolFailed,
   };
-  return (message.tools ?? []).map((tool) => ({
+  const summary = tool.receipt?.summary?.trim();
+  const runId = tool.receipt?.runId?.trim();
+  // Prefer path-like run id on the chip; keep prose summary for the rail when both exist.
+  const chip = runId || summary || undefined;
+  const detailLines =
+    summary && runId && summary !== runId
+      ? [{ text: summary, tone: "default" as const }]
+      : undefined;
+  return {
     id: tool.id,
-    title: tool.name === "wiki_produce" ? t.workbench.toolNames.wiki_produce : tool.name,
+    title: toolProductTitle(tool.name, { wikiProduce: t.workbench.toolNames.wiki_produce }),
+    technicalName: tool.name,
     status: tool.status,
-    statusLabel: labels[tool.status],
-    ...(tool.receipt?.summary ? { summary: tool.receipt.summary } : {}),
-    ...(tool.receipt?.runId ? { openRunId: tool.receipt.runId } : {}),
-    kind: tool.name === "wiki_produce" ? "wiki_produce" : "generic",
-    defaultOpen: tool.status === "pending" || tool.status === "running" || tool.status === "error",
-  }));
+    statusLabel: statusLabels[tool.status],
+    kind: inferToolKind(tool.name),
+    ...(summary ? { summary } : {}),
+    ...(chip ? { chip, chipMono: Boolean(runId && chip === runId) } : {}),
+    ...(detailLines ? { detailLines } : {}),
+    ...(runId ? { openRunId: runId } : {}),
+    defaultOpen: toolDefaultOpen(tool.status),
+    testId: `session-tool-${tool.name}`,
+  };
+}
+
+function sessionToolItems(message: SessionMessage, t: MessageTree): ToolItemVM[] {
+  return (message.tools ?? []).map((tool) => sessionToolToViewModel(tool, t));
 }
 
 function TranscriptRow({
@@ -111,13 +135,16 @@ function TranscriptRow({
     <Message data-testid="session-message-agent">
       <MessageContent>
         <div className="flex min-w-0 flex-col gap-2">
-          <ToolExecutionGroup
+          <ToolChipGroup
             items={tools}
             openRunLabel={t.workbench.openRun}
             inputLabel={t.workbench.toolInput}
             outputLabel={t.workbench.toolOutput}
             errorLabel={t.workbench.toolError}
             toolCallsSummaryLabel={t.workbench.toolCallsSummary}
+            toolCallsWithMessagesLabel={t.workbench.toolCallsWithMessages}
+            messageCount={message.content.trim() ? 1 : 0}
+            moreFilesLabel={t.workbench.moreFiles}
             onOpenRun={onOpenRun}
           />
           {message.content ? (

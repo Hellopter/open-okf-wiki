@@ -1,7 +1,8 @@
 import type { AgentToolCall } from "@okf-wiki/contract";
 import {
-  extractPrimaryFields,
-  extractToolHeadline,
+  extractFileChange,
+  extractToolChip,
+  extractToolDetailLines,
   formatRawArgs,
   toolDefaultOpen,
 } from "./tool-fields.ts";
@@ -25,7 +26,7 @@ function openRunIdFromTool(tool: AgentToolCall): string | undefined {
   return undefined;
 }
 
-/** Project a live AgentToolCall into the shared tool row view model. */
+/** Project a live AgentToolCall into the shared chip-row view model. */
 export function agentToolCallToViewModel(
   tool: AgentToolCall,
   labels: ToolNameLabels = {},
@@ -34,11 +35,19 @@ export function agentToolCallToViewModel(
   const summary = tool.details?.summary;
   const inputText = formatRawArgs(tool.args);
   const outputText = tool.output;
-  // Keep summary separate; item UI dedupes when summary equals error/output.
   const errorText = status === "error" ? tool.output : undefined;
   const openRunId = openRunIdFromTool(tool);
-  const headline = extractToolHeadline(tool.args, tool.details);
-  const primaryFields = extractPrimaryFields(tool.args);
+  const kind = inferToolKind(tool.name);
+  const chip = extractToolChip(tool.args, tool.details);
+  const detailLines = extractToolDetailLines(tool.args, tool.details, {
+    status,
+    summary,
+    output: outputText,
+    errorText,
+    chipText: chip?.text,
+  });
+  const fileChange =
+    status === "error" ? undefined : extractFileChange(tool.args, outputText, kind);
 
   return {
     id: tool.id,
@@ -47,12 +56,14 @@ export function agentToolCallToViewModel(
     status,
     statusLabel: toolStatusLabel(status, labels),
     summary,
-    headline,
-    primaryFields,
+    chip: chip?.text,
+    chipMono: chip?.mono,
+    detailLines,
     inputText,
     outputText,
     errorText,
-    kind: inferToolKind(tool.name),
+    ...(fileChange ? { fileChange } : {}),
+    kind,
     openRunId,
     defaultOpen: toolDefaultOpen(status),
     testId: `agent-tool-${tool.name}`,

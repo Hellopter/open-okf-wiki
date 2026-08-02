@@ -53,8 +53,8 @@ test("attemptToolToViewModel pairs call + done result", () => {
   assert.equal(vm.outputText, "accepted");
   assert.equal(vm.defaultOpen, false);
   assert.equal(vm.kind, "wiki_produce");
-  assert.equal(vm.headline, "docs");
-  assert.ok(vm.primaryFields?.some((f) => f.label === "goal"));
+  assert.equal(vm.chip, "docs");
+  assert.ok(vm.detailLines?.some((line) => line.text.includes("goal") || line.text === "accepted"));
 });
 
 test("attemptToolToViewModel treats missing result as running", () => {
@@ -70,7 +70,7 @@ test("attemptToolToViewModel treats missing result as running", () => {
   assert.equal(vm.defaultOpen, true);
   assert.equal(vm.title, "read file");
   assert.equal(vm.kind, "read");
-  assert.equal(vm.headline, "README.md");
+  assert.equal(vm.chip, "README.md");
 });
 
 test("attemptToolToViewModel maps error results and opens by default", () => {
@@ -88,6 +88,7 @@ test("attemptToolToViewModel maps error results and opens by default", () => {
   assert.equal(vm.errorText, "disk full");
   assert.equal(vm.defaultOpen, true);
   assert.equal(vm.kind, "write");
+  assert.ok(vm.detailLines?.some((line) => line.tone === "error"));
 });
 
 test("attemptToolToViewModel supports orphan tool_result", () => {
@@ -108,7 +109,7 @@ test("attemptToolToViewModel supports orphan tool_result", () => {
   assert.equal(vm.defaultOpen, false);
 });
 
-test("attemptToolToViewModel parses string JSON args for headline", () => {
+test("attemptToolToViewModel parses string JSON args for chip", () => {
   const vm = attemptToolToViewModel(
     call({
       ordinal: 10,
@@ -125,6 +126,6 @@ test("attemptToolToViewModel parses string JSON args for headline", () => {
     }),
   );
   assert.equal(vm.kind, "search");
-  assert.equal(vm.headline, "src/adapters");
+  assert.equal(vm.chip, "src/adapters");
   assert.equal(vm.defaultOpen, false);
 });

@@ -593,9 +593,14 @@ export const en = {
     recoveryBannerTitle: "Recovery needed",
     recoveryBanner:
       "{count} node(s) need attention (including “{node}”). Open a failed node to Retry or Rerun.",
+    recoveryBannerWithReason:
+      "{count} node(s) need attention (including “{node}”): {reason}. Open a failed node to Retry or Rerun.",
     recoveryBannerGeneric:
       "This Run has failed or interrupted work. Open a node to Retry or Rerun.",
     recoveryOpenNode: "Open {node}",
+    attemptErrorTitle: "Attempt failed",
+    noAutoRetryHint:
+      "This failure will not auto-retry. Use Retry or Rerun, or fix configuration and start a new Run.",
     cannotRetryReason: {
       runPublished: "Cannot retry on a published Run; start a new Run.",
       runCancelled: "Cannot retry on a cancelled Run.",
@@ -733,6 +738,8 @@ export const en = {
     thinkingElapsed: "{seconds}s",
     generating: "Generating…",
     toolCallsSummary: "{count} tool calls",
+    toolCallsWithMessages: "{count} tool calls, {messages} messages",
+    moreFiles: "+{count} more",
 
     toolNames: {
       wiki_produce: "Generate wiki",

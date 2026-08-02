@@ -570,8 +570,12 @@ export const zh: MessageTree = {
     rerunFeedbackPlaceholder: "可选：给新 generation 的指导说明",
     recoveryBannerTitle: "需要恢复",
     recoveryBanner: "有 {count} 个节点需要处理（包括“{node}”）。打开失败节点以重试或重新运行。",
+    recoveryBannerWithReason:
+      "有 {count} 个节点需要处理（包括“{node}”）：{reason}。打开失败节点以重试或重新运行。",
     recoveryBannerGeneric: "此运行存在失败或中断的工作。打开节点以重试或重新运行。",
     recoveryOpenNode: "打开 {node}",
+    attemptErrorTitle: "尝试失败",
+    noAutoRetryHint: "此类失败不会自动重试。请使用重试或重新运行，或修正配置后开始新运行。",
     cannotRetryReason: {
       runPublished: "已发布的运行无法重试；请开始新运行。",
       runCancelled: "已取消的运行无法重试。",
@@ -708,6 +712,8 @@ export const zh: MessageTree = {
     thinkingElapsed: "{seconds}秒",
     generating: "生成中…",
     toolCallsSummary: "{count} 次工具调用",
+    toolCallsWithMessages: "{count} 次工具调用，{messages} 条消息",
+    moreFiles: "+{count} 个文件",
 
     toolNames: {
       wiki_produce: "生成 Wiki",

@@ -14,8 +14,12 @@ export {
 } from "./adapters/attempt-trace";
 export { agentToolCallToViewModel } from "./adapters/tool-call";
 export {
+  aggregateFileChanges,
+  countUnifiedDiffStats,
+  extractFileChange,
   extractPrimaryFields,
-  extractToolHeadline,
+  extractToolChip,
+  extractToolDetailLines,
   formatRawArgs,
   parseToolArgs,
   toolDefaultOpen,
@@ -27,6 +31,8 @@ export {
   toolStatusLabel,
 } from "./adapters/tool-labels";
 export type {
+  ToolDetailLine,
+  ToolFileChange,
   ToolItemField,
   ToolItemKind,
   ToolItemStatus,
@@ -52,5 +58,6 @@ export {
   statusToneTextClass,
 } from "./status";
 export { ThinkingDisclosure, type ThinkingDisclosureProps } from "./ThinkingDisclosure";
-export { ToolExecutionGroup, type ToolExecutionGroupProps } from "./ToolExecutionGroup";
-export { ToolExecutionItem, type ToolExecutionItemProps } from "./ToolExecutionItem";
+export { ToolChipGroup, type ToolChipGroupProps } from "./ToolChipGroup";
+export { ToolChipRow, type ToolChipRowProps } from "./ToolChipRow";
+export { ToolKindIcon, type ToolKindIconProps } from "./tool-kind-icon";

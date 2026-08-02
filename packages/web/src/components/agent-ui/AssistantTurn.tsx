@@ -8,7 +8,7 @@ import { agentToolCallToViewModel } from "./adapters/tool-call";
 import type { ToolNameLabels } from "./adapters/tool-labels";
 import type { ToolItemVM } from "./adapters/types";
 import { ThinkingDisclosure } from "./ThinkingDisclosure";
-import { ToolExecutionGroup } from "./ToolExecutionGroup";
+import { ToolChipGroup } from "./ToolChipGroup";
 
 export type AssistantTurnLabels = {
   thinking: string;
@@ -20,6 +20,9 @@ export type AssistantTurnLabels = {
   toolError: string;
   openRun: string;
   toolCallsSummary: string;
+  /** "{count} tool calls, {messages} messages" when text segments exist. */
+  toolCallsWithMessages?: string;
+  moreFiles?: string;
   copy?: string;
   copied?: string;
   toolNames: ToolNameLabels;
@@ -36,27 +39,38 @@ function toolsToViewModels(tools: AgentToolCall[], labels: ToolNameLabels): Tool
   return tools.map((tool) => agentToolCallToViewModel(tool, labels));
 }
 
+function countTextSegments(message: AgentMessage): number {
+  const fromParts =
+    message.parts?.filter((part) => part.type === "text" && part.text.trim().length > 0).length ??
+    0;
+  if (fromParts > 0) return fromParts;
+  return message.content.trim().length > 0 ? 1 : 0;
+}
+
 function ToolGroup({
   tools,
   labels,
   onOpenRun,
+  messageCount,
 }: {
   tools: AgentToolCall[];
   labels: AssistantTurnLabels;
   onOpenRun?: (runId: string) => void;
+  messageCount?: number;
 }) {
   if (tools.length === 0) return null;
   const items = toolsToViewModels(tools, labels.toolNames);
   return (
-    <ToolExecutionGroup
+    <ToolChipGroup
       items={items}
       inputLabel={labels.toolInput}
       outputLabel={labels.toolOutput}
       errorLabel={labels.toolError}
       openRunLabel={labels.openRun}
       toolCallsSummaryLabel={labels.toolCallsSummary}
-      copyLabel={labels.copy}
-      copiedLabel={labels.copied}
+      toolCallsWithMessagesLabel={labels.toolCallsWithMessages}
+      messageCount={messageCount}
+      moreFilesLabel={labels.moreFiles}
       onOpenRun={onOpenRun}
     />
   );
@@ -68,6 +82,7 @@ function ToolGroup({
 export function AssistantTurn({ message, labels, onOpenRun, className }: AssistantTurnProps) {
   const streaming = message.status === "streaming";
   const mdMode = streaming ? "streaming" : "static";
+  const messageCount = countTextSegments(message);
 
   const thinkingProps = {
     streamingLabel: labels.thinking,
@@ -77,10 +92,8 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
 
   const parts = message.parts;
   const hasTextPart = parts?.some((part) => part.type === "text" && part.text) ?? false;
-  // Visible prose: text parts or top-level content (content-fallback / no-parts path).
   const hasVisibleText = hasTextPart || Boolean(message.content);
   const hasThinkingParts = parts?.some((part) => part.type === "thinking") ?? false;
-  // Suppress "Generating…" when thinking or tools already provide visible activity.
   const showGenerating =
     streaming &&
     !hasVisibleText &&
@@ -103,8 +116,6 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
       }
       return -1;
     })();
-    // Caret tracks the last text part with content, not merely the last part in the array
-    // (which may be a tool after prose has already started streaming).
     const lastTextPartWithContentIndex = (() => {
       for (let i = parts.length - 1; i >= 0; i--) {
         const part = parts[i];
@@ -113,7 +124,6 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
       return -1;
     })();
 
-    // Top-level thinking only when parts have no thinking entries (parts-first otherwise).
     if (message.thinking && !hasThinkingParts) {
       nodes.push(
         <ThinkingDisclosure
@@ -128,7 +138,15 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
     const flushTools = () => {
       if (toolBuffer.length === 0) return;
       const key = `tools-${toolGroupIdx++}`;
-      nodes.push(<ToolGroup key={key} tools={toolBuffer} labels={labels} onOpenRun={onOpenRun} />);
+      nodes.push(
+        <ToolGroup
+          key={key}
+          tools={toolBuffer}
+          labels={labels}
+          onOpenRun={onOpenRun}
+          messageCount={messageCount}
+        />,
+      );
       toolBuffer = [];
     };
 
@@ -136,8 +154,6 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
       const part = parts[partIndex]!;
       if (part.type === "thinking") {
         flushTools();
-        // Only the last thinking part stays "streaming"; earlier parts are always done.
-        // Render empty thinking while streaming so the live row appears immediately.
         const thinkingStatus =
           partIndex === lastThinkingPartIndex && message.thinkingStatus === "streaming"
             ? "streaming"
@@ -184,12 +200,17 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
     const remaining = (message.tools ?? []).filter((tool) => !renderedToolIds.has(tool.id));
     if (remaining.length > 0) {
       nodes.push(
-        <ToolGroup key="tools-remaining" tools={remaining} labels={labels} onOpenRun={onOpenRun} />,
+        <ToolGroup
+          key="tools-remaining"
+          tools={remaining}
+          labels={labels}
+          onOpenRun={onOpenRun}
+          messageCount={messageCount}
+        />,
       );
     }
 
     if (!hasTextPart && message.content) {
-      // Append prose after thinking/tools — coherent fallback when no text parts exist.
       nodes.push(
         <span key="content-fallback" className="relative inline-block w-full">
           <MarkdownDocument content={message.content} mode={mdMode} />
@@ -225,7 +246,12 @@ export function AssistantTurn({ message, labels, onOpenRun, className }: Assista
             ) : null}
           </span>
         ) : null}
-        <ToolGroup tools={message.tools ?? []} labels={labels} onOpenRun={onOpenRun} />
+        <ToolGroup
+          tools={message.tools ?? []}
+          labels={labels}
+          onOpenRun={onOpenRun}
+          messageCount={messageCount}
+        />
       </>
     );
   }

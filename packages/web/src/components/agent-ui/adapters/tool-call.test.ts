@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentToolCall } from "@okf-wiki/contract";
 import { agentToolCallToViewModel } from "./tool-call.ts";
+import {
+  aggregateFileChanges,
+  countUnifiedDiffStats,
+  extractFileChange,
+  extractToolChip,
+  extractToolDetailLines,
+} from "./tool-fields.ts";
 import { inferToolKind, toolProductTitle } from "./tool-labels.ts";
 
 test("toolProductTitle maps wiki_produce and falls back to spaced names", () => {
@@ -17,6 +24,40 @@ test("inferToolKind maps common tool names", () => {
   assert.equal(inferToolKind("edit"), "write");
   assert.equal(inferToolKind("bash"), "generic");
   assert.equal(inferToolKind("wiki_produce"), "wiki_produce");
+});
+
+test("extractToolChip prefers path over pattern", () => {
+  const chip = extractToolChip({ path: "src/foo.ts", pattern: "bar" });
+  assert.deepEqual(chip, { text: "src/foo.ts", mono: true });
+});
+
+test("extractToolChip falls back to pattern then summary", () => {
+  assert.deepEqual(extractToolChip({ pattern: "ToolItemVM" }), {
+    text: "ToolItemVM",
+    mono: true,
+  });
+  assert.deepEqual(extractToolChip(undefined, { summary: "Run started" }), {
+    text: "Run started",
+    mono: false,
+  });
+});
+
+test("extractToolDetailLines surfaces error first and skips chip duplicates", () => {
+  const lines = extractToolDetailLines(
+    { path: "a.ts", goal: "docs" },
+    { summary: "failed" },
+    {
+      status: "error",
+      errorText: "permission denied",
+      summary: "failed",
+      chipText: "a.ts",
+    },
+  );
+  assert.ok(lines);
+  assert.equal(lines![0]?.tone, "error");
+  assert.equal(lines![0]?.text, "permission denied");
+  assert.ok(lines!.some((line) => line.text.includes("goal")));
+  assert.ok(!lines!.some((line) => line.text === "a.ts"));
 });
 
 test("agentToolCallToViewModel projects a running wiki_produce receipt", () => {
@@ -35,10 +76,10 @@ test("agentToolCallToViewModel projects a running wiki_produce receipt", () => {
   assert.equal(vm.kind, "wiki_produce");
   assert.equal(vm.openRunId, "run-abc");
   assert.equal(vm.summary, "Run started");
-  assert.equal(vm.headline, "Run started");
+  assert.equal(vm.chip, "build docs");
   assert.equal(vm.defaultOpen, true);
   assert.match(vm.inputText ?? "", /build docs/);
-  assert.ok(vm.primaryFields?.some((f) => f.label === "goal"));
+  assert.ok(vm.detailLines?.some((line) => line.text.includes("goal") || line.text === "Run started"));
   assert.equal(vm.testId, "agent-tool-wiki_produce");
 });
 
@@ -55,7 +96,8 @@ test("agentToolCallToViewModel keeps done tools collapsed unless errored", () =>
   assert.equal(vm.kind, "read");
   assert.equal(vm.status, "done");
   assert.equal(vm.defaultOpen, false);
-  assert.equal(vm.headline, "README.md");
+  assert.equal(vm.chip, "README.md");
+  assert.equal(vm.chipMono, true);
   assert.equal(vm.outputText, "hello");
   assert.equal(vm.openRunId, undefined);
 });
@@ -71,8 +113,8 @@ test("agentToolCallToViewModel does not open done tools merely because args exis
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.defaultOpen, false);
   assert.equal(vm.kind, "search");
-  // path wins over pattern for headline when both present
-  assert.equal(vm.headline, "src/");
+  // path wins over pattern for chip when both present
+  assert.equal(vm.chip, "src/");
   assert.ok(vm.inputText?.includes("pattern"));
 });
 
@@ -88,6 +130,7 @@ test("agentToolCallToViewModel opens error tools and surfaces error text", () =>
   assert.equal(vm.defaultOpen, true);
   assert.equal(vm.errorText, "permission denied");
   assert.equal(vm.kind, "search");
+  assert.ok(vm.detailLines?.some((line) => line.tone === "error"));
 });
 
 test("agentToolCallToViewModel keeps summary separate from errorText", () => {
@@ -101,8 +144,7 @@ test("agentToolCallToViewModel keeps summary separate from errorText", () => {
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.errorText, "permission denied");
   assert.equal(vm.summary, "permission denied");
-  assert.equal(vm.headline, "permission denied");
-  // Item UI dedupes identical summary/error; adapter must not drop summary into errorText alone.
+  assert.equal(vm.chip, "permission denied");
 });
 
 test("agentToolCallToViewModel does not promote summary to errorText when output missing", () => {
@@ -115,7 +157,7 @@ test("agentToolCallToViewModel does not promote summary to errorText when output
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.errorText, undefined);
   assert.equal(vm.summary, "failed quietly");
-  assert.equal(vm.headline, "failed quietly");
+  assert.equal(vm.chip, "failed quietly");
 });
 
 test("agentToolCallToViewModel applies localized status labels", () => {
@@ -141,10 +183,10 @@ test("agentToolCallToViewModel extracts wiki_repair runId from args", () => {
   const vm = agentToolCallToViewModel(tool);
   assert.equal(vm.openRunId, "run-fix");
   assert.equal(vm.defaultOpen, false);
-  assert.ok(vm.primaryFields?.some((f) => f.label === "runId" && f.value === "run-fix"));
+  assert.ok(vm.detailLines?.some((line) => line.text.includes("run-fix")));
 });
 
-test("agentToolCallToViewModel uses pattern as headline when no path", () => {
+test("agentToolCallToViewModel uses pattern as chip when no path", () => {
   const tool: AgentToolCall = {
     id: "t5",
     name: "grep",
@@ -153,6 +195,74 @@ test("agentToolCallToViewModel uses pattern as headline when no path", () => {
     output: "ok",
   };
   const vm = agentToolCallToViewModel(tool);
-  assert.equal(vm.headline, "ToolItemVM");
+  assert.equal(vm.chip, "ToolItemVM");
   assert.equal(vm.defaultOpen, false);
+});
+
+test("countUnifiedDiffStats ignores headers", () => {
+  const stats = countUnifiedDiffStats(
+    [
+      "diff --git a/a.ts b/a.ts",
+      "--- a/a.ts",
+      "+++ b/a.ts",
+      "@@ -1,2 +1,3 @@",
+      " context",
+      "-old",
+      "+new",
+      "+more",
+    ].join("\n"),
+  );
+  assert.equal(stats.add, 2);
+  assert.equal(stats.del, 1);
+});
+
+test("extractFileChange reads unified diff from write output", () => {
+  const change = extractFileChange(
+    { path: "src/ChurnSchedule.tsx" },
+    ["--- a/src/ChurnSchedule.tsx", "+++ b/src/ChurnSchedule.tsx", "@@ -1 +1,2 @@", "+const x = 1", "+const y = 2"].join(
+      "\n",
+    ),
+    "write",
+  );
+  assert.deepEqual(change, { file: "ChurnSchedule.tsx", add: 2, del: 0 });
+});
+
+test("extractFileChange counts write content lines", () => {
+  const change = extractFileChange(
+    { path: "menu.ts", content: "a\nb\nc\n" },
+    undefined,
+    "write",
+  );
+  assert.deepEqual(change, { file: "menu.ts", add: 3, del: 0 });
+});
+
+test("extractFileChange ignores read tools", () => {
+  assert.equal(
+    extractFileChange({ path: "README.md", content: "hello" }, undefined, "read"),
+    undefined,
+  );
+});
+
+test("agentToolCallToViewModel attaches fileChange for write tools", () => {
+  const tool: AgentToolCall = {
+    id: "t6",
+    name: "write",
+    status: "done",
+    args: { path: "flavors.css", content: "a\nb\n" },
+    output: "ok",
+  };
+  const vm = agentToolCallToViewModel(tool);
+  assert.deepEqual(vm.fileChange, { file: "flavors.css", add: 2, del: 0 });
+});
+
+test("aggregateFileChanges sums per file", () => {
+  const merged = aggregateFileChanges([
+    { fileChange: { file: "a.ts", add: 1, del: 0 } },
+    { fileChange: { file: "a.ts", add: 2, del: 3 } },
+    { fileChange: { file: "b.ts", add: 4, del: 1 } },
+  ]);
+  assert.deepEqual(merged, [
+    { file: "a.ts", add: 3, del: 3 },
+    { file: "b.ts", add: 4, del: 1 },
+  ]);
 });

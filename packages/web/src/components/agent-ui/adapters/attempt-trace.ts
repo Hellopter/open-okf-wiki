@@ -1,7 +1,8 @@
 import type { AttemptTraceEvent } from "@okf-wiki/contract";
 import {
-  extractPrimaryFields,
-  extractToolHeadline,
+  extractFileChange,
+  extractToolChip,
+  extractToolDetailLines,
   formatRawArgs,
   toolDefaultOpen,
 } from "./tool-fields.ts";
@@ -40,14 +41,20 @@ export function attemptToolToViewModel(
     status = "done";
   }
 
-  // attempt call.args is typically a JSON string — parse for headline/fields, keep raw pretty.
+  const kind = inferToolKind(name);
   const rawArgs = call?.args;
   const inputText = rawArgs !== undefined ? formatRawArgs(rawArgs) : undefined;
   const outputText = result?.output;
-  // Keep summary/output separate; item UI dedupes when summary equals error/output.
   const errorText = result?.status === "error" ? result.output : undefined;
-  const headline = extractToolHeadline(rawArgs);
-  const primaryFields = extractPrimaryFields(rawArgs);
+  const chip = extractToolChip(rawArgs);
+  const detailLines = extractToolDetailLines(rawArgs, undefined, {
+    status,
+    output: outputText,
+    errorText,
+    chipText: chip?.text,
+  });
+  const fileChange =
+    status === "error" ? undefined : extractFileChange(rawArgs, outputText, kind);
 
   return {
     id,
@@ -55,12 +62,14 @@ export function attemptToolToViewModel(
     technicalName: name,
     status,
     statusLabel: toolStatusLabel(status, labels),
-    headline,
-    primaryFields,
+    chip: chip?.text,
+    chipMono: chip?.mono,
+    detailLines,
     inputText,
     outputText,
     errorText,
-    kind: inferToolKind(name),
+    ...(fileChange ? { fileChange } : {}),
+    kind,
     defaultOpen: toolDefaultOpen(status),
     testId: `attempt-tool-${name}`,
   };
