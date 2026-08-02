@@ -1,11 +1,16 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { atomicCreateJson } from "./atomic-write.js";
 import { withPerKeyMutex } from "./atomicity.js";
 import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 
 export const APP_STATE_FILE_NAME = "app.json";
 const RECENT_WORKSPACE_LIMIT = 32;
+const APP_STATE_LOCK_SUFFIX = ".lock";
+const APP_STATE_LOCK_RETRY_MS = 10;
+const APP_STATE_LOCK_WAIT_MS = 30_000;
 
 /**
  * Per-path write queue: read-modify-write cycles on app.json are serialized
@@ -13,6 +18,8 @@ const RECENT_WORKSPACE_LIMIT = 32;
  * each other's updates (last-write-wins on the whole file otherwise).
  */
 const appStateQueues = new Map<string, Promise<unknown>>();
+
+type AppStateLockRecord = { pid?: number; token?: string };
 
 /**
  * User-level app state file.
@@ -118,7 +125,7 @@ export async function setLoadHomeSkills(
   loadHomeSkills: boolean,
   appStatePath: string = defaultAppStatePath(),
 ): Promise<{ state: AppState; effective: boolean }> {
-  return withPerKeyMutex(appStateQueues, appStatePath, async () => {
+  return withAppStateLock(appStatePath, async () => {
     const prev = await readAppState(appStatePath);
     const state: AppState = {
       version: 1,
@@ -140,7 +147,7 @@ export async function registerWorkspaceInAppIndex(
     throw new Error("rootPath must be a non-empty string");
   }
 
-  await withPerKeyMutex(appStateQueues, appStatePath, async () => {
+  await withAppStateLock(appStatePath, async () => {
     const state = await readAppState(appStatePath);
     const recentRootPaths = [
       resolved,
@@ -163,7 +170,7 @@ export async function removeWorkspaceFromAppIndex(
   appStatePath: string = defaultAppStatePath(),
 ): Promise<boolean> {
   const resolved = path.resolve(rootPath.trim());
-  return withPerKeyMutex(appStateQueues, appStatePath, async () => {
+  return withAppStateLock(appStatePath, async () => {
     const state = await readAppState(appStatePath);
     const next = state.recentRootPaths.filter((entry) => path.resolve(entry) !== resolved);
     if (next.length === state.recentRootPaths.length) {
@@ -186,4 +193,102 @@ export async function listRecentWorkspaces(
 ): Promise<string[]> {
   const state = await readAppState(appStatePath);
   return [...state.recentRootPaths];
+}
+
+/** Serialize app.json read-modify-write operations across Server processes. */
+async function withAppStateLock<T>(appStatePath: string, operation: () => Promise<T>): Promise<T> {
+  return withPerKeyMutex(appStateQueues, appStatePath, async () => {
+    const lockPath = `${appStatePath}${APP_STATE_LOCK_SUFFIX}`;
+    const token = randomUUID();
+    await acquireAppStateLock(lockPath, token);
+    try {
+      return await operation();
+    } finally {
+      await releaseAppStateLock(lockPath, token);
+    }
+  });
+}
+
+async function acquireAppStateLock(lockPath: string, token: string): Promise<void> {
+  const deadline = Date.now() + APP_STATE_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      await atomicCreateJson(lockPath, { pid: process.pid, token });
+      return;
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+    }
+
+    const holder = await readAppStateLock(lockPath);
+    if (holder.pid !== undefined && isProcessAlive(holder.pid)) {
+      if (Date.now() >= deadline) {
+        throw new Error(`app state is locked by process ${holder.pid}`);
+      }
+      await sleep(APP_STATE_LOCK_RETRY_MS);
+      continue;
+    }
+
+    const stalePath = `${lockPath}.stale-${randomUUID()}`;
+    try {
+      await rename(lockPath, stalePath);
+      await rm(stalePath, { force: true });
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error;
+    }
+  }
+}
+
+async function releaseAppStateLock(lockPath: string, token: string): Promise<void> {
+  try {
+    const current = await readAppStateLock(lockPath);
+    if (current.token === token) await rm(lockPath, { force: true });
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+}
+
+async function readAppStateLock(lockPath: string): Promise<AppStateLockRecord> {
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return {};
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(raw) as { pid?: unknown; token?: unknown };
+    return {
+      ...(Number.isInteger(parsed.pid) && (parsed.pid as number) > 0
+        ? { pid: parsed.pid as number }
+        : {}),
+      ...(typeof parsed.token === "string" && parsed.token.length > 0
+        ? { token: parsed.token }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  let current = error;
+  while (current && typeof current === "object") {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string") return candidate.code;
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

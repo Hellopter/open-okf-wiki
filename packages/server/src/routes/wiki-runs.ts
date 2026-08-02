@@ -33,7 +33,7 @@ import {
 } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { getLogger } from "../logging/index.ts";
-import { wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
+import { WikiRunsWorkspaceDeletedError, wikiRunsForWorkspace } from "../wiki-runs-registry.ts";
 
 const HEARTBEAT_MS = 15_000;
 const POLL_MS = 500;
@@ -54,6 +54,7 @@ const HTTP_STATUS_BY_WIKI_RUNS_ERROR = {
 } as const satisfies Record<WikiRunsRequestErrorCode, number>;
 
 function statusFor(error: unknown): number {
+  if (error instanceof WikiRunsWorkspaceDeletedError) return 404;
   if (error instanceof WikiRunsRequestError) return HTTP_STATUS_BY_WIKI_RUNS_ERROR[error.code];
   if (error instanceof CommandIdCollision || error instanceof WorkflowInUseError) return 409;
   return 500;

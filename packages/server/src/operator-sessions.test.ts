@@ -14,7 +14,9 @@ import {
   createLiveSession,
   dispatchSessionCommand,
   invalidateOperatorSessions,
+  OperatorSessionWorkspaceDeletedError,
   projectOperatorStreamState,
+  retireOperatorSessionsForDeletedWorkspace,
   sessionSnapshot,
   subscribeSession,
 } from "./operator-sessions.ts";
@@ -231,6 +233,59 @@ test("workspace invalidation aborts the active turn, closes subscribers, and dro
   assert.equal(subscriberClosed, 1);
 });
 
+test("workspace deletion fence disposes a racing Session handle before it can attach", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-operator-session-retire-"));
+  const skillPath = path.join(root, "skill");
+  await mkdir(skillPath, { recursive: true });
+  await writeFile(path.join(skillPath, "SKILL.md"), "# fixture skill\n", "utf8");
+  t.after(async () => {
+    await resetOperatorSessionsForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  let releaseBuild!: () => void;
+  const buildReleased = new Promise<void>((resolve) => {
+    releaseBuild = resolve;
+  });
+  let buildStarted!: () => void;
+  const buildStartedPromise = new Promise<void>((resolve) => {
+    buildStarted = resolve;
+  });
+  let disposed = 0;
+  const handle = {
+    sessionId: "racing-session",
+    session: {
+      setSessionName() {},
+      sessionManager: { getSessionName: () => "Racing fixture" },
+      subscribe() {
+        return () => undefined;
+      },
+    },
+    dispose() {
+      disposed += 1;
+    },
+  } as unknown as Awaited<ReturnType<typeof createOperatorSession>>;
+  const workspace = fixtureWorkspace(root, skillPath);
+  const creating = createLiveSession(workspace, undefined, handle.sessionId, async () => {
+    buildStarted();
+    await buildReleased;
+    return { handle };
+  });
+  await buildStartedPromise;
+
+  assert.equal(await retireOperatorSessionsForDeletedWorkspace(workspace.id), 0);
+  releaseBuild();
+  await assert.rejects(
+    () => creating,
+    (error: unknown) => error instanceof OperatorSessionWorkspaceDeletedError,
+  );
+  assert.equal(disposed, 1);
+  await assert.rejects(
+    () => createLiveSession(workspace, undefined, "later-session", async () => ({ handle })),
+    OperatorSessionWorkspaceDeletedError,
+  );
+});
+
 test("Operator Session SSE emits stream patches without replaying prior history", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-operator-session-stream-"));
   const skillPath = path.join(root, "skill");
@@ -282,5 +337,8 @@ test("Operator Session SSE emits stream patches without replaying prior history"
   assert.ok(streams.every((event) => "messages" in event.payload === false));
 
   const snapshot = await sessionSnapshot(workspace, session.id);
-  assert.equal(snapshot.payload.state.messages.length, 2);
+  assert.equal(
+    snapshot.payload.state.messages.filter((message) => message.role === "assistant").length,
+    2,
+  );
 });

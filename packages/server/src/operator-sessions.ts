@@ -39,7 +39,14 @@ import {
   type SessionUsage,
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
-import { resolveWikiSkillPaths } from "@okf-wiki/core";
+import {
+  acquireWorkspaceActivityLease,
+  assertWorkspaceActive,
+  resolveWikiSkillPaths,
+  type WorkspaceActivityLease,
+  WorkspaceDeletedError,
+  WorkspaceLifecycleInUseError,
+} from "@okf-wiki/core";
 import { wikiRunsForWorkspace } from "./wiki-runs-registry.ts";
 
 type SessionHandle = Awaited<ReturnType<typeof createOperatorSession>>;
@@ -64,11 +71,44 @@ type LiveSession = {
   createdAt: string;
   updatedAt: string;
   unsubscribe: () => void;
+  activityLease: WorkspaceActivityLease;
+  closed: boolean;
   sessionUsage?: SessionUsage;
   queueFixtureTurn?: FixtureTurnQueue;
 };
 
 const liveSessions = new Map<string, LiveSession>();
+const openingLiveSessions = new Map<string, Promise<LiveSession>>();
+const retiredWorkspaceIds = new Set<string>();
+
+/** A request holding an old Workspace snapshot raced with workspace deletion. */
+export class OperatorSessionWorkspaceDeletedError extends Error {
+  readonly code = "workspace_deleted";
+  readonly workspaceId: string;
+
+  constructor(workspaceId: string) {
+    super(`workspace deleted: ${workspaceId}`);
+    this.name = "OperatorSessionWorkspaceDeletedError";
+    this.workspaceId = workspaceId;
+  }
+}
+
+async function assertWorkspaceAvailable(workspace: WorkspaceConfig): Promise<void> {
+  if (retiredWorkspaceIds.has(workspace.id)) {
+    throw new OperatorSessionWorkspaceDeletedError(workspace.id);
+  }
+  try {
+    await assertWorkspaceActive(workspace.rootPath);
+  } catch (error) {
+    if (error instanceof WorkspaceDeletedError || error instanceof WorkspaceLifecycleInUseError) {
+      throw new OperatorSessionWorkspaceDeletedError(workspace.id);
+    }
+    throw error;
+  }
+  if (retiredWorkspaceIds.has(workspace.id)) {
+    throw new OperatorSessionWorkspaceDeletedError(workspace.id);
+  }
+}
 
 function key(workspaceId: string, sessionId: string): string {
   return `${workspaceId}:${sessionId}`;
@@ -91,7 +131,10 @@ function titleFromPrompt(text: string): string | undefined {
 
 function runStarter(workspace: WorkspaceConfig, defaultSessionId: string): StartWikiRun {
   return async ({ commandId, sessionId, mode, notes }) => {
-    return (await wikiRunsForWorkspace(workspace)).dispatch(
+    await assertWorkspaceAvailable(workspace);
+    const runs = await wikiRunsForWorkspace(workspace);
+    await assertWorkspaceAvailable(workspace);
+    return runs.dispatch(
       {
         type: "start_run",
         commandId,
@@ -108,8 +151,10 @@ function runStarter(workspace: WorkspaceConfig, defaultSessionId: string): Start
 
 function repairRunner(workspace: WorkspaceConfig, defaultSessionId: string): RerunWikiNode {
   return async ({ commandId, runId, nodeKey, generation, feedback, sessionId }) => {
+    await assertWorkspaceAvailable(workspace);
     const runs = await wikiRunsForWorkspace(workspace);
     const { snapshot } = await runs.read({ runId });
+    await assertWorkspaceAvailable(workspace);
     return runs.dispatch(
       {
         type: "rerun_node",
@@ -134,20 +179,24 @@ async function resolveRepairTarget(
   input: { runId: string; nodeKey?: string },
 ): Promise<{ nodeKey: string; generation: number } | null> {
   try {
+    await assertWorkspaceAvailable(workspace);
     const { snapshot } = await (await wikiRunsForWorkspace(workspace)).read({ runId: input.runId });
     const key = input.nodeKey?.trim() || "write.root";
     const node = snapshot.nodes.find((candidate) => candidate.key === key);
     return node && !["freeze", "gate.plan", "gate.fix", "gate.publication"].includes(node.key)
       ? { nodeKey: node.key, generation: node.generation }
       : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof OperatorSessionWorkspaceDeletedError) throw error;
     return null;
   }
 }
 
 async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promise<BuiltHandle> {
+  await assertWorkspaceAvailable(workspace);
   const fixture = shouldUsePiFixtureMode({});
   const fixtureModel = fixture ? await createOperatorFixtureModel() : undefined;
+  await assertWorkspaceAvailable(workspace);
   const resolved = fixtureModel
     ? undefined
     : await resolveWorkspacePiModel({
@@ -158,6 +207,7 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
     workspaceRoot: workspace.rootPath,
     skillPath: workspace.skillPath,
   });
+  await assertWorkspaceAvailable(workspace);
   const sessionIdentity = sessionId ?? "pending";
   const baseInput = {
     workspace,
@@ -179,8 +229,15 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
   const handle = sessionId
     ? openOperatorSession({ ...baseInput, sessionId })
     : createOperatorSession(baseInput);
+  const resolvedHandle = await handle;
+  try {
+    await assertWorkspaceAvailable(workspace);
+  } catch (error) {
+    resolvedHandle.dispose();
+    throw error;
+  }
   return {
-    handle: await handle,
+    handle: resolvedHandle,
     ...(fixtureModel
       ? {
           queueFixtureTurn: (text: string, canProduce: boolean) => {
@@ -289,12 +346,14 @@ function emitStatePatch(
   } satisfies AgentSseStream);
 }
 
-function attachLive(
+async function attachLive(
   workspace: WorkspaceConfig,
   built: BuiltHandle,
   seed: PiStreamState,
+  activityLease: WorkspaceActivityLease,
   contextTokens?: number,
-): LiveSession {
+): Promise<LiveSession> {
+  await assertWorkspaceAvailable(workspace);
   const { handle, queueFixtureTurn } = built;
   const initialUsage = buildSessionUsage({
     contextTokens,
@@ -310,9 +369,15 @@ function attachLive(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     unsubscribe: () => undefined,
+    activityLease,
+    closed: false,
     ...(initialUsage ? { sessionUsage: initialUsage } : {}),
     ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
   };
+  const sessionKey = key(workspace.id, handle.sessionId);
+  if (liveSessions.has(sessionKey)) {
+    throw new Error(`Operator Session is already open: ${handle.sessionId}`);
+  }
   live.unsubscribe = handle.session.subscribe((raw: unknown) => {
     const type =
       raw && typeof raw === "object" && "type" in raw && typeof raw.type === "string"
@@ -333,21 +398,60 @@ function attachLive(
     live.updatedAt = new Date().toISOString();
     emitStatePatch(live, previousView, projectOperatorStreamState(next, live.sessionUsage));
   });
-  liveSessions.set(key(workspace.id, handle.sessionId), live);
+  liveSessions.set(sessionKey, live);
   return live;
 }
 
 async function openLive(workspace: WorkspaceConfig, sessionId: string): Promise<LiveSession> {
-  const existing = liveSessions.get(key(workspace.id, sessionId));
+  await assertWorkspaceAvailable(workspace);
+  const sessionKey = key(workspace.id, sessionId);
+  const existing = liveSessions.get(sessionKey);
   if (existing) return existing;
-  const history = await loadOperatorSessionHistory(workspace.rootPath, sessionId);
-  if (!history) throw new Error(`Operator Session not found: ${sessionId}`);
-  return attachLive(
-    workspace,
-    await makeHandle(workspace, sessionId),
-    createPiStreamState(history.messages),
-    history.lastContextTokens,
-  );
+  const pending = openingLiveSessions.get(sessionKey);
+  if (pending) return pending;
+
+  const opening = (async () => {
+    const history = await loadOperatorSessionHistory(workspace.rootPath, sessionId);
+    await assertWorkspaceAvailable(workspace);
+    if (!history) throw new Error(`Operator Session not found: ${sessionId}`);
+    const activityLease = await acquireWorkspaceActivityLease(workspace.rootPath, workspace.id);
+    let built: BuiltHandle | undefined;
+    try {
+      built = await makeHandle(workspace, sessionId);
+      return await attachLive(
+        workspace,
+        built,
+        createPiStreamState(history.messages),
+        activityLease,
+        history.lastContextTokens,
+      );
+    } catch (error) {
+      built?.handle.dispose();
+      await activityLease.release();
+      throw error;
+    }
+  })().finally(() => openingLiveSessions.delete(sessionKey));
+  openingLiveSessions.set(sessionKey, opening);
+  return opening;
+}
+
+async function assertLiveAvailable(workspace: WorkspaceConfig, live: LiveSession): Promise<void> {
+  await assertWorkspaceAvailable(workspace);
+  if (live.closed) throw new OperatorSessionWorkspaceDeletedError(workspace.id);
+}
+
+async function withWorkspaceActivity<T>(
+  workspace: WorkspaceConfig,
+  operation: () => Promise<T>,
+): Promise<T> {
+  await assertWorkspaceAvailable(workspace);
+  const lease = await acquireWorkspaceActivityLease(workspace.rootPath, workspace.id);
+  try {
+    await assertWorkspaceAvailable(workspace);
+    return await operation();
+  } finally {
+    await lease.release();
+  }
 }
 
 export async function createLiveSession(
@@ -359,37 +463,53 @@ export async function createLiveSession(
     sessionId?: string,
   ) => Promise<BuiltHandle> = makeHandle,
 ) {
-  const built = await buildHandle(workspace, sessionId);
-  const sessionTitle = title?.trim() || defaultSessionTitle(workspace);
-  built.handle.session.setSessionName(sessionTitle);
-  const live = attachLive(workspace, built, createPiStreamState());
-  return { id: live.sessionId, title: sessionTitle, createdAt: live.createdAt };
+  await assertWorkspaceAvailable(workspace);
+  const activityLease = await acquireWorkspaceActivityLease(workspace.rootPath, workspace.id);
+  let built: BuiltHandle | undefined;
+  try {
+    built = await buildHandle(workspace, sessionId);
+    await assertWorkspaceAvailable(workspace);
+    const sessionTitle = title?.trim() || defaultSessionTitle(workspace);
+    built.handle.session.setSessionName(sessionTitle);
+    const live = await attachLive(workspace, built, createPiStreamState(), activityLease);
+    return { id: live.sessionId, title: sessionTitle, createdAt: live.createdAt };
+  } catch (error) {
+    built?.handle.dispose();
+    await activityLease.release();
+    throw error;
+  }
 }
 
 export async function listSessions(
   workspace: WorkspaceConfig,
 ): Promise<Array<{ id: string; title?: string; createdAt: string; updatedAt: string }>> {
-  const rows = new Map(
-    (await listOperatorSessions(workspace.rootPath)).map((row) => [row.id, row]),
-  );
-  for (const live of liveSessions.values()) {
-    if (live.workspaceId === workspace.id) {
-      rows.set(live.sessionId, {
-        id: live.sessionId,
-        title: live.handle.session.sessionManager.getSessionName()?.trim() || undefined,
-        createdAt: live.createdAt,
-        updatedAt: live.updatedAt,
-      });
+  return withWorkspaceActivity(workspace, async () => {
+    const rows = new Map(
+      (await listOperatorSessions(workspace.rootPath)).map((row) => [row.id, row]),
+    );
+    await assertWorkspaceAvailable(workspace);
+    for (const live of liveSessions.values()) {
+      if (live.workspaceId === workspace.id && !live.closed) {
+        rows.set(live.sessionId, {
+          id: live.sessionId,
+          title: live.handle.session.sessionManager.getSessionName()?.trim() || undefined,
+          createdAt: live.createdAt,
+          updatedAt: live.updatedAt,
+        });
+      }
     }
-  }
-  return [...rows.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return [...rows.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  });
 }
 
 export async function deleteLiveSession(workspace: WorkspaceConfig, sessionId: string) {
-  const live = liveSessions.get(key(workspace.id, sessionId));
-  if (live) await releaseLive(live);
-  const deleted = await deleteOperatorSession(workspace.rootPath, sessionId);
-  return { sessionId, removed: deleted.deleted || Boolean(live) ? 1 : 0 };
+  return withWorkspaceActivity(workspace, async () => {
+    const live = liveSessions.get(key(workspace.id, sessionId));
+    if (live) await releaseLive(live);
+    await assertWorkspaceAvailable(workspace);
+    const deleted = await deleteOperatorSession(workspace.rootPath, sessionId);
+    return { sessionId, removed: deleted.deleted || Boolean(live) ? 1 : 0 };
+  });
 }
 
 function response(
@@ -406,7 +526,9 @@ export async function dispatchSessionCommand(
   sessionId: string,
   command: AgentCommand,
 ): Promise<AgentCommandResponse> {
+  await assertWorkspaceAvailable(workspace);
   const live = await openLive(workspace, sessionId);
+  await assertLiveAvailable(workspace, live);
   if (command.type === "abort") {
     void live.handle.session.abort().catch(() => undefined);
     live.busy = false;
@@ -429,13 +551,17 @@ export async function dispatchSessionCommand(
         "Wait for the current turn before compacting",
       );
     }
-    if (command.mode === "stop_and_compact") await live.handle.session.abort();
+    if (command.mode === "stop_and_compact") {
+      await live.handle.session.abort();
+      await assertLiveAvailable(workspace, live);
+    }
     void live.handle.session.compact().catch(() => undefined);
     return response(sessionId, "compact", "accepted");
   }
   if (command.type === "set_model") {
     if (live.busy) return response(sessionId, "set_model", "failed", "Wait for the current turn");
     const model = await resolveWorkspacePiModel({ profileId: command.profileId });
+    await assertLiveAvailable(workspace, live);
     await live.handle.session.setModel(model.model);
     return { ...response(sessionId, "set_model", "accepted"), modelId: model.model.id };
   }
@@ -490,7 +616,9 @@ export async function sessionSnapshot(
   workspace: WorkspaceConfig,
   sessionId: string,
 ): Promise<AgentSseSnapshot> {
+  await assertWorkspaceAvailable(workspace);
   const live = await openLive(workspace, sessionId);
+  await assertLiveAvailable(workspace, live);
   const projected = projectOperatorStreamState(live.state, live.sessionUsage);
   return {
     source: "server",
@@ -513,7 +641,9 @@ export async function subscribeSession(
   listener: Listener,
   onClosed?: () => void,
 ): Promise<() => void> {
+  await assertWorkspaceAvailable(workspace);
   const live = await openLive(workspace, sessionId);
+  await assertLiveAvailable(workspace, live);
   const subscription: ListenerSubscription = {
     onEvent: listener,
     ...(onClosed ? { onClosed } : {}),
@@ -523,15 +653,25 @@ export async function subscribeSession(
 }
 
 async function releaseLive(live: LiveSession): Promise<void> {
-  if (live.busy) {
-    await live.handle.session.abort().catch(() => undefined);
-    live.busy = false;
+  if (live.closed) return;
+  live.closed = true;
+  try {
+    if (live.busy) {
+      await live.handle.session.abort().catch(() => undefined);
+      live.busy = false;
+    }
+  } finally {
+    try {
+      live.unsubscribe();
+      live.handle.dispose();
+      const sessionKey = key(live.workspaceId, live.sessionId);
+      if (liveSessions.get(sessionKey) === live) liveSessions.delete(sessionKey);
+      for (const listener of [...live.listeners]) listener.onClosed?.();
+      live.listeners.clear();
+    } finally {
+      await live.activityLease.release();
+    }
   }
-  live.unsubscribe();
-  live.handle.dispose();
-  liveSessions.delete(key(live.workspaceId, live.sessionId));
-  for (const listener of [...live.listeners]) listener.onClosed?.();
-  live.listeners.clear();
 }
 
 /**
@@ -543,12 +683,36 @@ export async function invalidateOperatorSessions(
   workspaceId: string,
   _reason = "workspace configuration changed",
 ): Promise<number> {
+  const pending = [...openingLiveSessions.entries()]
+    .filter(([sessionKey]) => sessionKey.startsWith(`${workspaceId}:`))
+    .map(([, opening]) => opening.catch(() => undefined));
+  await Promise.all(pending);
   const targets = [...liveSessions.values()].filter((live) => live.workspaceId === workspaceId);
   await Promise.all(targets.map((live) => releaseLive(live)));
   return targets.length;
 }
 
+/** Fence deleted workspaces before closing their active Pi Session handles. */
+export async function retireOperatorSessionsForDeletedWorkspace(
+  workspaceId: string,
+): Promise<number> {
+  retiredWorkspaceIds.add(workspaceId);
+  return invalidateOperatorSessions(workspaceId, "workspace deleted");
+}
+
+/** Reopen the Session boundary when workspace deletion fails before removal. */
+export function restoreOperatorSessionsAfterFailedWorkspaceDeletion(workspaceId: string): void {
+  retiredWorkspaceIds.delete(workspaceId);
+}
+
 /** Graceful process shutdown closes Pi handles and all Session SSE subscribers. */
 export async function closeOperatorSessions(): Promise<void> {
-  await Promise.all([...liveSessions.values()].map((live) => releaseLive(live)));
+  try {
+    await Promise.all(
+      [...openingLiveSessions.values()].map((opening) => opening.catch(() => undefined)),
+    );
+    await Promise.all([...liveSessions.values()].map((live) => releaseLive(live)));
+  } finally {
+    retiredWorkspaceIds.clear();
+  }
 }

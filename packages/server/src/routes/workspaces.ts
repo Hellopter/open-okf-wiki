@@ -13,8 +13,12 @@ import {
   WorkspaceSkillFileWriteSchema,
 } from "@okf-wiki/contract";
 import {
+  acquireWikiRunsControlStoreLease,
   addSource,
   applyWorkspacePatch,
+  assertNoWorkspaceActivityLeases,
+  assertWorkspaceActive,
+  beginWorkspaceDeletion,
   cloneIntoWorkspace,
   createSkillFork,
   createWorkspace,
@@ -25,7 +29,7 @@ import {
   mutateWorkspace,
   probeLocalGit,
   readSkillFile,
-  registerWorkspaceInAppIndex,
+  registerActiveWorkspaceInAppIndex,
   removeSource,
   removeWorkspaceFromAppIndex,
   resolveSkillSource,
@@ -45,7 +49,15 @@ import { httpStatusForWorkspaceCode } from "../http-status.ts";
 import { readJsonBody, sendCaughtError, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { getLogger } from "../logging/index.ts";
-import { invalidateOperatorSessions } from "../operator-sessions.ts";
+import {
+  invalidateOperatorSessions,
+  restoreOperatorSessionsAfterFailedWorkspaceDeletion,
+  retireOperatorSessionsForDeletedWorkspace,
+} from "../operator-sessions.ts";
+import {
+  closeWikiRunsForDeletedWorkspace,
+  restoreWikiRunsAfterFailedWorkspaceDeletion,
+} from "../wiki-runs-registry.ts";
 
 function sendWorkspaceRevisionConflict(res: ServerResponse, error: unknown): boolean {
   if (!(error instanceof WorkspaceRevisionConflictError)) return false;
@@ -88,7 +100,7 @@ export async function handleCreateWorkspace(
       orchestration: body.orchestration,
     });
     await saveWorkspace(workspace);
-    await registerWorkspaceInAppIndex(workspace.rootPath);
+    await registerActiveWorkspaceInAppIndex(workspace.rootPath);
     getLogger().info(
       {
         event: "workspace.create",
@@ -117,7 +129,14 @@ export async function handleGetWorkspace(
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
   // Do not rewrite workspace.json for lastOpenedAt — only bump recents index.
-  await registerWorkspaceInAppIndex(workspace.rootPath);
+  try {
+    // A GET that started before DELETE must not restore the just-removed index entry.
+    await assertWorkspaceActive(workspace.rootPath);
+    await registerActiveWorkspaceInAppIndex(workspace.rootPath);
+  } catch (error) {
+    if (trySendCoreDomainError(res, error)) return;
+    throw error;
+  }
   sendJson(res, 200, { workspace });
 }
 
@@ -147,7 +166,7 @@ export async function handlePatchWorkspace(
             resolveWorkspaceModelSelection({ modelProfileId: profileId }),
         }),
     );
-    await registerWorkspaceInAppIndex(next.rootPath);
+    await registerActiveWorkspaceInAppIndex(next.rootPath);
     await invalidateOperatorSessions(next.id);
     getLogger().info({ event: "workspace.patch", workspaceId: next.id }, "workspace patched");
     sendJson(res, 200, { workspace: next });
@@ -186,10 +205,38 @@ export async function handleDeleteWorkspace(
       workspace.rootPath,
       expectedRevision.data,
       async (current) => {
-        await invalidateOperatorSessions(current.id, "workspace deleted");
-        await removeWorkspaceFromAppIndex(current.rootPath);
-        if (deleteFiles) await deleteWorkspaceMeta(current.rootPath);
-        return { rootPath: current.rootPath, deletedMeta: deleteFiles };
+        // Linearize deletion before index/filesystem changes: no old request may
+        // attach a Session or keep a WikiRuns SQLite owner after this point.
+        const deletion = await beginWorkspaceDeletion(current.rootPath, current.id);
+        let controlStoreLease:
+          | Awaited<ReturnType<typeof acquireWikiRunsControlStoreLease>>
+          | undefined;
+        let deletionCommitted = false;
+        let removalStarted = false;
+        try {
+          await retireOperatorSessionsForDeletedWorkspace(current.id);
+          await closeWikiRunsForDeletedWorkspace(current);
+          await assertNoWorkspaceActivityLeases(current.rootPath);
+          controlStoreLease = await acquireWikiRunsControlStoreLease(current.rootPath, {
+            allowWorkspaceDeletion: true,
+          });
+          await assertNoWorkspaceActivityLeases(current.rootPath);
+          await removeWorkspaceFromAppIndex(current.rootPath);
+          removalStarted = true;
+          if (deleteFiles) await deleteWorkspaceMeta(current.rootPath);
+          await deletion.complete();
+          deletionCommitted = true;
+          return { rootPath: current.rootPath, deletedMeta: deleteFiles };
+        } catch (error) {
+          if (!deletionCommitted && !removalStarted) {
+            await deletion.abort();
+            restoreOperatorSessionsAfterFailedWorkspaceDeletion(current.id);
+            restoreWikiRunsAfterFailedWorkspaceDeletion(current);
+          }
+          throw error;
+        } finally {
+          if (controlStoreLease) await controlStoreLease.release();
+        }
       },
     );
 
@@ -212,6 +259,7 @@ export async function handleDeleteWorkspace(
     });
   } catch (error) {
     if (sendWorkspaceRevisionConflict(res, error)) return;
+    if (trySendCoreDomainError(res, error)) return;
     sendCaughtError(res, 500, error);
   }
 }

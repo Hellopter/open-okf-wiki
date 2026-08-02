@@ -14,11 +14,17 @@ import {
   deleteLiveSession,
   dispatchSessionCommand,
   listSessions,
+  OperatorSessionWorkspaceDeletedError,
   sessionSnapshot,
   subscribeSession,
 } from "../operator-sessions.ts";
 
 const HEARTBEAT_MS = 15_000;
+
+function sessionErrorStatus(error: unknown): number {
+  if (error instanceof OperatorSessionWorkspaceDeletedError) return 404;
+  return /not found/i.test(redactErrorMessage(error)) ? 404 : 500;
+}
 
 export function handleListOperatorCommands(_req: IncomingMessage, res: ServerResponse): void {
   sendJson(res, 200, {
@@ -38,7 +44,11 @@ export async function handleListAgentSessions(
 ): Promise<void> {
   const workspace = await loadWorkspaceOr404(res, id);
   if (!workspace) return;
-  sendJson(res, 200, { sessions: await listSessions(workspace) });
+  try {
+    sendJson(res, 200, { sessions: await listSessions(workspace) });
+  } catch (error) {
+    sendError(res, sessionErrorStatus(error), redactErrorMessage(error));
+  }
 }
 
 export async function handleCreateAgentSession(
@@ -68,7 +78,12 @@ export async function handleCreateAgentSession(
     });
   } catch (error) {
     const message = redactErrorMessage(error);
-    const status = /exists|duplicate/i.test(message) ? 409 : 500;
+    const status =
+      error instanceof OperatorSessionWorkspaceDeletedError
+        ? 404
+        : /exists|duplicate/i.test(message)
+          ? 409
+          : 500;
     getLogger()[status >= 500 ? "error" : "warn"](
       { event: "session.create", workspaceId: workspace.id, err: message },
       "operator session create failed",
@@ -104,7 +119,7 @@ export async function handleDeleteAgentSession(
       },
       "operator session delete failed",
     );
-    sendError(res, 500, redactErrorMessage(error));
+    sendError(res, sessionErrorStatus(error), redactErrorMessage(error));
   }
 }
 
@@ -134,7 +149,7 @@ export async function handleAgentSessionCommand(
     sendJson(res, 202, result);
   } catch (error) {
     const message = redactErrorMessage(error);
-    const status = /not found/i.test(message) ? 404 : 500;
+    const status = sessionErrorStatus(error);
     getLogger()[status >= 500 ? "error" : "warn"](
       {
         event: "session.command",
@@ -217,10 +232,6 @@ export async function handleAgentSessionEvents(
     res.once("close", close);
   } catch (error) {
     unsubscribe();
-    sendError(
-      res,
-      /not found/i.test(redactErrorMessage(error)) ? 404 : 500,
-      redactErrorMessage(error),
-    );
+    sendError(res, sessionErrorStatus(error), redactErrorMessage(error));
   }
 }

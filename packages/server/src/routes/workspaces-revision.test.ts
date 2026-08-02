@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  acquireWorkspaceActivityLease,
   createWorkspace,
   registerWorkspaceInAppIndex,
   removeWorkspaceFromAppIndex,
@@ -109,4 +110,37 @@ test("Workspace DELETE requires the current revision before removing its index e
 
   const gone = await fetch(endpoint);
   assert.equal(gone.status, 404, await gone.clone().text());
+});
+
+test("Workspace DELETE refuses metadata removal while another process is active", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-workspace-delete-active-"));
+  const workspace = await createWorkspace({
+    name: "Active workspace deletion",
+    rootPath: root,
+    publicationPath: path.join(root, "published"),
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+  await registerWorkspaceInAppIndex(root);
+  const activity = await acquireWorkspaceActivityLease(root, workspace.id);
+
+  const server = createServer((req, res) => void dispatch(req, res));
+  t.after(async () => {
+    await activity.release();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    await removeWorkspaceFromAppIndex(root);
+    await rm(root, { recursive: true, force: true });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const endpoint = `http://127.0.0.1:${address.port}/api/workspaces/${workspace.id}`;
+
+  const deleted = await fetch(`${endpoint}?expectedRevision=0&deleteFiles=true`, {
+    method: "DELETE",
+  });
+  assert.equal(deleted.status, 409, await deleted.clone().text());
+  const stillThere = await fetch(endpoint);
+  assert.equal(stillThere.status, 200, await stillThere.clone().text());
 });

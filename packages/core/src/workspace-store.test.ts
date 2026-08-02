@@ -1,23 +1,37 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { assertAbsolutePath, resolveExistingDir } from "./paths.js";
-import { listRecentWorkspaces, registerWorkspaceInAppIndex } from "./workspace-app-state.js";
+import {
+  listRecentWorkspaces,
+  readAppState,
+  registerWorkspaceInAppIndex,
+} from "./workspace-app-state.js";
 import {
   acquireWikiRunsControlStoreLease,
+  acquireWorkspaceActivityLease,
+  assertNoWorkspaceActivityLeases,
+  assertWorkspaceActive,
+  beginWorkspaceDeletion,
   createWorkspace,
+  deleteWorkspaceMeta,
   loadWorkspace,
   mutateWorkspace,
   parseResetWikiRunsControlStoreArgs,
+  registerActiveWorkspaceInAppIndex,
   resetWikiRunsControlStore,
   saveWorkspace,
   WIKI_RUNS_CONTROL_STORE_FILE_NAME,
   WikiRunsControlStoreInUseError,
+  WorkspaceDeletedError,
+  WorkspaceLifecycleInUseError,
   WorkspaceRevisionConflictError,
+  withWorkspaceRevision,
   workspaceConfigPath,
+  workspaceLifecycleDir,
 } from "./workspace-config.js";
 import { addSource, updateSource } from "./workspace-source.js";
 
@@ -194,6 +208,60 @@ test("saveWorkspace protects legacy read-modify-write callers with revision CAS"
   assert.equal(final.revision, 1);
 });
 
+test("revision CAS serializes concurrent writers in separate Node processes", async () => {
+  const root = await tempDir("okf-wiki-ws-cross-process-cas-");
+  const config = await createWorkspace({
+    name: "Original",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+
+  const moduleUrl = new URL("./index.js", import.meta.url).href;
+  const runWriter = (name: string) =>
+    new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const script = `
+        import { mutateWorkspace } from ${JSON.stringify(moduleUrl)};
+        try {
+          const workspace = await mutateWorkspace(${JSON.stringify(root)}, 0, (current) => ({ ...current, name: ${JSON.stringify(name)} }));
+          console.log(JSON.stringify({ ok: true, revision: workspace.revision, name: workspace.name }));
+        } catch (error) {
+          console.log(JSON.stringify({ ok: false, name: error instanceof Error ? error.name : "Error" }));
+        }
+      `;
+      const child = spawn(process.execPath, ["--input-type=module", "--eval", script]);
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ code, stdout, stderr }));
+    });
+
+  const writers = await Promise.all([runWriter("First process"), runWriter("Second process")]);
+  assert.deepEqual(
+    writers.map((writer) => writer.code),
+    [0, 0],
+    writers.map((writer) => writer.stderr).join("\n"),
+  );
+  const results = writers.map(
+    (writer) => JSON.parse(writer.stdout) as { ok: boolean; name?: string; revision?: number },
+  );
+  assert.equal(results.filter((result) => result.ok).length, 1);
+  assert.equal(
+    results.filter((result) => !result.ok && result.name === "WorkspaceRevisionConflictError")
+      .length,
+    1,
+  );
+  const final = await loadWorkspace(root);
+  assert.equal(final.revision, 1);
+  assert.ok(["First process", "Second process"].includes(final.name));
+});
+
 test("resetWikiRunsControlStore removes only explicit durable Run state", async () => {
   const root = await tempDir("okf-wiki-ws-reset-control-");
   const config = await createWorkspace({
@@ -247,6 +315,169 @@ test("resetWikiRunsControlStore rejects while a WikiRuns owner holds its lease",
 
   await lease.release();
   await resetWikiRunsControlStore(root);
+});
+
+test("concurrent control-store leases admit exactly one complete holder", async () => {
+  const root = await tempDir("okf-wiki-ws-control-lease-race-");
+  const config = await createWorkspace({
+    name: "Control lease race",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(config);
+
+  const attempts = await Promise.allSettled([
+    acquireWikiRunsControlStoreLease(root),
+    acquireWikiRunsControlStoreLease(root),
+  ]);
+  const leases = attempts.filter(
+    (
+      attempt,
+    ): attempt is PromiseFulfilledResult<
+      Awaited<ReturnType<typeof acquireWikiRunsControlStoreLease>>
+    > => attempt.status === "fulfilled",
+  );
+  const rejected = attempts.filter(
+    (attempt): attempt is PromiseRejectedResult => attempt.status === "rejected",
+  );
+  assert.equal(leases.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0]?.reason instanceof WikiRunsControlStoreInUseError);
+  await leases[0]!.value.release();
+});
+
+test("workspace deletion marker blocks stale writes and survives metadata removal", async () => {
+  const root = await tempDir("okf-wiki-ws-deletion-marker-");
+  const workspace = await createWorkspace({
+    name: "Deletion marker",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+
+  const deletion = await beginWorkspaceDeletion(root, workspace.id);
+  await deleteWorkspaceMeta(root);
+  await deletion.complete();
+
+  await assert.rejects(() => assertWorkspaceActive(root), WorkspaceDeletedError);
+  await assert.rejects(() => saveWorkspace(workspace), WorkspaceDeletedError);
+  await assert.rejects(() => access(workspaceConfigPath(root)));
+});
+
+test("workspace deletion refuses a live activity lease and a fresh creation blocks stale saves", async () => {
+  const root = await tempDir("okf-wiki-ws-lifecycle-activity-");
+  const workspace = await createWorkspace({
+    name: "Lifecycle activity",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+  const activity = await acquireWorkspaceActivityLease(root, workspace.id);
+  await assert.rejects(() => assertNoWorkspaceActivityLeases(root), WorkspaceLifecycleInUseError);
+  await activity.release();
+
+  const deletion = await beginWorkspaceDeletion(root, workspace.id);
+  await deleteWorkspaceMeta(root);
+  await deletion.complete();
+  const recreated = await createWorkspace({
+    name: "Fresh workspace",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await assert.rejects(() => saveWorkspace(workspace), WorkspaceLifecycleInUseError);
+  await saveWorkspace(recreated);
+  assert.notEqual(recreated.id, workspace.id);
+  assert.equal((await loadWorkspace(root)).id, recreated.id);
+});
+
+test("logical workspace deletion fences load paths even when metadata remains", async () => {
+  const root = await tempDir("okf-wiki-ws-logical-delete-");
+  const workspace = await createWorkspace({
+    name: "Logical deletion",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+
+  const deletion = await beginWorkspaceDeletion(root, workspace.id);
+  await deletion.complete();
+
+  await assert.rejects(() => loadWorkspace(root), WorkspaceDeletedError);
+});
+
+test("a dead deleting marker with intact metadata rolls back to an active workspace", async () => {
+  const root = await tempDir("okf-wiki-ws-deletion-recovery-");
+  const workspace = await createWorkspace({
+    name: "Recover deletion",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+  await mkdir(workspaceLifecycleDir(root), { recursive: true });
+  await writeFile(
+    path.join(workspaceLifecycleDir(root), "deletion.json"),
+    JSON.stringify({
+      state: "deleting",
+      workspaceId: workspace.id,
+      pid: 999_999_999,
+      token: "crashed-delete",
+    }),
+  );
+
+  assert.equal((await loadWorkspace(root)).id, workspace.id);
+  await assertWorkspaceActive(root);
+});
+
+test("active index registration serializes behind deletion and cannot restore a tombstoned root", async () => {
+  const root = await tempDir("okf-wiki-ws-index-delete-race-");
+  const workspace = await createWorkspace({
+    name: "Index deletion race",
+    rootPath: root,
+    orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+  });
+  await saveWorkspace(workspace);
+
+  let lateRegistration!: Promise<void>;
+  await withWorkspaceRevision(root, 0, async (current) => {
+    const deletion = await beginWorkspaceDeletion(current.rootPath, current.id);
+    lateRegistration = registerActiveWorkspaceInAppIndex(current.rootPath);
+    await deletion.complete();
+  });
+
+  await assert.rejects(() => lateRegistration, WorkspaceDeletedError);
+});
+
+test("app index keeps concurrent registrations from separate Node processes", async () => {
+  const home = await tempDir("okf-wiki-app-index-cross-process-");
+  const appStatePath = path.join(home, "app.json");
+  const firstRoot = path.join(home, "first");
+  const secondRoot = path.join(home, "second");
+  const moduleUrl = new URL("./workspace-app-state.js", import.meta.url).href;
+  const register = (rootPath: string) =>
+    new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const script = `
+        import { registerWorkspaceInAppIndex } from ${JSON.stringify(moduleUrl)};
+        await registerWorkspaceInAppIndex(${JSON.stringify(rootPath)}, ${JSON.stringify(appStatePath)});
+      `;
+      const child = spawn(process.execPath, ["--input-type=module", "--eval", script]);
+      let stderr = "";
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ code, stderr }));
+    });
+
+  const results = await Promise.all([register(firstRoot), register(secondRoot)]);
+  assert.deepEqual(
+    results.map((result) => result.code),
+    [0, 0],
+    results.map((result) => result.stderr).join("\n"),
+  );
+  assert.deepEqual(
+    new Set((await readAppState(appStatePath)).recentRootPaths),
+    new Set([firstRoot, secondRoot]),
+  );
 });
 
 test("reset control store CLI parser requires an absolute target and confirmation", () => {
