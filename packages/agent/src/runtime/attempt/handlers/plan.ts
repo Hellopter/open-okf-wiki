@@ -215,6 +215,14 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       role: "plan",
       modelId: seatModelId(resolved),
       fromRun: planned.metrics,
+      // Persist scout list on the durable plan attempt so Run Graph can
+      // project plan.scout display nodes without durable DAG scheduling.
+      extra: {
+        extra: {
+          ...(planned.metrics?.extra ?? {}),
+          scoutKinds: planned.scoutKinds ?? [],
+        },
+      },
     }),
   });
 }

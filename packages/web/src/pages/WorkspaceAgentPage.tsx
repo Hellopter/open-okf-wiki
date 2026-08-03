@@ -97,6 +97,8 @@ export function WorkspaceAgentPage() {
     planReviewRetry,
     selectedAttempt,
     selectedNode,
+    selectedNodeKey,
+    planScoutDisplays,
     timeline,
   } = observation;
   const planReviewState = {
@@ -109,7 +111,6 @@ export function WorkspaceAgentPage() {
       null,
     retry: planReviewRetry,
   };
-  const selectedNodeKey = selectedNode?.key ?? null;
   const activeSessionRuns = sessionRunLinks(activity.runs, activeSessionId);
   const activeConnection =
     surface === "conversation" ? conversation.connection : observation.connection;
@@ -153,7 +154,10 @@ export function WorkspaceAgentPage() {
   };
   const selectNode = (nodeKey: string) => {
     if (!snapshot) return;
-    const attempt = latestAttemptForNode(snapshot, nodeKey);
+    // Display scouts have no durable attempts — open observation without attempt id.
+    const attempt = nodeKey.startsWith("plan.scout.")
+      ? null
+      : latestAttemptForNode(snapshot, nodeKey);
     observation.selectNode(nodeKey);
     updateSelection({ attempt: attempt?.attemptId ?? null });
     setSurface("observation");
@@ -282,11 +286,13 @@ export function WorkspaceAgentPage() {
               planReview={planReview}
               planReviewStatus={planReviewStatus}
               planReviewRetry={planReviewRetry}
+              planScoutDisplays={planScoutDisplays}
               onBack={() => {
                 updateSelection({ attempt: null });
                 setSurface("run");
               }}
               onSelectAttempt={selectAttempt}
+              onSelectNode={selectNode}
               onLoadEarlier={() => void observation.loadEarlier()}
               canLoadEarlier={Boolean(timeline?.hasEarlier)}
               loadingEarlier={Boolean(timeline?.loadingEarlier)}

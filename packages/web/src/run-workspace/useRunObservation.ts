@@ -1,4 +1,9 @@
-import type { WikiRunAttempt, WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract";
+import type {
+  WikiRunAttempt,
+  WikiRunNode,
+  WikiRunPlanReview,
+  WikiRunSpec,
+} from "@okf-wiki/contract";
 import {
   WikiRunAttemptTranscriptTraceFrameSchema,
   WikiRunEventSchema,
@@ -25,6 +30,14 @@ import {
   setTimelineLoadingEarlier,
 } from "./observation-state";
 import { usePlanReview } from "./plan-review/usePlanReview";
+import {
+  isPlanScoutNodeKey,
+  mergePlanScoutDisplays,
+  planScoutKindFromKey,
+  planScoutSlug,
+  scoutKindsFromSnapshot,
+  syntheticPlanScoutNode,
+} from "./workflow-topology";
 
 export type RunObservationConnection = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -195,13 +208,37 @@ export function useRunObservation(
       null,
     [state.selectedAttemptId, state.snapshot],
   );
-  const selectedNode = useMemo(
-    () => state.snapshot?.nodes.find((node) => node.key === state.selectedNodeKey) ?? null,
-    [state.selectedNodeKey, state.snapshot],
-  );
+  const planScoutDisplays = useMemo(() => {
+    if (!state.snapshot) return [];
+    const fromReview = planReviewMaterials?.scoutsSummary?.scouts;
+    const kindsFromReview = planReviewMaterials?.scoutsSummary?.kinds;
+    const reviewRows =
+      fromReview && fromReview.length > 0
+        ? fromReview
+        : kindsFromReview && kindsFromReview.length > 0
+          ? kindsFromReview.map((kind) => ({ kind }))
+          : undefined;
+    return mergePlanScoutDisplays(reviewRows, scoutKindsFromSnapshot(state.snapshot));
+  }, [planReviewMaterials?.scoutsSummary, state.snapshot]);
+
+  const selectedNode = useMemo((): WikiRunNode | null => {
+    if (!state.selectedNodeKey) return null;
+    const fromSnapshot =
+      state.snapshot?.nodes.find((node) => node.key === state.selectedNodeKey) ?? null;
+    if (fromSnapshot) return fromSnapshot;
+    // Display-only plan.scout nodes are not durable snapshot members.
+    if (!state.snapshot || !isPlanScoutNodeKey(state.selectedNodeKey)) return null;
+    const slug = planScoutKindFromKey(state.selectedNodeKey);
+    const scout =
+      planScoutDisplays.find((item) => planScoutSlug(item.kind) === slug) ??
+      planScoutDisplays.find((item) => item.kind === slug);
+    const planNode = state.snapshot.nodes.find((node) => node.key === "plan" || node.kind === "plan");
+    return syntheticPlanScoutNode(state.selectedNodeKey, planNode, scout);
+  }, [state.selectedNodeKey, state.snapshot, planScoutDisplays]);
+
   const timeline = selectedAttemptId ? (state.timelines[selectedAttemptId] ?? null) : null;
   const latestSelectedAttempt =
-    state.snapshot && state.selectedNodeKey
+    state.snapshot && state.selectedNodeKey && !isPlanScoutNodeKey(state.selectedNodeKey)
       ? latestAttemptForNode(state.snapshot, state.selectedNodeKey)
       : null;
 
@@ -217,11 +254,14 @@ export function useRunObservation(
     setError,
     connection,
     selectedNode,
+    /** Raw selection key (survives synthetic scout nodes not in snapshot.nodes). */
+    selectedNodeKey: state.selectedNodeKey,
     selectedAttempt,
     selectedAttemptId: state.selectedAttemptId,
     timeline,
     followMode: state.followMode,
     latestSelectedAttempt,
+    planScoutDisplays,
     selectNode,
     selectAttempt,
     setFollowMode,

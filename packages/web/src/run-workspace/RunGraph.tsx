@@ -50,7 +50,9 @@ import {
 import {
   buildFocusTopology,
   buildWorkflowStages,
+  injectPlanScoutDisplayNodes,
   orderedNodesForLayout,
+  type PlanScoutDisplay,
   projectCollapsedResearchLeaves,
   researchDomainLeafGroups,
   shouldCollapseResearchLeaves,
@@ -371,15 +373,52 @@ function FocusGraph({
   stage,
   selectedNodeKey,
   onSelectNode,
+  planScouts,
   t,
 }: {
   snapshot: WikiRunSnapshot;
   stage: WorkflowStageId;
   selectedNodeKey: string | null;
   onSelectNode: (nodeKey: string) => void;
+  planScouts?: PlanScoutDisplay[];
   t: MessageTree;
 }) {
-  const baseTopology = useMemo(() => buildFocusTopology(snapshot, stage), [snapshot, stage]);
+  const baseTopology = useMemo(() => {
+    const topology = buildFocusTopology(snapshot, stage);
+    if (stage !== "plan" || !planScouts?.length) return topology;
+    const planNode = topology.nodes.find((node) => node.key === "plan" || node.kind === "plan");
+    if (!planNode) return topology;
+    const injected = injectPlanScoutDisplayNodes(
+      topology.nodes,
+      topology.edges,
+      planScouts,
+      planNode,
+    );
+    if (injected.nodes.length === topology.nodes.length) return topology;
+    // Recompute context keys from plan-stage nodes only.
+    const planStageKeys = new Set(
+      injected.nodes
+        .filter(
+          (node) =>
+            node.kind === "freeze" ||
+            node.kind === "plan" ||
+            node.kind === "plan.scout" ||
+            node.kind === "gate.plan",
+        )
+        .map((node) => node.key),
+    );
+    return {
+      nodes: injected.nodes,
+      edges: injected.edges,
+      contextNodeKeys: new Set(
+        injected.nodes.filter((node) => !planStageKeys.has(node.key)).map((node) => node.key),
+      ),
+      topologyKey: JSON.stringify({
+        base: topology.topologyKey,
+        scouts: planScouts.map((s) => [s.kind, s.ok ?? null]),
+      }),
+    };
+  }, [snapshot, stage, planScouts]);
   const domainGroups = useMemo(() => researchDomainLeafGroups(baseTopology), [baseTopology]);
   const collapseEnabled = useMemo(() => shouldCollapseResearchLeaves(baseTopology), [baseTopology]);
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(() => new Set());
@@ -775,6 +814,7 @@ export function RunGraph({
   focusedStage,
   onFocusedStageChange,
   onSelectNode,
+  planScouts,
   t,
 }: {
   snapshot: WikiRunSnapshot;
@@ -782,6 +822,8 @@ export function RunGraph({
   focusedStage: WorkflowStageId | null;
   onFocusedStageChange: (stage: WorkflowStageId | null) => void;
   onSelectNode: (nodeKey: string) => void;
+  /** Display-only plan scout receipts (not durable DAG nodes). */
+  planScouts?: PlanScoutDisplay[];
   t: MessageTree;
 }) {
   const stages = useMemo(
@@ -891,6 +933,7 @@ export function RunGraph({
             stage={focusedStage}
             selectedNodeKey={selectedNodeKey}
             onSelectNode={onSelectNode}
+            planScouts={planScouts}
             t={t}
           />
           <MobileStageList

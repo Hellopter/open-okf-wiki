@@ -347,3 +347,32 @@ test("WikiRuns HTTP response and transcript SSE frames are strict", () => {
   );
   assert.equal(WikiRunAttemptTranscriptErrorFrameSchema.safeParse({ message: "" }).success, false);
 });
+
+test("WikiRunPlanReviewScoutsSummary accepts legacy shapes and optional scouts[]", async () => {
+  const { WikiRunNodeKindSchema, WikiRunPlanReviewScoutsSummarySchema } = await import(
+    "./wiki-runs.js"
+  );
+  assert.equal(WikiRunNodeKindSchema.safeParse("plan.scout").success, true);
+
+  const legacy = WikiRunPlanReviewScoutsSummarySchema.parse({
+    kinds: ["entry", "layout"],
+    receiptCount: 2,
+  });
+  assert.equal(legacy.scouts, undefined);
+  assert.deepEqual(legacy.kinds, ["entry", "layout"]);
+
+  const rich = WikiRunPlanReviewScoutsSummarySchema.parse({
+    kinds: ["entry"],
+    receiptCount: 1,
+    scouts: [
+      {
+        kind: "entry",
+        ok: true,
+        relPath: "analysis/plan-scouts/entry.md",
+        preview: "# Plan scout: entry\n\nok",
+      },
+    ],
+  });
+  assert.equal(rich.scouts?.[0]?.ok, true);
+  assert.equal(rich.scouts?.[0]?.kind, "entry");
+});

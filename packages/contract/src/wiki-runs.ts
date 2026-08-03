@@ -42,6 +42,8 @@ export const WikiRunStateSchema = z.enum([
 export const WikiRunNodeKindSchema = z.enum([
   "freeze",
   "plan",
+  /** Display-only projection of nested plan scouts (not durable DAG / scheduler). */
+  "plan.scout",
   "gate.plan",
   "plan.adapt",
   "research.leaf",
@@ -484,12 +486,26 @@ export type WikiRunPlanReviewExecution = z.infer<typeof WikiRunPlanReviewExecuti
 /**
  * Optional scouts summary for plan-gate review (kinds that produced receipts).
  * Soft projection — missing scouts never fail plan-review load.
+ * `scouts[]` is richer per-receipt detail for Run Graph display / observation.
  */
+export const WikiRunPlanReviewScoutEntrySchema = z
+  .object({
+    kind: z.string().trim().min(1).max(80),
+    ok: z.boolean().optional(),
+    relPath: z.string().trim().min(1).max(240).optional(),
+    preview: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export type WikiRunPlanReviewScoutEntry = z.infer<typeof WikiRunPlanReviewScoutEntrySchema>;
+
 export const WikiRunPlanReviewScoutsSummarySchema = z
   .object({
     kinds: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
     receiptCount: z.number().int().min(0).max(64).default(0),
     mode: z.string().trim().min(1).max(40).optional(),
+    /** Per-receipt rows (filename stem as kind); optional for older clients/fixtures. */
+    scouts: z.array(WikiRunPlanReviewScoutEntrySchema).max(32).optional(),
   })
   .strict();
 

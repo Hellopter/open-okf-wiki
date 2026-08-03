@@ -20,6 +20,16 @@ export type FocusTopology = {
   topologyKey: string;
 };
 
+/** Lightweight scout receipt projection for display nodes (plan-review or metrics). */
+export type PlanScoutDisplay = {
+  kind: string;
+  ok?: boolean;
+  preview?: string;
+  relPath?: string;
+};
+
+export const PLAN_SCOUT_KEY_PREFIX = "plan.scout.";
+
 export const workflowStageIds: WorkflowStageId[] = [
   "plan",
   "research",
@@ -29,12 +39,221 @@ export const workflowStageIds: WorkflowStageId[] = [
 ];
 
 export function stageForNode(node: WikiRunNode): WorkflowStageId {
-  if (["freeze", "plan", "gate.plan"].includes(node.kind)) return "plan";
+  if (["freeze", "plan", "plan.scout", "gate.plan"].includes(node.kind)) return "plan";
   if (["research.leaf", "research.domain", "plan.adapt"].includes(node.kind)) return "research";
   if (["write.root", "validate.pre"].includes(node.kind)) return "synthesis";
   if (["review.seat", "review.reduce", "gate.fix", "repair", "validate.final"].includes(node.kind))
     return "quality";
   return "publication";
+}
+
+/** Filesystem-safe slug for plan.scout.<slug> display keys. */
+export function planScoutSlug(kind: string): string {
+  return (
+    kind
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "scout"
+  );
+}
+
+export function planScoutNodeKey(kind: string): string {
+  return `${PLAN_SCOUT_KEY_PREFIX}${planScoutSlug(kind)}`;
+}
+
+export function isPlanScoutNodeKey(key: string | null | undefined): boolean {
+  return Boolean(key?.startsWith(PLAN_SCOUT_KEY_PREFIX));
+}
+
+export function planScoutKindFromKey(key: string): string {
+  return key.startsWith(PLAN_SCOUT_KEY_PREFIX) ? key.slice(PLAN_SCOUT_KEY_PREFIX.length) : key;
+}
+
+/**
+ * Read scout kinds from the latest succeeded/running plan attempt metrics.extra.
+ * Soft: missing or malformed extra never throws.
+ */
+export function scoutKindsFromSnapshot(snapshot: WikiRunSnapshot): string[] {
+  const planAttempts = snapshot.attempts
+    .filter((attempt) => attempt.nodeKey === "plan")
+    .slice()
+    .sort(
+      (a, b) =>
+        a.nodeGeneration - b.nodeGeneration ||
+        a.runIndex - b.runIndex ||
+        a.startedAt.localeCompare(b.startedAt),
+    );
+  for (let i = planAttempts.length - 1; i >= 0; i -= 1) {
+    const extra = planAttempts[i]?.metrics?.extra;
+    if (!extra || typeof extra !== "object") continue;
+    const raw = (extra as Record<string, unknown>).scoutKinds;
+    if (!Array.isArray(raw)) continue;
+    const kinds = raw
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .map((item) => item.trim())
+      .slice(0, 32);
+    if (kinds.length > 0) return kinds;
+  }
+  return [];
+}
+
+/**
+ * Project display-only plan.scout nodes into a topology. Pure — does not schedule
+ * durable DAG nodes. Prefer richer scouts (ok/preview) when available.
+ */
+export function injectPlanScoutDisplayNodes(
+  nodes: WikiRunNode[],
+  edges: Array<{ id: string; source: string; target: string; relation: WorkflowEdgeRelation }>,
+  scouts: PlanScoutDisplay[],
+  planNode: WikiRunNode,
+): {
+  nodes: WikiRunNode[];
+  edges: Array<{ id: string; source: string; target: string; relation: WorkflowEdgeRelation }>;
+} {
+  if (scouts.length === 0) return { nodes, edges };
+
+  const existingKeys = new Set(nodes.map((node) => node.key));
+  // Skip when durable graph already has plan.scout (future-proof); never double-inject.
+  if ([...existingKeys].some((key) => key.startsWith(PLAN_SCOUT_KEY_PREFIX))) {
+    return { nodes, edges };
+  }
+
+  const mirrorState = (ok: boolean | undefined): WikiRunNode["state"] => {
+    if (ok === false) return "failed";
+    if (planNode.state === "failed") return "failed";
+    if (planNode.state === "running" || planNode.state === "ready") return planNode.state;
+    if (planNode.state === "succeeded") return "succeeded";
+    if (planNode.state === "waiting") return "waiting";
+    if (planNode.state === "invalidated") return "invalidated";
+    if (planNode.state === "cancelled") return "cancelled";
+    return planNode.state;
+  };
+
+  const scoutNodes: WikiRunNode[] = scouts.map((scout) => {
+    const key = planScoutNodeKey(scout.kind);
+    return {
+      key,
+      kind: "plan.scout" as const,
+      label: `Scout · ${scout.kind}`,
+      state: mirrorState(scout.ok),
+      generation: planNode.generation,
+      currentAttemptId: null,
+      lastAttemptId: null,
+      outputs: [],
+      parentKey: planNode.key,
+      ...(scout.relPath ? { detail: { scope: scout.relPath } } : {}),
+    };
+  });
+
+  // Prefer unique keys (dedupe kinds that slug-collide).
+  const seen = new Set<string>();
+  const uniqueScouts = scoutNodes.filter((node) => {
+    if (seen.has(node.key) || existingKeys.has(node.key)) return false;
+    seen.add(node.key);
+    return true;
+  });
+  if (uniqueScouts.length === 0) return { nodes, edges };
+
+  const scoutKeys = new Set(uniqueScouts.map((node) => node.key));
+  // Drop direct plan → gate.plan (or other plan children in-stage) so fan-out
+  // goes through scouts; rewire consumers onto scout join edges.
+  const nextEdges = edges.filter((edge) => {
+    if (edge.source === planNode.key && !scoutKeys.has(edge.target)) {
+      // Keep non-gate fan-out (e.g. research leaves in research focus); only
+      // rewire edges whose target is still in the plan stage or is gate.plan.
+      const target = nodes.find((n) => n.key === edge.target);
+      if (target && (target.kind === "gate.plan" || target.kind === "plan.scout")) return false;
+      if (edge.target === "gate.plan") return false;
+    }
+    return true;
+  });
+
+  const joinTargets = new Set<string>();
+  for (const edge of edges) {
+    if (edge.source !== planNode.key) continue;
+    const target = nodes.find((n) => n.key === edge.target);
+    if (target?.kind === "gate.plan" || edge.target === "gate.plan") {
+      joinTargets.add(edge.target);
+    }
+  }
+  // Fallback: if plan has no outgoing gate edge in this topology, still fan out.
+  if (joinTargets.size === 0) {
+    const gate = nodes.find((n) => n.kind === "gate.plan" || n.key === "gate.plan");
+    if (gate) joinTargets.add(gate.key);
+  }
+
+  for (const scout of uniqueScouts) {
+    nextEdges.push({
+      id: `${planNode.key}->${scout.key}`,
+      source: planNode.key,
+      target: scout.key,
+      relation: "fanout",
+    });
+    for (const target of joinTargets) {
+      nextEdges.push({
+        id: `${scout.key}->${target}`,
+        source: scout.key,
+        target,
+        relation: "join",
+      });
+    }
+  }
+
+  return {
+    nodes: [...nodes, ...uniqueScouts],
+    edges: nextEdges,
+  };
+}
+
+/**
+ * Merge plan-review scouts with snapshot metrics scoutKinds (review wins on ok/preview).
+ */
+export function mergePlanScoutDisplays(
+  fromReview: PlanScoutDisplay[] | undefined,
+  fromMetrics: string[],
+): PlanScoutDisplay[] {
+  const bySlug = new Map<string, PlanScoutDisplay>();
+  for (const kind of fromMetrics) {
+    const slug = planScoutSlug(kind);
+    if (!bySlug.has(slug)) bySlug.set(slug, { kind });
+  }
+  for (const scout of fromReview ?? []) {
+    bySlug.set(planScoutSlug(scout.kind), scout);
+  }
+  return [...bySlug.values()].sort((a, b) => a.kind.localeCompare(b.kind));
+}
+
+/** Build a synthetic WikiRunNode for observation when the key is a display scout. */
+export function syntheticPlanScoutNode(
+  nodeKey: string,
+  planNode: WikiRunNode | undefined,
+  scout: PlanScoutDisplay | undefined,
+): WikiRunNode {
+  const kind = scout?.kind ?? planScoutKindFromKey(nodeKey);
+  const baseState: WikiRunNode["state"] =
+    scout?.ok === false
+      ? "failed"
+      : planNode?.state === "failed"
+        ? "failed"
+        : planNode?.state === "succeeded"
+          ? "succeeded"
+          : planNode?.state === "running"
+            ? "running"
+            : "succeeded";
+  return {
+    key: nodeKey,
+    kind: "plan.scout",
+    label: `Scout · ${kind}`,
+    state: baseState,
+    generation: planNode?.generation ?? 0,
+    currentAttemptId: null,
+    lastAttemptId: null,
+    outputs: [],
+    parentKey: "plan",
+    ...(scout?.relPath ? { detail: { scope: scout.relPath } } : {}),
+  };
 }
 
 function aggregateState(nodes: WikiRunNode[]): string {
@@ -65,6 +284,9 @@ export function buildWorkflowStages(
 
 export function relationForEdge(source: WikiRunNode, target: WikiRunNode): WorkflowEdgeRelation {
   if (source.kind === "repair" && target.kind === "validate.pre") return "feedback";
+  if (source.kind === "plan" && target.kind === "plan.scout") return "fanout";
+  if (source.kind === "plan.scout" && target.kind.startsWith("gate.")) return "join";
+  if (source.kind === "plan.scout") return "join";
   if (source.kind.startsWith("gate.") || target.kind.startsWith("gate.")) return "control";
   if (target.kind === "research.leaf" || target.kind === "review.seat") return "fanout";
   if (
@@ -176,10 +398,21 @@ export function orderedNodesForLayout(
     ordered.push(node);
   };
 
-  const planBoundary = topology.nodes
-    .filter((node) => node.kind === "freeze" || node.kind === "plan" || node.kind === "gate.plan")
+  // freeze → plan → plan.scout.* → gate.plan (stable alpha within scouts)
+  const planBoundaryCore = topology.nodes
+    .filter((node) => node.kind === "freeze" || node.kind === "plan")
     .sort((a, b) => a.key.localeCompare(b.key));
-  for (const node of planBoundary) take(node.key);
+  for (const node of planBoundaryCore) take(node.key);
+
+  const planScouts = topology.nodes
+    .filter((node) => node.kind === "plan.scout")
+    .sort((a, b) => a.key.localeCompare(b.key));
+  for (const node of planScouts) take(node.key);
+
+  const planGates = topology.nodes
+    .filter((node) => node.kind === "gate.plan")
+    .sort((a, b) => a.key.localeCompare(b.key));
+  for (const node of planGates) take(node.key);
 
   const groups = researchDomainLeafGroups(topology);
   const collapseActive = options?.expandedDomainKeys !== undefined;

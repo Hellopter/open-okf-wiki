@@ -213,3 +213,45 @@ test("assertCoverageForSealedSpec fails multi-source when plan missing (no soft 
       /multi-source|CoveragePlan/.test(err.message),
   );
 });
+
+test("readScoutsSummary returns per-receipt ok/preview rows", async () => {
+  const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { readScoutsSummary } = await import("./coverage-bridge.js");
+
+  const analysisDir = await mkdtemp(path.join(tmpdir(), "okf-scouts-"));
+  const scoutsDir = path.join(analysisDir, "plan-scouts");
+  await mkdir(scoutsDir, { recursive: true });
+  await writeFile(
+    path.join(scoutsDir, "entry.md"),
+    "# Plan scout: entry\n\nFound README and package.json.\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(scoutsDir, "layout.md"),
+    "# Plan scout: layout\n\nScout failed: timeout\n",
+    "utf8",
+  );
+
+  const summary = readScoutsSummary(analysisDir);
+  assert.ok(summary);
+  assert.deepEqual(summary.kinds, ["entry", "layout"]);
+  assert.equal(summary.receiptCount, 2);
+  assert.equal(summary.scouts.length, 2);
+  const entry = summary.scouts.find((s) => s.kind === "entry");
+  const layout = summary.scouts.find((s) => s.kind === "layout");
+  assert.equal(entry?.ok, true);
+  assert.equal(layout?.ok, false);
+  assert.match(entry?.preview ?? "", /Found README/);
+  assert.equal(entry?.relPath, "analysis/plan-scouts/entry.md");
+});
+
+test("readScoutsSummary returns undefined when plan-scouts missing", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { readScoutsSummary } = await import("./coverage-bridge.js");
+  const analysisDir = await mkdtemp(path.join(tmpdir(), "okf-scouts-empty-"));
+  assert.equal(readScoutsSummary(analysisDir), undefined);
+});

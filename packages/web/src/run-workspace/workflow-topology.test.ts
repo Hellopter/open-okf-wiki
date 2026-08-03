@@ -4,11 +4,16 @@ import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract";
 import {
   buildFocusTopology,
   buildWorkflowStages,
+  injectPlanScoutDisplayNodes,
+  mergePlanScoutDisplays,
   orderedNodesForLayout,
+  planScoutNodeKey,
   projectCollapsedResearchLeaves,
   relationForEdge,
   researchDomainLeafGroups,
+  scoutKindsFromSnapshot,
   shouldCollapseResearchLeaves,
+  stageForNode,
 } from "./workflow-topology.ts";
 
 function node(key: string, kind: string, state = "succeeded"): WikiRunNode {
@@ -18,6 +23,9 @@ function node(key: string, kind: string, state = "succeeded"): WikiRunNode {
     label: key,
     state: state as WikiRunNode["state"],
     generation: 0,
+    currentAttemptId: null,
+    lastAttemptId: null,
+    outputs: [],
   };
 }
 
@@ -294,4 +302,112 @@ test("layout order places orphan research leaves after domain clusters", () => {
     "research.leaf.orphan.1",
     "plan.adapt.1",
   ]);
+});
+
+test("plan.scout maps to plan stage and fanout/join relations", () => {
+  const plan = node("plan", "plan");
+  const scout = node("plan.scout.entry", "plan.scout");
+  const gate = node("gate.plan", "gate.plan");
+  assert.equal(stageForNode(scout), "plan");
+  assert.equal(relationForEdge(plan, scout), "fanout");
+  assert.equal(relationForEdge(scout, gate), "join");
+});
+
+test("injectPlanScoutDisplayNodes places scouts after plan before gate.plan", () => {
+  const freeze = node("freeze", "freeze");
+  const plan = node("plan", "plan", "succeeded");
+  const gate = node("gate.plan", "gate.plan", "waiting");
+  const baseNodes = [freeze, plan, gate];
+  const baseEdges = [
+    {
+      id: "freeze->plan",
+      source: "freeze",
+      target: "plan",
+      relation: "forward" as const,
+    },
+    {
+      id: "plan->gate.plan",
+      source: "plan",
+      target: "gate.plan",
+      relation: "control" as const,
+    },
+  ];
+  const { nodes, edges } = injectPlanScoutDisplayNodes(
+    baseNodes,
+    baseEdges,
+    [
+      { kind: "entry", ok: true },
+      { kind: "layout", ok: false },
+    ],
+    plan,
+  );
+
+  const topology = {
+    nodes,
+    edges,
+    contextNodeKeys: new Set<string>(),
+    topologyKey: "test",
+  };
+  const keys = orderedNodesForLayout(topology).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "freeze",
+    "plan",
+    planScoutNodeKey("entry"),
+    planScoutNodeKey("layout"),
+    "gate.plan",
+  ]);
+
+  const layoutScout = nodes.find((item) => item.key === planScoutNodeKey("layout"));
+  assert.equal(layoutScout?.state, "failed");
+  const entryScout = nodes.find((item) => item.key === planScoutNodeKey("entry"));
+  assert.equal(entryScout?.state, "succeeded");
+  assert.equal(entryScout?.parentKey, "plan");
+
+  assert.ok(edges.some((e) => e.source === "plan" && e.target === planScoutNodeKey("entry")));
+  assert.ok(
+    edges.some((e) => e.source === planScoutNodeKey("entry") && e.target === "gate.plan"),
+  );
+  assert.equal(
+    edges.some((e) => e.source === "plan" && e.target === "gate.plan"),
+    false,
+    "direct plan→gate rewired through scouts",
+  );
+});
+
+test("injectPlanScoutDisplayNodes is a no-op without scouts", () => {
+  const plan = node("plan", "plan");
+  const gate = node("gate.plan", "gate.plan");
+  const edges = [
+    { id: "plan->gate.plan", source: "plan", target: "gate.plan", relation: "control" as const },
+  ];
+  const result = injectPlanScoutDisplayNodes([plan, gate], edges, [], plan);
+  assert.equal(result.nodes.length, 2);
+  assert.equal(result.edges.length, 1);
+});
+
+test("scoutKindsFromSnapshot reads metrics.extra.scoutKinds from latest plan attempt", () => {
+  const snap = {
+    attempts: [
+      {
+        attemptId: "a1",
+        nodeKey: "plan",
+        nodeGeneration: 0,
+        runIndex: 1,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        metrics: { extra: { scoutKinds: ["entry", "layout"] } },
+      },
+    ],
+  } as unknown as WikiRunSnapshot;
+  assert.deepEqual(scoutKindsFromSnapshot(snap), ["entry", "layout"]);
+  assert.deepEqual(scoutKindsFromSnapshot({ attempts: [] } as unknown as WikiRunSnapshot), []);
+});
+
+test("mergePlanScoutDisplays prefers review rows over metrics kinds", () => {
+  const merged = mergePlanScoutDisplays(
+    [{ kind: "entry", ok: true, preview: "# hi" }],
+    ["entry", "layout"],
+  );
+  assert.equal(merged.length, 2);
+  assert.equal(merged.find((s) => s.kind === "entry")?.preview, "# hi");
+  assert.equal(merged.find((s) => s.kind === "layout")?.ok, undefined);
 });

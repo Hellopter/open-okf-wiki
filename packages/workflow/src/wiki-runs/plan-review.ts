@@ -291,6 +291,7 @@ export function readPlanReviewMaterials(
           scoutsSummary: {
             kinds: scouts.kinds,
             receiptCount: scouts.receiptCount,
+            scouts: scouts.scouts,
           },
         }
       : {}),

@@ -1,6 +1,6 @@
 import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract";
 import { PauseIcon, PlayIcon, SendIcon, SquareIcon, TriangleAlertIcon } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { describeRunStatus, GateActionShell, StatusBadge } from "@/components/agent-ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -18,7 +18,12 @@ import {
 import { PlanGateReviewPanel } from "../run-workspace/plan-review/PlanGateReviewPanel";
 import type { PlanReviewState } from "../run-workspace/plan-review/plan-review-utils";
 import { RunGraph } from "../run-workspace/RunGraph";
-import type { WorkflowStageId } from "../run-workspace/workflow-topology";
+import {
+  mergePlanScoutDisplays,
+  type PlanScoutDisplay,
+  scoutKindsFromSnapshot,
+  type WorkflowStageId,
+} from "../run-workspace/workflow-topology";
 import { localizedLabel } from "./workbench-utils";
 
 function openGate(snapshot: WikiRunSnapshot) {
@@ -53,6 +58,18 @@ export function RunCanvas({
   const [feedback, setFeedback] = useState("");
   const [answer, setAnswer] = useState("");
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
+
+  const planScouts: PlanScoutDisplay[] = useMemo(() => {
+    const fromReview = planReviewState?.review?.scoutsSummary?.scouts;
+    const kindsFromReview = planReviewState?.review?.scoutsSummary?.kinds;
+    const reviewRows: PlanScoutDisplay[] | undefined =
+      fromReview && fromReview.length > 0
+        ? fromReview
+        : kindsFromReview && kindsFromReview.length > 0
+          ? kindsFromReview.map((kind) => ({ kind }))
+          : undefined;
+    return mergePlanScoutDisplays(reviewRows, scoutKindsFromSnapshot(snapshot));
+  }, [planReviewState?.review?.scoutsSummary, snapshot]);
   const activeNode =
     snapshot.nodes.find((node) => node.state === "running") ??
     snapshot.nodes.find((node) => node.state === "ready");
@@ -316,6 +333,7 @@ export function RunCanvas({
           focusedStage={focusedStage}
           onFocusedStageChange={onFocusedStageChange}
           onSelectNode={onSelectNode}
+          planScouts={planScouts}
           t={t}
         />
       </div>

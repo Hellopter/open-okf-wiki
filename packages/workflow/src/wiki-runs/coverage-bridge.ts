@@ -173,9 +173,32 @@ export function pageSetDiffFromSpecs(
 }
 
 /** Soft-read plan-scouts directory under run analysis (if present). */
-export function readScoutsSummary(
-  analysisDir: string,
-): { kinds: string[]; receiptCount: number } | undefined {
+export type ScoutsSummaryProjection = {
+  kinds: string[];
+  receiptCount: number;
+  scouts: Array<{
+    kind: string;
+    ok?: boolean;
+    relPath?: string;
+    preview?: string;
+  }>;
+};
+
+const SCOUT_FAILED_PREFIX = /^scout failed\b/i;
+const PREVIEW_MAX = 2000;
+
+function scoutReceiptOk(body: string): boolean {
+  // Receipts write "Scout failed …" on the first content line after the title.
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    return !SCOUT_FAILED_PREFIX.test(trimmed);
+  }
+  return true;
+}
+
+/** Soft-read plan-scouts directory under run analysis (if present). */
+export function readScoutsSummary(analysisDir: string): ScoutsSummaryProjection | undefined {
   const scoutsDir = path.join(analysisDir, "plan-scouts");
   try {
     const entries = readdirSync(scoutsDir).filter((name) => name.endsWith(".md"));
@@ -183,7 +206,29 @@ export function readScoutsSummary(
     const kinds = entries
       .map((name) => name.replace(/\.md$/i, ""))
       .sort((a, b) => a.localeCompare(b));
-    return { kinds, receiptCount: kinds.length };
+    const scouts = kinds.map((kind) => {
+      const fileName = `${kind}.md`;
+      const relPath = `analysis/plan-scouts/${fileName}`;
+      let preview: string | undefined;
+      let ok: boolean | undefined;
+      try {
+        const body = readFileSync(path.join(scoutsDir, fileName), "utf8");
+        ok = scoutReceiptOk(body);
+        const trimmed = body.trim();
+        if (trimmed.length > 0) {
+          preview = trimmed.length > PREVIEW_MAX ? `${trimmed.slice(0, PREVIEW_MAX)}…` : trimmed;
+        }
+      } catch {
+        ok = undefined;
+      }
+      return {
+        kind,
+        ...(ok !== undefined ? { ok } : {}),
+        relPath,
+        ...(preview !== undefined ? { preview } : {}),
+      };
+    });
+    return { kinds, receiptCount: kinds.length, scouts };
   } catch {
     return undefined;
   }

@@ -21,6 +21,7 @@ import {
   attemptToolToViewModel,
   CodeSurface,
   describeAttemptStatus,
+  describeNodeStatus,
   isCapacityFailure,
   StatusBadge,
   ToolChipRow,
@@ -28,6 +29,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { PlanDocument, SpecSections } from "./plan-review/PlanDocument";
@@ -43,6 +45,11 @@ import {
   truncateAttemptError,
 } from "./node-recovery";
 import type { FollowMode } from "./observation-state";
+import {
+  type PlanScoutDisplay,
+  planScoutKindFromKey,
+  planScoutSlug,
+} from "./workflow-topology";
 
 /** Compact preview length for attempt-history sidebar rows. */
 const HISTORY_ERROR_PREVIEW_CHARS = 96;
@@ -263,6 +270,99 @@ export function RunPlanDetails({
   );
 }
 
+function PlanScoutObservation({
+  selectedNode,
+  scout,
+  siblingScouts,
+  onBack,
+  onOpenPlan,
+  t,
+}: {
+  selectedNode: WikiRunNode;
+  scout: PlanScoutDisplay | undefined;
+  siblingScouts: PlanScoutDisplay[];
+  onBack: () => void;
+  onOpenPlan?: () => void;
+  t: MessageTree;
+}) {
+  const kind = scout?.kind ?? planScoutKindFromKey(selectedNode.key);
+  const stateLabel =
+    t.workbench.nodeStates[selectedNode.state as keyof typeof t.workbench.nodeStates] ??
+    selectedNode.state;
+  const statusDescriptor = describeNodeStatus(selectedNode.state);
+  const preview = scout?.preview?.trim() ?? "";
+  const relPath = scout?.relPath ?? selectedNode.detail?.scope;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="plan-scout-observation">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 md:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <Button size="sm" variant="ghost" onClick={onBack}>
+            <ArrowLeftIcon data-icon="inline-start" />
+            {t.workbench.backToGraph}
+          </Button>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">
+              {selectedNode.label || `${t.workbench.planScout} · ${kind}`}
+            </p>
+            <p className="font-mono text-xs text-muted-foreground">{selectedNode.key}</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge descriptor={statusDescriptor}>{stateLabel}</StatusBadge>
+          {scout?.ok === false ? (
+            <Badge variant="destructive">{t.workbench.planScoutFailed}</Badge>
+          ) : scout?.ok === true ? (
+            <Badge variant="secondary">{t.workbench.planScoutOk}</Badge>
+          ) : null}
+          {onOpenPlan ? (
+            <Button size="sm" variant="outline" onClick={onOpenPlan} data-testid="open-plan-node">
+              {t.workbench.openPlanNode}
+            </Button>
+          ) : null}
+        </div>
+      </header>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-5 md:px-6">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
+          <section className="space-y-2">
+            <h2 className="text-sm font-medium">{t.workbench.planScoutReceipt}</h2>
+            {relPath ? (
+              <p className="font-mono text-xs text-muted-foreground">{relPath}</p>
+            ) : null}
+            {preview ? (
+              <div
+                className="rounded-lg border border-border bg-card p-4"
+                data-testid="plan-scout-preview"
+              >
+                <MarkdownDocument content={preview} />
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">{t.workbench.planScoutNoReceipt}</p>
+            )}
+          </section>
+          {siblingScouts.length > 1 ? (
+            <section className="space-y-2" data-testid="plan-scout-siblings">
+              <h3 className="text-sm font-medium">{t.workbench.planScoutSiblings}</h3>
+              <div className="flex flex-wrap gap-1.5">
+                {siblingScouts.map((item) => (
+                  <Badge
+                    key={item.kind}
+                    variant={planScoutSlug(item.kind) === planScoutSlug(kind) ? "default" : "outline"}
+                  >
+                    {item.kind}
+                    {item.ok === false ? " · !" : ""}
+                  </Badge>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <p className="text-xs text-muted-foreground">{t.workbench.planScoutVirtualHint}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AttemptObservation({
   snapshot,
   selectedNode,
@@ -272,8 +372,10 @@ export function AttemptObservation({
   planReview = null,
   planReviewStatus = "idle",
   planReviewRetry,
+  planScoutDisplays = [],
   onBack,
   onSelectAttempt,
+  onSelectNode,
   onLoadEarlier,
   canLoadEarlier,
   loadingEarlier,
@@ -290,8 +392,12 @@ export function AttemptObservation({
   planReview?: WikiRunPlanReview | null;
   planReviewStatus?: import("./plan-review/plan-review-utils").PlanReviewStatus;
   planReviewRetry?: () => void;
+  /** Merged scout displays for virtual plan.scout observation. */
+  planScoutDisplays?: PlanScoutDisplay[];
   onBack: () => void;
   onSelectAttempt: (attempt: WikiRunAttempt) => void;
+  /** Select another graph node (used by virtual scout → open plan). */
+  onSelectNode?: (nodeKey: string) => void;
   onLoadEarlier: () => void;
   canLoadEarlier: boolean;
   loadingEarlier: boolean;
@@ -303,6 +409,30 @@ export function AttemptObservation({
 }) {
   const [rerunFeedback, setRerunFeedback] = useState("");
   const [confirmRerunOpen, setConfirmRerunOpen] = useState(false);
+
+  // Display-only plan scouts: receipt markdown, no attempt transcript / retry.
+  if (selectedNode?.kind === "plan.scout" || selectedNode?.key.startsWith("plan.scout.")) {
+    const slug = planScoutKindFromKey(selectedNode.key);
+    const scout =
+      planScoutDisplays.find((item) => planScoutSlug(item.kind) === slug) ??
+      planReview?.scoutsSummary?.scouts?.find((item) => planScoutSlug(item.kind) === slug);
+    const siblings =
+      planScoutDisplays.length > 0
+        ? planScoutDisplays
+        : (planReview?.scoutsSummary?.scouts ??
+          planReview?.scoutsSummary?.kinds?.map((kind) => ({ kind })) ??
+          []);
+    return (
+      <PlanScoutObservation
+        selectedNode={selectedNode}
+        scout={scout}
+        siblingScouts={siblings}
+        onBack={onBack}
+        onOpenPlan={onSelectNode ? () => onSelectNode("plan") : undefined}
+        t={t}
+      />
+    );
+  }
 
   const attempts = selectedNode
     ? snapshot.attempts

@@ -518,6 +518,8 @@ export {
   WikiRunPlanReviewExecutionSchema,
   type WikiRunPlanReviewPageSetDiff,
   WikiRunPlanReviewPageSetDiffSchema,
+  type WikiRunPlanReviewScoutEntry,
+  WikiRunPlanReviewScoutEntrySchema,
   type WikiRunPlanReviewScoutsSummary,
   WikiRunPlanReviewScoutsSummarySchema,
   WikiRunPlanReviewSchema,
