@@ -20,7 +20,7 @@ export function DangerSection({ deleting, onRequestDelete }: DangerSectionProps)
   const { t } = useI18n();
 
   return (
-    <Card className="w-full max-w-3xl">
+    <Card className="w-full">
       <CardHeader>
         <CardTitle>{t.settings.dangerTitle}</CardTitle>
         <CardDescription>{t.settings.dangerDescription}</CardDescription>

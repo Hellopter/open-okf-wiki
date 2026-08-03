@@ -73,7 +73,7 @@ export function SkillSection({
   const { t } = useI18n();
 
   return (
-    <Card className="w-full max-w-3xl" data-testid="settings-skill-panel">
+    <Card className="w-full" data-testid="settings-skill-panel">
       <CardHeader>
         <CardTitle>{t.settings.skillTitle}</CardTitle>
         <CardDescription>{t.settings.skillDescription}</CardDescription>

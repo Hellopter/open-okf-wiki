@@ -115,34 +115,44 @@ function ConfigureBody({
     }
   }
 
+  // Match global SettingsPage visual: AppShell-like page padding, title block,
+  // line tabs, and full-width tab panels. Workbench top bar stays outside.
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <p className="shrink-0 px-4 pt-4 text-sm text-muted-foreground md:px-6">
-        {t.settings.descriptionPrefix}{" "}
-        <Link to="/settings" className="underline underline-offset-3 hover:text-foreground">
-          {t.settings.descriptionLink}
-        </Link>
-        {t.settings.descriptionSuffix}
-      </p>
+    <div
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 md:p-6 lg:p-8"
+      data-testid="configure-settings-body"
+    >
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
+        <header className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-1">
+            <h1 className="text-2xl font-semibold tracking-tight">{t.settings.title}</h1>
+            <p className="max-w-3xl text-sm text-muted-foreground">
+              {t.settings.descriptionPrefix}{" "}
+              <Link to="/settings" className="underline underline-offset-3 hover:text-foreground">
+                {t.settings.descriptionLink}
+              </Link>
+              {t.settings.descriptionSuffix}
+            </p>
+          </div>
+        </header>
 
-      <Tabs
-        value={section}
-        onValueChange={(v) => {
-          const next = v as Section;
-          onSectionChange(next);
-          navigate(
-            {
-              pathname: location.pathname,
-              search: location.search,
-              hash: SECTION_HASH[next],
-            },
-            { replace: true },
-          );
-        }}
-        className="flex min-h-0 flex-1 flex-col gap-0"
-      >
-        <div className="shrink-0 border-b border-border px-4 pt-3 pb-0 md:px-6">
-          <TabsList variant="line" className="mb-0 w-full justify-start">
+        <Tabs
+          value={section}
+          onValueChange={(v) => {
+            const next = v as Section;
+            onSectionChange(next);
+            navigate(
+              {
+                pathname: location.pathname,
+                search: location.search,
+                hash: SECTION_HASH[next],
+              },
+              { replace: true },
+            );
+          }}
+          className="w-full"
+        >
+          <TabsList variant="line" className="mb-2 w-full justify-start">
             <TabsTrigger value="sources" data-testid="workspace-subnav-sources">
               {t.sources.title}
             </TabsTrigger>
@@ -156,10 +166,8 @@ function ConfigureBody({
               {t.settings.tabDanger}
             </TabsTrigger>
           </TabsList>
-        </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
-          <TabsContent value="sources" className="outline-none" keepMounted>
+          <TabsContent value="sources" className="flex flex-col gap-4 outline-none" keepMounted>
             <SourcesSection
               workspace={workspace}
               onWorkspaceChange={onWorkspaceChange}
@@ -169,7 +177,7 @@ function ConfigureBody({
 
           <TabsContent
             value="general"
-            className="outline-none"
+            className="flex flex-col gap-4 outline-none"
             data-testid="settings-page"
             keepMounted
           >
@@ -256,7 +264,7 @@ function ConfigureBody({
             )}
           </TabsContent>
 
-          <TabsContent value="skill" className="outline-none">
+          <TabsContent value="skill" className="flex flex-col gap-4 outline-none" keepMounted>
             {form.loading ? (
               <LoadingState label={t.settings.loading} />
             ) : (
@@ -281,7 +289,7 @@ function ConfigureBody({
             )}
           </TabsContent>
 
-          <TabsContent value="danger" className="outline-none">
+          <TabsContent value="danger" className="flex flex-col gap-4 outline-none" keepMounted>
             <DangerSection
               deleting={deleting}
               onRequestDelete={() => {
@@ -290,8 +298,8 @@ function ConfigureBody({
               }}
             />
           </TabsContent>
-        </div>
-      </Tabs>
+        </Tabs>
+      </div>
 
       <ConfirmDialog
         open={deleteDialogOpen}

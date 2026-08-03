@@ -232,7 +232,7 @@ export function GeneralSection({ isSubmitting, isDirty, ...props }: GeneralSecti
     (models.length === 0 || Boolean(modelProfileId));
 
   return (
-    <div className="flex w-full max-w-4xl flex-col gap-6">
+    <div className="flex w-full flex-col gap-6">
       <Card>
         <CardHeader>
           <CardTitle>{t.settings.tabGeneral}</CardTitle>
