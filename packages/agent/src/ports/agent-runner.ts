@@ -6,7 +6,13 @@
  * Live/fixture adapters cast to concrete Pi types at the boundary.
  */
 
-import type { AttemptItem, NodeAttempt, RetryLimits, WikiRunSpec } from "@okf-wiki/contract";
+import type {
+  AttemptItem,
+  AttemptMetrics,
+  NodeAttempt,
+  RetryLimits,
+  WikiRunSpec,
+} from "@okf-wiki/contract";
 
 /** Roles that may run through AgentRunner (subset of operator/scoped roles). */
 export type ScopedRunnerRole =
@@ -96,6 +102,11 @@ export type AgentRunResult = {
   /** Final tool/text trail when the runner projected one. */
   items?: AttemptItem[];
   /**
+   * Best-effort observation metrics from the live projector (tokens / toolCalls).
+   * Missing fields never block completion; fixture runs typically omit this.
+   */
+  metrics?: AttemptMetrics;
+  /**
    * Per-task settle marker for runAgentsParallel: true when this task failed
    * (summary carries the error). Sibling results are still returned; only
    * AbortError rejects the whole batch.
@@ -151,6 +162,8 @@ export type WikiWriteResult = {
   summary: string;
   /** Final tool/text trail when the runner projected one. */
   items?: AttemptItem[];
+  /** Best-effort observation metrics from the live writer session. */
+  metrics?: AttemptMetrics;
 };
 
 /**

@@ -689,7 +689,34 @@ export async function executePi(
     };
   }
   const input = buildPiAttemptInput(host, claim);
-  return host.piAttemptExecutor(input, signal);
+  // Soft mid-run projection: persist metrics + throttle SSE snapshot refresh.
+  // Never throws into the agent; missing metrics remain ok.
+  const progressThrottleMs = 1500;
+  let lastEmit = 0;
+  let lastTokens: number | undefined;
+  return host.piAttemptExecutor(input, signal, {
+    onProgress: (metrics) => {
+      if (host.closed || !host.isCurrent(claim)) return;
+      try {
+        // Live progress: tokens / extra only — never invent stopReason / wallTimeMs.
+        writeAttemptMetrics(host.db, claim.attemptId, metrics);
+        const tokens = metrics.inputTokens;
+        const nowMs = Date.now();
+        const significant =
+          tokens !== lastTokens &&
+          (lastTokens === undefined ||
+            tokens === undefined ||
+            Math.abs((tokens ?? 0) - (lastTokens ?? 0)) >= 500);
+        if (significant || nowMs - lastEmit >= progressThrottleMs) {
+          lastEmit = nowMs;
+          lastTokens = tokens;
+          host.emit(claim.runId, "attempt.progress");
+        }
+      } catch {
+        // Progress is best-effort; never block attempt completion.
+      }
+    },
+  });
 }
 
 /**

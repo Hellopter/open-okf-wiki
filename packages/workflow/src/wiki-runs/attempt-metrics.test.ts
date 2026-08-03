@@ -162,6 +162,129 @@ test("writeAttemptMetrics + snapshot project metrics when set", () => {
   db.close();
 });
 
+test("mid-run writeAttemptMetrics projects live context fill without terminal fields", () => {
+  const db = openMigratedDb();
+  const ts = "2026-07-30T12:00:00.000Z";
+  const digest = "c".repeat(64);
+  db.prepare(
+    `INSERT INTO runs (
+      run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
+      freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
+    ) VALUES (?, ?, NULL, 5, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+  ).run("run-live", "ws-1", digest, ts, ts);
+  db.prepare(
+    `INSERT INTO nodes (
+      run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+    ) VALUES (?, 'plan', 'plan', 'running', 0, 'attempt-live', 'attempt-live', NULL)`,
+  ).run("run-live");
+  db.prepare(
+    `INSERT INTO attempts (
+      attempt_id, run_id, node_key, node_generation, run_index, state, input_digest,
+      error, started_at, ended_at
+    ) VALUES (?, ?, 'plan', 0, 1, 'running', ?, NULL, ?, NULL)`,
+  ).run("attempt-live", "run-live", digest, ts);
+
+  // Soft progress: tokens + window only — no wallTimeMs / stopReason.
+  writeAttemptMetrics(db, "attempt-live", {
+    role: "plan",
+    modelId: "provider/model",
+    inputTokens: 4_200,
+    extra: { contextWindow: 128_000, contextTarget: 108_800 },
+  });
+
+  let row = asRow(db.prepare("SELECT * FROM attempts WHERE attempt_id = ?").get("attempt-live"));
+  assert.ok(row);
+  assert.equal(row.input_tokens, 4_200);
+  assert.equal(row.wall_time_ms, null);
+  assert.equal(row.stop_reason, null);
+  let projected = projectAttemptMetrics(row!);
+  assert.equal(projected?.inputTokens, 4_200);
+  assert.deepEqual(projected?.extra, { contextWindow: 128_000, contextTarget: 108_800 });
+
+  // Second progress overwrites tokens/extra; still no terminal fields.
+  writeAttemptMetrics(db, "attempt-live", {
+    role: "plan",
+    modelId: "provider/model",
+    inputTokens: 9_100,
+    extra: { contextWindow: 128_000, contextTarget: 108_800 },
+  });
+  row = asRow(db.prepare("SELECT * FROM attempts WHERE attempt_id = ?").get("attempt-live"));
+  projected = projectAttemptMetrics(row!);
+  assert.equal(projected?.inputTokens, 9_100);
+  assert.equal(projected?.wallTimeMs, undefined);
+  assert.equal(projected?.stopReason, undefined);
+
+  // Running attempt metrics appear on snapshot projection.
+  const snapshot = buildSnapshot(db, "run-live");
+  const attempt = snapshot.attempts.find((a) => a.attemptId === "attempt-live");
+  assert.ok(attempt?.metrics);
+  assert.equal(attempt.metrics.inputTokens, 9_100);
+  assert.equal(attempt.metrics.extra?.contextWindow, 128_000);
+  db.close();
+});
+
+test("writeAttemptMetrics + snapshot preserve metrics.extra contextWindow/contextTarget", () => {
+  const db = openMigratedDb();
+  const ts = "2026-07-30T12:00:00.000Z";
+  const digest = "b".repeat(64);
+  db.prepare(
+    `INSERT INTO runs (
+      run_id, workspace_id, operator_session_id, definition_version, revision, state, cancel_requested,
+      freeze_config_json, freeze_config_digest, intent_json, created_at, updated_at
+    ) VALUES (?, ?, NULL, 5, 1, 'running', 0, '{}', ?, '{"mode":"generate"}', ?, ?)`,
+  ).run("run-extra", "ws-1", digest, ts, ts);
+  db.prepare(
+    `INSERT INTO nodes (
+      run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+    ) VALUES (?, 'plan', 'plan', 'succeeded', 0, NULL, 'attempt-extra', NULL)`,
+  ).run("run-extra");
+  db.prepare(
+    `INSERT INTO attempts (
+      attempt_id, run_id, node_key, node_generation, run_index, state, input_digest,
+      error, started_at, ended_at
+    ) VALUES (?, ?, 'plan', 0, 1, 'succeeded', ?, NULL, ?, ?)`,
+  ).run("attempt-extra", "run-extra", digest, ts, ts);
+
+  writeAttemptMetrics(
+    db,
+    "attempt-extra",
+    mergeAttemptMetrics(
+      {
+        inputTokens: 12_400,
+        outputTokens: 200,
+        modelId: "provider/model",
+        extra: { contextWindow: 128_000, contextTarget: 108_800, input: 11_000 },
+      },
+      { role: "plan", wallTimeMs: 900, stopReason: "succeeded" },
+    ),
+  );
+
+  const row = asRow(
+    db.prepare("SELECT * FROM attempts WHERE attempt_id = ?").get("attempt-extra"),
+  );
+  assert.ok(row);
+  assert.equal(typeof row.metrics_json, "string");
+  const storedExtra = JSON.parse(String(row.metrics_json)) as Record<string, unknown>;
+  assert.equal(storedExtra.contextWindow, 128_000);
+  assert.equal(storedExtra.contextTarget, 108_800);
+  assert.equal(storedExtra.input, 11_000);
+
+  const projected = projectAttemptMetrics(row!);
+  assert.equal(projected?.inputTokens, 12_400);
+  assert.deepEqual(projected?.extra, {
+    contextWindow: 128_000,
+    contextTarget: 108_800,
+    input: 11_000,
+  });
+
+  const snapshot = buildSnapshot(db, "run-extra");
+  const attempt = snapshot.attempts.find((a) => a.attemptId === "attempt-extra");
+  assert.ok(attempt?.metrics?.extra);
+  assert.equal(attempt.metrics.extra.contextWindow, 128_000);
+  assert.equal(attempt.metrics.extra.contextTarget, 108_800);
+  db.close();
+});
+
 test("graphRoleForNodeKind covers definition roles", () => {
   assert.equal(graphRoleForNodeKind("plan"), "plan");
   assert.equal(graphRoleForNodeKind("research.leaf"), "leaf");

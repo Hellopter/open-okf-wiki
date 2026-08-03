@@ -120,6 +120,7 @@ export function createLiveProduceRuntime(defaults?: LiveProduceRuntimeDefaults):
         pages,
         summary: result.summary?.trim() || `Pi live produce wrote ${pages.length} page(s)`,
         ...(result.items ? { items: result.items } : {}),
+        ...(result.metrics ? { metrics: result.metrics } : {}),
       };
     },
   };

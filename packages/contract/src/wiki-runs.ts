@@ -739,6 +739,11 @@ export const WikiRunEventTypeSchema = z.enum([
   "inputs.pinned",
   "node.ready",
   "attempt.started",
+  /**
+   * Soft mid-run metrics refresh (context fill / toolCalls). Not control truth —
+   * only triggers SSE snapshot projection while an attempt is still running.
+   */
+  "attempt.progress",
   "attempt.succeeded",
   "attempt.failed",
   "evaluation.recovery_available",

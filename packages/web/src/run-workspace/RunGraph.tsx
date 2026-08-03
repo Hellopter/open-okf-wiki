@@ -23,7 +23,14 @@ import {
   PlayIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { describeNodeStatus } from "@/components/agent-ui";
+import {
+  ContextFillMicroDot,
+  describeNodeStatus,
+  formatNodeContextHoverTitle,
+  type NodeContextFillSummary,
+  nodeContextFillSummary,
+  stageContextFillSummary,
+} from "@/components/agent-ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatMessage, type MessageTree } from "../i18n";
@@ -77,6 +84,10 @@ type OverviewNodeData = {
   stateLabel: string;
   /** Bottom handles only when quality→synthesis feedback is present. */
   showFeedbackHandles: boolean;
+  /** Single micro-dot for densest/running fill in this stage (null when none). */
+  contextFill: NodeContextFillSummary | null;
+  hoverTitle: string;
+  fillAriaLabel?: string;
 };
 type DomainCollapseUi = {
   leafCount: number;
@@ -95,6 +106,10 @@ type FocusNodeData = {
   sourceHandleIds: string[];
   targetHandleIds: string[];
   domainCollapse?: DomainCollapseUi;
+  /** Latest attempt context fill for micro-dot + hover (null when unknown). */
+  contextFill: NodeContextFillSummary | null;
+  hoverTitle: string;
+  fillAriaLabel?: string;
 };
 type OverviewNode = Node<OverviewNodeData, "overview">;
 type FocusNode = Node<FocusNodeData, "focus">;
@@ -115,8 +130,10 @@ function handleTopPercent(index: number, total: number): string {
 }
 
 function OverviewCard({ data }: NodeProps<OverviewNode>) {
+  const fill = data.contextFill;
   return (
     <div
+      title={data.hoverTitle}
       className={`flex h-[4.75rem] w-[216px] flex-col justify-between rounded-lg border px-3.5 py-3 shadow-sm ${stateClass(data.stage.state)}`}
     >
       <Handle id="left" type="target" position={Position.Left} className={handleClassName(false)} />
@@ -132,9 +149,18 @@ function OverviewCard({ data }: NodeProps<OverviewNode>) {
         <p className="min-w-0 flex-1 truncate text-sm font-medium" title={data.stage.label}>
           {data.stage.label}
         </p>
-        <Badge variant="outline" className="shrink-0">
-          {data.stateLabel}
-        </Badge>
+        <span className="inline-flex shrink-0 items-center gap-1.5">
+          {fill ? (
+            <ContextFillMicroDot
+              usage={fill.usage}
+              phase={fill.phase}
+              ariaLabel={data.fillAriaLabel}
+            />
+          ) : null}
+          <Badge variant="outline" className="shrink-0">
+            {data.stateLabel}
+          </Badge>
+        </span>
       </div>
       <p className="font-mono text-xs text-muted-foreground">
         {data.stage.completed}/{data.stage.total}
@@ -163,9 +189,10 @@ function FocusCard({ data }: NodeProps<FocusNode>) {
   const targets = data.targetHandleIds;
   const dense = Math.max(sources.length, targets.length) > 3;
   const domain = data.domainCollapse;
+  const fill = data.contextFill;
   return (
     <div
-      title={data.displayLabel}
+      title={data.hoverTitle}
       className={`relative flex h-full w-full flex-col justify-center overflow-hidden rounded-lg border px-3 py-2.5 shadow-sm transition-shadow ${
         data.context
           ? "border-dashed border-muted-foreground/40 bg-muted/40 opacity-90"
@@ -191,6 +218,14 @@ function FocusCard({ data }: NodeProps<FocusNode>) {
         <p className="line-clamp-2 min-w-0 flex-1 text-[13px] font-medium leading-snug">
           {data.displayLabel}
         </p>
+        {fill ? (
+          <ContextFillMicroDot
+            usage={fill.usage}
+            phase={fill.phase}
+            ariaLabel={data.fillAriaLabel}
+            className="mt-0.5"
+          />
+        ) : null}
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-2">
         <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground">
@@ -500,6 +535,15 @@ function FocusGraph({
     return () => cancelAnimationFrame(frame);
   }, [flow, layoutSettled, fitSignature, fittedSignature, topologyNodeCount]);
 
+  const tokenFormatters = useMemo(
+    () => ({
+      in: (n: string) => formatMessage(t.workbench.context.inTokens, { n }),
+      out: (n: string) => formatMessage(t.workbench.context.outTokens, { n }),
+      tools: (n: string) => formatMessage(t.workbench.context.toolCalls, { n }),
+    }),
+    [t.workbench.context.inTokens, t.workbench.context.outTokens, t.workbench.context.toolCalls],
+  );
+
   const nodes: FocusNode[] = useMemo(() => {
     const plan = handlePlan;
     return orderedNodes.map((node, index) => {
@@ -520,6 +564,19 @@ function FocusGraph({
               onToggle: () => toggleDomain(node.key),
             }
           : undefined;
+      const displayLabel = nodeLabel(node, t);
+      const contextFill = nodeContextFillSummary(
+        snapshot.attempts,
+        node.key,
+        tokenFormatters,
+      );
+      const fillAriaLabel = contextFill
+        ? contextFill.percent != null
+          ? formatMessage(t.workbench.context.graphFillAria, {
+              percent: Math.round(contextFill.percent),
+            })
+          : t.workbench.context.graphFillAriaUnknown
+        : undefined;
       return {
         id: node.key,
         type: "focus" as const,
@@ -539,13 +596,16 @@ function FocusGraph({
         },
         data: {
           node,
-          displayLabel: nodeLabel(node, t),
+          displayLabel,
           stateLabel: stateLabel(node.state, t),
           selected: node.key === selectedNodeKey,
           context: topology.contextNodeKeys.has(node.key),
           sourceHandleIds,
           targetHandleIds,
           domainCollapse,
+          contextFill,
+          hoverTitle: formatNodeContextHoverTitle(displayLabel, contextFill),
+          fillAriaLabel,
         },
       };
     });
@@ -561,6 +621,8 @@ function FocusGraph({
     domainCollapseKeys,
     expandedDomains,
     toggleDomain,
+    snapshot.attempts,
+    tokenFormatters,
   ]);
 
   const edges: Edge[] = useMemo(() => {
@@ -746,18 +808,43 @@ export function RunGraph({
       snapshot.nodes.find((node) => node.key === edge.from)?.kind === "repair" &&
       snapshot.nodes.find((node) => node.key === edge.to)?.kind === "validate.pre",
   );
-  const overviewNodes: OverviewNode[] = stages.map((stage, index) => ({
-    id: `stage:${stage.id}`,
-    type: "overview",
-    position: { x: index * OVERVIEW_STEP_X, y: 100 },
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    data: {
-      stage,
-      stateLabel: stateLabel(stage.state, t),
-      showFeedbackHandles: hasFeedback,
-    },
-  }));
+  const overviewTokenFormatters = useMemo(
+    () => ({
+      in: (n: string) => formatMessage(t.workbench.context.inTokens, { n }),
+      out: (n: string) => formatMessage(t.workbench.context.outTokens, { n }),
+      tools: (n: string) => formatMessage(t.workbench.context.toolCalls, { n }),
+    }),
+    [t.workbench.context.inTokens, t.workbench.context.outTokens, t.workbench.context.toolCalls],
+  );
+  const overviewNodes: OverviewNode[] = stages.map((stage, index) => {
+    const contextFill = stageContextFillSummary(
+      snapshot.attempts,
+      stage.nodes,
+      overviewTokenFormatters,
+    );
+    const fillAriaLabel = contextFill
+      ? contextFill.percent != null
+        ? formatMessage(t.workbench.context.graphFillAria, {
+            percent: Math.round(contextFill.percent),
+          })
+        : t.workbench.context.graphFillAriaUnknown
+      : undefined;
+    return {
+      id: `stage:${stage.id}`,
+      type: "overview" as const,
+      position: { x: index * OVERVIEW_STEP_X, y: 100 },
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      data: {
+        stage,
+        stateLabel: stateLabel(stage.state, t),
+        showFeedbackHandles: hasFeedback,
+        contextFill,
+        hoverTitle: formatNodeContextHoverTitle(stage.label, contextFill),
+        fillAriaLabel,
+      },
+    };
+  });
   const overviewEdges: Edge[] = stages.slice(0, -1).map((stage, index) => ({
     id: `${stage.id}->${stages[index + 1]!.id}`,
     source: `stage:${stage.id}`,

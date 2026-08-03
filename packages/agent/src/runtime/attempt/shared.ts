@@ -6,6 +6,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   type AttemptItem,
+  type AttemptMetrics,
+  type NodeAttempt,
   type PiAttemptArtifactDescriptor,
   type PiAttemptFailureClass,
   type PiAttemptInput,
@@ -18,11 +20,45 @@ import { effectiveIgnoresForSource, isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../../ports/agent-runner.js";
 import { redactSensitiveText } from "../../redact/index.js";
 import { finalizeAttemptTranscript } from "../attempt-transcript-sink.js";
-import { resolveWorkspacePiModel } from "../model/provider-model.js";
+import {
+  type ResolvedPiModel,
+  resolveWorkspacePiModel,
+} from "../model/provider-model.js";
 import { resolveModelSelection } from "../model/role-model.js";
 import type { RunWorkdirLayout } from "../workdir.js";
 
 export type ResolvePiModel = typeof resolveWorkspacePiModel;
+
+/**
+ * Catalog / profile model id for the resolved seat (roleModels path).
+ * Prefer runtime.modelId (e.g. `openai/corp-model`) over served model.id.
+ */
+export function seatModelId(resolved: ResolvedPiModel | undefined): string | undefined {
+  if (!resolved) return undefined;
+  const catalog = resolved.runtime?.modelId?.trim();
+  if (catalog) return catalog;
+  const served = resolved.model?.id?.trim();
+  return served || undefined;
+}
+
+/**
+ * Merge live-run projector metrics with seat model + graph role.
+ * Never invents token counts; missing optional fields stay absent.
+ */
+export function metricsFromSeatRun(input: {
+  role?: string;
+  modelId?: string;
+  fromRun?: AttemptMetrics;
+  extra?: AttemptMetrics;
+}): AttemptMetrics | undefined {
+  const metrics: AttemptMetrics = {
+    ...(input.fromRun ?? {}),
+    ...(input.extra ?? {}),
+  };
+  if (metrics.role === undefined && input.role) metrics.role = input.role;
+  if (metrics.modelId === undefined && input.modelId) metrics.modelId = input.modelId;
+  return Object.keys(metrics).length > 0 ? metrics : undefined;
+}
 
 /** Handler bag passed from the thin executor after materialisation. */
 export type AttemptHandlerContext = {
@@ -32,7 +68,71 @@ export type AttemptHandlerContext = {
   runtime: AgentRunner;
   resolveModel: ResolvePiModel;
   signal: AbortSignal;
+  /** Best-effort mid-run metrics sink from WikiRuns (optional). */
+  onProgress?: (metrics: AttemptMetrics) => void;
 };
+
+/**
+ * Map a live scoped-runner / NodeAttempt progress span into AttemptMetrics.
+ * - inputTokens ← usage.contextTokens (context-fill proxy)
+ * - extra.contextWindow / contextTarget from usage when known
+ * - modelId / role from seat when known
+ * - toolCalls counted from items of type toolCall (optional, best-effort)
+ *
+ * Never invents token counts; returns undefined when nothing projectable.
+ * Does not set wallTimeMs / stopReason (terminal-only fields).
+ */
+export function progressMetricsFromScoped(
+  progress: NodeAttempt | { usage?: NodeAttempt["usage"]; items?: AttemptItem[] },
+  seat?: { modelId?: string; role?: string },
+): AttemptMetrics | undefined {
+  const metrics: AttemptMetrics = {};
+  const usage = progress.usage;
+  if (usage?.contextTokens !== undefined && Number.isFinite(usage.contextTokens)) {
+    metrics.inputTokens = Math.max(0, Math.floor(usage.contextTokens));
+  }
+  const extra: Record<string, unknown> = {};
+  if (
+    usage?.contextWindow !== undefined &&
+    Number.isFinite(usage.contextWindow) &&
+    usage.contextWindow > 0
+  ) {
+    extra.contextWindow = Math.floor(usage.contextWindow);
+  }
+  if (
+    usage?.contextTarget !== undefined &&
+    Number.isFinite(usage.contextTarget) &&
+    usage.contextTarget > 0
+  ) {
+    extra.contextTarget = Math.floor(usage.contextTarget);
+  }
+  if (Object.keys(extra).length > 0) metrics.extra = extra;
+
+  if (seat?.modelId?.trim()) metrics.modelId = seat.modelId.trim().slice(0, 200);
+  if (seat?.role?.trim()) metrics.role = seat.role.trim().slice(0, 64);
+
+  if (Array.isArray(progress.items)) {
+    const toolCalls = progress.items.filter((item) => item.type === "toolCall").length;
+    if (toolCalls > 0) metrics.toolCalls = toolCalls;
+  }
+
+  return Object.keys(metrics).length > 0 ? metrics : undefined;
+}
+
+/** Forward scoped progress into handler onProgress (never throws). */
+export function forwardScopedProgress(
+  ctx: Pick<AttemptHandlerContext, "onProgress">,
+  progress: NodeAttempt | { usage?: NodeAttempt["usage"]; items?: AttemptItem[] },
+  seat?: { modelId?: string; role?: string },
+): void {
+  if (!ctx.onProgress) return;
+  try {
+    const metrics = progressMetricsFromScoped(progress, seat);
+    if (metrics) ctx.onProgress(metrics);
+  } catch {
+    // Progress is best-effort; never fail the attempt.
+  }
+}
 
 export function bounded(text: unknown): string {
   const value = String(text ?? "Pi attempt failed")

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { RepairRequestSchema } from "./evaluation.js";
 import { Sha256HexSchema } from "./primitives.js";
 import {
+  type AttemptMetrics,
   AttemptMetricsSchema,
   RunAttemptIdSchema,
   RunNodeKeySchema,
@@ -194,11 +195,23 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
 export type PiAttemptOutcome = z.infer<typeof PiAttemptOutcomeSchema>;
 
 /**
+ * Best-effort mid-run observation hooks for a Pi Attempt.
+ * Callers must never throw into the attempt; WikiRuns treats failures as soft.
+ */
+export type PiAttemptProgressHooks = {
+  /** Mid-run metrics (context fill, toolCalls, …). Never blocks attempt completion. */
+  onProgress?: (metrics: AttemptMetrics) => void;
+};
+
+/**
  * Runtime injection slot: WikiRuns calls this for Pi-backed nodes.
  * Defined on the contract so agent (implements) and workflow (owns control)
  * share one type without a forbidden agent→workflow dependency.
+ *
+ * `hooks` is optional and additive — existing 2-arg callers remain valid.
  */
 export type PiAttemptExecutor = (
   input: PiAttemptInput,
   signal: AbortSignal,
+  hooks?: PiAttemptProgressHooks,
 ) => Promise<PiAttemptOutcome>;

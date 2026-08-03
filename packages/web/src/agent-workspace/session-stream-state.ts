@@ -50,13 +50,31 @@ export function appendOptimisticUser(state: SessionStreamState, text: string): S
   };
 }
 
+/**
+ * Merge attach-identity chrome from snapshot.session when state omits it
+ * (Phase 0 servers put model only on payload.session).
+ */
+function mergeSnapshotChrome(event: Extract<AgentSseEvent, { kind: "snapshot" }>): SessionStreamState {
+  const state = event.payload.state;
+  const session = event.payload.session;
+  return {
+    ...state,
+    ...(state.model ? {} : session.model ? { model: session.model } : {}),
+    ...(state.contextBudget
+      ? {}
+      : session.contextBudget
+        ? { contextBudget: session.contextBudget }
+        : {}),
+  };
+}
+
 /** Keep durable session history separate from the latest live stream patch. */
 export function reduceSessionStreamEvent(
   state: SessionStreamState,
   event: AgentSseEvent,
 ): SessionStreamState {
   if (event.kind === "snapshot") {
-    return dedupeOptimisticUsers(event.payload.state);
+    return dedupeOptimisticUsers(mergeSnapshotChrome(event));
   }
   if (event.kind === "stream") {
     return dedupeOptimisticUsers(applySessionStreamPatch(state, event.payload));

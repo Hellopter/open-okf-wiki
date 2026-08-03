@@ -4,6 +4,7 @@ import {
   expandOperatorCommand,
   listOperatorCommands,
   parseCommandArgs,
+  resolveOperatorCommand,
   substituteArgs,
 } from "./operator-commands.js";
 
@@ -30,7 +31,7 @@ describe("substituteArgs", () => {
   });
 });
 
-describe("expandOperatorCommand", () => {
+describe("expandOperatorCommand / resolveOperatorCommand", () => {
   it("expands /wiki with notes into a wiki_produce prompt", () => {
     const result = expandOperatorCommand("/wiki focus on architecture");
     assert.equal(result.kind, "expanded");
@@ -59,6 +60,39 @@ describe("expandOperatorCommand", () => {
     if (status.kind === "expanded") assert.match(status.prompt, /session_status/);
   });
 
+  it("maps /compact to AgentCommand compact (not a prompt template)", () => {
+    const result = resolveOperatorCommand("/compact");
+    assert.equal(result.kind, "control");
+    if (result.kind !== "control") return;
+    assert.equal(result.command, "compact");
+    assert.deepEqual(result.agentCommand, { type: "compact" });
+    assert.equal("prompt" in result, false);
+  });
+
+  it("maps /compact stop to stop_and_compact", () => {
+    const result = resolveOperatorCommand("/compact stop");
+    assert.equal(result.kind, "control");
+    if (result.kind !== "control") return;
+    assert.deepEqual(result.agentCommand, {
+      type: "compact",
+      mode: "stop_and_compact",
+    });
+  });
+
+  it("maps /abort-compact to abort_compaction", () => {
+    const result = resolveOperatorCommand("/abort-compact");
+    assert.equal(result.kind, "control");
+    if (result.kind !== "control") return;
+    assert.deepEqual(result.agentCommand, { type: "abort_compaction" });
+  });
+
+  it("rejects invalid /compact args without expanding to a prompt", () => {
+    const result = resolveOperatorCommand("/compact now");
+    assert.equal(result.kind, "invalid");
+    if (result.kind !== "invalid") return;
+    assert.match(result.message, /Usage: \/compact/);
+  });
+
   it("reports unknown slash commands", () => {
     const result = expandOperatorCommand("/deploy prod");
     assert.deepEqual(result, { kind: "unknown", command: "deploy" });
@@ -73,15 +107,21 @@ describe("expandOperatorCommand", () => {
   it("is case-insensitive on the command name", () => {
     const result = expandOperatorCommand("/WIKI");
     assert.equal(result.kind, "expanded");
+    const compact = resolveOperatorCommand("/COMPACT");
+    assert.equal(compact.kind, "control");
   });
 });
 
 describe("listOperatorCommands", () => {
-  it("exposes name/description for autocomplete", () => {
+  it("exposes name/description for autocomplete including control commands", () => {
     const names = listOperatorCommands().map((c) => c.name);
-    assert.deepEqual(names, ["wiki", "repair", "status"]);
+    assert.deepEqual(names, ["wiki", "repair", "status", "compact", "abort-compact"]);
     for (const c of listOperatorCommands()) {
       assert.ok(c.description.length > 0);
+      assert.ok(c.kind === "template" || c.kind === "control");
     }
+    const compact = listOperatorCommands().find((c) => c.name === "compact");
+    assert.equal(compact?.kind, "control");
+    assert.equal(compact?.content, undefined);
   });
 });

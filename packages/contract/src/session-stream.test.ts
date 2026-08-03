@@ -67,10 +67,18 @@ test("Session snapshot is complete and a patch can safely replay from it", () =>
     agentStatus: "streaming" as const,
     contextPhase: "normal" as const,
     sessionUsage: { contextTokens: 100 },
+    model: { profileId: "default", modelId: "gpt-4o", name: "GPT-4o" },
+    contextBudget: {
+      contextWindow: 128_000,
+      contextTarget: 108_800,
+      reserveTokens: 19_200,
+    },
   };
   const parsed = SessionStreamStateSchema.parse(next);
   const patch = diffSessionStreamState(initial, parsed);
   assert.deepEqual(applySessionStreamPatch(initial, patch), parsed);
+  assert.equal(patch.model?.modelId, "gpt-4o");
+  assert.equal(patch.contextBudget?.contextTarget, 108_800);
 
   assert.equal(
     AgentSseEventSchema.safeParse({
@@ -82,4 +90,47 @@ test("Session snapshot is complete and a patch can safely replay from it", () =>
     }).success,
     true,
   );
+});
+
+test("Session patch model/contextBudget is additive and retains prior when absent", () => {
+  const withChrome = SessionStreamStateSchema.parse({
+    ...createSessionStreamState(),
+    model: { profileId: "a", modelId: "m-a" },
+    contextBudget: { contextWindow: 10_000, contextTarget: 8_000 },
+    sessionUsage: { contextTokens: 100, contextWindow: 10_000, contextTarget: 8_000 },
+  });
+  const turnOnly = diffSessionStreamState(withChrome, {
+    ...withChrome,
+    turnActive: true,
+    agentStatus: "streaming",
+    // Intentionally omit model/contextBudget on next → patch still re-emits when present on next
+  });
+  assert.equal(turnOnly.model?.profileId, "a");
+  assert.equal(turnOnly.contextBudget?.contextWindow, 10_000);
+
+  const clearedChromePatch = {
+    agentStatus: "idle" as const,
+    errorText: null,
+    turnActive: false,
+    lastAssistantId: null,
+    streamingMessage: null,
+    appended: [],
+    updated: [],
+    contextPhase: "normal" as const,
+    // no model / contextBudget / sessionUsage
+  };
+  const retained = applySessionStreamPatch(withChrome, clearedChromePatch);
+  assert.deepEqual(retained.model, withChrome.model);
+  assert.deepEqual(retained.contextBudget, withChrome.contextBudget);
+  assert.deepEqual(retained.sessionUsage, withChrome.sessionUsage);
+
+  const switched = applySessionStreamPatch(withChrome, {
+    ...clearedChromePatch,
+    model: { profileId: "b", modelId: "m-b" },
+    contextBudget: { contextWindow: 200_000, contextTarget: 170_000 },
+    sessionUsage: { contextTokens: 100, contextWindow: 200_000, contextTarget: 170_000 },
+  });
+  assert.equal(switched.model?.profileId, "b");
+  assert.equal(switched.contextBudget?.contextWindow, 200_000);
+  assert.equal(switched.sessionUsage?.contextWindow, 200_000);
 });

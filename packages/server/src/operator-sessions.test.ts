@@ -7,6 +7,7 @@ import { type createOperatorSession } from "@okf-wiki/agent";
 import {
   type AgentSseStream,
   createPiStreamState,
+  diffSessionStreamState,
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import { resetOperatorSessionsForTests } from "./operator-session-test-seams.ts";
@@ -284,6 +285,186 @@ test("workspace deletion fence disposes a racing Session handle before it can at
     () => createLiveSession(workspace, undefined, "later-session", async () => ({ handle })),
     OperatorSessionWorkspaceDeletedError,
   );
+});
+
+test("control slash /compact maps to compact AgentCommand, not a prompt", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-operator-session-compact-"));
+  const skillPath = path.join(root, "skill");
+  await mkdir(skillPath, { recursive: true });
+  await writeFile(path.join(skillPath, "SKILL.md"), "# fixture skill\n", "utf8");
+  t.after(async () => {
+    await resetOperatorSessionsForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  let compactCalls = 0;
+  let promptCalls = 0;
+  let abortCompactionCalls = 0;
+  let abortTurnCalls = 0;
+  const compactHandle = {
+    sessionId: "compact-slash",
+    session: {
+      setSessionName() {},
+      sessionManager: { getSessionName: () => "Compact fixture" },
+      subscribe() {
+        return () => undefined;
+      },
+      async prompt() {
+        promptCalls += 1;
+      },
+      async compact() {
+        compactCalls += 1;
+      },
+      abortCompaction() {
+        abortCompactionCalls += 1;
+      },
+      async abort() {
+        abortTurnCalls += 1;
+      },
+    },
+    dispose() {},
+  } as unknown as Awaited<ReturnType<typeof createOperatorSession>>;
+  const workspace = fixtureWorkspace(root, skillPath);
+  const session = await createLiveSession(
+    workspace,
+    undefined,
+    compactHandle.sessionId,
+    async () => ({
+      handle: compactHandle,
+      model: { profileId: "default", modelId: "openai/test", name: "Test" },
+      contextBudget: {
+        contextWindow: 64_000,
+        contextTarget: 54_400,
+        reserveTokens: 9_600,
+      },
+    }),
+  );
+
+  const compact = await dispatchSessionCommand(workspace, session.id, {
+    type: "prompt",
+    text: "/compact",
+  });
+  assert.equal(compact.ok, true);
+  assert.equal(compact.command, "compact");
+  assert.equal(compactCalls, 1);
+  assert.equal(promptCalls, 0);
+  assert.equal(abortTurnCalls, 0);
+
+  // /compact stop aborts the turn first (stop_and_compact), still not a prompt.
+  const stopCompact = await dispatchSessionCommand(workspace, session.id, {
+    type: "prompt",
+    text: "/compact stop",
+  });
+  assert.equal(stopCompact.ok, true);
+  assert.equal(stopCompact.command, "compact");
+  assert.equal(abortTurnCalls, 1);
+  assert.equal(compactCalls, 2);
+  assert.equal(promptCalls, 0);
+
+  const abort = await dispatchSessionCommand(workspace, session.id, {
+    type: "prompt",
+    text: "/abort-compact",
+  });
+  assert.equal(abort.ok, true);
+  assert.equal(abort.command, "abort_compaction");
+  assert.equal(abortCompactionCalls, 1);
+  assert.equal(promptCalls, 0);
+
+  // /wiki still expands to a prompt (template path unchanged).
+  const wiki = await dispatchSessionCommand(workspace, session.id, {
+    type: "prompt",
+    text: "/wiki notes",
+  });
+  assert.equal(wiki.ok, true);
+  assert.equal(wiki.command, "prompt");
+  assert.equal(promptCalls, 1);
+});
+
+test("session snapshot includes live model, contextBudget, and usage denominators", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-operator-session-chrome-"));
+  const skillPath = path.join(root, "skill");
+  await mkdir(skillPath, { recursive: true });
+  await writeFile(path.join(skillPath, "SKILL.md"), "# fixture skill\n", "utf8");
+  t.after(async () => {
+    await resetOperatorSessionsForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const chromeHandle = {
+    sessionId: "chrome-snapshot",
+    session: {
+      setSessionName() {},
+      sessionManager: { getSessionName: () => "Chrome fixture" },
+      subscribe() {
+        return () => undefined;
+      },
+    },
+    dispose() {},
+  } as unknown as Awaited<ReturnType<typeof createOperatorSession>>;
+  const workspace = fixtureWorkspace(root, skillPath);
+  const session = await createLiveSession(
+    workspace,
+    undefined,
+    chromeHandle.sessionId,
+    async () => ({
+      handle: chromeHandle,
+      model: { profileId: "default", modelId: "gpt-test", name: "Test model" },
+      contextBudget: {
+        contextWindow: 128_000,
+        contextTarget: 108_800,
+        reserveTokens: 19_200,
+      },
+    }),
+  );
+
+  const snapshot = await sessionSnapshot(workspace, session.id);
+  assert.deepEqual(snapshot.payload.session.model, {
+    profileId: "default",
+    modelId: "gpt-test",
+    name: "Test model",
+  });
+  assert.deepEqual(snapshot.payload.session.contextBudget, {
+    contextWindow: 128_000,
+    contextTarget: 108_800,
+    reserveTokens: 19_200,
+  });
+  // Chrome is also on state so clients reduce from snapshot without reading session.
+  assert.deepEqual(snapshot.payload.state.model, snapshot.payload.session.model);
+  assert.deepEqual(snapshot.payload.state.contextBudget, snapshot.payload.session.contextBudget);
+  assert.equal(snapshot.payload.state.sessionUsage?.contextWindow, 128_000);
+  assert.equal(snapshot.payload.state.sessionUsage?.contextTarget, 108_800);
+});
+
+test("stream chrome projection emits model + contextBudget on set_model-style diffs", () => {
+  // Tokens at target on a small seat, then re-derived to normal after a larger window.
+  const priorState = { ...createPiStreamState(), contextPhase: "at_target" as const };
+  const prior = projectOperatorStreamState(
+    priorState,
+    { contextTokens: 54_400, contextWindow: 64_000, contextTarget: 54_400 },
+    {
+      model: { profileId: "default", modelId: "gpt-a" },
+      contextBudget: { contextWindow: 64_000, contextTarget: 54_400, reserveTokens: 9_600 },
+    },
+  );
+  const nextState = { ...createPiStreamState(), contextPhase: "normal" as const };
+  const next = projectOperatorStreamState(
+    nextState,
+    { contextTokens: 54_400, contextWindow: 200_000, contextTarget: 170_000 },
+    {
+      model: { profileId: "fast", modelId: "gpt-b", name: "Fast" },
+      contextBudget: { contextWindow: 200_000, contextTarget: 170_000, reserveTokens: 30_000 },
+    },
+  );
+  const patch = diffSessionStreamState(prior, next);
+  assert.deepEqual(patch.model, {
+    profileId: "fast",
+    modelId: "gpt-b",
+    name: "Fast",
+  });
+  assert.equal(patch.contextBudget?.contextWindow, 200_000);
+  assert.equal(patch.sessionUsage?.contextWindow, 200_000);
+  // set_model re-derives contextPhase so clients do not keep a stale fill phase.
+  assert.equal(patch.contextPhase, "normal");
 });
 
 test("Operator Session SSE emits stream patches without replaying prior history", async (t) => {

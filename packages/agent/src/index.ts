@@ -39,6 +39,9 @@ export {
   expandOperatorCommand,
   listOperatorCommands,
   type OperatorCommand,
+  type OperatorCommandKind,
+  type ResolveOperatorCommandResult,
+  resolveOperatorCommand,
 } from "./session/operator-commands.js";
 export {
   createOperatorSession,

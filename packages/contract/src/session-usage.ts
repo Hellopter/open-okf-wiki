@@ -1,9 +1,13 @@
 /**
  * Ephemeral Operator Session context-fill projection (UI only).
  *
- * `contextTokens` is a last-assistant `usage.totalTokens` proxy — not a durable
- * WikiRuns control fact and not a billing meter (ADR 0035: no token-delta as
- * control truth; no provider $ display).
+ * Token semantics (none of these are durable WikiRuns control facts or a
+ * billing meter — ADR 0035: no token-delta as control truth; no provider $):
+ * - `contextTokens` — last assistant `usage.totalTokens` fill proxy.
+ * - `contextWindow` — hard provider/product window (denominator for the meter).
+ * - `contextTarget` — operational Pi auto-compaction target (default ~85% of
+ *   window when workspace.limits.contextTargetTokens is unset). Compaction
+ *   fires as usage approaches this target; it is not Observational Memory.
  */
 
 import { z } from "zod";
@@ -12,11 +16,20 @@ import { isRecord } from "./agent-message.js";
 /** Optional session context fill for Operator chrome. */
 export const SessionUsageSchema = z
   .object({
-    /** Last assistant totalTokens as fill proxy (when known). */
+    /**
+     * Last assistant totalTokens as fill proxy (when known).
+     * Numerator for the context meter; absent on empty / never-replied sessions.
+     */
     contextTokens: z.number().nonnegative().optional(),
-    /** Provider / product hard window. */
+    /**
+     * Hard context window (provider max, possibly clamped by profile).
+     * Preferred denominator for fill % and `12.4k / 128k` chrome.
+     */
     contextWindow: z.number().positive().optional(),
-    /** Operational compaction target (may be below window). */
+    /**
+     * Operational compaction target (may be below window).
+     * Used when window is unknown, and as the Pi auto-compact threshold.
+     */
     contextTarget: z.number().positive().optional(),
   })
   .strict();

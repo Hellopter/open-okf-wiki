@@ -17,6 +17,39 @@ export type SessionMessageRole = z.infer<typeof SessionMessageRoleSchema>;
 export const SessionMessageStatusSchema = z.enum(["streaming", "done", "error", "aborted"]);
 export type SessionMessageStatus = z.infer<typeof SessionMessageStatusSchema>;
 
+/**
+ * Live Operator Session chat model (session memory only).
+ * Not the workspace default; not persisted beyond the live handle.
+ */
+export const AgentSessionModelSchema = z
+  .object({
+    /** Settings model profile id used to resolve credentials / base URL. */
+    profileId: z.string().min(1),
+    /** Served model id currently bound to this Session. */
+    modelId: z.string().min(1),
+    /** Optional display name (profile or served id). */
+    name: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type AgentSessionModel = z.infer<typeof AgentSessionModelSchema>;
+
+/**
+ * Resolved context budget for this Session seat (window + compaction target).
+ * Mirrors agent `resolveSeatContextBudget`; chrome may prefer sessionUsage
+ * denominators which track the same values after attach / set_model.
+ */
+export const AgentSessionContextBudgetSchema = z
+  .object({
+    contextWindow: z.number().positive(),
+    contextTarget: z.number().positive(),
+    /** Pi reserveTokens = window - target when known. */
+    reserveTokens: z.number().nonnegative().optional(),
+  })
+  .strict();
+
+export type AgentSessionContextBudget = z.infer<typeof AgentSessionContextBudgetSchema>;
+
 /** Safe lifecycle data for one tool call. Raw arguments and results never cross this DTO. */
 export const SessionToolSchema = z
   .object({
@@ -54,6 +87,17 @@ export const SessionStreamStateSchema = z
     errorText: z.string().nullable(),
     contextPhase: ContextPhaseSchema,
     sessionUsage: SessionUsageSchema.optional(),
+    /**
+     * Live chat model for this Session (session-scoped).
+     * Absent on older servers; clients fall back to workspace.model.
+     * Also mirrored on snapshot payload.session for attach identity.
+     */
+    model: AgentSessionModelSchema.optional(),
+    /**
+     * Seat context budget (window + compaction target).
+     * sessionUsage carries the same denominators for the fill meter.
+     */
+    contextBudget: AgentSessionContextBudgetSchema.optional(),
   })
   .strict();
 export type SessionStreamState = z.infer<typeof SessionStreamStateSchema>;
@@ -71,6 +115,14 @@ export const SessionStreamPatchSchema = z
     contextPhase: ContextPhaseSchema,
     /** Absent leaves prior usage intact; present replaces it. */
     sessionUsage: SessionUsageSchema.optional(),
+    /**
+     * Absent leaves prior model intact; present replaces it (set_model / attach).
+     * Additive so older clients ignore unknown keys only if they skip strict parse —
+     * wire clients use this schema; optional fields keep older payloads valid.
+     */
+    model: AgentSessionModelSchema.optional(),
+    /** Absent leaves prior budget intact; present replaces it. */
+    contextBudget: AgentSessionContextBudgetSchema.optional(),
   })
   .strict();
 export type SessionStreamPatch = z.infer<typeof SessionStreamPatchSchema>;
@@ -121,6 +173,10 @@ export function diffSessionStreamState(
     updated,
     contextPhase: next.contextPhase,
     ...(next.sessionUsage ? { sessionUsage: next.sessionUsage } : {}),
+    // Always re-emit chrome when present so connected clients stay aligned after set_model
+    // without requiring a full reconnect (same pattern as sessionUsage denominators).
+    ...(next.model ? { model: next.model } : {}),
+    ...(next.contextBudget ? { contextBudget: next.contextBudget } : {}),
   };
 }
 
@@ -161,6 +217,12 @@ export function applySessionStreamPatch(
       ? { sessionUsage: patch.sessionUsage }
       : state.sessionUsage
         ? { sessionUsage: state.sessionUsage }
+        : {}),
+    ...(patch.model ? { model: patch.model } : state.model ? { model: state.model } : {}),
+    ...(patch.contextBudget
+      ? { contextBudget: patch.contextBudget }
+      : state.contextBudget
+        ? { contextBudget: state.contextBudget }
         : {}),
   };
 }

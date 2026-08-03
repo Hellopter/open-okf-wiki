@@ -205,6 +205,28 @@ async function addRepairInputs(input: PiAttemptInput): Promise<void> {
   );
 }
 
+test("Pi attempt executor accepts optional progress hooks (2-arg still valid)", async (t) => {
+  const input = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });
+  t.after(() => cleanup(input));
+  const progress: Array<{ role?: string; inputTokens?: number }> = [];
+  const executor = createPiAttemptExecutor({ fixture: true });
+  // Existing 2-arg call site remains valid.
+  const twoArg = await executor(input, new AbortController().signal);
+  assert.equal(twoArg.type, "succeeded");
+
+  const input2 = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });
+  t.after(() => cleanup(input2));
+  const threeArg = await executor(input2, new AbortController().signal, {
+    onProgress: (metrics) => {
+      progress.push({ role: metrics.role, inputTokens: metrics.inputTokens });
+    },
+  });
+  assert.equal(threeArg.type, "succeeded");
+  // Fixture plan emits onProgress with seat role (no live token counts).
+  assert.ok(progress.length >= 1, "hooks.onProgress should be invoked when provided");
+  assert.equal(progress.some((p) => p.role === "plan"), true);
+});
+
 test("Pi attempt fixture plan writes an unsealed canonical spec and transcript", async (t) => {
   const input = await fixture({ key: "plan", kind: "plan", generation: 0, runIndex: 1 });
   t.after(() => cleanup(input));

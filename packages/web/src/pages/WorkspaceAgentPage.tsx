@@ -84,7 +84,10 @@ export function WorkspaceAgentPage() {
     activeSessionId,
     onSelectInitialSession: selectInitialSession,
   });
-  const conversation = useSessionConversation(id, activeSessionId);
+  const workspaceDefaultProfileId = activity.workspace?.model?.profileId ?? null;
+  const conversation = useSessionConversation(id, activeSessionId, {
+    defaultProfileId: workspaceDefaultProfileId,
+  });
   const observation = useRunObservation(id, activeRunId, activeAttemptId);
   const {
     snapshot,
@@ -254,6 +257,8 @@ export function WorkspaceAgentPage() {
                   activity.updateTitleFromPrompt(activeSessionId, promptTitle(text));
               }}
               t={t}
+              workspaceId={id}
+              defaultProfileId={workspaceDefaultProfileId}
             />
           ) : snapshot && surface === "run" ? (
             <RunCanvas

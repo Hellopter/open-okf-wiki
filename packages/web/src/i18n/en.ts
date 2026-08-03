@@ -168,7 +168,7 @@ export const en = {
       "Language used for generated Wiki page titles and body (not the operator UI).",
     contextTargetTokens: "Context target (tokens)",
     contextTargetTokensHint:
-      "Operational budget for Wiki Run context compaction (Observational Memory + hard token limit). Leave blank to use 85% of the selected model’s max context when that is configured.",
+      "Operational budget for Pi auto-compaction near the context target. Leave blank to use 85% of the selected model’s max context when that is configured.",
     contextTargetTokensPlaceholder: "e.g. 100000",
     contextTargetDerived: "Currently derived from model max: {n} tokens (85%).",
     requestTimeoutSeconds: "Agent session timeout (seconds)",
@@ -593,6 +593,43 @@ export const en = {
     promptBusy: "Steer the active agent",
     send: "Send message",
     stop: "Stop agent",
+    modelPicker: {
+      ariaLabel: "Session model",
+      menuLabel: "Switch model",
+      empty: "No models",
+      emptySettingsTitle: "Add models in Settings",
+      /** Menu third line; `{n}` is a compact token count (e.g. 128k). */
+      maxContext: "{n} ctx",
+      busyTitle: "Wait for the current turn before switching models",
+    },
+    context: {
+      meterAria: "Context fill",
+      window: "Window",
+      target: "Target",
+      tokens: "Tokens",
+      phase: "Phase",
+      compactHint: "Type /compact to free context space, or /compact stop while the agent is busy",
+      insertCompact: "Insert /compact",
+      phases: {
+        normal: "Normal",
+        approaching_target: "Approaching target",
+        at_target: "At target",
+        compacting: "Compacting",
+        unknown: "Unknown",
+      },
+      /** Attempt observation: read-only model chip aria. */
+      modelAria: "Attempt model",
+      /** Side-note fragments; `{n}` is a compact token/tool count. */
+      inTokens: "in {n}",
+      outTokens: "out {n}",
+      toolCalls: "tools {n}",
+      /** Graph node micro-dot aria when fill percent is known. */
+      graphFillAria: "Context fill {percent}%",
+      graphFillAriaUnknown: "Context usage",
+    },
+    slash: {
+      listLabel: "Slash commands",
+    },
     pauseRun: "Pause Run",
     pauseRunHint: "Soft-stop: the Run can be resumed later.",
     resumeRun: "Resume",
@@ -618,6 +655,10 @@ export const en = {
       "This Run has failed or interrupted work. Open a node to Retry or Rerun.",
     recoveryOpenNode: "Open {node}",
     attemptErrorTitle: "Attempt failed",
+    /** Clearer title when failureClass/error indicates context capacity. */
+    capacityFailureTitle: "Context capacity exceeded",
+    capacityFailureHint:
+      "This attempt ran out of model context. Retry with a smaller task, or Rerun after adjusting scope.",
     noAutoRetryHint:
       "This failure will not auto-retry. Use Retry or Rerun, or fix configuration and start a new Run.",
     cannotRetryReason: {

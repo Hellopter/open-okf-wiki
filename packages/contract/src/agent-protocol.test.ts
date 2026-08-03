@@ -44,7 +44,16 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
     sessionId: "s1",
     timestamp: "2026-07-24T00:00:00.000Z",
     payload: {
-      session: { id: "s1", workspaceId: "w1" },
+      session: {
+        id: "s1",
+        workspaceId: "w1",
+        model: { profileId: "default", modelId: "gpt-4o", name: "GPT-4o" },
+        contextBudget: {
+          contextWindow: 128_000,
+          contextTarget: 108_800,
+          reserveTokens: 19_200,
+        },
+      },
       state: {
         messages: [
           {
@@ -72,8 +81,31 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
   assert.equal(snapshot.kind, "snapshot");
   if (snapshot.source === "server" && snapshot.kind === "snapshot") {
     assert.equal(snapshot.payload.state.sessionUsage?.contextTokens, 12_400);
+    assert.equal(snapshot.payload.session.model?.modelId, "gpt-4o");
+    assert.equal(snapshot.payload.session.contextBudget?.contextTarget, 108_800);
     assert.equal("pendingGate" in snapshot.payload, false);
   }
+
+  // Additive: older clients / servers may omit model + contextBudget.
+  const bareSession = AgentSseEventSchema.parse({
+    source: "server",
+    kind: "snapshot",
+    sessionId: "s1",
+    timestamp: "2026-07-24T00:00:00.000Z",
+    payload: {
+      session: { id: "s1", workspaceId: "w1" },
+      state: {
+        messages: [],
+        streamingMessage: null,
+        lastAssistantId: null,
+        turnActive: false,
+        agentStatus: "idle",
+        errorText: null,
+        contextPhase: "unknown",
+      },
+    },
+  });
+  assert.equal(bareSession.kind, "snapshot");
 
   const stream = AgentSseEventSchema.parse({
     source: "server",
@@ -90,12 +122,35 @@ test("AgentSseEventSchema: accepts snapshot, stream patches, and heartbeat only"
       updated: [],
       contextPhase: "normal",
       sessionUsage: { contextTokens: 2500, contextWindow: 128_000 },
+      model: { profileId: "fast", modelId: "gpt-4o-mini" },
+      contextBudget: { contextWindow: 128_000, contextTarget: 108_800 },
     },
   });
   assert.equal(stream.kind, "stream");
   if (stream.source === "server" && stream.kind === "stream") {
     assert.equal(stream.payload.sessionUsage?.contextTokens, 2500);
+    assert.equal(stream.payload.model?.profileId, "fast");
+    assert.equal(stream.payload.contextBudget?.contextWindow, 128_000);
   }
+
+  // Additive: stream patches may omit model + contextBudget.
+  const bareStream = AgentSseEventSchema.parse({
+    source: "server",
+    kind: "stream",
+    sessionId: "s1",
+    timestamp: "2026-07-24T00:00:00.000Z",
+    payload: {
+      agentStatus: "idle",
+      errorText: null,
+      turnActive: false,
+      lastAssistantId: null,
+      streamingMessage: null,
+      appended: [],
+      updated: [],
+      contextPhase: "normal",
+    },
+  });
+  assert.equal(bareStream.kind, "stream");
 
   const heartbeat = AgentSseEventSchema.parse({
     source: "server",

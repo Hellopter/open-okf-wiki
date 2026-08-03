@@ -17,9 +17,11 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AttemptContextSummary,
   attemptToolToViewModel,
   CodeSurface,
   describeAttemptStatus,
+  isCapacityFailure,
   StatusBadge,
   ToolChipRow,
 } from "@/components/agent-ui";
@@ -323,9 +325,21 @@ export function AttemptObservation({
       selectedAttempt.error != null &&
       selectedAttempt.error.length > 0,
   );
+  const capacityFailure = Boolean(
+    selectedAttempt &&
+      isCapacityFailure(selectedAttempt.failureClass, selectedAttempt.error),
+  );
   const showNoAutoRetry =
     showAttemptErrorAlert &&
     shouldShowNoAutoRetryHint(selectedAttempt?.failureClass, selectedNode?.kind);
+
+  const attemptContextLabels = {
+    modelAria: t.workbench.context.modelAria,
+    meterAria: t.workbench.context.meterAria,
+    in: t.workbench.context.inTokens,
+    out: t.workbench.context.outTokens,
+    tools: t.workbench.context.toolCalls,
+  };
 
   const retryTitle =
     retry?.ok === false
@@ -407,6 +421,13 @@ export function AttemptObservation({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {selectedAttempt ? (
+            <AttemptContextSummary
+              attempt={selectedAttempt}
+              labels={attemptContextLabels}
+              className="mr-1"
+            />
+          ) : null}
           {showRecovery ? (
             <div className="flex flex-wrap items-center gap-1" data-testid="node-recovery-actions">
               <Button
@@ -484,12 +505,14 @@ export function AttemptObservation({
             {attempts.map((attempt) => {
               const failedish =
                 attempt.state === "failed" || attempt.state === "interrupted";
-              const historyMeta = [
-                elapsed(attempt),
-                failedish && attempt.failureClass ? attempt.failureClass : null,
-              ]
-                .filter(Boolean)
-                .join(" · ");
+              const capacity = isCapacityFailure(attempt.failureClass, attempt.error);
+              const failureLabel =
+                failedish && attempt.failureClass
+                  ? capacity
+                    ? t.workbench.capacityFailureTitle
+                    : attempt.failureClass
+                  : null;
+              const historyMeta = [elapsed(attempt), failureLabel].filter(Boolean).join(" · ");
               const historyError =
                 failedish && attempt.error
                   ? truncateAttemptError(attempt.error, HISTORY_ERROR_PREVIEW_CHARS)
@@ -514,6 +537,13 @@ export function AttemptObservation({
                         {historyMeta}
                       </span>
                     ) : null}
+                    <AttemptContextSummary
+                      attempt={attempt}
+                      labels={attemptContextLabels}
+                      compact
+                      className="mt-1"
+                      data-testid="attempt-history-context"
+                    />
                     {historyError ? (
                       <span
                         className="mt-0.5 block line-clamp-2 text-[11px] text-destructive/90"
@@ -554,13 +584,23 @@ export function AttemptObservation({
                     >
                       <TriangleAlertIcon />
                       <AlertTitle>
-                        {selectedAttempt.failureClass
-                          ? `${t.workbench.attemptErrorTitle} · ${selectedAttempt.failureClass}`
-                          : t.workbench.attemptErrorTitle}
+                        {capacityFailure
+                          ? t.workbench.capacityFailureTitle
+                          : selectedAttempt.failureClass
+                            ? `${t.workbench.attemptErrorTitle} · ${selectedAttempt.failureClass}`
+                            : t.workbench.attemptErrorTitle}
                       </AlertTitle>
                       <AlertDescription className="whitespace-pre-wrap break-words font-mono text-xs">
                         {selectedAttempt.error}
                       </AlertDescription>
+                      {capacityFailure ? (
+                        <p
+                          className="col-start-2 mt-1 text-xs text-muted-foreground"
+                          data-testid="attempt-capacity-hint"
+                        >
+                          {t.workbench.capacityFailureHint}
+                        </p>
+                      ) : null}
                       {showNoAutoRetry ? (
                         <p
                           className="col-start-2 mt-1 text-xs text-muted-foreground"

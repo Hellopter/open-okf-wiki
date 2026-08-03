@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   applyAttemptSessionEvent,
   attemptItemsSnapshot,
+  attemptMetricsFromProjector,
   createAttemptProjectorState,
   MAX_ITEMS,
   MAX_TEXT_CHUNK,
@@ -39,6 +40,111 @@ test("message_end assistant increments turns and records usage", () => {
   });
   assert.equal(state.turns, 1);
   assert.equal(state.contextTokens, 1234);
+});
+
+test("message_end records real in/out/cache side notes when present", () => {
+  let state = createAttemptProjectorState();
+  state = applyAttemptSessionEvent(state, {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      usage: {
+        totalTokens: 5000,
+        input: 4000,
+        output: 900,
+        cacheRead: 80,
+        cacheWrite: 20,
+      },
+    },
+  });
+  assert.equal(state.contextTokens, 5000);
+  assert.equal(state.usageInput, 4000);
+  assert.equal(state.outputTokens, 900);
+  assert.equal(state.cacheTokens, 100);
+  const metrics = attemptMetricsFromProjector(state);
+  assert.equal(metrics?.inputTokens, 5000);
+  assert.equal(metrics?.outputTokens, 900);
+  assert.equal(metrics?.cacheTokens, 100);
+  assert.equal(metrics?.extra?.input, 4000);
+  assert.equal(metrics?.extra?.output, 900);
+});
+
+test("attemptMetricsFromProjector omits inventable fields when usage thin", () => {
+  let state = createAttemptProjectorState();
+  state = applyAttemptSessionEvent(state, {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      usage: { totalTokens: 42 },
+    },
+  });
+  const metrics = attemptMetricsFromProjector(state);
+  assert.deepEqual(metrics, { inputTokens: 42 });
+});
+
+test("attemptMetricsFromProjector puts seat budget window/target into metrics.extra", () => {
+  let state = createAttemptProjectorState();
+  state = applyAttemptSessionEvent(state, {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      usage: { totalTokens: 12_400 },
+    },
+  });
+  const metrics = attemptMetricsFromProjector(state, {
+    contextWindow: 128_000,
+    contextTarget: 108_800,
+  });
+  assert.equal(metrics?.inputTokens, 12_400);
+  assert.equal(metrics?.extra?.contextWindow, 128_000);
+  assert.equal(metrics?.extra?.contextTarget, 108_800);
+});
+
+test("attemptMetricsFromProjector ignores non-positive budget fields", () => {
+  let state = createAttemptProjectorState();
+  state = applyAttemptSessionEvent(state, {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      usage: { totalTokens: 10 },
+    },
+  });
+  const metrics = attemptMetricsFromProjector(state, {
+    contextWindow: 0,
+    contextTarget: -5,
+  });
+  assert.equal(metrics?.inputTokens, 10);
+  assert.equal(metrics?.extra, undefined);
+  assert.equal(Object.keys(metrics ?? {}).length, 1);
+});
+
+test("attemptMetricsFromProjector can emit budget-only extra without inventing tokens", () => {
+  const state = createAttemptProjectorState();
+  const metrics = attemptMetricsFromProjector(state, {
+    contextWindow: 64_000,
+    contextTarget: 54_400,
+  });
+  assert.deepEqual(metrics, {
+    extra: { contextWindow: 64_000, contextTarget: 54_400 },
+  });
+});
+
+test("toolCalls count is independent of MAX_ITEMS display cap", () => {
+  const state = createAttemptProjectorState();
+  for (let i = 0; i < MAX_ITEMS + 5; i++) {
+    applyAttemptSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: `c${i}`,
+      toolName: `tool-${i}`,
+      args: {},
+    });
+  }
+  assert.equal(state.toolCalls, MAX_ITEMS + 5);
+  assert.equal(attemptMetricsFromProjector(state)?.toolCalls, MAX_ITEMS + 5);
 });
 
 test("tool_execution_start/end correlates by toolCallId", () => {

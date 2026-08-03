@@ -16,6 +16,7 @@ export {
   deleteAgentSession,
   listAgentSessions,
   listOperatorCommands,
+  type OperatorCommandInfo,
   type PiSessionSummary,
   parseAgentSessionEvent,
 } from "./agent-sessions";

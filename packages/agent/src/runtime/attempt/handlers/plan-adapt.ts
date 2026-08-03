@@ -8,7 +8,15 @@ import {
   PiAttemptOutcomeSchema,
 } from "@okf-wiki/contract";
 import { loadEvidenceBundle } from "../materialize.js";
-import { type AttemptHandlerContext, bounded, liveModel, sealTranscript } from "../shared.js";
+import {
+  type AttemptHandlerContext,
+  bounded,
+  forwardScopedProgress,
+  liveModel,
+  metricsFromSeatRun,
+  seatModelId,
+  sealTranscript,
+} from "../shared.js";
 
 const ADAPT_SYSTEM =
   "You assess whether bounded additional read-only research is needed before writing. " +
@@ -46,6 +54,7 @@ export async function handlePlanAdapt(ctx: AttemptHandlerContext): Promise<PiAtt
   ].join("\n");
   const resolved =
     runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
+  const seat = { modelId: seatModelId(resolved), role: "plan_adapt" as const };
   const result = await runtime.runAgent({
     role: "leaf",
     spanId: input.attemptId,
@@ -64,6 +73,7 @@ export async function handlePlanAdapt(ctx: AttemptHandlerContext): Promise<PiAtt
     abortSignal: signal,
     timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
     transcriptPath: input.sessionPath,
+    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
   if (result.failed) throw new Error(result.summary);
   const delta =
@@ -86,6 +96,16 @@ export async function handlePlanAdapt(ctx: AttemptHandlerContext): Promise<PiAtt
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(delta.reason ?? (delta.complete ? "research complete" : "research added")),
-    metrics: { role: "plan_adapt", extra: { additions: delta.additions.length } },
+    metrics: metricsFromSeatRun({
+      role: "plan_adapt",
+      modelId: seatModelId(resolved),
+      fromRun: result.metrics,
+      extra: {
+        extra: {
+          ...(result.metrics?.extra ?? {}),
+          additions: delta.additions.length,
+        },
+      },
+    }),
   });
 }

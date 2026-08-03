@@ -1,15 +1,21 @@
 /**
- * Operator slash commands (Claude Code-style prompt templates).
+ * Operator slash commands (Claude Code-style).
  *
- * A command is a deterministic intent entry point, not a session mode:
- * `/wiki notes` expands into a prompt sent through the normal single write
- * path (SessionTurn → AgentSession.prompt), and a Wiki Run still begins only
- * when the agent genuinely calls `wiki_produce` (ADR 0032).
+ * Two kinds:
+ * - **template** — expands into a prompt sent through the normal write path
+ *   (SessionTurn → AgentSession.prompt). A Wiki Run still begins only when the
+ *   agent genuinely calls `wiki_produce` (ADR 0032).
+ * - **control** — maps to an AgentCommand (compact / abort_compaction). Must
+ *   NOT expand to a prompt template; the server dispatches the command directly.
  *
  * Template syntax follows Pi prompt templates for the subset we use
  * ($1..$9, $@, $ARGUMENTS, ${N:-default}, ${@:-default}); Pi does not export
  * its substituteArgs helper, so the subset is implemented and tested here.
  */
+
+import type { AgentCommand } from "@okf-wiki/contract";
+
+export type OperatorCommandKind = "template" | "control";
 
 export type OperatorCommand = {
   /** Command name without the leading slash (`wiki` → `/wiki`). */
@@ -17,12 +23,18 @@ export type OperatorCommand = {
   description: string;
   /** Autocomplete hint: `<required>` / `[optional]` arguments. */
   argumentHint?: string;
-  /** Prompt template body (argument placeholders allowed). */
-  content: string;
+  /**
+   * template (default): expand `content` into a prompt.
+   * control: resolve args to an AgentCommand (no prompt expansion).
+   */
+  kind: OperatorCommandKind;
+  /** Prompt template body (argument placeholders allowed). Required for template. */
+  content?: string;
 };
 
 export const OPERATOR_COMMANDS: readonly OperatorCommand[] = [
   {
+    kind: "template",
     name: "wiki",
     description: "Start a Wiki Run for this Workspace (plan → produce → publish gates)",
     argumentHint: "[notes for the planner]",
@@ -34,6 +46,7 @@ export const OPERATOR_COMMANDS: readonly OperatorCommand[] = [
     ].join("\n"),
   },
   {
+    kind: "template",
     name: "repair",
     description: "Repair the latest Staging Wiki with operator defect notes",
     argumentHint: "<defect notes>",
@@ -44,6 +57,7 @@ export const OPERATOR_COMMANDS: readonly OperatorCommand[] = [
     ].join("\n"),
   },
   {
+    kind: "template",
     name: "status",
     description: "Summarize Workspace, model, and latest Wiki Run state",
     content: [
@@ -51,6 +65,17 @@ export const OPERATOR_COMMANDS: readonly OperatorCommand[] = [
       "configured sources, selected models, the latest Wiki Run outcome,",
       "and any pending plan/publication gate.",
     ].join("\n"),
+  },
+  {
+    kind: "control",
+    name: "compact",
+    description: "Manually compact session context (Pi). Use /compact stop to abort the turn first",
+    argumentHint: "[stop]",
+  },
+  {
+    kind: "control",
+    name: "abort-compact",
+    description: "Abort in-progress manual or auto compaction",
   },
 ];
 
@@ -111,21 +136,66 @@ export function substituteArgs(content: string, args: readonly string[]): string
   );
 }
 
-export type ExpandOperatorCommandResult =
+export type ResolveOperatorCommandResult =
   /** Input was not a slash command (including path-like `/home/x`). */
   | { kind: "not_command" }
   /** Leading-slash token that matches no registered command. */
   | { kind: "unknown"; command: string }
-  | { kind: "expanded"; command: string; prompt: string };
+  /** Template command expanded to a prompt body. */
+  | { kind: "expanded"; command: string; prompt: string }
+  /** Control command mapped to an AgentCommand (not a prompt). */
+  | { kind: "control"; command: string; agentCommand: AgentCommand }
+  /** Registered command with invalid arguments. */
+  | { kind: "invalid"; command: string; message: string };
+
+/** @deprecated Prefer {@link ResolveOperatorCommandResult}; kept for call-site type aliases. */
+export type ExpandOperatorCommandResult = ResolveOperatorCommandResult;
 
 /**
- * Detect and expand a leading-slash operator command.
- *
- * A first token containing `/` after the leading slash (e.g. `/home/user/x`)
- * is treated as a path, not a command, so pasted absolute paths flow to the
- * model instead of erroring.
+ * Resolve a control slash command's args into an AgentCommand.
+ * Returns null when the command name is not a control command.
  */
-export function expandOperatorCommand(text: string): ExpandOperatorCommandResult {
+function resolveControlAgentCommand(
+  name: string,
+  args: readonly string[],
+):
+  | { ok: true; agentCommand: AgentCommand }
+  | { ok: false; message: string }
+  | null {
+  if (name === "compact") {
+    if (args.length === 0) {
+      return { ok: true, agentCommand: { type: "compact" } };
+    }
+    if (args.length === 1 && args[0]!.toLowerCase() === "stop") {
+      return {
+        ok: true,
+        agentCommand: { type: "compact", mode: "stop_and_compact" },
+      };
+    }
+    return {
+      ok: false,
+      message: "Usage: /compact or /compact stop",
+    };
+  }
+  if (name === "abort-compact") {
+    if (args.length > 0) {
+      return { ok: false, message: "Usage: /abort-compact" };
+    }
+    return { ok: true, agentCommand: { type: "abort_compaction" } };
+  }
+  return null;
+}
+
+/**
+ * Detect and resolve a leading-slash operator command.
+ *
+ * - Template commands → `{ kind: "expanded", prompt }`
+ * - Control commands → `{ kind: "control", agentCommand }` (never a prompt)
+ * - A first token containing `/` after the leading slash (e.g. `/home/user/x`)
+ *   is treated as a path, not a command, so pasted absolute paths flow to the
+ *   model instead of erroring.
+ */
+export function resolveOperatorCommand(text: string): ResolveOperatorCommandResult {
   const trimmed = text.trimStart();
   if (!trimmed.startsWith("/")) return { kind: "not_command" };
   const match = /^\/(\S+)([\s\S]*)$/.exec(trimmed);
@@ -135,9 +205,40 @@ export function expandOperatorCommand(text: string): ExpandOperatorCommandResult
   const command = OPERATOR_COMMANDS.find((c) => c.name === token.toLowerCase());
   if (!command) return { kind: "unknown", command: token };
   const args = parseCommandArgs(match[2] ?? "");
+
+  if (command.kind === "control") {
+    const resolved = resolveControlAgentCommand(command.name, args);
+    if (!resolved) {
+      return { kind: "unknown", command: token };
+    }
+    if (!resolved.ok) {
+      return { kind: "invalid", command: command.name, message: resolved.message };
+    }
+    return {
+      kind: "control",
+      command: command.name,
+      agentCommand: resolved.agentCommand,
+    };
+  }
+
+  const content = command.content;
+  if (!content) {
+    return { kind: "unknown", command: token };
+  }
   return {
     kind: "expanded",
     command: command.name,
-    prompt: substituteArgs(command.content, args),
+    prompt: substituteArgs(content, args),
   };
+}
+
+/**
+ * Detect and expand a leading-slash operator command.
+ *
+ * Control commands resolve to `{ kind: "control" }` (not a prompt). Prefer
+ * {@link resolveOperatorCommand} at new call sites; this name is retained for
+ * existing imports.
+ */
+export function expandOperatorCommand(text: string): ResolveOperatorCommandResult {
+  return resolveOperatorCommand(text);
 }

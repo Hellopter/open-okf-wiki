@@ -157,7 +157,12 @@ export const NodeAttemptSchema = z.object({
   usage: z
     .object({
       turns: z.number().int().nonnegative().optional(),
+      /** Last assistant totalTokens as context-fill proxy (when known). */
       contextTokens: z.number().int().nonnegative().optional(),
+      /** Provider / product hard window for fill denominator. */
+      contextWindow: z.number().int().positive().optional(),
+      /** Operational compaction target (may be below window). */
+      contextTarget: z.number().int().positive().optional(),
     })
     .optional(),
 });

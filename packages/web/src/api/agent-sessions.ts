@@ -20,7 +20,11 @@ export type {
   PiSessionSummary,
 };
 
-export type OperatorCommandInfo = { name: string; description: string; argumentHint?: string };
+export type OperatorCommandInfo = {
+  name: string;
+  description: string;
+  argumentHint?: string;
+};
 
 const OperatorCommandsSchema = z.object({
   commands: z.array(

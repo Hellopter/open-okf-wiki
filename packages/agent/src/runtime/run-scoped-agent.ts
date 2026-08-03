@@ -15,13 +15,14 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { AttemptItem, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import type { AttemptItem, AttemptMetrics, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
 import type { AgentRunRequest, ScopedRunnerRole } from "../ports/agent-runner.js";
 import { classifyAgentFailure } from "../workflow/retry-policy.js";
 import {
   type AttemptTranscriptSink,
   createAttemptTranscriptSink,
 } from "./attempt-transcript-sink.js";
+import type { ContextBudget } from "./context-budget.js";
 import {
   createWikiSession,
   type WikiSessionHandle,
@@ -32,6 +33,7 @@ import { resolveAssistantSummary } from "./projectors/assistant-outcome.js";
 import {
   applyAttemptSessionEvent,
   attemptItemsSnapshot,
+  attemptMetricsFromProjector,
   createAttemptProjectorState,
 } from "./projectors/attempt-projector.js";
 import type { WikiAgentRole } from "./tool-policy.js";
@@ -94,6 +96,11 @@ export type RunScopedAgentResult = {
   receiptPath?: string;
   /** Final projector items (tool/text trail) for callers that seal transcripts. */
   items?: AttemptItem[];
+  /**
+   * Best-effort observation metrics from the live projector.
+   * inputTokens uses last assistant totalTokens as context-fill proxy.
+   */
+  metrics?: AttemptMetrics;
   /** Set by runScopedAgentsParallel when this task failed (summary holds the error). */
   failed?: boolean;
 };
@@ -213,6 +220,8 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
 
   const sessionRole: WikiAgentRole = role;
   let handle: WikiSessionHandle | undefined;
+  /** Seat budget from createWikiSession — fills live progress window/target. */
+  let contextBudget: ContextBudget | undefined;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const onAbort = () => {
@@ -237,6 +246,16 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     summary?: string,
   ): ScopedAgentProgress => {
     const items = attemptItemsSnapshot(projector);
+    const usage: NonNullable<ScopedAgentProgress["usage"]> = {
+      turns: projector.turns,
+    };
+    if (projector.contextTokens !== undefined) {
+      usage.contextTokens = projector.contextTokens;
+    }
+    if (contextBudget) {
+      usage.contextWindow = contextBudget.contextWindow;
+      usage.contextTarget = contextBudget.contextTarget;
+    }
     return {
       attemptId,
       nodeKey,
@@ -245,12 +264,7 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       status,
       ...(summary ? { summary: truncate(summary, 4000) } : {}),
       ...(items ? { items } : {}),
-      usage: {
-        turns: projector.turns,
-        ...(projector.contextTokens !== undefined
-          ? { contextTokens: projector.contextTokens }
-          : {}),
-      },
+      usage,
     };
   };
 
@@ -274,6 +288,9 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
       scopedTools: true,
       customTools: input.customTools,
     });
+    contextBudget = handle.contextBudget;
+    // Re-emit so UI gets window/target as soon as the seat session exists.
+    emitProgress(input.onProgress, snapshot("running", `${input.role} started`));
 
     if (input.abortSignal) {
       if (input.abortSignal.aborted) {
@@ -333,11 +350,15 @@ export async function runScopedAgent(input: RunScopedAgentInput): Promise<RunSco
     const summary = controlSummary(resolved.summary);
     emitProgress(input.onProgress, snapshot("done", summary));
     const items = attemptItemsSnapshot(projector);
+    // Include seat budget window/target in metrics.extra so durable snapshots
+    // can drive ContextFillMeter percent (live progress already has usage.*).
+    const metrics = attemptMetricsFromProjector(projector, contextBudget);
     return {
       role: input.role,
       mode: "live",
       summary,
       ...(items ? { items } : {}),
+      ...(metrics ? { metrics } : {}),
     };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {

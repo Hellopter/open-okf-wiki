@@ -7,7 +7,23 @@
  */
 
 import { z } from "zod";
-import { SessionStreamPatchSchema, SessionStreamStateSchema } from "./session-stream.js";
+import {
+  type AgentSessionContextBudget,
+  AgentSessionContextBudgetSchema,
+  type AgentSessionModel,
+  AgentSessionModelSchema,
+  SessionStreamPatchSchema,
+  SessionStreamStateSchema,
+} from "./session-stream.js";
+
+// Re-export session chrome schemas (defined next to SessionStreamState so patch
+// fields stay co-located without a circular import with this protocol module).
+export {
+  type AgentSessionContextBudget,
+  AgentSessionContextBudgetSchema,
+  type AgentSessionModel,
+  AgentSessionModelSchema,
+};
 
 /** Relative dir under workspace meta: `{root}/.okf-wiki/pi-sessions/`. */
 export const PI_SESSIONS_DIR = "pi-sessions" as const;
@@ -133,6 +149,16 @@ export const AgentSseSnapshotSchema = z
           .object({
             id: z.string().min(1),
             workspaceId: z.string().min(1),
+            /**
+             * Live chat model for this Session (session-scoped).
+             * Absent on older servers; clients should fall back to workspace.model.
+             */
+            model: AgentSessionModelSchema.optional(),
+            /**
+             * Seat context budget (window + compaction target).
+             * sessionUsage carries the same denominators for the fill meter.
+             */
+            contextBudget: AgentSessionContextBudgetSchema.optional(),
           })
           .strict(),
         /**

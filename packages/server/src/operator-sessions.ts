@@ -10,13 +10,14 @@ import {
   createOperatorFixtureModel,
   createOperatorSession,
   deleteOperatorSession,
-  expandOperatorCommand,
   listOperatorSessions,
   loadOperatorSessionHistory,
   openOperatorSession,
   type RerunWikiNode,
   redactErrorMessage,
   redactSensitiveText,
+  resolveSeatContextBudget,
+  resolveOperatorCommand,
   resolveWorkspacePiModel,
   type StartWikiRun,
   shouldUsePiFixtureMode,
@@ -25,11 +26,14 @@ import {
   type AgentCommand,
   type AgentCommandResponse,
   type AgentMessage,
+  type AgentSessionContextBudget,
+  type AgentSessionModel,
   type AgentSseEvent,
   type AgentSseSnapshot,
   type AgentSseStream,
   buildSessionUsage,
   createPiStreamState,
+  deriveContextPhase,
   diffSessionStreamState,
   extractContextTokensFromPiMessage,
   type PiStreamState,
@@ -59,6 +63,10 @@ type FixtureTurnQueue = (text: string, canProduce: boolean) => void;
 type BuiltHandle = {
   handle: SessionHandle;
   queueFixtureTurn?: FixtureTurnQueue;
+  /** Live chat model bound when the handle was opened. */
+  model?: AgentSessionModel;
+  /** Seat budget derived from model window + workspace target. */
+  contextBudget?: AgentSessionContextBudget;
 };
 
 type LiveSession = {
@@ -74,6 +82,10 @@ type LiveSession = {
   activityLease: WorkspaceActivityLease;
   closed: boolean;
   sessionUsage?: SessionUsage;
+  /** Session-scoped chat model (not workspace default; not disk-persisted). */
+  model?: AgentSessionModel;
+  /** Seat context budget for chrome + sessionUsage denominators. */
+  contextBudget?: AgentSessionContextBudget;
   queueFixtureTurn?: FixtureTurnQueue;
 };
 
@@ -192,6 +204,47 @@ async function resolveRepairTarget(
   }
 }
 
+function sessionModelFromParts(input: {
+  profileId?: string;
+  modelId: string;
+  name?: string;
+}): AgentSessionModel {
+  return {
+    profileId: input.profileId?.trim() || "default",
+    modelId: input.modelId,
+    ...(input.name?.trim() ? { name: input.name.trim() } : {}),
+  };
+}
+
+function budgetFromSeat(input: {
+  maxContextTokens?: number;
+  modelContextWindow?: number;
+  contextTargetTokens?: number;
+}): AgentSessionContextBudget {
+  const budget = resolveSeatContextBudget({
+    maxContextTokens: input.maxContextTokens,
+    modelContextWindow: input.modelContextWindow,
+    contextTargetTokens: input.contextTargetTokens,
+  });
+  return {
+    contextWindow: budget.contextWindow,
+    contextTarget: budget.contextTarget,
+    reserveTokens: budget.reserveTokens,
+  };
+}
+
+function usageWithBudget(
+  budget: AgentSessionContextBudget | undefined,
+  contextTokens?: number,
+  prior?: SessionUsage,
+): SessionUsage | undefined {
+  return buildSessionUsage({
+    contextTokens: contextTokens ?? prior?.contextTokens,
+    contextWindow: budget?.contextWindow ?? prior?.contextWindow,
+    contextTarget: budget?.contextTarget ?? prior?.contextTarget,
+  });
+}
+
 async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promise<BuiltHandle> {
   await assertWorkspaceAvailable(workspace);
   const fixture = shouldUsePiFixtureMode({});
@@ -209,6 +262,24 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
   });
   await assertWorkspaceAvailable(workspace);
   const sessionIdentity = sessionId ?? "pending";
+  const piModel = fixtureModel?.model ?? resolved?.model;
+  const maxContextTokens = resolved?.runtime.maxContextTokens;
+  const modelContextWindow =
+    piModel && typeof piModel.contextWindow === "number" && piModel.contextWindow > 0
+      ? piModel.contextWindow
+      : undefined;
+  const contextBudget = budgetFromSeat({
+    maxContextTokens,
+    modelContextWindow,
+    contextTargetTokens: workspace.limits.contextTargetTokens,
+  });
+  const model = sessionModelFromParts({
+    profileId: resolved?.runtime.profileId ?? workspace.model.profileId,
+    modelId: resolved?.servedModelId ?? piModel?.id ?? workspace.model.id,
+    name:
+      (typeof piModel?.name === "string" && piModel.name.trim() ? piModel.name : undefined) ??
+      resolved?.runtime.profileName,
+  });
   const baseInput = {
     workspace,
     ...(fixtureModel
@@ -218,7 +289,7 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
         : {}),
     additionalSkillPaths: skillPaths,
     contextTargetTokens: workspace.limits.contextTargetTokens,
-    maxContextTokens: resolved?.runtime.maxContextTokens,
+    maxContextTokens,
     wikiProduce: {
       startWikiRun: runStarter(workspace, sessionIdentity),
       rerunWikiNode: repairRunner(workspace, sessionIdentity),
@@ -238,6 +309,8 @@ async function makeHandle(workspace: WorkspaceConfig, sessionId?: string): Promi
   }
   return {
     handle: resolvedHandle,
+    model,
+    contextBudget,
     ...(fixtureModel
       ? {
           queueFixtureTurn: (text: string, canProduce: boolean) => {
@@ -306,10 +379,17 @@ function projectOperatorMessage(message: AgentMessage): SessionMessage | null {
   };
 }
 
+/** Optional session chrome projected onto the browser Session DTO. */
+export type OperatorStreamChrome = {
+  model?: AgentSessionModel;
+  contextBudget?: AgentSessionContextBudget;
+};
+
 /** A dedicated, secret-free wire projection for the browser Session SSE. */
 export function projectOperatorStreamState(
   state: PiStreamState,
   sessionUsage?: SessionUsage,
+  chrome?: OperatorStreamChrome,
 ): SessionStreamState {
   const messages = state.messages.flatMap((message) => {
     const projected = projectOperatorMessage(message);
@@ -329,7 +409,17 @@ export function projectOperatorStreamState(
     errorText: state.errorText ? redactSessionText(redactErrorMessage(state.errorText)) : null,
     contextPhase: state.contextPhase,
     ...(sessionUsage ? { sessionUsage } : {}),
+    ...(chrome?.model ? { model: chrome.model } : {}),
+    ...(chrome?.contextBudget ? { contextBudget: chrome.contextBudget } : {}),
   };
+}
+
+/** Project live handle conversation + session chrome for SSE snapshot/stream. */
+function projectLiveView(live: LiveSession, state: PiStreamState = live.state): SessionStreamState {
+  return projectOperatorStreamState(state, live.sessionUsage, {
+    ...(live.model ? { model: live.model } : {}),
+    ...(live.contextBudget ? { contextBudget: live.contextBudget } : {}),
+  });
 }
 
 function emitStatePatch(
@@ -354,11 +444,10 @@ async function attachLive(
   contextTokens?: number,
 ): Promise<LiveSession> {
   await assertWorkspaceAvailable(workspace);
-  const { handle, queueFixtureTurn } = built;
-  const initialUsage = buildSessionUsage({
-    contextTokens,
-    contextTarget: workspace.limits.contextTargetTokens,
-  });
+  const { handle, queueFixtureTurn, model, contextBudget } = built;
+  // Prefer seat budget (window + target) over workspace target alone so the
+  // meter denominators match Pi auto-compaction settings for this model.
+  const initialUsage = usageWithBudget(contextBudget, contextTokens);
   const live: LiveSession = {
     workspaceId: workspace.id,
     sessionId: handle.sessionId,
@@ -372,6 +461,8 @@ async function attachLive(
     activityLease,
     closed: false,
     ...(initialUsage ? { sessionUsage: initialUsage } : {}),
+    ...(model ? { model } : {}),
+    ...(contextBudget ? { contextBudget } : {}),
     ...(queueFixtureTurn ? { queueFixtureTurn } : {}),
   };
   const sessionKey = key(workspace.id, handle.sessionId);
@@ -384,19 +475,20 @@ async function attachLive(
         ? raw.type
         : "error";
     const previous = live.state;
-    const previousView = projectOperatorStreamState(previous, live.sessionUsage);
+    const previousView = projectLiveView(live, previous);
     const next = reducePiEvent(previous, type, raw);
     live.state = next;
     const body = raw && typeof raw === "object" && "message" in raw ? raw.message : undefined;
-    const contextTokens = extractContextTokensFromPiMessage(body);
-    if (contextTokens !== undefined) {
-      live.sessionUsage = buildSessionUsage({
-        contextTokens,
-        contextTarget: live.sessionUsage?.contextTarget,
-      });
+    const nextContextTokens = extractContextTokensFromPiMessage(body);
+    if (nextContextTokens !== undefined) {
+      live.sessionUsage = usageWithBudget(
+        live.contextBudget,
+        nextContextTokens,
+        live.sessionUsage,
+      );
     }
     live.updatedAt = new Date().toISOString();
-    emitStatePatch(live, previousView, projectOperatorStreamState(next, live.sessionUsage));
+    emitStatePatch(live, previousView, projectLiveView(live, next));
   });
   liveSessions.set(sessionKey, live);
   return live;
@@ -560,25 +652,76 @@ export async function dispatchSessionCommand(
   }
   if (command.type === "set_model") {
     if (live.busy) return response(sessionId, "set_model", "failed", "Wait for the current turn");
-    const model = await resolveWorkspacePiModel({ profileId: command.profileId });
+    const resolved = await resolveWorkspacePiModel({ profileId: command.profileId });
     await assertLiveAvailable(workspace, live);
-    await live.handle.session.setModel(model.model);
-    return { ...response(sessionId, "set_model", "accepted"), modelId: model.model.id };
+    await live.handle.session.setModel(resolved.model);
+    // Session-scoped only: do not mutate workspace.model or write provider defaults.
+    // Capture prior chrome so the stream patch carries the new model without reconnect.
+    const previousView = projectLiveView(live);
+    const modelContextWindow =
+      typeof resolved.model.contextWindow === "number" && resolved.model.contextWindow > 0
+        ? resolved.model.contextWindow
+        : undefined;
+    live.model = sessionModelFromParts({
+      profileId: resolved.runtime.profileId ?? command.profileId,
+      modelId: resolved.servedModelId || resolved.model.id,
+      name:
+        (typeof resolved.model.name === "string" && resolved.model.name.trim()
+          ? resolved.model.name
+          : undefined) ?? resolved.runtime.profileName,
+    });
+    live.contextBudget = budgetFromSeat({
+      maxContextTokens: resolved.runtime.maxContextTokens,
+      modelContextWindow,
+      contextTargetTokens: workspace.limits.contextTargetTokens,
+    });
+    live.sessionUsage = usageWithBudget(
+      live.contextBudget,
+      live.sessionUsage?.contextTokens,
+      live.sessionUsage,
+    );
+    // Re-derive pressure against the new seat budget. Keep compacting while a
+    // compaction is in flight so the meter does not flicker to a fill phase.
+    const compacting =
+      live.state.contextPhase === "compacting" || live.state.agentStatus === "compacting";
+    live.state = {
+      ...live.state,
+      contextPhase: deriveContextPhase({
+        contextTokens: live.sessionUsage?.contextTokens,
+        contextTarget: live.sessionUsage?.contextTarget,
+        contextWindow: live.sessionUsage?.contextWindow,
+        compacting,
+      }),
+    };
+    live.updatedAt = new Date().toISOString();
+    emitStatePatch(live, previousView, projectLiveView(live));
+    return {
+      ...response(sessionId, "set_model", "accepted"),
+      modelId: resolved.servedModelId || resolved.model.id,
+    };
   }
 
   const delivery = command.type;
+  const text = command.text.trim();
+  // Resolve control/template slash before the busy gate so `/compact stop` can
+  // abort an active turn (stop_and_compact) instead of being rejected as a prompt.
+  const resolvedCmd =
+    delivery === "prompt" ? resolveOperatorCommand(text) : { kind: "not_command" as const };
+  if (resolvedCmd.kind === "unknown")
+    return response(sessionId, "prompt", "failed", `Unknown command: /${resolvedCmd.command}`);
+  if (resolvedCmd.kind === "invalid")
+    return response(sessionId, "prompt", "failed", resolvedCmd.message);
+  // Control slash → AgentCommand (never expand to a prompt template).
+  if (resolvedCmd.kind === "control") {
+    return dispatchSessionCommand(workspace, sessionId, resolvedCmd.agentCommand);
+  }
   if (delivery === "prompt" && live.busy) {
     return response(sessionId, "prompt", "failed", "The Session already has an active turn");
   }
   if ((delivery === "steer" || delivery === "follow_up") && !live.busy) {
     return response(sessionId, delivery, "failed", "There is no active turn to redirect");
   }
-  const text = command.text.trim();
-  const expansion =
-    delivery === "prompt" ? expandOperatorCommand(text) : { kind: "not_command" as const };
-  if (expansion.kind === "unknown")
-    return response(sessionId, "prompt", "failed", `Unknown command: /${expansion.command}`);
-  const effectiveText = expansion.kind === "expanded" ? expansion.prompt : text;
+  const effectiveText = resolvedCmd.kind === "expanded" ? resolvedCmd.prompt : text;
   if (delivery === "prompt") {
     if (
       live.handle.session.sessionManager.getSessionName()?.trim() === defaultSessionTitle(workspace)
@@ -593,14 +736,14 @@ export async function dispatchSessionCommand(
       .prompt(effectiveText)
       .catch((error) => {
         const previous = live.state;
-        const previousView = projectOperatorStreamState(previous, live.sessionUsage);
+        const previousView = projectLiveView(live, previous);
         const next = reducePiEvent(previous, "error", {
           type: "error",
           message: redactErrorMessage(error),
         });
         live.state = next;
         live.updatedAt = new Date().toISOString();
-        emitStatePatch(live, previousView, projectOperatorStreamState(next, live.sessionUsage));
+        emitStatePatch(live, previousView, projectLiveView(live, next));
       })
       .finally(() => {
         live.busy = false;
@@ -619,14 +762,20 @@ export async function sessionSnapshot(
   await assertWorkspaceAvailable(workspace);
   const live = await openLive(workspace, sessionId);
   await assertLiveAvailable(workspace, live);
-  const projected = projectOperatorStreamState(live.state, live.sessionUsage);
+  // Chrome is on both payload.session (attach identity) and state (stream reduce).
+  const projected = projectLiveView(live);
   return {
     source: "server",
     kind: "snapshot",
     sessionId,
     timestamp: new Date().toISOString(),
     payload: {
-      session: { id: sessionId, workspaceId: workspace.id },
+      session: {
+        id: sessionId,
+        workspaceId: workspace.id,
+        ...(live.model ? { model: live.model } : {}),
+        ...(live.contextBudget ? { contextBudget: live.contextBudget } : {}),
+      },
       // `live.state` includes the durable branch plus finalized messages that
       // arrived after the session file was last flushed. The subsequent SSE
       // patches are diffed from this exact baseline.

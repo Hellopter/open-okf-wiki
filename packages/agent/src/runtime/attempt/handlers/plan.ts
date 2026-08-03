@@ -18,7 +18,15 @@ import {
   loadProjectedOperatorInput,
   mergeOperatorNotes,
 } from "../materialize.js";
-import { type AttemptHandlerContext, bounded, liveModel, sealTranscript } from "../shared.js";
+import {
+  type AttemptHandlerContext,
+  bounded,
+  forwardScopedProgress,
+  liveModel,
+  metricsFromSeatRun,
+  seatModelId,
+  sealTranscript,
+} from "../shared.js";
 
 /** Coarse inventory from workspace sources (no tree walk — cheap signal). */
 function inventoryFromWorkspace(workspace: { sources?: readonly unknown[] }): {
@@ -67,6 +75,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
 
   const planTask = `Plan WikiRunSpec for ${input.workspace.name}`;
+  const seat = { modelId: seatModelId(resolved), role: "plan" as const };
   const planned = await planWikiSpec({
     layout,
     workspaceName: input.workspace.name,
@@ -96,6 +105,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       }),
     ],
     transcriptPath: input.sessionPath,
+    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
   const specPath = path.join(layout.analysisDir, "spec.json");
   await writeFile(specPath, `${JSON.stringify(planned.spec, null, 2)}\n`, "utf8");
@@ -120,5 +130,10 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary,
+    metrics: metricsFromSeatRun({
+      role: "plan",
+      modelId: seatModelId(resolved),
+      fromRun: planned.metrics,
+    }),
   });
 }

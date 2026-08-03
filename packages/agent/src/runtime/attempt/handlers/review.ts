@@ -31,9 +31,12 @@ import {
   type AttemptHandlerContext,
   bounded,
   failAttempt,
+  forwardScopedProgress,
   liveModel,
+  metricsFromSeatRun,
   parseNodeDetail,
   resolveReviewSeatIndex,
+  seatModelId,
   sealTranscript,
   writeAnalysisJson,
 } from "../shared.js";
@@ -177,6 +180,7 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
   });
   const operatorNotes = formatOperatorInputNotes(await loadProjectedOperatorInput(layout));
 
+  const seat = { modelId: seatModelId(resolved), role: "review" as const };
   const result = await runtime.runAgent({
     role: "reviewer",
     spanId: input.attemptId,
@@ -208,6 +212,7 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
         reviewerId,
       }),
     ],
+    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
   if (result.failed) throw new Error(result.summary);
 
@@ -254,6 +259,11 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(summaryText),
+    metrics: metricsFromSeatRun({
+      role: "review",
+      modelId: seatModelId(resolved),
+      fromRun: result.metrics,
+    }),
   });
 }
 

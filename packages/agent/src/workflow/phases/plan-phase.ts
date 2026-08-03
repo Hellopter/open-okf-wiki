@@ -12,6 +12,7 @@
 
 import {
   type AttemptItem,
+  type AttemptMetrics,
   DEFAULT_ORCHESTRATION,
   defaultWikiRunSpec,
   type NodeAttempt,
@@ -119,6 +120,8 @@ export type PlanWikiSpecResult = {
   scoutKinds?: string[];
   /** Final tool/text trail from the planner agent when available. */
   items?: AttemptItem[];
+  /** Best-effort projector metrics from the planner synthesizer seat. */
+  metrics?: AttemptMetrics;
 };
 
 /**
@@ -236,5 +239,6 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     draftPath: resolved.draftPath,
     scoutKinds: scouts.receipts.map((r) => r.kind),
     ...(child.items ? { items: child.items } : {}),
+    ...(child.metrics ? { metrics: child.metrics } : {}),
   };
 }

@@ -70,7 +70,9 @@ export function mergeAttemptMetrics(
 }
 
 /**
- * Persist metrics columns on a terminal attempt row.
+ * Persist metrics columns on an attempt row (terminal or soft mid-run progress).
+ * COALESCE leaves unspecified fields intact — live progress should omit
+ * stopReason / wallTimeMs so they stay terminal-only.
  * Safe to call with undefined (no-op). Does not change attempt state.
  */
 export function writeAttemptMetrics(

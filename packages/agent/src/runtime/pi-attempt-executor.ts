@@ -56,7 +56,8 @@ export type { PiAttemptExecutor };
 
 /**
  * Attach best-effort observation metrics without blocking on missing token counts.
- * Executor-supplied metrics win; defaults fill role / wall_time / stop_reason / model_id.
+ * Executor-supplied metrics win (including seat modelId from roleModels resolution);
+ * defaults fill role / wall_time / stop_reason / workspace-default model_id only.
  */
 function withAttemptMetrics(
   outcome: PiAttemptOutcome,
@@ -77,10 +78,12 @@ function withAttemptMetrics(
   if (metrics.role === undefined) metrics.role = defaults.role;
   if (metrics.wallTimeMs === undefined) metrics.wallTimeMs = defaults.wallTimeMs;
   if (metrics.stopReason === undefined) metrics.stopReason = defaults.stopReason;
+  // Prefer handler-supplied seat modelId; workspace default is last-resort only.
   if (metrics.modelId === undefined && defaults.modelId) metrics.modelId = defaults.modelId;
   const merged = { ...outcome, metrics };
   const parsed = PiAttemptOutcomeSchema.safeParse(merged);
-  return parsed.success ? parsed.data : outcome;
+  // Never block completion on metrics shape — drop metrics if invalid.
+  return parsed.success ? parsed.data : { ...outcome };
 }
 
 /**
@@ -95,7 +98,7 @@ export function createPiAttemptExecutor(
     (options.fixture ? createFixtureProduceRuntime() : createLiveProduceRuntime());
   const resolveModel = options.resolveModel ?? resolveWorkspacePiModel;
 
-  return async (rawInput, signal) => {
+  return async (rawInput, signal, hooks) => {
     let input: PiAttemptInput | undefined;
     const startedMs = Date.now();
     try {
@@ -111,6 +114,7 @@ export function createPiAttemptExecutor(
         runtime,
         resolveModel,
         signal,
+        ...(hooks?.onProgress ? { onProgress: hooks.onProgress } : {}),
       };
 
       let outcome: PiAttemptOutcome;

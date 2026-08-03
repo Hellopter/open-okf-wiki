@@ -27,8 +27,11 @@ import {
 import {
   type AttemptHandlerContext,
   bounded,
+  forwardScopedProgress,
   liveModel,
+  metricsFromSeatRun,
   readSpec,
+  seatModelId,
   sealTranscript,
 } from "./shared.js";
 
@@ -160,6 +163,10 @@ export async function runWriteShared(
     }
   }
 
+  const seat = {
+    modelId: seatModelId(resolved),
+    role: (mode === "repair" ? "repair" : "writer") as "repair" | "writer",
+  };
   const produced = await runtime.writeWiki({
     layout,
     spec,
@@ -180,6 +187,7 @@ export async function runWriteShared(
     runIndex: input.node.runIndex,
     ...(asRepair ? { graphRole: "repair" as const } : {}),
     transcriptPath: input.sessionPath,
+    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
 
   await materializeWikiIndexes(layout.wikiDir);
@@ -216,5 +224,10 @@ export async function runWriteShared(
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(produced.summary),
+    metrics: metricsFromSeatRun({
+      role: mode === "repair" ? "repair" : "writer",
+      modelId: seatModelId(resolved),
+      fromRun: produced.metrics,
+    }),
   });
 }

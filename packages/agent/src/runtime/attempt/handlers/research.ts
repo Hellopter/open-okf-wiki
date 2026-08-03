@@ -22,8 +22,11 @@ import {
 import {
   type AttemptHandlerContext,
   bounded,
+  forwardScopedProgress,
   liveModel,
+  metricsFromSeatRun,
   parseNodeDetail,
+  seatModelId,
   sealTranscript,
   writeAnalysisJson,
 } from "../shared.js";
@@ -176,6 +179,7 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
     runId: input.runId,
   });
   const leafTask = operatorNotes ? `${operatorNotes}\n\n${leafBase}` : leafBase;
+  const seat = { modelId: seatModelId(resolved), role: "leaf" as const };
   const result = await runtime.runAgent({
     role: "leaf",
     spanId: input.attemptId,
@@ -194,6 +198,7 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
     abortSignal: signal,
     timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
     transcriptPath: input.sessionPath,
+    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
   if (result.failed) throw new Error(result.summary);
 
@@ -222,7 +227,11 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(result.summary),
-    metrics: { role: "leaf" },
+    metrics: metricsFromSeatRun({
+      role: "leaf",
+      modelId: seatModelId(resolved),
+      fromRun: result.metrics,
+    }),
   });
 }
 
@@ -279,6 +288,7 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
     childReceiptSummaries: childBodies || undefined,
   });
   const domainTask = operatorNotes ? `${operatorNotes}\n\n${domainBase}` : domainBase;
+  const seat = { modelId: seatModelId(resolved), role: "domain" as const };
   const result = await runtime.runAgent({
     role: "domain",
     spanId: input.attemptId,
@@ -297,6 +307,7 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
     abortSignal: signal,
     timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
     transcriptPath: input.sessionPath,
+    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
   if (result.failed) throw new Error(result.summary);
 
@@ -343,6 +354,10 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
       { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
     ],
     summary: bounded(result.summary || summary),
-    metrics: { role: "domain" },
+    metrics: metricsFromSeatRun({
+      role: "domain",
+      modelId: seatModelId(resolved),
+      fromRun: result.metrics,
+    }),
   });
 }

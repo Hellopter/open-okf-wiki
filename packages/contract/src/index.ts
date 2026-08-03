@@ -184,6 +184,7 @@ export {
   PiAttemptNodeSchema,
   type PiAttemptOutcome,
   PiAttemptOutcomeSchema,
+  type PiAttemptProgressHooks,
   type PiAttemptTranscriptDescriptor,
   PiAttemptTranscriptDescriptorSchema,
 } from "./pi-attempt.js";
@@ -293,6 +294,10 @@ export {
 } from "./run-phase.js";
 /** Browser-safe Operator Session wire projection (ADR 0039). */
 export {
+  type AgentSessionContextBudget,
+  AgentSessionContextBudgetSchema,
+  type AgentSessionModel,
+  AgentSessionModelSchema,
   applySessionStreamPatch,
   createSessionStreamState,
   diffSessionStreamState,

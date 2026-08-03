@@ -146,3 +146,119 @@ test("appendOptimisticUser ignores blank text and keeps distinct content", () =>
   );
   assert.ok(viewSessionMessages(state).every((message) => message.id.startsWith("optimistic_")));
 });
+
+test("reduceSessionStreamEvent tracks model from snapshot state and session chrome", () => {
+  const empty = createSessionStreamState();
+
+  // Prefer state.model when present (current servers project chrome onto state).
+  const withStateModel: AgentSseEvent = {
+    source: "server",
+    kind: "snapshot",
+    sessionId: "session-1",
+    timestamp,
+    payload: {
+      session: {
+        id: "session-1",
+        workspaceId: "w1",
+        model: { profileId: "envelope", modelId: "env-model" },
+      },
+      state: {
+        ...createSessionStreamState(),
+        model: { profileId: "state-profile", modelId: "state-model" },
+        contextBudget: { contextWindow: 64_000, contextTarget: 54_400 },
+      },
+    },
+  };
+  const fromState = reduceSessionStreamEvent(empty, withStateModel);
+  assert.equal(fromState.model?.profileId, "state-profile");
+  assert.equal(fromState.contextBudget?.contextWindow, 64_000);
+
+  // Phase 0 fallback: model only on payload.session when state omits it.
+  const envelopeOnly: AgentSseEvent = {
+    source: "server",
+    kind: "snapshot",
+    sessionId: "session-1",
+    timestamp,
+    payload: {
+      session: {
+        id: "session-1",
+        workspaceId: "w1",
+        model: { profileId: "envelope", modelId: "env-model" },
+        contextBudget: { contextWindow: 32_000, contextTarget: 27_200 },
+      },
+      state: createSessionStreamState(),
+    },
+  };
+  const fromEnvelope = reduceSessionStreamEvent(empty, envelopeOnly);
+  assert.equal(fromEnvelope.model?.profileId, "envelope");
+  assert.equal(fromEnvelope.contextBudget?.contextWindow, 32_000);
+});
+
+test("reduceSessionStreamEvent applies set_model chrome from stream patches", () => {
+  const prior = reduceSessionStreamEvent(createSessionStreamState(), {
+    source: "server",
+    kind: "snapshot",
+    sessionId: "session-1",
+    timestamp,
+    payload: {
+      session: {
+        id: "session-1",
+        workspaceId: "w1",
+        model: { profileId: "default", modelId: "gpt-a" },
+      },
+      state: {
+        ...createSessionStreamState(),
+        model: { profileId: "default", modelId: "gpt-a" },
+        contextBudget: { contextWindow: 64_000, contextTarget: 54_400 },
+        sessionUsage: { contextTokens: 100, contextWindow: 64_000, contextTarget: 54_400 },
+      },
+    },
+  });
+  assert.equal(prior.model?.profileId, "default");
+
+  const setModelPatch: AgentSseEvent = {
+    source: "server",
+    kind: "stream",
+    sessionId: "session-1",
+    timestamp,
+    payload: {
+      agentStatus: "idle",
+      errorText: null,
+      turnActive: false,
+      lastAssistantId: null,
+      streamingMessage: null,
+      appended: [],
+      updated: [],
+      contextPhase: "unknown",
+      model: { profileId: "fast", modelId: "gpt-b", name: "Fast" },
+      contextBudget: { contextWindow: 200_000, contextTarget: 170_000 },
+      sessionUsage: { contextTokens: 100, contextWindow: 200_000, contextTarget: 170_000 },
+    },
+  };
+  const after = reduceSessionStreamEvent(prior, setModelPatch);
+  assert.equal(after.model?.profileId, "fast");
+  assert.equal(after.model?.modelId, "gpt-b");
+  assert.equal(after.contextBudget?.contextWindow, 200_000);
+  assert.equal(after.sessionUsage?.contextWindow, 200_000);
+
+  // Subsequent turn patch without chrome retains prior model.
+  const turnOnly: AgentSseEvent = {
+    source: "server",
+    kind: "stream",
+    sessionId: "session-1",
+    timestamp,
+    payload: {
+      agentStatus: "streaming",
+      errorText: null,
+      turnActive: true,
+      lastAssistantId: "a1",
+      streamingMessage: assistant("a1", "hi", "streaming"),
+      appended: [],
+      updated: [],
+      contextPhase: "normal",
+    },
+  };
+  const retained = reduceSessionStreamEvent(after, turnOnly);
+  assert.equal(retained.model?.profileId, "fast");
+  assert.equal(retained.contextBudget?.contextWindow, 200_000);
+});

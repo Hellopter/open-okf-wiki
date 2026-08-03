@@ -203,6 +203,18 @@ test("run events carry one matching full snapshot", () => {
     }).success,
     false,
   );
+  // Soft mid-run metrics refresh event (SSE projection only).
+  assert.equal(
+    WikiRunEventSchema.safeParse({
+      runId: "run-1",
+      eventId: 2,
+      revision: 2,
+      type: "attempt.progress",
+      occurredAt: timestamp,
+      snapshot,
+    }).success,
+    true,
+  );
 });
 
 test("publication effects bind a candidate to its approved publication generation", () => {
