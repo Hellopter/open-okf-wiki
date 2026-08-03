@@ -9,6 +9,12 @@ export {
   PLAN_SCOUT_KINDS,
   type PlanScoutKind,
   planScoutPrompt,
+  planScoutPromptLegacy,
+  THEMATIC_SCOUT_KINDS,
+  type PlanScoutTask,
+  type ThematicScoutKind,
+  scoutTaskFileSlug,
+  scoutTaskLabel,
 } from "./plan-scout.js";
 export { type ReviewLens, reviewerPrompt } from "./reviewer.js";
 export {

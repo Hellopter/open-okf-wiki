@@ -1,15 +1,21 @@
 /**
- * Host-side ExecutionPlan compiler (Phase 1 hard-cut).
+ * Host-side ExecutionPlan compiler (Phase 1 hard-cut + coverage Phase A).
  *
  * WikiRunSpec is content/acceptance only. Topology caps are enforced here:
  * over maxDomainFanOut / maxLeafFanOut → throw (never silent `.slice`).
+ * When a CoveragePlan is available, assertCoverage runs fail-closed before
+ * the plan is accepted (ADR 0040).
  */
 
 import {
+  assertCoverage,
   assertSpecWithinFanOutCaps,
+  type CoveragePlan,
+  CoverageAssertError,
   DEFAULT_ORCHESTRATION,
   type ExecutionPlan,
   ExecutionPlanSchema,
+  normalizeSpecUnitIds,
   resolveSpecFanOutCaps,
   SpecFanOutCapError,
   type WikiRunSpec,
@@ -25,6 +31,19 @@ export type CompileExecutionPlanCaps = {
   adaptationRequired?: boolean;
   /** Optional Spec content digest to record on the plan. */
   specDigest?: string;
+  /**
+   * Host CoveragePlan (contract shape with requiredUnits). When provided and
+   * non-empty requiredUnits, assertCoverage runs fail-closed before compile
+   * accepts the Spec topology.
+   */
+  coveragePlan?: CoveragePlan;
+  /**
+   * When true (default if coveragePlan is set), throw on coverage gaps.
+   * Soft mode returns only when throwOnCoverageGap is explicitly false.
+   */
+  throwOnCoverageGap?: boolean;
+  /** Credit domain-level coverage bindings in assertCoverage (default false). */
+  includeDomainsInCoverage?: boolean;
 };
 
 export class ExecutionPlanCompileError extends Error {
@@ -41,6 +60,7 @@ export class ExecutionPlanCompileError extends Error {
 /**
  * Compile a sealed ExecutionPlan from an approved (or plan-success) WikiRunSpec.
  * Fail-closed on fan-out caps — callers must not truncate Spec domains/questions.
+ * Fail-closed on coverage gaps when coveragePlan is supplied.
  */
 export function compileExecutionPlan(
   spec: WikiRunSpec,
@@ -70,6 +90,22 @@ export function compileExecutionPlan(
     throw err;
   }
 
+  // ADR 0040: do not compile a topology that already omits required coverage units.
+  if (caps?.coveragePlan) {
+    const throwOnGap = caps.throwOnCoverageGap !== false;
+    try {
+      assertCoverage(spec, caps.coveragePlan, {
+        throwOnGap,
+        includeDomains: caps.includeDomainsInCoverage === true,
+      });
+    } catch (err) {
+      if (err instanceof CoverageAssertError) {
+        throw new ExecutionPlanCompileError(err.message);
+      }
+      throw err;
+    }
+  }
+
   const workUnits: ExecutionPlan["workUnits"] = [];
   let leafCount = 0;
 
@@ -79,8 +115,15 @@ export function compileExecutionPlan(
       throw new ExecutionPlanCompileError("WikiRunSpec domain id must be non-empty");
     }
     const questions = (domain.questions ?? []).map((q) => q.trim()).filter((q) => q.length > 0);
+    const { coverageUnitIds, sourceIds, surfaceIds } = normalizeSpecUnitIds(domain);
 
     const scope = (domain.scope?.trim() || domain.title?.trim() || domainId).slice(0, 2_000);
+    const coverageBindings = {
+      ...(coverageUnitIds.length > 0 ? { coverageUnitIds } : {}),
+      ...(sourceIds.length > 0 ? { sourceIds } : {}),
+      ...(surfaceIds.length > 0 ? { surfaceIds } : {}),
+    };
+
     if (questions.length === 0) {
       // Domains without questions still get one leaf so domain reduce has input.
       const id = `leaf:${domainId}:1`;
@@ -89,6 +132,7 @@ export function compileExecutionPlan(
         domainId,
         questions: [],
         scope,
+        ...coverageBindings,
       });
       leafCount += 1;
     } else {
@@ -99,6 +143,7 @@ export function compileExecutionPlan(
           domainId,
           questions: [question],
           scope,
+          ...coverageBindings,
         });
         leafCount += 1;
       });

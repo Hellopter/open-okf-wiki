@@ -2,7 +2,14 @@
  * Pure plan-review helpers (no React / network). Safe for node:test.
  */
 
-import type { WikiRunGate, WikiRunPlanReview } from "@okf-wiki/contract";
+import type {
+  CoverageResult,
+  CoverageResultRow,
+  CoverageRowStatus,
+  CoverageStopReason,
+  WikiRunGate,
+  WikiRunPlanReview,
+} from "@okf-wiki/contract";
 
 export type PlanReviewStatus = "idle" | "loading" | "ready" | "pending" | "stale" | "error";
 
@@ -57,4 +64,94 @@ export function shouldLoadPlanReview(snapshot: {
   const planNode = snapshot.nodes.find((node) => node.key === "plan" || node.kind === "plan");
   if (!planNode) return false;
   return ["succeeded", "waiting", "running"].includes(planNode.state);
+}
+
+/** Effective stop reason from plan-review materials (top-level or nested coverage). */
+export function coverageStopReasonOf(
+  review: Pick<WikiRunPlanReview, "coverage" | "coverageStopReason"> | null | undefined,
+): CoverageStopReason | undefined {
+  if (!review) return undefined;
+  return review.coverageStopReason ?? review.coverage?.stop_reason;
+}
+
+/**
+ * Host fail-closed mirror: block Approve when coverage is incomplete / has gaps.
+ * Missing coverage or `not_required` (light single-repo) must allow approve.
+ */
+export function coverageBlocksApprove(
+  review: Pick<WikiRunPlanReview, "coverage" | "coverageStopReason"> | null | undefined,
+): boolean {
+  if (!review) return false;
+  const stop = coverageStopReasonOf(review);
+  if (stop === "coverage_gap") return true;
+  const coverage = review.coverage;
+  if (!coverage) return false;
+  if (coverage.stop_reason === "not_required") return false;
+  if (coverage.ok === false) return true;
+  if (coverage.gaps.length > 0) return true;
+  if (coverage.rows.some((row) => row.status === "gap")) return true;
+  return false;
+}
+
+export type CoverageStatusCounts = {
+  covered: number;
+  gap: number;
+  cancelled: number;
+  total: number;
+};
+
+export function coverageStatusCounts(
+  coverage: CoverageResult | null | undefined,
+): CoverageStatusCounts {
+  const counts: CoverageStatusCounts = { covered: 0, gap: 0, cancelled: 0, total: 0 };
+  if (!coverage) return counts;
+  for (const row of coverage.rows) {
+    counts.total += 1;
+    if (row.status === "covered") counts.covered += 1;
+    else if (row.status === "gap") counts.gap += 1;
+    else if (row.status === "cancelled") counts.cancelled += 1;
+  }
+  return counts;
+}
+
+const STATUS_ORDER: Record<CoverageRowStatus, number> = {
+  gap: 0,
+  covered: 1,
+  cancelled: 2,
+};
+
+/**
+ * Sort coverage rows for operator scan:
+ * gaps first, then covered, then cancelled; within status prefer sources when
+ * multi-source (source units present), else surfaces first for large-single.
+ */
+export function sortCoverageRows(rows: readonly CoverageResultRow[]): CoverageResultRow[] {
+  const hasSource = rows.some((row) => row.kind === "source");
+  const kindRank = (kind: CoverageResultRow["kind"]): number => {
+    if (hasSource) return kind === "source" ? 0 : 1;
+    return kind === "surface" ? 0 : 1;
+  };
+  return rows.slice().sort((a, b) => {
+    const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+    if (statusDiff !== 0) return statusDiff;
+    const kindDiff = kindRank(a.kind) - kindRank(b.kind);
+    if (kindDiff !== 0) return kindDiff;
+    return a.unitId.localeCompare(b.unitId);
+  });
+}
+
+/** Whether page-set diff has anything operator-visible (added/removed). */
+export function pageSetDiffHasChanges(
+  diff: WikiRunPlanReview["pageSetDiff"] | null | undefined,
+): boolean {
+  if (!diff) return false;
+  return diff.added.length > 0 || diff.removed.length > 0;
+}
+
+/** Whether scouts summary has anything to show. */
+export function hasScoutsSummary(
+  scouts: WikiRunPlanReview["scoutsSummary"] | null | undefined,
+): boolean {
+  if (!scouts) return false;
+  return scouts.receiptCount > 0 || scouts.kinds.length > 0;
 }

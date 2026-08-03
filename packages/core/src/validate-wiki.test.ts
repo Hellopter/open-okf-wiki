@@ -264,3 +264,181 @@ test("validateWikiTree rejects oversized file", async () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /max file size/i);
 });
+
+test("validateWikiTree rejects missing SOURCE_COVERAGE when coveragePlan provided", async () => {
+  const wiki = await tempDir("okf-val-src-cov-");
+  const apiSrc = await tempDir("okf-val-api-src-");
+  const webSrc = await tempDir("okf-val-web-src-");
+  await writeFile(path.join(apiSrc, "main.go"), "package main\n");
+  await writeFile(path.join(webSrc, "index.ts"), "export {};\n");
+
+  // Only cites api — web source unit is missing.
+  await writeMd(
+    wiki,
+    "overview.md",
+    `---\ntype: Overview\ntitle: Overview\n---\n\nBody [Source](repo:api/main.go#L1).\n`,
+  );
+  await writeMd(wiki, "index.md", listingIndex);
+
+  const result = await validateWikiTree(wiki, {
+    sources: [
+      { id: "api", path: apiSrc },
+      { id: "web", path: webSrc },
+    ],
+    coveragePlan: {
+      version: 1,
+      requiredUnits: [
+        { id: "api", kind: "source", sourceId: "api" },
+        { id: "web", kind: "source", sourceId: "web" },
+      ],
+      cancelled: [],
+      lightPath: false,
+      reasons: [],
+      maxSurfacesRequired: 12,
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /SOURCE_COVERAGE:.*\bweb\b/);
+  assert.equal(
+    result.errors.some((e) => e.includes('"api"') && e.includes("no page covers")),
+    false,
+    "api should be covered by overview citation",
+  );
+});
+
+test("validateWikiTree accepts coveragePlan when all source units are cited", async () => {
+  const wiki = await tempDir("okf-val-src-cov-ok-");
+  const apiSrc = await tempDir("okf-val-api2-");
+  const webSrc = await tempDir("okf-val-web2-");
+  await writeFile(path.join(apiSrc, "main.go"), "package main\n");
+  await writeFile(path.join(webSrc, "index.ts"), "export {};\n");
+
+  await writeMd(
+    wiki,
+    "overview.md",
+    `---\ntype: Overview\ntitle: Overview\n---\n\n[Source](repo:api/main.go#L1) [Source](repo:web/index.ts#L1).\n`,
+  );
+  await writeMd(wiki, "index.md", listingIndex);
+
+  const result = await validateWikiTree(wiki, {
+    sources: [
+      { id: "api", path: apiSrc },
+      { id: "web", path: webSrc },
+    ],
+    coveragePlan: {
+      requiredUnits: [
+        { id: "api", kind: "source", sourceId: "api" },
+        { id: "web", kind: "source", sourceId: "web" },
+      ],
+    },
+  });
+  assert.equal(result.ok, true, result.errors.join("; "));
+});
+
+test("validateWikiTree rejects SURFACE_COVERAGE for unbound surface unit", async () => {
+  const wiki = await tempDir("okf-val-surf-");
+  const src = await tempDir("okf-val-surf-src-");
+  await mkdir(path.join(src, "packages/core"), { recursive: true });
+  await writeFile(path.join(src, "packages/core/index.ts"), "export {};\n");
+  await writeFile(path.join(src, "README.md"), "# r\n");
+
+  await writeMd(
+    wiki,
+    "overview.md",
+    `---\ntype: Overview\ntitle: Overview\n---\n\nOnly root [Source](repo:README.md#L1).\n`,
+  );
+  await writeMd(wiki, "index.md", listingIndex);
+
+  const result = await validateWikiTree(wiki, {
+    sources: [{ id: "mono", path: src }],
+    coveragePlan: {
+      requiredUnits: [
+        {
+          id: "mono::packages/core",
+          kind: "surface",
+          sourceId: "mono",
+          path: "packages/core",
+        },
+      ],
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("; "), /SURFACE_COVERAGE:.*mono::packages\/core/);
+});
+
+test("validateWikiTree enforces coverageObligations page binding", async () => {
+  const wiki = await tempDir("okf-val-ob-");
+  const src = await tempDir("okf-val-ob-src-");
+  await writeFile(path.join(src, "lib.ts"), "export {};\n");
+
+  await writeMd(
+    wiki,
+    "overview.md",
+    `---\ntype: Overview\ntitle: Overview\n---\n\n[Source](repo:lib.ts#L1).\n`,
+  );
+  await writeMd(wiki, "index.md", listingIndex);
+
+  const missingPage = await validateWikiTree(wiki, {
+    sources: [{ id: "main", path: src }],
+    requireCitations: true,
+    coverageObligations: [{ unitId: "main", pagePath: "modules/main.md" }],
+  });
+  assert.equal(missingPage.ok, false);
+  assert.match(missingPage.errors.join("; "), /SOURCE_COVERAGE:.*modules\/main\.md/);
+
+  await writeMd(
+    wiki,
+    "modules/main.md",
+    `---\ntype: Module\ntitle: Main\n---\n\n[Source](repo:lib.ts#L1).\n`,
+  );
+  const ok = await validateWikiTree(wiki, {
+    sources: [{ id: "main", path: src }],
+    requireCitations: true,
+    coverageObligations: [{ unitId: "main", pagePath: "modules/main.md" }],
+  });
+  assert.equal(ok.ok, true, ok.errors.join("; "));
+});
+
+test("validateWikiTree CROSS_SOURCE_FLOW requires ≥2 source ids on Flow pages", async () => {
+  const wiki = await tempDir("okf-val-flow-");
+  const apiSrc = await tempDir("okf-val-flow-api-");
+  const webSrc = await tempDir("okf-val-flow-web-");
+  await writeFile(path.join(apiSrc, "handler.go"), "package api\n");
+  await writeFile(path.join(webSrc, "client.ts"), "export {};\n");
+
+  await writeMd(
+    wiki,
+    "overview.md",
+    `---\ntype: Overview\ntitle: Overview\n---\n\n[Source](repo:api/handler.go#L1) [Source](repo:web/client.ts#L1).\n`,
+  );
+  // Flow only cites one source → fail.
+  await writeMd(
+    wiki,
+    "flows/checkout.md",
+    `---\ntype: Flow\ntitle: Checkout\n---\n\nPath [Source](repo:api/handler.go#L1).\n`,
+  );
+  await writeMd(wiki, "index.md", listingIndex);
+
+  const bad = await validateWikiTree(wiki, {
+    sources: [
+      { id: "api", path: apiSrc },
+      { id: "web", path: webSrc },
+    ],
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors.join("; "), /CROSS_SOURCE_FLOW:.*flows\/checkout\.md/);
+
+  await writeMd(
+    wiki,
+    "flows/checkout.md",
+    `---\ntype: Flow\ntitle: Checkout\n---\n\n[Source](repo:api/handler.go#L1) then [Source](repo:web/client.ts#L1).\n`,
+  );
+  const good = await validateWikiTree(wiki, {
+    sources: [
+      { id: "api", path: apiSrc },
+      { id: "web", path: webSrc },
+    ],
+  });
+  assert.equal(good.ok, true, good.errors.join("; "));
+});
+

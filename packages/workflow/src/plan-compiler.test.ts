@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import {
+  CoveragePlanSchema,
+  defaultWikiRunSpec,
+  sourceCoverageUnit,
+} from "@okf-wiki/contract";
 import { compileExecutionPlan, ExecutionPlanCompileError } from "./plan-compiler.js";
 import { failureClassOf } from "./wiki-runs/scheduler.js";
 
@@ -75,4 +79,100 @@ test("zero-question domain still yields one leaf work unit", () => {
   const plan = compileExecutionPlan(spec);
   assert.equal(plan.workUnits.length, 1);
   assert.equal(plan.workUnits[0]?.scope, "whole repo");
+});
+
+test("compileExecutionPlan propagates domain coverage ids onto work units", () => {
+  const spec = defaultWikiRunSpec("Cov");
+  spec.domains = [
+    {
+      id: "core",
+      title: "Core",
+      scope: "api + web",
+      critical: true,
+      questions: ["q1"],
+      sourceIds: ["api", "web"],
+      coverageUnitIds: ["api", "web"],
+    },
+  ];
+  spec.pages = [
+    {
+      path: "overview.md",
+      purpose: "overview",
+      domainIds: ["core"],
+      questions: [],
+      critical: true,
+      coverageUnitIds: ["api", "web"],
+    },
+  ];
+  const plan = compileExecutionPlan(spec);
+  assert.equal(plan.workUnits.length, 1);
+  assert.deepEqual(plan.workUnits[0]?.sourceIds, ["api", "web"]);
+  assert.deepEqual(plan.workUnits[0]?.coverageUnitIds, ["api", "web"]);
+});
+
+test("compileExecutionPlan fails closed when coveragePlan has gaps", () => {
+  const spec = defaultWikiRunSpec("Gap");
+  spec.domains = [
+    {
+      id: "core",
+      title: "Core",
+      scope: "frontend only",
+      critical: true,
+      questions: ["q"],
+      sourceIds: ["frontend"],
+    },
+  ];
+  spec.pages = [
+    {
+      path: "overview.md",
+      purpose: "overview",
+      domainIds: ["core"],
+      questions: [],
+      critical: true,
+      sourceIds: ["frontend"],
+    },
+  ];
+  const coveragePlan = CoveragePlanSchema.parse({
+    requiredUnits: [sourceCoverageUnit("frontend"), sourceCoverageUnit("backend")],
+    cancelled: [],
+  });
+  assert.throws(
+    () => compileExecutionPlan(spec, { coveragePlan }),
+    ExecutionPlanCompileError,
+  );
+  assert.throws(
+    () => compileExecutionPlan(spec, { coveragePlan }),
+    /coverage gate failed|gap/,
+  );
+});
+
+test("compileExecutionPlan accepts Spec that covers all required units", () => {
+  const spec = defaultWikiRunSpec("Ok");
+  spec.domains = [
+    {
+      id: "core",
+      title: "Core",
+      scope: "both",
+      critical: true,
+      questions: ["q"],
+      coverageUnitIds: ["frontend", "backend"],
+    },
+  ];
+  spec.pages = [
+    {
+      path: "overview.md",
+      purpose: "overview",
+      domainIds: ["core"],
+      questions: [],
+      critical: true,
+      coverageUnitIds: ["frontend", "backend"],
+    },
+  ];
+  const coveragePlan = CoveragePlanSchema.parse({
+    requiredUnits: [sourceCoverageUnit("frontend"), sourceCoverageUnit("backend")],
+    cancelled: [],
+  });
+  const plan = compileExecutionPlan(spec, { coveragePlan });
+  assert.equal(plan.workUnits.length, 1);
+  assert.ok(plan.workUnits[0]?.coverageUnitIds?.includes("frontend"));
 });

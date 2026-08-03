@@ -283,6 +283,45 @@ const OPERATOR_INPUT: InputRequirement = {
   mountPath: "operator-input.json",
 };
 
+/** Host-sealed CoverageInventory from freeze (optional until freeze materializes it). */
+const COVERAGE_INVENTORY: InputRequirement = {
+  role: "coverage_inventory",
+  artifactKind: "receipt",
+  required: false,
+  projection: "mounted",
+  mountPath: "coverage-inventory.json",
+};
+
+/** Host-sealed CoveragePlan (required units) from freeze. */
+const COVERAGE_PLAN: InputRequirement = {
+  role: "coverage_plan",
+  artifactKind: "receipt",
+  required: false,
+  projection: "mounted",
+  mountPath: "coverage-plan.json",
+};
+
+/** Optional path-only BoundaryIndex sealed at freeze. */
+const BOUNDARY_INDEX: InputRequirement = {
+  role: "boundary_index",
+  artifactKind: "receipt",
+  required: false,
+  projection: "mounted",
+  mountPath: "boundary-index.json",
+};
+
+/**
+ * Prior sealed Spec on plan revise (gen>0). Role is prior_spec so it does not
+ * collide with the new Spec this attempt will produce.
+ */
+const PRIOR_SPEC: InputRequirement = {
+  role: "prior_spec",
+  artifactKind: "spec",
+  required: false,
+  projection: "mounted",
+  mountPath: "prior-spec.json",
+};
+
 const VALIDATE_REPORT_OUTPUT: OutputRequirement = {
   role: "validate_report",
   artifactKind: "receipt",
@@ -297,13 +336,26 @@ const CONTRACTS: Record<string, NodeContract> = {
       { role: "skill", artifactKind: "skill" },
       { role: "frozen_run_manifest", artifactKind: "manifest" },
       { role: "prior_wiki", artifactKind: "wiki_tree", required: false },
+      { role: "coverage_inventory", artifactKind: "receipt", required: false },
+      { role: "coverage_plan", artifactKind: "receipt", required: false },
+      { role: "boundary_index", artifactKind: "receipt", required: false },
       { role: "attempt_output", artifactKind: "manifest" },
     ],
     execution: "mechanical",
   },
   plan: {
     kind: "plan",
-    requiredInputs: [SOURCES, SKILL, FROZEN_MANIFEST, TRANSCRIPT_AUDIT, OPERATOR_INPUT],
+    requiredInputs: [
+      SOURCES,
+      SKILL,
+      FROZEN_MANIFEST,
+      COVERAGE_INVENTORY,
+      COVERAGE_PLAN,
+      BOUNDARY_INDEX,
+      PRIOR_SPEC,
+      TRANSCRIPT_AUDIT,
+      OPERATOR_INPUT,
+    ],
     outputs: [
       { role: "spec", artifactKind: "spec" },
       { role: "execution_plan", artifactKind: "execution_plan" },
@@ -419,13 +471,13 @@ const CONTRACTS: Record<string, NodeContract> = {
   },
   "validate.pre": {
     kind: "validate.pre",
-    requiredInputs: [WIKI_TREE, SPEC],
+    requiredInputs: [WIKI_TREE, SPEC, COVERAGE_PLAN, { ...SOURCES, required: false }],
     outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }, VALIDATE_REPORT_OUTPUT],
     execution: "mechanical",
   },
   "validate.final": {
     kind: "validate.final",
-    requiredInputs: [WIKI_TREE, SPEC],
+    requiredInputs: [WIKI_TREE, SPEC, COVERAGE_PLAN, { ...SOURCES, required: false }],
     outputs: [{ role: "wiki_tree", artifactKind: "wiki_tree" }, VALIDATE_REPORT_OUTPUT],
     execution: "mechanical",
   },

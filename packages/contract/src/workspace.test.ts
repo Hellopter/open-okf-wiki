@@ -110,6 +110,10 @@ test("resolveOrchestration fills schema defaults and preserves partials", () => 
   // Phase 7 light path: 0 scouts, 1 review lens.
   assert.equal(DEFAULT_ORCHESTRATION.planScoutCount, 0);
   assert.equal(DEFAULT_ORCHESTRATION.reviewCouncilSize, 1);
+  assert.equal(DEFAULT_ORCHESTRATION.planScoutMode, "auto");
+  assert.equal(DEFAULT_ORCHESTRATION.planRescoutMaxRounds, 1);
+  assert.equal(DEFAULT_ORCHESTRATION.maxSurfacesRequired, 12);
+  assert.equal(DEFAULT_ORCHESTRATION.maxSourcesPerRun, 16);
   const partial = resolveOrchestration({ domainConcurrency: 4, reviewCouncilSize: 1 });
   assert.equal(partial.domainConcurrency, 4);
   assert.equal(partial.reviewCouncilSize, 1);
@@ -118,7 +122,30 @@ test("resolveOrchestration fills schema defaults and preserves partials", () => 
   assert.equal(partial.planScoutCount, DEFAULT_ORCHESTRATION.planScoutCount);
   assert.equal(partial.leafConcurrency, DEFAULT_ORCHESTRATION.leafConcurrency);
   assert.equal(partial.leafConcurrency, 2);
+  assert.equal(partial.planScoutMode, "auto");
+  assert.equal(partial.maxSourcesPerRun, 16);
   assert.equal("reviewConcurrency" in partial, false);
+  assert.equal("planSurveyTaskBudget" in partial, false);
+  assert.equal("requireSourceCoverage" in partial, false);
+});
+
+test("resolveOrchestration preserves coverage / survey overrides", () => {
+  const o = resolveOrchestration({
+    planScoutMode: "hybrid",
+    planRescoutMaxRounds: 2,
+    planSurveyTaskBudget: 8,
+    requireSourceCoverage: true,
+    requireSurfaceCoverage: false,
+    maxSurfacesRequired: 20,
+    maxSourcesPerRun: 10,
+  });
+  assert.equal(o.planScoutMode, "hybrid");
+  assert.equal(o.planRescoutMaxRounds, 2);
+  assert.equal(o.planSurveyTaskBudget, 8);
+  assert.equal(o.requireSourceCoverage, true);
+  assert.equal(o.requireSurfaceCoverage, false);
+  assert.equal(o.maxSurfacesRequired, 20);
+  assert.equal(o.maxSourcesPerRun, 10);
 });
 
 test("leafConcurrency defaults to 2 and accepts overrides", () => {

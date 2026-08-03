@@ -1,11 +1,16 @@
 /**
  * Readable sealed plan document: Spec body + host ExecutionPlan summary.
  * Shared by plan-gate decision surface and observation Plan tab.
+ * Optional coverage / scouts / page-set diff when present on plan-review.
  */
 
 import type { WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract";
 import { Badge } from "@/components/ui/badge";
 import { formatMessage, type MessageTree } from "../../i18n";
+import { CoverageMatrixPanel, CoverageStrip } from "./CoverageMatrixPanel";
+import { hasScoutsSummary, pageSetDiffHasChanges } from "./plan-review-utils";
+import { ScoutsSummary } from "./ScoutsSummary";
+import { SpecPageSetDiff } from "./SpecPageSetDiff";
 
 export function PlanDocument({
   review,
@@ -15,13 +20,54 @@ export function PlanDocument({
   t: MessageTree;
 }) {
   const { spec, execution } = review;
+  const showCoverage = Boolean(review.coverage);
+  const showScouts = hasScoutsSummary(review.scoutsSummary);
+  const showPageDiff =
+    Boolean(review.pageSetDiff) &&
+    (pageSetDiffHasChanges(review.pageSetDiff) ||
+      (review.pageSetDiff?.retained.length ?? 0) > 0 ||
+      Boolean(review.priorSpec));
+
   return (
     <div
       className="mx-auto flex w-full max-w-5xl flex-col gap-8"
       data-testid="plan-document"
       data-payload-digest={review.payloadDigest}
     >
+      {showCoverage || showScouts ? (
+        <div className="flex flex-col gap-4 border-b border-border pb-4">
+          {showCoverage && review.coverage ? (
+            <CoverageStrip
+              coverage={review.coverage}
+              stopReason={review.coverageStopReason}
+              t={t}
+            />
+          ) : null}
+          {showScouts && review.scoutsSummary ? (
+            <ScoutsSummary scouts={review.scoutsSummary} t={t} />
+          ) : null}
+        </div>
+      ) : null}
+
       <SpecSections spec={spec} t={t} />
+
+      {showCoverage && review.coverage ? (
+        <CoverageMatrixPanel
+          coverage={review.coverage}
+          stopReason={review.coverageStopReason}
+          coverageRounds={review.coverageRounds}
+          t={t}
+        />
+      ) : null}
+
+      {showPageDiff && review.pageSetDiff ? (
+        <SpecPageSetDiff
+          pageSetDiff={review.pageSetDiff}
+          priorSpec={review.priorSpec}
+          t={t}
+        />
+      ) : null}
+
       <section data-testid="plan-execution-summary">
         <h3 className="text-sm font-medium">{t.specReview.execution}</h3>
         <dl className="mt-3 grid gap-x-6 gap-y-3 border-y border-border py-3 text-sm sm:grid-cols-2">

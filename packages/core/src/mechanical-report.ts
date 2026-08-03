@@ -54,6 +54,11 @@ function classifyValidateError(error: string): IssueClassification {
   if (/critical page missing/i.test(error)) {
     return { code: "missing_critical_page", autoFixable: false };
   }
+  // Plan coverage gaps (SOURCE_COVERAGE / SURFACE_COVERAGE / CROSS_SOURCE_FLOW).
+  // Contract MechanicalIssueCode has no dedicated coverage codes yet → "other".
+  if (/^SOURCE_COVERAGE:|^SURFACE_COVERAGE:|^CROSS_SOURCE_FLOW:/i.test(error)) {
+    return { code: "other", autoFixable: false };
+  }
   if (/symlink/i.test(error)) {
     return { code: "symlink", autoFixable: false };
   }

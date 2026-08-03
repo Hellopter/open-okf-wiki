@@ -385,6 +385,99 @@ test("mergeOperatorNotes prefers sealed answer over focus", () => {
   );
 });
 
+test("materialize projects prior_spec into inputs/prior-spec.json", async (t) => {
+  // Plan node does not take sealed `spec`/`execution_plan` — hand-build envelope.
+  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-prior-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sources = path.join(root, "sealed-sources");
+  const skill = path.join(root, "sealed-skill");
+  const manifest = path.join(root, "sealed-manifest");
+  const priorDir = path.join(root, "sealed-prior-spec");
+  const attemptDir = path.join(root, "attempts", "attempt-1");
+  await mkdir(sources, { recursive: true });
+  await mkdir(skill, { recursive: true });
+  await mkdir(manifest, { recursive: true });
+  await mkdir(priorDir, { recursive: true });
+  await writeFile(path.join(sources, "README.md"), "# Demo\n", "utf8");
+  await writeFile(path.join(skill, "SKILL.md"), "# Skill\n", "utf8");
+  await writeFile(
+    path.join(manifest, "frozen-run-manifest.json"),
+    `${JSON.stringify({
+      version: 2,
+      intent: { mode: "generate" },
+      mode: "generate",
+      intentDigest: digest,
+      sources: [{ id: "main" }],
+    })}\n`,
+    "utf8",
+  );
+  const priorSpec = defaultWikiRunSpec("Prior");
+  priorSpec.summary = "Prior plan summary";
+  await writeFile(path.join(priorDir, "spec.json"), `${JSON.stringify(priorSpec)}\n`, "utf8");
+
+  const input = PiAttemptInputSchema.parse({
+    runId: "run-prior-1",
+    attemptId: "attempt-1",
+    node: { key: "plan", kind: "plan", generation: 1, runIndex: 1 },
+    inputDigest: digest,
+    workspace: {
+      version: 3,
+      id: "workspace-1",
+      name: "Demo",
+      rootPath: root,
+      sources: [
+        {
+          id: "main",
+          path: sources,
+          applyDefaultIgnores: true,
+          ignore: [],
+          origin: { type: "path" },
+        },
+      ],
+      model: { id: "fixture/model" },
+      publicationPath: path.join(root, "published"),
+      orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+      createdAt: timestamp,
+    },
+    sealedInputs: [
+      {
+        role: "sources",
+        artifact: { artifactId: "sources", kind: "snapshot_set", digest, sealedAt: timestamp },
+        readOnlyPath: sources,
+      },
+      {
+        role: "skill",
+        artifact: { artifactId: "skill", kind: "skill", digest, sealedAt: timestamp },
+        readOnlyPath: skill,
+      },
+      {
+        role: "frozen_run_manifest",
+        artifact: { artifactId: "manifest", kind: "manifest", digest, sealedAt: timestamp },
+        readOnlyPath: manifest,
+      },
+      {
+        role: "prior_spec",
+        artifact: { artifactId: "prior-1", kind: "spec", digest, sealedAt: timestamp },
+        readOnlyPath: priorDir,
+      },
+    ],
+    attemptDir,
+    workDir: path.join(attemptDir, "work"),
+    sessionPath: path.join(attemptDir, "session.jsonl"),
+    skillPath: skill,
+    sourcePaths: { main: sources },
+  });
+  const layout = await materializeInputs(input);
+  const projected = path.join(layout.runWorkDir, "inputs", "prior-spec.json");
+  await access(projected);
+  const body = JSON.parse(await readFile(projected, "utf8")) as { summary?: string };
+  assert.equal(body.summary, "Prior plan summary");
+  // Unlock read-only mounts before after-hook rm (inputs/evidence are 0555).
+  await unlock(root);
+  t.after(() => rm(root, { recursive: true, force: true }));
+});
+
 test("materialize projects operator_input into inputs/operator-input.json", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-mat-op-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -567,6 +660,171 @@ test("materialize lineage: research artifact digests land in evidence index", as
   // Readable under workDir
   const body = await readFile(path.join(layout.runWorkDir, bundle.receipts[0]!.path), "utf8");
   assert.ok(body.includes("Domain summary"));
+});
+
+test("materialize accepts freeze-shaped coverage_plan (requiredUnits + host extras)", async (t) => {
+  // Freeze seals plan with lightPath/reasons/maxSurfacesRequired; strict schema rejects those.
+  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-cov-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const sources = path.join(root, "sealed-sources");
+  const skill = path.join(root, "sealed-skill");
+  const manifest = path.join(root, "sealed-manifest");
+  const planDir = path.join(root, "sealed-coverage-plan");
+  const invDir = path.join(root, "sealed-coverage-inventory");
+  const attemptDir = path.join(root, "attempts", "attempt-1");
+  await mkdir(sources, { recursive: true });
+  await mkdir(skill, { recursive: true });
+  await mkdir(manifest, { recursive: true });
+  await mkdir(planDir, { recursive: true });
+  await mkdir(invDir, { recursive: true });
+  await writeFile(path.join(sources, "README.md"), "# Demo\n", "utf8");
+  await writeFile(path.join(skill, "SKILL.md"), "# Skill\n", "utf8");
+  await writeFile(
+    path.join(manifest, "frozen-run-manifest.json"),
+    `${JSON.stringify({
+      version: 2,
+      intent: { mode: "generate" },
+      mode: "generate",
+      intentDigest: digest,
+      sources: [{ id: "api" }, { id: "web" }],
+    })}\n`,
+    "utf8",
+  );
+  const freezePlan = {
+    version: 1,
+    requiredUnits: [
+      { id: "api", kind: "source", sourceId: "api" },
+      { id: "web", kind: "source", sourceId: "web" },
+    ],
+    cancelled: [],
+    lightPath: false,
+    reasons: ["multi-source: each source unit required"],
+    maxSurfacesRequired: 12,
+  };
+  const freezeInventory = {
+    version: 1,
+    sources: [
+      {
+        sourceId: "api",
+        fileCount: 3,
+        languages: ["ts"],
+        multiEntry: false,
+        truncated: false,
+        surfaces: [{ id: "api::.", path: ".", origin: "root" }],
+      },
+      {
+        sourceId: "web",
+        fileCount: 2,
+        languages: ["ts"],
+        multiEntry: false,
+        truncated: false,
+        surfaces: [{ id: "web::.", path: ".", origin: "root" }],
+      },
+    ],
+    units: [
+      { id: "api", kind: "source", sourceId: "api" },
+      { id: "web", kind: "source", sourceId: "web" },
+    ],
+    sourceCount: 2,
+    fileCount: 5,
+    languages: ["ts"],
+    multiEntry: false,
+    large: true,
+  };
+  await writeFile(
+    path.join(planDir, "coverage-plan.json"),
+    `${JSON.stringify(freezePlan)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(invDir, "coverage-inventory.json"),
+    `${JSON.stringify(freezeInventory)}\n`,
+    "utf8",
+  );
+
+  const input = PiAttemptInputSchema.parse({
+    runId: "run-cov-1",
+    attemptId: "attempt-1",
+    node: { key: "plan", kind: "plan", generation: 0, runIndex: 1 },
+    inputDigest: digest,
+    workspace: {
+      version: 3,
+      id: "workspace-1",
+      name: "Demo",
+      rootPath: root,
+      sources: [
+        {
+          id: "api",
+          path: sources,
+          applyDefaultIgnores: true,
+          ignore: [],
+          origin: { type: "path" },
+        },
+        {
+          id: "web",
+          path: sources,
+          applyDefaultIgnores: true,
+          ignore: [],
+          origin: { type: "path" },
+        },
+      ],
+      model: { id: "fixture/model" },
+      publicationPath: path.join(root, "published"),
+      orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4 },
+      createdAt: timestamp,
+    },
+    sealedInputs: [
+      {
+        role: "sources",
+        artifact: { artifactId: "sources", kind: "snapshot_set", digest, sealedAt: timestamp },
+        readOnlyPath: sources,
+      },
+      {
+        role: "skill",
+        artifact: { artifactId: "skill", kind: "skill", digest, sealedAt: timestamp },
+        readOnlyPath: skill,
+      },
+      {
+        role: "frozen_run_manifest",
+        artifact: { artifactId: "manifest", kind: "manifest", digest, sealedAt: timestamp },
+        readOnlyPath: manifest,
+      },
+      {
+        role: "coverage_plan",
+        artifact: { artifactId: "cov-plan", kind: "receipt", digest, sealedAt: timestamp },
+        readOnlyPath: planDir,
+      },
+      {
+        role: "coverage_inventory",
+        artifact: { artifactId: "cov-inv", kind: "receipt", digest, sealedAt: timestamp },
+        readOnlyPath: invDir,
+      },
+    ],
+    attemptDir,
+    workDir: path.join(attemptDir, "work"),
+    sessionPath: path.join(attemptDir, "session.jsonl"),
+    skillPath: skill,
+    sourcePaths: { api: sources, web: sources },
+  });
+
+  const layout = await materializeInputs(input);
+  const projectedPlan = path.join(layout.runWorkDir, "inputs", "coverage-plan.json");
+  const projectedInv = path.join(layout.runWorkDir, "inputs", "coverage-inventory.json");
+  await access(projectedPlan);
+  await access(projectedInv);
+  const planBody = JSON.parse(await readFile(projectedPlan, "utf8")) as {
+    requiredUnits?: { id: string }[];
+    lightPath?: boolean;
+  };
+  assert.deepEqual(
+    planBody.requiredUnits?.map((u) => u.id),
+    ["api", "web"],
+  );
+  // Sealed bytes projected as-is (host extras retained on disk).
+  assert.equal(planBody.lightPath, false);
+  await unlock(root);
+  t.after(() => rm(root, { recursive: true, force: true }));
 });
 
 test("mountSealedSourceTree prefers hardlink shared mount (Phase 7)", async () => {

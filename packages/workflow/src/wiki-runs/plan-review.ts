@@ -1,12 +1,14 @@
 /**
  * Operator plan-gate review materials: sealed Spec + ExecutionPlan projection.
  * Full bodies stay off the Run SSE snapshot (ADR 0035); this is an explicit read.
+ * Wave 2: coverage rows, scouts summary, priorSpec, pageSetDiff (additive).
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  assertCoverage,
   type ExecutionPlan,
   ExecutionPlanSchema,
   type WikiRunPlanReview,
@@ -16,8 +18,14 @@ import {
   type WorkspaceConfig,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
+import {
+  loadCoveragePlanFromArtifactRoot,
+  pageSetDiffFromSpecs,
+  readScoutsSummary,
+  toContractCoveragePlan,
+} from "./coverage-bridge.js";
 import { digest } from "./crypto-util.js";
-import { asRow, requiredText } from "./sql.js";
+import { asRow, requiredNumber, requiredText } from "./sql.js";
 import { WikiRunsRequestError } from "./types.js";
 
 const MAX_WORK_UNITS_IN_REVIEW = 32;
@@ -25,6 +33,7 @@ const MAX_WORK_UNITS_IN_REVIEW = 32;
 export type PlanReviewHost = {
   db: DatabaseSync;
   workspace: WorkspaceConfig;
+  currentNodeGeneration?(runId: string, nodeKey: string): number | undefined;
 };
 
 /** Same binding formula as openPlanGate / onAttemptSucceeded. */
@@ -53,6 +62,7 @@ type PlanArtifactRow = {
   artifactId: string;
   digest: string;
   relativePath: string;
+  nodeGeneration?: number;
 };
 
 function latestPlanArtifact(
@@ -63,7 +73,8 @@ function latestPlanArtifact(
   const row = asRow(
     db
       .prepare(
-        `SELECT artifacts.artifact_id, artifacts.digest, artifacts.relative_path
+        `SELECT artifacts.artifact_id, artifacts.digest, artifacts.relative_path,
+                node_outputs.node_generation AS node_generation
          FROM node_outputs
          JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
          JOIN (
@@ -84,6 +95,10 @@ function latestPlanArtifact(
     artifactId: requiredText(row, "artifact_id"),
     digest: requiredText(row, "digest"),
     relativePath: requiredText(row, "relative_path"),
+    nodeGeneration:
+      row.node_generation !== null && row.node_generation !== undefined
+        ? requiredNumber(row, "node_generation")
+        : undefined,
   };
 }
 
@@ -132,6 +147,83 @@ function projectExecution(plan: ExecutionPlan) {
   };
 }
 
+/** Prior Spec from an earlier plan generation (revise path). */
+function loadPriorSpec(
+  host: PlanReviewHost,
+  runId: string,
+  currentGeneration: number | undefined,
+): WikiRunSpec | undefined {
+  if (currentGeneration === undefined || currentGeneration < 1) return undefined;
+  for (let g = currentGeneration - 1; g >= 0; g -= 1) {
+    const row = asRow(
+      host.db
+        .prepare(
+          `SELECT artifacts.relative_path
+           FROM node_outputs
+           JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+           WHERE node_outputs.run_id = ?
+             AND node_outputs.node_key = 'plan'
+             AND node_outputs.node_generation = ?
+             AND node_outputs.role = 'spec'
+           LIMIT 1`,
+        )
+        .get(runId, g),
+    );
+    if (!row) continue;
+    const spec = loadSpecJson(host.workspace, runId, requiredText(row, "relative_path"));
+    if (spec) return spec;
+  }
+  return undefined;
+}
+
+function loadCoverageProjection(
+  host: PlanReviewHost,
+  runId: string,
+  spec: WikiRunSpec,
+): {
+  coverage?: ReturnType<typeof assertCoverage>;
+  coverageStopReason?: ReturnType<typeof assertCoverage>["stop_reason"];
+} {
+  const runDir = runWorkDir(host.workspace.rootPath, runId);
+  // Prefer sealed freeze coverage_plan artifact.
+  const sealed = asRow(
+    host.db
+      .prepare(
+        `SELECT artifacts.relative_path
+         FROM node_outputs
+         JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+         JOIN (
+           SELECT node_key, MAX(generation) AS generation FROM nodes
+           WHERE run_id = ? AND node_key = 'freeze' GROUP BY node_key
+         ) cur ON cur.node_key = node_outputs.node_key
+              AND cur.generation = node_outputs.node_generation
+         WHERE node_outputs.run_id = ?
+           AND node_outputs.node_key = 'freeze'
+           AND node_outputs.role = 'coverage_plan'
+         LIMIT 1`,
+      )
+      .get(runId, runId),
+  );
+  const roots = [
+    ...(sealed ? [path.join(runDir, requiredText(sealed, "relative_path"))] : []),
+    path.join(runDir, "analysis"),
+  ];
+  for (const root of roots) {
+    const corePlan = loadCoveragePlanFromArtifactRoot(root);
+    if (!corePlan) continue;
+    const contractPlan = toContractCoveragePlan(corePlan);
+    if (contractPlan.requiredUnits.length === 0) {
+      return {
+        coverage: assertCoverage(spec, contractPlan, { throwOnGap: false }),
+        coverageStopReason: "not_required",
+      };
+    }
+    const result = assertCoverage(spec, contractPlan, { throwOnGap: false });
+    return { coverage: result, coverageStopReason: result.stop_reason };
+  }
+  return {};
+}
+
 /**
  * Load sealed plan materials for operator document review.
  * When an open plan gate exists, payloadDigest must match that gate.
@@ -176,6 +268,12 @@ export function readPlanReviewMaterials(
     }
   }
 
+  const priorSpec = loadPriorSpec(host, runId, specRow.nodeGeneration);
+  const pageSetDiff = pageSetDiffFromSpecs(priorSpec, spec);
+  const { coverage, coverageStopReason } = loadCoverageProjection(host, runId, spec);
+  const runDir = runWorkDir(host.workspace.rootPath, runId);
+  const scouts = readScoutsSummary(path.join(runDir, "analysis"));
+
   return WikiRunPlanReviewSchema.parse({
     runId,
     payloadDigest,
@@ -187,7 +285,16 @@ export function readPlanReviewMaterials(
       specArtifactId: specRow.artifactId,
       planArtifactId: planRow.artifactId,
     },
+    ...(coverage ? { coverage, coverageStopReason } : {}),
+    ...(scouts
+      ? {
+          scoutsSummary: {
+            kinds: scouts.kinds,
+            receiptCount: scouts.receiptCount,
+          },
+        }
+      : {}),
+    ...(priorSpec ? { priorSpec } : {}),
+    ...(pageSetDiff ? { pageSetDiff } : {}),
   });
 }
-
-

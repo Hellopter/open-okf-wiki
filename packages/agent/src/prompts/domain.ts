@@ -13,6 +13,8 @@ export function domainResearchPrompt(input: {
   receiptIndex?: string;
   /** Inline child receipt summaries when projected. */
   childReceiptSummaries?: string;
+  /** Freeze / Spec coverage source ids this domain should prioritize. */
+  sourceIds?: readonly string[];
 }): string {
   const evidenceBlock = input.receiptIndex?.trim()
     ? [
@@ -28,6 +30,15 @@ export function domainResearchPrompt(input: {
   const childBlock = input.childReceiptSummaries?.trim()
     ? ["", "## Child receipt bodies (already loaded)", input.childReceiptSummaries.trim()]
     : [];
+  const sourceBlock =
+    input.sourceIds && input.sourceIds.length > 0
+      ? [
+          "",
+          `## Coverage sources: ${input.sourceIds.join(", ")}`,
+          "Prefer evidence under the matching sources/<id>/ mounts when reconciling findings.",
+          "Multi-source claims need repo:<id>/path citations in later wiki pages.",
+        ]
+      : [];
 
   return [
     `Domain research: ${input.title} (${input.domainId})`,
@@ -36,6 +47,7 @@ export function domainResearchPrompt(input: {
     ...(input.questions.length
       ? input.questions.map((q) => `- ${q}`)
       : ["- What are the main boundaries and entry points in this scope?"]),
+    ...sourceBlock,
     ...evidenceBlock,
     ...childBlock,
     "",

@@ -15,12 +15,20 @@ import {
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract";
 import {
+  buildBoundaryIndex,
+  buildCoverageInventory,
+  buildCoveragePlan,
   type FreezeRunBoundaryInput,
   type FrozenRunBoundary,
   listPublishedWikiPages,
   PublishedWikiError,
   runWorkDir,
 } from "@okf-wiki/core";
+import {
+  BOUNDARY_INDEX_FILE,
+  COVERAGE_INVENTORY_FILE,
+  COVERAGE_PLAN_FILE,
+} from "./coverage-bridge.js";
 import {
   graphRoleForNodeKind,
   mergeAttemptMetrics,
@@ -140,6 +148,11 @@ export async function executeFreeze(host: FreezeHost, claim: ClaimedFreeze): Pro
         role: "prior_wiki",
       });
     }
+
+    // ADR 0040: seal CoverageInventory + CoveragePlan + BoundaryIndex from frozen mounts.
+    const coverageCandidates = await materializeCoverageArtifacts(host, claim, frozen, workDir);
+    if (coverageCandidates === null) return;
+
     const inputArtifacts = await prepareFreezeArtifacts(host, claim, [
       {
         directory: path.join(frozen.runWorkDir, "sources"),
@@ -153,6 +166,7 @@ export async function executeFreeze(host: FreezeHost, claim: ClaimedFreeze): Pro
         role: "frozen_run_manifest",
       },
       ...priorWikiCandidates,
+      ...coverageCandidates,
     ]);
     if (!inputArtifacts) return;
     for (const preparation of inputArtifacts.preparations)
@@ -228,7 +242,10 @@ export async function executePinnedFreezeRetry(
            JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
            WHERE node_outputs.run_id = ?
              AND node_outputs.node_key = 'freeze'
-             AND node_outputs.role IN ('sources', 'skill', 'frozen_run_manifest', 'prior_wiki')
+             AND node_outputs.role IN (
+               'sources', 'skill', 'frozen_run_manifest', 'prior_wiki',
+               'coverage_inventory', 'coverage_plan', 'boundary_index'
+             )
            ORDER BY node_outputs.node_generation DESC, node_outputs.role`,
         )
         .all(claim.runId),
@@ -310,8 +327,14 @@ export async function executePinnedFreezeRetry(
       await host.sealPreparation(claim.runId, preparation);
     if (host.closed || !host.isCurrent(claim)) return;
     const priorWikiPinned = byRole.get("prior_wiki");
+    const optionalPinnedRoles = [
+      priorWikiPinned,
+      byRole.get("coverage_inventory"),
+      byRole.get("coverage_plan"),
+      byRole.get("boundary_index"),
+    ].filter((row): row is SqlRow => row !== undefined);
     const inputPreparations: ArtifactPreparation[] = [
-      ...[sources, skill, ...(priorWikiPinned ? [priorWikiPinned] : [])].map((row) => ({
+      ...[sources, skill, ...optionalPinnedRoles].map((row) => ({
         artifactId: requiredText(row, "artifact_id"),
         digest: requiredText(row, "digest"),
         kind: requiredText(row, "kind") as ArtifactPreparation["kind"],
@@ -652,4 +675,120 @@ export function loadRunIntent(
     throw new Error(`run ${runId} has no sealed intent`);
   }
   return RunIntentSchema.parse(parseJson<unknown>(String(run.intent_json)));
+}
+
+/**
+ * Build and stage sealed CoverageInventory / CoveragePlan / BoundaryIndex under
+ * freeze attempt work. Returns artifact candidates (empty array when sources empty —
+ * should not happen after freezeRunBoundary). Returns null when claim is stale.
+ */
+async function materializeCoverageArtifacts(
+  host: FreezeHost,
+  claim: ClaimedFreeze,
+  frozen: FrozenRunBoundary,
+  workDir: string,
+): Promise<
+  | Array<{
+      directory: string;
+      kind: ArtifactPreparation["kind"];
+      role: string;
+    }>
+  | null
+> {
+  if (host.closed || !host.isCurrent(claim)) return null;
+
+  const inventorySources = frozen.sources.map((source) => ({
+    id: source.id,
+    path:
+      frozen.sourcePathMap.get(source.id) ??
+      source.path ??
+      path.join(frozen.runWorkDir, "sources", source.id),
+    effectiveIgnores: [
+      ...(frozen.sourceIgnores.get(source.id) ?? source.effectiveIgnores ?? []),
+    ],
+  }));
+
+  const orch = host.workspaceForRun(claim.runId).orchestration;
+  const maxSurfacesRequired = orch?.maxSurfacesRequired ?? 12;
+  const signal = host.activeAttempts.get(claim.attemptId)?.signal;
+  const sourceCount = frozen.sources.length;
+  const mustHaveCoverage =
+    sourceCount >= 2 ||
+    orch?.requireSourceCoverage === true ||
+    orch?.requireSurfaceCoverage === true;
+
+  let inventory: Awaited<ReturnType<typeof buildCoverageInventory>>;
+  let coveragePlan: ReturnType<typeof buildCoveragePlan>;
+  let boundaryIndex: Awaited<ReturnType<typeof buildBoundaryIndex>>;
+  try {
+    inventory = await buildCoverageInventory(inventorySources, { signal });
+    coveragePlan = buildCoveragePlan(inventory, { maxSurfacesRequired });
+    boundaryIndex = await buildBoundaryIndex(inventorySources, { signal });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (mustHaveCoverage) {
+      throw new Error(
+        `freeze coverage inventory/plan failed for multi-source or coverage-required run ` +
+          `(sourceCount=${sourceCount}): ${detail}`,
+      );
+    }
+    throw error;
+  }
+
+  // Fail-closed: multi-source (or explicit require flags) must not seal an empty
+  // requiredUnits plan — plan claim / assertCoverage would otherwise soft-skip.
+  if (mustHaveCoverage && coveragePlan.requiredUnits.length === 0) {
+    throw new Error(
+      `freeze coverage plan has empty requiredUnits for multi-source or coverage-required run ` +
+        `(sourceCount=${sourceCount}); inventory/plan build incomplete`,
+    );
+  }
+
+  // Also write under run analysis/ for operator/plan soft reads (not sealed identity).
+  const analysisDir = path.join(frozen.runWorkDir, "analysis");
+  await mkdir(analysisDir, { recursive: true });
+  await writeFile(
+    path.join(analysisDir, COVERAGE_INVENTORY_FILE),
+    `${JSON.stringify(inventory, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(analysisDir, COVERAGE_PLAN_FILE),
+    `${JSON.stringify(coveragePlan, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(analysisDir, BOUNDARY_INDEX_FILE),
+    `${JSON.stringify(boundaryIndex, null, 2)}\n`,
+    "utf8",
+  );
+
+  const inventoryDir = path.join(workDir, "coverage_inventory");
+  const planDir = path.join(workDir, "coverage_plan");
+  const boundaryDir = path.join(workDir, "boundary_index");
+  await mkdir(inventoryDir, { recursive: true });
+  await mkdir(planDir, { recursive: true });
+  await mkdir(boundaryDir, { recursive: true });
+  await writeFile(
+    path.join(inventoryDir, COVERAGE_INVENTORY_FILE),
+    `${JSON.stringify(inventory, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(planDir, COVERAGE_PLAN_FILE),
+    `${JSON.stringify(coveragePlan, null, 2)}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(boundaryDir, BOUNDARY_INDEX_FILE),
+    `${JSON.stringify(boundaryIndex, null, 2)}\n`,
+    "utf8",
+  );
+
+  if (host.closed || !host.isCurrent(claim)) return null;
+  return [
+    { directory: inventoryDir, kind: "receipt", role: "coverage_inventory" },
+    { directory: planDir, kind: "receipt", role: "coverage_plan" },
+    { directory: boundaryDir, kind: "receipt", role: "boundary_index" },
+  ];
 }

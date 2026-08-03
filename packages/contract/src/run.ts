@@ -13,6 +13,23 @@ export const WikiPageTemplateSchema = z.enum([
 
 export type WikiPageTemplate = z.infer<typeof WikiPageTemplateSchema>;
 
+/**
+ * Optional coverage bindings on domains/pages.
+ * Prefer `coverageUnitIds` as canonical (source ids and `{sourceId}::{path}`
+ * surface ids). `sourceIds` / `surfaceIds` are projections of the same space.
+ */
+const SpecCoverageBindingsFields = {
+  /**
+   * Canonical coverage unit ids this domain/page covers.
+   * Source units: bare sourceId. Surface units: `{sourceId}::{path}`.
+   */
+  coverageUnitIds: z.array(z.string().trim().min(1).max(400)).max(64).optional(),
+  /** Projection: whole sources covered (multi-source plan gate). */
+  sourceIds: z.array(SourceIdSchema).max(64).optional(),
+  /** Projection: source-qualified surface ids `{sourceId}::{path}`. */
+  surfaceIds: z.array(z.string().trim().min(1).max(400)).max(64).optional(),
+};
+
 export const WikiRunSpecDomainSchema = z.object({
   id: z.string().trim().min(1).max(80),
   title: z.string().trim().min(1).max(200),
@@ -20,6 +37,7 @@ export const WikiRunSpecDomainSchema = z.object({
   scope: z.string().trim().min(1).max(2000),
   critical: z.boolean().default(true),
   questions: z.array(z.string().trim().min(1).max(500)).default([]),
+  ...SpecCoverageBindingsFields,
 });
 
 export type WikiRunSpecDomain = z.infer<typeof WikiRunSpecDomainSchema>;
@@ -31,9 +49,85 @@ export const WikiRunSpecPageSchema = z.object({
   questions: z.array(z.string().trim().min(1).max(500)).default([]),
   template: WikiPageTemplateSchema.optional(),
   critical: z.boolean().default(true),
+  ...SpecCoverageBindingsFields,
 });
 
 export type WikiRunSpecPage = z.infer<typeof WikiRunSpecPageSchema>;
+
+/** Optional planner-supplied source role map (narrative aid, not a gate). */
+export const WikiRunSpecRepositoryMapSchema = z
+  .object({
+    summary: z.string().trim().min(1).max(4_000).optional(),
+    sources: z
+      .array(
+        z
+          .object({
+            sourceId: SourceIdSchema,
+            role: z.string().trim().min(1).max(500).optional(),
+            entryPoints: z.array(z.string().trim().min(1).max(300)).max(32).optional(),
+          })
+          .strict(),
+      )
+      .max(64)
+      .optional(),
+  })
+  .strict();
+
+export type WikiRunSpecRepositoryMap = z.infer<typeof WikiRunSpecRepositoryMapSchema>;
+
+/** Optional planner checklist row for source coverage (audit; host uses assertCoverage). */
+export const WikiRunSpecSourceCoverageRowSchema = z
+  .object({
+    sourceId: SourceIdSchema,
+    pagePaths: z.array(z.string().trim().min(1).max(200)).max(64).optional(),
+    notes: z.string().trim().min(1).max(1_000).optional(),
+    /**
+     * When true, cancel this source unit for assertCoverage (merge into
+     * CoveragePlan.cancelled). Requires `notes` as the explicit cancel reason —
+     * never cancel via notes/changelog alone.
+     */
+    cancelled: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((row, ctx) => {
+    if (row.cancelled === true && (!row.notes || row.notes.trim().length < 1)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "cancelled sourceCoverage row requires notes as the explicit cancel reason",
+        path: ["notes"],
+      });
+    }
+  });
+
+export type WikiRunSpecSourceCoverageRow = z.infer<typeof WikiRunSpecSourceCoverageRowSchema>;
+
+/** Optional planner checklist row for surface coverage. */
+export const WikiRunSpecSurfaceCoverageRowSchema = z
+  .object({
+    /** Source-qualified surface id `{sourceId}::{path}`. */
+    surfaceId: z.string().trim().min(1).max(400),
+    pagePaths: z.array(z.string().trim().min(1).max(200)).max(64).optional(),
+    notes: z.string().trim().min(1).max(1_000).optional(),
+    /**
+     * When true, cancel this surface unit for assertCoverage (merge into
+     * CoveragePlan.cancelled). Requires `notes` as the explicit cancel reason.
+     */
+    cancelled: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((row, ctx) => {
+    if (row.cancelled === true && (!row.notes || row.notes.trim().length < 1)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "cancelled surfaceCoverage row requires notes as the explicit cancel reason",
+        path: ["notes"],
+      });
+    }
+  });
+
+export type WikiRunSpecSurfaceCoverageRow = z.infer<typeof WikiRunSpecSurfaceCoverageRowSchema>;
 
 /**
  * Acceptance knobs on WikiSpec. Budgets map into EvaluationPolicy via
@@ -122,6 +216,15 @@ export const WikiRunSpecSchema = z
     notes: z.string().max(4000).optional(),
     /** Chronological replan / discovery trail (stigmergy-lite). */
     changelog: z.array(z.string().max(500)).default([]),
+    /**
+     * Optional planner map of source roles / entry points (narrative aid).
+     * Host coverage gates use page bindings + assertCoverage, not this field alone.
+     */
+    repositoryMap: WikiRunSpecRepositoryMapSchema.optional(),
+    /** Optional planner source-coverage checklist (audit aid). */
+    sourceCoverage: z.array(WikiRunSpecSourceCoverageRowSchema).max(64).optional(),
+    /** Optional planner surface-coverage checklist (audit aid). */
+    surfaceCoverage: z.array(WikiRunSpecSurfaceCoverageRowSchema).max(256).optional(),
   })
   .superRefine((spec, ctx) => {
     const domainIds = new Set(spec.domains.map((d) => d.id));
@@ -146,6 +249,7 @@ export const WikiRunSpecSchema = z
           });
         }
       }
+      refineCoverageBindings(page, ctx, ["pages", i]);
     }
 
     if (spec.domains.length > 0) {
@@ -158,9 +262,116 @@ export const WikiRunSpecSchema = z
             path: ["domains", i, "id"],
           });
         }
+        refineCoverageBindings(domain, ctx, ["domains", i]);
+      }
+    }
+
+    // Best-effort multi-source structural checks without host inventory:
+    // if any critical page binds sourceIds / source-kind coverageUnitIds, and
+    // two+ distinct sources appear, every listed sourceId must appear on at
+    // least one critical page (projections may still be incomplete vs freeze).
+    const criticalSourceIds = new Set<string>();
+    for (const page of spec.pages) {
+      if (page.critical === false) continue;
+      for (const sid of page.sourceIds ?? []) criticalSourceIds.add(sid);
+      for (const uid of page.coverageUnitIds ?? []) {
+        if (!uid.includes("::")) criticalSourceIds.add(uid.trim());
+      }
+    }
+    // Best-effort: non-cancelled sourceCoverage rows should match critical page
+    // source bindings when two+ sources are claimed (inventory-backed gates use
+    // assertCoverage; cancelled rows need not be bound on pages).
+    if (criticalSourceIds.size >= 2 && spec.sourceCoverage) {
+      for (let i = 0; i < spec.sourceCoverage.length; i++) {
+        const row = spec.sourceCoverage[i]!;
+        if (row.cancelled === true) continue;
+        if (!criticalSourceIds.has(row.sourceId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `sourceCoverage lists sourceId "${row.sourceId}" but no critical page ` +
+              `binds that source via sourceIds or coverageUnitIds ` +
+              `(or set cancelled:true with notes reason)`,
+            path: ["sourceCoverage", i, "sourceId"],
+          });
+        }
+      }
+    }
+
+    // Surface structural check: surfaceCoverage ids should be source-qualified.
+    if (spec.surfaceCoverage) {
+      for (let i = 0; i < spec.surfaceCoverage.length; i++) {
+        const row = spec.surfaceCoverage[i]!;
+        if (!row.surfaceId.includes("::")) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `surfaceCoverage surfaceId must be source-qualified "{sourceId}::{path}"`,
+            path: ["surfaceCoverage", i, "surfaceId"],
+          });
+        }
       }
     }
   });
+
+/**
+ * Structural consistency for coverage bindings on a page or domain.
+ * Inventory-backed completeness is enforced by assertCoverage, not here.
+ */
+function refineCoverageBindings(
+  binding: {
+    coverageUnitIds?: string[] | undefined;
+    sourceIds?: string[] | undefined;
+    surfaceIds?: string[] | undefined;
+  },
+  ctx: z.RefinementCtx,
+  pathPrefix: (string | number)[],
+): void {
+  for (let i = 0; i < (binding.surfaceIds ?? []).length; i++) {
+    const sid = binding.surfaceIds![i]!;
+    if (!sid.includes("::")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `surfaceIds entry must be source-qualified "{sourceId}::{path}"`,
+        path: [...pathPrefix, "surfaceIds", i],
+      });
+    }
+  }
+  // When both canonical and projection are set, projections must be subsets of
+  // the id space implied by coverageUnitIds ∪ projections (no contradiction).
+  if (binding.coverageUnitIds && binding.coverageUnitIds.length > 0) {
+    const canonical = new Set(binding.coverageUnitIds.map((s) => s.trim()));
+    for (let i = 0; i < (binding.sourceIds ?? []).length; i++) {
+      const sid = binding.sourceIds![i]!;
+      if (!canonical.has(sid)) {
+        // Projection may be a subset of a richer canonical set that also lists
+        // surfaces — source id alone is valid when present as a unit or as
+        // prefix of a surface unit. Only flag when nothing in canonical matches.
+        const matched =
+          canonical.has(sid) ||
+          [...canonical].some((id) => id === sid || id.startsWith(`${sid}::`));
+        if (!matched) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `sourceIds "${sid}" is not present in coverageUnitIds and does not ` +
+              `prefix any surface unit id on this binding`,
+            path: [...pathPrefix, "sourceIds", i],
+          });
+        }
+      }
+    }
+    for (let i = 0; i < (binding.surfaceIds ?? []).length; i++) {
+      const surfaceId = binding.surfaceIds![i]!;
+      if (!canonical.has(surfaceId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `surfaceIds "${surfaceId}" is not present in coverageUnitIds`,
+          path: [...pathPrefix, "surfaceIds", i],
+        });
+      }
+    }
+  }
+}
 
 export type WikiRunSpec = z.infer<typeof WikiRunSpecSchema>;
 
@@ -245,6 +456,13 @@ export const ExecutionPlanWorkUnitSchema = z
     domainId: z.string().trim().min(1).max(80).optional(),
     questions: z.array(z.string().trim().min(1).max(500)).default([]),
     scope: z.string().trim().min(1).max(2_000),
+    /**
+     * Optional coverage bindings for research work units (host may thread
+     * Spec page coverage into leaf/domain scope). Prefer coverageUnitIds.
+     */
+    coverageUnitIds: z.array(z.string().trim().min(1).max(400)).max(64).optional(),
+    sourceIds: z.array(SourceIdSchema).max(64).optional(),
+    surfaceIds: z.array(z.string().trim().min(1).max(400)).max(64).optional(),
   })
   .strict();
 

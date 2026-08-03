@@ -41,4 +41,25 @@ describe("planner prompt", () => {
     assert.match(prompt, /At most 6 question/);
     assert.match(prompt, /maxLeafFanOut/);
   });
+
+  it("includes multi-source and required unit rules when sourceCount >= 2", () => {
+    const multiLayout: RunWorkdirLayout = {
+      ...layout,
+      sourceMounts: new Map([
+        ["api", "/run/sources/api"],
+        ["web", "/run/sources/web"],
+      ]),
+    };
+    const prompt = plannerPrompt({
+      layout: multiLayout,
+      workspaceName: "Demo",
+      sourceCount: 2,
+      requiredUnitIds: ["api", "web"],
+    });
+    assert.match(prompt, /Multi-source freeze/);
+    assert.match(prompt, /required coverage units/i);
+    assert.match(prompt, /- api/);
+    assert.match(prompt, /- web/);
+    assert.match(prompt, /coverageUnitIds/);
+  });
 });

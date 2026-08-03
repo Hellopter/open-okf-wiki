@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CoverageResultSchema, CoverageStopReasonSchema } from "./coverage.js";
 import { Sha256HexSchema } from "./primitives.js";
 import { RepositorySnapshotSchema, WikiRunSpecSchema } from "./run.js";
 import { AttemptTraceEventSchema } from "./run-graph.js";
@@ -481,8 +482,38 @@ export const WikiRunPlanReviewExecutionSchema = z
 export type WikiRunPlanReviewExecution = z.infer<typeof WikiRunPlanReviewExecutionSchema>;
 
 /**
+ * Optional scouts summary for plan-gate review (kinds that produced receipts).
+ * Soft projection — missing scouts never fail plan-review load.
+ */
+export const WikiRunPlanReviewScoutsSummarySchema = z
+  .object({
+    kinds: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
+    receiptCount: z.number().int().min(0).max(64).default(0),
+    mode: z.string().trim().min(1).max(40).optional(),
+  })
+  .strict();
+
+export type WikiRunPlanReviewScoutsSummary = z.infer<typeof WikiRunPlanReviewScoutsSummarySchema>;
+
+/**
+ * Page-set delta vs prior Spec on plan revise (paths only).
+ */
+export const WikiRunPlanReviewPageSetDiffSchema = z
+  .object({
+    added: z.array(z.string().trim().min(1).max(200)).max(256).default([]),
+    removed: z.array(z.string().trim().min(1).max(200)).max(256).default([]),
+    retained: z.array(z.string().trim().min(1).max(200)).max(256).default([]),
+  })
+  .strict();
+
+export type WikiRunPlanReviewPageSetDiff = z.infer<typeof WikiRunPlanReviewPageSetDiffSchema>;
+
+/**
  * GET …/runs/:runId/plan-review — full operator materials for plan-gate document review.
  * Bound by payloadDigest (same formula as open plan gate). Not embedded on Run SSE.
+ *
+ * Coverage / priorSpec / scouts fields are additive and optional so older clients
+ * and thin fixtures stay compatible (server re-parses with this schema).
  */
 export const WikiRunPlanReviewSchema = z
   .object({
@@ -500,6 +531,24 @@ export const WikiRunPlanReviewSchema = z
       })
       .strict()
       .default({}),
+    /**
+     * Host assertCoverage result rows (sources + surfaces) when a CoveragePlan
+     * is sealed for the run. Soft: omitted when inventory/plan unavailable.
+     */
+    coverage: CoverageResultSchema.optional(),
+    /** Plan scout receipt summary when analysis/plan-scouts is present. */
+    scoutsSummary: WikiRunPlanReviewScoutsSummarySchema.optional(),
+    /** Prior sealed Spec body on plan revise (gen>0), when available. */
+    priorSpec: WikiRunSpecSchema.optional(),
+    /** Page path set diff vs priorSpec when both present. */
+    pageSetDiff: WikiRunPlanReviewPageSetDiffSchema.optional(),
+    /**
+     * Coverage stop_reason when coverage result is present (mirrors coverage.stop_reason
+     * for operators that only read top-level fields).
+     */
+    coverageStopReason: CoverageStopReasonSchema.optional(),
+    /** Plan coverage re-scout rounds completed when recorded on the Spec notes/meta. */
+    coverageRounds: z.number().int().min(0).max(16).optional(),
   })
   .strict();
 

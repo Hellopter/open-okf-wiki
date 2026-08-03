@@ -412,7 +412,10 @@ export function upstreamSealedOutputs(
       output.role === "sources" ||
       output.role === "skill" ||
       output.role === "frozen_run_manifest" ||
-      output.role === "prior_wiki"
+      output.role === "prior_wiki" ||
+      output.role === "coverage_inventory" ||
+      output.role === "coverage_plan" ||
+      output.role === "boundary_index"
     ) {
       add(output.role, output.artifactId);
     }
@@ -421,6 +424,22 @@ export function upstreamSealedOutputs(
     for (const output of nodeOutputsAtCurrentGen(host, runId, "plan")) {
       if (output.role === "spec") add(output.role, output.artifactId);
       if (output.role === "execution_plan") add(output.role, output.artifactId);
+    }
+  }
+
+  // Plan revise (gen>0): bind prior sealed Spec as prior_spec (ADR 0036 / 0040).
+  if (nodeKey === "plan") {
+    const generation = host.currentNodeGeneration(runId, "plan");
+    if (generation !== undefined && generation > 0) {
+      for (let g = generation - 1; g >= 0; g -= 1) {
+        for (const output of nodeOutputsAtGeneration(host, runId, "plan", g)) {
+          if (output.role === "spec") {
+            add("prior_spec", output.artifactId);
+            break;
+          }
+        }
+        if (byRole.has("prior_spec")) break;
+      }
     }
   }
 
@@ -434,6 +453,10 @@ export function upstreamSealedOutputs(
     "execution_plan",
     "frozen_run_manifest",
     "prior_wiki",
+    "prior_spec",
+    "coverage_inventory",
+    "coverage_plan",
+    "boundary_index",
     "wiki_tree",
     "defects",
     "publication_candidate",

@@ -3,7 +3,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import {
+  CoveragePlanSchema,
+  defaultWikiRunSpec,
+  sourceCoverageUnit,
+} from "@okf-wiki/contract";
 import { PLAN_DRAFT_REL_PATH, planDraftPathFromRunWorkDir } from "../ports/core-spec-store.js";
 import {
   createSubmitWikiRunSpecTool,
@@ -198,5 +202,142 @@ describe("submit_wiki_run_spec tool", () => {
     assert.equal(result.details?.pageCount, 1);
     const raw = await readFile(planDraftPathFromRunWorkDir(dir), "utf8");
     assert.match(raw, /overview\.md/);
+  });
+
+  it("rejects Spec that fails assertCoverage when coverage plan is provided", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-cov-gap-"));
+    temps.push(dir);
+    let wrote = false;
+    const plan = CoveragePlanSchema.parse({
+      requiredUnits: [sourceCoverageUnit("frontend"), sourceCoverageUnit("backend")],
+    });
+    const tool = createSubmitWikiRunSpecTool({
+      runWorkDir: dir,
+      coveragePlan: plan,
+      writeDraft: async () => {
+        wrote = true;
+        return path.join(dir, "analysis", "plan-draft.json");
+      },
+    });
+    await assert.rejects(
+      () =>
+        tool.execute(
+          "call-cov-gap",
+          {
+            version: 1,
+            summary: "only covers frontend",
+            domains: [],
+            pages: [
+              {
+                path: "overview.md",
+                purpose: "frontend only",
+                critical: true,
+                sourceIds: ["frontend"],
+              },
+            ],
+          },
+          undefined,
+          undefined,
+          {} as never,
+        ),
+      /coverage gap|backend/,
+    );
+    assert.equal(wrote, false);
+  });
+
+  it("accepts Spec that covers every required source unit", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-cov-ok-"));
+    temps.push(dir);
+    const plan = CoveragePlanSchema.parse({
+      requiredUnits: [sourceCoverageUnit("frontend"), sourceCoverageUnit("backend")],
+    });
+    const tool = createSubmitWikiRunSpecTool({
+      runWorkDir: dir,
+      coveragePlan: plan,
+    });
+    const result = await tool.execute(
+      "call-cov-ok",
+      {
+        version: 1,
+        summary: "covers both sources",
+        domains: [],
+        pages: [
+          {
+            path: "overview.md",
+            purpose: "map both sources",
+            critical: true,
+            coverageUnitIds: ["frontend", "backend"],
+          },
+          {
+            path: "modules/frontend.md",
+            purpose: "frontend detail",
+            critical: true,
+            sourceIds: ["frontend"],
+          },
+          {
+            path: "modules/backend.md",
+            purpose: "backend detail",
+            critical: true,
+            sourceIds: ["backend"],
+          },
+        ],
+        sourceCoverage: [
+          { sourceId: "frontend", pagePaths: ["overview.md", "modules/frontend.md"] },
+          { sourceId: "backend", pagePaths: ["overview.md", "modules/backend.md"] },
+        ],
+      },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    assert.equal(result.details?.pageCount, 3);
+    const raw = await readFile(planDraftPathFromRunWorkDir(dir), "utf8");
+    assert.match(raw, /backend/);
+  });
+
+  it("accepts Spec that cancels a required source via sourceCoverage.cancelled", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-cov-cancel-"));
+    temps.push(dir);
+    const plan = CoveragePlanSchema.parse({
+      requiredUnits: [
+        sourceCoverageUnit("frontend"),
+        sourceCoverageUnit("backend"),
+        sourceCoverageUnit("docs"),
+      ],
+      cancelled: [],
+    });
+    const tool = createSubmitWikiRunSpecTool({
+      runWorkDir: dir,
+      coveragePlan: plan,
+    });
+    const result = await tool.execute(
+      "call-cov-cancel",
+      {
+        version: 1,
+        summary: "covers fe+be; cancels docs",
+        domains: [],
+        pages: [
+          {
+            path: "overview.md",
+            purpose: "map product sources",
+            critical: true,
+            coverageUnitIds: ["frontend", "backend"],
+          },
+        ],
+        sourceCoverage: [
+          {
+            sourceId: "docs",
+            cancelled: true,
+            notes: "docs repo out of scope for this run",
+          },
+        ],
+      },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    assert.equal(result.details?.pageCount, 1);
+    const raw = await readFile(planDraftPathFromRunWorkDir(dir), "utf8");
+    assert.match(raw, /cancelled/);
   });
 });

@@ -27,6 +27,27 @@ test("ExecutionPlan requires v4 with an explicit adaptation decision", () => {
   assert.equal(ExecutionPlanSchema.safeParse(withoutVersion).success, false);
 });
 
+test("ExecutionPlanWorkUnit accepts optional coverage bindings", () => {
+  const plan = {
+    version: 4,
+    workUnits: [
+      {
+        id: "wu-1",
+        domainId: "core",
+        questions: ["What is the API surface?"],
+        scope: "backend API modules",
+        sourceIds: ["backend"],
+        coverageUnitIds: ["backend", "backend::src/api"],
+        surfaceIds: ["backend::src/api"],
+      },
+    ],
+    reviewLenses: ["grounding"],
+    fanOut: { domainCount: 1, leafCount: 1, maxDomainFanOut: 4, maxLeafFanOut: 6 },
+    adaptation: { required: false, maxRounds: 0 },
+  };
+  assert.equal(ExecutionPlanSchema.safeParse(plan).success, true);
+});
+
 test("assertSpecWithinFanOutCaps rejects over domain and leaf caps", () => {
   assert.throws(
     () =>

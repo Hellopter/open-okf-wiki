@@ -208,9 +208,14 @@ export const WorkspaceOrchestrationSchema = z
      */
     reviewConcurrency: z.number().int().min(1).max(4).optional(),
     /**
-     * Parallel plan scouts before the Spec synthesizer (entry / layout / tests).
-     * 0 disables scouts (single planner only; light-path default).
+     * Parallel **thematic** plan scouts before the Spec synthesizer
+     * (entry / layout / tests / risks).
+     * 0 disables thematic scouts (single planner only; light-path default).
      * Raise when inventory shows large/multi-entry or plan uncertainty.
+     *
+     * Independent of per-source survey tasks: multi-source coverage uses
+     * `planScoutMode` + `planSurveyTaskBudget` / source slots, and must not
+     * be silently truncated to this thematic cap.
      */
     planScoutCount: z.number().int().min(0).max(4).default(0),
     /**
@@ -218,6 +223,49 @@ export const WorkspaceOrchestrationSchema = z
      * Defaults to `planScoutCount` when omitted.
      */
     planScoutConcurrency: z.number().int().min(1).max(4).optional(),
+    /**
+     * Plan scout topology:
+     * - thematic: entry/layout/tests/risks only (classic)
+     * - source: per-source survey tasks only
+     * - hybrid: source surveys + thematic scouts
+     * - auto: adaptive router chooses (multi-source → hybrid, else thematic)
+     */
+    planScoutMode: z.enum(["thematic", "source", "hybrid", "auto"]).default("auto"),
+    /**
+     * Max re-scout / sufficiency rounds after synthesizer coverage checklist
+     * finds gaps (PlanRAG-style). 0 disables re-scout. Default 1.
+     */
+    planRescoutMaxRounds: z.number().int().min(0).max(4).default(1),
+    /**
+     * Independent budget for per-source survey tasks (and optional source×lens
+     * slots). Separate from `planScoutCount` (thematic). When omitted, host may
+     * derive from sourceCount under `maxSourcesPerRun`.
+     * Fail-closed: never silently drop survey tasks past this budget — raise
+     * the budget, cancel units explicitly, or fail the plan phase.
+     */
+    planSurveyTaskBudget: z.number().int().min(0).max(32).optional(),
+    /**
+     * When true, multi-source runs require every freeze source to be covered
+     * (or cancelled) via Spec coverage bindings before plan accept.
+     * When omitted, host treats sourceCount >= 2 as require-source.
+     */
+    requireSourceCoverage: z.boolean().optional(),
+    /**
+     * When true, large single-repo runs require inventoried surfaces to be
+     * covered (or cancelled). When omitted, host may enable for large inventory.
+     * Small single-repo light path: leave unset/false (no required surfaces).
+     */
+    requireSurfaceCoverage: z.boolean().optional(),
+    /**
+     * Cap on required surface units derived from inventory.
+     * Over-cap inventory fails closed (no silent truncation). Default 12.
+     */
+    maxSurfacesRequired: z.number().int().min(0).max(64).default(12),
+    /**
+     * Cap on sources participating in one Wiki Run / coverage plan.
+     * Over-cap source sets fail closed (no silent truncation). Default 16.
+     */
+    maxSourcesPerRun: z.number().int().min(1).max(64).default(16),
     /**
      * How many domain research units may run concurrently (each unit is
      * leaf fan-out + domain reduce). Domains have independent scopes, so
@@ -265,6 +313,19 @@ export function resolveOrchestration(
     ...(o.planScoutConcurrency !== undefined
       ? { planScoutConcurrency: o.planScoutConcurrency }
       : {}),
+    planScoutMode: o.planScoutMode ?? DEFAULT_ORCHESTRATION.planScoutMode,
+    planRescoutMaxRounds: o.planRescoutMaxRounds ?? DEFAULT_ORCHESTRATION.planRescoutMaxRounds,
+    ...(o.planSurveyTaskBudget !== undefined
+      ? { planSurveyTaskBudget: o.planSurveyTaskBudget }
+      : {}),
+    ...(o.requireSourceCoverage !== undefined
+      ? { requireSourceCoverage: o.requireSourceCoverage }
+      : {}),
+    ...(o.requireSurfaceCoverage !== undefined
+      ? { requireSurfaceCoverage: o.requireSurfaceCoverage }
+      : {}),
+    maxSurfacesRequired: o.maxSurfacesRequired ?? DEFAULT_ORCHESTRATION.maxSurfacesRequired,
+    maxSourcesPerRun: o.maxSourcesPerRun ?? DEFAULT_ORCHESTRATION.maxSourcesPerRun,
     domainConcurrency: o.domainConcurrency ?? DEFAULT_ORCHESTRATION.domainConcurrency,
     leafConcurrency: o.leafConcurrency ?? DEFAULT_ORCHESTRATION.leafConcurrency,
   };

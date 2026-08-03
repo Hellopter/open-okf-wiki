@@ -14,7 +14,7 @@ import {
   resolveAdaptiveOrchestration,
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
-import { runWorkDir } from "@okf-wiki/core";
+import { runWorkDir, toAdaptiveRepositoryInventory } from "@okf-wiki/core";
 import { compileExecutionPlan } from "../plan-compiler.js";
 import {
   type ArtifactsHost,
@@ -23,6 +23,11 @@ import {
   prepareUnsealedArtifact,
   verifyArtifact,
 } from "./artifacts.js";
+import {
+  assertCoverageForSealedSpec,
+  loadSealedContractCoveragePlan,
+  loadSealedCoverageInventory,
+} from "./coverage-bridge.js";
 import { digest, now } from "./crypto-util.js";
 import type { WikiRunsCasCtx, WikiRunsDbCtx } from "./ctx.js";
 import { unlockReadyNodes } from "./dag.js";
@@ -206,20 +211,27 @@ export function onAttemptSucceeded(
     }
     // Gate payload binds Spec digest + ExecutionPlan digest (Phase 1 hard-cut).
     const payloadDigest = planGatePayloadDigest(specPrep.digest, planPrep.digest);
+    const workspace = host.workspaceForRun(claim.runId);
+    const runDir = runWorkDir(workspace.rootPath, claim.runId);
+    let sealedSpec: ReturnType<typeof WikiRunSpecSchema.parse> | undefined;
+    try {
+      const raw = readFileSync(path.join(runDir, specPrep.relativePath, "spec.json"), "utf8");
+      sealedSpec = WikiRunSpecSchema.parse(JSON.parse(raw));
+    } catch {
+      sealedSpec = undefined;
+    }
     // planConfirm=false: auto-approve — same onPlanAccepted path as ResolveGate approve.
-    if (host.workspaceForRun(claim.runId).planConfirm === false) {
+    // ADR 0040: assertCoverage on this path (UI disable alone is insufficient).
+    if (workspace.planConfirm === false) {
+      assertCoverageForSealedSpec(host.db, claim.runId, runDir, sealedSpec, {
+        requireSpec: true,
+      });
       onPlanAccepted(host, claim.runId, specPrep.relativePath, timestamp);
       return;
     }
-    const workspace = host.workspaceForRun(claim.runId);
     let planDetail: ReturnType<typeof planGateDetailFromSpec> | undefined;
-    try {
-      const runDir = runWorkDir(workspace.rootPath, claim.runId);
-      const raw = readFileSync(path.join(runDir, specPrep.relativePath, "spec.json"), "utf8");
-      const sealedSpec = WikiRunSpecSchema.parse(JSON.parse(raw));
+    if (sealedSpec) {
       planDetail = planGateDetailFromSpec(sealedSpec);
-    } catch {
-      // Gate still opens; operator loads full Spec via plan-review API.
     }
     openPlanGate(host, claim, payloadDigest, timestamp, planDetail);
     return;
@@ -383,8 +395,9 @@ export function commitSuccessfulAttempt(
 }
 
 /**
- * After plan Spec is sealed, compile ExecutionPlan (fail-closed on fan-out caps)
- * and prepare it as an unsealed artifact for seal+commit.
+ * After plan Spec is sealed, compile ExecutionPlan (fail-closed on fan-out caps
+ * and coverage gaps when a CoveragePlan is sealed) and prepare it as an unsealed
+ * artifact for seal+commit.
  * Called from the scheduler before commitSuccessfulAttempt.
  */
 export async function preparePlanExecutionPlan(
@@ -405,22 +418,29 @@ export async function preparePlanExecutionPlan(
 
   // Phase 7: adaptive lenses from inventory + Spec uncertainty (default 1).
   const workspace = host.workspaceForRun(claim.runId);
+  const sealedInventory = loadSealedCoverageInventory(host.db, claim.runId, runDir);
+  // multiEntry is an inventory walk signal (multi-package monorepo) — never
+  // implied by multi-source alone (sourceCount). Without sealed inventory we
+  // only know sourceCount; omit multiEntry/large so adaptive-router treats them false.
+  const inventory = sealedInventory
+    ? toAdaptiveRepositoryInventory(sealedInventory)
+    : {
+        sourceCount: workspace.sources?.length ?? 0,
+      };
   const adaptive = resolveAdaptiveOrchestration({
     orchestration: workspace.orchestration,
-    inventory: {
-      sourceCount: workspace.sources?.length ?? 0,
-      multiEntry: (workspace.sources?.length ?? 0) >= 2,
-      large: (workspace.sources?.length ?? 0) >= 3,
-    },
+    inventory,
     planUncertainty: planUncertaintyFromSpec(spec),
   });
   const orch = adaptive.orchestration;
+  const coveragePlan = loadSealedContractCoveragePlan(host.db, claim.runId, runDir);
   const plan = compileExecutionPlan(spec, {
     maxDomainFanOut: orch.maxDomainFanOut,
     maxLeafFanOut: orch.maxLeafFanOut,
     reviewCouncilSize: orch.reviewCouncilSize,
     adaptationRequired: !adaptive.lightPath,
     specDigest: specPrep.digest,
+    ...(coveragePlan ? { coveragePlan } : {}),
   });
 
   const stageParent = path.join(runDir, "attempts", claim.attemptId, "work");

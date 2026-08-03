@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import { type WorkspaceConfig, resolveOrchestration } from "@okf-wiki/contract";
 import { modelRefForRole, resolveModelSelection } from "./role-model.js";
 
 function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfig {
@@ -23,7 +23,7 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
       },
     },
     roleModels: { reviewers: [] },
-    orchestration: {
+    orchestration: resolveOrchestration({
       maxActiveRuns: 2,
       maxConcurrentAttempts: 4,
       maxDomainFanOut: 4,
@@ -32,7 +32,7 @@ function baseWorkspace(overrides: Partial<WorkspaceConfig> = {}): WorkspaceConfi
       planScoutCount: 2,
       domainConcurrency: 2,
       leafConcurrency: 2,
-    },
+    }),
     planConfirm: false,
     operatorTools: ["read", "grep", "find", "ls"],
     wikiLanguage: "en",

@@ -12,8 +12,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatMessage, type MessageTree } from "../../i18n";
 import { newCommandId } from "../../lib/command-id";
 import { localizedLabel } from "../../agent-workspace/workbench-utils";
+import { CoverageStrip } from "./CoverageMatrixPanel";
 import { PlanDocument } from "./PlanDocument";
 import {
+  coverageBlocksApprove,
   formatDomainPageCounts,
   planReviewHeadline,
   type PlanReviewState,
@@ -95,12 +97,15 @@ export function PlanGateReviewPanel({
     formatMessage,
   );
   const decisionsReady = reviewState.status === "ready" && reviewState.review != null;
+  const approveBlockedByCoverage = coverageBlocksApprove(reviewState.review);
+  const canApprove = decisionsReady && !approveBlockedByCoverage;
 
   return (
     <section
       className={className}
       data-testid="plan-gate-review-panel"
       data-slot="plan-gate-review"
+      data-coverage-blocks-approve={approveBlockedByCoverage ? "true" : "false"}
     >
       <div className="sticky top-0 z-10 space-y-3 border-y border-border bg-background/95 px-3 py-3 backdrop-blur supports-backdrop-filter:bg-background/80">
         <div>
@@ -124,6 +129,22 @@ export function PlanGateReviewPanel({
                 .join(" · ")}
             </p>
           ) : null}
+          {reviewState.review?.coverage ? (
+            <CoverageStrip
+              className="mt-2"
+              coverage={reviewState.review.coverage}
+              stopReason={reviewState.review.coverageStopReason}
+              t={t}
+            />
+          ) : null}
+          {approveBlockedByCoverage ? (
+            <p
+              className="mt-2 text-xs text-destructive"
+              data-testid="plan-gate-coverage-blocked"
+            >
+              {t.specReview.coverageGapBlocksApprove}
+            </p>
+          ) : null}
         </div>
         <Textarea
           className="min-h-20"
@@ -137,8 +158,11 @@ export function PlanGateReviewPanel({
           <Button
             size="sm"
             onClick={() => resolve("approve")}
-            disabled={!decisionsReady}
+            disabled={!canApprove}
             data-testid="plan-gate-approve"
+            title={
+              approveBlockedByCoverage ? t.specReview.coverageGapBlocksApprove : undefined
+            }
           >
             {t.workbench.approve}
           </Button>

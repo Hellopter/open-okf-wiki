@@ -171,12 +171,16 @@ export async function handleResearchLeaf(ctx: AttemptHandlerContext): Promise<Pi
   const resolved =
     runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
   const operatorNotes = formatOperatorInputNotes(await loadProjectedOperatorInput(layout));
+  const sourceIds = Array.isArray(detail.sourceIds)
+    ? (detail.sourceIds as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    : undefined;
   const leafBase = leafResearchPrompt({
     domainId,
     question,
     scope,
     nodeId: input.node.key,
     runId: input.runId,
+    ...(sourceIds && sourceIds.length > 0 ? { sourceIds } : {}),
   });
   const leafTask = operatorNotes ? `${operatorNotes}\n\n${leafBase}` : leafBase;
   const seat = { modelId: seatModelId(resolved), role: "leaf" as const };
@@ -277,6 +281,9 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
 
   const resolved =
     runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
+  const domainSourceIds = Array.isArray(detail.sourceIds)
+    ? (detail.sourceIds as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    : undefined;
   const domainBase = domainResearchPrompt({
     domainId,
     title,
@@ -286,6 +293,7 @@ export async function handleResearchDomain(ctx: AttemptHandlerContext): Promise<
     runId: input.runId,
     receiptIndex,
     childReceiptSummaries: childBodies || undefined,
+    ...(domainSourceIds && domainSourceIds.length > 0 ? { sourceIds: domainSourceIds } : {}),
   });
   const domainTask = operatorNotes ? `${operatorNotes}\n\n${domainBase}` : domainBase;
   const seat = { modelId: seatModelId(resolved), role: "domain" as const };

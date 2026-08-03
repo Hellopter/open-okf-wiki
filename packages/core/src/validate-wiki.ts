@@ -6,10 +6,28 @@ import {
   sourceRootMapFromSources,
   validateCitationResolve,
 } from "./citations-canonicalize.js";
-import { parseSourceCitations, validateCitationFormat } from "./citations-parse.js";
+import {
+  parseSourceCitations,
+  type SourceCitation,
+  validateCitationFormat,
+} from "./citations-parse.js";
+import {
+  isSurfaceUnitId,
+  makeSourceUnit,
+  makeSurfaceUnit,
+  parseSurfaceUnitId,
+  type CoverageObligation,
+  type CoveragePlan,
+  type CoverageUnit,
+} from "./coverage-types.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { deriveWikiGraph } from "./wiki-links.js";
-import { isReservedWikiPath, loadWikiPageRecords, WIKI_MAX_FILE_BYTES } from "./wiki-tree.js";
+import {
+  isReservedWikiPath,
+  loadWikiPageRecords,
+  type WikiPageRecord,
+  WIKI_MAX_FILE_BYTES,
+} from "./wiki-tree.js";
 
 /** Soft caps for mechanical publication validation. */
 export const WIKI_VALIDATE_MAX_FILES = 500;
@@ -39,6 +57,21 @@ export type ValidateWikiOptions = {
   autofixCitations?: boolean;
   /** Line slack for {@link autofixCitations} (default 1 — true off-by-one). */
   lineSlack?: number;
+  /**
+   * Optional plan-coverage obligations. When provided, each required unit must
+   * be covered by at least one concept page citation (fail-closed).
+   */
+  coveragePlan?: Pick<CoveragePlan, "requiredUnits"> | CoveragePlan;
+  /**
+   * Explicit unit → page bindings. When set, the named page must exist and
+   * cover the unit (stronger than tree-wide unit coverage).
+   */
+  coverageObligations?: readonly CoverageObligation[];
+  /**
+   * Force multi-source cross-flow checks even when `sources` length is 1.
+   * Defaults to `sources.length >= 2` when omitted.
+   */
+  multiSource?: boolean;
 };
 export type ValidateWikiResult = {
   ok: boolean;
@@ -67,6 +100,9 @@ export type ValidateWikiResult = {
  * - Source Citations on concept pages (format + optional Snapshot resolve) — ADR 0008
  * - No symlinks inside the tree
  * - Soft caps: ≤ {@link WIKI_VALIDATE_MAX_FILES} files, each ≤ 1MB
+ * - Optional plan coverage (SOURCE_COVERAGE / SURFACE_COVERAGE) when
+ *   {@link ValidateWikiOptions.coveragePlan} / `coverageObligations` are provided
+ * - Cross-source Flow pages must cite ≥2 source ids when multi-source
  */
 export async function validateWikiTree(
   dir: string,
@@ -81,6 +117,7 @@ export async function validateWikiTree(
   const sourceMap: SourceRootMap | undefined = options.sources
     ? sourceRootMapFromSources(options.sources)
     : undefined;
+  const registeredSourceIds = (options.sources ?? []).map((s) => s.id);
   let citationCount = 0;
 
   let resolved: string;
@@ -210,6 +247,37 @@ export async function validateWikiTree(
     }
   }
 
+  // Plan coverage obligations (fail-closed when options provided).
+  const conceptPages = pages.filter((page) => !isReservedWikiPath(page.relativePath));
+  // Prefer freeze source ids; fall back to ids declared on the coverage plan.
+  const coverageSourceIds =
+    registeredSourceIds.length > 0
+      ? registeredSourceIds
+      : uniqueSourceIdsFromPlan(options.coveragePlan, options.coverageObligations);
+  const coverageMultiSource =
+    options.multiSource ??
+    (coverageSourceIds.length >= 2 || (options.sources?.length ?? 0) >= 2);
+  errors.push(
+    ...validateCoverageObligations({
+      pages: conceptPages,
+      coveragePlan: options.coveragePlan,
+      coverageObligations: options.coverageObligations,
+      registeredSourceIds: coverageSourceIds,
+      multiSource: coverageMultiSource,
+    }),
+  );
+
+  // Cross-source Flow / multi-sourceId pages: citations must hit ≥2 source ids.
+  if (coverageMultiSource) {
+    errors.push(
+      ...validateCrossSourceFlows({
+        pages: conceptPages,
+        registeredSourceIds: coverageSourceIds,
+        multiSource: coverageMultiSource,
+      }),
+    );
+  }
+
   return {
     ok: errors.length === 0,
     errors,
@@ -218,4 +286,283 @@ export async function validateWikiTree(
     fileCount,
     citationCount,
   };
+}
+
+type PageCitationIndex = {
+  page: WikiPageRecord;
+  citations: SourceCitation[];
+  /** Distinct source ids observed on this page. */
+  sourceIds: Set<string>;
+  /** (sourceId → repo-relative paths cited). */
+  pathsBySource: Map<string, Set<string>>;
+};
+
+/**
+ * Mechanical SOURCE_COVERAGE / SURFACE_COVERAGE checks.
+ * Exported for unit tests of pure obligation logic.
+ */
+export function validateCoverageObligations(input: {
+  pages: readonly WikiPageRecord[];
+  coveragePlan?: Pick<CoveragePlan, "requiredUnits"> | CoveragePlan;
+  coverageObligations?: readonly CoverageObligation[];
+  registeredSourceIds: readonly string[];
+  multiSource: boolean;
+}): string[] {
+  const errors: string[] = [];
+  const required = input.coveragePlan?.requiredUnits ?? [];
+  const obligations = input.coverageObligations ?? [];
+  if (required.length === 0 && obligations.length === 0) {
+    return errors;
+  }
+
+  const pageIndex = buildPageCitationIndex(
+    input.pages,
+    input.registeredSourceIds,
+    input.multiSource,
+  );
+  const pagesByPath = new Map(pageIndex.map((row) => [normalizeWikiRel(row.page.relativePath), row]));
+
+  // Explicit unit → page obligations (strongest).
+  const obligatedUnitIds = new Set<string>();
+  for (const obligation of obligations) {
+    const unitId = obligation.unitId.trim();
+    const pagePath = normalizeWikiRel(obligation.pagePath);
+    if (!unitId || !pagePath) continue;
+    obligatedUnitIds.add(unitId);
+    const row = pagesByPath.get(pagePath);
+    if (!row) {
+      errors.push(
+        coverageErrorForUnitId(
+          unitId,
+          `page missing for obligation unit "${unitId}" (expected ${pagePath})`,
+        ),
+      );
+      continue;
+    }
+    const unit = unitFromObligationId(unitId, required);
+    if (!unit) {
+      // Unknown unit id still fails closed when obligations are declared.
+      errors.push(`SOURCE_COVERAGE: unknown coverage unit "${unitId}" for page ${pagePath}`);
+      continue;
+    }
+    if (!pageCoversUnit(row, unit)) {
+      errors.push(
+        coverageError(
+          unit,
+          `${pagePath} does not cover unit "${unit.id}"`,
+        ),
+      );
+    }
+  }
+
+  // Required units without an explicit page obligation: any concept page may cover.
+  for (const unit of required) {
+    if (obligatedUnitIds.has(unit.id)) continue;
+    const covered = pageIndex.some((row) => pageCoversUnit(row, unit));
+    if (!covered) {
+      errors.push(coverageError(unit, `no page covers unit "${unit.id}"`));
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Flow pages (type: Flow) or pages declaring multiple sourceIds must cite ≥2
+ * registered source ids when multi-source is active.
+ */
+export function validateCrossSourceFlows(input: {
+  pages: readonly WikiPageRecord[];
+  registeredSourceIds: readonly string[];
+  multiSource: boolean;
+}): string[] {
+  if (!input.multiSource) return [];
+  const errors: string[] = [];
+  const registered = new Set(input.registeredSourceIds);
+
+  for (const page of input.pages) {
+    if (!pageNeedsCrossSourceCitations(page)) continue;
+    const citations = parseSourceCitations(page.content);
+    const citedIds = new Set<string>();
+    for (const citation of citations) {
+      const parsed = parseCitationSourcePath(
+        citation.target,
+        input.registeredSourceIds,
+        true,
+      );
+      if (parsed && registered.has(parsed.sourceId)) {
+        citedIds.add(parsed.sourceId);
+      }
+    }
+    if (citedIds.size < 2) {
+      const got = citedIds.size === 0 ? "none" : [...citedIds].sort().join(", ");
+      errors.push(
+        `CROSS_SOURCE_FLOW: ${page.relativePath} must cite ≥2 source ids (got: ${got})`,
+      );
+    }
+  }
+  return errors;
+}
+
+function pageNeedsCrossSourceCitations(page: WikiPageRecord): boolean {
+  const type = (page.values.type ?? "").trim().toLowerCase();
+  if (type === "flow") return true;
+  const declared = parseFrontmatterSourceIds(page.values);
+  return declared.length >= 2;
+}
+
+/** Parse optional frontmatter `sourceIds` / `sourceids` as comma or space separated. */
+function parseFrontmatterSourceIds(values: Readonly<Record<string, string>>): string[] {
+  const raw = values.sourceids ?? values.sourceIds ?? "";
+  if (!raw.trim()) return [];
+  return raw
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function buildPageCitationIndex(
+  pages: readonly WikiPageRecord[],
+  registeredSourceIds: readonly string[],
+  multiSource: boolean,
+): PageCitationIndex[] {
+  return pages.map((page) => {
+    const citations = parseSourceCitations(page.content);
+    const sourceIds = new Set<string>();
+    const pathsBySource = new Map<string, Set<string>>();
+    for (const citation of citations) {
+      const parsed = parseCitationSourcePath(
+        citation.target,
+        registeredSourceIds,
+        multiSource,
+      );
+      if (!parsed) continue;
+      sourceIds.add(parsed.sourceId);
+      let paths = pathsBySource.get(parsed.sourceId);
+      if (!paths) {
+        paths = new Set();
+        pathsBySource.set(parsed.sourceId, paths);
+      }
+      paths.add(parsed.repoPath);
+    }
+    return { page, citations, sourceIds, pathsBySource };
+  });
+}
+
+/**
+ * Split a citation target into sourceId + repo path.
+ * Multi-source: requires registered id prefix.
+ * Single-source: bare path counts as the sole registered id (when exactly one).
+ */
+export function parseCitationSourcePath(
+  target: string,
+  registeredSourceIds: readonly string[],
+  multiSource: boolean,
+): { sourceId: string; repoPath: string } | undefined {
+  const normalized = target.trim().replace(/\\/g, "/");
+  if (!normalized || normalized.startsWith("/") || normalized.includes("..")) {
+    return undefined;
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) return undefined;
+  const idSet = new Set(registeredSourceIds);
+
+  // sources/<id>/rest mount form
+  if (segments[0] === "sources" && segments.length >= 3 && idSet.has(segments[1]!)) {
+    return { sourceId: segments[1]!, repoPath: segments.slice(2).join("/") };
+  }
+
+  if (segments.length >= 2 && idSet.has(segments[0]!)) {
+    return { sourceId: segments[0]!, repoPath: segments.slice(1).join("/") };
+  }
+
+  if (multiSource) {
+    return undefined;
+  }
+
+  // Single-source bare path.
+  if (registeredSourceIds.length === 1) {
+    return { sourceId: registeredSourceIds[0]!, repoPath: segments.join("/") };
+  }
+  // No registered ids: treat as anonymous single-source path under "".
+  if (registeredSourceIds.length === 0) {
+    return { sourceId: "", repoPath: segments.join("/") };
+  }
+  return undefined;
+}
+
+function pageCoversUnit(row: PageCitationIndex, unit: CoverageUnit): boolean {
+  if (unit.kind === "source") {
+    if (unit.sourceId === "") {
+      return row.citations.length > 0;
+    }
+    return row.sourceIds.has(unit.sourceId);
+  }
+  // Surface: need a citation under the surface path within the source.
+  const paths = row.pathsBySource.get(unit.sourceId);
+  if (!paths || paths.size === 0) return false;
+  const surfacePath = (unit.path ?? ".").replace(/\\/g, "/");
+  if (surfacePath === "." || surfacePath === "") {
+    // Root surface: any path under this source covers it.
+    return true;
+  }
+  for (const cited of paths) {
+    if (cited === surfacePath || cited.startsWith(`${surfacePath}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function unitFromObligationId(
+  unitId: string,
+  required: readonly CoverageUnit[],
+): CoverageUnit | undefined {
+  const fromRequired = required.find((u) => u.id === unitId);
+  if (fromRequired) return fromRequired;
+  // Synthesize from contract id conventions when plan is absent.
+  if (isSurfaceUnitId(unitId)) {
+    const parsed = parseSurfaceUnitId(unitId);
+    if (!parsed) return undefined;
+    return makeSurfaceUnit(parsed.sourceId, parsed.path);
+  }
+  const bare = unitId.trim();
+  if (!bare) return undefined;
+  // Bare source slug (contract: unitIdForSource = sourceId).
+  try {
+    return makeSourceUnit(bare);
+  } catch {
+    return { id: bare, kind: "source", sourceId: bare };
+  }
+}
+
+function coverageError(unit: CoverageUnit, detail: string): string {
+  const code = unit.kind === "source" ? "SOURCE_COVERAGE" : "SURFACE_COVERAGE";
+  return `${code}: ${detail}`;
+}
+
+function coverageErrorForUnitId(unitId: string, detail: string): string {
+  if (isSurfaceUnitId(unitId)) {
+    return `SURFACE_COVERAGE: ${detail}`;
+  }
+  return `SOURCE_COVERAGE: ${detail}`;
+}
+
+function normalizeWikiRel(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+function uniqueSourceIdsFromPlan(
+  plan: Pick<CoveragePlan, "requiredUnits"> | CoveragePlan | undefined,
+  obligations: readonly CoverageObligation[] | undefined,
+): string[] {
+  const ids = new Set<string>();
+  for (const unit of plan?.requiredUnits ?? []) {
+    if (unit.sourceId) ids.add(unit.sourceId);
+  }
+  for (const obligation of obligations ?? []) {
+    const unit = unitFromObligationId(obligation.unitId, plan?.requiredUnits ?? []);
+    if (unit?.sourceId) ids.add(unit.sourceId);
+  }
+  return [...ids].sort((a, b) => a.localeCompare(b));
 }

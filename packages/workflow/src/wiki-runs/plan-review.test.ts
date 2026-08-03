@@ -56,6 +56,21 @@ test("plan gate opens with detail summary and readPlanReview matches payloadDige
   assert.ok(review.spec.pages.length >= 1);
   assert.ok(review.execution.workUnitCount >= 0);
   assert.equal(review.spec.summary, planGate.detail?.summary);
+  // Wave 2 additive fields: optional; schema-compatible when present.
+  if (review.coverage) {
+    assert.equal(typeof review.coverage.ok, "boolean");
+    assert.ok(Array.isArray(review.coverage.rows));
+    assert.ok(
+      review.coverageStopReason === undefined ||
+        ["complete", "coverage_gap", "not_required"].includes(review.coverageStopReason),
+    );
+  }
+  if (review.pageSetDiff) {
+    assert.ok(Array.isArray(review.pageSetDiff.added));
+    assert.ok(Array.isArray(review.pageSetDiff.removed));
+  }
+  // Single-source fixture: priorSpec only after revise.
+  assert.equal(review.priorSpec, undefined);
 
   const thin = await runs.readPlanSpec({ runId: receipt.runId });
   assert.equal(thin.digest, review.specDigest);

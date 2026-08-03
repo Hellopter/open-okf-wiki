@@ -30,9 +30,13 @@ import {
   FrozenRunManifestSchema,
   type InputRequirement,
   inputRoleMatches,
+  parseSealedCoverageInventory,
+  parseSealedCoveragePlan,
   type PiAttemptInput,
   type RunIntent,
   RunIntentSchema,
+  type WikiRunSpec,
+  WikiRunSpecSchema,
   validateBoundInputs,
 } from "@okf-wiki/contract";
 import { isPathInside, safeReceiptNodeId } from "@okf-wiki/core";
@@ -334,6 +338,84 @@ async function projectSealedInputs(
       continue;
     }
 
+    if (requirement.role === "prior_spec") {
+      const file = await resolveSealedFile(sealed.readOnlyPath, [
+        "prior-spec.json",
+        "spec.json",
+      ]);
+      if (!file) throw new Error("sealed prior_spec artifact does not contain a readable Spec");
+      const raw = await readFile(file, "utf8");
+      // Validate shape so revise cannot bind garbage as prior Spec.
+      WikiRunSpecSchema.parse(JSON.parse(raw));
+      await writeReadOnlyFile(
+        mountedInputPath(inputsDir, requirement),
+        raw.endsWith("\n") ? raw : `${raw}\n`,
+      );
+      continue;
+    }
+
+    if (requirement.role === "coverage_inventory") {
+      const file = await resolveSealedFile(sealed.readOnlyPath, [
+        "coverage-inventory.json",
+        "inventory.json",
+      ]);
+      if (!file) throw new Error("sealed coverage_inventory artifact is unreadable");
+      const raw = await readFile(file, "utf8");
+      const json = JSON.parse(raw) as unknown;
+      // Freeze inventory includes host extras; strip via shared sealed parser.
+      if (!parseSealedCoverageInventory(json)) {
+        throw new Error(
+          "sealed coverage_inventory must be contract/host inventory with sources[]",
+        );
+      }
+      await writeReadOnlyFile(
+        mountedInputPath(inputsDir, requirement),
+        raw.endsWith("\n") ? raw : `${raw}\n`,
+      );
+      continue;
+    }
+
+    if (requirement.role === "coverage_plan") {
+      const file = await resolveSealedFile(sealed.readOnlyPath, [
+        "coverage-plan.json",
+        "plan.json",
+      ]);
+      if (!file) throw new Error("sealed coverage_plan artifact is unreadable");
+      const raw = await readFile(file, "utf8");
+      const json = JSON.parse(raw) as unknown;
+      // Freeze plan includes host extras (lightPath/reasons/maxSurfacesRequired).
+      // Strict CoveragePlanSchema rejects them — use shared sealed parser.
+      if (!parseSealedCoveragePlan(json)) {
+        throw new Error(
+          "sealed coverage_plan must be contract { requiredUnits } or legacy core { required }",
+        );
+      }
+      await writeReadOnlyFile(
+        mountedInputPath(inputsDir, requirement),
+        raw.endsWith("\n") ? raw : `${raw}\n`,
+      );
+      continue;
+    }
+
+    if (requirement.role === "boundary_index") {
+      const file = await resolveSealedFile(sealed.readOnlyPath, [
+        "boundary-index.json",
+        "boundaries.json",
+      ]);
+      if (!file) throw new Error("sealed boundary_index artifact is unreadable");
+      const raw = await readFile(file, "utf8");
+      // Path-list only; soft-validate shape without a hard schema dependency.
+      const parsed = JSON.parse(raw) as { version?: unknown; entries?: unknown };
+      if (parsed?.version !== 1 || !Array.isArray(parsed.entries)) {
+        throw new Error("sealed boundary_index must be { version: 1, entries: [...] }");
+      }
+      await writeReadOnlyFile(
+        mountedInputPath(inputsDir, requirement),
+        raw.endsWith("\n") ? raw : `${raw}\n`,
+      );
+      continue;
+    }
+
     if (requirement.role === "research") {
       const file = await resolveSealedFile(sealed.readOnlyPath, []);
       if (!file) {
@@ -515,6 +597,19 @@ export async function loadProjectedOperatorInput(
         ? { parentAttemptId: row.parentAttemptId.trim() }
         : {}),
     };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Load sealed prior Spec from inputs/prior-spec.json when projected (plan revise). */
+export async function loadProjectedPriorSpec(
+  layout: RunWorkdirLayout,
+): Promise<WikiRunSpec | undefined> {
+  const candidate = path.join(layout.runWorkDir, "inputs", "prior-spec.json");
+  try {
+    const raw = await readFile(candidate, "utf8");
+    return WikiRunSpecSchema.parse(JSON.parse(raw));
   } catch {
     return undefined;
   }

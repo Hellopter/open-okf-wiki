@@ -46,7 +46,15 @@ test("freeze pins real Git and Skill inputs", async (t) => {
   );
   assert.deepEqual(
     snapshot.nodes[0]?.outputs.map((output) => output.role),
-    ["attempt_output", "frozen_run_manifest", "skill", "sources"],
+    [
+      "attempt_output",
+      "boundary_index",
+      "coverage_inventory",
+      "coverage_plan",
+      "frozen_run_manifest",
+      "skill",
+      "sources",
+    ],
   );
   const attemptOutput = snapshot.nodes[0]?.outputs.find(
     (output) => output.role === "attempt_output",
@@ -328,7 +336,15 @@ test("reopen adopts only a prepared, already sealed artifact", async (t) => {
   const freeze = recovered.snapshot.nodes.find((node) => node.key === "freeze");
   assert.deepEqual(
     freeze?.outputs.map((output) => output.role),
-    ["attempt_output", "frozen_run_manifest", "skill", "sources"],
+    [
+      "attempt_output",
+      "boundary_index",
+      "coverage_inventory",
+      "coverage_plan",
+      "frozen_run_manifest",
+      "skill",
+      "sources",
+    ],
   );
 });
 

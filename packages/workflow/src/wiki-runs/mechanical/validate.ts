@@ -17,6 +17,10 @@ import {
   WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import { regenerateWikiIndexes, toMechanicalReport, validateWikiTree } from "@okf-wiki/core";
+import {
+  coverageObligationsFromSpec,
+  loadCoveragePlanFromArtifactRoot,
+} from "../coverage-bridge.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
@@ -91,6 +95,16 @@ export async function mechanicalValidate(
       ? spec.pages.map((p) => ({ path: p.path, critical: p.critical }))
       : undefined;
 
+  // ADR 0040: pass coverage obligations from Spec + sealed CoveragePlan when present.
+  const coveragePlanRoot =
+    sealedInputPath(host, claim, runDir, "coverage_plan") ?? path.join(runDir, "analysis");
+  const coveragePlan = loadCoveragePlanFromArtifactRoot(coveragePlanRoot);
+  const coverageObligations = spec ? coverageObligationsFromSpec(spec) : [];
+  const wantCoverage =
+    (coveragePlan && coveragePlan.requiredUnits.length > 0) ||
+    coverageObligations.length > 0 ||
+    sources.length >= 2;
+
   // Host-owned indexes before score (EvaluationPolicy.autoFix.regenerateIndexes).
   if (policy.mechanical.autoFix.regenerateIndexes) {
     try {
@@ -112,6 +126,11 @@ export async function mechanicalValidate(
     autofixCitations: wantAutofix,
     lineSlack: policy.mechanical.autoFix.clampLineSlack,
     ...(requiredPages && requiredPages.length > 0 ? { requiredPages } : {}),
+    ...(wantCoverage && coveragePlan ? { coveragePlan } : {}),
+    ...(wantCoverage && coverageObligations.length > 0
+      ? { coverageObligations }
+      : {}),
+    ...(sources.length >= 2 ? { multiSource: true } : {}),
   });
   const mechanical = toMechanicalReport(result);
   const reportPath = path.join(workDir, "validate-report.json");

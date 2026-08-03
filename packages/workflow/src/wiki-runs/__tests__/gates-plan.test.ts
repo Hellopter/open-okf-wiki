@@ -368,10 +368,17 @@ test("scheduler plan claim binds freeze sealed outputs as attempt_inputs", async
     .get(receipt.runId) as { count: number };
   db.close();
 
-  // Plan binds freeze pins (sources + skill + frozen_run_manifest), not attempt_output noise.
+  // Plan binds freeze pins (sources + skill + frozen_run_manifest + coverage/*),
+  // not attempt_output noise.
   const expected = (freezeOutputs ?? [])
     .filter(
-      (row) => row.role === "sources" || row.role === "skill" || row.role === "frozen_run_manifest",
+      (row) =>
+        row.role === "sources" ||
+        row.role === "skill" ||
+        row.role === "frozen_run_manifest" ||
+        row.role === "coverage_inventory" ||
+        row.role === "coverage_plan" ||
+        row.role === "boundary_index",
     )
     .sort((a, b) => a.role.localeCompare(b.role));
   assert.deepEqual(

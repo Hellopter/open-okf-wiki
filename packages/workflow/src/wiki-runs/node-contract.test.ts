@@ -186,10 +186,24 @@ test("validateNodeOutputs rejects missing and undeclared business artifacts", ()
 test("freeze contract accepts generate outputs and marks prior_wiki optional", () => {
   const freeze = contractForNode("freeze", "freeze");
   assert.equal(freeze.outputs.find((output) => output.role === "prior_wiki")?.required, false);
+  assert.equal(
+    freeze.outputs.find((output) => output.role === "coverage_inventory")?.required,
+    false,
+  );
+  assert.equal(freeze.outputs.find((output) => output.role === "coverage_plan")?.required, false);
   validateNodeOutputs(freeze, [
     { role: "sources", kind: "snapshot_set" },
     { role: "skill", kind: "skill" },
     { role: "frozen_run_manifest", kind: "manifest" },
+    { role: "attempt_output", kind: "manifest" },
+  ]);
+  validateNodeOutputs(freeze, [
+    { role: "sources", kind: "snapshot_set" },
+    { role: "skill", kind: "skill" },
+    { role: "frozen_run_manifest", kind: "manifest" },
+    { role: "coverage_inventory", kind: "receipt" },
+    { role: "coverage_plan", kind: "receipt" },
+    { role: "boundary_index", kind: "receipt" },
     { role: "attempt_output", kind: "manifest" },
   ]);
   assert.throws(
@@ -200,5 +214,21 @@ test("freeze contract accepts generate outputs and marks prior_wiki optional", (
         { role: "frozen_run_manifest", kind: "manifest" },
       ]),
     /attempt_output:manifest/,
+  );
+});
+
+test("plan contract accepts optional prior_spec and coverage inputs", () => {
+  const plan = contractForNode("plan", "plan");
+  assert.equal(plan.requiredInputs.find((r) => r.role === "prior_spec")?.required, false);
+  assert.equal(plan.requiredInputs.find((r) => r.role === "coverage_plan")?.required, false);
+  validateBoundInputs(
+    plan,
+    inputs(
+      ["sources", "snapshot_set"],
+      ["skill", "skill"],
+      ["frozen_run_manifest", "manifest"],
+      ["prior_spec", "spec"],
+      ["coverage_plan", "receipt"],
+    ),
   );
 });

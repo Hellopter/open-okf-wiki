@@ -61,9 +61,11 @@ layers beyond this index.
 
 ### Phase order
 
-1. **Plan.** Read `skill/references/plan.md`. Inspect `sources/`, submit the draft Spec, and
-   decide whether bounded Leaf/Domain research is needed. **Gate:** every intended page has a clear reader
-   purpose and enough inspected evidence to write.
+1. **Plan.** Read `skill/references/plan.md`. Inspect every freeze source (and multi-package
+   surfaces), submit the draft Spec with coverage bindings, and decide whether bounded Leaf/Domain
+   research is needed. **Gate:** every intended page has a clear reader purpose and enough inspected
+   evidence to write, and every required coverage unit is bound or cancelled via Spec
+   sourceCoverage/surfaceCoverage (`cancelled: true` + notes reason).
 2. **Choose write branch.** Inspect `wiki/` with `ls` / `read`. Read `skill/references/generate.md`
    when it is empty; otherwise read `skill/references/refresh.md`. **Gate:** the selected branch
    reference has been read in full before write work begins.

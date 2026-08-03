@@ -1,12 +1,19 @@
 /**
  * Run Boundary planner tool: validate WikiRunSpec and atomically write plan-draft.json.
  * Path-first handoff (ADR 0011) — control returns a short ACK + path, not the full Spec.
+ * When a CoveragePlan is available (injected or on disk), assertCoverage runs fail-closed.
  */
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+  assertCoverage,
   assertSpecWithinFanOutCaps,
+  type CoveragePlan,
+  CoverageAssertError,
+  parseSealedCoveragePlan,
   SpecFanOutCapError,
   type SpecFanOutCaps,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
@@ -16,6 +23,57 @@ import {
 import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../ports/core-spec-store.js";
 
 export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
+
+/** Load sealed coverage plan from run workdir (inputs/ preferred, then analysis/). */
+async function loadCoveragePlanFromWorkdir(
+  runWorkDir: string,
+): Promise<CoveragePlan | undefined> {
+  for (const rel of ["inputs/coverage-plan.json", "analysis/coverage-plan.json"]) {
+    try {
+      const raw = JSON.parse(await readFile(path.join(runWorkDir, rel), "utf8")) as unknown;
+      // Strip freeze host extras (lightPath/reasons/maxSurfacesRequired).
+      const parsed = parseSealedCoveragePlan(raw);
+      if (parsed) return parsed;
+    } catch {
+      // try next path
+    }
+  }
+  return undefined;
+}
+
+const coverageBindings = {
+  coverageUnitIds: Type.Optional(
+    Type.Array(
+      Type.String({
+        description:
+          "Canonical coverage unit ids: bare sourceId or source-qualified surface `{sourceId}::{path}`.",
+        minLength: 1,
+        maxLength: 400,
+      }),
+      { maxItems: 64 },
+    ),
+  ),
+  sourceIds: Type.Optional(
+    Type.Array(
+      Type.String({
+        description: "Projection: whole freeze source ids this domain/page covers.",
+        minLength: 1,
+        maxLength: 80,
+      }),
+      { maxItems: 64 },
+    ),
+  ),
+  surfaceIds: Type.Optional(
+    Type.Array(
+      Type.String({
+        description: "Projection: source-qualified surface ids `{sourceId}::{path}`.",
+        minLength: 1,
+        maxLength: 400,
+      }),
+      { maxItems: 64 },
+    ),
+  ),
+};
 
 const domainSchema = Type.Object(
   {
@@ -48,6 +106,7 @@ const domainSchema = Type.Object(
         }),
       ),
     ),
+    ...coverageBindings,
   },
   { additionalProperties: false },
 );
@@ -103,6 +162,7 @@ const pageSchema = Type.Object(
         description: "When true, page is required (always mark overview.md critical).",
       }),
     ),
+    ...coverageBindings,
   },
   { additionalProperties: false },
 );
@@ -185,6 +245,92 @@ export const submitWikiRunSpecParameters = Type.Object(
         }),
       ),
     ),
+    repositoryMap: Type.Optional(
+      Type.Object(
+        {
+          summary: Type.Optional(
+            Type.String({
+              description: "Narrative map of freeze sources / roles (max 4000 chars).",
+              maxLength: 4000,
+            }),
+          ),
+          sources: Type.Optional(
+            Type.Array(
+              Type.Object(
+                {
+                  sourceId: Type.String({ minLength: 1, maxLength: 80 }),
+                  role: Type.Optional(Type.String({ maxLength: 500 })),
+                  entryPoints: Type.Optional(
+                    Type.Array(Type.String({ maxLength: 300 }), { maxItems: 32 }),
+                  ),
+                },
+                { additionalProperties: false },
+              ),
+              { maxItems: 64 },
+            ),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    sourceCoverage: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            sourceId: Type.String({ minLength: 1, maxLength: 80 }),
+            pagePaths: Type.Optional(
+              Type.Array(Type.String({ maxLength: 200 }), { maxItems: 64 }),
+            ),
+            notes: Type.Optional(
+              Type.String({
+                description:
+                  "Optional audit notes; required cancel reason when cancelled is true.",
+                maxLength: 1000,
+              }),
+            ),
+            cancelled: Type.Optional(
+              Type.Boolean({
+                description:
+                  "When true, cancel this source unit for assertCoverage (notes required as reason).",
+              }),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 64 },
+      ),
+    ),
+    surfaceCoverage: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            surfaceId: Type.String({
+              description: "Source-qualified surface id `{sourceId}::{path}`.",
+              minLength: 1,
+              maxLength: 400,
+            }),
+            pagePaths: Type.Optional(
+              Type.Array(Type.String({ maxLength: 200 }), { maxItems: 64 }),
+            ),
+            notes: Type.Optional(
+              Type.String({
+                description:
+                  "Optional audit notes; required cancel reason when cancelled is true.",
+                maxLength: 1000,
+              }),
+            ),
+            cancelled: Type.Optional(
+              Type.Boolean({
+                description:
+                  "When true, cancel this surface unit for assertCoverage (notes required as reason).",
+              }),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 256 },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -205,8 +351,15 @@ export type CreateSubmitWikiRunSpecToolInput = {
    * Host compile remains fail-closed as defense in depth.
    */
   caps?: SpecFanOutCaps;
+  /**
+   * Coverage plan for assertCoverage. When omitted, the tool loads
+   * analysis/coverage-plan.json or inputs/coverage-plan.json when present.
+   */
+  coveragePlan?: CoveragePlan;
   /** Optional test hook; defaults to defaultSpecStore.writePlanDraft. */
   writeDraft?: (runWorkDir: string, spec: WikiRunSpec) => Promise<string>;
+  /** Optional test hook for loading coverage plan from disk. */
+  loadCoveragePlan?: (runWorkDir: string) => Promise<CoveragePlan | undefined>;
 };
 
 export function createSubmitWikiRunSpecTool(
@@ -214,12 +367,15 @@ export function createSubmitWikiRunSpecTool(
 ): ToolDefinition<typeof submitWikiRunSpecParameters, SubmitWikiRunSpecDetails> {
   const writeDraft =
     input.writeDraft ?? ((dir, spec) => defaultSpecStore.writePlanDraft(dir, spec));
+  const loadPlan =
+    input.loadCoveragePlan ?? ((dir) => loadCoveragePlanFromWorkdir(dir));
   return defineTool({
     name: SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
     label: "Submit WikiRunSpec",
     description: [
       "Submit the complete living WikiRunSpec after read-only inspection of frozen sources.",
-      "Product validates the Spec and atomically writes analysis/plan-draft.json under the Run Boundary (path-first handoff).",
+      "Product validates the Spec (including coverage unit bindings when a CoveragePlan is sealed)",
+      "and atomically writes analysis/plan-draft.json under the Run Boundary (path-first handoff).",
       "Call exactly once when the plan is ready.",
       "",
       "When to use:",
@@ -237,6 +393,7 @@ export function createSubmitWikiRunSpecTool(
       "After read-only source inspection, call submit_wiki_run_spec with the full WikiRunSpec fields.",
       "Do not paste the full Spec as chat text; the tool is the handoff.",
       "Always include a critical overview.md page; prefer modules/, flows/ (and deeper) directory layout for related concepts.",
+      "Bind required coverage units on critical pages via coverageUnitIds (or sourceIds / surfaceIds).",
       "Do not list index.md or log.md as Spec pages — indexes are mechanical progressive-disclosure listings regenerated by the product.",
       "On rejection, fix the named field and call submit_wiki_run_spec again with a complete Spec — do not write wiki pages to work around validation.",
     ],
@@ -264,6 +421,26 @@ export function createSubmitWikiRunSpecTool(
         }
         throw err;
       }
+
+      const plan = input.coveragePlan ?? (await loadPlan(input.runWorkDir));
+      if (plan && plan.requiredUnits.length > 0) {
+        try {
+          assertCoverage(parsed.data, plan, { throwOnGap: true });
+        } catch (err) {
+          if (err instanceof CoverageAssertError) {
+            const gaps = err.result.gaps.slice(0, 12).join(", ");
+            throw new Error(
+              `submit_wiki_run_spec rejected: coverage gap — ${err.message}. ` +
+                `Missing units: ${gaps || "(see plan)"}. ` +
+                "Bind each required unit on a critical page via coverageUnitIds / sourceIds / surfaceIds, " +
+                "or cancel via sourceCoverage/surfaceCoverage with cancelled:true and notes reason, " +
+                "then resubmit the complete Spec.",
+            );
+          }
+          throw err;
+        }
+      }
+
       const absolutePath = await writeDraft(input.runWorkDir, parsed.data);
       const details: SubmitWikiRunSpecDetails = {
         specPath: PLAN_DRAFT_REL_PATH,

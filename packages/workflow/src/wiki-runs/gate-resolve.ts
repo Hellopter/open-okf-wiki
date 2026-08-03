@@ -4,15 +4,17 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   contractForNode,
   type RunCommand,
   type RunCommandContext,
   type RunCommandReceipt,
+  WikiRunSpecSchema,
 } from "@okf-wiki/contract";
 import { runWorkDir } from "@okf-wiki/core";
+import { assertCoverageForSealedSpec } from "./coverage-bridge.js";
 import { artifactId, digest, now } from "./crypto-util.js";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { materializeExecutionGraph, planNodeKeyForGate, unlockReadyNodes } from "./dag.js";
@@ -206,7 +208,27 @@ export function applyPlanGateDecision(
         "plan approve requires a sealed Spec artifact",
       );
     }
-    onPlanAccepted(host, command.runId, requiredText(spec, "relative_path"), timestamp);
+    // ADR 0040: operator approval cannot launder an under-covered Spec.
+    const relativePath = requiredText(spec, "relative_path");
+    const runDir = runWorkDir(host.workspace.rootPath, command.runId);
+    let sealedSpec: ReturnType<typeof WikiRunSpecSchema.parse> | undefined;
+    try {
+      const raw = readFileSync(path.join(runDir, relativePath, "spec.json"), "utf8");
+      sealedSpec = WikiRunSpecSchema.parse(JSON.parse(raw));
+    } catch {
+      sealedSpec = undefined;
+    }
+    try {
+      assertCoverageForSealedSpec(host.db, command.runId, runDir, sealedSpec, {
+        requireSpec: true,
+      });
+    } catch (error) {
+      throw new WikiRunsRequestError(
+        "invalid_request",
+        error instanceof Error ? error.message : "coverage gate failed on plan approve",
+      );
+    }
+    onPlanAccepted(host, command.runId, relativePath, timestamp);
     return;
   }
   if (command.decision === "revise") {
@@ -223,6 +245,25 @@ export function applyPlanGateDecision(
     if (!plan) {
       throw new WikiRunsRequestError("stale_revision", "plan node is stale or unavailable");
     }
+    // Prior Spec artifact id for attempt input binding (also recovered via gen>0 scan).
+    const priorSpec = asRow(
+      host.db
+        .prepare(
+          `SELECT node_outputs.artifact_id
+           FROM node_outputs
+           WHERE node_outputs.run_id = ?
+             AND node_outputs.node_key = ?
+             AND node_outputs.node_generation = ?
+             AND node_outputs.role = 'spec'
+           LIMIT 1`,
+        )
+        .get(command.runId, planKey, planGen),
+    );
+    const detail: Record<string, unknown> = {};
+    if (command.feedback !== undefined) detail.feedback = command.feedback;
+    if (priorSpec) {
+      detail.priorSpecArtifactId = requiredText(priorSpec, "artifact_id");
+    }
     contractForNode(requiredText(plan, "kind"), planKey);
     host.db
       .prepare(
@@ -235,7 +276,7 @@ export function applyPlanGateDecision(
         planKey,
         requiredText(plan, "kind"),
         planGen + 1,
-        command.feedback !== undefined ? JSON.stringify({ feedback: command.feedback }) : null,
+        Object.keys(detail).length > 0 ? JSON.stringify(detail) : null,
       );
     host.db
       .prepare(
