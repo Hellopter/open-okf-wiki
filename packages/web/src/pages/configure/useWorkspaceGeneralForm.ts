@@ -21,6 +21,21 @@ export type GeneralFieldErrorKey =
   | "providerMaxRetries"
   | "providerMaxRetryDelayMs";
 
+/** Plan scout topology select values (matches contract planScoutMode). */
+export type PlanScoutModeUi = "auto" | "thematic" | "source" | "hybrid";
+
+/**
+ * Tri-state for optional boolean coverage flags.
+ * auto → omit on save; on → true; off → false.
+ */
+export type CoverageRequirementUi = "auto" | "on" | "off";
+
+function coverageRequirementFromWorkspace(value: boolean | undefined): CoverageRequirementUi {
+  if (value === true) return "on";
+  if (value === false) return "off";
+  return "auto";
+}
+
 export type WorkspaceGeneralForm = {
   models: ModelProfilePublic[];
   defaultModelProfileId: string | undefined;
@@ -74,8 +89,24 @@ export type WorkspaceGeneralForm = {
   setMaxActiveRuns: (value: string) => void;
   maxConcurrentAttempts: string;
   setMaxConcurrentAttempts: (value: string) => void;
+  planScoutMode: PlanScoutModeUi;
+  setPlanScoutMode: (value: PlanScoutModeUi) => void;
   planScoutCount: string;
   setPlanScoutCount: (value: string) => void;
+  planScoutConcurrency: string;
+  setPlanScoutConcurrency: (value: string) => void;
+  planSurveyTaskBudget: string;
+  setPlanSurveyTaskBudget: (value: string) => void;
+  planRescoutMaxRounds: string;
+  setPlanRescoutMaxRounds: (value: string) => void;
+  requireSourceCoverage: CoverageRequirementUi;
+  setRequireSourceCoverage: (value: CoverageRequirementUi) => void;
+  requireSurfaceCoverage: CoverageRequirementUi;
+  setRequireSurfaceCoverage: (value: CoverageRequirementUi) => void;
+  maxSourcesPerRun: string;
+  setMaxSourcesPerRun: (value: string) => void;
+  maxSurfacesRequired: string;
+  setMaxSurfacesRequired: (value: string) => void;
   reviewCouncilSize: string;
   setReviewCouncilSize: (value: string) => void;
   reviewConcurrency: string;
@@ -130,8 +161,26 @@ export function useWorkspaceGeneralForm(
   const [maxLeafFanOut, setMaxLeafFanOut] = useState("6");
   const [maxActiveRuns, setMaxActiveRuns] = useState("2");
   const [maxConcurrentAttempts, setMaxConcurrentAttempts] = useState("4");
+  const [planScoutMode, setPlanScoutMode] = useState<PlanScoutModeUi>(
+    DEFAULT_ORCHESTRATION.planScoutMode,
+  );
   const [planScoutCount, setPlanScoutCount] = useState(
     String(DEFAULT_ORCHESTRATION.planScoutCount),
+  );
+  const [planScoutConcurrency, setPlanScoutConcurrency] = useState("");
+  const [planSurveyTaskBudget, setPlanSurveyTaskBudget] = useState("");
+  const [planRescoutMaxRounds, setPlanRescoutMaxRounds] = useState(
+    String(DEFAULT_ORCHESTRATION.planRescoutMaxRounds),
+  );
+  const [requireSourceCoverage, setRequireSourceCoverage] =
+    useState<CoverageRequirementUi>("auto");
+  const [requireSurfaceCoverage, setRequireSurfaceCoverage] =
+    useState<CoverageRequirementUi>("auto");
+  const [maxSourcesPerRun, setMaxSourcesPerRun] = useState(
+    String(DEFAULT_ORCHESTRATION.maxSourcesPerRun),
+  );
+  const [maxSurfacesRequired, setMaxSurfacesRequired] = useState(
+    String(DEFAULT_ORCHESTRATION.maxSurfacesRequired),
   );
   const [reviewCouncilSize, setReviewCouncilSize] = useState(
     String(DEFAULT_ORCHESTRATION.reviewCouncilSize),
@@ -165,7 +214,15 @@ export function useWorkspaceGeneralForm(
       maxLeafFanOut: string;
       maxActiveRuns: string;
       maxConcurrentAttempts: string;
+      planScoutMode: PlanScoutModeUi;
       planScoutCount: string;
+      planScoutConcurrency: string;
+      planSurveyTaskBudget: string;
+      planRescoutMaxRounds: string;
+      requireSourceCoverage: CoverageRequirementUi;
+      requireSurfaceCoverage: CoverageRequirementUi;
+      maxSourcesPerRun: string;
+      maxSurfacesRequired: string;
       reviewCouncilSize: string;
       reviewConcurrency: string;
       domainConcurrency: string;
@@ -212,8 +269,33 @@ export function useWorkspaceGeneralForm(
       const nextMaxLeafFanOut = String(ws.orchestration?.maxLeafFanOut ?? 6);
       const nextMaxActiveRuns = String(ws.orchestration.maxActiveRuns);
       const nextMaxConcurrentAttempts = String(ws.orchestration.maxConcurrentAttempts);
+      const nextPlanScoutMode: PlanScoutModeUi =
+        ws.orchestration?.planScoutMode ?? DEFAULT_ORCHESTRATION.planScoutMode;
       const nextPlanScoutCount = String(
         ws.orchestration?.planScoutCount ?? DEFAULT_ORCHESTRATION.planScoutCount,
+      );
+      const nextPlanScoutConcurrency =
+        ws.orchestration?.planScoutConcurrency !== undefined
+          ? String(ws.orchestration.planScoutConcurrency)
+          : "";
+      const nextPlanSurveyTaskBudget =
+        ws.orchestration?.planSurveyTaskBudget !== undefined
+          ? String(ws.orchestration.planSurveyTaskBudget)
+          : "";
+      const nextPlanRescoutMaxRounds = String(
+        ws.orchestration?.planRescoutMaxRounds ?? DEFAULT_ORCHESTRATION.planRescoutMaxRounds,
+      );
+      const nextRequireSourceCoverage = coverageRequirementFromWorkspace(
+        ws.orchestration?.requireSourceCoverage,
+      );
+      const nextRequireSurfaceCoverage = coverageRequirementFromWorkspace(
+        ws.orchestration?.requireSurfaceCoverage,
+      );
+      const nextMaxSourcesPerRun = String(
+        ws.orchestration?.maxSourcesPerRun ?? DEFAULT_ORCHESTRATION.maxSourcesPerRun,
+      );
+      const nextMaxSurfacesRequired = String(
+        ws.orchestration?.maxSurfacesRequired ?? DEFAULT_ORCHESTRATION.maxSurfacesRequired,
       );
       const nextReviewCouncilSize = String(
         ws.orchestration?.reviewCouncilSize ?? DEFAULT_ORCHESTRATION.reviewCouncilSize,
@@ -252,7 +334,15 @@ export function useWorkspaceGeneralForm(
       setMaxLeafFanOut(nextMaxLeafFanOut);
       setMaxActiveRuns(nextMaxActiveRuns);
       setMaxConcurrentAttempts(nextMaxConcurrentAttempts);
+      setPlanScoutMode(nextPlanScoutMode);
       setPlanScoutCount(nextPlanScoutCount);
+      setPlanScoutConcurrency(nextPlanScoutConcurrency);
+      setPlanSurveyTaskBudget(nextPlanSurveyTaskBudget);
+      setPlanRescoutMaxRounds(nextPlanRescoutMaxRounds);
+      setRequireSourceCoverage(nextRequireSourceCoverage);
+      setRequireSurfaceCoverage(nextRequireSurfaceCoverage);
+      setMaxSourcesPerRun(nextMaxSourcesPerRun);
+      setMaxSurfacesRequired(nextMaxSurfacesRequired);
       setReviewCouncilSize(nextReviewCouncilSize);
       setReviewConcurrency(nextReviewConcurrency);
       setDomainConcurrency(nextDomainConcurrency);
@@ -280,7 +370,15 @@ export function useWorkspaceGeneralForm(
         maxLeafFanOut: nextMaxLeafFanOut,
         maxActiveRuns: nextMaxActiveRuns,
         maxConcurrentAttempts: nextMaxConcurrentAttempts,
+        planScoutMode: nextPlanScoutMode,
         planScoutCount: nextPlanScoutCount,
+        planScoutConcurrency: nextPlanScoutConcurrency,
+        planSurveyTaskBudget: nextPlanSurveyTaskBudget,
+        planRescoutMaxRounds: nextPlanRescoutMaxRounds,
+        requireSourceCoverage: nextRequireSourceCoverage,
+        requireSurfaceCoverage: nextRequireSurfaceCoverage,
+        maxSourcesPerRun: nextMaxSourcesPerRun,
+        maxSurfacesRequired: nextMaxSurfacesRequired,
         reviewCouncilSize: nextReviewCouncilSize,
         reviewConcurrency: nextReviewConcurrency,
         domainConcurrency: nextDomainConcurrency,
@@ -343,7 +441,15 @@ export function useWorkspaceGeneralForm(
         maxLeafFanOut,
         maxActiveRuns,
         maxConcurrentAttempts,
+        planScoutMode,
         planScoutCount,
+        planScoutConcurrency,
+        planSurveyTaskBudget,
+        planRescoutMaxRounds,
+        requireSourceCoverage,
+        requireSurfaceCoverage,
+        maxSourcesPerRun,
+        maxSurfacesRequired,
         reviewCouncilSize,
         reviewConcurrency,
         domainConcurrency,
@@ -371,7 +477,15 @@ export function useWorkspaceGeneralForm(
       maxLeafFanOut,
       maxActiveRuns,
       maxConcurrentAttempts,
+      planScoutMode,
       planScoutCount,
+      planScoutConcurrency,
+      planSurveyTaskBudget,
+      planRescoutMaxRounds,
+      requireSourceCoverage,
+      requireSurfaceCoverage,
+      maxSourcesPerRun,
+      maxSurfacesRequired,
       reviewCouncilSize,
       reviewConcurrency,
       domainConcurrency,
@@ -487,12 +601,54 @@ export function useWorkspaceGeneralForm(
       const reviewConc = reviewConcRaw
         ? Math.min(4, Math.max(1, Number(reviewConcRaw) || council))
         : undefined;
+      const scoutConcRaw = planScoutConcurrency.trim();
+      const scoutConc = scoutConcRaw
+        ? Math.min(4, Math.max(1, Number(scoutConcRaw) || 1))
+        : undefined;
+      const surveyBudgetRaw = planSurveyTaskBudget.trim();
+      const surveyBudget = surveyBudgetRaw
+        ? Math.min(32, Math.max(0, Number(surveyBudgetRaw) || 0))
+        : undefined;
       const orchestration = {
         maxActiveRuns: Math.min(32, Math.max(1, Number(maxActiveRuns) || 1)),
         maxConcurrentAttempts: Math.min(128, Math.max(1, Number(maxConcurrentAttempts) || 1)),
         maxDomainFanOut: Math.max(1, Number(maxDomainFanOut) || 4),
         maxLeafFanOut: Math.max(1, Number(maxLeafFanOut) || 6),
+        planScoutMode,
         planScoutCount: Math.min(4, Math.max(0, Number(planScoutCount) || 0)),
+        ...(scoutConc !== undefined ? { planScoutConcurrency: scoutConc } : {}),
+        ...(surveyBudget !== undefined ? { planSurveyTaskBudget: surveyBudget } : {}),
+        planRescoutMaxRounds: Math.min(
+          4,
+          Math.max(
+            0,
+            Number(planRescoutMaxRounds) || DEFAULT_ORCHESTRATION.planRescoutMaxRounds,
+          ),
+        ),
+        ...(requireSourceCoverage === "on"
+          ? { requireSourceCoverage: true as const }
+          : requireSourceCoverage === "off"
+            ? { requireSourceCoverage: false as const }
+            : {}),
+        ...(requireSurfaceCoverage === "on"
+          ? { requireSurfaceCoverage: true as const }
+          : requireSurfaceCoverage === "off"
+            ? { requireSurfaceCoverage: false as const }
+            : {}),
+        maxSourcesPerRun: Math.min(
+          16,
+          Math.max(
+            1,
+            Number(maxSourcesPerRun) || DEFAULT_ORCHESTRATION.maxSourcesPerRun,
+          ),
+        ),
+        maxSurfacesRequired: Math.min(
+          48,
+          Math.max(
+            1,
+            Number(maxSurfacesRequired) || DEFAULT_ORCHESTRATION.maxSurfacesRequired,
+          ),
+        ),
         reviewCouncilSize: council,
         ...(reviewConc !== undefined ? { reviewConcurrency: reviewConc } : {}),
         domainConcurrency: Math.min(8, Math.max(1, Number(domainConcurrency) || 2)),
@@ -568,8 +724,24 @@ export function useWorkspaceGeneralForm(
     setMaxActiveRuns,
     maxConcurrentAttempts,
     setMaxConcurrentAttempts,
+    planScoutMode,
+    setPlanScoutMode,
     planScoutCount,
     setPlanScoutCount,
+    planScoutConcurrency,
+    setPlanScoutConcurrency,
+    planSurveyTaskBudget,
+    setPlanSurveyTaskBudget,
+    planRescoutMaxRounds,
+    setPlanRescoutMaxRounds,
+    requireSourceCoverage,
+    setRequireSourceCoverage,
+    requireSurfaceCoverage,
+    setRequireSurfaceCoverage,
+    maxSourcesPerRun,
+    setMaxSourcesPerRun,
+    maxSurfacesRequired,
+    setMaxSurfacesRequired,
     reviewCouncilSize,
     setReviewCouncilSize,
     reviewConcurrency,

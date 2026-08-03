@@ -60,6 +60,7 @@ function ConfigureBody({
 }: ConfigureBodyProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const location = useLocation();
   const { id = "" } = useParams<{ id: string }>();
   const form = useWorkspaceGeneralForm(workspace, onWorkspaceChange);
 
@@ -115,8 +116,8 @@ function ConfigureBody({
   }
 
   return (
-    <div className="flex w-full flex-col gap-4">
-      <p className="text-sm text-muted-foreground">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <p className="shrink-0 px-4 pt-4 text-sm text-muted-foreground md:px-6">
         {t.settings.descriptionPrefix}{" "}
         <Link to="/settings" className="underline underline-offset-3 hover:text-foreground">
           {t.settings.descriptionLink}
@@ -129,135 +130,167 @@ function ConfigureBody({
         onValueChange={(v) => {
           const next = v as Section;
           onSectionChange(next);
-          navigate({ hash: SECTION_HASH[next] }, { replace: true });
+          navigate(
+            {
+              pathname: location.pathname,
+              search: location.search,
+              hash: SECTION_HASH[next],
+            },
+            { replace: true },
+          );
         }}
-        className="w-full"
+        className="flex min-h-0 flex-1 flex-col gap-0"
       >
-        <TabsList variant="line" className="justify-start">
-          <TabsTrigger value="sources" data-testid="workspace-subnav-sources">
-            {t.sources.title}
-          </TabsTrigger>
-          <TabsTrigger value="general" data-testid="settings-tab-general">
-            {t.settings.tabGeneral}
-          </TabsTrigger>
-          <TabsTrigger value="skill" data-testid="settings-tab-skill">
-            {t.settings.tabSkill}
-          </TabsTrigger>
-          <TabsTrigger value="danger" data-testid="settings-tab-danger">
-            {t.settings.tabDanger}
-          </TabsTrigger>
-        </TabsList>
+        <div className="shrink-0 border-b border-border px-4 pt-3 pb-0 md:px-6">
+          <TabsList variant="line" className="mb-0 w-full justify-start">
+            <TabsTrigger value="sources" data-testid="workspace-subnav-sources">
+              {t.sources.title}
+            </TabsTrigger>
+            <TabsTrigger value="general" data-testid="settings-tab-general">
+              {t.settings.tabGeneral}
+            </TabsTrigger>
+            <TabsTrigger value="skill" data-testid="settings-tab-skill">
+              {t.settings.tabSkill}
+            </TabsTrigger>
+            <TabsTrigger value="danger" data-testid="settings-tab-danger">
+              {t.settings.tabDanger}
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-        <TabsContent value="sources" className="outline-none">
-          <SourcesSection
-            workspace={workspace}
-            onWorkspaceChange={onWorkspaceChange}
-            skipNextWorkspaceHydrate={form.skipNextWorkspaceHydrate}
-          />
-        </TabsContent>
-
-        <TabsContent value="general" className="outline-none" data-testid="settings-page">
-          <ErrorBanner error={form.loadError} onDismiss={() => form.setLoadError(null)} />
-          {form.loading ? (
-            <LoadingState label={t.settings.loading} />
-          ) : (
-            <GeneralSection
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
+          <TabsContent value="sources" className="outline-none" keepMounted>
+            <SourcesSection
               workspace={workspace}
-              models={form.models}
-              defaultModelProfileId={form.defaultModelProfileId}
-              isSubmitting={form.isSubmitting}
-              isDirty={form.isDirty}
-              onSubmit={form.handleSubmit}
-              fieldErrors={form.fieldErrors}
-              onClearFieldError={form.clearFieldError}
-              name={form.name}
-              setName={form.setName}
-              modelProfileId={form.modelProfileId}
-              setModelProfileId={form.setModelProfileId}
-              publicationPath={form.publicationPath}
-              setPublicationPath={form.setPublicationPath}
-              planConfirm={form.planConfirm}
-              setPlanConfirm={form.setPlanConfirm}
-              wikiLanguage={form.wikiLanguage}
-              setWikiLanguage={form.setWikiLanguage}
-              contextTargetTokens={form.contextTargetTokens}
-              setContextTargetTokens={form.setContextTargetTokens}
-              requestTimeoutSeconds={form.requestTimeoutSeconds}
-              setRequestTimeoutSeconds={form.setRequestTimeoutSeconds}
-              gateTimeoutSeconds={form.gateTimeoutSeconds}
-              setGateTimeoutSeconds={form.setGateTimeoutSeconds}
-              retryEnabled={form.retryEnabled}
-              setRetryEnabled={form.setRetryEnabled}
-              retryMaxRetries={form.retryMaxRetries}
-              setRetryMaxRetries={form.setRetryMaxRetries}
-              retryBaseDelayMs={form.retryBaseDelayMs}
-              setRetryBaseDelayMs={form.setRetryBaseDelayMs}
-              providerMaxRetries={form.providerMaxRetries}
-              setProviderMaxRetries={form.setProviderMaxRetries}
-              providerMaxRetryDelayMs={form.providerMaxRetryDelayMs}
-              setProviderMaxRetryDelayMs={form.setProviderMaxRetryDelayMs}
-              maxDomainFanOut={form.maxDomainFanOut}
-              setMaxDomainFanOut={form.setMaxDomainFanOut}
-              maxLeafFanOut={form.maxLeafFanOut}
-              setMaxLeafFanOut={form.setMaxLeafFanOut}
-              maxActiveRuns={form.maxActiveRuns}
-              setMaxActiveRuns={form.setMaxActiveRuns}
-              maxConcurrentAttempts={form.maxConcurrentAttempts}
-              setMaxConcurrentAttempts={form.setMaxConcurrentAttempts}
-              planScoutCount={form.planScoutCount}
-              setPlanScoutCount={form.setPlanScoutCount}
-              reviewCouncilSize={form.reviewCouncilSize}
-              setReviewCouncilSize={form.setReviewCouncilSize}
-              reviewConcurrency={form.reviewConcurrency}
-              setReviewConcurrency={form.setReviewConcurrency}
-              domainConcurrency={form.domainConcurrency}
-              setDomainConcurrency={form.setDomainConcurrency}
-              leafConcurrency={form.leafConcurrency}
-              setLeafConcurrency={form.setLeafConcurrency}
-              plannerProfileId={form.plannerProfileId}
-              setPlannerProfileId={form.setPlannerProfileId}
-              workerProfileId={form.workerProfileId}
-              setWorkerProfileId={form.setWorkerProfileId}
-              writerProfileId={form.writerProfileId}
-              setWriterProfileId={form.setWriterProfileId}
-            />
-          )}
-        </TabsContent>
-
-        <TabsContent value="skill" className="outline-none">
-          {form.loading ? (
-            <LoadingState label={t.settings.loading} />
-          ) : (
-            <SkillSection
-              workspaceId={id}
-              expectedRevision={workspace.revision}
-              models={form.models}
-              skill={skill}
-              skillBusy={skillBusy}
-              skillFilePath={skillFilePath}
-              skillFileContent={skillFileContent}
-              skillFileDirty={skillFileDirty}
-              setSkill={setSkill}
-              setSkillBusy={setSkillBusy}
-              setSkillFilePath={setSkillFilePath}
-              setSkillFileContent={setSkillFileContent}
-              setSkillFileDirty={setSkillFileDirty}
               onWorkspaceChange={onWorkspaceChange}
-              applyWorkspace={form.applyWorkspace}
               skipNextWorkspaceHydrate={form.skipNextWorkspaceHydrate}
             />
-          )}
-        </TabsContent>
+          </TabsContent>
 
-        <TabsContent value="danger" className="outline-none">
-          <DangerSection
-            deleting={deleting}
-            onRequestDelete={() => {
-              setDeleteMeta(false);
-              setDeleteDialogOpen(true);
-            }}
-          />
-        </TabsContent>
+          <TabsContent
+            value="general"
+            className="outline-none"
+            data-testid="settings-page"
+            keepMounted
+          >
+            <ErrorBanner error={form.loadError} onDismiss={() => form.setLoadError(null)} />
+            {form.loading ? (
+              <LoadingState label={t.settings.loading} />
+            ) : (
+              <GeneralSection
+                workspace={workspace}
+                models={form.models}
+                defaultModelProfileId={form.defaultModelProfileId}
+                isSubmitting={form.isSubmitting}
+                isDirty={form.isDirty}
+                onSubmit={form.handleSubmit}
+                fieldErrors={form.fieldErrors}
+                onClearFieldError={form.clearFieldError}
+                name={form.name}
+                setName={form.setName}
+                modelProfileId={form.modelProfileId}
+                setModelProfileId={form.setModelProfileId}
+                publicationPath={form.publicationPath}
+                setPublicationPath={form.setPublicationPath}
+                planConfirm={form.planConfirm}
+                setPlanConfirm={form.setPlanConfirm}
+                wikiLanguage={form.wikiLanguage}
+                setWikiLanguage={form.setWikiLanguage}
+                contextTargetTokens={form.contextTargetTokens}
+                setContextTargetTokens={form.setContextTargetTokens}
+                requestTimeoutSeconds={form.requestTimeoutSeconds}
+                setRequestTimeoutSeconds={form.setRequestTimeoutSeconds}
+                gateTimeoutSeconds={form.gateTimeoutSeconds}
+                setGateTimeoutSeconds={form.setGateTimeoutSeconds}
+                retryEnabled={form.retryEnabled}
+                setRetryEnabled={form.setRetryEnabled}
+                retryMaxRetries={form.retryMaxRetries}
+                setRetryMaxRetries={form.setRetryMaxRetries}
+                retryBaseDelayMs={form.retryBaseDelayMs}
+                setRetryBaseDelayMs={form.setRetryBaseDelayMs}
+                providerMaxRetries={form.providerMaxRetries}
+                setProviderMaxRetries={form.setProviderMaxRetries}
+                providerMaxRetryDelayMs={form.providerMaxRetryDelayMs}
+                setProviderMaxRetryDelayMs={form.setProviderMaxRetryDelayMs}
+                maxDomainFanOut={form.maxDomainFanOut}
+                setMaxDomainFanOut={form.setMaxDomainFanOut}
+                maxLeafFanOut={form.maxLeafFanOut}
+                setMaxLeafFanOut={form.setMaxLeafFanOut}
+                maxActiveRuns={form.maxActiveRuns}
+                setMaxActiveRuns={form.setMaxActiveRuns}
+                maxConcurrentAttempts={form.maxConcurrentAttempts}
+                setMaxConcurrentAttempts={form.setMaxConcurrentAttempts}
+                planScoutMode={form.planScoutMode}
+                setPlanScoutMode={form.setPlanScoutMode}
+                planScoutCount={form.planScoutCount}
+                setPlanScoutCount={form.setPlanScoutCount}
+                planScoutConcurrency={form.planScoutConcurrency}
+                setPlanScoutConcurrency={form.setPlanScoutConcurrency}
+                planSurveyTaskBudget={form.planSurveyTaskBudget}
+                setPlanSurveyTaskBudget={form.setPlanSurveyTaskBudget}
+                planRescoutMaxRounds={form.planRescoutMaxRounds}
+                setPlanRescoutMaxRounds={form.setPlanRescoutMaxRounds}
+                requireSourceCoverage={form.requireSourceCoverage}
+                setRequireSourceCoverage={form.setRequireSourceCoverage}
+                requireSurfaceCoverage={form.requireSurfaceCoverage}
+                setRequireSurfaceCoverage={form.setRequireSurfaceCoverage}
+                maxSourcesPerRun={form.maxSourcesPerRun}
+                setMaxSourcesPerRun={form.setMaxSourcesPerRun}
+                maxSurfacesRequired={form.maxSurfacesRequired}
+                setMaxSurfacesRequired={form.setMaxSurfacesRequired}
+                reviewCouncilSize={form.reviewCouncilSize}
+                setReviewCouncilSize={form.setReviewCouncilSize}
+                reviewConcurrency={form.reviewConcurrency}
+                setReviewConcurrency={form.setReviewConcurrency}
+                domainConcurrency={form.domainConcurrency}
+                setDomainConcurrency={form.setDomainConcurrency}
+                leafConcurrency={form.leafConcurrency}
+                setLeafConcurrency={form.setLeafConcurrency}
+                plannerProfileId={form.plannerProfileId}
+                setPlannerProfileId={form.setPlannerProfileId}
+                workerProfileId={form.workerProfileId}
+                setWorkerProfileId={form.setWorkerProfileId}
+                writerProfileId={form.writerProfileId}
+                setWriterProfileId={form.setWriterProfileId}
+              />
+            )}
+          </TabsContent>
+
+          <TabsContent value="skill" className="outline-none">
+            {form.loading ? (
+              <LoadingState label={t.settings.loading} />
+            ) : (
+              <SkillSection
+                workspaceId={id}
+                expectedRevision={workspace.revision}
+                models={form.models}
+                skill={skill}
+                skillBusy={skillBusy}
+                skillFilePath={skillFilePath}
+                skillFileContent={skillFileContent}
+                skillFileDirty={skillFileDirty}
+                setSkill={setSkill}
+                setSkillBusy={setSkillBusy}
+                setSkillFilePath={setSkillFilePath}
+                setSkillFileContent={setSkillFileContent}
+                setSkillFileDirty={setSkillFileDirty}
+                onWorkspaceChange={onWorkspaceChange}
+                applyWorkspace={form.applyWorkspace}
+                skipNextWorkspaceHydrate={form.skipNextWorkspaceHydrate}
+              />
+            )}
+          </TabsContent>
+
+          <TabsContent value="danger" className="outline-none">
+            <DangerSection
+              deleting={deleting}
+              onRequestDelete={() => {
+                setDeleteMeta(false);
+                setDeleteDialogOpen(true);
+              }}
+            />
+          </TabsContent>
+        </div>
       </Tabs>
 
       <ConfirmDialog
@@ -328,12 +361,15 @@ export function ConfigurePage() {
       workspaceId={id}
       workspaceName={workspace?.name}
       mode="configure"
+      immersive
       error={error}
       onDismissError={() => setError(null)}
       testId="configure-page"
     >
       {loading ? (
-        <LoadingState label={t.common.loading} />
+        <div className="flex min-h-0 flex-1 flex-col p-4 md:p-6">
+          <LoadingState label={t.common.loading} />
+        </div>
       ) : workspace ? (
         <ConfigureBody
           workspace={workspace}

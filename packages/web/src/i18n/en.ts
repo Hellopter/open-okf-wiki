@@ -229,9 +229,37 @@ export const en = {
     maxLeafFanOut: "Max leaves / domain",
     maxLeafFanOutHint:
       "Topology only: max questions/leaves materialized per domain. Does not set the leaf concurrency pool.",
-    planScoutCount: "Plan scouts",
+    planCoverageTitle: "Plan coverage / scouts",
+    planCoverageHint:
+      "Multi-source runs use auto hybrid by default: per-source surveys plus thematic scouts, gated by coverage checklists. Leave mode on auto unless you need a fixed topology.",
+    planScoutMode: "Scout mode",
+    planScoutModeAuto: "Auto",
+    planScoutModeThematic: "Thematic",
+    planScoutModeSource: "Source",
+    planScoutModeHybrid: "Hybrid",
+    planScoutCount: "Thematic plan scouts",
     planScoutCountHint:
-      "Parallel read-only scouts (entry / layout / tests / risks) before the Spec synthesizer. Default 0 (light path: inventory + one planner); raise for large or multi-entry repos.",
+      "Thematic only (entry / layout / tests / risks). Default 0 (light path). Multi-source surveys use survey task budget below — not this count.",
+    planScoutConcurrency: "Scout concurrency",
+    planScoutConcurrencyHint: "How many plan scouts may run at once (defaults to scout count).",
+    planSurveyTaskBudget: "Survey task budget",
+    planSurveyTaskBudgetPlaceholder: "auto",
+    planSurveyTaskBudgetHint:
+      "Independent budget for per-source survey tasks. Empty = host derives under max sources per run. Never silently truncates past this budget.",
+    planRescoutMaxRounds: "Re-scout rounds",
+    planRescoutMaxRoundsHint:
+      "Max re-scout rounds after coverage gaps (0 disables). Default 1.",
+    requireSourceCoverage: "Require source coverage",
+    requireSurfaceCoverage: "Require surface coverage",
+    coverageRequirementAuto: "Auto",
+    coverageRequirementOn: "On",
+    coverageRequirementOff: "Off",
+    maxSourcesPerRun: "Max sources / run",
+    maxSourcesPerRunHint:
+      "Cap on sources in one Wiki Run coverage plan. Over-cap fails closed (no silent truncation).",
+    maxSurfacesRequired: "Max surfaces required",
+    maxSurfacesRequiredHint:
+      "Cap on required surface units from inventory. Over-cap fails closed.",
     reviewCouncilSize: "Review council size",
     reviewCouncilSizeHint:
       "Independent review lenses (grounding, coverage, consistency, …). Default 1 (light path); raise when extra lenses earn unique defects.",

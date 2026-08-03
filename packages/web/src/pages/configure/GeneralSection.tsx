@@ -38,7 +38,11 @@ import { Switch } from "@/components/ui/switch";
 import type { ModelProfilePublic, WikiLanguage, WorkspaceConfig } from "../../api";
 import { ModelSelect } from "../../components/ModelSelect";
 import { formatMessage, useI18n } from "../../i18n";
-import type { GeneralFieldErrorKey } from "./useWorkspaceGeneralForm";
+import type {
+  CoverageRequirementUi,
+  GeneralFieldErrorKey,
+  PlanScoutModeUi,
+} from "./useWorkspaceGeneralForm";
 
 export type GeneralSectionProps = {
   workspace: WorkspaceConfig;
@@ -83,8 +87,24 @@ export type GeneralSectionProps = {
   setMaxActiveRuns: (value: string) => void;
   maxConcurrentAttempts: string;
   setMaxConcurrentAttempts: (value: string) => void;
+  planScoutMode: PlanScoutModeUi;
+  setPlanScoutMode: (value: PlanScoutModeUi) => void;
   planScoutCount: string;
   setPlanScoutCount: (value: string) => void;
+  planScoutConcurrency: string;
+  setPlanScoutConcurrency: (value: string) => void;
+  planSurveyTaskBudget: string;
+  setPlanSurveyTaskBudget: (value: string) => void;
+  planRescoutMaxRounds: string;
+  setPlanRescoutMaxRounds: (value: string) => void;
+  requireSourceCoverage: CoverageRequirementUi;
+  setRequireSourceCoverage: (value: CoverageRequirementUi) => void;
+  requireSurfaceCoverage: CoverageRequirementUi;
+  setRequireSurfaceCoverage: (value: CoverageRequirementUi) => void;
+  maxSourcesPerRun: string;
+  setMaxSourcesPerRun: (value: string) => void;
+  maxSurfacesRequired: string;
+  setMaxSurfacesRequired: (value: string) => void;
   reviewCouncilSize: string;
   setReviewCouncilSize: (value: string) => void;
   reviewConcurrency: string;
@@ -144,8 +164,24 @@ export function GeneralSection({ isSubmitting, isDirty, ...props }: GeneralSecti
     setMaxActiveRuns,
     maxConcurrentAttempts,
     setMaxConcurrentAttempts,
+    planScoutMode,
+    setPlanScoutMode,
     planScoutCount,
     setPlanScoutCount,
+    planScoutConcurrency,
+    setPlanScoutConcurrency,
+    planSurveyTaskBudget,
+    setPlanSurveyTaskBudget,
+    planRescoutMaxRounds,
+    setPlanRescoutMaxRounds,
+    requireSourceCoverage,
+    setRequireSourceCoverage,
+    requireSurfaceCoverage,
+    setRequireSurfaceCoverage,
+    maxSourcesPerRun,
+    setMaxSourcesPerRun,
+    maxSurfacesRequired,
+    setMaxSurfacesRequired,
     reviewCouncilSize,
     setReviewCouncilSize,
     reviewConcurrency,
@@ -196,7 +232,7 @@ export function GeneralSection({ isSubmitting, isDirty, ...props }: GeneralSecti
     (models.length === 0 || Boolean(modelProfileId));
 
   return (
-    <div className="flex w-full max-w-3xl flex-col gap-6">
+    <div className="flex w-full max-w-4xl flex-col gap-6">
       <Card>
         <CardHeader>
           <CardTitle>{t.settings.tabGeneral}</CardTitle>
@@ -684,27 +720,6 @@ export function GeneralSection({ isSubmitting, isDirty, ...props }: GeneralSecti
                         </Field>
                         <Field className="w-auto flex-col gap-1">
                           <FieldLabel
-                            htmlFor="settings-plan-scout-count"
-                            className="text-xs text-muted-foreground"
-                          >
-                            {t.settings.planScoutCount}
-                          </FieldLabel>
-                          <Input
-                            id="settings-plan-scout-count"
-                            type="number"
-                            min={0}
-                            max={4}
-                            value={planScoutCount}
-                            onChange={(e) => {
-                              setPlanScoutCount(e.target.value);
-                            }}
-                            className="w-24 font-mono"
-                            data-testid="settings-plan-scout-count"
-                            title={t.settings.planScoutCountHint}
-                          />
-                        </Field>
-                        <Field className="w-auto flex-col gap-1">
-                          <FieldLabel
                             htmlFor="settings-review-council-size"
                             className="text-xs text-muted-foreground"
                           >
@@ -791,10 +806,294 @@ export function GeneralSection({ isSubmitting, isDirty, ...props }: GeneralSecti
                       </div>
                     </FieldGroup>
                     <FieldDescription className="mt-2 text-xs">
-                      {t.settings.planScoutCountHint} {t.settings.reviewCouncilSizeHint}{" "}
-                      {t.settings.domainConcurrencyHint} {t.settings.leafConcurrencyHint}{" "}
-                      {t.settings.maxLeafFanOutHint}
+                      {t.settings.reviewCouncilSizeHint} {t.settings.domainConcurrencyHint}{" "}
+                      {t.settings.leafConcurrencyHint} {t.settings.maxLeafFanOutHint}
                     </FieldDescription>
+
+                    <div className="mt-4 border-t border-border pt-4">
+                      <p className="mb-1 text-sm font-medium">
+                        {t.settings.planCoverageTitle}
+                      </p>
+                      <FieldDescription className="mb-3">
+                        {t.settings.planCoverageHint}
+                      </FieldDescription>
+                      <FieldGroup>
+                        <div className="flex flex-wrap gap-3">
+                          <Field className="w-auto min-w-36 flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-plan-scout-mode"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.planScoutMode}
+                            </FieldLabel>
+                            <Select
+                              value={planScoutMode}
+                              onValueChange={(next) => {
+                                if (
+                                  next === "auto" ||
+                                  next === "thematic" ||
+                                  next === "source" ||
+                                  next === "hybrid"
+                                ) {
+                                  setPlanScoutMode(next);
+                                }
+                              }}
+                              items={[
+                                { value: "auto", label: t.settings.planScoutModeAuto },
+                                {
+                                  value: "thematic",
+                                  label: t.settings.planScoutModeThematic,
+                                },
+                                { value: "source", label: t.settings.planScoutModeSource },
+                                { value: "hybrid", label: t.settings.planScoutModeHybrid },
+                              ]}
+                            >
+                              <SelectTrigger
+                                id="settings-plan-scout-mode"
+                                className="w-36"
+                                data-testid="settings-plan-scout-mode"
+                                data-value={planScoutMode}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value="auto">
+                                    {t.settings.planScoutModeAuto}
+                                  </SelectItem>
+                                  <SelectItem value="thematic">
+                                    {t.settings.planScoutModeThematic}
+                                  </SelectItem>
+                                  <SelectItem value="source">
+                                    {t.settings.planScoutModeSource}
+                                  </SelectItem>
+                                  <SelectItem value="hybrid">
+                                    {t.settings.planScoutModeHybrid}
+                                  </SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                          <Field className="w-auto flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-plan-scout-count"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.planScoutCount}
+                            </FieldLabel>
+                            <Input
+                              id="settings-plan-scout-count"
+                              type="number"
+                              min={0}
+                              max={4}
+                              value={planScoutCount}
+                              onChange={(e) => {
+                                setPlanScoutCount(e.target.value);
+                              }}
+                              className="w-24 font-mono"
+                              data-testid="settings-plan-scout-count"
+                              title={t.settings.planScoutCountHint}
+                            />
+                          </Field>
+                          <Field className="w-auto flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-plan-scout-concurrency"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.planScoutConcurrency}
+                            </FieldLabel>
+                            <Input
+                              id="settings-plan-scout-concurrency"
+                              type="number"
+                              min={1}
+                              max={4}
+                              placeholder={planScoutCount || "1"}
+                              value={planScoutConcurrency}
+                              onChange={(e) => {
+                                setPlanScoutConcurrency(e.target.value);
+                              }}
+                              className="w-24 font-mono"
+                              data-testid="settings-plan-scout-concurrency"
+                              title={t.settings.planScoutConcurrencyHint}
+                            />
+                          </Field>
+                          <Field className="w-auto flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-plan-survey-task-budget"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.planSurveyTaskBudget}
+                            </FieldLabel>
+                            <Input
+                              id="settings-plan-survey-task-budget"
+                              type="number"
+                              min={0}
+                              max={32}
+                              placeholder={t.settings.planSurveyTaskBudgetPlaceholder}
+                              value={planSurveyTaskBudget}
+                              onChange={(e) => {
+                                setPlanSurveyTaskBudget(e.target.value);
+                              }}
+                              className="w-24 font-mono"
+                              data-testid="settings-plan-survey-task-budget"
+                              title={t.settings.planSurveyTaskBudgetHint}
+                            />
+                          </Field>
+                          <Field className="w-auto flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-plan-rescout-max-rounds"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.planRescoutMaxRounds}
+                            </FieldLabel>
+                            <Input
+                              id="settings-plan-rescout-max-rounds"
+                              type="number"
+                              min={0}
+                              max={4}
+                              value={planRescoutMaxRounds}
+                              onChange={(e) => {
+                                setPlanRescoutMaxRounds(e.target.value);
+                              }}
+                              className="w-24 font-mono"
+                              data-testid="settings-plan-rescout-max-rounds"
+                              title={t.settings.planRescoutMaxRoundsHint}
+                            />
+                          </Field>
+                          <Field className="w-auto min-w-36 flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-require-source-coverage"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.requireSourceCoverage}
+                            </FieldLabel>
+                            <Select
+                              value={requireSourceCoverage}
+                              onValueChange={(next) => {
+                                if (next === "auto" || next === "on" || next === "off") {
+                                  setRequireSourceCoverage(next);
+                                }
+                              }}
+                              items={[
+                                { value: "auto", label: t.settings.coverageRequirementAuto },
+                                { value: "on", label: t.settings.coverageRequirementOn },
+                                { value: "off", label: t.settings.coverageRequirementOff },
+                              ]}
+                            >
+                              <SelectTrigger
+                                id="settings-require-source-coverage"
+                                className="w-36"
+                                data-testid="settings-require-source-coverage"
+                                data-value={requireSourceCoverage}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value="auto">
+                                    {t.settings.coverageRequirementAuto}
+                                  </SelectItem>
+                                  <SelectItem value="on">
+                                    {t.settings.coverageRequirementOn}
+                                  </SelectItem>
+                                  <SelectItem value="off">
+                                    {t.settings.coverageRequirementOff}
+                                  </SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                          <Field className="w-auto min-w-36 flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-require-surface-coverage"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.requireSurfaceCoverage}
+                            </FieldLabel>
+                            <Select
+                              value={requireSurfaceCoverage}
+                              onValueChange={(next) => {
+                                if (next === "auto" || next === "on" || next === "off") {
+                                  setRequireSurfaceCoverage(next);
+                                }
+                              }}
+                              items={[
+                                { value: "auto", label: t.settings.coverageRequirementAuto },
+                                { value: "on", label: t.settings.coverageRequirementOn },
+                                { value: "off", label: t.settings.coverageRequirementOff },
+                              ]}
+                            >
+                              <SelectTrigger
+                                id="settings-require-surface-coverage"
+                                className="w-36"
+                                data-testid="settings-require-surface-coverage"
+                                data-value={requireSurfaceCoverage}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value="auto">
+                                    {t.settings.coverageRequirementAuto}
+                                  </SelectItem>
+                                  <SelectItem value="on">
+                                    {t.settings.coverageRequirementOn}
+                                  </SelectItem>
+                                  <SelectItem value="off">
+                                    {t.settings.coverageRequirementOff}
+                                  </SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          </Field>
+                          <Field className="w-auto flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-max-sources-per-run"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.maxSourcesPerRun}
+                            </FieldLabel>
+                            <Input
+                              id="settings-max-sources-per-run"
+                              type="number"
+                              min={1}
+                              max={16}
+                              value={maxSourcesPerRun}
+                              onChange={(e) => {
+                                setMaxSourcesPerRun(e.target.value);
+                              }}
+                              className="w-24 font-mono"
+                              data-testid="settings-max-sources-per-run"
+                              title={t.settings.maxSourcesPerRunHint}
+                            />
+                          </Field>
+                          <Field className="w-auto flex-col gap-1">
+                            <FieldLabel
+                              htmlFor="settings-max-surfaces-required"
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t.settings.maxSurfacesRequired}
+                            </FieldLabel>
+                            <Input
+                              id="settings-max-surfaces-required"
+                              type="number"
+                              min={1}
+                              max={48}
+                              value={maxSurfacesRequired}
+                              onChange={(e) => {
+                                setMaxSurfacesRequired(e.target.value);
+                              }}
+                              className="w-24 font-mono"
+                              data-testid="settings-max-surfaces-required"
+                              title={t.settings.maxSurfacesRequiredHint}
+                            />
+                          </Field>
+                        </div>
+                      </FieldGroup>
+                      <FieldDescription className="mt-2 text-xs">
+                        {t.settings.planScoutCountHint} {t.settings.planSurveyTaskBudgetHint}
+                      </FieldDescription>
+                    </div>
                   </FieldSet>
                 </AccordionContent>
               </AccordionItem>
