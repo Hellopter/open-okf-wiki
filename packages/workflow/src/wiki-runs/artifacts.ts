@@ -1,7 +1,7 @@
 /**
  * Artifact prepare / seal / commit (bytes + CAS) and orphan.
  * Attempt input binding lives in attempt-inputs.ts.
- * Control-flow after success/failure lives in attempt-finish.ts.
+ * Control-flow after success/failure lives in attempt-finish/.
  */
 
 import { createHash, randomUUID } from "node:crypto";

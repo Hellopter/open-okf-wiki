@@ -24,7 +24,7 @@ import {
   commitSuccessfulAttempt as commitSuccessfulAttemptImpl,
   preparePlanExecutionPlan as preparePlanExecutionPlanImpl,
   recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
-} from "./wiki-runs/attempt-finish.js";
+} from "./wiki-runs/attempt-finish/index.js";
 import { CandidateReview } from "./wiki-runs/candidate-review.js";
 import {
   applyCommand as applyCommandImpl,

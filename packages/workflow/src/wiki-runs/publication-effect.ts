@@ -7,7 +7,8 @@
  *   conflict may cancel when operator revises / restarts the candidate path
  *
  * Callers: gate-open (insert prepared), gate-resolve (ready / cancel),
- * mechanical publish (applying / applied / conflict / failed), owner recover.
+ * publication-control (applying / applied / conflict around sealed apply),
+ * mechanical publish (candidate_ready → failed on pre-CAS error), owner recover.
  */
 
 import path from "node:path";

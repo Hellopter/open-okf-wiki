@@ -1,6 +1,6 @@
 /**
  * Ready-node claim, attempt execution (Pi + mechanical), abort.
- * Terminal success/failure control effects live in attempt-finish.ts
+ * Terminal success/failure control effects live in attempt-finish/
  * (commitSuccessfulAttempt / failNode). Owner binds db/workspace/transaction/emit.
  */
 
@@ -21,7 +21,7 @@ import {
 } from "@okf-wiki/contract/wiki-runs";
 import { runWorkDir } from "@okf-wiki/core";
 import { isGateKind, isMechanicalAttemptKind, isPiAttemptKind } from "../execution-graph.js";
-import { failNode } from "./attempt-finish.js";
+import { failNode } from "./attempt-finish/index.js";
 import {
   graphRoleForNodeKind,
   mergeAttemptMetrics,

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
 import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
-import { shouldAutoRetryResearch } from "../attempt-finish.js";
+import { shouldAutoRetryResearch } from "../attempt-finish/index.js";
 import { fixtureWorkspace, partialControl } from "../testing/control-fixture.js";
 import { type ClaimedNode, RESEARCH_AUTO_RETRY_MAX_ATTEMPTS } from "../types.js";
 
