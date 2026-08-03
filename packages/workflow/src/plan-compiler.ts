@@ -7,19 +7,9 @@
  * the plan is accepted (ADR 0040).
  */
 
-import {
-  assertCoverage,
-  assertSpecWithinFanOutCaps,
-  type CoveragePlan,
-  CoverageAssertError,
-  DEFAULT_ORCHESTRATION,
-  type ExecutionPlan,
-  ExecutionPlanSchema,
-  normalizeSpecUnitIds,
-  resolveSpecFanOutCaps,
-  SpecFanOutCapError,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
+import { assertCoverage, type CoveragePlan, CoverageAssertError, normalizeSpecUnitIds } from "@okf-wiki/contract/coverage";
+import { assertSpecWithinFanOutCaps, type ExecutionPlan, ExecutionPlanSchema, resolveSpecFanOutCaps, SpecFanOutCapError, type WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import { DEFAULT_ORCHESTRATION } from "@okf-wiki/contract/workspace";
 
 export const REVIEW_LENSES = ["grounding", "coverage", "consistency", "general"] as const;
 

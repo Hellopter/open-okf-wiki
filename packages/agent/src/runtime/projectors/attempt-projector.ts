@@ -8,7 +8,7 @@
  * Real in/out/cache from Pi Usage are side notes when present (not inventable).
  */
 
-import type { AttemptItem, AttemptMetrics } from "@okf-wiki/contract";
+import type { AttemptItem, AttemptMetrics } from "@okf-wiki/contract/wiki-runs";
 
 export const MAX_ITEMS = 20;
 export const MAX_TEXT_CHUNK = 2000;

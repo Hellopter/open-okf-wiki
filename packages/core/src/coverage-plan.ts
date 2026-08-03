@@ -12,7 +12,7 @@
  * `cancelled`) plus host policy fields (`lightPath`, `reasons`, cap).
  */
 
-import { CoverageAssertError } from "@okf-wiki/contract";
+import { CoverageAssertError } from "@okf-wiki/contract/coverage";
 import {
   type CoverageInventory,
   type CoveragePlan,

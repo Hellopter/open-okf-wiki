@@ -129,6 +129,7 @@ test("validateWikiTree accepts a minimal valid tree", async () => {
   const result = await validateWikiTree(root);
   assert.equal(result.ok, true);
   assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.issues, []);
   assert.equal(result.pageCount, 3);
 });
 
@@ -145,6 +146,11 @@ test("validateWikiTree fails when Spec critical page is missing", async () => {
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("; "), /critical page missing: modules\/missing\.md/);
+  assert.ok(
+    result.issues.some(
+      (i) => i.code === "missing_critical_page" && i.path === "modules/missing.md",
+    ),
+  );
   assert.equal(
     result.errors.some((e) => e.includes("optional.md")),
     false,
@@ -189,6 +195,7 @@ test("validateWikiTree rejects concept page without type", async () => {
   const result = await validateWikiTree(root);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /type/i);
+  assert.ok(result.issues.some((i) => i.code === "missing_frontmatter" && i.path === "overview.md"));
 });
 
 test("validateWikiTree exempts index.md from title/type and citations", async () => {
@@ -254,6 +261,7 @@ test("validateWikiTree rejects symlink entries inside tree", async () => {
   const result = await validateWikiTree(root);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /symlink/i);
+  assert.ok(result.issues.some((i) => i.code === "symlink"));
 });
 
 test("validateWikiTree rejects oversized file", async () => {
@@ -263,6 +271,7 @@ test("validateWikiTree rejects oversized file", async () => {
   const result = await validateWikiTree(root);
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /max file size/i);
+  assert.ok(result.issues.some((i) => i.code === "cap_exceeded" && i.path === "huge.md"));
 });
 
 test("validateWikiTree rejects missing SOURCE_COVERAGE when coveragePlan provided", async () => {

@@ -3,11 +3,7 @@
  * Rows live in wiki_candidates; contract WikiCandidate is the validated projection.
  */
 
-import {
-  type WikiCandidate,
-  type WikiCandidateProducedBy,
-  WikiCandidateSchema,
-} from "@okf-wiki/contract";
+import { type WikiCandidate, type WikiCandidateProducedBy, WikiCandidateSchema } from "@okf-wiki/contract/wiki-runs";
 import { now } from "../crypto-util.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "../sql.js";
 

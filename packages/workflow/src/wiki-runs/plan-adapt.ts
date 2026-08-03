@@ -6,13 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  contractForNode,
-  type ExecutionPlanDelta,
-  ExecutionPlanDeltaSchema,
-  type WikiRunSpec,
-  WikiRunSpecSchema,
-} from "@okf-wiki/contract";
+import { contractForNode, type ExecutionPlanDelta, ExecutionPlanDeltaSchema, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
 import { runWorkDir } from "@okf-wiki/core";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { loadExecutionPlanFromPlanNode } from "./dag.js";

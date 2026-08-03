@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import {
   buildExecutionGraph,
   isMechanicalAttemptKind,

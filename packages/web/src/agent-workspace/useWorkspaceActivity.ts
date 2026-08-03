@@ -1,4 +1,4 @@
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createAgentSession,

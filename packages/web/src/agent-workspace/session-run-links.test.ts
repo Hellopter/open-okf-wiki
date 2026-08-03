@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WikiRunListItem } from "@okf-wiki/contract";
+import type { WikiRunListItem } from "@okf-wiki/contract/wiki-runs";
 import { sessionRunLinks } from "./session-run-links.ts";
 
 const run = (runId: string, sessionId?: string): WikiRunListItem => ({

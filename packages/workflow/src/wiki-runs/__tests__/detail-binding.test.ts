@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { PiAttemptInput } from "@okf-wiki/contract";
+import type { PiAttemptInput } from "@okf-wiki/contract/pi-attempt";
 import { openWikiRuns } from "../../wiki-runs.js";
 import { loadPiAttemptNodeDetail } from "../scheduler.js";
 import {

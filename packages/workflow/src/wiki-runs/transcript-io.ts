@@ -4,7 +4,7 @@
 
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { type AttemptTraceEvent, AttemptTraceEventSchema } from "@okf-wiki/contract";
+import { type AttemptTraceEvent, AttemptTraceEventSchema } from "@okf-wiki/contract/wiki-runs";
 import { TRANSCRIPT_MAX_BYTES } from "./types.js";
 
 /**

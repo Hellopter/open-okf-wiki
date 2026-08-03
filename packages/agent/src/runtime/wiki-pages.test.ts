@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { runWorkdirLayout } from "../runtime/workdir.js";
+import { runWorkdirLayout } from "./workdir.js";
 import { listWikiMarkdown, materializeWikiIndexes, writeFixtureWiki } from "./wiki-pages.js";
 
 test("listWikiMarkdown: empty when wiki dir missing", async () => {

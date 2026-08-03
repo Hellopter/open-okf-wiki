@@ -1,7 +1,7 @@
 /**
  * Source Citation API surface (ADR 0008).
- * Implementation is split across parse + canonicalize modules; this file
- * re-exports the public names for a stable import path.
+ * Implementation is split across parse + target policy + canonicalize modules;
+ * this file re-exports the public names for a stable import path.
  */
 
 export {
@@ -27,6 +27,14 @@ export {
   sourceRootMapFromSources,
   validateCitationResolve,
 } from "./citations-canonicalize.js";
+export {
+  type CitationTargetOptions,
+  type CitationTargetParts,
+  type ParseCitationTargetResult,
+  formatCitationTarget,
+  parseCitationSourcePath,
+  parseCitationTarget,
+} from "./citation-target.js";
 export {
   parseSourceCitations,
   SOURCE_CITATION_RE,

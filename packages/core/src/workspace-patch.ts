@@ -1,9 +1,5 @@
 import path from "node:path";
-import {
-  type WorkspaceConfig,
-  WorkspaceLimitsSchema,
-  type WorkspacePatch,
-} from "@okf-wiki/contract";
+import { type WorkspaceConfig, WorkspaceLimitsSchema, type WorkspacePatch } from "@okf-wiki/contract/workspace";
 import { WorkspaceIntakeError } from "./workspace-errors.js";
 
 export type ResolveModelSelection = (

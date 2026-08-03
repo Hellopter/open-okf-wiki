@@ -6,12 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import {
-  type RunCommandReceipt,
-  type RunIntent,
-  type WikiProduceToolDetails,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { RunCommandReceipt, RunIntent, WikiProduceToolDetails } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 
 export const WIKI_PRODUCE_TOOL_NAME = "wiki_produce" as const;
 

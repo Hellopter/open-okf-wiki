@@ -9,7 +9,8 @@
 
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { type RepositorySnapshot, type WorkspaceConfig } from "@okf-wiki/contract";
+import type { RepositorySnapshot } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { cleanupWritableTree } from "./atomicity.js";
 import { probeLocalGit } from "./git.js";
 import { materializeRepositorySnapshot } from "./repository-snapshot.js";

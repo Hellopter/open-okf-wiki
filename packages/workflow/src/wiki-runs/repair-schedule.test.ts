@@ -4,11 +4,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  MechanicalReportSchema,
-  PiAttemptNodeDetailSchema,
-  RepairRequestSchema,
-} from "@okf-wiki/contract";
+import { PiAttemptNodeDetailSchema } from "@okf-wiki/contract/pi-attempt";
+import { MechanicalReportSchema, RepairRequestSchema } from "@okf-wiki/contract/wiki-runs";
 import {
   buildMechanicalRepairRequest,
   buildSemanticRepairRequest,

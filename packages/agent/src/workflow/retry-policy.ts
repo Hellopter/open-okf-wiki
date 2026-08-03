@@ -13,7 +13,7 @@
  * Unknown classes fail closed (no default retry).
  */
 
-import type { ErrorClass } from "@okf-wiki/contract";
+import type { ErrorClass } from "@okf-wiki/contract/wiki-runs";
 
 const TRANSIENT_PATTERNS: readonly RegExp[] = [
   /rate.?limit/i,

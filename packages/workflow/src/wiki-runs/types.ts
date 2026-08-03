@@ -3,25 +3,9 @@
  * Package callers use WikiRuns / openWikiRuns only — ClaimedNode stays internal.
  */
 
-import type {
-  CandidateDiffRead,
-  CandidatePageRead,
-  CandidateTreeRead,
-  WikiRunAttemptTranscript as ContractWikiRunAttemptTranscript,
-  WikiRunListItem as ContractWikiRunListItem,
-  PiAttemptExecutor,
-  PiAttemptInput,
-  PiAttemptOutcome,
-  RunCommand,
-  RunCommandContext,
-  RunCommandReceipt,
-  WikiRunArtifactKind,
-  WikiRunEvent,
-  WikiRunPlanReview,
-  WikiRunSnapshot,
-  WikiRunSpecRead,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { PiAttemptExecutor, PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
+import type { CandidateDiffRead, CandidatePageRead, CandidateTreeRead, WikiRunAttemptTranscript as ContractWikiRunAttemptTranscript, WikiRunListItem as ContractWikiRunListItem, RunCommand, RunCommandContext, RunCommandReceipt, WikiRunArtifactKind, WikiRunEvent, WikiRunPlanReview, WikiRunSnapshot, WikiRunSpecRead } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import type { FreezeRunBoundaryInput, FrozenRunBoundary } from "@okf-wiki/core";
 
 /** Scheduler claim envelope for one ready node attempt (internal). */

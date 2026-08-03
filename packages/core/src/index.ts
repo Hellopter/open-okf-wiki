@@ -24,13 +24,19 @@ export {
   type CanonicalizeCitationOptions,
   type CanonicalizeCitationResult,
   type CanonicalizeWikiTreeResult,
+  type CitationTargetOptions,
+  type CitationTargetParts,
   type ClampCitationOptions,
+  type ParseCitationTargetResult,
   canonicalizeCitationInContent,
   canonicalizeCitationTarget,
   canonicalizeWikiTreeCitations,
   clampCitationLineRange,
   countFileLines,
+  formatCitationTarget,
   formatRepoCitation,
+  parseCitationSourcePath,
+  parseCitationTarget,
   parseSourceCitations,
   resolveCitationFile,
   SOURCE_CITATION_RE,
@@ -40,7 +46,6 @@ export {
   validateCitationFormat,
   validateCitationResolve,
 } from "./citations.js";
-// publish exports rewriteWikiTreeCitationsForPublish via publish module below
 export {
   type CloneIntoWorkspaceInput,
   type CloneIntoWorkspaceResult,
@@ -54,9 +59,12 @@ export {
   type GitRunResult,
 } from "./git-runner.js";
 export {
+  extractPagesFromMechanicalIssues,
   extractPagesFromValidationMessage,
   extractPathFromValidateError,
-  mechanicalIssuesFromErrors,
+  makeMechanicalIssue,
+  type MakeMechanicalIssueInput,
+  type MechanicalReportSource,
   toMechanicalReport,
 } from "./mechanical-report.js";
 export {
@@ -120,25 +128,32 @@ export {
   type ResolvedProviderRuntime,
   resolveProviderRuntime,
 } from "./provider-runtime.js";
+// Publication primitives (ADR 0017 / 0035) — deep modules, no shallow facade.
 export {
   type ApplySealedPublicationInput,
   type ApplySealedPublicationResult,
   applySealedPublicationCandidate,
-  capturePublicationBaseline,
+  PublicationConflictError,
+  type ReconcilePublicationApplyInput,
+  type ReconcilePublicationApplyResult,
+  reconcilePublicationApply,
+} from "./publication/apply.js";
+export {
   digestPublicationTree,
   digestPublicationTreeContentOnly,
   EMPTY_PUBLICATION_DIGEST,
   manifestPublicationTree,
-  materializePublicationCandidate,
-  PublicationConflictError,
   type PublicationTreeManifest,
-  type PublishStagingResult,
-  type ReconcilePublicationApplyInput,
-  type ReconcilePublicationApplyResult,
-  reconcilePublicationApply,
-  rewriteWikiTreeCitationsForPublish,
+} from "./publication/digest.js";
+export {
+  capturePublicationBaseline,
   withPublicationLock,
-} from "./publish.js";
+} from "./publication/lock.js";
+export {
+  materializePublicationCandidate,
+  type PublishStagingResult,
+  rewriteWikiTreeCitationsForPublish,
+} from "./publication/materialize.js";
 export {
   derivePublishedWikiGraph,
   listPublishedWikiBrowse,
@@ -259,7 +274,6 @@ export {
   WORKSPACE_PARENT_DIRS,
 } from "./repository-inventory.js";
 export {
-  parseCitationSourcePath,
   type ValidateWikiOptions,
   type ValidateWikiResult,
   validateCoverageObligations,

@@ -7,7 +7,7 @@ import {
   createSubmitDefectReportTool,
   DEFECT_REPORT_REL_PATH,
   defectReportPathFromRunWorkDir,
-  readDefectReportDraft,
+  readDefectReport,
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
 } from "./submit-defect-report.js";
 
@@ -52,7 +52,7 @@ describe("submit_defect_report tool", () => {
     assert.equal(result.details?.clean, false);
     const raw = await readFile(defectReportPathFromRunWorkDir(dir), "utf8");
     assert.match(raw, /missing_citation/);
-    const draft = await readDefectReportDraft(dir);
+    const draft = await readDefectReport(dir);
     assert.equal(draft?.clean, false);
     assert.equal(draft?.defects[0]?.reviewerId, "grounding");
   });
@@ -94,7 +94,7 @@ describe("submit_defect_report tool", () => {
       undefined,
       {} as never,
     );
-    const draft = await readDefectReportDraft(dir);
+    const draft = await readDefectReport(dir);
     assert.equal(draft?.reviewerId, "consistency");
     assert.equal(draft?.clean, true);
   });

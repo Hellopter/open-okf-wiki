@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import type { PiAttemptInput, PiAttemptOutcome, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
+import type { WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   context,

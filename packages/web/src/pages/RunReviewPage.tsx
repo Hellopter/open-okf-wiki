@@ -1,10 +1,5 @@
-import type {
-  CandidateDiffRead,
-  CandidatePageRead,
-  RunCommand,
-  WikiRunSnapshot,
-  WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { CandidateDiffRead, CandidatePageRead, RunCommand, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { Check, FileDiff, MessageSquarePlus, Wrench } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";

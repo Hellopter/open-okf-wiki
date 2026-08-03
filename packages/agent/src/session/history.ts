@@ -16,7 +16,7 @@ import {
   type SessionManager,
   sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
-import { type AgentMessage, projectAgentMessagesFromPiHistory } from "@okf-wiki/contract";
+import { type AgentMessage, projectAgentMessagesFromPiHistory } from "@okf-wiki/contract/stream-server";
 
 function projectEntries(manager: SessionManager, mode: "branch" | "context"): Message[] {
   const entries = mode === "branch" ? manager.getBranch() : manager.buildContextEntries();

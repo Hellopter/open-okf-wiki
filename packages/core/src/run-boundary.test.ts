@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import { FreezeWikiRunError, freezeRunBoundary } from "./run-boundary.js";
 import { skillDigest } from "./skill-digest.js";
 

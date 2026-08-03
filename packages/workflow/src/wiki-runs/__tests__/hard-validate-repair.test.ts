@@ -9,23 +9,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it, test } from "node:test";
-import {
-  defaultWikiRunSpec,
-  type PiAttemptInput,
-  type PiAttemptOutcome,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
+import type { PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { openWikiRuns } from "../../wiki-runs.js";
-import { baselineWikiForRepair, parseRepairRound, upstreamSealedOutputs } from "../artifacts.js";
+import { baselineWikiForRepair, parseRepairRound, upstreamSealedOutputs } from "../attempt-inputs.js";
 import {
   countRepairsBySource,
   isRepairNodeKey,
   MECHANICAL_REPAIR_FEEDBACK_PREFIX,
   REPAIR_NODE_PREFIX,
-  type RepairScheduleHost,
   repairNodeKey,
   shouldAutoMechanicalRepair,
 } from "../repair-schedule.js";
+import { partialControl } from "../testing/control-fixture.js";
 import type { ClaimedNode } from "../types.js";
 import {
   approvePlanGate,
@@ -678,8 +675,8 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
     rootPath?: string;
     specRelativePath?: string;
     wikiCandidateCount?: number;
-  }): RepairScheduleHost {
-    return {
+  }) {
+    return partialControl({
       workspace: {
         rootPath: opts.rootPath ?? "/tmp/okf-mech-unit-missing",
         limits: { retry: { enabled: true } },
@@ -690,7 +687,7 @@ describe("shouldAutoMechanicalRepair (unit)", () => {
       emit: () => 0,
       currentNodeGeneration: () => undefined,
       applyRerunAt: () => undefined,
-    };
+    });
   }
 
   const validateClaim: ClaimedNode = {

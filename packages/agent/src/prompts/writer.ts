@@ -2,7 +2,7 @@
  * Root writer prompts for Staging Wiki pages.
  */
 
-import type { WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import type { RunWorkdirLayout } from "../runtime/workdir.js";
 import { runWorkdirPromptPaths } from "../runtime/workdir.js";
 import { domainList, pageList, type WikiLanguage } from "./system.js";

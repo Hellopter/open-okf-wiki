@@ -4,15 +4,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  contractForNode,
-  RunCommand,
-  RunCommandContext,
-  RunCommandReceipt,
-} from "@okf-wiki/contract";
+import { contractForNode, RunCommand, RunCommandContext, RunCommandReceipt } from "@okf-wiki/contract/wiki-runs";
 import { CandidateReviewCommands } from "./candidate-review.js";
 import { digest, now } from "./crypto-util.js";
-import type { WikiRunsDbCtx } from "./ctx.js";
+import type { ApplyRerunAtOptions, WikiRunsControl } from "./ctx.js";
+
+export type { ApplyRerunAtOptions } from "./ctx.js";
 import { countModelWikiCandidates } from "./evaluation/candidate.js";
 import {
   continueEvaluationRecovery,
@@ -21,48 +18,11 @@ import {
 } from "./repair-schedule.js";
 import { pauseRun, resumeRun, submitRunRevision } from "./run-revision-coordinator.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
-import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
+import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import { CommandIdCollision, WikiRunsRequestError } from "./types.js";
 
-/**
- * Command application always runs under the owner's outer BEGIN IMMEDIATE
- * (dispatch → applyCommand). Do not put `transaction` on this host — nested
- * BEGIN would throw. Scheduling is the owner's post-commit concern, not commands.
- */
-export type CommandsHost = WikiRunsDbCtx & {
-  activeAttempts: Map<string, AbortController>;
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-  currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
-  applyRerunAt(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    feedback?: string,
-    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
-  ): void;
-  upstreamSealedOutputs(
-    runId: string,
-    nodeKey: string,
-  ): Array<{ role: string; artifactId: string }>;
-  abortRunAttempts(runId: string): void;
-  withdrawOpenGates(runId: string): void;
-  withdrawOpenGatesForNode(runId: string, nodeKey: string, generation: number): void;
-  cancelPreApplyEffects(runId: string): void;
-  cancelPreApplyEffectsForPublication(
-    runId: string,
-    publicationNodeKey: string,
-    publicationNodeGeneration: number,
-  ): void;
-  /** Bound to gate-resolve.resolveGate by the owner. */
-  resolveGate(
-    command: Extract<RunCommand, { type: "resolve_gate" }>,
-    context: RunCommandContext,
-    payloadDigest: string,
-  ): RunCommandReceipt;
-};
-
 export function applyCommand(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: RunCommand,
   context: RunCommandContext,
 ): RunCommandReceipt {
@@ -175,7 +135,7 @@ export function applyCommand(
 }
 
 export function retryFailedNode(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "retry_failed_node" }>,
   context: RunCommandContext,
   payloadDigest: string,
@@ -259,7 +219,7 @@ export function retryFailedNode(
 
 /** Shared path for manual RetryFailedNode and research auto-retry. */
 export function requeueFailedNode(
-  host: Pick<CommandsHost, "db">,
+  host: Pick<WikiRunsControl, "db">,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -280,13 +240,13 @@ export function requeueFailedNode(
 }
 
 /** Digest of current sealed upstream envelope (same algorithm as first claim). */
-export function liveInputDigest(host: CommandsHost, runId: string, nodeKey: string): string {
+export function liveInputDigest(host: WikiRunsControl, runId: string, nodeKey: string): string {
   const upstreams = host.upstreamSealedOutputs(runId, nodeKey);
   return digest(upstreams.map((input) => ({ role: input.role, artifactId: input.artifactId })));
 }
 
 export function cancelRun(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "cancel_run" }>,
   context: RunCommandContext,
   payloadDigest: string,
@@ -317,7 +277,7 @@ export function cancelRun(
 }
 
 export function rerunNode(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "rerun_node" }>,
   context: RunCommandContext,
   payloadDigest: string,
@@ -368,7 +328,7 @@ export function rerunNode(
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
 }
 
-function hasMaterializedExecutionTopology(host: Pick<CommandsHost, "db">, runId: string): boolean {
+function hasMaterializedExecutionTopology(host: Pick<WikiRunsControl, "db">, runId: string): boolean {
   // Before approval, the durable bootstrap contains only freeze, plan, and gate.plan.
   return Boolean(
     asRow(
@@ -384,7 +344,7 @@ function hasMaterializedExecutionTopology(host: Pick<CommandsHost, "db">, runId:
 }
 
 export function continueEvaluation(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "continue_evaluation" }>,
   context: RunCommandContext,
   payloadDigest: string,
@@ -394,27 +354,13 @@ export function continueEvaluation(
   return { commandId: command.commandId, runId: command.runId, revision, accepted: true };
 }
 
-export type ApplyRerunAtOptions = {
-  /**
-   * When true, only bump `nodeKey` (no attempt_inputs consumer lineage).
-   * Used after repair.N to re-arm validate.pre / seats / reduce without
-   * invalidating the just-succeeded repair stage (which consumed upstream outputs).
-   */
-  selfOnly?: boolean;
-  /**
-   * Drop lineage consumers whose node_key matches this predicate.
-   * Ignored when selfOnly is true.
-   */
-  excludeConsumer?: (nodeKey: string) => boolean;
-};
-
 /**
  * Core RerunNode: generation++ on target + actual lineage consumers, withdraw
  * gates, cancel pre-apply effects, persist optional feedback on the new root gen.
  * Shared by the rerun_node command and publication-gate revise.
  */
 export function applyRerunAt(
-  host: CommandsHost,
+  host: WikiRunsControl,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -530,7 +476,7 @@ export function applyRerunAt(
 
 /** Mark a replaced generation non-claimable; keep terminal succeeded/failed for audit. */
 export function supersedeClaimableNode(
-  host: Pick<CommandsHost, "db">,
+  host: Pick<WikiRunsControl, "db">,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -546,7 +492,7 @@ export function supersedeClaimableNode(
 
 /** Transitive consumers of `(nodeKey, generation)` outputs via attempt_inputs lineage. */
 export function lineageInvalidationClosure(
-  host: Pick<CommandsHost, "db" | "currentNodeGeneration">,
+  host: Pick<WikiRunsControl, "db" | "currentNodeGeneration">,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -596,7 +542,7 @@ export function lineageInvalidationClosure(
 }
 
 export function cancelNodeAttempts(
-  host: Pick<CommandsHost, "db" | "activeAttempts">,
+  host: Pick<WikiRunsControl, "db" | "activeAttempts">,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -629,7 +575,7 @@ export function cancelNodeAttempts(
 }
 
 export function recordCommand(
-  host: Pick<CommandsHost, "db" | "workspace">,
+  host: Pick<WikiRunsControl, "db" | "workspace">,
   command: RunCommand,
   context: RunCommandContext,
   payloadDigest: string,

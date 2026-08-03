@@ -1,14 +1,17 @@
 /**
- * Plan re-runs use sealed RunIntent plus current revision feedback only.
+ * Thin handlePlan wiring tests (Epic D.4).
+ * Plan policy (adaptive, scouts, draft I/O) is covered by plan-phase.test.ts.
+ * This file only asserts the Attempt edge: projections → planWikiSpec → unsealed outputs.
  */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { type PiAttemptInput, WorkspaceConfigSchema } from "@okf-wiki/contract";
+import type { PiAttemptInput } from "@okf-wiki/contract/pi-attempt";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import { createFixtureProduceRuntime } from "../../fixture-runner.js";
-import { handlePlan } from "./plan.js";
+import { handlePlan, planUncertaintyForPriorSpec } from "./plan.js";
 
 function baseWorkspace(rootPath: string) {
   return WorkspaceConfigSchema.parse({
@@ -144,5 +147,16 @@ test("handlePlan fixture revise uses current feedback without a prior Spec input
   assert.equal(outcome.type, "succeeded");
   if (outcome.type !== "succeeded") return;
   assert.ok(outcome.unsealedArtifacts.some((a) => a.kind === "spec"));
+  assert.ok(outcome.unsealedArtifacts.some((a) => a.kind === "transcript"));
   assert.match(outcome.summary ?? "", /Source-grounded wiki for Plan Handler Test/);
+
+  // Unsealed Spec is written under analysis/ (Attempt edge, not plan policy).
+  const specArt = outcome.unsealedArtifacts.find((a) => a.kind === "spec");
+  assert.ok(specArt);
+  const raw = await readFile(specArt!.sourcePath, "utf8");
+  assert.match(raw, /overview\.md/);
+});
+
+test("planUncertaintyForPriorSpec is re-exported from plan deep module", () => {
+  assert.equal(planUncertaintyForPriorSpec(undefined), 0);
 });

@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { type AnalysisReceipt, AnalysisReceiptSchema } from "@okf-wiki/contract";
+import { type AnalysisReceipt, AnalysisReceiptSchema } from "@okf-wiki/contract/wiki-runs";
 import { atomicWriteJson } from "./atomic-write.js";
 import { isPathInside } from "./paths.js";
 import {

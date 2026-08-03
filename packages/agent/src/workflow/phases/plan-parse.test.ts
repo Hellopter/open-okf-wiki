@@ -3,8 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
-import { defaultSpecStore, planDraftPathFromRunWorkDir } from "../../ports/core-spec-store.js";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import {
+  clearPlanDraft,
+  commitPlanDraft,
+  planDraftPathFromRunWorkDir,
+  readPlanDraft,
+} from "../../plan/commit-plan-draft.js";
 import { resolvePlanSpecFromAgentResult } from "./plan-phase.js";
 
 const temps: string[] = [];
@@ -46,7 +51,7 @@ test("resolvePlanSpecFromAgentResult reads only on-disk plan-draft (not summary 
   const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-draft-"));
   temps.push(dir);
   const expected = defaultWikiRunSpec("FromDisk");
-  await defaultSpecStore.writePlanDraft(dir, expected);
+  await commitPlanDraft(dir, expected);
   const resolved = await resolvePlanSpecFromAgentResult({
     runWorkDir: dir,
     summary: "Plan submitted → analysis/plan-draft.json",
@@ -75,17 +80,17 @@ test("resolvePlanSpecFromAgentResult fails closed when draft is missing (no text
 test("clearPlanDraft removes a stale draft so a failed replan cannot re-resolve it", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "okf-plan-stale-"));
   temps.push(dir);
-  await defaultSpecStore.writePlanDraft(dir, defaultWikiRunSpec("Round1"));
-  assert.ok(await defaultSpecStore.readPlanDraft(dir), "draft exists after round 1");
+  await commitPlanDraft(dir, defaultWikiRunSpec("Round1"));
+  assert.ok(await readPlanDraft(dir), "draft exists after round 1");
 
   // Round 2 starts: the previous round's draft must not survive into resolve.
-  await defaultSpecStore.clearPlanDraft(dir);
-  assert.equal(await defaultSpecStore.readPlanDraft(dir), null);
+  await clearPlanDraft(dir);
+  assert.equal(await readPlanDraft(dir), null);
   await assert.rejects(
     () => resolvePlanSpecFromAgentResult({ runWorkDir: dir, summary: "revise failed" }),
     /submit_wiki_run_spec|plan-draft\.json/,
   );
 
   // Clearing a non-existent draft is a no-op.
-  await defaultSpecStore.clearPlanDraft(dir);
+  await clearPlanDraft(dir);
 });

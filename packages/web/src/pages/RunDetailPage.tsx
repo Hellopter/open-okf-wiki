@@ -1,4 +1,5 @@
-import type { RunCommand, WikiRunSnapshot, WorkspaceConfig } from "@okf-wiki/contract";
+import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { Activity, FileSearch, Pause, Play, Square, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";

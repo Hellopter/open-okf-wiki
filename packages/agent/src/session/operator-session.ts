@@ -8,8 +8,9 @@ import {
   type SessionInfo,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentMessage, WorkspaceConfig } from "@okf-wiki/contract";
-import { extractContextTokensFromPiHistory } from "@okf-wiki/contract";
+import type { AgentMessage } from "@okf-wiki/contract/stream-server";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
+import { extractContextTokensFromPiHistory } from "@okf-wiki/contract/session";
 import { isPathInside, WORKSPACE_DIR_NAME } from "@okf-wiki/core";
 import { createWikiSession, type WikiSessionHandle } from "../runtime/create-wiki-session.js";
 import { createSessionStatusTool } from "../tools/session-status.js";

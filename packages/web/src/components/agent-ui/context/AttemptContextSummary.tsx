@@ -1,4 +1,4 @@
-import type { AttemptMetrics, WikiRunAttempt } from "@okf-wiki/contract";
+import type { AttemptMetrics, WikiRunAttempt } from "@okf-wiki/contract/wiki-runs";
 import { cn } from "@/lib/utils";
 import { ModelChip } from "../ModelChip";
 import {

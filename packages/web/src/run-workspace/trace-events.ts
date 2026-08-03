@@ -1,4 +1,4 @@
-import type { AttemptTraceEvent } from "@okf-wiki/contract";
+import type { AttemptTraceEvent } from "@okf-wiki/contract/wiki-runs";
 
 /** Merge paged history and live transcript frames without dropping prior events. */
 export function mergeAttemptTraceEvents(

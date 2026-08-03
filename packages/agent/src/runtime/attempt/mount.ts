@@ -1,5 +1,5 @@
 /**
- * Attempt-local materialisation: copy sealed sources/skill into workDir,
+ * Attempt-local mount: copy sealed sources/skill into workDir,
  * project sealed semantic inputs into inputs/, chmod read-only, path asserts.
  * WikiRuns owns sealing; this mounts + projects the claim envelope.
  *
@@ -20,6 +20,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { parseSealedCoverageInventory, parseSealedCoveragePlan } from "@okf-wiki/contract/coverage";
+import type { PiAttemptInput } from "@okf-wiki/contract/pi-attempt";
 import {
   type AnalysisReceipt,
   AnalysisReceiptSchema,
@@ -30,17 +32,12 @@ import {
   FrozenRunManifestSchema,
   type InputRequirement,
   inputRoleMatches,
-  parseSealedCoverageInventory,
-  parseSealedCoveragePlan,
-  type PiAttemptInput,
-  type RunIntent,
-  RunIntentSchema,
-  type WikiRunSpec,
   WikiRunSpecSchema,
   validateBoundInputs,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/wiki-runs";
 import { isPathInside, safeReceiptNodeId } from "@okf-wiki/core";
 import { type RunWorkdirLayout, runWorkdirLayout } from "../workdir.js";
+import type { EvidenceBundle, EvidenceBundleEntry } from "./projection.js";
 
 export function assertAttemptPaths(input: PiAttemptInput): void {
   if (!isPathInside(input.attemptDir, input.workDir)) {
@@ -196,21 +193,6 @@ async function writeReadOnlyFile(target: string, content: string): Promise<void>
   await writeFile(target, content, "utf8");
   await chmod(target, 0o444);
 }
-
-export type EvidenceBundleEntry = {
-  handle: string;
-  path: string;
-  digest?: string;
-  scope: string;
-  summary: string;
-  findingsCount: number;
-  nodeId: string;
-  role: string;
-};
-
-export type EvidenceBundle = {
-  receipts: EvidenceBundleEntry[];
-};
 
 /**
  * Project sealed semantic inputs into workDir/inputs/ after sources+skill mount.
@@ -538,130 +520,6 @@ async function isDirEmpty(directory: string): Promise<boolean> {
   }
 }
 
-/** Load EvidenceBundle from projected inputs/evidence/index.json. */
-export async function loadEvidenceBundle(
-  layout: RunWorkdirLayout,
-): Promise<EvidenceBundle | undefined> {
-  const indexPath = path.join(layout.runWorkDir, "inputs", "evidence", "index.json");
-  try {
-    const raw = await readFile(indexPath, "utf8");
-    const parsed = JSON.parse(raw) as EvidenceBundle;
-    if (!parsed || !Array.isArray(parsed.receipts)) return undefined;
-    return parsed;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Load RunIntent from the canonical projection emitted from the frozen manifest. */
-export async function loadProjectedIntent(
-  layout: RunWorkdirLayout,
-): Promise<RunIntent | undefined> {
-  try {
-    return RunIntentSchema.parse(
-      JSON.parse(await readFile(path.join(layout.runWorkDir, "inputs", "intent.json"), "utf8")),
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-/** Load defects JSON text from inputs/defects.json when projected. */
-export async function loadProjectedDefectsText(
-  layout: RunWorkdirLayout,
-): Promise<string | undefined> {
-  const candidate = path.join(layout.runWorkDir, "inputs", "defects.json");
-  try {
-    return await readFile(candidate, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-/** Load sealed operator answer from inputs/operator-input.json when projected. */
-export async function loadProjectedOperatorInput(
-  layout: RunWorkdirLayout,
-): Promise<{ answer: string; gateId?: string; parentAttemptId?: string } | undefined> {
-  const candidate = path.join(layout.runWorkDir, "inputs", "operator-input.json");
-  try {
-    const raw = await readFile(candidate, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-    const row = parsed as Record<string, unknown>;
-    const answer = typeof row.answer === "string" ? row.answer.trim() : "";
-    if (!answer) return undefined;
-    return {
-      answer,
-      ...(typeof row.gateId === "string" && row.gateId.trim() ? { gateId: row.gateId.trim() } : {}),
-      ...(typeof row.parentAttemptId === "string" && row.parentAttemptId.trim()
-        ? { parentAttemptId: row.parentAttemptId.trim() }
-        : {}),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/** Load sealed prior Spec from inputs/prior-spec.json when projected (plan revise). */
-export async function loadProjectedPriorSpec(
-  layout: RunWorkdirLayout,
-): Promise<WikiRunSpec | undefined> {
-  const candidate = path.join(layout.runWorkDir, "inputs", "prior-spec.json");
-  try {
-    const raw = await readFile(candidate, "utf8");
-    return WikiRunSpecSchema.parse(JSON.parse(raw));
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Prompt block for a sealed operator answer (Phase 4 continuation Attempt).
- * Place early so truncation does not drop the fact.
- */
-export function formatOperatorInputNotes(
-  operatorInput: { answer: string } | undefined,
-): string | undefined {
-  const answer = operatorInput?.answer?.trim();
-  if (!answer) return undefined;
-  return `Operator answer (sealed fact from prior gate; treat as authoritative):\n${answer}`;
-}
-
-/**
- * Merge RunIntent focus with a sealed operator answer for planner/worker notes.
- * Operator answer wins when both are present (more specific continuation fact).
- */
-export function mergeOperatorNotes(parts: {
-  focus?: string;
-  operatorAnswer?: string;
-}): string | undefined {
-  const focus = parts.focus?.trim() || undefined;
-  const answer = parts.operatorAnswer?.trim() || undefined;
-  if (answer && focus) {
-    return `Operator answer (authoritative):\n${answer}\n\nOperator-requested focus:\n${focus}`;
-  }
-  if (answer) return `Operator answer (authoritative):\n${answer}`;
-  if (focus) return focus;
-  return undefined;
-}
-
-/** Format evidence index for writer/domain prompts. */
-export function formatEvidenceIndex(bundle: EvidenceBundle | undefined): string {
-  if (!bundle || bundle.receipts.length === 0) {
-    return "No research receipts were projected under inputs/evidence/.";
-  }
-  const lines = [
-    `Projected ${bundle.receipts.length} research receipt(s) under inputs/evidence/receipts/:`,
-    ...bundle.receipts.map((r) => {
-      const scope = r.scope ? ` scope=${r.scope}` : "";
-      const summary = r.summary ? ` — ${r.summary.slice(0, 200)}` : "";
-      return `- ${r.nodeId} (${r.path})${scope} findings=${r.findingsCount}${summary}`;
-    }),
-    "Read receipt JSON files directly; prefer synthesizing from them over re-scanning sources.",
-  ];
-  return lines.join("\n");
-}
-
 /** Mount sealed sources + skill under workDir; project semantic inputs; create wiki/analysis. */
 export async function materializeInputs(input: PiAttemptInput): Promise<RunWorkdirLayout> {
   assertAttemptPaths(input);
@@ -694,6 +552,3 @@ export async function materializeInputs(input: PiAttemptInput): Promise<RunWorkd
   await projectSealedInputs(input, layout, contract.requiredInputs);
   return layout;
 }
-
-// Re-export type for consumers.
-export type { FrozenRunManifest, RunIntent };

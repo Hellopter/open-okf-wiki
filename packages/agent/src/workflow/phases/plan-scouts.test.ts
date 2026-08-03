@@ -3,13 +3,8 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import {
-  CoveragePlanSchema,
-  resolveOrchestration,
-  sourceCoverageUnit,
-  surfaceCoverageUnit,
-  type WorkspaceOrchestration,
-} from "@okf-wiki/contract";
+import { CoveragePlanSchema, sourceCoverageUnit, surfaceCoverageUnit } from "@okf-wiki/contract/coverage";
+import { resolveOrchestration, type WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
 import { type AgentRunRequest, createFixtureProduceRuntime } from "../../runtime/fixture-runner.js";
 import { runWorkdirLayout } from "../../runtime/workdir.js";
 import { formatScoutPlannerContext, runPlanScouts, selectPlanScoutTasks } from "./plan-scouts.js";

@@ -1,4 +1,4 @@
-import type { WorkspaceConfig, WorkspaceSummary } from "@okf-wiki/contract";
+import type { WorkspaceConfig, WorkspaceSummary } from "@okf-wiki/contract/workspace";
 import { listRecentWorkspaces } from "./workspace-app-state.js";
 import { loadWorkspace } from "./workspace-config.js";
 

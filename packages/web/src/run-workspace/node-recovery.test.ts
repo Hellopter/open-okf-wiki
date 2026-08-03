@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WikiRunSnapshot } from "@okf-wiki/contract";
+import type { WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import {
   ATTEMPT_ERROR_PREVIEW_CHARS,
   canRerunNode,

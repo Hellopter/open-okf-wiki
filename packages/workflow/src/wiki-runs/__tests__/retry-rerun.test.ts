@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   approvePlanGate,

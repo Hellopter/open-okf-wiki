@@ -5,11 +5,7 @@
 
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type AttemptTraceEvent,
-  AttemptTraceEventSchema,
-  type WikiRunAttempt,
-} from "@okf-wiki/contract";
+import { type AttemptTraceEvent, AttemptTraceEventSchema, type WikiRunAttempt } from "@okf-wiki/contract/wiki-runs";
 import { isPathInside, runWorkDir } from "@okf-wiki/core";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { asRow, asRows, requiredText, type SqlRow } from "./sql.js";
@@ -22,14 +18,13 @@ import {
   WikiRunsRequestError,
 } from "./types.js";
 
-export type TranscriptHost = Pick<WikiRunsDbCtx, "workspace" | "db">;
 
 /**
  * Secret-free Attempt transcript for Node details.
  * Resolves live `attempts/<id>/session.jsonl` or a sealed transcript artifact under the run.
  */
 export async function readAttemptTranscript(
-  host: TranscriptHost,
+  host: Pick<WikiRunsDbCtx, "workspace" | "db">,
   input: {
     runId: string;
     attemptId: string;

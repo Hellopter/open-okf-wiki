@@ -3,7 +3,7 @@
  * Pure helpers used by buildSnapshot — not durable control identifiers.
  */
 
-import type { WikiRunNodeDetail, WikiRunNodeKind } from "@okf-wiki/contract";
+import type { WikiRunNodeDetail, WikiRunNodeKind } from "@okf-wiki/contract/wiki-runs";
 
 const LABEL_MAX = 200;
 const QUESTION_LABEL_MAX = 72;

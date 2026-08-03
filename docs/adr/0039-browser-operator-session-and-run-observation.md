@@ -16,18 +16,23 @@ own durable scheduling, gates, repairs, or observation.
 ## Decision
 
 1. The browser exposes a linked Operator Session and Run Workspace at
-   `/w/:workspaceId`. `session`, `run`, `stage`, and `attempt` are stable URL
-   selections, not alternate workflow state stores.
+   `/w/:workspaceId`. `session`, `run`, `stage`, `attempt`, and optional `node`
+   are stable URL selections, not alternate workflow state stores. The workbench
+   panel is **derived only from the URL** (conversation / run canvas /
+   observation) — there is no independent React `surface` store (Epic F).
 2. An Operator Session is backed by Pi `SessionManager` history and may invoke
    `wiki_produce` more than once. Each call receives a durable WikiRun receipt
    carrying its `runId`; deleting a Session never deletes its linked WikiRuns.
 3. Browser Session SSE begins with a snapshot and then streams a dedicated
-   redacted DTO. It includes user-visible text, tool lifecycle, and bounded
-   `wiki_produce` receipt details. It excludes provider thinking, raw tool
-   arguments/results, system prompts, credentials, and filesystem paths.
+   redacted DTO (`@okf-wiki/contract/session`). It includes user-visible text,
+   tool lifecycle, and bounded `wiki_produce` receipt details. It excludes
+   provider thinking, raw tool arguments/results, system prompts, credentials,
+   and filesystem paths. Live chat uses `SessionTranscript`; AgentMessage /
+   `AssistantTurn` / `@okf-wiki/contract/stream-server` are not browser paths.
 4. WikiRuns remains authoritative for Run state, commands, graph topology,
    gates, repair loops, and durable trace replay. Run SSE and Attempt transcript
-   SSE must not be synthesized from Session events.
+   SSE must not be synthesized from Session events. Session and Run connection
+   indicators stay separate in the operator chrome.
 5. Stopping a Session aborts its current Pi turn only. Stopping, pausing,
    rerunning, approving, or repairing a WikiRun uses its typed Run command and
    retains existing durable semantics across browser/server reconnects.

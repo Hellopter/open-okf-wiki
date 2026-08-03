@@ -1,4 +1,4 @@
-import type { WikiRunListItem } from "@okf-wiki/contract";
+import type { WikiRunListItem } from "@okf-wiki/contract/wiki-runs";
 
 export type SessionRunLink = Pick<WikiRunListItem, "runId" | "state" | "attention" | "updatedAt">;
 

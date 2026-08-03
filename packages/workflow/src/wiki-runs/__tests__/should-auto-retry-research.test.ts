@@ -1,22 +1,15 @@
 /**
  * Unit matrix for shouldAutoRetryResearch (L_control research auto-requeue policy).
+ * Uses partialControl fixture — no full SchedulerHost mock zoo.
  */
 
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
-import { type SchedulerHost, shouldAutoRetryResearch } from "../scheduler.js";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
+import { shouldAutoRetryResearch } from "../attempt-finish.js";
+import { fixtureWorkspace, partialControl } from "../testing/control-fixture.js";
 import { type ClaimedNode, RESEARCH_AUTO_RETRY_MAX_ATTEMPTS } from "../types.js";
-
-function workspace(retryEnabled = true): WorkspaceConfig {
-  // Minimal stub: shouldAutoRetryResearch only reads limits.retry.enabled.
-  return {
-    limits: {
-      retry: { enabled: retryEnabled },
-    },
-  } as WorkspaceConfig;
-}
 
 function openPolicyDb(opts: {
   cancelRequested?: boolean;
@@ -50,23 +43,23 @@ function openPolicyDb(opts: {
   return db;
 }
 
-function host(opts: {
+function ctrl(opts: {
   closed?: boolean;
   retryEnabled?: boolean;
   cancelRequested?: boolean;
   failedAttemptCount?: number;
-}): SchedulerHost {
-  const config = workspace(opts.retryEnabled ?? true);
-  return {
-    workspace: config,
-    workspaceForRun: () => config,
+}) {
+  const workspace = fixtureWorkspace({
+    limits: { retry: { enabled: opts.retryEnabled ?? true } },
+  } as Partial<WorkspaceConfig>);
+  return partialControl({
+    workspace,
     db: openPolicyDb({
       cancelRequested: opts.cancelRequested,
       failedAttemptCount: opts.failedAttemptCount,
     }),
     closed: opts.closed ?? false,
-    // Remaining SchedulerHost fields are unused by shouldAutoRetryResearch.
-  } as unknown as SchedulerHost;
+  });
 }
 
 const researchClaim: ClaimedNode = {
@@ -93,7 +86,7 @@ describe("shouldAutoRetryResearch", () => {
   it("allows research.leaf/domain once for infrastructure|transient", () => {
     assert.equal(
       shouldAutoRetryResearch(
-        host({ failedAttemptCount: 1 }),
+        ctrl({ failedAttemptCount: 1 }),
         researchClaim,
         "flake",
         "infrastructure",
@@ -101,13 +94,13 @@ describe("shouldAutoRetryResearch", () => {
       true,
     );
     assert.equal(
-      shouldAutoRetryResearch(host({ failedAttemptCount: 1 }), domainClaim, "flake", "transient"),
+      shouldAutoRetryResearch(ctrl({ failedAttemptCount: 1 }), domainClaim, "flake", "transient"),
       true,
     );
   });
 
   it("denies non-research kinds even with infrastructure", () => {
-    assert.equal(shouldAutoRetryResearch(host({}), writeClaim, "flake", "infrastructure"), false);
+    assert.equal(shouldAutoRetryResearch(ctrl({}), writeClaim, "flake", "infrastructure"), false);
   });
 
   it("denies capacity|budget|policy|provider|cancelled", () => {
@@ -120,7 +113,7 @@ describe("shouldAutoRetryResearch", () => {
       "cancel",
     ] as const) {
       assert.equal(
-        shouldAutoRetryResearch(host({}), researchClaim, `msg ${cls}`, cls),
+        shouldAutoRetryResearch(ctrl({}), researchClaim, `msg ${cls}`, cls),
         false,
         `must deny ${cls}`,
       );
@@ -128,42 +121,42 @@ describe("shouldAutoRetryResearch", () => {
   });
 
   it("denies unknown typed classes", () => {
-    assert.equal(shouldAutoRetryResearch(host({}), researchClaim, "schema boom", "schema"), false);
+    assert.equal(shouldAutoRetryResearch(ctrl({}), researchClaim, "schema boom", "schema"), false);
   });
 
   it("fail-closed when failureClass missing and message is a bare product error", () => {
     assert.equal(
       shouldAutoRetryResearch(
-        host({}),
+        ctrl({}),
         researchClaim,
         "research.leaf.core.1 requires sealed sources and skill inputs",
       ),
       false,
       "must not requeue bare 'requires sealed sources'",
     );
-    assert.equal(shouldAutoRetryResearch(host({}), researchClaim, "boom domain"), false);
+    assert.equal(shouldAutoRetryResearch(ctrl({}), researchClaim, "boom domain"), false);
   });
 
   it("allows missing failureClass only for clear transport/infra messages", () => {
     assert.equal(
       shouldAutoRetryResearch(
-        host({ failedAttemptCount: 1 }),
+        ctrl({ failedAttemptCount: 1 }),
         researchClaim,
         "429 Too Many Requests",
       ),
       true,
     );
     assert.equal(
-      shouldAutoRetryResearch(host({ failedAttemptCount: 1 }), researchClaim, "connect ECONNRESET"),
+      shouldAutoRetryResearch(ctrl({ failedAttemptCount: 1 }), researchClaim, "connect ECONNRESET"),
       true,
     );
     assert.equal(
-      shouldAutoRetryResearch(host({ failedAttemptCount: 1 }), researchClaim, "fetch failed"),
+      shouldAutoRetryResearch(ctrl({ failedAttemptCount: 1 }), researchClaim, "fetch failed"),
       true,
     );
     assert.equal(
       shouldAutoRetryResearch(
-        host({ failedAttemptCount: 1 }),
+        ctrl({ failedAttemptCount: 1 }),
         researchClaim,
         "provider overloaded",
       ),
@@ -171,10 +164,10 @@ describe("shouldAutoRetryResearch", () => {
     );
   });
 
-  it("respects retry.enabled=false, closed host, and cancel_requested", () => {
+  it("respects retry.enabled=false, closed control, and cancel_requested", () => {
     assert.equal(
       shouldAutoRetryResearch(
-        host({ retryEnabled: false }),
+        ctrl({ retryEnabled: false }),
         researchClaim,
         "flake",
         "infrastructure",
@@ -182,12 +175,12 @@ describe("shouldAutoRetryResearch", () => {
       false,
     );
     assert.equal(
-      shouldAutoRetryResearch(host({ closed: true }), researchClaim, "flake", "infrastructure"),
+      shouldAutoRetryResearch(ctrl({ closed: true }), researchClaim, "flake", "infrastructure"),
       false,
     );
     assert.equal(
       shouldAutoRetryResearch(
-        host({ cancelRequested: true }),
+        ctrl({ cancelRequested: true }),
         researchClaim,
         "flake",
         "infrastructure",
@@ -200,7 +193,7 @@ describe("shouldAutoRetryResearch", () => {
     assert.equal(RESEARCH_AUTO_RETRY_MAX_ATTEMPTS, 2);
     assert.equal(
       shouldAutoRetryResearch(
-        host({ failedAttemptCount: 1 }),
+        ctrl({ failedAttemptCount: 1 }),
         researchClaim,
         "flake",
         "infrastructure",
@@ -210,7 +203,7 @@ describe("shouldAutoRetryResearch", () => {
     );
     assert.equal(
       shouldAutoRetryResearch(
-        host({ failedAttemptCount: 2 }),
+        ctrl({ failedAttemptCount: 2 }),
         researchClaim,
         "flake",
         "infrastructure",

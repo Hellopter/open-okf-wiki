@@ -1,5 +1,5 @@
 import type { ServerResponse } from "node:http";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { loadWorkspaceById } from "@okf-wiki/core";
 import { sendError } from "./http-util.ts";
 

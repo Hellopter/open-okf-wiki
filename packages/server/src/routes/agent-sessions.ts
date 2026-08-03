@@ -1,11 +1,7 @@
 /** HTTP and SSE adapter for Pi-native Operator Sessions. */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listOperatorCommands, redactErrorMessage } from "@okf-wiki/agent";
-import {
-  type AgentSseEvent,
-  CreatePiAgentSessionBodySchema,
-  safeParseAgentCommand,
-} from "@okf-wiki/contract";
+import { type AgentSseEvent, CreatePiAgentSessionBodySchema, safeParseAgentCommand } from "@okf-wiki/contract/session";
 import { readJsonBody, sendError, sendJson } from "../http-util.ts";
 import { loadWorkspaceOr404 } from "../load-workspace-or-404.ts";
 import { getLogger } from "../logging/index.ts";
@@ -18,8 +14,12 @@ import {
   sessionSnapshot,
   subscribeSession,
 } from "../operator-sessions.ts";
-
-const HEARTBEAT_MS = 15_000;
+import {
+  DEFAULT_SSE_HEARTBEAT_MS,
+  endSseResponse,
+  openSseResponse,
+  writeSseData,
+} from "../sse/framing.ts";
 
 function sessionErrorStatus(error: unknown): number {
   if (error instanceof OperatorSessionWorkspaceDeletedError) return 404;
@@ -164,10 +164,6 @@ export async function handleAgentSessionCommand(
   }
 }
 
-function writeSse(res: ServerResponse, event: AgentSseEvent): void {
-  if (!res.writableEnded && !res.destroyed) res.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-
 export async function handleAgentSessionEvents(
   req: IncomingMessage,
   res: ServerResponse,
@@ -185,7 +181,7 @@ export async function handleAgentSessionEvents(
     closed = true;
     if (heartbeat) clearInterval(heartbeat);
     unsubscribe();
-    if (!res.writableEnded && !res.destroyed) res.end();
+    endSseResponse(res);
     getLogger().debug(
       { event: "session.sse", workspaceId: workspace.id, sessionId, phase: "close" },
       "session SSE closed",
@@ -198,35 +194,31 @@ export async function handleAgentSessionEvents(
       workspace,
       sessionId,
       (event) => {
-        if (ready) writeSse(res, event);
+        // Session Pi SSE uses data-only frames (payload carries `kind`).
+        if (ready) writeSseData(res, event);
         else pending.push(event);
       },
       close,
     );
     const snapshot = await sessionSnapshot(workspace, sessionId);
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
+    openSseResponse(res);
     getLogger().debug(
       { event: "session.sse", workspaceId: workspace.id, sessionId, phase: "open" },
       "session SSE open",
     );
-    writeSse(res, snapshot);
-    for (const event of pending.splice(0)) writeSse(res, event);
+    writeSseData(res, snapshot);
+    for (const event of pending.splice(0)) writeSseData(res, event);
     // The same subscriber crosses the snapshot cut, so a Pi event cannot be lost.
     ready = true;
     heartbeat = setInterval(
       () =>
-        writeSse(res, {
+        writeSseData(res, {
           source: "server",
           kind: "heartbeat",
           sessionId,
           timestamp: new Date().toISOString(),
         }),
-      HEARTBEAT_MS,
+      DEFAULT_SSE_HEARTBEAT_MS,
     );
     req.once("close", close);
     res.once("close", close);

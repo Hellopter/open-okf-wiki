@@ -16,11 +16,25 @@ Vite + React operator UI for OKF Wiki. It talks to `@okf-wiki/server` over local
 
 The linked Operator Session and Run Workspace (`/w/:id`) is the operator surface. Sources, Published Wiki, and Workspace settings remain supporting read/configuration pages. A Session can invoke `wiki_produce` repeatedly; its receipts link to durable Run detail and review views.
 
-The workbench uses three independent projection paths:
+### URL selection (sole authority)
 
-1. **Session SSE** — a redacted Session snapshot and stream carry user-visible text, tool lifecycle, and bounded `wiki_produce` receipts; provider reasoning and raw tool payloads never reach the browser.
-2. **WikiRuns index SSE** — `WorkspaceAgentPage` loads `GET …/runs/index` then subscribes to EventSource `…/runs/index/events`.
-3. **WikiRuns detail SSE** — a Run detail view loads `GET …/runs/:runId` then subscribes to EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect; heartbeats ignored). Full snapshots replace projection by event id.
+Workbench panel and ids come only from the query string (ADR 0039) — there is no independent React `surface` store:
+
+| Params | Panel |
+| --- | --- |
+| (no `run`) | Conversation (`SessionTranscript`) |
+| `?run=` | Run canvas |
+| `?run=&attempt=` or `?run=&node=` | Attempt / node observation |
+
+`session`, `stage` pin Session and graph stage without changing the Session/Run domain split. Stopping a Session aborts the Pi turn only; Run stop/pause/retry use WikiRuns commands.
+
+### Projection paths
+
+1. **Session SSE** — redacted Session snapshot/stream (`@okf-wiki/contract/session`); user-visible text, tool lifecycle, bounded `wiki_produce` receipts. Live UI uses `SessionTranscript`, not AgentMessage/`AssistantTurn`.
+2. **WikiRuns index SSE** — `GET …/runs/index` then EventSource `…/runs/index/events`.
+3. **WikiRuns detail SSE** — `GET …/runs/:runId` then EventSource `…/runs/:runId/events` (Last-Event-ID on reconnect). Pure reducers live in `run-workspace/observation-state.ts`; `useRunObservation` is transport-only.
+
+Web must not import `@okf-wiki/contract/stream-server` (AgentMessage / `reducePiEvent` / `applyStreamPatch` are server-only). Session and Run connection indicators are separate badges — domains are never merged into one status.
 
 Plan/publication gates and failed-node retry/rerun dispatch durable WikiRuns commands (`ResolveGate`, `RetryFailedNode`, `RerunNode`). Session state never replaces Run state, and Session events never synthesize Run state.
 

@@ -3,12 +3,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+import { CoveragePlanSchema, sourceCoverageUnit } from "@okf-wiki/contract/coverage";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import {
-  CoveragePlanSchema,
-  defaultWikiRunSpec,
-  sourceCoverageUnit,
-} from "@okf-wiki/contract";
-import { PLAN_DRAFT_REL_PATH, planDraftPathFromRunWorkDir } from "../ports/core-spec-store.js";
+  PLAN_DRAFT_REL_PATH,
+  planDraftPathFromRunWorkDir,
+} from "../plan/commit-plan-draft.js";
 import {
   createSubmitWikiRunSpecTool,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
@@ -77,14 +77,9 @@ describe("submit_wiki_run_spec tool", () => {
   it("rejects Specs over maxDomainFanOut before writing draft", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-domain-cap-"));
     temps.push(dir);
-    let wrote = false;
     const tool = createSubmitWikiRunSpecTool({
       runWorkDir: dir,
       caps: { maxDomainFanOut: 2, maxLeafFanOut: 6 },
-      writeDraft: async () => {
-        wrote = true;
-        return path.join(dir, "analysis", "plan-draft.json");
-      },
     });
     const domains = Array.from({ length: 3 }, (_, i) => ({
       id: `d${i}`,
@@ -115,20 +110,18 @@ describe("submit_wiki_run_spec tool", () => {
         ),
       /submit_wiki_run_spec rejected:.*maxDomainFanOut is 2/,
     );
-    assert.equal(wrote, false);
+    await assert.rejects(
+      () => readFile(planDraftPathFromRunWorkDir(dir), "utf8"),
+      /ENOENT/,
+    );
   });
 
   it("rejects Specs over maxLeafFanOut before writing draft", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-leaf-cap-"));
     temps.push(dir);
-    let wrote = false;
     const tool = createSubmitWikiRunSpecTool({
       runWorkDir: dir,
       caps: { maxDomainFanOut: 4, maxLeafFanOut: 2 },
-      writeDraft: async () => {
-        wrote = true;
-        return path.join(dir, "analysis", "plan-draft.json");
-      },
     });
     await assert.rejects(
       () =>
@@ -161,7 +154,11 @@ describe("submit_wiki_run_spec tool", () => {
         ),
       /submit_wiki_run_spec rejected:.*maxLeafFanOut is 2/,
     );
-    assert.equal(wrote, false);
+    // No draft file when rejected.
+    await assert.rejects(
+      () => readFile(planDraftPathFromRunWorkDir(dir), "utf8"),
+      /ENOENT/,
+    );
   });
 
   it("writes draft when Spec is within fan-out caps", async () => {
@@ -207,17 +204,12 @@ describe("submit_wiki_run_spec tool", () => {
   it("rejects Spec that fails assertCoverage when coverage plan is provided", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-submit-cov-gap-"));
     temps.push(dir);
-    let wrote = false;
     const plan = CoveragePlanSchema.parse({
       requiredUnits: [sourceCoverageUnit("frontend"), sourceCoverageUnit("backend")],
     });
     const tool = createSubmitWikiRunSpecTool({
       runWorkDir: dir,
       coveragePlan: plan,
-      writeDraft: async () => {
-        wrote = true;
-        return path.join(dir, "analysis", "plan-draft.json");
-      },
     });
     await assert.rejects(
       () =>
@@ -242,7 +234,10 @@ describe("submit_wiki_run_spec tool", () => {
         ),
       /coverage gap|backend/,
     );
-    assert.equal(wrote, false);
+    await assert.rejects(
+      () => readFile(planDraftPathFromRunWorkDir(dir), "utf8"),
+      /ENOENT/,
+    );
   });
 
   it("accepts Spec that covers every required source unit", async () => {

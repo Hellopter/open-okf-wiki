@@ -19,10 +19,7 @@
  */
 
 import path from "node:path";
-import {
-  IGNORE_PRESETS as CONTRACT_IGNORE_PRESETS,
-  type WorkspaceSource,
-} from "@okf-wiki/contract";
+import { IGNORE_PRESETS as CONTRACT_IGNORE_PRESETS, type WorkspaceSource } from "@okf-wiki/contract/workspace";
 
 /**
  * Product Default Source Ignores — dependency/build/cache noise.

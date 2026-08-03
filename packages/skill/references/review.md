@@ -4,6 +4,21 @@
 **Prereq:** concept pages exist under `wiki/` (after generate or refresh).
 **Next:** repair via earlier plan/write steps, or fail the run if unclean after repair rounds.
 
+## Handoff (required)
+
+Call the `submit_defect_report` tool with a typed DefectReport. Product validates
+`DefectReportSchema` and atomically writes `analysis/defect-report.json`.
+
+- **That path is the only admission path.** Free-text chat JSON is never accepted as success.
+- Call exactly once when the seat verdict is ready.
+- `clean=true` only with empty `defects`; `clean=false` requires ≥1 defect with
+  `severity` / `code` / `issue` (`severity` is `blocking` | `major` | `minor`).
+- Stamp `reviewerId` to the seat lens (e.g. `grounding`, `coverage`, `consistency`, `general`).
+
+Do **not** paste DefectReport JSON into assistant text as a substitute for the tool.
+
+## What to verify
+
 Review the Wiki as both a first-time reader and a source verifier. Repair before completing:
 
 - unclear purpose, audience, or terminology on concept pages (especially the narrative overview)
@@ -21,4 +36,4 @@ Review the Wiki as both a first-time reader and a source verifier. Repair before
 
 Complete only when every manifest concept page exists, has a distinct reader purpose, is reachable
 from the Wiki narrative (overview + directory structure), and passes this review without a known
-defect.
+defect — reported only via `submit_defect_report`.

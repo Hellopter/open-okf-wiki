@@ -1,110 +1,41 @@
 /**
- * Ready-node claim, attempt execution (Pi + mechanical), fail/retry, abort.
- * Owner binds db/workspace/transaction/emit — scheduler stays free of WikiRunsOwner.
+ * Ready-node claim, attempt execution (Pi + mechanical), abort.
+ * Terminal success/failure control effects live in attempt-finish.ts
+ * (commitSuccessfulAttempt / failNode). Owner binds db/workspace/transaction/emit.
  */
 
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
-  type AttemptMetrics,
-  type BoundInput,
-  contractForNode,
-  type PiAttemptArtifactDescriptor,
-  type PiAttemptExecutor,
-  type PiAttemptFailureClass,
   type PiAttemptInput,
   type PiAttemptNodeDetail,
   PiAttemptNodeDetailSchema,
   type PiAttemptOutcome,
+} from "@okf-wiki/contract/pi-attempt";
+import {
+  type AttemptMetrics,
+  type BoundInput,
+  contractForNode,
   validateBoundInputs,
   type WikiRunArtifactKind,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/wiki-runs";
 import { runWorkDir } from "@okf-wiki/core";
 import { isGateKind, isMechanicalAttemptKind, isPiAttemptKind } from "../execution-graph.js";
+import { failNode } from "./attempt-finish.js";
 import {
   graphRoleForNodeKind,
   mergeAttemptMetrics,
-  metricsOf,
   normalizeAttemptMetrics,
   wallTimeMsFromStarted,
   writeAttemptMetrics,
 } from "./attempt-metrics.js";
 import { canClaimKind } from "./concurrency.js";
 import { digest, now } from "./crypto-util.js";
-import type { WikiRunsCasCtx } from "./ctx.js";
-import { unlockReadyNodes } from "./dag.js";
+import type { WikiRunsControl } from "./ctx.js";
 import { openOperatorInputGate } from "./gate-open.js";
-import {
-  openMechanicalEvaluationRecovery,
-  scheduleMechanicalRepair,
-  shouldAutoMechanicalRepair,
-} from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { appendAttemptFailureTranscript } from "./transcript-io.js";
-import type {
-  ArtifactPreparation,
-  ClaimedFreeze,
-  ClaimedNode,
-  TrustedFrozenInputs,
-} from "./types.js";
-import { RESEARCH_AUTO_RETRY_KINDS, RESEARCH_AUTO_RETRY_MAX_ATTEMPTS } from "./types.js";
-
-export type SchedulerHost = WikiRunsCasCtx & {
-  closed: boolean;
-  piAttemptExecutor?: PiAttemptExecutor;
-  activeAttempts: Map<string, AbortController>;
-  activeExecutions: Map<string, Promise<void>>;
-  upstreamsSucceeded(runId: string, nodeKey: string): boolean;
-  upstreamSealedOutputs(
-    runId: string,
-    nodeKey: string,
-  ): Array<{ role: string; artifactId: string }>;
-  copyAttemptInputs(attemptId: string, inputs: Array<{ role: string; artifactId: string }>): void;
-  bindAttemptInputs(attemptId: string, runId: string, nodeKey: string): void;
-  executeFreeze(claim: ClaimedFreeze): Promise<void>;
-  executeMechanical(claim: ClaimedNode, signal: AbortSignal): Promise<PiAttemptOutcome>;
-  prepareUnsealedArtifact(
-    claim: ClaimedNode,
-    descriptor: PiAttemptArtifactDescriptor,
-  ): Promise<ArtifactPreparation | undefined>;
-  sealPreparation(runId: string, preparation: ArtifactPreparation): Promise<void>;
-  /**
-   * Compile ExecutionPlan from sealed Spec and prepare as unsealed artifact.
-   * Throws on fan-out over-cap (plan attempt fails).
-   */
-  preparePlanExecutionPlan(
-    claim: ClaimedNode,
-    preparations: ArtifactPreparation[],
-  ): Promise<ArtifactPreparation | undefined>;
-  /** CAS + gate open / unlock / plan accept (attempt-success single entry). */
-  commitSuccessfulAttempt(
-    claim: ClaimedNode,
-    preparations: ArtifactPreparation[],
-    metrics?: AttemptMetrics,
-  ): void;
-  /** Persist sealed failure evidence without falsely succeeding the Attempt. */
-  commitFailedAttemptArtifacts(claim: ClaimedNode, preparations: ArtifactPreparation[]): void;
-  orphanPreparedArtifacts(attemptId: string): void;
-  requeueFailedNode(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    lastAttemptId: string,
-  ): void;
-  trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
-  attemptInputDigest(attemptId: string): string;
-  /**
-   * Durable RerunNode core (generation++ + lineage invalidation + optional feedback).
-   * Used by auto mechanical repair to re-arm validate.* + downstream after scheduling repair.N.
-   */
-  applyRerunAt(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    feedback?: string,
-    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
-  ): void;
-};
+import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
 /**
  * Drain ready claims until the owner closes or the queue is empty.
@@ -112,7 +43,7 @@ export type SchedulerHost = WikiRunsCasCtx & {
  * Independent ready nodes (multi-domain leaves, review seats, …) run under
  * workspace.orchestration concurrency — not one-at-a-time serial await.
  */
-export async function runScheduler(host: SchedulerHost): Promise<void> {
+export async function runScheduler(host: WikiRunsControl): Promise<void> {
   const pending = new Set<Promise<void>>();
 
   const launch = (claim: ClaimedNode): void => {
@@ -151,7 +82,7 @@ export async function runScheduler(host: SchedulerHost): Promise<void> {
  * Count in-flight Attempts by kind for concurrency gates.
  * Uses durable `nodes.state = 'running'` so each claim transaction sees prior claims.
  */
-export function runningCountByKind(host: SchedulerHost, runId?: string): Map<string, number> {
+export function runningCountByKind(host: WikiRunsControl, runId?: string): Map<string, number> {
   const counts = new Map<string, number>();
   const runFilter = runId ? "AND nodes.run_id = ?" : "";
   const rows = asRows(
@@ -179,7 +110,7 @@ export function runningCountByKind(host: SchedulerHost, runId?: string): Map<str
  * Prefer freeze, then mechanical, then Pi (when executor is wired).
  * Skips kinds already at workspace.orchestration concurrency.
  */
-export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
+export function claimReadyNode(host: WikiRunsControl): ClaimedNode | undefined {
   const freeze = claimNodeByKey(host, "freeze", "freeze");
   if (freeze) return freeze;
 
@@ -248,7 +179,7 @@ export function claimReadyNode(host: SchedulerHost): ClaimedNode | undefined {
 }
 
 export function claimNodeByKey(
-  host: SchedulerHost,
+  host: WikiRunsControl,
   nodeKey: string,
   kind: string,
 ): ClaimedNode | undefined {
@@ -305,7 +236,7 @@ export function claimNodeByKey(
   return claimPreparedRow(host, node);
 }
 
-export function claimPreparedRow(host: SchedulerHost, node: SqlRow): ClaimedNode | undefined {
+export function claimPreparedRow(host: WikiRunsControl, node: SqlRow): ClaimedNode | undefined {
   const runId = requiredText(node, "run_id");
   const nodeKey = requiredText(node, "node_key");
   const kind = requiredText(node, "kind");
@@ -375,7 +306,7 @@ export function claimPreparedRow(host: SchedulerHost, node: SqlRow): ClaimedNode
  * Retry: copy that Attempt's frozen input envelope verbatim.
  */
 function retrySourceAttempt(
-  host: SchedulerHost,
+  host: WikiRunsControl,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -414,7 +345,7 @@ function retrySourceAttempt(
  * parentAttemptId + operatorInputArtifactId so claim reuses frozen inputs + answer.
  */
 function operatorContinuationSource(
-  host: SchedulerHost,
+  host: WikiRunsControl,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -480,7 +411,7 @@ function operatorContinuationSource(
  * Run=waiting_for_operator. Old Pi worker is discarded; resume is a new Attempt.
  */
 export function suspendForOperatorInput(
-  host: SchedulerHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   outcome: Extract<PiAttemptOutcome, { type: "gate_requested" }>,
   transcriptPrep: ArtifactPreparation | undefined,
@@ -543,24 +474,24 @@ export function suspendForOperatorInput(
   });
 }
 
-export function abortRunAttempts(host: SchedulerHost, runId: string): void {
+export function abortRunAttempts(host: WikiRunsControl, runId: string): void {
   for (const [attemptId, controller] of host.activeAttempts) {
     if (attemptRunId(host, attemptId) === runId) controller.abort();
   }
 }
 
-export function abortActiveAttempts(host: SchedulerHost): void {
+export function abortActiveAttempts(host: WikiRunsControl): void {
   for (const controller of host.activeAttempts.values()) controller.abort();
 }
 
-export function attemptRunId(host: SchedulerHost, attemptId: string): string | undefined {
+export function attemptRunId(host: WikiRunsControl, attemptId: string): string | undefined {
   const attempt = asRow(
     host.db.prepare("SELECT run_id FROM attempts WHERE attempt_id = ?").get(attemptId),
   );
   return attempt === undefined ? undefined : requiredText(attempt, "run_id");
 }
 
-export async function waitForRunExecution(host: SchedulerHost, runId: string): Promise<void> {
+export async function waitForRunExecution(host: WikiRunsControl, runId: string): Promise<void> {
   const executions = [...host.activeExecutions.entries()]
     .filter(([attemptId]) => attemptRunId(host, attemptId) === runId)
     .map(([, execution]) => execution);
@@ -568,7 +499,7 @@ export async function waitForRunExecution(host: SchedulerHost, runId: string): P
 }
 
 /** Generic non-freeze attempt: Pi kinds via executor, mechanical kinds in-process. */
-export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): Promise<void> {
+export async function executeClaimed(host: WikiRunsControl, claim: ClaimedNode): Promise<void> {
   const controller = new AbortController();
   host.activeAttempts.set(claim.attemptId, controller);
   try {
@@ -657,7 +588,7 @@ export async function executeClaimed(host: SchedulerHost, claim: ClaimedNode): P
  * Uses the real error message so operators see why the Attempt failed.
  */
 async function ensureAttemptFailureTranscript(
-  host: SchedulerHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   error: unknown,
 ): Promise<void> {
@@ -677,7 +608,7 @@ async function ensureAttemptFailureTranscript(
 }
 
 export async function executePi(
-  host: SchedulerHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   signal: AbortSignal,
 ): Promise<PiAttemptOutcome> {
@@ -725,7 +656,7 @@ export async function executePi(
  * rather than letting Pi invent missing scope, questions, or repair intent.
  */
 export function loadPiAttemptNodeDetail(
-  host: Pick<SchedulerHost, "db">,
+  host: Pick<WikiRunsControl, "db">,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -848,7 +779,7 @@ function isDynamicPiNodeKind(
   );
 }
 
-export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): PiAttemptInput {
+export function buildPiAttemptInput(host: WikiRunsControl, claim: ClaimedNode): PiAttemptInput {
   const workspace = host.workspaceForRun(claim.runId);
   const runDir = runWorkDir(host.workspace.rootPath, claim.runId);
   const attemptDir = path.join(runDir, "attempts", claim.attemptId);
@@ -928,210 +859,3 @@ export function buildPiAttemptInput(host: SchedulerHost, claim: ClaimedNode): Pi
   };
 }
 
-/** Extract typed failureClass from a failed outcome Error or plain object. */
-export function failureClassOf(error: unknown): string | undefined {
-  if (error && typeof error === "object" && "failureClass" in error) {
-    const value = (error as { failureClass?: unknown }).failureClass;
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
-  }
-  return undefined;
-}
-
-function failureArtifactIdOf(error: unknown, role: string): string | undefined {
-  if (!error || typeof error !== "object" || !("failureArtifacts" in error)) return undefined;
-  const artifacts = (error as { failureArtifacts?: unknown }).failureArtifacts;
-  if (!artifacts || typeof artifacts !== "object" || Array.isArray(artifacts)) return undefined;
-  const artifactId = (artifacts as Record<string, unknown>)[role];
-  return typeof artifactId === "string" && artifactId.trim() ? artifactId : undefined;
-}
-
-/**
- * Classes L_control may auto-requeue for research.leaf/domain (same input_digest).
- * Transport after L0 exhaustion maps to infrastructure (or transient when present).
- * capacity / budget / policy / cancel / provider never auto-requeue.
- */
-const RESEARCH_AUTO_RETRY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
-  "transient",
-  "infrastructure",
-]);
-
-/** Typed classes that must never auto-requeue (even if message looks flaky). */
-const RESEARCH_NO_AUTO_RETRY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
-  "capacity",
-  "budget",
-  "policy",
-  "cancelled",
-  "cancel",
-  "provider",
-]);
-
-export function failNode(host: SchedulerHost, claim: ClaimedNode, error: unknown): void {
-  if (!host.isCurrent(claim)) return;
-  const timestamp = now();
-  const message =
-    error instanceof Error ? error.message.slice(0, 4_000) : `${claim.nodeKey} failed`;
-  const failureClass = failureClassOf(error);
-  const mechanicalReportArtifactId = failureArtifactIdOf(error, "validate_report");
-  host.db
-    .prepare(
-      `UPDATE attempts SET state = 'failed', error = ?, failure_class = ?, ended_at = ?
-       WHERE attempt_id = ? AND state = 'running'`,
-    )
-    .run(message, failureClass ?? null, timestamp, claim.attemptId);
-  const resolved = mergeAttemptMetrics(metricsOf(error), {
-    role: graphRoleForNodeKind(claim.kind),
-    wallTimeMs: wallTimeMsFromStarted(host.db, claim.attemptId, timestamp),
-    stopReason: failureClass ?? "failed",
-  });
-  writeAttemptMetrics(host.db, claim.attemptId, resolved);
-  host.db
-    .prepare(
-      `UPDATE nodes SET state = 'failed', current_attempt_id = NULL
-       WHERE run_id = ? AND node_key = ? AND generation = ? AND current_attempt_id = ?`,
-    )
-    .run(claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
-  host.db
-    .prepare(
-      "UPDATE artifact_preparations SET state = 'orphaned' WHERE attempt_id = ? AND state = 'prepared'",
-    )
-    .run(claim.attemptId);
-  host.emit(claim.runId, "attempt.failed");
-
-  // A publication CAS conflict is an explicit operator decision point, not a
-  // failed Run. mechanicalPublish has reopened the payload-bound gate and
-  // preserved the candidate; leave publish blocked until that decision.
-  if (claim.kind === "publish" && failureClass === "publication_conflict") {
-    host.db
-      .prepare(
-        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
-         WHERE run_id = ? AND node_key = ? AND generation = ?`,
-      )
-      .run(claim.runId, claim.nodeKey, claim.nodeGeneration);
-    return;
-  }
-
-  // Research read-only auto-retry: re-queue same generation with exact input digest.
-  if (shouldAutoRetryResearch(host, claim, message, failureClass)) {
-    host.requeueFailedNode(claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
-    host.emit(claim.runId, "node.ready");
-    return;
-  }
-
-  // Mechanical model repair: schedule a dedicated repair.N stage with
-  // validation feedback under EvaluationPolicy.mechanical.modelRepairBudget
-  // (default 0; host autofix preferred). Independent of research L_control and council.
-  // Does NOT disguise fix as write.root (write stays at its successful generation).
-  if (shouldAutoMechanicalRepair(host, claim, message, failureClass)) {
-    if (scheduleMechanicalRepair(host, claim, message, mechanicalReportArtifactId)) {
-      host.emit(claim.runId, "node.ready");
-      return;
-    }
-  }
-
-  // Siblings may still be ready/running, or an open gate may be waiting.
-  // Do not count 'blocked' alone as progress — a failed critical-path node leaves
-  // downstream blocked forever; without ready/running/waiting work the run is failed.
-  const hasWork = asRow(
-    host.db
-      .prepare(
-        `SELECT 1 AS present FROM nodes
-         WHERE run_id = ? AND state IN ('ready', 'running', 'waiting')
-           AND generation = (
-             SELECT MAX(n2.generation) FROM nodes n2
-             WHERE n2.run_id = nodes.run_id AND n2.node_key = nodes.node_key
-           )
-         LIMIT 1`,
-      )
-      .get(claim.runId),
-  );
-  if (!hasWork) {
-    const recovery = openMechanicalEvaluationRecovery(
-      host,
-      claim,
-      message,
-      failureClass,
-      mechanicalReportArtifactId,
-    );
-    host.db
-      .prepare("UPDATE runs SET state = 'failed', updated_at = ? WHERE run_id = ?")
-      .run(timestamp, claim.runId);
-    if (recovery) host.emit(claim.runId, "evaluation.recovery_available");
-  } else {
-    // Re-evaluate unlock in case other branches can proceed without this node.
-    unlockReadyNodes(host, claim.runId);
-    host.db
-      .prepare(
-        "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0 AND state NOT IN ('waiting_for_operator', 'cancelling', 'cancelled')",
-      )
-      .run(timestamp, claim.runId);
-  }
-}
-
-/**
- * Clear transport / infrastructure message patterns used only when failureClass
- * is missing (legacy bare Errors). Product defects must not match.
- */
-const RESEARCH_AUTO_RETRY_MESSAGE_PATTERNS: readonly RegExp[] = [
-  /rate.?limit/i,
-  /\b(?:429|500|502|503|529)\b/,
-  /\bETIMEDOUT\b|\bECONNRESET\b|\bECONNREFUSED\b|\bEAI_AGAIN\b|\bENOTFOUND\b|\bEPIPE\b/,
-  /socket hang up/i,
-  /fetch failed/i,
-  /network error/i,
-  /\boverloaded\b/i,
-  /service unavailable/i,
-  /bad gateway/i,
-  /internal server error/i,
-  /connection (?:closed|reset|refused|error)/i,
-  /\binfrastructure\b/i,
-  /\btransient\b/i,
-];
-
-/**
- * Limited auto-retry for research.leaf / research.domain only.
- * Budget: RESEARCH_AUTO_RETRY_MAX_ATTEMPTS total Attempts per generation.
- * Prefer typed failureClass; missing class is fail-closed unless the message
- * clearly matches transport/infrastructure patterns (never bare product errors
- * like "requires sealed sources").
- * Allow: transient, infrastructure. Deny: capacity, budget, policy, cancel, provider.
- */
-export function shouldAutoRetryResearch(
-  host: SchedulerHost,
-  claim: ClaimedNode,
-  message: string,
-  failureClass?: string | PiAttemptFailureClass,
-): boolean {
-  if (!RESEARCH_AUTO_RETRY_KINDS.has(claim.kind)) return false;
-  // Align with workspace.limits.retry.enabled — off means no control-plane auto-requeue.
-  if (host.workspaceForRun(claim.runId).limits.retry.enabled === false) return false;
-  if (host.closed) return false;
-  const run = asRow(
-    host.db.prepare("SELECT cancel_requested FROM runs WHERE run_id = ?").get(claim.runId),
-  );
-  if (!run || requiredNumber(run, "cancel_requested") === 1) return false;
-
-  const cls = failureClass?.trim().toLowerCase();
-  if (cls) {
-    if (RESEARCH_NO_AUTO_RETRY_FAILURE_CLASSES.has(cls)) return false;
-    if (!RESEARCH_AUTO_RETRY_FAILURE_CLASSES.has(cls)) return false;
-  } else {
-    // Fail-closed when failureClass was not plumbed: only clear transport/infra
-    // messages may requeue. Bare product errors never auto-requeue.
-    if (!RESEARCH_AUTO_RETRY_MESSAGE_PATTERNS.some((p) => p.test(message))) {
-      return false;
-    }
-  }
-
-  const countRow = asRow(
-    host.db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM attempts
-         WHERE run_id = ? AND node_key = ? AND node_generation = ?
-           AND state IN ('failed', 'interrupted', 'cancelled')`,
-      )
-      .get(claim.runId, claim.nodeKey, claim.nodeGeneration),
-  );
-  const failedCount = requiredNumber(countRow ?? { count: 0 }, "count");
-  // failedCount includes this just-failed Attempt; allow one more total Attempt.
-  return failedCount < RESEARCH_AUTO_RETRY_MAX_ATTEMPTS;
-}

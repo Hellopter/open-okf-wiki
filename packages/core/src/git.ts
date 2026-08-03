@@ -1,6 +1,6 @@
 import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
-import type { GitProbe } from "@okf-wiki/contract";
+import type { GitProbe } from "@okf-wiki/contract/workspace";
 import { createDefaultGitRunner, type GitRunner } from "./git-runner.js";
 import { isPathInside } from "./paths.js";
 

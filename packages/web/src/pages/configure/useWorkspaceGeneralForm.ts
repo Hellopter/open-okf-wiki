@@ -1,4 +1,4 @@
-import { DEFAULT_ORCHESTRATION } from "@okf-wiki/contract";
+import { DEFAULT_ORCHESTRATION } from "@okf-wiki/contract/workspace";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {

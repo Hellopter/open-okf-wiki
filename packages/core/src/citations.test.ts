@@ -40,71 +40,14 @@ test("validateCitationFormat rejects path escape and bad ranges", () => {
   const bad = parseSourceCitations(
     "x [Source](repo:../etc/passwd#L0-L2) y [Source](repo:a.ts#L5-L2)",
   );
-  const errors = validateCitationFormat(bad, "p.md");
-  assert.ok(errors.some((e) => e.includes("repository-relative")));
-  assert.ok(errors.some((e) => e.includes("line end before start")));
+  const issues = validateCitationFormat(bad, "p.md");
+  assert.ok(issues.every((i) => i.code === "citation_format"));
+  assert.ok(issues.some((i) => i.message.includes("repository-relative")));
+  assert.ok(issues.some((i) => i.message.includes("line end before start")));
+  assert.ok(issues.every((i) => i.path === "p.md"));
 });
 
-test("canonicalizeCitationTarget: single strips sources/<id>/", () => {
-  const r = canonicalizeCitationTarget("sources/ebase-2/pom.xml", {
-    sourceIds: ["ebase-2"],
-    multiSource: false,
-  });
-  assert.deepEqual(r, { ok: true, target: "pom.xml" });
-});
-
-test("canonicalizeCitationTarget: multi strips sources/ keeps id", () => {
-  const r = canonicalizeCitationTarget("sources/a/x.ts", {
-    sourceIds: ["a", "b"],
-    multiSource: true,
-  });
-  assert.deepEqual(r, { ok: true, target: "a/x.ts" });
-});
-
-test("canonicalizeCitationTarget: single strips registered id prefix", () => {
-  const r = canonicalizeCitationTarget("ebase-2/pom.xml", {
-    sourceIds: ["ebase-2"],
-    multiSource: false,
-  });
-  assert.deepEqual(r, { ok: true, target: "pom.xml" });
-});
-
-test("canonicalizeCitationTarget: multi keeps id prefix", () => {
-  const r = canonicalizeCitationTarget("a/x.ts", {
-    sourceIds: ["a", "b"],
-    multiSource: true,
-  });
-  assert.deepEqual(r, { ok: true, target: "a/x.ts" });
-});
-
-test("canonicalizeCitationTarget: multi bare path errors", () => {
-  const r = canonicalizeCitationTarget("orphan.ts", {
-    sourceIds: ["a", "b"],
-    multiSource: true,
-  });
-  assert.equal(r.ok, false);
-  if (!r.ok) {
-    assert.match(r.error, /multi-source citation must start with a source id/);
-  }
-});
-
-test("canonicalizeCitationTarget: real repo path sources/foo.ts is not stripped", () => {
-  // id is "main", not "foo" — sources/ is a real directory under the repo.
-  const r = canonicalizeCitationTarget("sources/foo.ts", {
-    sourceIds: ["main"],
-    multiSource: false,
-  });
-  assert.deepEqual(r, { ok: true, target: "sources/foo.ts" });
-});
-
-test("canonicalizeCitationTarget: nested real path sources/dir/file.ts is not stripped", () => {
-  // id is "main", not "dir" — sources/dir/ is a real nested path under the repo.
-  const r = canonicalizeCitationTarget("sources/dir/file.ts", {
-    sourceIds: ["main"],
-    multiSource: false,
-  });
-  assert.deepEqual(r, { ok: true, target: "sources/dir/file.ts" });
-});
+// Unit matrix for canonicalize / parse / split lives in citation-target.test.ts.
 
 test("resolveCitationFile: nested real path sources/dir/file.ts against snapshot", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-cite-nested-src-"));
@@ -127,31 +70,6 @@ test("resolveCitationFile: nested real path sources/dir/file.ts against snapshot
     assert.equal(resolved.absPath, path.resolve(src, "sources/dir/file.ts"));
   }
   assert.deepEqual(await validateCitationResolve(cites, "p.md", map), []);
-});
-
-test("canonicalizeCitationTarget: rejects escape and absolute", () => {
-  assert.equal(
-    canonicalizeCitationTarget("../etc/passwd", {
-      sourceIds: ["main"],
-      multiSource: false,
-    }).ok,
-    false,
-  );
-  assert.equal(
-    canonicalizeCitationTarget("/abs/path", {
-      sourceIds: ["main"],
-      multiSource: false,
-    }).ok,
-    false,
-  );
-});
-
-test("canonicalizeCitationTarget: empty after strip errors", () => {
-  const r = canonicalizeCitationTarget("sources/ebase-2", {
-    sourceIds: ["ebase-2"],
-    multiSource: false,
-  });
-  assert.equal(r.ok, false);
 });
 
 test("formatRepoCitation preserves line fragments", () => {
@@ -219,10 +137,12 @@ test("validateCitationResolve: file + line bounds against snapshot", async () =>
   assert.deepEqual(await validateCitationResolve(ok, "p.md", map), []);
   const oob = parseSourceCitations("see [Source](repo:README.md#L1-L99)");
   const err = await validateCitationResolve(oob, "p.md", map);
-  assert.ok(err.some((e) => e.includes("out of bounds")));
+  assert.ok(err.some((e) => e.message.includes("out of bounds")));
+  assert.ok(err.some((e) => e.code === "citation_oob"));
   const missing = parseSourceCitations("see [Source](repo:nope.ts#L1)");
   const err2 = await validateCitationResolve(missing, "p.md", map);
-  assert.ok(err2.some((e) => e.includes("not found")));
+  assert.ok(err2.some((e) => e.message.includes("not found")));
+  assert.ok(err2.some((e) => e.code === "citation_unresolved"));
 });
 
 test("validateWikiTree with sources requires resolvable citations", async () => {
@@ -336,7 +256,7 @@ test("autofixCitationsInContent clamps + canonicalizes", async () => {
   assert.ok(out.fixes.some((f) => f.includes("clamped") || f.includes("canonicalized")));
 });
 
-test("autofixWikiTreeCitations + validateWikiTree autofixCitations", async () => {
+test("autofixWikiTreeCitations then validateWikiTree (explicit second step)", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-wiki-autofix-"));
   const src = path.join(root, "src");
   const wiki = path.join(root, "wiki");
@@ -352,14 +272,19 @@ test("autofixWikiTreeCitations + validateWikiTree autofixCitations", async () =>
     "utf8",
   );
 
-  // Without autofix, resolve should fail on OOB (even after canonicalize would strip mount).
+  // Without autofix, pure validate fails with structured citation issue.
   const fail = await validateWikiTree(wiki, {
     sources: [{ id: "main", path: src }],
   });
   assert.equal(fail.ok, false);
-  assert.ok(fail.errors.some((e) => e.includes("out of bounds") || e.includes("not found")));
+  assert.ok(
+    fail.issues.some(
+      (i) => i.code === "citation_oob" || i.code === "citation_unresolved" || i.code === "citation_format",
+    ),
+    fail.issues.map((i) => `${i.code}:${i.message}`).join("; "),
+  );
 
-  // autofixWikiTreeCitations alone rewrites the page
+  // autofix is an explicit second step (not silent inside validateWikiTree).
   const map = sourceRootMapFromSources([{ id: "main", path: src }]);
   const fix = await autofixWikiTreeCitations(wiki, map, { lineSlack: 2 });
   assert.equal(fix.rewrittenPages, 1);
@@ -367,22 +292,14 @@ test("autofixWikiTreeCitations + validateWikiTree autofixCitations", async () =>
   const rewritten = await readFile(path.join(wiki, "overview.md"), "utf8");
   assert.match(rewritten, /\[Source\]\(repo:a\.ts#L1-L3\)/);
 
-  // Fresh OOB write + validate with autofixCitations: true should pass
-  await writeFile(
-    path.join(wiki, "overview.md"),
-    "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\n" +
-      "Note [Source](repo:a.ts#L2-L4).\n",
-    "utf8",
-  );
   const pass = await validateWikiTree(wiki, {
     sources: [{ id: "main", path: src }],
-    autofixCitations: true,
-    lineSlack: 2,
   });
   assert.equal(pass.ok, true, pass.errors.join("; "));
+  assert.deepEqual(pass.issues, []);
   assert.equal(
     await readFile(path.join(wiki, "overview.md"), "utf8"),
     "---\ntype: Overview\ntitle: Overview\n---\n\n# Overview\n\n" +
-      "Note [Source](repo:a.ts#L2-L3).\n",
+      "Note [Source](repo:a.ts#L1-L3).\n",
   );
 });

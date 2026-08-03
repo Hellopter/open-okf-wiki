@@ -3,7 +3,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { WikiRunArtifactKind } from "@okf-wiki/contract";
+import type { WikiRunArtifactKind } from "@okf-wiki/contract/wiki-runs";
 
 export function now(): string {
   return new Date().toISOString();

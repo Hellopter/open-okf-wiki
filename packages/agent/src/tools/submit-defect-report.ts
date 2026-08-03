@@ -1,29 +1,29 @@
 /**
- * Review seat tool: validate DefectReportSchema and atomically write defect-report.json.
- * Path-first handoff (ADR 0011) — control returns a short ACK + path, not free-text defects.
+ * Thin review-seat tool: TypeBox schema + commitDefectReport + short ACK.
+ * Deep validation/write lives in review/commit-defect-report (hard-cut Epic D).
+ * Path-first only — free-text chat is never the handoff.
  */
 
-import { mkdir } from "node:fs/promises";
-import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   type DefectReport,
-  DefectReportSchema,
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
-} from "@okf-wiki/contract";
-import { atomicWriteJson } from "@okf-wiki/core";
+} from "@okf-wiki/contract/wiki-runs";
+import {
+  type CommitDefectReportResult,
+  commitDefectReport,
+  DEFECT_REPORT_REL_PATH,
+  defectReportPathFromRunWorkDir,
+} from "../review/commit-defect-report.js";
 
-export { SUBMIT_DEFECT_REPORT_TOOL_NAME };
-
-export const DEFECT_REPORT_FILE_NAME = "defect-report.json";
-
-/** Run-workdir relative path for the seat DefectReport candidate. */
-export const DEFECT_REPORT_REL_PATH = `analysis/${DEFECT_REPORT_FILE_NAME}`;
-
-export function defectReportPathFromRunWorkDir(runWorkDir: string): string {
-  return path.join(path.resolve(runWorkDir), "analysis", DEFECT_REPORT_FILE_NAME);
-}
+export { SUBMIT_DEFECT_REPORT_TOOL_NAME, DEFECT_REPORT_REL_PATH, defectReportPathFromRunWorkDir };
+export {
+  commitDefectReport,
+  readDefectReport,
+  readDefectReportDraft,
+  writeDefectReportDraft,
+} from "../review/commit-defect-report.js";
 
 const defectItemSchema = Type.Object(
   {
@@ -63,7 +63,7 @@ const defectItemSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** TypeBox surface for the reviewer; Zod DefectReportSchema is the truth gate. */
+/** TypeBox surface for the reviewer; Zod DefectReportSchema is the truth gate in commitDefectReport. */
 export const submitDefectReportParameters = Type.Object(
   {
     version: Type.Optional(
@@ -103,103 +103,75 @@ export type CreateSubmitDefectReportToolInput = {
   runWorkDir: string;
   /** Seat reviewer id stamped when the model omits or mismatches. */
   reviewerId: string;
-  /** Optional test hook. */
-  writeReport?: (runWorkDir: string, report: DefectReport) => Promise<string>;
+  /**
+   * Optional test hook; defaults to commitDefectReport.
+   * Internal seam only.
+   */
+  commit?: (
+    runWorkDir: string,
+    report: unknown,
+    opts?: { reviewerId?: string },
+  ) => Promise<CommitDefectReportResult>;
 };
 
-export async function writeDefectReportDraft(
-  runWorkDir: string,
-  report: DefectReport,
-): Promise<string> {
-  const parsed = DefectReportSchema.parse(report);
-  const filePath = defectReportPathFromRunWorkDir(runWorkDir);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await atomicWriteJson(filePath, parsed);
-  return filePath;
-}
-
-export async function readDefectReportDraft(runWorkDir: string): Promise<DefectReport | null> {
-  try {
-    const { readFile } = await import("node:fs/promises");
-    const raw = await readFile(defectReportPathFromRunWorkDir(runWorkDir), "utf8");
-    const parsed = DefectReportSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
+function mapCommitError(err: unknown): never {
+  if (err instanceof Error && err.message.startsWith("commitDefectReport rejected:")) {
+    throw new Error(
+      err.message.replace(/^commitDefectReport rejected:/, "submit_defect_report rejected:"),
+    );
   }
+  throw err;
 }
 
 export function createSubmitDefectReportTool(
   input: CreateSubmitDefectReportToolInput,
 ): ToolDefinition<typeof submitDefectReportParameters, SubmitDefectReportDetails> {
-  const writeReport = input.writeReport ?? writeDefectReportDraft;
+  const commit = input.commit ?? commitDefectReport;
   return defineTool({
     name: SUBMIT_DEFECT_REPORT_TOOL_NAME,
     label: "Submit DefectReport",
     description: [
       "Submit a typed DefectReport for this review seat after reading wiki/ and sources/.",
       "Product validates DefectReportSchema and atomically writes analysis/defect-report.json.",
-      "Call exactly once when the seat verdict is ready.",
+      "Call exactly once when the seat verdict is ready. This tool is the only handoff.",
       "",
       "When to use:",
       "- Review seat Attempt: pages inspected under your lens, ready to hand off clean or defects.",
       "",
       "Do not use when:",
       "- Still reading wiki/sources — keep using read-only tools until the verdict is complete.",
-      "- Pasting DefectReport JSON into chat — the tool is the handoff; free-text is not accepted as success.",
+      "- Pasting DefectReport JSON into chat — free-text is never accepted as success.",
     ].join("\n"),
     promptSnippet: "Submit typed DefectReport (writes analysis/defect-report.json)",
     promptGuidelines: [
       "After lens-scoped review, call submit_defect_report with clean/defects/summary.",
-      "Do not paste the full DefectReport as chat text; the tool is the handoff.",
+      "Do not paste the full DefectReport as chat text; the tool is the only handoff.",
       "clean=true only with empty defects; clean=false requires ≥1 defect with severity/code/issue.",
       "Report every blocking defect supported by this lens; keep major/minor findings high-signal. severity is blocking | major | minor.",
     ],
     parameters: submitDefectReportParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      const stamped = {
-        ...params,
-        version: 1 as const,
-        reviewerId:
-          typeof params.reviewerId === "string" && params.reviewerId.trim()
-            ? params.reviewerId.trim()
-            : input.reviewerId,
-        defects: Array.isArray(params.defects)
-          ? params.defects.map((d) => ({
-              ...d,
-              reviewerId:
-                typeof d.reviewerId === "string" && d.reviewerId.trim()
-                  ? d.reviewerId.trim()
-                  : input.reviewerId,
-            }))
-          : [],
-      };
-      const parsed = DefectReportSchema.safeParse(stamped);
-      if (!parsed.success) {
-        const issue = parsed.error.issues[0];
-        const where = issue
-          ? `${issue.path.join(".") || "report"}: ${issue.message}`
-          : "invalid DefectReport";
-        throw new Error(
-          `submit_defect_report rejected: ${where}. ` +
-            "Fix clean/defects consistency (clean ⇔ empty defects) and call again. " +
-            "Do not bypass via free-text chat.",
-        );
+      let result: CommitDefectReportResult;
+      try {
+        result = await commit(input.runWorkDir, params as DefectReport, {
+          reviewerId: input.reviewerId,
+        });
+      } catch (err) {
+        mapCommitError(err);
       }
-      const absolutePath = await writeReport(input.runWorkDir, parsed.data);
       const details: SubmitDefectReportDetails = {
-        reportPath: DEFECT_REPORT_REL_PATH,
-        absolutePath,
-        clean: parsed.data.clean,
-        defectCount: parsed.data.defects.length,
-        reviewerId: parsed.data.reviewerId,
+        reportPath: result.reportPath,
+        absolutePath: result.absolutePath,
+        clean: result.clean,
+        defectCount: result.defectCount,
+        reviewerId: result.reviewerId,
       };
       return {
         content: [
           {
             type: "text" as const,
-            text: parsed.data.clean
+            text: result.clean
               ? `DefectReport accepted: clean (NO_DEFECTS) → ${DEFECT_REPORT_REL_PATH}`
               : `DefectReport accepted: ${details.defectCount} defect(s) → ${DEFECT_REPORT_REL_PATH}`,
           },

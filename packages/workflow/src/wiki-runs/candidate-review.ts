@@ -3,26 +3,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  CandidateDiffRead,
-  CandidatePageRead,
-  CandidateTreeRead,
-  CreateReviewThreadCommand,
-  RequestRepairCommand,
-  ResolveReviewThreadCommand,
-  RunCommandContext,
-  RunCommandReceipt,
-} from "@okf-wiki/contract";
-import {
-  CandidateDiffReadSchema,
-  CandidatePageReadSchema,
-  CandidateTreeReadSchema,
-  RepairRequestSchema,
-} from "@okf-wiki/contract";
+import type { CandidateDiffRead, CandidatePageRead, CandidateTreeRead, CreateReviewThreadCommand, RequestRepairCommand, ResolveReviewThreadCommand, RunCommandContext, RunCommandReceipt } from "@okf-wiki/contract/wiki-runs";
+import { CandidateDiffReadSchema, CandidatePageReadSchema, CandidateTreeReadSchema, RepairRequestSchema } from "@okf-wiki/contract/wiki-runs";
 import { runWorkDir } from "@okf-wiki/core";
-import type { CommandsHost } from "./commands.js";
 import { digest, now } from "./crypto-util.js";
-import type { WikiRunsDbCtx } from "./ctx.js";
+import type { WikiRunsControl, WikiRunsDbCtx } from "./ctx.js";
 import { scheduleRepair } from "./repair-schedule.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import { WikiRunsRequestError } from "./types.js";
@@ -45,12 +30,12 @@ type CandidateEvidenceMap = {
 };
 
 /** Read-only candidate inspection surface. It deliberately excludes all command callbacks. */
-export type CandidateReadHost = Pick<WikiRunsDbCtx, "db" | "workspace">;
+export type CandidateReadControl = Pick<WikiRunsDbCtx, "db" | "workspace">;
 
 /** Narrow write surface retained only by review-thread and repair commands. */
-type CandidateReviewCommandHost = CandidateReadHost &
+type CandidateReviewCommandControl = CandidateReadControl &
   Pick<WikiRunsDbCtx, "emit"> &
-  Pick<CommandsHost, "currentNodeGeneration" | "applyRerunAt">;
+  Pick<WikiRunsControl, "currentNodeGeneration" | "applyRerunAt" | "workspaceForRun">;
 
 function assertPagePath(pagePath: string): string {
   const value = pagePath.trim();
@@ -66,7 +51,7 @@ function assertPagePath(pagePath: string): string {
 }
 
 function candidateForDigest(
-  host: Pick<CandidateReadHost, "db">,
+  host: Pick<CandidateReadControl, "db">,
   runId: string,
   digestValue: string,
 ): CandidateRecord {
@@ -91,7 +76,7 @@ function candidateForDigest(
   };
 }
 
-function candidateRoot(host: CandidateReadHost, runId: string, candidate: CandidateRecord): string {
+function candidateRoot(host: CandidateReadControl, runId: string, candidate: CandidateRecord): string {
   const runRoot = path.resolve(runWorkDir(host.workspace.rootPath, runId));
   const root = path.resolve(runRoot, candidate.relativePath);
   if (path.relative(runRoot, root).startsWith("..") || path.relative(runRoot, root) === "") {
@@ -101,7 +86,7 @@ function candidateRoot(host: CandidateReadHost, runId: string, candidate: Candid
 }
 
 function candidatePagePath(
-  host: CandidateReadHost,
+  host: CandidateReadControl,
   runId: string,
   candidate: CandidateRecord,
   pagePath: string,
@@ -132,7 +117,7 @@ function contentDigest(content: string): string {
 }
 
 function evidenceMapForCandidate(
-  host: CandidateReadHost,
+  host: CandidateReadControl,
   runId: string,
   candidate: CandidateRecord,
 ): CandidateEvidenceMap {
@@ -188,7 +173,7 @@ function evidenceMapForCandidate(
 }
 
 function sealedPage(
-  host: CandidateReadHost,
+  host: CandidateReadControl,
   runId: string,
   candidate: CandidateRecord,
   pagePath: string,
@@ -225,7 +210,7 @@ function lineDiff(before: string, after: string): CandidateDiffRead["lines"] {
 }
 
 function recordCommand(
-  host: CandidateReviewCommandHost,
+  host: CandidateReviewCommandControl,
   commandId: string,
   payloadDigest: string,
   context: RunCommandContext,
@@ -251,7 +236,7 @@ function recordCommand(
 
 /** Deep module boundary for all candidate/read review behavior. */
 export class CandidateReview {
-  constructor(protected readonly host: CandidateReadHost) {}
+  constructor(protected readonly host: CandidateReadControl) {}
 
   readPage(input: { runId: string; candidateDigest: string; pagePath: string }): CandidatePageRead {
     const pagePath = assertPagePath(input.pagePath);
@@ -309,7 +294,7 @@ export class CandidateReview {
 
 /** Command-side companion. Read paths never instantiate this wider host. */
 export class CandidateReviewCommands extends CandidateReview {
-  constructor(private readonly commandHost: CandidateReviewCommandHost) {
+  constructor(private readonly commandHost: CandidateReviewCommandControl) {
     super(commandHost);
   }
 

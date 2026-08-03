@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AgentSseEventSchema } from "./agent-protocol.js";
 import {
-  AgentSseEventSchema,
   applySessionStreamPatch,
   createSessionStreamState,
   diffSessionStreamState,
   SessionMessageSchema,
   SessionStreamStateSchema,
-} from "./index.js";
+} from "./session-stream.js";
 
 test("Session DTO rejects Pi-only thinking, parts, raw tool args, and raw tool output", () => {
   const base = {

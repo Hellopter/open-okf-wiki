@@ -4,16 +4,22 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import { applySealedPublicationCandidate, PublicationConflictError } from "@okf-wiki/core";
+import type { WikiRunsControl } from "../ctx.js";
+import {
+  transitionCandidateReadyToApplying,
+  transitionCandidateReadyToFailed,
+  transitionToApplied,
+  transitionToConflict,
+} from "../publication-effect.js";
 import { asRow, parseJson, requiredNumber, requiredText } from "../sql.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
-import type { MechanicalHost } from "./host.js";
 
 export async function mechanicalPublish(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   workDir: string,
   runDir: string,
@@ -88,14 +94,7 @@ export async function mechanicalPublish(
       const decision = parseJson<{ decision?: string }>(gate.decision_json);
       if (decision.decision !== "approve") return;
 
-      const cas = host.db
-        .prepare(
-          `UPDATE effects SET state = 'applying'
-           WHERE effect_key = ? AND state = 'candidate_ready'`,
-        )
-        .run(effectKey);
-      if (cas.changes !== 1) return;
-      host.emit(claim.runId, "effect.applying");
+      if (!transitionCandidateReadyToApplying(host, claim.runId, effectKey)) return;
       accepted = true;
     });
     return accepted;
@@ -112,18 +111,12 @@ export async function mechanicalPublish(
 
     if (result.status === "conflict") {
       host.transaction(() => {
-        host.db
-          .prepare(
-            `UPDATE effects SET state = 'conflict', observed_outcome = ?
-             WHERE effect_key = ? AND state IN ('candidate_ready', 'applying')`,
-          )
-          .run(
-            `PublicationConflict live=${result.liveDigest} expected=${result.expectedLiveDigest}`.slice(
-              0,
-              4_000,
-            ),
-            effectKey,
-          );
+        transitionToConflict(
+          host,
+          claim.runId,
+          effectKey,
+          `PublicationConflict live=${result.liveDigest} expected=${result.expectedLiveDigest}`,
+        );
         host.db
           .prepare(
             `UPDATE gates
@@ -155,7 +148,6 @@ export async function mechanicalPublish(
             "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
           )
           .run(new Date().toISOString(), claim.runId);
-        host.emit(claim.runId, "effect.conflict");
         host.emit(claim.runId, "gate.opened");
       });
       return mechanicalFailed({
@@ -181,13 +173,7 @@ export async function mechanicalPublish(
     }
 
     host.transaction(() => {
-      host.db
-        .prepare(
-          `UPDATE effects SET state = 'applied', observed_outcome = ?
-           WHERE effect_key = ? AND state IN ('applying', 'candidate_ready')`,
-        )
-        .run(`published:${result.liveDigest}`, effectKey);
-      host.emit(claim.runId, "effect.applied");
+      transitionToApplied(host, claim.runId, effectKey, `published:${result.liveDigest}`);
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "publish failed";
@@ -198,10 +184,7 @@ export async function mechanicalPublish(
     if (state === "candidate_ready") {
       // Error before CAS — safe to mark failed; live was never mutated.
       host.transaction(() => {
-        host.db
-          .prepare("UPDATE effects SET state = 'failed', observed_outcome = ? WHERE effect_key = ?")
-          .run(message.slice(0, 4_000), effectKey);
-        host.emit(claim.runId, "effect.failed");
+        transitionCandidateReadyToFailed(host, claim.runId, effectKey, message);
       });
       return mechanicalFailed({
         claim,

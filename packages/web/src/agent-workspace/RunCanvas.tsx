@@ -1,4 +1,4 @@
-import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { RunCommand, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { PauseIcon, PlayIcon, SendIcon, SquareIcon, TriangleAlertIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { describeRunStatus, GateActionShell, StatusBadge } from "@/components/agent-ui";

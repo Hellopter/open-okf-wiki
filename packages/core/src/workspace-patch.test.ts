@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  type WorkspaceConfig,
-  WorkspaceLimitsSchema,
-  WorkspaceOrchestrationSchema,
-  WorkspaceRoleModelsSchema,
-} from "@okf-wiki/contract";
+import { type WorkspaceConfig, WorkspaceLimitsSchema, WorkspaceOrchestrationSchema, WorkspaceRoleModelsSchema } from "@okf-wiki/contract/workspace";
 import { WorkspaceIntakeError } from "./workspace-errors.js";
 import { applyWorkspacePatch } from "./workspace-patch.js";
 

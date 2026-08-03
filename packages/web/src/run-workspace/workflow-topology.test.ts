@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import {
   buildFocusTopology,
   buildWorkflowStages,

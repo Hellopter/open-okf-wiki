@@ -3,12 +3,8 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  type CoverageResult,
-  type WikiRunGate,
-  type WikiRunPlanReview,
-  WikiRunPlanReviewSchema,
-} from "@okf-wiki/contract";
+import type { CoverageResult } from "@okf-wiki/contract/coverage";
+import { type WikiRunGate, type WikiRunPlanReview, WikiRunPlanReviewSchema } from "@okf-wiki/contract/wiki-runs";
 import {
   coverageBlocksApprove,
   coverageStatusCounts,

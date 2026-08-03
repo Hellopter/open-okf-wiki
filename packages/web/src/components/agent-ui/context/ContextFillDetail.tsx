@@ -1,9 +1,5 @@
-import {
-  type ContextPhase,
-  formatContextFill,
-  formatTokenCount,
-  type SessionUsage,
-} from "@okf-wiki/contract";
+import { formatContextFill, formatTokenCount, type SessionUsage } from "@okf-wiki/contract/session";
+import type { ContextPhase } from "@okf-wiki/contract/session";
 import { isContextNearLimit } from "./context-phase";
 
 export type ContextFillDetailLabels = {

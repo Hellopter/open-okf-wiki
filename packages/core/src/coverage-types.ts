@@ -6,22 +6,13 @@
  * BoundaryIndex, and plan policy fields.
  */
 
-import {
-  type CoveragePlan as ContractCoveragePlan,
-  type CoverageSourceInventory,
-  type CoverageSurfaceEntry,
-  type CoverageUnit,
-  sourceCoverageUnit,
-  surfaceCoverageUnit,
-  unitIdForSource,
-  unitIdForSurface,
-} from "@okf-wiki/contract";
+import { type CoveragePlan as ContractCoveragePlan, type CoverageSourceInventory, type CoverageSurfaceEntry, type CoverageUnit, sourceCoverageUnit, surfaceCoverageUnit, unitIdForSource, unitIdForSurface } from "@okf-wiki/contract/coverage";
 
 export type {
   CoverageCancelledUnit,
   CoverageSurfaceEntry,
   CoverageUnit,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/coverage";
 
 export {
   isSurfaceUnitId,
@@ -30,7 +21,7 @@ export {
   surfaceCoverageUnit,
   unitIdForSource,
   unitIdForSurface,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/coverage";
 
 /** How a surface was discovered under a sealed snapshot. */
 export type CoverageSurfaceOrigin = "root" | "manifest" | "workspace_dir";

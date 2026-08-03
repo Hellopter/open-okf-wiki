@@ -2,12 +2,9 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  ExecutionPlanDeltaSchema,
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
-} from "@okf-wiki/contract";
-import { loadEvidenceBundle } from "../materialize.js";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import { ExecutionPlanDeltaSchema } from "@okf-wiki/contract/wiki-runs";
+import { loadEvidenceBundle } from "../projection.js";
 import {
   type AttemptHandlerContext,
   bounded,

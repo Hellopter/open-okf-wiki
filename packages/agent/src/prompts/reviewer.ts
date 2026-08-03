@@ -63,7 +63,8 @@ export function reviewerPrompt(input: {
   return [
     lensHint,
     "Read wiki/ pages and relevant sources/ with read-only tools when needed.",
-    "Submit a typed DefectReport via the submit_defect_report tool (required handoff).",
+    "You MUST call submit_defect_report with a typed DefectReport — that tool is the only handoff.",
+    "Do not paste DefectReport JSON into chat; free-text is never accepted as success.",
     "Fields: { reviewerId, clean, defects: [{ severity, code, path, issue }], summary }.",
     "severity is blocking | major | minor. Report every blocking defect supported by this lens; keep major/minor findings high-signal.",
     "clean=true only with empty defects; clean=false requires ≥1 defect.",

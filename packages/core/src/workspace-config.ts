@@ -1,16 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import {
-  DEFAULT_OPERATOR_TOOLS,
-  type WorkspaceConfig,
-  WorkspaceConfigSchema,
-  WorkspaceLimitsSchema,
-  type WorkspaceOrchestration,
-  WorkspaceOrchestrationSchema,
-  WorkspaceRevisionSchema,
-  WorkspaceRoleModelsSchema,
-} from "@okf-wiki/contract";
+import { DEFAULT_OPERATOR_TOOLS, type WorkspaceConfig, WorkspaceConfigSchema, WorkspaceLimitsSchema, type WorkspaceOrchestration, WorkspaceOrchestrationSchema, WorkspaceRevisionSchema, WorkspaceRoleModelsSchema } from "@okf-wiki/contract/workspace";
 import { atomicCreateJson, atomicWriteJson } from "./atomic-write.js";
 import { withPerKeyMutex } from "./atomicity.js";
 import { assertAbsolutePath, isPathInside, resolveExistingDir } from "./paths.js";

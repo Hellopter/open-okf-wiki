@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import {
   createWikiRepairTool,
   WIKI_REPAIR_TOOL_NAME,

@@ -1,11 +1,4 @@
-import {
-  type ModelProfile,
-  type ModelProfilePublic,
-  type ProviderConfig,
-  type ProviderEntry,
-  type ProviderEntryPublic,
-  type ProviderPublic,
-} from "@okf-wiki/contract";
+import type { ModelProfile, ModelProfilePublic, ProviderConfig, ProviderEntry, ProviderEntryPublic, ProviderPublic } from "@okf-wiki/contract/workspace";
 import { PROVIDER_CONFIG_VERSION } from "./provider-catalog.js";
 import { flattenModels, PROVIDER_KIND } from "./provider-runtime.js";
 

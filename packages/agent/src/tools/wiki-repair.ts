@@ -6,7 +6,8 @@
 
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { RunCommandReceipt, WorkspaceConfig } from "@okf-wiki/contract";
+import type { RunCommandReceipt } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 
 export const WIKI_REPAIR_TOOL_NAME = "wiki_repair" as const;
 

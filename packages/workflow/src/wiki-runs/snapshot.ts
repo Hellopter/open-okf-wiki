@@ -3,17 +3,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import {
-  type RunIntent,
-  RunIntentSchema,
-  WIKI_RUNS_SCHEMA,
-  type WikiRunAttempt,
-  type WikiRunGateDetail,
-  type WikiRunNode,
-  type WikiRunNodeKind,
-  type WikiRunSnapshot,
-  WikiRunSnapshotSchema,
-} from "@okf-wiki/contract";
+import { type RunIntent, RunIntentSchema, WIKI_RUNS_SCHEMA, type WikiRunAttempt, type WikiRunGateDetail, type WikiRunNode, type WikiRunNodeKind, type WikiRunSnapshot, WikiRunSnapshotSchema } from "@okf-wiki/contract/wiki-runs";
 import { projectAttemptMetrics } from "./attempt-metrics.js";
 import { labelForNode, parentKeyForNode, parseNodeDetail } from "./node-label.js";
 import { asRow, asRows, parseJson, requiredNumber, requiredText } from "./sql.js";

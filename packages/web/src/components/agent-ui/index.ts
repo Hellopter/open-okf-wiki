@@ -3,16 +3,10 @@
 export { ActivityCollapsible, type ActivityCollapsibleProps } from "./ActivityCollapsible";
 export { AgentTaskRow, type AgentTaskRowProps } from "./AgentTaskRow";
 export {
-  AssistantTurn,
-  type AssistantTurnLabels,
-  type AssistantTurnProps,
-} from "./AssistantTurn";
-export {
   type AttemptToolCallEvent,
   type AttemptToolResultEvent,
   attemptToolToViewModel,
 } from "./adapters/attempt-trace";
-export { agentToolCallToViewModel } from "./adapters/tool-call";
 export {
   aggregateFileChanges,
   countUnifiedDiffStats,

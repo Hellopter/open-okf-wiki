@@ -2,7 +2,8 @@
  * Shared prompt helpers (language, page/domain lists, template types).
  */
 
-import type { WikiLanguage, WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import type { WikiLanguage } from "@okf-wiki/contract/workspace";
 
 export type { WikiLanguage };
 

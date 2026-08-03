@@ -1,45 +1,25 @@
 /**
- * Run Boundary planner tool: validate WikiRunSpec and atomically write plan-draft.json.
- * Path-first handoff (ADR 0011) — control returns a short ACK + path, not the full Spec.
- * When a CoveragePlan is available (injected or on disk), assertCoverage runs fail-closed.
+ * Thin planner tool: TypeBox schema + commitPlanDraft + short ACK.
+ * Deep validation/write lives in plan/commit-plan-draft (hard-cut Epic D).
  */
 
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { CoveragePlan } from "@okf-wiki/contract/coverage";
 import {
-  assertCoverage,
-  assertSpecWithinFanOutCaps,
-  type CoveragePlan,
-  CoverageAssertError,
-  parseSealedCoveragePlan,
-  SpecFanOutCapError,
   type SpecFanOutCaps,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
-  WikiRunSpecSchema,
-} from "@okf-wiki/contract";
-import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../ports/core-spec-store.js";
+} from "@okf-wiki/contract/wiki-runs";
+import {
+  type CommitPlanDraftResult,
+  commitPlanDraft,
+  loadCoveragePlanFromWorkdir,
+  PLAN_DRAFT_REL_PATH,
+} from "../plan/commit-plan-draft.js";
 
-export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
-
-/** Load sealed coverage plan from run workdir (inputs/ preferred, then analysis/). */
-async function loadCoveragePlanFromWorkdir(
-  runWorkDir: string,
-): Promise<CoveragePlan | undefined> {
-  for (const rel of ["inputs/coverage-plan.json", "analysis/coverage-plan.json"]) {
-    try {
-      const raw = JSON.parse(await readFile(path.join(runWorkDir, rel), "utf8")) as unknown;
-      // Strip freeze host extras (lightPath/reasons/maxSurfacesRequired).
-      const parsed = parseSealedCoveragePlan(raw);
-      if (parsed) return parsed;
-    } catch {
-      // try next path
-    }
-  }
-  return undefined;
-}
+export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME, PLAN_DRAFT_REL_PATH };
+export { planDraftPathFromRunWorkDir } from "../plan/commit-plan-draft.js";
 
 const coverageBindings = {
   coverageUnitIds: Type.Optional(
@@ -194,7 +174,7 @@ const acceptanceSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** TypeBox surface for the planner; Zod WikiRunSpecSchema is the truth gate. */
+/** TypeBox surface for the planner; Zod WikiRunSpecSchema is the truth gate in commitPlanDraft. */
 export const submitWikiRunSpecParameters = Type.Object(
   {
     version: Type.Optional(
@@ -356,19 +336,31 @@ export type CreateSubmitWikiRunSpecToolInput = {
    * analysis/coverage-plan.json or inputs/coverage-plan.json when present.
    */
   coveragePlan?: CoveragePlan;
-  /** Optional test hook; defaults to defaultSpecStore.writePlanDraft. */
-  writeDraft?: (runWorkDir: string, spec: WikiRunSpec) => Promise<string>;
+  /**
+   * Optional test hook; defaults to commitPlanDraft.
+   * Internal seam only — not a SpecStore port.
+   */
+  commit?: (
+    runWorkDir: string,
+    spec: WikiRunSpec,
+    opts?: { caps?: SpecFanOutCaps; coveragePlan?: CoveragePlan },
+  ) => Promise<CommitPlanDraftResult>;
   /** Optional test hook for loading coverage plan from disk. */
   loadCoveragePlan?: (runWorkDir: string) => Promise<CoveragePlan | undefined>;
 };
 
+function mapCommitError(err: unknown): never {
+  if (err instanceof Error && err.message.startsWith("commitPlanDraft rejected:")) {
+    throw new Error(err.message.replace(/^commitPlanDraft rejected:/, "submit_wiki_run_spec rejected:"));
+  }
+  throw err;
+}
+
 export function createSubmitWikiRunSpecTool(
   input: CreateSubmitWikiRunSpecToolInput,
 ): ToolDefinition<typeof submitWikiRunSpecParameters, SubmitWikiRunSpecDetails> {
-  const writeDraft =
-    input.writeDraft ?? ((dir, spec) => defaultSpecStore.writePlanDraft(dir, spec));
-  const loadPlan =
-    input.loadCoveragePlan ?? ((dir) => loadCoveragePlanFromWorkdir(dir));
+  const commit = input.commit ?? commitPlanDraft;
+  const loadPlan = input.loadCoveragePlan ?? loadCoveragePlanFromWorkdir;
   return defineTool({
     name: SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
     label: "Submit WikiRunSpec",
@@ -400,54 +392,22 @@ export function createSubmitWikiRunSpecTool(
     parameters: submitWikiRunSpecParameters,
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      const parsed = WikiRunSpecSchema.safeParse(params);
-      if (!parsed.success) {
-        const issue = parsed.error.issues[0];
-        const where = issue
-          ? `${issue.path.join(".") || "spec"}: ${issue.message}`
-          : "invalid Spec";
-        throw new Error(
-          `submit_wiki_run_spec rejected: ${where}. ` +
-            "Fix the named field(s) and call again with a complete WikiRunSpec " +
-            "(pages min 1, include critical overview.md; never index.md/log.md). " +
-            "Do not write wiki page bodies or bypass via bash.",
-        );
-      }
-      try {
-        assertSpecWithinFanOutCaps(parsed.data, input.caps);
-      } catch (err) {
-        if (err instanceof SpecFanOutCapError) {
-          throw new Error(`submit_wiki_run_spec rejected: ${err.message}`);
-        }
-        throw err;
-      }
-
       const plan = input.coveragePlan ?? (await loadPlan(input.runWorkDir));
-      if (plan && plan.requiredUnits.length > 0) {
-        try {
-          assertCoverage(parsed.data, plan, { throwOnGap: true });
-        } catch (err) {
-          if (err instanceof CoverageAssertError) {
-            const gaps = err.result.gaps.slice(0, 12).join(", ");
-            throw new Error(
-              `submit_wiki_run_spec rejected: coverage gap — ${err.message}. ` +
-                `Missing units: ${gaps || "(see plan)"}. ` +
-                "Bind each required unit on a critical page via coverageUnitIds / sourceIds / surfaceIds, " +
-                "or cancel via sourceCoverage/surfaceCoverage with cancelled:true and notes reason, " +
-                "then resubmit the complete Spec.",
-            );
-          }
-          throw err;
-        }
+      let result: CommitPlanDraftResult;
+      try {
+        result = await commit(input.runWorkDir, params as WikiRunSpec, {
+          caps: input.caps,
+          coveragePlan: plan,
+        });
+      } catch (err) {
+        mapCommitError(err);
       }
-
-      const absolutePath = await writeDraft(input.runWorkDir, parsed.data);
       const details: SubmitWikiRunSpecDetails = {
-        specPath: PLAN_DRAFT_REL_PATH,
-        absolutePath,
-        pageCount: parsed.data.pages.length,
-        domainCount: parsed.data.domains.length,
-        summary: parsed.data.summary.slice(0, 200),
+        specPath: result.specPath,
+        absolutePath: result.absolutePath,
+        pageCount: result.pageCount,
+        domainCount: result.domainCount,
+        summary: result.summary,
       };
       return {
         content: [

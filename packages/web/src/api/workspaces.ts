@@ -3,26 +3,8 @@
  * Domain types come from `@okf-wiki/contract` — do not redeclare schemas here.
  */
 
-import type {
-  GitProbe,
-  SkillFileContent,
-  SkillFileEntry,
-  SkillInfo,
-  SourceOrigin,
-  WikiLanguage,
-  WorkspaceConfig,
-  WorkspaceSource,
-  WorkspaceSummary,
-} from "@okf-wiki/contract";
-import {
-  GitProbeSchema,
-  SkillFileContentSchema,
-  SkillFileEntrySchema,
-  SkillInfoSchema,
-  WorkspaceConfigSchema,
-  WorkspaceSourceSchema,
-  WorkspaceSummarySchema,
-} from "@okf-wiki/contract";
+import type { GitProbe, SkillFileContent, SkillFileEntry, SkillInfo, SourceOrigin, WikiLanguage, WorkspaceConfig, WorkspaceSource, WorkspaceSummary } from "@okf-wiki/contract/workspace";
+import { GitProbeSchema, SkillFileContentSchema, SkillFileEntrySchema, SkillInfoSchema, WorkspaceConfigSchema, WorkspaceSourceSchema, WorkspaceSummarySchema } from "@okf-wiki/contract/workspace";
 import { z } from "zod";
 import { ApiError, request } from "./client";
 

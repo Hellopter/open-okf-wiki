@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AttemptTraceEvent } from "@okf-wiki/contract";
+import type { AttemptTraceEvent } from "@okf-wiki/contract/wiki-runs";
 import { mergeAttemptTraceEvents } from "./trace-events.ts";
 
 function assistant(ordinal: number, content: string): AttemptTraceEvent {

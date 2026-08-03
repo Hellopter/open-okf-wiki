@@ -4,12 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { type createOperatorSession } from "@okf-wiki/agent";
-import {
-  type AgentSseStream,
-  createPiStreamState,
-  diffSessionStreamState,
-  WorkspaceConfigSchema,
-} from "@okf-wiki/contract";
+import { type AgentSseStream, diffSessionStreamState } from "@okf-wiki/contract/session";
+import { createPiStreamState } from "@okf-wiki/contract/stream-server";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import { resetOperatorSessionsForTests } from "./operator-session-test-seams.ts";
 import {
   createLiveSession,

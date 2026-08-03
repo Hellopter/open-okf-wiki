@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  type WikiProduceToolDetails,
-  WikiProduceToolDetailsSchema,
-  WorkspaceConfigSchema,
-} from "@okf-wiki/contract";
+import { type WikiProduceToolDetails, WikiProduceToolDetailsSchema } from "@okf-wiki/contract/wiki-runs";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import { createWikiProduceTool, type StartWikiRun } from "./wiki-produce.js";
 
 type ExecuteWikiProduce = (

@@ -5,6 +5,14 @@
 **Pi 源码：** `refs/pi` → 本地树 `earendil-works/pi`（`@earendil-works/pi-coding-agent` / `pi-agent-core` / `pi-tui`）  
 **触发：** 实机 Wiki 生成中，点击 subagent 只见「思考中…」，正文 / tool / message 不渲染  
 
+> **Historical snapshot (2026-07).** Product Session/web path has moved on.
+> Live browser conversation is Session SSE + `applySessionStreamPatch` /
+> `SessionTranscript` ([ADR 0039](../adr/0039-browser-operator-session-and-run-observation.md),
+> [ADR 0041](../adr/0041-contract-subpaths-and-agent-port-thinning.md)).
+> Body claims that web reduces via `applyPiEvent` → `messages[]` / AgentMessage
+> describe the **then** stack; `applyStreamPatch` / `AgentMessage` are server-only
+> under `@okf-wiki/contract/stream-server` today.
+
 ---
 
 ## 1. Pi 在解决什么问题

@@ -1,12 +1,4 @@
-import type {
-  AttemptTraceEvent,
-  RunCommand,
-  WikiRunAttempt,
-  WikiRunNode,
-  WikiRunPlanReview,
-  WikiRunSnapshot,
-  WikiRunSpec,
-} from "@okf-wiki/contract";
+import type { AttemptTraceEvent, RunCommand, WikiRunAttempt, WikiRunNode, WikiRunPlanReview, WikiRunSnapshot, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import {
   ArrowLeftIcon,
   Clock3Icon,

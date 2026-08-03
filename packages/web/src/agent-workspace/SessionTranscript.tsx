@@ -1,4 +1,4 @@
-import type { SessionMessage, SessionTool } from "@okf-wiki/contract";
+import type { SessionMessage, SessionTool } from "@okf-wiki/contract/session";
 import { MessageSquareIcon, WorkflowIcon } from "lucide-react";
 import {
   describeRunStatus,

@@ -3,7 +3,7 @@
  * Server remains authoritative; these helpers only gate the operator UI.
  */
 
-import type { WikiRunAttempt, WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { WikiRunAttempt, WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 
 export type RetryReasonKey =
   | "runPublished"

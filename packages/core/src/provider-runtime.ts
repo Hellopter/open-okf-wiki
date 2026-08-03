@@ -1,10 +1,4 @@
-import {
-  type ModelProfile,
-  ModelProfileSchema,
-  OPENAI_COMPATIBLE_PROVIDER_KIND,
-  type ProviderApiShape,
-  type ProviderConfig,
-} from "@okf-wiki/contract";
+import { type ModelProfile, ModelProfileSchema, OPENAI_COMPATIBLE_PROVIDER_KIND, type ProviderApiShape, type ProviderConfig } from "@okf-wiki/contract/workspace";
 import { ProviderStoreError } from "./workspace-errors.js";
 
 /** Sole supported product provider kind (not a multi-provider switch). */

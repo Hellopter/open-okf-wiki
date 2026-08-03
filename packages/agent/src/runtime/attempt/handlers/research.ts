@@ -5,12 +5,8 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type AnalysisReceipt,
-  AnalysisReceiptSchema,
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import { type AnalysisReceipt, AnalysisReceiptSchema } from "@okf-wiki/contract/wiki-runs";
 import { domainResearchPrompt, leafResearchPrompt } from "../../../prompts/index.js";
 import {
   type EvidenceBundle,
@@ -18,7 +14,7 @@ import {
   formatOperatorInputNotes,
   loadEvidenceBundle,
   loadProjectedOperatorInput,
-} from "../materialize.js";
+} from "../projection.js";
 import {
   type AttemptHandlerContext,
   bounded,

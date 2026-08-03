@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {
-  AttemptTraceEvent,
-  WikiRunAttemptTranscript,
-  WikiRunSnapshot,
-} from "@okf-wiki/contract";
+import type { AttemptTraceEvent, WikiRunAttemptTranscript, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import {
   createRunObservationState,
   hydrateAttemptTimeline,

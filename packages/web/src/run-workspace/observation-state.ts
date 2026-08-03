@@ -1,10 +1,4 @@
-import type {
-  AttemptTraceEvent,
-  WikiRunAttempt,
-  WikiRunAttemptTranscript,
-  WikiRunAttemptTranscriptTraceFrame,
-  WikiRunSnapshot,
-} from "@okf-wiki/contract";
+import type { AttemptTraceEvent, WikiRunAttempt, WikiRunAttemptTranscript, WikiRunAttemptTranscriptTraceFrame, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { mergeAttemptTraceEvents } from "./trace-events.ts";
 
 export type FollowMode = "pinned" | "selected-live";

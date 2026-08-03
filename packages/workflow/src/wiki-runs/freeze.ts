@@ -12,13 +12,12 @@ import {
   RepositorySnapshotSchema,
   RunIntentSchema,
   validateNodeOutputs,
-  WorkspaceConfigSchema,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/wiki-runs";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import {
   buildBoundaryIndex,
   buildCoverageInventory,
   buildCoveragePlan,
-  type FreezeRunBoundaryInput,
   type FrozenRunBoundary,
   listPublishedWikiPages,
   PublishedWikiError,
@@ -37,7 +36,7 @@ import {
   writeAttemptMetrics,
 } from "./attempt-metrics.js";
 import { artifactId, digest, now } from "./crypto-util.js";
-import type { WikiRunsCasCtx } from "./ctx.js";
+import type { WikiRunsCasCtx, WikiRunsControl } from "./ctx.js";
 import { makeOwnedTreeWritable, manifestFor } from "./fs-util.js";
 import { asRow, asRows, parseJson, requiredText, type SqlRow } from "./sql.js";
 import { writeConversationTranscript } from "./transcript-io.js";
@@ -49,23 +48,14 @@ import type {
   TrustedFrozenInputs,
 } from "./types.js";
 
-export type FreezeHost = WikiRunsCasCtx & {
-  closed: boolean;
-  activeAttempts: Map<string, AbortController>;
-  runBoundary(input: FreezeRunBoundaryInput): Promise<FrozenRunBoundary>;
-  sealPreparation(runId: string, preparation: ArtifactPreparation): Promise<void>;
-  trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
-  orphanPreparedArtifacts(attemptId: string): void;
-};
-
 /**
  * Minimal surface for freeze CAS commit / recovery.
  * Intentionally excludes piAttemptExecutor, runBoundary, activeAttempts, seal, orphan —
  * those are execute-path only; prepared-artifact recovery must not pull them in.
  */
-export type FreezeCommitHost = Pick<FreezeHost, "db" | "isCurrent" | "emit">;
+export type FreezeCommitHost = Pick<WikiRunsCasCtx, "db" | "isCurrent" | "emit">;
 
-export async function executeFreeze(host: FreezeHost, claim: ClaimedFreeze): Promise<void> {
+export async function executeFreeze(host: WikiRunsControl, claim: ClaimedFreeze): Promise<void> {
   const controller = new AbortController();
   host.activeAttempts.set(claim.attemptId, controller);
   let materialized = false;
@@ -225,7 +215,7 @@ export async function executeFreeze(host: FreezeHost, claim: ClaimedFreeze): Pro
  * Re-seal attempt_output from pinned inputs and recommit node outputs.
  */
 export async function executePinnedFreezeRetry(
-  host: FreezeHost,
+  host: WikiRunsControl,
   claim: ClaimedFreeze,
   signal: AbortSignal,
 ): Promise<void> {
@@ -379,7 +369,7 @@ export async function executePinnedFreezeRetry(
 }
 
 export function trustedFrozenInputs(
-  host: Pick<FreezeHost, "db">,
+  host: Pick<WikiRunsControl, "db">,
   runId: string,
 ): TrustedFrozenInputs | undefined {
   const run = asRow(
@@ -528,7 +518,7 @@ export function commitFreezeArtifacts(
   host.emit(claim.runId, "node.ready");
 }
 
-export function failFreeze(host: FreezeHost, claim: ClaimedFreeze, error: unknown): void {
+export function failFreeze(host: WikiRunsControl, claim: ClaimedFreeze, error: unknown): void {
   if (!host.isCurrent(claim)) return;
   const timestamp = now();
   const message = error instanceof Error ? error.message.slice(0, 4_000) : "freeze failed";
@@ -568,7 +558,7 @@ export function failFreeze(host: FreezeHost, claim: ClaimedFreeze, error: unknow
  * Post-pin retry reuses immutable pinned inputs (does not re-resolve live selectors).
  */
 export function prepareFreeze(
-  host: Pick<FreezeHost, "db">,
+  host: Pick<WikiRunsControl, "db">,
   claim: ClaimedFreeze,
 ): PreparedFreeze & { reusePinned: boolean } {
   const run = asRow(
@@ -585,7 +575,7 @@ export function prepareFreeze(
 
 /** A failed or cancelled pre-pin freeze leaves no durable owned work tree. */
 export async function clearUnpinnedFreezeWork(
-  host: Pick<FreezeHost, "db" | "workspace">,
+  host: Pick<WikiRunsControl, "db" | "workspace">,
   runId: string,
 ): Promise<void> {
   const run = asRow(host.db.prepare("SELECT pinned_digest FROM runs WHERE run_id = ?").get(runId));
@@ -598,7 +588,7 @@ export async function clearUnpinnedFreezeWork(
 
 /** Inputs are trusted only after the Run Boundary returns, never from Pi output. */
 export function recordTrustedFrozenInputs(
-  host: FreezeHost,
+  host: WikiRunsControl,
   claim: ClaimedFreeze,
   inputs: TrustedFrozenInputs,
 ): boolean {
@@ -614,7 +604,7 @@ export function recordTrustedFrozenInputs(
 }
 
 export async function prepareFreezeArtifacts(
-  host: FreezeHost,
+  host: WikiRunsControl,
   claim: ClaimedFreeze,
   candidates: Array<{
     directory: string;
@@ -667,7 +657,7 @@ export async function prepareFreezeArtifacts(
 
 /** Load the intent sealed when StartRun was accepted. */
 export function loadRunIntent(
-  host: Pick<FreezeHost, "db">,
+  host: Pick<WikiRunsControl, "db">,
   runId: string,
 ): ReturnType<typeof RunIntentSchema.parse> {
   const run = asRow(host.db.prepare("SELECT intent_json FROM runs WHERE run_id = ?").get(runId));
@@ -683,7 +673,7 @@ export function loadRunIntent(
  * should not happen after freezeRunBoundary). Returns null when claim is stale.
  */
 async function materializeCoverageArtifacts(
-  host: FreezeHost,
+  host: WikiRunsControl,
   claim: ClaimedFreeze,
   frozen: FrozenRunBoundary,
   workDir: string,

@@ -1,11 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import {
-  type GitProbe,
-  type WorkspaceConfig,
-  type WorkspaceSource,
-  WorkspaceSourceSchema,
-} from "@okf-wiki/contract";
+import { type GitProbe, type WorkspaceConfig, type WorkspaceSource, WorkspaceSourceSchema } from "@okf-wiki/contract/workspace";
 import { probeLocalGit } from "./git.js";
 import { assertAbsolutePath, resolveExistingDir } from "./paths.js";
 import { WorkspaceIntakeError } from "./workspace-errors.js";

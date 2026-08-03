@@ -4,13 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  contractForNode,
-  isResearchRole,
-  metricsRoleForNodeKind,
-  validateBoundInputs,
-  validateNodeOutputs,
-} from "@okf-wiki/contract";
+import { contractForNode, isResearchRole, metricsRoleForNodeKind, validateBoundInputs, validateNodeOutputs } from "@okf-wiki/contract/wiki-runs";
 
 function inputs(...entries: Array<[string, string]>) {
   return entries.map(([role, kind]) => ({ role, kind }));

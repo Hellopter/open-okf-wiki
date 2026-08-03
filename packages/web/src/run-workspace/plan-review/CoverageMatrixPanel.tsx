@@ -4,7 +4,7 @@
  * and surface units for large single-repo inventories.
  */
 
-import type { CoverageResult, CoverageResultRow, CoverageStopReason } from "@okf-wiki/contract";
+import type { CoverageResult, CoverageResultRow, CoverageStopReason } from "@okf-wiki/contract/coverage";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,

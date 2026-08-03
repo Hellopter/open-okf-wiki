@@ -6,21 +6,23 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { contractForNode, type WorkspaceConfig } from "@okf-wiki/contract";
+import { contractForNode } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { EMPTY_PUBLICATION_DIGEST, runWorkDir } from "@okf-wiki/core";
 import { digest } from "./crypto-util.js";
 import type { WikiRunsDbCtx } from "./ctx.js";
 import { unlockReadyNodes } from "./dag.js";
+import { insertPreparedEffect } from "./publication-effect.js";
 import { asRow, asRows } from "./sql.js";
 import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
-/** Minimal surface for gate open / withdraw. */
-export type GateOpenHost = Pick<WikiRunsDbCtx, "db" | "emit"> & {
+/** Minimal surface for gate open / withdraw (narrow of control). */
+export type GateOpenControl = Pick<WikiRunsDbCtx, "db" | "emit"> & {
   currentNodeGeneration?(runId: string, nodeKey: string): number | undefined;
   workspace?: WorkspaceConfig;
 };
 
-export function withdrawOpenGates(host: Pick<GateOpenHost, "db" | "emit">, runId: string): void {
+export function withdrawOpenGates(host: Pick<GateOpenControl, "db" | "emit">, runId: string): void {
   const open = asRows(
     host.db.prepare("SELECT gate_id FROM gates WHERE run_id = ? AND state = 'open'").all(runId),
   );
@@ -32,7 +34,7 @@ export function withdrawOpenGates(host: Pick<GateOpenHost, "db" | "emit">, runId
 }
 
 export function withdrawOpenGatesForNode(
-  host: Pick<GateOpenHost, "db" | "emit">,
+  host: Pick<GateOpenControl, "db" | "emit">,
   runId: string,
   nodeKey: string,
   generation: number,
@@ -56,7 +58,7 @@ export function withdrawOpenGatesForNode(
 }
 
 export function openPlanGate(
-  host: Pick<GateOpenHost, "db" | "emit">,
+  host: Pick<GateOpenControl, "db" | "emit">,
   claim: ClaimedNode,
   specPayloadDigest: string,
   timestamp: string,
@@ -217,7 +219,7 @@ export function openFixGate(
 
 /**
  * Clean review path: mark gate.fix succeeded without operator HITL and unlock
- * validate.final. Called from attempt-success when sealed defects are clean.
+ * validate.final. Called from attempt-finish when sealed defects are clean.
  */
 export function autoPassFixGate(
   host: Pick<WikiRunsDbCtx, "db" | "emit"> & {
@@ -307,7 +309,7 @@ export function readPublicationBaseline(
  * Caller must already have set Attempt=suspended and Node=waiting.
  */
 export function openOperatorInputGate(
-  host: Pick<GateOpenHost, "db" | "emit">,
+  host: Pick<GateOpenControl, "db" | "emit">,
   claim: ClaimedNode,
   input: {
     question: string;
@@ -391,24 +393,17 @@ export function openPublicationGate(
     publicationNodeKey: claim.nodeKey,
     publicationNodeGeneration: claim.nodeGeneration,
   });
-  host.db
-    .prepare(
-      `INSERT INTO effects (
-        effect_key, run_id, publication_node_key, publication_node_generation, gate_id, state,
-        request_digest, expected_live_digest, candidate_artifact_id, candidate_digest, observed_outcome
-      ) VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, NULL)`,
-    )
-    .run(
-      effectKey,
-      claim.runId,
-      claim.nodeKey,
-      claim.nodeGeneration,
-      gateId,
-      requestDigest,
-      expectedLiveDigest,
-      candidate.artifactId,
-      candidate.digest,
-    );
+  insertPreparedEffect(host, {
+    effectKey,
+    runId: claim.runId,
+    publicationNodeKey: claim.nodeKey,
+    publicationNodeGeneration: claim.nodeGeneration,
+    gateId,
+    requestDigest,
+    expectedLiveDigest,
+    candidateArtifactId: candidate.artifactId,
+    candidateDigest: candidate.digest,
+  });
   host.db
     .prepare(
       `INSERT INTO gates (
@@ -423,6 +418,5 @@ export function openPublicationGate(
       "UPDATE runs SET state = 'waiting_for_operator', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
     )
     .run(timestamp, claim.runId);
-  host.emit(claim.runId, "effect.prepared");
   host.emit(claim.runId, "gate.opened");
 }

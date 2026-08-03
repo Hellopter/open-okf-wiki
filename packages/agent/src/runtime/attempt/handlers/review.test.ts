@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { writeDefectReportDraft } from "../../../tools/submit-defect-report.js";
+import { commitDefectReport } from "../../../review/commit-defect-report.js";
 import { resolveReviewSeatIndex } from "../shared.js";
 import { resolveSeatDefectReport } from "./review.js";
 
@@ -24,7 +24,7 @@ function fakeInput(key: string, detail?: Record<string, unknown>) {
   } as Parameters<typeof resolveReviewSeatIndex>[0];
 }
 
-describe("review seat fail-closed", () => {
+describe("review seat fail-closed (path-first only)", () => {
   it("resolveReviewSeatIndex requires sealed seatIndex", () => {
     assert.equal(resolveReviewSeatIndex(fakeInput("review.seat.grounding", { seatIndex: 2 })), 2);
     assert.throws(
@@ -37,11 +37,11 @@ describe("review seat fail-closed", () => {
     );
   });
 
-  it("resolveSeatDefectReport prefers tool draft", async () => {
+  it("resolveSeatDefectReport admits tool draft only", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-seat-tool-"));
     temps.push(dir);
     await mkdir(path.join(dir, "analysis"), { recursive: true });
-    await writeDefectReportDraft(dir, {
+    await commitDefectReport(dir, {
       version: 1,
       reviewerId: "grounding",
       clean: true,
@@ -51,7 +51,6 @@ describe("review seat fail-closed", () => {
     const result = await resolveSeatDefectReport({
       workDir: dir,
       reviewerId: "grounding",
-      summaryText: "ignore me",
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -59,53 +58,52 @@ describe("review seat fail-closed", () => {
     assert.equal(result.report.clean, true);
   });
 
-  it("resolveSeatDefectReport parses free-text JSON once", async () => {
+  it("resolveSeatDefectReport rejects free-text JSON (no dual path)", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-seat-text-"));
     temps.push(dir);
     const result = await resolveSeatDefectReport({
       workDir: dir,
       reviewerId: "coverage",
-      summaryText: JSON.stringify({
-        clean: false,
-        defects: [
-          {
-            severity: "blocking",
-            code: "gap",
-            issue: "missing page",
-          },
-        ],
-        summary: "gap",
-      }),
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.source, "free_text");
-    assert.equal(result.report.reviewerId, "coverage");
-    assert.equal(result.report.defects[0]?.reviewerId, "coverage");
-  });
-
-  it("resolveSeatDefectReport fails closed on malformed free text", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-seat-bad-"));
-    temps.push(dir);
-    const result = await resolveSeatDefectReport({
-      workDir: dir,
-      reviewerId: "general",
-      summaryText: "NO_DEFECTS looks fine",
     });
     assert.equal(result.ok, false);
     if (result.ok) return;
-    assert.match(result.error, /missing validated DefectReport|never treated as clean/i);
+    assert.match(result.error, /missing validated DefectReport|never treated as clean|Free-text/i);
   });
 
-  it("resolveSeatDefectReport fails on empty summary without draft", async () => {
+  it("resolveSeatDefectReport fails closed on empty workdir", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "okf-seat-empty-"));
     temps.push(dir);
     await writeFile(path.join(dir, "noise.txt"), "x", "utf8");
     const result = await resolveSeatDefectReport({
       workDir: dir,
       reviewerId: "general",
-      summaryText: "",
     });
     assert.equal(result.ok, false);
+  });
+
+  it("resolveSeatDefectReport re-stamps seat reviewerId from draft", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "okf-seat-stamp-"));
+    temps.push(dir);
+    await commitDefectReport(dir, {
+      version: 1,
+      reviewerId: "other",
+      clean: false,
+      defects: [
+        {
+          severity: "blocking",
+          code: "gap",
+          issue: "missing page",
+        },
+      ],
+      summary: "gap",
+    });
+    const result = await resolveSeatDefectReport({
+      workDir: dir,
+      reviewerId: "coverage",
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.report.reviewerId, "coverage");
+    assert.equal(result.report.defects[0]?.reviewerId, "coverage");
   });
 });

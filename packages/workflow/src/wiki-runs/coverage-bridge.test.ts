@@ -4,12 +4,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  assertCoverage,
-  CoveragePlanSchema,
-  defaultWikiRunSpec,
-  sourceCoverageUnit,
-} from "@okf-wiki/contract";
+import { assertCoverage, CoveragePlanSchema, sourceCoverageUnit } from "@okf-wiki/contract/coverage";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import {
   coverageObligationsFromSpec,
   pageSetDiffFromSpecs,
@@ -160,7 +156,7 @@ test("assertCoverageForSealedSpec fails multi-source when plan missing (no soft 
     assertCoverageForSealedSpec,
     COVERAGE_INVENTORY_FILE,
   } = await import("./coverage-bridge.js");
-  const { CoverageAssertError } = await import("@okf-wiki/contract");
+  const { CoverageAssertError } = await import("@okf-wiki/contract/coverage");
 
   const runDir = await mkdtemp(path.join(tmpdir(), "okf-cov-ms-miss-"));
   const analysisDir = path.join(runDir, "analysis");

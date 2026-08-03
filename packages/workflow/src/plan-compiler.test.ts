@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  CoveragePlanSchema,
-  defaultWikiRunSpec,
-  sourceCoverageUnit,
-} from "@okf-wiki/contract";
+import { CoveragePlanSchema, sourceCoverageUnit } from "@okf-wiki/contract/coverage";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { compileExecutionPlan, ExecutionPlanCompileError } from "./plan-compiler.js";
-import { failureClassOf } from "./wiki-runs/scheduler.js";
+import { failureClassOf } from "./wiki-runs/attempt-finish.js";
 
 test("compileExecutionPlan throws when domains > maxDomainFanOut", () => {
   const spec = defaultWikiRunSpec("D");

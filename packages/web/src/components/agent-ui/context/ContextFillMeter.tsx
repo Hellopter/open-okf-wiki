@@ -1,8 +1,5 @@
-import {
-  type ContextPhase,
-  formatContextFill,
-  type SessionUsage,
-} from "@okf-wiki/contract";
+import { formatContextFill, type SessionUsage } from "@okf-wiki/contract/session";
+import type { ContextPhase } from "@okf-wiki/contract/session";
 import { cn } from "@/lib/utils";
 import {
   contextPhaseRingClass,

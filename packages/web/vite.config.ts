@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? "http://127.0.0.1:8787";
-const contractSrc = path.resolve(__dirname, "../contract/src/index.ts");
+const contractDir = path.resolve(__dirname, "../contract/src");
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -13,8 +13,15 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
       // Dev: follow contract TypeScript sources (HMR) instead of waiting on tsc dist.
-      // Internal contract imports use ".js" extensions — map them to ".ts".
-      "@okf-wiki/contract": contractSrc,
+      // Subpath exports map to barrel entry files (Epic A hard-cut).
+      "@okf-wiki/contract/session": path.join(contractDir, "session.ts"),
+      "@okf-wiki/contract/wiki-runs": path.join(contractDir, "wiki-runs-api.ts"),
+      "@okf-wiki/contract/coverage": path.join(contractDir, "coverage.ts"),
+      "@okf-wiki/contract/stream-server": path.join(contractDir, "stream-server.ts"),
+      "@okf-wiki/contract/workspace": path.join(contractDir, "workspace-api.ts"),
+      "@okf-wiki/contract/pi-attempt": path.join(contractDir, "pi-attempt.ts"),
+      // Root: errors-only (no business types).
+      "@okf-wiki/contract": path.join(contractDir, "index.ts"),
     },
     // Vite runtime supports extensionAlias; @types/vite may lag behind.
     ...({

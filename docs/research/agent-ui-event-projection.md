@@ -2,6 +2,14 @@
 
 研究日期：2026-07-23
 
+> **Historical snapshot (2026-07).** Analysis of the day, not current product norm.
+> Browser Session projection is now the redacted `@okf-wiki/contract/session` DTO
+> (`applySessionStreamPatch` + `SessionTranscript`) per [ADR 0039](../adr/0039-browser-operator-session-and-run-observation.md)
+> and [ADR 0041](../adr/0041-contract-subpaths-and-agent-port-thinning.md).
+> `applyPiEvent` / `AgentMessage` / `applyStreamPatch` are **not** the web true-source;
+> they live under `@okf-wiki/contract/stream-server` (server-only). Do not reintroduce
+> AgentMessage UI as the browser conversation path.
+
 ## 结论
 
 1. **生产级 Agent Web UI 几乎都做「事件流 → 视图模型」投影**，而不是在浏览器里持有 `AgentSession` / graph runtime。

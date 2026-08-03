@@ -7,6 +7,30 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
+    "./wiki-runs": {
+      "types": "./dist/wiki-runs-api.d.ts",
+      "import": "./dist/wiki-runs-api.js"
+    },
+    "./coverage": {
+      "types": "./dist/coverage.d.ts",
+      "import": "./dist/coverage.js"
+    },
+    "./stream-server": {
+      "types": "./dist/stream-server.d.ts",
+      "import": "./dist/stream-server.js"
+    },
+    "./workspace": {
+      "types": "./dist/workspace-api.d.ts",
+      "import": "./dist/workspace-api.js"
+    },
+    "./pi-attempt": {
+      "types": "./dist/pi-attempt.d.ts",
+      "import": "./dist/pi-attempt.js"
     }
   },
   "files": [

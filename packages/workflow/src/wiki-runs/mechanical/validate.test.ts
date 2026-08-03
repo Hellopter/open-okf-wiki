@@ -7,39 +7,25 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { WikiRunsControl } from "../ctx.js";
+import { fixtureWorkspace, partialControl } from "../testing/control-fixture.js";
 import type { ClaimedNode } from "../types.js";
-import type { MechanicalHost } from "./host.js";
 import { mechanicalValidate } from "./validate.js";
 
-function stubHost(): MechanicalHost {
-  const workspace = {
-    version: 3,
-    id: "ws",
-    name: "Validate Test",
-    rootPath: "/tmp",
-    sources: [],
-    model: { id: "fixture/model" },
-    publicationPath: "/tmp/published",
-    orchestration: { maxActiveRuns: 1, maxConcurrentAttempts: 1 },
-    createdAt: "2026-07-30T00:00:00.000Z",
-  } as unknown as WorkspaceConfig;
-  return {
-    workspace,
-    workspaceForRun: () => workspace,
+function stubHost(): WikiRunsControl {
+  return partialControl({
+    workspace: fixtureWorkspace({ rootPath: "/tmp", publicationPath: "/tmp/published" }),
     db: {
       prepare: () => ({
         get: () => undefined,
         all: () => [],
         run: () => ({ changes: 0 }),
       }),
-    } as unknown as MechanicalHost["db"],
-    emit: () => 0,
-    transaction: <T>(work: () => T) => work(),
-    trustedPinnedInputs: () => undefined,
+    } as unknown as WikiRunsControl["db"],
     currentNodeGeneration: () => 0,
+    trustedPinnedInputs: () => undefined,
     reconcileApplyingEffect: async () => undefined,
-  };
+  });
 }
 
 function claim(kind: "validate.pre" | "validate.final" = "validate.pre"): ClaimedNode {
@@ -97,7 +83,7 @@ test("validate dirty wiki writes error transcript and keeps validate_report", as
       all: () => [],
       run: () => ({ changes: 0 }),
     }),
-  } as unknown as MechanicalHost["db"];
+  } as unknown as WikiRunsControl["db"];
 
   const outcome = await mechanicalValidate(host, c, workDir, runDir);
   assert.equal(outcome.type, "failed");

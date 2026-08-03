@@ -4,16 +4,17 @@
 
 import { cp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import { capturePublicationBaseline, materializePublicationCandidate } from "@okf-wiki/core";
 import { now } from "../crypto-util.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
-import { type MechanicalHost, sealedInputPath } from "./host.js";
+import type { WikiRunsControl } from "../ctx.js";
+import { sealedInputPath } from "./host.js";
 
 export async function mechanicalPreparePublication(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   workDir: string,
   runDir: string,

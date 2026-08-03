@@ -12,14 +12,10 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type {
-  CoverageInventory,
-  CoveragePlan,
-  CoverageUnit,
-  NodeAttempt,
-  WorkspaceOrchestration,
-} from "@okf-wiki/contract";
-import { isSurfaceUnitId, parseSurfaceUnitId, unitIdForSource } from "@okf-wiki/contract";
+import type { CoverageInventory, CoveragePlan, CoverageUnit } from "@okf-wiki/contract/coverage";
+import type { NodeAttempt } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
+import { isSurfaceUnitId, parseSurfaceUnitId, unitIdForSource } from "@okf-wiki/contract/coverage";
 import type {
   AgentRunner,
   RunWorkdirLayoutPaths,

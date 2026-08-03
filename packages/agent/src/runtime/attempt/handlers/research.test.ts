@@ -7,11 +7,8 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
-  AnalysisReceiptSchema,
-  type PiAttemptInput,
-  PiAttemptInputSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptInput, PiAttemptInputSchema } from "@okf-wiki/contract/pi-attempt";
+import { AnalysisReceiptSchema } from "@okf-wiki/contract/wiki-runs";
 import { createFixtureProduceRuntime } from "../../fixture-runner.js";
 import { createPiAttemptExecutor } from "../../pi-attempt-executor.js";
 import { evidenceFromSummary, findingsFromSummary } from "./research.js";

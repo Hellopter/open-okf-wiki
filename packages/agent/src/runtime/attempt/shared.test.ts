@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AttemptMetrics } from "@okf-wiki/contract";
+import type { AttemptMetrics } from "@okf-wiki/contract/wiki-runs";
 import {
   forwardScopedProgress,
   progressMetricsFromScoped,

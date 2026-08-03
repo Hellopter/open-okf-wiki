@@ -6,20 +6,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  contractForNode,
-  type ExecutionPlan,
-  ExecutionPlanSchema,
-  type WikiRunSpec,
-  WikiRunSpecSchema,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
+import { contractForNode, type ExecutionPlan, ExecutionPlanSchema, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { runWorkDir } from "@okf-wiki/core";
 import { buildExecutionGraphFromPlan, isGateKind } from "../execution-graph.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 
 /** Minimal db + generation surface for unlock / upstream checks. */
-export type DagHost = {
+export type DagControl = {
   db: DatabaseSync;
   currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
 };
@@ -40,7 +34,7 @@ export function loadSpecFromArtifact(
 }
 
 export function planNodeKeyForGate(
-  host: Pick<DagHost, "db">,
+  host: Pick<DagControl, "db">,
   runId: string,
   gateNodeKey: string,
 ): string {
@@ -154,7 +148,7 @@ export function materializeExecutionGraph(
  * succeeded. After RerunNode, invalidated gen+1 descendants re-enter ready this way.
  * Gate nodes stay blocked/waiting until their predecessor opens them explicitly.
  */
-export function unlockReadyNodes(host: DagHost, runId: string): void {
+export function unlockReadyNodes(host: DagControl, runId: string): void {
   const candidates = asRows(
     host.db
       .prepare(
@@ -185,7 +179,7 @@ export function unlockReadyNodes(host: DagHost, runId: string): void {
   }
 }
 
-export function upstreamKeys(host: Pick<DagHost, "db">, runId: string, nodeKey: string): string[] {
+export function upstreamKeys(host: Pick<DagControl, "db">, runId: string, nodeKey: string): string[] {
   return asRows(
     host.db
       .prepare("SELECT from_key FROM node_edges WHERE run_id = ? AND to_key = ? ORDER BY from_key")
@@ -193,7 +187,7 @@ export function upstreamKeys(host: Pick<DagHost, "db">, runId: string, nodeKey: 
   ).map((row) => requiredText(row, "from_key"));
 }
 
-export function upstreamsSucceeded(host: DagHost, runId: string, nodeKey: string): boolean {
+export function upstreamsSucceeded(host: DagControl, runId: string, nodeKey: string): boolean {
   const upstreams = upstreamKeys(host, runId, nodeKey);
   // Hard-coded bootstrap edges for freeze→plan before node_edges exist.
   if (upstreams.length === 0) {

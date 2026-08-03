@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import { defaultWikiRunSpec, type PiAttemptInput, type PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   approvePlanGate,

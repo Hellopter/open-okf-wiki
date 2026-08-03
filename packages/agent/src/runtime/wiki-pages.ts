@@ -5,7 +5,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { regenerateWikiIndexes, scanWikiTree } from "@okf-wiki/core";
-import type { RunWorkdirLayout } from "../runtime/workdir.js";
+import type { RunWorkdirLayout } from "./workdir.js";
 
 export async function listWikiMarkdown(wikiDir: string): Promise<string[]> {
   const scan = await scanWikiTree(wikiDir);

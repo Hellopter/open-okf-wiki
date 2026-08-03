@@ -1,8 +1,4 @@
-import {
-  createSessionStreamState,
-  type SessionStreamState,
-  viewSessionMessages,
-} from "@okf-wiki/contract";
+import { createSessionStreamState, type SessionStreamState, viewSessionMessages } from "@okf-wiki/contract/session";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { agentSessionCommand, agentSessionEventsUrl, parseAgentSessionEvent } from "../api";
 import { planSessionSend } from "../components/agent-ui/context/slash-commands";
@@ -32,6 +28,8 @@ export function useSessionConversation(
 
   const messages = useMemo(() => viewSessionMessages(streamState), [streamState]);
   const status = streamState.agentStatus;
+  /** Single busy derive for composer, send planning, and stop chrome. */
+  const isBusy = BUSY_STATUSES.has(status);
   const sessionUsage = streamState.sessionUsage;
   const contextPhase = streamState.contextPhase;
 
@@ -115,7 +113,7 @@ export function useSessionConversation(
   const send = useCallback(
     async (text: string) => {
       if (!sessionId) return false;
-      const plan = planSessionSend(text, BUSY_STATUSES.has(status));
+      const plan = planSessionSend(text, isBusy);
       if (!plan) return false;
 
       try {
@@ -134,7 +132,7 @@ export function useSessionConversation(
         return false;
       }
     },
-    [sessionId, status, t.workbench.commandRejected, workspaceId],
+    [isBusy, sessionId, t.workbench.commandRejected, workspaceId],
   );
 
   const abort = useCallback(async () => {
@@ -150,6 +148,7 @@ export function useSessionConversation(
   return {
     messages,
     status,
+    isBusy,
     connection,
     sessionUsage,
     contextPhase,

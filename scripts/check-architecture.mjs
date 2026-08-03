@@ -80,7 +80,9 @@ const removedModulePaths = [
   /\/agent\/src\/runtime\/produce-runtime\./,
   /\/core\/src\/(?:run-store|run-graph)\./,
   /\/agent\/src\/tools\/wiki-produce-details\./,
-  /\/contract\/src\/(?:events|gate-ui|interaction|session)\./,
+  // events/gate-ui/interaction stay deleted. `session.ts` is the Epic A
+  // `@okf-wiki/contract/session` subpath barrel (see architecture-hard-cut-2026-08).
+  /\/contract\/src\/(?:events|gate-ui|interaction)\./,
   /\/web\/src\/agent-workspace\/(?:components\/(?:ProduceTrail|ProduceUnitCard)|hooks\/project\/produce|panels\/AgentTree)\./,
 ];
 
@@ -355,6 +357,90 @@ for (const file of ["package.json", "tsconfig.json", "pnpm-workspace.yaml"]) {
   const content = readFileSync(path.join(root, file), "utf8");
   if (/packages\/cli|apps\/\*|apps\/desktop|@okf-wiki\/cli/.test(content)) {
     failures.push(`${file}: CLI/Desktop workspace reference must stay deleted`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hard-cut deepening guards (Epic 0 skeleton).
+// Design: docs/design/architecture-hard-cut-2026-08.md
+// Keep all flags false until the owning epic deletes the residue; enabling
+// early fails the tree mid-migration. Epic G turns everything on.
+// ---------------------------------------------------------------------------
+const HARD_CUT_FLAGS = {
+  banContractRootBusinessImport: true, // Epic A complete
+  banWebStreamServer: true, // Epic F complete
+  banDefaultSpecStore: true, // Epic D complete
+  banFreeTextDefectParse: true, // Epic D complete
+};
+
+/** Product packages subject to hard-cut import bans (not contract itself). */
+const hardCutProductDirs = [
+  "packages/web/src",
+  "packages/server/src",
+  "packages/agent/src",
+  "packages/workflow/src",
+  "packages/core/src",
+];
+
+function hardCutProductSourceFiles() {
+  return productSourceFiles.filter((file) =>
+    hardCutProductDirs.some((dir) => file.startsWith(`${dir}/`) || file.startsWith(dir)),
+  );
+}
+
+if (HARD_CUT_FLAGS.banContractRootBusinessImport) {
+  // Ban bare `@okf-wiki/contract` root imports in product source. Subpaths
+  // (`@okf-wiki/contract/session`, etc.) remain allowed. packages/contract
+  // is outside hardCutProductDirs.
+  const bareContractRoot =
+    /(?:from\s*|import\s*\(\s*|import\s+)["']@okf-wiki\/contract["']/;
+  for (const file of hardCutProductSourceFiles()) {
+    const content = readFileSync(path.join(root, file), "utf8");
+    const match = bareContractRoot.exec(content);
+    if (!match) continue;
+    const line = content.slice(0, match.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: hard-cut banContractRootBusinessImport: bare @okf-wiki/contract root import (use subpaths): ${JSON.stringify(match[0])}`,
+    );
+  }
+}
+
+if (HARD_CUT_FLAGS.banWebStreamServer) {
+  // packages/web must not import stream-server surface or its museum symbols.
+  const webBan =
+    /(?:from\s*|import\s*\(\s*|import\s+)["'][^"']*stream-server[^"']*["']|\b(?:AgentMessage|reducePiEvent|applyStreamPatch)\b/;
+  for (const file of productSourceFiles.filter((file) => file.startsWith("packages/web/"))) {
+    const content = readFileSync(path.join(root, file), "utf8");
+    const match = webBan.exec(content);
+    if (!match) continue;
+    const line = content.slice(0, match.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: hard-cut banWebStreamServer: web must not use stream-server / AgentMessage / reducePiEvent / applyStreamPatch: ${JSON.stringify(match[0])}`,
+    );
+  }
+}
+
+if (HARD_CUT_FLAGS.banDefaultSpecStore) {
+  for (const file of productSourceFiles.filter((file) => file.startsWith("packages/agent/src/"))) {
+    const content = readFileSync(path.join(root, file), "utf8");
+    const match = /\bdefaultSpecStore\b/.exec(content);
+    if (!match) continue;
+    const line = content.slice(0, match.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: hard-cut banDefaultSpecStore: defaultSpecStore must stay deleted (use commitPlanDraft): ${JSON.stringify(match[0])}`,
+    );
+  }
+}
+
+if (HARD_CUT_FLAGS.banFreeTextDefectParse) {
+  for (const file of sourceFiles.filter((file) => file.startsWith("packages/agent/"))) {
+    const content = readFileSync(path.join(root, file), "utf8");
+    const match = /\btryParseDefectReportJson\b/.exec(content);
+    if (!match) continue;
+    const line = content.slice(0, match.index).split("\n").length;
+    failures.push(
+      `${file}:${line}: hard-cut banFreeTextDefectParse: tryParseDefectReportJson must stay deleted (path-first review only): ${JSON.stringify(match[0])}`,
+    );
   }
 }
 

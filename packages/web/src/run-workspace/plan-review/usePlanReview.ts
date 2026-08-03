@@ -3,7 +3,7 @@
  * keyed by open plan gate payloadDigest (or latest sealed plan when no gate).
  */
 
-import type { WikiRunSnapshot } from "@okf-wiki/contract";
+import type { WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, getWikiRunPlanReview, hasApiErrorCode } from "../../api";
 import {

@@ -13,7 +13,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   context,

@@ -6,51 +6,25 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import {
-  contractForNode,
-  type RunCommand,
-  type RunCommandContext,
-  type RunCommandReceipt,
-  WikiRunSpecSchema,
-} from "@okf-wiki/contract";
+import { contractForNode, type RunCommand, type RunCommandContext, type RunCommandReceipt, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
 import { runWorkDir } from "@okf-wiki/core";
 import { assertCoverageForSealedSpec } from "./coverage-bridge.js";
 import { artifactId, digest, now } from "./crypto-util.js";
-import type { WikiRunsDbCtx } from "./ctx.js";
+import type { WikiRunsControl, WikiRunsDbCtx } from "./ctx.js";
 import { materializeExecutionGraph, planNodeKeyForGate, unlockReadyNodes } from "./dag.js";
 import { withdrawOpenGates } from "./gate-open.js";
+import {
+  cancelEffect,
+  cancelEffectsForGate,
+  transitionPreparedToCandidateReady,
+} from "./publication-effect.js";
 import { scheduleOperatorRepair } from "./repair-schedule.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
 import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { WikiRunsRequestError } from "./types.js";
 
-/**
- * Full resolve surface: decision handlers need rerun/cancel/command recording.
- * Open helpers take narrower picks from gate-open.ts.
- */
-export type GatesHost = WikiRunsDbCtx & {
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-  currentNodeRow(runId: string, nodeKey: string): SqlRow | undefined;
-  abortRunAttempts(runId: string): void;
-  cancelPreApplyEffects(runId: string): void;
-  applyRerunAt(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    feedback?: string,
-    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
-  ): void;
-  recordCommand(
-    command: RunCommand,
-    context: RunCommandContext,
-    payloadDigest: string,
-    runId: string,
-    revision: number,
-  ): void;
-};
-
 export function resolveGate(
-  host: GatesHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   context: RunCommandContext,
   payloadDigest: string,
@@ -176,7 +150,7 @@ export function onPlanAccepted(
 }
 
 export function applyPlanGateDecision(
-  host: GatesHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   gateNodeKey: string,
   gateNodeGeneration: number,
@@ -315,7 +289,7 @@ export function applyPlanGateDecision(
  * parent frozen inputs + answer. Restart never resumes the old Pi worker.
  */
 export function applyOperatorInputGateDecision(
-  host: GatesHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   gateNodeKey: string,
   gateNodeGeneration: number,
@@ -472,7 +446,7 @@ export function applyOperatorInputGateDecision(
 }
 
 export function applyPublicationGateDecision(
-  host: GatesHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   timestamp: string,
 ): void {
@@ -519,13 +493,7 @@ export function applyPublicationGateDecision(
         `publication effect generation ${pubGen} is stale (current ${liveGen ?? "none"})`,
       );
     }
-    const cas = host.db
-      .prepare(
-        `UPDATE effects SET state = 'candidate_ready'
-         WHERE effect_key = ? AND state = 'prepared'`,
-      )
-      .run(requiredText(effect, "effect_key"));
-    if (cas.changes !== 1) {
+    if (!transitionPreparedToCandidateReady(host, command.runId, requiredText(effect, "effect_key"))) {
       throw new WikiRunsRequestError(
         "stale_revision",
         "publication effect could not transition to candidate_ready",
@@ -538,7 +506,6 @@ export function applyPublicationGateDecision(
         "UPDATE runs SET state = 'running', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
       )
       .run(timestamp, command.runId);
-    host.emit(command.runId, "effect.candidate_ready");
     return;
   }
   if (command.decision === "revise") {
@@ -562,12 +529,7 @@ export function applyPublicationGateDecision(
     return;
   }
   if (command.decision === "deny") {
-    host.db
-      .prepare(
-        `UPDATE effects SET state = 'cancelled'
-         WHERE run_id = ? AND gate_id = ? AND state IN ('prepared', 'candidate_ready', 'conflict')`,
-      )
-      .run(command.runId, command.gateId);
+    cancelEffectsForGate(host, command.runId, command.gateId);
     host.db
       .prepare("UPDATE runs SET state = 'completed_unpublished', updated_at = ? WHERE run_id = ?")
       .run(timestamp, command.runId);
@@ -582,17 +544,12 @@ export function applyPublicationGateDecision(
 
 /** A conflict cannot safely retry its bytes. Re-run the candidate-producing path instead. */
 function restartPublicationCandidate(
-  host: GatesHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   effect: SqlRow,
   feedback?: string,
 ): void {
-  host.db
-    .prepare(
-      `UPDATE effects SET state = 'cancelled'
-       WHERE effect_key = ? AND state IN ('prepared', 'candidate_ready', 'conflict')`,
-    )
-    .run(requiredText(effect, "effect_key"));
+  cancelEffect(host, requiredText(effect, "effect_key"));
   const writeGen = host.currentNodeGeneration(command.runId, "write.root");
   if (writeGen !== undefined) {
     host.applyRerunAt(command.runId, "write.root", writeGen, feedback);
@@ -613,7 +570,7 @@ function restartPublicationCandidate(
  * - revise — re-open gate.fix at gen+1 with notes baked into payload digest
  */
 export function applyFixGateDecision(
-  host: GatesHost,
+  host: WikiRunsControl,
   command: Extract<RunCommand, { type: "resolve_gate" }>,
   gateNodeKey: string,
   gateNodeGeneration: number,
@@ -716,7 +673,7 @@ export function applyFixGateDecision(
  * 0 / unset disables. The owner invokes this from dispatch/scheduling and its deadline timer,
  * so an idle gate expires without an external control request or poll.
  */
-export function expireStaleOpenGates(host: GatesHost): number {
+export function expireStaleOpenGates(host: WikiRunsControl): number {
   const open = asRows(
     host.db
       .prepare(

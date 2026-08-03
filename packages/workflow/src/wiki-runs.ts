@@ -1,36 +1,8 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import {
-  type AttemptMetrics,
-  CancelRunCommandSchema,
-  ContinueEvaluationCommandSchema,
-  CreateReviewThreadCommandSchema,
-  PauseRunCommandSchema,
-  type PiAttemptArtifactDescriptor,
-  type PiAttemptExecutor,
-  type PiAttemptOutcome,
-  RepositorySnapshotSchema,
-  RequestRepairCommandSchema,
-  RerunNodeCommandSchema,
-  ResolveGateCommandSchema,
-  ResolveReviewThreadCommandSchema,
-  ResumeRunCommandSchema,
-  RetryFailedNodeCommandSchema,
-  type RunCommand,
-  type RunCommandContext,
-  RunCommandContextSchema,
-  type RunCommandReceipt,
-  StartRunCommandSchema,
-  SubmitRunRevisionCommandSchema,
-  type WikiRunEvent,
-  WikiRunEventSchema,
-  type WikiRunSnapshot,
-  type WikiRunPlanReview,
-  type WikiRunSpecRead,
-  WikiRunSpecReadSchema,
-  type WorkspaceConfig,
-  WorkspaceConfigSchema,
-} from "@okf-wiki/contract";
+import type { PiAttemptExecutor } from "@okf-wiki/contract/pi-attempt";
+import { CancelRunCommandSchema, ContinueEvaluationCommandSchema, CreateReviewThreadCommandSchema, PauseRunCommandSchema, RepositorySnapshotSchema, RequestRepairCommandSchema, RerunNodeCommandSchema, ResolveGateCommandSchema, ResolveReviewThreadCommandSchema, ResumeRunCommandSchema, RetryFailedNodeCommandSchema, type RunCommand, type RunCommandContext, RunCommandContextSchema, type RunCommandReceipt, StartRunCommandSchema, SubmitRunRevisionCommandSchema, type WikiRunEvent, WikiRunEventSchema, type WikiRunSnapshot, type WikiRunPlanReview, type WikiRunSpecRead, WikiRunSpecReadSchema } from "@okf-wiki/contract/wiki-runs";
+import { type WorkspaceConfig, WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import {
   type FreezeRunBoundaryInput,
   type FrozenRunBoundary,
@@ -38,56 +10,52 @@ import {
   loadWorkspace,
 } from "@okf-wiki/core";
 import {
-  type ArtifactsHost,
-  bindAttemptInputs as bindAttemptInputsImpl,
   commitFailedAttemptArtifacts as commitFailedAttemptArtifactsImpl,
-  copyAttemptInputs as copyAttemptInputsImpl,
   orphanPreparedArtifacts as orphanPreparedArtifactsImpl,
   prepareUnsealedArtifact as prepareUnsealedArtifactImpl,
   sealPreparation as sealPreparationImpl,
-  upstreamSealedOutputs as upstreamSealedOutputsImpl,
 } from "./wiki-runs/artifacts.js";
 import {
-  type AttemptSuccessHost,
+  bindAttemptInputs as bindAttemptInputsImpl,
+  copyAttemptInputs as copyAttemptInputsImpl,
+  upstreamSealedOutputs as upstreamSealedOutputsImpl,
+} from "./wiki-runs/attempt-inputs.js";
+import {
   commitSuccessfulAttempt as commitSuccessfulAttemptImpl,
   preparePlanExecutionPlan as preparePlanExecutionPlanImpl,
   recoverPreparedArtifacts as recoverPreparedArtifactsImpl,
-} from "./wiki-runs/attempt-success.js";
-import { type CandidateReadHost, CandidateReview } from "./wiki-runs/candidate-review.js";
+} from "./wiki-runs/attempt-finish.js";
+import { CandidateReview } from "./wiki-runs/candidate-review.js";
 import {
   applyCommand as applyCommandImpl,
   applyRerunAt as applyRerunAtImpl,
-  type CommandsHost,
   recordCommand as recordCommandImpl,
   requeueFailedNode as requeueFailedNodeImpl,
 } from "./wiki-runs/commands.js";
 import { now } from "./wiki-runs/crypto-util.js";
-import type { WikiRunsCasCtx, WikiRunsDbCtx, WikiRunsTxCtx } from "./wiki-runs/ctx.js";
+import type { WikiRunsControl } from "./wiki-runs/ctx.js";
 import { upstreamsSucceeded as upstreamsSucceededImpl } from "./wiki-runs/dag.js";
-import { readPlanReviewMaterials } from "./wiki-runs/plan-review.js";
 import {
   cancelPreApplyEffectsForPublication as cancelPreApplyEffectsForPublicationImpl,
   cancelPreApplyEffects as cancelPreApplyEffectsImpl,
-  type EffectsHost,
   reconcileApplyingEffect as reconcileApplyingEffectImpl,
   reconcileApplyingEffects as reconcileApplyingEffectsImpl,
-} from "./wiki-runs/effects.js";
-import { type FreezeHost, executeFreeze as runFreeze } from "./wiki-runs/freeze.js";
+} from "./wiki-runs/publication-effect.js";
+import { executeFreeze as runFreeze } from "./wiki-runs/freeze.js";
 import {
   withdrawOpenGatesForNode as withdrawOpenGatesForNodeImpl,
   withdrawOpenGates as withdrawOpenGatesImpl,
 } from "./wiki-runs/gate-open.js";
 import {
   expireStaleOpenGates as expireStaleOpenGatesImpl,
-  type GatesHost,
   resolveGate as resolveGateImpl,
 } from "./wiki-runs/gate-resolve.js";
-import { executeMechanical, type MechanicalHost } from "./wiki-runs/mechanical/index.js";
+import { executeMechanical } from "./wiki-runs/mechanical/index.js";
+import { readPlanReviewMaterials } from "./wiki-runs/plan-review.js";
 import {
   abortActiveAttempts as abortActiveAttemptsImpl,
   abortRunAttempts as abortRunAttemptsImpl,
   runScheduler,
-  type SchedulerHost,
   waitForRunExecution as waitForRunExecutionImpl,
 } from "./wiki-runs/scheduler.js";
 import { configureOwner, migrate } from "./wiki-runs/schema.js";
@@ -101,13 +69,8 @@ import {
   type SqlRow,
   sqliteBusy,
 } from "./wiki-runs/sql.js";
+import { readAttemptTranscript as readAttemptTranscriptImpl } from "./wiki-runs/transcript.js";
 import {
-  readAttemptTranscript as readAttemptTranscriptImpl,
-  type TranscriptHost,
-} from "./wiki-runs/transcript.js";
-import {
-  type ArtifactPreparation,
-  type ClaimedFreeze,
   type ClaimedNode,
   DATABASE_FILE_NAME,
   type OpenWikiRunsInput,
@@ -177,6 +140,8 @@ class WikiRunsOwner implements WikiRuns {
   private gateExpiryRefreshQueued = false;
   private readonly activeAttempts = new Map<string, AbortController>();
   private readonly activeExecutions = new Map<string, Promise<void>>();
+  /** Cached single control-plane object (see {@link control}). */
+  private _control: WikiRunsControl | undefined;
 
   constructor(
     private readonly db: DatabaseSync,
@@ -203,7 +168,7 @@ class WikiRunsOwner implements WikiRuns {
     if (parsedContext.workspaceId !== this.workspace.id) {
       throw new Error("command workspace does not match the opened workspace");
     }
-    this.transaction(() => expireStaleOpenGatesImpl(this.gatesHost()));
+    this.transaction(() => expireStaleOpenGatesImpl(this.control()));
     const receipt = this.transaction(() => this.applyCommand(parsedCommand, parsedContext));
     this.schedule();
     if (parsedCommand.type === "cancel_run") await this.waitForRunExecution(parsedCommand.runId);
@@ -367,17 +332,17 @@ class WikiRunsOwner implements WikiRuns {
 
   async readCandidatePage(input: { runId: string; candidateDigest: string; pagePath: string }) {
     this.assertOpen();
-    return new CandidateReview(this.candidateReadHost()).readPage(input);
+    return new CandidateReview(this.control()).readPage(input);
   }
 
   async readCandidateTree(input: { runId: string; candidateDigest: string }) {
     this.assertOpen();
-    return new CandidateReview(this.candidateReadHost()).readTree(input);
+    return new CandidateReview(this.control()).readTree(input);
   }
 
   async readCandidateDiff(input: { runId: string; candidateDigest: string; pagePath: string }) {
     this.assertOpen();
-    return new CandidateReview(this.candidateReadHost()).readDiff(input);
+    return new CandidateReview(this.control()).readDiff(input);
   }
 
   async readAttemptTranscript(input: {
@@ -388,7 +353,7 @@ class WikiRunsOwner implements WikiRuns {
     limit?: number;
   }): Promise<WikiRunAttemptTranscript> {
     this.assertOpen();
-    return readAttemptTranscriptImpl(this.transcriptHost(), input);
+    return readAttemptTranscriptImpl(this.control(), input);
   }
 
   /**
@@ -448,80 +413,11 @@ class WikiRunsOwner implements WikiRuns {
   }
 
   private async recoverPreparedArtifacts(): Promise<void> {
-    await recoverPreparedArtifactsImpl(this.attemptSuccessHost());
+    await recoverPreparedArtifactsImpl(this.control());
   }
 
   private applyCommand(command: RunCommand, context: RunCommandContext): RunCommandReceipt {
-    return applyCommandImpl(this.commandsHost(), command, context);
-  }
-
-  /** Shared path for manual RetryFailedNode and research auto-retry. */
-  private requeueFailedNode(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    lastAttemptId: string,
-  ): void {
-    requeueFailedNodeImpl({ db: this.db }, runId, nodeKey, generation, lastAttemptId);
-  }
-
-  private resolveGate(
-    command: Extract<RunCommand, { type: "resolve_gate" }>,
-    context: RunCommandContext,
-    payloadDigest: string,
-  ): RunCommandReceipt {
-    return resolveGateImpl(this.gatesHost(), command, context, payloadDigest);
-  }
-
-  private upstreamsSucceeded(runId: string, nodeKey: string): boolean {
-    return upstreamsSucceededImpl(
-      {
-        db: this.db,
-        currentNodeGeneration: (id, key) => this.currentNodeGeneration(id, key),
-      },
-      runId,
-      nodeKey,
-    );
-  }
-
-  /**
-   * Core RerunNode: generation++ on target + actual lineage consumers, withdraw
-   * gates, cancel pre-apply effects, persist optional feedback on the new root gen.
-   * Shared by the rerun_node command and publication-gate revise.
-   */
-  private applyRerunAt(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    feedback?: string,
-    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
-  ): void {
-    applyRerunAtImpl(this.commandsHost(), runId, nodeKey, generation, feedback, opts);
-  }
-
-  private withdrawOpenGates(runId: string): void {
-    withdrawOpenGatesImpl(this.gatesHost(), runId);
-  }
-
-  private withdrawOpenGatesForNode(runId: string, nodeKey: string, generation: number): void {
-    withdrawOpenGatesForNodeImpl(this.gatesHost(), runId, nodeKey, generation);
-  }
-
-  private cancelPreApplyEffects(runId: string): void {
-    cancelPreApplyEffectsImpl({ db: this.db }, runId);
-  }
-
-  private cancelPreApplyEffectsForPublication(
-    runId: string,
-    publicationNodeKey: string,
-    publicationNodeGeneration: number,
-  ): void {
-    cancelPreApplyEffectsForPublicationImpl(
-      this.effectsHost(),
-      runId,
-      publicationNodeKey,
-      publicationNodeGeneration,
-    );
+    return applyCommandImpl(this.control(), command, context);
   }
 
   private currentNodeGeneration(runId: string, nodeKey: string): number | undefined {
@@ -546,30 +442,6 @@ class WikiRunsOwner implements WikiRuns {
     );
   }
 
-  private async reconcileApplyingEffects(): Promise<void> {
-    return reconcileApplyingEffectsImpl(this.effectsHost());
-  }
-
-  private async reconcileApplyingEffect(input: {
-    effectKey: string;
-    runId: string;
-    candidateArtifactId: string;
-    candidateDigest: string;
-    expectedLiveDigest: string;
-  }): Promise<void> {
-    return reconcileApplyingEffectImpl(this.effectsHost(), input);
-  }
-
-  /** Minimum host surface: StartRun config + immutable per-Run config + db + emit. */
-  private baseCtx(): WikiRunsDbCtx {
-    return {
-      workspace: this.workspace,
-      workspaceForRun: (runId) => this.workspaceForRun(runId),
-      db: this.db,
-      emit: (runId, type) => this.emit(runId, type),
-    };
-  }
-
   private workspaceForRun(runId: string): WorkspaceConfig {
     const row = asRow(
       this.db.prepare("SELECT freeze_config_json FROM runs WHERE run_id = ?").get(runId),
@@ -578,248 +450,114 @@ class WikiRunsOwner implements WikiRuns {
     return WorkspaceConfigSchema.parse(parseJson<unknown>(requiredText(row, "freeze_config_json")));
   }
 
-  /** baseCtx + owner IMMEDIATE transaction. */
-  private txCtx(): WikiRunsTxCtx {
-    return {
-      ...this.baseCtx(),
-      transaction: (work) => this.transaction(work),
-    };
-  }
-
-  /** txCtx + isCurrent / currentNodeGeneration CAS checks. */
-  private casCtx(): WikiRunsCasCtx {
-    return {
-      ...this.txCtx(),
-      isCurrent: (claim) => this.isCurrent(claim),
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-    };
-  }
-
-  private effectsHost(): EffectsHost {
-    const isClosed = () => this.closed;
-    return {
-      ...this.txCtx(),
-      get closed() {
-        return isClosed();
+  /**
+   * Single control-plane object for all module entry points.
+   * Built once; closed/workspace are live getters.
+   */
+  private control(): WikiRunsControl {
+    if (this._control) return this._control;
+    const self = this;
+    const ctrl: WikiRunsControl = {
+      get workspace() {
+        return self.workspace;
       },
-    };
-  }
-
-  private gatesHost(): GatesHost {
-    return {
-      ...this.baseCtx(),
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-      currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
-      abortRunAttempts: (runId) => this.abortRunAttempts(runId),
-      cancelPreApplyEffects: (runId) => this.cancelPreApplyEffects(runId),
+      workspaceForRun: (runId) => self.workspaceForRun(runId),
+      db: self.db,
+      emit: (runId, type) => self.emit(runId, type),
+      transaction: (work) => self.transaction(work),
+      isCurrent: (claim) => self.isCurrent(claim),
+      currentNodeGeneration: (runId, nodeKey) => self.currentNodeGeneration(runId, nodeKey),
+      get closed() {
+        return self.closed;
+      },
+      get piAttemptExecutor() {
+        return self.piAttemptExecutor;
+      },
+      activeAttempts: self.activeAttempts,
+      activeExecutions: self.activeExecutions,
+      currentNodeRow: (runId, nodeKey) => self.currentNodeRow(runId, nodeKey),
       applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
-        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
-      recordCommand: (command, context, payloadDigest, runId, revision) =>
-        this.recordCommand(command, context, payloadDigest, runId, revision),
-    };
-  }
-
-  private artifactsHost(): ArtifactsHost {
-    return this.casCtx();
-  }
-
-  /** Shared success/recovery surface: CAS host + generation for gate open / unlock. */
-  private attemptSuccessHost(): AttemptSuccessHost & { transaction<T>(work: () => T): T } {
-    return {
-      ...this.casCtx(),
-      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
-        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
-    };
-  }
-
-  private recordCommand(
-    command: RunCommand,
-    context: RunCommandContext,
-    payloadDigest: string,
-    runId: string,
-    revision: number,
-  ): void {
-    recordCommandImpl(this.baseCtx(), command, context, payloadDigest, runId, revision);
-  }
-
-  private commandsHost(): CommandsHost {
-    return {
-      ...this.baseCtx(),
-      activeAttempts: this.activeAttempts,
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-      currentNodeRow: (runId, nodeKey) => this.currentNodeRow(runId, nodeKey),
-      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
-        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
-      upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
-      abortRunAttempts: (runId) => this.abortRunAttempts(runId),
-      withdrawOpenGates: (runId) => this.withdrawOpenGates(runId),
+        applyRerunAtImpl(ctrl, runId, nodeKey, generation, feedback, opts),
+      abortRunAttempts: (runId) => abortRunAttemptsImpl(ctrl, runId),
+      withdrawOpenGates: (runId) => withdrawOpenGatesImpl(ctrl, runId),
       withdrawOpenGatesForNode: (runId, nodeKey, generation) =>
-        this.withdrawOpenGatesForNode(runId, nodeKey, generation),
-      cancelPreApplyEffects: (runId) => this.cancelPreApplyEffects(runId),
+        withdrawOpenGatesForNodeImpl(ctrl, runId, nodeKey, generation),
+      cancelPreApplyEffects: (runId) => cancelPreApplyEffectsImpl(ctrl, runId),
       cancelPreApplyEffectsForPublication: (runId, publicationNodeKey, publicationNodeGeneration) =>
-        this.cancelPreApplyEffectsForPublication(
+        cancelPreApplyEffectsForPublicationImpl(
+          ctrl,
           runId,
           publicationNodeKey,
           publicationNodeGeneration,
         ),
       resolveGate: (command, context, payloadDigest) =>
-        this.resolveGate(command, context, payloadDigest),
-    };
-  }
-
-  private candidateReadHost(): CandidateReadHost {
-    return { db: this.db, workspace: this.workspace };
-  }
-
-  private transcriptHost(): TranscriptHost {
-    return this.baseCtx();
-  }
-
-  private schedulerHost(): SchedulerHost {
-    const isClosed = () => this.closed;
-    return {
-      ...this.casCtx(),
-      get closed() {
-        return isClosed();
-      },
-      piAttemptExecutor: this.piAttemptExecutor,
-      activeAttempts: this.activeAttempts,
-      activeExecutions: this.activeExecutions,
-      upstreamsSucceeded: (runId, nodeKey) => this.upstreamsSucceeded(runId, nodeKey),
-      upstreamSealedOutputs: (runId, nodeKey) => this.upstreamSealedOutputs(runId, nodeKey),
-      copyAttemptInputs: (attemptId, inputs) => this.copyAttemptInputs(attemptId, inputs),
+        resolveGateImpl(ctrl, command, context, payloadDigest),
+      recordCommand: (command, context, payloadDigest, runId, revision) =>
+        recordCommandImpl(ctrl, command, context, payloadDigest, runId, revision),
+      upstreamsSucceeded: (runId, nodeKey) =>
+        upstreamsSucceededImpl(
+          {
+            db: self.db,
+            currentNodeGeneration: (id, key) => self.currentNodeGeneration(id, key),
+          },
+          runId,
+          nodeKey,
+        ),
+      upstreamSealedOutputs: (runId, nodeKey) =>
+        upstreamSealedOutputsImpl(ctrl, runId, nodeKey),
+      copyAttemptInputs: (attemptId, inputs) => copyAttemptInputsImpl(ctrl, attemptId, inputs),
       bindAttemptInputs: (attemptId, runId, nodeKey) =>
-        this.bindAttemptInputs(attemptId, runId, nodeKey),
-      executeFreeze: (claim) => this.executeFreeze(claim),
-      executeMechanical: (claim, signal) => this.executeMechanical(claim, signal),
+        bindAttemptInputsImpl(ctrl, attemptId, runId, nodeKey),
+      executeFreeze: (claim) => runFreeze(ctrl, claim),
+      executeMechanical: (claim, signal) => executeMechanical(ctrl, claim, signal),
       prepareUnsealedArtifact: (claim, descriptor) =>
-        this.prepareUnsealedArtifact(claim, descriptor),
-      sealPreparation: (runId, preparation) => this.sealPreparation(runId, preparation),
+        prepareUnsealedArtifactImpl(ctrl, claim, descriptor),
+      sealPreparation: (runId, preparation) => sealPreparationImpl(ctrl, runId, preparation),
       preparePlanExecutionPlan: (claim, preparations) =>
-        this.preparePlanExecutionPlan(claim, preparations),
+        preparePlanExecutionPlanImpl(ctrl, claim, preparations),
       commitSuccessfulAttempt: (claim, preparations, metrics) =>
-        this.commitSuccessfulAttempt(claim, preparations, metrics),
+        commitSuccessfulAttemptImpl(ctrl, claim, preparations, metrics),
       commitFailedAttemptArtifacts: (claim, preparations) =>
-        this.commitFailedAttemptArtifacts(claim, preparations),
-      orphanPreparedArtifacts: (attemptId) => this.orphanPreparedArtifacts(attemptId),
+        commitFailedAttemptArtifactsImpl(ctrl, claim, preparations),
+      orphanPreparedArtifacts: (attemptId) => orphanPreparedArtifactsImpl(ctrl, attemptId),
       requeueFailedNode: (runId, nodeKey, generation, lastAttemptId) =>
-        this.requeueFailedNode(runId, nodeKey, generation, lastAttemptId),
-      trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
-      attemptInputDigest: (attemptId) => this.attemptInputDigest(attemptId),
-      applyRerunAt: (runId, nodeKey, generation, feedback, opts) =>
-        this.applyRerunAt(runId, nodeKey, generation, feedback, opts),
+        requeueFailedNodeImpl(ctrl, runId, nodeKey, generation, lastAttemptId),
+      trustedPinnedInputs: (runId) => self.trustedPinnedInputs(runId),
+      attemptInputDigest: (attemptId) => self.attemptInputDigest(attemptId),
+      runBoundary: (input) => self.runBoundary(input),
+      reconcileApplyingEffect: (input) => reconcileApplyingEffectImpl(ctrl, input),
     };
+    this._control = ctrl;
+    return ctrl;
   }
 
   private schedule(): void {
     if (this.closed) return;
     try {
       this.transaction(() => {
-        expireStaleOpenGatesImpl(this.gatesHost());
+        expireStaleOpenGatesImpl(this.control());
       });
     } catch {
       // Expiry best-effort; do not block the scheduler on a single bad gate.
     }
     this.refreshGateExpiryTimer();
     if (this.scheduler) return;
-    this.scheduler = runScheduler(this.schedulerHost()).finally(() => {
+    this.scheduler = runScheduler(this.control()).finally(() => {
       this.scheduler = undefined;
       this.refreshGateExpiryTimer();
     });
   }
 
-  private copyAttemptInputs(
-    attemptId: string,
-    inputs: Array<{ role: string; artifactId: string }>,
-  ): void {
-    copyAttemptInputsImpl(this.artifactsHost(), attemptId, inputs);
-  }
-
-  private bindAttemptInputs(attemptId: string, runId: string, nodeKey: string): void {
-    bindAttemptInputsImpl(this.artifactsHost(), attemptId, runId, nodeKey);
-  }
-
-  private upstreamSealedOutputs(
-    runId: string,
-    nodeKey: string,
-  ): Array<{ role: string; artifactId: string }> {
-    return upstreamSealedOutputsImpl(this.artifactsHost(), runId, nodeKey);
-  }
-
-  private abortRunAttempts(runId: string): void {
-    abortRunAttemptsImpl(this.schedulerHost(), runId);
-  }
-
   private abortActiveAttempts(): void {
-    abortActiveAttemptsImpl(this.schedulerHost());
+    abortActiveAttemptsImpl(this.control());
   }
 
   private async waitForRunExecution(runId: string): Promise<void> {
-    await waitForRunExecutionImpl(this.schedulerHost(), runId);
+    await waitForRunExecutionImpl(this.control(), runId);
   }
 
-  private mechanicalHost(): MechanicalHost {
-    return {
-      ...this.txCtx(),
-      trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
-      currentNodeGeneration: (runId, nodeKey) => this.currentNodeGeneration(runId, nodeKey),
-      reconcileApplyingEffect: (input) => this.reconcileApplyingEffect(input),
-    };
-  }
-
-  private freezeHost(): FreezeHost {
-    const isClosed = () => this.closed;
-    return {
-      ...this.casCtx(),
-      get closed() {
-        return isClosed();
-      },
-      activeAttempts: this.activeAttempts,
-      runBoundary: (input) => this.runBoundary(input),
-      sealPreparation: (runId, preparation) => this.sealPreparation(runId, preparation),
-      trustedPinnedInputs: (runId) => this.trustedPinnedInputs(runId),
-      orphanPreparedArtifacts: (attemptId) => this.orphanPreparedArtifacts(attemptId),
-    };
-  }
-
-  private async executeMechanical(
-    claim: ClaimedNode,
-    signal: AbortSignal,
-  ): Promise<PiAttemptOutcome> {
-    return executeMechanical(this.mechanicalHost(), claim, signal);
-  }
-
-  private async prepareUnsealedArtifact(
-    claim: ClaimedNode,
-    descriptor: PiAttemptArtifactDescriptor,
-  ): Promise<ArtifactPreparation | undefined> {
-    return prepareUnsealedArtifactImpl(this.artifactsHost(), claim, descriptor);
-  }
-
-  private async preparePlanExecutionPlan(
-    claim: ClaimedNode,
-    preparations: ArtifactPreparation[],
-  ): Promise<ArtifactPreparation | undefined> {
-    return preparePlanExecutionPlanImpl(this.artifactsHost(), claim, preparations);
-  }
-
-  private commitSuccessfulAttempt(
-    claim: ClaimedNode,
-    preparations: ArtifactPreparation[],
-    metrics?: AttemptMetrics,
-  ): void {
-    commitSuccessfulAttemptImpl(this.attemptSuccessHost(), claim, preparations, metrics);
-  }
-
-  private commitFailedAttemptArtifacts(
-    claim: ClaimedNode,
-    preparations: ArtifactPreparation[],
-  ): void {
-    commitFailedAttemptArtifactsImpl(this.artifactsHost(), claim, preparations);
-  }
-
-  private async executeFreeze(claim: ClaimedFreeze): Promise<void> {
-    return runFreeze(this.freezeHost(), claim);
+  private async reconcileApplyingEffects(): Promise<void> {
+    return reconcileApplyingEffectsImpl(this.control());
   }
 
   private trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined {
@@ -856,14 +594,6 @@ class WikiRunsOwner implements WikiRuns {
     );
     if (!attempt) throw new Error(`attempt not found: ${attemptId}`);
     return requiredText(attempt, "input_digest");
-  }
-
-  private async sealPreparation(runId: string, preparation: ArtifactPreparation): Promise<void> {
-    await sealPreparationImpl(this.artifactsHost(), runId, preparation);
-  }
-
-  private orphanPreparedArtifacts(attemptId: string): void {
-    orphanPreparedArtifactsImpl(this.artifactsHost(), attemptId);
   }
 
   private isCurrent(claim: ClaimedNode): boolean {

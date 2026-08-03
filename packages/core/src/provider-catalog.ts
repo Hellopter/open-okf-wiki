@@ -2,16 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import {
-  CatalogModelSchema,
-  type ModelProfile,
-  type ModelProfileWrite,
-  type ProviderConfig,
-  ProviderConfigSchema,
-  type ProviderEntry,
-  ProviderEntrySchema,
-  type ProviderEntryWrite,
-} from "@okf-wiki/contract";
+import { CatalogModelSchema, type ModelProfile, type ModelProfileWrite, type ProviderConfig, ProviderConfigSchema, type ProviderEntry, ProviderEntrySchema, type ProviderEntryWrite } from "@okf-wiki/contract/workspace";
 import { flattenModels, PROVIDER_KIND } from "./provider-runtime.js";
 import { WORKSPACE_DIR_NAME } from "./run-layout.js";
 import { ProviderStoreError } from "./workspace-errors.js";

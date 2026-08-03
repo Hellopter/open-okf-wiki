@@ -2,14 +2,8 @@
  * Pure plan-review helpers (no React / network). Safe for node:test.
  */
 
-import type {
-  CoverageResult,
-  CoverageResultRow,
-  CoverageRowStatus,
-  CoverageStopReason,
-  WikiRunGate,
-  WikiRunPlanReview,
-} from "@okf-wiki/contract";
+import type { CoverageResult, CoverageResultRow, CoverageRowStatus, CoverageStopReason } from "@okf-wiki/contract/coverage";
+import type { WikiRunGate, WikiRunPlanReview } from "@okf-wiki/contract/wiki-runs";
 
 export type PlanReviewStatus = "idle" | "loading" | "ready" | "pending" | "stale" | "error";
 

@@ -8,7 +8,8 @@
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { type AttemptItem, type AttemptTraceEvent, formatToolResultText } from "@okf-wiki/contract";
+import type { AttemptItem, AttemptTraceEvent } from "@okf-wiki/contract/wiki-runs";
+import { formatToolResultText } from "@okf-wiki/contract/stream-server";
 import { redactSensitiveText, redactSensitiveValue } from "../redact/index.js";
 
 export const ATTEMPT_TRACE_MAX_BYTES = 2 * 1024 * 1024;

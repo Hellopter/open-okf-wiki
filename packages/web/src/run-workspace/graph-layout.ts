@@ -1,4 +1,4 @@
-import type { WikiRunNode } from "@okf-wiki/contract";
+import type { WikiRunNode } from "@okf-wiki/contract/wiki-runs";
 import type { FocusTopology } from "./workflow-topology";
 
 /**

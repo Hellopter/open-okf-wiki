@@ -8,9 +8,9 @@
 import { mkdir } from "node:fs/promises";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { RetryLimits } from "@okf-wiki/contract";
+import type { RetryLimits } from "@okf-wiki/contract/workspace";
 import type { AgentRunner, AgentRunRequest, WikiWriteRequest } from "../ports/agent-runner.js";
-import { listWikiMarkdown } from "../produce/wiki-pages.js";
+import { listWikiMarkdown } from "./wiki-pages.js";
 import type { SourceIgnoreInput as PiSourceIgnoreInput } from "./path-policy.js";
 import {
   type RunScopedAgentInput,

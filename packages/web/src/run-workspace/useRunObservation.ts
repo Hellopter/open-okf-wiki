@@ -1,14 +1,5 @@
-import type {
-  WikiRunAttempt,
-  WikiRunNode,
-  WikiRunPlanReview,
-  WikiRunSpec,
-} from "@okf-wiki/contract";
-import {
-  WikiRunAttemptTranscriptTraceFrameSchema,
-  WikiRunEventSchema,
-  WikiRunGetResponseSchema,
-} from "@okf-wiki/contract";
+import type { WikiRunAttempt, WikiRunNode, WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import { WikiRunAttemptTranscriptTraceFrameSchema, WikiRunEventSchema, WikiRunGetResponseSchema } from "@okf-wiki/contract/wiki-runs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getWikiRun,
@@ -41,10 +32,16 @@ import {
 
 export type RunObservationConnection = "connecting" | "live" | "reconnecting" | "offline";
 
+/**
+ * Thin transport hook for WikiRun observation.
+ * Pure selection / timeline reducers live in `observation-state.ts` (authority).
+ * This hook only owns SSE/fetch, React state wiring, and derived view memos.
+ */
 export function useRunObservation(
   workspaceId: string,
   runId: string | null,
   routeAttemptId: string | null,
+  routeNodeKey: string | null = null,
 ) {
   const [state, setState] = useState<RunObservationState>(() => createRunObservationState());
   const [error, setError] = useState<unknown>(null);
@@ -108,15 +105,30 @@ export function useRunObservation(
   const planReviewMaterials: WikiRunPlanReview | null = planReview.review;
 
   useEffect(() => {
-    if (!routeAttemptId) return;
-    setState((current) => {
-      // Snapshot frames arrive while an attempt is running. A route selection
-      // is applied only once so an operator can explicitly pin live output.
-      if (current.selectedAttemptId === routeAttemptId) return current;
-      const attempt = current.snapshot?.attempts.find((item) => item.attemptId === routeAttemptId);
-      return attempt ? selectObservationNode(current, attempt.nodeKey, attempt.attemptId) : current;
-    });
-  }, [routeAttemptId, state.snapshot]);
+    // URL is sole selection authority: attempt wins over bare node (scout / pin).
+    if (routeAttemptId) {
+      setState((current) => {
+        // Snapshot frames arrive while an attempt is running. A route selection
+        // is applied only once so an operator can explicitly pin live output.
+        if (current.selectedAttemptId === routeAttemptId) return current;
+        const attempt = current.snapshot?.attempts.find(
+          (item) => item.attemptId === routeAttemptId,
+        );
+        return attempt
+          ? selectObservationNode(current, attempt.nodeKey, attempt.attemptId)
+          : current;
+      });
+      return;
+    }
+    if (routeNodeKey) {
+      setState((current) => {
+        if (current.selectedNodeKey === routeNodeKey && !current.selectedAttemptId) {
+          return current;
+        }
+        return selectObservationNode(current, routeNodeKey, null);
+      });
+    }
+  }, [routeAttemptId, routeNodeKey, state.snapshot]);
 
   const selectedAttemptId = state.selectedAttemptId;
   useEffect(() => {

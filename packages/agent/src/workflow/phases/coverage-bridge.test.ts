@@ -3,11 +3,8 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  CoveragePlanSchema,
-  resolveOrchestration,
-  sourceCoverageUnit,
-} from "@okf-wiki/contract";
+import { CoveragePlanSchema, sourceCoverageUnit } from "@okf-wiki/contract/coverage";
+import { resolveOrchestration } from "@okf-wiki/contract/workspace";
 import { runWorkdirLayout } from "../../runtime/workdir.js";
 import {
   contractPlanFromCore,

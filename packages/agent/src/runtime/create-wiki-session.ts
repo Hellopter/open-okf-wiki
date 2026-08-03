@@ -31,7 +31,7 @@ import {
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { RetryLimits } from "@okf-wiki/contract";
+import type { RetryLimits } from "@okf-wiki/contract/workspace";
 import {
   type ContextBudget,
   compactionSettingsFromBudget,

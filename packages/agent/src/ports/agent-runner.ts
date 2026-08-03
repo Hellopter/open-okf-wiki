@@ -6,13 +6,8 @@
  * Live/fixture adapters cast to concrete Pi types at the boundary.
  */
 
-import type {
-  AttemptItem,
-  AttemptMetrics,
-  NodeAttempt,
-  RetryLimits,
-  WikiRunSpec,
-} from "@okf-wiki/contract";
+import type { AttemptItem, AttemptMetrics, NodeAttempt, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import type { RetryLimits } from "@okf-wiki/contract/workspace";
 
 /** Roles that may run through AgentRunner (subset of operator/scoped roles). */
 export type ScopedRunnerRole =

@@ -1,4 +1,4 @@
-import type { RunCommand, WikiRunAttempt, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { RunCommand, WikiRunAttempt, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { LanguagesIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
@@ -32,14 +32,26 @@ import { useRunObservation } from "../run-workspace/useRunObservation";
 import { type WorkflowStageId, workflowStageIds } from "../run-workspace/workflow-topology";
 import { WorkbenchShell } from "../shells/WorkbenchShell";
 
+/**
+ * Workbench panel derived solely from URL selection (ADR 0039 / Epic F).
+ * `?attempt` or `?node` → observation · `?run` → run canvas · else conversation.
+ * No independent React surface store.
+ */
 type Surface = "conversation" | "run" | "observation";
+
+function surfaceFromSelection(
+  runId: string | null,
+  attemptId: string | null,
+  nodeKey: string | null,
+): Surface {
+  if (attemptId || nodeKey) return "observation";
+  if (runId) return "run";
+  return "conversation";
+}
 
 export function WorkspaceAgentPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [params, setParams] = useSearchParams();
-  const [surface, setSurface] = useState<Surface>(
-    params.get("attempt") ? "observation" : params.get("run") ? "run" : "conversation",
-  );
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
@@ -49,17 +61,20 @@ export function WorkspaceAgentPage() {
   const activeSessionId = params.get("session");
   const activeRunId = params.get("run");
   const activeAttemptId = params.get("attempt");
+  const activeNodeKey = params.get("node");
   const stageParam = params.get("stage");
   const graphStage =
     stageParam && workflowStageIds.includes(stageParam as WorkflowStageId)
       ? (stageParam as WorkflowStageId)
       : null;
+  const surface = surfaceFromSelection(activeRunId, activeAttemptId, activeNodeKey);
 
   const updateSelection = useCallback(
     (next: {
       session?: string | null;
       run?: string | null;
       attempt?: string | null;
+      node?: string | null;
       stage?: WorkflowStageId | null;
     }) => {
       const copy = new URLSearchParams(params);
@@ -88,7 +103,7 @@ export function WorkspaceAgentPage() {
   const conversation = useSessionConversation(id, activeSessionId, {
     defaultProfileId: workspaceDefaultProfileId,
   });
-  const observation = useRunObservation(id, activeRunId, activeAttemptId);
+  const observation = useRunObservation(id, activeRunId, activeAttemptId, activeNodeKey);
   const {
     snapshot,
     spec,
@@ -112,8 +127,6 @@ export function WorkspaceAgentPage() {
     retry: planReviewRetry,
   };
   const activeSessionRuns = sessionRunLinks(activity.runs, activeSessionId);
-  const activeConnection =
-    surface === "conversation" ? conversation.connection : observation.connection;
 
   useEffect(() => {
     window.localStorage.setItem("okf-wiki:workbench-timeline-collapsed", String(sidebarCollapsed));
@@ -122,8 +135,7 @@ export function WorkspaceAgentPage() {
   const createSession = async () => {
     const created = await activity.createSession();
     if (!created) return;
-    updateSelection({ session: created.id, run: null, attempt: null });
-    setSurface("conversation");
+    updateSelection({ session: created.id, run: null, attempt: null, node: null });
   };
 
   const dispatchRun = async (build: (current: WikiRunSnapshot) => RunCommand) => {
@@ -138,13 +150,18 @@ export function WorkspaceAgentPage() {
   };
 
   const selectSession = (sessionId: string) => {
-    updateSelection({ session: sessionId });
-    setSurface("conversation");
+    // Session focus clears Run selection so URL surface becomes conversation.
+    updateSelection({
+      session: sessionId,
+      run: null,
+      attempt: null,
+      node: null,
+      stage: null,
+    });
     setSidebarOpen(false);
   };
   const selectRun = (runId: string) => {
-    updateSelection({ run: runId, attempt: null, stage: null });
-    setSurface("run");
+    updateSelection({ run: runId, attempt: null, node: null, stage: null });
     setSidebarOpen(false);
   };
   const deleteSession = async (sessionId: string) => {
@@ -154,18 +171,20 @@ export function WorkspaceAgentPage() {
   };
   const selectNode = (nodeKey: string) => {
     if (!snapshot) return;
-    // Display scouts have no durable attempts — open observation without attempt id.
+    // Display scouts have no durable attempts — pin node in URL for observation.
     const attempt = nodeKey.startsWith("plan.scout.")
       ? null
       : latestAttemptForNode(snapshot, nodeKey);
     observation.selectNode(nodeKey);
-    updateSelection({ attempt: attempt?.attemptId ?? null });
-    setSurface("observation");
+    if (attempt) {
+      updateSelection({ attempt: attempt.attemptId, node: null });
+    } else {
+      updateSelection({ attempt: null, node: nodeKey });
+    }
   };
   const selectAttempt = (attempt: WikiRunAttempt) => {
     observation.selectAttempt(attempt);
-    updateSelection({ attempt: attempt.attemptId });
-    setSurface("observation");
+    updateSelection({ attempt: attempt.attemptId, node: null });
   };
 
   if (activity.loading) return <LoadingState />;
@@ -226,11 +245,12 @@ export function WorkspaceAgentPage() {
           onMobileOpenChange={setSidebarOpen}
           onShowConversation={() => {
             setSidebarCollapsed(false);
-            setSurface("conversation");
+            updateSelection({ run: null, attempt: null, node: null, stage: null });
           }}
           onShowRun={() => {
             setSidebarCollapsed(false);
-            setSurface("run");
+            // URL already selects run; clear observation pins to show run canvas.
+            if (activeRunId) updateSelection({ attempt: null, node: null });
           }}
           t={t}
         />
@@ -238,18 +258,42 @@ export function WorkspaceAgentPage() {
           <div className="flex shrink-0 items-center justify-between border-b border-border py-2 pr-4 pl-12 md:px-6">
             <Tabs
               value={surface === "conversation" ? "conversation" : "run"}
-              onValueChange={(value) => setSurface(value as Surface)}
+              onValueChange={(value) => {
+                if (value === "conversation") {
+                  updateSelection({ run: null, attempt: null, node: null, stage: null });
+                } else if (activeRunId) {
+                  updateSelection({ attempt: null, node: null });
+                }
+              }}
             >
               <TabsList variant="line">
                 <TabsTrigger value="conversation">{t.workbench.conversation}</TabsTrigger>
-                <TabsTrigger value="run" disabled={!snapshot}>
+                <TabsTrigger value="run" disabled={!activeRunId}>
                   {t.workbench.activeRun}
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <Badge variant={activeConnection === "live" ? "secondary" : "outline"}>
-              {t.workbench.connectionStates[activeConnection]}
-            </Badge>
+            {/* Separate Session vs Run SSE indicators (ADR 0039 — never merge domains). */}
+            <div className="flex items-center gap-2" data-testid="connection-indicators">
+              <Badge
+                variant={conversation.connection === "live" ? "secondary" : "outline"}
+                data-testid="session-connection"
+                title={t.workbench.conversation}
+              >
+                {t.workbench.conversation}:{" "}
+                {t.workbench.connectionStates[conversation.connection]}
+              </Badge>
+              {activeRunId ? (
+                <Badge
+                  variant={observation.connection === "live" ? "secondary" : "outline"}
+                  data-testid="run-connection"
+                  title={t.workbench.activeRun}
+                >
+                  {t.workbench.activeRun}:{" "}
+                  {t.workbench.connectionStates[observation.connection]}
+                </Badge>
+              ) : null}
+            </div>
           </div>
           {surface === "conversation" ? (
             <ConversationPanel
@@ -288,8 +332,7 @@ export function WorkspaceAgentPage() {
               planReviewRetry={planReviewRetry}
               planScoutDisplays={planScoutDisplays}
               onBack={() => {
-                updateSelection({ attempt: null });
-                setSurface("run");
+                updateSelection({ attempt: null, node: null });
               }}
               onSelectAttempt={selectAttempt}
               onSelectNode={selectNode}

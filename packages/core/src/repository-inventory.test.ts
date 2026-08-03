@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { unitIdForSurface } from "@okf-wiki/contract";
+import { unitIdForSurface } from "@okf-wiki/contract/coverage";
 import { buildCoveragePlan } from "./coverage-plan.js";
 import { makeSourceUnit, makeSurfaceUnit } from "./coverage-types.js";
 import {

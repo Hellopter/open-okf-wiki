@@ -1,4 +1,4 @@
-import { formatTokenCount } from "@okf-wiki/contract";
+import { formatTokenCount } from "@okf-wiki/contract/session";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { useMemo } from "react";
 import { Link } from "react-router-dom";

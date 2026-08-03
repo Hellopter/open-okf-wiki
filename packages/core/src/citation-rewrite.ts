@@ -13,7 +13,7 @@
  */
 
 import path from "node:path";
-import { canonicalizeCitationTarget } from "./citations-canonicalize.js";
+import { parseCitationTarget } from "./citation-target.js";
 import { parseSourceCitations, type SourceCitation } from "./citations-parse.js";
 
 export type CitationRewriteSources = Array<{ id: string }>;
@@ -27,30 +27,6 @@ export type RewriteRepoCitationsOptions = {
   /** Snapshot source ids (order irrelevant). */
   sources: CitationRewriteSources;
 };
-
-function splitCitationTarget(
-  target: string,
-  sources: CitationRewriteSources,
-): { sourceId: string; relPath: string } | null {
-  const canon = canonicalizeCitationTarget(target, {
-    sourceIds: sources.map((s) => s.id),
-    multiSource: sources.length > 1,
-  });
-  if (!canon.ok) return null;
-
-  const segments = canon.target.split("/").filter(Boolean);
-  if (segments.length === 0) return null;
-
-  const ids = new Set(sources.map((s) => s.id));
-  if (segments.length >= 2 && ids.has(segments[0]!)) {
-    return { sourceId: segments[0]!, relPath: segments.slice(1).join("/") };
-  }
-  if (sources.length === 1) {
-    return { sourceId: sources[0]!.id, relPath: canon.target };
-  }
-  // Multi-source bare path — cannot rewrite safely.
-  return null;
-}
 
 function lineFragment(c: SourceCitation): string {
   if (c.lineStart === undefined) return "";
@@ -82,10 +58,15 @@ export function rewriteOneRepoCitation(
   citation: SourceCitation,
   options: RewriteRepoCitationsOptions,
 ): string | null {
-  const split = splitCitationTarget(citation.target, options.sources);
-  if (!split) return null;
+  const parsed = parseCitationTarget(citation.target, {
+    sourceIds: options.sources.map((s) => s.id),
+    multiSource: options.sources.length > 1,
+  });
+  // Need a bound source id to place under sources/<id>/…
+  if (!parsed.ok || !parsed.sourceId) return null;
   const href =
-    relativeSourceHref(options.pageRelPath, split.sourceId, split.relPath) + lineFragment(citation);
+    relativeSourceHref(options.pageRelPath, parsed.sourceId, parsed.repoPath) +
+    lineFragment(citation);
   return `[Source](${href})`;
 }
 

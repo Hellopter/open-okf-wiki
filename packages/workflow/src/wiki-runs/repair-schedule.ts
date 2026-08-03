@@ -5,24 +5,12 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  EvaluationPolicy,
-  MechanicalReport,
-  PiAttemptFailureClass,
-  RepairRequest,
-  RepairSource,
-  WikiRunSpecAcceptance,
-} from "@okf-wiki/contract";
-import {
-  contractForNode,
-  evaluationPolicyFromAcceptance,
-  MechanicalReportSchema,
-  RepairRequestSchema,
-  WikiRunSpecAcceptanceSchema,
-} from "@okf-wiki/contract";
+import type { PiAttemptFailureClass } from "@okf-wiki/contract/pi-attempt";
+import type { EvaluationPolicy, MechanicalReport, RepairRequest, RepairSource, WikiRunSpecAcceptance } from "@okf-wiki/contract/wiki-runs";
+import { contractForNode, evaluationPolicyFromAcceptance, MechanicalReportSchema, RepairRequestSchema, WikiRunSpecAcceptanceSchema } from "@okf-wiki/contract/wiki-runs";
 import { extractPagesFromValidationMessage, runWorkDir } from "@okf-wiki/core";
 import { now } from "./crypto-util.js";
-import type { WikiRunsDbCtx } from "./ctx.js";
+import type { WikiRunsControl } from "./ctx.js";
 import { loadSpecFromArtifact, unlockReadyNodes } from "./dag.js";
 import {
   assertUnderMaxCandidates,
@@ -33,6 +21,17 @@ import {
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import { type ClaimedNode, WikiRunsRequestError } from "./types.js";
 
+/**
+ * Narrow control surface for repair scheduling (not full WikiRunsControl).
+ * Full control satisfies this; unit tests may pass a Pick via partialControl.
+ */
+export type RepairControl = Pick<
+  WikiRunsControl,
+  "db" | "workspace" | "emit" | "currentNodeGeneration" | "applyRerunAt"
+> & {
+  closed?: boolean;
+};
+
 /** Product repair node keys: `repair.1`, `repair.2`, … */
 export const REPAIR_NODE_PREFIX = "repair.";
 
@@ -41,20 +40,6 @@ const AUTO_MECHANICAL_REPAIR_KINDS: ReadonlySet<string> = new Set([
   "validate.pre",
   "validate.final",
 ]);
-
-/** Shared surface for loading sealed Spec acceptance and scheduling repairs. */
-export type RepairScheduleHost = Pick<WikiRunsDbCtx, "db" | "workspace" | "emit"> & {
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-  applyRerunAt(
-    runId: string,
-    nodeKey: string,
-    generation: number,
-    feedback?: string,
-    opts?: { selfOnly?: boolean; excludeConsumer?: (nodeKey: string) => boolean },
-  ): void;
-  /** When true, auto mechanical repair is suppressed (owner closed). */
-  closed?: boolean;
-};
 
 export function isRepairNodeKey(nodeKey: string): boolean {
   return /^repair\.\d+$/.test(nodeKey);
@@ -105,7 +90,7 @@ export function buildMechanicalRepairRequest(opts: {
 
 /** Read the full validation report only from its sealed artifact directory. */
 export function loadMechanicalReport(
-  host: Pick<RepairScheduleHost, "db" | "workspace">,
+  host: Pick<RepairControl, "db" | "workspace">,
   runId: string,
   artifactId: string | undefined,
 ): MechanicalReport | undefined {
@@ -166,7 +151,7 @@ export function buildSemanticRepairRequest(opts: {
  * Load sealed Spec acceptance from plan node_outputs role=spec.
  */
 export function loadAcceptance(
-  host: Pick<RepairScheduleHost, "db" | "workspace">,
+  host: Pick<RepairControl, "db" | "workspace">,
   runId: string,
 ): WikiRunSpecAcceptance | undefined {
   const plan = asRow(
@@ -190,7 +175,7 @@ export function loadAcceptance(
 }
 
 export function loadEvaluationPolicy(
-  host: Pick<RepairScheduleHost, "db" | "workspace">,
+  host: Pick<RepairControl, "db" | "workspace">,
   runId: string,
 ): EvaluationPolicy {
   const acceptance = loadAcceptance(host, runId);
@@ -198,7 +183,7 @@ export function loadEvaluationPolicy(
 }
 
 /** All prior `repair.N` stages (single family). */
-export function countRepairs(host: Pick<RepairScheduleHost, "db">, runId: string): number {
+export function countRepairs(host: Pick<RepairControl, "db">, runId: string): number {
   const keys = asRows(
     host.db
       .prepare(`SELECT DISTINCT node_key FROM nodes WHERE run_id = ? AND node_key LIKE 'repair.%'`)
@@ -211,7 +196,7 @@ export function countRepairs(host: Pick<RepairScheduleHost, "db">, runId: string
 
 /** Count repair nodes whose detail sources include the given source. */
 export function countRepairsBySource(
-  host: Pick<RepairScheduleHost, "db">,
+  host: Pick<RepairControl, "db">,
   runId: string,
   source: RepairSource,
 ): number {
@@ -255,21 +240,21 @@ export function countRepairsBySource(
 }
 
 export function loadSemanticRepairBudget(
-  host: Pick<RepairScheduleHost, "db" | "workspace">,
+  host: Pick<RepairControl, "db" | "workspace">,
   runId: string,
 ): number {
   return loadEvaluationPolicy(host, runId).semantic.modelRepairBudget;
 }
 
 export function loadMechanicalRepairBudget(
-  host: Pick<RepairScheduleHost, "db" | "workspace">,
+  host: Pick<RepairControl, "db" | "workspace">,
   runId: string,
 ): number {
   return loadEvaluationPolicy(host, runId).mechanical.modelRepairBudget;
 }
 
 export function currentWriteRootGeneration(
-  host: Pick<RepairScheduleHost, "db">,
+  host: Pick<RepairControl, "db">,
   runId: string,
 ): number | undefined {
   const row = asRow(
@@ -307,7 +292,7 @@ export type ScheduleRepairInput = {
  * back to an unrelated wiki_tree during claim.
  */
 function assertSealedRepairBaseline(
-  host: Pick<RepairScheduleHost, "db">,
+  host: Pick<RepairControl, "db">,
   runId: string,
   candidateId: string,
 ): void {
@@ -335,7 +320,7 @@ function assertSealedRepairBaseline(
  * Insert `repair.N`, wire edges, hold publication path until EvaluationRound re-runs.
  * Single product entry for mechanical auto-repair and operator/council fix.
  */
-export function scheduleRepair(host: RepairScheduleHost, input: ScheduleRepairInput): string {
+export function scheduleRepair(host: RepairControl, input: ScheduleRepairInput): string {
   const policy = loadEvaluationPolicy(host, input.runId);
   assertUnderMaxCandidates(host, input.runId, policy.maxCandidates);
 
@@ -470,7 +455,7 @@ export function scheduleRepair(host: RepairScheduleHost, input: ScheduleRepairIn
  * Operator / council fix → scheduleRepair (semantic source).
  */
 export function scheduleOperatorRepair(
-  host: RepairScheduleHost,
+  host: RepairControl,
   command: { runId: string; feedback?: string },
   timestamp: string,
 ): void {
@@ -524,7 +509,7 @@ export function scheduleOperatorRepair(
  * the budget is exhausted or no safe candidate can be scheduled.
  */
 export function scheduleAutomaticSemanticRepair(
-  host: RepairScheduleHost,
+  host: RepairControl,
   claim: Pick<ClaimedNode, "runId">,
   timestamp: string,
 ): boolean {
@@ -576,7 +561,7 @@ export function scheduleAutomaticSemanticRepair(
  * otherwise budget-exhausted validate failure leaves unclaimable ready seats and
  * the run never reaches failed.
  */
-export function rearmEvaluationRoundAfterRepair(host: RepairScheduleHost, runId: string): void {
+export function rearmEvaluationRoundAfterRepair(host: RepairControl, runId: string): void {
   const seatKeys = asRows(
     host.db
       .prepare(
@@ -616,7 +601,7 @@ export function rearmEvaluationRoundAfterRepair(host: RepairScheduleHost, runId:
  * Returns true when a repair.N stage was scheduled.
  */
 export function scheduleMechanicalRepair(
-  host: RepairScheduleHost,
+  host: RepairControl,
   claim: ClaimedNode,
   message: string,
   mechanicalReportArtifactId?: string,
@@ -669,7 +654,7 @@ export function scheduleMechanicalRepair(
  * model budget is exhausted. Candidate caps remain hard terminal boundaries.
  */
 export function openMechanicalEvaluationRecovery(
-  host: RepairScheduleHost,
+  host: RepairControl,
   claim: ClaimedNode,
   message: string,
   failureClass: string | PiAttemptFailureClass | undefined,
@@ -736,7 +721,7 @@ export function openMechanicalEvaluationRecovery(
  * validation so the next repair is an explicit, one-time operator command.
  */
 function openSemanticEvaluationRecovery(
-  host: RepairScheduleHost,
+  host: RepairControl,
   runId: string,
   budget: number,
   used: number,
@@ -807,7 +792,7 @@ function openSemanticEvaluationRecovery(
 
 /** Resume exactly one persisted recovery as the next repair.N in the same Run. */
 export function continueEvaluationRecovery(
-  host: RepairScheduleHost,
+  host: RepairControl,
   command: { runId: string; recoveryId: string; feedback?: string },
 ): number {
   const run = asRow(
@@ -894,7 +879,7 @@ export function continueEvaluationRecovery(
 }
 
 export function shouldAutoMechanicalRepair(
-  host: RepairScheduleHost,
+  host: RepairControl,
   claim: ClaimedNode,
   message: string,
   failureClass?: string | PiAttemptFailureClass,

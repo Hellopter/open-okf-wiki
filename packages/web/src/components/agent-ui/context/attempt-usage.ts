@@ -8,14 +8,13 @@
  */
 
 import {
-  type AttemptMetrics,
   buildSessionUsage,
   deriveContextPhase,
   formatContextFill,
   formatTokenCount,
   type SessionUsage,
-  type WikiRunAttempt,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/session";
+import type { AttemptMetrics, WikiRunAttempt } from "@okf-wiki/contract/wiki-runs";
 
 /** Optional NodeAttempt.usage-shaped fields (live progress / contract run-graph). */
 export type AttemptUsageFields = {

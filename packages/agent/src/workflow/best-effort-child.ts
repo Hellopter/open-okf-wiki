@@ -3,7 +3,7 @@
  * a result shape instead of throwing. AbortError always rethrows.
  */
 
-import type { ErrorClass } from "@okf-wiki/contract";
+import type { ErrorClass } from "@okf-wiki/contract/wiki-runs";
 import { classifyError } from "./retry-policy.js";
 
 export type BestEffortResult<T> =

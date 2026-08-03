@@ -7,14 +7,17 @@ export {
   SESSION_STATUS_TOOL_NAME,
 } from "./session-status.js";
 export {
+  commitDefectReport,
   createSubmitDefectReportTool,
   DEFECT_REPORT_REL_PATH,
+  readDefectReport,
   readDefectReportDraft,
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
   writeDefectReportDraft,
 } from "./submit-defect-report.js";
 export {
   createSubmitWikiRunSpecTool,
+  PLAN_DRAFT_REL_PATH,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
 } from "./submit-wiki-run-spec.js";
 export {

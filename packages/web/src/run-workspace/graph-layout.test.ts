@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { WikiRunNode } from "@okf-wiki/contract";
+import type { WikiRunNode } from "@okf-wiki/contract/wiki-runs";
 import {
   contentNodeHeight,
   FOCUS_NODE_HEIGHT,

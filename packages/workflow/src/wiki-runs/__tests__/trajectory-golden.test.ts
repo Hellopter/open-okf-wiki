@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { WikiRunEvent, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { WikiRunEvent, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   context,

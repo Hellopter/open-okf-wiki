@@ -4,11 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  defaultWikiRunSpec,
-  planUncertaintyFromSpec,
-  resolveAdaptiveOrchestration,
-} from "@okf-wiki/contract";
+import { defaultWikiRunSpec, planUncertaintyFromSpec, resolveAdaptiveOrchestration } from "@okf-wiki/contract/wiki-runs";
 import { buildExecutionGraph, buildExecutionGraphFromPlan } from "./execution-graph.js";
 import { compileExecutionPlan } from "./plan-compiler.js";
 

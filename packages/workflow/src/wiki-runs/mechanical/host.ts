@@ -1,34 +1,21 @@
 /**
- * Host callbacks for mechanical node execution.
- * Owner binds db/workspace/transaction/emit — mechanical stays free of WikiRunsOwner.
+ * Mechanical node helpers. Execution uses WikiRunsControl (no separate MechanicalHost).
  */
 
 import path from "node:path";
-import type { WikiRunsTxCtx } from "../ctx.js";
+import type { WikiRunsControl } from "../ctx.js";
 import { asRow, requiredText } from "../sql.js";
-import type { ClaimedNode, TrustedFrozenInputs } from "../types.js";
-
-export type MechanicalHost = WikiRunsTxCtx & {
-  trustedPinnedInputs(runId: string): TrustedFrozenInputs | undefined;
-  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
-  reconcileApplyingEffect(input: {
-    effectKey: string;
-    runId: string;
-    candidateArtifactId: string;
-    candidateDigest: string;
-    expectedLiveDigest: string;
-  }): Promise<void>;
-};
+import type { ClaimedNode } from "../types.js";
 
 /** Resolve a sealed attempt input role to an absolute path under the run dir. */
 export function sealedInputPath(
-  host: MechanicalHost,
+  ctrl: Pick<WikiRunsControl, "db">,
   claim: ClaimedNode,
   runDir: string,
   role: string,
 ): string | undefined {
   const row = asRow(
-    host.db
+    ctrl.db
       .prepare(
         `SELECT artifacts.relative_path
          FROM attempt_inputs

@@ -1,13 +1,6 @@
 /** Browser transport for Pi-native Operator Sessions. */
-import type {
-  AgentCommand,
-  AgentCommandResponse,
-  AgentSseEvent,
-  CreatePiAgentSessionBody,
-  CreatePiAgentSessionResponse,
-  PiSessionSummary,
-} from "@okf-wiki/contract";
-import { AgentSseEventSchema } from "@okf-wiki/contract";
+import type { AgentCommand, AgentCommandResponse, AgentSseEvent, CreatePiAgentSessionBody, CreatePiAgentSessionResponse, PiSessionSummary } from "@okf-wiki/contract/session";
+import { AgentSseEventSchema } from "@okf-wiki/contract/session";
 import { z } from "zod";
 import { getApiBase, request } from "./client";
 

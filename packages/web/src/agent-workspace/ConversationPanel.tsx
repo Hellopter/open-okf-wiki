@@ -1,4 +1,4 @@
-import { formatContextFill } from "@okf-wiki/contract";
+import { formatContextFill } from "@okf-wiki/contract/session";
 import { SendIcon, SquareIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -50,8 +50,6 @@ type ConversationPanelProps = {
   /** Optional preloaded slash commands (skips fetch when provided). */
   slashCommands?: OperatorCommandInfo[];
 };
-
-const BUSY_STATUSES = new Set(["streaming", "between_operations", "retrying", "compacting"]);
 
 export function ConversationPanel({
   conversation,
@@ -144,7 +142,7 @@ export function ConversationPanel({
     setPrompt(insertSlashCommand(command.name));
   };
 
-  const isBusy = BUSY_STATUSES.has(conversation.status);
+  const isBusy = conversation.isBusy;
   const hasPrompt = Boolean(prompt.trim());
   /** When the agent is busy and the composer is empty, promote Stop as the primary action. */
   const emphasizeStop = isBusy && !hasPrompt;

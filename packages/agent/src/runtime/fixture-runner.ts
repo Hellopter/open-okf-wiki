@@ -1,8 +1,10 @@
 /**
  * Fixture AgentRunner: no LLM. Scriptable for repair / critical-fail tests.
+ * Reviewer seats write analysis/defect-report.json (path-first) — no free-text handoff.
  */
 
 import { mkdir } from "node:fs/promises";
+import type { DefectReport } from "@okf-wiki/contract/wiki-runs";
 import type {
   AgentRunner,
   AgentRunRequest,
@@ -10,7 +12,8 @@ import type {
   WikiWriteRequest,
   WikiWriteResult,
 } from "../ports/agent-runner.js";
-import { writeFixtureWiki } from "../produce/wiki-pages.js";
+import { commitDefectReport } from "../review/commit-defect-report.js";
+import { writeFixtureWiki } from "./wiki-pages.js";
 import { finalizeAttemptTranscript } from "./attempt-transcript-sink.js";
 import type { RunWorkdirLayout } from "./workdir.js";
 
@@ -38,13 +41,13 @@ export type FixtureProduceRuntimeOptions = {
   failAgent?: (input: AgentRunRequest) => Error | string | undefined;
 };
 
-const DEFAULT_CLEAN_REVIEW = JSON.stringify({
+const DEFAULT_CLEAN_REPORT: DefectReport = {
   version: 1,
   reviewerId: "fixture",
   clean: true,
   defects: [],
   summary: "NO_DEFECTS",
-});
+};
 
 function abortError(): Error {
   const err = new Error("Wiki Run cancelled");
@@ -54,6 +57,43 @@ function abortError(): Error {
 
 function asLayout(layout: WikiWriteRequest["layout"]): RunWorkdirLayout {
   return layout as RunWorkdirLayout;
+}
+
+/** Path-first fixture reviewer: commit DefectReport under run workdir. */
+async function commitFixtureReview(
+  input: AgentRunRequest,
+  report: DefectReport,
+): Promise<AgentRunResult> {
+  if (input.runWorkDir) {
+    await commitDefectReport(input.runWorkDir, report, { reviewerId: report.reviewerId });
+  }
+  const summary = report.summary?.trim() || (report.clean ? "NO_DEFECTS" : `${report.defects.length} defect(s)`);
+  const attemptId = input.spanId?.trim() || input.role;
+  const items = [{ type: "text" as const, text: summary.slice(0, 2000) }];
+  input.onProgress?.({
+    attemptId,
+    nodeKey: input.nodeKey?.trim() || attemptId,
+    runIndex: input.runIndex ?? 0,
+    role: "reviewer",
+    status: "done",
+    summary: summary.slice(0, 4000),
+    items,
+  });
+  if (input.transcriptPath) {
+    await finalizeAttemptTranscript(input.transcriptPath, {
+      task: input.task,
+      items,
+      summary: summary.slice(0, 4000),
+      terminal: "done",
+      meta: { mode: "fixture", role: input.role, node: input.nodeKey ?? input.role },
+    }).catch(() => undefined);
+  }
+  return {
+    role: "reviewer",
+    mode: "fixture",
+    summary: summary.slice(0, 4000),
+    items,
+  };
 }
 
 /**
@@ -85,10 +125,11 @@ export function createFixtureProduceRuntime(
       throw err;
     }
 
-    const summary =
-      input.role === "reviewer"
-        ? DEFAULT_CLEAN_REVIEW
-        : `[fixture ${input.role}] ${input.task.slice(0, 200)}`;
+    if (input.role === "reviewer") {
+      return commitFixtureReview(input, DEFAULT_CLEAN_REPORT);
+    }
+
+    const summary = `[fixture ${input.role}] ${input.task.slice(0, 200)}`;
 
     const attemptId = input.spanId?.trim() || input.role;
     const items = [{ type: "text" as const, text: summary.slice(0, 2000) }];
@@ -225,8 +266,8 @@ export function createScriptedReviewFixtureRuntime(input: {
       if (req.role !== "reviewer") return undefined;
       reviewerCalls += 1;
       const blocking = reviewerCalls <= input.blockingRounds;
-      const text = blocking
-        ? JSON.stringify({
+      const report: DefectReport = blocking
+        ? {
             version: 1,
             reviewerId: "fixture",
             clean: false,
@@ -240,22 +281,9 @@ export function createScriptedReviewFixtureRuntime(input: {
               },
             ],
             summary: `blocking call ${reviewerCalls}`,
-          })
-        : DEFAULT_CLEAN_REVIEW;
-      const attemptId = req.spanId?.trim() || req.role;
-      req.onProgress?.({
-        attemptId,
-        nodeKey: req.nodeKey?.trim() || attemptId,
-        runIndex: req.runIndex ?? 0,
-        role: "reviewer",
-        status: "done",
-        summary: text.slice(0, 4000),
-      });
-      return {
-        role: "reviewer",
-        mode: "fixture",
-        summary: text,
-      };
+          }
+        : DEFAULT_CLEAN_REPORT;
+      return commitFixtureReview(req, report);
     },
   });
 }

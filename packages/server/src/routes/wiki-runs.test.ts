@@ -4,10 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
-  WikiRunAttemptTranscriptDoneFrameSchema,
-  WikiRunAttemptTranscriptTraceFrameSchema,
-} from "@okf-wiki/contract";
+import { WikiRunAttemptTranscriptDoneFrameSchema, WikiRunAttemptTranscriptTraceFrameSchema } from "@okf-wiki/contract/wiki-runs";
 import { createWorkspace, registerWorkspaceInAppIndex, saveWorkspace } from "@okf-wiki/core";
 import { dispatch } from "../dispatch.ts";
 import { resetWikiRunsRegistryForTests } from "../wiki-runs-registry.ts";

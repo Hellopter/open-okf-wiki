@@ -1,8 +1,4 @@
-import {
-  WikiRunEventSchema,
-  WikiRunGetResponseSchema,
-  WikiRunIndexEventSchema,
-} from "@okf-wiki/contract";
+import { WikiRunEventSchema, WikiRunGetResponseSchema, WikiRunIndexEventSchema } from "@okf-wiki/contract/wiki-runs";
 
 function parseEventData(data: string): unknown {
   return JSON.parse(data) as unknown;

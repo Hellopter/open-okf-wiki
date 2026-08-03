@@ -1,9 +1,4 @@
-import {
-  type AgentSseEvent,
-  applySessionStreamPatch,
-  type SessionMessage,
-  type SessionStreamState,
-} from "@okf-wiki/contract";
+import { type AgentSseEvent, applySessionStreamPatch, type SessionMessage, type SessionStreamState } from "@okf-wiki/contract/session";
 
 function isOptimisticUserId(id: string): boolean {
   return id.startsWith("optimistic_");

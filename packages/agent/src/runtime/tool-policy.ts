@@ -7,11 +7,7 @@
  * wire shape and runtime policy stay one list.
  */
 
-import {
-  DEFAULT_OPERATOR_TOOLS,
-  type OperatorToolName,
-  OperatorToolNameSchema,
-} from "@okf-wiki/contract";
+import { DEFAULT_OPERATOR_TOOLS, type OperatorToolName, OperatorToolNameSchema } from "@okf-wiki/contract/workspace";
 
 /** Pi coding-agent built-in tool names we may enable. */
 export type PiFsToolName = "read" | "grep" | "find" | "ls" | "write" | "edit";

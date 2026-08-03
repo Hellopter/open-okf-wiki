@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import { createSessionStatusTool, SESSION_STATUS_TOOL_NAME } from "./session-status.js";
 
 describe("session_status tool", () => {

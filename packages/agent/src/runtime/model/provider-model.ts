@@ -11,11 +11,7 @@
 
 import { type Api, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import {
-  OPENAI_COMPATIBLE_PROVIDER_KIND,
-  type ProviderApiShape,
-  type ProviderTestResult,
-} from "@okf-wiki/contract";
+import { OPENAI_COMPATIBLE_PROVIDER_KIND, type ProviderApiShape, type ProviderTestResult } from "@okf-wiki/contract/workspace";
 import {
   flattenModels,
   hasProviderCredentials,

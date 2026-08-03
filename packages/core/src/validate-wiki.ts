@@ -1,6 +1,15 @@
+/**
+ * Pure mechanical wiki-tree validation.
+ *
+ * Pipeline: load pages → pure rules → MechanicalIssue[] → (optional) report adapter.
+ * Disk autofix is **not** an option of this function — call
+ * {@link autofixWikiTreeCitations} explicitly before validate when desired.
+ */
+
 import { lstat } from "node:fs/promises";
 import path from "node:path";
-import { autofixWikiTreeCitations } from "./citations-autofix.js";
+import type { MechanicalIssue } from "@okf-wiki/contract/wiki-runs";
+import { parseCitationSourcePath } from "./citation-target.js";
 import {
   type SourceRootMap,
   sourceRootMapFromSources,
@@ -20,12 +29,15 @@ import {
   type CoveragePlan,
   type CoverageUnit,
 } from "./coverage-types.js";
+import { makeMechanicalIssue } from "./mechanical-report.js";
 import { assertAbsolutePath, assertNoSymlinkComponents } from "./paths.js";
 import { deriveWikiGraph } from "./wiki-links.js";
 import {
   isReservedWikiPath,
   loadWikiPageRecords,
+  type WikiPageLoadIssue,
   type WikiPageRecord,
+  type WikiTreeIssue,
   WIKI_MAX_FILE_BYTES,
 } from "./wiki-tree.js";
 
@@ -49,15 +61,6 @@ export type ValidateWikiOptions = {
    */
   requiredPages?: Array<{ path: string; critical?: boolean }>;
   /**
-   * When true and `sources` are provided, mechanically clamp off-by-one citation
-   * line ranges (and canonicalize targets) on disk before validation.
-   * Default false — callers / workflows may also invoke {@link autofixWikiTreeCitations}
-   * explicitly before validate.
-   */
-  autofixCitations?: boolean;
-  /** Line slack for {@link autofixCitations} (default 1 — true off-by-one). */
-  lineSlack?: number;
-  /**
    * Optional plan-coverage obligations. When provided, each required unit must
    * be covered by at least one concept page citation (fail-closed).
    */
@@ -73,8 +76,16 @@ export type ValidateWikiOptions = {
    */
   multiSource?: boolean;
 };
+
 export type ValidateWikiResult = {
+  /** Fail-closed: false when any blocking MechanicalIssue is present. */
   ok: boolean;
+  /** Structured mechanical issues (primary output). */
+  issues: MechanicalIssue[];
+  /**
+   * Compat mirror of issue messages for legacy consumers.
+   * Derived from {@link issues} — never an independent source of truth.
+   */
   errors: string[];
   /**
    * Non-blocking quality notes (OKF SHOULDs, e.g. missing `description`).
@@ -89,8 +100,68 @@ export type ValidateWikiResult = {
   citationCount?: number;
 };
 
+function finalizeResult(
+  issues: MechanicalIssue[],
+  warnings: string[],
+  extras?: Pick<ValidateWikiResult, "pageCount" | "fileCount" | "citationCount">,
+): ValidateWikiResult {
+  const errors = issues.map((issue) => issue.message);
+  return {
+    ok: issues.length === 0,
+    issues,
+    errors,
+    warnings,
+    ...extras,
+  };
+}
+
+function scanIssueToMechanical(issue: WikiTreeIssue): MechanicalIssue {
+  if (issue.kind === "symlink") {
+    return makeMechanicalIssue({
+      code: "symlink",
+      path: issue.relativePath === "." ? undefined : issue.relativePath,
+      message: issue.message,
+      autoFixable: false,
+    });
+  }
+  return makeMechanicalIssue({
+    code: "other",
+    path: issue.relativePath === "." ? undefined : issue.relativePath,
+    message: issue.message,
+    autoFixable: false,
+  });
+}
+
+function loadIssueToMechanical(issue: WikiPageLoadIssue): MechanicalIssue {
+  if (issue.kind === "symlink") {
+    return makeMechanicalIssue({
+      code: "symlink",
+      path: issue.relativePath,
+      message: issue.message,
+      autoFixable: false,
+    });
+  }
+  if (issue.kind === "size") {
+    return makeMechanicalIssue({
+      code: "cap_exceeded",
+      path: issue.relativePath,
+      message: issue.message,
+      autoFixable: false,
+    });
+  }
+  return makeMechanicalIssue({
+    code: "other",
+    path: issue.relativePath,
+    message: issue.message,
+    autoFixable: false,
+  });
+}
+
 /**
  * Mechanically validate a staging / publication-candidate Wiki tree before publish.
+ *
+ * Pure model + rules only — no on-disk mutation. Callers that want citation
+ * clamp/canonicalize must invoke {@link autofixWikiTreeCitations} first.
  *
  * Checks:
  * - Absolute path, real directory, no symlink components
@@ -108,7 +179,7 @@ export async function validateWikiTree(
   dir: string,
   options: ValidateWikiOptions = {},
 ): Promise<ValidateWikiResult> {
-  const errors: string[] = [];
+  const issues: MechanicalIssue[] = [];
   const warnings: string[] = [];
   // Citations required when Snapshot sources are supplied (publish path) unless
   // explicitly disabled. Pure frontmatter/caps checks omit sources.
@@ -124,11 +195,15 @@ export async function validateWikiTree(
   try {
     resolved = path.resolve(assertAbsolutePath(dir, "wikiDir"));
   } catch (error) {
-    return {
-      ok: false,
-      errors: [error instanceof Error ? error.message : String(error)],
+    return finalizeResult(
+      [
+        makeMechanicalIssue({
+          code: "other",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      ],
       warnings,
-    };
+    );
   }
 
   let rootInfo;
@@ -137,44 +212,73 @@ export async function validateWikiTree(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
-      return { ok: false, errors: [`wiki directory does not exist: ${resolved}`], warnings };
+      return finalizeResult(
+        [
+          makeMechanicalIssue({
+            code: "other",
+            message: `wiki directory does not exist: ${resolved}`,
+          }),
+        ],
+        warnings,
+      );
     }
-    return {
-      ok: false,
-      errors: [error instanceof Error ? error.message : String(error)],
+    return finalizeResult(
+      [
+        makeMechanicalIssue({
+          code: "other",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      ],
       warnings,
-    };
+    );
   }
 
   if (rootInfo.isSymbolicLink()) {
-    return { ok: false, errors: [`wikiDir is a symlink: ${resolved}`], warnings };
+    return finalizeResult(
+      [
+        makeMechanicalIssue({
+          code: "symlink",
+          message: `wikiDir is a symlink: ${resolved}`,
+        }),
+      ],
+      warnings,
+    );
   }
   if (!rootInfo.isDirectory()) {
-    return { ok: false, errors: [`wikiDir is not a directory: ${resolved}`], warnings };
+    return finalizeResult(
+      [
+        makeMechanicalIssue({
+          code: "other",
+          message: `wikiDir is not a directory: ${resolved}`,
+        }),
+      ],
+      warnings,
+    );
   }
 
   try {
     await assertNoSymlinkComponents(resolved, "wikiDir");
   } catch (error) {
-    return {
-      ok: false,
-      errors: [error instanceof Error ? error.message : String(error)],
+    return finalizeResult(
+      [
+        makeMechanicalIssue({
+          code: "symlink",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      ],
       warnings,
-    };
-  }
-
-  // Mechanical autofix (canonicalize + off-by-one line clamp) before load/validate.
-  if (options.autofixCitations && sourceMap) {
-    await autofixWikiTreeCitations(resolved, sourceMap, {
-      lineSlack: options.lineSlack,
-    });
+    );
   }
 
   const { pages, scan, loadIssues } = await loadWikiPageRecords(resolved, {
     maxFileBytes: WIKI_VALIDATE_MAX_FILE_BYTES,
   });
-  errors.push(...scan.issues.map((issue) => issue.message));
-  errors.push(...loadIssues.map((issue) => issue.message));
+  for (const issue of scan.issues) {
+    issues.push(scanIssueToMechanical(issue));
+  }
+  for (const issue of loadIssues) {
+    issues.push(loadIssueToMechanical(issue));
+  }
 
   const fileCount = scan.files.length;
   const pageCount = scan.files.filter((file) =>
@@ -182,11 +286,21 @@ export async function validateWikiTree(
   ).length;
 
   if (fileCount > WIKI_VALIDATE_MAX_FILES) {
-    errors.push(`wiki tree has ${fileCount} files (max ${WIKI_VALIDATE_MAX_FILES})`);
+    issues.push(
+      makeMechanicalIssue({
+        code: "cap_exceeded",
+        message: `wiki tree has ${fileCount} files (max ${WIKI_VALIDATE_MAX_FILES})`,
+      }),
+    );
   }
 
   if (pageCount < 1) {
-    errors.push(`wiki tree has no markdown pages: ${resolved}`);
+    issues.push(
+      makeMechanicalIssue({
+        code: "other",
+        message: `wiki tree has no markdown pages: ${resolved}`,
+      }),
+    );
   }
 
   for (const page of pages) {
@@ -198,13 +312,22 @@ export async function validateWikiTree(
     const hasType = Boolean(page.values.type);
     const hasTitle = Boolean(page.values.title);
     if (!hasType || !hasTitle) {
+      let message: string;
       if (!hasType && !hasTitle) {
-        errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty type and title`);
+        message = `${page.relativePath}: missing YAML frontmatter with non-empty type and title`;
       } else if (!hasType) {
-        errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty type`);
+        message = `${page.relativePath}: missing YAML frontmatter with non-empty type`;
       } else {
-        errors.push(`${page.relativePath}: missing YAML frontmatter with non-empty title`);
+        message = `${page.relativePath}: missing YAML frontmatter with non-empty title`;
       }
+      issues.push(
+        makeMechanicalIssue({
+          code: "missing_frontmatter",
+          path: page.relativePath,
+          message,
+          autoFixable: false,
+        }),
+      );
     }
     // OKF v0.2 SHOULD: description feeds index generation, search, and previews.
     if (page.hasFrontmatter && !page.values.description) {
@@ -213,11 +336,18 @@ export async function validateWikiTree(
     const citations = parseSourceCitations(page.content);
     citationCount += citations.length;
     if (requireCitations && citations.length === 0) {
-      errors.push(`${page.relativePath}: missing Source Citation ([Source](repo:…#L…))`);
+      issues.push(
+        makeMechanicalIssue({
+          code: "missing_citation",
+          path: page.relativePath,
+          message: `${page.relativePath}: missing Source Citation ([Source](repo:…#L…))`,
+          autoFixable: false,
+        }),
+      );
     }
-    errors.push(...validateCitationFormat(citations, page.relativePath));
+    issues.push(...validateCitationFormat(citations, page.relativePath));
     if (sourceMap) {
-      errors.push(...(await validateCitationResolve(citations, page.relativePath, sourceMap)));
+      issues.push(...(await validateCitationResolve(citations, page.relativePath, sourceMap)));
     }
   }
 
@@ -242,7 +372,14 @@ export async function validateWikiTree(
       const rel = page.path.replace(/\\/g, "/").replace(/^\.\//, "");
       if (!rel || isReservedWikiPath(rel)) continue;
       if (!present.has(rel)) {
-        errors.push(`critical page missing: ${rel}`);
+        issues.push(
+          makeMechanicalIssue({
+            code: "missing_critical_page",
+            path: rel,
+            message: `critical page missing: ${rel}`,
+            autoFixable: false,
+          }),
+        );
       }
     }
   }
@@ -257,7 +394,7 @@ export async function validateWikiTree(
   const coverageMultiSource =
     options.multiSource ??
     (coverageSourceIds.length >= 2 || (options.sources?.length ?? 0) >= 2);
-  errors.push(
+  issues.push(
     ...validateCoverageObligations({
       pages: conceptPages,
       coveragePlan: options.coveragePlan,
@@ -269,7 +406,7 @@ export async function validateWikiTree(
 
   // Cross-source Flow / multi-sourceId pages: citations must hit ≥2 source ids.
   if (coverageMultiSource) {
-    errors.push(
+    issues.push(
       ...validateCrossSourceFlows({
         pages: conceptPages,
         registeredSourceIds: coverageSourceIds,
@@ -278,14 +415,7 @@ export async function validateWikiTree(
     );
   }
 
-  return {
-    ok: errors.length === 0,
-    errors,
-    warnings,
-    pageCount,
-    fileCount,
-    citationCount,
-  };
+  return finalizeResult(issues, warnings, { pageCount, fileCount, citationCount });
 }
 
 type PageCitationIndex = {
@@ -300,6 +430,7 @@ type PageCitationIndex = {
 /**
  * Mechanical SOURCE_COVERAGE / SURFACE_COVERAGE checks.
  * Exported for unit tests of pure obligation logic.
+ * Contract has no dedicated coverage codes yet → code `"other"`.
  */
 export function validateCoverageObligations(input: {
   pages: readonly WikiPageRecord[];
@@ -307,12 +438,12 @@ export function validateCoverageObligations(input: {
   coverageObligations?: readonly CoverageObligation[];
   registeredSourceIds: readonly string[];
   multiSource: boolean;
-}): string[] {
-  const errors: string[] = [];
+}): MechanicalIssue[] {
+  const issues: MechanicalIssue[] = [];
   const required = input.coveragePlan?.requiredUnits ?? [];
   const obligations = input.coverageObligations ?? [];
   if (required.length === 0 && obligations.length === 0) {
-    return errors;
+    return issues;
   }
 
   const pageIndex = buildPageCitationIndex(
@@ -331,10 +462,11 @@ export function validateCoverageObligations(input: {
     obligatedUnitIds.add(unitId);
     const row = pagesByPath.get(pagePath);
     if (!row) {
-      errors.push(
-        coverageErrorForUnitId(
+      issues.push(
+        coverageIssue(
           unitId,
           `page missing for obligation unit "${unitId}" (expected ${pagePath})`,
+          pagePath,
         ),
       );
       continue;
@@ -342,15 +474,19 @@ export function validateCoverageObligations(input: {
     const unit = unitFromObligationId(unitId, required);
     if (!unit) {
       // Unknown unit id still fails closed when obligations are declared.
-      errors.push(`SOURCE_COVERAGE: unknown coverage unit "${unitId}" for page ${pagePath}`);
+      issues.push(
+        makeMechanicalIssue({
+          code: "other",
+          path: pagePath,
+          message: `SOURCE_COVERAGE: unknown coverage unit "${unitId}" for page ${pagePath}`,
+          autoFixable: false,
+        }),
+      );
       continue;
     }
     if (!pageCoversUnit(row, unit)) {
-      errors.push(
-        coverageError(
-          unit,
-          `${pagePath} does not cover unit "${unit.id}"`,
-        ),
+      issues.push(
+        coverageIssue(unit, `${pagePath} does not cover unit "${unit.id}"`, pagePath),
       );
     }
   }
@@ -360,11 +496,11 @@ export function validateCoverageObligations(input: {
     if (obligatedUnitIds.has(unit.id)) continue;
     const covered = pageIndex.some((row) => pageCoversUnit(row, unit));
     if (!covered) {
-      errors.push(coverageError(unit, `no page covers unit "${unit.id}"`));
+      issues.push(coverageIssue(unit, `no page covers unit "${unit.id}"`));
     }
   }
 
-  return errors;
+  return issues;
 }
 
 /**
@@ -375,9 +511,9 @@ export function validateCrossSourceFlows(input: {
   pages: readonly WikiPageRecord[];
   registeredSourceIds: readonly string[];
   multiSource: boolean;
-}): string[] {
+}): MechanicalIssue[] {
   if (!input.multiSource) return [];
-  const errors: string[] = [];
+  const issues: MechanicalIssue[] = [];
   const registered = new Set(input.registeredSourceIds);
 
   for (const page of input.pages) {
@@ -396,12 +532,17 @@ export function validateCrossSourceFlows(input: {
     }
     if (citedIds.size < 2) {
       const got = citedIds.size === 0 ? "none" : [...citedIds].sort().join(", ");
-      errors.push(
-        `CROSS_SOURCE_FLOW: ${page.relativePath} must cite ≥2 source ids (got: ${got})`,
+      issues.push(
+        makeMechanicalIssue({
+          code: "other",
+          path: page.relativePath,
+          message: `CROSS_SOURCE_FLOW: ${page.relativePath} must cite ≥2 source ids (got: ${got})`,
+          autoFixable: false,
+        }),
       );
     }
   }
-  return errors;
+  return issues;
 }
 
 function pageNeedsCrossSourceCitations(page: WikiPageRecord): boolean {
@@ -449,47 +590,8 @@ function buildPageCitationIndex(
   });
 }
 
-/**
- * Split a citation target into sourceId + repo path.
- * Multi-source: requires registered id prefix.
- * Single-source: bare path counts as the sole registered id (when exactly one).
- */
-export function parseCitationSourcePath(
-  target: string,
-  registeredSourceIds: readonly string[],
-  multiSource: boolean,
-): { sourceId: string; repoPath: string } | undefined {
-  const normalized = target.trim().replace(/\\/g, "/");
-  if (!normalized || normalized.startsWith("/") || normalized.includes("..")) {
-    return undefined;
-  }
-  const segments = normalized.split("/").filter(Boolean);
-  if (segments.length === 0) return undefined;
-  const idSet = new Set(registeredSourceIds);
-
-  // sources/<id>/rest mount form
-  if (segments[0] === "sources" && segments.length >= 3 && idSet.has(segments[1]!)) {
-    return { sourceId: segments[1]!, repoPath: segments.slice(2).join("/") };
-  }
-
-  if (segments.length >= 2 && idSet.has(segments[0]!)) {
-    return { sourceId: segments[0]!, repoPath: segments.slice(1).join("/") };
-  }
-
-  if (multiSource) {
-    return undefined;
-  }
-
-  // Single-source bare path.
-  if (registeredSourceIds.length === 1) {
-    return { sourceId: registeredSourceIds[0]!, repoPath: segments.join("/") };
-  }
-  // No registered ids: treat as anonymous single-source path under "".
-  if (registeredSourceIds.length === 0) {
-    return { sourceId: "", repoPath: segments.join("/") };
-  }
-  return undefined;
-}
+// parseCitationSourcePath — sole implementation in citation-target.ts
+export { parseCitationSourcePath } from "./citation-target.js";
 
 function pageCoversUnit(row: PageCitationIndex, unit: CoverageUnit): boolean {
   if (unit.kind === "source") {
@@ -536,16 +638,25 @@ function unitFromObligationId(
   }
 }
 
-function coverageError(unit: CoverageUnit, detail: string): string {
-  const code = unit.kind === "source" ? "SOURCE_COVERAGE" : "SURFACE_COVERAGE";
-  return `${code}: ${detail}`;
+function coveragePrefix(unit: CoverageUnit | string): "SOURCE_COVERAGE" | "SURFACE_COVERAGE" {
+  if (typeof unit === "string") {
+    return isSurfaceUnitId(unit) ? "SURFACE_COVERAGE" : "SOURCE_COVERAGE";
+  }
+  return unit.kind === "source" ? "SOURCE_COVERAGE" : "SURFACE_COVERAGE";
 }
 
-function coverageErrorForUnitId(unitId: string, detail: string): string {
-  if (isSurfaceUnitId(unitId)) {
-    return `SURFACE_COVERAGE: ${detail}`;
-  }
-  return `SOURCE_COVERAGE: ${detail}`;
+function coverageIssue(
+  unit: CoverageUnit | string,
+  detail: string,
+  pathHint?: string,
+): MechanicalIssue {
+  const prefix = coveragePrefix(unit);
+  return makeMechanicalIssue({
+    code: "other",
+    ...(pathHint ? { path: pathHint } : {}),
+    message: `${prefix}: ${detail}`,
+    autoFixable: false,
+  });
 }
 
 function normalizeWikiRel(value: string): string {

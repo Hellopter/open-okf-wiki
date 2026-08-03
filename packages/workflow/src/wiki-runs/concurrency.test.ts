@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  DEFAULT_ORCHESTRATION,
-  resolveOrchestration,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
+import { DEFAULT_ORCHESTRATION, resolveOrchestration, type WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import {
   canClaimKind,
   concurrencyLimitForKind,

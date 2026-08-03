@@ -9,18 +9,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  assertCoverage,
-  type CoveragePlan as ContractCoveragePlan,
-  CoveragePlanSchema,
-  CoverageAssertError,
-  type CoverageResult,
-  isSurfaceUnitId,
-  parseSealedCoveragePlan as parseContractSealedCoveragePlan,
-  unitIdForSource,
-  type WikiRunSpec,
-  WikiRunSpecSchema,
-} from "@okf-wiki/contract";
+import { assertCoverage, type CoveragePlan as ContractCoveragePlan, CoveragePlanSchema, CoverageAssertError, type CoverageResult, isSurfaceUnitId, parseSealedCoveragePlan as parseContractSealedCoveragePlan, unitIdForSource } from "@okf-wiki/contract/coverage";
+import { type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
 import type {
   CoverageInventory as CoreCoverageInventory,
   CoverageObligation,

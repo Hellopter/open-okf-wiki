@@ -5,6 +5,9 @@
  *   multi repo:   [Source](repo:repository-id/path/to/file.py#L10-L20)
  */
 
+import type { MechanicalIssue } from "@okf-wiki/contract/wiki-runs";
+import { makeMechanicalIssue } from "./mechanical-report.js";
+
 /** One parsed Source Citation. */
 export type SourceCitation = {
   /** Full match text, e.g. `[Source](repo:foo.ts#L1-L2)`. */
@@ -51,22 +54,44 @@ export function parseSourceCitations(content: string): SourceCitation[] {
 }
 
 /**
- * Format-only validation (no filesystem). Returns error strings.
+ * Format-only validation (no filesystem). Returns structured MechanicalIssue rows.
  */
-export function validateCitationFormat(citations: SourceCitation[], pageLabel: string): string[] {
-  const errors: string[] = [];
+export function validateCitationFormat(
+  citations: SourceCitation[],
+  pageLabel: string,
+): MechanicalIssue[] {
+  const issues: MechanicalIssue[] = [];
   for (const c of citations) {
     if (c.target.includes("..") || c.target.startsWith("/")) {
-      errors.push(
-        `${pageLabel}: citation path must be repository-relative POSIX (got ${c.target})`,
+      issues.push(
+        makeMechanicalIssue({
+          code: "citation_format",
+          path: pageLabel,
+          message: `${pageLabel}: citation path must be repository-relative POSIX (got ${c.target})`,
+          autoFixable: false,
+        }),
       );
     }
     if (c.lineStart !== undefined && c.lineStart < 1) {
-      errors.push(`${pageLabel}: citation line start must be ≥ 1 (${c.raw})`);
+      issues.push(
+        makeMechanicalIssue({
+          code: "citation_format",
+          path: pageLabel,
+          message: `${pageLabel}: citation line start must be ≥ 1 (${c.raw})`,
+          autoFixable: false,
+        }),
+      );
     }
     if (c.lineStart !== undefined && c.lineEnd !== undefined && c.lineEnd < c.lineStart) {
-      errors.push(`${pageLabel}: citation line end before start (${c.raw})`);
+      issues.push(
+        makeMechanicalIssue({
+          code: "citation_format",
+          path: pageLabel,
+          message: `${pageLabel}: citation line end before start (${c.raw})`,
+          autoFixable: false,
+        }),
+      );
     }
   }
-  return errors;
+  return issues;
 }

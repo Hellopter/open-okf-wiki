@@ -6,7 +6,7 @@
  * (e.g. operator picks a model when starting a Wiki Run).
  */
 
-import type { ModelRef, WorkspaceConfig } from "@okf-wiki/contract";
+import type { ModelRef, WorkspaceConfig } from "@okf-wiki/contract/workspace";
 
 /** Semantic roles that can select a model profile. */
 export type WikiModelRole = "default" | "planner" | "worker" | "writer" | "reviewer";

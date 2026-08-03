@@ -8,15 +8,15 @@
 
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
+import { type EvaluationPolicy, evaluationPolicyFromAcceptance, type WikiRunSpec, WikiRunSpecAcceptanceSchema, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
 import {
-  type EvaluationPolicy,
-  evaluationPolicyFromAcceptance,
-  type PiAttemptOutcome,
-  type WikiRunSpec,
-  WikiRunSpecAcceptanceSchema,
-  WikiRunSpecSchema,
-} from "@okf-wiki/contract";
-import { regenerateWikiIndexes, toMechanicalReport, validateWikiTree } from "@okf-wiki/core";
+  autofixWikiTreeCitations,
+  regenerateWikiIndexes,
+  sourceRootMapFromSources,
+  toMechanicalReport,
+  validateWikiTree,
+} from "@okf-wiki/core";
 import {
   coverageObligationsFromSpec,
   loadCoveragePlanFromArtifactRoot,
@@ -24,10 +24,11 @@ import {
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
-import { type MechanicalHost, sealedInputPath } from "./host.js";
+import type { WikiRunsControl } from "../ctx.js";
+import { sealedInputPath } from "./host.js";
 
 async function loadSealedSpec(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   runDir: string,
 ): Promise<WikiRunSpec | undefined> {
@@ -56,7 +57,7 @@ function policyForSpec(spec: WikiRunSpec | undefined): EvaluationPolicy {
 }
 
 export async function mechanicalValidate(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   workDir: string,
   runDir: string,
@@ -114,17 +115,21 @@ export async function mechanicalValidate(
     }
   }
 
+  // Explicit autofix adapter (not in-band validate). Policy-gated host rewrite.
   const wantAutofix =
     hasSources &&
     (policy.mechanical.autoFix.canonicalizeCitations ||
       policy.mechanical.autoFix.clampCitationLines);
+  if (wantAutofix) {
+    await autofixWikiTreeCitations(stagingWiki, sourceRootMapFromSources(sources), {
+      lineSlack: policy.mechanical.autoFix.clampLineSlack,
+    });
+  }
 
   const result = await validateWikiTree(stagingWiki, {
     sources: hasSources ? sources : undefined,
     // Single mechanical contract for pre and final (no weaker pre path).
     requireCitations: hasSources ? policy.mechanical.requireCitations : false,
-    autofixCitations: wantAutofix,
-    lineSlack: policy.mechanical.autoFix.clampLineSlack,
     ...(requiredPages && requiredPages.length > 0 ? { requiredPages } : {}),
     ...(wantCoverage && coveragePlan ? { coveragePlan } : {}),
     ...(wantCoverage && coverageObligations.length > 0

@@ -7,16 +7,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  assertCoverage,
-  type ExecutionPlan,
-  ExecutionPlanSchema,
-  type WikiRunPlanReview,
-  WikiRunPlanReviewSchema,
-  type WikiRunSpec,
-  WikiRunSpecSchema,
-  type WorkspaceConfig,
-} from "@okf-wiki/contract";
+import { assertCoverage } from "@okf-wiki/contract/coverage";
+import { type ExecutionPlan, ExecutionPlanSchema, type WikiRunPlanReview, WikiRunPlanReviewSchema, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { runWorkDir } from "@okf-wiki/core";
 import {
   loadCoveragePlanFromArtifactRoot,

@@ -2,7 +2,7 @@
  * write.root: produce (or feedback-repair) the Staging Wiki tree.
  */
 
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import type { AttemptHandlerContext } from "../shared.js";
 import { runWriteShared } from "../write-shared.js";
 

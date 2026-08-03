@@ -12,7 +12,7 @@
  * is separate (domainConcurrency × min(leafConcurrency, maxLeafFanOut) in concurrency.ts).
  */
 
-import { type ExecutionPlan, type WikiRunNodeKind, type WikiRunSpec } from "@okf-wiki/contract";
+import type { ExecutionPlan, WikiRunNodeKind, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { type CompileExecutionPlanCaps, compileExecutionPlan } from "./plan-compiler.js";
 
 export type BuildExecutionGraphOptions = CompileExecutionPlanCaps;

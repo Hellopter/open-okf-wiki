@@ -4,11 +4,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import {
-  type AttemptMetrics,
-  AttemptMetricsSchema,
-  metricsRoleForNodeKind,
-} from "@okf-wiki/contract";
+import { type AttemptMetrics, AttemptMetricsSchema, metricsRoleForNodeKind } from "@okf-wiki/contract/wiki-runs";
 import { asRow, requiredText } from "./sql.js";
 
 /** Map durable node kind → short graph role for metrics / cost attribution. */

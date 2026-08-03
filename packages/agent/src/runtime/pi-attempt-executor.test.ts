@@ -13,7 +13,8 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { defaultWikiRunSpec, type PiAttemptInput, PiAttemptInputSchema } from "@okf-wiki/contract";
+import { type PiAttemptInput, PiAttemptInputSchema } from "@okf-wiki/contract/pi-attempt";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { createFixtureProduceRuntime } from "./fixture-runner.js";
 import { createPiAttemptExecutor } from "./pi-attempt-executor.js";
 
@@ -330,7 +331,7 @@ test("Pi attempt fixture research.leaf and research.domain return full AnalysisR
     assert.ok(leafOut.unsealedArtifacts.some((a) => a.role === "research" || a.kind === "receipt"));
     const receiptArt = leafOut.unsealedArtifacts.find((a) => a.role === "research");
     assert.ok(receiptArt);
-    const { AnalysisReceiptSchema } = await import("@okf-wiki/contract");
+    const { AnalysisReceiptSchema } = await import("@okf-wiki/contract/wiki-runs");
     const raw = JSON.parse(await readFile(receiptArt.sourcePath, "utf8")) as unknown;
     const parsed = AnalysisReceiptSchema.parse(raw);
     assert.equal(parsed.nodeId, "research.leaf.core.1");
@@ -343,7 +344,7 @@ test("Pi attempt fixture research.leaf and research.domain return full AnalysisR
   if (domainOut.type === "succeeded") {
     const receiptArt = domainOut.unsealedArtifacts.find((a) => a.role === "research");
     assert.ok(receiptArt);
-    const { AnalysisReceiptSchema } = await import("@okf-wiki/contract");
+    const { AnalysisReceiptSchema } = await import("@okf-wiki/contract/wiki-runs");
     AnalysisReceiptSchema.parse(JSON.parse(await readFile(receiptArt.sourcePath, "utf8")));
   }
 });

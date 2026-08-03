@@ -11,22 +11,15 @@
 
 import { cp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type DefectItem,
-  type DefectReport,
-  DefectReportSchema,
-  type DefectSeverity,
-  type MergedDefectReport,
-  MergedDefectReportSchema,
-  type PiAttemptOutcome,
-  type WikiRunSpecAcceptance,
-} from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
+import { type DefectItem, type DefectReport, DefectReportSchema, type DefectSeverity, type MergedDefectReport, MergedDefectReportSchema, type WikiRunSpecAcceptance } from "@okf-wiki/contract/wiki-runs";
 import { loadAcceptance } from "../repair-schedule.js";
 import { asRows, requiredText } from "../sql.js";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
-import { type MechanicalHost, sealedInputPath } from "./host.js";
+import type { WikiRunsControl } from "../ctx.js";
+import { sealedInputPath } from "./host.js";
 
 export type SeatFinding = {
   role: string;
@@ -234,7 +227,7 @@ async function readSeatText(root: string): Promise<string> {
   }
 }
 
-function listConfiguredSeatKeys(host: MechanicalHost, runId: string): string[] {
+function listConfiguredSeatKeys(host: WikiRunsControl, runId: string): string[] {
   return asRows(
     host.db
       .prepare(
@@ -247,7 +240,7 @@ function listConfiguredSeatKeys(host: MechanicalHost, runId: string): string[] {
 }
 
 export async function mechanicalReviewReduce(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   workDir: string,
   runDir: string,
@@ -390,7 +383,7 @@ export async function mechanicalReviewReduce(
 }
 
 async function sealReduceSuccess(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   workDir: string,
   runDir: string,

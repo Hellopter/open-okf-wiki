@@ -2,7 +2,7 @@
  * repair: fix blocking defects on an existing Staging Wiki (requires sealed wiki_tree).
  */
 
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import type { AttemptHandlerContext } from "../shared.js";
 import { runWriteShared } from "../write-shared.js";
 

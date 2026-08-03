@@ -8,19 +8,8 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type CoverageInventory as ContractInventory,
-  type CoveragePlan as ContractPlan,
-  CoverageInventorySchema,
-  CoveragePlanSchema,
-  type CoverageUnit,
-  parseSealedCoverageInventory,
-  parseSealedCoveragePlan,
-  requiredSourceUnitsFromInventory,
-  requiredSurfaceUnitsFromInventory,
-  sourceCoverageUnit,
-  type WorkspaceOrchestration,
-} from "@okf-wiki/contract";
+import { type CoverageInventory as ContractInventory, type CoveragePlan as ContractPlan, CoverageInventorySchema, CoveragePlanSchema, type CoverageUnit, parseSealedCoverageInventory, parseSealedCoveragePlan, requiredSourceUnitsFromInventory, requiredSurfaceUnitsFromInventory, sourceCoverageUnit } from "@okf-wiki/contract/coverage";
+import type { WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
 import {
   type BoundaryIndex,
   buildBoundaryIndex,

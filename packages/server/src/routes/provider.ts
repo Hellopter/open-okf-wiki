@@ -1,10 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { redactErrorMessage, testProviderConnection } from "@okf-wiki/agent";
-import {
-  ModelProfileWriteSchema,
-  ProviderApiShapeSchema,
-  ProviderEntryWriteSchema,
-} from "@okf-wiki/contract";
+import { ModelProfileWriteSchema, ProviderApiShapeSchema, ProviderEntryWriteSchema } from "@okf-wiki/contract/workspace";
 import {
   createModelProfile,
   createProviderEntry,

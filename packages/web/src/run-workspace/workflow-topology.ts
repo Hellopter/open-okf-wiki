@@ -1,4 +1,8 @@
-import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract";
+import {
+  stageForNodeKind,
+  type WikiRunNode,
+  type WikiRunSnapshot,
+} from "@okf-wiki/contract/wiki-runs";
 
 export type WorkflowStageId = "plan" | "research" | "synthesis" | "quality" | "publication";
 export type WorkflowEdgeRelation = "forward" | "fanout" | "join" | "control" | "feedback";
@@ -38,13 +42,34 @@ export const workflowStageIds: WorkflowStageId[] = [
   "publication",
 ];
 
+/** Map contract observation stages onto the operator canvas stage ids. */
+function canvasStageFromObservation(stage: ReturnType<typeof stageForNodeKind>): WorkflowStageId {
+  switch (stage) {
+    case "plan":
+      return "plan";
+    case "research":
+      return "research";
+    case "write":
+      return "synthesis";
+    case "review":
+    case "repair":
+    case "validate":
+      return "quality";
+    case "publish":
+    case "gate":
+      // gate.plan is "gate" in contract; keep plan-adjacent gates on plan via kind check below.
+      return "publication";
+    default:
+      return "publication";
+  }
+}
+
 export function stageForNode(node: WikiRunNode): WorkflowStageId {
-  if (["freeze", "plan", "plan.scout", "gate.plan"].includes(node.kind)) return "plan";
-  if (["research.leaf", "research.domain", "plan.adapt"].includes(node.kind)) return "research";
-  if (["write.root", "validate.pre"].includes(node.kind)) return "synthesis";
-  if (["review.seat", "review.reduce", "gate.fix", "repair", "validate.final"].includes(node.kind))
-    return "quality";
-  return "publication";
+  // Plan gate stays in plan stage (operator canvas grouping).
+  if (node.kind === "gate.plan") return "plan";
+  if (node.kind === "gate.fix") return "quality";
+  if (node.kind === "validate.pre") return "synthesis";
+  return canvasStageFromObservation(stageForNodeKind(node.kind));
 }
 
 /** Filesystem-safe slug for plan.scout.<slug> display keys. */

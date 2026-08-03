@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { WorkspaceConfigSchema } from "@okf-wiki/contract";
+import { WorkspaceConfigSchema } from "@okf-wiki/contract/workspace";
 import {
   createOperatorSession,
   deleteOperatorSession,

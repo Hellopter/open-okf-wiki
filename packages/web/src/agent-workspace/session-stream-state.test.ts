@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  type AgentSseEvent,
-  createSessionStreamState,
-  type SessionMessage,
-  viewSessionMessages,
-} from "@okf-wiki/contract";
+import { type AgentSseEvent, createSessionStreamState, type SessionMessage, viewSessionMessages } from "@okf-wiki/contract/session";
 import {
   appendOptimisticUser,
   dedupeOptimisticUsers,

@@ -3,7 +3,7 @@
  * Parent owns resolve_gate dispatch and (preferably) a single usePlanReview owner.
  */
 
-import type { RunCommand, WikiRunGate, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { RunCommand, WikiRunGate, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import { LoaderCircleIcon, SendIcon } from "lucide-react";
 import { useState } from "react";
 import { ActivityCollapsible } from "@/components/agent-ui";

@@ -4,11 +4,7 @@
  */
 
 import path from "node:path";
-import type {
-  PiAttemptArtifactDescriptor,
-  PiAttemptFailureClass,
-  PiAttemptOutcome,
-} from "@okf-wiki/contract";
+import type { PiAttemptArtifactDescriptor, PiAttemptFailureClass, PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import { writeConversationTranscript } from "../transcript-io.js";
 import type { ClaimedNode } from "../types.js";
 

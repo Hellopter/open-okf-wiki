@@ -1,7 +1,7 @@
 /**
  * Pure context-fill phase → chrome tone mapping (semantic tokens only).
  */
-import type { ContextPhase } from "@okf-wiki/contract";
+import type { ContextPhase } from "@okf-wiki/contract/session";
 import type { StatusTone } from "../status";
 
 /** Map server context pressure phase to StatusTone for meter chrome. */

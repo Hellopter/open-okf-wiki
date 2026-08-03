@@ -9,15 +9,8 @@
  * of this adapter makes an interrupted Pi session safe to discard.
  */
 
-import {
-  type AttemptMetrics,
-  metricsRoleForNodeKind,
-  type PiAttemptExecutor,
-  type PiAttemptInput,
-  PiAttemptInputSchema,
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptExecutor, type PiAttemptInput, PiAttemptInputSchema, type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import { type AttemptMetrics, metricsRoleForNodeKind } from "@okf-wiki/contract/wiki-runs";
 import { isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../ports/agent-runner.js";
 import { classifyPiFailureClass, failure } from "./attempt/classify.js";
@@ -32,7 +25,7 @@ import { handleRepair } from "./attempt/handlers/repair.js";
 import { handleResearchDomain, handleResearchLeaf } from "./attempt/handlers/research.js";
 import { handleReviewSeat } from "./attempt/handlers/review.js";
 import { handleWriteRoot } from "./attempt/handlers/write.js";
-import { materializeInputs } from "./attempt/materialize.js";
+import { materializeInputs } from "./attempt/mount.js";
 import {
   type AttemptHandlerContext,
   type ResolvePiModel,

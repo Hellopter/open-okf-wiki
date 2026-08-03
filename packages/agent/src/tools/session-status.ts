@@ -6,7 +6,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { resolveContextBudget } from "../runtime/context-budget.js";
 
 export const SESSION_STATUS_TOOL_NAME = "session_status" as const;

@@ -1,4 +1,4 @@
-import type { AttemptTraceEvent } from "@okf-wiki/contract";
+import type { AttemptTraceEvent } from "@okf-wiki/contract/wiki-runs";
 import {
   extractFileChange,
   extractToolChip,

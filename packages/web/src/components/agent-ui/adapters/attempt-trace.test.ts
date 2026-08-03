@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AttemptTraceEvent } from "@okf-wiki/contract";
+import type { AttemptTraceEvent } from "@okf-wiki/contract/wiki-runs";
 import { attemptToolToViewModel } from "./attempt-trace.ts";
 
 const at = "2026-08-02T12:00:00.000Z";

@@ -8,11 +8,7 @@
  * Execution graph topology caps are maxDomainFanOut / maxLeafFanOut only.
  */
 
-import {
-  resolveOrchestration,
-  type WorkspaceConfig,
-  type WorkspaceOrchestration,
-} from "@okf-wiki/contract";
+import { resolveOrchestration, type WorkspaceConfig, type WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
 import { isMechanicalAttemptKind } from "../execution-graph.js";
 
 /**

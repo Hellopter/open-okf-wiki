@@ -1,4 +1,4 @@
-import type { ProviderStoreErrorCode, WorkspaceIntakeErrorCode } from "@okf-wiki/contract";
+import type { ProviderStoreErrorCode, WorkspaceIntakeErrorCode } from "@okf-wiki/contract/workspace";
 
 /** Map workspace intake domain codes → HTTP status (server only). */
 export function httpStatusForWorkspaceCode(code: WorkspaceIntakeErrorCode): number {

@@ -13,7 +13,7 @@
  * its substituteArgs helper, so the subset is implemented and tested here.
  */
 
-import type { AgentCommand } from "@okf-wiki/contract";
+import type { AgentCommand } from "@okf-wiki/contract/session";
 
 export type OperatorCommandKind = "template" | "control";
 

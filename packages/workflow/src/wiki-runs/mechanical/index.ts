@@ -4,20 +4,19 @@
 
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import { runWorkDir } from "@okf-wiki/core";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
-import type { MechanicalHost } from "./host.js";
+import type { WikiRunsControl } from "../ctx.js";
 import { mechanicalPreparePublication } from "./prepare-publication.js";
 import { mechanicalPublish } from "./publish.js";
 import { mechanicalReviewReduce } from "./review-reduce.js";
 import { mechanicalValidate } from "./validate.js";
 
-export type { MechanicalHost } from "./host.js";
 
 export async function executeMechanical(
-  host: MechanicalHost,
+  host: WikiRunsControl,
   claim: ClaimedNode,
   signal: AbortSignal,
 ): Promise<PiAttemptOutcome> {

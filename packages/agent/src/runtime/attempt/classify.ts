@@ -30,8 +30,8 @@
  * maps to infrastructure so L_control may requeue research once.
  */
 
-import type { PiAttemptFailureClass } from "@okf-wiki/contract";
-import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract";
+import type { PiAttemptFailureClass } from "@okf-wiki/contract/pi-attempt";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
 import { redactSensitiveText } from "../../redact/index.js";
 import { classifyError } from "../../workflow/retry-policy.js";
 import { bounded } from "./shared.js";

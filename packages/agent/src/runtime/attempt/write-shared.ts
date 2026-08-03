@@ -7,14 +7,10 @@
  * Phase 2: consume projected EvidenceBundle, defects, and refresh prior wiki.
  */
 
-import {
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
-  type RepairRequest,
-  RepairRequestSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import { type RepairRequest, RepairRequestSchema } from "@okf-wiki/contract/wiki-runs";
 import { digestPublicationTreeContentOnly } from "@okf-wiki/core";
-import { materializeWikiIndexes } from "../../produce/wiki-pages.js";
+import { materializeWikiIndexes } from "../wiki-pages.js";
 import { rootWritePrompt, rootWriteSystemPrompt } from "../../prompts/index.js";
 import {
   formatEvidenceIndex,
@@ -23,7 +19,7 @@ import {
   loadProjectedDefectsText,
   loadProjectedIntent,
   loadProjectedOperatorInput,
-} from "./materialize.js";
+} from "./projection.js";
 import {
   type AttemptHandlerContext,
   bounded,

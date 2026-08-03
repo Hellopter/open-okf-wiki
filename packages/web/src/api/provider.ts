@@ -3,20 +3,8 @@
  * Domain types come from `@okf-wiki/contract` — do not redeclare schemas here.
  */
 
-import type {
-  ModelProfilePublic,
-  ModelProfileWrite,
-  ProviderApiShape,
-  ProviderEntryPublic,
-  ProviderPublic,
-  ProviderTestResult,
-} from "@okf-wiki/contract";
-import {
-  ModelProfilePublicSchema,
-  ProviderApiShapeSchema,
-  ProviderPublicSchema,
-  ProviderTestResultSchema,
-} from "@okf-wiki/contract";
+import type { ModelProfilePublic, ModelProfileWrite, ProviderApiShape, ProviderEntryPublic, ProviderPublic, ProviderTestResult } from "@okf-wiki/contract/workspace";
+import { ModelProfilePublicSchema, ProviderApiShapeSchema, ProviderPublicSchema, ProviderTestResultSchema } from "@okf-wiki/contract/workspace";
 import { z } from "zod";
 import { request } from "./client";
 

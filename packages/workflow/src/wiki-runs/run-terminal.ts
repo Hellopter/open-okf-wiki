@@ -6,16 +6,15 @@
  * This helper must not open a nested transaction.
  */
 
-import type { WikiRunsDbCtx } from "./ctx.js";
+import type { WikiRunsControl } from "./ctx.js";
 import { asRow, requiredNumber } from "./sql.js";
 
 export type TerminalCancelReason = "cancel_requested" | "plan_denied";
 
-export type TerminalCancelHost = Pick<WikiRunsDbCtx, "db" | "emit"> & {
-  abortRunAttempts(runId: string): void;
-  withdrawOpenGates(runId: string): void;
-  cancelPreApplyEffects(runId: string): void;
-};
+export type TerminalCancelControl = Pick<
+  WikiRunsControl,
+  "db" | "emit" | "abortRunAttempts" | "withdrawOpenGates" | "cancelPreApplyEffects"
+>;
 
 export type ApplyRunCancelTransitionsInput = {
   runId: string;
@@ -46,7 +45,7 @@ const ACTIVE_CANCEL_STATES =
  * On mutate, `revision` is the run.cancelled event revision (caller should not re-emit).
  */
 export function applyRunCancelTransitions(
-  host: TerminalCancelHost,
+  host: TerminalCancelControl,
   input: ApplyRunCancelTransitionsInput,
 ): { didMutate: false } | { didMutate: true; revision: number } {
   if (input.skipIfAlreadyRequested) {

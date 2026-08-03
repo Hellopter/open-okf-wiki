@@ -15,7 +15,8 @@
 
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { AttemptItem, AttemptMetrics, NodeAttempt, RetryLimits } from "@okf-wiki/contract";
+import type { AttemptItem, AttemptMetrics, NodeAttempt } from "@okf-wiki/contract/wiki-runs";
+import type { RetryLimits } from "@okf-wiki/contract/workspace";
 import type { AgentRunRequest, ScopedRunnerRole } from "../ports/agent-runner.js";
 import { classifyAgentFailure } from "../workflow/retry-policy.js";
 import {

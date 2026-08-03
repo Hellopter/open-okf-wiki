@@ -1,4 +1,4 @@
-import { IGNORE_PRESETS } from "@okf-wiki/contract";
+import { IGNORE_PRESETS } from "@okf-wiki/contract/workspace";
 import { type FormEvent, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";

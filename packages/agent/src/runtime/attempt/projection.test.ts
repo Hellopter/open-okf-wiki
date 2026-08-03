@@ -1,6 +1,5 @@
 /**
- * Phase 2 materialize: project sealed spec + research into inputs/evidence,
- * transcript containment, refresh prior wiki.
+ * Attempt projection: sealed semantic inputs under inputs/, loaders, formatters.
  */
 
 import assert from "node:assert/strict";
@@ -18,20 +17,16 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
-  AnalysisReceiptSchema,
-  defaultWikiRunSpec,
-  type PiAttemptInput,
-  PiAttemptInputSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptInput, PiAttemptInputSchema } from "@okf-wiki/contract/pi-attempt";
+import { AnalysisReceiptSchema, defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { runWorkdirLayout } from "../workdir.js";
+import { materializeInputs } from "./mount.js";
 import {
   formatEvidenceIndex,
   formatOperatorInputNotes,
   loadEvidenceBundle,
-  materializeInputs,
   mergeOperatorNotes,
-} from "./materialize.js";
+} from "./projection.js";
 import { readSpec } from "./shared.js";
 
 const digest = "b".repeat(64);
@@ -46,7 +41,7 @@ async function baseFixture(
     runIndex: 1,
   },
 ): Promise<PiAttemptInput> {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-materialize-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-projection-"));
   const sources = path.join(root, "sealed-sources");
   const skill = path.join(root, "sealed-skill");
   const spec = path.join(root, "sealed-spec");
@@ -95,7 +90,7 @@ async function baseFixture(
     );
   }
   return PiAttemptInputSchema.parse({
-    runId: "run-mat-1",
+    runId: "run-proj-1",
     attemptId: "attempt-1",
     node,
     inputDigest: digest,
@@ -189,7 +184,7 @@ async function cleanup(input: PiAttemptInput): Promise<void> {
 }
 
 test("materialize projects spec + research receipts into inputs/evidence", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-seal-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-seal-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const specDir = path.join(root, "sealed-spec");
@@ -202,7 +197,7 @@ test("materialize projects spec + research receipts into inputs/evidence", async
 
   const receipt = AnalysisReceiptSchema.parse({
     version: 1,
-    runId: "run-mat-1",
+    runId: "run-proj-1",
     nodeId: "research.leaf.core.1",
     parentId: "research.domain.core",
     attempt: 1,
@@ -280,90 +275,6 @@ test("readSpec requires inputs/spec.json instead of an analysis fallback", async
   await assert.rejects(() => readSpec(layout), /projected inputs\/spec\.json is unreadable/);
 });
 
-test("materialize rejects legacy manifest versions, role names, and filenames", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-legacy-manifest-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-
-  const v1Dir = path.join(root, "v1");
-  await mkdir(v1Dir, { recursive: true });
-  await writeFile(
-    path.join(v1Dir, "frozen-run-manifest.json"),
-    `${JSON.stringify({
-      version: 1,
-      intent: { mode: "generate" },
-      mode: "generate",
-      intentDigest: digest,
-      sources: [{ id: "main" }],
-    })}\n`,
-    "utf8",
-  );
-  const v1 = await baseFixture([
-    {
-      role: "frozen_run_manifest",
-      artifact: { artifactId: "v1", kind: "manifest", digest, sealedAt: timestamp },
-      readOnlyPath: v1Dir,
-    },
-  ]);
-  t.after(() => cleanup(v1));
-  await assert.rejects(() => materializeInputs(v1), /sealed frozen_run_manifest is invalid/);
-
-  const oldNameDir = path.join(root, "old-name");
-  await mkdir(oldNameDir, { recursive: true });
-  await writeFile(
-    path.join(oldNameDir, "manifest.json"),
-    `${JSON.stringify({ version: 2, intent: { mode: "generate" } })}\n`,
-    "utf8",
-  );
-  const oldName = await baseFixture([
-    {
-      role: "frozen_run_manifest",
-      artifact: { artifactId: "old-name", kind: "manifest", digest, sealedAt: timestamp },
-      readOnlyPath: oldNameDir,
-    },
-  ]);
-  t.after(() => cleanup(oldName));
-  await assert.rejects(
-    () => materializeInputs(oldName),
-    /sealed frozen_run_manifest is unreadable/,
-  );
-
-  const legacyRole = await baseFixture([
-    {
-      role: "manifest",
-      artifact: { artifactId: "legacy-role", kind: "manifest", digest, sealedAt: timestamp },
-      readOnlyPath: oldNameDir,
-    },
-  ]);
-  t.after(() => cleanup(legacyRole));
-  await assert.rejects(
-    () => materializeInputs(legacyRole),
-    /sealed input role is not declared by write\.root: manifest/,
-  );
-});
-
-test("materialize rejects a Pi envelope missing NodeContract-required inputs", async (t) => {
-  const input = await baseFixture([], {
-    key: "research.leaf.core.1",
-    kind: "research.leaf",
-    generation: 0,
-    runIndex: 1,
-    detail: {
-      domainId: "core",
-      question: "What is this repository for?",
-      scope: "Repository entry points",
-    },
-  });
-  t.after(() => cleanup(input));
-  const index = input.sealedInputs.findIndex((sealed) => sealed.role === "execution_plan");
-  assert.ok(index >= 0, "fixture must start with a valid execution plan");
-  input.sealedInputs.splice(index, 1);
-
-  await assert.rejects(
-    () => materializeInputs(input),
-    /research\.leaf missing required sealed input\(s\): execution_plan/,
-  );
-});
-
 test("mergeOperatorNotes prefers sealed answer over focus", () => {
   assert.equal(mergeOperatorNotes({}), undefined);
   assert.equal(mergeOperatorNotes({ focus: "  only focus  " }), "only focus");
@@ -387,7 +298,7 @@ test("mergeOperatorNotes prefers sealed answer over focus", () => {
 
 test("materialize projects prior_spec into inputs/prior-spec.json", async (t) => {
   // Plan node does not take sealed `spec`/`execution_plan` — hand-build envelope.
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-prior-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-prior-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const sources = path.join(root, "sealed-sources");
@@ -479,7 +390,7 @@ test("materialize projects prior_spec into inputs/prior-spec.json", async (t) =>
 });
 
 test("materialize projects operator_input into inputs/operator-input.json", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-op-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-op-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const opDir = path.join(root, "sealed-operator-input");
@@ -518,7 +429,7 @@ test("materialize projects operator_input into inputs/operator-input.json", asyn
 });
 
 test("materialize must NOT place session.jsonl or transcript under inputs/", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-tx-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-tx-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const transcriptDir = path.join(root, "sealed-transcript");
@@ -552,7 +463,7 @@ test("materialize must NOT place session.jsonl or transcript under inputs/", asy
 });
 
 test("materialize refresh seeds wiki from prior_wiki and fails without it", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-refresh-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-refresh-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const priorWiki = path.join(root, "prior-wiki");
@@ -616,14 +527,14 @@ test("materialize refresh seeds wiki from prior_wiki and fails without it", asyn
 });
 
 test("materialize lineage: research artifact digests land in evidence index", async (t) => {
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-lineage-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-lineage-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const receiptDir = path.join(root, "receipt");
   await mkdir(receiptDir, { recursive: true });
   const receipt = AnalysisReceiptSchema.parse({
     version: 1,
-    runId: "run-mat-1",
+    runId: "run-proj-1",
     nodeId: "research.domain.core",
     parentId: null,
     attempt: 1,
@@ -664,7 +575,7 @@ test("materialize lineage: research artifact digests land in evidence index", as
 
 test("materialize accepts freeze-shaped coverage_plan (requiredUnits + host extras)", async (t) => {
   // Freeze seals plan with lightPath/reasons/maxSurfacesRequired; strict schema rejects those.
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mat-cov-"));
+  const root = await mkdtemp(path.join(tmpdir(), "okf-proj-cov-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   const sources = path.join(root, "sealed-sources");
@@ -825,38 +736,4 @@ test("materialize accepts freeze-shaped coverage_plan (requiredUnits + host extr
   assert.equal(planBody.lightPath, false);
   await unlock(root);
   t.after(() => rm(root, { recursive: true, force: true }));
-});
-
-test("mountSealedSourceTree prefers hardlink shared mount (Phase 7)", async () => {
-  const { mountSealedSourceTree } = await import("./materialize.js");
-  const root = await mkdtemp(path.join(tmpdir(), "okf-mount-"));
-  try {
-    const sealed = path.join(root, "sealed");
-    const mountA = path.join(root, "attempt-a", "sources", "main");
-    const mountB = path.join(root, "attempt-b", "sources", "main");
-    await mkdir(path.join(sealed, "src"), { recursive: true });
-    await writeFile(path.join(sealed, "src", "a.ts"), "export const a = 1;\n", "utf8");
-    await writeFile(path.join(sealed, "README.md"), "# sealed\n", "utf8");
-    // Make sealed read-only like freeze.
-    await chmod(path.join(sealed, "src", "a.ts"), 0o444);
-    await chmod(path.join(sealed, "README.md"), 0o444);
-
-    const modeA = await mountSealedSourceTree(sealed, mountA, "sealed source main");
-    const modeB = await mountSealedSourceTree(sealed, mountB, "sealed source main");
-    assert.ok(modeA === "hardlink" || modeA === "copy");
-    assert.ok(modeB === "hardlink" || modeB === "copy");
-    // Content readable and ordinary (no symlinks).
-    assert.equal(await readFile(path.join(mountA, "README.md"), "utf8"), "# sealed\n");
-    assert.equal(await readFile(path.join(mountB, "src", "a.ts"), "utf8"), "export const a = 1;\n");
-    const st = await lstat(path.join(mountA, "README.md"));
-    assert.equal(st.isSymbolicLink(), false);
-    assert.equal(st.isFile(), true);
-    // Hardlink shares inode with sealed when mode is hardlink.
-    if (modeA === "hardlink") {
-      const sealedSt = await lstat(path.join(sealed, "README.md"));
-      assert.equal(st.ino, sealedSt.ino);
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 });

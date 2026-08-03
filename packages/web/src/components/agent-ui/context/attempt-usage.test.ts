@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { formatContextFill, type WikiRunAttempt } from "@okf-wiki/contract";
+import { formatContextFill } from "@okf-wiki/contract/session";
+import type { WikiRunAttempt } from "@okf-wiki/contract/wiki-runs";
 import {
   contextPhaseFromAttemptUsage,
   formatAttemptTokenSideNote,

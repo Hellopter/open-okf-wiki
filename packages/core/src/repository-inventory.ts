@@ -8,7 +8,7 @@
 
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
-import { unitIdForSurface } from "@okf-wiki/contract";
+import { unitIdForSurface } from "@okf-wiki/contract/coverage";
 import {
   type CoverageInventory,
   type CoverageSourceRecord,

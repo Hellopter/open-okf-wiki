@@ -2,16 +2,7 @@ import { rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { redactErrorMessage } from "@okf-wiki/agent";
-import {
-  SourceAddSchema,
-  SourceCloneSchema,
-  SourceUpdateSchema,
-  WorkspaceCreateSchema,
-  WorkspacePatchRequestSchema,
-  WorkspaceRevisionRequestSchema,
-  WorkspaceRevisionSchema,
-  WorkspaceSkillFileWriteSchema,
-} from "@okf-wiki/contract";
+import { SourceAddSchema, SourceCloneSchema, SourceUpdateSchema, WorkspaceCreateSchema, WorkspacePatchRequestSchema, WorkspaceRevisionRequestSchema, WorkspaceRevisionSchema, WorkspaceSkillFileWriteSchema } from "@okf-wiki/contract/workspace";
 import {
   acquireWikiRunsControlStoreLease,
   addSource,

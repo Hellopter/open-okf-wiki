@@ -4,18 +4,8 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type AttemptItem,
-  type AttemptMetrics,
-  type NodeAttempt,
-  type PiAttemptArtifactDescriptor,
-  type PiAttemptFailureClass,
-  type PiAttemptInput,
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
-  type WikiRunSpec,
-  WikiRunSpecSchema,
-} from "@okf-wiki/contract";
+import { type PiAttemptArtifactDescriptor, type PiAttemptFailureClass, type PiAttemptInput, type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import { type AttemptItem, type AttemptMetrics, type NodeAttempt, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
 import { effectiveIgnoresForSource, isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../../ports/agent-runner.js";
 import { redactSensitiveText } from "../../redact/index.js";

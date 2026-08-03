@@ -6,20 +6,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type {
-  PauseRunCommand,
-  ResumeRunCommand,
-  RunCommandContext,
-  RunCommandReceipt,
-  SubmitRunRevisionCommand,
-} from "@okf-wiki/contract";
-import type { CommandsHost } from "./commands.js";
+import type { PauseRunCommand, ResumeRunCommand, RunCommandContext, RunCommandReceipt, SubmitRunRevisionCommand } from "@okf-wiki/contract/wiki-runs";
+import type { WikiRunsControl } from "./ctx.js";
 import { now } from "./crypto-util.js";
 import { asRow, requiredNumber, requiredText } from "./sql.js";
 import { WikiRunsRequestError } from "./types.js";
 
 function recordCommand(
-  host: CommandsHost,
+  host: WikiRunsControl,
   commandId: string,
   payloadDigest: string,
   context: RunCommandContext,
@@ -43,7 +37,7 @@ function recordCommand(
     );
 }
 
-function activeRun(host: CommandsHost, runId: string): { state: string; revision: number } {
+function activeRun(host: WikiRunsControl, runId: string): { state: string; revision: number } {
   const run = asRow(
     host.db.prepare("SELECT state, revision FROM runs WHERE run_id = ?").get(runId),
   );
@@ -62,7 +56,7 @@ function isTerminal(state: string): boolean {
 }
 
 export function submitRunRevision(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: SubmitRunRevisionCommand,
   context: RunCommandContext,
   payloadDigest: string,
@@ -126,7 +120,7 @@ export function submitRunRevision(
 }
 
 export function pauseRun(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: PauseRunCommand,
   context: RunCommandContext,
   payloadDigest: string,
@@ -163,7 +157,7 @@ export function pauseRun(
 }
 
 export function resumeRun(
-  host: CommandsHost,
+  host: WikiRunsControl,
   command: ResumeRunCommand,
   context: RunCommandContext,
   payloadDigest: string,

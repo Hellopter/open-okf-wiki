@@ -1,4 +1,4 @@
-import type { ProviderStoreErrorCode, WorkspaceIntakeErrorCode } from "@okf-wiki/contract";
+import type { ProviderStoreErrorCode, WorkspaceIntakeErrorCode } from "@okf-wiki/contract/workspace";
 
 /**
  * Structured domain error for workspace intake (create / sources / load).

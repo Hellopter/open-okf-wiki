@@ -3,7 +3,7 @@
  * PiAttemptExecutor can be wired for all node kinds.
  */
 
-import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
 import { type AttemptHandlerContext, sealTranscript } from "../shared.js";
 
 export async function handleFreeze(ctx: AttemptHandlerContext): Promise<PiAttemptOutcome> {

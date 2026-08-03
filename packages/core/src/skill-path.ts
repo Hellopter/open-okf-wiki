@@ -18,7 +18,7 @@ import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SkillSourceKind } from "@okf-wiki/contract";
+import type { SkillSourceKind } from "@okf-wiki/contract/workspace";
 import {
   homeProducerSkillPath,
   homeSkillsDir,

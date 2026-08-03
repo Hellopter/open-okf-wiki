@@ -2,7 +2,7 @@
  * Plan scout receipt summary for plan-gate review.
  */
 
-import type { WikiRunPlanReviewScoutsSummary } from "@okf-wiki/contract";
+import type { WikiRunPlanReviewScoutsSummary } from "@okf-wiki/contract/wiki-runs";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatMessage, type MessageTree } from "../../i18n";

@@ -1,6 +1,6 @@
 /** One long-lived WikiRuns owner per workspace root for this Server process. */
 import { createPiAttemptExecutor, shouldUsePiFixtureMode } from "@okf-wiki/agent";
-import type { WorkspaceConfig } from "@okf-wiki/contract";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import {
   acquireWikiRunsControlStoreLease,
   acquireWorkspaceActivityLease,

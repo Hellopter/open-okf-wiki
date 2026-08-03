@@ -1,37 +1,54 @@
 /**
- * Planner: living WikiRunSpec via AgentRunner (or default Spec for fixture).
+ * Planner deep module: living WikiRunSpec via AgentRunner (or default Spec for fixture).
+ *
+ * Owns plan policy end-to-end (Epic D.4 locality):
+ * - inventory / coverage resolve + adaptive orchestration
+ * - hybrid scouts + bounded re-scout
+ * - synthesizer loop + host assertCoverage
+ * - draft clear / path-first resolve via commitPlanDraft
+ *
  * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
  * fail-closed when draft is missing — no invented thin plans / chat JSON spill.
  *
- * Hybrid plan scouts + bounded re-scout when assertCoverage finds gaps
- * (planRescoutMaxRounds). Only this synthesizer may submit the Spec.
- *
- * Workflow stays free of Pi SDK and tools/: live callers inject customTools
- * (submit_wiki_run_spec) via PlanWikiSpecInput.customTools.
+ * Workflow stays free of Pi SDK and tools/: live callers inject customTools or
+ * createCustomTools (after adaptive caps are known) via PlanWikiSpecInput.
+ * Spec draft I/O is commitPlanDraft / readPlanDraft / clearPlanDraft (no SpecStore port).
  */
 
 import {
   assertCoverage,
-  type AttemptItem,
-  type AttemptMetrics,
   type CoveragePlan,
   type CoverageResult,
   CoverageAssertError,
-  DEFAULT_ORCHESTRATION,
+} from "@okf-wiki/contract/coverage";
+import {
+  type AttemptItem,
+  type AttemptMetrics,
   defaultWikiRunSpec,
   type NodeAttempt,
-  type RetryLimits,
+  planUncertaintyFromSpec,
+  type RepositoryInventory,
+  resolveAdaptiveOrchestration,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
+} from "@okf-wiki/contract/wiki-runs";
+import {
+  resolveOrchestration,
+  type RetryLimits,
   type WorkspaceOrchestration,
-} from "@okf-wiki/contract";
+} from "@okf-wiki/contract/workspace";
 import type {
   AgentRunner,
   RunWorkdirLayoutPaths,
   SourceIgnoreInput,
 } from "../../ports/agent-runner.js";
-import { defaultSpecStore, PLAN_DRAFT_REL_PATH } from "../../ports/core-spec-store.js";
-import type { SpecStore } from "../../ports/spec-store.js";
+import {
+  clearPlanDraft,
+  commitPlanDraft,
+  PLAN_DRAFT_REL_PATH,
+  planDraftPathFromRunWorkDir,
+  readPlanDraft,
+} from "../../plan/commit-plan-draft.js";
 import { plannerPrompt } from "../../prompts/plan.js";
 import {
   type CoverageArtifacts,
@@ -51,6 +68,47 @@ function snippet(text: string, max = 240): string {
 }
 
 /**
+ * Coarse inventory from workspace source count only (no tree walk).
+ * Used when mounts are unavailable or coverage walk fails on small single-source.
+ */
+export function inventoryFromWorkspace(workspace: {
+  sources?: readonly unknown[];
+  sourceCount?: number;
+}): RepositoryInventory {
+  const sourceCount =
+    workspace.sourceCount ?? workspace.sources?.length ?? 0;
+  return {
+    sourceCount,
+    // multiEntry must not be inferred from multi-source alone.
+    multiEntry: false,
+    large: false,
+  };
+}
+
+/** Adaptive inventory signals from resolved coverage artifacts. */
+export function inventoryFromCoverageArtifacts(
+  artifacts: CoverageArtifacts,
+): RepositoryInventory {
+  return {
+    sourceCount: artifacts.adaptive.sourceCount,
+    multiEntry: artifacts.adaptive.multiEntry,
+    large: artifacts.adaptive.large,
+    ...(artifacts.adaptive.fileCount !== undefined
+      ? { fileCount: artifacts.adaptive.fileCount }
+      : {}),
+    ...(artifacts.adaptive.languages
+      ? { languages: artifacts.adaptive.languages }
+      : {}),
+    ...(artifacts.adaptive.surfaceCount !== undefined
+      ? { surfaceCount: artifacts.adaptive.surfaceCount }
+      : {}),
+    ...(artifacts.adaptive.sources
+      ? { sources: artifacts.adaptive.sources }
+      : {}),
+  };
+}
+
+/**
  * Resolve Spec from path-first draft only (disk).
  * Control plane is short summary + path; full Spec is never required in summary.
  */
@@ -58,14 +116,12 @@ export async function resolvePlanSpecFromAgentResult(input: {
   runWorkDir: string;
   /** Short control summary only (never the full Spec payload). */
   summary?: string;
-  store?: SpecStore;
 }): Promise<{ spec: WikiRunSpec; source: "draft"; draftPath: string }> {
-  const store = input.store ?? defaultSpecStore;
-  const fromDisk = await store.readPlanDraft(input.runWorkDir);
+  const fromDisk = await readPlanDraft(input.runWorkDir);
   if (fromDisk) {
-    // Re-write normalizes / re-validates; path stays plan-draft.json.
-    const draftPath = await store.writePlanDraft(input.runWorkDir, fromDisk);
-    return { spec: fromDisk, source: "draft", draftPath };
+    // Re-commit normalizes / re-validates; path stays plan-draft.json.
+    const committed = await commitPlanDraft(input.runWorkDir, fromDisk);
+    return { spec: fromDisk, source: "draft", draftPath: committed.absolutePath };
   }
 
   const hint = input.summary?.trim()
@@ -76,6 +132,15 @@ export async function resolvePlanSpecFromAgentResult(input: {
       `(missing ${PLAN_DRAFT_REL_PATH}).${hint}`,
   );
 }
+
+/** Context passed to createCustomTools after adaptive + coverage resolve. */
+export type PlanCustomToolsContext = {
+  orchestration: WorkspaceOrchestration;
+  coveragePlan: CoveragePlan;
+  /** Why adaptive raised scouts / lenses (empty on light path). */
+  adaptiveReasons: readonly string[];
+  lightPath: boolean;
+};
 
 export type PlanWikiSpecInput = {
   layout: RunWorkdirLayoutPaths;
@@ -105,21 +170,38 @@ export type PlanWikiSpecInput = {
   /**
    * Sealed prior Spec for plan revise (ADR 0040 / 0036).
    * Injected into the planner prompt; synthesizer must submit a complete new Spec.
+   * Also drives planUncertainty for adaptive orchestration.
    */
   priorSpec?: WikiRunSpec;
   /** Host coverage plan override (else resolved from workdir / inventory). */
   coveragePlan?: CoveragePlan;
-  /** Pre-resolved coverage artifacts (skips re-walk when handler already built). */
+  /** Pre-resolved coverage artifacts (skips re-walk when caller already built). */
   coverageArtifacts?: CoverageArtifacts;
-  /** Orchestration budgets (planScoutCount, planRescoutMaxRounds, …). */
-  orchestration?: WorkspaceOrchestration;
+  /**
+   * Base workspace orchestration (before adaptive). planWikiSpec owns
+   * resolveAdaptiveOrchestration from inventory + priorSpec uncertainty.
+   * Operator-explicit raises are preserved by the adaptive router.
+   */
+  orchestration?: Partial<WorkspaceOrchestration> | null;
+  /**
+   * Workspace source count for maxSources fail-closed and coarse inventory
+   * fallback when mounts / coverage walk are unavailable.
+   */
+  workspaceSourceCount?: number;
   onProgress?: (attempt: NodeAttempt) => void;
   /**
-   * Opaque custom tools (e.g. submit_wiki_run_spec). Injected by tool edge
-   * so workflow/ never imports tools/ or Pi SDK.
+   * Opaque custom tools (e.g. submit_wiki_run_spec). Prefer createCustomTools
+   * when tool caps depend on adaptive orchestration.
    */
   customTools?: readonly unknown[];
-  store?: SpecStore;
+  /**
+   * Build custom tools after adaptive + coverage are known so caps and
+   * coveragePlan match the plan-phase decision. Preferred over pre-built
+   * customTools for live plan Attempts.
+   */
+  createCustomTools?: (
+    ctx: PlanCustomToolsContext,
+  ) => readonly unknown[] | Promise<readonly unknown[]>;
   /**
    * Attempt session.jsonl for Node details transcript (live + fixture).
    * Passed through to the synthesizer runAgent only (scouts stay private).
@@ -145,6 +227,10 @@ export type PlanWikiSpecResult = {
   coverage?: CoverageResult;
   /** How many re-scout rounds ran after the initial scout pass. */
   rescoutRounds?: number;
+  /** Adaptive router reasons (empty when light path kept). */
+  adaptiveReasons?: string[];
+  /** Effective orchestration after adaptive resolve. */
+  orchestration?: WorkspaceOrchestration;
 };
 
 function formatPriorSpecPrompt(prior: WikiRunSpec): string {
@@ -180,15 +266,102 @@ function formatPriorSpecPrompt(prior: WikiRunSpec): string {
 }
 
 /**
- * Plan a WikiRunSpec. Fixture runtime → default Spec; live → scouts + planner
- * with bounded re-scout on coverage gaps.
+ * Resolve coverage + adaptive orchestration for the plan phase.
+ * Exported for unit tests of the deep policy surface.
+ */
+export async function resolvePlanInventoryAndAdaptive(input: {
+  layout: RunWorkdirLayoutPaths;
+  orchestration?: Partial<WorkspaceOrchestration> | null;
+  workspaceSourceCount?: number;
+  sourceIgnores?: SourceIgnoreInput;
+  abortSignal?: AbortSignal;
+  priorSpec?: WikiRunSpec;
+  coveragePlan?: CoveragePlan;
+  coverageArtifacts?: CoverageArtifacts;
+  /** When true, inventory walk failure is fatal for multi-source. Default true for live. */
+  failClosedMultiSource?: boolean;
+}): Promise<{
+  coverageArtifacts: CoverageArtifacts;
+  inventory: RepositoryInventory;
+  adaptive: ReturnType<typeof resolveAdaptiveOrchestration>;
+}> {
+  const baseOrch = resolveOrchestration(input.orchestration);
+
+  const workspaceSourceCount = input.workspaceSourceCount ?? 0;
+  const mountCount = input.layout.sourceMounts?.size ?? 0;
+  const sourceCount = Math.max(workspaceSourceCount, mountCount);
+  const maxSources = baseOrch.maxSourcesPerRun;
+
+  // Fail-closed: mounted / workspace sources must not exceed maxSourcesPerRun.
+  if (sourceCount > maxSources) {
+    throw new Error(
+      `plan: ${sourceCount} sources exceed maxSourcesPerRun=${maxSources}; ` +
+        `reduce freeze sources or raise workspace.orchestration.maxSourcesPerRun ` +
+        `(silent truncation is not allowed)`,
+    );
+  }
+
+  let coverageArtifacts: CoverageArtifacts;
+  let inventory: RepositoryInventory;
+
+  if (input.coverageArtifacts) {
+    coverageArtifacts = input.coverageArtifacts;
+    inventory = inventoryFromCoverageArtifacts(coverageArtifacts);
+  } else {
+    try {
+      coverageArtifacts = await resolveCoverageArtifacts({
+        layout: input.layout,
+        orch: baseOrch,
+        sourceMounts: input.layout.sourceMounts,
+        sourceIgnores:
+          input.sourceIgnores instanceof Map ? input.sourceIgnores : undefined,
+        abortSignal: input.abortSignal,
+      });
+      inventory = inventoryFromCoverageArtifacts(coverageArtifacts);
+    } catch (err) {
+      // Inventory walk failure: fail-closed when multi-source; else coarse fallback.
+      const failClosed = input.failClosedMultiSource !== false && sourceCount >= 2;
+      if (failClosed) {
+        throw err instanceof Error
+          ? err
+          : new Error(`plan inventory failed: ${String(err)}`);
+      }
+      inventory = inventoryFromWorkspace({ sourceCount: workspaceSourceCount || sourceCount });
+      coverageArtifacts = await resolveCoverageArtifacts({
+        layout: input.layout,
+        orch: baseOrch,
+        // No mounts → sealed/light path without walk.
+        sourceMounts: new Map(),
+        abortSignal: input.abortSignal,
+      });
+    }
+  }
+
+  if (input.coveragePlan) {
+    coverageArtifacts = { ...coverageArtifacts, plan: input.coveragePlan };
+  }
+
+  const planUncertainty = input.priorSpec
+    ? planUncertaintyFromSpec(input.priorSpec)
+    : 0;
+
+  const adaptive = resolveAdaptiveOrchestration({
+    orchestration: input.orchestration,
+    inventory,
+    planUncertainty,
+  });
+
+  return { coverageArtifacts, inventory, adaptive };
+}
+
+/**
+ * Plan a WikiRunSpec. Fixture runtime → default Spec; live → adaptive + scouts +
+ * planner with bounded re-scout on coverage gaps.
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
-  const store = input.store ?? defaultSpecStore;
-
   if (input.runtime.kind === "fixture") {
     const spec = defaultWikiRunSpec(input.workspaceName);
-    const draftPath = await store.writePlanDraft(input.layout.runWorkDir, spec);
+    const committed = await commitPlanDraft(input.layout.runWorkDir, spec);
     const items: AttemptItem[] = [
       {
         type: "text",
@@ -206,33 +379,46 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
       items,
     });
     // Transcript disk write is owned by pi-attempt-executor (runtime edge).
-    return { spec, mode: "fixture", source: "fixture", draftPath, scoutKinds: [], items };
+    return {
+      spec,
+      mode: "fixture",
+      source: "fixture",
+      draftPath: committed.absolutePath,
+      scoutKinds: [],
+      items,
+      adaptiveReasons: [],
+      orchestration: resolveOrchestration(input.orchestration),
+    };
   }
 
   if (!input.model) {
     throw new Error("Live plan phase requires a model");
   }
 
-  const orch = input.orchestration ?? { ...DEFAULT_ORCHESTRATION };
+  const { coverageArtifacts, adaptive } = await resolvePlanInventoryAndAdaptive({
+    layout: input.layout,
+    orchestration: input.orchestration,
+    workspaceSourceCount: input.workspaceSourceCount,
+    sourceIgnores: input.sourceIgnores,
+    abortSignal: input.abortSignal,
+    priorSpec: input.priorSpec,
+    coveragePlan: input.coveragePlan,
+    coverageArtifacts: input.coverageArtifacts,
+    failClosedMultiSource: true,
+  });
 
-  // Coverage inventory + plan (sealed or core walk).
-  const coverageArtifacts =
-    input.coverageArtifacts ??
-    (await resolveCoverageArtifacts({
-      layout: input.layout,
-      orch,
-      sourceMounts: input.layout.sourceMounts,
-      sourceIgnores:
-        input.sourceIgnores instanceof Map
-          ? input.sourceIgnores
-          : undefined,
-      abortSignal: input.abortSignal,
-    }));
-  // Prefer explicit plan override when provided.
-  if (input.coveragePlan) {
-    coverageArtifacts.plan = input.coveragePlan;
-  }
+  const orch = adaptive.orchestration;
   await writeCoverageArtifacts(input.layout, coverageArtifacts);
+
+  const customTools =
+    (input.createCustomTools
+      ? await input.createCustomTools({
+          orchestration: orch,
+          coveragePlan: coverageArtifacts.plan,
+          adaptiveReasons: adaptive.reasons,
+          lightPath: adaptive.lightPath,
+        })
+      : input.customTools) ?? [];
 
   const maxRescout = Math.max(0, orch.planRescoutMaxRounds ?? 0);
   let gapUnitIds: string[] | undefined;
@@ -283,7 +469,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
   // to call submit_wiki_run_spec.
   for (let round = 0; round <= maxRescout; round++) {
     if (round > 0) rescoutRounds += 1;
-    await store.clearPlanDraft(input.layout.runWorkDir);
+    await clearPlanDraft(input.layout.runWorkDir);
 
     const scouts = await runPlanScouts({
       layout: input.layout,
@@ -347,7 +533,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
         .join("\n\n"),
       systemPrompt,
       preferFinalMessage: true,
-      customTools: input.customTools,
+      customTools,
       model: input.model,
       modelRuntime: input.modelRuntime,
       sourceIgnores: input.sourceIgnores,
@@ -363,7 +549,6 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     const resolved = await resolvePlanSpecFromAgentResult({
       runWorkDir: input.layout.runWorkDir,
       summary: child.summary,
-      store,
     });
 
     lastChild = child;
@@ -428,5 +613,21 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     ...(lastChild?.metrics ? { metrics: lastChild.metrics } : {}),
     ...(lastCoverage ? { coverage: lastCoverage } : {}),
     rescoutRounds,
+    adaptiveReasons: adaptive.reasons,
+    orchestration: orch,
   };
+}
+
+/** Re-export path helpers for tests and handlers. */
+export {
+  planDraftPathFromRunWorkDir,
+  PLAN_DRAFT_REL_PATH,
+  clearPlanDraft,
+  readPlanDraft,
+  commitPlanDraft,
+};
+
+/** Test seam: prior-spec aware planUncertainty without full planWikiSpec. */
+export function planUncertaintyForPriorSpec(spec: WikiRunSpec | undefined): number {
+  return spec ? planUncertaintyFromSpec(spec) : 0;
 }

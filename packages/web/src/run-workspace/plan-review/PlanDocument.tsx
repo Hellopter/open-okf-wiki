@@ -4,7 +4,7 @@
  * Optional coverage / scouts / page-set diff when present on plan-review.
  */
 
-import type { WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { Badge } from "@/components/ui/badge";
 import { formatMessage, type MessageTree } from "../../i18n";
 import { CoverageMatrixPanel, CoverageStrip } from "./CoverageMatrixPanel";

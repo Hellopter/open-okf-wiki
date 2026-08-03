@@ -2,7 +2,7 @@
  * Prior Spec vs current page-path set on plan revise (paths only).
  */
 
-import type { WikiRunPlanReviewPageSetDiff, WikiRunSpec } from "@okf-wiki/contract";
+import type { WikiRunPlanReviewPageSetDiff, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatMessage, type MessageTree } from "../../i18n";

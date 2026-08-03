@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { defaultWikiRunSpec, type WorkspaceConfig } from "@okf-wiki/contract";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { loadSpecFromArtifact } from "./dag.js";
 
 test("loadSpecFromArtifact accepts only the canonical sealed spec.json payload", async (t) => {

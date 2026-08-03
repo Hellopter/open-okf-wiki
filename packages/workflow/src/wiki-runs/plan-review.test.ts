@@ -13,7 +13,7 @@ import {
   waitForRunState,
 } from "./__tests__/harness.js";
 import { openWikiRuns } from "../wiki-runs.js";
-import { defaultWikiRunSpec } from "@okf-wiki/contract";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
 
 test("planGateDetailFromSpec projects secret-free counts from Spec", () => {
   const spec = defaultWikiRunSpec("Demo");

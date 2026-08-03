@@ -1,32 +1,26 @@
 /**
- * plan node: produce an unsealed WikiRunSpec via planWikiSpec.
- * Wires RunIntent (focus → operatorNotes), revision feedback, prior Spec,
- * inventory-backed adaptive orchestration, and the scout model (worker role).
+ * plan node: thin wiring to planWikiSpec (Epic D.4).
+ *
+ * Handler owns only Attempt edge concerns:
+ * load projections / models / tools → call planWikiSpec → write unsealed outputs/metrics.
+ * Plan policy (inventory, adaptive orch, scouts/rescout, assert, draft I/O) lives in
+ * workflow/phases/plan-phase.
  */
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import {
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
-  planUncertaintyFromSpec,
-  type RepositoryInventory,
-  resolveAdaptiveOrchestration,
-  resolveOrchestration,
-  type WikiRunSpec,
-} from "@okf-wiki/contract";
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
 import { createSubmitWikiRunSpecTool } from "../../../tools/submit-wiki-run-spec.js";
 import {
-  type CoverageArtifacts,
-  resolveCoverageArtifacts,
-} from "../../../workflow/phases/coverage-bridge.js";
-import { planWikiSpec } from "../../../workflow/phases/plan-phase.js";
+  planUncertaintyForPriorSpec,
+  planWikiSpec,
+} from "../../../workflow/phases/plan-phase.js";
 import {
   loadProjectedIntent,
   loadProjectedOperatorInput,
   loadProjectedPriorSpec,
   mergeOperatorNotes,
-} from "../materialize.js";
+} from "../projection.js";
 import {
   type AttemptHandlerContext,
   bounded,
@@ -37,23 +31,8 @@ import {
   sealTranscript,
 } from "../shared.js";
 
-/**
- * Coarse inventory from workspace sources only (no tree walk).
- * Used when mounts are unavailable or coverage walk fails.
- */
-function inventoryFromWorkspace(workspace: { sources?: readonly unknown[] }): {
-  sourceCount: number;
-  multiEntry?: boolean;
-  large?: boolean;
-} {
-  const sourceCount = workspace.sources?.length ?? 0;
-  return {
-    sourceCount,
-    // multiEntry must not be inferred from multi-source alone.
-    multiEntry: false,
-    large: false,
-  };
-}
+/** Test seam: re-export prior-spec uncertainty helper from plan deep module. */
+export { planUncertaintyForPriorSpec };
 
 export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptOutcome> {
   const { input, layout, ignores, runtime, resolveModel, signal } = ctx;
@@ -74,74 +53,6 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       : undefined;
   const isRevise = input.node.generation > 0 || Boolean(revisionFeedback);
   const priorSpec = await loadProjectedPriorSpec(layout);
-
-  // Fail-closed: mounted freeze sources must not exceed maxSourcesPerRun.
-  const maxSources =
-    input.workspace.orchestration?.maxSourcesPerRun ??
-    input.workspace.sources?.length ??
-    16;
-  const workspaceSourceCount = input.workspace.sources?.length ?? 0;
-  const mountCount = layout.sourceMounts?.size ?? 0;
-  const sourceCount = Math.max(workspaceSourceCount, mountCount);
-  if (sourceCount > maxSources) {
-    throw new Error(
-      `plan: ${sourceCount} sources exceed maxSourcesPerRun=${maxSources}; ` +
-        `reduce freeze sources or raise workspace.orchestration.maxSourcesPerRun ` +
-        `(silent truncation is not allowed)`,
-    );
-  }
-
-  // Prefer core inventory walk over workspace sourceCount alone.
-  let coverageArtifacts: CoverageArtifacts | undefined;
-  let inventorySignals: RepositoryInventory = inventoryFromWorkspace(input.workspace);
-  if (runtime.kind === "live" && layout.sourceMounts && layout.sourceMounts.size > 0) {
-    try {
-      // Pre-adaptive orch for inventory resolve; adaptive re-resolve after signals.
-      const baseOrch = resolveOrchestration(input.workspace.orchestration);
-      coverageArtifacts = await resolveCoverageArtifacts({
-        layout,
-        orch: baseOrch,
-        sourceMounts: layout.sourceMounts,
-        sourceIgnores: ignores instanceof Map ? ignores : undefined,
-        abortSignal: signal,
-      });
-      inventorySignals = {
-        sourceCount: coverageArtifacts.adaptive.sourceCount,
-        multiEntry: coverageArtifacts.adaptive.multiEntry,
-        large: coverageArtifacts.adaptive.large,
-        ...(coverageArtifacts.adaptive.fileCount !== undefined
-          ? { fileCount: coverageArtifacts.adaptive.fileCount }
-          : {}),
-        ...(coverageArtifacts.adaptive.languages
-          ? { languages: coverageArtifacts.adaptive.languages }
-          : {}),
-        ...(coverageArtifacts.adaptive.surfaceCount !== undefined
-          ? { surfaceCount: coverageArtifacts.adaptive.surfaceCount }
-          : {}),
-        ...(coverageArtifacts.adaptive.sources
-          ? { sources: coverageArtifacts.adaptive.sources }
-          : {}),
-      };
-    } catch (err) {
-      // Inventory walk failure on live is fail-closed when multi-source.
-      if (sourceCount >= 2) {
-        throw err instanceof Error
-          ? err
-          : new Error(`plan inventory failed: ${String(err)}`);
-      }
-      // Small single-source: fall back to workspace signals.
-      inventorySignals = inventoryFromWorkspace(input.workspace);
-    }
-  }
-
-  // planUncertainty from prior Spec when revising; else 0 for green-field.
-  const planUncertainty = priorSpec ? planUncertaintyFromSpec(priorSpec) : 0;
-
-  const adaptive = resolveAdaptiveOrchestration({
-    orchestration: input.workspace.orchestration,
-    inventory: inventorySignals,
-    planUncertainty,
-  });
 
   const resolved =
     runtime.kind === "live" ? await liveModel(input, "planner", resolveModel) : undefined;
@@ -165,26 +76,27 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     contextTargetTokens: input.workspace.limits.contextTargetTokens,
     retry: input.workspace.limits.retry,
     timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
-    orchestration: adaptive.orchestration,
+    orchestration: input.workspace.orchestration,
+    workspaceSourceCount: input.workspace.sources?.length ?? 0,
     sourceIgnores: ignores,
     abortSignal: signal,
     operatorNotes,
     ...(revisionFeedback ? { revisionFeedback } : {}),
     ...(priorSpec ? { priorSpec } : {}),
-    ...(coverageArtifacts ? { coverageArtifacts } : {}),
-    customTools: [
+    createCustomTools: ({ orchestration, coveragePlan }) => [
       createSubmitWikiRunSpecTool({
         runWorkDir: input.workDir,
         caps: {
-          maxDomainFanOut: adaptive.orchestration.maxDomainFanOut,
-          maxLeafFanOut: adaptive.orchestration.maxLeafFanOut,
+          maxDomainFanOut: orchestration.maxDomainFanOut,
+          maxLeafFanOut: orchestration.maxLeafFanOut,
         },
-        ...(coverageArtifacts?.plan ? { coveragePlan: coverageArtifacts.plan } : {}),
+        coveragePlan,
       }),
     ],
     transcriptPath: input.sessionPath,
     onProgress: (p) => forwardScopedProgress(ctx, p, seat),
   });
+
   const specPath = path.join(layout.analysisDir, "spec.json");
   await writeFile(specPath, `${JSON.stringify(planned.spec, null, 2)}\n`, "utf8");
   const summary = bounded(planned.rawSummary ?? planned.spec.summary);
@@ -200,7 +112,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       revise: isRevise,
       priorSpecBound: Boolean(priorSpec),
       rescoutRounds: planned.rescoutRounds ?? 0,
-      adaptiveReasons: adaptive.reasons,
+      adaptiveReasons: planned.adaptiveReasons ?? [],
       ...(operatorInput?.answer ? { operatorInputBound: true } : {}),
     },
   });
@@ -225,9 +137,4 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       },
     }),
   });
-}
-
-/** Test seam: expose prior-spec aware revise path without full handler. */
-export function planUncertaintyForPriorSpec(spec: WikiRunSpec | undefined): number {
-  return spec ? planUncertaintyFromSpec(spec) : 0;
 }

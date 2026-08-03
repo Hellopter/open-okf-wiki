@@ -3,31 +3,8 @@
  * Domain types come from `@okf-wiki/contract` — do not redeclare schemas here.
  */
 
-import type {
-  CandidateDiffRead,
-  CandidatePageRead,
-  CandidateTreeRead,
-  RunCommand,
-  WikiRunAttemptTranscript,
-  WikiRunCommandResponse,
-  WikiRunGetResponse,
-  WikiRunIndexGetResponse,
-  WikiRunListItem,
-  WikiRunPlanReview,
-  WikiRunSpecRead,
-  WikiRunState,
-} from "@okf-wiki/contract";
-import {
-  CandidateDiffReadSchema,
-  CandidatePageReadSchema,
-  CandidateTreeReadSchema,
-  WikiRunAttemptTranscriptSchema,
-  WikiRunCommandResponseSchema,
-  WikiRunGetResponseSchema,
-  WikiRunIndexGetResponseSchema,
-  WikiRunPlanReviewSchema,
-  WikiRunSpecReadSchema,
-} from "@okf-wiki/contract";
+import type { CandidateDiffRead, CandidatePageRead, CandidateTreeRead, RunCommand, WikiRunAttemptTranscript, WikiRunCommandResponse, WikiRunGetResponse, WikiRunIndexGetResponse, WikiRunListItem, WikiRunPlanReview, WikiRunSpecRead, WikiRunState } from "@okf-wiki/contract/wiki-runs";
+import { CandidateDiffReadSchema, CandidatePageReadSchema, CandidateTreeReadSchema, WikiRunAttemptTranscriptSchema, WikiRunCommandResponseSchema, WikiRunGetResponseSchema, WikiRunIndexGetResponseSchema, WikiRunPlanReviewSchema, WikiRunSpecReadSchema } from "@okf-wiki/contract/wiki-runs";
 import { getApiBase, request } from "./client";
 
 export type { WikiRunAttemptTranscript, WikiRunListItem, WikiRunPlanReview, WikiRunState };

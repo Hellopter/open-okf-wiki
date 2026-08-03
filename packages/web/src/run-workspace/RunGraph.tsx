@@ -1,4 +1,4 @@
-import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract";
+import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs";
 import {
   Background,
   BackgroundVariant,

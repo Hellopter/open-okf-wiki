@@ -1,32 +1,31 @@
 /**
  * review.seat: lens-scoped wiki review Attempt.
  *
- * Fail-closed (Phase 3): seat succeeds only with a validated DefectReportSchema
- * via submit_defect_report (preferred) or a single free-text JSON parse fallback.
- * Malformed / missing reports never become clean NO_DEFECTS.
+ * Fail-closed (hard-cut Epic D): seat succeeds only with a validated
+ * DefectReportSchema via submit_defect_report → analysis/defect-report.json.
+ * Free-text chat JSON is never admitted.
  */
 
+import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
 import {
   type DefectReport,
   DefectReportSchema,
   type MergedDefectReport,
   MergedDefectReportSchema,
-  type PiAttemptOutcome,
-  PiAttemptOutcomeSchema,
   SUBMIT_DEFECT_REPORT_TOOL_NAME,
-} from "@okf-wiki/contract";
-import { listWikiMarkdown } from "../../../produce/wiki-pages.js";
+} from "@okf-wiki/contract/wiki-runs";
+import { listWikiMarkdown } from "../../wiki-pages.js";
 import { type ReviewLens, reviewerPrompt } from "../../../prompts/index.js";
 import {
-  createSubmitDefectReportTool,
-  readDefectReportDraft,
-  writeDefectReportDraft,
-} from "../../../tools/submit-defect-report.js";
+  commitDefectReport,
+  readDefectReport,
+} from "../../../review/commit-defect-report.js";
+import { createSubmitDefectReportTool } from "../../../tools/submit-defect-report.js";
 import {
   formatOperatorInputNotes,
   loadProjectedDefectsText,
   loadProjectedOperatorInput,
-} from "../materialize.js";
+} from "../projection.js";
 import {
   type AttemptHandlerContext,
   bounded,
@@ -43,58 +42,13 @@ import {
 
 const REVIEW_SYSTEM = [
   "You are a wiki reviewer.",
-  `Submit your verdict with the ${SUBMIT_DEFECT_REPORT_TOOL_NAME} tool (typed DefectReport).`,
-  "Do not rely on free-text chat as the handoff. Prefer fail-closed blocking only for true defects.",
+  `You MUST call the ${SUBMIT_DEFECT_REPORT_TOOL_NAME} tool with a typed DefectReport.`,
+  "analysis/defect-report.json is the only handoff — free-text chat JSON is never accepted.",
+  "Prefer fail-closed blocking only for true defects.",
 ].join(" ");
 
 function reviewerIdForSeat(lens: string): string {
   return lens;
-}
-
-function tryParseDefectReportJson(text: string, reviewerId: string): DefectReport | null {
-  const raw = text.trim();
-  if (!raw) return null;
-  const candidates: string[] = [raw];
-  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
-  if (fence?.[1]) candidates.push(fence[1]!.trim());
-  // Prefer a trailing JSON object if the model mixed prose + JSON once.
-  const brace = raw.indexOf("{");
-  if (brace >= 0) candidates.push(raw.slice(brace));
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-      const obj = parsed as Record<string, unknown>;
-      const stamped = {
-        version: 1 as const,
-        reviewerId:
-          typeof obj.reviewerId === "string" && obj.reviewerId.trim()
-            ? obj.reviewerId.trim()
-            : reviewerId,
-        clean: obj.clean,
-        defects: Array.isArray(obj.defects)
-          ? obj.defects.map((d) => {
-              if (!d || typeof d !== "object" || Array.isArray(d)) return d;
-              const item = d as Record<string, unknown>;
-              return {
-                ...item,
-                reviewerId:
-                  typeof item.reviewerId === "string" && item.reviewerId.trim()
-                    ? item.reviewerId.trim()
-                    : reviewerId,
-              };
-            })
-          : obj.defects,
-        summary: obj.summary,
-      };
-      const report = DefectReportSchema.safeParse(stamped);
-      if (report.success) return report.data;
-    } catch {
-      // try next candidate
-    }
-  }
-  return null;
 }
 
 async function loadPriorBlocking(
@@ -112,17 +66,14 @@ async function loadPriorBlocking(
 }
 
 /**
- * Resolve a validated DefectReport: disk draft from submit tool, else one free-text parse.
+ * Resolve a validated DefectReport from analysis/defect-report.json only.
  * Never invents clean NO_DEFECTS on missing/malformed output.
  */
 export async function resolveSeatDefectReport(input: {
   workDir: string;
   reviewerId: string;
-  summaryText: string;
-}): Promise<
-  { ok: true; report: DefectReport; source: "tool" | "free_text" } | { ok: false; error: string }
-> {
-  const fromTool = await readDefectReportDraft(input.workDir);
+}): Promise<{ ok: true; report: DefectReport; source: "tool" } | { ok: false; error: string }> {
+  const fromTool = await readDefectReport(input.workDir);
   if (fromTool) {
     // Re-stamp reviewerId to the seat when the draft used a different id.
     const stamped = DefectReportSchema.safeParse({
@@ -140,18 +91,12 @@ export async function resolveSeatDefectReport(input: {
     };
   }
 
-  const fromText = tryParseDefectReportJson(input.summaryText, input.reviewerId);
-  if (fromText) {
-    await writeDefectReportDraft(input.workDir, fromText);
-    return { ok: true, report: fromText, source: "free_text" };
-  }
-
   return {
     ok: false,
     error:
       `review.seat failed: missing validated DefectReport ` +
-      `(call ${SUBMIT_DEFECT_REPORT_TOOL_NAME} or emit one JSON DefectReport). ` +
-      `Malformed/missing reviewer output is never treated as clean.`,
+      `(call ${SUBMIT_DEFECT_REPORT_TOOL_NAME} → analysis/defect-report.json). ` +
+      `Free-text chat is never accepted; malformed/missing reviewer output is never treated as clean.`,
   };
 }
 
@@ -193,6 +138,7 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
       "",
       `You MUST call ${SUBMIT_DEFECT_REPORT_TOOL_NAME} with reviewerId=${JSON.stringify(reviewerId)}.`,
       "clean=true only with empty defects; otherwise list severity/code/issue defects.",
+      "Do not paste DefectReport JSON into chat — the tool is the only handoff.",
     ].join("\n"),
     systemPrompt: REVIEW_SYSTEM,
     preferFinalMessage: true,
@@ -219,7 +165,6 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
   const resolvedReport = await resolveSeatDefectReport({
     workDir: input.workDir,
     reviewerId,
-    summaryText: result.summary,
   });
   if (!resolvedReport.ok) {
     return failAttempt(input, {
@@ -234,7 +179,7 @@ export async function handleReviewSeat(ctx: AttemptHandlerContext): Promise<PiAt
   const report = resolvedReport.report;
   const receiptPath = await writeAnalysisJson(layout, `${input.node.key}.json`, report);
   // Also keep the canonical draft path for reduce/debug.
-  await writeDefectReportDraft(input.workDir, report);
+  await commitDefectReport(input.workDir, report, { reviewerId });
 
   const summaryText =
     report.summary?.trim() || (report.clean ? "NO_DEFECTS" : `${report.defects.length} defect(s)`);

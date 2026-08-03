@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
-import type { PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract";
+import type { PiAttemptInput, PiAttemptOutcome } from "@okf-wiki/contract/pi-attempt";
 import { openWikiRuns } from "../../wiki-runs.js";
 import {
   context,

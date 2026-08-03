@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DEFAULT_OPERATOR_TOOLS, OperatorToolNameSchema } from "@okf-wiki/contract";
+import { DEFAULT_OPERATOR_TOOLS, OperatorToolNameSchema } from "@okf-wiki/contract/workspace";
 import {
   assertSafeWikiToolList,
   isReadOnlyToolList,
