@@ -1,27 +1,38 @@
 # @okf-wiki/wiki-agent-kit
 
-`ow` freezes repositories into a source-grounded, run-local Wiki candidate. The kit installs the
-same producer Skill for `.agents` and `.claude`; Claude Code additionally receives two Dynamic
-Workflows for its interactive stages.
+`ow` turns registered repositories into an immutable, source-grounded, run-local Wiki candidate.
+The kit has three separate responsibilities: the CLI owns deterministic state and validation, the
+Skill owns the research and writing method, and Claude Dynamic Workflows own Claude agent
+orchestration.
 
-## Install and start
+## Requirements
 
-Node 22 or later is required.
+- Node.js 22 or newer.
+- Claude Code `2.1.154` or newer.
+- Dynamic Workflows enabled for the Claude Code account and session. Start a fresh Claude Code
+  session from the workspace directory and verify the feature in `/config`.
+
+Dynamic Workflows are a hard requirement for the Claude workflow path. `ow doctor` verifies the
+installed assets and Claude CLI version, but cannot verify account entitlement or `/config`. There
+is deliberately no fallback workflow implementation for an account or endpoint that does not
+support Dynamic Workflows.
+
+Install the CLI from this checkout, then create a workspace:
 
 ```bash
-node packages/wiki-agent-kit/scripts/ow.mjs init ./my-wiki --name my-wiki --lang en
+cd packages/wiki-agent-kit
+pnpm link --global
+
+ow init ./my-wiki --name my-wiki --lang en
 cd my-wiki
-
-# Register one or more repositories.
 ow source add clone https://github.com/example/app.git --id app
-# ow source add path /absolute/path/to/repo --id app
+# or: ow source add path /absolute/path/to/repo --id app
 
-# Optional source-ignore controls, before the snapshot is made.
-ow ignore presets
-ow ignore set app --preset js-tests
+ow doctor
 ```
 
-`ow init` installs:
+`ow init` installs the same frozen-method Skill for generic agents and Claude, plus the Claude
+project workflows:
 
 ```text
 .agents/skills/repository-wiki-producer/
@@ -30,98 +41,104 @@ ow ignore set app --preset js-tests
 .claude/workflows/wiki-write-review.workflow.js
 ```
 
-Hosts that discover `.agents/skills` or `.claude/skills` can use the same Skill and follow the
-host commands below. Claude Code can also run the installed slash workflows. Reinstall intentional
-changes with `ow install all --force`; a new freeze rejects drifted installed assets so the run is
-always tied to the kit that created it.
+Use `ow install --force` after intentionally updating the kit. A freeze refuses drifted installed
+assets, so every run records the exact Skill that it copied. Start a new Claude Code session after
+installing workflows so project assets are rediscovered.
 
-## Two explicit stages
+## Manual Claude Flow
+
+Run commands from the workspace directory. `ow freeze` returns the exact `runId` and absolute
+`workdir` to pass to Claude.
 
 ```bash
-# 1. Freeze source snapshots and prepare a new candidate run.
-ow produce
+# 1. Snapshot sources, inventory, policy, and the Skill.
+ow freeze --focus "authentication and request flow"
 
-# 2. Enter the planning stage. It prints the exact Claude command and arguments.
-ow plan --run <runId>
-# In Claude Code: /wiki-plan with the printed { "runId", "workdir" } arguments
+# 2. In a new Claude Code session started in this workspace:
+claude
+# Confirm Dynamic Workflows in /config, then run the command emitted by freeze:
+/wiki-plan {"runId":"<runId>","workdir":"<absolute-workdir>"}
 
-# 3. Bind the completed plan to the exact inventory, discovery map, and Spec.
+# 3. Back in the terminal, check the completed plan and obtain the next workflow arguments.
 ow gate plan --run <runId>
 
-# 4. Enter write/review only after the gate succeeded.
-ow write --run <runId>
-# In Claude Code: /wiki-write-review with the printed arguments
+# 4. In Claude Code, run the command emitted by the successful gate:
+/wiki-write-review {"runId":"<runId>","workdir":"<absolute-workdir>"}
 ```
 
-The planning workflow performs Discover and Plan only. The host plan gate verifies coverage and
-semantic sufficiency, then writes a digest-bound receipt. `ow write` and the write/review workflow
-recheck that receipt before changing the candidate.
+`/wiki-plan` does discovery and planning only. It writes the Discovery Map and Spec, then stops.
+`ow gate plan` checks coverage and semantic sufficiency and records the digests it approved.
+`/wiki-write-review` rechecks that receipt, writes the Spec-defined pages, runs independent review
+lenses, repairs unresolved issues once, and calls the pinned host CLI to validate and seal.
 
-The write/review workflow writes the Spec-defined pages, runs independent review lenses, repairs
-once when needed, and invokes `ow validate --run <runId>`. Validation regenerates indexes, checks
-frontmatter and links, and seals the candidate on success.
+Do not use `ow plan`, `ow write`, or `ow continue`; those workflow-launching wrappers do not exist.
+The only lifecycle commands are:
 
-## Run layout and immutability
+```text
+ow freeze [--focus TEXT]
+ow gate plan|check --run <runId>
+ow validate --run <runId>
+ow retry --run <runId> --from plan|write
+```
+
+`ow validate` remains available for a deterministic manual final check. It refuses to seal unless
+the current plan-gate receipt matches the current inventory, Discovery Map, and Spec.
+
+## Failure Handling
+
+| Condition | Required action |
+|---|---|
+| `ow doctor` reports asset drift | Run `ow install --force`, then start a new Claude Code session. |
+| `ow doctor` reports an unsupported or missing Claude CLI | Install or upgrade Claude Code before attempting the workflow. |
+| Dynamic Workflows is absent or disabled in `/config` | Enable the supported feature for the account/session. This kit has no alternate execution path. |
+| `ow gate plan` fails | Correct the Discovery Map or Spec in a new `/wiki-plan` attempt; use `ow retry --from plan` when discarding all plan artifacts. |
+| Write/review does not validate | Use `ow retry --from write`, then rerun `/wiki-write-review` with the same frozen `runId` and `workdir`. |
+| A candidate is `sealed` or `tampered` | Do not edit or reseal it. Use `ow retry --from write` to create a replacement candidate. |
+
+## Run Layout
 
 ```text
 .wiki-agent/runs/<runId>/
-  meta.json
+  meta.json                         # freeze identity and immutable input summary
   workdir/
-    sources/<sourceId>/       # immutable filtered source snapshot
-    skill/                    # skill copied into this run and content-hashed
-    inputs/                   # inventory, snapshot manifest, run policy, plan-gate receipt
-    analysis/                 # discovery map, Spec, review receipts, sealed-candidate manifest
-    candidate/                # run-local Wiki candidate; no publish step exists
+    sources/<sourceId>/             # filtered, content-hashed source snapshot
+    skill/                          # exact copied Skill
+    inputs/                         # inventory, policy, manifests, gate receipt
+    analysis/                       # map, Spec, receipts, defects, validation, manifest
+    candidate/                      # generated Wiki pages; never published by this kit
 ```
 
-`candidate/` is deliberately run-local. A successful validation writes
-`analysis/candidate.manifest.json`; subsequent `ow write` or `ow validate` calls refuse to alter it.
-If the candidate or its manifest needs replacement, use the explicit reset:
+`ow status` derives each run state from artifacts rather than mutating lifecycle fields in
+`meta.json`: `frozen`, `planned`, `write-ready`, `sealed`, or `tampered`. A successful validation
+writes `analysis/candidate.manifest.json`; its candidate is immutable. To make a replacement,
+explicitly run `ow retry --from write`. `ow retry --from plan` also clears the plan and gate before
+the next `/wiki-plan` run. Frozen sources and the copied Skill are never changed.
 
-```bash
-ow retry --run <runId> --from discover|plan|write|review
-```
+## Source Citations
 
-The retry removes only derived artifacts for the selected phase and later work. It never changes
-the frozen source snapshots.
-
-## Source links
-
-Every factual claim uses a normal local Markdown link from the candidate page to the frozen source
-file with real one-based line fragments. For a root candidate page:
+Every factual claim must be a normal local Markdown link into the frozen snapshot with genuine
+one-based source lines. This lets compatible Wiki renderers open the actual copied source file.
 
 ```md
+<!-- candidate/overview.md -->
 [Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
-```
 
-For `candidate/modules/auth.md`, the equivalent source is:
-
-```md
+<!-- candidate/modules/auth.md -->
 [Source: src/A.java L10-L20](../../sources/app/src/A.java#L10-L20)
 ```
 
-This answers the navigation requirement: a renderer that opens local Markdown links can open the
-actual frozen `src/A.java` file. `repo:`, remote URLs, `file://`, and editor-specific links are not
-accepted. The `#L10-L20` fragment remains evidence metadata because not all local editors navigate
-to Markdown line anchors.
+Links using `repo:`, remote URLs, `file://`, `vscode://`, paths outside `sources/`, or invalid line
+ranges fail validation. `index.md` is generated by the validator; `log.md` is reserved.
 
-## Contracts and checks
-
-- Concept pages require YAML frontmatter with non-empty `type`, `title`, and `description`.
-- `index.md` is host-generated; `log.md` is reserved. Neither belongs in the Spec page set.
-- Required inventory coverage units must be bound by the Spec or cancelled with a non-empty reason.
-- Multi-source runs require a cross-source flow, multi-unit domain, or an explicit cancellation.
-- Candidate citations must resolve to a source file inside the frozen snapshot and have valid
-  `#Lx-Ly` bounds.
-- Snapshot, planning gate, and candidate manifests use deterministic SHA-256 tree/file digests.
-- Reference schemas live in `schemas/` for discovery maps, Specs, defects, and candidate manifests.
-
-Useful operations:
+## Other Operations
 
 ```bash
+ow source list
+ow ignore presets
+ow ignore set app --preset js-tests
+ow config set wikiLanguage zh
 ow status
 ow gate check --run <runId>
-ow config set wikiLanguage zh
-ow install all --force
+ow install --force
 ow help
 ```

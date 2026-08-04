@@ -1,5 +1,5 @@
 /**
- * wiki-plan - Discover and plan only. Run `ow gate plan` after it finishes.
+ * wiki-plan - Discover and plan only. The operator runs `ow gate plan` afterwards.
  * Claude Dynamic Workflow globals: agent, parallel, phase, log, args.
  */
 
@@ -9,8 +9,11 @@ export const meta = {
   phases: [{ title: "Discover" }, { title: "Plan" }],
 };
 
-const runId = args?.runId ?? args?.run ?? null;
-const workdir = args?.workdir ?? ".";
+const runId = args?.runId;
+const workdir = args?.workdir;
+if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir) {
+  return { stopped: "runId and absolute workdir arguments are required" };
+}
 const skillRoot = `${workdir}/skill`;
 const ENVELOPE = {
   type: "object",
@@ -52,7 +55,7 @@ for (let offset = 0; offset < units.length; offset += 4) {
   const wave = units.slice(offset, offset + 4);
   const results = await parallel(
     wave.map((unit, index) => () => {
-      const outPath = `analysis/receipts/survey/${safeId(unit.id)}.json`;
+      const outPath = `${workdir}/analysis/receipts/survey/${safeId(unit.id)}.json`;
       return agent(
         [
           `Surveyor. workdir=${workdir}; read ${skillRoot}/references/research.md in full.`,
@@ -70,7 +73,7 @@ for (let offset = 0; offset < units.length; offset += 4) {
     ledger.push({
       id: String(unit.id),
       status: result?.status === "ok" ? "complete" : "failed",
-      path: result?.path ?? `analysis/receipts/survey/${safeId(unit.id)}.json`,
+      path: result?.path ?? `${workdir}/analysis/receipts/survey/${safeId(unit.id)}.json`,
       digest: result?.digest ?? null,
       summary: result?.summary ?? "survey failed or returned no envelope",
     });
@@ -91,7 +94,7 @@ phase("Plan");
 const spec = await agent(
   [
     `Planner. Read ${skillRoot}/references/plan.md in full. workdir=${workdir}.`,
-    `Read inventory and ${discovery?.path ?? "analysis/discovery-map.json"}; JIT-read supporting receipts by path.`,
+    `Read inventory and ${discovery?.path ?? `${workdir}/analysis/discovery-map.json`}; JIT-read supporting receipts by path.`,
     `Ledger: ${JSON.stringify(ledger.map(({ id, status, path }) => ({ id, status, path })))}.`,
     `Write complete, source-grounded ${workdir}/analysis/spec.json. Bind every coverageUnitId or add structured cancellation with coverageUnitId, cancelled:true, reason.`,
     `Do not write candidate pages. Return only {status,path,summary,digest}.`,

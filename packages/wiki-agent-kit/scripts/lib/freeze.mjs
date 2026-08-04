@@ -138,6 +138,7 @@ export function freezeRun(root, { focus } = {}) {
     hostCli: {
       node: process.execPath,
       script: path.join(KIT_ROOT, "scripts", "ow.mjs"),
+      workspaceRoot: root,
     },
   };
   fs.writeFileSync(
@@ -148,8 +149,6 @@ export function freezeRun(root, { focus } = {}) {
 
   const meta = {
     runId,
-    status: "frozen",
-    phase: "freeze",
     createdAt: new Date().toISOString(),
     wikiLanguage: workspace.wikiLanguage,
     focus: focus || null,

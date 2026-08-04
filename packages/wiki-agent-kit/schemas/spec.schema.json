@@ -23,8 +23,6 @@
     },
     "domains": { "type": "array", "items": { "type": "object" } },
     "coverageCancellations": { "$ref": "#/$defs/cancellations" },
-    "sourceCoverage": { "$ref": "#/$defs/cancellations" },
-    "surfaceCoverage": { "$ref": "#/$defs/cancellations" },
     "crossSourceFlowCancellation": {
       "type": "object",
       "properties": { "cancelled": { "const": true }, "reason": { "type": "string", "minLength": 1 } },
@@ -37,14 +35,11 @@
       "items": {
         "type": "object",
         "properties": {
-          "coverageUnitId": { "type": "string" },
-          "sourceId": { "type": "string" },
-          "surfaceId": { "type": "string" },
+          "coverageUnitId": { "type": "string", "minLength": 1 },
           "cancelled": { "const": true },
-          "reason": { "type": "string", "minLength": 1 },
-          "notes": { "type": "string", "minLength": 1 }
+          "reason": { "type": "string", "minLength": 1 }
         },
-        "required": ["cancelled"]
+        "required": ["coverageUnitId", "cancelled", "reason"]
       }
     }
   }

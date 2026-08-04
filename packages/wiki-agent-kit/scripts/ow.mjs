@@ -6,10 +6,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { freezeRun, listRuns, loadRunMeta } from "./lib/freeze.mjs";
 import { verifyPlanGate, writePlanGateReceipt } from "./lib/gate.mjs";
 import { effectiveSourceIgnores, listPresetSummaries, loadIgnorePresets } from "./lib/ignores.mjs";
-import { assertInstalledAssets, installAll, installSkill, installWorkflows } from "./lib/install.mjs";
+import { assertInstalledAssets, installAll } from "./lib/install.mjs";
 import { resolveWorkspaceRoot } from "./lib/paths.mjs";
 import { retryFromPhase } from "./lib/run-state.mjs";
 import {
@@ -255,22 +256,28 @@ function cmdStatus(args) {
       applyDefaultIgnores: s.applyDefaultIgnores !== false,
       presets: s.presets || [],
     })),
-    runs: runs.slice(0, 10),
+    runs: runs.slice(0, 10).map((meta) => summarizeRun(root, meta)),
   });
 }
 
 function cmdInstall(args) {
   const root = workspaceRoot(args.flags);
   loadWorkspace(root);
+  if (args._.length) die("usage: ow install [--force]");
   const force = Boolean(args.flags.force);
-  const what = args._[0] || "all";
-  if (what === "all") printJson(installAll(root, { force }));
-  else if (what === "workflows") printJson(installWorkflows(root, { force }));
-  else if (what === "skill") printJson(installSkill(root, { force }));
-  else die("usage: ow install [all|workflows|skill] [--force]");
+  printJson(installAll(root, { force }));
 }
 
-function cmdProduce(args) {
+function workflowInvocation(name, root, runId, workdir) {
+  return {
+    command: `/${name}`,
+    args: { runId, workdir },
+    cwd: root,
+    instructions: `Start a new Claude Code session from ${root}, then run /${name} with the args object above.`,
+  };
+}
+
+function cmdFreeze(args) {
   const root = workspaceRoot(args.flags);
   const focus = args.flags.focus;
   const result = freezeRun(root, { focus });
@@ -278,10 +285,9 @@ function cmdProduce(args) {
     ok: true,
     runId: result.runId,
     workdir: result.workdir,
-    meta: result.meta,
     inventoryTier: result.inventory.tier,
     coverageUnits: result.inventory.coverageUnits.length,
-    next: `Run: ow plan --run ${result.runId} --workspace ${root}`,
+    workflow: workflowInvocation("wiki-plan", root, result.runId, result.workdir),
   };
   printJson(out);
 }
@@ -289,25 +295,6 @@ function cmdProduce(args) {
 function runWorkdir(root, runId) {
   const meta = loadRunMeta(root, runId);
   return { meta, workdir: path.resolve(root, meta.workdir) };
-}
-
-function workflowHint(name, root, runId, workdir) {
-  return `In Claude Code (cwd=${root}), run /${name} with args: ${JSON.stringify({ runId, workdir })}`;
-}
-
-function cmdPlan(args) {
-  const root = workspaceRoot(args.flags);
-  const runId = args.flags.run || args._[0];
-  if (!runId) die("usage: ow plan --run <runId>");
-  assertInstalledAssets(root);
-  const { meta, workdir } = runWorkdir(root, runId);
-  const workflow = path.join(root, ".claude", "workflows", "wiki-plan.workflow.js");
-  if (!fs.existsSync(workflow)) die("wiki-plan workflow missing; run: ow install workflows --force");
-  meta.status = "planning";
-  meta.phase = "discover";
-  meta.updatedAt = new Date().toISOString();
-  fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  printJson({ ok: true, runId, workdir, next: workflowHint("wiki-plan", root, runId, workdir) });
 }
 
 function cmdGate(args) {
@@ -324,42 +311,12 @@ function cmdGate(args) {
     return;
   }
   const { result, receipt } = writePlanGateReceipt(workdir, runId, meta.skillDigest);
-  if (receipt) {
-    meta.status = "plan-gated";
-    meta.phase = "write";
-    meta.updatedAt = new Date().toISOString();
-    fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  }
-  printJson({ ...result, receipt });
+  printJson({
+    ...result,
+    receipt,
+    ...(receipt ? { workflow: workflowInvocation("wiki-write-review", root, runId, workdir) } : {}),
+  });
   if (!result.ok) process.exit(2);
-}
-
-function cmdWrite(args) {
-  const root = workspaceRoot(args.flags);
-  const runId = args.flags.run || args._[0];
-  if (!runId) die("usage: ow write --run <runId>");
-  assertInstalledAssets(root);
-  const { meta, workdir } = runWorkdir(root, runId);
-  const gate = verifyPlanGate(workdir, runId, meta.skillDigest);
-  if (!gate.ok) {
-    printJson(gate);
-    process.exit(2);
-  }
-  const seal = candidateSealStatus(workdir);
-  if (seal.sealed) {
-    die(
-      seal.valid
-        ? "candidate is sealed; run: ow retry --run <id> --from write"
-        : "sealed candidate was modified; its manifest no longer matches. Run: ow retry --run <id> --from write",
-    );
-  }
-  const workflow = path.join(root, ".claude", "workflows", "wiki-write-review.workflow.js");
-  if (!fs.existsSync(workflow)) die("wiki-write-review workflow missing; run: ow install workflows --force");
-  meta.status = "writing";
-  meta.phase = "write";
-  meta.updatedAt = new Date().toISOString();
-  fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  printJson({ ok: true, runId, workdir, next: workflowHint("wiki-write-review", root, runId, workdir) });
 }
 
 function cmdValidate(args) {
@@ -367,6 +324,11 @@ function cmdValidate(args) {
   const runId = args.flags.run || args._[0];
   if (!runId) die("usage: ow validate --run <runId>");
   const { meta, workdir } = runWorkdir(root, runId);
+  const gate = verifyPlanGate(workdir, runId, meta.skillDigest);
+  if (!gate.ok) {
+    printJson(gate);
+    process.exit(2);
+  }
   const seal = candidateSealStatus(workdir);
   if (seal.sealed) {
     die(
@@ -379,12 +341,6 @@ function cmdValidate(args) {
   regenerateIndexes(candidateDir);
   const result = validateWorkdir(workdir);
   const manifest = result.ok ? sealCandidate(workdir, result) : null;
-  if (manifest) {
-    meta.status = "sealed";
-    meta.phase = "complete";
-    meta.updatedAt = new Date().toISOString();
-    fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  }
   printJson({ ...result, manifest });
   if (!result.ok) process.exit(2);
 }
@@ -393,8 +349,87 @@ function cmdRetry(args) {
   const root = workspaceRoot(args.flags);
   const runId = args.flags.run || args._[0];
   const from = args.flags.from || args._[1] || "plan";
-  if (!runId) die("usage: ow retry --run <runId> --from <phase>");
+  if (!runId) die("usage: ow retry --run <runId> --from plan|write");
   printJson(retryFromPhase(root, runId, from));
+}
+
+const MIN_CLAUDE_WORKFLOW_VERSION = [2, 1, 154];
+
+function parseVersion(output) {
+  const match = String(output).match(/(\d+)\.(\d+)\.(\d+)/);
+  return match ? match.slice(1).map(Number) : null;
+}
+
+function isSupportedVersion(version, minimum = MIN_CLAUDE_WORKFLOW_VERSION) {
+  if (!version) return false;
+  for (let index = 0; index < minimum.length; index++) {
+    if (version[index] !== minimum[index]) return version[index] > minimum[index];
+  }
+  return true;
+}
+
+function runSummary(meta, status, extra = {}) {
+  return {
+    runId: meta.runId,
+    status,
+    createdAt: meta.createdAt,
+    wikiLanguage: meta.wikiLanguage,
+    focus: meta.focus,
+    sourceCount: meta.sources?.length ?? 0,
+    inventoryTier: meta.inventoryTier,
+    coverageUnitCount: meta.coverageUnitCount,
+    workdir: meta.workdir,
+    ...extra,
+  };
+}
+
+function summarizeRun(root, meta) {
+  if (meta.status === "corrupt") return meta;
+  try {
+    const workdir = path.resolve(root, meta.workdir);
+    const seal = candidateSealStatus(workdir);
+    if (seal.sealed) return runSummary(meta, seal.valid ? "sealed" : "tampered");
+    const gate = verifyPlanGate(workdir, meta.runId, meta.skillDigest);
+    if (gate.ok) return runSummary(meta, "write-ready");
+    if (fs.existsSync(path.join(workdir, "analysis", "spec.json"))) {
+      return runSummary(meta, "planned");
+    }
+    return runSummary(meta, "frozen");
+  } catch (error) {
+    return runSummary(meta, "invalid", { error: error.message });
+  }
+}
+
+function cmdDoctor(args) {
+  const root = workspaceRoot(args.flags);
+  loadWorkspace(root);
+  let assets;
+  try {
+    assets = assertInstalledAssets(root);
+  } catch (error) {
+    assets = { ok: false, error: error.message };
+  }
+  const probe = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 5000 });
+  const rawVersion = probe.error ? "" : `${probe.stdout || ""}\n${probe.stderr || ""}`;
+  const version = parseVersion(rawVersion);
+  const claude = {
+    found: !probe.error && probe.status === 0,
+    version: version ? version.join(".") : null,
+    minimumVersion: MIN_CLAUDE_WORKFLOW_VERSION.join("."),
+    versionSupported: isSupportedVersion(version),
+  };
+  const dynamicWorkflowPrerequisite = {
+    required: true,
+    locallyVerifiable: false,
+    action: "In a new Claude Code session started from this workspace, verify Dynamic Workflows are enabled in /config.",
+  };
+  printJson({
+    ok: assets.ok && claude.found && claude.versionSupported,
+    workspace: root,
+    assets,
+    claude,
+    dynamicWorkflowPrerequisite,
+  });
 }
 
 function cmdHelp() {
@@ -411,13 +446,12 @@ Usage:
   ow ignore presets
   ow config set wikiLanguage en|zh | get
   ow status [--workspace DIR]
-  ow install [all|workflows|skill] [--force]
-  ow produce [--focus TEXT] [--workspace DIR]
-  ow plan --run <runId>
+  ow install [--force]
+  ow doctor [--workspace DIR]
+  ow freeze [--focus TEXT] [--workspace DIR]
   ow gate plan|check --run <runId>
-  ow write --run <runId>
   ow validate --run <runId>
-  ow retry --run <runId> --from <phase>
+  ow retry --run <runId> --from plan|write
 
 Global: --workspace <dir>  (default: cwd)
 `);
@@ -445,21 +479,16 @@ async function main() {
         return cmdStatus(args);
       case "install":
         return cmdInstall(args);
-      case "produce":
-        return cmdProduce(args);
-      case "plan":
-        return cmdPlan(args);
+      case "doctor":
+        return cmdDoctor(args);
+      case "freeze":
+        return cmdFreeze(args);
       case "gate":
         return cmdGate(args);
-      case "write":
-        return cmdWrite(args);
       case "validate":
         return cmdValidate(args);
       case "retry":
         return cmdRetry(args);
-      case "continue":
-        die("ow continue was removed; resume Claude workflows from /workflows in the same session");
-        return;
       default:
         die(`unknown command: ${cmd} (try ow help)`);
     }

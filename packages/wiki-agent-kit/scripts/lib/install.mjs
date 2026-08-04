@@ -32,11 +32,6 @@ function copyWorkflows(root, { force = false } = {}) {
     return { files: [], note: "no kit workflows yet" };
   }
   const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".js"));
-  if (force) {
-    for (const legacy of ["wiki-produce.workflow.js"]) {
-      fs.rmSync(path.join(destDir, legacy), { force: true });
-    }
-  }
   const results = [];
   for (const f of files) {
     const from = path.join(srcDir, f);
@@ -97,7 +92,7 @@ export function assertInstalledAssets(root) {
     }
   }
   if (errors.length) {
-    throw new Error(`${errors.join("; ")}. Run: ow install all --force`);
+    throw new Error(`${errors.join("; ")}. Run: ow install --force`);
   }
   return { ok: true, skillDigest: expectedSkillDigest };
 }

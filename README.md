@@ -1,6 +1,7 @@
 # open-okf-wiki (wiki-agent-kit slice)
 
-This branch ships only the portable **wiki-agent-kit** for source-grounded repository-to-Wiki runs:
+This branch ships only the portable **wiki-agent-kit** for source-grounded repository-to-Wiki runs.
+It uses a deterministic `ow` CLI, a shared Agent Skill, and native Claude Dynamic Workflows:
 
 | Path | Role |
 |------|------|
@@ -12,6 +13,7 @@ This branch ships only the portable **wiki-agent-kit** for source-grounded repos
 ```bash
 node packages/wiki-agent-kit/scripts/ow.mjs help
 node packages/wiki-agent-kit/scripts/ow.mjs init ./my-ws --lang zh
+node packages/wiki-agent-kit/scripts/ow.mjs doctor --workspace ./my-ws
 ```
 
 See `packages/wiki-agent-kit/README.md`.

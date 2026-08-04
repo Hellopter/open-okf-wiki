@@ -2,11 +2,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { candidateManifestPath, runDir } from "./paths.mjs";
+import { candidateManifestPath } from "./paths.mjs";
 import { gateReceiptPath } from "./gate.mjs";
 import { loadRunMeta } from "./freeze.mjs";
 
-const PHASES = ["discover", "plan", "write", "review"];
+const PHASES = ["plan", "write"];
 
 function remove(target) {
   fs.rmSync(target, { recursive: true, force: true });
@@ -24,24 +24,26 @@ export function retryFromPhase(root, runId, fromPhase) {
     removed.push(path.relative(workdir, target));
   };
 
-  if (fromPhase === "discover") {
+  if (fromPhase === "plan") {
     removeTracked(path.join(analysis, "receipts"));
     removeTracked(path.join(analysis, "discovery-map.json"));
     removeTracked(path.join(analysis, "spec.json"));
-  }
-  if (fromPhase === "discover" || fromPhase === "plan") {
     removeTracked(gateReceiptPath(workdir));
+    removeTracked(path.join(analysis, "defects.json"));
+    removeTracked(path.join(analysis, "validation.json"));
+    removeTracked(candidate);
+    fs.mkdirSync(candidate, { recursive: true });
+    fs.mkdirSync(path.join(analysis, "receipts", "survey"), { recursive: true });
+    fs.mkdirSync(path.join(analysis, "receipts", "semantic"), { recursive: true });
   }
-  if (fromPhase === "discover" || fromPhase === "plan" || fromPhase === "write") {
+  if (fromPhase === "write") {
+    removeTracked(path.join(analysis, "receipts", "review"));
+    removeTracked(path.join(analysis, "defects.json"));
+    removeTracked(path.join(analysis, "validation.json"));
     removeTracked(candidate);
     fs.mkdirSync(candidate, { recursive: true });
   }
-  removeTracked(path.join(analysis, "defects.json"));
   removeTracked(candidateManifestPath(workdir));
 
-  meta.status = "retrying";
-  meta.phase = fromPhase;
-  meta.updatedAt = new Date().toISOString();
-  fs.writeFileSync(path.join(runDir(root, runId), "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  return { runId, fromPhase, removed, meta };
+  return { runId, fromPhase, removed };
 }

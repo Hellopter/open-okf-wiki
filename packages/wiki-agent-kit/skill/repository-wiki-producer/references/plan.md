@@ -2,8 +2,8 @@
 
 Shape the complete `analysis/spec.json` before any candidate page is written.
 
-**Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json` (or the input shell), and survey
-receipts under `analysis/receipts/`.
+**Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json`, and survey receipts under
+`analysis/receipts/`.
 **Output:** `analysis/spec.json`.
 **Mandatory stop:** run `ow gate plan --run <runId>` after planning. Do not enter Write unless it
 succeeds.
@@ -35,8 +35,7 @@ succeeds.
 
 Every page needs a reader purpose and inspected evidence. Bind every required inventory coverage
 unit via page/domain `coverageUnitIds`, or add a `coverageCancellations` entry with
-`coverageUnitId`, `cancelled: true`, and a non-empty `reason`. Legacy `sourceCoverage` and
-`surfaceCoverage` forms remain accepted when their id and reason are equally explicit.
+`coverageUnitId`, `cancelled: true`, and a non-empty `reason`.
 
 For multiple sources, plan a repository/surface map plus either a `crossSource: true` Discovery Map
 flow, a domain that binds multiple units, or `crossSourceFlowCancellation` with
@@ -49,5 +48,5 @@ machine-readable reference contract.
 ## Gate failure
 
 Repair the Discovery Map or Spec, then rerun `ow gate plan`. The gate receipt is invalidated whenever
-the inventory, Discovery Map, or Spec changes. Use `ow retry --from discover|plan` only when
-discarding the corresponding derived artifacts is intended.
+the inventory, Discovery Map, or Spec changes. Use `ow retry --from plan` only when discarding the
+planning artifacts is intended.

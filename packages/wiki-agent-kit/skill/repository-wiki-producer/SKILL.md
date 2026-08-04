@@ -1,87 +1,74 @@
 ---
 name: repository-wiki-producer
-description: Produce a source-grounded OKF Wiki candidate from frozen repository snapshots using ow. Installed for both .agents and .claude; Claude Code may run the paired Dynamic Workflows.
+description: Produce a source-grounded OKF Wiki candidate from immutable repository snapshots. Use the frozen run workdir, local Markdown source citations, and the deterministic ow gate and validator.
 ---
 
 # Repository Wiki Producer
 
-Produce a source-grounded Wiki from an immutable freeze workdir. The source snapshots and copied
-Skill are the evidence boundary. The run-local `candidate/` directory is the only writable Wiki
-output; there is no publish action in this kit.
+Produce a Wiki candidate only from a frozen run workdir. `sources/` and `skill/` are immutable
+evidence; `candidate/` is the only Wiki output and remains run-local. There is no publish action.
 
-## Host commands and stage boundary
+## Lifecycle
 
-| Command | Purpose |
+The deterministic host commands are intentionally small:
+
+| Command | Contract |
 |---|---|
-| `ow produce` | Freeze registered sources and create a run. |
-| `ow plan --run <id>` | Enter Discover/Plan and print the Claude workflow invocation. |
-| `ow gate plan --run <id>` | Required explicit gate after planning. Writes a digest-bound receipt only when valid. |
-| `ow write --run <id>` | Recheck the receipt, enter Write/Review, and print the Claude workflow invocation. |
+| `ow freeze` | Snapshot sources and this Skill; returns the `/wiki-plan` arguments. |
+| `ow gate plan --run <id>` | Verify planning artifacts and write a digest-bound receipt. |
+| `ow gate check --run <id>` | Recheck that receipt before candidate mutation or validation. |
 | `ow validate --run <id>` | Regenerate indexes, validate, and seal an unsealed candidate. |
-| `ow retry --run <id> --from discover|plan|write|review` | Explicitly discard derived phase outputs for a replacement attempt. |
+| `ow retry --run <id> --from plan|write` | Explicitly discard derived artifacts for a replacement attempt. |
 
-Do not invent slash commands. In Claude Code, use `/wiki-plan` only after `ow plan`, then run
-`ow gate plan`, then use `/wiki-write-review` only after `ow write`. Other hosts use this Skill and
-the same on-disk contracts, but do not execute Claude workflow JavaScript.
+Claude Code runs `/wiki-plan` after `ow freeze`, then the operator runs `ow gate plan`, then Claude
+Code runs `/wiki-write-review`. Other hosts follow the same on-disk contracts but do not execute
+Claude workflow JavaScript. Workflow agents use the pinned `hostCli` command in
+`inputs/run-policy.json`; do not substitute a global `ow` executable.
 
-## Freeze workdir
+## Workdir Contract
 
 | Path | Role |
 |---|---|
-| `sources/<id>/` | Filtered, content-hashed frozen source snapshots. Read-only evidence. |
-| `skill/` | This exact copied Skill. Read its phase reference before phase work. |
-| `inputs/` | Inventory, source snapshot manifest, run policy, and successful plan-gate receipt. |
-| `analysis/` | Discovery Map, Spec, receipts, defects, and candidate manifest. |
-| `candidate/` | Spec-bound concept pages. Writable until validation seals it. |
+| `sources/<id>/` | Filtered, content-hashed frozen evidence. |
+| `skill/` | Exact copied Skill; read its phase reference before work. |
+| `inputs/` | Inventory, snapshot manifest, run policy, and plan-gate receipt. |
+| `analysis/` | Discovery Map, Spec, receipts, defects, validation output, and candidate manifest. |
+| `candidate/` | Spec-bound concept pages, writable only before sealing. |
 
-Never read mutable registered source directories as evidence after `ow produce`. Never write under
-`sources/`, `skill/`, or `inputs/` except the host-owned plan receipt.
+Never use mutable registered repositories as evidence after `ow freeze`. Never write in `sources/`,
+`skill/`, or `inputs/`, except that the host owns the plan-gate receipt.
 
-## Required sequence
+## Agent Method
 
-1. **Discover.** Read `skill/references/research.md`. Survey every required inventory coverage unit
-   from frozen sources. Write full receipts to `analysis/receipts/` and merge
-   `analysis/discovery-map.json`.
-2. **Plan.** Read `skill/references/plan.md`. Write `analysis/spec.json`; it must bind every required
-   coverage unit or provide a structured, non-empty cancellation reason. Stop. The host must run
-   `ow gate plan --run <runId>` before writing anything in `candidate/`.
-3. **Write.** Read `skill/references/generate.md`. A valid Spec is the only page-set authority. Write
-   only its concept pages beneath `candidate/`.
-4. **Review.** Read `skill/references/review.md`. Keep detailed findings in
-   `analysis/receipts/review/`, consolidate `analysis/defects.json`, repair unresolved blocking or
-   major defects, then invoke the host validator.
+1. Discover: read `references/research.md`, survey every required inventory coverage unit from
+   frozen sources, preserve failures, and write `analysis/discovery-map.json`.
+2. Plan: read `references/plan.md`, write `analysis/spec.json`, bind every required coverage unit or
+   cancel it with a structured non-empty reason, then stop for the host gate.
+3. Write: read `references/generate.md`, treat the Spec pages as the sole page-set authority, and
+   write only those concept pages under `candidate/`.
+4. Review: read `references/review.md`, keep independent findings in `analysis/receipts/review/`,
+   consolidate `analysis/defects.json`, and repair blocking or major defects before validation.
 
-## Output rules
+Children write full data to disk and return compact `{status, path, summary, digest?}` envelopes.
+Maintain a ledger for all coverage units, including failed work. One writer owns `candidate/**`;
+surveys and review lenses may run concurrently. Read `references/orchestrator-context.md` for the
+file-first handoff rules.
 
-Every concept page has YAML frontmatter with non-empty `type`, `title`, and `description`. Optional
-`tags` are allowed. Do not author `generated`, `verified`, `stale_after`, or `okf_version`.
-`index.md` is generated by the host and `log.md` is reserved; neither is a Spec concept page.
+## Output Rules
 
-Write prose in the `wikiLanguage` recorded in `inputs/run-policy.json`. Do not translate source
-paths, identifiers, or code symbols.
+Write prose in the `wikiLanguage` in `inputs/run-policy.json`; keep identifiers and source paths
+unchanged. Concept pages require non-empty YAML `type`, `title`, and `description`; optional `tags`
+are allowed. Do not author `index.md`, `log.md`, `generated`, `verified`, `stale_after`, or
+`okf_version`.
 
-## Local source citations
-
-Use direct relative Markdown links to the relevant frozen source file. The path is relative to the
-candidate page, so calculate the directory depth for every page. Include genuine one-based lines.
+Every factual claim needs a direct local Markdown link to the frozen source and genuine one-based
+line numbers. Calculate the link relative to the candidate page:
 
 ```md
 [Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
 [Source: src/A.java L10-L20](../../sources/app/src/A.java#L10-L20)
 ```
 
-The first example is for `candidate/overview.md`; the second is for
-`candidate/modules/auth.md`. Do not use `repo:`, remote URLs, `file://`, `vscode://`, or paths that
-escape into anything except the frozen `sources/` directory. Never invent a line range.
-
-## Candidate seal
-
-`ow validate` materializes indexes, validates the candidate, and writes a hash manifest. The host
-then treats the candidate as immutable. Do not alter it after sealing. A mismatched seal is a failed
-state, not permission to reseal: restart deliberately with `ow retry --from write`.
-
-## Orchestrator discipline
-
-Children write full receipts to disk and return short envelopes only. One writer owns
-`candidate/**`; research and review lenses may fan out. Read
-`skill/references/orchestrator-context.md` for the file-first handoff protocol.
+Do not use `repo:`, remote URLs, `file://`, `vscode://`, or targets outside frozen `sources/`.
+Never estimate line ranges. A successful `ow validate` writes a hash manifest and makes the
+candidate immutable; use `ow retry --from write` before creating a replacement.

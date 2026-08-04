@@ -19,6 +19,7 @@ Keep the workflow parent at index size. Full data belongs on disk; children retu
 
 Claude Code runs two workflows: `wiki-plan.workflow.js` for Discover/Plan and
 `wiki-write-review.workflow.js` for gated Write/Review/Validate. The host boundary is mandatory:
-after `/wiki-plan`, run `ow gate plan`; after that succeeds, run `ow write` before
-`/wiki-write-review`. Other Skill hosts follow the same file/command contract without running the
+after `/wiki-plan`, run `ow gate plan`; after that succeeds, run `/wiki-write-review` with the
+returned arguments. Workflow agents invoke `ow gate check` and `ow validate` through the pinned
+`hostCli` policy. Other Skill hosts follow the same file/command contract without running the
 Claude workflow JavaScript.

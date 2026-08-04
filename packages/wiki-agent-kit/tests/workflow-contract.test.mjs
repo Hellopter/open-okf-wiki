@@ -29,6 +29,8 @@ describe("Claude workflow contracts", () => {
     const { source, run } = loadWorkflow("wiki-plan.workflow.js");
     assert.match(source, /name: "wiki-plan"/);
     assert.doesNotMatch(source, /wiki-produce/);
+    assert.doesNotMatch(source, /ow plan/);
+    assert.match(source, /\$\{workdir\}\/analysis\/receipts\/survey/);
     const phases = [];
     const output = await run(
       successfulAgent,
@@ -46,6 +48,8 @@ describe("Claude workflow contracts", () => {
     const { source, run } = loadWorkflow("wiki-write-review.workflow.js");
     assert.match(source, /name: "wiki-write-review"/);
     assert.match(source, /gate-plan\.ok\.json/);
+    assert.doesNotMatch(source, /ow write/);
+    assert.match(source, /hostCli\.workspaceRoot/);
     const phases = [];
     const output = await run(
       successfulAgent,
@@ -56,5 +60,11 @@ describe("Claude workflow contracts", () => {
     );
     assert.deepEqual(phases, ["Preflight", "Write", "Review", "Validate"]);
     assert.equal(output.validation.status, "ok");
+  });
+
+  it("fails closed when a workflow is invoked without frozen-run arguments", async () => {
+    const { run } = loadWorkflow("wiki-plan.workflow.js");
+    const output = await run(successfulAgent, async () => [], () => {}, () => {}, {});
+    assert.match(output.stopped, /runId and absolute workdir/);
   });
 });

@@ -13,11 +13,7 @@ function artifactDigest(file) {
 }
 
 function cancellationEntries(spec) {
-  return [
-    ...(spec?.coverageCancellations ?? []),
-    ...(spec?.sourceCoverage ?? []).map((entry) => ({ ...entry, coverageUnitId: entry.sourceId })),
-    ...(spec?.surfaceCoverage ?? []).map((entry) => ({ ...entry, coverageUnitId: entry.surfaceId })),
-  ];
+  return spec?.coverageCancellations ?? [];
 }
 
 /** @returns {{ ok: boolean, errors: string[], warnings: string[] }} */
@@ -103,22 +99,14 @@ export function assertSemanticSufficiency({ inventory, spec, discoveryMap }) {
   return { ok: !errors.length, errors, warnings };
 }
 
-/** Prefer the filled analysis map over the input shell. */
 export function loadDiscoveryMap(workdir) {
-  const analysis = readJson(path.join(workdir, "analysis", "discovery-map.json"));
-  const inputs = readJson(path.join(workdir, "inputs", "discovery-map.json"));
-  if (analysis?.domains?.length) return analysis;
-  if (inputs?.domains?.length) return inputs;
-  return analysis ?? inputs ?? null;
+  return readJson(path.join(workdir, "analysis", "discovery-map.json"));
 }
 
 export function gatePlan(workdir) {
   const inventoryPath = path.join(workdir, "inputs", "inventory.json");
   const analysisMapPath = path.join(workdir, "analysis", "discovery-map.json");
-  const inputMapPath = path.join(workdir, "inputs", "discovery-map.json");
-  const specPath = fs.existsSync(path.join(workdir, "analysis", "spec.json"))
-    ? path.join(workdir, "analysis", "spec.json")
-    : path.join(workdir, "inputs", "spec.json");
+  const specPath = path.join(workdir, "analysis", "spec.json");
   const inventory = readJson(inventoryPath);
   const discoveryMap = loadDiscoveryMap(workdir);
   const spec = readJson(specPath);
@@ -126,7 +114,7 @@ export function gatePlan(workdir) {
   const semantic = assertSemanticSufficiency({ inventory, spec, discoveryMap });
   const digests = {
     inventory: artifactDigest(inventoryPath),
-    discoveryMap: artifactDigest(fs.existsSync(analysisMapPath) ? analysisMapPath : inputMapPath),
+    discoveryMap: artifactDigest(analysisMapPath),
     spec: artifactDigest(specPath),
   };
   const errors = [...coverage.errors, ...semantic.errors];

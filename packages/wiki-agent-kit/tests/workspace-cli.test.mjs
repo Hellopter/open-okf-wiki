@@ -42,11 +42,20 @@ describe("ow init + source path + freeze", () => {
     assert.equal(st.sources.length, 1);
     assert.equal(st.wikiLanguage, "zh");
 
-    r = ow(["produce", "--workspace", ws], tmp);
+    r = ow(["doctor", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
-    const prod = JSON.parse(r.stdout);
-    assert.ok(prod.runId);
-    const workdir = prod.workdir;
+    const doctor = JSON.parse(r.stdout);
+    assert.equal(doctor.assets.ok, true);
+    assert.equal(doctor.dynamicWorkflowPrerequisite.required, true);
+    assert.ok(Object.hasOwn(doctor.claude, "versionSupported"));
+
+    r = ow(["freeze", "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const frozen = JSON.parse(r.stdout);
+    assert.ok(frozen.runId);
+    assert.equal(frozen.workflow.command, "/wiki-plan");
+    assert.equal(frozen.workflow.args.runId, frozen.runId);
+    const workdir = frozen.workdir;
     assert.ok(fs.existsSync(path.join(workdir, "inputs", "inventory.json")));
     assert.ok(fs.existsSync(path.join(workdir, "inputs", "snapshot-manifest.json")));
     assert.ok(fs.existsSync(path.join(workdir, "candidate")));
@@ -58,7 +67,7 @@ describe("ow init + source path + freeze", () => {
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-write-review.workflow.js")));
 
     // gate without spec should fail closed when units exist
-    r = ow(["gate", "plan", "--run", prod.runId, "--workspace", ws], tmp);
+    r = ow(["gate", "plan", "--run", frozen.runId, "--workspace", ws], tmp);
     assert.equal(r.status, 2, r.stderr || r.stdout);
     const gate = JSON.parse(r.stdout);
     assert.equal(gate.ok, false);
@@ -75,13 +84,13 @@ describe("ow init + source path + freeze", () => {
       path.join(ws, ".agents", "skills", "repository-wiki-producer", "SKILL.md"),
       "\nlocal drift\n",
     );
-    r = ow(["produce", "--workspace", ws], tmp);
+    r = ow(["freeze", "--workspace", ws], tmp);
     assert.equal(r.status, 1, r.stderr || r.stdout);
-    assert.match(r.stderr, /installed skill drifted.*ow install all --force/i);
+    assert.match(r.stderr, /installed skill drifted.*ow install --force/i);
 
-    r = ow(["plan", "--run", prod.runId, "--workspace", ws], tmp);
+    r = ow(["plan", "--run", frozen.runId, "--workspace", ws], tmp);
     assert.equal(r.status, 1, r.stderr || r.stdout);
-    assert.match(r.stderr, /installed skill drifted.*ow install all --force/i);
+    assert.match(r.stderr, /unknown command: plan/i);
   });
 
   it("runs the full gated lifecycle and seals a local-link candidate", () => {
@@ -94,10 +103,10 @@ describe("ow init + source path + freeze", () => {
 
     let r = ow(["init", ws, "--name", "demo", "--path", repo, "--id", "app"], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
-    r = ow(["produce", "--workspace", ws], tmp);
+    r = ow(["freeze", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
-    const produced = JSON.parse(r.stdout);
-    const workdir = produced.workdir;
+    const frozen = JSON.parse(r.stdout);
+    const workdir = frozen.workdir;
     fs.writeFileSync(
       path.join(workdir, "analysis", "discovery-map.json"),
       JSON.stringify({
@@ -114,12 +123,8 @@ describe("ow init + source path + freeze", () => {
       }),
     );
 
-    r = ow(["gate", "plan", "--run", produced.runId, "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    assert.ok(JSON.parse(r.stdout).receipt);
-    r = ow(["write", "--run", produced.runId, "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    assert.match(JSON.parse(r.stdout).next, /\/wiki-write-review/);
+    r = ow(["status", "--workspace", ws], tmp);
+    assert.equal(JSON.parse(r.stdout).runs[0].status, "planned");
 
     fs.writeFileSync(
       path.join(workdir, "candidate", "overview.md"),
@@ -134,14 +139,39 @@ describe("ow init + source path + freeze", () => {
         "",
       ].join("\n"),
     );
-    r = ow(["validate", "--run", produced.runId, "--workspace", ws], tmp);
+    r = ow(["validate", "--run", frozen.runId, "--workspace", ws], tmp);
+    assert.equal(r.status, 2, r.stderr || r.stdout);
+    assert.match(JSON.stringify(JSON.parse(r.stdout)), /plan gate receipt/i);
+
+    r = ow(["gate", "plan", "--run", frozen.runId, "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const gated = JSON.parse(r.stdout);
+    assert.ok(gated.receipt);
+    assert.equal(gated.workflow.command, "/wiki-write-review");
+    r = ow(["status", "--workspace", ws], tmp);
+    assert.equal(JSON.parse(r.stdout).runs[0].status, "write-ready");
+
+    r = ow(["validate", "--run", frozen.runId, "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
     const validated = JSON.parse(r.stdout);
     assert.equal(validated.ok, true);
     assert.ok(validated.manifest.candidateDigest);
+    r = ow(["status", "--workspace", ws], tmp);
+    assert.equal(JSON.parse(r.stdout).runs[0].status, "sealed");
 
-    r = ow(["validate", "--run", produced.runId, "--workspace", ws], tmp);
+    r = ow(["validate", "--run", frozen.runId, "--workspace", ws], tmp);
     assert.equal(r.status, 1, r.stderr || r.stdout);
     assert.match(r.stderr, /candidate is already sealed/);
+
+    fs.appendFileSync(path.join(workdir, "candidate", "overview.md"), "tampered\n");
+    r = ow(["status", "--workspace", ws], tmp);
+    assert.equal(JSON.parse(r.stdout).runs[0].status, "tampered");
+
+    const beforeRetry = fs.readFileSync(path.join(ws, ".wiki-agent", "runs", frozen.runId, "meta.json"), "utf8");
+    r = ow(["retry", "--run", frozen.runId, "--from", "write", "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    assert.ok(fs.existsSync(path.join(workdir, "analysis", "spec.json")));
+    assert.deepEqual(fs.readdirSync(path.join(workdir, "candidate")), []);
+    assert.equal(fs.readFileSync(path.join(ws, ".wiki-agent", "runs", frozen.runId, "meta.json"), "utf8"), beforeRetry);
   });
 });
