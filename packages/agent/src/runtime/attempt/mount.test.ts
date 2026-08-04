@@ -273,6 +273,42 @@ test("materializeInputs rejects legacy manifest versions, role names, and filena
   );
 });
 
+test("materialize projects a durable plan scout receipt with its producer filename", async (t) => {
+  const input = await baseFixture([], {
+    key: "plan",
+    kind: "plan",
+    generation: 0,
+    runIndex: 1,
+  });
+  t.after(() => cleanup(input));
+
+  // Plan has no prior spec or execution-plan input. Its scouts are sealed as
+  // `<slug>.json` by the producer, and sealing preserves that filename.
+  input.sealedInputs = input.sealedInputs.filter(
+    (sealed) => sealed.role !== "spec" && sealed.role !== "execution_plan",
+  );
+  const root = path.dirname(path.dirname(input.attemptDir));
+  const scoutDir = path.join(root, "sealed-plan-scout");
+  await mkdir(scoutDir, { recursive: true });
+  await writeFile(
+    path.join(scoutDir, "entry.json"),
+    `${JSON.stringify({ version: 1, kind: "entry", ok: true, summary: "Scout findings" })}\n`,
+    "utf8",
+  );
+  input.sealedInputs.push({
+    role: "plan.scout.entry:scout_receipt",
+    artifact: { artifactId: "scout-entry", kind: "receipt", digest, sealedAt: timestamp },
+    readOnlyPath: scoutDir,
+  });
+
+  const layout = await materializeInputs(input);
+  const receipt = JSON.parse(
+    await readFile(path.join(layout.runWorkDir, "inputs", "plan-scouts", "entry.json"), "utf8"),
+  ) as { kind?: unknown; summary?: unknown };
+  assert.equal(receipt.kind, "entry");
+  assert.equal(receipt.summary, "Scout findings");
+});
+
 test("mountSealedSourceTree prefers hardlink shared mount (Phase 7)", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-mount-hl-"));
   try {

@@ -432,10 +432,9 @@ async function projectSealedInputs(
 
     if (requirement.role === "scout_receipt") {
       // Project durable plan.scout receipts into inputs/plan-scouts/<slug>.json
-      const file = await resolveSealedFile(sealed.readOnlyPath, [
-        "scout-receipt.json",
-        "receipt.json",
-      ]);
+      // Sealing preserves the producer's `<slug>.json` basename, so receipt
+      // inputs use the same unique-JSON payload rule as research receipts.
+      const file = await resolveSealedFile(sealed.readOnlyPath, []);
       if (!file) {
         throw new Error(`sealed scout_receipt is unreadable for role ${sealed.role}`);
       }
