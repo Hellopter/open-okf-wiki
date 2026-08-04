@@ -66,6 +66,16 @@ export const PiAttemptNodeDetailSchema = z
      * Optional so older detail_json rows still parse; agents may ignore when absent.
      */
     repairRequest: RepairRequestSchema.optional(),
+    /** plan.scout: thematic (entry|layout|tests|risks) or source|surface. */
+    scoutKind: z.string().trim().min(1).max(80).optional(),
+    /** plan.scout: coverage unit id when source/surface. */
+    unitId: z.string().trim().min(1).max(200).optional(),
+    /** plan.scout: freeze source id for source/surface surveys. */
+    sourceId: z.string().trim().min(1).max(120).optional(),
+    /** plan.scout: surface path under the source (`.` for root). */
+    surfacePath: z.string().trim().min(1).max(400).optional(),
+    /** plan.scout: human label for receipts / observation. */
+    taskLabel: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 

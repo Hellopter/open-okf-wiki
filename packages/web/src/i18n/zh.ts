@@ -806,14 +806,15 @@ export const zh: MessageTree = {
     expandAllDomains: "全部展开",
     collapseAllDomains: "全部收起",
     backToGraph: "执行图",
-    /** 展示用计划侦察观察（嵌套在 plan 尝试下）。 */
+    /** 计划侦察节点（持久 Attempt）或旧版密封回执观察。 */
     planScout: "计划侦察",
     planScoutReceipt: "侦察回执",
     planScoutOk: "成功",
     planScoutFailed: "失败",
     planScoutNoReceipt: "尚无侦察回执。",
     planScoutSiblings: "其他侦察",
-    planScoutVirtualHint: "计划侦察嵌套在 plan 尝试下运行。此处仅供观察，不能单独重试。",
+    planScoutVirtualHint:
+      "此侦察尚无尝试记录。若有密封回执会显示在上方；持久化侦察节点可与其他失败节点一样重试。",
     openPlanNode: "打开计划节点",
     nodeActivity: "活动",
     noAttemptStarted: "此节点尚未开始尝试。",

@@ -355,6 +355,11 @@ export function upstreamSealedOutputs(
         if (byRole.has("prior_spec")) break;
       }
     }
+
+    // Durable plan.scout receipts (like domain binds leaf research).
+    // Prefer edge-upstream outputs; also scan all succeeded plan.scout.* nodes
+    // so light-path / partial U1 graphs still project sealed scouts into plan.
+    bindSucceededPlanScoutReceipts(host, runId, add);
   }
 
   const edgeUps = upstreamKeys(host, runId, nodeKey);
@@ -506,4 +511,34 @@ export function upstreamSealedOutputs(
   return [...byRole.entries()]
     .map(([role, artifactId]) => ({ role, artifactId }))
     .sort((a, b) => a.role.localeCompare(b.role));
+}
+
+/**
+ * Bind succeeded plan.scout.* scout_receipt outputs into the plan envelope.
+ * Roles are namespaced `plan.scout.<slug>:scout_receipt` so multiple scouts
+ * do not collide (mirrors research.leaf.*:research on domain).
+ */
+function bindSucceededPlanScoutReceipts(
+  host: Pick<WikiRunsCasCtx, "db" | "currentNodeGeneration">,
+  runId: string,
+  add: (role: string, artifactId: string) => void,
+): void {
+  const scoutKeys = asRows(
+    host.db
+      .prepare(
+        `SELECT DISTINCT node_key FROM nodes
+         WHERE run_id = ? AND kind = 'plan.scout'
+         ORDER BY node_key`,
+      )
+      .all(runId),
+  ).map((row) => requiredText(row, "node_key"));
+
+  for (const scoutKey of scoutKeys) {
+    // Prefer latest succeeded generation (re-arm may leave current gen empty).
+    for (const output of latestSucceededOutputs(host, runId, scoutKey)) {
+      if (output.role === "scout_receipt") {
+        add(`${scoutKey}:scout_receipt`, output.artifactId);
+      }
+    }
+  }
 }

@@ -187,6 +187,37 @@ export function upstreamKeys(host: Pick<DagControl, "db">, runId: string, nodeKe
   ).map((row) => requiredText(row, "from_key"));
 }
 
+/**
+ * True when a plan.scout node's detail_json.critical is true.
+ * Missing/invalid detail fails closed (treat as critical).
+ */
+export function isCriticalPlanScoutNode(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+): boolean {
+  if (!nodeKey.startsWith("plan.scout.")) return true;
+  const row = asRow(
+    host.db
+      .prepare(
+        "SELECT kind, detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, nodeKey, generation),
+  );
+  if (!row) return true;
+  if (requiredText(row, "kind") !== "plan.scout") return true;
+  const raw = row.detail_json;
+  if (raw == null || raw === "") return true;
+  try {
+    const parsed = JSON.parse(String(raw)) as { critical?: unknown };
+    if (typeof parsed.critical === "boolean") return parsed.critical;
+  } catch {
+    return true;
+  }
+  return true;
+}
+
 export function upstreamsSucceeded(host: DagControl, runId: string, nodeKey: string): boolean {
   const upstreams = upstreamKeys(host, runId, nodeKey);
   // Hard-coded bootstrap edges for freeze→plan before node_edges exist.
@@ -213,7 +244,24 @@ export function upstreamsSucceeded(host: DagControl, runId: string, nodeKey: str
         .prepare("SELECT state FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?")
         .get(runId, fromKey, gen),
     );
-    if (!node || requiredText(node, "state") !== "succeeded") return false;
+    if (!node) return false;
+    const state = requiredText(node, "state");
+
+    // Plan waits for every plan.scout.* to reach a terminal state.
+    // Optional scouts may fail/cancel without blocking; critical must succeed.
+    // Non-terminal scouts (ready/running/blocked/…) always hold plan closed —
+    // otherwise synthesizer can claim plan with empty scout receipts.
+    if (nodeKey === "plan" && fromKey.startsWith("plan.scout.")) {
+      if (state === "succeeded") continue;
+      if (state === "failed" || state === "cancelled") {
+        if (isCriticalPlanScoutNode(host, runId, fromKey, gen)) return false;
+        continue;
+      }
+      // Non-terminal (blocked|ready|running|waiting|invalidated|…): wait.
+      return false;
+    }
+
+    if (state !== "succeeded") return false;
   }
   return true;
 }

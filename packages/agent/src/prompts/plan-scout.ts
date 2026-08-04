@@ -1,74 +1,22 @@
 /**
  * Hybrid plan-scout prompts (MoA proposers before Spec synthesizer).
  *
- * Task kinds:
- * - thematic: entry | layout | tests | risks (classic orthogonal lenses)
- * - source: per-source survey (multi-source coverage)
- * - surface: per-surface survey (large monorepo packages/apps)
+ * Task kinds / selection live in `@okf-wiki/contract/wiki-runs` so workflow
+ * freeze materialization does not import agent. This module owns prompt text.
  */
 
-export type ThematicScoutKind = "entry" | "layout" | "tests" | "risks";
+export {
+  PLAN_SCOUT_KINDS,
+  type PlanScoutKind,
+  type PlanScoutTask,
+  planScoutNodeKey,
+  scoutTaskFileSlug,
+  scoutTaskLabel,
+  THEMATIC_SCOUT_KINDS,
+  type ThematicScoutKind,
+} from "@okf-wiki/contract/wiki-runs";
 
-export const THEMATIC_SCOUT_KINDS: readonly ThematicScoutKind[] = [
-  "entry",
-  "layout",
-  "tests",
-  "risks",
-] as const;
-
-/** @deprecated Prefer THEMATIC_SCOUT_KINDS; kept for callers that only slice thematic. */
-export const PLAN_SCOUT_KINDS = THEMATIC_SCOUT_KINDS;
-
-export type PlanScoutKind = ThematicScoutKind | "source" | "surface";
-
-export type PlanScoutTask =
-  | {
-      kind: "thematic";
-      thematic: ThematicScoutKind;
-      /** Stable id for receipts / concurrency keys (thematic name). */
-      id: ThematicScoutKind;
-      /** Required unit failure is a hard gap; thematic scouts are optional. */
-      required: false;
-    }
-  | {
-      kind: "source";
-      sourceId: string;
-      id: string;
-      required: boolean;
-    }
-  | {
-      kind: "surface";
-      sourceId: string;
-      /** Repo-relative surface path (`.` for root). */
-      path: string;
-      /** Source-qualified unit id `{sourceId}::{path}`. */
-      unitId: string;
-      id: string;
-      required: boolean;
-    };
-
-/** Filesystem-safe slug for analysis/plan-scouts/<slug>.md */
-export function scoutTaskFileSlug(task: PlanScoutTask): string {
-  if (task.kind === "thematic") return task.thematic;
-  if (task.kind === "source") return `source-${sanitizeSlug(task.sourceId)}`;
-  return `surface-${sanitizeSlug(task.sourceId)}-${sanitizeSlug(task.path === "." ? "root" : task.path)}`;
-}
-
-function sanitizeSlug(value: string): string {
-  return value
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "unit";
-}
-
-/** Human label for receipts / planner context headings. */
-export function scoutTaskLabel(task: PlanScoutTask): string {
-  if (task.kind === "thematic") return `thematic:${task.thematic}`;
-  if (task.kind === "source") return `source:${task.sourceId}`;
-  return `surface:${task.unitId}`;
-}
+import type { PlanScoutTask, ThematicScoutKind } from "@okf-wiki/contract/wiki-runs";
 
 export function planScoutPrompt(input: {
   task: PlanScoutTask;

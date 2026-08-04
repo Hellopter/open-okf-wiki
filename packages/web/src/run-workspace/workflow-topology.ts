@@ -96,11 +96,24 @@ export function planScoutKindFromKey(key: string): string {
   return key.startsWith(PLAN_SCOUT_KEY_PREFIX) ? key.slice(PLAN_SCOUT_KEY_PREFIX.length) : key;
 }
 
+/** True when the control-plane snapshot already has durable plan.scout nodes. */
+export function hasDurablePlanScouts(
+  nodes: ReadonlyArray<Pick<WikiRunNode, "key" | "kind">>,
+): boolean {
+  return nodes.some(
+    (node) => node.kind === "plan.scout" || node.key.startsWith(PLAN_SCOUT_KEY_PREFIX),
+  );
+}
+
 /**
  * Read scout kinds from the latest succeeded/running plan attempt metrics.extra.
  * Soft: missing or malformed extra never throws.
+ * Prefer durable snapshot plan.scout nodes — this is only a fallback for old runs.
  */
 export function scoutKindsFromSnapshot(snapshot: WikiRunSnapshot): string[] {
+  // Durable plan.scout.* nodes own topology; do not also project metrics.extra.
+  if (hasDurablePlanScouts(snapshot.nodes)) return [];
+
   const planAttempts = snapshot.attempts
     .filter((attempt) => attempt.nodeKey === "plan")
     .slice()
@@ -125,8 +138,9 @@ export function scoutKindsFromSnapshot(snapshot: WikiRunSnapshot): string[] {
 }
 
 /**
- * Project display-only plan.scout nodes into a topology. Pure — does not schedule
- * durable DAG nodes. Prefer richer scouts (ok/preview) when available.
+ * Project display-only plan.scout nodes into a topology for **legacy** runs that
+ * nested scouts under the plan attempt (no durable DAG nodes). Prefer durable
+ * snapshot nodes — this helper is a no-op when plan.scout already exists.
  */
 export function injectPlanScoutDisplayNodes(
   nodes: WikiRunNode[],
@@ -140,8 +154,8 @@ export function injectPlanScoutDisplayNodes(
   if (scouts.length === 0) return { nodes, edges };
 
   const existingKeys = new Set(nodes.map((node) => node.key));
-  // Skip when durable graph already has plan.scout (future-proof); never double-inject.
-  if ([...existingKeys].some((key) => key.startsWith(PLAN_SCOUT_KEY_PREFIX))) {
+  // Durable graph already has plan.scout — never double-inject from metrics/review.
+  if (hasDurablePlanScouts(nodes)) {
     return { nodes, edges };
   }
 
@@ -309,7 +323,10 @@ export function buildWorkflowStages(
 
 export function relationForEdge(source: WikiRunNode, target: WikiRunNode): WorkflowEdgeRelation {
   if (source.kind === "repair" && target.kind === "validate.pre") return "feedback";
+  // Durable: freeze → plan.scout.* → plan; legacy inject: plan → plan.scout → gate.plan
+  if (source.kind === "freeze" && target.kind === "plan.scout") return "fanout";
   if (source.kind === "plan" && target.kind === "plan.scout") return "fanout";
+  if (source.kind === "plan.scout" && target.kind === "plan") return "join";
   if (source.kind === "plan.scout" && target.kind.startsWith("gate.")) return "join";
   if (source.kind === "plan.scout") return "join";
   if (source.kind.startsWith("gate.") || target.kind.startsWith("gate.")) return "control";
@@ -423,16 +440,37 @@ export function orderedNodesForLayout(
     ordered.push(node);
   };
 
-  // freeze → plan → plan.scout.* → gate.plan (stable alpha within scouts)
-  const planBoundaryCore = topology.nodes
-    .filter((node) => node.kind === "freeze" || node.kind === "plan")
+  // Durable topology: freeze → plan.scout.* → plan → gate.plan (edges from snapshot).
+  // Legacy display inject: plan → plan.scout → gate — place scouts after plan then.
+  const byKeyForPlan = byKey;
+  const durableScoutOrder = topology.edges.some((edge) => {
+    const source = byKeyForPlan.get(edge.source);
+    const target = byKeyForPlan.get(edge.target);
+    return (
+      (source?.kind === "freeze" && target?.kind === "plan.scout") ||
+      (source?.kind === "plan.scout" && target?.kind === "plan")
+    );
+  });
+
+  const freezeNodes = topology.nodes
+    .filter((node) => node.kind === "freeze")
     .sort((a, b) => a.key.localeCompare(b.key));
-  for (const node of planBoundaryCore) take(node.key);
+  for (const node of freezeNodes) take(node.key);
 
   const planScouts = topology.nodes
     .filter((node) => node.kind === "plan.scout")
     .sort((a, b) => a.key.localeCompare(b.key));
-  for (const node of planScouts) take(node.key);
+  const planNodes = topology.nodes
+    .filter((node) => node.kind === "plan")
+    .sort((a, b) => a.key.localeCompare(b.key));
+
+  if (durableScoutOrder) {
+    for (const node of planScouts) take(node.key);
+    for (const node of planNodes) take(node.key);
+  } else {
+    for (const node of planNodes) take(node.key);
+    for (const node of planScouts) take(node.key);
+  }
 
   const planGates = topology.nodes
     .filter((node) => node.kind === "gate.plan")

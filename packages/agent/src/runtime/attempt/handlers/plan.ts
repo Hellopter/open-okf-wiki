@@ -1,10 +1,11 @@
 /**
- * plan node: thin wiring to planWikiSpec (Epic D.4).
+ * plan node: thin wiring to planWikiSpec (Epic D.4 / U2 durable scouts).
  *
  * Handler owns only Attempt edge concerns:
  * load projections / models / tools → call planWikiSpec → write unsealed outputs/metrics.
- * Plan policy (inventory, adaptive orch, scouts/rescout, assert, draft I/O) lives in
- * workflow/phases/plan-phase.
+ * Plan policy (inventory, adaptive orch, sealed scout receipts, assert, draft I/O)
+ * lives in workflow/phases/plan-phase. Nested runPlanScouts is gone — scouts are
+ * durable plan.scout Attempts whose receipts project into inputs/plan-scouts/.
  */
 
 import { writeFile } from "node:fs/promises";
@@ -56,9 +57,6 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
 
   const resolved =
     runtime.kind === "live" ? await liveModel(input, "planner", resolveModel) : undefined;
-  // Scout model: cheaper worker role when live; planWikiSpec falls back to planner model.
-  const scoutResolved =
-    runtime.kind === "live" ? await liveModel(input, "worker", resolveModel) : undefined;
 
   const planTask = `Plan WikiRunSpec for ${input.workspace.name}`;
   const seat = { modelId: seatModelId(resolved), role: "plan" as const };
@@ -69,9 +67,6 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
     runtime,
     model: resolved?.model,
     modelRuntime: resolved?.modelRuntime,
-    scoutModel: scoutResolved?.model ?? resolved?.model,
-    scoutModelRuntime: scoutResolved?.modelRuntime ?? resolved?.modelRuntime,
-    scoutMaxContextTokens: scoutResolved?.model.contextWindow ?? resolved?.model.contextWindow,
     maxContextTokens: resolved?.model.contextWindow,
     contextTargetTokens: input.workspace.limits.contextTargetTokens,
     retry: input.workspace.limits.retry,
@@ -113,6 +108,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       priorSpecBound: Boolean(priorSpec),
       rescoutRounds: planned.rescoutRounds ?? 0,
       adaptiveReasons: planned.adaptiveReasons ?? [],
+      scoutKinds: planned.scoutKinds ?? [],
       ...(operatorInput?.answer ? { operatorInputBound: true } : {}),
     },
   });
@@ -127,8 +123,7 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       role: "plan",
       modelId: seatModelId(resolved),
       fromRun: planned.metrics,
-      // Persist scout list on the durable plan attempt so Run Graph can
-      // project plan.scout display nodes without durable DAG scheduling.
+      // Persist scout kinds bound for this synthesizer Attempt (display + audit).
       extra: {
         extra: {
           ...(planned.metrics?.extra ?? {}),

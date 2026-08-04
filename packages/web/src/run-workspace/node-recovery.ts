@@ -223,15 +223,19 @@ const NO_AUTO_RETRY_FAILURE_CLASSES = new Set([
   "publication_conflict",
 ]);
 
-/** L_control auto-requeue only applies to research.leaf / research.domain. */
+/** L_control auto-requeue: research.leaf / research.domain / plan.scout. */
 function isResearchAutoRetryKind(nodeKind: string | undefined): boolean {
-  return nodeKind === "research.leaf" || nodeKind === "research.domain";
+  return (
+    nodeKind === "research.leaf" ||
+    nodeKind === "research.domain" ||
+    nodeKind === "plan.scout"
+  );
 }
 
 /**
  * Whether to show the “will not auto-retry” operator hint.
- * Auto-retry is research-only for infrastructure/transient; product/schema and
- * non-research nodes need manual Retry/Rerun.
+ * Auto-retry is research/plan.scout-only for infrastructure/transient;
+ * product/schema and other node kinds need manual Retry/Rerun.
  */
 export function shouldShowNoAutoRetryHint(
   failureClass: string | undefined,

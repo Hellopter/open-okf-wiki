@@ -402,29 +402,9 @@ export function AttemptObservation({
   const [rerunFeedback, setRerunFeedback] = useState("");
   const [confirmRerunOpen, setConfirmRerunOpen] = useState(false);
 
-  // Display-only plan scouts: receipt markdown, no attempt transcript / retry.
-  if (selectedNode?.kind === "plan.scout" || selectedNode?.key.startsWith("plan.scout.")) {
-    const slug = planScoutKindFromKey(selectedNode.key);
-    const scout =
-      planScoutDisplays.find((item) => planScoutSlug(item.kind) === slug) ??
-      planReview?.scoutsSummary?.scouts?.find((item) => planScoutSlug(item.kind) === slug);
-    const siblings =
-      planScoutDisplays.length > 0
-        ? planScoutDisplays
-        : (planReview?.scoutsSummary?.scouts ??
-          planReview?.scoutsSummary?.kinds?.map((kind) => ({ kind })) ??
-          []);
-    return (
-      <PlanScoutObservation
-        selectedNode={selectedNode}
-        scout={scout}
-        siblingScouts={siblings}
-        onBack={onBack}
-        onOpenPlan={onSelectNode ? () => onSelectNode("plan") : undefined}
-        t={t}
-      />
-    );
-  }
+  const isPlanScoutNode =
+    selectedNode?.kind === "plan.scout" ||
+    Boolean(selectedNode?.key.startsWith("plan.scout."));
 
   const attempts = selectedNode
     ? snapshot.attempts
@@ -435,7 +415,39 @@ export function AttemptObservation({
             right.nodeGeneration - left.nodeGeneration || right.runIndex - left.runIndex,
         )
     : [];
+
+  const scoutDisplay = useMemo((): PlanScoutDisplay | undefined => {
+    if (!selectedNode || !isPlanScoutNode) return undefined;
+    const slug = planScoutKindFromKey(selectedNode.key);
+    return (
+      planScoutDisplays.find((item) => planScoutSlug(item.kind) === slug) ??
+      planReview?.scoutsSummary?.scouts?.find((item) => planScoutSlug(item.kind) === slug)
+    );
+  }, [selectedNode, isPlanScoutNode, planScoutDisplays, planReview?.scoutsSummary?.scouts]);
+
+  // Legacy display-only scouts (no durable Attempt): receipt markdown panel.
+  // Durable plan.scout with attempts uses the standard transcript path below.
+  if (isPlanScoutNode && selectedNode && attempts.length === 0 && !selectedAttempt) {
+    const siblings =
+      planScoutDisplays.length > 0
+        ? planScoutDisplays
+        : (planReview?.scoutsSummary?.scouts ??
+          planReview?.scoutsSummary?.kinds?.map((kind) => ({ kind })) ??
+          []);
+    return (
+      <PlanScoutObservation
+        selectedNode={selectedNode}
+        scout={scoutDisplay}
+        siblingScouts={siblings}
+        onBack={onBack}
+        onOpenPlan={onSelectNode ? () => onSelectNode("plan") : undefined}
+        t={t}
+      />
+    );
+  }
+
   const live = selectedAttempt?.state === "running" || selectedAttempt?.state === "suspended";
+  const scoutReceiptPreview = scoutDisplay?.preview?.trim() ?? "";
 
   const retry = selectedNode ? canRetryFailedNode(snapshot, selectedNode.key) : null;
   const rerun = selectedNode ? canRerunNode(snapshot, selectedNode.key) : null;
@@ -692,6 +704,11 @@ export function AttemptObservation({
           <Tabs defaultValue="activity" className="flex min-h-0 flex-1 flex-col">
             <TabsList variant="line" className="shrink-0 border-b border-border px-4 md:px-6">
               <TabsTrigger value="activity">{t.workbench.nodeActivity}</TabsTrigger>
+              {scoutReceiptPreview ? (
+                <TabsTrigger value="receipt" data-testid="plan-scout-receipt-tab">
+                  {t.workbench.planScoutReceipt}
+                </TabsTrigger>
+              ) : null}
               <TabsTrigger value="plan">{t.workbench.plan}</TabsTrigger>
               <TabsTrigger value="events">{t.workbench.rawEvents}</TabsTrigger>
             </TabsList>
@@ -743,6 +760,21 @@ export function AttemptObservation({
                 </p>
               )}
             </TabsContent>
+            {scoutReceiptPreview ? (
+              <TabsContent value="receipt" className="min-h-0 flex-1 overflow-y-auto">
+                <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 py-5 md:px-6">
+                  {scoutDisplay?.relPath ? (
+                    <p className="font-mono text-xs text-muted-foreground">{scoutDisplay.relPath}</p>
+                  ) : null}
+                  <div
+                    className="rounded-lg border border-border bg-card p-4"
+                    data-testid="plan-scout-preview"
+                  >
+                    <MarkdownDocument content={scoutReceiptPreview} />
+                  </div>
+                </div>
+              </TabsContent>
+            ) : null}
             <TabsContent value="plan" className="min-h-0 flex-1 overflow-y-auto">
               <RunPlanDetails
                 spec={spec}

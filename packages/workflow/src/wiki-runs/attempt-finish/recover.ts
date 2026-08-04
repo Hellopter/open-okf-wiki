@@ -24,6 +24,8 @@ function freezeCommitHost(host: WikiRunsControl): FreezeCommitHost {
     db: host.db,
     isCurrent: (claim) => host.isCurrent(claim),
     emit: (runId, type) => host.emit(runId, type),
+    workspace: host.workspace,
+    currentNodeGeneration: (runId, nodeKey) => host.currentNodeGeneration(runId, nodeKey),
   };
 }
 

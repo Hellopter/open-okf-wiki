@@ -52,11 +52,17 @@ export function isReviewSeatRole(role: string): boolean {
   return role === "review_seat" || role.endsWith(":review_seat");
 }
 
+/** True for plan scout receipt roles (exact or namespaced plan.scout.* outputs). */
+export function isScoutReceiptRole(role: string): boolean {
+  return role === "scout_receipt" || role.endsWith(":scout_receipt");
+}
+
 /** Whether one sealed role matches an input requirement. */
 export function inputRoleMatches(requirement: InputRequirement, boundRole: string): boolean {
   if (requirement.role === boundRole) return true;
   if (requirement.role === "research") return isResearchRole(boundRole);
   if (requirement.role === "review_seat") return isReviewSeatRole(boundRole);
+  if (requirement.role === "scout_receipt") return isScoutReceiptRole(boundRole);
   return boundRole.endsWith(`:${requirement.role}`);
 }
 
@@ -101,6 +107,8 @@ export function metricsRoleForNodeKind(kind: string): string {
   switch (kind) {
     case "plan":
       return "plan";
+    case "plan.scout":
+      return "plan_scout";
     case "plan.adapt":
       return "plan_adapt";
     case "research.leaf":
@@ -124,6 +132,7 @@ export function metricsRoleForNodeKind(kind: string): string {
     case "gate.publication":
       return "mechanical";
     default:
+      if (kind.startsWith("plan.scout")) return "plan_scout";
       if (kind.startsWith("research.leaf")) return "leaf";
       if (kind.startsWith("research.domain")) return "domain";
       if (kind.startsWith("review.seat")) return "review";
@@ -322,6 +331,18 @@ const PRIOR_SPEC: InputRequirement = {
   mountPath: "prior-spec.json",
 };
 
+/**
+ * Durable plan scout receipts (namespaced `plan.scout.*:scout_receipt`).
+ * Optional so light-path plan (no scouts scheduled) still claims.
+ */
+const SCOUT_RECEIPT: InputRequirement = {
+  role: "scout_receipt",
+  artifactKind: "receipt",
+  required: false,
+  projection: "mounted",
+  mountPath: "plan-scouts/",
+};
+
 const VALIDATE_REPORT_OUTPUT: OutputRequirement = {
   role: "validate_report",
   artifactKind: "receipt",
@@ -353,6 +374,7 @@ const CONTRACTS: Record<string, NodeContract> = {
       COVERAGE_PLAN,
       BOUNDARY_INDEX,
       PRIOR_SPEC,
+      SCOUT_RECEIPT,
       TRANSCRIPT_AUDIT,
       OPERATOR_INPUT,
     ],
@@ -360,6 +382,25 @@ const CONTRACTS: Record<string, NodeContract> = {
       { role: "spec", artifactKind: "spec" },
       { role: "execution_plan", artifactKind: "execution_plan" },
     ],
+    execution: "pi",
+  },
+  /**
+   * Durable plan scout (MoA proposer). One scout task per Attempt.
+   * Scheduled before plan synthesizer; seals scout_receipt for plan inputs.
+   */
+  "plan.scout": {
+    kind: "plan.scout",
+    requiredInputs: [
+      SOURCES,
+      SKILL,
+      FROZEN_MANIFEST,
+      COVERAGE_INVENTORY,
+      COVERAGE_PLAN,
+      BOUNDARY_INDEX,
+      TRANSCRIPT_AUDIT,
+      OPERATOR_INPUT,
+    ],
+    outputs: [{ role: "scout_receipt", artifactKind: "receipt" }],
     execution: "pi",
   },
   "research.leaf": {
@@ -542,6 +583,9 @@ function hasValidKey(kind: string, nodeKey: string): boolean {
       return /^plan\.adapt\.[1-2]$/.test(nodeKey);
     case "review.seat":
       return /^review\.seat\..+$/.test(nodeKey);
+    case "plan.scout":
+      // plan.scout.<slug> — thematic (entry), source (source-api), surface, …
+      return /^plan\.scout\.[A-Za-z0-9._-]+$/.test(nodeKey);
     default:
       return nodeKey === kind;
   }

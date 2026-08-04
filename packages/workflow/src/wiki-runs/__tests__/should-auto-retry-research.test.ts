@@ -82,8 +82,14 @@ const writeClaim: ClaimedNode = {
   kind: "write.root",
 };
 
+const planScoutClaim: ClaimedNode = {
+  ...researchClaim,
+  nodeKey: "plan.scout.entry",
+  kind: "plan.scout",
+};
+
 describe("shouldAutoRetryResearch", () => {
-  it("allows research.leaf/domain once for infrastructure|transient", () => {
+  it("allows research.leaf/domain/plan.scout once for infrastructure|transient", () => {
     assert.equal(
       shouldAutoRetryResearch(
         ctrl({ failedAttemptCount: 1 }),
@@ -95,6 +101,15 @@ describe("shouldAutoRetryResearch", () => {
     );
     assert.equal(
       shouldAutoRetryResearch(ctrl({ failedAttemptCount: 1 }), domainClaim, "flake", "transient"),
+      true,
+    );
+    assert.equal(
+      shouldAutoRetryResearch(
+        ctrl({ failedAttemptCount: 1 }),
+        planScoutClaim,
+        "flake",
+        "infrastructure",
+      ),
       true,
     );
   });

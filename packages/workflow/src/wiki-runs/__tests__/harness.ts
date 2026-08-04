@@ -89,6 +89,31 @@ export async function fullGraphFixtureExecutor(
   if (input.node.kind === "plan") {
     return succeededPlan(input);
   }
+  if (input.node.kind === "plan.scout") {
+    // U1 claimable shape: seal scout_receipt (handler body lands in U2).
+    const receipt = path.join(input.workDir, "analysis", `${input.node.key}.json`);
+    await mkdir(path.dirname(receipt), { recursive: true });
+    await writeFile(
+      receipt,
+      `${JSON.stringify({
+        version: 1,
+        kind: String(input.node.detail?.scoutKind ?? input.node.key),
+        summary: `fixture scout ${input.node.key}`,
+        ok: true,
+        critical: input.node.detail?.critical === true,
+        taskLabel: String(input.node.detail?.taskLabel ?? input.node.key),
+      })}\n`,
+      "utf8",
+    );
+    return {
+      type: "succeeded",
+      unsealedArtifacts: [
+        { kind: "receipt", role: "scout_receipt", sourcePath: receipt, directory: false },
+        { kind: "transcript", role: "transcript", sourcePath: transcript, directory: false },
+      ],
+      summary: `fixture plan.scout ${input.node.key}`,
+    };
+  }
   if (input.node.kind === "plan.adapt") {
     const delta = path.join(input.workDir, "analysis", "execution-plan-delta.json");
     await writeFile(delta, '{"version":1,"complete":true,"additions":[]}\n', "utf8");

@@ -67,7 +67,7 @@ export function stageForNodeKind(kind: WikiRunNodeKind): WikiRunObservationStage
 
 /**
  * Execution class for a node kind via the fixed NodeContract registry.
- * Unregistered kinds (e.g. display-only `plan.scout`) return `"other"`.
+ * Unregistered kinds return `"other"`.
  */
 export function executionClassForNodeKind(kind: WikiRunNodeKind): WikiRunExecutionClass {
   const contract = allNodeContracts().find((entry) => entry.kind === kind);

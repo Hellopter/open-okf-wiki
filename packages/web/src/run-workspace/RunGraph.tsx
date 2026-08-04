@@ -50,6 +50,7 @@ import {
 import {
   buildFocusTopology,
   buildWorkflowStages,
+  hasDurablePlanScouts,
   injectPlanScoutDisplayNodes,
   orderedNodesForLayout,
   type PlanScoutDisplay,
@@ -291,6 +292,14 @@ function stateLabel(state: string, t: MessageTree): string {
 
 function nodeLabel(node: WikiRunNode, t: MessageTree): string {
   if (node.kind === "plan.adapt" && /^\d+$/.test(node.label.trim())) return t.workbench.planAdapt;
+  if (node.kind === "plan.scout") {
+    const label = node.label.trim();
+    if (label) return label;
+    const short = node.key.startsWith("plan.scout.")
+      ? node.key.slice("plan.scout.".length)
+      : node.key;
+    return `${t.workbench.planScout} · ${short}`;
+  }
   return node.label.trim() || node.key;
 }
 
@@ -385,7 +394,12 @@ function FocusGraph({
 }) {
   const baseTopology = useMemo(() => {
     const topology = buildFocusTopology(snapshot, stage);
+    // Prefer durable plan.scout nodes from the snapshot. Inject only for legacy
+    // runs that nested scouts under the plan attempt (no durable DAG members).
     if (stage !== "plan" || !planScouts?.length) return topology;
+    if (hasDurablePlanScouts(topology.nodes) || hasDurablePlanScouts(snapshot.nodes)) {
+      return topology;
+    }
     const planNode = topology.nodes.find((node) => node.key === "plan" || node.kind === "plan");
     if (!planNode) return topology;
     const injected = injectPlanScoutDisplayNodes(

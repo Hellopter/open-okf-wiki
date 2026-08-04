@@ -47,8 +47,7 @@ test("executionClassForNodeKind uses NodeContract registry", () => {
   assert.equal(executionClassForNodeKind("validate.final"), "mechanical");
   assert.equal(executionClassForNodeKind("gate.plan"), "gate");
   assert.equal(executionClassForNodeKind("gate.fix"), "gate");
-  // Display-only; not in the fixed registry.
-  assert.equal(executionClassForNodeKind("plan.scout"), "other");
+  assert.equal(executionClassForNodeKind("plan.scout"), "pi");
 });
 
 test("latestAttemptForNode prefers generation, then runIndex, then startedAt", () => {

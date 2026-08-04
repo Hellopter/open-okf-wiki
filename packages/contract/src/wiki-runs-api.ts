@@ -5,6 +5,7 @@
 
 export * from "./wiki-runs.js";
 export * from "./node-contract.js";
+export * from "./plan-scouts.js";
 export * from "./run-graph.js";
 export * from "./evaluation.js";
 export * from "./run-phase.js";

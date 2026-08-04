@@ -103,6 +103,58 @@ test("canRetryFailedNode accepts failed node with failed attempt", () => {
   });
 });
 
+test("canRetryFailedNode accepts failed durable plan.scout like a leaf", () => {
+  const snapshot = baseSnapshot({
+    nodes: [
+      {
+        key: "plan.scout.entry",
+        kind: "plan.scout",
+        state: "failed",
+        generation: 0,
+        currentAttemptId: null,
+        lastAttemptId: "att-scout",
+        outputs: [],
+        label: "Scout · entry",
+      },
+      {
+        key: "plan",
+        kind: "plan",
+        state: "blocked",
+        generation: 0,
+        currentAttemptId: null,
+        lastAttemptId: null,
+        outputs: [],
+        label: "Plan",
+      },
+    ],
+    edges: [{ from: "plan.scout.entry", to: "plan" }],
+    attempts: [
+      {
+        attemptId: "att-scout",
+        nodeKey: "plan.scout.entry",
+        nodeGeneration: 0,
+        runIndex: 1,
+        state: "failed",
+        inputDigest: DIGEST,
+        error: "scout model timeout",
+        failureClass: "infrastructure",
+        startedAt: "2026-08-02T00:00:00.000Z",
+        endedAt: "2026-08-02T00:01:00.000Z",
+      },
+    ],
+  });
+
+  assert.deepEqual(canRetryFailedNode(snapshot, "plan.scout.entry"), {
+    ok: true,
+    attemptId: "att-scout",
+    generation: 0,
+  });
+  // plan.scout shares L_control transport auto-requeue with research leaf/domain.
+  assert.equal(shouldShowNoAutoRetryHint("infrastructure", "plan.scout"), false);
+  // Product/schema failures still need manual Retry/Rerun.
+  assert.equal(shouldShowNoAutoRetryHint("schema", "plan.scout"), true);
+});
+
 test("canRetryFailedNode accepts interrupted last attempt", () => {
   const snapshot = baseSnapshot({
     nodes: [
@@ -582,7 +634,7 @@ test("lastFailedAttemptForNode returns failed/interrupted last attempt only", ()
 });
 
 test("shouldShowNoAutoRetryHint covers product failures and non-research nodes", () => {
-  // Research kinds use real WikiRunNodeKind values (research.leaf / research.domain).
+  // Auto-retry kinds use real WikiRunNodeKind values.
   assert.equal(shouldShowNoAutoRetryHint("schema", "research.leaf"), true);
   assert.equal(shouldShowNoAutoRetryHint("quality", "research.domain"), true);
   assert.equal(shouldShowNoAutoRetryHint("provider", "research.leaf"), true);
@@ -591,9 +643,10 @@ test("shouldShowNoAutoRetryHint covers product failures and non-research nodes",
   assert.equal(shouldShowNoAutoRetryHint("cancelled", "research.leaf"), true);
   assert.equal(shouldShowNoAutoRetryHint("infrastructure", "write.root"), true);
   assert.equal(shouldShowNoAutoRetryHint("infrastructure", "plan"), true);
-  // Research + infrastructure/transient: may auto-retry — no "will not" hint.
+  // Research/plan.scout + infrastructure/transient: may auto-retry — no "will not" hint.
   assert.equal(shouldShowNoAutoRetryHint("infrastructure", "research.leaf"), false);
   assert.equal(shouldShowNoAutoRetryHint("transient", "research.domain"), false);
+  assert.equal(shouldShowNoAutoRetryHint("infrastructure", "plan.scout"), false);
   assert.equal(shouldShowNoAutoRetryHint(undefined, "research.leaf"), false);
   assert.equal(shouldShowNoAutoRetryHint(undefined, "plan"), true);
   // Bare "research" is not a real kind — treat as non-research for safety.

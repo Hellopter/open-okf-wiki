@@ -82,6 +82,12 @@ export function labelForNode(
     const short = key.startsWith("review.seat.") ? key.slice("review.seat.".length) : key;
     return clip(`Review · ${short}`, LABEL_MAX);
   }
+  if (kind === "plan.scout") {
+    const label = detail?.taskLabel?.trim() || detail?.scoutKind?.trim();
+    if (label) return clip(`Scout · ${label}`, LABEL_MAX);
+    const short = key.startsWith("plan.scout.") ? key.slice("plan.scout.".length) : key;
+    return clip(`Scout · ${short}`, LABEL_MAX);
+  }
   return mechanicalLabel(kind, key);
 }
 
@@ -100,6 +106,7 @@ export function parentKeyForNode(
     if (domainId) return `research.domain.${domainId}`;
   }
   if (kind === "research.domain") return "plan";
+  if (kind === "plan.scout") return "freeze";
   if (kind === "review.seat") return "validate.pre";
   if (kind === "gate.plan") return "plan";
   if (kind === "gate.fix") return "review.reduce";
@@ -136,5 +143,15 @@ export function parseNodeDetail(raw: unknown): WikiRunNodeDetail | undefined {
     row.adaptRound <= 2
   )
     out.adaptRound = row.adaptRound;
+  if (typeof row.scoutKind === "string" && row.scoutKind.trim())
+    out.scoutKind = row.scoutKind.trim().slice(0, 80);
+  if (typeof row.unitId === "string" && row.unitId.trim())
+    out.unitId = row.unitId.trim().slice(0, 200);
+  if (typeof row.sourceId === "string" && row.sourceId.trim())
+    out.sourceId = row.sourceId.trim().slice(0, 120);
+  if (typeof row.surfacePath === "string" && row.surfacePath.trim())
+    out.surfacePath = row.surfacePath.trim().slice(0, 400);
+  if (typeof row.taskLabel === "string" && row.taskLabel.trim())
+    out.taskLabel = row.taskLabel.trim().slice(0, 200);
   return Object.keys(out).length > 0 ? out : undefined;
 }

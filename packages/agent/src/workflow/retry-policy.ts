@@ -4,9 +4,9 @@
  * Layering (ADR 0013 / ADR 0035):
  * - L0 Pi settings.retry: in-session transport only (createWikiSession).
  * - L0 compaction: overflow → capacity (not transport-retried).
- * - L_control: WikiRuns may auto-requeue research.leaf/domain ONCE for
- *   failureClass infrastructure|transient only — never capacity|budget|
- *   policy|provider|cancelled. This classifier does not decide requeue;
+ * - L_control: WikiRuns may auto-requeue research.leaf/domain and plan.scout
+ *   ONCE for failureClass infrastructure|transient only — never capacity|
+ *   budget|policy|provider|cancelled. This classifier does not decide requeue;
  *   scheduler.shouldAutoRetryResearch owns that policy.
  * - Manual: RetryFailedNode / RerunNode.
  *

@@ -4,7 +4,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contractForNode, isResearchRole, metricsRoleForNodeKind, validateBoundInputs, validateNodeOutputs } from "@okf-wiki/contract/wiki-runs";
+import {
+  contractForNode,
+  isResearchRole,
+  metricsRoleForNodeKind,
+  validateBoundInputs,
+  validateNodeOutputs,
+} from "@okf-wiki/contract/wiki-runs";
 
 function inputs(...entries: Array<[string, string]>) {
   return entries.map(([role, kind]) => ({ role, kind }));
@@ -50,6 +56,16 @@ test("contractForNode rejects unknown kinds and malformed dynamic keys", () => {
     /unknown WikiRuns node key/,
   );
   assert.throws(() => contractForNode("repair", "repair.0"), /unknown WikiRuns node key/);
+  assert.throws(() => contractForNode("plan.scout", "plan.scout"), /unknown WikiRuns node key/);
+});
+
+test("contractForNode: plan.scout is pi and emits scout_receipt", () => {
+  const scout = contractForNode("plan.scout", "plan.scout.source-api");
+  assert.equal(scout.execution, "pi");
+  assert.ok(scout.outputs.some((o) => o.role === "scout_receipt" && o.artifactKind === "receipt"));
+  assert.ok(scout.requiredInputs.some((r) => r.role === "sources" && r.required));
+  const plan = contractForNode("plan", "plan");
+  assert.ok(plan.requiredInputs.some((r) => r.role === "scout_receipt" && r.required === false));
 });
 
 test("validateBoundInputs: fails closed on missing required research for domain", () => {
@@ -139,6 +155,7 @@ test("contractForNode: validate.pre/final require Spec", () => {
 
 test("metrics role mapping is shared by all execution adapters", () => {
   assert.equal(metricsRoleForNodeKind("plan.adapt"), "plan_adapt");
+  assert.equal(metricsRoleForNodeKind("plan.scout"), "plan_scout");
   assert.equal(metricsRoleForNodeKind("research.leaf"), "leaf");
   assert.equal(metricsRoleForNodeKind("validate.final"), "mechanical");
 });
@@ -149,6 +166,27 @@ test("isResearchRole matches exact and namespaced forms", () => {
   assert.equal(isResearchRole("research.domain.core:research"), true);
   assert.equal(isResearchRole("transcript"), false);
   assert.equal(isResearchRole("spec"), false);
+});
+
+test("contractForNode: plan.scout is Pi and plan accepts namespaced scout_receipt", () => {
+  const scout = contractForNode("plan.scout", "plan.scout.entry");
+  assert.equal(scout.execution, "pi");
+  assert.ok(scout.outputs.some((o) => o.role === "scout_receipt" && o.artifactKind === "receipt"));
+  assert.ok(scout.requiredInputs.some((r) => r.role === "sources" && r.required));
+
+  const plan = contractForNode("plan", "plan");
+  const scoutReq = plan.requiredInputs.find((r) => r.role === "scout_receipt");
+  assert.ok(scoutReq);
+  assert.equal(scoutReq.required, false);
+  validateBoundInputs(
+    plan,
+    inputs(
+      ["sources", "snapshot_set"],
+      ["skill", "skill"],
+      ["frozen_run_manifest", "manifest"],
+      ["plan.scout.entry:scout_receipt", "receipt"],
+    ),
+  );
 });
 
 test("validateNodeOutputs rejects missing and undeclared business artifacts", () => {

@@ -3,8 +3,8 @@
  *
  * Owns plan policy end-to-end (Epic D.4 locality):
  * - inventory / coverage resolve + adaptive orchestration
- * - hybrid scouts + bounded re-scout
- * - synthesizer loop + host assertCoverage
+ * - synthesizer from sealed inputs/plan-scouts/* (durable plan.scout Attempts)
+ * - host assertCoverage (fail-closed; no nested re-scout)
  * - draft clear / path-first resolve via commitPlanDraft
  *
  * Path-first handoff: prefer analysis/plan-draft.json from submit_wiki_run_spec;
@@ -56,7 +56,10 @@ import {
   resolveCoverageArtifacts,
   writeCoverageArtifacts,
 } from "./coverage-bridge.js";
-import { runPlanScouts } from "./plan-scouts.js";
+import {
+  formatScoutPlannerContextFromJson,
+  loadProjectedPlanScoutReceipts,
+} from "./plan-scouts.js";
 
 /** Tool name constant (contract-owned — no tools/ import). */
 export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
@@ -152,17 +155,19 @@ export type PlanWikiSpecInput = {
   /** Opaque model runtime — runtime adapters cast to Pi ModelRuntime. */
   modelRuntime?: unknown;
   /**
-   * Cheaper scout model (worker). Falls back to planner model when omitted.
+   * @deprecated Nested scouts removed (U2 durable plan.scout). Ignored.
    */
   scoutModel?: unknown;
+  /** @deprecated Nested scouts removed (U2). Ignored. */
   scoutModelRuntime?: unknown;
+  /** @deprecated Nested scouts removed (U2). Ignored. */
   scoutMaxContextTokens?: number;
   sourceIgnores?: SourceIgnoreInput;
   maxContextTokens?: number;
   contextTargetTokens?: number;
   /** Pi transport retry (workspace.limits.retry). */
   retry?: RetryLimits;
-  /** Wall-clock budget for planner (and scouts via planScout path). */
+  /** Wall-clock budget for planner synthesizer. */
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   operatorNotes?: string;
@@ -217,7 +222,7 @@ export type PlanWikiSpecResult = {
   /** How the Spec was obtained. */
   source?: "draft" | "fixture";
   draftPath?: string;
-  /** Scout task labels that produced receipts (empty when scouts disabled). */
+  /** Scout kinds loaded from sealed inputs/plan-scouts (empty when none bound). */
   scoutKinds?: string[];
   /** Final tool/text trail from the planner agent when available. */
   items?: AttemptItem[];
@@ -225,7 +230,9 @@ export type PlanWikiSpecResult = {
   metrics?: AttemptMetrics;
   /** Coverage assert result after final Spec (when plan had required units). */
   coverage?: CoverageResult;
-  /** How many re-scout rounds ran after the initial scout pass. */
+  /**
+   * @deprecated Nested re-scout removed (U2). Always 0; host re-arms plan.scout DAG.
+   */
   rescoutRounds?: number;
   /** Adaptive router reasons (empty when light path kept). */
   adaptiveReasons?: string[];
@@ -355,8 +362,9 @@ export async function resolvePlanInventoryAndAdaptive(input: {
 }
 
 /**
- * Plan a WikiRunSpec. Fixture runtime → default Spec; live → adaptive + scouts +
- * planner with bounded re-scout on coverage gaps.
+ * Plan a WikiRunSpec. Fixture runtime → default Spec (no scouts).
+ * Live → adaptive + synthesizer reading sealed inputs/plan-scouts/* only
+ * (durable plan.scout Attempts; no nested runPlanScouts / re-scout loop).
  */
 export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSpecResult> {
   if (input.runtime.kind === "fixture") {
@@ -388,6 +396,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
       items,
       adaptiveReasons: [],
       orchestration: resolveOrchestration(input.orchestration),
+      rescoutRounds: 0,
     };
   }
 
@@ -420,17 +429,14 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
         })
       : input.customTools) ?? [];
 
-  const maxRescout = Math.max(0, orch.planRescoutMaxRounds ?? 0);
-  let gapUnitIds: string[] | undefined;
-  let lastCoverage: CoverageResult | undefined;
-  let lastResolved: { spec: WikiRunSpec; source: "draft"; draftPath: string } | undefined;
-  let lastChild: {
-    summary?: string;
-    items?: AttemptItem[];
-    metrics?: AttemptMetrics;
-  } | undefined;
-  let allScoutLabels: string[] = [];
-  let rescoutRounds = 0;
+  // Durable scouts: load sealed receipts projected into inputs/plan-scouts/.
+  const scoutReceipts = await loadProjectedPlanScoutReceipts(input.layout);
+  const scoutKinds = scoutReceipts.map((r) => r.kind);
+  const plannerScoutContext = formatScoutPlannerContextFromJson(scoutReceipts);
+  const requiredScoutGaps = scoutReceipts
+    .filter((r) => r.critical && !r.ok)
+    .map((r) => r.unitId ?? r.kind)
+    .filter(Boolean);
 
   const coverageContext = formatCoveragePlannerContext(coverageArtifacts);
   const priorBlock = input.priorSpec ? formatPriorSpecPrompt(input.priorSpec) : "";
@@ -454,7 +460,7 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
 
   const systemPrompt = [
     "You are the Wiki planner (Spec synthesizer).",
-    "Use read-only tools (ls, find, grep, read) to inspect sources/ and any plan scout receipts.",
+    "Use read-only tools (ls, find, grep, read) to inspect sources/ and inputs/plan-scouts/* receipts.",
     `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Run Boundary writes ${PLAN_DRAFT_REL_PATH}).`,
     "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
     coverageArtifacts.plan.requiredUnits.length > 0
@@ -464,128 +470,79 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     .filter(Boolean)
     .join(" ");
 
-  // Fail-closed across (re)plan rounds: clear stale draft BEFORE scouts so a
-  // previous round's plan-draft.json cannot be re-resolved if this round fails
-  // to call submit_wiki_run_spec.
-  for (let round = 0; round <= maxRescout; round++) {
-    if (round > 0) rescoutRounds += 1;
-    await clearPlanDraft(input.layout.runWorkDir);
+  // Fail-closed: clear stale draft before synthesizer so a previous plan-draft.json
+  // cannot be re-resolved if this Attempt fails to call submit_wiki_run_spec.
+  await clearPlanDraft(input.layout.runWorkDir);
 
-    const scouts = await runPlanScouts({
-      layout: input.layout,
-      workspaceName: input.workspaceName,
-      runtime: input.runtime,
-      orch,
-      operatorNotes: input.operatorNotes,
-      model: input.scoutModel ?? input.model,
-      modelRuntime: input.scoutModelRuntime ?? input.modelRuntime,
-      maxContextTokens: input.scoutMaxContextTokens ?? input.maxContextTokens,
-      contextTargetTokens: input.contextTargetTokens,
-      sourceIgnores: input.sourceIgnores,
-      abortSignal: input.abortSignal,
-      onProgress: input.onProgress,
-      runIndex: round,
-      coveragePlan: coverageArtifacts.plan,
-      coverageInventory: coverageArtifacts.contractInventory,
-      ...(gapUnitIds ? { gapUnitIds } : {}),
+  const requiredScoutGapNote =
+    requiredScoutGaps.length > 0
+      ? [
+          "## Required scout failures (coverage gaps)",
+          `These unit surveys failed or returned empty: ${requiredScoutGaps.join(", ")}.`,
+          "Still attempt a Spec that binds known units; do not pretend failed surveys covered them.",
+        ].join("\n")
+      : "";
+
+  const child = await input.runtime.runAgent({
+    role: "plan",
+    spanId: "plan",
+    nodeKey: "plan",
+    runIndex: 0,
+    runWorkDir: input.layout.runWorkDir,
+    task: [
+      basePrompt,
+      coverageContext,
+      plannerScoutContext,
+      priorBlock,
+      revisionPrompt,
+      requiredScoutGapNote,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    systemPrompt,
+    preferFinalMessage: true,
+    customTools,
+    model: input.model,
+    modelRuntime: input.modelRuntime,
+    sourceIgnores: input.sourceIgnores,
+    maxContextTokens: input.maxContextTokens,
+    contextTargetTokens: input.contextTargetTokens,
+    retry: input.retry,
+    timeoutMs: input.timeoutMs,
+    abortSignal: input.abortSignal,
+    onProgress: input.onProgress,
+    transcriptPath: input.transcriptPath,
+  });
+
+  const resolved = await resolvePlanSpecFromAgentResult({
+    runWorkDir: input.layout.runWorkDir,
+    summary: child.summary,
+  });
+
+  // Host assertCoverage after Spec submit (defense in depth with tool-time gate).
+  let lastCoverage: CoverageResult | undefined;
+  if (coverageArtifacts.plan.requiredUnits.length === 0) {
+    lastCoverage = assertCoverage(resolved.spec, coverageArtifacts.plan, {
+      throwOnGap: false,
     });
-
-    allScoutLabels = scouts.tasks.map((t) =>
-      t.kind === "thematic" ? t.thematic : t.kind === "source" ? `source:${t.sourceId}` : t.id,
-    );
-
-    const gapFeedback =
-      gapUnitIds && gapUnitIds.length > 0
-        ? [
-            "## Coverage re-scout (host)",
-            `Previous Spec left gaps: ${gapUnitIds.join(", ")}.`,
-            "Re-read scout receipts for those units and bind them on critical pages,",
-            "or cancel via sourceCoverage/surfaceCoverage with cancelled:true and notes reason",
-            "(not notes/changelog alone).",
-          ].join("\n")
-        : "";
-
-    const requiredScoutGapNote =
-      scouts.requiredScoutGaps.length > 0
-        ? [
-            "## Required scout failures (coverage gaps)",
-            `These unit surveys failed or returned empty: ${scouts.requiredScoutGaps.join(", ")}.`,
-            "Still attempt a Spec that binds known units; do not pretend failed surveys covered them.",
-          ].join("\n")
-        : "";
-
-    const child = await input.runtime.runAgent({
-      role: "plan",
-      spanId: round === 0 ? "plan" : `plan@${round}`,
-      nodeKey: "plan",
-      runIndex: round,
-      runWorkDir: input.layout.runWorkDir,
-      task: [
-        basePrompt,
-        coverageContext,
-        scouts.plannerContext,
-        priorBlock,
-        revisionPrompt,
-        gapFeedback,
-        requiredScoutGapNote,
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-      systemPrompt,
-      preferFinalMessage: true,
-      customTools,
-      model: input.model,
-      modelRuntime: input.modelRuntime,
-      sourceIgnores: input.sourceIgnores,
-      maxContextTokens: input.maxContextTokens,
-      contextTargetTokens: input.contextTargetTokens,
-      retry: input.retry,
-      timeoutMs: input.timeoutMs,
-      abortSignal: input.abortSignal,
-      onProgress: input.onProgress,
-      transcriptPath: input.transcriptPath,
-    });
-
-    const resolved = await resolvePlanSpecFromAgentResult({
-      runWorkDir: input.layout.runWorkDir,
-      summary: child.summary,
-    });
-
-    lastChild = child;
-    lastResolved = resolved;
-
-    // Host assertCoverage after Spec submit (defense in depth with tool-time gate).
-    if (coverageArtifacts.plan.requiredUnits.length === 0) {
-      lastCoverage = assertCoverage(resolved.spec, coverageArtifacts.plan, {
-        throwOnGap: false,
-      });
-      break;
-    }
-
+  } else {
     const coverage = assertCoverage(resolved.spec, coverageArtifacts.plan, {
       throwOnGap: false,
     });
     lastCoverage = coverage;
 
-    // Merge soft gaps with required scout failures that remain unbound.
     const gaps = new Set(coverage.gaps);
-    for (const unitId of scouts.requiredScoutGaps) {
-      // Scout failure is a gap only if still unbound after synthesize.
+    for (const unitId of requiredScoutGaps) {
       if (!coverage.rows.some((r) => r.unitId === unitId && r.status === "covered")) {
         gaps.add(unitId);
       }
     }
 
-    if (gaps.size === 0) {
-      break;
-    }
-
-    if (round >= maxRescout) {
+    if (gaps.size > 0) {
       const preview = [...gaps].slice(0, 8).join(", ");
       const more = gaps.size > 8 ? ` (+${gaps.size - 8} more)` : "";
       throw new CoverageAssertError(
-        `plan coverage exhausted after ${maxRescout} re-scout round(s): ` +
-          `${gaps.size} gap(s): ${preview}${more}`,
+        `plan coverage gaps after durable scout synthesis: ${gaps.size} gap(s): ${preview}${more}`,
         {
           ...coverage,
           ok: false,
@@ -594,25 +551,19 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
         },
       );
     }
-
-    gapUnitIds = [...gaps];
-  }
-
-  if (!lastResolved) {
-    throw new Error("plan phase produced no Spec");
   }
 
   return {
-    spec: lastResolved.spec,
+    spec: resolved.spec,
     mode: "live",
-    rawSummary: lastChild?.summary,
-    source: lastResolved.source,
-    draftPath: lastResolved.draftPath,
-    scoutKinds: allScoutLabels,
-    ...(lastChild?.items ? { items: lastChild.items } : {}),
-    ...(lastChild?.metrics ? { metrics: lastChild.metrics } : {}),
+    rawSummary: child.summary,
+    source: resolved.source,
+    draftPath: resolved.draftPath,
+    scoutKinds,
+    ...(child.items ? { items: child.items } : {}),
+    ...(child.metrics ? { metrics: child.metrics } : {}),
     ...(lastCoverage ? { coverage: lastCoverage } : {}),
-    rescoutRounds,
+    rescoutRounds: 0,
     adaptiveReasons: adaptive.reasons,
     orchestration: orch,
   };

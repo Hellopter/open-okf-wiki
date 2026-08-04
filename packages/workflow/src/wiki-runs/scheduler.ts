@@ -696,6 +696,12 @@ export function loadPiAttemptNodeDetail(
   if (typeof rowObj.workUnitId === "string") candidate.workUnitId = rowObj.workUnitId;
   if (typeof rowObj.adaptRound === "number") candidate.adaptRound = rowObj.adaptRound;
   if (typeof rowObj.feedback === "string") candidate.feedback = rowObj.feedback;
+  // plan.scout durable detail (host-materialized after freeze).
+  if (typeof rowObj.scoutKind === "string") candidate.scoutKind = rowObj.scoutKind;
+  if (typeof rowObj.unitId === "string") candidate.unitId = rowObj.unitId;
+  if (typeof rowObj.sourceId === "string") candidate.sourceId = rowObj.sourceId;
+  if (typeof rowObj.surfacePath === "string") candidate.surfacePath = rowObj.surfacePath;
+  if (typeof rowObj.taskLabel === "string") candidate.taskLabel = rowObj.taskLabel;
   // Structured RepairRequest from scheduleMechanicalRepair / scheduleOperatorRepair.
   if (rowObj.repairRequest != null && typeof rowObj.repairRequest === "object") {
     candidate.repairRequest = rowObj.repairRequest;
@@ -764,18 +770,30 @@ function requireDynamicNodeDetail(
       dynamicDetailError(kind, nodeKey, "missing or mismatched detail.adaptRound");
     }
   }
+  if (kind === "plan.scout") {
+    if (typeof detail.scoutKind !== "string" || !detail.scoutKind.trim()) {
+      dynamicDetailError(kind, nodeKey, "missing detail.scoutKind");
+    }
+  }
   return detail;
 }
 
 function isDynamicPiNodeKind(
   kind: PiAttemptInput["node"]["kind"],
-): kind is "research.leaf" | "research.domain" | "review.seat" | "repair" | "plan.adapt" {
+): kind is
+  | "research.leaf"
+  | "research.domain"
+  | "review.seat"
+  | "repair"
+  | "plan.adapt"
+  | "plan.scout" {
   return (
     kind === "research.leaf" ||
     kind === "research.domain" ||
     kind === "review.seat" ||
     kind === "repair" ||
-    kind === "plan.adapt"
+    kind === "plan.adapt" ||
+    kind === "plan.scout"
   );
 }
 

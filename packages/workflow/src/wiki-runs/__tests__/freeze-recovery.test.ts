@@ -146,7 +146,13 @@ test("freeze output contract fails before it mutates the durable run", async (t)
   assert.throws(
     () =>
       commitFreezeArtifacts(
-        { db, isCurrent: () => true, emit: () => 0 },
+        {
+          db,
+          isCurrent: () => true,
+          emit: () => 0,
+          workspace: { rootPath: root },
+          currentNodeGeneration: () => 0,
+        },
         {
           attemptId: attempt.attemptId,
           runId: receipt.runId,

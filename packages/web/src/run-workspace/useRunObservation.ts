@@ -22,6 +22,7 @@ import {
 } from "./observation-state";
 import { usePlanReview } from "./plan-review/usePlanReview";
 import {
+  hasDurablePlanScouts,
   isPlanScoutNodeKey,
   mergePlanScoutDisplays,
   planScoutKindFromKey,
@@ -222,6 +223,8 @@ export function useRunObservation(
   );
   const planScoutDisplays = useMemo(() => {
     if (!state.snapshot) return [];
+    // Sealed receipt previews (plan-review) still useful for durable scouts;
+    // metrics.extra.scoutKinds only feeds legacy display inject (skipped when durable).
     const fromReview = planReviewMaterials?.scoutsSummary?.scouts;
     const kindsFromReview = planReviewMaterials?.scoutsSummary?.kinds;
     const reviewRows =
@@ -230,7 +233,10 @@ export function useRunObservation(
         : kindsFromReview && kindsFromReview.length > 0
           ? kindsFromReview.map((kind) => ({ kind }))
           : undefined;
-    return mergePlanScoutDisplays(reviewRows, scoutKindsFromSnapshot(state.snapshot));
+    const metricsKinds = hasDurablePlanScouts(state.snapshot.nodes)
+      ? []
+      : scoutKindsFromSnapshot(state.snapshot);
+    return mergePlanScoutDisplays(reviewRows, metricsKinds);
   }, [planReviewMaterials?.scoutsSummary, state.snapshot]);
 
   const selectedNode = useMemo((): WikiRunNode | null => {
@@ -238,8 +244,9 @@ export function useRunObservation(
     const fromSnapshot =
       state.snapshot?.nodes.find((node) => node.key === state.selectedNodeKey) ?? null;
     if (fromSnapshot) return fromSnapshot;
-    // Display-only plan.scout nodes are not durable snapshot members.
+    // Legacy display-only plan.scout keys (not durable snapshot members).
     if (!state.snapshot || !isPlanScoutNodeKey(state.selectedNodeKey)) return null;
+    if (hasDurablePlanScouts(state.snapshot.nodes)) return null;
     const slug = planScoutKindFromKey(state.selectedNodeKey);
     const scout =
       planScoutDisplays.find((item) => planScoutSlug(item.kind) === slug) ??
@@ -249,8 +256,9 @@ export function useRunObservation(
   }, [state.selectedNodeKey, state.snapshot, planScoutDisplays]);
 
   const timeline = selectedAttemptId ? (state.timelines[selectedAttemptId] ?? null) : null;
+  // Durable plan.scout uses the same attempt path as leaf/domain.
   const latestSelectedAttempt =
-    state.snapshot && state.selectedNodeKey && !isPlanScoutNodeKey(state.selectedNodeKey)
+    state.snapshot && state.selectedNodeKey
       ? latestAttemptForNode(state.snapshot, state.selectedNodeKey)
       : null;
 

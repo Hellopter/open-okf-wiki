@@ -48,9 +48,10 @@ function failureArtifactIdOf(error: unknown, role: string): string | undefined {
 }
 
 /**
- * Classes L_control may auto-requeue for research.leaf/domain (same input_digest).
- * Transport after L0 exhaustion maps to infrastructure (or transient when present).
- * capacity / budget / policy / cancel / provider never auto-requeue.
+ * Classes L_control may auto-requeue for research.leaf/domain/plan.scout
+ * (same input_digest). Transport after L0 exhaustion maps to infrastructure
+ * (or transient when present). capacity / budget / policy / cancel / provider
+ * never auto-requeue.
  */
 const RESEARCH_AUTO_RETRY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "transient",
@@ -88,7 +89,7 @@ const RESEARCH_AUTO_RETRY_MESSAGE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * Limited auto-retry for research.leaf / research.domain only.
+ * Limited auto-retry for research.leaf / research.domain / plan.scout only.
  * Budget: RESEARCH_AUTO_RETRY_MAX_ATTEMPTS total Attempts per generation.
  * Prefer typed failureClass; missing class is fail-closed unless the message
  * clearly matches transport/infrastructure patterns (never bare product errors

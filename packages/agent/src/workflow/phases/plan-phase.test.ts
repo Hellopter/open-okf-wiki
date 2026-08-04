@@ -3,7 +3,7 @@
  * Fixture AgentRunner + live-shaped runner that commits plan-draft.json.
  */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
@@ -126,17 +126,33 @@ describe("resolvePlanInventoryAndAdaptive", () => {
 });
 
 describe("planWikiSpec live path (scripted AgentRunner)", () => {
-  it("runs scouts then synthesizer; resolve path-first draft", async () => {
+  it("synthesizes from sealed inputs/plan-scouts without nested scout agents", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "okf-plan-live-"));
     temps.push(root);
     const layout = await makeLayout(root);
+    // Pre-project durable scout receipts (as materialize would after claim).
+    const scoutsDir = path.join(layout.runWorkDir, "inputs", "plan-scouts");
+    await mkdir(scoutsDir, { recursive: true });
+    await writeFile(
+      path.join(scoutsDir, "entry.json"),
+      `${JSON.stringify({
+        version: 1,
+        kind: "entry",
+        summary: "Entry points under sources/main/README.md",
+        ok: true,
+        critical: false,
+      })}\n`,
+      "utf8",
+    );
     const roles: string[] = [];
+    let planTask = "";
     let toolCaps: { maxDomainFanOut?: number; maxLeafFanOut?: number } | undefined;
 
     const base = createFixtureProduceRuntime({
       onAgent: async (req: AgentRunRequest) => {
         roles.push(req.role);
         if (req.role === "plan") {
+          planTask = req.task;
           const spec = defaultWikiRunSpec("Live Plan");
           await commitPlanDraft(layout.runWorkDir, spec);
           return {
@@ -149,7 +165,7 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
         return {
           role: req.role,
           mode: "fixture",
-          summary: `scout ${req.spanId}`,
+          summary: `unexpected ${req.role}`,
         };
       },
     });
@@ -181,10 +197,12 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
     assert.equal(result.source, "draft");
     assert.match(result.spec.summary, /Live Plan/);
     assert.ok(roles.includes("plan"));
-    assert.ok(roles.includes("root_research"), "thematic scouts should run");
+    assert.ok(!roles.includes("root_research"), "plan phase must not nest scouts");
+    assert.match(planTask, /Plan scout receipts|inputs\/plan-scouts|Entry points/);
     assert.equal(toolCaps?.maxDomainFanOut, result.orchestration?.maxDomainFanOut);
     assert.ok(Array.isArray(result.adaptiveReasons));
-    assert.ok((result.scoutKinds?.length ?? 0) >= 1);
+    assert.deepEqual(result.scoutKinds, ["entry"]);
+    assert.equal(result.rescoutRounds, 0);
 
     const resolved = await resolvePlanSpecFromAgentResult({
       runWorkDir: layout.runWorkDir,
@@ -263,8 +281,8 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
     assert.match(result.spec.summary, /Revised/);
   });
 
-  it("rescouts when coverage gaps remain and budget allows", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "okf-plan-rescout-"));
+  it("fail-closes coverage gaps without nested re-scout (durable scouts only)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "okf-plan-gap-"));
     temps.push(root);
     const layout = await makeLayout(root, ["api", "web"]);
     let planRounds = 0;
@@ -275,12 +293,12 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
       onAgent: async (req: AgentRunRequest) => {
         if (req.role === "plan") {
           planRounds += 1;
-          // Round 0: bind only api → gap on web. Round 1+: bind both.
-          const units = planRounds === 1 ? ["api"] : ["api", "web"];
-          const base = defaultWikiRunSpec("Multi");
-          const domainId = base.domains[0]!.id;
+          // Bind only api → gap on web (no re-scout loop to recover).
+          const units = ["api"];
+          const baseSpec = defaultWikiRunSpec("Multi");
+          const domainId = baseSpec.domains[0]!.id;
           const spec = {
-            ...base,
+            ...baseSpec,
             pages: [
               {
                 path: "overview.md",
@@ -303,30 +321,31 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
             summary: `plan round ${planRounds}`,
           };
         }
-        return { role: req.role, mode: "fixture", summary: `scout ${req.spanId}` };
+        return { role: req.role, mode: "fixture", summary: `unexpected ${req.role}` };
       },
     });
     const runtime = { ...base, kind: "live" as const };
 
-    const result = await planWikiSpec({
-      layout,
-      workspaceName: "Multi",
-      runtime,
-      model: { id: "m" },
-      coveragePlan: plan,
-      orchestration: resolveOrchestration({
-        planScoutCount: 0,
-        planScoutMode: "source",
-        planSurveyTaskBudget: 2,
-        planRescoutMaxRounds: 1,
-        maxSourcesPerRun: 8,
-      }),
-      workspaceSourceCount: 2,
-    });
-
-    assert.equal(result.rescoutRounds, 1);
-    assert.equal(planRounds, 2);
-    assert.ok(result.coverage?.ok !== false || result.spec.pages[0]?.coverageUnitIds?.includes("web"));
+    await assert.rejects(
+      () =>
+        planWikiSpec({
+          layout,
+          workspaceName: "Multi",
+          runtime,
+          model: { id: "m" },
+          coveragePlan: plan,
+          orchestration: resolveOrchestration({
+            planScoutCount: 0,
+            planScoutMode: "source",
+            planSurveyTaskBudget: 2,
+            planRescoutMaxRounds: 1,
+            maxSourcesPerRun: 8,
+          }),
+          workspaceSourceCount: 2,
+        }),
+      /coverage gap/i,
+    );
+    assert.equal(planRounds, 1, "single synthesizer pass only");
   });
 });
 

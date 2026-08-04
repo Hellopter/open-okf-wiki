@@ -21,6 +21,7 @@ export { classifyPiFailureClass, failure };
 import { handleFreeze } from "./attempt/handlers/freeze.js";
 import { handlePlan } from "./attempt/handlers/plan.js";
 import { handlePlanAdapt } from "./attempt/handlers/plan-adapt.js";
+import { handlePlanScout } from "./attempt/handlers/plan-scout.js";
 import { handleRepair } from "./attempt/handlers/repair.js";
 import { handleResearchDomain, handleResearchLeaf } from "./attempt/handlers/research.js";
 import { handleReviewSeat } from "./attempt/handlers/review.js";
@@ -117,6 +118,9 @@ export function createPiAttemptExecutor(
           break;
         case "plan":
           outcome = await handlePlan(ctx);
+          break;
+        case "plan.scout":
+          outcome = await handlePlanScout(ctx);
           break;
         case "plan.adapt":
           outcome = await handlePlanAdapt(ctx);

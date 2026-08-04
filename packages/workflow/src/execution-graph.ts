@@ -233,6 +233,7 @@ export function buildExecutionGraph(
 /** Node kinds executed by the optional PiAttemptExecutor (model / fixture agent). */
 export const PI_ATTEMPT_KINDS: ReadonlySet<WikiRunNodeKind> = new Set([
   "plan",
+  "plan.scout",
   "plan.adapt",
   "research.leaf",
   "research.domain",

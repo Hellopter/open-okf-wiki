@@ -841,7 +841,7 @@ export const en = {
     expandAllDomains: "Expand all",
     collapseAllDomains: "Collapse all",
     backToGraph: "Execution graph",
-    /** Display-only plan scout observation (nested under plan attempt). */
+    /** Plan scout node (durable Attempt) or legacy sealed-receipt observation. */
     planScout: "Plan scout",
     planScoutReceipt: "Scout receipt",
     planScoutOk: "Ok",
@@ -849,7 +849,7 @@ export const en = {
     planScoutNoReceipt: "No scout receipt is available yet.",
     planScoutSiblings: "Other scouts",
     planScoutVirtualHint:
-      "Plan scouts run nested under the plan attempt. They are shown for observation only and cannot be retried independently.",
+      "No attempt is recorded for this scout yet. When a sealed receipt is available it appears above; durable scouts can be retried like other failed nodes.",
     openPlanNode: "Open plan",
     nodeActivity: "Activity",
     noAttemptStarted: "This node has not started an attempt yet.",

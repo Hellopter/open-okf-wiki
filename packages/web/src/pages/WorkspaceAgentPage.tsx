@@ -171,10 +171,9 @@ export function WorkspaceAgentPage() {
   };
   const selectNode = (nodeKey: string) => {
     if (!snapshot) return;
-    // Display scouts have no durable attempts — pin node in URL for observation.
-    const attempt = nodeKey.startsWith("plan.scout.")
-      ? null
-      : latestAttemptForNode(snapshot, nodeKey);
+    // Durable plan.scout.* uses real attempts (transcript SSE) like leaf/domain.
+    // Legacy display-only scouts have no attempts — pin the node key instead.
+    const attempt = latestAttemptForNode(snapshot, nodeKey);
     observation.selectNode(nodeKey);
     if (attempt) {
       updateSelection({ attempt: attempt.attemptId, node: null });

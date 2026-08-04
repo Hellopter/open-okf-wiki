@@ -38,6 +38,11 @@ import {
 import { artifactId, digest, now } from "./crypto-util.js";
 import type { WikiRunsCasCtx, WikiRunsControl } from "./ctx.js";
 import { makeOwnedTreeWritable, manifestFor } from "./fs-util.js";
+import {
+  loadRunOrchestration,
+  materializePlanScoutsAfterFreeze,
+  selectPlanScoutTasksForFreeze,
+} from "./plan-scout-materialize.js";
 import { asRow, asRows, parseJson, requiredText, type SqlRow } from "./sql.js";
 import { writeConversationTranscript } from "./transcript-io.js";
 import type {
@@ -52,8 +57,13 @@ import type {
  * Minimal surface for freeze CAS commit / recovery.
  * Intentionally excludes piAttemptExecutor, runBoundary, activeAttempts, seal, orphan —
  * those are execute-path only; prepared-artifact recovery must not pull them in.
+ * workspace + currentNodeGeneration are required to materialize durable plan.scout
+ * nodes after freeze (U1) without pulling the full WikiRunsControl.
  */
-export type FreezeCommitHost = Pick<WikiRunsCasCtx, "db" | "isCurrent" | "emit">;
+export type FreezeCommitHost = Pick<WikiRunsCasCtx, "db" | "isCurrent" | "emit"> & {
+  workspace: { rootPath: string };
+  currentNodeGeneration(runId: string, nodeKey: string): number | undefined;
+};
 
 export async function executeFreeze(host: WikiRunsControl, claim: ClaimedFreeze): Promise<void> {
   const controller = new AbortController();
@@ -476,40 +486,17 @@ export function commitFreezeArtifacts(
     )
     .run(claim.attemptId);
   host.emit(claim.runId, "attempt.succeeded");
-  // Advance freeze → plan: plan is ready for claim; run stays active (not terminal).
-  const existingPlan = asRow(
-    host.db
-      .prepare(
-        "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = 0",
-      )
-      .get(claim.runId),
-  );
-  if (!existingPlan) {
-    contractForNode("plan", "plan");
-    host.db
-      .prepare(
-        `INSERT INTO nodes (
-          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
-        ) VALUES (?, 'plan', 'plan', 'ready', 0, NULL, NULL, NULL)`,
-      )
-      .run(claim.runId);
-  } else {
-    host.db
-      .prepare(
-        `UPDATE nodes SET state = 'ready', current_attempt_id = NULL
-         WHERE run_id = ? AND node_key = 'plan' AND generation = 0
-           AND state IN ('blocked', 'invalidated', 'failed')`,
-      )
-      .run(claim.runId);
-  }
-  // This bootstrap dependency used to exist only in unlockReadyNodes. Persist
-  // it so the operator snapshot remains the complete, actual DAG.
-  host.db
-    .prepare(
-      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'freeze', 'plan')
-       ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
-    )
-    .run(claim.runId);
+  // Advance freeze → plan.scout.* (when selected) → plan. Light path: freeze → plan ready.
+  // Host owns topology; selectPlanScoutTasks fails closed on over-budget multi-source surveys.
+  const orch = loadRunOrchestration(host, claim.runId);
+  const scoutTasks = selectPlanScoutTasksForFreeze({
+    rootPath: host.workspace.rootPath,
+    runId: claim.runId,
+    preparations,
+    orch,
+    db: host.db,
+  });
+  materializePlanScoutsAfterFreeze(host, claim.runId, scoutTasks);
   host.db
     .prepare(
       "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",

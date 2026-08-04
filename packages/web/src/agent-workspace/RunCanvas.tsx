@@ -19,6 +19,7 @@ import { PlanGateReviewPanel } from "../run-workspace/plan-review/PlanGateReview
 import type { PlanReviewState } from "../run-workspace/plan-review/plan-review-utils";
 import { RunGraph } from "../run-workspace/RunGraph";
 import {
+  hasDurablePlanScouts,
   mergePlanScoutDisplays,
   type PlanScoutDisplay,
   scoutKindsFromSnapshot,
@@ -59,7 +60,9 @@ export function RunCanvas({
   const [answer, setAnswer] = useState("");
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
+  // Legacy display inject only — durable plan.scout.* nodes come from the snapshot.
   const planScouts: PlanScoutDisplay[] = useMemo(() => {
+    if (hasDurablePlanScouts(snapshot.nodes)) return [];
     const fromReview = planReviewState?.review?.scoutsSummary?.scouts;
     const kindsFromReview = planReviewState?.review?.scoutsSummary?.kinds;
     const reviewRows: PlanScoutDisplay[] | undefined =

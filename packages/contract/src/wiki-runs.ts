@@ -42,7 +42,7 @@ export const WikiRunStateSchema = z.enum([
 export const WikiRunNodeKindSchema = z.enum([
   "freeze",
   "plan",
-  /** Display-only projection of nested plan scouts (not durable DAG / scheduler). */
+  /** Durable plan scout Attempt (MoA proposer); host-materialized after freeze. */
   "plan.scout",
   "gate.plan",
   "plan.adapt",
@@ -420,6 +420,16 @@ export const WikiRunNodeDetailSchema = z
     critical: z.boolean().optional(),
     workUnitId: z.string().trim().min(1).max(120).optional(),
     adaptRound: z.number().int().min(1).max(2).optional(),
+    /** plan.scout: thematic | source | surface kind discriminator. */
+    scoutKind: z.string().trim().min(1).max(80).optional(),
+    /** plan.scout: coverage unit id when source/surface. */
+    unitId: z.string().trim().min(1).max(200).optional(),
+    /** plan.scout: freeze source id for source/surface surveys. */
+    sourceId: z.string().trim().min(1).max(120).optional(),
+    /** plan.scout: surface path under the source (`.` for root). */
+    surfacePath: z.string().trim().min(1).max(400).optional(),
+    /** plan.scout: human label for receipts / observation. */
+    taskLabel: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 

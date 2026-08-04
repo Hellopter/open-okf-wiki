@@ -57,6 +57,13 @@ export function concurrencyLimitForKind(
       return domainConcurrency;
     case "review.seat":
       return reviewConcurrency;
+    case "plan.scout": {
+      const scoutConcurrency = Math.max(
+        1,
+        orch.planScoutConcurrency ?? Math.max(orch.planScoutCount || 1, 1),
+      );
+      return Math.min(4, scoutConcurrency);
+    }
     case "freeze":
     case "plan":
     case "write.root":

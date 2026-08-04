@@ -4,6 +4,7 @@ import type { WikiRunNode, WikiRunSnapshot } from "@okf-wiki/contract/wiki-runs"
 import {
   buildFocusTopology,
   buildWorkflowStages,
+  hasDurablePlanScouts,
   injectPlanScoutDisplayNodes,
   mergePlanScoutDisplays,
   orderedNodesForLayout,
@@ -305,15 +306,74 @@ test("layout order places orphan research leaves after domain clusters", () => {
 });
 
 test("plan.scout maps to plan stage and fanout/join relations", () => {
+  const freeze = node("freeze", "freeze");
   const plan = node("plan", "plan");
   const scout = node("plan.scout.entry", "plan.scout");
   const gate = node("gate.plan", "gate.plan");
   assert.equal(stageForNode(scout), "plan");
+  assert.equal(relationForEdge(freeze, scout), "fanout");
+  assert.equal(relationForEdge(scout, plan), "join");
   assert.equal(relationForEdge(plan, scout), "fanout");
   assert.equal(relationForEdge(scout, gate), "join");
 });
 
-test("injectPlanScoutDisplayNodes places scouts after plan before gate.plan", () => {
+test("durable plan.scout snapshot: layout freeze → scouts → plan → gate.plan", () => {
+  const freeze = node("freeze", "freeze");
+  const entry = node("plan.scout.entry", "plan.scout", "succeeded");
+  const layout = node("plan.scout.layout", "plan.scout", "failed");
+  const plan = node("plan", "plan", "ready");
+  const gate = node("gate.plan", "gate.plan", "blocked");
+  const snap = snapshot(
+    [freeze, plan, gate, layout, entry],
+    [
+      { from: "freeze", to: "plan.scout.entry" },
+      { from: "freeze", to: "plan.scout.layout" },
+      { from: "plan.scout.entry", to: "plan" },
+      { from: "plan.scout.layout", to: "plan" },
+      { from: "plan", to: "gate.plan" },
+    ],
+  );
+  assert.equal(hasDurablePlanScouts(snap.nodes), true);
+
+  const view = buildFocusTopology(snap, "plan");
+  assert.deepEqual(
+    view.edges
+      .filter((edge) => edge.source === "freeze" || edge.source.startsWith("plan.scout."))
+      .map((edge) => [edge.source, edge.target, edge.relation])
+      .sort(),
+    [
+      ["freeze", "plan.scout.entry", "fanout"],
+      ["freeze", "plan.scout.layout", "fanout"],
+      ["plan.scout.entry", "plan", "join"],
+      ["plan.scout.layout", "plan", "join"],
+    ].sort(),
+  );
+
+  const keys = orderedNodesForLayout(view).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "freeze",
+    "plan.scout.entry",
+    "plan.scout.layout",
+    "plan",
+    "gate.plan",
+  ]);
+
+  // Inject must not double-add display scouts when durable nodes exist.
+  const injected = injectPlanScoutDisplayNodes(
+    view.nodes,
+    view.edges,
+    [{ kind: "entry", ok: true }, { kind: "risks", ok: true }],
+    plan,
+  );
+  assert.equal(injected.nodes.length, view.nodes.length);
+  assert.equal(
+    injected.nodes.filter((item) => item.kind === "plan.scout").length,
+    2,
+    "no extra injected scout",
+  );
+});
+
+test("injectPlanScoutDisplayNodes places scouts after plan before gate.plan (legacy)", () => {
   const freeze = node("freeze", "freeze");
   const plan = node("plan", "plan", "succeeded");
   const gate = node("gate.plan", "gate.plan", "waiting");
@@ -348,6 +408,7 @@ test("injectPlanScoutDisplayNodes places scouts after plan before gate.plan", ()
     contextNodeKeys: new Set<string>(),
     topologyKey: "test",
   };
+  // Legacy inject: plan → scout → gate; layout places scouts after plan.
   const keys = orderedNodesForLayout(topology).map((item) => item.key);
   assert.deepEqual(keys, [
     "freeze",
@@ -387,6 +448,7 @@ test("injectPlanScoutDisplayNodes is a no-op without scouts", () => {
 
 test("scoutKindsFromSnapshot reads metrics.extra.scoutKinds from latest plan attempt", () => {
   const snap = {
+    nodes: [],
     attempts: [
       {
         attemptId: "a1",
@@ -399,7 +461,27 @@ test("scoutKindsFromSnapshot reads metrics.extra.scoutKinds from latest plan att
     ],
   } as unknown as WikiRunSnapshot;
   assert.deepEqual(scoutKindsFromSnapshot(snap), ["entry", "layout"]);
-  assert.deepEqual(scoutKindsFromSnapshot({ attempts: [] } as unknown as WikiRunSnapshot), []);
+  assert.deepEqual(
+    scoutKindsFromSnapshot({ nodes: [], attempts: [] } as unknown as WikiRunSnapshot),
+    [],
+  );
+});
+
+test("scoutKindsFromSnapshot skips metrics when durable plan.scout nodes exist", () => {
+  const snap = {
+    nodes: [node("plan.scout.entry", "plan.scout")],
+    attempts: [
+      {
+        attemptId: "a1",
+        nodeKey: "plan",
+        nodeGeneration: 0,
+        runIndex: 1,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        metrics: { extra: { scoutKinds: ["entry", "layout"] } },
+      },
+    ],
+  } as unknown as WikiRunSnapshot;
+  assert.deepEqual(scoutKindsFromSnapshot(snap), []);
 });
 
 test("mergePlanScoutDisplays prefers review rows over metrics kinds", () => {

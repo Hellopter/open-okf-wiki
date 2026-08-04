@@ -430,6 +430,38 @@ async function projectSealedInputs(
       continue;
     }
 
+    if (requirement.role === "scout_receipt") {
+      // Project durable plan.scout receipts into inputs/plan-scouts/<slug>.json
+      const file = await resolveSealedFile(sealed.readOnlyPath, [
+        "scout-receipt.json",
+        "receipt.json",
+      ]);
+      if (!file) {
+        throw new Error(`sealed scout_receipt is unreadable for role ${sealed.role}`);
+      }
+      const raw = await readFile(file, "utf8");
+      let kindSlug = sealed.role
+        .replace(/:scout_receipt$/, "")
+        .replace(/^scout_receipt$/, sealed.artifact.artifactId)
+        .replace(/^plan\.scout\./, "");
+      try {
+        const parsed = JSON.parse(raw) as { kind?: unknown; relPath?: unknown };
+        if (typeof parsed.kind === "string" && parsed.kind.trim()) {
+          kindSlug = parsed.kind
+            .trim()
+            .replace(/[^a-zA-Z0-9._-]+/g, "-")
+            .slice(0, 80);
+        }
+      } catch {
+        // still project bytes under role-derived name
+      }
+      const safe = safeReceiptNodeId(kindSlug || "scout");
+      const destName = `${safe}.json`;
+      const destPath = path.join(mountedInputPath(inputsDir, requirement), destName);
+      await writeReadOnlyFile(destPath, raw.endsWith("\n") ? raw : `${raw}\n`);
+      continue;
+    }
+
     if (requirement.role === "prior_wiki" || requirement.role === "wiki_tree") {
       // Mount read-only copy under inputs/prior-wiki/ when present.
       const priorMount = mountedInputPath(inputsDir, requirement);
