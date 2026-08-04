@@ -1,0 +1,14 @@
+{
+  "name": "open-okf-wiki-wiki-agent-kit",
+  "private": true,
+  "version": "0.1.0-dev",
+  "description": "Slim branch: ow CLI + skill + workflow only",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "pnpm --filter @okf-wiki/wiki-agent-kit test",
+    "ow": "node packages/wiki-agent-kit/scripts/ow.mjs"
+  }
+}
