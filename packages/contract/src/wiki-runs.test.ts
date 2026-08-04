@@ -353,6 +353,7 @@ test("WikiRunPlanReviewScoutsSummary accepts legacy shapes and optional scouts[]
     "./wiki-runs.js"
   );
   assert.equal(WikiRunNodeKindSchema.safeParse("plan.scout").success, true);
+  assert.equal(WikiRunNodeKindSchema.safeParse("plan.discover.reduce").success, true);
 
   const legacy = WikiRunPlanReviewScoutsSummarySchema.parse({
     kinds: ["entry", "layout"],
@@ -375,4 +376,92 @@ test("WikiRunPlanReviewScoutsSummary accepts legacy shapes and optional scouts[]
   });
   assert.equal(rich.scouts?.[0]?.ok, true);
   assert.equal(rich.scouts?.[0]?.kind, "entry");
+});
+
+test("WikiRunPlanReviewSchema accepts optional discoverySummary + semanticSufficiency", async () => {
+  const { WikiRunPlanReviewDiscoverySummarySchema, WikiRunPlanReviewSchema } = await import(
+    "./wiki-runs.js"
+  );
+  const { defaultWikiRunSpec } = await import("./run.js");
+
+  const summary = WikiRunPlanReviewDiscoverySummarySchema.parse({
+    domainCount: 2,
+    flowCount: 1,
+    conceptCount: 3,
+    sourceCount: 2,
+    crossSourceFlowCount: 1,
+    openQuestionCount: 0,
+    scoutKinds: ["source", "flow"],
+  });
+  assert.equal(summary.domainCount, 2);
+  assert.equal(summary.crossSourceFlowCount, 1);
+
+  // Minimal required counts only.
+  assert.equal(
+    WikiRunPlanReviewDiscoverySummarySchema.safeParse({
+      domainCount: 0,
+      flowCount: 0,
+      conceptCount: 0,
+    }).success,
+    true,
+  );
+  // Strict: unknown keys rejected.
+  assert.equal(
+    WikiRunPlanReviewDiscoverySummarySchema.safeParse({
+      domainCount: 1,
+      flowCount: 0,
+      conceptCount: 0,
+      extra: true,
+    }).success,
+    false,
+  );
+
+  const dig = "a".repeat(64);
+  const review = WikiRunPlanReviewSchema.parse({
+    runId: "run-1",
+    payloadDigest: dig,
+    specDigest: dig,
+    planDigest: dig,
+    spec: defaultWikiRunSpec("Discovery review"),
+    execution: {
+      workUnitCount: 0,
+      domainCount: 0,
+      leafCount: 0,
+      maxDomainFanOut: 4,
+      maxLeafFanOut: 6,
+      reviewLenses: [],
+      workUnits: [],
+    },
+    discoverySummary: summary,
+    semanticSufficiency: {
+      ok: true,
+      rows: [],
+      stop_reason: "not_required",
+      gaps: [],
+    },
+  });
+  assert.equal(review.discoverySummary?.domainCount, 2);
+  assert.equal(review.discoverySummary?.scoutKinds?.[0], "source");
+  assert.equal(review.semanticSufficiency?.ok, true);
+  assert.equal(review.semanticSufficiency?.stop_reason, "not_required");
+
+  // Omitted discovery fields still parse (light path).
+  const thin = WikiRunPlanReviewSchema.parse({
+    runId: "run-2",
+    payloadDigest: dig,
+    specDigest: dig,
+    planDigest: dig,
+    spec: defaultWikiRunSpec("Thin"),
+    execution: {
+      workUnitCount: 0,
+      domainCount: 0,
+      leafCount: 0,
+      maxDomainFanOut: 4,
+      maxLeafFanOut: 6,
+      reviewLenses: [],
+      workUnits: [],
+    },
+  });
+  assert.equal(thin.discoverySummary, undefined);
+  assert.equal(thin.semanticSufficiency, undefined);
 });

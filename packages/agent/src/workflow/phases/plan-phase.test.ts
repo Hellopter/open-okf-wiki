@@ -7,8 +7,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
-import { CoveragePlanSchema, sourceCoverageUnit } from "@okf-wiki/contract/coverage";
-import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import {
+  CoverageAssertError,
+  CoveragePlanSchema,
+  sourceCoverageUnit,
+} from "@okf-wiki/contract/coverage";
+import {
+  defaultWikiRunSpec,
+  SemanticSufficiencyError,
+} from "@okf-wiki/contract/wiki-runs";
 import { resolveOrchestration } from "@okf-wiki/contract/workspace";
 import { commitPlanDraft, PLAN_DRAFT_REL_PATH, readPlanDraft } from "../../plan/commit-plan-draft.js";
 import {
@@ -133,14 +140,28 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
     // Pre-project durable scout receipts (as materialize would after claim).
     const scoutsDir = path.join(layout.runWorkDir, "inputs", "plan-scouts");
     await mkdir(scoutsDir, { recursive: true });
+    const fatScoutBody = `Entry points under sources/main/README.md. ${"detail ".repeat(400)}`;
     await writeFile(
       path.join(scoutsDir, "entry.json"),
       `${JSON.stringify({
         version: 1,
         kind: "entry",
-        summary: "Entry points under sources/main/README.md",
+        summary: fatScoutBody,
         ok: true,
         critical: false,
+      })}\n`,
+      "utf8",
+    );
+    // Optional discovery-map projection
+    await writeFile(
+      path.join(layout.runWorkDir, "inputs", "discovery-map.json"),
+      `${JSON.stringify({
+        version: 1,
+        sources: [{ sourceId: "main", entryPoints: ["README.md"], evidencePaths: ["src/"] }],
+        domains: [],
+        flows: [],
+        concepts: [],
+        openQuestions: [],
       })}\n`,
       "utf8",
     );
@@ -198,7 +219,11 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
     assert.match(result.spec.summary, /Live Plan/);
     assert.ok(roles.includes("plan"));
     assert.ok(!roles.includes("root_research"), "plan phase must not nest scouts");
-    assert.match(planTask, /Plan scout receipts|inputs\/plan-scouts|Entry points/);
+    assert.match(planTask, /Plan scout index|file handoff|inputs\/plan-scouts/i);
+    assert.match(planTask, /discovery-map/i);
+    // Index-only: full multi-kB scout summary must not appear in the planner task
+    assert.ok(!planTask.includes(fatScoutBody), "must not paste full scout body into plan task");
+    assert.ok(planTask.length < fatScoutBody.length + 8_000, "plan task must not grow with scout bodies");
     assert.equal(toolCaps?.maxDomainFanOut, result.orchestration?.maxDomainFanOut);
     assert.ok(Array.isArray(result.adaptiveReasons));
     assert.deepEqual(result.scoutKinds, ["entry"]);
@@ -346,6 +371,98 @@ describe("planWikiSpec live path (scripted AgentRunner)", () => {
       /coverage gap/i,
     );
     assert.equal(planRounds, 1, "single synthesizer pass only");
+  });
+
+  it("fail-closes multi-source semantic gaps as SemanticSufficiencyError (not CoverageAssertError)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "okf-plan-semantic-gap-"));
+    temps.push(root);
+    const layout = await makeLayout(root, ["api", "web"]);
+    // Incomplete DiscoveryMap: sources lack evidencePaths; no crossSource flow / openQuestion.
+    await mkdir(path.join(layout.runWorkDir, "inputs"), { recursive: true });
+    await writeFile(
+      path.join(layout.runWorkDir, "inputs", "discovery-map.json"),
+      `${JSON.stringify({
+        version: 1,
+        sources: [
+          { sourceId: "api", entryPoints: ["README.md"], evidencePaths: [] },
+          { sourceId: "web", entryPoints: ["README.md"], evidencePaths: [] },
+        ],
+        domains: [],
+        flows: [],
+        concepts: [],
+        openQuestions: [],
+      })}\n`,
+      "utf8",
+    );
+    const plan = CoveragePlanSchema.parse({
+      requiredUnits: [sourceCoverageUnit("api"), sourceCoverageUnit("web")],
+    });
+    const base = createFixtureProduceRuntime({
+      onAgent: async (req: AgentRunRequest) => {
+        if (req.role === "plan") {
+          // Coverage-complete Spec so only the semantic dual gate fails.
+          const units = ["api", "web"];
+          const baseSpec = defaultWikiRunSpec("Multi Semantic");
+          const domainId = baseSpec.domains[0]!.id;
+          const spec = {
+            ...baseSpec,
+            pages: [
+              {
+                path: "overview.md",
+                purpose: "cover sources",
+                critical: true as const,
+                domainIds: [domainId],
+                coverageUnitIds: units,
+                sourceIds: units,
+              },
+            ],
+            sourceCoverage: units.map((sourceId) => ({
+              sourceId,
+              pagePaths: ["overview.md"],
+            })),
+          };
+          await commitPlanDraft(layout.runWorkDir, spec);
+          return {
+            role: "plan",
+            mode: "fixture",
+            summary: "plan with coverage but semantic gaps",
+          };
+        }
+        return { role: req.role, mode: "fixture", summary: `unexpected ${req.role}` };
+      },
+    });
+    const runtime = { ...base, kind: "live" as const };
+
+    await assert.rejects(
+      () =>
+        planWikiSpec({
+          layout,
+          workspaceName: "Multi Semantic",
+          runtime,
+          model: { id: "m" },
+          coveragePlan: plan,
+          orchestration: resolveOrchestration({
+            planScoutCount: 0,
+            planScoutMode: "source",
+            planSurveyTaskBudget: 2,
+            planRescoutMaxRounds: 0,
+            maxSourcesPerRun: 8,
+          }),
+          workspaceSourceCount: 2,
+        }),
+      (err: unknown) => {
+        assert.ok(
+          err instanceof SemanticSufficiencyError,
+          `expected SemanticSufficiencyError, got ${err instanceof Error ? err.name : typeof err}`,
+        );
+        assert.ok(!(err instanceof CoverageAssertError));
+        assert.equal(err.name, "SemanticSufficiencyError");
+        assert.equal(err.result.stop_reason, "semantic_gap");
+        assert.ok(err.result.gaps.length > 0);
+        assert.match(err.message, /semantic sufficiency/i);
+        return true;
+      },
+    );
   });
 });
 

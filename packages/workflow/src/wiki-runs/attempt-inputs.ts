@@ -376,6 +376,7 @@ export function upstreamSealedOutputs(
     "coverage_inventory",
     "coverage_plan",
     "boundary_index",
+    "discovery_map",
     "wiki_tree",
     "defects",
     "publication_candidate",

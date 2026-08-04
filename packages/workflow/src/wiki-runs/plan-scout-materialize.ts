@@ -1,12 +1,20 @@
 /**
- * Host-owned durable plan.scout materialization after freeze.
+ * Host-owned durable plan.scout materialization after freeze, plus control-plane
+ * plan sufficiency re-scout (ADR 0040/0042).
  *
- * Topology (U1):
- *   light: freeze → plan (ready)
- *   scout: freeze → plan.scout.* → plan (blocked until all scouts terminal;
- *          critical must succeed; optional may fail/cancel)
+ * Topology (semantic discovery):
+ *   light: freeze → plan (ready) — no scouts, no reduce
+ *   scout: freeze → plan.scout.* → plan.discover.reduce → plan
+ *          (plan blocked until mechanical reduce succeeds;
+ *           reduce waits until all scouts terminal — critical must succeed;
+ *           optional may fail/cancel)
  *
- * Task selection is pure contract code; this module only inserts nodes/edges.
+ * Coverage / semantic gap on plan → schedulePlanSufficiencyRescout re-arms gap
+ * scouts + reduce + plan (gen+1) while planRescoutMaxRounds remains; fail-closed
+ * when exhausted. Nested agent re-scout is not used.
+ *
+ * Task selection is pure contract code; this module only inserts/re-arms nodes.
+ * plan.discover.reduce is pre-plan only — never part of post-plan execution graph.
  */
 
 import { readFileSync } from "node:fs";
@@ -22,6 +30,7 @@ import {
   contractForNode,
   type PlanScoutTask,
   planScoutNodeKey,
+  planScoutTaskFromDetail,
   scoutTaskLabel,
   selectPlanScoutTasks,
 } from "@okf-wiki/contract/wiki-runs";
@@ -32,8 +41,9 @@ import {
 } from "@okf-wiki/contract/workspace";
 import { runWorkDir } from "@okf-wiki/core";
 import { COVERAGE_INVENTORY_FILE, COVERAGE_PLAN_FILE } from "./coverage-bridge.js";
+import { now } from "./crypto-util.js";
 import { unlockReadyNodes, type DagControl } from "./dag.js";
-import { asRow, parseJson } from "./sql.js";
+import { asRow, asRows, parseJson } from "./sql.js";
 import type { ArtifactPreparation } from "./types.js";
 
 /** detail_json shape sealed on each durable plan.scout node. */
@@ -64,18 +74,28 @@ export function planScoutDetailFromTask(task: PlanScoutTask): PlanScoutNodeDetai
       taskLabel,
     };
   }
+  if (task.kind === "surface") {
+    return {
+      scoutKind: "surface",
+      sourceId: task.sourceId,
+      surfacePath: task.path,
+      unitId: task.unitId,
+      critical: task.required,
+      taskLabel,
+    };
+  }
+  // Semantic: domain | flow | concept
   return {
-    scoutKind: "surface",
-    sourceId: task.sourceId,
-    surfacePath: task.path,
-    unitId: task.unitId,
+    scoutKind: task.kind,
     critical: task.required,
     taskLabel,
   };
 }
 
+const DISCOVER_REDUCE_KEY = "plan.discover.reduce" as const;
+
 /**
- * Insert durable plan.scout.* nodes + edges, or light-path freeze→plan.
+ * Insert durable plan.scout.* + plan.discover.reduce, or light-path freeze→plan.
  * Idempotent for node keys already present (pin retry / recovery).
  *
  * @returns selected tasks (empty on light path)
@@ -94,7 +114,7 @@ export function materializePlanScoutsAfterFreeze(
   );
 
   if (tasks.length === 0) {
-    // Light path: freeze → plan ready.
+    // Light path: freeze → plan ready (no reduce).
     if (!existingPlan) {
       contractForNode("plan", "plan");
       host.db
@@ -122,7 +142,7 @@ export function materializePlanScoutsAfterFreeze(
     return [];
   }
 
-  // Scout path: freeze → each scout → plan (blocked).
+  // Scout path: freeze → each scout → plan.discover.reduce → plan (blocked).
   for (const task of tasks) {
     const nodeKey = planScoutNodeKey(task);
     const existing = asRow(
@@ -151,11 +171,45 @@ export function materializePlanScoutsAfterFreeze(
       .run(runId, nodeKey);
     host.db
       .prepare(
-        `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'plan')
+        `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, ?)
          ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
       )
-      .run(runId, nodeKey);
+      .run(runId, nodeKey, DISCOVER_REDUCE_KEY);
   }
+
+  const existingReduce = asRow(
+    host.db
+      .prepare(
+        "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 0",
+      )
+      .get(runId, DISCOVER_REDUCE_KEY),
+  );
+  if (!existingReduce) {
+    contractForNode("plan.discover.reduce", DISCOVER_REDUCE_KEY);
+    host.db
+      .prepare(
+        `INSERT INTO nodes (
+          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+        ) VALUES (?, ?, 'plan.discover.reduce', 'blocked', 0, NULL, NULL, NULL)`,
+      )
+      .run(runId, DISCOVER_REDUCE_KEY);
+  } else {
+    // Pin retry: keep reduce blocked until scouts finish (do not force ready).
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
+         WHERE run_id = ? AND node_key = ? AND generation = 0
+           AND state IN ('ready', 'invalidated', 'failed')`,
+      )
+      .run(runId, DISCOVER_REDUCE_KEY);
+  }
+
+  host.db
+    .prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'plan')
+       ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+    )
+    .run(runId, DISCOVER_REDUCE_KEY);
 
   if (!existingPlan) {
     contractForNode("plan", "plan");
@@ -167,7 +221,7 @@ export function materializePlanScoutsAfterFreeze(
       )
       .run(runId);
   } else {
-    // Pin retry: keep plan blocked until scouts finish (do not force ready).
+    // Pin retry: keep plan blocked until reduce succeeds (do not force ready).
     host.db
       .prepare(
         `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
@@ -193,10 +247,23 @@ export function loadRunOrchestration(
     return resolveOrchestration(undefined);
   }
   try {
-    const workspace = WorkspaceConfigSchema.parse(
-      parseJson<unknown>(String(run.freeze_config_json)),
-    );
-    return resolveOrchestration(workspace.orchestration);
+    const raw = parseJson<unknown>(String(run.freeze_config_json));
+    // Full workspace snapshot (normal StartRun path).
+    try {
+      const workspace = WorkspaceConfigSchema.parse(raw);
+      return resolveOrchestration(workspace.orchestration);
+    } catch {
+      // Partial freeze_config or test fixtures: accept orchestration fragment.
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        const obj = raw as { orchestration?: unknown };
+        if (obj.orchestration && typeof obj.orchestration === "object") {
+          return resolveOrchestration(
+            obj.orchestration as Partial<WorkspaceOrchestration>,
+          );
+        }
+      }
+      return resolveOrchestration(undefined);
+    }
   } catch {
     return resolveOrchestration(undefined);
   }
@@ -281,5 +348,430 @@ export function selectPlanScoutTasksForFreeze(input: {
     coverageInventory: inventory,
     coveragePlan,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Plan coverage / semantic sufficiency re-scout (ADR 0040 / 0042 control-plane)
+// ---------------------------------------------------------------------------
+
+/**
+ * Message patterns that identify synthesizer coverage or semantic sufficiency
+ * gaps (not transport/transient). Nested agent re-scout is gone — host re-arms.
+ */
+export const PLAN_SUFFICIENCY_GAP_MESSAGE_PATTERNS: readonly RegExp[] = [
+  /coverage\s+gap/i,
+  /coverage\s+gate\s+failed/i,
+  /plan\s+coverage\s+gaps/i,
+  /semantic\s+sufficiency/i,
+  /semantic\s+gap/i,
+  /\bCOVERAGE_GAP\b/,
+  /\bSEMANTIC_GAP\b/,
+];
+
+/** Failure classes that must never trigger plan re-scout (transport / operator). */
+const PLAN_RESCOUT_DENY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  "transient",
+  "capacity",
+  "budget",
+  "policy",
+  "cancelled",
+  "cancel",
+  "provider",
+  "publication_conflict",
+]);
+
+export type PlanRescoutControl = DagControl & {
+  db: DatabaseSync;
+  applyRerunAt(
+    runId: string,
+    nodeKey: string,
+    generation: number,
+    feedback?: string,
+    opts?: { selfOnly?: boolean },
+  ): void;
+};
+
+/** True when the plan Attempt failed for coverage / semantic sufficiency (not transport). */
+export function isPlanSufficiencyGapFailure(
+  kind: string,
+  message: string,
+  failureClass?: string,
+  error?: unknown,
+): boolean {
+  if (kind !== "plan") return false;
+  const cls = failureClass?.trim().toLowerCase();
+  if (cls && PLAN_RESCOUT_DENY_FAILURE_CLASSES.has(cls)) return false;
+
+  if (error && typeof error === "object") {
+    const name = "name" in error && typeof (error as { name?: unknown }).name === "string"
+      ? (error as { name: string }).name
+      : "";
+    if (name === "CoverageAssertError" || name === "SemanticSufficiencyError") return true;
+    const code =
+      "code" in error && typeof (error as { code?: unknown }).code === "string"
+        ? (error as { code: string }).code
+        : "";
+    if (code === "COVERAGE_GAP" || code === "SEMANTIC_GAP") return true;
+  }
+
+  return PLAN_SUFFICIENCY_GAP_MESSAGE_PATTERNS.some((p) => p.test(message));
+}
+
+/**
+ * Extract gap unit ids from CoverageAssertError/SemanticSufficiencyError result
+ * or from synthesizer gap messages (`gap(s): a, b`).
+ */
+export function extractPlanSufficiencyGapUnitIds(
+  message: string,
+  error?: unknown,
+): string[] {
+  if (error && typeof error === "object" && "result" in error) {
+    const result = (error as { result?: { gaps?: unknown } }).result;
+    if (result && Array.isArray(result.gaps)) {
+      const fromResult = result.gaps
+        .filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+        .map((g) => g.trim());
+      if (fromResult.length > 0) return [...new Set(fromResult)];
+    }
+  }
+
+  const match = message.match(/gap\(s\):\s*([^\n(+]+)/i);
+  if (match?.[1]) {
+    const ids = match[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !/^semantic gap$/i.test(s));
+    if (ids.length > 0) return [...new Set(ids)];
+  }
+
+  // Semantic: "semantic sufficiency gap: a, b" / "semantic sufficiency: …"
+  const semantic = message.match(
+    /semantic sufficiency(?:\s+gap)?[:\s]+([^\n(+]+)/i,
+  );
+  if (semantic?.[1]) {
+    const ids = semantic[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !/requires|multi-source/i.test(s));
+    if (ids.length > 0) return [...new Set(ids)];
+  }
+
+  return [];
+}
+
+/** Max planSufficiencyRound already recorded on any plan generation (0 = never re-armed). */
+export function planSufficiencyRoundsUsed(
+  host: Pick<DagControl, "db">,
+  runId: string,
+): number {
+  const rows = asRows(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan'",
+      )
+      .all(runId),
+  );
+  let max = 0;
+  for (const row of rows) {
+    const raw = row.detail_json;
+    if (raw == null || raw === "") continue;
+    try {
+      const parsed = JSON.parse(String(raw)) as { planSufficiencyRound?: unknown };
+      if (
+        typeof parsed.planSufficiencyRound === "number" &&
+        Number.isFinite(parsed.planSufficiencyRound) &&
+        parsed.planSufficiencyRound > max
+      ) {
+        max = Math.floor(parsed.planSufficiencyRound);
+      }
+    } catch {
+      // ignore corrupt detail
+    }
+  }
+  return max;
+}
+
+/** True when this run has scout topology (not light freeze→plan). */
+export function hasPlanScoutTopology(
+  host: Pick<DagControl, "db">,
+  runId: string,
+): boolean {
+  return Boolean(
+    asRow(
+      host.db
+        .prepare(
+          `SELECT 1 AS present FROM nodes
+           WHERE run_id = ? AND (
+             kind = 'plan.discover.reduce'
+             OR kind = 'plan.scout'
+             OR node_key = 'plan.discover.reduce'
+           )
+           LIMIT 1`,
+        )
+        .get(runId),
+    ),
+  );
+}
+
+function isRealCoverageUnitGapId(id: string): boolean {
+  const t = id.trim();
+  // Semantic meta-gaps are not CoverageUnit ids.
+  if (!t || t.startsWith("_")) return false;
+  return true;
+}
+
+/** Existing durable plan.scout tasks (unit/semantic preferred; else all). */
+function existingPlanScoutTasks(
+  host: Pick<DagControl, "db" | "currentNodeGeneration">,
+  runId: string,
+): PlanScoutTask[] {
+  const rows = asRows(
+    host.db
+      .prepare(
+        `SELECT node_key, detail_json, generation FROM nodes
+         WHERE run_id = ? AND kind = 'plan.scout'
+         ORDER BY node_key, generation DESC`,
+      )
+      .all(runId),
+  );
+  const seen = new Set<string>();
+  const unitSemantic: PlanScoutTask[] = [];
+  const all: PlanScoutTask[] = [];
+  for (const row of rows) {
+    const nodeKey = String(row.node_key ?? "");
+    if (!nodeKey || seen.has(nodeKey)) continue;
+    // Only consider current generation row once per key (ORDER BY gen DESC).
+    const live = host.currentNodeGeneration(runId, nodeKey);
+    if (live !== undefined && Number(row.generation) !== live) continue;
+    seen.add(nodeKey);
+    let detail: Record<string, unknown> = {};
+    if (row.detail_json != null && row.detail_json !== "") {
+      try {
+        const parsed = JSON.parse(String(row.detail_json)) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          detail = parsed as Record<string, unknown>;
+        }
+      } catch {
+        detail = {};
+      }
+    }
+    try {
+      const task = planScoutTaskFromDetail({
+        scoutKind: typeof detail.scoutKind === "string" ? detail.scoutKind : undefined,
+        unitId: typeof detail.unitId === "string" ? detail.unitId : undefined,
+        sourceId: typeof detail.sourceId === "string" ? detail.sourceId : undefined,
+        surfacePath:
+          typeof detail.surfacePath === "string" ? detail.surfacePath : undefined,
+        critical: typeof detail.critical === "boolean" ? detail.critical : undefined,
+        taskLabel: typeof detail.taskLabel === "string" ? detail.taskLabel : undefined,
+      });
+      all.push(task);
+      if (task.kind !== "thematic") unitSemantic.push(task);
+    } catch {
+      // Skip unparseable scout detail.
+    }
+  }
+  return unitSemantic.length > 0 ? unitSemantic : all;
+}
+
+function demoteNodeState(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+  state: "blocked" | "invalidated",
+): void {
+  host.db
+    .prepare(
+      `UPDATE nodes SET state = ?, current_attempt_id = NULL
+       WHERE run_id = ? AND node_key = ? AND generation = ?
+         AND state IN ('ready', 'blocked', 'invalidated')`,
+    )
+    .run(state, runId, nodeKey, generation);
+}
+
+function mergePlanDetailRound(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  generation: number,
+  nextRound: number,
+  gapUnitIds: readonly string[],
+): void {
+  const row = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = ?",
+      )
+      .get(runId, generation),
+  );
+  let base: Record<string, unknown> = {};
+  if (row?.detail_json != null && row.detail_json !== "") {
+    try {
+      const parsed = JSON.parse(String(row.detail_json)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        base = { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      base = {};
+    }
+  }
+  base.planSufficiencyRound = nextRound;
+  if (gapUnitIds.length > 0) base.planSufficiencyGaps = [...gapUnitIds];
+  host.db
+    .prepare(
+      `UPDATE nodes SET detail_json = ?
+       WHERE run_id = ? AND node_key = 'plan' AND generation = ?`,
+    )
+    .run(JSON.stringify(base), runId, generation);
+}
+
+/**
+ * Control-plane re-arm after plan coverage/semantic gap (ADR 0040/0042).
+ *
+ * When budget remains (`planRescoutMaxRounds`): bump gap plan.scout tasks
+ * (or existing unit/semantic scouts), re-block plan.discover.reduce + plan at
+ * gen+1, unlock scouts. Fail-closed when exhausted or light path (no scouts).
+ *
+ * @returns true when re-arm was applied (caller should emit node.ready).
+ */
+export function schedulePlanSufficiencyRescout(
+  host: PlanRescoutControl,
+  input: {
+    runId: string;
+    planGeneration: number;
+    message: string;
+    failureClass?: string;
+    error?: unknown;
+  },
+): boolean {
+  const { runId, planGeneration, message, failureClass, error } = input;
+  if (
+    !isPlanSufficiencyGapFailure("plan", message, failureClass, error)
+  ) {
+    return false;
+  }
+  if (!hasPlanScoutTopology(host, runId)) {
+    // Light path: no scouts to re-arm — fail closed as today.
+    return false;
+  }
+
+  const orch = loadRunOrchestration(host, runId);
+  const maxRounds = orch.planRescoutMaxRounds;
+  if (maxRounds <= 0) return false;
+
+  const used = planSufficiencyRoundsUsed(host, runId);
+  if (used >= maxRounds) return false;
+
+  const nextRound = used + 1;
+  const rawGaps = extractPlanSufficiencyGapUnitIds(message, error);
+  const unitGaps = rawGaps.filter(isRealCoverageUnitGapId);
+
+  let tasks: PlanScoutTask[] = [];
+  if (unitGaps.length > 0) {
+    try {
+      tasks = selectPlanScoutTasks({
+        orch,
+        gapUnitIds: unitGaps,
+      });
+    } catch {
+      tasks = [];
+    }
+  }
+  if (tasks.length === 0) {
+    // Semantic meta-gaps / unparseable unit list → re-arm existing unit/semantic scouts.
+    tasks = existingPlanScoutTasks(host, runId);
+  }
+  if (tasks.length === 0) {
+    // Topology claimed scouts exist but none parseable — still bump reduce+plan only if
+    // at least one plan.scout node key is known.
+    const anyScout = asRow(
+      host.db
+        .prepare(
+          `SELECT node_key FROM nodes WHERE run_id = ? AND kind = 'plan.scout' LIMIT 1`,
+        )
+        .get(runId),
+    );
+    if (!anyScout) return false;
+  }
+
+  const feedback = [
+    `Plan sufficiency re-scout round ${nextRound}/${maxRounds}`,
+    unitGaps.length > 0 ? `gaps: ${unitGaps.slice(0, 12).join(", ")}` : message.slice(0, 500),
+  ].join("\n");
+
+  // 1) Re-arm gap / selected scouts (selfOnly — reduce/plan bumped explicitly).
+  for (const task of tasks) {
+    const nodeKey = planScoutNodeKey(task);
+    const gen = host.currentNodeGeneration(runId, nodeKey);
+    if (gen === undefined) {
+      // Insert new gap scout at generation 0 if freeze already succeeded.
+      contractForNode("plan.scout", nodeKey);
+      const detail = planScoutDetailFromTask(task);
+      host.db
+        .prepare(
+          `INSERT INTO nodes (
+            run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+          ) VALUES (?, ?, 'plan.scout', 'ready', 0, NULL, NULL, ?)`,
+        )
+        .run(runId, nodeKey, JSON.stringify(detail));
+      host.db
+        .prepare(
+          `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'freeze', ?)
+           ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+        )
+        .run(runId, nodeKey);
+      host.db
+        .prepare(
+          `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, ?)
+           ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+        )
+        .run(runId, nodeKey, DISCOVER_REDUCE_KEY);
+      continue;
+    }
+    try {
+      host.applyRerunAt(runId, nodeKey, gen, undefined, { selfOnly: true });
+    } catch {
+      // already bumped / stale — continue
+    }
+  }
+
+  // 2) Re-arm plan.discover.reduce → blocked until scouts terminal.
+  const reduceGen = host.currentNodeGeneration(runId, DISCOVER_REDUCE_KEY);
+  if (reduceGen !== undefined) {
+    try {
+      host.applyRerunAt(runId, DISCOVER_REDUCE_KEY, reduceGen, undefined, {
+        selfOnly: true,
+      });
+    } catch {
+      // ignore
+    }
+    const nextReduceGen = host.currentNodeGeneration(runId, DISCOVER_REDUCE_KEY);
+    if (nextReduceGen !== undefined) {
+      demoteNodeState(host, runId, DISCOVER_REDUCE_KEY, nextReduceGen, "blocked");
+    }
+  }
+
+  // 3) Re-arm plan at gen+1, blocked until reduce succeeds; stamp round counter.
+  try {
+    host.applyRerunAt(runId, "plan", planGeneration, feedback, { selfOnly: true });
+  } catch {
+    return false;
+  }
+  const nextPlanGen = host.currentNodeGeneration(runId, "plan");
+  if (nextPlanGen === undefined) return false;
+  demoteNodeState(host, runId, "plan", nextPlanGen, "blocked");
+  mergePlanDetailRound(host, runId, nextPlanGen, nextRound, unitGaps.length > 0 ? unitGaps : rawGaps);
+
+  unlockReadyNodes(host, runId);
+
+  // Scouts that were inserted ready stay ready; applyRerunAt roots are ready.
+  // Ensure run is claimable.
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(now(), runId);
+
+  return true;
 }
 

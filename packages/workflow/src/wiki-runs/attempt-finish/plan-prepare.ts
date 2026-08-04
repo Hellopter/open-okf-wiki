@@ -50,18 +50,24 @@ export async function preparePlanExecutionPlan(
     : {
         sourceCount: workspace.sources?.length ?? 0,
       };
+  const planUncertainty = planUncertaintyFromSpec(spec);
   const adaptive = resolveAdaptiveOrchestration({
     orchestration: workspace.orchestration,
     inventory,
-    planUncertainty: planUncertaintyFromSpec(spec),
+    planUncertainty,
   });
   const orch = adaptive.orchestration;
+  // plan.adapt is DEFAULT-OFF (ADR / plan-compiler). Do not force on merely
+  // leaving light path — only high Spec uncertainty. 0.5 ≈ saturated openQuestions
+  // in planUncertaintyFromSpec (6+ OQs) without requiring multi-domain fan-out.
+  const HIGH_PLAN_UNCERTAINTY = 0.5;
+  const adaptationRequired = planUncertainty >= HIGH_PLAN_UNCERTAINTY;
   const coveragePlan = loadSealedContractCoveragePlan(host.db, claim.runId, runDir);
   const plan = compileExecutionPlan(spec, {
     maxDomainFanOut: orch.maxDomainFanOut,
     maxLeafFanOut: orch.maxLeafFanOut,
     reviewCouncilSize: orch.reviewCouncilSize,
-    adaptationRequired: !adaptive.lightPath,
+    adaptationRequired,
     specDigest: specPrep.digest,
     ...(coveragePlan ? { coveragePlan } : {}),
   });

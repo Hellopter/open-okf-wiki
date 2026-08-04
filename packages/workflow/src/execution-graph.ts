@@ -10,6 +10,10 @@
  *
  * Topology caps are maxDomainFanOut and maxLeafFanOut only; leaf *concurrency*
  * is separate (domainConcurrency × min(leafConcurrency, maxLeafFanOut) in concurrency.ts).
+ *
+ * Pre-plan stage (freeze materialize only — not in this post-plan graph):
+ *   freeze → plan.scout.* → plan.discover.reduce → plan → gate.plan
+ * Light path: freeze → plan. plan.discover.reduce is mechanical and never appears here.
  */
 
 import type { ExecutionPlan, WikiRunNodeKind, WikiRunSpec } from "@okf-wiki/contract/wiki-runs";
@@ -249,6 +253,8 @@ export const MECHANICAL_ATTEMPT_KINDS: ReadonlySet<WikiRunNodeKind> = new Set([
   "prepare.publication",
   "publish",
   "review.reduce",
+  /** Pre-plan only (freeze materialize); not inserted by buildExecutionGraph. */
+  "plan.discover.reduce",
 ]);
 
 /** Gates wait for ResolveGate; never claimed for execute. */

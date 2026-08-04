@@ -13,4 +13,6 @@ export * from "./wiki-produce.js";
 export * from "./run.js";
 export * from "./adaptive-router.js";
 export * from "./receipt.js";
+export * from "./handoff.js";
+export * from "./discovery.js";
 export * from "./observe-wiki-run.js";

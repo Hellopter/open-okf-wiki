@@ -27,6 +27,18 @@ describe("planner prompt", () => {
     const prompt = plannerPrompt({ layout, workspaceName: "Demo" });
     assert.match(prompt, /submit_wiki_run_spec/);
     assert.match(prompt, /plan-draft\.json/);
+    assert.match(prompt, /never Spec authority|Chat is never Spec|not.*primary delivery/i);
+  });
+
+  it("is DiscoveryMap-first and mentions dual gates", () => {
+    const prompt = plannerPrompt({
+      layout,
+      workspaceName: "Demo",
+      discoveryMapPath: "inputs/discovery-map.json",
+    });
+    assert.match(prompt, /DiscoveryMap-first|discovery-map\.json/);
+    assert.match(prompt, /assertCoverage/);
+    assert.match(prompt, /assertSemanticSufficiency/);
   });
 
   it("includes fan-out cap numbers when provided", () => {

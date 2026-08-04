@@ -54,6 +54,7 @@ import {
   injectPlanScoutDisplayNodes,
   orderedNodesForLayout,
   type PlanScoutDisplay,
+  planScoutKindClass,
   projectCollapsedResearchLeaves,
   researchDomainLeafGroups,
   shouldCollapseResearchLeaves,
@@ -290,14 +291,59 @@ function stateLabel(state: string, t: MessageTree): string {
   );
 }
 
+const SEMANTIC_KIND_FROM_TASK = /^semantic:(domain|flow|concept)$/;
+const THEMATIC_KIND_FROM_TASK = /^thematic:/;
+
 function nodeLabel(node: WikiRunNode, t: MessageTree): string {
   if (node.kind === "plan.adapt" && /^\d+$/.test(node.label.trim())) return t.workbench.planAdapt;
+  if (node.kind === "plan.discover.reduce") {
+    return t.workbench.planDiscoverReduce;
+  }
   if (node.kind === "plan.scout") {
-    const label = node.label.trim();
-    if (label) return label;
+    const scoutKind = node.detail?.scoutKind?.trim() ?? "";
+    const taskLabel = node.detail?.taskLabel?.trim() ?? "";
+    const kindClass = planScoutKindClass(scoutKind || taskLabel.split(":")[0]);
+
+    // Semantic discovery scouts: prefer i18n kind labels over host English chips.
+    if (kindClass === "semantic" || SEMANTIC_KIND_FROM_TASK.test(taskLabel)) {
+      const semantic = scoutKind || taskLabel.replace(/^semantic:/, "");
+      if (semantic === "domain") return t.workbench.planScoutSemanticDomain;
+      if (semantic === "flow") return t.workbench.planScoutSemanticFlow;
+      if (semantic === "concept") return t.workbench.planScoutSemanticConcept;
+    }
+
+    // Unit surveys: source / surface with id when available.
+    if (kindClass === "unit" || scoutKind === "source" || scoutKind === "surface") {
+      if (scoutKind === "source" || taskLabel.startsWith("source:")) {
+        const id =
+          node.detail?.sourceId?.trim() ||
+          (taskLabel.startsWith("source:") ? taskLabel.slice("source:".length) : "");
+        return id
+          ? formatMessage(t.workbench.planScoutUnitSourceId, { id })
+          : t.workbench.planScoutUnitSource;
+      }
+      if (scoutKind === "surface" || taskLabel.startsWith("surface:")) {
+        const unit =
+          node.detail?.unitId?.trim() ||
+          (taskLabel.startsWith("surface:") ? taskLabel.slice("surface:".length) : "");
+        return unit
+          ? formatMessage(t.workbench.planScoutUnitSurfaceId, { id: unit })
+          : t.workbench.planScoutUnitSurface;
+      }
+    }
+
+    // Thematic spine: prefer i18n over host English "Scout · thematic:…" chips.
     const short = node.key.startsWith("plan.scout.")
       ? node.key.slice("plan.scout.".length)
       : node.key;
+    if (kindClass === "thematic" || THEMATIC_KIND_FROM_TASK.test(taskLabel)) {
+      const thematic = scoutKind || taskLabel.replace(/^thematic:/, "") || short;
+      return formatMessage(t.workbench.planScoutThematicId, { kind: thematic });
+    }
+
+    // Host-projected label / key fallback.
+    const label = node.label.trim();
+    if (label) return label;
     return `${t.workbench.planScout} · ${short}`;
   }
   return node.label.trim() || node.key;
@@ -417,6 +463,7 @@ function FocusGraph({
             node.kind === "freeze" ||
             node.kind === "plan" ||
             node.kind === "plan.scout" ||
+            node.kind === "plan.discover.reduce" ||
             node.kind === "gate.plan",
         )
         .map((node) => node.key),

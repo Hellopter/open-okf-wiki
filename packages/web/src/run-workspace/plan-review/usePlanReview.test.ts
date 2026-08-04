@@ -10,11 +10,13 @@ import {
   coverageStatusCounts,
   coverageStopReasonOf,
   formatDomainPageCounts,
+  hasDiscoverySummary,
   hasScoutsSummary,
   pageSetDiffHasChanges,
   planReviewHeadline,
   type PlanReviewState,
   shouldLoadPlanReview,
+  softDiscoverySummary,
   sortCoverageRows,
 } from "./plan-review-utils.ts";
 
@@ -349,6 +351,75 @@ describe("coverageStopReasonOf / pageSetDiffHasChanges / hasScoutsSummary", () =
     assert.equal(hasScoutsSummary({ kinds: [], receiptCount: 0 }), false);
     assert.equal(hasScoutsSummary({ kinds: ["entry"], receiptCount: 0 }), true);
     assert.equal(hasScoutsSummary({ kinds: [], receiptCount: 1 }), true);
+  });
+});
+
+describe("softDiscoverySummary", () => {
+  it("returns null when discovery fields are absent", () => {
+    assert.equal(softDiscoverySummary(undefined), null);
+    assert.equal(softDiscoverySummary(null), null);
+    assert.equal(softDiscoverySummary(baseReview()), null);
+    assert.equal(hasDiscoverySummary(null), false);
+  });
+
+  it("reads formal discoverySummary count fields (schema-aligned)", () => {
+    const fromCounts = softDiscoverySummary(
+      baseReview({
+        discoverySummary: {
+          domainCount: 3,
+          flowCount: 2,
+          conceptCount: 1,
+          sourceCount: 2,
+          openQuestionCount: 1,
+        },
+      }),
+    );
+    assert.deepEqual(fromCounts, {
+      domains: 3,
+      flows: 2,
+      concepts: 1,
+      sources: 2,
+      openQuestions: 1,
+    });
+    assert.equal(hasDiscoverySummary(fromCounts), true);
+  });
+
+  it("soft-reads count fields and array lengths without hard fail", () => {
+    const fromCounts = softDiscoverySummary({
+      discoverySummary: {
+        domainCount: 3,
+        flowCount: 2,
+        conceptCount: 1,
+        sourceCount: 2,
+      },
+    });
+    assert.deepEqual(fromCounts, {
+      domains: 3,
+      flows: 2,
+      concepts: 1,
+      sources: 2,
+    });
+    assert.equal(hasDiscoverySummary(fromCounts), true);
+
+    const fromArrays = softDiscoverySummary({
+      discovery: {
+        domains: [{ id: "a" }, { id: "b" }],
+        flows: [{ id: "f1" }],
+        concepts: [],
+        sources: [{ sourceId: "api" }],
+      },
+    });
+    assert.deepEqual(fromArrays, {
+      domains: 2,
+      flows: 1,
+      concepts: 0,
+      sources: 1,
+    });
+  });
+
+  it("ignores malformed discovery blocks", () => {
+    assert.equal(softDiscoverySummary({ discoverySummary: "nope" }), null);
+    assert.equal(softDiscoverySummary({ discoverySummary: { other: true } }), null);
   });
 });
 

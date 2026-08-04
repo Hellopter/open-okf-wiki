@@ -3,8 +3,12 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { test } from "node:test";
-import { planGateDetailFromSpec, planGatePayloadDigest } from "./plan-review.js";
+import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import { runWorkDir } from "@okf-wiki/core";
+import { openWikiRuns } from "../wiki-runs.js";
 import {
   context,
   fullGraphFixtureExecutor,
@@ -12,8 +16,11 @@ import {
   removeWorkspace,
   waitForRunState,
 } from "./__tests__/harness.js";
-import { openWikiRuns } from "../wiki-runs.js";
-import { defaultWikiRunSpec } from "@okf-wiki/contract/wiki-runs";
+import {
+  discoverySummaryFromMap,
+  planGateDetailFromSpec,
+  planGatePayloadDigest,
+} from "./plan-review.js";
 
 test("planGateDetailFromSpec projects secret-free counts from Spec", () => {
   const spec = defaultWikiRunSpec("Demo");
@@ -91,4 +98,146 @@ test("readPlanReview not_found when run has no sealed plan", async (t) => {
     /not found/,
   );
   void workspaceId;
+});
+
+test("discoverySummaryFromMap projects compact counts", () => {
+  const summary = discoverySummaryFromMap({
+    version: 1,
+    sources: [
+      {
+        sourceId: "api",
+        entryPoints: [],
+        surfaces: [],
+        purpose: "",
+        evidencePaths: ["sources/api/main.go"],
+      },
+      {
+        sourceId: "web",
+        entryPoints: [],
+        surfaces: [],
+        purpose: "",
+        evidencePaths: ["sources/web/src/main.tsx"],
+      },
+    ],
+    domains: [
+      {
+        id: "auth",
+        title: "Auth",
+        scope: "Login",
+        coverageUnitIds: [],
+        evidencePaths: [],
+        readerQuestion: "How login?",
+      },
+    ],
+    flows: [
+      {
+        id: "login",
+        title: "Login",
+        steps: [],
+        crossSource: true,
+        coverageUnitIds: [],
+        evidencePaths: [],
+      },
+      {
+        id: "local",
+        title: "Local",
+        steps: [],
+        crossSource: false,
+        coverageUnitIds: [],
+        evidencePaths: [],
+      },
+    ],
+    concepts: [
+      {
+        id: "jwt",
+        term: "JWT",
+        definitionHint: "token",
+        evidencePaths: [],
+      },
+    ],
+    openQuestions: ["Need OAuth details?"],
+    boundaryPaths: [],
+    scoutKinds: ["source", "flow", "concept"],
+  });
+  assert.deepEqual(summary, {
+    domainCount: 1,
+    flowCount: 2,
+    conceptCount: 1,
+    sourceCount: 2,
+    crossSourceFlowCount: 1,
+    openQuestionCount: 1,
+    scoutKinds: ["source", "flow", "concept"],
+  });
+});
+
+test("readPlanReview projects discoverySummary from analysis/discovery-map.json", async (t) => {
+  const { root, workspaceId } = await makeWorkspace();
+  t.after(() => removeWorkspace(root));
+  const runs = await openWikiRuns({
+    rootPath: root,
+    piAttemptExecutor: fullGraphFixtureExecutor,
+  });
+  t.after(() => runs.close());
+
+  const receipt = await runs.dispatch(
+    { type: "start_run", commandId: "plan-review-discovery", intent: { mode: "generate" } },
+    context(workspaceId),
+  );
+
+  await waitForRunState(runs, receipt.runId, ["waiting_for_operator"]);
+
+  const analysisDir = path.join(runWorkDir(root, receipt.runId), "analysis");
+  await mkdir(analysisDir, { recursive: true });
+  await writeFile(
+    path.join(analysisDir, "discovery-map.json"),
+    `${JSON.stringify({
+      version: 1,
+      sources: [
+        {
+          sourceId: "main",
+          entryPoints: ["README.md"],
+          surfaces: ["."],
+          purpose: "demo",
+          evidencePaths: ["sources/main/README.md"],
+        },
+      ],
+      domains: [
+        {
+          id: "core",
+          title: "Core",
+          scope: "Main surface",
+          coverageUnitIds: ["main"],
+          evidencePaths: ["sources/main/README.md"],
+          readerQuestion: "What is this?",
+        },
+      ],
+      flows: [],
+      concepts: [
+        {
+          id: "wiki",
+          term: "Wiki",
+          definitionHint: "knowledge pages",
+          evidencePaths: [],
+        },
+      ],
+      openQuestions: [],
+      boundaryPaths: [],
+      scoutKinds: ["source", "domain"],
+    })}\n`,
+    "utf8",
+  );
+
+  const review = await runs.readPlanReview({ runId: receipt.runId });
+  assert.ok(review.discoverySummary, "discoverySummary projected from analysis map");
+  assert.equal(review.discoverySummary.domainCount, 1);
+  assert.equal(review.discoverySummary.flowCount, 0);
+  assert.equal(review.discoverySummary.conceptCount, 1);
+  assert.equal(review.discoverySummary.sourceCount, 1);
+  assert.equal(review.discoverySummary.openQuestionCount, 0);
+  assert.deepEqual(review.discoverySummary.scoutKinds, ["source", "domain"]);
+  assert.ok(review.semanticSufficiency, "soft semanticSufficiency included");
+  assert.equal(typeof review.semanticSufficiency.ok, "boolean");
+  assert.ok(
+    ["complete", "semantic_gap", "not_required"].includes(review.semanticSufficiency.stop_reason),
+  );
 });

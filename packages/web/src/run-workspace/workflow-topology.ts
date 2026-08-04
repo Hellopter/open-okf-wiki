@@ -67,9 +67,34 @@ function canvasStageFromObservation(stage: ReturnType<typeof stageForNodeKind>):
 export function stageForNode(node: WikiRunNode): WorkflowStageId {
   // Plan gate stays in plan stage (operator canvas grouping).
   if (node.kind === "gate.plan") return "plan";
+  // Explicit: mechanical discovery join is pre-plan, same canvas stage as scouts.
+  if (node.kind === "plan.discover.reduce") return "plan";
   if (node.kind === "gate.fix") return "quality";
   if (node.kind === "validate.pre") return "synthesis";
   return canvasStageFromObservation(stageForNodeKind(node.kind));
+}
+
+/** Semantic discovery scout kinds (domain map / flow / concept). */
+export const SEMANTIC_SCOUT_KINDS = new Set(["domain", "flow", "concept"]);
+
+/** Unit survey scout kinds (source / surface). */
+export const UNIT_SCOUT_KINDS = new Set(["source", "surface"]);
+
+/** Thematic spine scout kinds (entry | layout | tests | risks). */
+export const THEMATIC_SCOUT_KINDS = new Set(["entry", "layout", "tests", "risks"]);
+
+export type PlanScoutKindClass = "semantic" | "unit" | "thematic" | "other";
+
+/** Classify a plan.scout from sealed detail.scoutKind (soft when missing). */
+export function planScoutKindClass(
+  scoutKind: string | null | undefined,
+): PlanScoutKindClass {
+  const kind = (scoutKind ?? "").trim();
+  if (!kind) return "other";
+  if (SEMANTIC_SCOUT_KINDS.has(kind)) return "semantic";
+  if (UNIT_SCOUT_KINDS.has(kind)) return "unit";
+  if (THEMATIC_SCOUT_KINDS.has(kind)) return "thematic";
+  return "other";
 }
 
 /** Filesystem-safe slug for plan.scout.<slug> display keys. */
@@ -323,12 +348,17 @@ export function buildWorkflowStages(
 
 export function relationForEdge(source: WikiRunNode, target: WikiRunNode): WorkflowEdgeRelation {
   if (source.kind === "repair" && target.kind === "validate.pre") return "feedback";
-  // Durable: freeze → plan.scout.* → plan; legacy inject: plan → plan.scout → gate.plan
+  // Durable discovery: freeze → plan.scout.* → plan.discover.reduce → plan → gate.plan
+  // Legacy inject (no durable scouts): plan → plan.scout → gate.plan
   if (source.kind === "freeze" && target.kind === "plan.scout") return "fanout";
   if (source.kind === "plan" && target.kind === "plan.scout") return "fanout";
+  if (source.kind === "plan.scout" && target.kind === "plan.discover.reduce") return "join";
   if (source.kind === "plan.scout" && target.kind === "plan") return "join";
   if (source.kind === "plan.scout" && target.kind.startsWith("gate.")) return "join";
   if (source.kind === "plan.scout") return "join";
+  // Mechanical discovery map → planner is a single forward edge (not a fan-in join).
+  if (source.kind === "plan.discover.reduce" && target.kind === "plan") return "forward";
+  if (source.kind === "plan.discover.reduce") return "forward";
   if (source.kind.startsWith("gate.") || target.kind.startsWith("gate.")) return "control";
   if (target.kind === "research.leaf" || target.kind === "review.seat") return "fanout";
   if (
@@ -440,7 +470,8 @@ export function orderedNodesForLayout(
     ordered.push(node);
   };
 
-  // Durable topology: freeze → plan.scout.* → plan → gate.plan (edges from snapshot).
+  // Durable topology: freeze → plan.scout.* → plan.discover.reduce → plan → gate.plan.
+  // Older durable (no reduce): freeze → plan.scout.* → plan → gate.plan.
   // Legacy display inject: plan → plan.scout → gate — place scouts after plan then.
   const byKeyForPlan = byKey;
   const durableScoutOrder = topology.edges.some((edge) => {
@@ -448,7 +479,9 @@ export function orderedNodesForLayout(
     const target = byKeyForPlan.get(edge.target);
     return (
       (source?.kind === "freeze" && target?.kind === "plan.scout") ||
-      (source?.kind === "plan.scout" && target?.kind === "plan")
+      (source?.kind === "plan.scout" && target?.kind === "plan.discover.reduce") ||
+      (source?.kind === "plan.scout" && target?.kind === "plan") ||
+      (source?.kind === "plan.discover.reduce" && target?.kind === "plan")
     );
   });
 
@@ -460,16 +493,21 @@ export function orderedNodesForLayout(
   const planScouts = topology.nodes
     .filter((node) => node.kind === "plan.scout")
     .sort((a, b) => a.key.localeCompare(b.key));
+  const discoverReduce = topology.nodes
+    .filter((node) => node.kind === "plan.discover.reduce")
+    .sort((a, b) => a.key.localeCompare(b.key));
   const planNodes = topology.nodes
     .filter((node) => node.kind === "plan")
     .sort((a, b) => a.key.localeCompare(b.key));
 
   if (durableScoutOrder) {
     for (const node of planScouts) take(node.key);
+    for (const node of discoverReduce) take(node.key);
     for (const node of planNodes) take(node.key);
   } else {
     for (const node of planNodes) take(node.key);
     for (const node of planScouts) take(node.key);
+    for (const node of discoverReduce) take(node.key);
   }
 
   const planGates = topology.nodes

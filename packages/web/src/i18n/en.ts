@@ -81,6 +81,12 @@ export const en = {
     coverageRounds: "{count} re-scout rounds",
     scouts: "Plan scouts",
     scoutsReceipts: "{count} receipts",
+    /** Soft discovery-map summary on plan review (domain/flow/concept counts). */
+    discovery: "Discovery map",
+    discoveryCounts:
+      "{domains} domains · {flows} flows · {concepts} concepts",
+    discoveryCountsWithSources:
+      "{sources} sources · {domains} domains · {flows} flows · {concepts} concepts",
     pageSetDiff: "Page set changes",
     pageSetDiffCounts: "+{added} · −{removed} · {retained} retained",
     pageSetAdded: "Added",
@@ -843,6 +849,19 @@ export const en = {
     backToGraph: "Execution graph",
     /** Plan scout node (durable Attempt) or legacy sealed-receipt observation. */
     planScout: "Plan scout",
+    /** Mechanical merge of scout receipts → discovery_map. */
+    planDiscoverReduce: "Discovery reduce",
+    /** Semantic discovery scouts (domain map / flow / concept). */
+    planScoutSemanticDomain: "Scout · domain",
+    planScoutSemanticFlow: "Scout · flow",
+    planScoutSemanticConcept: "Scout · concept",
+    /** Unit survey scouts (source / surface). */
+    planScoutUnitSource: "Scout · source",
+    planScoutUnitSourceId: "Scout · source:{id}",
+    planScoutUnitSurface: "Scout · surface",
+    planScoutUnitSurfaceId: "Scout · surface:{id}",
+    /** Thematic spine scouts. */
+    planScoutThematicId: "Scout · {kind}",
     planScoutReceipt: "Scout receipt",
     planScoutOk: "Ok",
     planScoutFailed: "Failed",

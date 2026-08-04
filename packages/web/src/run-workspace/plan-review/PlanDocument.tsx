@@ -8,7 +8,13 @@ import type { WikiRunPlanReview, WikiRunSpec } from "@okf-wiki/contract/wiki-run
 import { Badge } from "@/components/ui/badge";
 import { formatMessage, type MessageTree } from "../../i18n";
 import { CoverageMatrixPanel, CoverageStrip } from "./CoverageMatrixPanel";
-import { hasScoutsSummary, pageSetDiffHasChanges } from "./plan-review-utils";
+import { DiscoverySummaryPanel } from "./DiscoverySummaryPanel";
+import {
+  hasDiscoverySummary,
+  hasScoutsSummary,
+  pageSetDiffHasChanges,
+  softDiscoverySummary,
+} from "./plan-review-utils";
 import { ScoutsSummary } from "./ScoutsSummary";
 import { SpecPageSetDiff } from "./SpecPageSetDiff";
 
@@ -22,6 +28,9 @@ export function PlanDocument({
   const { spec, execution } = review;
   const showCoverage = Boolean(review.coverage);
   const showScouts = hasScoutsSummary(review.scoutsSummary);
+  // Formal discoverySummary (schema) or soft legacy shapes.
+  const discovery = softDiscoverySummary(review);
+  const showDiscovery = hasDiscoverySummary(discovery);
   const showPageDiff =
     Boolean(review.pageSetDiff) &&
     (pageSetDiffHasChanges(review.pageSetDiff) ||
@@ -34,7 +43,7 @@ export function PlanDocument({
       data-testid="plan-document"
       data-payload-digest={review.payloadDigest}
     >
-      {showCoverage || showScouts ? (
+      {showCoverage || showScouts || showDiscovery ? (
         <div className="flex flex-col gap-4 border-b border-border pb-4">
           {showCoverage && review.coverage ? (
             <CoverageStrip
@@ -42,6 +51,9 @@ export function PlanDocument({
               stopReason={review.coverageStopReason}
               t={t}
             />
+          ) : null}
+          {showDiscovery && discovery ? (
+            <DiscoverySummaryPanel summary={discovery} t={t} />
           ) : null}
           {showScouts && review.scoutsSummary ? (
             <ScoutsSummary scouts={review.scoutsSummary} t={t} />

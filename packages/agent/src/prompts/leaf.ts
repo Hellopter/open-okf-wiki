@@ -1,5 +1,5 @@
 /**
- * Leaf research prompt.
+ * Leaf research prompt — short task; evidence file seal doctrine.
  */
 
 export function leafResearchPrompt(input: {
@@ -25,7 +25,15 @@ export function leafResearchPrompt(input: {
     ...sourceBlock,
     "",
     "Read skill/references/leaf-research.md in full before investigating.",
-    "Use only read tools. Narrow investigation; return findings + source paths + open questions.",
+    "Use only read tools (ls, find, grep, read). Narrow investigation; never write wiki pages; never use bash.",
+    "",
+    "## Evidence file seal doctrine",
+    "- Findings authority is the sealed Analysis Receipt file (Host seals after this Attempt).",
+    "- Return a **short** control summary only: key findings bullets, source paths with tool-derived line ranges, open questions.",
+    "- Do not paste multi-kB source dumps into the final message.",
+    "- Do not invent Host tools, handoff JSON schemas, or further delegation.",
+    "- Do not change Spec domains/pages — research only.",
+    "",
     `nodeId=${input.nodeId} runId=${input.runId}`,
   ].join("\n");
 }

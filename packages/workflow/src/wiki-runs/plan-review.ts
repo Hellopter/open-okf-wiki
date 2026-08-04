@@ -2,13 +2,26 @@
  * Operator plan-gate review materials: sealed Spec + ExecutionPlan projection.
  * Full bodies stay off the Run SSE snapshot (ADR 0035); this is an explicit read.
  * Wave 2: coverage rows, scouts summary, priorSpec, pageSetDiff (additive).
+ * Wave 3: discoverySummary + soft semanticSufficiency from sealed DiscoveryMap.
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { assertCoverage } from "@okf-wiki/contract/coverage";
-import { type ExecutionPlan, ExecutionPlanSchema, type WikiRunPlanReview, WikiRunPlanReviewSchema, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
+import {
+  assertSemanticSufficiency,
+  type DiscoveryMap,
+  type ExecutionPlan,
+  ExecutionPlanSchema,
+  parseDiscoveryMap,
+  type SemanticSufficiencyResult,
+  type WikiRunPlanReview,
+  type WikiRunPlanReviewDiscoverySummary,
+  WikiRunPlanReviewSchema,
+  type WikiRunSpec,
+  WikiRunSpecSchema,
+} from "@okf-wiki/contract/wiki-runs";
 import type { WorkspaceConfig } from "@okf-wiki/contract/workspace";
 import { runWorkDir } from "@okf-wiki/core";
 import {
@@ -17,6 +30,7 @@ import {
   readScoutsSummary,
   toContractCoveragePlan,
 } from "./coverage-bridge.js";
+import { DISCOVERY_MAP_FILE } from "./discovery-map-merge.js";
 import { digest } from "./crypto-util.js";
 import { asRow, requiredNumber, requiredText } from "./sql.js";
 import { WikiRunsRequestError } from "./types.js";
@@ -217,6 +231,101 @@ function loadCoverageProjection(
   return {};
 }
 
+/** Build compact discovery counts from a sealed DiscoveryMap (payload-size friendly). */
+export function discoverySummaryFromMap(map: DiscoveryMap): WikiRunPlanReviewDiscoverySummary {
+  const crossSourceFlowCount = map.flows.filter((f) => f.crossSource).length;
+  return {
+    domainCount: map.domains.length,
+    flowCount: map.flows.length,
+    conceptCount: map.concepts.length,
+    sourceCount: map.sources.length,
+    crossSourceFlowCount,
+    openQuestionCount: map.openQuestions.length,
+    ...(map.scoutKinds.length > 0 ? { scoutKinds: [...map.scoutKinds] } : {}),
+  };
+}
+
+function tryParseDiscoveryMapFile(filePath: string): DiscoveryMap | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+    return parseDiscoveryMap(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Load sealed DiscoveryMap for plan-review projection.
+ * Prefer node_outputs role=discovery_map (plan.discover.reduce), then
+ * analysis/discovery-map.json and inputs/discovery-map.json fallbacks.
+ */
+export function loadDiscoveryMapForPlanReview(
+  host: PlanReviewHost,
+  runId: string,
+): DiscoveryMap | undefined {
+  const runDir = runWorkDir(host.workspace.rootPath, runId);
+
+  const sealed = asRow(
+    host.db
+      .prepare(
+        `SELECT artifacts.relative_path
+         FROM node_outputs
+         JOIN artifacts ON artifacts.artifact_id = node_outputs.artifact_id
+         WHERE node_outputs.run_id = ?
+           AND node_outputs.role = 'discovery_map'
+         ORDER BY artifacts.sealed_at DESC
+         LIMIT 1`,
+      )
+      .get(runId),
+  );
+
+  const candidatePaths: string[] = [];
+  if (sealed) {
+    const rel = requiredText(sealed, "relative_path");
+    const root = path.join(runDir, rel);
+    // Artifact may be the file itself or a directory containing discovery-map.json.
+    candidatePaths.push(
+      root,
+      path.join(root, DISCOVERY_MAP_FILE),
+      path.join(root, "discovery_map.json"),
+    );
+  }
+  candidatePaths.push(
+    path.join(runDir, "analysis", DISCOVERY_MAP_FILE),
+    path.join(runDir, "inputs", DISCOVERY_MAP_FILE),
+  );
+
+  for (const candidate of candidatePaths) {
+    const map = tryParseDiscoveryMapFile(candidate);
+    if (map) return map;
+  }
+  return undefined;
+}
+
+function loadDiscoveryProjection(
+  host: PlanReviewHost,
+  runId: string,
+  spec: WikiRunSpec,
+): {
+  discoverySummary?: WikiRunPlanReviewDiscoverySummary;
+  semanticSufficiency?: SemanticSufficiencyResult;
+} {
+  const map = loadDiscoveryMapForPlanReview(host, runId);
+  if (!map) return {};
+  const discoverySummary = discoverySummaryFromMap(map);
+  const semanticSufficiency = assertSemanticSufficiency(
+    map,
+    {
+      sourceCoverage: spec.sourceCoverage,
+      repositoryMap: spec.repositoryMap,
+      openQuestions: spec.openQuestions,
+    },
+    { sourceCount: map.sources.length },
+    { throwOnGap: false },
+  );
+  return { discoverySummary, semanticSufficiency };
+}
+
 /**
  * Load sealed plan materials for operator document review.
  * When an open plan gate exists, payloadDigest must match that gate.
@@ -264,6 +373,7 @@ export function readPlanReviewMaterials(
   const priorSpec = loadPriorSpec(host, runId, specRow.nodeGeneration);
   const pageSetDiff = pageSetDiffFromSpecs(priorSpec, spec);
   const { coverage, coverageStopReason } = loadCoverageProjection(host, runId, spec);
+  const { discoverySummary, semanticSufficiency } = loadDiscoveryProjection(host, runId, spec);
   const runDir = runWorkDir(host.workspace.rootPath, runId);
   const scouts = readScoutsSummary(path.join(runDir, "analysis"));
 
@@ -290,5 +400,7 @@ export function readPlanReviewMaterials(
       : {}),
     ...(priorSpec ? { priorSpec } : {}),
     ...(pageSetDiff ? { pageSetDiff } : {}),
+    ...(discoverySummary ? { discoverySummary } : {}),
+    ...(semanticSufficiency ? { semanticSufficiency } : {}),
   });
 }

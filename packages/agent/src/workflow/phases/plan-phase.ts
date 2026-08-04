@@ -24,11 +24,16 @@ import {
 import {
   type AttemptItem,
   type AttemptMetrics,
+  assertSemanticSufficiency,
+  type DiscoveryMap,
   defaultWikiRunSpec,
   type NodeAttempt,
+  parseDiscoveryMapStrict,
   planUncertaintyFromSpec,
   type RepositoryInventory,
   resolveAdaptiveOrchestration,
+  SemanticSufficiencyError,
+  type SemanticSufficiencyResult,
   SUBMIT_WIKI_RUN_SPEC_TOOL_NAME,
   type WikiRunSpec,
 } from "@okf-wiki/contract/wiki-runs";
@@ -57,12 +62,47 @@ import {
   writeCoverageArtifacts,
 } from "./coverage-bridge.js";
 import {
+  DISCOVERY_MAP_INPUT_REL,
   formatScoutPlannerContextFromJson,
+  loadProjectedDiscoveryMap,
   loadProjectedPlanScoutReceipts,
 } from "./plan-scouts.js";
 
 /** Tool name constant (contract-owned — no tools/ import). */
 export { SUBMIT_WIKI_RUN_SPEC_TOOL_NAME };
+
+/**
+ * Call contract assertSemanticSufficiency when a DiscoveryMap object is present.
+ * Soft no-op when discovery is missing/unparseable (light path has no map).
+ * Multi-source fail-closed callers pass throwOnGap: true.
+ */
+function tryAssertSemanticSufficiency(input: {
+  discovery: unknown;
+  spec: WikiRunSpec;
+  sourceCount: number;
+  throwOnGap: boolean;
+}): SemanticSufficiencyResult | undefined {
+  if (!input.discovery || typeof input.discovery !== "object") return undefined;
+  let discovery: DiscoveryMap;
+  try {
+    discovery = parseDiscoveryMapStrict(input.discovery);
+  } catch {
+    // Unparseable map: soft skip (mechanical reduce seals valid maps).
+    return undefined;
+  }
+  try {
+    return assertSemanticSufficiency(
+      discovery,
+      input.spec,
+      { sourceCount: input.sourceCount },
+      { throwOnGap: input.throwOnGap },
+    );
+  } catch (err) {
+    if (err instanceof SemanticSufficiencyError) throw err;
+    if (input.throwOnGap && err instanceof Error) throw err;
+    return undefined;
+  }
+}
 
 function snippet(text: string, max = 240): string {
   const t = text.replace(/\s+/g, " ").trim();
@@ -430,9 +470,13 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
       : input.customTools) ?? [];
 
   // Durable scouts: load sealed receipts projected into inputs/plan-scouts/.
+  // Index-card only in the planner task — never multi-kB body paste.
   const scoutReceipts = await loadProjectedPlanScoutReceipts(input.layout);
   const scoutKinds = scoutReceipts.map((r) => r.kind);
-  const plannerScoutContext = formatScoutPlannerContextFromJson(scoutReceipts);
+  const discoveryMap = await loadProjectedDiscoveryMap(input.layout);
+  const plannerScoutContext = formatScoutPlannerContextFromJson(scoutReceipts, {
+    ...(discoveryMap?.path ? { discoveryMapPath: discoveryMap.path } : {}),
+  });
   const requiredScoutGaps = scoutReceipts
     .filter((r) => r.critical && !r.ok)
     .map((r) => r.unitId ?? r.kind)
@@ -456,13 +500,18 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
     maxLeafFanOut: orch.maxLeafFanOut,
     sourceCount: coverageArtifacts.adaptive.sourceCount,
     requiredUnitIds: coverageArtifacts.plan.requiredUnits.map((u) => u.id),
+    ...(discoveryMap?.path ? { discoveryMapPath: discoveryMap.path } : {}),
   });
 
   const systemPrompt = [
     "You are the Wiki planner (Spec synthesizer).",
-    "Use read-only tools (ls, find, grep, read) to inspect sources/ and inputs/plan-scouts/* receipts.",
+    "File-first: read DiscoveryMap and inputs/plan-scouts/* with read tools; do not rely on index-card previews alone.",
+    discoveryMap?.path
+      ? `DiscoveryMap is at ${discoveryMap.path} — read it first when synthesizing.`
+      : `If ${DISCOVERY_MAP_INPUT_REL} exists, read it first.`,
     `Submit the complete WikiRunSpec via the ${SUBMIT_WIKI_RUN_SPEC_TOOL_NAME} tool (Run Boundary writes ${PLAN_DRAFT_REL_PATH}).`,
-    "Do not write wiki pages. Do not rely on chat-only JSON as the primary handoff.",
+    "Do not write wiki pages. Chat is never Spec authority — sealed plan-draft.json is.",
+    "Host dual gates: assertCoverage + assertSemanticSufficiency (when DiscoveryMap present).",
     coverageArtifacts.plan.requiredUnits.length > 0
       ? "Every required coverage unit must be bound on critical pages or cancelled via sourceCoverage/surfaceCoverage (cancelled:true + notes)."
       : "",
@@ -551,6 +600,25 @@ export async function planWikiSpec(input: PlanWikiSpecInput): Promise<PlanWikiSp
         },
       );
     }
+  }
+
+  // Dual gate: assertSemanticSufficiency + DiscoveryMap when present (soft without map).
+  // Multi-source with a map: fail-closed as SemanticSufficiencyError (not CoverageAssertError).
+  const semantic = tryAssertSemanticSufficiency({
+    discovery: discoveryMap?.data,
+    spec: resolved.spec,
+    sourceCount: coverageArtifacts.adaptive.sourceCount,
+    throwOnGap:
+      Boolean(discoveryMap?.data) && coverageArtifacts.adaptive.sourceCount >= 2,
+  });
+  if (semantic && semantic.ok === false) {
+    const gaps = semantic.gaps ?? [];
+    const preview = gaps.slice(0, 8).join(", ") || "semantic gap";
+    const more = gaps.length > 8 ? ` (+${gaps.length - 8} more)` : "";
+    throw new SemanticSufficiencyError(
+      `plan semantic sufficiency gaps after durable scout synthesis: ${preview}${more}`,
+      semantic,
+    );
   }
 
   return {

@@ -74,6 +74,9 @@ test("high uncertainty + multi inventory raises beyond light path", () => {
     planUncertainty: uncertainty,
   });
   assert.equal(decision.lightPath, false);
-  assert.ok(decision.orchestration.planScoutCount >= 1);
+  // Multi-source: thematic planScoutCount DEFAULT-OFF; hybrid mode + survey budget
+  // drive unit/semantic scouts (selectPlanScoutTasks), not planScoutCount.
+  assert.equal(decision.orchestration.planScoutMode, "hybrid");
+  assert.ok((decision.orchestration.planSurveyTaskBudget ?? 0) >= 1);
   assert.ok(decision.orchestration.reviewCouncilSize >= 1);
 });

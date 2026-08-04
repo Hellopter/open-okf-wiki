@@ -140,11 +140,10 @@ export function compileExecutionPlan(
     }
   }
 
-  // In the live path this is derived from inventory + planner uncertainty.
-  // Direct compiler consumers retain a deterministic, evidence-shaped default.
-  const adaptationRequired =
-    caps?.adaptationRequired ??
-    (leafCount > 1 || (spec.openQuestions ?? []).some((question) => question.trim().length > 0));
+  // plan.adapt is DEFAULT-OFF: only when the host explicitly sets
+  // caps.adaptationRequired === true (e.g. plan-prepare on high planUncertainty).
+  // Do not auto-on from leafCount > 1, openQuestions alone, or !lightPath.
+  const adaptationRequired = caps?.adaptationRequired === true;
 
   return ExecutionPlanSchema.parse({
     version: 4,

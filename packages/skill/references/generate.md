@@ -1,26 +1,31 @@
 # Generate
 
-**Job:** write a new Staging Wiki from an empty (or fixture-seeded empty) `wiki/`.
-**Prereq:** plan complete (`skill/references/plan.md`); Spec pages are known.
+**Job:** write Staging Wiki concept pages for the **sealed Spec page set** into an empty (or fixture-seeded empty) `wiki/`.
+**Prereq:** plan complete; sealed Spec at `inputs/spec.json` is the sole page-set authority.
 **Next:** review (`skill/references/review.md`).
 
-Start from the empty Staging Wiki.
+## Spec-bound only (do not re-plan)
 
-1. Find each repository's stated purpose, executable or library entry points, public interfaces,
-   major directories, configuration, and tests that reveal intended behavior (tests remaining in
-   the Snapshot are evidence, not noise). Use any run inventory only as a discovery aid. Identify
-   how the repositories relate before deciding the Wiki shape.
-2. Follow high-signal dependencies and call paths until the important boundaries, modules, flows,
-   and domain concepts are understood. Branch according to what the repository contains rather than
-   classifying the Repository Snapshot Set into a fixed project type.
-3. Draft the smallest useful page set. Put purpose, audience, main capabilities, and where to
-   continue on `overview.md` (or the Spec narrative path) — **not** on `index.md`. Prefer
-   directories for related pages (`modules/*.md`, `flows/*.md`, deeper as needed). Add other pages
-   only when they answer a distinct reader question. Do not plan or hand-write `index.md` /
-   `log.md` as concept pages; the product regenerates every directory's `index.md` as a mechanical
-   progressive-disclosure listing.
-4. Write and cross-link the concept pages, then proceed to the review reference.
+You are **not** re-discovering or redesigning the wiki page tree. Plan already fixed domains/pages.
 
-Generation is complete when a new reader can enter at `overview.md` (or the Spec narrative path),
-navigate important ideas via multi-level directory indexes, and verify every concept page against
-its Source Citations without encountering padding or unexplained gaps.
+1. Read `inputs/spec.json`. The `pages` list (critical paths especially) is your write checklist.
+2. When present, read `inputs/discovery-map.json` (or `analysis/discovery-map.json`) for evidence paths,
+   domain/flow/concept hints — **supporting evidence only**, not a license to invent extra concept pages.
+3. Read `inputs/evidence/index.json` and `inputs/evidence/receipts/*` when projected; re-open load-bearing
+   `sources/` spans as needed. Do not invent citations.
+4. For each Spec concept path, select the matching
+   `skill/templates/{overview,architecture,module,flow,concept}.md`, adapt it, and write under `wiki/`
+   with `write` / `edit`. Prefer Spec directory layout (`modules/`, `flows/`, …).
+5. Cross-link related Spec pages. Do **not** plan or hand-write `index.md` / `log.md` as concept pages;
+   the product regenerates every directory's `index.md` as a mechanical progressive-disclosure listing.
+6. Proceed to the review reference.
+
+Do **not**:
+
+- Draft a new page set from a fresh repository survey
+- Add concept pages that are not in the Spec
+- Treat DiscoveryMap or research receipts as Spec authority
+
+Generation is complete when every **critical Spec concept path** exists under `wiki/`, answers its
+reader purpose, is grounded by nearby verified Source Citations, and a new reader can enter at
+`overview.md` (or the Spec narrative path) and navigate via multi-level mechanical indexes.

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { CoveragePlanSchema, sourceCoverageUnit, surfaceCoverageUnit } from "./coverage.js";
 import {
   planScoutNodeKey,
+  planScoutTaskFromDetail,
   scoutTaskFileSlug,
   selectPlanScoutTasks,
 } from "./plan-scouts.js";
@@ -61,9 +62,45 @@ describe("selectPlanScoutTasks", () => {
     });
     const sources = tasks.filter((t) => t.kind === "source");
     const thematic = tasks.filter((t) => t.kind === "thematic");
+    const semantic = tasks.filter((t) => t.kind === "domain" || t.kind === "flow");
     assert.equal(sources.length, 2);
     assert.ok(sources.every((t) => t.required));
     assert.equal(thematic.length, 1);
+    assert.equal(semantic.length, 2);
+    assert.ok(semantic.every((t) => t.required));
+  });
+
+  it("multi-source hybrid schedules domain+flow required; thematic default-off when planScoutCount=0", () => {
+    const plan = CoveragePlanSchema.parse({
+      requiredUnits: [sourceCoverageUnit("api"), sourceCoverageUnit("web")],
+    });
+    const tasks = selectPlanScoutTasks({
+      orch: orch({
+        planScoutCount: 0,
+        planScoutMode: "hybrid",
+        planSurveyTaskBudget: 2,
+      }),
+      coveragePlan: plan,
+      coverageInventory: {
+        version: 1,
+        sources: [
+          { sourceId: "api", surfaces: [] },
+          { sourceId: "web", surfaces: [] },
+        ],
+      },
+    });
+    assert.ok(tasks.some((t) => t.kind === "domain" && t.required));
+    assert.ok(tasks.some((t) => t.kind === "flow" && t.required));
+    assert.equal(
+      tasks.filter((t) => t.kind === "thematic").length,
+      0,
+      "thematic spine default-off for multi-source",
+    );
+    assert.equal(
+      tasks.filter((t) => t.kind === "concept").length,
+      0,
+      "concept not auto-scheduled",
+    );
   });
 
   it("fail-closes when source surveys exceed planSurveyTaskBudget", () => {
@@ -140,5 +177,43 @@ describe("selectPlanScoutTasks", () => {
       }),
       "source-api",
     );
+    assert.equal(
+      scoutTaskFileSlug({ kind: "domain", id: "domain", required: true }),
+      "domain",
+    );
+    assert.equal(
+      planScoutNodeKey({ kind: "flow", id: "flow", required: true }),
+      "plan.scout.flow",
+    );
+  });
+
+  it("planScoutTaskFromDetail supports thematic, source, surface, semantic", () => {
+    assert.deepEqual(planScoutTaskFromDetail({ scoutKind: "entry" }), {
+      kind: "thematic",
+      thematic: "entry",
+      id: "entry",
+      required: false,
+    });
+    assert.deepEqual(planScoutTaskFromDetail({ scoutKind: "domain" }), {
+      kind: "domain",
+      id: "domain",
+      required: true,
+    });
+    assert.deepEqual(planScoutTaskFromDetail({ scoutKind: "concept" }), {
+      kind: "concept",
+      id: "concept",
+      required: false,
+    });
+    assert.deepEqual(
+      planScoutTaskFromDetail({ scoutKind: "source", sourceId: "api", critical: true }),
+      {
+        kind: "source",
+        sourceId: "api",
+        id: "source:api",
+        required: true,
+      },
+    );
+    assert.throws(() => planScoutTaskFromDetail({}), /scoutKind/);
+    assert.throws(() => planScoutTaskFromDetail({ scoutKind: "nope" }), /scoutKind/);
   });
 });

@@ -1,7 +1,8 @@
 /**
  * Failure-path control effects after a terminal failed attempt.
- * Policy tree: publication_conflict → research auto-retry → mechanical repair →
- * recovery / fail run (or keep running when siblings have work).
+ * Policy tree: publication_conflict → research auto-retry → plan sufficiency
+ * re-scout → mechanical repair → recovery / fail run (or keep running when
+ * siblings have work).
  *
  * publication_conflict branch: stable hook for follow-up #3 — do not rewrite
  * the special-case body without coordinating that change.
@@ -9,6 +10,9 @@
 
 import type { PiAttemptFailureClass } from "@okf-wiki/contract/pi-attempt";
 import type { WikiRunsControl } from "../ctx.js";
+import {
+  schedulePlanSufficiencyRescout,
+} from "../plan-scout-materialize.js";
 import {
   openMechanicalEvaluationRecovery,
   scheduleMechanicalRepair,
@@ -164,6 +168,24 @@ export function failNode(host: WikiRunsControl, claim: ClaimedNode, error: unkno
     host.requeueFailedNode(claim.runId, claim.nodeKey, claim.nodeGeneration, claim.attemptId);
     host.emit(claim.runId, "node.ready");
     return;
+  }
+
+  // Plan coverage / semantic sufficiency re-scout (ADR 0040/0042 control-plane).
+  // Nested agent re-scout is gone — host re-arms gap plan.scout + reduce + plan
+  // while planRescoutMaxRounds remains. Transport stays on research auto-retry only.
+  if (claim.kind === "plan") {
+    if (
+      schedulePlanSufficiencyRescout(host, {
+        runId: claim.runId,
+        planGeneration: claim.nodeGeneration,
+        message,
+        failureClass,
+        error,
+      })
+    ) {
+      host.emit(claim.runId, "node.ready");
+      return;
+    }
   }
 
   // Mechanical model repair: schedule a dedicated repair.N stage with

@@ -9,7 +9,8 @@ import {
 import { compileExecutionPlan, ExecutionPlanCompileError } from "./plan-compiler.js";
 
 test("buildExecutionGraph orders leaves before domains and ends at publish", () => {
-  const graph = buildExecutionGraph(defaultWikiRunSpec("Demo"));
+  // plan.adapt is DEFAULT-OFF; opt in explicitly for this topology assertion.
+  const graph = buildExecutionGraph(defaultWikiRunSpec("Demo"), { adaptationRequired: true });
   const keys = graph.nodes.map((n) => n.key);
   assert.ok(keys.includes("research.leaf.core.1"));
   assert.ok(keys.includes("research.leaf.core.2"));
@@ -24,6 +25,8 @@ test("buildExecutionGraph orders leaves before domains and ends at publish", () 
   assert.ok(keys.includes("prepare.publication"));
   assert.ok(keys.includes("gate.publication"));
   assert.ok(keys.includes("publish"));
+  // Pre-plan plan.discover.reduce is freeze-materialized only — never post-plan.
+  assert.equal(keys.includes("plan.discover.reduce"), false);
 
   assert.ok(
     graph.edges.some((e) => e.from === "research.leaf.core.1" && e.to === "research.domain.core"),
@@ -36,6 +39,7 @@ test("buildExecutionGraph orders leaves before domains and ends at publish", () 
   assert.ok(graph.edges.some((e) => e.from === "gate.publication" && e.to === "publish"));
   assert.equal(isPiAttemptKind("research.leaf"), true);
   assert.equal(isMechanicalAttemptKind("validate.pre"), true);
+  assert.equal(isMechanicalAttemptKind("plan.discover.reduce"), true);
   assert.equal(isPiAttemptKind("publish"), false);
 
   const grounding = graph.nodes.find((n) => n.key === "review.seat.grounding");
@@ -118,7 +122,17 @@ test("compileExecutionPlan within caps builds the executable work-unit plan", ()
   assert.equal(plan.fanOut.leafCount, 2);
   assert.equal(plan.workUnits.length, 2);
   assert.equal(plan.reviewLenses.length, 1);
-  assert.deepEqual(plan.adaptation, { required: true, maxRounds: 2 });
+  // plan.adapt DEFAULT-OFF unless caps.adaptationRequired === true
+  assert.deepEqual(plan.adaptation, { required: false, maxRounds: 0 });
+});
+
+test("compileExecutionPlan adaptationRequired only when caps.adaptationRequired === true", () => {
+  const spec = defaultWikiRunSpec("Adapt");
+  spec.openQuestions = ["why?", "how?"];
+  const off = compileExecutionPlan(spec);
+  assert.deepEqual(off.adaptation, { required: false, maxRounds: 0 });
+  const on = compileExecutionPlan(spec, { adaptationRequired: true });
+  assert.deepEqual(on.adaptation, { required: true, maxRounds: 2 });
 });
 
 test("buildExecutionGraph omitted options use DEFAULT_ORCHESTRATION (4/6/1)", () => {

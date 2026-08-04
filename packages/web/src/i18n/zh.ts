@@ -81,6 +81,11 @@ export const zh: MessageTree = {
     coverageRounds: "{count} 轮再侦察",
     scouts: "计划侦察",
     scoutsReceipts: "{count} 份回执",
+    /** Soft discovery-map summary on plan review (domain/flow/concept counts). */
+    discovery: "发现地图",
+    discoveryCounts: "{domains} 个领域 · {flows} 个流程 · {concepts} 个概念",
+    discoveryCountsWithSources:
+      "{sources} 个源 · {domains} 个领域 · {flows} 个流程 · {concepts} 个概念",
     pageSetDiff: "页面集合变更",
     pageSetDiffCounts: "+{added} · −{removed} · 保留 {retained}",
     pageSetAdded: "新增",
@@ -808,6 +813,19 @@ export const zh: MessageTree = {
     backToGraph: "执行图",
     /** 计划侦察节点（持久 Attempt）或旧版密封回执观察。 */
     planScout: "计划侦察",
+    /** Mechanical merge of scout receipts → discovery_map. */
+    planDiscoverReduce: "发现归并",
+    /** Semantic discovery scouts (domain map / flow / concept). */
+    planScoutSemanticDomain: "侦察 · 领域",
+    planScoutSemanticFlow: "侦察 · 流程",
+    planScoutSemanticConcept: "侦察 · 概念",
+    /** Unit survey scouts (source / surface). */
+    planScoutUnitSource: "侦察 · 源",
+    planScoutUnitSourceId: "侦察 · 源:{id}",
+    planScoutUnitSurface: "侦察 · 表面",
+    planScoutUnitSurfaceId: "侦察 · 表面:{id}",
+    /** Thematic spine scouts. */
+    planScoutThematicId: "侦察 · {kind}",
     planScoutReceipt: "侦察回执",
     planScoutOk: "成功",
     planScoutFailed: "失败",

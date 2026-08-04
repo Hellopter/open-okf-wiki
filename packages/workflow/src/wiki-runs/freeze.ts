@@ -486,8 +486,9 @@ export function commitFreezeArtifacts(
     )
     .run(claim.attemptId);
   host.emit(claim.runId, "attempt.succeeded");
-  // Advance freeze → plan.scout.* (when selected) → plan. Light path: freeze → plan ready.
-  // Host owns topology; selectPlanScoutTasks fails closed on over-budget multi-source surveys.
+  // Advance freeze → plan.scout.* → plan.discover.reduce → plan (when scouts selected).
+  // Light path: freeze → plan ready (no reduce). Host owns topology;
+  // selectPlanScoutTasks fails closed on over-budget multi-source surveys.
   const orch = loadRunOrchestration(host, claim.runId);
   const scoutTasks = selectPlanScoutTasksForFreeze({
     rootPath: host.workspace.rootPath,

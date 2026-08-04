@@ -21,8 +21,8 @@ import {
   type PlanScoutTask,
   scoutTaskFileSlug,
   scoutTaskLabel,
+  SEMANTIC_SCOUT_KINDS,
   selectPlanScoutTasks,
-  THEMATIC_SCOUT_KINDS,
 } from "@okf-wiki/contract/wiki-runs";
 import type { WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
 import type {
@@ -35,7 +35,20 @@ import { planScoutPrompt } from "../../prompts/plan-scout.js";
 import { runBestEffortChild } from "../best-effort-child.js";
 import { mapWithConcurrency } from "../map-with-concurrency.js";
 
-export { selectPlanScoutTasks } from "@okf-wiki/contract/wiki-runs";
+export { planScoutTaskFromDetail, selectPlanScoutTasks } from "@okf-wiki/contract/wiki-runs";
+
+function isSemanticScoutKind(kind: string): boolean {
+  return (SEMANTIC_SCOUT_KINDS as readonly string[]).includes(kind);
+}
+
+/** Label for receipts / planner index — contract scoutTaskLabel owns semantic kinds. */
+function taskLabel(task: PlanScoutTask): string {
+  try {
+    return scoutTaskLabel(task);
+  } catch {
+    return (task.kind as string) || "scout";
+  }
+}
 
 /** Lightweight sealed scout receipt (Attempt business output). */
 export type PlanScoutReceiptJson = {
@@ -155,13 +168,20 @@ export function buildPlanScoutReceiptJson(input: {
   ok: boolean;
   relPath?: string;
 }): PlanScoutReceiptJson {
-  const label = scoutTaskLabel(input.task);
-  const kind =
-    input.task.kind === "thematic"
-      ? input.task.thematic
-      : input.task.kind === "source"
-        ? `source:${input.task.sourceId}`
-        : `surface:${input.task.unitId}`;
+  const label = taskLabel(input.task);
+  const taskKind = input.task.kind as string;
+  let kind: string;
+  if (input.task.kind === "thematic") {
+    kind = input.task.thematic;
+  } else if (input.task.kind === "source") {
+    kind = `source:${input.task.sourceId}`;
+  } else if (input.task.kind === "surface") {
+    kind = `surface:${input.task.unitId}`;
+  } else if (isSemanticScoutKind(taskKind)) {
+    kind = taskKind;
+  } else {
+    kind = taskKind || label;
+  }
   const openQuestions = openQuestionsFromScoutSummary(input.summary);
   const paths = pathsFromScoutSummary(input.summary);
   return {
@@ -201,8 +221,15 @@ export async function writePlanScoutReceiptFiles(input: {
   receiptAbsPath: string;
   receipt: PlanScoutReceiptJson;
 }> {
-  const slug = scoutTaskFileSlug(input.task);
-  const label = scoutTaskLabel(input.task);
+  const slug = (() => {
+    try {
+      return scoutTaskFileSlug(input.task);
+    } catch {
+      const k = input.task.kind as string;
+      return isSemanticScoutKind(k) ? k : k.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || "scout";
+    }
+  })();
+  const label = taskLabel(input.task);
   const scoutsDir = path.join(input.layout.analysisDir, "plan-scouts");
   await mkdir(scoutsDir, { recursive: true });
   const relPath = `analysis/plan-scouts/${slug}.md`;
@@ -263,8 +290,15 @@ export async function runOnePlanScout(input: {
   errorMessage?: string;
 }> {
   const task = input.task;
-  const slug = scoutTaskFileSlug(task);
-  const label = scoutTaskLabel(task);
+  const slug = (() => {
+    try {
+      return scoutTaskFileSlug(task);
+    } catch {
+      const k = task.kind as string;
+      return isSemanticScoutKind(k) ? k : k.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || "scout";
+    }
+  })();
+  const label = taskLabel(task);
   const runIndex = input.runIndex ?? 0;
   const nodeKey = input.nodeKey ?? `plan.scout.${slug}`;
   const spanId = input.spanId ?? nodeKey;
@@ -285,8 +319,10 @@ export async function runOnePlanScout(input: {
           operatorNotes: input.operatorNotes,
         }),
         systemPrompt:
-          "You are a read-only plan scout. Inspect sources/ and return a compact structured report. Do not write wiki pages.",
-        preferFinalMessage: false,
+          "You are a read-only plan scout. Inspect sources/ for implementation evidence (not README-only). " +
+          "Write a compact structured report as your final message (short ACK doctrine: prefer paths over prose; under ~800 words). " +
+          "Do not write wiki pages. Do not submit a Spec.",
+        preferFinalMessage: true,
         model: input.model,
         modelRuntime: input.modelRuntime,
         maxContextTokens: input.maxContextTokens,
@@ -362,103 +398,275 @@ export async function runOnePlanScout(input: {
   };
 }
 
-/**
- * Build plannerContext sectioned by Source / Surface / Thematic.
- */
-export function formatScoutPlannerContext(receipts: readonly PlanScoutReceipt[]): string {
-  const ok = receipts.filter((r) => r.ok);
-  if (ok.length === 0) return "";
+/** Max chars for an optional one-line preview on the index card (not full body). */
+const SCOUT_INDEX_PREVIEW_MAX = 120;
 
-  const sources = ok.filter((r) => r.task.kind === "source");
-  const surfaces = ok.filter((r) => r.task.kind === "surface");
-  const thematic = ok.filter((r) => r.task.kind === "thematic");
+/** Paths the planner should `read` for sealed discovery / scout files. */
+export const DISCOVERY_MAP_INPUT_REL = "inputs/discovery-map.json";
+export const DISCOVERY_MAP_ANALYSIS_REL = "analysis/discovery-map.json";
+export const PLAN_SCOUTS_INPUT_DIR = "inputs/plan-scouts";
+export const PLAN_SCOUTS_ANALYSIS_DIR = "analysis/plan-scouts";
+
+/**
+ * Compact one-line preview from a scout summary (never multi-kB body paste).
+ */
+export function scoutIndexPreview(summary: string, max = SCOUT_INDEX_PREVIEW_MAX): string {
+  const line = summary.replace(/\s+/g, " ").trim();
+  if (!line) return "";
+  if (line.length <= max) return line;
+  return `${line.slice(0, max - 1)}…`;
+}
+
+function scoutCardSection(
+  heading: string,
+  rows: readonly { id: string; status: string; path: string; preview?: string }[],
+): string[] {
+  if (rows.length === 0) return [];
+  const lines = [`### ${heading}`];
+  for (const r of rows) {
+    const preview = r.preview?.trim() ? ` — ${r.preview.trim()}` : "";
+    lines.push(`- **${r.id}** | ${r.status} | \`${r.path}\`${preview}`);
+  }
+  return lines;
+}
+
+/**
+ * Build plannerContext as a compact **index card** (ids, status, paths).
+ * Does NOT paste multi-kB scout bodies — planner must `read` sealed files.
+ */
+export function formatScoutPlannerContext(
+  receipts: readonly PlanScoutReceipt[],
+  options?: { discoveryMapPath?: string },
+): string {
+  if (receipts.length === 0 && !options?.discoveryMapPath) return "";
+
+  const sources = receipts.filter((r) => r.task.kind === "source");
+  const surfaces = receipts.filter((r) => r.task.kind === "surface");
+  const thematic = receipts.filter((r) => r.task.kind === "thematic");
+  // Semantic kinds (domain/flow/concept) when contract ships them — treat by id.
+  const semantic = receipts.filter((r) => {
+    const k = r.task.kind as string;
+    return k === "domain" || k === "flow" || k === "concept" || k === "semantic";
+  });
+  const other = receipts.filter(
+    (r) =>
+      !sources.includes(r) &&
+      !surfaces.includes(r) &&
+      !thematic.includes(r) &&
+      !semantic.includes(r),
+  );
+
+  const toRow = (r: PlanScoutReceipt, id: string) => ({
+    id,
+    status: r.ok ? "ok" : r.required ? "failed(required)" : "failed",
+    path: r.relPath.startsWith("inputs/")
+      ? r.relPath
+      : r.receiptRelPath ?? r.relPath,
+    preview: scoutIndexPreview(r.summary),
+  });
 
   const sections: string[] = [
-    "Plan scout receipts (multi-angle survey — synthesize into ONE WikiRunSpec):",
+    "## Plan scout index (file handoff — do not rely on this card alone)",
+    "Sealed scout bodies live under `inputs/plan-scouts/*` (and `analysis/plan-scouts/*` when present).",
+    "Use the `read` tool on each path below before synthesizing the WikiRunSpec.",
+    "Do **not** invent scout findings from this index; open the files.",
   ];
 
-  if (sources.length > 0) {
-    sections.push("## Source surveys");
-    for (const r of sources) {
-      const sid = r.task.kind === "source" ? r.task.sourceId : "?";
-      sections.push(`### Source: ${sid} (${r.relPath})\n${r.summary.slice(0, 2500)}`);
-    }
-  }
-  if (surfaces.length > 0) {
-    sections.push("## Surface surveys");
-    for (const r of surfaces) {
-      const label = r.task.kind === "surface" ? r.task.unitId : "?";
-      sections.push(`### Surface: ${label} (${r.relPath})\n${r.summary.slice(0, 2500)}`);
-    }
-  }
-  if (thematic.length > 0) {
-    sections.push("## Thematic scouts");
-    for (const r of thematic) {
-      const label = r.task.kind === "thematic" ? r.task.thematic : "?";
-      sections.push(`### Scout ${label} (${r.relPath})\n${r.summary.slice(0, 2500)}`);
-    }
+  if (options?.discoveryMapPath) {
+    sections.push(
+      `### Discovery map`,
+      `- **discovery-map** | present | \`${options.discoveryMapPath}\``,
+      "Prefer DiscoveryMap as the first synthesis input when present (merged scout evidence).",
+    );
+  } else {
+    sections.push(
+      "### Discovery map",
+      `- (not projected) — check \`${DISCOVERY_MAP_INPUT_REL}\` / \`${DISCOVERY_MAP_ANALYSIS_REL}\` with \`ls\`/\`read\` if present.`,
+    );
   }
 
   sections.push(
-    "Use scout findings as evidence. Resolve conflicts explicitly in openQuestions.",
-    "You remain the sole author of the WikiRunSpec — scouts do not submit specs.",
-    "Every required coverage unit must appear on critical pages (coverageUnitIds / sourceIds / surfaceIds) or be cancelled via sourceCoverage/surfaceCoverage (cancelled:true + notes).",
+    ...scoutCardSection(
+      "Source surveys",
+      sources.map((r) =>
+        toRow(r, r.task.kind === "source" ? r.task.sourceId : taskLabel(r.task)),
+      ),
+    ),
+    ...scoutCardSection(
+      "Surface surveys",
+      surfaces.map((r) =>
+        toRow(r, r.task.kind === "surface" ? r.task.unitId : taskLabel(r.task)),
+      ),
+    ),
+    ...scoutCardSection(
+      "Semantic scouts",
+      semantic.map((r) => toRow(r, taskLabel(r.task))),
+    ),
+    ...scoutCardSection(
+      "Thematic scouts",
+      thematic.map((r) =>
+        toRow(r, r.task.kind === "thematic" ? r.task.thematic : taskLabel(r.task)),
+      ),
+    ),
+    ...scoutCardSection(
+      "Other scouts",
+      other.map((r) => toRow(r, taskLabel(r.task))),
+    ),
   );
 
-  return sections.join("\n\n");
+  sections.push(
+    "### Rules",
+    "- You remain the sole author of the WikiRunSpec — scouts do not submit specs.",
+    "- Resolve conflicts from scout files explicitly in openQuestions.",
+    "- Every required coverage unit must appear on critical pages (coverageUnitIds / sourceIds / surfaceIds) or be cancelled via sourceCoverage/surfaceCoverage (cancelled:true + notes).",
+    "- Host gates: assertCoverage + assertSemanticSufficiency (when DiscoveryMap is present).",
+  );
+
+  return sections.filter(Boolean).join("\n");
 }
 
 /**
  * Format planner context from projected durable scout receipts (JSON files).
+ * Index-card only — never paste multi-kB `summary` bodies into the planner task.
  */
 export function formatScoutPlannerContextFromJson(
   receipts: readonly PlanScoutReceiptJson[],
+  options?: { discoveryMapPath?: string },
 ): string {
-  const ok = receipts.filter((r) => r.ok && r.summary.trim().length > 0);
-  if (ok.length === 0) return "";
+  if (receipts.length === 0 && !options?.discoveryMapPath) return "";
 
-  const sourceOnly = ok.filter((r) => r.kind.startsWith("source:"));
-  const surfaceOnly = ok.filter((r) => r.kind.startsWith("surface:"));
-  const thematicOnly = ok.filter(
-    (r) => !r.kind.startsWith("source:") && !r.kind.startsWith("surface:"),
+  const sourceOnly = receipts.filter((r) => r.kind.startsWith("source:"));
+  const surfaceOnly = receipts.filter((r) => r.kind.startsWith("surface:"));
+  const semanticOnly = receipts.filter((r) => {
+    const k = r.kind.replace(/^semantic:/, "");
+    return (
+      r.kind === "domain" ||
+      r.kind === "flow" ||
+      r.kind === "concept" ||
+      r.kind.startsWith("domain") ||
+      r.kind.startsWith("flow") ||
+      r.kind.startsWith("concept") ||
+      k === "domain" ||
+      k === "flow" ||
+      k === "concept"
+    );
+  });
+  const thematicOnly = receipts.filter(
+    (r) =>
+      !sourceOnly.includes(r) &&
+      !surfaceOnly.includes(r) &&
+      !semanticOnly.includes(r),
   );
 
+  const inputPathFor = (r: PlanScoutReceiptJson, fallbackSlug: string): string => {
+    // Prefer projected inputs/ path; analysis/ is for local inspection.
+    if (r.relPath?.startsWith("inputs/")) return r.relPath;
+    if (r.relPath?.startsWith("analysis/plan-scouts/")) {
+      const base = path.basename(r.relPath).replace(/\.md$/, ".json");
+      return `${PLAN_SCOUTS_INPUT_DIR}/${base}`;
+    }
+    // kind may be "source:api" or "entry" — use filesystem-safe slug from kind.
+    const slug =
+      fallbackSlug
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80) || "scout";
+    return `${PLAN_SCOUTS_INPUT_DIR}/${slug}.json`;
+  };
+
+  const toRow = (r: PlanScoutReceiptJson, id: string, slug: string) => ({
+    id,
+    status: r.ok
+      ? r.critical
+        ? "ok(required)"
+        : "ok"
+      : r.critical
+        ? "failed(required)"
+        : "failed",
+    path: inputPathFor(r, slug),
+    preview: scoutIndexPreview(r.summary),
+  });
+
   const sections: string[] = [
-    "Plan scout receipts (multi-angle survey — synthesize into ONE WikiRunSpec):",
-    "Receipts are under inputs/plan-scouts/ (sealed from durable plan.scout Attempts).",
+    "## Plan scout index (file handoff — do not rely on this card alone)",
+    "Sealed scout receipts: `inputs/plan-scouts/*.json` (durable plan.scout Attempts).",
+    "Markdown reports may also exist under `analysis/plan-scouts/*.md` — prefer JSON receipts.",
+    "Use the `read` tool on each path before synthesizing. **Do not invent findings from this index.**",
   ];
 
-  if (sourceOnly.length > 0) {
-    sections.push("## Source surveys");
-    for (const r of sourceOnly) {
-      const sid = r.sourceId ?? r.kind.replace(/^source:/, "");
-      const pathHint = r.relPath ?? `inputs/plan-scouts/${sid}.json`;
-      sections.push(`### Source: ${sid} (${pathHint})\n${r.summary.slice(0, 2500)}`);
-    }
-  }
-  if (surfaceOnly.length > 0) {
-    sections.push("## Surface surveys");
-    for (const r of surfaceOnly) {
-      const label = r.unitId ?? r.kind.replace(/^surface:/, "");
-      const pathHint = r.relPath ?? `inputs/plan-scouts/${label}.json`;
-      sections.push(`### Surface: ${label} (${pathHint})\n${r.summary.slice(0, 2500)}`);
-    }
-  }
-  if (thematicOnly.length > 0) {
-    sections.push("## Thematic scouts");
-    for (const r of thematicOnly) {
-      const pathHint = r.relPath ?? `inputs/plan-scouts/${r.kind}.json`;
-      sections.push(`### Scout ${r.kind} (${pathHint})\n${r.summary.slice(0, 2500)}`);
-    }
+  if (options?.discoveryMapPath) {
+    sections.push(
+      "### Discovery map",
+      `- **discovery-map** | present | \`${options.discoveryMapPath}\``,
+      "Read DiscoveryMap first when present — it is the merged discovery authority for synthesis.",
+    );
+  } else {
+    sections.push(
+      "### Discovery map",
+      `- (not projected) — check \`${DISCOVERY_MAP_INPUT_REL}\` / \`${DISCOVERY_MAP_ANALYSIS_REL}\` with \`ls\`/\`read\` if present.`,
+    );
   }
 
   sections.push(
-    "Use scout findings as evidence. Resolve conflicts explicitly in openQuestions.",
-    "You remain the sole author of the WikiRunSpec — scouts do not submit specs.",
-    "Every required coverage unit must appear on critical pages (coverageUnitIds / sourceIds / surfaceIds) or be cancelled via sourceCoverage/surfaceCoverage (cancelled:true + notes).",
+    ...scoutCardSection(
+      "Source surveys",
+      sourceOnly.map((r) => {
+        const sid = r.sourceId ?? r.kind.replace(/^source:/, "");
+        return toRow(r, sid, `source-${sid}`);
+      }),
+    ),
+    ...scoutCardSection(
+      "Surface surveys",
+      surfaceOnly.map((r) => {
+        const label = r.unitId ?? r.kind.replace(/^surface:/, "");
+        return toRow(r, label, `surface-${label}`);
+      }),
+    ),
+    ...scoutCardSection(
+      "Semantic scouts",
+      semanticOnly.map((r) => toRow(r, r.taskLabel ?? r.kind, r.kind)),
+    ),
+    ...scoutCardSection(
+      "Thematic / other scouts",
+      thematicOnly.map((r) => toRow(r, r.taskLabel ?? r.kind, r.kind)),
+    ),
   );
 
-  return sections.join("\n\n");
+  sections.push(
+    "### Rules",
+    "- You remain the sole author of the WikiRunSpec — scouts do not submit specs.",
+    "- Resolve conflicts from scout files explicitly in openQuestions.",
+    "- Every required coverage unit must appear on critical pages (coverageUnitIds / sourceIds / surfaceIds) or be cancelled via sourceCoverage/surfaceCoverage (cancelled:true + notes).",
+    "- Host gates: assertCoverage + assertSemanticSufficiency (when DiscoveryMap is present).",
+  );
+
+  return sections.filter(Boolean).join("\n");
+}
+
+/**
+ * Soft-load sealed DiscoveryMap JSON from inputs/ then analysis/.
+ * Returns path + raw object when present; does not require contract schema.
+ */
+export async function loadProjectedDiscoveryMap(
+  layout: RunWorkdirLayoutPaths,
+): Promise<{ path: string; data: unknown } | undefined> {
+  const candidates = [
+    path.join(layout.runWorkDir, DISCOVERY_MAP_INPUT_REL),
+    path.join(layout.runWorkDir, DISCOVERY_MAP_ANALYSIS_REL),
+  ];
+  for (const abs of candidates) {
+    try {
+      const raw = await readFile(abs, "utf8");
+      const data = JSON.parse(raw) as unknown;
+      if (data && typeof data === "object") {
+        const rel = path.relative(layout.runWorkDir, abs).replace(/\\/g, "/");
+        return { path: rel, data };
+      }
+    } catch {
+      // missing or unreadable — try next
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -563,7 +771,14 @@ export async function runPlanScouts(input: RunPlanScoutsInput): Promise<RunPlanS
   const runIndex = input.runIndex ?? 0;
 
   const receipts = await mapWithConcurrency(tasks, concurrency, input.abortSignal, async (task) => {
-    const slug = scoutTaskFileSlug(task);
+    const slug = (() => {
+      try {
+        return scoutTaskFileSlug(task);
+      } catch {
+        const k = task.kind as string;
+        return isSemanticScoutKind(k) ? k : k.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || "scout";
+      }
+    })();
     const result = await runOnePlanScout({
       layout: input.layout,
       workspaceName: input.workspaceName,
@@ -600,68 +815,3 @@ export async function runPlanScouts(input: RunPlanScoutsInput): Promise<RunPlanS
   };
 }
 
-/**
- * Build a PlanScoutTask from sealed plan.scout node detail.
- * Fail-closed when scoutKind / required fields are missing or inconsistent.
- */
-export function planScoutTaskFromDetail(detail: {
-  scoutKind?: string;
-  unitId?: string;
-  sourceId?: string;
-  surfacePath?: string;
-  critical?: boolean;
-  taskLabel?: string;
-}): PlanScoutTask {
-  const kind = (detail.scoutKind ?? "").trim();
-  if (!kind) throw new Error("plan.scout requires detail.scoutKind");
-
-  const thematic = THEMATIC_SCOUT_KINDS.find((k) => k === kind);
-  if (thematic) {
-    return {
-      kind: "thematic",
-      thematic,
-      id: thematic,
-      required: false,
-    };
-  }
-
-  if (kind === "source" || kind.startsWith("source:")) {
-    const sourceId =
-      detail.sourceId?.trim() ||
-      (kind.startsWith("source:") ? kind.slice("source:".length).trim() : "");
-    if (!sourceId) throw new Error("plan.scout source survey requires detail.sourceId");
-    return {
-      kind: "source",
-      sourceId,
-      id: `source:${sourceId}`,
-      required: detail.critical !== false,
-    };
-  }
-
-  if (kind === "surface" || kind.startsWith("surface:")) {
-    const sourceId = detail.sourceId?.trim() ?? "";
-    const surfacePath = (detail.surfacePath ?? ".").trim() || ".";
-    const unitId =
-      detail.unitId?.trim() ||
-      (sourceId
-        ? `${sourceId}::${surfacePath}`
-        : kind.startsWith("surface:")
-          ? kind.slice("surface:".length)
-          : "");
-    if (!sourceId || !unitId) {
-      throw new Error("plan.scout surface survey requires detail.sourceId and detail.unitId");
-    }
-    return {
-      kind: "surface",
-      sourceId,
-      path: surfacePath,
-      unitId,
-      id: `surface:${unitId}`,
-      required: detail.critical !== false,
-    };
-  }
-
-  throw new Error(
-    `plan.scout detail.scoutKind must be thematic (entry|layout|tests|risks), source, or surface; got ${JSON.stringify(kind)}`,
-  );
-}

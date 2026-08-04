@@ -173,3 +173,16 @@ test("compileExecutionPlan accepts Spec that covers all required units", () => {
   assert.equal(plan.workUnits.length, 1);
   assert.ok(plan.workUnits[0]?.coverageUnitIds?.includes("frontend"));
 });
+
+test("compileExecutionPlan defaults adaptationRequired to false (plan.adapt DEFAULT-OFF)", () => {
+  const multiLeaf = defaultWikiRunSpec("Multi");
+  multiLeaf.openQuestions = ["a", "b", "c"];
+  const plan = compileExecutionPlan(multiLeaf);
+  assert.equal(plan.adaptation.required, false);
+  assert.equal(plan.adaptation.maxRounds, 0);
+  assert.ok(plan.fanOut.leafCount > 1);
+
+  const forced = compileExecutionPlan(multiLeaf, { adaptationRequired: true });
+  assert.equal(forced.adaptation.required, true);
+  assert.equal(forced.adaptation.maxRounds, 2);
+});

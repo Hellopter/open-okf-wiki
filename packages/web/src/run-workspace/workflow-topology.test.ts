@@ -8,6 +8,7 @@ import {
   injectPlanScoutDisplayNodes,
   mergePlanScoutDisplays,
   orderedNodesForLayout,
+  planScoutKindClass,
   planScoutNodeKey,
   projectCollapsedResearchLeaves,
   relationForEdge,
@@ -309,12 +310,28 @@ test("plan.scout maps to plan stage and fanout/join relations", () => {
   const freeze = node("freeze", "freeze");
   const plan = node("plan", "plan");
   const scout = node("plan.scout.entry", "plan.scout");
+  const reduce = node("plan.discover.reduce", "plan.discover.reduce");
   const gate = node("gate.plan", "gate.plan");
   assert.equal(stageForNode(scout), "plan");
+  assert.equal(stageForNode(reduce), "plan");
   assert.equal(relationForEdge(freeze, scout), "fanout");
   assert.equal(relationForEdge(scout, plan), "join");
+  assert.equal(relationForEdge(scout, reduce), "join");
+  assert.equal(relationForEdge(reduce, plan), "forward");
   assert.equal(relationForEdge(plan, scout), "fanout");
   assert.equal(relationForEdge(scout, gate), "join");
+});
+
+test("planScoutKindClass classifies semantic / unit / thematic scouts", () => {
+  assert.equal(planScoutKindClass("domain"), "semantic");
+  assert.equal(planScoutKindClass("flow"), "semantic");
+  assert.equal(planScoutKindClass("concept"), "semantic");
+  assert.equal(planScoutKindClass("source"), "unit");
+  assert.equal(planScoutKindClass("surface"), "unit");
+  assert.equal(planScoutKindClass("entry"), "thematic");
+  assert.equal(planScoutKindClass("layout"), "thematic");
+  assert.equal(planScoutKindClass(""), "other");
+  assert.equal(planScoutKindClass(undefined), "other");
 });
 
 test("durable plan.scout snapshot: layout freeze → scouts → plan → gate.plan", () => {
@@ -371,6 +388,63 @@ test("durable plan.scout snapshot: layout freeze → scouts → plan → gate.pl
     2,
     "no extra injected scout",
   );
+});
+
+test("durable discovery DAG: freeze → scouts → plan.discover.reduce → plan → gate.plan", () => {
+  const freeze = node("freeze", "freeze");
+  const source = node("plan.scout.source-api", "plan.scout", "succeeded");
+  const domain = node("plan.scout.domain", "plan.scout", "succeeded");
+  const reduce = node("plan.discover.reduce", "plan.discover.reduce", "succeeded");
+  const plan = node("plan", "plan", "ready");
+  const gate = node("gate.plan", "gate.plan", "blocked");
+  const snap = snapshot(
+    [freeze, plan, gate, reduce, domain, source],
+    [
+      { from: "freeze", to: "plan.scout.source-api" },
+      { from: "freeze", to: "plan.scout.domain" },
+      { from: "plan.scout.source-api", to: "plan.discover.reduce" },
+      { from: "plan.scout.domain", to: "plan.discover.reduce" },
+      { from: "plan.discover.reduce", to: "plan" },
+      { from: "plan", to: "gate.plan" },
+    ],
+  );
+
+  assert.equal(stageForNode(reduce), "plan");
+  assert.equal(hasDurablePlanScouts(snap.nodes), true);
+
+  const view = buildFocusTopology(snap, "plan");
+  assert.deepEqual(
+    view.edges
+      .map((edge) => [edge.source, edge.target, edge.relation])
+      .sort(),
+    [
+      ["freeze", "plan.scout.domain", "fanout"],
+      ["freeze", "plan.scout.source-api", "fanout"],
+      ["plan.discover.reduce", "plan", "forward"],
+      ["plan.scout.domain", "plan.discover.reduce", "join"],
+      ["plan.scout.source-api", "plan.discover.reduce", "join"],
+      ["plan", "gate.plan", "control"],
+    ].sort(),
+  );
+
+  const keys = orderedNodesForLayout(view).map((item) => item.key);
+  assert.deepEqual(keys, [
+    "freeze",
+    "plan.scout.domain",
+    "plan.scout.source-api",
+    "plan.discover.reduce",
+    "plan",
+    "gate.plan",
+  ]);
+
+  // Do not double-inject legacy scouts when durable discovery DAG exists.
+  const injected = injectPlanScoutDisplayNodes(
+    view.nodes,
+    view.edges,
+    [{ kind: "entry", ok: true }],
+    plan,
+  );
+  assert.equal(injected.nodes.length, view.nodes.length);
 });
 
 test("injectPlanScoutDisplayNodes places scouts after plan before gate.plan (legacy)", () => {

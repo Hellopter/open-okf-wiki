@@ -1,5 +1,5 @@
 /**
- * Mechanical node execution router (validate / review.reduce / prepare / publish).
+ * Mechanical node execution router (validate / review.reduce / discover.reduce / prepare / publish).
  */
 
 import { mkdir } from "node:fs/promises";
@@ -9,6 +9,7 @@ import { runWorkDir } from "@okf-wiki/core";
 import type { ClaimedNode } from "../types.js";
 import { mechanicalFailed } from "./failed.js";
 import type { WikiRunsControl } from "../ctx.js";
+import { mechanicalDiscoverReduce } from "./discover-reduce.js";
 import { mechanicalPreparePublication } from "./prepare-publication.js";
 import { mechanicalPublish } from "./publish.js";
 import { mechanicalReviewReduce } from "./review-reduce.js";
@@ -38,6 +39,9 @@ export async function executeMechanical(
   }
   if (claim.kind === "review.reduce") {
     return mechanicalReviewReduce(host, claim, workDir, runDir);
+  }
+  if (claim.kind === "plan.discover.reduce") {
+    return mechanicalDiscoverReduce(host, claim, workDir, runDir);
   }
   if (claim.kind === "prepare.publication") {
     return mechanicalPreparePublication(host, claim, workDir, runDir);

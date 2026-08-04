@@ -28,6 +28,10 @@ export function getWikiRun(workspaceId: string, runId: string): Promise<WikiRunG
 /**
  * Spec + ExecutionPlan summary for plan-gate document review (not on Run SSE).
  * Prefer this over {@link getWikiRunSpec} for operator UI.
+ *
+ * `discoverySummary` / `semanticSufficiency` are first-class optional fields on
+ * {@link WikiRunPlanReviewSchema}. Soft-reattach keeps older host shapes
+ * (`discovery` / `discoveryMap` full maps) available for UI soft-readers.
  */
 export function getWikiRunPlanReview(
   workspaceId: string,
@@ -37,7 +41,26 @@ export function getWikiRunPlanReview(
   return request(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/plan-review`,
     init,
-  ).then(WikiRunPlanReviewSchema.parse);
+  ).then((raw) => {
+    const review = WikiRunPlanReviewSchema.parse(raw);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return review;
+    const row = raw as Record<string, unknown>;
+    // Soft fallback: re-attach full-map aliases not on the formal schema.
+    for (const key of ["discovery", "discoveryMap"] as const) {
+      if (row[key] != null && typeof row[key] === "object" && !(key in review)) {
+        Object.assign(review, { [key]: row[key] });
+      }
+    }
+    // If host sent discoverySummary that failed strict parse (unlikely), re-attach.
+    if (
+      row.discoverySummary != null &&
+      typeof row.discoverySummary === "object" &&
+      review.discoverySummary === undefined
+    ) {
+      Object.assign(review, { discoverySummary: row.discoverySummary });
+    }
+    return review;
+  });
 }
 
 /** Sealed plan Spec only (compat thin read). */

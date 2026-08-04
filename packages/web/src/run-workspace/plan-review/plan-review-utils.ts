@@ -149,3 +149,101 @@ export function hasScoutsSummary(
   if (!scouts) return false;
   return scouts.receiptCount > 0 || scouts.kinds.length > 0;
 }
+
+/**
+ * Soft discovery-map counts for plan-gate review.
+ * Schema may not project these yet — never throws; returns null when absent.
+ */
+export type SoftDiscoverySummary = {
+  domains: number;
+  flows: number;
+  concepts: number;
+  sources?: number;
+  openQuestions?: number;
+};
+
+function nonNegInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
+    const n = Number(value);
+    if (n >= 0) return Math.floor(n);
+  }
+  return undefined;
+}
+
+function countFromArrayOrNumber(value: unknown): number | undefined {
+  if (Array.isArray(value)) return value.length;
+  return nonNegInt(value);
+}
+
+/**
+ * Soft-read discovery domain/flow/concept counts from plan-review payload.
+ * Prefer formal {@link WikiRunPlanReview.discoverySummary} count fields;
+ * still accepts legacy soft shapes (full DiscoveryMap arrays / aliases).
+ * Never hard-fails on unknown shapes.
+ */
+export function softDiscoverySummary(
+  review: unknown,
+): SoftDiscoverySummary | null {
+  if (!review || typeof review !== "object" || Array.isArray(review)) return null;
+  const root = review as Record<string, unknown>;
+
+  const blocks: unknown[] = [
+    // Formal schema field (host-projected counts).
+    root.discoverySummary,
+    // Legacy soft aliases / full map embedding.
+    root.discovery,
+    root.discoveryMap,
+    // Nested under artifact / extras if host soft-projects later.
+    typeof root.artifact === "object" && root.artifact && !Array.isArray(root.artifact)
+      ? (root.artifact as Record<string, unknown>).discoverySummary
+      : undefined,
+  ];
+
+  for (const block of blocks) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+    const b = block as Record<string, unknown>;
+    const domains =
+      nonNegInt(b.domainCount) ??
+      nonNegInt(b.domain_count) ??
+      countFromArrayOrNumber(b.domains);
+    const flows =
+      nonNegInt(b.flowCount) ?? nonNegInt(b.flow_count) ?? countFromArrayOrNumber(b.flows);
+    const concepts =
+      nonNegInt(b.conceptCount) ??
+      nonNegInt(b.concept_count) ??
+      countFromArrayOrNumber(b.concepts);
+    if (domains === undefined && flows === undefined && concepts === undefined) continue;
+    const sources =
+      nonNegInt(b.sourceCount) ??
+      nonNegInt(b.source_count) ??
+      countFromArrayOrNumber(b.sources);
+    const openQuestions =
+      nonNegInt(b.openQuestionCount) ??
+      nonNegInt(b.open_question_count) ??
+      countFromArrayOrNumber(b.openQuestions);
+    return {
+      domains: domains ?? 0,
+      flows: flows ?? 0,
+      concepts: concepts ?? 0,
+      ...(sources !== undefined ? { sources } : {}),
+      ...(openQuestions !== undefined ? { openQuestions } : {}),
+    };
+  }
+
+  return null;
+}
+
+export function hasDiscoverySummary(
+  summary: SoftDiscoverySummary | null | undefined,
+): boolean {
+  if (!summary) return false;
+  return (
+    summary.domains > 0 ||
+    summary.flows > 0 ||
+    summary.concepts > 0 ||
+    (summary.sources ?? 0) > 0
+  );
+}

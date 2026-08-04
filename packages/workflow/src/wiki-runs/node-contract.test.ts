@@ -66,6 +66,14 @@ test("contractForNode: plan.scout is pi and emits scout_receipt", () => {
   assert.ok(scout.requiredInputs.some((r) => r.role === "sources" && r.required));
   const plan = contractForNode("plan", "plan");
   assert.ok(plan.requiredInputs.some((r) => r.role === "scout_receipt" && r.required === false));
+  assert.ok(plan.requiredInputs.some((r) => r.role === "discovery_map" && r.required === false));
+});
+
+test("contractForNode: plan.discover.reduce is mechanical and emits discovery_map", () => {
+  const reduce = contractForNode("plan.discover.reduce", "plan.discover.reduce");
+  assert.equal(reduce.execution, "mechanical");
+  assert.ok(reduce.outputs.some((o) => o.role === "discovery_map" && o.artifactKind === "receipt"));
+  assert.ok(reduce.requiredInputs.some((r) => r.role === "scout_receipt" && r.required === true));
 });
 
 test("validateBoundInputs: fails closed on missing required research for domain", () => {

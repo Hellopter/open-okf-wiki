@@ -7,7 +7,12 @@ import { CoveragePlanSchema, sourceCoverageUnit, surfaceCoverageUnit } from "@ok
 import { resolveOrchestration, type WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
 import { type AgentRunRequest, createFixtureProduceRuntime } from "../../runtime/fixture-runner.js";
 import { runWorkdirLayout } from "../../runtime/workdir.js";
-import { formatScoutPlannerContext, runPlanScouts, selectPlanScoutTasks } from "./plan-scouts.js";
+import {
+  formatScoutPlannerContext,
+  formatScoutPlannerContextFromJson,
+  runPlanScouts,
+  selectPlanScoutTasks,
+} from "./plan-scouts.js";
 
 const temps: string[] = [];
 
@@ -147,36 +152,102 @@ describe("selectPlanScoutTasks", () => {
 });
 
 describe("formatScoutPlannerContext", () => {
-  it("sections by Source / Surface / Thematic", () => {
+  it("emits index cards (ids/status/paths) without multi-kB body paste", () => {
+    const longBody = "API findings ".repeat(300); // multi-kB-ish body must not appear in full
+    const text = formatScoutPlannerContext(
+      [
+        {
+          task: {
+            kind: "source",
+            sourceId: "api",
+            id: "source:api",
+            required: true,
+          },
+          relPath: "analysis/plan-scouts/source-api.md",
+          receiptRelPath: "analysis/plan-scouts/source-api.json",
+          summary: longBody,
+          ok: true,
+          required: true,
+        },
+        {
+          task: {
+            kind: "thematic",
+            thematic: "entry",
+            id: "entry",
+            required: false,
+          },
+          relPath: "analysis/plan-scouts/entry.md",
+          summary: "Entry findings with a short note",
+          ok: true,
+          required: false,
+        },
+      ],
+      { discoveryMapPath: "inputs/discovery-map.json" },
+    );
+    assert.match(text, /Plan scout index|file handoff/i);
+    assert.match(text, /### Source surveys/);
+    assert.match(text, /\*\*api\*\*/);
+    assert.match(text, /### Thematic scouts/);
+    assert.match(text, /discovery-map/);
+    assert.match(text, /inputs\/discovery-map\.json/);
+    // Must instruct planner to read files
+    assert.match(text, /`read`|read tool/i);
+    // Must NOT paste the multi-kB body
+    assert.ok(!text.includes(longBody), "must not paste multi-kB scout body");
+    assert.ok(text.length < 4_000, "index card must stay compact");
+    // Preview is truncated
+    assert.ok(!/API findings API findings API findings API findings API findings/.test(text.slice(0, 500)) || text.length < longBody.length);
+  });
+
+  it("includes failed required scouts on the index (not only ok)", () => {
     const text = formatScoutPlannerContext([
       {
         task: {
           kind: "source",
-          sourceId: "api",
-          id: "source:api",
+          sourceId: "web",
+          id: "source:web",
           required: true,
         },
-        relPath: "analysis/plan-scouts/source-api.md",
-        summary: "API findings",
-        ok: true,
+        relPath: "analysis/plan-scouts/source-web.md",
+        summary: "boom",
+        ok: false,
         required: true,
       },
-      {
-        task: {
-          kind: "thematic",
-          thematic: "entry",
-          id: "entry",
-          required: false,
-        },
-        relPath: "analysis/plan-scouts/entry.md",
-        summary: "Entry findings",
-        ok: true,
-        required: false,
-      },
     ]);
-    assert.match(text, /## Source surveys/);
-    assert.match(text, /### Source: api/);
-    assert.match(text, /## Thematic scouts/);
+    assert.match(text, /failed\(required\)|failed/);
+    assert.match(text, /\*\*web\*\*/);
+  });
+});
+
+describe("formatScoutPlannerContextFromJson", () => {
+  it("is index-only and never pastes full summary bodies", () => {
+    const fat = "x".repeat(2_500);
+    const text = formatScoutPlannerContextFromJson(
+      [
+        {
+          version: 1,
+          kind: "source:api",
+          sourceId: "api",
+          summary: fat,
+          ok: true,
+          critical: true,
+          relPath: "analysis/plan-scouts/source-api.md",
+        },
+        {
+          version: 1,
+          kind: "entry",
+          summary: "entry ok",
+          ok: true,
+          critical: false,
+        },
+      ],
+      { discoveryMapPath: "inputs/discovery-map.json" },
+    );
+    assert.match(text, /Plan scout index|file handoff/i);
+    assert.match(text, /inputs\/plan-scouts\//);
+    assert.match(text, /discovery-map/);
+    assert.ok(!text.includes(fat), "must not paste full summary body");
+    assert.ok(text.length < fat.length, "context shorter than one fat body");
   });
 });
 
@@ -237,8 +308,14 @@ describe("runPlanScouts", () => {
 
     assert.equal(result.receipts.length, 2);
     assert.ok(result.receipts.every((r) => r.ok));
-    assert.match(result.plannerContext, /Plan scout receipts|Thematic/);
+    assert.match(result.plannerContext, /Plan scout index|file handoff|Thematic/i);
     assert.match(result.plannerContext, /entry|layout/);
+    // Index only — scout agent bodies must not be fully pasted into planner context
+    for (const r of result.receipts) {
+      if (r.summary.length > 200) {
+        assert.ok(!result.plannerContext.includes(r.summary));
+      }
+    }
     assert.ok(roles.every((r) => r === "root_research"));
 
     const entryPath = path.join(layout.runWorkDir, "analysis/plan-scouts/entry.md");

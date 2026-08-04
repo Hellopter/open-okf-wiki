@@ -10,7 +10,9 @@
 
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { CoverageAssertError } from "@okf-wiki/contract/coverage";
 import { type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import { SemanticSufficiencyError } from "@okf-wiki/contract/wiki-runs";
 import { createSubmitWikiRunSpecTool } from "../../../tools/submit-wiki-run-spec.js";
 import {
   planUncertaintyForPriorSpec,
@@ -25,6 +27,7 @@ import {
 import {
   type AttemptHandlerContext,
   bounded,
+  failAttempt,
   forwardScopedProgress,
   liveModel,
   metricsFromSeatRun,
@@ -60,37 +63,56 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
 
   const planTask = `Plan WikiRunSpec for ${input.workspace.name}`;
   const seat = { modelId: seatModelId(resolved), role: "plan" as const };
-  const planned = await planWikiSpec({
-    layout,
-    workspaceName: input.workspace.name,
-    wikiLanguage: input.workspace.wikiLanguage,
-    runtime,
-    model: resolved?.model,
-    modelRuntime: resolved?.modelRuntime,
-    maxContextTokens: resolved?.model.contextWindow,
-    contextTargetTokens: input.workspace.limits.contextTargetTokens,
-    retry: input.workspace.limits.retry,
-    timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
-    orchestration: input.workspace.orchestration,
-    workspaceSourceCount: input.workspace.sources?.length ?? 0,
-    sourceIgnores: ignores,
-    abortSignal: signal,
-    operatorNotes,
-    ...(revisionFeedback ? { revisionFeedback } : {}),
-    ...(priorSpec ? { priorSpec } : {}),
-    createCustomTools: ({ orchestration, coveragePlan }) => [
-      createSubmitWikiRunSpecTool({
-        runWorkDir: input.workDir,
-        caps: {
-          maxDomainFanOut: orchestration.maxDomainFanOut,
-          maxLeafFanOut: orchestration.maxLeafFanOut,
+  let planned;
+  try {
+    planned = await planWikiSpec({
+      layout,
+      workspaceName: input.workspace.name,
+      wikiLanguage: input.workspace.wikiLanguage,
+      runtime,
+      model: resolved?.model,
+      modelRuntime: resolved?.modelRuntime,
+      maxContextTokens: resolved?.model.contextWindow,
+      contextTargetTokens: input.workspace.limits.contextTargetTokens,
+      retry: input.workspace.limits.retry,
+      timeoutMs: input.workspace.limits.requestTimeoutSeconds * 1_000,
+      orchestration: input.workspace.orchestration,
+      workspaceSourceCount: input.workspace.sources?.length ?? 0,
+      sourceIgnores: ignores,
+      abortSignal: signal,
+      operatorNotes,
+      ...(revisionFeedback ? { revisionFeedback } : {}),
+      ...(priorSpec ? { priorSpec } : {}),
+      createCustomTools: ({ orchestration, coveragePlan }) => [
+        createSubmitWikiRunSpecTool({
+          runWorkDir: input.workDir,
+          caps: {
+            maxDomainFanOut: orchestration.maxDomainFanOut,
+            maxLeafFanOut: orchestration.maxLeafFanOut,
+          },
+          coveragePlan,
+        }),
+      ],
+      transcriptPath: input.sessionPath,
+      onProgress: (p) => forwardScopedProgress(ctx, p, seat),
+    });
+  } catch (error) {
+    // Product dual gates (assertCoverage / assertSemanticSufficiency) → schema,
+    // consistent with plan.scout critical gaps and ExecutionPlanCompileError.
+    if (error instanceof CoverageAssertError || error instanceof SemanticSufficiencyError) {
+      return failAttempt(input, {
+        error,
+        failureClass: "schema",
+        task: planTask,
+        meta: {
+          mode: "plan",
+          gate:
+            error instanceof SemanticSufficiencyError ? "semantic_sufficiency" : "coverage",
         },
-        coveragePlan,
-      }),
-    ],
-    transcriptPath: input.sessionPath,
-    onProgress: (p) => forwardScopedProgress(ctx, p, seat),
-  });
+      });
+    }
+    throw error;
+  }
 
   const specPath = path.join(layout.analysisDir, "spec.json");
   await writeFile(specPath, `${JSON.stringify(planned.spec, null, 2)}\n`, "utf8");

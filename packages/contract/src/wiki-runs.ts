@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CoverageResultSchema, CoverageStopReasonSchema } from "./coverage.js";
+import { SemanticSufficiencyResultSchema } from "./discovery.js";
 import { Sha256HexSchema } from "./primitives.js";
 import { RepositorySnapshotSchema, WikiRunSpecSchema } from "./run.js";
 import { AttemptTraceEventSchema } from "./run-graph.js";
@@ -44,6 +45,11 @@ export const WikiRunNodeKindSchema = z.enum([
   "plan",
   /** Durable plan scout Attempt (MoA proposer); host-materialized after freeze. */
   "plan.scout",
+  /**
+   * Mechanical merge of plan.scout receipts into discovery-map.json (pre-plan only).
+   * Host-materialized after freeze when scouts are selected; not part of post-plan execution graph.
+   */
+  "plan.discover.reduce",
   "gate.plan",
   "plan.adapt",
   "research.leaf",
@@ -535,11 +541,32 @@ export const WikiRunPlanReviewPageSetDiffSchema = z
 export type WikiRunPlanReviewPageSetDiff = z.infer<typeof WikiRunPlanReviewPageSetDiffSchema>;
 
 /**
+ * Compact DiscoveryMap counts for plan-gate review (payload-size friendly).
+ * Host projects from sealed discovery_map / analysis/discovery-map.json.
+ * Soft: omitted when discovery is not present (light path / no scouts).
+ */
+export const WikiRunPlanReviewDiscoverySummarySchema = z
+  .object({
+    domainCount: z.number().int().min(0),
+    flowCount: z.number().int().min(0),
+    conceptCount: z.number().int().min(0),
+    sourceCount: z.number().int().min(0).optional(),
+    crossSourceFlowCount: z.number().int().min(0).optional(),
+    openQuestionCount: z.number().int().min(0).optional(),
+    scoutKinds: z.array(z.string().trim().min(1).max(80)).max(64).optional(),
+  })
+  .strict();
+
+export type WikiRunPlanReviewDiscoverySummary = z.infer<
+  typeof WikiRunPlanReviewDiscoverySummarySchema
+>;
+
+/**
  * GET …/runs/:runId/plan-review — full operator materials for plan-gate document review.
  * Bound by payloadDigest (same formula as open plan gate). Not embedded on Run SSE.
  *
- * Coverage / priorSpec / scouts fields are additive and optional so older clients
- * and thin fixtures stay compatible (server re-parses with this schema).
+ * Coverage / priorSpec / scouts / discovery fields are additive and optional so older
+ * clients and thin fixtures stay compatible (server re-parses with this schema).
  */
 export const WikiRunPlanReviewSchema = z
   .object({
@@ -575,6 +602,16 @@ export const WikiRunPlanReviewSchema = z
     coverageStopReason: CoverageStopReasonSchema.optional(),
     /** Plan coverage re-scout rounds completed when recorded on the Spec notes/meta. */
     coverageRounds: z.number().int().min(0).max(16).optional(),
+    /**
+     * Compact DiscoveryMap counts when a sealed discovery_map (or analysis file)
+     * is available. Prefer this over embedding the full map on plan-review.
+     */
+    discoverySummary: WikiRunPlanReviewDiscoverySummarySchema.optional(),
+    /**
+     * Soft assertSemanticSufficiency result (throwOnGap: false) for operator display.
+     * Omitted when discovery map is absent.
+     */
+    semanticSufficiency: SemanticSufficiencyResultSchema.optional(),
   })
   .strict();
 

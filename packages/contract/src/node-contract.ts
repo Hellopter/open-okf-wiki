@@ -125,6 +125,7 @@ export function metricsRoleForNodeKind(kind: string): string {
     case "validate.pre":
     case "validate.final":
     case "review.reduce":
+    case "plan.discover.reduce":
     case "prepare.publication":
     case "publish":
     case "gate.plan":
@@ -343,6 +344,18 @@ const SCOUT_RECEIPT: InputRequirement = {
   mountPath: "plan-scouts/",
 };
 
+/**
+ * Mechanical discovery map sealed by plan.discover.reduce (pre-plan only).
+ * Optional so light-path plan (no reduce node) still claims.
+ */
+const DISCOVERY_MAP: InputRequirement = {
+  role: "discovery_map",
+  artifactKind: "receipt",
+  required: false,
+  projection: "mounted",
+  mountPath: "discovery-map.json",
+};
+
 const VALIDATE_REPORT_OUTPUT: OutputRequirement = {
   role: "validate_report",
   artifactKind: "receipt",
@@ -375,6 +388,7 @@ const CONTRACTS: Record<string, NodeContract> = {
       BOUNDARY_INDEX,
       PRIOR_SPEC,
       SCOUT_RECEIPT,
+      DISCOVERY_MAP,
       TRANSCRIPT_AUDIT,
       OPERATOR_INPUT,
     ],
@@ -402,6 +416,23 @@ const CONTRACTS: Record<string, NodeContract> = {
     ],
     outputs: [{ role: "scout_receipt", artifactKind: "receipt" }],
     execution: "pi",
+  },
+  /**
+   * Mechanical merge of plan.scout receipts → discovery_map (pre-plan stage only).
+   * Host materializes after freeze when scouts are selected; plan waits on this node.
+   */
+  "plan.discover.reduce": {
+    kind: "plan.discover.reduce",
+    requiredInputs: [
+      {
+        role: "scout_receipt",
+        artifactKind: "receipt",
+        required: true,
+        projection: "handle",
+      },
+    ],
+    outputs: [{ role: "discovery_map", artifactKind: "receipt" }],
+    execution: "mechanical",
   },
   "research.leaf": {
     kind: "research.leaf",

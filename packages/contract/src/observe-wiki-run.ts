@@ -35,6 +35,7 @@ export function stageForNodeKind(kind: WikiRunNodeKind): WikiRunObservationStage
     case "freeze":
     case "plan":
     case "plan.scout":
+    case "plan.discover.reduce":
       return "plan";
     case "plan.adapt":
     case "research.leaf":

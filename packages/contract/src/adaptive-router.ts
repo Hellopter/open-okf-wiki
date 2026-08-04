@@ -1,12 +1,18 @@
 /**
- * Inventory / plan-uncertainty adaptive orchestration router (Phase 7 + coverage Phase A).
+ * Inventory / plan-uncertainty adaptive orchestration router (Phase 7 + coverage Phase A + L0–L3).
  *
  * Light-path defaults (contract): planScoutCount=0, reviewCouncilSize=1, planScoutMode=auto.
  * Raise only when inventory or plan uncertainty justifies cost.
  * Operator-explicit orchestration values still win via resolveOrchestration first.
  *
+ * Inventory tiers:
+ * - **L0** light: small single-source (fileCount &lt; 50, no multi-entry/lang complexity)
+ * - **L1** medium: single-source, fileCount in [50, 2000) or mild complexity → ≥1 thematic scout
+ * - **L2** large single-repo: fileCount ≥ 2000 / multi-entry / large flag
+ * - **L3** multi-source: never light; hybrid mode + source coverage; thematic DEFAULT-OFF
+ *
  * Multi-source is **not** “large monorepo with multiEntry”:
- * - multi-source → hybrid scout mode (source surveys + thematic), independent survey budget
+ * - multi-source → hybrid scout mode (source surveys + semantic domain/flow), independent survey budget
  * - large single-repo → raise thematic scouts only
  * - multiEntry stays an explicit inventory signal (never implied by multi-source alone)
  */
@@ -63,11 +69,49 @@ export type AdaptiveRouterDecision = {
   reasons: string[];
   /** True when light path kept (0 scouts, 1 lens, thematic/auto without force). */
   lightPath: boolean;
+  /** Coarse inventory tier for host / observability. */
+  tier: InventoryTier;
 };
 
+/** Coarse inventory cost tier (L0 light … L3 multi-source). */
+export type InventoryTier = "L0" | "L1" | "L2" | "L3";
+
 const LARGE_FILE_THRESHOLD = 2_000;
+/** Inclusive lower bound for L1 medium single-source by file count. */
+const MEDIUM_FILE_MIN = 50;
 const UNCERTAINTY_SCOUT_THRESHOLD = 0.45;
 const UNCERTAINTY_LENS_THRESHOLD = 0.6;
+
+/**
+ * Map inventory signals to L0–L3. Pure helper for host policy and tests.
+ *
+ * | Tier | Signal |
+ * |------|--------|
+ * | L3 | sourceCount ≥ 2 |
+ * | L2 | single-source large / multi-entry / fileCount ≥ 2000 |
+ * | L1 | single-source fileCount ∈ [50, 2000) or multi-language mild complexity |
+ * | L0 | otherwise (small single-source light path) |
+ */
+export function inventoryTier(inventory?: RepositoryInventory | null): InventoryTier {
+  const sourceCount = inventory?.sourceCount ?? 0;
+  if (sourceCount >= 2) return "L3";
+
+  const fileCount = inventory?.fileCount;
+  const multiEntry = inventory?.multiEntry === true;
+  const fileLarge =
+    inventory?.large === true ||
+    (fileCount !== undefined && fileCount >= LARGE_FILE_THRESHOLD);
+  if (fileLarge || multiEntry) return "L2";
+
+  const multiLang = (inventory?.languages?.length ?? 0) >= 2;
+  const mediumByFiles =
+    fileCount !== undefined &&
+    fileCount >= MEDIUM_FILE_MIN &&
+    fileCount < LARGE_FILE_THRESHOLD;
+  if (mediumByFiles || multiLang) return "L1";
+
+  return "L0";
+}
 
 /**
  * Decide scout count, scout mode, and review lenses from inventory + plan uncertainty.
@@ -87,6 +131,7 @@ export function resolveAdaptiveOrchestration(
 
   const inv = input.inventory;
   const uncertainty = clamp01(input.planUncertainty);
+  const tier = inventoryTier(inv);
 
   const sourceCount = inv?.sourceCount ?? 0;
   const multiSource = sourceCount >= 2;
@@ -98,6 +143,13 @@ export function resolveAdaptiveOrchestration(
     (inv?.fileCount !== undefined && inv.fileCount >= LARGE_FILE_THRESHOLD);
   // Large for thematic/lens purposes: file scale or multi-entry monorepo — not multi-source alone.
   const largeSingleRepo = !multiSource && (fileLarge || multiEntry);
+  const mediumSingleRepo =
+    !multiSource &&
+    !largeSingleRepo &&
+    (tier === "L1" ||
+      (inv?.fileCount !== undefined &&
+        inv.fileCount >= MEDIUM_FILE_MIN &&
+        inv.fileCount < LARGE_FILE_THRESHOLD));
   const surfaceCount =
     inv?.surfaceCount ??
     inv?.sources?.reduce((n, s) => n + (s.surfaces?.length ?? 0), 0) ??
@@ -138,21 +190,27 @@ export function resolveAdaptiveOrchestration(
   }
 
   // --- Thematic scouts ---
-  // Multi-source hybrid still benefits from a small thematic layer, but source
-  // surveys are budgeted separately (planSurveyTaskBudget).
+  // Multi-source (L3): thematic spine DEFAULT-OFF. Semantic domain+flow scouts are
+  // scheduled by selectPlanScoutTasks; planScoutCount stays 0 unless operator raises.
+  // L1 medium / L2 large single-repo: raise thematic when still at light default 0.
   if (planScoutCount === 0) {
     if (multiSource) {
-      // Hybrid: modest thematic scouts; coverage comes from source surveys.
-      planScoutCount = multiLang ? 2 : 1;
-      reasons.push("inventory:multi-source:thematic-scouts");
-    } else if (largeSingleRepo || multiEntry || multiLang) {
+      // Thematic DEFAULT-OFF for multi-source — do not auto-raise planScoutCount.
+      reasons.push("inventory:multi-source:thematic-default-off");
+    } else if (largeSingleRepo || multiEntry) {
       planScoutCount = multiLang || multiEntry ? 2 : 1;
       reasons.push(
         fileLarge
           ? "inventory:large-single-repo"
           : multiEntry
             ? "inventory:multi-entry"
-            : "inventory:multi-language",
+            : "inventory:large-single-repo",
+      );
+    } else if (mediumSingleRepo || multiLang) {
+      // L1: at least one thematic scout for medium file count or mild multi-lang.
+      planScoutCount = multiLang ? 2 : 1;
+      reasons.push(
+        multiLang ? "inventory:multi-language" : "inventory:medium-single-repo",
       );
     } else if (uncertainty >= UNCERTAINTY_SCOUT_THRESHOLD) {
       planScoutCount = 1;
@@ -192,7 +250,7 @@ export function resolveAdaptiveOrchestration(
     orchestration.requireSourceCoverage !== true &&
     orchestration.requireSurfaceCoverage !== true;
 
-  return { orchestration, reasons, lightPath };
+  return { orchestration, reasons, lightPath, tier };
 }
 
 /**

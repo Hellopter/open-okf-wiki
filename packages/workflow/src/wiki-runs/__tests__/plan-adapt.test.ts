@@ -45,6 +45,8 @@ test("plan.adapt derives bounded research edges before writer unlocks", async (t
     piAttemptExecutor: async (input, signal) => {
       if (input.node.key === "plan") {
         const spec = defaultWikiRunSpec("Workflow test");
+        // plan.adapt is DEFAULT-OFF; plan-prepare enables it only on high
+        // planUncertainty (≥ 0.5 ≈ 6+ openQuestions via planUncertaintyFromSpec).
         spec.openQuestions = [
           "Which authorization boundaries remain uncertain?",
           "Which module owns authentication?",

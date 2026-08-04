@@ -398,6 +398,27 @@ async function projectSealedInputs(
       continue;
     }
 
+    if (requirement.role === "discovery_map") {
+      // Sealed by mechanical plan.discover.reduce (contract DiscoveryMap).
+      const file = await resolveSealedFile(sealed.readOnlyPath, [
+        "discovery-map.json",
+        "discovery_map.json",
+      ]);
+      if (!file) throw new Error("sealed discovery_map artifact is unreadable");
+      const raw = await readFile(file, "utf8");
+      const parsed = JSON.parse(raw) as { version?: unknown; sources?: unknown };
+      if (parsed?.version !== 1 && !Array.isArray(parsed?.sources)) {
+        throw new Error(
+          "sealed discovery_map must be DiscoveryMap { version: 1, sources: [...] }",
+        );
+      }
+      await writeReadOnlyFile(
+        mountedInputPath(inputsDir, requirement),
+        raw.endsWith("\n") ? raw : `${raw}\n`,
+      );
+      continue;
+    }
+
     if (requirement.role === "research") {
       const file = await resolveSealedFile(sealed.readOnlyPath, []);
       if (!file) {

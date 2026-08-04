@@ -247,11 +247,15 @@ export function upstreamsSucceeded(host: DagControl, runId: string, nodeKey: str
     if (!node) return false;
     const state = requiredText(node, "state");
 
-    // Plan waits for every plan.scout.* to reach a terminal state.
+    // plan.discover.reduce waits for every plan.scout.* to reach a terminal state.
     // Optional scouts may fail/cancel without blocking; critical must succeed.
-    // Non-terminal scouts (ready/running/blocked/…) always hold plan closed —
-    // otherwise synthesizer can claim plan with empty scout receipts.
-    if (nodeKey === "plan" && fromKey.startsWith("plan.scout.")) {
+    // Non-terminal scouts (ready/running/blocked/…) always hold reduce closed —
+    // otherwise mechanical merge could claim with empty scout receipts.
+    // (Legacy: plan may still have direct scout edges from older graphs.)
+    if (
+      (nodeKey === "plan.discover.reduce" || nodeKey === "plan") &&
+      fromKey.startsWith("plan.scout.")
+    ) {
       if (state === "succeeded") continue;
       if (state === "failed" || state === "cancelled") {
         if (isCriticalPlanScoutNode(host, runId, fromKey, gen)) return false;

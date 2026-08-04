@@ -26,7 +26,9 @@ import {
 } from "../shared.js";
 
 const SCOUT_SYSTEM =
-  "You are a read-only plan scout. Inspect sources/ and return a compact structured report. Do not write wiki pages.";
+  "You are a read-only plan scout. Inspect sources/ for implementation evidence (not README-only). " +
+  "Return a compact structured report as your final message (short ACK; prefer paths). " +
+  "Sealed analysis/plan-scouts/* is durable authority. Do not write wiki pages or submit a Spec.";
 
 export async function handlePlanScout(ctx: AttemptHandlerContext): Promise<PiAttemptOutcome> {
   const { input, layout, ignores, runtime, resolveModel, signal } = ctx;
@@ -134,9 +136,12 @@ export async function handlePlanScout(ctx: AttemptHandlerContext): Promise<PiAtt
     });
   }
 
+  // Control ACK: short status + path; sealed receipt file is authority (not multi-kB body).
+  const ackBase =
+    result.receipt.summary?.replace(/\s+/g, " ").trim().slice(0, 160) ||
+    (result.receipt.ok ? `Plan scout ${label}` : `Plan scout ${label} (soft-empty)`);
   const summary = bounded(
-    result.receipt.summary ||
-      (result.receipt.ok ? `Plan scout ${label}` : `Plan scout ${label} (soft-empty)`),
+    `${result.receipt.ok ? "ok" : "failed"}: ${ackBase} → ${result.receipt.relPath}`,
   );
   const transcript = await sealTranscript(input, {
     task: `Plan scout ${label}`,

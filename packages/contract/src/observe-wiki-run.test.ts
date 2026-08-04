@@ -25,6 +25,7 @@ function attempt(
 test("stageForNodeKind buckets known kinds", () => {
   assert.equal(stageForNodeKind("plan"), "plan");
   assert.equal(stageForNodeKind("plan.scout"), "plan");
+  assert.equal(stageForNodeKind("plan.discover.reduce"), "plan");
   assert.equal(stageForNodeKind("freeze"), "plan");
   assert.equal(stageForNodeKind("research.leaf"), "research");
   assert.equal(stageForNodeKind("plan.adapt"), "research");
@@ -48,6 +49,7 @@ test("executionClassForNodeKind uses NodeContract registry", () => {
   assert.equal(executionClassForNodeKind("gate.plan"), "gate");
   assert.equal(executionClassForNodeKind("gate.fix"), "gate");
   assert.equal(executionClassForNodeKind("plan.scout"), "pi");
+  assert.equal(executionClassForNodeKind("plan.discover.reduce"), "mechanical");
 });
 
 test("latestAttemptForNode prefers generation, then runIndex, then startedAt", () => {
