@@ -671,8 +671,12 @@ export const zh: MessageTree = {
     cancelRun: "取消运行",
     cancelRunConfirm: "确定取消此运行？取消是终态——已取消的运行无法恢复。",
     retryNode: "重试",
+    /** Plan 覆盖/语义缺口：主机再侦察后重新规划（WP-D）。 */
+    retryNodeRediscover: "再发现并重新规划",
     rerunNode: "重新运行",
     retryNodeHint: "在相同 generation 下使用相同封存输入重试。",
+    retryNodeRediscoverHint:
+      "在剩余再发现预算内重新武装缺口侦察并重新规划（不是同输入空重试）。",
     rerunNodeHint: "提升 generation，并使下游消费者失效。",
     rerunNodeConfirmTitle: "重新运行此节点？",
     rerunNodeConfirm: "重新运行会提升节点 generation。依赖此节点的下游工作可能被失效。",

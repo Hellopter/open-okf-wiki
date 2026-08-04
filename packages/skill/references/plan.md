@@ -2,7 +2,7 @@
 
 Shape the living **WikiRunSpec** and intended page set before writing Staging Wiki pages.
 
-Host coverage + discover contract ([ADR 0040](../../../docs/adr/0040-use-coverage-units-for-multi-source-and-monorepo-plan-gates.md), [ADR 0042](../../../docs/adr/0042-semantic-discovery-plane-and-plan-sufficiency.md), [ADR 0043](../../../docs/adr/0043-host-owned-multi-wave-discover-orchestration.md)): freeze seals a **CoverageInventory** / **CoveragePlan** of **CoverageUnits** (`source` or source-qualified `surface`). Every required unit must be bound on Spec pages/domains (`coverageUnitIds`; `sourceIds` / `surfaceIds` are projections) or explicitly cancelled when the plan allows. Host **`assertCoverage`** and (when DiscoveryMap is present / multi-source) **`assertSemanticSufficiency`** reject under-covered Specs on submit, compile, approve, validate, and `planConfirm=false` auto-approve. Prefer any sealed inventory / BoundaryIndex path list as a scoping accelerator — it is not a citation membership gate; grounded paths under `sources/` remain citable.
+Host coverage + discover contract ([ADR 0040](../../../docs/adr/0040-use-coverage-units-for-multi-source-and-monorepo-plan-gates.md), [ADR 0042](../../../docs/adr/0042-semantic-discovery-plane-and-plan-sufficiency.md), [ADR 0043](../../../docs/adr/0043-host-owned-multi-wave-discover-orchestration.md), [ADR 0044](../../../docs/adr/0044-typed-plan-gate-failure-and-rediscover-rearm.md)): freeze seals a **CoverageInventory** / **CoveragePlan** of **CoverageUnits** (`source` or source-qualified `surface`). Every required unit must be bound on Spec pages/domains (`coverageUnitIds`; `sourceIds` / `surfaceIds` are projections) or explicitly cancelled when the plan allows. Host **`assertCoverage`** and (when DiscoveryMap is present / multi-source) **`assertSemanticSufficiency`** reject under-covered Specs on submit, compile, approve, validate, and `planConfirm=false` auto-approve. Prefer any sealed inventory / BoundaryIndex path list as a scoping accelerator — it is not a citation membership gate; grounded paths under `sources/` remain citable.
 
 ### Host multi-wave discover (you do not own topology)
 
@@ -13,6 +13,8 @@ The host materializes durable discover nodes after freeze. You run only the **as
 - **L3 multi-source two-wave:** Wave **A** unit surveys (`source` / `surface`) → intermediate reduce → Wave **B** source-qualified `domain:{id}` / `flow:{id}` + `flow:cross` (optional thematic) → final reduce → plan.
 
 **No LLM free spawn:** do not create children, schedule sibling scouts, invent node keys, or call reduce. Parallel scout width is a host budget (concurrency floor 2; not tied to thematic `planScoutCount || 1`). Gap re-scout is host-armed only (`planRescoutMaxRounds`).
+
+**Dual-gate gap → host re-scout (not same-digest plan retry):** when `assertCoverage` / `assertSemanticSufficiency` reject the Spec, the host re-arms gap `plan.scout` + reduce + plan for at most `planRescoutMaxRounds` (typed `coverage_gap` / `semantic_gap` + `gateFailure`; you do not re-spawn topology). Operator **RetryFailedNode** on a plan gap re-discovers the same way — it is not a same-input plan-only replay.
 
 ### File-first discovery (sealed files are authority)
 

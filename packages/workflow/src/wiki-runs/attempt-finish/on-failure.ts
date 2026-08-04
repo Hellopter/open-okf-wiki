@@ -144,6 +144,8 @@ export function shouldAutoRetryResearch(
 export function failNode(host: WikiRunsControl, claim: ClaimedNode, error: unknown): void {
   const failureClass = failureClassOf(error);
   const mechanicalReportArtifactId = failureArtifactIdOf(error, "validate_report");
+  // Always write the failed attempt/node terminal first (audit). applyRerunAt
+  // leaves terminal `failed` generations intact and inserts gen+1 for re-arm.
   const terminal = writeFailedAttemptTerminal(
     host,
     claim,
@@ -170,9 +172,11 @@ export function failNode(host: WikiRunsControl, claim: ClaimedNode, error: unkno
     return;
   }
 
-  // Plan coverage / semantic sufficiency re-scout (ADR 0040/0042 control-plane).
+  // Plan coverage / semantic sufficiency re-scout (ADR 0040/0042, WP-C).
+  // Prefer typed failureClass coverage_gap|semantic_gap + error.gateFailure.
   // Nested agent re-scout is gone — host re-arms gap plan.scout + reduce + plan
-  // while planRescoutMaxRounds remains. Transport stays on research auto-retry only.
+  // while planRescoutMaxRounds remains. On success: emit node.ready and return
+  // WITHOUT markRunFailed (run stays queued/running for the re-scout wave).
   if (claim.kind === "plan") {
     if (
       schedulePlanSufficiencyRescout(host, {

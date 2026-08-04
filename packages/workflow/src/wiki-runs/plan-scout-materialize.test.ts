@@ -8,6 +8,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import type { PlanScoutTask } from "@okf-wiki/contract/wiki-runs";
+import { resolveOrchestration } from "@okf-wiki/contract/workspace";
+import {
+  planSufficiencyContextFromAttempt,
+  retryFailedNode,
+} from "./commands.js";
+import { digest } from "./crypto-util.js";
 import { unlockReadyNodes, upstreamsSucceeded } from "./dag.js";
 import {
   extractPlanSufficiencyGapUnitIds,
@@ -15,6 +21,7 @@ import {
   isDiscoverWaveATask,
   isDiscoverWaveBTask,
   isPlanSufficiencyGapFailure,
+  mapPlanSufficiencyGapsToTasks,
   materializePlanScoutsAfterFreeze,
   maybeMaterializeDiscoverWaveB,
   needsTwoWaveDiscover,
@@ -27,6 +34,7 @@ import {
 import { migrate } from "./schema.js";
 import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
 import { openControlFixture } from "./testing/control-fixture.js";
+import { WikiRunsRequestError } from "./types.js";
 
 function openDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -561,6 +569,15 @@ test("isPlanSufficiencyGapFailure detects coverage/semantic messages only", () =
     ),
     true,
   );
+  // Typed failureClass preferred (WP-C) — even without message patterns.
+  assert.equal(
+    isPlanSufficiencyGapFailure("plan", "gate rejected", "coverage_gap"),
+    true,
+  );
+  assert.equal(
+    isPlanSufficiencyGapFailure("plan", "gate rejected", "semantic_gap"),
+    true,
+  );
   assert.equal(
     isPlanSufficiencyGapFailure("plan", "ECONNRESET from provider", "infrastructure"),
     false,
@@ -578,9 +595,23 @@ test("isPlanSufficiencyGapFailure detects coverage/semantic messages only", () =
     code: "COVERAGE_GAP",
   });
   assert.equal(isPlanSufficiencyGapFailure("plan", covErr.message, undefined, covErr), true);
+
+  // gateFailure alone is enough (typed Error from executeClaimed).
+  const gfErr = Object.assign(new Error("semantic sufficiency incomplete"), {
+    failureClass: "semantic_gap",
+    gateFailure: {
+      kind: "semantic_sufficiency",
+      code: "SEMANTIC_GAP",
+      gaps: ["domain:api", "_cross_source"],
+    },
+  });
+  assert.equal(
+    isPlanSufficiencyGapFailure("plan", gfErr.message, "semantic_gap", gfErr),
+    true,
+  );
 });
 
-test("extractPlanSufficiencyGapUnitIds parses message and error.result", () => {
+test("extractPlanSufficiencyGapUnitIds prefers gateFailure then result then message", () => {
   assert.deepEqual(
     extractPlanSufficiencyGapUnitIds(
       "plan coverage gaps after durable scout synthesis: 2 gap(s): backend, web",
@@ -600,6 +631,65 @@ test("extractPlanSufficiencyGapUnitIds parses message and error.result", () => {
       result: { gaps: ["a", "b"] },
     }),
     ["a", "b"],
+  );
+  // gateFailure.gaps wins over message / result.
+  assert.deepEqual(
+    extractPlanSufficiencyGapUnitIds(
+      "gap(s): ignored",
+      {
+        gateFailure: {
+          kind: "semantic_sufficiency",
+          gaps: ["domain:api", "_cross_source"],
+        },
+        result: { gaps: ["old"] },
+      },
+    ),
+    ["domain:api", "_cross_source"],
+  );
+  // gateFailure.result.gaps when gaps field omitted.
+  assert.deepEqual(
+    extractPlanSufficiencyGapUnitIds("x", {
+      gateFailure: {
+        kind: "coverage",
+        result: { gaps: ["web", "api"] },
+      },
+    }),
+    ["web", "api"],
+  );
+});
+
+test("mapPlanSufficiencyGapsToTasks: bare source → source+domain+flow; meta → cross/full", () => {
+  const db = openDb();
+  seedRun(db);
+  const host = dagHost(db);
+  const orch = resolveOrchestration({
+    planScoutMode: "hybrid",
+    planScoutCount: 0,
+    planRescoutMaxRounds: 1,
+    planSurveyTaskBudget: 4,
+  });
+  const tasks = mapPlanSufficiencyGapsToTasks(host, "run-1", orch, [
+    "web",
+    "_cross_source",
+  ]);
+  const ids = tasks.map((t) => t.id).sort();
+  assert.ok(ids.includes("source:web"));
+  assert.ok(ids.includes("domain:web"));
+  assert.ok(ids.includes("flow:web"));
+  assert.ok(ids.includes("flow:cross"));
+  // surface unit
+  const surface = mapPlanSufficiencyGapsToTasks(host, "run-1", orch, [
+    "mono::packages/api",
+  ]);
+  assert.equal(surface.length, 1);
+  assert.equal(surface[0]!.kind, "surface");
+  // domain:x only
+  const domainOnly = mapPlanSufficiencyGapsToTasks(host, "run-1", orch, [
+    "domain:api",
+  ]);
+  assert.deepEqual(
+    domainOnly.map((t) => t.id),
+    ["domain:api"],
   );
 });
 
@@ -716,10 +806,17 @@ test("plan coverage gap re-arms scouts + reduce + plan once", async () => {
     assert.equal(detail.planSufficiencyRound, 1);
     assert.deepEqual(detail.planSufficiencyGaps, ["web"]);
 
-    // After gap scout + reduce succeed, plan unlocks.
-    db.prepare(
-      "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = ? AND generation = 1",
-    ).run("run-1", "plan.scout.source-web");
+    // Bare source gap re-arms source + domain + flow; all must terminal before reduce.
+    for (const key of [
+      "plan.scout.source-web",
+      "plan.scout.domain-web",
+      "plan.scout.flow-web",
+    ]) {
+      db.prepare(
+        `UPDATE nodes SET state = 'succeeded'
+         WHERE run_id = ? AND node_key = ? AND state IN ('ready', 'blocked', 'running')`,
+      ).run("run-1", key);
+    }
     unlockReadyNodes(ctrl, "run-1");
     assert.equal(nodeState(db, "run-1", "plan.discover.reduce"), "ready");
     db.prepare(
@@ -785,6 +882,434 @@ test("planRescoutMaxRounds=0 disables re-arm", async () => {
       }),
       false,
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("plan fail with gateFailure semantic → scouts ready, plan gen+1 blocked, reduce re-armed", async () => {
+  const fixture = await openControlFixture();
+  try {
+    const { db, ctrl } = fixture;
+    await seedScoutPathSucceeded(db);
+
+    const gateError = Object.assign(
+      new Error("plan semantic sufficiency gaps after durable scout synthesis: domain:api, _cross_source"),
+      {
+        failureClass: "semantic_gap",
+        gateFailure: {
+          kind: "semantic_sufficiency" as const,
+          code: "SEMANTIC_GAP",
+          gaps: ["domain:api", "_cross_source"],
+        },
+      },
+    );
+
+    const ok = schedulePlanSufficiencyRescout(ctrl, {
+      runId: "run-1",
+      planGeneration: 0,
+      message: gateError.message,
+      failureClass: "semantic_gap",
+      error: gateError,
+    });
+    assert.equal(ok, true);
+    assert.equal(planSufficiencyRoundsUsed(ctrl, "run-1"), 1);
+
+    // Source-qualified domain scout inserted (or re-armed) ready.
+    const domain = asRow(
+      db
+        .prepare(
+          "SELECT generation, state FROM nodes WHERE run_id = ? AND node_key = ? ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1", "plan.scout.domain-api"),
+    );
+    assert.ok(domain, "expected plan.scout.domain-api");
+    assert.equal(requiredText(domain, "state"), "ready");
+
+    // flow:cross scout ready.
+    const cross = asRow(
+      db
+        .prepare(
+          "SELECT generation, state FROM nodes WHERE run_id = ? AND node_key = ? ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1", "plan.scout.flow-cross"),
+    );
+    assert.ok(cross, "expected plan.scout.flow-cross");
+    assert.equal(requiredText(cross, "state"), "ready");
+
+    // Reduce re-armed at gen+1 blocked with discoverWave:2 + sufficiencyRescout.
+    const reduce = asRow(
+      db
+        .prepare(
+          "SELECT generation, state, detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan.discover.reduce' ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1"),
+    );
+    assert.ok(reduce);
+    assert.equal(requiredNumber(reduce, "generation"), 1);
+    assert.equal(requiredText(reduce, "state"), "blocked");
+    const reduceDetail = JSON.parse(String(reduce.detail_json)) as {
+      discoverWave?: number;
+      sufficiencyRescout?: boolean;
+    };
+    assert.equal(reduceDetail.discoverWave, 2);
+    assert.equal(reduceDetail.sufficiencyRescout, true);
+
+    // Plan gen+1 blocked (not ready — waits for reduce). Failed gen0 kept for audit.
+    const plan = asRow(
+      db
+        .prepare(
+          "SELECT generation, state, detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan' ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1"),
+    );
+    assert.ok(plan);
+    assert.equal(requiredNumber(plan, "generation"), 1);
+    assert.equal(requiredText(plan, "state"), "blocked");
+    const planDetail = JSON.parse(String(plan.detail_json)) as {
+      planSufficiencyRound?: number;
+      planSufficiencyGaps?: string[];
+    };
+    assert.equal(planDetail.planSufficiencyRound, 1);
+    assert.deepEqual(planDetail.planSufficiencyGaps, ["domain:api", "_cross_source"]);
+
+    const failedPlan = asRow(
+      db
+        .prepare(
+          "SELECT state FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = 0",
+        )
+        .get("run-1"),
+    );
+    assert.equal(requiredText(failedPlan!, "state"), "failed");
+
+    // Run must stay claimable (not markRunFailed).
+    const run = asRow(db.prepare("SELECT state FROM runs WHERE run_id = ?").get("run-1"));
+    assert.equal(requiredText(run!, "state"), "queued");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("coverage gap re-arm stamps reduce sufficiencyRescout + source-qualified domain/flow", async () => {
+  const fixture = await openControlFixture();
+  try {
+    const { db, ctrl } = fixture;
+    await seedScoutPathSucceeded(db);
+
+    const ok = schedulePlanSufficiencyRescout(ctrl, {
+      runId: "run-1",
+      planGeneration: 0,
+      message: "coverage matrix incomplete",
+      failureClass: "coverage_gap",
+      error: {
+        failureClass: "coverage_gap",
+        gateFailure: {
+          kind: "coverage",
+          code: "COVERAGE_GAP",
+          gaps: ["web"],
+        },
+      },
+    });
+    assert.equal(ok, true);
+
+    // Bare sourceId → source + domain + flow for web.
+    for (const key of [
+      "plan.scout.source-web",
+      "plan.scout.domain-web",
+      "plan.scout.flow-web",
+    ]) {
+      const row = asRow(
+        db
+          .prepare(
+            "SELECT state FROM nodes WHERE run_id = ? AND node_key = ? ORDER BY generation DESC LIMIT 1",
+          )
+          .get("run-1", key),
+      );
+      assert.ok(row, `expected ${key}`);
+      assert.equal(requiredText(row, "state"), "ready", key);
+    }
+
+    const reduce = asRow(
+      db
+        .prepare(
+          "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan.discover.reduce' ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1"),
+    );
+    const detail = JSON.parse(String(reduce!.detail_json)) as {
+      discoverWave?: number;
+      sufficiencyRescout?: boolean;
+    };
+    assert.equal(detail.discoverWave, 2);
+    assert.equal(detail.sufficiencyRescout, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/** Link a durable failed plan attempt (error + failure_class + metrics_json.gateFailure). */
+function seedFailedPlanAttempt(
+  db: DatabaseSync,
+  runId: string,
+  opts: {
+    attemptId?: string;
+    generation?: number;
+    failureClass: string;
+    error: string;
+    gateFailure?: Record<string, unknown>;
+  },
+): string {
+  const attemptId = opts.attemptId ?? "attempt-plan-gap";
+  const generation = opts.generation ?? 0;
+  const ts = "2026-07-30T12:05:00.000Z";
+  const metricsJson = opts.gateFailure
+    ? JSON.stringify({ gateFailure: opts.gateFailure })
+    : null;
+  db.prepare(
+    `INSERT INTO attempts (
+      attempt_id, run_id, node_key, node_generation, run_index, state, input_digest,
+      error, failure_class, metrics_json, started_at, ended_at
+    ) VALUES (?, ?, 'plan', ?, 1, 'failed', ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    attemptId,
+    runId,
+    generation,
+    "d".repeat(64),
+    opts.error,
+    opts.failureClass,
+    metricsJson,
+    ts,
+    ts,
+  );
+  db.prepare(
+    `UPDATE nodes SET state = 'failed', last_attempt_id = ?, current_attempt_id = NULL
+     WHERE run_id = ? AND node_key = 'plan' AND generation = ?`,
+  ).run(attemptId, runId, generation);
+  return attemptId;
+}
+
+const operatorContext = {
+  workspaceId: "ws-fixture",
+  actor: { id: "operator", kind: "local_operator" as const },
+};
+
+test("planSufficiencyContextFromAttempt reads error + failure_class + metrics_json.gateFailure", () => {
+  const ctx = planSufficiencyContextFromAttempt({
+    error: "semantic gap: domain:api",
+    failure_class: "semantic_gap",
+    metrics_json: JSON.stringify({
+      gateFailure: {
+        kind: "semantic_sufficiency",
+        code: "SEMANTIC_GAP",
+        gaps: ["domain:api", "_cross_source"],
+      },
+    }),
+  });
+  assert.equal(ctx.message, "semantic gap: domain:api");
+  assert.equal(ctx.failureClass, "semantic_gap");
+  const err = ctx.error as { failureClass?: string; gateFailure?: { gaps?: string[] } };
+  assert.equal(err.failureClass, "semantic_gap");
+  assert.deepEqual(err.gateFailure?.gaps, ["domain:api", "_cross_source"]);
+  assert.ok(
+    isPlanSufficiencyGapFailure("plan", ctx.message, ctx.failureClass, ctx.error),
+  );
+});
+
+test("RetryFailedNode on plan coverage_gap re-arms via schedulePlanSufficiencyRescout (WP-D)", async () => {
+  const fixture = await openControlFixture();
+  try {
+    const { db, ctrl } = fixture;
+    await seedScoutPathSucceeded(db);
+    const attemptId = seedFailedPlanAttempt(db, "run-1", {
+      failureClass: "coverage_gap",
+      error: "plan coverage gaps after durable scout synthesis: 1 gap(s): web",
+      gateFailure: {
+        kind: "coverage",
+        code: "COVERAGE_GAP",
+        gaps: ["web"],
+      },
+    });
+
+    const revisionBefore = requiredNumber(
+      asRow(db.prepare("SELECT revision FROM runs WHERE run_id = ?").get("run-1"))!,
+      "revision",
+    );
+
+    const receipt = retryFailedNode(
+      ctrl,
+      {
+        type: "retry_failed_node",
+        commandId: "retry-plan-coverage",
+        runId: "run-1",
+        expectedRevision: revisionBefore,
+        nodeKey: "plan",
+        generation: 0,
+        attemptId,
+      },
+      operatorContext,
+      "digest-retry-plan-coverage",
+    );
+    assert.equal(receipt.accepted, true);
+    assert.equal(planSufficiencyRoundsUsed(ctrl, "run-1"), 1);
+
+    // Failed gen stays failed for audit; gen+1 is blocked until reduce.
+    assert.equal(
+      requiredText(
+        asRow(
+          db
+            .prepare(
+              "SELECT state FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = 0",
+            )
+            .get("run-1"),
+        )!,
+        "state",
+      ),
+      "failed",
+    );
+    const planNext = asRow(
+      db
+        .prepare(
+          "SELECT generation, state FROM nodes WHERE run_id = ? AND node_key = 'plan' ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1"),
+    );
+    assert.equal(requiredNumber(planNext!, "generation"), 1);
+    assert.equal(requiredText(planNext!, "state"), "blocked");
+
+    // Gap scout re-armed (source:web → source + domain + flow).
+    const webScout = asRow(
+      db
+        .prepare(
+          "SELECT generation, state FROM nodes WHERE run_id = ? AND node_key = ? ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1", "plan.scout.source-web"),
+    );
+    assert.ok(webScout);
+    assert.equal(requiredText(webScout, "state"), "ready");
+    assert.ok(requiredNumber(webScout, "generation") >= 1);
+
+    // Must NOT have requeued plan@0 as ready (same-digest empty retry).
+    assert.notEqual(nodeState(db, "run-1", "plan"), "ready");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("RetryFailedNode on plan semantic_gap with exhausted budget → conflict (WP-D)", async () => {
+  const fixture = await openControlFixture();
+  try {
+    const { db, ctrl } = fixture;
+    await seedScoutPathSucceeded(db);
+
+    // Consume the single re-scout round (auto path equivalent).
+    assert.equal(
+      schedulePlanSufficiencyRescout(ctrl, {
+        runId: "run-1",
+        planGeneration: 0,
+        message: "coverage gate failed: 1 gap(s): api",
+        failureClass: "coverage_gap",
+        error: {
+          failureClass: "coverage_gap",
+          gateFailure: { kind: "coverage", code: "COVERAGE_GAP", gaps: ["api"] },
+        },
+      }),
+      true,
+    );
+    assert.equal(planSufficiencyRoundsUsed(ctrl, "run-1"), 1);
+
+    const planGen = ctrl.currentNodeGeneration("run-1", "plan");
+    assert.equal(planGen, 1);
+    const attemptId = seedFailedPlanAttempt(db, "run-1", {
+      attemptId: "attempt-plan-gap-2",
+      generation: planGen!,
+      failureClass: "semantic_gap",
+      error: "semantic sufficiency gap: domain:api",
+      gateFailure: {
+        kind: "semantic_sufficiency",
+        code: "SEMANTIC_GAP",
+        gaps: ["domain:api"],
+      },
+    });
+
+    const revision = requiredNumber(
+      asRow(db.prepare("SELECT revision FROM runs WHERE run_id = ?").get("run-1"))!,
+      "revision",
+    );
+
+    try {
+      retryFailedNode(
+        ctrl,
+        {
+          type: "retry_failed_node",
+          commandId: "retry-plan-exhausted",
+          runId: "run-1",
+          expectedRevision: revision,
+          nodeKey: "plan",
+          generation: planGen!,
+          attemptId,
+        },
+        operatorContext,
+        "digest-retry-plan-exhausted",
+      );
+      assert.fail("expected WikiRunsRequestError conflict");
+    } catch (err) {
+      assert.ok(err instanceof WikiRunsRequestError);
+      assert.equal(err.code, "conflict");
+      assert.match(err.message, /re-discover budget exhausted|start a new run/i);
+    }
+
+    // Plan generation must not advance further.
+    assert.equal(ctrl.currentNodeGeneration("run-1", "plan"), planGen);
+    assert.equal(nodeState(db, "run-1", "plan"), "failed");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("RetryFailedNode on plan infrastructure failure still same-digest requeues", async () => {
+  const fixture = await openControlFixture();
+  try {
+    const { db, ctrl } = fixture;
+    await seedScoutPathSucceeded(db);
+    // Fixture upstreamSealedOutputs is [] → live digest is digest([]).
+    const emptyDigest = digest([]);
+    const attemptId = "attempt-plan-infra";
+    const ts = "2026-07-30T12:05:00.000Z";
+    db.prepare(
+      `INSERT INTO attempts (
+        attempt_id, run_id, node_key, node_generation, run_index, state, input_digest,
+        error, failure_class, started_at, ended_at
+      ) VALUES (?, 'run-1', 'plan', 0, 1, 'failed', ?, ?, 'infrastructure', ?, ?)`,
+    ).run(attemptId, emptyDigest, "plan fixture transport failure", ts, ts);
+    db.prepare(
+      `UPDATE nodes SET state = 'failed', last_attempt_id = ?, current_attempt_id = NULL
+       WHERE run_id = ? AND node_key = 'plan' AND generation = 0`,
+    ).run(attemptId, "run-1");
+
+    const revision = requiredNumber(
+      asRow(db.prepare("SELECT revision FROM runs WHERE run_id = ?").get("run-1"))!,
+      "revision",
+    );
+
+    const receipt = retryFailedNode(
+      ctrl,
+      {
+        type: "retry_failed_node",
+        commandId: "retry-plan-infra",
+        runId: "run-1",
+        expectedRevision: revision,
+        nodeKey: "plan",
+        generation: 0,
+        attemptId,
+      },
+      operatorContext,
+      "digest-retry-plan-infra",
+    );
+    assert.equal(receipt.accepted, true);
+    // Same generation requeue — plan@0 ready, not gen+1 rescout.
+    assert.equal(ctrl.currentNodeGeneration("run-1", "plan"), 0);
+    assert.equal(nodeState(db, "run-1", "plan"), "ready");
+    assert.equal(planSufficiencyRoundsUsed(ctrl, "run-1"), 0);
   } finally {
     await fixture.close();
   }

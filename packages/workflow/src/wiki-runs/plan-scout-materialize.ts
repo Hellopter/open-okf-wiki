@@ -29,16 +29,23 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   type CoverageInventory,
   type CoveragePlan,
+  isSurfaceUnitId,
   parseSealedCoverageInventory,
   parseSealedCoveragePlan,
+  parseSurfaceUnitId,
+  unitIdForSource,
 } from "@okf-wiki/contract/coverage";
+import type { GateFailure } from "@okf-wiki/contract/pi-attempt";
 import {
   contractForNode,
+  makeSemanticScoutTask,
   type PlanScoutTask,
   planScoutNodeKey,
   planScoutTaskFromDetail,
+  REQUIRED_SEMANTIC_SCOUT_KINDS,
   scoutTaskLabel,
   selectPlanScoutTasks,
+  SEMANTIC_SCOUT_KINDS,
 } from "@okf-wiki/contract/wiki-runs";
 import {
   resolveOrchestration,
@@ -745,7 +752,43 @@ export type PlanRescoutControl = DagControl & {
     feedback?: string,
     opts?: { selfOnly?: boolean },
   ): void;
+  /** Optional: full hybrid re-selection for `_discovery` gaps. */
+  workspace?: { rootPath: string };
+  workspaceForRun?: (runId: string) => { rootPath: string };
 };
+
+/** Typed failure classes that always count as plan sufficiency gaps. */
+const PLAN_SUFFICIENCY_GAP_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  "coverage_gap",
+  "semantic_gap",
+]);
+
+function gateFailureOf(error: unknown): GateFailure | undefined {
+  if (!error || typeof error !== "object" || !("gateFailure" in error)) return undefined;
+  const raw = (error as { gateFailure?: unknown }).gateFailure;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const gf = raw as GateFailure;
+  if (
+    gf.kind !== "coverage" &&
+    gf.kind !== "semantic_sufficiency" &&
+    gf.kind !== "spec_fanout" &&
+    gf.kind !== "other"
+  ) {
+    return undefined;
+  }
+  return gf;
+}
+
+function stringGapsFromUnknown(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((g): g is string => typeof g === "string" && g.trim().length > 0)
+        .map((g) => g.trim()),
+    ),
+  ];
+}
 
 /** True when the plan Attempt failed for coverage / semantic sufficiency (not transport). */
 export function isPlanSufficiencyGapFailure(
@@ -757,6 +800,13 @@ export function isPlanSufficiencyGapFailure(
   if (kind !== "plan") return false;
   const cls = failureClass?.trim().toLowerCase();
   if (cls && PLAN_RESCOUT_DENY_FAILURE_CLASSES.has(cls)) return false;
+
+  // Prefer typed failureClass from PiAttemptOutcome (WP-B/C).
+  if (cls && PLAN_SUFFICIENCY_GAP_FAILURE_CLASSES.has(cls)) return true;
+
+  // Prefer structured gateFailure on the thrown Error.
+  const gf = gateFailureOf(error);
+  if (gf && (gf.kind === "coverage" || gf.kind === "semantic_sufficiency")) return true;
 
   if (error && typeof error === "object") {
     const name = "name" in error && typeof (error as { name?: unknown }).name === "string"
@@ -774,23 +824,34 @@ export function isPlanSufficiencyGapFailure(
 }
 
 /**
- * Extract gap unit ids from CoverageAssertError/SemanticSufficiencyError result
- * or from synthesizer gap messages (`gap(s): a, b`).
+ * Extract gap unit / semantic ids from gateFailure (preferred),
+ * CoverageAssertError/SemanticSufficiencyError result, or synthesizer messages.
  */
 export function extractPlanSufficiencyGapUnitIds(
   message: string,
   error?: unknown,
 ): string[] {
-  if (error && typeof error === "object" && "result" in error) {
-    const result = (error as { result?: { gaps?: unknown } }).result;
-    if (result && Array.isArray(result.gaps)) {
-      const fromResult = result.gaps
-        .filter((g): g is string => typeof g === "string" && g.trim().length > 0)
-        .map((g) => g.trim());
-      if (fromResult.length > 0) return [...new Set(fromResult)];
+  // 1) Typed gateFailure.gaps (WP-C preferred path).
+  const gf = gateFailureOf(error);
+  if (gf) {
+    const fromGf = stringGapsFromUnknown(gf.gaps);
+    if (fromGf.length > 0) return fromGf;
+    if (gf.result && typeof gf.result === "object" && !Array.isArray(gf.result)) {
+      const fromGfResult = stringGapsFromUnknown(
+        (gf.result as { gaps?: unknown }).gaps,
+      );
+      if (fromGfResult.length > 0) return fromGfResult;
     }
   }
 
+  // 2) Direct error.result.gaps (CoverageAssertError / SemanticSufficiencyError).
+  if (error && typeof error === "object" && "result" in error) {
+    const result = (error as { result?: { gaps?: unknown } }).result;
+    const fromResult = stringGapsFromUnknown(result?.gaps);
+    if (fromResult.length > 0) return fromResult;
+  }
+
+  // 3) Message fallbacks (legacy free-form synthesizer errors).
   const match = message.match(/gap\(s\):\s*([^\n(+]+)/i);
   if (match?.[1]) {
     const ids = match[1]
@@ -813,6 +874,137 @@ export function extractPlanSufficiencyGapUnitIds(
   }
 
   return [];
+}
+
+/**
+ * Parse a gap id into a source-qualified semantic scout when it looks like
+ * `domain:api`, `flow:web`, `flow:cross`, `concept:x`, or `flow-cross`.
+ */
+function semanticTaskFromGapId(raw: string): PlanScoutTask | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+  if (value === "flow-cross" || value === "flow:cross") {
+    return makeSemanticScoutTask("flow", { cross: true, required: true });
+  }
+  const m = /^(domain|flow|concept)[:\-](.+)$/.exec(value);
+  if (!m) return undefined;
+  const kind = m[1] as (typeof SEMANTIC_SCOUT_KINDS)[number];
+  const qual = m[2]!.trim();
+  if (!qual) return undefined;
+  if (kind === "flow" && qual === "cross") {
+    return makeSemanticScoutTask("flow", { cross: true, required: true });
+  }
+  return makeSemanticScoutTask(kind, { sourceId: qual, required: true });
+}
+
+/**
+ * Map plan sufficiency gap ids to scout tasks (source-qualified).
+ *
+ * - bare sourceId → source + domain + flow for that source
+ * - surface unit → surface task
+ * - `_cross_source` → flow:cross
+ * - `_discovery` → full hybrid unit+semantic set (or existing scouts)
+ * - `domain:x` / `flow:x` / `concept:x` → makeSemanticScoutTask
+ */
+export function mapPlanSufficiencyGapsToTasks(
+  host: Pick<PlanRescoutControl, "db" | "currentNodeGeneration" | "workspace" | "workspaceForRun">,
+  runId: string,
+  orch: WorkspaceOrchestration,
+  gaps: readonly string[],
+): PlanScoutTask[] {
+  const trimmed = gaps.map((g) => g.trim()).filter(Boolean);
+  const wantsFullDiscovery = trimmed.includes("_discovery");
+
+  if (wantsFullDiscovery) {
+    const full = selectFullHybridScoutTasks(host, runId, orch);
+    if (full.length > 0) return full;
+    return existingPlanScoutTasks(host, runId);
+  }
+
+  const tasks: PlanScoutTask[] = [];
+  const seen = new Set<string>();
+  const push = (task: PlanScoutTask) => {
+    if (seen.has(task.id)) return;
+    seen.add(task.id);
+    tasks.push(task);
+  };
+
+  for (const gap of trimmed) {
+    if (gap === "_discovery") continue;
+    if (gap === "_cross_source") {
+      push(makeSemanticScoutTask("flow", { cross: true, required: true }));
+      continue;
+    }
+
+    const semantic = semanticTaskFromGapId(gap);
+    if (semantic) {
+      push(semantic);
+      continue;
+    }
+
+    if (isSurfaceUnitId(gap)) {
+      const parsed = parseSurfaceUnitId(gap);
+      if (!parsed) continue;
+      push({
+        kind: "surface",
+        sourceId: parsed.sourceId,
+        path: parsed.path,
+        unitId: gap,
+        id: `surface:${gap}`,
+        required: true,
+      });
+      continue;
+    }
+
+    // Bare semantic kinds without qualifier — legacy global reopen.
+    if ((SEMANTIC_SCOUT_KINDS as readonly string[]).includes(gap)) {
+      push(
+        makeSemanticScoutTask(gap as (typeof SEMANTIC_SCOUT_KINDS)[number], {
+          required: true,
+        }),
+      );
+      continue;
+    }
+
+    // Bare sourceId → unit survey + source-qualified domain + flow.
+    const sid = unitIdForSource(gap);
+    if (!sid) continue;
+    push({
+      kind: "source",
+      sourceId: sid,
+      id: `source:${sid}`,
+      required: true,
+    });
+    for (const semanticKind of REQUIRED_SEMANTIC_SCOUT_KINDS) {
+      push(makeSemanticScoutTask(semanticKind, { sourceId: sid, required: true }));
+    }
+  }
+
+  return tasks;
+}
+
+/** Full hybrid scout set from sealed freeze coverage (or empty when unavailable). */
+function selectFullHybridScoutTasks(
+  host: Pick<PlanRescoutControl, "db" | "workspace" | "workspaceForRun">,
+  runId: string,
+  orch: WorkspaceOrchestration,
+): PlanScoutTask[] {
+  const rootPath =
+    host.workspaceForRun?.(runId)?.rootPath ?? host.workspace?.rootPath;
+  if (!rootPath) return [];
+  try {
+    const { inventory, coveragePlan } = loadCoverageFromSealedFreeze(host, {
+      rootPath,
+      runId,
+    });
+    return selectPlanScoutTasks({
+      orch,
+      coverageInventory: inventory,
+      coveragePlan,
+    });
+  } catch {
+    return [];
+  }
 }
 
 /** Max planSufficiencyRound already recorded on any plan generation (0 = never re-armed). */
@@ -867,13 +1059,6 @@ export function hasPlanScoutTopology(
         .get(runId),
     ),
   );
-}
-
-function isRealCoverageUnitGapId(id: string): boolean {
-  const t = id.trim();
-  // Semantic meta-gaps are not CoverageUnit ids.
-  if (!t || t.startsWith("_")) return false;
-  return true;
 }
 
 /** Existing durable plan.scout tasks (unit/semantic preferred; else all). */
@@ -946,6 +1131,46 @@ function demoteNodeState(
     .run(state, runId, nodeKey, generation);
 }
 
+function readNodeDetailBase(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+): Record<string, unknown> {
+  const row = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, nodeKey, generation),
+  );
+  if (row?.detail_json == null || row.detail_json === "") return {};
+  try {
+    const parsed = JSON.parse(String(row.detail_json)) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...(parsed as Record<string, unknown>) };
+    }
+  } catch {
+    // corrupt → empty base
+  }
+  return {};
+}
+
+function writeNodeDetail(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+  detail: Record<string, unknown>,
+): void {
+  host.db
+    .prepare(
+      `UPDATE nodes SET detail_json = ?
+       WHERE run_id = ? AND node_key = ? AND generation = ?`,
+    )
+    .run(JSON.stringify(detail), runId, nodeKey, generation);
+}
+
 function mergePlanDetailRound(
   host: Pick<DagControl, "db">,
   runId: string,
@@ -953,42 +1178,63 @@ function mergePlanDetailRound(
   nextRound: number,
   gapUnitIds: readonly string[],
 ): void {
-  const row = asRow(
-    host.db
-      .prepare(
-        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = ?",
-      )
-      .get(runId, generation),
-  );
-  let base: Record<string, unknown> = {};
-  if (row?.detail_json != null && row.detail_json !== "") {
-    try {
-      const parsed = JSON.parse(String(row.detail_json)) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        base = { ...(parsed as Record<string, unknown>) };
-      }
-    } catch {
-      base = {};
-    }
-  }
+  const base = readNodeDetailBase(host, runId, "plan", generation);
   base.planSufficiencyRound = nextRound;
   if (gapUnitIds.length > 0) base.planSufficiencyGaps = [...gapUnitIds];
-  host.db
-    .prepare(
-      `UPDATE nodes SET detail_json = ?
-       WHERE run_id = ? AND node_key = 'plan' AND generation = ?`,
-    )
-    .run(JSON.stringify(base), runId, generation);
+  writeNodeDetail(host, runId, "plan", generation, base);
+}
+
+/**
+ * Mark reduce as final-wave sufficiency re-scout so L3 two-wave gate does not
+ * treat this reduce as intermediate Wave A (discoverWave:1) and block Wave B
+ * scouts that were re-armed together with unit surveys.
+ */
+function mergeReduceSufficiencyRescoutDetail(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  generation: number,
+): void {
+  const base = readNodeDetailBase(host, runId, DISCOVER_REDUCE_KEY, generation);
+  base.discoverWave = 2;
+  base.sufficiencyRescout = true;
+  writeNodeDetail(host, runId, DISCOVER_REDUCE_KEY, generation, base);
+}
+
+/** Record why applyRerunAt aborted re-arm (no silent empty catch). */
+function recordPlanRescoutApplyFailure(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  planGeneration: number,
+  nodeKey: string,
+  err: unknown,
+): void {
+  const reason =
+    err instanceof Error
+      ? err.message.slice(0, 500)
+      : String(err ?? "unknown applyRerunAt failure").slice(0, 500);
+  const base = readNodeDetailBase(host, runId, "plan", planGeneration);
+  base.planSufficiencyRescoutError = {
+    nodeKey,
+    reason,
+    at: now(),
+  };
+  writeNodeDetail(host, runId, "plan", planGeneration, base);
 }
 
 /**
  * Control-plane re-arm after plan coverage/semantic gap (ADR 0040/0042).
  *
  * When budget remains (`planRescoutMaxRounds`): bump gap plan.scout tasks
- * (or existing unit/semantic scouts), re-block plan.discover.reduce + plan at
- * gen+1, unlock scouts. Fail-closed when exhausted or light path (no scouts).
+ * (source-qualified domain/flow + flow:cross when semantic), re-block
+ * plan.discover.reduce + plan at gen+1, unlock scouts. Reduce is stamped
+ * `discoverWave:2` + `sufficiencyRescout:true` so L3 two-wave does not treat
+ * the re-arm as intermediate Wave A. Fail-closed when exhausted or light path.
  *
- * @returns true when re-arm was applied (caller should emit node.ready).
+ * applyRerunAt failures are recorded on the failed plan generation detail
+ * (`planSufficiencyRescoutError`) — never silent empty catch / bare false.
+ *
+ * @returns true when re-arm was applied (caller should emit node.ready; must
+ *   NOT markRunFailed).
  */
 export function schedulePlanSufficiencyRescout(
   host: PlanRescoutControl,
@@ -1020,21 +1266,24 @@ export function schedulePlanSufficiencyRescout(
 
   const nextRound = used + 1;
   const rawGaps = extractPlanSufficiencyGapUnitIds(message, error);
-  const unitGaps = rawGaps.filter(isRealCoverageUnitGapId);
 
   let tasks: PlanScoutTask[] = [];
-  if (unitGaps.length > 0) {
+  if (rawGaps.length > 0) {
     try {
-      tasks = selectPlanScoutTasks({
-        orch,
-        gapUnitIds: unitGaps,
-      });
-    } catch {
+      tasks = mapPlanSufficiencyGapsToTasks(host, runId, orch, rawGaps);
+    } catch (err) {
+      recordPlanRescoutApplyFailure(
+        host,
+        runId,
+        planGeneration,
+        "mapPlanSufficiencyGapsToTasks",
+        err,
+      );
       tasks = [];
     }
   }
   if (tasks.length === 0) {
-    // Semantic meta-gaps / unparseable unit list → re-arm existing unit/semantic scouts.
+    // Empty gap list / unparseable → re-arm existing unit/semantic scouts.
     tasks = existingPlanScoutTasks(host, runId);
   }
   if (tasks.length === 0) {
@@ -1047,12 +1296,21 @@ export function schedulePlanSufficiencyRescout(
         )
         .get(runId),
     );
-    if (!anyScout) return false;
+    if (!anyScout) {
+      recordPlanRescoutApplyFailure(
+        host,
+        runId,
+        planGeneration,
+        "plan.scout",
+        new Error("plan sufficiency re-scout: scout topology present but no parseable tasks"),
+      );
+      return false;
+    }
   }
 
   const feedback = [
     `Plan sufficiency re-scout round ${nextRound}/${maxRounds}`,
-    unitGaps.length > 0 ? `gaps: ${unitGaps.slice(0, 12).join(", ")}` : message.slice(0, 500),
+    rawGaps.length > 0 ? `gaps: ${rawGaps.slice(0, 12).join(", ")}` : message.slice(0, 500),
   ].join("\n");
 
   // 1) Re-arm gap / selected scouts (selfOnly — reduce/plan bumped explicitly).
@@ -1086,37 +1344,67 @@ export function schedulePlanSufficiencyRescout(
     }
     try {
       host.applyRerunAt(runId, nodeKey, gen, undefined, { selfOnly: true });
-    } catch {
-      // already bumped / stale — continue
+    } catch (err) {
+      const nextGen = host.currentNodeGeneration(runId, nodeKey);
+      if (nextGen === undefined || nextGen === gen) {
+        // Real failure (not already-bumped). Record and continue other scouts.
+        recordPlanRescoutApplyFailure(host, runId, planGeneration, nodeKey, err);
+      }
+      // already bumped / stale with advanced gen — continue
     }
   }
 
   // 2) Re-arm plan.discover.reduce → blocked until scouts terminal.
+  // Stamp discoverWave:2 + sufficiencyRescout so two-wave gate does not block B.
   const reduceGen = host.currentNodeGeneration(runId, DISCOVER_REDUCE_KEY);
   if (reduceGen !== undefined) {
     try {
       host.applyRerunAt(runId, DISCOVER_REDUCE_KEY, reduceGen, undefined, {
         selfOnly: true,
       });
-    } catch {
-      // ignore
+    } catch (err) {
+      const next = host.currentNodeGeneration(runId, DISCOVER_REDUCE_KEY);
+      if (next === undefined || next === reduceGen) {
+        recordPlanRescoutApplyFailure(
+          host,
+          runId,
+          planGeneration,
+          DISCOVER_REDUCE_KEY,
+          err,
+        );
+        return false;
+      }
+      // already bumped
     }
     const nextReduceGen = host.currentNodeGeneration(runId, DISCOVER_REDUCE_KEY);
     if (nextReduceGen !== undefined) {
       demoteNodeState(host, runId, DISCOVER_REDUCE_KEY, nextReduceGen, "blocked");
+      mergeReduceSufficiencyRescoutDetail(host, runId, nextReduceGen);
     }
   }
 
   // 3) Re-arm plan at gen+1, blocked until reduce succeeds; stamp round counter.
+  // Failed plan generation stays failed for audit (applyRerunAt does not supersede
+  // terminal failed — only claimable states).
   try {
     host.applyRerunAt(runId, "plan", planGeneration, feedback, { selfOnly: true });
-  } catch {
+  } catch (err) {
+    recordPlanRescoutApplyFailure(host, runId, planGeneration, "plan", err);
     return false;
   }
   const nextPlanGen = host.currentNodeGeneration(runId, "plan");
-  if (nextPlanGen === undefined) return false;
+  if (nextPlanGen === undefined) {
+    recordPlanRescoutApplyFailure(
+      host,
+      runId,
+      planGeneration,
+      "plan",
+      new Error("plan sufficiency re-scout: plan generation missing after applyRerunAt"),
+    );
+    return false;
+  }
   demoteNodeState(host, runId, "plan", nextPlanGen, "blocked");
-  mergePlanDetailRound(host, runId, nextPlanGen, nextRound, unitGaps.length > 0 ? unitGaps : rawGaps);
+  mergePlanDetailRound(host, runId, nextPlanGen, nextRound, rawGaps);
 
   unlockReadyNodes(host, runId);
 

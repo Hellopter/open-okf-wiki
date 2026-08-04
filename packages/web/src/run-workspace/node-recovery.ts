@@ -223,6 +223,30 @@ const NO_AUTO_RETRY_FAILURE_CLASSES = new Set([
   "publication_conflict",
 ]);
 
+/** Plan product gates that re-arm via host re-discover (not same-digest Retry). */
+const PLAN_SUFFICIENCY_GAP_FAILURE_CLASSES = new Set(["coverage_gap", "semantic_gap"]);
+
+/**
+ * True when RetryFailedNode on this plan node should re-discover & re-plan
+ * (host schedulePlanSufficiencyRescout), not same-generation empty retry.
+ * Best-effort UI hint; server remains authoritative.
+ */
+export function isPlanSufficiencyGapRetry(
+  nodeKey: string,
+  attempt: WikiRunAttempt | null | undefined,
+): boolean {
+  if (nodeKey !== "plan" || !attempt) return false;
+  const cls = attempt.failureClass?.trim().toLowerCase();
+  if (cls && PLAN_SUFFICIENCY_GAP_FAILURE_CLASSES.has(cls)) return true;
+  // metrics_json.extra.gateFailure when failureClass was not projected.
+  const gf = attempt.metrics?.extra?.gateFailure;
+  if (gf && typeof gf === "object" && !Array.isArray(gf)) {
+    const kind = (gf as { kind?: unknown }).kind;
+    if (kind === "coverage" || kind === "semantic_sufficiency") return true;
+  }
+  return false;
+}
+
 /** L_control auto-requeue: research.leaf / research.domain / plan.scout. */
 function isResearchAutoRetryKind(nodeKind: string | undefined): boolean {
   return (

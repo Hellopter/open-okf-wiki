@@ -97,17 +97,41 @@ export async function handlePlan(ctx: AttemptHandlerContext): Promise<PiAttemptO
       onProgress: (p) => forwardScopedProgress(ctx, p, seat),
     });
   } catch (error) {
-    // Product dual gates (assertCoverage / assertSemanticSufficiency) → schema,
-    // consistent with plan.scout critical gaps and ExecutionPlanCompileError.
-    if (error instanceof CoverageAssertError || error instanceof SemanticSufficiencyError) {
+    // Product dual gates → typed failureClass + gateFailure so the host can
+    // re-arm scouts from gap unit ids without parsing free-form error strings.
+    if (error instanceof SemanticSufficiencyError) {
+      const gaps = Array.isArray(error.result.gaps) ? error.result.gaps : [];
       return failAttempt(input, {
         error,
-        failureClass: "schema",
+        failureClass: "semantic_gap",
+        gateFailure: {
+          kind: "semantic_sufficiency",
+          code: error.code ?? "SEMANTIC_GAP",
+          ...(gaps.length > 0 ? { gaps: gaps.slice(0, 64) } : {}),
+          result: error.result,
+        },
         task: planTask,
         meta: {
           mode: "plan",
-          gate:
-            error instanceof SemanticSufficiencyError ? "semantic_sufficiency" : "coverage",
+          gate: "semantic_sufficiency",
+        },
+      });
+    }
+    if (error instanceof CoverageAssertError) {
+      const gaps = Array.isArray(error.result.gaps) ? error.result.gaps : [];
+      return failAttempt(input, {
+        error,
+        failureClass: "coverage_gap",
+        gateFailure: {
+          kind: "coverage",
+          code: error.code ?? "COVERAGE_GAP",
+          ...(gaps.length > 0 ? { gaps: gaps.slice(0, 64) } : {}),
+          result: error.result,
+        },
+        task: planTask,
+        meta: {
+          mode: "plan",
+          gate: "coverage",
         },
       });
     }

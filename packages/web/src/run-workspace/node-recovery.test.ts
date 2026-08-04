@@ -7,6 +7,7 @@ import {
   canRetryFailedNode,
   hasLikelyDownstreamConsumers,
   hasMaterializedExecutionTopology,
+  isPlanSufficiencyGapRetry,
   isRepairNodeKey,
   lastFailedAttemptForNode,
   listRecoveryTargetNodes,
@@ -651,4 +652,48 @@ test("shouldShowNoAutoRetryHint covers product failures and non-research nodes",
   assert.equal(shouldShowNoAutoRetryHint(undefined, "plan"), true);
   // Bare "research" is not a real kind — treat as non-research for safety.
   assert.equal(shouldShowNoAutoRetryHint("infrastructure", "research"), true);
+});
+
+test("isPlanSufficiencyGapRetry detects coverage/semantic gaps on plan only", () => {
+  const coverage = {
+    attemptId: "att-c",
+    nodeKey: "plan",
+    nodeGeneration: 0,
+    runIndex: 1,
+    state: "failed" as const,
+    inputDigest: DIGEST,
+    error: "coverage gap",
+    failureClass: "coverage_gap",
+    startedAt: "2026-08-02T00:00:00.000Z",
+    endedAt: "2026-08-02T00:01:00.000Z",
+  };
+  const semantic = {
+    ...coverage,
+    attemptId: "att-s",
+    failureClass: "semantic_gap",
+    error: "semantic gap",
+  };
+  const viaMetrics = {
+    ...coverage,
+    attemptId: "att-m",
+    failureClass: undefined,
+    metrics: {
+      extra: {
+        gateFailure: { kind: "coverage", code: "COVERAGE_GAP", gaps: ["web"] },
+      },
+    },
+  };
+  const infra = {
+    ...coverage,
+    attemptId: "att-i",
+    failureClass: "infrastructure",
+    error: "timeout",
+  };
+
+  assert.equal(isPlanSufficiencyGapRetry("plan", coverage), true);
+  assert.equal(isPlanSufficiencyGapRetry("plan", semantic), true);
+  assert.equal(isPlanSufficiencyGapRetry("plan", viaMetrics), true);
+  assert.equal(isPlanSufficiencyGapRetry("plan", infra), false);
+  assert.equal(isPlanSufficiencyGapRetry("research.leaf.a", coverage), false);
+  assert.equal(isPlanSufficiencyGapRetry("plan", null), false);
 });

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PiAttemptInputSchema, PiAttemptOutcomeSchema } from "./pi-attempt.js";
+import {
+  GateFailureSchema,
+  PiAttemptFailureClassSchema,
+  PiAttemptInputSchema,
+  PiAttemptOutcomeSchema,
+} from "./pi-attempt.js";
 
 const digest = "a".repeat(64);
 const timestamp = "2026-07-28T00:00:00.000Z";
@@ -234,5 +239,105 @@ test("PiAttemptOutcome rejects malformed and cross-variant results", () => {
       metrics: { role: "leaf", stopReason: "infrastructure", wallTimeMs: 3 },
     }).success,
     true,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "coverage matrix incomplete",
+      failureClass: "coverage_gap",
+      gateFailure: {
+        kind: "coverage",
+        code: "coverage_gap",
+        gaps: ["unit:src/entry", "unit:src/layout"],
+        result: { stop_reason: "coverage_gap", ok: false },
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "semantic sufficiency incomplete",
+      failureClass: "semantic_gap",
+      gateFailure: {
+        kind: "semantic_sufficiency",
+        gaps: ["facet:audience"],
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "fanout rejected",
+      failureClass: "schema",
+      gateFailure: {
+        kind: "spec_fanout",
+        code: "spec_fanout",
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "gate failed",
+      failureClass: "coverage_gap",
+      gateFailure: {
+        kind: "coverage",
+        gaps: Array.from({ length: 65 }, (_, i) => `gap-${i}`),
+      },
+    }).success,
+    false,
+    "gateFailure.gaps must cap at 64",
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "gate failed",
+      failureClass: "coverage_gap",
+      gateFailure: {
+        kind: "not_a_kind",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    PiAttemptOutcomeSchema.safeParse({
+      type: "failed",
+      error: "gate failed",
+      failureClass: "coverage_gap",
+      gateFailure: {
+        kind: "coverage",
+        extra: true,
+      },
+    }).success,
+    false,
+    "gateFailure is strict",
+  );
+});
+
+test("PiAttemptFailureClass and GateFailure schemas export new gate classes", () => {
+  for (const value of ["coverage_gap", "semantic_gap", "schema", "provider"] as const) {
+    assert.equal(PiAttemptFailureClassSchema.safeParse(value).success, true, value);
+  }
+  assert.equal(PiAttemptFailureClassSchema.safeParse("timeout").success, false);
+
+  const coverage = GateFailureSchema.safeParse({
+    kind: "coverage",
+    code: "coverage_gap",
+    gaps: ["a"],
+    result: { ok: false },
+  });
+  assert.equal(coverage.success, true);
+  if (coverage.success) {
+    assert.equal(coverage.data.kind, "coverage");
+    assert.deepEqual(coverage.data.gaps, ["a"]);
+  }
+
+  assert.equal(
+    GateFailureSchema.safeParse({ kind: "other" }).success,
+    true,
+    "minimal gateFailure is valid",
   );
 });

@@ -33,6 +33,8 @@ import { MarkdownDocument } from "../shared/MarkdownDocument";
 import {
   canRerunNode,
   canRetryFailedNode,
+  isPlanSufficiencyGapRetry,
+  lastFailedAttemptForNode,
   shouldShowNoAutoRetryHint,
   truncateAttemptError,
 } from "./node-recovery";
@@ -475,10 +477,27 @@ export function AttemptObservation({
     tools: t.workbench.context.toolCalls,
   };
 
+  // Plan coverage/semantic gap → host re-discover label (not same-digest Retry).
+  // Prefer the node's last failed attempt (retry target), not a historical row.
+  const planSufficiencyRetry = Boolean(
+    selectedNode &&
+      isPlanSufficiencyGapRetry(
+        selectedNode.key,
+        lastFailedAttemptForNode(snapshot, selectedNode.key) ??
+          (selectedAttempt && ["failed", "interrupted"].includes(selectedAttempt.state)
+            ? selectedAttempt
+            : null),
+      ),
+  );
+  const retryLabel = planSufficiencyRetry
+    ? t.workbench.retryNodeRediscover
+    : t.workbench.retryNode;
   const retryTitle =
     retry?.ok === false
       ? (t.workbench.cannotRetryReason[retry.reasonKey] ?? t.workbench.retryNodeHint)
-      : t.workbench.retryNodeHint;
+      : planSufficiencyRetry
+        ? t.workbench.retryNodeRediscoverHint
+        : t.workbench.retryNodeHint;
   const rerunTitle =
     rerun?.ok === false
       ? (t.workbench.cannotRerunReason[rerun.reasonKey] ?? t.workbench.rerunNodeHint)
@@ -569,12 +588,13 @@ export function AttemptObservation({
                 variant={retry?.ok ? "default" : "outline"}
                 disabled={!retry?.ok}
                 title={retryTitle}
-                aria-label={t.workbench.retryNode}
+                aria-label={retryLabel}
                 data-testid="retry-node"
+                data-rediscover={planSufficiencyRetry ? "true" : undefined}
                 onClick={dispatchRetry}
               >
                 <RotateCcwIcon data-icon="inline-start" />
-                {t.workbench.retryNode}
+                {retryLabel}
               </Button>
               <Button
                 size="sm"

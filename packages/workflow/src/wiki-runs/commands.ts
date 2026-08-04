@@ -12,13 +12,18 @@ import type { ApplyRerunAtOptions, WikiRunsControl } from "./ctx.js";
 export type { ApplyRerunAtOptions } from "./ctx.js";
 import { countModelWikiCandidates } from "./evaluation/candidate.js";
 import {
+  isPlanSufficiencyGapFailure,
+  planSufficiencyRoundsUsed,
+  schedulePlanSufficiencyRescout,
+} from "./plan-scout-materialize.js";
+import {
   continueEvaluationRecovery,
   isRepairNodeKey,
   loadEvaluationPolicy,
 } from "./repair-schedule.js";
 import { pauseRun, resumeRun, submitRunRevision } from "./run-revision-coordinator.js";
 import { applyRunCancelTransitions } from "./run-terminal.js";
-import { asRow, asRows, requiredNumber, requiredText } from "./sql.js";
+import { asRow, asRows, requiredNumber, requiredText, type SqlRow } from "./sql.js";
 import { CommandIdCollision, WikiRunsRequestError } from "./types.js";
 
 export function applyCommand(
@@ -134,6 +139,44 @@ export function applyCommand(
   return { commandId: command.commandId, runId, revision, accepted: true };
 }
 
+/**
+ * Rebuild the structured error envelope used by schedulePlanSufficiencyRescout
+ * from a durable failed attempt row (error + failure_class + metrics_json.gateFailure).
+ */
+export function planSufficiencyContextFromAttempt(row: SqlRow): {
+  message: string;
+  failureClass?: string;
+  error: unknown;
+} {
+  const message =
+    row.error != null && String(row.error).trim()
+      ? String(row.error).slice(0, 4_000)
+      : "plan failed";
+  const failureClass =
+    row.failure_class != null && String(row.failure_class).trim()
+      ? String(row.failure_class).trim()
+      : undefined;
+  let gateFailure: unknown;
+  if (row.metrics_json != null && String(row.metrics_json).trim()) {
+    try {
+      const parsed = JSON.parse(String(row.metrics_json)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const gf = (parsed as { gateFailure?: unknown }).gateFailure;
+        if (gf && typeof gf === "object" && !Array.isArray(gf)) {
+          gateFailure = gf;
+        }
+      }
+    } catch {
+      // corrupt metrics_json — fall through with message / failureClass only
+    }
+  }
+  const error = Object.assign(new Error(message), {
+    ...(failureClass ? { failureClass } : {}),
+    ...(gateFailure ? { gateFailure } : {}),
+  });
+  return { message, failureClass, error };
+}
+
 export function retryFailedNode(
   host: WikiRunsControl,
   command: Extract<RunCommand, { type: "retry_failed_node" }>,
@@ -151,7 +194,8 @@ export function retryFailedNode(
     host.db
       .prepare(
         `SELECT nodes.state, nodes.last_attempt_id, nodes.kind, attempts.state AS attempt_state,
-                  attempts.input_digest, runs.pinned_digest, runs.state AS run_state
+                  attempts.input_digest, attempts.error, attempts.failure_class, attempts.metrics_json,
+                  runs.pinned_digest, runs.state AS run_state
            FROM nodes JOIN attempts ON attempts.attempt_id = nodes.last_attempt_id
            JOIN runs ON runs.run_id = nodes.run_id
            WHERE nodes.run_id = ? AND nodes.node_key = ? AND nodes.generation = ?
@@ -199,6 +243,46 @@ export function retryFailedNode(
       "downstream already consumed this node's outputs; use RerunNode instead of RetryFailedNode",
     );
   }
+
+  // Plan coverage / semantic sufficiency gap (WP-D): operator Retry must call the
+  // same host re-discover path as automatic failNode — never same-digest empty retry.
+  if (command.nodeKey === "plan") {
+    const sufficiency = planSufficiencyContextFromAttempt(node);
+    if (
+      isPlanSufficiencyGapFailure(
+        "plan",
+        sufficiency.message,
+        sufficiency.failureClass,
+        sufficiency.error,
+      )
+    ) {
+      const rearmed = schedulePlanSufficiencyRescout(host, {
+        runId: command.runId,
+        planGeneration: command.generation,
+        message: sufficiency.message,
+        failureClass: sufficiency.failureClass,
+        error: sufficiency.error,
+      });
+      if (rearmed) {
+        const revision = host.emit(command.runId, "node.ready");
+        recordCommand(host, command, context, payloadDigest, command.runId, revision);
+        return {
+          commandId: command.commandId,
+          runId: command.runId,
+          revision,
+          accepted: true,
+        };
+      }
+      const used = planSufficiencyRoundsUsed(host, command.runId);
+      throw new WikiRunsRequestError(
+        "conflict",
+        used > 0
+          ? "plan re-discover budget exhausted; start a new run"
+          : "cannot re-discover plan sufficiency gaps (budget exhausted or no scout topology); start a new run",
+      );
+    }
+  }
+
   // Frozen input digest must still match current sealed upstreams (or prior attempt
   // inputs when freeze post-pin reuses pins). Changed lineage → RerunNode.
   if (command.nodeKey !== "freeze") {

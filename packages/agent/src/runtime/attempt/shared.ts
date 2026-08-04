@@ -4,7 +4,14 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { type PiAttemptArtifactDescriptor, type PiAttemptFailureClass, type PiAttemptInput, type PiAttemptOutcome, PiAttemptOutcomeSchema } from "@okf-wiki/contract/pi-attempt";
+import {
+  type GateFailure,
+  type PiAttemptArtifactDescriptor,
+  type PiAttemptFailureClass,
+  type PiAttemptInput,
+  type PiAttemptOutcome,
+  PiAttemptOutcomeSchema,
+} from "@okf-wiki/contract/pi-attempt";
 import { type AttemptItem, type AttemptMetrics, type NodeAttempt, type WikiRunSpec, WikiRunSpecSchema } from "@okf-wiki/contract/wiki-runs";
 import { effectiveIgnoresForSource, isPathInside } from "@okf-wiki/core";
 import type { AgentRunner } from "../../ports/agent-runner.js";
@@ -174,12 +181,17 @@ export async function sealTranscript(
  *
  * Prefer this over bare `{ type: "failed" }` returns that skip transcripts.
  * Throw paths still go through the executor catch (which finalizes similarly).
+ *
+ * Optional `gateFailure` carries structured coverage / semantic gap ids so the
+ * host can re-arm without parsing free-form error strings (WP-B).
  */
 export async function failAttempt(
   input: PiAttemptInput,
   parts: {
     error: unknown;
     failureClass: PiAttemptFailureClass;
+    /** Structured gate rejection (coverage / semantic_sufficiency / …). */
+    gateFailure?: GateFailure;
     unsealedArtifacts?: PiAttemptArtifactDescriptor[];
     task?: string;
     items?: AttemptItem[];
@@ -200,6 +212,15 @@ export async function failAttempt(
       mode: "failed",
       failureClass: parts.failureClass,
       error: message,
+      ...(parts.gateFailure
+        ? {
+            gateFailure: {
+              kind: parts.gateFailure.kind,
+              ...(parts.gateFailure.code ? { code: parts.gateFailure.code } : {}),
+              ...(parts.gateFailure.gaps ? { gaps: parts.gateFailure.gaps } : {}),
+            },
+          }
+        : {}),
       ...parts.meta,
     },
   });
@@ -211,6 +232,7 @@ export async function failAttempt(
     type: "failed",
     error: message,
     failureClass: parts.failureClass,
+    ...(parts.gateFailure ? { gateFailure: parts.gateFailure } : {}),
     unsealedArtifacts,
   });
 }

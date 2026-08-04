@@ -699,8 +699,12 @@ export const en = {
     cancelRunConfirm:
       "Cancel this Run? Cancellation is terminal — you cannot resume a cancelled Run.",
     retryNode: "Retry",
+    /** Plan coverage/semantic gap: host re-arms scouts then re-plans (WP-D). */
+    retryNodeRediscover: "Re-discover & re-plan",
     rerunNode: "Rerun",
     retryNodeHint: "Retry the same generation with the same sealed inputs.",
+    retryNodeRediscoverHint:
+      "Re-arm gap scouts and re-plan within the remaining re-discover budget (not a same-input empty retry).",
     rerunNodeHint: "Start a new generation and invalidate downstream consumers.",
     rerunNodeConfirmTitle: "Rerun this node?",
     rerunNodeConfirm:

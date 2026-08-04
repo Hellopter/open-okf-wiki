@@ -523,9 +523,13 @@ export async function executeClaimed(host: WikiRunsControl, claim: ClaimedNode):
       if (preparations.length > 0) {
         host.transaction(() => host.commitFailedAttemptArtifacts(claim, preparations));
       }
-      // Preserve typed failureClass + optional metrics for L_control / observation.
+      // Preserve typed failureClass, structured gateFailure (coverage/semantic
+      // gaps), and optional metrics for L_control / plan sufficiency re-scout.
       throw Object.assign(new Error(outcome.error), {
         failureClass: outcome.failureClass,
+        ...("gateFailure" in outcome && outcome.gateFailure
+          ? { gateFailure: outcome.gateFailure }
+          : {}),
         ...(preparations.length > 0
           ? {
               failureArtifacts: Object.fromEntries(

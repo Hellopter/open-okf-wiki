@@ -156,9 +156,29 @@ export const PiAttemptFailureClassSchema = z.enum([
   "publication_conflict",
   /** Mechanical / product quality defects (e.g. hard-validate dirty wiki). */
   "schema",
+  /** Plan coverage matrix gate failed (unit gaps remain). */
+  "coverage_gap",
+  /** Semantic sufficiency gate failed (required facets missing). */
+  "semantic_gap",
 ]);
 
 export type PiAttemptFailureClass = z.infer<typeof PiAttemptFailureClassSchema>;
+
+/**
+ * Structured gate failure attached to a failed Pi Attempt outcome.
+ * Preferred over string-only `error` when a coverage / semantic / fanout gate rejects.
+ */
+export const GateFailureSchema = z
+  .object({
+    kind: z.enum(["coverage", "semantic_sufficiency", "spec_fanout", "other"]),
+    code: z.string().trim().min(1).max(120).optional(),
+    gaps: z.array(z.string().trim().min(1).max(500)).max(64).optional(),
+    /** Compact gate payload; keep small — not a full report dump. */
+    result: z.unknown().optional(),
+  })
+  .strict();
+
+export type GateFailure = z.infer<typeof GateFailureSchema>;
 
 /**
  * Optional observation metrics on a terminal Attempt outcome.
@@ -192,6 +212,11 @@ export const PiAttemptOutcomeSchema = z.discriminatedUnion("type", [
       type: z.literal("failed"),
       error: BoundedTextSchema,
       failureClass: PiAttemptFailureClassSchema,
+      /**
+       * Structured gate rejection. Preferred path for coverage / semantic /
+       * fanout failures; string-only `error` remains for non-gate classes.
+       */
+      gateFailure: GateFailureSchema.optional(),
       /**
        * Failure evidence that must be sealed before the Attempt becomes
        * terminal. Validation uses this for its complete MechanicalReport.
