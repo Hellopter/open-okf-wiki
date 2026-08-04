@@ -151,7 +151,8 @@ repository-wiki-producer/
     references/{plan,generate,refresh,research,review}.md
     templates/...
   workflows/                     # L2 topology (JS, Claude/Pi/ODW dialect)
-    wiki-produce.workflow.js     # inventory → research → plan → write → verify
+    wiki-plan.workflow.js        # inventory → research → plan
+    wiki-write-review.workflow.js # gated write → review → verify
     wiki-refresh.workflow.js
     wiki-audit-citations.js
   scripts/                       # L0 host (no LLM)
@@ -198,7 +199,7 @@ repository-wiki-producer/
 
 - Topology is stable enough to check into git (audit, produce, refresh).
 - Coding agent should **edit the workflow** like code (reviewable diffs).
-- You want Claude Code users to run `/wiki-produce` with zero extra daemon.
+- You want Claude Code users to run `/wiki-plan` and `/wiki-write-review` with no extra daemon.
 
 This matches how community showcases ship value (TradingFlow, stale-docs-audit): **the JS file is the product**.
 
@@ -214,7 +215,7 @@ freeze (host)
   → [optional] parallel research agents → analysis/receipts/*.json
   → mechanical reduce → discovery-map.json
   → plan agent → analysis/spec.json (schema)
-  → single writer → wiki/**
+  → single writer → candidate/**
   → parallel review lenses → analysis/defects.json
   → bounded repair
   → validate (host) → publish (host)
@@ -384,7 +385,7 @@ Growth of orchestrator-visible state with N children should be roughly **O(index
 
 - Plan / write: short sessions over **sealed `inputs/`**.  
 - Research: entirely in child sessions; root **never** pastes leaf bodies.  
-- Review: read `wiki/` + sampled sources; write structured defects — not essay-length chat returns.
+- Review: read `candidate/` + sampled frozen sources; write structured defects — not essay-length chat returns.
 
 ### 6.6 Metrics (know when it is working)
 
@@ -436,7 +437,7 @@ Not: “buy a larger context window.”
 
 ## 8. Suggested follow-ups (future work, not done here)
 
-1. Author a minimal `wiki-produce.workflow.js` sketch (Claude-compatible primitives).  
+1. Author paired `wiki-plan.workflow.js` and `wiki-write-review.workflow.js` sketches (Claude-compatible primitives).
 2. Spike: install `pi-dynamic-workflows` in a throwaway Pi session and run fan-out-and-synthesize against a fixture repo.  
 3. Spike: ODW daemon run of the same script dialect for CI.  
 4. If productizing: ADR for “Skill + JS workflow + host scripts” as the portable unit; host adapters as thin.  

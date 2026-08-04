@@ -3,50 +3,16 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory, writeInventory } from "./inventory.mjs";
-import { ensureWorkflowsInstalled, installAll } from "./install.mjs";
-import { agentsSkillsDir, kitSkillDir, runDir, runsDir } from "./paths.mjs";
+import { assertInstalledAssets, ensureWorkflowsInstalled, installAll } from "./install.mjs";
+import { KIT_ROOT, kitSkillDir, runDir, runsDir } from "./paths.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
-
-function sha256DirSample(abs, patterns, { maxFiles = 5000 } = {}) {
-  const hash = createHash("sha256");
-  const files = [];
-  const stack = [""];
-  while (stack.length && files.length < maxFiles) {
-    const rel = stack.pop();
-    const dir = rel ? path.join(abs, rel) : abs;
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const ent of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      const childRel = rel ? `${rel}/${ent.name}` : ent.name;
-      const norm = childRel.replace(/\\/g, "/");
-      if (pathMatchesIgnore(norm, patterns)) continue;
-      if (ent.isDirectory()) stack.push(norm);
-      else if (ent.isFile()) files.push(norm);
-    }
-  }
-  files.sort();
-  for (const f of files) {
-    hash.update(f);
-    hash.update("\0");
-    try {
-      hash.update(fs.readFileSync(path.join(abs, f)));
-    } catch {
-      hash.update("?");
-    }
-    hash.update("\0");
-  }
-  return { digest: hash.digest("hex"), fileCount: files.length };
-}
+import { hashTree, isInside, writeJson } from "./artifacts.mjs";
 
 function gitHead(abs) {
   const r = spawnSync("git", ["-C", abs, "rev-parse", "HEAD"], { encoding: "utf8" });
@@ -56,6 +22,8 @@ function gitHead(abs) {
 
 function copyTreeFiltered(srcAbs, destAbs, patterns) {
   fs.mkdirSync(destAbs, { recursive: true });
+  const sourceReal = fs.realpathSync(srcAbs);
+  const skippedSymlinks = [];
   const stack = [""];
   while (stack.length) {
     const rel = stack.pop();
@@ -79,31 +47,31 @@ function copyTreeFiltered(srcAbs, destAbs, patterns) {
       } else if (ent.isFile()) {
         fs.copyFileSync(from, to);
       } else if (ent.isSymbolicLink()) {
-        // materialize as copy of target if file; skip dangling
         try {
           const real = fs.realpathSync(from);
-          if (fs.statSync(real).isFile()) fs.copyFileSync(real, to);
+          if (!isInside(sourceReal, real)) {
+            skippedSymlinks.push({ path: norm, reason: "target escapes source root" });
+          } else if (fs.statSync(real).isFile()) {
+            fs.copyFileSync(real, to);
+          } else {
+            skippedSymlinks.push({ path: norm, reason: "directory symlink not copied" });
+          }
         } catch {
-          /* skip */
+          skippedSymlinks.push({ path: norm, reason: "dangling or unreadable" });
         }
       }
     }
   }
+  return { skippedSymlinks };
 }
 
 function copySkill(destSkillDir) {
   const from = kitSkillDir();
   if (!fs.existsSync(from)) {
-    fs.mkdirSync(destSkillDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(destSkillDir, "SKILL.md"),
-      "---\nname: repository-wiki-producer\ndescription: Placeholder skill\n---\n\n# Placeholder\n",
-      "utf8",
-    );
-    return { digest: "placeholder", path: destSkillDir };
+    throw new Error(`missing canonical skill: ${from}`);
   }
   fs.cpSync(from, destSkillDir, { recursive: true });
-  const { digest } = sha256DirSample(destSkillDir, []);
+  const { digest } = hashTree(destSkillDir);
   return { digest, path: destSkillDir };
 }
 
@@ -118,6 +86,7 @@ export function freezeRun(root, { focus } = {}) {
   }
   installAll(root, { force: false });
   ensureWorkflowsInstalled(root);
+  assertInstalledAssets(root);
 
   const runId = randomUUID().slice(0, 8) + Date.now().toString(36).slice(-4);
   const rdir = runDir(root, runId);
@@ -125,23 +94,27 @@ export function freezeRun(root, { focus } = {}) {
   fs.mkdirSync(path.join(workdir, "sources"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "inputs"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis"), { recursive: true });
-  fs.mkdirSync(path.join(workdir, "wiki"), { recursive: true });
+  fs.mkdirSync(path.join(workdir, "candidate"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts", "survey"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts", "semantic"), { recursive: true });
 
   const sourceSnapshots = [];
+  const sourceRoots = new Map();
   for (const src of workspace.sources) {
     const abs = resolveSourceAbs(root, src);
     const patterns = effectiveSourceIgnores(src);
     const head = gitHead(abs);
     const dest = path.join(workdir, "sources", src.id);
-    copyTreeFiltered(abs, dest, patterns);
-    const { digest, fileCount } = sha256DirSample(dest, []);
+    const copy = copyTreeFiltered(abs, dest, patterns);
+    const tree = hashTree(dest);
+    sourceRoots.set(src.id, dest);
     sourceSnapshots.push({
       sourceId: src.id,
       gitHead: head,
-      contentDigest: digest,
-      fileCount,
+      contentDigest: tree.digest,
+      fileCount: tree.fileCount,
+      files: tree.files,
+      skippedSymlinks: copy.skippedSymlinks,
       effectiveIgnores: patterns,
       applyDefaultIgnores: src.applyDefaultIgnores !== false,
       presets: src.presets ?? [],
@@ -150,21 +123,22 @@ export function freezeRun(root, { focus } = {}) {
   }
 
   const skill = copySkill(path.join(workdir, "skill"));
-  // also prefer workspace-installed skill if present
-  const wsSkill = agentsSkillsDir(root);
-  if (fs.existsSync(path.join(wsSkill, "SKILL.md"))) {
-    fs.rmSync(path.join(workdir, "skill"), { recursive: true, force: true });
-    fs.cpSync(wsSkill, path.join(workdir, "skill"), { recursive: true });
-    skill.digest = sha256DirSample(path.join(workdir, "skill"), []).digest;
-  }
 
-  const inventory = buildInventory(root, workspace);
+  const inventory = buildInventory(root, workspace, { sourceRoots });
   writeInventory(workdir, inventory);
+  writeJson(path.join(workdir, "inputs", "snapshot-manifest.json"), {
+    version: 1,
+    sources: sourceSnapshots,
+  });
 
   const runPolicy = {
     wikiLanguage: workspace.wikiLanguage,
     focus: focus || null,
     tier: inventory.tier,
+    hostCli: {
+      node: process.execPath,
+      script: path.join(KIT_ROOT, "scripts", "ow.mjs"),
+    },
   };
   fs.writeFileSync(
     path.join(workdir, "inputs", "run-policy.json"),
@@ -186,12 +160,8 @@ export function freezeRun(root, { focus } = {}) {
     workdir: path.relative(root, workdir),
   };
   fs.writeFileSync(path.join(rdir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  fs.writeFileSync(path.join(rdir, "journal.jsonl"), "", "utf8");
-
-  // Empty discovery-map shell under inputs/ as a starting point only.
-  // The filled map should be written to analysis/discovery-map.json during Discover;
-  // optionally seal a copy back to inputs/discovery-map.json. gatePlan prefers
-  // analysis/ when present (especially when it has domains).
+  // Empty discovery-map shell is planning input. Discover writes the filled analysis version;
+  // the gate prefers that version when it contains domains.
   const emptyMap = {
     version: 1,
     sources: inventory.sources.map((s) => ({

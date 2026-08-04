@@ -1,24 +1,10 @@
 # Review
 
-**Job:** independently verify the Staging Wiki; blocking defects must be repaired before completion.
-**Prereq:** concept pages exist under `wiki/` after generate.
-**Next:** repair via earlier plan/write steps, or fail the run if unclean after repair rounds.
-**Host check:** `ow validate --run <runId>` (regenerates indexes + mechanical citation resolve).
+Independently verify the unsealed `candidate/` against the frozen sources and `analysis/spec.json`.
+Do not edit candidate pages while acting as a reviewer.
 
-## Defect report
-
-Write structured defects to `analysis/defects.json` (and optional per-lens receipts under
-`analysis/receipts/review/`). Return only a short envelope to the orchestrator:
-
-```json
-{
-  "status": "ok",
-  "path": "analysis/defects.json",
-  "summary": "clean|N blocking, M major"
-}
-```
-
-Example defect file:
+Write per-lens findings beneath `analysis/receipts/review/`, then consolidate
+`analysis/defects.json`:
 
 ```json
 {
@@ -34,25 +20,19 @@ Example defect file:
 }
 ```
 
-`severity` is `blocking` | `major` | `minor`. `clean: true` only with empty `defects`.
+Severity is `blocking`, `major`, or `minor`. `clean` is true only when the defects array is empty.
+The package's `schemas/defects.schema.json` records the reference shape.
 
-## What to verify
+## Check
 
-- Unclear purpose, audience, or terminology (especially overview)
-- Navigation: overview + directory structure reach every concept; host materializes `index.md` —
-  do not fail solely for missing hand-written indexes; **do** fail on unreachable concepts, broken
-  cross-links, or missing critical Spec pages
-- Important boundary, module, flow, or concept readers need but cannot find
-- Thin, duplicated, or stale pages better merged or split
-- Claims that overstate the cited source; citations too far from claims; pages without resolved
-  Source Citations
-- Invented line ranges, `sources/` prefix inside `repo:`, or multi-source pages missing source ids
-- Broken frontmatter (missing `type` / `title` / `description`) or prohibited provenance fields
-  (`generated`, `verified`, `stale_after`)
-- Diagrams that add no clarity or disagree with prose and source
+- Every critical Spec page exists, has a distinct reader purpose, and is reachable from the narrative.
+- Candidate `.md` links resolve within `candidate/`; host-generated indexes are not hand-authored.
+- Claims are supported by nearby links into frozen `sources/` and their line ranges are real.
+- Source targets are relative local Markdown links, never `repo:`, remote, `file://`, or editor URLs.
+- Frontmatter has non-empty `type`, `title`, and `description`, without prohibited provenance fields.
+- Multi-source flows identify each participating source/surface rather than collapsing them.
+- Diagrams clarify real evidence and agree with prose.
 
-## Completion
-
-Complete only when every critical Spec page exists, has a distinct reader purpose, is reachable from
-the narrative entry, citations resolve under freeze sources, and review is clean (or only non-blocking
-minors remain per operator policy). Otherwise repair or fail — preserve prior published wiki if any.
+Blocking and major defects require repair before the validator runs. `ow validate --run <runId>`
+regenerates indexes, mechanically validates the candidate, and seals it. Do not alter a sealed
+candidate; start a new write attempt with `ow retry --from write`.

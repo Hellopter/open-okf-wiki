@@ -1,49 +1,38 @@
 # Generate
 
-**Job:** write Staging Wiki concept pages for the **sealed Spec page set** into `wiki/`.
-**Prereq:** plan complete; `ow gate plan` passed; Spec at `analysis/spec.json` (or sealed
-`inputs/spec.json`) is the sole page-set authority.
-**Next:** review (`skill/references/review.md`), then `ow validate --run <runId>`.
+Write the Spec-bound concept pages into the unsealed `candidate/` directory.
 
-## Spec-bound only (do not re-plan)
+**Prerequisites:** `analysis/spec.json` exists and `ow gate check --run <runId>` succeeds.
+**Authority:** the `pages` array in `analysis/spec.json` is the sole page-set authority.
+**Next:** independent review, then `ow validate --run <runId>`.
 
-You are **not** re-discovering or redesigning the wiki page tree.
+## Procedure
 
-1. Read `analysis/spec.json` or `inputs/spec.json`. The `pages` list (especially `critical: true`)
-   is the write checklist.
-2. When present, read discovery-map and `analysis/receipts/*` for evidence **paths** — supporting
-   only; not Spec authority.
-3. Re-open load-bearing spans under `sources/` as needed. Do not invent citations or line numbers.
-4. For each Spec concept path, select matching
-   `skill/templates/{overview,architecture,module,flow,concept}.md`, adapt it, and write under
-   `wiki/`. Prefer Spec directory layout (`modules/`, `flows/`, …).
-5. Cross-link related Spec pages with relative `.md` links.
-6. Do **not** hand-write durable `index.md` / `log.md` as concept pages — host regenerates every
-   directory `index.md` (`ow validate` regenerates indexes).
+1. Read the full Spec and the relevant Discovery Map/receipt paths. Do not re-plan from a fresh
+   survey.
+2. Re-open evidence spans inside `sources/<id>/` as needed.
+3. For each Spec page, adapt the matching template and write only below `candidate/`.
+4. Cross-link candidate pages with relative `.md` links.
+5. Leave `index.md` and `log.md` to the host; validation regenerates every `index.md`.
 
-## Frontmatter and language
+Every critical Spec path must exist, answer its stated reader question, and have nearby verified
+evidence. Do not add a concept page absent from the Spec or change the Spec while writing.
 
-- Required: non-empty `type`, `title`, `description` (OKF v0.2).
-- Optional: `tags`.
-- **Never** write `generated`, `verified`, `stale_after`, `okf_version`.
-- Prose language follows `wikiLanguage` (`en` | `zh`). Paths and citations stay untranslated.
+## Frontmatter and local links
 
-## Citations
+Each concept page needs non-empty YAML `type`, `title`, and `description`. `tags` are optional.
+Never write `generated`, `verified`, `stale_after`, or `okf_version`.
 
-Place verified Source Citations beside the facts they support:
+Link a factual claim directly to its frozen source file with a real line range. The link target is
+relative to the page being written:
 
-- Single: `repo:path#L1-L2`
-- Multi: `repo:id/path#L1-L2`
-- Never invent line ranges; never use a `sources/` prefix inside `repo:`.
+```md
+<!-- candidate/overview.md -->
+[Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
 
-## Fail-closed completeness
+<!-- candidate/modules/auth.md -->
+[Source: src/A.java L10-L20](../../sources/app/src/A.java#L10-L20)
+```
 
-Generation is complete only when every **critical** Spec concept path exists under `wiki/`, answers
-its reader question, is grounded by nearby verified citations, and a new reader can enter at
-`overview.md` (or Spec narrative path). Missing critical pages → fail; do not claim success.
-
-Do **not**:
-
-- Draft a new page set from a fresh repository survey
-- Add concept pages absent from the Spec
-- Treat DiscoveryMap or research receipts as Spec authority
+Do not use `repo:`, remote URLs, `file://`, `vscode://`, a plain source path without `#Lx-Ly`, or
+any target outside frozen `sources/`. The line range must come from an actual read, never an estimate.

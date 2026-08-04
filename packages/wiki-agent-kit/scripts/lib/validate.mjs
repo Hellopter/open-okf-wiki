@@ -1,216 +1,261 @@
-/**
- * Mechanical OKF + citation validation for staging wiki.
- */
+/** Mechanical candidate validation, local source-link resolution, and sealing. */
 
 import fs from "node:fs";
 import path from "node:path";
+import { parseDocument } from "yaml";
+import { candidateDir, candidateManifestPath } from "./paths.mjs";
+import { hashTree, isInside, readJson, writeJson } from "./artifacts.mjs";
 
 const RESERVED = new Set(["index.md", "log.md"]);
-const CITE_RE = /\[([^\]]*)\]\((repo:[^)]+)\)/g;
-// repo:path#L1-L2  OR  repo:sourceId/path#L1-L2
-const REPO_LINK_RE =
-  /^repo:(?:([A-Za-z0-9._-]+)\/)?([^#]+?)(?:#L(\d+)(?:-L(\d+))?)?$/;
+const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+const LINE_FRAGMENT_RE = /^L(\d+)(?:-L(\d+))?$/;
 
-function walkMd(dir, base = "") {
+function walkMd(dir, base = "", unsafe = []) {
   const out = [];
-  if (!fs.existsSync(dir)) return out;
+  if (!fs.existsSync(dir)) return { files: out, unsafe };
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = base ? `${base}/${ent.name}` : ent.name;
     const abs = path.join(dir, ent.name);
-    if (ent.isDirectory()) out.push(...walkMd(abs, rel));
+    if (ent.isDirectory()) out.push(...walkMd(abs, rel, unsafe).files);
     else if (ent.isFile() && ent.name.endsWith(".md")) out.push({ rel: rel.replace(/\\/g, "/"), abs });
+    else if (ent.isSymbolicLink()) unsafe.push(rel.replace(/\\/g, "/"));
   }
-  return out;
+  return { files: out, unsafe };
 }
 
 function parseFrontmatter(text) {
-  if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) {
-    return { ok: false, error: "missing YAML frontmatter" };
+  const start = text.match(/^---\r?\n/);
+  if (!start) return { ok: false, error: "missing YAML frontmatter" };
+  const close = text.indexOf("\n---", start[0].length);
+  if (close < 0) return { ok: false, error: "unclosed frontmatter" };
+  const raw = text.slice(start[0].length, close);
+  const doc = parseDocument(raw, { prettyErrors: false, uniqueKeys: true });
+  if (doc.errors.length) return { ok: false, error: `invalid YAML frontmatter: ${doc.errors[0].message}` };
+  const data = doc.toJSON();
+  if (!data || Array.isArray(data) || typeof data !== "object") {
+    return { ok: false, error: "frontmatter must be a YAML mapping" };
   }
-  const end = text.indexOf("\n---", 4);
-  if (end < 0) return { ok: false, error: "unclosed frontmatter" };
-  const raw = text.slice(4, end).trim();
-  /** @type {Record<string, string>} */
-  const data = {};
-  for (const line of raw.split(/\r?\n/)) {
-    const m = line.match(/^([A-Za-z0-9_]+):\s*(.*)$/);
-    if (!m) continue;
-    let v = m[2].trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    data[m[1]] = v;
-  }
-  return { ok: true, data, body: text.slice(end + 4) };
+  return { ok: true, data, body: text.slice(close + 4) };
 }
 
 function countLines(fileAbs) {
-  try {
-    const t = fs.readFileSync(fileAbs, "utf8");
-    if (!t) return 0;
-    return t.split(/\r?\n/).length;
-  } catch {
-    return -1;
+  const text = fs.readFileSync(fileAbs, "utf8");
+  if (!text) return 0;
+  const newlineCount = (text.match(/\n/g) ?? []).length;
+  return newlineCount + (text.endsWith("\n") ? 0 : 1);
+}
+
+function parseLinks(text) {
+  const links = [];
+  MARKDOWN_LINK_RE.lastIndex = 0;
+  let match;
+  while ((match = MARKDOWN_LINK_RE.exec(text)) !== null) {
+    links.push({ label: match[1], target: match[2] });
+  }
+  return links;
+}
+
+function validateCitation({ rel, pageAbs, target, candidate, sources, errors }) {
+  if (target.startsWith("repo:")) {
+    errors.push(`${rel}: legacy repo: citations are not clickable; use a relative source link`);
+    return false;
+  }
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target) || target.startsWith("/")) return false;
+  const hashAt = target.indexOf("#");
+  if (hashAt < 0) return false;
+  const fragment = target.slice(hashAt + 1);
+  const lineMatch = fragment.match(LINE_FRAGMENT_RE);
+  if (!lineMatch) return false;
+  const targetPath = target.slice(0, hashAt);
+  const fileAbs = path.resolve(path.dirname(pageAbs), targetPath);
+  if (!isInside(sources, fileAbs) || !fs.existsSync(fileAbs) || !fs.statSync(fileAbs).isFile()) {
+    errors.push(`${rel}: citation target must resolve to a frozen source file: ${target}`);
+    return true;
+  }
+  const start = Number(lineMatch[1]);
+  const end = lineMatch[2] ? Number(lineMatch[2]) : start;
+  const lines = countLines(fileAbs);
+  if (start < 1 || end < start || end > lines) {
+    errors.push(`${rel}: citation line range out of bounds: ${target} (file lines=${lines})`);
+  }
+  return true;
+}
+
+function validateInternalLink({ rel, pageAbs, target, candidate, errors }) {
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target) || target.startsWith("#")) return;
+  const targetPath = target.split("#", 1)[0];
+  if (!targetPath || !targetPath.endsWith(".md")) return;
+  const targetAbs = path.resolve(path.dirname(pageAbs), targetPath);
+  if (!isInside(candidate, targetAbs) || !fs.existsSync(targetAbs)) {
+    errors.push(`${rel}: broken internal Markdown link: ${target}`);
   }
 }
 
-/**
- * @param {string} workdir freeze workdir with wiki/ and sources/
- * @param {{ specPath?: string }} [opts]
- */
+function safeCandidatePage(candidate, pagePath) {
+  const raw = String(pagePath ?? "");
+  if (
+    !raw ||
+    raw.includes("\\") ||
+    raw.split("/").includes("..") ||
+    path.isAbsolute(raw) ||
+    RESERVED.has(path.posix.basename(raw))
+  ) {
+    return null;
+  }
+  const resolved = path.resolve(candidate, raw);
+  return isInside(candidate, resolved) ? resolved : null;
+}
+
+function isRegularFile(file) {
+  try {
+    return fs.lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** @param {string} workdir freeze workdir with candidate/ and sources/ */
 export function validateWorkdir(workdir, opts = {}) {
-  const wikiDir = path.join(workdir, "wiki");
-  const sourcesDir = path.join(workdir, "sources");
+  const candidate = opts.candidateDir ?? candidateDir(workdir);
+  const sources = path.join(workdir, "sources");
   const errors = [];
   const warnings = [];
-  const files = walkMd(wikiDir);
-
-  // Prefer explicit opts.specPath; otherwise analysis/ then inputs/
-  const specCandidates = opts.specPath
-    ? [opts.specPath]
-    : [
-        path.join(workdir, "analysis", "spec.json"),
-        path.join(workdir, "inputs", "spec.json"),
-      ];
+  const scan = walkMd(candidate);
+  const files = scan.files;
+  for (const rel of scan.unsafe) errors.push(`${rel}: symlinks are not allowed in candidate/`);
+  const specPath = opts.specPath ?? path.join(workdir, "analysis", "spec.json");
   let spec = null;
-  for (const p of specCandidates) {
-    if (!p || !fs.existsSync(p)) continue;
-    try {
-      spec = JSON.parse(fs.readFileSync(p, "utf8"));
-      break;
-    } catch (e) {
-      errors.push(`spec parse error (${p}): ${e.message}`);
+  try {
+    spec = readJson(specPath);
+  } catch (error) {
+    errors.push(`spec parse error (${specPath}): ${error.message}`);
+  }
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+    errors.push(`missing or invalid Spec: ${specPath}`);
+  } else if (!Array.isArray(spec.pages)) {
+    errors.push(`Spec pages must be an array: ${specPath}`);
+  }
+
+  const specPaths = new Set();
+  for (const page of spec?.pages ?? []) {
+    if (!page || typeof page !== "object") {
+      errors.push("Spec page must be an object");
+      continue;
+    }
+    const target = safeCandidatePage(candidate, page.path);
+    if (!target) {
+      errors.push(`Spec page has unsafe path: ${page.path ?? "?"}`);
+      continue;
+    }
+    const rel = path.relative(candidate, target).replace(/\\/g, "/");
+    specPaths.add(rel);
+    if (page.critical !== false && !isRegularFile(target)) {
+      errors.push(`critical spec page missing: ${page.path}`);
     }
   }
 
   const conceptRels = [];
   for (const { rel, abs } of files) {
-    const base = path.posix.basename(rel);
-    if (RESERVED.has(base)) continue;
+    if (RESERVED.has(path.posix.basename(rel))) continue;
     conceptRels.push(rel);
-    const text = fs.readFileSync(abs, "utf8");
-    const fm = parseFrontmatter(text);
-    if (!fm.ok) {
-      errors.push(`${rel}: ${fm.error}`);
+    if (spec && !specPaths.has(rel)) {
+      errors.push(`${rel}: concept page is absent from the Spec`);
+    }
+    const parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    if (!parsed.ok) {
+      errors.push(`${rel}: ${parsed.error}`);
       continue;
     }
     for (const key of ["type", "title", "description"]) {
-      if (!fm.data[key] || !String(fm.data[key]).trim()) {
+      if (typeof parsed.data[key] !== "string" || !parsed.data[key].trim()) {
         errors.push(`${rel}: frontmatter missing non-empty ${key}`);
       }
     }
     for (const banned of ["generated", "verified", "stale_after", "okf_version"]) {
-      if (fm.data[banned] !== undefined) {
+      if (Object.hasOwn(parsed.data, banned)) {
         errors.push(`${rel}: model must not author frontmatter field ${banned}`);
       }
     }
-
-    CITE_RE.lastIndex = 0;
-    let m;
-    while ((m = CITE_RE.exec(text)) !== null) {
-      const link = m[2];
-      if (link.includes("sources/")) {
-        errors.push(`${rel}: citation must not contain sources/ prefix: ${link}`);
+    let citationCount = 0;
+    for (const link of parseLinks(parsed.body)) {
+      if (validateCitation({ rel, pageAbs: abs, target: link.target, candidate, sources, errors })) {
+        citationCount++;
       }
-      const rm = link.match(REPO_LINK_RE);
-      if (!rm) {
-        errors.push(`${rel}: malformed repo citation: ${link}`);
-        continue;
-      }
-      const sourceId = rm[1];
-      const filePath = rm[2].replace(/^\//, "");
-      const lineStart = rm[3] ? Number(rm[3]) : null;
-      const lineEnd = rm[4] ? Number(rm[4]) : lineStart;
-      let fileAbs;
-      if (sourceId) {
-        fileAbs = path.join(sourcesDir, sourceId, filePath);
-      } else {
-        // single-source: try each source mount
-        const mounts = fs.existsSync(sourcesDir) ? fs.readdirSync(sourcesDir) : [];
-        if (mounts.length === 1) {
-          fileAbs = path.join(sourcesDir, mounts[0], filePath);
-        } else if (mounts.length === 0) {
-          errors.push(`${rel}: no frozen sources for citation ${link}`);
-          continue;
-        } else {
-          errors.push(`${rel}: multi-source freeze requires repo:<id>/path citation: ${link}`);
-          continue;
-        }
-      }
-      if (!fs.existsSync(fileAbs)) {
-        errors.push(`${rel}: citation target missing: ${link}`);
-        continue;
-      }
-      if (lineStart != null) {
-        const n = countLines(fileAbs);
-        if (n < 0 || lineStart < 1 || lineEnd < lineStart || lineEnd > n) {
-          errors.push(`${rel}: citation line range out of bounds: ${link} (file lines=${n})`);
-        }
-      }
+      validateInternalLink({ rel, pageAbs: abs, target: link.target, candidate, errors });
     }
+    if (!citationCount) errors.push(`${rel}: concept page has no Source Citation with #Lx-Ly`);
   }
 
-  if (spec?.pages) {
-    for (const page of spec.pages) {
-      if (page.critical === false) continue;
-      const p = String(page.path || "").replace(/^\//, "");
-      if (!p || RESERVED.has(path.posix.basename(p))) continue;
-      const abs = path.join(wikiDir, p);
-      if (!fs.existsSync(abs)) {
-        errors.push(`critical spec page missing: ${p}`);
-      }
-    }
-  }
-
-  if (conceptRels.length === 0) {
-    warnings.push("wiki/ has no concept pages yet");
-  }
-
-  return {
-    ok: errors.length === 0,
-    errors,
-    warnings,
-    conceptPageCount: conceptRels.length,
-  };
+  if (!conceptRels.length) warnings.push("candidate/ has no concept pages yet");
+  return { ok: !errors.length, errors, warnings, conceptPageCount: conceptRels.length };
 }
 
-/**
- * Mechanically regenerate directory index.md listings (OKF reserved).
- */
-export function regenerateIndexes(wikiDir) {
-  if (!fs.existsSync(wikiDir)) return { written: 0 };
+/** Mechanically regenerate directory index.md listings (OKF reserved). */
+export function regenerateIndexes(dir) {
+  if (!fs.existsSync(dir)) return { written: 0 };
   let written = 0;
-
-  function walk(dir, relBase = "") {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+  function walk(current) {
     const concepts = [];
     const subdirs = [];
-    for (const ent of entries) {
+    for (const ent of fs.readdirSync(current, { withFileTypes: true })) {
       if (ent.name.startsWith(".")) continue;
       if (ent.isDirectory()) {
         subdirs.push(ent.name);
-        walk(path.join(dir, ent.name), relBase ? `${relBase}/${ent.name}` : ent.name);
+        walk(path.join(current, ent.name));
       } else if (ent.isFile() && ent.name.endsWith(".md") && !RESERVED.has(ent.name)) {
         concepts.push(ent.name);
       }
     }
-    concepts.sort();
-    subdirs.sort();
     const lines = ["# Index", ""];
     if (subdirs.length) {
       lines.push("## Directories", "");
-      for (const d of subdirs) lines.push(`- [${d}/](./${d}/index.md)`);
+      for (const child of subdirs.sort()) lines.push(`- [${child}/](./${child}/index.md)`);
       lines.push("");
     }
     if (concepts.length) {
       lines.push("## Pages", "");
-      for (const c of concepts) lines.push(`- [${c.replace(/\.md$/, "")}](./${c})`);
+      for (const page of concepts.sort()) lines.push(`- [${page.replace(/\.md$/, "")}](./${page})`);
       lines.push("");
     }
-    fs.writeFileSync(path.join(dir, "index.md"), `${lines.join("\n")}\n`, "utf8");
+    fs.writeFileSync(path.join(current, "index.md"), `${lines.join("\n")}\n`, "utf8");
     written++;
   }
-
-  walk(wikiDir);
+  walk(dir);
   return { written };
+}
+
+export function sealCandidate(workdir, validation) {
+  if (!validation.ok) throw new Error("cannot seal an invalid candidate");
+  if (fs.existsSync(candidateManifestPath(workdir))) {
+    throw new Error("candidate is already sealed; run: ow retry --run <id> --from write");
+  }
+  const candidate = candidateDir(workdir);
+  const tree = hashTree(candidate);
+  const manifest = {
+    version: 1,
+    sealedAt: new Date().toISOString(),
+    candidateDigest: tree.digest,
+    fileCount: tree.fileCount,
+    files: tree.files,
+  };
+  writeJson(candidateManifestPath(workdir), manifest);
+  return manifest;
+}
+
+export function isCandidateSealed(workdir) {
+  return fs.existsSync(candidateManifestPath(workdir));
+}
+
+/** Return the state of a sealed candidate without changing it. */
+export function candidateSealStatus(workdir) {
+  const manifestPath = candidateManifestPath(workdir);
+  if (!fs.existsSync(manifestPath)) return { sealed: false, valid: false, manifest: null };
+  const manifest = readJson(manifestPath);
+  const tree = hashTree(candidateDir(workdir));
+  return {
+    sealed: true,
+    valid: manifest?.candidateDigest === tree.digest,
+    manifest,
+    actualDigest: tree.digest,
+  };
 }

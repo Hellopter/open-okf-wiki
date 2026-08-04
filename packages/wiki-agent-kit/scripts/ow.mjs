@@ -7,18 +7,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import { freezeRun, listRuns, loadRunMeta } from "./lib/freeze.mjs";
-import { gatePlan } from "./lib/gate.mjs";
+import { verifyPlanGate, writePlanGateReceipt } from "./lib/gate.mjs";
 import { effectiveSourceIgnores, listPresetSummaries, loadIgnorePresets } from "./lib/ignores.mjs";
-import { installAll, installSkill, installWorkflows } from "./lib/install.mjs";
+import { assertInstalledAssets, installAll, installSkill, installWorkflows } from "./lib/install.mjs";
 import { resolveWorkspaceRoot } from "./lib/paths.mjs";
-import { continuePlan, retryFromPhase } from "./lib/run-state.mjs";
+import { retryFromPhase } from "./lib/run-state.mjs";
 import {
   addCloneSource,
   addPathSource,
   listSources,
   removeSource,
 } from "./lib/sources.mjs";
-import { regenerateIndexes, validateWorkdir } from "./lib/validate.mjs";
+import {
+  candidateSealStatus,
+  regenerateIndexes,
+  sealCandidate,
+  validateWorkdir,
+} from "./lib/validate.mjs";
 import {
   findSource,
   initWorkspace,
@@ -267,10 +272,8 @@ function cmdInstall(args) {
 
 function cmdProduce(args) {
   const root = workspaceRoot(args.flags);
-  const prepareOnly = Boolean(args.flags.prepare);
   const focus = args.flags.focus;
   const result = freezeRun(root, { focus });
-  const produceWf = path.join(root, ".claude", "workflows", "wiki-produce.workflow.js");
   const out = {
     ok: true,
     runId: result.runId,
@@ -278,51 +281,111 @@ function cmdProduce(args) {
     meta: result.meta,
     inventoryTier: result.inventory.tier,
     coverageUnits: result.inventory.coverageUnits.length,
-    next: prepareOnly
-      ? "freeze complete (--prepare)"
-      : fs.existsSync(produceWf)
-        ? `In Claude Code (cwd=${root}), run workflow wiki-produce with args: ${JSON.stringify({ runId: result.runId, workdir: result.workdir })}`
-        : "workflow file missing after install; add workflows/wiki-produce.workflow.js to the kit",
+    next: `Run: ow plan --run ${result.runId} --workspace ${root}`,
   };
   printJson(out);
+}
+
+function runWorkdir(root, runId) {
+  const meta = loadRunMeta(root, runId);
+  return { meta, workdir: path.resolve(root, meta.workdir) };
+}
+
+function workflowHint(name, root, runId, workdir) {
+  return `In Claude Code (cwd=${root}), run /${name} with args: ${JSON.stringify({ runId, workdir })}`;
+}
+
+function cmdPlan(args) {
+  const root = workspaceRoot(args.flags);
+  const runId = args.flags.run || args._[0];
+  if (!runId) die("usage: ow plan --run <runId>");
+  assertInstalledAssets(root);
+  const { meta, workdir } = runWorkdir(root, runId);
+  const workflow = path.join(root, ".claude", "workflows", "wiki-plan.workflow.js");
+  if (!fs.existsSync(workflow)) die("wiki-plan workflow missing; run: ow install workflows --force");
+  meta.status = "planning";
+  meta.phase = "discover";
+  meta.updatedAt = new Date().toISOString();
+  fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  printJson({ ok: true, runId, workdir, next: workflowHint("wiki-plan", root, runId, workdir) });
 }
 
 function cmdGate(args) {
   const root = workspaceRoot(args.flags);
   const sub = args._[0];
-  if (sub !== "plan") die("usage: ow gate plan --run <runId>");
+  if (sub !== "plan" && sub !== "check") die("usage: ow gate plan|check --run <runId>");
   const runId = args.flags.run || args._[1];
-  if (!runId) die("usage: ow gate plan --run <runId>");
-  const meta = loadRunMeta(root, runId);
-  const workdir = path.join(root, meta.workdir);
-  const result = gatePlan(workdir);
-  if (result.ok) {
-    const receiptDir = path.join(workdir, "inputs");
-    fs.mkdirSync(receiptDir, { recursive: true });
-    const receipt = {
-      ok: true,
-      at: new Date().toISOString(),
-    };
-    fs.writeFileSync(
-      path.join(receiptDir, "gate-plan.ok.json"),
-      `${JSON.stringify(receipt, null, 2)}\n`,
-      "utf8",
+  if (!runId) die("usage: ow gate plan|check --run <runId>");
+  const { meta, workdir } = runWorkdir(root, runId);
+  if (sub === "check") {
+    const check = verifyPlanGate(workdir, runId, meta.skillDigest);
+    printJson(check);
+    if (!check.ok) process.exit(2);
+    return;
+  }
+  const { result, receipt } = writePlanGateReceipt(workdir, runId, meta.skillDigest);
+  if (receipt) {
+    meta.status = "plan-gated";
+    meta.phase = "write";
+    meta.updatedAt = new Date().toISOString();
+    fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  }
+  printJson({ ...result, receipt });
+  if (!result.ok) process.exit(2);
+}
+
+function cmdWrite(args) {
+  const root = workspaceRoot(args.flags);
+  const runId = args.flags.run || args._[0];
+  if (!runId) die("usage: ow write --run <runId>");
+  assertInstalledAssets(root);
+  const { meta, workdir } = runWorkdir(root, runId);
+  const gate = verifyPlanGate(workdir, runId, meta.skillDigest);
+  if (!gate.ok) {
+    printJson(gate);
+    process.exit(2);
+  }
+  const seal = candidateSealStatus(workdir);
+  if (seal.sealed) {
+    die(
+      seal.valid
+        ? "candidate is sealed; run: ow retry --run <id> --from write"
+        : "sealed candidate was modified; its manifest no longer matches. Run: ow retry --run <id> --from write",
     );
   }
-  printJson(result);
-  if (!result.ok) process.exit(2);
+  const workflow = path.join(root, ".claude", "workflows", "wiki-write-review.workflow.js");
+  if (!fs.existsSync(workflow)) die("wiki-write-review workflow missing; run: ow install workflows --force");
+  meta.status = "writing";
+  meta.phase = "write";
+  meta.updatedAt = new Date().toISOString();
+  fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  printJson({ ok: true, runId, workdir, next: workflowHint("wiki-write-review", root, runId, workdir) });
 }
 
 function cmdValidate(args) {
   const root = workspaceRoot(args.flags);
   const runId = args.flags.run || args._[0];
   if (!runId) die("usage: ow validate --run <runId>");
-  const meta = loadRunMeta(root, runId);
-  const workdir = path.join(root, meta.workdir);
-  const wikiDir = path.join(workdir, "wiki");
-  regenerateIndexes(wikiDir);
+  const { meta, workdir } = runWorkdir(root, runId);
+  const seal = candidateSealStatus(workdir);
+  if (seal.sealed) {
+    die(
+      seal.valid
+        ? "candidate is already sealed; run: ow retry --run <id> --from write to create a replacement"
+        : "sealed candidate was modified; its manifest no longer matches. Run: ow retry --run <id> --from write",
+    );
+  }
+  const candidateDir = path.join(workdir, "candidate");
+  regenerateIndexes(candidateDir);
   const result = validateWorkdir(workdir);
-  printJson(result);
+  const manifest = result.ok ? sealCandidate(workdir, result) : null;
+  if (manifest) {
+    meta.status = "sealed";
+    meta.phase = "complete";
+    meta.updatedAt = new Date().toISOString();
+    fs.writeFileSync(path.join(root, ".wiki-agent", "runs", runId, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  }
+  printJson({ ...result, manifest });
   if (!result.ok) process.exit(2);
 }
 
@@ -332,13 +395,6 @@ function cmdRetry(args) {
   const from = args.flags.from || args._[1] || "plan";
   if (!runId) die("usage: ow retry --run <runId> --from <phase>");
   printJson(retryFromPhase(root, runId, from));
-}
-
-function cmdContinue(args) {
-  const root = workspaceRoot(args.flags);
-  const runId = args.flags.run || args._[0];
-  if (!runId) die("usage: ow continue --run <runId>");
-  printJson(continuePlan(root, runId));
 }
 
 function cmdHelp() {
@@ -356,11 +412,12 @@ Usage:
   ow config set wikiLanguage en|zh | get
   ow status [--workspace DIR]
   ow install [all|workflows|skill] [--force]
-  ow produce [--prepare] [--focus TEXT] [--workspace DIR]
-  ow gate plan --run <runId>
+  ow produce [--focus TEXT] [--workspace DIR]
+  ow plan --run <runId>
+  ow gate plan|check --run <runId>
+  ow write --run <runId>
   ow validate --run <runId>
   ow retry --run <runId> --from <phase>
-  ow continue --run <runId>
 
 Global: --workspace <dir>  (default: cwd)
 `);
@@ -390,14 +447,19 @@ async function main() {
         return cmdInstall(args);
       case "produce":
         return cmdProduce(args);
+      case "plan":
+        return cmdPlan(args);
       case "gate":
         return cmdGate(args);
+      case "write":
+        return cmdWrite(args);
       case "validate":
         return cmdValidate(args);
       case "retry":
         return cmdRetry(args);
       case "continue":
-        return cmdContinue(args);
+        die("ow continue was removed; resume Claude workflows from /workflows in the same session");
+        return;
       default:
         die(`unknown command: ${cmd} (try ow help)`);
     }

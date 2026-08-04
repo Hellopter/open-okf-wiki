@@ -1,10 +1,10 @@
 # open-okf-wiki (wiki-agent-kit slice)
 
-This branch ships only the portable **wiki-agent-kit** for Claude Code–first source→wiki:
+This branch ships only the portable **wiki-agent-kit** for source-grounded repository-to-Wiki runs:
 
 | Path | Role |
 |------|------|
-| `packages/wiki-agent-kit/` | `ow` CLI, skill, dynamic workflow, tests |
+| `packages/wiki-agent-kit/` | `ow` CLI, Skill for `.agents` + `.claude`, Claude workflows, schemas, tests |
 | `docs/research/claude-dynamic-workflow-coding-agent-2026-08.md` | Design notes (packaging, orchestrator context) |
 
 ## Quick start

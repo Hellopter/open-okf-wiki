@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://okf.wiki/schemas/discovery-map.schema.json",
+  "title": "Wiki discovery map",
+  "type": "object",
+  "required": ["domains", "flows", "coverageUnits"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "coverageUnitIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "crossSource": { "type": "boolean" },
+          "coverageUnitIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "coverageUnits": { "type": "array", "items": { "type": "object", "required": ["id"] } }
+  }
+}

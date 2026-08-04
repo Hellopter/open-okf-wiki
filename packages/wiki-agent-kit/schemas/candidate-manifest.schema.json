@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://okf.wiki/schemas/candidate-manifest.schema.json",
+  "title": "Immutable candidate manifest",
+  "type": "object",
+  "required": ["version", "sealedAt", "candidateDigest", "fileCount", "files"],
+  "properties": {
+    "version": { "const": 1 },
+    "sealedAt": { "type": "string", "format": "date-time" },
+    "candidateDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "fileCount": { "type": "integer", "minimum": 0 },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "bytes", "sha256"],
+        "properties": {
+          "path": { "type": "string" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
+  }
+}

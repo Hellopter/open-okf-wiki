@@ -1,121 +1,87 @@
 ---
 name: repository-wiki-producer
-description: Produce a source-grounded OKF Wiki from frozen repository snapshots using ow + Claude Dynamic Workflow.
+description: Produce a source-grounded OKF Wiki candidate from frozen repository snapshots using ow. Installed for both .agents and .claude; Claude Code may run the paired Dynamic Workflows.
 ---
 
 # Repository Wiki Producer
 
-Produce or refresh a **source-grounded Wiki** from a pinned freeze workdir. Method lives here;
-topology lives in `wiki-produce.workflow.js`; host truth gates live in the **`ow` CLI**.
+Produce a source-grounded Wiki from an immutable freeze workdir. The source snapshots and copied
+Skill are the evidence boundary. The run-local `candidate/` directory is the only writable Wiki
+output; there is no publish action in this kit.
 
-## When to use `ow`
+## Host commands and stage boundary
 
-| Command | When |
-|---------|------|
-| `ow init` | Create a workspace (`workspace.json`), install skill + workflows |
-| `ow source add clone\|path` | Register repositories to document |
-| `ow ignore …` | Tune Effective Source Ignores before freeze |
-| `ow produce` | Freeze sources + skill into a run workdir; print `runId` / `workdir` |
-| `ow gate plan --run <id>` | **Required after Plan** — coverage + semantic sufficiency fail-closed |
-| `ow validate --run <id>` | Mechanical OKF frontmatter + citation resolve after write |
-| `ow retry --run <id> --from <phase>` | Re-open a failed phase on the same run metadata |
-| `ow continue --run <id>` | Resume plan after operator feedback |
+| Command | Purpose |
+|---|---|
+| `ow produce` | Freeze registered sources and create a run. |
+| `ow plan --run <id>` | Enter Discover/Plan and print the Claude workflow invocation. |
+| `ow gate plan --run <id>` | Required explicit gate after planning. Writes a digest-bound receipt only when valid. |
+| `ow write --run <id>` | Recheck the receipt, enter Write/Review, and print the Claude workflow invocation. |
+| `ow validate --run <id>` | Regenerate indexes, validate, and seal an unsealed candidate. |
+| `ow retry --run <id> --from discover|plan|write|review` | Explicitly discard derived phase outputs for a replacement attempt. |
 
-Do **not** invent slash commands. Run `ow help` for the full surface.
+Do not invent slash commands. In Claude Code, use `/wiki-plan` only after `ow plan`, then run
+`ow gate plan`, then use `/wiki-write-review` only after `ow write`. Other hosts use this Skill and
+the same on-disk contracts, but do not execute Claude workflow JavaScript.
 
-## Run workdir layout
-
-Agent cwd for produce is the **freeze workdir** (`args.workdir` from the workflow):
+## Freeze workdir
 
 | Path | Role |
-|------|------|
-| `sources/<id>/` | Frozen repository snapshots (read-only) |
-| `skill/` | This skill (read-only) — start with `skill/SKILL.md` |
-| `inputs/` | Sealed inputs: inventory, discovery-map shell, run-policy |
-| `wiki/` | Staging Wiki (writable during write) |
-| `analysis/` | This attempt's outputs (spec, receipts, defects) |
+|---|---|
+| `sources/<id>/` | Filtered, content-hashed frozen source snapshots. Read-only evidence. |
+| `skill/` | This exact copied Skill. Read its phase reference before phase work. |
+| `inputs/` | Inventory, source snapshot manifest, run policy, and successful plan-gate receipt. |
+| `analysis/` | Discovery Map, Spec, receipts, defects, and candidate manifest. |
+| `candidate/` | Spec-bound concept pages. Writable until validation seals it. |
 
-## Semantic loop
+Never read mutable registered source directories as evidence after `ow produce`. Never write under
+`sources/`, `skill/`, or `inputs/` except the host-owned plan receipt.
 
-Read each phase reference **in full** before that phase's work. Do not invent extra method layers.
+## Required sequence
 
-| Phase | When | Reference |
-|-------|------|-----------|
-| **Research / Discover** | Survey coverage units; fill discovery map | `skill/references/research.md` |
-| **Plan** | Shape Spec / page set before write | `skill/references/plan.md` |
-| **Generate** | Write Spec-bound pages into empty `wiki/` | `skill/references/generate.md` |
-| **Review** | After write (and each repair round) | `skill/references/review.md` |
-| **Orchestrator context** | Always for fan-out / handoffs | `skill/references/orchestrator-context.md` |
+1. **Discover.** Read `skill/references/research.md`. Survey every required inventory coverage unit
+   from frozen sources. Write full receipts to `analysis/receipts/` and merge
+   `analysis/discovery-map.json`.
+2. **Plan.** Read `skill/references/plan.md`. Write `analysis/spec.json`; it must bind every required
+   coverage unit or provide a structured, non-empty cancellation reason. Stop. The host must run
+   `ow gate plan --run <runId>` before writing anything in `candidate/`.
+3. **Write.** Read `skill/references/generate.md`. A valid Spec is the only page-set authority. Write
+   only its concept pages beneath `candidate/`.
+4. **Review.** Read `skill/references/review.md`. Keep detailed findings in
+   `analysis/receipts/review/`, consolidate `analysis/defects.json`, repair unresolved blocking or
+   major defects, then invoke the host validator.
 
-### Phase order
+## Output rules
 
-1. **Discover.** Read `skill/references/research.md`. Survey every freeze source and required
-   coverage unit from `inputs/inventory.json`. Write receipts under `analysis/receipts/`. Merge
-   into `analysis/discovery-map.json` (and update `inputs/discovery-map.json` when sealing).
-2. **Plan.** Read `skill/references/plan.md`. Write **`analysis/spec.json`** with domains, pages,
-   coverage bindings, and cancellations. **Gate:** operator/host must run
-   `ow gate plan --run <runId>` before any write. Fail-closed if critical units are unbound.
-3. **Write (Spec-bound).** Read `skill/references/generate.md`. Sealed Spec is the **only** page-set
-   authority. Adapt templates under `skill/templates/` and write concept pages under `wiki/`.
-   Do not author `index.md` / `log.md` as concept work — host regenerates indexes.
-4. **Review.** Read `skill/references/review.md`. Repair blocking defects; re-validate with
-   `ow validate --run <runId>`. Fail the run if critical pages or citations remain broken.
+Every concept page has YAML frontmatter with non-empty `type`, `title`, and `description`. Optional
+`tags` are allowed. Do not author `generated`, `verified`, `stale_after`, or `okf_version`.
+`index.md` is generated by the host and `log.md` is reserved; neither is a Spec concept page.
 
-## Core output contract
+Write prose in the `wikiLanguage` recorded in `inputs/run-policy.json`. Do not translate source
+paths, identifiers, or code symbols.
 
-### Concept pages (OKF v0.2)
+## Local source citations
 
-Every concept page (all `.md` except reserved names) begins with YAML frontmatter containing
-non-empty **`type`**, **`title`**, and one-sentence **`description`**. Optional `tags` (short
-lowercase strings) help navigation. Suggested `type` values: `Overview`, `Architecture`, `Module`,
-`Flow`, `Concept`.
+Use direct relative Markdown links to the relevant frozen source file. The path is relative to the
+candidate page, so calculate the directory depth for every page. Include genuine one-based lines.
 
-```yaml
----
-type: Module
-title: Session runtime
-description: How operator sessions are created, resumed, and streamed.
-tags: [session, runtime]
----
+```md
+[Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
+[Source: src/A.java L10-L20](../../sources/app/src/A.java#L10-L20)
 ```
 
-**Do not author** `generated`, `verified`, `stale_after`, or `okf_version` — the host stamps
-provenance at publication. Model-authored timestamps or verification claims are fabrications.
+The first example is for `candidate/overview.md`; the second is for
+`candidate/modules/auth.md`. Do not use `repo:`, remote URLs, `file://`, `vscode://`, or paths that
+escape into anything except the frozen `sources/` directory. Never invent a line range.
 
-### wikiLanguage
+## Candidate seal
 
-`workspace.wikiLanguage` is `en` or `zh` (see `inputs/run-policy.json`). Write **prose only** in that
-language. Do **not** translate repository paths, identifiers, code identifiers, or Source Citation
-targets.
+`ow validate` materializes indexes, validates the candidate, and writes a hash manifest. The host
+then treats the candidate as immutable. Do not alter it after sealing. A mismatched seal is a failed
+state, not permission to reseal: restart deliberately with `ow retry --from write`.
 
-### Source Citations
+## Orchestrator discipline
 
-- Single source: `[Source](repo:path/to/file.py#L10-L20)`
-- Multi-source: `[Source](repo:repository-id/path/to/file.py#L10-L20)`
-- Paths are repository-relative POSIX; line ranges are one-based inclusive.
-- Line numbers must come from tool reads — **never invent or estimate** ranges.
-- Transform `sources/<id>/rest` → `repo:rest` or `repo:<id>/rest`. **Never** leave a `sources/`
-  prefix inside `repo:`.
-
-### Reserved files (OKF)
-
-| File | Role |
-|------|------|
-| `index.md` (every directory) | Mechanical progressive-disclosure listing. Host regenerates. Not concept work. |
-| `log.md` | Optional change history (newest first). |
-
-Narrative entry is **`overview.md`** (or the Spec path) — **not** `index.md`. Spec pages must
-**not** list `index.md` or `log.md`.
-
-### Orchestrator discipline
-
-Children return **short JSON envelopes** `{status, path, summary}` only. Full findings live on disk
-under `analysis/receipts/`. Never dump transcripts into the parent prompt. See
-`skill/references/orchestrator-context.md`.
-
-### Coverage (fail-closed)
-
-Inventory / DiscoveryMap define **coverage units** (sources, surfaces, domains, flows). Every
-**required** unit must be bound on Spec pages/domains (`coverageUnitIds`) or explicitly cancelled
-(`sourceCoverage` / `surfaceCoverage` with `cancelled: true` + `notes`). Missing critical units
-→ plan gate fails; do not write a partial Spec-bound Wiki as if complete.
+Children write full receipts to disk and return short envelopes only. One writer owns
+`candidate/**`; research and review lenses may fan out. Read
+`skill/references/orchestrator-context.md` for the file-first handoff protocol.

@@ -7,6 +7,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   agentsSkillsDir,
+  claudeSkillsDir,
   claudeWorkflowsDir,
   metaDir,
   runsDir,
@@ -49,8 +50,8 @@ export function ensureWorkspaceLayout(root) {
   fs.mkdirSync(metaDir(root), { recursive: true });
   fs.mkdirSync(runsDir(root), { recursive: true });
   fs.mkdirSync(claudeWorkflowsDir(root), { recursive: true });
+  fs.mkdirSync(path.dirname(claudeSkillsDir(root)), { recursive: true });
   fs.mkdirSync(path.dirname(agentsSkillsDir(root)), { recursive: true });
-  fs.mkdirSync(path.join(root, "wiki"), { recursive: true });
 }
 
 /**

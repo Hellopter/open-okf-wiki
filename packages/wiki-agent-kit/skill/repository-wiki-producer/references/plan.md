@@ -1,84 +1,53 @@
 # Plan
 
-Shape the **WikiRunSpec** and intended page set before writing Staging Wiki pages.
+Shape the complete `analysis/spec.json` before any candidate page is written.
 
-**Prereq:** discovery receipts and/or `inputs/inventory.json` surveyed; discovery-map filled when
-tier requires it.
-**Output:** `analysis/spec.json`
-**Host gate (mandatory before write):** `ow gate plan --run <runId>`
+**Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json` (or the input shell), and survey
+receipts under `analysis/receipts/`.
+**Output:** `analysis/spec.json`.
+**Mandatory stop:** run `ow gate plan --run <runId>` after planning. Do not enter Write unless it
+succeeds.
 
-## Authority
-
-1. Read `inputs/inventory.json` (coverage units, tier, surfaces).
-2. Read `analysis/discovery-map.json` or `inputs/discovery-map.json` when present — domains/flows
-   are evidence for Spec shape, **not** a license to skip coverage bindings.
-3. Read survey/semantic receipts under `analysis/receipts/` by **path** (JIT). Do not invent
-   findings from chat paste.
-4. Explore `sources/<id>/` from entry points toward implementation (not README-only). Enumerate
-   **every** freeze source and distinct monorepo surface the inventory implies.
-
-## Spec shape
-
-Write a complete JSON document to **`analysis/spec.json`**:
+## Required Spec shape
 
 ```json
 {
   "version": 1,
-  "title": "…",
+  "title": "Example service",
   "overviewPath": "overview.md",
   "wikiLanguage": "en",
   "domains": [
-    {
-      "id": "domain:auth",
-      "title": "Auth",
-      "coverageUnitIds": ["api", "api::packages/auth"]
-    }
+    { "id": "domain:auth", "title": "Authentication", "coverageUnitIds": ["app"] }
   ],
   "pages": [
     {
       "path": "overview.md",
       "type": "Overview",
-      "title": "…",
-      "question": "What is this product and for whom?",
+      "title": "Example service",
+      "question": "What does this service do and how is it organized?",
       "critical": true,
-      "coverageUnitIds": ["api"]
+      "coverageUnitIds": ["app"]
     }
   ],
-  "sourceCoverage": [],
-  "surfaceCoverage": [],
-  "openQuestions": [],
-  "changelog": "Initial plan"
+  "coverageCancellations": []
 }
 ```
 
-Rules:
+Every page needs a reader purpose and inspected evidence. Bind every required inventory coverage
+unit via page/domain `coverageUnitIds`, or add a `coverageCancellations` entry with
+`coverageUnitId`, `cancelled: true`, and a non-empty `reason`. Legacy `sourceCoverage` and
+`surfaceCoverage` forms remain accepted when their id and reason are equally explicit.
 
-- Every intended page has a clear **reader purpose** (`question`) and enough inspected evidence.
-- Bind every **required** coverage unit via `coverageUnitIds` (and/or projected `sourceIds` /
-  `surfaceIds`) on pages or domains, **or** cancel via `sourceCoverage` / `surfaceCoverage` with
-  `cancelled: true` and a non-empty `notes` reason. Silent omission fails the gate.
-- Multi-source: plan an overview repository map and at least one cross-source flow (or cancel with
-  an explicit open question). Use multi-id citations later (`repo:<id>/…`).
-- Monorepo multi-package: treat each inventory surface as a unit; do not collapse unrelated packages
-  into one vague page.
-- Prefer fewest domains that still isolate independent evidence.
-- Do **not** include `index.md` or `log.md` as Spec pages.
-- Do **not** author `generated` / `verified` / `stale_after` anywhere.
+For multiple sources, plan a repository/surface map plus either a `crossSource: true` Discovery Map
+flow, a domain that binds multiple units, or `crossSourceFlowCancellation` with
+`cancelled: true` and a non-empty `reason`.
 
-## Multi-source protocol
+Do not list `index.md` or `log.md` as pages. Spec paths must remain below `candidate/` and cannot
+contain an absolute or traversal path. The package's `schemas/spec.schema.json` is the
+machine-readable reference contract.
 
-When two or more directories exist under `sources/`:
+## Gate failure
 
-- Survey **each** source before synthesizing the Spec.
-- Bind or cancel every freeze source unit.
-- Prefer domains by reader boundary, but scope text and `coverageUnitIds` must still name sources.
-
-## Completion gate
-
-- Every intended page has purpose + evidence to write.
-- Every required coverage unit is bound or explicitly cancelled.
-- DiscoveryMap domains/flows (when tier ≠ L0) support the page set; critical units are not missing.
-- **Then** stop for host: `ow gate plan --run <runId>`. Do not write Wiki pages until the gate passes.
-
-On gate failure: repair Spec or re-discover missing units (`ow retry --from discover|plan`). Do not
-proceed to write with unbound critical coverage.
+Repair the Discovery Map or Spec, then rerun `ow gate plan`. The gate receipt is invalidated whenever
+the inventory, Discovery Map, or Spec changes. Use `ow retry --from discover|plan` only when
+discarding the corresponding derived artifacts is intended.

@@ -12,4 +12,5 @@ Use for an important runtime, request, build, or data sequence:
 - Source Citations for each material stage
 
 Focus on one coherent journey. When the journey crosses repositories or monorepo packages, name
-each participating source/surface and cite with matching `repo:` / `repo:<id>/` evidence.
+each participating source/surface and cite each with direct local relative links into the appropriate
+frozen `sources/<id>/` snapshot.

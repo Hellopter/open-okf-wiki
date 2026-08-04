@@ -17,7 +17,8 @@ description: One sentence on what the repository does and for whom.
 - Main capabilities and boundaries
 - **Repository / surface map** when multiple sources or monorepo packages exist
 - Links to the pages this Wiki actually needs
-- Source Citations beside factual explanations (`repo:path#L1-L2` or `repo:id/path#L1-L2`)
+- Source Citations beside factual explanations, using a local relative link such as
+  `[Source: src/A.java L1-L2](../sources/app/src/A.java#L1-L2)`
 
 Open with the product's value rather than its directory tree. Omit irrelevant prompts; merge small
 topics into the narrative. Prose language follows `wikiLanguage`; paths stay untranslated.

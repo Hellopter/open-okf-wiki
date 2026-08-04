@@ -46,8 +46,20 @@ export function claudeWorkflowsDir(root) {
   return path.join(root, ".claude", "workflows");
 }
 
+export function claudeSkillsDir(root) {
+  return path.join(root, ".claude", "skills", "repository-wiki-producer");
+}
+
 export function agentsSkillsDir(root) {
   return path.join(root, ".agents", "skills", "repository-wiki-producer");
+}
+
+export function candidateDir(workdir) {
+  return path.join(workdir, "candidate");
+}
+
+export function candidateManifestPath(workdir) {
+  return path.join(workdir, "analysis", "candidate.manifest.json");
 }
 
 export function kitWorkflowsDir() {

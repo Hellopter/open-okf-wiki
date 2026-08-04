@@ -12,7 +12,7 @@ const MAX_WALK_FILES = 50_000;
 function walkFiles(absRoot, patterns, { maxFiles = MAX_WALK_FILES } = {}) {
   const out = [];
   const stack = [""];
-  while (stack.length && out.length < maxFiles) {
+  while (stack.length) {
     const rel = stack.pop();
     const abs = rel ? path.join(absRoot, rel) : absRoot;
     let entries;
@@ -32,6 +32,9 @@ function walkFiles(absRoot, patterns, { maxFiles = MAX_WALK_FILES } = {}) {
         if (pathMatchesIgnore(norm, patterns)) continue;
         stack.push(norm);
       } else if (ent.isFile()) {
+        if (out.length >= maxFiles) {
+          throw new Error(`inventory file limit exceeded (${maxFiles}) for ${absRoot}; add ignore rules`);
+        }
         out.push(norm);
       }
     }
@@ -113,14 +116,15 @@ function inventoryTier({ sourceCount, fileCount, surfaceCount, multiEntry }) {
 /**
  * @param {string} root workspace root
  * @param {object} workspace
+ * @param {{ sourceRoots?: Map<string, string> }} [opts]
  */
-export function buildInventory(root, workspace) {
+export function buildInventory(root, workspace, opts = {}) {
   const sourcesOut = [];
   const units = [];
   let totalFiles = 0;
 
   for (const src of workspace.sources) {
-    const abs = resolveSourceAbs(root, src);
+    const abs = opts.sourceRoots?.get(src.id) ?? resolveSourceAbs(root, src);
     const patterns = effectiveSourceIgnores(src);
     const files = walkFiles(abs, patterns);
     totalFiles += files.length;

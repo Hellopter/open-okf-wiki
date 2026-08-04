@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://okf.wiki/schemas/spec.schema.json",
+  "title": "Wiki run specification",
+  "type": "object",
+  "required": ["pages"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+\\.md$" },
+          "type": { "type": "string" },
+          "title": { "type": "string" },
+          "question": { "type": "string" },
+          "critical": { "type": "boolean" },
+          "coverageUnitIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "domains": { "type": "array", "items": { "type": "object" } },
+    "coverageCancellations": { "$ref": "#/$defs/cancellations" },
+    "sourceCoverage": { "$ref": "#/$defs/cancellations" },
+    "surfaceCoverage": { "$ref": "#/$defs/cancellations" },
+    "crossSourceFlowCancellation": {
+      "type": "object",
+      "properties": { "cancelled": { "const": true }, "reason": { "type": "string", "minLength": 1 } },
+      "required": ["cancelled", "reason"]
+    }
+  },
+  "$defs": {
+    "cancellations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "coverageUnitId": { "type": "string" },
+          "sourceId": { "type": "string" },
+          "surfaceId": { "type": "string" },
+          "cancelled": { "const": true },
+          "reason": { "type": "string", "minLength": 1 },
+          "notes": { "type": "string", "minLength": 1 }
+        },
+        "required": ["cancelled"]
+      }
+    }
+  }
+}
