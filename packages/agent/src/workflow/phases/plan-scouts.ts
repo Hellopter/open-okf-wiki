@@ -178,12 +178,17 @@ export function buildPlanScoutReceiptJson(input: {
   } else if (input.task.kind === "surface") {
     kind = `surface:${input.task.unitId}`;
   } else if (isSemanticScoutKind(taskKind)) {
-    kind = taskKind;
+    // Prefer source-qualified / cross ids (domain:api, flow:cross) over bare kind.
+    kind = input.task.id || taskKind;
   } else {
     kind = taskKind || label;
   }
   const openQuestions = openQuestionsFromScoutSummary(input.summary);
   const paths = pathsFromScoutSummary(input.summary);
+  const semanticSourceId =
+    isSemanticScoutKind(taskKind) && "sourceId" in input.task
+      ? input.task.sourceId
+      : undefined;
   return {
     version: 1,
     kind,
@@ -196,6 +201,7 @@ export function buildPlanScoutReceiptJson(input: {
           sourceId: input.task.sourceId,
         }
       : {}),
+    ...(semanticSourceId ? { sourceId: semanticSourceId } : {}),
     summary: input.summary.slice(0, 4_000),
     ok: input.ok,
     critical: input.task.required,

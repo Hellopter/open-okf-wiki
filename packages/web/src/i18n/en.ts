@@ -855,6 +855,10 @@ export const en = {
     planScoutSemanticDomain: "Scout · domain",
     planScoutSemanticFlow: "Scout · flow",
     planScoutSemanticConcept: "Scout · concept",
+    /** Source-qualified semantic scouts (domain-api, flow-web, flow-cross). */
+    planScoutSemanticDomainId: "Domain · {id}",
+    planScoutSemanticFlowId: "Flow · {id}",
+    planScoutSemanticConceptId: "Concept · {id}",
     /** Unit survey scouts (source / surface). */
     planScoutUnitSource: "Scout · source",
     planScoutUnitSourceId: "Scout · source:{id}",

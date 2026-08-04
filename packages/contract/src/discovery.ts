@@ -223,6 +223,12 @@ export class SemanticSufficiencyError extends Error {
   }
 }
 
+/**
+ * Minimum non-doc evidencePaths required per required source on multi-source.
+ * Scout prompts ask for ≥3 when possible; gate floor is 2.
+ */
+export const MIN_SOURCE_NON_DOC_EVIDENCE = 2;
+
 function cancelledSourceIds(spec: SemanticSufficiencySpec): Map<string, string> {
   const out = new Map<string, string>();
   for (const row of spec.sourceCoverage ?? []) {
@@ -234,47 +240,139 @@ function cancelledSourceIds(spec: SemanticSufficiencySpec): Map<string, string> 
   return out;
 }
 
+/**
+ * Doc-like paths (README, docs/, license, …) do not count toward the
+ * multi-source non-doc evidence floor.
+ */
+export function isDocLikeEvidencePath(path: string): boolean {
+  const n = path.replace(/\\/g, "/").trim().toLowerCase();
+  if (!n) return true;
+  const segments = n.split("/").filter(Boolean);
+  const base = segments[segments.length - 1] ?? n;
+  if (/^readme(\.|$)/i.test(base)) return true;
+  if (/(^|\/)(docs?|documentation)(\/|$)/.test(n)) return true;
+  if (
+    /^(license|licence|changelog|contributing|code_of_conduct|authors|copying|notice|security)(\.|$)/i.test(
+      base,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Count evidence paths that are not doc-like (README / docs / license). */
+export function countNonDocEvidencePaths(paths: readonly string[] | undefined): number {
+  if (!paths?.length) return 0;
+  let n = 0;
+  for (const p of paths) {
+    if (!isDocLikeEvidencePath(p)) n += 1;
+  }
+  return n;
+}
+
+/**
+ * True when a domain's coverageUnitIds binds this source (bare source id or
+ * a surface unit under that source: `{sourceId}::…`).
+ */
+function domainBindsSource(
+  domain: DiscoveryDomainRow,
+  sourceId: string,
+): boolean {
+  const sid = unitIdForSource(sourceId);
+  if (!sid) return false;
+  for (const raw of domain.coverageUnitIds) {
+    const id = raw.trim();
+    if (!id) continue;
+    if (unitIdForSource(id) === sid) return true;
+    if (id.startsWith(`${sid}::`)) return true;
+  }
+  return false;
+}
+
 function sourceHasEvidence(
   discovery: DiscoveryMap | null | undefined,
   sourceId: string,
-  spec: SemanticSufficiencySpec,
 ): { ok: boolean; reason?: string } {
   const sid = unitIdForSource(sourceId);
   const row = discovery?.sources.find((s) => unitIdForSource(s.sourceId) === sid);
-  if (row && row.evidencePaths.length > 0) {
-    return { ok: true };
-  }
-  // Prefer repositoryMap as a secondary sealed narrative aid (entry points).
-  const mapRow = spec.repositoryMap?.sources?.find(
-    (s) => unitIdForSource(s.sourceId) === sid,
-  );
-  if (mapRow && (mapRow.entryPoints?.length ?? 0) > 0) {
-    return { ok: true, reason: "covered via Spec.repositoryMap entryPoints" };
-  }
-  if (row && (row.entryPoints.length > 0 || row.surfaces.length > 0)) {
-    // Entry/surface lists without evidencePaths are not enough for multi-source.
+  if (!row) {
     return {
       ok: false,
-      reason: `discovery source "${sid}" has no evidencePaths (entry/surface lists alone are insufficient)`,
+      reason: `required source "${sid}" has no discovery sources row and is not cancelled`,
+    };
+  }
+  const nonDoc = countNonDocEvidencePaths(row.evidencePaths);
+  if (nonDoc >= MIN_SOURCE_NON_DOC_EVIDENCE) {
+    return {
+      ok: true,
+      reason: `${nonDoc} non-doc evidencePaths (≥${MIN_SOURCE_NON_DOC_EVIDENCE})`,
+    };
+  }
+  if (row.evidencePaths.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `discovery source "${sid}" needs ≥${MIN_SOURCE_NON_DOC_EVIDENCE} non-doc evidencePaths ` +
+        `(got ${nonDoc} non-doc of ${row.evidencePaths.length} total; README/docs-only do not count)`,
+    };
+  }
+  if (row.entryPoints.length > 0 || row.surfaces.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `discovery source "${sid}" has no evidencePaths ` +
+        `(entry/surface lists alone are insufficient; need ≥${MIN_SOURCE_NON_DOC_EVIDENCE} non-doc paths)`,
     };
   }
   return {
     ok: false,
     reason:
-      `required source "${sid}" has no discovery evidencePaths ` +
-      `(or Spec.repositoryMap entryPoints) and is not cancelled`,
+      `required source "${sid}" has a discovery row but fewer than ` +
+      `${MIN_SOURCE_NON_DOC_EVIDENCE} non-doc evidencePaths and is not cancelled`,
   };
+}
+
+function sourceHasDomain(
+  discovery: DiscoveryMap,
+  sourceId: string,
+): { ok: boolean; reason?: string } {
+  const sid = unitIdForSource(sourceId);
+  const hit = discovery.domains.some((d) => domainBindsSource(d, sid));
+  if (hit) {
+    return { ok: true, reason: `domain candidate binds coverage unit "${sid}"` };
+  }
+  return {
+    ok: false,
+    reason:
+      `required source "${sid}" has no domain candidate whose coverageUnitIds includes ` +
+      `"${sid}" (or a surface under it)`,
+  };
+}
+
+/** Cross-source flow with non-empty steps and/or evidencePaths. */
+function hasQualifiedCrossFlow(discovery: DiscoveryMap): boolean {
+  return discovery.flows.some(
+    (f) =>
+      f.crossSource === true &&
+      (f.steps.length > 0 || f.evidencePaths.length > 0),
+  );
 }
 
 /**
  * Fail-closed semantic discovery check for plan sufficiency.
  *
- * - **Multi-source** (`sourceCount >= 2`): every required source needs a
- *   discovery sources row with ≥1 `evidencePath` (or Spec `repositoryMap`
- *   entryPoints), or explicit Spec cancel; plus a cross-source flow **or**
- *   an explicit openQuestion (discovery or Spec).
- * - **Light / small single-source**: soft pass when discovery is not required
- *   (`lightPath` or sourceCount < 2 without a required map).
+ * - **Soft only** for L0 / lightPath or `sourceCount < 2` (DiscoveryMap not required).
+ * - **Multi-source** (`sourceCount ≥ 2`, not light): for each required source
+ *   (unless Spec-cancelled):
+ *   1. discovery `sources[]` row with ≥{@link MIN_SOURCE_NON_DOC_EVIDENCE} non-doc
+ *      `evidencePaths` (README/docs alone fail)
+ *   2. ≥1 domain candidate whose `coverageUnitIds` includes that sourceId
+ *      (or a surface unit under it)
+ *   3. ≥1 `crossSource:true` flow with non-empty `steps` and/or `evidencePaths`,
+ *      **or** an explicit openQuestion (discovery or Spec) — escape hatch when
+ *      the join is unknown. When fewer than 2 non-cancelled sources remain,
+ *      the cross-source obligation is not required.
  */
 export function assertSemanticSufficiency(
   discovery: DiscoveryMap | null | undefined,
@@ -291,7 +389,7 @@ export function assertSemanticSufficiency(
   const multiSource = sourceCount >= 2;
   const lightPath = inventoryHints.lightPath === true;
 
-  // Light / small single-source: soft pass when discovery not required.
+  // Soft only L0 / lightPath or sourceCount < 2.
   if (!multiSource || lightPath) {
     const empty = SemanticSufficiencyResultSchema.parse({
       ok: true,
@@ -301,8 +399,8 @@ export function assertSemanticSufficiency(
           kind: "discovery",
           status: "not_required",
           reason: multiSource
-            ? "lightPath override — discovery gate skipped"
-            : "single-source / light path — DiscoveryMap not required",
+            ? "lightPath / L0 override — discovery gate skipped"
+            : "single-source / sourceCount < 2 — DiscoveryMap not required",
         },
       ],
       stop_reason: "not_required",
@@ -355,6 +453,7 @@ export function assertSemanticSufficiency(
 
   const rows: SemanticSufficiencyRow[] = [];
   const gaps: string[] = [];
+  const activeSourceIds: string[] = [];
 
   for (const sourceId of requiredSourceIds) {
     const cancelReason = cancelled.get(sourceId);
@@ -369,8 +468,35 @@ export function assertSemanticSufficiency(
       );
       continue;
     }
-    const ev = sourceHasEvidence(discovery, sourceId, spec);
-    if (ev.ok) {
+    activeSourceIds.push(sourceId);
+
+    const ev = sourceHasEvidence(discovery, sourceId);
+    if (!ev.ok) {
+      gaps.push(sourceId);
+      rows.push(
+        SemanticSufficiencyRowSchema.parse({
+          unitId: sourceId,
+          kind: "source",
+          status: "gap",
+          reason: ev.reason,
+        }),
+      );
+      continue;
+    }
+
+    const dom = sourceHasDomain(discovery, sourceId);
+    if (!dom.ok) {
+      const gapId = `domain:${sourceId}`;
+      gaps.push(gapId);
+      rows.push(
+        SemanticSufficiencyRowSchema.parse({
+          unitId: gapId,
+          kind: "source",
+          status: "gap",
+          reason: dom.reason,
+        }),
+      );
+      // Still record source evidence covered for operator clarity.
       rows.push(
         SemanticSufficiencyRowSchema.parse({
           unitId: sourceId,
@@ -381,45 +507,59 @@ export function assertSemanticSufficiency(
       );
       continue;
     }
-    gaps.push(sourceId);
+
     rows.push(
       SemanticSufficiencyRowSchema.parse({
         unitId: sourceId,
         kind: "source",
-        status: "gap",
-        reason: ev.reason,
+        status: "covered",
+        reason: `${ev.reason}; ${dom.reason}`,
       }),
     );
   }
 
-  // Cross-source flow or explicit openQuestion.
-  const hasCrossFlow = discovery.flows.some((f) => f.crossSource === true);
+  // Cross-source flow (qualified) or explicit openQuestion — only when ≥2 active.
   const openQs = [
     ...(discovery.openQuestions ?? []),
     ...(spec.openQuestions ?? []),
   ].filter((q) => q.trim().length > 0);
-  if (hasCrossFlow || openQs.length > 0) {
+  const needCross = activeSourceIds.length >= 2;
+  if (!needCross) {
     rows.push(
       SemanticSufficiencyRowSchema.parse({
         unitId: "_cross_source",
         kind: "cross_source",
-        status: "covered",
-        reason: hasCrossFlow
-          ? "cross-source flow present"
-          : "explicit openQuestion present for multi-source join",
+        status: "not_required",
+        reason:
+          "fewer than 2 non-cancelled sources — cross-source flow not required",
       }),
     );
   } else {
-    gaps.push("_cross_source");
-    rows.push(
-      SemanticSufficiencyRowSchema.parse({
-        unitId: "_cross_source",
-        kind: "cross_source",
-        status: "gap",
-        reason:
-          "multi-source discovery requires a crossSource flow or an explicit openQuestion",
-      }),
-    );
+    const qualifiedCross = hasQualifiedCrossFlow(discovery);
+    if (qualifiedCross || openQs.length > 0) {
+      rows.push(
+        SemanticSufficiencyRowSchema.parse({
+          unitId: "_cross_source",
+          kind: "cross_source",
+          status: "covered",
+          reason: qualifiedCross
+            ? "crossSource flow with non-empty steps/evidencePaths"
+            : "explicit openQuestion present for multi-source join",
+        }),
+      );
+    } else {
+      gaps.push("_cross_source");
+      rows.push(
+        SemanticSufficiencyRowSchema.parse({
+          unitId: "_cross_source",
+          kind: "cross_source",
+          status: "gap",
+          reason:
+            "multi-source discovery requires a crossSource flow with non-empty steps/evidencePaths " +
+            "or an explicit openQuestion",
+        }),
+      );
+    }
   }
 
   const ok = gaps.length === 0;

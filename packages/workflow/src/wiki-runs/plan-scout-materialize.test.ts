@@ -1,6 +1,7 @@
 /**
- * Unit tests for durable plan.scout materialization after freeze (U1)
- * and control-plane plan sufficiency re-scout (ADR 0040/0042).
+ * Unit tests for durable plan.scout materialization after freeze (U1),
+ * L3 two-wave discover (WP3), and control-plane plan sufficiency re-scout
+ * (ADR 0040/0042).
  */
 
 import assert from "node:assert/strict";
@@ -11,10 +12,16 @@ import { unlockReadyNodes, upstreamsSucceeded } from "./dag.js";
 import {
   extractPlanSufficiencyGapUnitIds,
   hasPlanScoutTopology,
+  isDiscoverWaveATask,
+  isDiscoverWaveBTask,
   isPlanSufficiencyGapFailure,
   materializePlanScoutsAfterFreeze,
+  maybeMaterializeDiscoverWaveB,
+  needsTwoWaveDiscover,
+  partitionPlanScoutTasksByDiscoverWave,
   planScoutDetailFromTask,
   planSufficiencyRoundsUsed,
+  readDiscoverWaveFromDetail,
   schedulePlanSufficiencyRescout,
 } from "./plan-scout-materialize.js";
 import { migrate } from "./schema.js";
@@ -100,26 +107,32 @@ test("multi-source: inserts N source scouts + discover.reduce; plan blocked unti
   const db = openDb();
   seedRun(db);
   const host = dagHost(db);
+  // One-wave path: only unit scouts (no Wave B kinds) — all materialize at freeze.
   const tasks: PlanScoutTask[] = [
     { kind: "source", sourceId: "api", id: "source:api", required: true },
     { kind: "source", sourceId: "web", id: "source:web", required: true },
-    { kind: "thematic", thematic: "entry", id: "entry", required: false },
   ];
-  materializePlanScoutsAfterFreeze(host, "run-1", tasks);
+  materializePlanScoutsAfterFreeze(host, "run-1", tasks, { sourceCount: 2 });
 
   assert.equal(nodeState(db, "run-1", "plan"), "blocked");
   assert.equal(nodeState(db, "run-1", "plan.discover.reduce"), "blocked");
   assert.equal(nodeState(db, "run-1", "plan.scout.source-api"), "ready");
   assert.equal(nodeState(db, "run-1", "plan.scout.source-web"), "ready");
-  assert.equal(nodeState(db, "run-1", "plan.scout.entry"), "ready");
+  // discoverWave:2 (final) when no Wave B tasks
+  const reduceDetail = asRow(
+    db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan.discover.reduce'",
+      )
+      .get("run-1"),
+  );
+  assert.equal(readDiscoverWaveFromDetail(reduceDetail?.detail_json), 2);
 
   const edgeSet = new Set(edges(db, "run-1").map((e) => `${e.from}->${e.to}`));
   assert.ok(edgeSet.has("freeze->plan.scout.source-api"));
   assert.ok(edgeSet.has("freeze->plan.scout.source-web"));
-  assert.ok(edgeSet.has("freeze->plan.scout.entry"));
   assert.ok(edgeSet.has("plan.scout.source-api->plan.discover.reduce"));
   assert.ok(edgeSet.has("plan.scout.source-web->plan.discover.reduce"));
-  assert.ok(edgeSet.has("plan.scout.entry->plan.discover.reduce"));
   assert.ok(edgeSet.has("plan.discover.reduce->plan"));
   assert.ok(!edgeSet.has("freeze->plan"));
   assert.ok(!edgeSet.has("plan.scout.source-api->plan"));
@@ -128,13 +141,10 @@ test("multi-source: inserts N source scouts + discover.reduce; plan blocked unti
   assert.equal(upstreamsSucceeded(host, "run-1", "plan.discover.reduce"), false);
   assert.equal(upstreamsSucceeded(host, "run-1", "plan"), false);
 
-  // Succeed critical scouts only; optional thematic still open → reduce NOT ready.
+  // Succeed one critical scout only → reduce NOT ready.
   db.prepare(
     "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = ?",
   ).run("run-1", "plan.scout.source-api");
-  db.prepare(
-    "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = ?",
-  ).run("run-1", "plan.scout.source-web");
 
   assert.equal(upstreamsSucceeded(host, "run-1", "plan.discover.reduce"), false);
   unlockReadyNodes(host, "run-1");
@@ -144,7 +154,7 @@ test("multi-source: inserts N source scouts + discover.reduce; plan blocked unti
   // All scouts succeeded → reduce ready; plan still blocked until reduce succeeds.
   db.prepare(
     "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = ?",
-  ).run("run-1", "plan.scout.entry");
+  ).run("run-1", "plan.scout.source-web");
   assert.equal(upstreamsSucceeded(host, "run-1", "plan.discover.reduce"), true);
   unlockReadyNodes(host, "run-1");
   assert.equal(nodeState(db, "run-1", "plan.discover.reduce"), "ready");
@@ -156,6 +166,238 @@ test("multi-source: inserts N source scouts + discover.reduce; plan blocked unti
   assert.equal(upstreamsSucceeded(host, "run-1", "plan"), true);
   unlockReadyNodes(host, "run-1");
   assert.equal(nodeState(db, "run-1", "plan"), "ready");
+});
+
+test("partition / needsTwoWaveDiscover: unit vs semantic by kind", () => {
+  const tasks: PlanScoutTask[] = [
+    { kind: "source", sourceId: "api", id: "source:api", required: true },
+    { kind: "source", sourceId: "web", id: "source:web", required: true },
+    { kind: "domain", id: "domain:api", sourceId: "api", required: true },
+    { kind: "flow", id: "flow:cross", sourceId: "cross", cross: true, required: true },
+    { kind: "thematic", thematic: "entry", id: "entry", required: false },
+  ];
+  assert.ok(tasks.filter(isDiscoverWaveATask).every((t) => t.kind === "source"));
+  assert.ok(tasks.filter(isDiscoverWaveBTask).every((t) => t.kind !== "source"));
+  const { waveA, waveB } = partitionPlanScoutTasksByDiscoverWave(tasks);
+  assert.equal(waveA.length, 2);
+  assert.equal(waveB.length, 3);
+  assert.equal(needsTwoWaveDiscover(2, tasks), true);
+  assert.equal(needsTwoWaveDiscover(1, tasks), false, "single-source never forced two-wave");
+  assert.equal(
+    needsTwoWaveDiscover(2, tasks.filter(isDiscoverWaveATask)),
+    false,
+    "unit-only has no Wave B",
+  );
+});
+
+test("multi-source L3: after freeze only unit scouts; after reduce success Wave B appears", async () => {
+  const fixture = await openControlFixture();
+  try {
+    const { db, ctrl } = fixture;
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const { runWorkDir } = await import("@okf-wiki/core");
+
+    seedRun(db);
+    db.prepare(
+      `UPDATE runs SET freeze_config_json = ?, pinned_sources_json = ? WHERE run_id = ?`,
+    ).run(
+      JSON.stringify({
+        orchestration: {
+          planScoutMode: "hybrid",
+          planScoutCount: 0,
+          planSurveyTaskBudget: 2,
+          planRescoutMaxRounds: 1,
+        },
+      }),
+      JSON.stringify([{ id: "api" }, { id: "web" }]),
+      "run-1",
+    );
+
+    // Sealed coverage under run work dir so Wave B re-selection works.
+    const analysisDir = pathMod.join(runWorkDir(ctrl.workspace.rootPath, "run-1"), "analysis");
+    await mkdir(analysisDir, { recursive: true });
+    await writeFile(
+      pathMod.join(analysisDir, "coverage-inventory.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { sourceId: "api", surfaces: [] },
+          { sourceId: "web", surfaces: [] },
+        ],
+      }),
+      "utf8",
+    );
+    await writeFile(
+      pathMod.join(analysisDir, "coverage-plan.json"),
+      JSON.stringify({
+        version: 1,
+        requiredUnits: [
+          { kind: "source", id: "api", sourceId: "api" },
+          { kind: "source", id: "web", sourceId: "web" },
+        ],
+      }),
+      "utf8",
+    );
+
+    const tasks: PlanScoutTask[] = [
+      { kind: "source", sourceId: "api", id: "source:api", required: true },
+      { kind: "source", sourceId: "web", id: "source:web", required: true },
+      { kind: "domain", id: "domain:api", sourceId: "api", required: true },
+      { kind: "domain", id: "domain:web", sourceId: "web", required: true },
+      { kind: "flow", id: "flow:api", sourceId: "api", required: true },
+      { kind: "flow", id: "flow:web", sourceId: "web", required: true },
+      { kind: "flow", id: "flow:cross", sourceId: "cross", cross: true, required: true },
+    ];
+    const materialized = materializePlanScoutsAfterFreeze(ctrl, "run-1", tasks, {
+      sourceCount: 2,
+    });
+    assert.equal(materialized.length, 2, "freeze materializes Wave A unit scouts only");
+    assert.ok(materialized.every((t) => t.kind === "source"));
+
+    assert.equal(nodeState(db, "run-1", "plan.scout.source-api"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan.scout.source-web"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan.scout.domain-api"), undefined);
+    assert.equal(nodeState(db, "run-1", "plan.scout.flow-cross"), undefined);
+    assert.equal(nodeState(db, "run-1", "plan"), "blocked");
+
+    const reduce0 = asRow(
+      db
+        .prepare(
+          "SELECT detail_json, generation FROM nodes WHERE run_id = ? AND node_key = 'plan.discover.reduce' ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1"),
+    );
+    assert.equal(readDiscoverWaveFromDetail(reduce0?.detail_json), 1);
+
+    // Complete Wave A scouts → intermediate reduce ready.
+    for (const key of ["plan.scout.source-api", "plan.scout.source-web"]) {
+      db.prepare(
+        "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = ?",
+      ).run("run-1", key);
+    }
+    unlockReadyNodes(ctrl, "run-1");
+    assert.equal(nodeState(db, "run-1", "plan.discover.reduce"), "ready");
+
+    // Intermediate reduce success → Wave B materialize.
+    db.prepare(
+      "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = 'plan.discover.reduce' AND generation = 0",
+    ).run("run-1");
+    const opened = maybeMaterializeDiscoverWaveB(ctrl, {
+      attemptId: "a1",
+      nodeGeneration: 0,
+      nodeKey: "plan.discover.reduce",
+      kind: "plan.discover.reduce",
+      runId: "run-1",
+    });
+    assert.equal(opened, true, "Wave B opens after intermediate reduce");
+
+    assert.equal(nodeState(db, "run-1", "plan.scout.domain-api"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan.scout.domain-web"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan.scout.flow-api"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan.scout.flow-web"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan.scout.flow-cross"), "ready");
+    assert.equal(nodeState(db, "run-1", "plan"), "blocked");
+
+    const reduce1 = asRow(
+      db
+        .prepare(
+          "SELECT generation, state, detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan.discover.reduce' ORDER BY generation DESC LIMIT 1",
+        )
+        .get("run-1"),
+    );
+    assert.equal(requiredNumber(reduce1!, "generation"), 1);
+    assert.equal(requiredText(reduce1!, "state"), "blocked");
+    assert.equal(readDiscoverWaveFromDetail(reduce1?.detail_json), 2);
+
+    // Second maybeMaterialize on wave-2 must not loop.
+    const again = maybeMaterializeDiscoverWaveB(ctrl, {
+      attemptId: "a2",
+      nodeGeneration: 1,
+      nodeKey: "plan.discover.reduce",
+      kind: "plan.discover.reduce",
+      runId: "run-1",
+    });
+    assert.equal(again, false, "no infinite Wave B loop");
+    assert.equal(ctrl.currentNodeGeneration("run-1", "plan.discover.reduce"), 1);
+
+    // Also reject re-call on already-succeeded wave-1 gen after bump (stale).
+    const stale = maybeMaterializeDiscoverWaveB(ctrl, {
+      attemptId: "a3",
+      nodeGeneration: 0,
+      nodeKey: "plan.discover.reduce",
+      kind: "plan.discover.reduce",
+      runId: "run-1",
+    });
+    assert.equal(stale, false);
+
+    // Wave B scouts + final reduce → plan unlocks.
+    for (const key of [
+      "plan.scout.domain-api",
+      "plan.scout.domain-web",
+      "plan.scout.flow-api",
+      "plan.scout.flow-web",
+      "plan.scout.flow-cross",
+    ]) {
+      db.prepare(
+        "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = ?",
+      ).run("run-1", key);
+    }
+    unlockReadyNodes(ctrl, "run-1");
+    assert.equal(nodeState(db, "run-1", "plan.discover.reduce"), "ready");
+    db.prepare(
+      "UPDATE nodes SET state = 'succeeded' WHERE run_id = ? AND node_key = 'plan.discover.reduce' AND generation = 1",
+    ).run("run-1");
+    unlockReadyNodes(ctrl, "run-1");
+    assert.equal(nodeState(db, "run-1", "plan"), "ready");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("single-source L1/L2: all narrow tasks in one wave (no forced double reduce)", () => {
+  const db = openDb();
+  seedRun(db);
+  const host = dagHost(db);
+  const tasks: PlanScoutTask[] = [
+    { kind: "source", sourceId: "mono", id: "source:mono", required: true },
+    { kind: "domain", id: "domain:mono", sourceId: "mono", required: true },
+    { kind: "flow", id: "flow:mono", sourceId: "mono", required: true },
+    { kind: "thematic", thematic: "entry", id: "entry", required: false },
+  ];
+  const materialized = materializePlanScoutsAfterFreeze(host, "run-1", tasks, {
+    sourceCount: 1,
+  });
+  assert.equal(materialized.length, 4);
+  assert.equal(nodeState(db, "run-1", "plan.scout.source-mono"), "ready");
+  assert.equal(nodeState(db, "run-1", "plan.scout.domain-mono"), "ready");
+  assert.equal(nodeState(db, "run-1", "plan.scout.flow-mono"), "ready");
+  assert.equal(nodeState(db, "run-1", "plan.scout.entry"), "ready");
+  const reduceDetail = asRow(
+    db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = 'plan.discover.reduce'",
+      )
+      .get("run-1"),
+  );
+  assert.equal(readDiscoverWaveFromDetail(reduceDetail?.detail_json), 2);
+});
+
+test("light path freeze→plan unchanged (0 scouts)", () => {
+  const db = openDb();
+  seedRun(db);
+  const tasks = materializePlanScoutsAfterFreeze(dagHost(db), "run-1", [], { sourceCount: 1 });
+  assert.equal(tasks.length, 0);
+  assert.equal(nodeState(db, "run-1", "plan"), "ready");
+  assert.deepEqual(edges(db, "run-1"), [{ from: "freeze", to: "plan" }]);
+  assert.equal(
+    asRows(
+      db
+        .prepare("SELECT node_key FROM nodes WHERE run_id = ? AND kind = 'plan.discover.reduce'")
+        .all("run-1"),
+    ).length,
+    0,
+  );
 });
 
 test("thematic scout open → reduce not ready; optional failed + critical succeeded → reduce ready", () => {
@@ -235,6 +477,36 @@ test("planScoutDetailFromTask marks source/surface/semantic required as critical
       required: true,
     }).critical,
     true,
+  );
+  // Source-qualified semantic + flow:cross round-trip via detail.sourceId
+  assert.deepEqual(
+    planScoutDetailFromTask({
+      kind: "domain",
+      id: "domain:api",
+      sourceId: "api",
+      required: true,
+    }),
+    {
+      scoutKind: "domain",
+      sourceId: "api",
+      critical: true,
+      taskLabel: "domain:api",
+    },
+  );
+  assert.deepEqual(
+    planScoutDetailFromTask({
+      kind: "flow",
+      id: "flow:cross",
+      sourceId: "cross",
+      cross: true,
+      required: true,
+    }),
+    {
+      scoutKind: "flow",
+      sourceId: "cross",
+      critical: true,
+      taskLabel: "flow:cross",
+    },
   );
 });
 

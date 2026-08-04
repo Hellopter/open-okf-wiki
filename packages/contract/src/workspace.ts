@@ -219,10 +219,17 @@ export const WorkspaceOrchestrationSchema = z
      */
     planScoutCount: z.number().int().min(0).max(4).default(0),
     /**
-     * How many plan scouts may run concurrently.
-     * Defaults to `planScoutCount` when omitted.
+     * How many plan scouts may run concurrently (thematic + survey/unit slots).
+     * When omitted, `resolvePlanScoutConcurrency` applies a floor of 2 so
+     * multi-source hybrid/survey is not forced serial when thematic
+     * `planScoutCount` is 0. Cap is `maxPlanScoutConcurrency`.
      */
-    planScoutConcurrency: z.number().int().min(1).max(4).optional(),
+    planScoutConcurrency: z.number().int().min(1).max(8).optional(),
+    /**
+     * Ceiling for resolved plan-scout concurrency (explicit or default floor).
+     * Default 4; operator may raise up to 8.
+     */
+    maxPlanScoutConcurrency: z.number().int().min(1).max(8).default(4),
     /**
      * Plan scout topology:
      * - thematic: entry/layout/tests/risks only (classic)
@@ -313,6 +320,8 @@ export function resolveOrchestration(
     ...(o.planScoutConcurrency !== undefined
       ? { planScoutConcurrency: o.planScoutConcurrency }
       : {}),
+    maxPlanScoutConcurrency:
+      o.maxPlanScoutConcurrency ?? DEFAULT_ORCHESTRATION.maxPlanScoutConcurrency,
     planScoutMode: o.planScoutMode ?? DEFAULT_ORCHESTRATION.planScoutMode,
     planRescoutMaxRounds: o.planRescoutMaxRounds ?? DEFAULT_ORCHESTRATION.planRescoutMaxRounds,
     ...(o.planSurveyTaskBudget !== undefined
@@ -329,6 +338,30 @@ export function resolveOrchestration(
     domainConcurrency: o.domainConcurrency ?? DEFAULT_ORCHESTRATION.domainConcurrency,
     leafConcurrency: o.leafConcurrency ?? DEFAULT_ORCHESTRATION.leafConcurrency,
   };
+}
+
+/**
+ * Concurrent plan.scout slots for the WikiRuns scheduler and in-process scout runner.
+ *
+ * - Prefer explicit `planScoutConcurrency` (still capped by `maxPlanScoutConcurrency`).
+ * - Else floor of 2: hybrid/survey needs parallel width even when thematic
+ *   `planScoutCount` is 0 (multi-source thematic DEFAULT-OFF).
+ * - When thematic count > 0: `max(planScoutCount, 2)`, still capped.
+ *
+ * Never use only `planScoutCount || 1` as the sole default (that serializes
+ * multi-source surveys when count is 0).
+ */
+export function resolvePlanScoutConcurrency(
+  o?: Partial<WorkspaceOrchestration> | null,
+): number {
+  const orch = resolveOrchestration(o);
+  const cap = Math.min(8, Math.max(1, orch.maxPlanScoutConcurrency));
+  if (orch.planScoutConcurrency !== undefined) {
+    return Math.min(cap, Math.max(1, orch.planScoutConcurrency));
+  }
+  // planScoutCount=0 → 2; count>0 → max(count, 2)
+  const fallback = Math.max(orch.planScoutCount, 2);
+  return Math.min(cap, fallback);
 }
 
 /**

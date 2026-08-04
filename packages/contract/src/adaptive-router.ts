@@ -17,7 +17,11 @@
  * - multiEntry stays an explicit inventory signal (never implied by multi-source alone)
  */
 
-import { resolveOrchestration, type WorkspaceOrchestration } from "./workspace.js";
+import {
+  resolveOrchestration,
+  resolvePlanScoutConcurrency,
+  type WorkspaceOrchestration,
+} from "./workspace.js";
 
 /**
  * Deterministic host-side inventory signals used for adaptive fan-out.
@@ -233,10 +237,37 @@ export function resolveAdaptiveOrchestration(
     }
   }
 
+  // Global in-flight Attempt ceiling must not undercut plan.scout width, or the
+  // scheduler serializes scouts even when planScoutConcurrency ≥ 2.
+  // Never lower an operator-explicit maxConcurrentAttempts.
+  const scoutConcurrency = resolvePlanScoutConcurrency({
+    ...base,
+    planScoutCount,
+    ...(base.planScoutConcurrency !== undefined
+      ? { planScoutConcurrency: base.planScoutConcurrency }
+      : {}),
+  });
+  let maxConcurrentAttempts = base.maxConcurrentAttempts;
+  if (multiSource) {
+    // L3: at least plan scout concurrency (hybrid/survey width).
+    if (maxConcurrentAttempts < scoutConcurrency) {
+      maxConcurrentAttempts = scoutConcurrency;
+      reasons.push("inventory:multi-source:max-concurrent-attempts");
+    }
+  } else if (largeSingleRepo) {
+    // L2: at least max(2, planScoutConcurrency / resolved scout width).
+    const minAttempts = Math.max(2, scoutConcurrency);
+    if (maxConcurrentAttempts < minAttempts) {
+      maxConcurrentAttempts = minAttempts;
+      reasons.push("inventory:large-single-repo:max-concurrent-attempts");
+    }
+  }
+
   const orchestration: WorkspaceOrchestration = {
     ...base,
     planScoutCount: Math.min(4, Math.max(0, planScoutCount)),
     reviewCouncilSize: Math.min(4, Math.max(1, reviewCouncilSize)),
+    maxConcurrentAttempts,
     planScoutMode,
     ...(planSurveyTaskBudget !== undefined ? { planSurveyTaskBudget } : {}),
     ...(requireSourceCoverage !== undefined ? { requireSourceCoverage } : {}),

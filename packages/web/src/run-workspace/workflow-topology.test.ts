@@ -13,6 +13,7 @@ import {
   projectCollapsedResearchLeaves,
   relationForEdge,
   researchDomainLeafGroups,
+  resolvePlanScoutSemantic,
   scoutKindsFromSnapshot,
   shouldCollapseResearchLeaves,
   stageForNode,
@@ -326,12 +327,79 @@ test("planScoutKindClass classifies semantic / unit / thematic scouts", () => {
   assert.equal(planScoutKindClass("domain"), "semantic");
   assert.equal(planScoutKindClass("flow"), "semantic");
   assert.equal(planScoutKindClass("concept"), "semantic");
+  // Source-qualified semantic forms
+  assert.equal(planScoutKindClass("domain:api"), "semantic");
+  assert.equal(planScoutKindClass("flow-web"), "semantic");
+  assert.equal(planScoutKindClass("flow-cross"), "semantic");
+  assert.equal(planScoutKindClass("flow:cross"), "semantic");
   assert.equal(planScoutKindClass("source"), "unit");
   assert.equal(planScoutKindClass("surface"), "unit");
   assert.equal(planScoutKindClass("entry"), "thematic");
   assert.equal(planScoutKindClass("layout"), "thematic");
   assert.equal(planScoutKindClass(""), "other");
   assert.equal(planScoutKindClass(undefined), "other");
+});
+
+test("resolvePlanScoutSemantic prefers detail.scoutKind + sourceId", () => {
+  // Sealed durable shape: bare scoutKind + sourceId
+  assert.deepEqual(
+    resolvePlanScoutSemantic({ scoutKind: "domain", sourceId: "api" }),
+    { kind: "domain", sourceId: "api" },
+  );
+  assert.deepEqual(
+    resolvePlanScoutSemantic({ scoutKind: "flow", sourceId: "web" }),
+    { kind: "flow", sourceId: "web" },
+  );
+  assert.deepEqual(
+    resolvePlanScoutSemantic({ scoutKind: "flow", sourceId: "cross" }),
+    { kind: "flow", sourceId: "cross" },
+  );
+  // Qualified scoutKind aliases
+  assert.deepEqual(resolvePlanScoutSemantic({ scoutKind: "flow-cross" }), {
+    kind: "flow",
+    sourceId: "cross",
+  });
+  assert.deepEqual(resolvePlanScoutSemantic({ scoutKind: "flow:web" }), {
+    kind: "flow",
+    sourceId: "web",
+  });
+  assert.deepEqual(resolvePlanScoutSemantic({ scoutKind: "domain:api" }), {
+    kind: "domain",
+    sourceId: "api",
+  });
+  // Node key slug fallback (plan.scout.domain-api / flow-web / flow-cross)
+  assert.deepEqual(resolvePlanScoutSemantic({ keySlug: "domain-api" }), {
+    kind: "domain",
+    sourceId: "api",
+  });
+  assert.deepEqual(resolvePlanScoutSemantic({ keySlug: "flow-web" }), {
+    kind: "flow",
+    sourceId: "web",
+  });
+  assert.deepEqual(resolvePlanScoutSemantic({ keySlug: "flow-cross" }), {
+    kind: "flow",
+    sourceId: "cross",
+  });
+  // taskLabel forms
+  assert.deepEqual(
+    resolvePlanScoutSemantic({ taskLabel: "domain:api" }),
+    { kind: "domain", sourceId: "api" },
+  );
+  assert.deepEqual(
+    resolvePlanScoutSemantic({ taskLabel: "semantic:domain" }),
+    { kind: "domain" },
+  );
+  // Legacy bare global semantic
+  assert.deepEqual(resolvePlanScoutSemantic({ scoutKind: "domain" }), {
+    kind: "domain",
+  });
+  assert.deepEqual(resolvePlanScoutSemantic({ scoutKind: "concept" }), {
+    kind: "concept",
+  });
+  // Non-semantic
+  assert.equal(resolvePlanScoutSemantic({ scoutKind: "source", sourceId: "api" }), undefined);
+  assert.equal(resolvePlanScoutSemantic({ scoutKind: "entry" }), undefined);
+  assert.equal(resolvePlanScoutSemantic({}), undefined);
 });
 
 test("durable plan.scout snapshot: layout freeze → scouts → plan → gate.plan", () => {

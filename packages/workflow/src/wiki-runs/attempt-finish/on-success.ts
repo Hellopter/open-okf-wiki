@@ -23,6 +23,9 @@ import { onPlanAccepted } from "../gate-resolve.js";
 import { materializePlanAdaptation, validatePlanAdaptation } from "../plan-adapt.js";
 import { planGateDetailFromSpec, planGatePayloadDigest } from "../plan-review.js";
 import {
+  maybeMaterializeDiscoverWaveB,
+} from "../plan-scout-materialize.js";
+import {
   isRepairNodeKey,
   loadAcceptance,
   rearmEvaluationRoundAfterRepair,
@@ -126,6 +129,12 @@ export function onAttemptSucceeded(
   if (claim.kind === "plan.adapt") {
     if (!planDelta) throw new Error("plan adaptation succeeded without a validated delta");
     materializePlanAdaptation(host, claim, planDelta);
+  }
+
+  // L3 two-wave discover: intermediate reduce (discoverWave:1) opens Wave B
+  // semantic scouts and re-arms reduce (discoverWave:2). Host-owned only.
+  if (claim.kind === "plan.discover.reduce" || claim.nodeKey === "plan.discover.reduce") {
+    maybeMaterializeDiscoverWaveB(host, claim);
   }
 
   // ANY repair.N success → full EvaluationRound re-arm (validate.pre + seats + reduce).

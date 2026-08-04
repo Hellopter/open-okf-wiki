@@ -1,13 +1,19 @@
 /**
  * Host-owned durable plan.scout materialization after freeze, plus control-plane
- * plan sufficiency re-scout (ADR 0040/0042).
+ * plan sufficiency re-scout (ADR 0040/0042) and L3 two-wave discover (WP3).
  *
  * Topology (semantic discovery):
  *   light: freeze → plan (ready) — no scouts, no reduce
- *   scout: freeze → plan.scout.* → plan.discover.reduce → plan
- *          (plan blocked until mechanical reduce succeeds;
- *           reduce waits until all scouts terminal — critical must succeed;
- *           optional may fail/cancel)
+ *   single-source / one-wave: freeze → plan.scout.* → plan.discover.reduce → plan
+ *   multi-source L3 two-wave:
+ *     freeze → Wave A plan.scout.* (unit source/surface only)
+ *           → plan.discover.reduce (discoverWave:1 intermediate)
+ *           → Wave B plan.scout.* (source-qualified domain/flow + flow:cross)
+ *           → plan.discover.reduce (discoverWave:2 final)
+ *           → plan
+ *   (plan blocked until final mechanical reduce succeeds;
+ *    reduce waits until all scouts terminal — critical must succeed;
+ *    optional may fail/cancel)
  *
  * Coverage / semantic gap on plan → schedulePlanSufficiencyRescout re-arms gap
  * scouts + reduce + plan (gen+1) while planRescoutMaxRounds remains; fail-closed
@@ -40,11 +46,16 @@ import {
   WorkspaceConfigSchema,
 } from "@okf-wiki/contract/workspace";
 import { runWorkDir } from "@okf-wiki/core";
-import { COVERAGE_INVENTORY_FILE, COVERAGE_PLAN_FILE } from "./coverage-bridge.js";
+import {
+  COVERAGE_INVENTORY_FILE,
+  COVERAGE_PLAN_FILE,
+  sealedCoverageInventoryRelativePath,
+  sealedCoveragePlanRelativePath,
+} from "./coverage-bridge.js";
 import { now } from "./crypto-util.js";
 import { unlockReadyNodes, type DagControl } from "./dag.js";
 import { asRow, asRows, parseJson } from "./sql.js";
-import type { ArtifactPreparation } from "./types.js";
+import type { ArtifactPreparation, ClaimedNode } from "./types.js";
 
 /** detail_json shape sealed on each durable plan.scout node. */
 export type PlanScoutNodeDetail = {
@@ -55,6 +66,9 @@ export type PlanScoutNodeDetail = {
   critical: boolean;
   taskLabel: string;
 };
+
+/** Discover reduce wave marker (detail_json.discoverWave). 1 = intermediate, 2 = final. */
+export type DiscoverWave = 1 | 2;
 
 export function planScoutDetailFromTask(task: PlanScoutTask): PlanScoutNodeDetail {
   const taskLabel = scoutTaskLabel(task);
@@ -84,9 +98,10 @@ export function planScoutDetailFromTask(task: PlanScoutTask): PlanScoutNodeDetai
       taskLabel,
     };
   }
-  // Semantic: domain | flow | concept
+  // Semantic: domain | flow | concept (source-qualified or flow:cross)
   return {
     scoutKind: task.kind,
+    ...(task.sourceId ? { sourceId: task.sourceId } : {}),
     critical: task.required,
     taskLabel,
   };
@@ -94,16 +109,243 @@ export function planScoutDetailFromTask(task: PlanScoutTask): PlanScoutNodeDetai
 
 const DISCOVER_REDUCE_KEY = "plan.discover.reduce" as const;
 
+// ---------------------------------------------------------------------------
+// L3 two-wave discover: Wave A = unit surveys; Wave B = semantic (+ thematic)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wave A (unit): source / surface surveys only.
+ * Works with both global and source-qualified semantic kinds (WP2).
+ */
+export function isDiscoverWaveATask(task: PlanScoutTask): boolean {
+  return task.kind === "source" || task.kind === "surface";
+}
+
+/**
+ * Wave B (semantic + soft spine): domain / flow / concept / thematic.
+ * Includes source-qualified domain/flow and flow:cross.
+ */
+export function isDiscoverWaveBTask(task: PlanScoutTask): boolean {
+  return !isDiscoverWaveATask(task);
+}
+
+/** Partition selected tasks into discover waves (by kind). */
+export function partitionPlanScoutTasksByDiscoverWave(
+  tasks: readonly PlanScoutTask[],
+): { waveA: PlanScoutTask[]; waveB: PlanScoutTask[] } {
+  const waveA: PlanScoutTask[] = [];
+  const waveB: PlanScoutTask[] = [];
+  for (const task of tasks) {
+    if (isDiscoverWaveATask(task)) waveA.push(task);
+    else waveB.push(task);
+  }
+  return { waveA, waveB };
+}
+
+/**
+ * Multi-source L3 two-wave when sourceCount ≥ 2 and both unit + semantic waves
+ * have tasks. Single-source L1/L2 keeps one wave (no forced double reduce).
+ */
+export function needsTwoWaveDiscover(
+  sourceCount: number,
+  tasks: readonly PlanScoutTask[],
+): boolean {
+  if (sourceCount < 2) return false;
+  const { waveA, waveB } = partitionPlanScoutTasksByDiscoverWave(tasks);
+  return waveA.length > 0 && waveB.length > 0;
+}
+
+/** Read discoverWave from a reduce (or any) node detail_json; default 2 (final). */
+export function readDiscoverWaveFromDetail(detailJson: unknown): DiscoverWave {
+  if (detailJson == null || detailJson === "") return 2;
+  try {
+    const raw =
+      typeof detailJson === "string"
+        ? (JSON.parse(detailJson) as unknown)
+        : detailJson;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const w = (raw as { discoverWave?: unknown }).discoverWave;
+      if (w === 1 || w === 1.0) return 1;
+      if (w === 2 || w === 2.0) return 2;
+    }
+  } catch {
+    // corrupt → treat as final (fail-closed: no extra wave)
+  }
+  return 2;
+}
+
+function discoverReduceDetailJson(wave: DiscoverWave): string {
+  return JSON.stringify({ discoverWave: wave });
+}
+
+function mergeDiscoverWaveDetail(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  nodeKey: string,
+  generation: number,
+  wave: DiscoverWave,
+): void {
+  const row = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(runId, nodeKey, generation),
+  );
+  let base: Record<string, unknown> = {};
+  if (row?.detail_json != null && row.detail_json !== "") {
+    try {
+      const parsed = JSON.parse(String(row.detail_json)) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        base = { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      base = {};
+    }
+  }
+  base.discoverWave = wave;
+  host.db
+    .prepare(
+      `UPDATE nodes SET detail_json = ?
+       WHERE run_id = ? AND node_key = ? AND generation = ?`,
+    )
+    .run(JSON.stringify(base), runId, nodeKey, generation);
+}
+
+/** Insert plan.scout nodes + freeze→scout→reduce edges (idempotent by key). */
+function insertPlanScoutNodes(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  tasks: readonly PlanScoutTask[],
+  opts?: { initialState?: "blocked" | "ready" },
+): void {
+  const initialState = opts?.initialState ?? "blocked";
+  for (const task of tasks) {
+    const nodeKey = planScoutNodeKey(task);
+    const existing = asRow(
+      host.db
+        .prepare(
+          "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 0",
+        )
+        .get(runId, nodeKey),
+    );
+    if (!existing) {
+      contractForNode("plan.scout", nodeKey);
+      const detail = planScoutDetailFromTask(task);
+      host.db
+        .prepare(
+          `INSERT INTO nodes (
+            run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+          ) VALUES (?, ?, 'plan.scout', ?, 0, NULL, NULL, ?)`,
+        )
+        .run(runId, nodeKey, initialState, JSON.stringify(detail));
+    }
+    host.db
+      .prepare(
+        `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'freeze', ?)
+         ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+      )
+      .run(runId, nodeKey);
+    host.db
+      .prepare(
+        `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, ?)
+         ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+      )
+      .run(runId, nodeKey, DISCOVER_REDUCE_KEY);
+  }
+}
+
+function ensureDiscoverReduceAndBlockedPlan(
+  host: Pick<DagControl, "db">,
+  runId: string,
+  discoverWave: DiscoverWave,
+): void {
+  const existingReduce = asRow(
+    host.db
+      .prepare(
+        "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 0",
+      )
+      .get(runId, DISCOVER_REDUCE_KEY),
+  );
+  const reduceDetail = discoverReduceDetailJson(discoverWave);
+  if (!existingReduce) {
+    contractForNode("plan.discover.reduce", DISCOVER_REDUCE_KEY);
+    host.db
+      .prepare(
+        `INSERT INTO nodes (
+          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+        ) VALUES (?, ?, 'plan.discover.reduce', 'blocked', 0, NULL, NULL, ?)`,
+      )
+      .run(runId, DISCOVER_REDUCE_KEY, reduceDetail);
+  } else {
+    // Pin retry: keep reduce blocked until scouts finish (do not force ready).
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL, detail_json = ?
+         WHERE run_id = ? AND node_key = ? AND generation = 0
+           AND state IN ('ready', 'blocked', 'invalidated', 'failed')`,
+      )
+      .run(reduceDetail, runId, DISCOVER_REDUCE_KEY);
+  }
+
+  host.db
+    .prepare(
+      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'plan')
+       ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
+    )
+    .run(runId, DISCOVER_REDUCE_KEY);
+
+  const existingPlan = asRow(
+    host.db
+      .prepare(
+        "SELECT state FROM nodes WHERE run_id = ? AND node_key = 'plan' AND generation = 0",
+      )
+      .get(runId),
+  );
+  if (!existingPlan) {
+    contractForNode("plan", "plan");
+    host.db
+      .prepare(
+        `INSERT INTO nodes (
+          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
+        ) VALUES (?, 'plan', 'plan', 'blocked', 0, NULL, NULL, NULL)`,
+      )
+      .run(runId);
+  } else {
+    // Pin retry: keep plan blocked until final reduce succeeds (do not force ready).
+    host.db
+      .prepare(
+        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
+         WHERE run_id = ? AND node_key = 'plan' AND generation = 0
+           AND state IN ('ready', 'invalidated', 'failed')`,
+      )
+      .run(runId);
+  }
+}
+
+export type MaterializePlanScoutsOptions = {
+  /**
+   * Inventoried / pinned source count. ≥2 enables L3 two-wave when both unit
+   * and semantic waves are present. Omit to infer from source/surface tasks.
+   */
+  sourceCount?: number;
+};
+
 /**
  * Insert durable plan.scout.* + plan.discover.reduce, or light-path freeze→plan.
  * Idempotent for node keys already present (pin retry / recovery).
  *
- * @returns selected tasks (empty on light path)
+ * Multi-source L3: only Wave A unit scouts at freeze (discoverWave:1).
+ * Wave B materializes on intermediate reduce success via
+ * {@link maybeMaterializeDiscoverWaveB}.
+ *
+ * @returns tasks materialized at freeze (Wave A only when two-wave; empty on light)
  */
 export function materializePlanScoutsAfterFreeze(
   host: DagControl & { db: DatabaseSync },
   runId: string,
   tasks: readonly PlanScoutTask[],
+  options?: MaterializePlanScoutsOptions,
 ): PlanScoutTask[] {
   const existingPlan = asRow(
     host.db
@@ -142,97 +384,211 @@ export function materializePlanScoutsAfterFreeze(
     return [];
   }
 
+  const inferredSourceCount = tasks.filter((t) => t.kind === "source").length;
+  const sourceCount = options?.sourceCount ?? inferredSourceCount;
+  const twoWave = needsTwoWaveDiscover(sourceCount, tasks);
+  const { waveA } = partitionPlanScoutTasksByDiscoverWave(tasks);
+  // Two-wave: freeze materializes unit surveys only; one-wave: all tasks.
+  const freezeTasks = twoWave ? waveA : [...tasks];
+  const discoverWave: DiscoverWave = twoWave ? 1 : 2;
+
   // Scout path: freeze → each scout → plan.discover.reduce → plan (blocked).
-  for (const task of tasks) {
-    const nodeKey = planScoutNodeKey(task);
-    const existing = asRow(
-      host.db
-        .prepare(
-          "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 0",
-        )
-        .get(runId, nodeKey),
-    );
-    if (!existing) {
-      contractForNode("plan.scout", nodeKey);
-      const detail = planScoutDetailFromTask(task);
-      host.db
-        .prepare(
-          `INSERT INTO nodes (
-            run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
-          ) VALUES (?, ?, 'plan.scout', 'blocked', 0, NULL, NULL, ?)`,
-        )
-        .run(runId, nodeKey, JSON.stringify(detail));
-    }
-    host.db
-      .prepare(
-        `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, 'freeze', ?)
-         ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
-      )
-      .run(runId, nodeKey);
-    host.db
-      .prepare(
-        `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, ?)
-         ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
-      )
-      .run(runId, nodeKey, DISCOVER_REDUCE_KEY);
-  }
-
-  const existingReduce = asRow(
-    host.db
-      .prepare(
-        "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? AND generation = 0",
-      )
-      .get(runId, DISCOVER_REDUCE_KEY),
-  );
-  if (!existingReduce) {
-    contractForNode("plan.discover.reduce", DISCOVER_REDUCE_KEY);
-    host.db
-      .prepare(
-        `INSERT INTO nodes (
-          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
-        ) VALUES (?, ?, 'plan.discover.reduce', 'blocked', 0, NULL, NULL, NULL)`,
-      )
-      .run(runId, DISCOVER_REDUCE_KEY);
-  } else {
-    // Pin retry: keep reduce blocked until scouts finish (do not force ready).
-    host.db
-      .prepare(
-        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
-         WHERE run_id = ? AND node_key = ? AND generation = 0
-           AND state IN ('ready', 'invalidated', 'failed')`,
-      )
-      .run(runId, DISCOVER_REDUCE_KEY);
-  }
-
-  host.db
-    .prepare(
-      `INSERT INTO node_edges (run_id, from_key, to_key) VALUES (?, ?, 'plan')
-       ON CONFLICT(run_id, from_key, to_key) DO NOTHING`,
-    )
-    .run(runId, DISCOVER_REDUCE_KEY);
-
-  if (!existingPlan) {
-    contractForNode("plan", "plan");
-    host.db
-      .prepare(
-        `INSERT INTO nodes (
-          run_id, node_key, kind, state, generation, current_attempt_id, last_attempt_id, detail_json
-        ) VALUES (?, 'plan', 'plan', 'blocked', 0, NULL, NULL, NULL)`,
-      )
-      .run(runId);
-  } else {
-    // Pin retry: keep plan blocked until reduce succeeds (do not force ready).
-    host.db
-      .prepare(
-        `UPDATE nodes SET state = 'blocked', current_attempt_id = NULL
-         WHERE run_id = ? AND node_key = 'plan' AND generation = 0
-           AND state IN ('ready', 'invalidated', 'failed')`,
-      )
-      .run(runId);
-  }
+  insertPlanScoutNodes(host, runId, freezeTasks, { initialState: "blocked" });
+  ensureDiscoverReduceAndBlockedPlan(host, runId, discoverWave);
 
   unlockReadyNodes(host, runId);
-  return [...tasks];
+  // Return freeze-materialized tasks (Wave B deferred when twoWave).
+  return [...freezeTasks];
+}
+
+/**
+ * After intermediate plan.discover.reduce success (discoverWave:1): materialize
+ * Wave B semantic scouts, re-arm reduce at gen+1 with discoverWave:2, re-block plan.
+ *
+ * Fail-closed loop guard: only runs when detail.discoverWave === 1. Final wave (2)
+ * never re-arms. Host-owned only — no Pi orchestrator node.
+ *
+ * @returns true when Wave B was materialized (caller still runs recomputeRunState).
+ */
+export function maybeMaterializeDiscoverWaveB(
+  host: PlanRescoutControl & {
+    workspace: { rootPath: string };
+    workspaceForRun?: (runId: string) => { rootPath: string };
+  },
+  claim: ClaimedNode,
+): boolean {
+  if (claim.kind !== "plan.discover.reduce" && claim.nodeKey !== DISCOVER_REDUCE_KEY) {
+    return false;
+  }
+
+  const reduceRow = asRow(
+    host.db
+      .prepare(
+        "SELECT detail_json, state FROM nodes WHERE run_id = ? AND node_key = ? AND generation = ?",
+      )
+      .get(claim.runId, DISCOVER_REDUCE_KEY, claim.nodeGeneration),
+  );
+  if (!reduceRow) return false;
+
+  const wave = readDiscoverWaveFromDetail(reduceRow.detail_json);
+  // Only intermediate wave-1 reduce may open Wave B (prevents infinite re-arm).
+  if (wave !== 1) return false;
+
+  const rootPath =
+    host.workspaceForRun?.(claim.runId)?.rootPath ?? host.workspace.rootPath;
+  const { inventory, coveragePlan } = loadCoverageFromSealedFreeze(host, {
+    rootPath,
+    runId: claim.runId,
+  });
+  const sourceCount = resolveDiscoverSourceCount(host, claim.runId, inventory);
+  // Single-source never forced into a second wave even if detail says 1.
+  if (sourceCount < 2) return false;
+
+  const orch = loadRunOrchestration(host, claim.runId);
+  let allTasks: PlanScoutTask[] = [];
+  try {
+    allTasks = selectPlanScoutTasks({
+      orch,
+      coverageInventory: inventory,
+      coveragePlan,
+    });
+  } catch {
+    // Fail-closed: over-budget / selection error — do not open Wave B; leave plan blocked.
+    return false;
+  }
+
+  const { waveB } = partitionPlanScoutTasksByDiscoverWave(allTasks);
+  if (waveB.length === 0) return false;
+
+  // Skip tasks already present (idempotent recovery).
+  const toInsert = waveB.filter((task) => {
+    const nodeKey = planScoutNodeKey(task);
+    return !asRow(
+      host.db
+        .prepare(
+          "SELECT 1 AS present FROM nodes WHERE run_id = ? AND node_key = ? LIMIT 1",
+        )
+        .get(claim.runId, nodeKey),
+    );
+  });
+
+  // If every Wave B key already exists and reduce was not yet bumped, still re-arm
+  // only when current generation is the claim (crash mid-materialize recovery).
+  if (toInsert.length === 0) {
+    // Wave B already fully present — still re-arm reduce if still at wave-1 gen.
+    // (Otherwise a second reduce success would unlock plan without semantic merge.)
+  } else {
+    insertPlanScoutNodes(host, claim.runId, toInsert, { initialState: "ready" });
+  }
+
+  // Re-arm reduce at gen+1 blocked with discoverWave:2 (final).
+  try {
+    host.applyRerunAt(claim.runId, DISCOVER_REDUCE_KEY, claim.nodeGeneration, undefined, {
+      selfOnly: true,
+    });
+  } catch {
+    // already bumped / stale — do not loop
+    return false;
+  }
+  const nextReduceGen = host.currentNodeGeneration(claim.runId, DISCOVER_REDUCE_KEY);
+  if (nextReduceGen === undefined) return false;
+  demoteNodeState(host, claim.runId, DISCOVER_REDUCE_KEY, nextReduceGen, "blocked");
+  mergeDiscoverWaveDetail(host, claim.runId, DISCOVER_REDUCE_KEY, nextReduceGen, 2);
+
+  // Keep plan blocked until final reduce succeeds.
+  const planGen = host.currentNodeGeneration(claim.runId, "plan");
+  if (planGen !== undefined) {
+    demoteNodeState(host, claim.runId, "plan", planGen, "blocked");
+  }
+
+  unlockReadyNodes(host, claim.runId);
+  host.db
+    .prepare(
+      "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",
+    )
+    .run(now(), claim.runId);
+
+  return true;
+}
+
+/** Load sealed freeze coverage inventory/plan for wave-B re-selection. */
+function loadCoverageFromSealedFreeze(
+  host: { db: DatabaseSync },
+  input: { rootPath: string; runId: string },
+): { inventory?: CoverageInventory; coveragePlan?: CoveragePlan } {
+  const runDir = runWorkDir(input.rootPath, input.runId);
+  const preparations: ArtifactPreparation[] = [];
+  const invRel = sealedCoverageInventoryRelativePath(host.db, input.runId);
+  if (invRel) {
+    preparations.push({
+      artifactId: "sealed-coverage-inventory",
+      digest: "",
+      kind: "receipt",
+      preparationId: "sealed-inv",
+      relativePath: invRel,
+      role: "coverage_inventory",
+      sourceDirectory: path.join(runDir, invRel),
+    });
+  }
+  const planRel = sealedCoveragePlanRelativePath(host.db, input.runId);
+  if (planRel) {
+    preparations.push({
+      artifactId: "sealed-coverage-plan",
+      digest: "",
+      kind: "receipt",
+      preparationId: "sealed-plan",
+      relativePath: planRel,
+      role: "coverage_plan",
+      sourceDirectory: path.join(runDir, planRel),
+    });
+  }
+  // Fallback: analysis/ under run dir when node_outputs not yet bound in unit tests.
+  if (preparations.length === 0) {
+    preparations.push({
+      artifactId: "analysis-fallback",
+      digest: "",
+      kind: "receipt",
+      preparationId: "analysis",
+      relativePath: "analysis",
+      role: "coverage_inventory",
+      sourceDirectory: path.join(runDir, "analysis"),
+    });
+    preparations.push({
+      artifactId: "analysis-plan-fallback",
+      digest: "",
+      kind: "receipt",
+      preparationId: "analysis-plan",
+      relativePath: "analysis",
+      role: "coverage_plan",
+      sourceDirectory: path.join(runDir, "analysis"),
+    });
+  }
+  return loadCoverageForPlanScoutSelection({
+    rootPath: input.rootPath,
+    runId: input.runId,
+    preparations,
+  });
+}
+
+/** Prefer inventory sources; fall back to pinned_sources_json length. */
+function resolveDiscoverSourceCount(
+  host: { db: DatabaseSync },
+  runId: string,
+  inventory?: CoverageInventory,
+): number {
+  if (inventory?.sources?.length) return inventory.sources.length;
+  const run = asRow(
+    host.db.prepare("SELECT pinned_sources_json FROM runs WHERE run_id = ?").get(runId),
+  );
+  if (run?.pinned_sources_json != null && run.pinned_sources_json !== "") {
+    try {
+      const pinned = JSON.parse(String(run.pinned_sources_json)) as unknown;
+      if (Array.isArray(pinned)) return pinned.length;
+    } catch {
+      // ignore
+    }
+  }
+  return 0;
 }
 
 /** Load orchestration from the StartRun freeze_config snapshot. */

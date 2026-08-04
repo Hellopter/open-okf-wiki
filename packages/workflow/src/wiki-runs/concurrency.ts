@@ -8,7 +8,12 @@
  * Execution graph topology caps are maxDomainFanOut / maxLeafFanOut only.
  */
 
-import { resolveOrchestration, type WorkspaceConfig, type WorkspaceOrchestration } from "@okf-wiki/contract/workspace";
+import {
+  resolveOrchestration,
+  resolvePlanScoutConcurrency,
+  type WorkspaceConfig,
+  type WorkspaceOrchestration,
+} from "@okf-wiki/contract/workspace";
 import { isMechanicalAttemptKind } from "../execution-graph.js";
 
 /**
@@ -57,13 +62,11 @@ export function concurrencyLimitForKind(
       return domainConcurrency;
     case "review.seat":
       return reviewConcurrency;
-    case "plan.scout": {
-      const scoutConcurrency = Math.max(
-        1,
-        orch.planScoutConcurrency ?? Math.max(orch.planScoutCount || 1, 1),
-      );
-      return Math.min(4, scoutConcurrency);
-    }
+    case "plan.scout":
+      // Prefer explicit planScoutConcurrency; else floor ≥2 so planScoutCount=0
+      // (multi-source thematic DEFAULT-OFF) does not serialize hybrid surveys.
+      // Cap by maxPlanScoutConcurrency (default 4). See resolvePlanScoutConcurrency.
+      return resolvePlanScoutConcurrency(orch);
     case "freeze":
     case "plan":
     case "write.root":

@@ -6,6 +6,10 @@
  *
  * Doctrine: implementation evidence (not README-only); structured report file
  * body via final message; short ACK — sealed analysis/plan-scouts/* is authority.
+ *
+ * Semantic scouts are source-qualified after WP2:
+ * - domain:{sourceId} / flow:{sourceId} / concept:{sourceId} — stay under sources/{id}/
+ * - flow:cross (task.cross or sourceId "cross") — cross-repo contracts only
  */
 
 export {
@@ -28,7 +32,9 @@ const SHORT_ACK =
   "Final message doctrine: return only the structured report below (prefer paths over prose). " +
   "Keep under the word budget. Sealed analysis/plan-scouts/* is the durable authority; chat is not.";
 
-function semanticKindOf(task: PlanScoutTask): "domain" | "flow" | "concept" | undefined {
+type SemanticKind = "domain" | "flow" | "concept";
+
+function semanticKindOf(task: PlanScoutTask): SemanticKind | undefined {
   const k = task.kind as string;
   if (k === "domain" || k === "flow" || k === "concept") return k;
   return undefined;
@@ -110,26 +116,156 @@ function surfaceSurveyPrompt(input: {
     .join("\n");
 }
 
-function semanticSurveyPrompt(input: {
+/** Per-source domain scout: stay under sources/{sourceId}/. */
+function domainSourcePrompt(input: {
   workspaceName: string;
-  kind: "domain" | "flow" | "concept";
+  sourceId: string;
+  notes: string;
+}): string {
+  const sid = input.sourceId;
+  const mount = `sources/${sid}/`;
+  return [
+    `You are a plan scout for workspace "${input.workspaceName}".`,
+    `Scout focus: SEMANTIC DOMAINS for freeze source "${sid}" only.`,
+    `Stay under ${mount}. Do not survey other sources/ mounts — they have their own domain scouts.`,
+    "Identify independent reader/evidence domains (ownership boundaries, not one domain per file).",
+    "Ground every candidate in implementation paths (packages, services, modules, handlers) — not README paraphrase.",
+    "Prefer ≥3 non-README evidence paths per domain when the tree allows (manifests + src + tests count).",
+    "Emit at most 5 domain candidates; merge thin slices rather than inventing filler.",
+    TOOLS_LINE,
+    input.notes,
+    "",
+    "Return a compact structured report with sections:",
+    `## Source: ${sid}`,
+    "## Candidate domains (≤5)",
+    `- For each: id, title, scope, coverageUnitIds (include "${sid}"), evidencePaths (≥3 non-README under ${mount} when possible), readerQuestion`,
+    "## Suggested pages",
+    "- wiki page paths + one-line purpose per domain",
+    "## Open questions",
+    "",
+    SHORT_ACK,
+    "Keep under ~700 words. Prefer paths over prose.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Per-source flow scout: critical paths inside one source. */
+function flowSourcePrompt(input: {
+  workspaceName: string;
+  sourceId: string;
+  notes: string;
+}): string {
+  const sid = input.sourceId;
+  const mount = `sources/${sid}/`;
+  return [
+    `You are a plan scout for workspace "${input.workspaceName}".`,
+    `Scout focus: SEMANTIC FLOWS for freeze source "${sid}" only.`,
+    `Stay under ${mount}. Trace critical runtime/request/data paths inside this source.`,
+    "Prefer call paths, handlers, pipelines, and internal integration seams over marketing docs.",
+    "Do not invent cross-repo journeys here — a separate flow:cross scout owns multi-source contracts.",
+    "Mark crossSource: false for in-source flows.",
+    TOOLS_LINE,
+    input.notes,
+    "",
+    "Return a compact structured report with sections:",
+    `## Source: ${sid}`,
+    "## Candidate flows",
+    `- For each: id, title, ordered steps (module/path names under ${mount}), crossSource: false, coverageUnitIds (include "${sid}"), evidencePaths (implementation, not README-only)`,
+    "## Suggested pages",
+    "- flow/*.md candidates + purpose",
+    "## Open questions",
+    "",
+    SHORT_ACK,
+    "Keep under ~700 words. Prefer paths over prose.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Multi-source cross-flow scout: contracts/APIs/events across sources only. */
+function flowCrossPrompt(input: {
+  workspaceName: string;
+  notes: string;
+}): string {
+  return [
+    `You are a plan scout for workspace "${input.workspaceName}".`,
+    "Scout focus: CROSS-SOURCE FLOWS (flow:cross).",
+    "Only document contracts that cross freeze sources: HTTP/RPC APIs, shared events/queues, auth handshakes, shared schemas, or deploy-time wiring.",
+    "Do not re-list in-source call graphs — per-source flow scouts own those.",
+    "Each cross-source flow must name participating sources and cite evidence paths under at least two sources/<id>/ mounts.",
+    "Mark crossSource: true. Steps should be ordered and source-qualified (e.g. web form → api token handler).",
+    TOOLS_LINE,
+    input.notes,
+    "",
+    "Return a compact structured report with sections:",
+    "## Candidate cross-source flows",
+    "- For each: id, title, ordered steps (source-qualified), crossSource: true, coverageUnitIds (all participating source ids), evidencePaths (non-empty; both/all sources)",
+    "## Integration seams",
+    "- API/event/schema boundaries with concrete paths",
+    "## Open questions",
+    "- Unknown joins the planner must still resolve (explicit openQuestion if no cross flow is evidenced)",
+    "",
+    SHORT_ACK,
+    "Keep under ~700 words. Prefer paths over prose.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Per-source concept scout (optional / soft). */
+function conceptSourcePrompt(input: {
+  workspaceName: string;
+  sourceId: string;
+  notes: string;
+}): string {
+  const sid = input.sourceId;
+  const mount = `sources/${sid}/`;
+  return [
+    `You are a plan scout for workspace "${input.workspaceName}".`,
+    `Scout focus: SEMANTIC CONCEPTS for freeze source "${sid}".`,
+    `Prefer ${mount}; only mention other sources when a term is defined by a shared contract.`,
+    "Surface load-bearing domain terms and abstractions a new reader must learn for this source.",
+    "Each concept needs implementation evidence paths (types, configs, primary modules) — not glossary fluff.",
+    TOOLS_LINE,
+    input.notes,
+    "",
+    "Return a compact structured report with sections:",
+    `## Source: ${sid}`,
+    "## Candidate concepts",
+    "- term, one-line definition hint, evidencePaths under " + mount,
+    "## Suggested pages",
+    "- concept page candidates when a term needs its own page",
+    "## Open questions",
+    "",
+    SHORT_ACK,
+    "Keep under ~600 words. Prefer paths over prose.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Legacy bare global semantic (compat for pre-WP2 nodes without sourceId). */
+function semanticGlobalPrompt(input: {
+  workspaceName: string;
+  kind: SemanticKind;
   notes: string;
 }): string {
   const focus = {
     domain: [
-      "Scout focus: SEMANTIC DOMAINS.",
+      "Scout focus: SEMANTIC DOMAINS (global / legacy).",
       "Identify independent reader/evidence domains (ownership boundaries, not one domain per file).",
       "Ground each candidate domain in implementation paths under sources/ (packages, services, modules).",
-      "Multi-source: name which sources/<id>/ each domain spans.",
+      "Multi-source: name which sources/<id>/ each domain spans; prefer per-source domain:{id} scouts when available.",
     ].join(" "),
     flow: [
-      "Scout focus: SEMANTIC FLOWS.",
+      "Scout focus: SEMANTIC FLOWS (global / legacy).",
       "Trace important runtime or request/data flows across modules or sources.",
       "Prefer call paths, handlers, pipelines, and integration seams over marketing docs.",
-      "Flag cross-source flows when sources integrate.",
+      "Flag cross-source flows when sources integrate; prefer flow:{id} + flow:cross when available.",
     ].join(" "),
     concept: [
-      "Scout focus: SEMANTIC CONCEPTS.",
+      "Scout focus: SEMANTIC CONCEPTS (global / legacy).",
       "Surface load-bearing domain terms and abstractions a new reader must learn.",
       "Each concept needs implementation evidence paths (types, configs, primary modules) — not glossary fluff.",
     ].join(" "),
@@ -173,6 +309,55 @@ function semanticSurveyPrompt(input: {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function semanticSurveyPrompt(input: {
+  workspaceName: string;
+  kind: SemanticKind;
+  notes: string;
+  /** Per-source qualifier when task is source-qualified. */
+  sourceId?: string;
+  /** True for multi-source cross-flow scout. */
+  cross?: boolean;
+}): string {
+  const { kind, sourceId, cross } = input;
+
+  if (kind === "flow" && (cross === true || sourceId === "cross")) {
+    return flowCrossPrompt({
+      workspaceName: input.workspaceName,
+      notes: input.notes,
+    });
+  }
+
+  if (sourceId && sourceId !== "cross") {
+    if (kind === "domain") {
+      return domainSourcePrompt({
+        workspaceName: input.workspaceName,
+        sourceId,
+        notes: input.notes,
+      });
+    }
+    if (kind === "flow") {
+      return flowSourcePrompt({
+        workspaceName: input.workspaceName,
+        sourceId,
+        notes: input.notes,
+      });
+    }
+    if (kind === "concept") {
+      return conceptSourcePrompt({
+        workspaceName: input.workspaceName,
+        sourceId,
+        notes: input.notes,
+      });
+    }
+  }
+
+  return semanticGlobalPrompt({
+    workspaceName: input.workspaceName,
+    kind,
+    notes: input.notes,
+  });
 }
 
 function thematicSurveyPrompt(input: {
@@ -261,10 +446,14 @@ export function planScoutPrompt(input: {
 
   const semantic = semanticKindOf(input.task);
   if (semantic) {
+    // Branch on source-qualified / cross semantic tasks (PlanScoutTask.sourceId?, cross?).
+    const task = input.task as Extract<PlanScoutTask, { kind: SemanticKind }>;
     return semanticSurveyPrompt({
       workspaceName: input.workspaceName,
       kind: semantic,
       notes,
+      sourceId: task.sourceId,
+      cross: task.cross,
     });
   }
 

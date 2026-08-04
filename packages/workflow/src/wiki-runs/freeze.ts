@@ -39,6 +39,7 @@ import { artifactId, digest, now } from "./crypto-util.js";
 import type { WikiRunsCasCtx, WikiRunsControl } from "./ctx.js";
 import { makeOwnedTreeWritable, manifestFor } from "./fs-util.js";
 import {
+  loadCoverageForPlanScoutSelection,
   loadRunOrchestration,
   materializePlanScoutsAfterFreeze,
   selectPlanScoutTasksForFreeze,
@@ -487,9 +488,15 @@ export function commitFreezeArtifacts(
     .run(claim.attemptId);
   host.emit(claim.runId, "attempt.succeeded");
   // Advance freeze → plan.scout.* → plan.discover.reduce → plan (when scouts selected).
+  // Multi-source L3: Wave A unit scouts only at freeze; Wave B after intermediate reduce.
   // Light path: freeze → plan ready (no reduce). Host owns topology;
   // selectPlanScoutTasks fails closed on over-budget multi-source surveys.
   const orch = loadRunOrchestration(host, claim.runId);
+  const coverage = loadCoverageForPlanScoutSelection({
+    rootPath: host.workspace.rootPath,
+    runId: claim.runId,
+    preparations,
+  });
   const scoutTasks = selectPlanScoutTasksForFreeze({
     rootPath: host.workspace.rootPath,
     runId: claim.runId,
@@ -497,7 +504,8 @@ export function commitFreezeArtifacts(
     orch,
     db: host.db,
   });
-  materializePlanScoutsAfterFreeze(host, claim.runId, scoutTasks);
+  const sourceCount = coverage.inventory?.sources?.length ?? 0;
+  materializePlanScoutsAfterFreeze(host, claim.runId, scoutTasks, { sourceCount });
   host.db
     .prepare(
       "UPDATE runs SET state = 'queued', updated_at = ? WHERE run_id = ? AND cancel_requested = 0",

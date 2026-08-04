@@ -57,6 +57,7 @@ import {
   planScoutKindClass,
   projectCollapsedResearchLeaves,
   researchDomainLeafGroups,
+  resolvePlanScoutSemantic,
   shouldCollapseResearchLeaves,
   type WorkflowEdgeRelation,
   type WorkflowStage,
@@ -291,7 +292,6 @@ function stateLabel(state: string, t: MessageTree): string {
   );
 }
 
-const SEMANTIC_KIND_FROM_TASK = /^semantic:(domain|flow|concept)$/;
 const THEMATIC_KIND_FROM_TASK = /^thematic:/;
 
 function nodeLabel(node: WikiRunNode, t: MessageTree): string {
@@ -302,14 +302,40 @@ function nodeLabel(node: WikiRunNode, t: MessageTree): string {
   if (node.kind === "plan.scout") {
     const scoutKind = node.detail?.scoutKind?.trim() ?? "";
     const taskLabel = node.detail?.taskLabel?.trim() ?? "";
-    const kindClass = planScoutKindClass(scoutKind || taskLabel.split(":")[0]);
+    const short = node.key.startsWith("plan.scout.")
+      ? node.key.slice("plan.scout.".length)
+      : node.key;
+    const kindClass = planScoutKindClass(scoutKind || taskLabel.split(":")[0] || short);
 
-    // Semantic discovery scouts: prefer i18n kind labels over host English chips.
-    if (kindClass === "semantic" || SEMANTIC_KIND_FROM_TASK.test(taskLabel)) {
-      const semantic = scoutKind || taskLabel.replace(/^semantic:/, "");
-      if (semantic === "domain") return t.workbench.planScoutSemanticDomain;
-      if (semantic === "flow") return t.workbench.planScoutSemanticFlow;
-      if (semantic === "concept") return t.workbench.planScoutSemanticConcept;
+    // Semantic discovery scouts: bare "Scout · domain" or source-qualified "Domain · api".
+    // Prefer detail.scoutKind + detail.sourceId; fall back to taskLabel / node key slug.
+    const semanticRef = resolvePlanScoutSemantic({
+      scoutKind,
+      sourceId: node.detail?.sourceId,
+      taskLabel,
+      keySlug: short,
+    });
+    if (semanticRef) {
+      if (semanticRef.sourceId) {
+        if (semanticRef.kind === "domain") {
+          return formatMessage(t.workbench.planScoutSemanticDomainId, {
+            id: semanticRef.sourceId,
+          });
+        }
+        if (semanticRef.kind === "flow") {
+          return formatMessage(t.workbench.planScoutSemanticFlowId, {
+            id: semanticRef.sourceId,
+          });
+        }
+        if (semanticRef.kind === "concept") {
+          return formatMessage(t.workbench.planScoutSemanticConceptId, {
+            id: semanticRef.sourceId,
+          });
+        }
+      }
+      if (semanticRef.kind === "domain") return t.workbench.planScoutSemanticDomain;
+      if (semanticRef.kind === "flow") return t.workbench.planScoutSemanticFlow;
+      if (semanticRef.kind === "concept") return t.workbench.planScoutSemanticConcept;
     }
 
     // Unit surveys: source / surface with id when available.
@@ -333,9 +359,6 @@ function nodeLabel(node: WikiRunNode, t: MessageTree): string {
     }
 
     // Thematic spine: prefer i18n over host English "Scout · thematic:…" chips.
-    const short = node.key.startsWith("plan.scout.")
-      ? node.key.slice("plan.scout.".length)
-      : node.key;
     if (kindClass === "thematic" || THEMATIC_KIND_FROM_TASK.test(taskLabel)) {
       const thematic = scoutKind || taskLabel.replace(/^thematic:/, "") || short;
       return formatMessage(t.workbench.planScoutThematicId, { kind: thematic });

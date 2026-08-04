@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_ORCHESTRATION, resolveOrchestration, type WorkspaceConfig } from "@okf-wiki/contract/workspace";
+import {
+  DEFAULT_ORCHESTRATION,
+  resolveOrchestration,
+  resolvePlanScoutConcurrency,
+  type WorkspaceConfig,
+} from "@okf-wiki/contract/workspace";
 import {
   canClaimKind,
   concurrencyLimitForKind,
@@ -90,10 +95,69 @@ test("mechanical kinds are unbounded; single-pipeline Pi is 1", () => {
   assert.equal(concurrencyLimitForKind(workspace(), "write.root"), 1);
 });
 
+test("plan.scout concurrency: planScoutCount=0 still gets floor ≥ 2 (not serial)", () => {
+  // Bug: planScoutCount || 1 forced multi-source hybrid surveys to run serially.
+  assert.equal(concurrencyLimitForKind(workspace({ planScoutCount: 0 }), "plan.scout"), 2);
+  assert.equal(resolvePlanScoutConcurrency({ planScoutCount: 0 }), 2);
+  // Thematic count > 0 uses max(count, 2).
+  assert.equal(concurrencyLimitForKind(workspace({ planScoutCount: 3 }), "plan.scout"), 3);
+  assert.equal(concurrencyLimitForKind(workspace({ planScoutCount: 1 }), "plan.scout"), 2);
+});
+
+test("plan.scout concurrency prefers explicit planScoutConcurrency and respects cap", () => {
+  assert.equal(
+    concurrencyLimitForKind(
+      workspace({ planScoutCount: 0, planScoutConcurrency: 1 }),
+      "plan.scout",
+    ),
+    1,
+  );
+  assert.equal(
+    concurrencyLimitForKind(
+      workspace({ planScoutCount: 0, planScoutConcurrency: 4 }),
+      "plan.scout",
+    ),
+    4,
+  );
+  assert.equal(
+    concurrencyLimitForKind(
+      workspace({
+        planScoutCount: 0,
+        planScoutConcurrency: 8,
+        maxPlanScoutConcurrency: 6,
+      }),
+      "plan.scout",
+    ),
+    6,
+  );
+  // Default cap is 4 even when thematic count would want more via floor.
+  assert.equal(
+    concurrencyLimitForKind(
+      workspace({ planScoutCount: 4, maxPlanScoutConcurrency: 4 }),
+      "plan.scout",
+    ),
+    4,
+  );
+  assert.equal(
+    concurrencyLimitForKind(
+      workspace({ planScoutCount: 4, maxPlanScoutConcurrency: 3 }),
+      "plan.scout",
+    ),
+    3,
+  );
+});
+
 test("canClaimKind respects running counts", () => {
   const ws = workspace({ domainConcurrency: 2 });
   assert.equal(canClaimKind(ws, "research.leaf", { "research.leaf": 3 }), true);
   assert.equal(canClaimKind(ws, "research.leaf", { "research.leaf": 4 }), false);
   assert.equal(canClaimKind(ws, "research.domain", new Map([["research.domain", 1]])), true);
   assert.equal(canClaimKind(ws, "research.domain", new Map([["research.domain", 2]])), false);
+});
+
+test("canClaimKind allows second plan.scout when planScoutCount=0 (floor 2)", () => {
+  const ws = workspace({ planScoutCount: 0 });
+  assert.equal(canClaimKind(ws, "plan.scout", { "plan.scout": 0 }), true);
+  assert.equal(canClaimKind(ws, "plan.scout", { "plan.scout": 1 }), true);
+  assert.equal(canClaimKind(ws, "plan.scout", { "plan.scout": 2 }), false);
 });

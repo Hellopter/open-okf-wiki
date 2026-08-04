@@ -54,6 +54,9 @@ test("multi-source selects hybrid mode; thematic DEFAULT-OFF (L3 never light)", 
   assert.ok((decision.orchestration.planSurveyTaskBudget ?? 0) >= 2);
   // Thematic spine default-off: planScoutCount stays 0 unless operator raises.
   assert.equal(decision.orchestration.planScoutCount, 0);
+  // Global Attempt ceiling must allow plan.scout floor (≥2) so surveys are not serial.
+  assert.ok(decision.orchestration.maxConcurrentAttempts >= 2);
+  assert.ok(decision.reasons.some((r) => r.includes("max-concurrent-attempts")));
   assert.equal(decision.lightPath, false);
   assert.ok(decision.reasons.every((r) => !r.includes("multi-entry")));
   assert.ok(decision.reasons.some((r) => r.includes("hybrid")));
@@ -89,6 +92,9 @@ test("large single-repo raises thematic scouts and optional surface coverage (L2
   assert.equal(decision.orchestration.requireSurfaceCoverage, true);
   assert.notEqual(decision.orchestration.planScoutMode, "hybrid");
   assert.ok(decision.reasons.some((r) => r.includes("large-single-repo")));
+  // L2: maxConcurrentAttempts at least max(2, plan scout concurrency).
+  assert.ok(decision.orchestration.maxConcurrentAttempts >= 2);
+  assert.ok(decision.reasons.some((r) => r.includes("max-concurrent-attempts")));
 });
 
 test("small single-repo below L1 stays light path without required surfaces", () => {
@@ -123,6 +129,39 @@ test("operator-explicit scouts and mode are not lowered", () => {
   assert.equal(decision.orchestration.planScoutCount, 3);
   assert.equal(decision.orchestration.reviewCouncilSize, 3);
   assert.equal(decision.orchestration.planScoutMode, "thematic");
+});
+
+test("L3 does not lower operator-higher maxConcurrentAttempts", () => {
+  const decision = resolveAdaptiveOrchestration({
+    orchestration: { maxConcurrentAttempts: 16 },
+    inventory: { sourceCount: 3 },
+  });
+  assert.equal(decision.orchestration.maxConcurrentAttempts, 16);
+});
+
+test("L3 raises maxConcurrentAttempts to at least planScoutConcurrency", () => {
+  const decision = resolveAdaptiveOrchestration({
+    orchestration: {
+      maxConcurrentAttempts: 1,
+      planScoutCount: 0,
+      planScoutConcurrency: 4,
+    },
+    inventory: { sourceCount: 2 },
+  });
+  assert.equal(decision.orchestration.planScoutCount, 0);
+  assert.ok(decision.orchestration.maxConcurrentAttempts >= 4);
+});
+
+test("L2 raises maxConcurrentAttempts to at least max(2, planScoutConcurrency)", () => {
+  const decision = resolveAdaptiveOrchestration({
+    orchestration: {
+      maxConcurrentAttempts: 1,
+      planScoutConcurrency: 3,
+    },
+    inventory: { sourceCount: 1, fileCount: 5_000 },
+  });
+  assert.equal(decision.tier, "L2");
+  assert.ok(decision.orchestration.maxConcurrentAttempts >= 3);
 });
 
 test("planUncertaintyFromSpec rises with openQuestions and domains", () => {

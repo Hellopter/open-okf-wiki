@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   DEFAULT_ORCHESTRATION,
   resolveOrchestration,
+  resolvePlanScoutConcurrency,
   WorkspaceConfigSchema,
   WorkspaceSourceSchema,
 } from "./workspace.js";
@@ -114,6 +115,7 @@ test("resolveOrchestration fills schema defaults and preserves partials", () => 
   assert.equal(DEFAULT_ORCHESTRATION.planRescoutMaxRounds, 1);
   assert.equal(DEFAULT_ORCHESTRATION.maxSurfacesRequired, 12);
   assert.equal(DEFAULT_ORCHESTRATION.maxSourcesPerRun, 16);
+  assert.equal(DEFAULT_ORCHESTRATION.maxPlanScoutConcurrency, 4);
   const partial = resolveOrchestration({ domainConcurrency: 4, reviewCouncilSize: 1 });
   assert.equal(partial.domainConcurrency, 4);
   assert.equal(partial.reviewCouncilSize, 1);
@@ -124,6 +126,7 @@ test("resolveOrchestration fills schema defaults and preserves partials", () => 
   assert.equal(partial.leafConcurrency, 2);
   assert.equal(partial.planScoutMode, "auto");
   assert.equal(partial.maxSourcesPerRun, 16);
+  assert.equal(partial.maxPlanScoutConcurrency, 4);
   assert.equal("reviewConcurrency" in partial, false);
   assert.equal("planSurveyTaskBudget" in partial, false);
   assert.equal("requireSourceCoverage" in partial, false);
@@ -164,4 +167,20 @@ test("leafConcurrency defaults to 2 and accepts overrides", () => {
     orchestration: { maxActiveRuns: 2, maxConcurrentAttempts: 4, leafConcurrency: 8 },
   });
   assert.equal(ws.orchestration.leafConcurrency, 8);
+});
+
+test("resolvePlanScoutConcurrency floors at 2 when planScoutCount is 0", () => {
+  // Multi-source thematic DEFAULT-OFF leaves planScoutCount=0; surveys still need width.
+  assert.equal(resolvePlanScoutConcurrency({ planScoutCount: 0 }), 2);
+  assert.equal(resolvePlanScoutConcurrency({ planScoutCount: 1 }), 2);
+  assert.equal(resolvePlanScoutConcurrency({ planScoutCount: 3 }), 3);
+  assert.equal(resolvePlanScoutConcurrency({ planScoutConcurrency: 1 }), 1);
+  assert.equal(
+    resolvePlanScoutConcurrency({ planScoutConcurrency: 8, maxPlanScoutConcurrency: 4 }),
+    4,
+  );
+  assert.equal(
+    resolvePlanScoutConcurrency({ planScoutCount: 4, maxPlanScoutConcurrency: 8 }),
+    4,
+  );
 });

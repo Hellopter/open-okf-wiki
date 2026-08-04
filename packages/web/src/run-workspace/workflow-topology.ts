@@ -85,6 +85,90 @@ export const THEMATIC_SCOUT_KINDS = new Set(["entry", "layout", "tests", "risks"
 
 export type PlanScoutKindClass = "semantic" | "unit" | "thematic" | "other";
 
+export type PlanScoutSemanticKind = "domain" | "flow" | "concept";
+
+/** Resolved semantic scout for display (bare or source-qualified / flow:cross). */
+export type PlanScoutSemanticRef = {
+  kind: PlanScoutSemanticKind;
+  /** Present for per-source domain/flow/concept or multi-source flow:cross. */
+  sourceId?: string;
+};
+
+/**
+ * Parse source-qualified semantic forms: `domain:api`, `flow-web`, `flow-cross`, `flow:cross`.
+ * Soft: returns undefined when not a semantic qualifier.
+ */
+function parseSemanticQualified(value: string): PlanScoutSemanticRef | undefined {
+  const v = value.trim();
+  if (!v) return undefined;
+  if (v === "flow-cross" || v === "flow:cross") {
+    return { kind: "flow", sourceId: "cross" };
+  }
+  // domain:api / flow:web / concept:x  OR domain-api / flow-web (node-key slug form)
+  const m = /^(domain|flow|concept)[:\-](.+)$/.exec(v);
+  if (!m) return undefined;
+  const kind = m[1] as PlanScoutSemanticKind;
+  const qual = m[2]!.trim();
+  if (!qual) return undefined;
+  return { kind, sourceId: qual };
+}
+
+/**
+ * Resolve semantic scout kind + optional source qualifier from sealed detail
+ * and/or node key slug. Prefer detail.scoutKind + detail.sourceId when present.
+ * Soft: returns undefined when not a semantic scout.
+ *
+ * Examples:
+ * - { scoutKind: "domain", sourceId: "api" } → { kind: "domain", sourceId: "api" }
+ * - { scoutKind: "flow-cross" } → { kind: "flow", sourceId: "cross" }
+ * - { keySlug: "flow-web" } → { kind: "flow", sourceId: "web" }
+ * - { scoutKind: "domain" } → { kind: "domain" } (legacy bare)
+ */
+export function resolvePlanScoutSemantic(input: {
+  scoutKind?: string | null;
+  sourceId?: string | null;
+  taskLabel?: string | null;
+  /** plan.scout.<slug> suffix, e.g. domain-api / flow-cross / domain */
+  keySlug?: string | null;
+}): PlanScoutSemanticRef | undefined {
+  const scoutKind = (input.scoutKind ?? "").trim();
+  const sourceId = (input.sourceId ?? "").trim();
+  const taskLabel = (input.taskLabel ?? "").trim();
+  const keySlug = (input.keySlug ?? "").trim();
+
+  // 1) Qualified scoutKind forms before bare match (flow-cross, domain:api, …)
+  const fromKind = parseSemanticQualified(scoutKind);
+  if (fromKind) return fromKind;
+
+  // 2) Bare scoutKind domain|flow|concept + optional detail.sourceId
+  if (SEMANTIC_SCOUT_KINDS.has(scoutKind)) {
+    const kind = scoutKind as PlanScoutSemanticKind;
+    if (sourceId) return { kind, sourceId };
+    return { kind };
+  }
+
+  // 3) taskLabel: semantic:domain | domain:api | flow:cross
+  if (taskLabel.startsWith("semantic:")) {
+    const bare = taskLabel.slice("semantic:".length).trim();
+    if (SEMANTIC_SCOUT_KINDS.has(bare)) {
+      const kind = bare as PlanScoutSemanticKind;
+      return sourceId ? { kind, sourceId } : { kind };
+    }
+  }
+  const fromTask = parseSemanticQualified(taskLabel);
+  if (fromTask) return fromTask;
+
+  // 4) Node key slug fallback: domain-api, flow-web, flow-cross, domain
+  const fromKey = parseSemanticQualified(keySlug);
+  if (fromKey) return fromKey;
+  if (SEMANTIC_SCOUT_KINDS.has(keySlug)) {
+    const kind = keySlug as PlanScoutSemanticKind;
+    return sourceId ? { kind, sourceId } : { kind };
+  }
+
+  return undefined;
+}
+
 /** Classify a plan.scout from sealed detail.scoutKind (soft when missing). */
 export function planScoutKindClass(
   scoutKind: string | null | undefined,
@@ -92,6 +176,8 @@ export function planScoutKindClass(
   const kind = (scoutKind ?? "").trim();
   if (!kind) return "other";
   if (SEMANTIC_SCOUT_KINDS.has(kind)) return "semantic";
+  // Source-qualified semantic (domain:api, flow-cross, domain-api, …)
+  if (parseSemanticQualified(kind)) return "semantic";
   if (UNIT_SCOUT_KINDS.has(kind)) return "unit";
   if (THEMATIC_SCOUT_KINDS.has(kind)) return "thematic";
   return "other";

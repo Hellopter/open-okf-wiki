@@ -3,7 +3,8 @@
  *
  * Hybrid scouts (MoA proposers) before the Spec synthesizer:
  * - unit surveys: source / surface (budgeted; fail-closed)
- * - semantic scouts: domain | flow | concept (multi-source / hybrid)
+ * - semantic scouts: per-source `domain:{id}` / `flow:{id}` + multi-source `flow:cross`
+ *   (optional `concept:{id}` for large tiers later; not auto-scheduled)
  * - thematic (entry|layout|tests|risks): optional soft spine; DEFAULT-OFF for multi-source
  *
  * Fail-closed: multi-source required surveys must not silently slice past budget.
@@ -36,11 +37,14 @@ export const SEMANTIC_SCOUT_KINDS: readonly SemanticScoutKind[] = [
   "concept",
 ] as const;
 
-/** Required semantic kinds scheduled for multi-source / hybrid (concept stays soft). */
+/** Required semantic kinds scheduled per source for multi-source / hybrid. */
 export const REQUIRED_SEMANTIC_SCOUT_KINDS: readonly SemanticScoutKind[] = [
   "domain",
   "flow",
 ] as const;
+
+/** Stable id for the multi-source cross-flow scout. */
+export const FLOW_CROSS_ID = "flow:cross" as const;
 
 export type PlanScoutKind = ThematicScoutKind | "source" | "surface" | SemanticScoutKind;
 
@@ -71,9 +75,57 @@ export type PlanScoutTask =
     }
   | {
       kind: SemanticScoutKind;
-      id: SemanticScoutKind;
+      /**
+       * Stable id: `domain:{sourceId}`, `flow:{sourceId}`, `flow:cross`,
+       * or bare `domain|flow|concept` for legacy global (compat only).
+       */
+      id: string;
       required: boolean;
+      /** Per-source qualifier; `"cross"` when this is the multi-source cross-flow. */
+      sourceId?: string;
+      /** True for multi-source cross-flow scout (`flow:cross`). */
+      cross?: boolean;
     };
+
+/** Build a source-qualified or cross semantic scout task. */
+export function makeSemanticScoutTask(
+  kind: SemanticScoutKind,
+  opts: {
+    sourceId?: string;
+    /** Force cross-flow (`flow:cross`); also inferred when sourceId === "cross". */
+    cross?: boolean;
+    required?: boolean;
+  } = {},
+): Extract<PlanScoutTask, { kind: SemanticScoutKind }> {
+  const cross =
+    opts.cross === true || (kind === "flow" && (opts.sourceId ?? "").trim() === "cross");
+  const required =
+    opts.required !== undefined
+      ? opts.required
+      : kind === "concept"
+        ? false
+        : true;
+  if (cross) {
+    return {
+      kind,
+      id: `${kind}:cross`,
+      required,
+      cross: true,
+      sourceId: "cross",
+    };
+  }
+  const sourceId = opts.sourceId?.trim();
+  if (sourceId) {
+    return {
+      kind,
+      id: `${kind}:${sourceId}`,
+      sourceId,
+      required,
+    };
+  }
+  // Legacy bare global semantic (compat / single-source callers).
+  return { kind, id: kind, required };
+}
 
 /** Filesystem-safe slug for plan.scout.<slug> keys and analysis/plan-scouts/<slug>.md */
 export function scoutTaskFileSlug(task: PlanScoutTask): string {
@@ -82,7 +134,9 @@ export function scoutTaskFileSlug(task: PlanScoutTask): string {
   if (task.kind === "surface") {
     return `surface-${sanitizeSlug(task.sourceId)}-${sanitizeSlug(task.path === "." ? "root" : task.path)}`;
   }
-  // domain | flow | concept
+  // domain | flow | concept — source-qualified or cross
+  if (task.cross) return `${task.kind}-cross`;
+  if (task.sourceId) return `${task.kind}-${sanitizeSlug(task.sourceId)}`;
   return task.kind;
 }
 
@@ -102,6 +156,8 @@ export function scoutTaskLabel(task: PlanScoutTask): string {
   if (task.kind === "thematic") return `thematic:${task.thematic}`;
   if (task.kind === "source") return `source:${task.sourceId}`;
   if (task.kind === "surface") return `surface:${task.unitId}`;
+  if (task.cross) return `${task.kind}:cross`;
+  if (task.sourceId) return `${task.kind}:${task.sourceId}`;
   return `semantic:${task.kind}`;
 }
 
@@ -111,8 +167,40 @@ export function planScoutNodeKey(task: PlanScoutTask): string {
 }
 
 /**
+ * Parse a gap / detail id into a semantic scout task when it looks like
+ * `domain:api`, `flow:web`, `flow:cross`, `concept:x`, or `flow-cross`.
+ */
+function semanticTaskFromQualifiedId(
+  raw: string,
+  required: boolean,
+): Extract<PlanScoutTask, { kind: SemanticScoutKind }> | undefined {
+  const value = raw.trim();
+  if (!value) return undefined;
+
+  // flow-cross alias (hyphen form used in some node keys / scoutKind)
+  if (value === "flow-cross" || value === "flow:cross") {
+    return makeSemanticScoutTask("flow", { cross: true, required });
+  }
+
+  const m = /^(domain|flow|concept)[:\-](.+)$/.exec(value);
+  if (!m) return undefined;
+  const kind = m[1] as SemanticScoutKind;
+  const qual = m[2]!.trim();
+  if (!qual) return undefined;
+  if (kind === "flow" && qual === "cross") {
+    return makeSemanticScoutTask("flow", { cross: true, required });
+  }
+  return makeSemanticScoutTask(kind, { sourceId: qual, required });
+}
+
+/**
  * Build a PlanScoutTask from sealed plan.scout node detail.
  * Fail-closed when scoutKind / required fields are missing or inconsistent.
+ *
+ * Semantic compatibility:
+ * - `scoutKind` domain|flow|concept + optional `sourceId` in detail
+ * - `scoutKind` `domain:api` / `flow:web` / `concept:x` qualified forms
+ * - flow cross: `sourceId: "cross"`, `scoutKind: "flow-cross"`, or `flow:cross`
  */
 export function planScoutTaskFromDetail(detail: {
   scoutKind?: string;
@@ -135,17 +223,39 @@ export function planScoutTaskFromDetail(detail: {
     };
   }
 
+  // flow-cross / flow:cross / domain:api forms before bare semantic match
+  const qualifiedFromKind = semanticTaskFromQualifiedId(
+    kind,
+    // concept soft unless critical; domain/flow hard unless critical:false
+    kind.startsWith("concept")
+      ? detail.critical === true
+      : detail.critical !== false,
+  );
+  if (qualifiedFromKind) {
+    // Prefer detail.sourceId when scoutKind was bare-qualified without cross conflict
+    if (
+      !qualifiedFromKind.cross &&
+      detail.sourceId?.trim() &&
+      detail.sourceId.trim() !== qualifiedFromKind.sourceId
+    ) {
+      // scoutKind already carried qualifier — keep it (detail.sourceId is secondary).
+    }
+    return qualifiedFromKind;
+  }
+
   const semantic = SEMANTIC_SCOUT_KINDS.find((k) => k === kind);
   if (semantic) {
-    return {
-      kind: semantic,
-      id: semantic,
-      // domain + flow are hard for multi-source; concept soft unless critical.
-      required:
-        semantic === "concept"
-          ? detail.critical === true
-          : detail.critical !== false,
-    };
+    const sourceId = detail.sourceId?.trim();
+    const required =
+      semantic === "concept" ? detail.critical === true : detail.critical !== false;
+    if (sourceId === "cross" && semantic === "flow") {
+      return makeSemanticScoutTask("flow", { cross: true, required });
+    }
+    if (sourceId) {
+      return makeSemanticScoutTask(semantic, { sourceId, required });
+    }
+    // Legacy bare global semantic (compat for pre-WP2 nodes).
+    return makeSemanticScoutTask(semantic, { required });
   }
 
   if (kind === "source" || kind.startsWith("source:")) {
@@ -186,7 +296,7 @@ export function planScoutTaskFromDetail(detail: {
 
   throw new Error(
     `plan.scout detail.scoutKind must be thematic (entry|layout|tests|risks), ` +
-      `semantic (domain|flow|concept), source, or surface; got ${JSON.stringify(kind)}`,
+      `semantic (domain|flow|concept, optionally source-qualified), source, or surface; got ${JSON.stringify(kind)}`,
   );
 }
 
@@ -219,8 +329,10 @@ function requiredUnits(plan?: CoveragePlan): CoverageUnit[] {
  * Select hybrid scout tasks from orchestration + inventory + optional gap filter.
  * Pure — safe for freeze materialization (no agent import).
  *
- * Order: unit surveys (source/surface) → semantic domain+flow (multi-source/hybrid)
- * → optional thematic spine when planScoutCount > 0.
+ * Order: unit surveys (source/surface) → per-source domain+flow (+ flow:cross when
+ * multi-source) → optional thematic spine when planScoutCount > 0.
+ *
+ * Never schedules bare global domain/flow without sourceId on the multi-source path.
  */
 export function selectPlanScoutTasks(input: {
   orch: WorkspaceOrchestration;
@@ -228,6 +340,10 @@ export function selectPlanScoutTasks(input: {
   coverageInventory?: CoverageInventory;
   /** @deprecated Prefer coverageInventory — same shape. */
   inventory?: CoverageInventory;
+  /**
+   * Gap re-scout filter: unit ids (`api`, `mono::pkg`) and/or semantic ids
+   * (`domain:api`, `flow:web`, `flow:cross`, `concept:x`).
+   */
   gapUnitIds?: readonly string[];
 }): PlanScoutTask[] {
   const orch = input.orch;
@@ -264,9 +380,14 @@ export function selectPlanScoutTasks(input: {
     tasks.push(task);
   };
 
-  // --- Gap-only re-scout: only unit-keyed scouts for missing units ---
+  // --- Gap-only re-scout: unit-keyed and/or semantic-id scouts ---
   if (gapSet) {
     for (const unitId of gapSet) {
+      const semanticGap = semanticTaskFromQualifiedId(unitId, true);
+      if (semanticGap) {
+        push(semanticGap);
+        continue;
+      }
       if (isSurfaceUnitId(unitId)) {
         const parsed = parseSurfaceUnitId(unitId);
         if (!parsed) continue;
@@ -279,8 +400,15 @@ export function selectPlanScoutTasks(input: {
           required: true,
         });
       } else {
+        // Bare semantic kinds without qualifier are not unit ids — skip unless source.
+        if ((SEMANTIC_SCOUT_KINDS as readonly string[]).includes(unitId)) {
+          // gap of bare "domain" / "flow" / "concept" — reopen legacy global
+          push(makeSemanticScoutTask(unitId as SemanticScoutKind, { required: true }));
+          continue;
+        }
         const sid = unitIdForSource(unitId);
         if (!sid) continue;
+        // unitIdForSource accepts bare source ids; reject semantic-looking noise already handled
         push({
           kind: "source",
           sourceId: sid,
@@ -362,14 +490,17 @@ export function selectPlanScoutTasks(input: {
   }
 
   // --- Semantic discovery scouts (after unit surveys) ---
-  // Multi-source / hybrid: domain + flow required. Concept is never auto-required.
-  if (multiSource || mode === "hybrid") {
-    for (const semantic of REQUIRED_SEMANTIC_SCOUT_KINDS) {
-      push({
-        kind: semantic,
-        id: semantic,
-        required: true,
-      });
+  // Multi-source / hybrid: per-source domain + flow required; multi-source also flow:cross.
+  // Do NOT schedule bare global domain/flow without sourceId.
+  // Concept is never auto-required (large-tier optional later).
+  if ((multiSource || mode === "hybrid") && allSourceIds.length > 0) {
+    for (const sourceId of allSourceIds) {
+      for (const semantic of REQUIRED_SEMANTIC_SCOUT_KINDS) {
+        push(makeSemanticScoutTask(semantic, { sourceId, required: true }));
+      }
+    }
+    if (multiSource) {
+      push(makeSemanticScoutTask("flow", { cross: true, required: true }));
     }
   }
 

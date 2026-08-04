@@ -819,6 +819,10 @@ export const zh: MessageTree = {
     planScoutSemanticDomain: "侦察 · 领域",
     planScoutSemanticFlow: "侦察 · 流程",
     planScoutSemanticConcept: "侦察 · 概念",
+    /** Source-qualified semantic scouts (domain-api, flow-web, flow-cross). */
+    planScoutSemanticDomainId: "领域 · {id}",
+    planScoutSemanticFlowId: "流程 · {id}",
+    planScoutSemanticConceptId: "概念 · {id}",
     /** Unit survey scouts (source / surface). */
     planScoutUnitSource: "侦察 · 源",
     planScoutUnitSourceId: "侦察 · 源:{id}",
