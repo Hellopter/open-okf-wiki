@@ -19,7 +19,9 @@ support Dynamic Workflows.
 
 ## Global CLI Installation
 
-From the repository root, register this development package as the global `ow` command:
+From the repository root, register this development package as the global `ow` command.
+
+### macOS and Linux
 
 ```bash
 pnpm --dir packages/wiki-agent-kit link --global
@@ -29,6 +31,18 @@ ow help
 
 If `ow` is not found, run `pnpm setup`, start a new shell, and rerun the link command. The new
 shell must include pnpm's global bin directory in `PATH`.
+
+### Windows PowerShell
+
+```powershell
+pnpm --dir packages/wiki-agent-kit link --global
+Get-Command ow
+ow help
+```
+
+If PowerShell cannot find `ow`, run `pnpm setup`, close all PowerShell windows, open a new one,
+and rerun the link command. This configures pnpm's user-level global bin directory in `PATH`; it
+does not require an administrator shell.
 
 ## Create a Workspace
 

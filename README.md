@@ -10,7 +10,9 @@ It uses a deterministic `ow` CLI, a shared Agent Skill, and native Claude Dynami
 
 ## Global CLI Installation
 
-From the repository root, link the development package into pnpm's global bin directory:
+From the repository root, link the development package into pnpm's global bin directory.
+
+### macOS and Linux
 
 ```bash
 pnpm --dir packages/wiki-agent-kit link --global
@@ -20,6 +22,18 @@ ow help
 
 If `command -v ow` prints nothing, run `pnpm setup`, open a new shell so its global bin directory
 is on `PATH`, and repeat the link command.
+
+### Windows PowerShell
+
+```powershell
+pnpm --dir packages/wiki-agent-kit link --global
+Get-Command ow
+ow help
+```
+
+If `Get-Command ow` does not find the command, run `pnpm setup`, close every PowerShell window,
+open a new one, and repeat the link command. `pnpm setup` adds pnpm's global bin directory to the
+user `PATH`; no administrator shell is required for this user-level installation.
 
 ## Quick Start
 
