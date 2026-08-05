@@ -35,6 +35,10 @@ If `Get-Command ow` does not find the command, run `pnpm setup`, close every Pow
 open a new one, and repeat the link command. `pnpm setup` adds pnpm's global bin directory to the
 user `PATH`; no administrator shell is required for this user-level installation.
 
+On Windows, `ow source add path` links a **local** directory with a directory junction (no admin).
+UNC/network paths need Developer Mode or an elevated shell for a symlink, or use
+`ow source add clone` instead. Details: `packages/wiki-agent-kit/README.md`.
+
 ## Quick Start
 
 ```bash

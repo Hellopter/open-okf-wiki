@@ -78,6 +78,55 @@ export function addCloneSource(root, { url, id, ref, depth = 1 }) {
   return { source, hint };
 }
 
+/** UNC / network share path (not a valid Windows junction target). */
+function isUncPath(absPath) {
+  return /^[\\/]{2}[^\\/]+/.test(absPath);
+}
+
+/**
+ * Link a local directory into workspace sources/ for a uniform layout.
+ * On Windows, prefer a directory junction so ordinary users do not need
+ * Developer Mode or an elevated shell. Junctions require an absolute local
+ * path and cannot target UNC shares; those fall back to a dir symlink.
+ * @returns {"junction" | "dir"}
+ */
+export function linkPathSource(absTarget, dest) {
+  const target = path.resolve(absTarget);
+  if (process.platform !== "win32") {
+    fs.symlinkSync(target, dest, "dir");
+    return "dir";
+  }
+
+  // Junctions are local-only and must use an absolute path.
+  if (!isUncPath(target)) {
+    try {
+      fs.symlinkSync(target, dest, "junction");
+      return "junction";
+    } catch (err) {
+      // Fall through to a dir symlink (needs Developer Mode or admin).
+      if (err && (err.code === "EPERM" || err.code === "EACCES" || err.code === "EINVAL")) {
+        /* try symlink below */
+      } else if (err) {
+        throw err;
+      }
+    }
+  }
+
+  try {
+    fs.symlinkSync(target, dest, "dir");
+    return "dir";
+  } catch (err) {
+    const code = err?.code ? ` (${err.code})` : "";
+    throw new Error(
+      `failed to link path source${code}: ${target} -> ${dest}. ` +
+        "On Windows, local paths use a directory junction (no admin). " +
+        "Network/UNC paths need Developer Mode or an elevated shell for a symlink, " +
+        "or use: ow source add clone <path-or-url>",
+      { cause: err },
+    );
+  }
+}
+
 /**
  * @returns {{ source: object, hint?: string }}
  */
@@ -96,8 +145,7 @@ export function addPathSource(root, { linkedPath, id }) {
   if (fs.existsSync(dest)) {
     throw new Error(`destination exists: ${dest}`);
   }
-  // symlink into workspace sources/ for uniform layout
-  fs.symlinkSync(abs, dest, "dir");
+  const linkType = linkPathSource(abs, dest);
   const applyDefaultIgnores = workspace.defaultSourceIgnores?.enabled !== false;
   const source = {
     id: sourceId,
@@ -108,6 +156,7 @@ export function addPathSource(root, { linkedPath, id }) {
     origin: {
       type: "path",
       linkedPath: abs,
+      linkType,
     },
   };
   upsertSource(workspace, source);

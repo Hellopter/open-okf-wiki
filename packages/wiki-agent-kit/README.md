@@ -55,6 +55,29 @@ ow source add clone https://github.com/example/app.git --id app
 ow doctor
 ```
 
+### Local path sources on Windows
+
+`ow source add path` registers a local directory under `sources/<id>` without copying it:
+
+| Platform | Link type | Admin / Developer Mode |
+|----------|-----------|------------------------|
+| Windows (local drive path) | Directory **junction** | Not required |
+| Windows (UNC / network path) | Directory **symlink** | Developer Mode or elevated shell |
+| macOS / Linux | Directory **symlink** | Not required |
+
+Prefer a normal local path such as `C:\work\app`. Junctions cannot target network shares; for those,
+either enable [Developer Mode](https://learn.microsoft.com/windows/apps/get-started/enable-your-device-for-development)
+and retry `source add path`, or avoid the link entirely:
+
+```powershell
+ow source add clone C:\work\app --id app
+# or a remote:
+ow source add clone https://github.com/example/app.git --id app
+```
+
+Global `pnpm link` and local path junctions are both user-level operations; neither needs an
+administrator shell for ordinary local work.
+
 `ow init` installs the same frozen-method Skill for generic agents and Claude, plus the Claude
 project workflows:
 

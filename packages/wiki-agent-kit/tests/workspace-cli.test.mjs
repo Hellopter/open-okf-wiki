@@ -91,6 +91,15 @@ describe("ow init + source path + freeze", () => {
     r = ow(["plan", "--run", frozen.runId, "--workspace", ws], tmp);
     assert.equal(r.status, 1, r.stderr || r.stdout);
     assert.match(r.stderr, /unknown command: plan/i);
+
+    const linked = path.join(ws, "sources", "api");
+    const lstat = fs.lstatSync(linked);
+    assert.ok(lstat.isSymbolicLink() || lstat.isDirectory());
+    assert.equal(fs.realpathSync(linked), fs.realpathSync(repo));
+    const workspace = JSON.parse(fs.readFileSync(path.join(ws, "workspace.json"), "utf8"));
+    const src = workspace.sources.find((s) => s.id === "api");
+    assert.equal(src.origin.type, "path");
+    assert.equal(src.origin.linkType, process.platform === "win32" ? "junction" : "dir");
   });
 
   it("runs the full gated lifecycle and seals a local-link candidate", () => {
