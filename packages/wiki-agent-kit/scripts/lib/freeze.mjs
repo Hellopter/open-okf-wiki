@@ -1,5 +1,5 @@
 /**
- * Freeze sources + skill into a run workdir; record digests and effective ignores.
+ * Freeze sources + internal method pack into a run workdir; record digests and effective ignores.
  */
 
 import { spawnSync } from "node:child_process";
@@ -8,9 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory, writeInventory } from "./inventory.mjs";
-import { assertInstalledAssets, ensureWorkflowsInstalled, installAll } from "./install.mjs";
 import { setActiveRun } from "./active-run.mjs";
-import { KIT_ROOT, kitSkillDir, runDir, runsDir } from "./paths.mjs";
+import { KIT_ROOT, kitMethodDir, runDir, runsDir } from "./paths.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
 import { hashTree, isInside, writeJson } from "./artifacts.mjs";
@@ -66,29 +65,25 @@ function copyTreeFiltered(srcAbs, destAbs, patterns) {
   return { skippedSymlinks };
 }
 
-function copySkill(destSkillDir) {
-  const from = kitSkillDir();
+function copyMethod(destMethodDir) {
+  const from = kitMethodDir();
   if (!fs.existsSync(from)) {
-    throw new Error(`missing canonical skill: ${from}`);
+    throw new Error(`missing canonical method pack: ${from}`);
   }
-  fs.cpSync(from, destSkillDir, { recursive: true });
-  const { digest } = hashTree(destSkillDir);
-  return { digest, path: destSkillDir };
+  fs.cpSync(from, destMethodDir, { recursive: true });
+  const { digest } = hashTree(destMethodDir);
+  return { digest, path: destMethodDir };
 }
 
 /**
- * Create a new run, freeze sources+skill, write inventory.
- * @returns {{ runId: string, runDir: string, workdir: string, meta: object, inventory: object, current: object, nextAction: object }}
+ * Create a new run, freeze sources+internal method pack, and write inventory.
+ * This is a host primitive; the public CLI entry point is `ow prepare`.
  */
-export function freezeRun(root, { focus, approvePlan = false, produce = true } = {}) {
+export function freezeRun(root, { focus } = {}) {
   const workspace = loadWorkspace(root);
   if (!workspace.sources?.length) {
     throw new Error("workspace has no sources; run: ow source add clone|path …");
   }
-  installAll(root, { force: false });
-  ensureWorkflowsInstalled(root);
-  assertInstalledAssets(root);
-
   const runId = randomUUID().slice(0, 8) + Date.now().toString(36).slice(-4);
   const rdir = runDir(root, runId);
   const workdir = path.join(rdir, "workdir");
@@ -98,6 +93,8 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
   fs.mkdirSync(path.join(workdir, "candidate"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts", "survey"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts", "semantic"), { recursive: true });
+  fs.mkdirSync(path.join(workdir, "analysis", "handoffs"), { recursive: true });
+  fs.mkdirSync(path.join(workdir, "analysis", "checkpoints"), { recursive: true });
 
   const sourceSnapshots = [];
   const sourceRoots = new Map();
@@ -123,7 +120,7 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
     });
   }
 
-  const skill = copySkill(path.join(workdir, "skill"));
+  const method = copyMethod(path.join(workdir, "method"));
 
   const inventory = buildInventory(root, workspace, { sourceRoots });
   writeInventory(workdir, inventory);
@@ -133,6 +130,7 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
   });
 
   const runPolicy = {
+    version: 2,
     wikiLanguage: workspace.wikiLanguage,
     focus: focus || null,
     tier: inventory.tier,
@@ -140,6 +138,11 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
       node: process.execPath,
       script: path.join(KIT_ROOT, "scripts", "ow.mjs"),
       workspaceRoot: root,
+    },
+    limits: {
+      batchConcurrency: 8,
+      maxCoveragePasses: 2,
+      maxRepairRounds: 2,
     },
   };
   fs.writeFileSync(
@@ -153,7 +156,7 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
     createdAt: new Date().toISOString(),
     wikiLanguage: workspace.wikiLanguage,
     focus: focus || null,
-    skillDigest: skill.digest,
+    methodDigest: method.digest,
     sources: sourceSnapshots,
     inventoryTier: inventory.tier,
     coverageUnitCount: inventory.coverageUnits.length,
@@ -184,15 +187,11 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
     "utf8",
   );
 
-  const command = approvePlan || !produce ? "/wiki-plan" : "/wiki-produce";
-  const pointers = setActiveRun(root, {
+  const current = setActiveRun(root, {
     runId,
     workdir,
-    command,
     phase: "frozen",
-    reason: "freeze created active run",
-    approvePlan,
-    produce: !approvePlan && produce,
+    status: "active",
   });
 
   return {
@@ -201,8 +200,7 @@ export function freezeRun(root, { focus, approvePlan = false, produce = true } =
     workdir,
     meta,
     inventory,
-    current: pointers.current,
-    nextAction: pointers.nextAction,
+    current,
   };
 }
 

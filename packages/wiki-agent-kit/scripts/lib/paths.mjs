@@ -1,6 +1,4 @@
-/**
- * Workspace path helpers for the ow CLI.
- */
+/** Workspace and kit path helpers for the ow CLI. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -10,75 +8,46 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Kit package root (packages/wiki-agent-kit). */
 export const KIT_ROOT = path.resolve(__dirname, "../..");
-
 export const META_DIR = ".wiki-agent";
-/** @deprecated Prefer resolveWorkspaceConfigPath / WORKSPACE_CONFIG_CANDIDATES. */
-export const WORKSPACE_FILE = "workspace.json";
-
-/** Preferred order when multiple names are considered for creation. */
-export const WORKSPACE_CONFIG_CANDIDATES = ["workspace.yaml", "workspace.yml", "workspace.json"];
+export const WORKSPACE_FILE = "workspace.yaml";
+export const LEGACY_WORKSPACE_FILES = ["workspace.yml", "workspace.json"];
 
 export function resolveWorkspaceRoot(cwd = process.cwd(), explicit) {
-  if (explicit) return path.resolve(explicit);
-  return path.resolve(cwd);
+  return path.resolve(explicit || cwd);
 }
 
-/**
- * Locate the on-disk workspace config.
- * @returns {{ path: string, format: "yaml" | "json", name: string } | null}
- */
+/** v2 deliberately supports one configuration filename and one encoding. */
 export function findWorkspaceConfig(root) {
-  const found = [];
-  for (const name of WORKSPACE_CONFIG_CANDIDATES) {
-    const abs = path.join(root, name);
-    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
-      found.push({
-        path: abs,
-        name,
-        format: name.endsWith(".json") ? "json" : "yaml",
-      });
-    }
+  const configPath = path.join(root, WORKSPACE_FILE);
+  if (!fs.existsSync(configPath)) return null;
+  if (!fs.statSync(configPath).isFile()) {
+    throw new Error(`workspace config is not a file: ${configPath}`);
   }
-  if (found.length > 1) {
-    throw new Error(
-      `multiple workspace configs found (${found.map((f) => f.name).join(", ")}); keep exactly one of workspace.yaml|workspace.yml|workspace.json`,
-    );
-  }
-  return found[0] ?? null;
+  return { path: configPath, name: WORKSPACE_FILE, format: "yaml" };
 }
 
-/**
- * Path used when creating a new workspace config.
- * @param {"yaml"|"json"} [format]
- */
-export function defaultWorkspaceConfigPath(root, format = "yaml") {
-  const name = format === "json" ? "workspace.json" : "workspace.yaml";
-  return {
-    path: path.join(root, name),
-    name,
-    format: format === "json" ? "json" : "yaml",
-  };
+export function findLegacyWorkspaceConfigs(root) {
+  return LEGACY_WORKSPACE_FILES.filter((name) => {
+    const candidate = path.join(root, name);
+    return fs.existsSync(candidate) && fs.statSync(candidate).isFile();
+  });
 }
 
-/** @deprecated Use findWorkspaceConfig / defaultWorkspaceConfigPath. */
-export function workspaceJsonPath(root) {
-  const existing = findWorkspaceConfig(root);
-  if (existing) return existing.path;
-  return path.join(root, WORKSPACE_FILE);
+export function defaultWorkspaceConfigPath(root) {
+  return { path: path.join(root, WORKSPACE_FILE), name: WORKSPACE_FILE, format: "yaml" };
 }
 
 export function metaDir(root) {
   return path.join(root, META_DIR);
 }
 
-/** Active-run pointer for no-arg Claude workflows. */
+/** The only workspace-level run pointer. */
 export function currentRunPath(root) {
   return path.join(metaDir(root), "current.json");
 }
 
-/** Next operator/workflow action for the active run. */
-export function nextActionPath(root) {
-  return path.join(metaDir(root), "next-action.json");
+export function runtimeManifestPath(root) {
+  return path.join(metaDir(root), "runtime.json");
 }
 
 export function runsDir(root) {
@@ -87,6 +56,14 @@ export function runsDir(root) {
 
 export function runDir(root, runId) {
   return path.join(runsDir(root), runId);
+}
+
+export function checkpointsDir(workdir) {
+  return path.join(workdir, "analysis", "checkpoints");
+}
+
+export function checkpointPath(workdir, phase) {
+  return path.join(checkpointsDir(workdir), `${phase}.json`);
 }
 
 export function sourcesDir(root) {
@@ -101,24 +78,8 @@ export function claudeWorkflowsDir(root) {
   return path.join(root, ".claude", "workflows");
 }
 
-export function claudeSkillsDir(root) {
-  return path.join(root, ".claude", "skills", "repository-wiki-producer");
-}
-
-export function agentsSkillsDir(root) {
-  return path.join(root, ".agents", "skills", "repository-wiki-producer");
-}
-
-/** Human entry skill (/wiki). Not frozen into run workdir. */
-export function claudeEntrySkillDir(root) {
-  return path.join(root, ".claude", "skills", "wiki");
-}
-
-export function kitEntrySkillDir() {
-  return path.join(KIT_ROOT, "skill", "wiki");
-}
-
-export const REQUIRED_WORKFLOWS = [
+export const REQUIRED_WORKFLOWS = ["wiki.workflow.js"];
+export const LEGACY_WORKFLOWS = [
   "wiki-plan.workflow.js",
   "wiki-write-review.workflow.js",
   "wiki-produce.workflow.js",
@@ -136,15 +97,15 @@ export function kitWorkflowsDir() {
   return path.join(KIT_ROOT, "workflows");
 }
 
-export function kitSkillDir() {
-  return path.join(KIT_ROOT, "skill", "repository-wiki-producer");
+/** Private method material, frozen into run workdirs but never installed. */
+export function kitMethodDir() {
+  return path.join(KIT_ROOT, "method", "repository-wiki-producer");
 }
 
 export function kitDefaultsDir() {
   return path.join(KIT_ROOT, "defaults");
 }
 
-/** Contain a candidate path under workspace root (no escape). */
 export function assertInsideRoot(root, candidate) {
   const absRoot = path.resolve(root);
   const abs = path.resolve(candidate);

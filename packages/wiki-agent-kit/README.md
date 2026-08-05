@@ -2,125 +2,86 @@
 
 Source-grounded, run-local OKF Wiki candidates from registered repositories.
 
-**Layering (2026 agent practice):**
+## Architecture
 
-| Layer | Audience | Role |
-|---|---|---|
-| **`/wiki` entry skill** | Humans | Only daily generate command |
-| **Claude workflows** | Runtime | Multi-agent orchestration |
-| **Method skill** (`repository-wiki-producer`) | Agents | Hidden progressive instructions; frozen into each run |
-| **`ow` CLI** | Agents / CI / recovery | Deterministic host API (not a human checklist) |
+| Layer | Role |
+|---|---|
+| `/wiki` Workflow | One native Claude Code Dynamic Workflow that owns orchestration. |
+| `method/` pack | Progressive production guidance, frozen into each run but never installed as a Skill. |
+| `ow` CLI | Deterministic workspace, checkpoint, gate, and validation authority. |
+
+The workflow graph is `Bootstrap -> Discover -> Plan -> Write -> Verify/Repair -> Validate`.
+Every edge is a host-validated checkpoint. Agents exchange compact envelopes and artifact paths; full
+evidence stays in the run workdir.
 
 ## Requirements
 
 - Node.js 22+
-- Claude Code `2.1.154+` with **Dynamic Workflows** enabled (`/config`)
+- Claude Code `2.1.154+` with Dynamic Workflows enabled in `/config`
 
-## One-time setup
+## Setup
 
 ```bash
-pnpm --dir packages/wiki-agent-kit link --global   # from monorepo root
+pnpm --dir packages/wiki-agent-kit link --global
 ow init ./my-wiki --name my-wiki --lang zh --path /abs/repo --id app
 cd my-wiki
 ow doctor
-```
-
-`ow init` installs:
-
-```text
-.claude/skills/wiki/                         # human entry /wiki
-.claude/skills/repository-wiki-producer/     # method (user-invocable: false)
-.agents/skills/repository-wiki-producer/
-.claude/workflows/wiki-produce.workflow.js
-.claude/workflows/wiki-plan.workflow.js
-.claude/workflows/wiki-write-review.workflow.js
-```
-
-After kit updates: `ow install --force`, then **start a new Claude session**.
-
-## Human path (default)
-
-```bash
-cd my-wiki
 claude
-# Dynamic Workflows on in /config, then:
-/wiki authentication and request flow
 ```
 
-`/wiki` will:
+Initialization creates `workspace.yaml` v2, `.wiki-agent/runtime.json`, source registration, and one
+workflow at `.claude/workflows/wiki.workflow.js`.
 
-1. Run the deterministic entry helper (`skill/wiki/scripts/entry.mjs`) → `ow run` / resume pointers
-2. Route to `/wiki-produce` (or plan/write-review as needed)
-3. Workflows auto-run host `gate plan` / `gate check` / `validate` via pinned `hostCli`
-
-No JSON args. No hand-run gates in the default path.
-
-### Optional plan approval
+## Human workflow
 
 ```text
-/wiki --approve-plan focus text
-# or host: ow run --focus "..." --approve-plan
-# after Spec:
-ow approve plan
-/wiki
+/wiki authentication and request flow   # complete run
+/wiki --plan authentication flow         # freeze, discover, plan, and checkpoint only
+/wiki --write                            # consume the current approved plan checkpoint
+/wiki --retry write                      # discard write descendants and retry them
 ```
 
-## Agent / host API (`ow`)
+`/wiki --plan` is the explicit human approval boundary. A workflow cannot wait for user input while
+running, so `/wiki --write` is the only edge from a plan checkpoint with a valid host gate receipt to writing.
 
-Agents and workflows call these (JSON stdout). Humans use them for setup/recovery only.
+## Host API
+
+The workflow calls the CLI through the pinned `hostCli` recorded in `inputs/run-policy.json`.
 
 ```text
-ow run | freeze | gate plan|check | validate | approve plan | retry | status | doctor | install
-ow init | source | ignore | config
+ow prepare --mode auto|plan|write|retry-plan|retry-write [--focus TEXT]
+ow checkpoint --phase PHASE --proposal analysis/handoffs/NAME.json
+ow gate plan|check
+ow validate
 ```
 
-Workflows **must** use `inputs/run-policy.json` → `hostCli.{node,script,workspaceRoot}`, not a bare global `ow` when available.
+`ow checkpoint` is the only state-transition authority. It validates proposal paths and ownership,
+recomputes artifact digests, checks input checkpoint dependencies, then advances
+`.wiki-agent/current.json` atomically. `ow validate` prepares a verified candidate manifest; its
+following `validate` checkpoint is the only transition to `sealed`.
 
-Active pointers:
+## Handoff and ownership
 
-```text
-.wiki-agent/current.json
-.wiki-agent/next-action.json
-```
+- `analysis/checkpoints/*.json` is the durable control plane.
+- `analysis/handoffs/*.json`, receipts, pages, and defects are the data plane.
+- `analysis/page-assignments.json` assigns every page to exactly one source/domain or integration
+  owner. Shards cannot write another owner's path.
+- Survey, writer, and evidence-review fan-out is bounded to eight agents per wave.
+- Coverage has at most two passes. Repair has at most two rounds and stops when the major/blocking
+  defect fingerprint fails to improve.
 
-## Advanced workflows
+## Failure and recovery
 
-| Slash | Role |
+| Condition | Result |
 |---|---|
-| `/wiki-produce` | Real multi-phase E2E (default route from `/wiki`) |
-| `/wiki-plan` | Discover/Plan + auto gate |
-| `/wiki-write-review` | Write/review/validate |
+| Invalid handoff, stale digest, missing dependency, duplicate owner | Checkpoint rejects the transition. |
+| Required shard fails | Run is checkpointed as blocked; no integration or validation proceeds. |
+| Plan gate fails | Fix the planned artifacts and rerun `/wiki --retry plan`. |
+| Candidate review or validation fails | Run `/wiki --retry write`; source and plan checkpoints remain intact. |
+| Validate command completed but the terminal checkpoint did not | Run `/wiki`; it resumes at Validate without rewriting pages. |
+| Sealed or tampered candidate | `ow prepare` fails closed until a retry starts a replacement write. |
 
-## Failure / recovery
+## Compatibility
 
-| Condition | Action |
-|---|---|
-| Asset drift | `ow install --force` + new Claude session |
-| Plan gate fails | Fix Spec or `ow retry --from plan` then `/wiki` |
-| Write/validate fails | `ow retry --from write` then `/wiki` |
-| Sealed/tampered | Never edit sealed tree; `ow retry --from write` |
-
-## Language & multi-source
-
-- `wikiLanguage` `en`|`zh` frozen into policy/inventory; workflows inject into prompts
-- Multi-source (`sourceCount >= 2` / tier L3): deep Spec required (overview + per-source + cross-source flow or cancellation)
-
-## Source citations
-
-```md
-[Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
-```
-
-Local frozen paths only; genuine line numbers.
-
-## Migration from older kit
-
-```bash
-cd my-wiki
-ow install --force
-ow doctor
-# new Claude session
-/wiki
-```
-
-Old manual `ow run` + `/wiki-produce` still works as advanced/agent path.
+vNext supports only `workspace.yaml` v2 and the single `/wiki` workflow. It intentionally does not
+read legacy workspace formats, Skills, workflow names, CLI commands, or run pointers.

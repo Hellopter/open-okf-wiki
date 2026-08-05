@@ -114,6 +114,29 @@ function isRegularFile(file) {
   }
 }
 
+function assignmentPaths(spec, assignments, errors) {
+  if (!Array.isArray(assignments)) {
+    errors.push("missing analysis/page-assignments.json");
+    return new Map();
+  }
+  const specPaths = new Set((spec?.pages ?? []).map((page) => page?.path).filter(Boolean));
+  const result = new Map();
+  for (const assignment of assignments) {
+    const pagePath = assignment?.pagePath;
+    if (typeof pagePath !== "string" || typeof assignment?.owner !== "string" || !assignment.owner) {
+      errors.push("invalid page assignment");
+      continue;
+    }
+    if (!specPaths.has(pagePath)) errors.push(`assignment path absent from Spec: ${pagePath}`);
+    if (result.has(pagePath)) errors.push(`multiple owners assigned to page: ${pagePath}`);
+    result.set(pagePath, assignment.owner);
+  }
+  for (const specPath of specPaths) {
+    if (!result.has(specPath)) errors.push(`Spec page has no owner assignment: ${specPath}`);
+  }
+  return result;
+}
+
 /** @param {string} workdir freeze workdir with candidate/ and sources/ */
 export function validateWorkdir(workdir, opts = {}) {
   const candidate = opts.candidateDir ?? candidateDir(workdir);
@@ -124,6 +147,7 @@ export function validateWorkdir(workdir, opts = {}) {
   const files = scan.files;
   for (const rel of scan.unsafe) errors.push(`${rel}: symlinks are not allowed in candidate/`);
   const specPath = opts.specPath ?? path.join(workdir, "analysis", "spec.json");
+  const assignmentsPath = path.join(workdir, "analysis", "page-assignments.json");
   let spec = null;
   try {
     spec = readJson(specPath);
@@ -153,6 +177,7 @@ export function validateWorkdir(workdir, opts = {}) {
       errors.push(`critical spec page missing: ${page.path}`);
     }
   }
+  const owners = assignmentPaths(spec, readJson(assignmentsPath), errors);
 
   const conceptRels = [];
   for (const { rel, abs } of files) {
@@ -160,6 +185,9 @@ export function validateWorkdir(workdir, opts = {}) {
     conceptRels.push(rel);
     if (spec && !specPaths.has(rel)) {
       errors.push(`${rel}: concept page is absent from the Spec`);
+    }
+    if (spec && !owners.has(rel)) {
+      errors.push(`${rel}: concept page is absent from page assignments`);
     }
     const parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
     if (!parsed.ok) {
@@ -187,6 +215,9 @@ export function validateWorkdir(workdir, opts = {}) {
   }
 
   if (!conceptRels.length) warnings.push("candidate/ has no concept pages yet");
+  for (const assignedPath of owners.keys()) {
+    if (!conceptRels.includes(assignedPath)) errors.push(`assigned candidate page missing: ${assignedPath}`);
+  }
   return { ok: !errors.length, errors, warnings, conceptPageCount: conceptRels.length };
 }
 
@@ -227,7 +258,7 @@ export function regenerateIndexes(dir) {
 export function sealCandidate(workdir, validation) {
   if (!validation.ok) throw new Error("cannot seal an invalid candidate");
   if (fs.existsSync(candidateManifestPath(workdir))) {
-    throw new Error("candidate is already sealed; run: ow retry --run <id> --from write");
+    throw new Error("candidate is already sealed; use /wiki --retry write to regenerate");
   }
   const candidate = candidateDir(workdir);
   const tree = hashTree(candidate);

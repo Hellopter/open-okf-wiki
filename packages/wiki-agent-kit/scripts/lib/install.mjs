@@ -1,170 +1,227 @@
-/**
- * Install kit workflows + method skill + human entry skill into a workspace.
- */
+/** Install and verify the sole v2 Claude Code workflow asset. */
 
 import fs from "node:fs";
 import path from "node:path";
 import {
-  agentsSkillsDir,
-  claudeEntrySkillDir,
-  claudeSkillsDir,
-  claudeWorkflowsDir,
-  kitEntrySkillDir,
-  kitSkillDir,
-  kitWorkflowsDir,
+  KIT_ROOT,
+  LEGACY_WORKFLOWS,
   REQUIRED_WORKFLOWS,
+  claudeWorkflowsDir,
+  kitMethodDir,
+  kitWorkflowsDir,
+  runtimeManifestPath,
 } from "./paths.mjs";
-import { hashTree } from "./artifacts.mjs";
+import { hashTree, sha256File, writeJson } from "./artifacts.mjs";
 
-function copyDir(src, dest, { force = false } = {}) {
-  if (!fs.existsSync(src)) throw new Error(`missing kit asset: ${src}`);
-  if (fs.existsSync(dest)) {
-    if (!force) return { skipped: true, dest };
-    fs.rmSync(dest, { recursive: true, force: true });
-  }
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.cpSync(src, dest, { recursive: true });
-  return { skipped: false, dest };
+const LEGACY_ASSET_DIRS = [
+  [".claude", "skills", "wiki"],
+  [".claude", "skills", "repository-wiki-producer"],
+  [".agents", "skills", "repository-wiki-producer"],
+];
+
+const LEGACY_WORKFLOW_DIGESTS = {
+  "wiki-plan.workflow.js": "271074894b2d87b23b323128f7e96d6f46b06b6784aa094936981275daf35873",
+  "wiki-write-review.workflow.js": "b970dbb8a977eab0a1c42d5a054051dc20e873943f362c336df50ac0358f309c",
+  "wiki-produce.workflow.js": "c39c4e9a36bb8d3c96123a51833089b01e499041ad9dc5cc7dd5b4bbadd1f0f1",
+};
+
+const LEGACY_METHOD_MANIFEST = {
+  "SKILL.md": "085fd7d35059bca2a5d60f66f4243cbb3ec2e3d96bee1696e4bb43fe8b9c64b3",
+  "references/generate.md": "e2ce6dde494582247d1fa0a4da81706d3b9c6922fd67083711f8db21b7fbc99c",
+  "references/orchestrator-context.md": "12934d8d3d83adacaafacd6f9a972ae6f56fc9c5f5eac5238f53ffb251c19f65",
+  "references/plan.md": "af7b754f5a744cdeb6a857ac6271317521c353faca8eeebfc22a919f78e64d19",
+  "references/research.md": "7c00d8da674841eb7047245fdd0e41c38b703e7e80cf7097c8c1858ad4a30b7b",
+  "references/review.md": "7c7d77a63c1a57e928718065b23fbd93d9332573c712057654a690e8bd743aac",
+  "templates/architecture.md": "633fa5b6348541a671240763735a239f66e29faeed623a9e829acdf3a89725cd",
+  "templates/concept.md": "e278d79f5b73af3cc803fe656a1ef9b0b56e57c014c92befafd85b4b42ef5082",
+  "templates/flow.md": "6574f7fa072c311f604da40af4d0039e0d5b94aee9e68301c38bad0d516180df",
+  "templates/module.md": "164a6a80e89f35c39f159c7c06b44f4761acff728b3d3e97b7f766836507f53a",
+  "templates/overview.md": "458db849c231891acab5933b1a08bea308d61e54e52d7e21aad5a997ea9572c8",
+};
+
+const LEGACY_ENTRY_MANIFEST = {
+  "SKILL.md": "e1b0ef9d475b8fc68be450cf0b11b107294cd2bcb881747fb4529fafe8a327a0",
+  "scripts/entry.mjs": "b7a41d64f052612150c6ded61325f736ca34f6a83462166601791eabb8725933",
+};
+
+function kitVersion() {
+  const packagePath = path.join(KIT_ROOT, "package.json");
+  return JSON.parse(fs.readFileSync(packagePath, "utf8")).version;
 }
 
-function copyWorkflows(root, { force = false } = {}) {
-  const srcDir = kitWorkflowsDir();
-  const destDir = claudeWorkflowsDir(root);
-  fs.mkdirSync(destDir, { recursive: true });
-  if (!fs.existsSync(srcDir)) {
-    return { files: [], note: "no kit workflows yet" };
-  }
-  const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".js"));
-  const results = [];
-  for (const f of files) {
-    const from = path.join(srcDir, f);
-    const to = path.join(destDir, f);
-    if (fs.existsSync(to) && !force) {
-      results.push({ file: f, skipped: true });
-      continue;
+function fileEquals(left, right) {
+  return fs.existsSync(left) && fs.existsSync(right) && sha256File(left) === sha256File(right);
+}
+
+function fileManifest(directory, { allowKitRoot = false } = {}) {
+  const files = {};
+  const stack = [""];
+  while (stack.length) {
+    const relative = stack.pop();
+    const current = relative ? path.join(directory, relative) : directory;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      const absolute = path.join(directory, child);
+      if (entry.isDirectory()) stack.push(child);
+      else if (entry.isFile()) files[child] = sha256File(absolute);
+      else return null;
     }
-    fs.copyFileSync(from, to);
-    results.push({ file: f, skipped: false });
   }
-  return { files: results, destDir };
+  if (allowKitRoot && Object.hasOwn(files, "scripts/kit-root.json")) {
+    try {
+      const pin = JSON.parse(fs.readFileSync(path.join(directory, "scripts", "kit-root.json"), "utf8"));
+      if (typeof pin?.kitRoot !== "string" || !pin.kitRoot) return null;
+      delete files["scripts/kit-root.json"];
+    } catch {
+      return null;
+    }
+  }
+  return files;
 }
 
-export function installWorkflows(root, opts = {}) {
-  return copyWorkflows(root, opts);
+function sameManifest(actual, expected) {
+  if (!actual) return false;
+  const actualPaths = Object.keys(actual).sort();
+  const expectedPaths = Object.keys(expected).sort();
+  return actualPaths.length === expectedPaths.length && actualPaths.every((key) => actual[key] === expected[key]);
 }
 
-/** Method skill (hidden from human slash menu; frozen into runs). */
-export function installSkill(root, opts = {}) {
-  const source = kitSkillDir();
-  const targets = [agentsSkillsDir(root), claudeSkillsDir(root)];
-  const installs = targets.map((dest) => copyDir(source, dest, opts));
-  const expectedDigest = hashTree(source).digest;
-  return {
-    kind: "method-skill",
-    expectedDigest,
-    installs: installs.map((install) => ({
-      ...install,
-      digest: fs.existsSync(install.dest) ? hashTree(install.dest).digest : null,
-    })),
-  };
+function legacyAssets(root) {
+  const assets = [];
+  for (const name of LEGACY_WORKFLOWS) {
+    const target = path.join(claudeWorkflowsDir(root), name);
+    if (fs.existsSync(target)) {
+      assets.push({ path: target, recognized: fs.lstatSync(target).isFile() && sha256File(target) === LEGACY_WORKFLOW_DIGESTS[name] });
+    }
+  }
+  for (const [index, segments] of LEGACY_ASSET_DIRS.entries()) {
+    const target = path.join(root, ...segments);
+    if (!fs.existsSync(target)) continue;
+    const manifest = fileManifest(target, { allowKitRoot: index === 0 });
+    assets.push({
+      path: target,
+      recognized: sameManifest(manifest, index === 0 ? LEGACY_ENTRY_MANIFEST : LEGACY_METHOD_MANIFEST),
+    });
+  }
+  return assets;
 }
 
-/** Human entry skill (/wiki). Host UX only; not freeze evidence. */
-export function installEntrySkill(root, opts = {}) {
-  const source = kitEntrySkillDir();
-  if (!fs.existsSync(source)) {
-    return { kind: "entry-skill", skipped: true, note: "entry skill not in kit yet" };
+export function removeLegacyAssets(root) {
+  const removed = [];
+  const assets = legacyAssets(root);
+  const unrecognized = assets.filter((asset) => !asset.recognized).map((asset) => asset.path);
+  if (unrecognized.length) {
+    throw new Error(`refusing to delete modified or user-owned legacy assets: ${unrecognized.join(", ")}`);
   }
-  const dest = claudeEntrySkillDir(root);
-  const install = copyDir(source, dest, opts);
-  // Pin kit root so entry.mjs can call ow.mjs without relying on PATH.
-  if (fs.existsSync(dest)) {
-    const scriptsDir = path.join(dest, "scripts");
-    fs.mkdirSync(scriptsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(scriptsDir, "kit-root.json"),
-      `${JSON.stringify({ kitRoot: path.resolve(kitEntrySkillDir(), "../.."), writtenAt: new Date().toISOString() }, null, 2)}\n`,
-      "utf8",
-    );
+  for (const asset of assets) {
+    fs.rmSync(asset.path, { recursive: true, force: true });
+    removed.push(asset.path);
   }
-  return {
-    kind: "entry-skill",
-    install: {
-      ...install,
-      digest: fs.existsSync(install.dest) ? hashTree(install.dest).digest : null,
+  return removed;
+}
+
+export function assertLegacyAssetsRemovable(root) {
+  const unrecognized = legacyAssets(root).filter((asset) => !asset.recognized).map((asset) => asset.path);
+  if (unrecognized.length) {
+    throw new Error(`refusing to delete modified or user-owned legacy assets: ${unrecognized.join(", ")}`);
+  }
+}
+
+function writeRuntimeManifest(root, workflowPath) {
+  const hostScript = path.join(KIT_ROOT, "scripts", "ow.mjs");
+  const methodPath = kitMethodDir();
+  if (!fs.existsSync(methodPath)) throw new Error(`missing internal method pack: ${methodPath}`);
+  const manifest = {
+    version: 2,
+    kitVersion: kitVersion(),
+    workspaceRoot: path.resolve(root),
+    hostCli: {
+      node: process.execPath,
+      script: hostScript,
+      digest: sha256File(hostScript),
     },
+    workflow: {
+      path: workflowPath,
+      digest: sha256File(workflowPath),
+    },
+    method: {
+      path: methodPath,
+      digest: hashTree(methodPath).digest,
+    },
+    installedAt: new Date().toISOString(),
   };
+  fs.mkdirSync(path.dirname(runtimeManifestPath(root)), { recursive: true });
+  writeJson(runtimeManifestPath(root), manifest);
+  return manifest;
 }
 
-export function installAll(root, opts = {}) {
-  return {
-    workflows: installWorkflows(root, opts),
-    skill: installSkill(root, opts),
-    entrySkill: installEntrySkill(root, opts),
-  };
+export function installWorkflows(root, { force = false } = {}) {
+  const sourceDir = kitWorkflowsDir();
+  const destinationDir = claudeWorkflowsDir(root);
+  fs.mkdirSync(destinationDir, { recursive: true });
+  const files = [];
+  for (const name of REQUIRED_WORKFLOWS) {
+    const source = path.join(sourceDir, name);
+    const target = path.join(destinationDir, name);
+    if (!fs.existsSync(source)) throw new Error(`missing required v2 workflow asset: ${source}`);
+    const existed = fs.existsSync(target);
+    if (existed && !force && !fileEquals(source, target)) {
+      throw new Error(`installed workflow drifted from kit: ${target}; run ow install --force`);
+    }
+    if (!existed || force) fs.copyFileSync(source, target);
+    files.push({ file: name, path: target, digest: sha256File(target), skipped: existed && !force });
+  }
+  return { files, destDir: destinationDir };
+}
+
+export function installAll(root, { force = false } = {}) {
+  const removed = force ? removeLegacyAssets(root) : [];
+  const workflows = installWorkflows(root, { force });
+  const workflowPath = path.join(claudeWorkflowsDir(root), REQUIRED_WORKFLOWS[0]);
+  const runtime = writeRuntimeManifest(root, workflowPath);
+  return { workflows, runtime, removedLegacyAssets: removed };
 }
 
 export function assertInstalledAssets(root) {
-  const expectedSkillDigest = hashTree(kitSkillDir()).digest;
-  const skillTargets = [agentsSkillsDir(root), claudeSkillsDir(root)];
   const errors = [];
-  for (const target of skillTargets) {
-    if (!fs.existsSync(target)) {
-      errors.push(`missing installed skill: ${target}`);
-    } else if (hashTree(target).digest !== expectedSkillDigest) {
-      errors.push(`installed skill drifted from kit: ${target}`);
-    }
-  }
+  const source = path.join(kitWorkflowsDir(), REQUIRED_WORKFLOWS[0]);
+  const target = path.join(claudeWorkflowsDir(root), REQUIRED_WORKFLOWS[0]);
+  if (!fs.existsSync(source)) errors.push(`missing kit workflow: ${source}`);
+  else if (!fs.existsSync(target)) errors.push(`missing installed workflow: ${target}`);
+  else if (!fileEquals(source, target)) errors.push(`installed workflow drifted from kit: ${target}`);
 
-  const entrySource = kitEntrySkillDir();
-  if (fs.existsSync(entrySource)) {
-    const entryDest = claudeEntrySkillDir(root);
-    if (!fs.existsSync(entryDest)) {
-      errors.push(`missing installed entry skill: ${entryDest}`);
-    } else {
-      const skillMd = path.join(entryDest, "SKILL.md");
-      if (!fs.existsSync(skillMd)) errors.push(`missing entry skill SKILL.md: ${skillMd}`);
-      const entryJs = path.join(entryDest, "scripts", "entry.mjs");
-      if (!fs.existsSync(entryJs)) errors.push(`missing entry helper: ${entryJs}`);
-      const pin = path.join(entryDest, "scripts", "kit-root.json");
-      if (!fs.existsSync(pin)) errors.push(`missing entry kit-root pin: ${pin}`);
-      // Compare method-critical files loosely: SKILL.md body may drift only if kit changed;
-      // full tree digest would fail because kit-root.json is install-local.
-      const kitSkillMd = path.join(entrySource, "SKILL.md");
-      if (fs.existsSync(skillMd) && fs.readFileSync(kitSkillMd, "utf8") !== fs.readFileSync(skillMd, "utf8")) {
-        errors.push(`installed entry skill drifted from kit: ${skillMd}`);
-      }
-      const kitEntry = path.join(entrySource, "scripts", "entry.mjs");
-      if (fs.existsSync(entryJs) && fs.readFileSync(kitEntry, "utf8") !== fs.readFileSync(entryJs, "utf8")) {
-        errors.push(`installed entry helper drifted from kit: ${entryJs}`);
-      }
-    }
-  }
+  const stale = legacyAssets(root);
+  if (stale.length) errors.push(`legacy workflow/skill assets remain: ${stale.map((asset) => asset.path).join(", ")}`);
 
-  for (const name of REQUIRED_WORKFLOWS) {
-    const source = path.join(kitWorkflowsDir(), name);
-    const target = path.join(claudeWorkflowsDir(root), name);
-    if (!fs.existsSync(source)) continue;
-    if (!fs.existsSync(target)) errors.push(`missing installed workflow: ${target}`);
-    else if (fs.readFileSync(source, "utf8") !== fs.readFileSync(target, "utf8")) {
-      errors.push(`installed workflow drifted from kit: ${target}`);
+  let runtime = null;
+  try {
+    runtime = JSON.parse(fs.readFileSync(runtimeManifestPath(root), "utf8"));
+  } catch {
+    errors.push(`missing or invalid runtime manifest: ${runtimeManifestPath(root)}`);
+  }
+  if (runtime) {
+    if (runtime.version !== 2) errors.push("runtime manifest version is not v2");
+    if (runtime.workspaceRoot !== path.resolve(root)) errors.push("runtime manifest workspaceRoot does not match workspace");
+    const hostScript = path.join(KIT_ROOT, "scripts", "ow.mjs");
+    if (runtime.hostCli?.script !== hostScript || runtime.hostCli?.digest !== sha256File(hostScript)) {
+      errors.push("runtime manifest host CLI binding is stale");
+    }
+    if (runtime.workflow?.path !== target || runtime.workflow?.digest !== (fs.existsSync(target) ? sha256File(target) : null)) {
+      errors.push("runtime manifest workflow binding is stale");
+    }
+    const methodPath = kitMethodDir();
+    if (!fs.existsSync(methodPath) || runtime.method?.path !== methodPath || runtime.method?.digest !== hashTree(methodPath).digest) {
+      errors.push("runtime manifest method binding is stale");
     }
   }
-  if (errors.length) {
-    throw new Error(`${errors.join("; ")}. Run: ow install --force`);
-  }
-  return { ok: true, skillDigest: expectedSkillDigest };
+  if (errors.length) throw new Error(`${errors.join("; ")}. Run: ow install --force`);
+  return { ok: true, runtime };
 }
 
 export function ensureWorkflowsInstalled(root) {
-  const destDir = claudeWorkflowsDir(root);
-  const missing = REQUIRED_WORKFLOWS.some((name) => !fs.existsSync(path.join(destDir, name)));
-  if (missing) {
-    installWorkflows(root, { force: false });
+  const target = path.join(claudeWorkflowsDir(root), REQUIRED_WORKFLOWS[0]);
+  if (!fs.existsSync(target) || !fs.existsSync(runtimeManifestPath(root))) {
+    installAll(root, { force: false });
   }
-  return {
-    destDir,
-    required: REQUIRED_WORKFLOWS,
-    exists: REQUIRED_WORKFLOWS.every((name) => fs.existsSync(path.join(destDir, name))),
-  };
+  return assertInstalledAssets(root);
 }

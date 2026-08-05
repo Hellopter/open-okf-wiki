@@ -1,16 +1,13 @@
-/**
- * Load / save workspace.yaml|yml|json
- */
+/** v2 workspace configuration: workspace.yaml only. */
 
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import {
-  agentsSkillsDir,
-  claudeSkillsDir,
   claudeWorkflowsDir,
   defaultWorkspaceConfigPath,
+  findLegacyWorkspaceConfigs,
   findWorkspaceConfig,
   metaDir,
   runsDir,
@@ -19,7 +16,7 @@ import {
 
 export function defaultWorkspace({ name, wikiLanguage = "en", rootPath }) {
   return {
-    version: 1,
+    version: 2,
     id: randomUUID(),
     name: name || path.basename(rootPath),
     wikiLanguage: wikiLanguage === "zh" ? "zh" : "en",
@@ -30,32 +27,24 @@ export function defaultWorkspace({ name, wikiLanguage = "en", rootPath }) {
   };
 }
 
-function parseWorkspaceText(text, format, file) {
+function parseWorkspaceText(text, file) {
   let doc;
-  if (format === "json") {
-    try {
-      doc = JSON.parse(text);
-    } catch (err) {
-      throw new Error(`invalid workspace JSON (${file}): ${err.message}`);
-    }
-  } else {
-    try {
-      doc = YAML.parse(text);
-    } catch (err) {
-      throw new Error(`invalid workspace YAML (${file}): ${err.message}`);
-    }
+  try {
+    doc = YAML.parse(text);
+  } catch (error) {
+    throw new Error(`invalid workspace YAML (${file}): ${error.message}`);
   }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
-    throw new Error(`workspace config must be a mapping/object: ${file}`);
+    throw new Error(`workspace config must be a YAML mapping: ${file}`);
   }
-  if (doc.version !== 1) throw new Error(`unsupported workspace version: ${doc.version}`);
+  if (doc.version !== 2) {
+    throw new Error(`unsupported workspace version: ${doc.version}; create a v2 workspace with ow init --force`);
+  }
+  if (!Array.isArray(doc.sources)) throw new Error(`workspace sources must be an array: ${file}`);
   return doc;
 }
 
-function serializeWorkspace(doc, format) {
-  if (format === "json") {
-    return `${JSON.stringify(doc, null, 2)}\n`;
-  }
+function serializeWorkspace(doc) {
   return YAML.stringify(doc, {
     indent: 2,
     lineWidth: 0,
@@ -64,37 +53,25 @@ function serializeWorkspace(doc, format) {
   });
 }
 
-/**
- * @returns {{ path: string, format: "yaml"|"json", name: string, workspace: object }}
- */
 export function loadWorkspaceConfig(root) {
   const found = findWorkspaceConfig(root);
   if (!found) {
-    throw new Error(
-      `not a workspace (missing workspace.yaml|workspace.yml|workspace.json under ${root}). Run: ow init ${root}`,
-    );
+    const legacy = findLegacyWorkspaceConfigs(root);
+    const detail = legacy.length ? `; unsupported legacy config present: ${legacy.join(", ")}` : "";
+    throw new Error(`not a v2 workspace (missing workspace.yaml under ${root})${detail}. Run: ow init ${root}`);
   }
   const text = fs.readFileSync(found.path, "utf8");
-  const workspace = parseWorkspaceText(text, found.format, found.name);
-  return { ...found, workspace };
+  return { ...found, workspace: parseWorkspaceText(text, found.name) };
 }
 
 export function loadWorkspace(root) {
   return loadWorkspaceConfig(root).workspace;
 }
 
-/**
- * Persist workspace. Writes back to the existing config file when present;
- * otherwise creates the default format (yaml unless opts.format is set).
- * @param {string} root
- * @param {object} doc
- * @param {{ format?: "yaml"|"json" }} [opts]
- */
-export function saveWorkspace(root, doc, opts = {}) {
-  const existing = findWorkspaceConfig(root);
-  const target = existing ?? defaultWorkspaceConfigPath(root, opts.format === "json" ? "json" : "yaml");
-  const next = { ...doc, updatedAt: new Date().toISOString() };
-  fs.writeFileSync(target.path, serializeWorkspace(next, target.format), "utf8");
+export function saveWorkspace(root, doc) {
+  const target = findWorkspaceConfig(root) ?? defaultWorkspaceConfigPath(root);
+  const next = { ...doc, version: 2, updatedAt: new Date().toISOString() };
+  fs.writeFileSync(target.path, serializeWorkspace(next), "utf8");
   return next;
 }
 
@@ -104,40 +81,43 @@ export function ensureWorkspaceLayout(root) {
   fs.mkdirSync(metaDir(root), { recursive: true });
   fs.mkdirSync(runsDir(root), { recursive: true });
   fs.mkdirSync(claudeWorkflowsDir(root), { recursive: true });
-  fs.mkdirSync(path.dirname(claudeSkillsDir(root)), { recursive: true });
-  fs.mkdirSync(path.dirname(agentsSkillsDir(root)), { recursive: true });
 }
 
-/**
- * @returns {{ created: boolean, workspace: object, configPath: string, format: "yaml"|"json" }}
- */
-export function initWorkspace(root, { name, wikiLanguage = "en", force = false, format = "yaml" } = {}) {
+/** Create a v2 workspace. --force is an explicit replacement operation. */
+export function initWorkspace(root, { name, wikiLanguage = "en", force = false } = {}) {
   ensureWorkspaceLayout(root);
   const existing = findWorkspaceConfig(root);
-  if (existing && !force) {
-    return {
-      created: false,
-      workspace: loadWorkspace(root),
-      configPath: existing.path,
-      format: existing.format,
-    };
+  const legacy = findLegacyWorkspaceConfigs(root);
+  if ((existing || legacy.length) && !force) {
+    if (legacy.length && !existing) {
+      throw new Error(
+        `unsupported legacy workspace config: ${legacy.join(", ")}; rerun ow init --force to replace it with workspace.yaml v2`,
+      );
+    }
+    return { created: false, workspace: loadWorkspace(root), configPath: existing.path, format: "yaml" };
   }
-  if (existing && force) {
-    fs.rmSync(existing.path, { force: true });
+  if (force) {
+    for (const name of legacy) fs.rmSync(path.join(root, name), { force: true });
+    if (existing) fs.rmSync(existing.path, { force: true });
+    // A replacement v2 workspace must not inherit a run pointer or frozen
+    // artifacts from a schema it no longer understands.
+    fs.rmSync(metaDir(root), { recursive: true, force: true });
+    fs.mkdirSync(metaDir(root), { recursive: true });
+    fs.mkdirSync(runsDir(root), { recursive: true });
   }
-  const target = defaultWorkspaceConfigPath(root, format === "json" ? "json" : "yaml");
+  const target = defaultWorkspaceConfigPath(root);
   const workspace = defaultWorkspace({ name, wikiLanguage, rootPath: root });
-  saveWorkspace(root, workspace, { format: target.format });
-  return { created: true, workspace, configPath: target.path, format: target.format };
+  saveWorkspace(root, workspace);
+  return { created: true, workspace, configPath: target.path, format: "yaml" };
 }
 
 export function findSource(workspace, sourceId) {
-  return workspace.sources.find((s) => s.id === sourceId);
+  return workspace.sources.find((source) => source.id === sourceId);
 }
 
 export function upsertSource(workspace, source) {
-  const idx = workspace.sources.findIndex((s) => s.id === source.id);
-  if (idx >= 0) workspace.sources[idx] = source;
+  const index = workspace.sources.findIndex((candidate) => candidate.id === source.id);
+  if (index >= 0) workspace.sources[index] = source;
   else workspace.sources.push(source);
   return workspace;
 }

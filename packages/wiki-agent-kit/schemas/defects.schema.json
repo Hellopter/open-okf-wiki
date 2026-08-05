@@ -1,23 +1,35 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://okf.wiki/schemas/defects.schema.json",
-  "title": "Wiki candidate review defects",
+  "title": "Wiki candidate review defects (v2)",
   "type": "object",
-  "required": ["clean", "defects"],
+  "additionalProperties": false,
+  "required": ["version", "clean", "defects"],
   "properties": {
+    "version": { "const": 2 },
     "clean": { "type": "boolean" },
     "defects": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["severity", "code", "issue"],
+        "additionalProperties": false,
+        "required": ["severity", "code", "category", "issue", "pagePath", "owner", "fingerprint", "evidence", "repairSuggestion"],
         "properties": {
           "severity": { "enum": ["blocking", "major", "minor"] },
           "code": { "type": "string", "minLength": 1 },
+          "category": { "type": "string", "minLength": 1 },
           "issue": { "type": "string", "minLength": 1 },
-          "path": { "type": "string" }
+          "pagePath": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\]+\\.md$" },
+          "owner": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+          "fingerprint": { "type": "string", "minLength": 16, "maxLength": 256 },
+          "evidence": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "repairSuggestion": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "blocker": {
+      "type": ["string", "null"],
+      "maxLength": 6000
     }
   }
 }

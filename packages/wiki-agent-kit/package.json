@@ -3,7 +3,7 @@
   "version": "0.1.0-dev",
   "private": true,
   "type": "module",
-  "description": "Agent-host toolkit: deterministic ow CLI + method skill + Claude workflows; human entry is /wiki",
+  "description": "Agent-host toolkit: deterministic ow CLI + internal method pack + native Claude workflow; human entry is /wiki",
   "bin": {
     "ow": "./scripts/ow.mjs"
   },

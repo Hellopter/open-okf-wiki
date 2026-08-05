@@ -1,66 +1,118 @@
-/** Artifact cleanup for explicit workflow retries. Claude owns in-session resume. */
+/** Deterministic cleanup for graph retry edges, preserving valid ancestors. */
 
 import fs from "node:fs";
 import path from "node:path";
 import { setActiveRun } from "./active-run.mjs";
-import { candidateManifestPath } from "./paths.mjs";
+import { candidateManifestPath, checkpointsDir } from "./paths.mjs";
 import { gateReceiptPath } from "./gate.mjs";
 import { loadRunMeta } from "./freeze.mjs";
+import { verifyCheckpoint } from "./checkpoints.mjs";
 
-const PHASES = ["plan", "write"];
+const PHASES = new Set(["plan", "write"]);
 
-function remove(target) {
+function remove(target, removed, workdir) {
+  if (!fs.existsSync(target)) return;
   fs.rmSync(target, { recursive: true, force: true });
+  removed.push(path.relative(workdir, target).replace(/\\/g, "/"));
 }
 
-export function retryFromPhase(root, runId, fromPhase, { approvePlan = false, produce = true } = {}) {
-  if (!PHASES.includes(fromPhase)) throw new Error(`unknown phase: ${fromPhase}`);
+function removeMatching(directory, predicate, removed, workdir) {
+  if (!fs.existsSync(directory)) return;
+  for (const name of fs.readdirSync(directory)) {
+    if (predicate(name)) remove(path.join(directory, name), removed, workdir);
+  }
+}
+
+function recreateWorkdirLayout(workdir) {
+  fs.mkdirSync(path.join(workdir, "candidate"), { recursive: true });
+  fs.mkdirSync(path.join(workdir, "analysis", "receipts", "survey"), { recursive: true });
+  fs.mkdirSync(path.join(workdir, "analysis", "receipts", "semantic"), { recursive: true });
+  fs.mkdirSync(path.join(workdir, "analysis", "handoffs"), { recursive: true });
+  fs.mkdirSync(checkpointsDir(workdir), { recursive: true });
+}
+
+function clearFromPlan(workdir, removed) {
+  const analysis = path.join(workdir, "analysis");
+  for (const target of [
+    path.join(analysis, "spec.json"),
+    path.join(analysis, "page-assignments.json"),
+    path.join(analysis, "cross-source-contract.json"),
+    path.join(analysis, "defects.json"),
+    path.join(analysis, "validation.json"),
+    gateReceiptPath(workdir),
+    path.join(workdir, "candidate"),
+    candidateManifestPath(workdir),
+    path.join(analysis, "handoffs", "plan.json"),
+    path.join(analysis, "handoffs", "preflight.json"),
+    path.join(analysis, "handoffs", "write"),
+    path.join(analysis, "handoffs", "write.json"),
+    path.join(analysis, "handoffs", "write-sources.json"),
+    path.join(analysis, "handoffs", "validate.json"),
+    path.join(analysis, "handoffs", "review"),
+    path.join(analysis, "handoffs", "repair"),
+    path.join(analysis, "receipts", "review"),
+    path.join(analysis, "receipts", "gate-plan.json"),
+    path.join(analysis, "receipts", "preflight.json"),
+    path.join(analysis, "receipts", "validate.json"),
+  ]) remove(target, removed, workdir);
+  removeMatching(path.join(analysis, "handoffs"), (name) => /^(review|repair|blocked)-/.test(name), removed, workdir);
+  removeMatching(
+    checkpointsDir(workdir),
+    (name) => /^(plan|write(?:-sources)?|review-\d+|repair-\d+|blocked-\d+|validate)\.json$/.test(name),
+    removed,
+    workdir,
+  );
+}
+
+function clearFromWrite(workdir, removed) {
+  const analysis = path.join(workdir, "analysis");
+  for (const target of [
+    path.join(analysis, "defects.json"),
+    path.join(analysis, "validation.json"),
+    path.join(workdir, "candidate"),
+    candidateManifestPath(workdir),
+    path.join(analysis, "handoffs", "preflight.json"),
+    path.join(analysis, "handoffs", "write"),
+    path.join(analysis, "handoffs", "write.json"),
+    path.join(analysis, "handoffs", "write-sources.json"),
+    path.join(analysis, "handoffs", "validate.json"),
+    path.join(analysis, "handoffs", "review"),
+    path.join(analysis, "handoffs", "repair"),
+    path.join(analysis, "receipts", "review"),
+    path.join(analysis, "receipts", "preflight.json"),
+    path.join(analysis, "receipts", "validate.json"),
+  ]) remove(target, removed, workdir);
+  removeMatching(path.join(analysis, "handoffs"), (name) => /^(review|repair|blocked)-/.test(name), removed, workdir);
+  removeMatching(
+    checkpointsDir(workdir),
+    (name) => /^(write(?:-sources)?|review-\d+|repair-\d+|blocked-\d+|validate)\.json$/.test(name),
+    removed,
+    workdir,
+  );
+}
+
+/** Reset only artifacts derived from the selected graph edge. */
+export function retryFromPhase(root, runId, fromPhase) {
+  if (!PHASES.has(fromPhase)) throw new Error(`unknown retry phase: ${fromPhase}`);
   const meta = loadRunMeta(root, runId);
   const workdir = path.resolve(root, meta.workdir);
-  const analysis = path.join(workdir, "analysis");
-  const candidate = path.join(workdir, "candidate");
+  const ancestorPhase = fromPhase === "plan" ? "discover" : "plan";
+  const verifiedAncestor = verifyCheckpoint(workdir, ancestorPhase);
+  if (!verifiedAncestor.ok || verifiedAncestor.checkpoint.status !== "complete") {
+    throw new Error(`cannot retry ${fromPhase}: required ancestor checkpoint is missing or invalid`);
+  }
   const removed = [];
-  const removeTracked = (target) => {
-    remove(target);
-    removed.push(path.relative(workdir, target));
-  };
+  if (fromPhase === "plan") clearFromPlan(workdir, removed);
+  else clearFromWrite(workdir, removed);
+  recreateWorkdirLayout(workdir);
 
-  if (fromPhase === "plan") {
-    removeTracked(path.join(analysis, "receipts"));
-    removeTracked(path.join(analysis, "discovery-map.json"));
-    removeTracked(path.join(analysis, "spec.json"));
-    removeTracked(gateReceiptPath(workdir));
-    removeTracked(path.join(analysis, "defects.json"));
-    removeTracked(path.join(analysis, "validation.json"));
-    removeTracked(candidate);
-    fs.mkdirSync(candidate, { recursive: true });
-    fs.mkdirSync(path.join(analysis, "receipts", "survey"), { recursive: true });
-    fs.mkdirSync(path.join(analysis, "receipts", "semantic"), { recursive: true });
-  }
-  if (fromPhase === "write") {
-    removeTracked(path.join(analysis, "receipts", "review"));
-    removeTracked(path.join(analysis, "defects.json"));
-    removeTracked(path.join(analysis, "validation.json"));
-    removeTracked(candidate);
-    fs.mkdirSync(candidate, { recursive: true });
-  }
-  removeTracked(candidateManifestPath(workdir));
-
-  const command =
-    fromPhase === "write"
-      ? "/wiki-write-review"
-      : approvePlan || !produce
-        ? "/wiki-plan"
-        : "/wiki-produce";
-  const pointers = setActiveRun(root, {
+  const ancestor = verifiedAncestor.checkpoint;
+  const current = setActiveRun(root, {
     runId,
     workdir,
-    command,
-    phase: fromPhase === "write" ? "write-ready" : "frozen",
-    reason: `retry --from ${fromPhase}`,
-    approvePlan,
-    produce: !approvePlan && produce,
+    phase: fromPhase === "plan" ? "discover" : "plan",
+    status: "active",
+    checkpointDigest: ancestor.checkpointDigest,
   });
-
-  return { runId, fromPhase, removed, current: pointers.current, nextAction: pointers.nextAction, workflow: { command } };
+  return { runId, fromPhase, workdir, removed, ancestor, current };
 }

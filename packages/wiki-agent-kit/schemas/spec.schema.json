@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://okf.wiki/schemas/spec.schema.json",
-  "title": "Wiki run specification",
+  "title": "Wiki run specification (v2)",
   "type": "object",
-  "required": ["pages"],
+  "additionalProperties": false,
+  "required": ["version", "pages", "pageAssignments"],
   "properties": {
-    "version": { "type": "integer", "minimum": 1 },
+    "version": { "const": 2 },
     "title": { "type": "string" },
     "overviewPath": { "type": "string" },
     "wikiLanguage": { "type": "string", "enum": ["en", "zh"] },
@@ -20,7 +21,27 @@
           "title": { "type": "string" },
           "question": { "type": "string" },
           "critical": { "type": "boolean" },
-          "coverageUnitIds": { "type": "array", "items": { "type": "string" } }
+          "coverageUnitIds": { "type": "array", "items": { "type": "string" } },
+          "owner": { "$ref": "#/$defs/owner" }
+        }
+      }
+    },
+    "pageAssignments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pagePath", "owner", "role", "coverageUnitIds", "dependsOn"],
+        "properties": {
+          "pagePath": { "$ref": "#/$defs/candidatePath" },
+          "owner": { "$ref": "#/$defs/owner" },
+          "role": { "enum": ["domain", "integration"] },
+          "coverageUnitIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "dependsOn": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "sourceIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "contractIds": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "terms": { "type": "array", "items": { "type": "string", "minLength": 1 } }
         }
       }
     },
@@ -33,6 +54,16 @@
     }
   },
   "$defs": {
+    "candidatePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\]+\\.md$"
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
     "cancellations": {
       "type": "array",
       "items": {

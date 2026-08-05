@@ -4,15 +4,15 @@ Shape the complete `analysis/spec.json` before any candidate page is written.
 
 **Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json`, and survey receipts under
 `analysis/receipts/`.
-**Output:** `analysis/spec.json`.
-**Mandatory stop:** run `ow gate plan --run <runId>` after planning. Do not enter Write unless it
-succeeds.
+**Output:** `analysis/spec.json` and `analysis/page-assignments.json`.
+**Mandatory stop:** publish `ow checkpoint --phase plan` after planning, then run
+`ow gate plan --run <runId>`. Do not enter Write unless both succeed.
 
 ## Required Spec shape
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "title": "Example service",
   "overviewPath": "overview.md",
   "wikiLanguage": "en",
@@ -27,6 +27,15 @@ succeeds.
       "question": "What does this service do and how is it organized?",
       "critical": true,
       "coverageUnitIds": ["app"]
+    }
+  ],
+  "pageAssignments": [
+    {
+      "pagePath": "overview.md",
+      "owner": "integration",
+      "role": "integration",
+      "coverageUnitIds": ["app"],
+      "dependsOn": []
     }
   ],
   "coverageCancellations": []
@@ -55,8 +64,13 @@ Do not list `index.md` or `log.md` as pages. Spec paths must remain below `candi
 contain an absolute or traversal path. The package's `schemas/spec.schema.json` is the
 machine-readable reference contract.
 
+`pageAssignments` is mandatory. Every Spec path belongs to exactly one owner. Use source/domain
+owners for source-specific pages and an `integration` owner for overview, navigation, glossary, and
+cross-source Flow pages. Each assignment declares the coverage it owns and the handoff ids it needs;
+do not give two owners the same path.
+
 ## Gate failure
 
-Repair the Discovery Map or Spec, then rerun `ow gate plan`. The gate receipt is invalidated whenever
-the inventory, Discovery Map, or Spec changes. Use `ow retry --from plan` only when discarding the
-planning artifacts is intended.
+Repair the Discovery Map or Spec, publish a replacement plan checkpoint, then rerun the gate. The
+gate receipt and checkpoint are invalidated whenever inventory, Discovery Map, Spec, or assignments
+change.

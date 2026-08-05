@@ -24,8 +24,9 @@ only a short envelope such as:
 ```json
 {
   "status": "ok",
-  "path": "analysis/receipts/survey/source-app.json",
-  "summary": "At most eight concise bullets"
+  "proposalPath": "analysis/handoffs/survey/source-app.json",
+  "summary": "At most eight concise bullets",
+  "openQuestions": []
 }
 ```
 

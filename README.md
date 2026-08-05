@@ -1,10 +1,10 @@
 # open-okf-wiki (wiki-agent-kit slice)
 
-Portable **wiki-agent-kit**: agent-host CLI + method skill + Claude workflows, with a single human entry.
+Portable **wiki-agent-kit**: deterministic host CLI + frozen method pack + one native Claude workflow.
 
 | Path | Role |
 |------|------|
-| `packages/wiki-agent-kit/` | `ow` agent API, `/wiki` entry skill, method skill, workflows, tests |
+| `packages/wiki-agent-kit/` | `ow` host API, `/wiki` workflow, frozen method pack, handoff schemas, tests |
 | `docs/research/claude-dynamic-workflow-coding-agent-2026-08.md` | Design notes |
 
 ## Install CLI (dev)
@@ -23,6 +23,8 @@ claude
 # /wiki core architecture
 ```
 
-Humans use **`/wiki` only** for generation. `ow` is the deterministic host API for agents and recovery.
+Humans use **`/wiki` only** for generation. `ow` is the deterministic host API for workflow agents,
+checkpoints, and validation; there is no Skill-to-Workflow handoff. Existing workspaces must be
+reinitialized as `workspace.yaml` v2.
 
 Details: `packages/wiki-agent-kit/README.md`.

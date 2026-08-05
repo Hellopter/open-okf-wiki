@@ -11,262 +11,328 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OW = path.resolve(__dirname, "../scripts/ow.mjs");
 
 function ow(args, cwd) {
-  return spawnSync(process.execPath, [OW, ...args], {
-    cwd,
-    encoding: "utf8",
-  });
+  return spawnSync(process.execPath, [OW, ...args], { cwd, encoding: "utf8" });
 }
 
-function readWorkspace(ws) {
-  const yamlPath = path.join(ws, "workspace.yaml");
-  const ymlPath = path.join(ws, "workspace.yml");
-  const jsonPath = path.join(ws, "workspace.json");
-  if (fs.existsSync(yamlPath)) return YAML.parse(fs.readFileSync(yamlPath, "utf8"));
-  if (fs.existsSync(ymlPath)) return YAML.parse(fs.readFileSync(ymlPath, "utf8"));
-  return JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+function json(result) {
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return JSON.parse(result.stdout);
 }
 
-describe("ow init + source path + freeze", () => {
-  it("creates workspace, adds path source, freezes", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-test-"));
-    const repo = path.join(tmp, "repo");
-    fs.mkdirSync(path.join(repo, "src", "main", "java"), { recursive: true });
-    fs.writeFileSync(path.join(repo, "pom.xml"), "<project/>\n");
-    fs.writeFileSync(
-      path.join(repo, "src", "main", "java", "App.java"),
-      "class App {}\n",
-    );
-    fs.mkdirSync(path.join(repo, "target"), { recursive: true });
-    fs.writeFileSync(path.join(repo, "target", "x.class"), "xx");
+function makeWorkspace() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-v2-"));
+  const source = path.join(root, "source");
+  fs.mkdirSync(path.join(source, "src"), { recursive: true });
+  fs.writeFileSync(path.join(source, "src", "app.js"), "export const answer = 42;\n");
+  fs.mkdirSync(path.join(source, "target"), { recursive: true });
+  fs.writeFileSync(path.join(source, "target", "ignored.class"), "ignored");
+  const workspace = path.join(root, "workspace");
+  const initialized = json(ow(["init", workspace, "--name", "v2-demo", "--lang", "zh", "--path", source, "--id", "app"], root));
+  return { root, source, workspace, initialized };
+}
 
-    const ws = path.join(tmp, "ws");
-    let r = ow(["init", ws, "--name", "demo", "--lang", "zh", "--path", repo, "--id", "api"], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const initOut = JSON.parse(r.stdout);
-    assert.equal(initOut.wikiLanguage, "zh");
-    assert.equal(initOut.format, "yaml");
-    assert.ok(initOut.workspace.endsWith("workspace.yaml"));
-    assert.ok(fs.existsSync(path.join(ws, "workspace.yaml")));
-    assert.ok(!fs.existsSync(path.join(ws, "workspace.json")));
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+}
 
-    r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr);
-    const st = JSON.parse(r.stdout);
-    assert.equal(st.sources.length, 1);
-    assert.equal(st.wikiLanguage, "zh");
-    assert.equal(st.humanEntry, "/wiki");
+function handoff({ phase, inputCheckpointDigests = [], artifacts, producer = "test" }) {
+  return {
+    version: 2,
+    phase,
+    producer,
+    status: "complete",
+    inputCheckpointDigests,
+    artifacts,
+    summary: `${phase} handoff`,
+    openQuestions: [],
+  };
+}
 
-    r = ow(["doctor", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const doctor = JSON.parse(r.stdout);
-    assert.equal(doctor.assets.ok, true);
-    assert.equal(doctor.dynamicWorkflowPrerequisite.required, true);
-    assert.ok(Object.hasOwn(doctor.claude, "versionSupported"));
+function checkpoint(workspace, phase, proposal) {
+  const proposalPath = `analysis/handoffs/${phase}.json`;
+  writeJson(path.join(proposal.workdir, proposalPath), proposal.value);
+  return json(ow(["checkpoint", "--phase", phase, "--proposal", proposalPath, "--workspace", workspace], workspace));
+}
 
-    r = ow(["freeze", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const frozen = JSON.parse(r.stdout);
-    assert.ok(frozen.runId);
-    assert.equal(frozen.workflow.command, "/wiki-produce");
-    assert.equal(frozen.workflow.args.runId, frozen.runId);
-    assert.ok(fs.existsSync(path.join(ws, ".wiki-agent", "current.json")));
-    assert.ok(fs.existsSync(path.join(ws, ".wiki-agent", "next-action.json")));
-    const current = JSON.parse(fs.readFileSync(path.join(ws, ".wiki-agent", "current.json"), "utf8"));
-    assert.equal(current.runId, frozen.runId);
-    assert.equal(current.command, "/wiki-produce");
-    const workdir = frozen.workdir;
-    assert.ok(fs.existsSync(path.join(workdir, "inputs", "inventory.json")));
-    assert.ok(fs.existsSync(path.join(workdir, "inputs", "snapshot-manifest.json")));
-    assert.ok(fs.existsSync(path.join(workdir, "candidate")));
-    assert.ok(fs.existsSync(path.join(workdir, "sources", "api", "src", "main", "java", "App.java")));
-    assert.ok(!fs.existsSync(path.join(workdir, "sources", "api", "target", "x.class")));
-    assert.ok(fs.existsSync(path.join(ws, ".agents", "skills", "repository-wiki-producer", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "repository-wiki-producer", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "wiki", "SKILL.md")));
-    assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "wiki", "scripts", "entry.mjs")));
-    const methodFront = fs.readFileSync(
-      path.join(ws, ".claude", "skills", "repository-wiki-producer", "SKILL.md"),
-      "utf8",
-    );
-    assert.match(methodFront, /user-invocable:\s*false/);
-    const entryFront = fs.readFileSync(path.join(ws, ".claude", "skills", "wiki", "SKILL.md"), "utf8");
-    assert.match(entryFront, /disable-model-invocation:\s*true/);
-    assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-plan.workflow.js")));
-    assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-write-review.workflow.js")));
-    assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-produce.workflow.js")));
-    assert.equal(frozen.workflow.humanEntry, "/wiki");
+function makePlanReady(workspace, prepared) {
+  const { workdir, runId } = prepared;
+  const inventory = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "inventory.json"), "utf8"));
+  const coverageUnitId = inventory.coverageUnits[0].id;
+  writeJson(path.join(workdir, "analysis", "discovery-map.json"), {
+    version: 2,
+    sources: [{ sourceId: "app" }],
+    domains: [{ id: "domain:app", coverageUnitIds: [coverageUnitId] }],
+    flows: [],
+    coverageUnits: inventory.coverageUnits,
+  });
+  const discoverReceipt = path.join(workdir, "analysis", "receipts", "discover.json");
+  writeJson(discoverReceipt, { coverageUnitId, evidence: ["sources/app/src/app.js"] });
+  const discover = checkpoint(workspace, "discover", {
+    workdir,
+    value: handoff({
+      phase: "discover",
+      artifacts: [
+        { id: "discover-receipt", type: "receipt", owner: "survey:app", path: "analysis/receipts/discover.json", dependsOn: [], coverageUnitIds: [coverageUnitId] },
+        { id: "discovery-map", type: "discovery-map", owner: "survey:app", path: "analysis/discovery-map.json", dependsOn: ["discover-receipt"], coverageUnitIds: [coverageUnitId] },
+      ],
+    }),
+  });
+  const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds: [coverageUnitId], owner: "integration" }];
+  const pageAssignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds: [coverageUnitId], dependsOn: ["discover-receipt"], sourceIds: ["app"] }];
+  writeJson(path.join(workdir, "analysis", "spec.json"), { version: 2, wikiLanguage: "zh", pages, pageAssignments });
+  writeJson(path.join(workdir, "analysis", "page-assignments.json"), pageAssignments);
+  const planReceipt = path.join(workdir, "analysis", "receipts", "plan.json");
+  writeJson(planReceipt, { planned: true });
+  const plan = checkpoint(workspace, "plan", {
+    workdir,
+    value: handoff({
+      phase: "plan",
+      inputCheckpointDigests: [discover.checkpointDigest],
+      artifacts: [
+        { id: "plan-receipt", type: "receipt", owner: "planner", path: "analysis/receipts/plan.json", dependsOn: ["discovery-map"] },
+        { id: "spec", type: "spec", owner: "planner", path: "analysis/spec.json", dependsOn: ["discovery-map"] },
+        { id: "page-assignments", type: "assignment-map", owner: "planner", path: "analysis/page-assignments.json", dependsOn: ["spec"] },
+      ],
+    }),
+  });
+  const gate = json(ow(["gate", "plan", "--workspace", workspace], workspace));
+  assert.equal(gate.ok, true, JSON.stringify(gate));
+  assert.equal(gate.receipt.version, 2);
+  assert.equal(runId, gate.current.runId);
+  return { workdir, runId, coverageUnitId, discover, plan, gate };
+}
 
-    const policy = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "run-policy.json"), "utf8"));
-    assert.equal(policy.wikiLanguage, "zh");
-    const inventory = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "inventory.json"), "utf8"));
-    assert.equal(inventory.wikiLanguage, "zh");
+function makeWriteReviewReady(workspace, ready) {
+  const { workdir } = ready;
+  fs.writeFileSync(path.join(workdir, "candidate", "overview.md"), [
+    "---",
+    "type: Overview",
+    "title: Demo",
+    "description: A source-grounded demo.",
+    "---",
+    "",
+    "[Source: app.js L1](../sources/app/src/app.js#L1)",
+    "",
+  ].join("\n"));
+  writeJson(path.join(workdir, "analysis", "receipts", "write-sources.json"), { pages: ["overview.md"] });
+  const writeSources = checkpoint(workspace, "write-sources", {
+    workdir,
+    value: handoff({
+      phase: "write-sources",
+      inputCheckpointDigests: [ready.plan.checkpointDigest],
+      artifacts: [{ id: "domain-pages", type: "candidate-pages", owner: "integration", path: "candidate/overview.md", dependsOn: ["spec"], pagePaths: ["candidate/overview.md"] }],
+    }),
+  });
+  writeJson(path.join(workdir, "analysis", "receipts", "write.json"), { integrated: true });
+  const write = checkpoint(workspace, "write", {
+    workdir,
+    value: handoff({
+      phase: "write",
+      inputCheckpointDigests: [writeSources.checkpointDigest],
+      artifacts: [{ id: "write-receipt", type: "receipt", owner: "integration", path: "analysis/receipts/write.json", dependsOn: ["domain-pages"] }],
+    }),
+  });
+  writeJson(path.join(workdir, "analysis", "receipts", "review-1.json"), { clean: true });
+  const review = checkpoint(workspace, "review-1", {
+    workdir,
+    value: handoff({
+      phase: "review-1",
+      inputCheckpointDigests: [write.checkpointDigest],
+      artifacts: [{ id: "review-receipt", type: "review", owner: "reviewer", path: "analysis/receipts/review-1.json", dependsOn: ["write-receipt"] }],
+    }),
+  });
+  writeJson(path.join(workdir, "analysis", "defects.json"), { version: 2, clean: true, defects: [] });
+  return { writeSources, write, review };
+}
 
-    // gate without spec should fail closed when units exist
-    r = ow(["gate", "plan", "--run", frozen.runId, "--workspace", ws], tmp);
-    assert.equal(r.status, 2, r.stderr || r.stdout);
-    const gate = JSON.parse(r.stdout);
-    assert.equal(gate.ok, false);
-    assert.ok(
-      gate.errors.some((e) => /missing spec|cannot assert coverage/i.test(e)),
-      JSON.stringify(gate.errors),
-    );
-    assert.ok(
-      !fs.existsSync(path.join(workdir, "inputs", "gate-plan.ok.json")),
-      "must not write gate-plan.ok.json on failure",
-    );
+describe("ow v2 workspace and lifecycle", () => {
+  it("installs exactly one native workflow and a v2 runtime manifest", () => {
+    const { workspace, initialized } = makeWorkspace();
+    assert.equal(initialized.format, "yaml");
+    assert.equal(initialized.wikiLanguage, "zh");
+    const config = YAML.parse(fs.readFileSync(path.join(workspace, "workspace.yaml"), "utf8"));
+    assert.equal(config.version, 2);
+    assert.ok(!fs.existsSync(path.join(workspace, "workspace.json")));
+    assert.ok(!fs.existsSync(path.join(workspace, "workspace.yml")));
 
-    fs.appendFileSync(
-      path.join(ws, ".agents", "skills", "repository-wiki-producer", "SKILL.md"),
-      "\nlocal drift\n",
-    );
-    r = ow(["freeze", "--workspace", ws], tmp);
-    assert.equal(r.status, 1, r.stderr || r.stdout);
-    assert.match(r.stderr, /installed skill drifted.*ow install --force/i);
+    const workflow = path.join(workspace, ".claude", "workflows", "wiki.workflow.js");
+    const runtime = JSON.parse(fs.readFileSync(path.join(workspace, ".wiki-agent", "runtime.json"), "utf8"));
+    assert.ok(fs.existsSync(workflow));
+    assert.equal(runtime.version, 2);
+    assert.equal(runtime.workflow.path, workflow);
+    assert.match(runtime.workflow.digest, /^[a-f0-9]{64}$/);
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "wiki")));
+    assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "repository-wiki-producer")));
+    for (const legacy of ["wiki-plan.workflow.js", "wiki-write-review.workflow.js", "wiki-produce.workflow.js"]) {
+      assert.ok(!fs.existsSync(path.join(workspace, ".claude", "workflows", legacy)));
+    }
+    const help = ow(["help"], workspace);
+    assert.equal(help.status, 0, help.stderr);
+    assert.doesNotMatch(help.stdout, /\bow (?:run|freeze|approve|retry)\b/);
+    for (const command of ["run", "freeze", "approve", "retry"]) {
+      assert.notEqual(ow([command, "--workspace", workspace], workspace).status, 0, `${command} must not remain a v2 CLI command`);
+    }
 
-    r = ow(["run", "--resume", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const resumed = JSON.parse(r.stdout);
-    assert.equal(resumed.mode, "resume");
-    assert.equal(resumed.runId, frozen.runId);
-    assert.equal(resumed.workflow.command, "/wiki-produce");
-
-    const linked = path.join(ws, "sources", "api");
-    const lstat = fs.lstatSync(linked);
-    assert.ok(lstat.isSymbolicLink() || lstat.isDirectory());
-    assert.equal(fs.realpathSync(linked), fs.realpathSync(repo));
-    const workspace = readWorkspace(ws);
-    const src = workspace.sources.find((s) => s.id === "api");
-    assert.equal(src.origin.type, "path");
-    assert.equal(src.origin.linkType, process.platform === "win32" ? "junction" : "dir");
+    const status = json(ow(["status", "--workspace", workspace], workspace));
+    assert.equal(status.workflow, "/wiki");
+    assert.equal(status.current, null);
+    const rejected = ow(["init", path.join(workspace, "wrong"), "--format", "json"], workspace);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /workspace v2 always uses workspace\.yaml/i);
   });
 
-  it("supports --format json and loads legacy workspace.json", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-json-ws-"));
-    const repo = path.join(tmp, "repo");
-    fs.mkdirSync(path.join(repo, "src"), { recursive: true });
-    fs.writeFileSync(path.join(repo, "src", "A.js"), "export const x = 1;\n");
-    const ws = path.join(tmp, "ws");
+  it("prepares, resumes, gates, retries, and never falls back to the newest run", () => {
+    const { workspace } = makeWorkspace();
+    const first = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    assert.equal(first.startAt, "survey");
+    assert.match(first.summary, /created frozen run/i);
+    assert.ok(fs.existsSync(path.join(first.workdir, "method", "METHOD.md")));
+    assert.ok(!fs.existsSync(path.join(first.workdir, "method", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(first.workdir, "sources", "app", "src", "app.js")));
+    assert.ok(!fs.existsSync(path.join(first.workdir, "sources", "app", "target", "ignored.class")));
+    const current = JSON.parse(fs.readFileSync(path.join(workspace, ".wiki-agent", "current.json"), "utf8"));
+    assert.deepEqual(Object.keys(current).sort(), ["checkpointDigest", "phase", "runId", "status", "updatedAt", "version", "workdir"]);
+    assert.ok(!fs.existsSync(path.join(workspace, ".wiki-agent", "next-action.json")));
 
-    let r = ow(["init", ws, "--name", "json-demo", "--format", "json", "--path", repo, "--id", "app"], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const initOut = JSON.parse(r.stdout);
-    assert.equal(initOut.format, "json");
-    assert.ok(fs.existsSync(path.join(ws, "workspace.json")));
-    assert.ok(!fs.existsSync(path.join(ws, "workspace.yaml")));
+    const resumed = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    assert.equal(resumed.startAt, "survey");
+    assert.match(resumed.summary, /resuming survey/i);
+    assert.equal(resumed.runId, first.runId);
+    const focused = json(ow(["prepare", "--mode", "auto", "--focus", "authentication flow", "--workspace", workspace], workspace));
+    assert.equal(focused.startAt, "survey");
+    assert.match(focused.summary, /created frozen run/i);
+    assert.notEqual(focused.runId, first.runId);
 
-    r = ow(["config", "set", "wikiLanguage", "zh", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const after = JSON.parse(fs.readFileSync(path.join(ws, "workspace.json"), "utf8"));
-    assert.equal(after.wikiLanguage, "zh");
+    const missingPlan = ow(["prepare", "--mode", "write", "--workspace", workspace], workspace);
+    assert.equal(missingPlan.status, 1);
+    assert.match(missingPlan.stderr, /write-ready|plan checkpoint/i);
 
-    r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    assert.equal(JSON.parse(r.stdout).wikiLanguage, "zh");
+    const ready = makePlanReady(workspace, focused);
+    const write = json(ow(["prepare", "--mode", "write", "--workspace", workspace], workspace));
+    assert.equal(write.runId, focused.runId);
+    assert.equal(write.mode, "write");
+    assert.equal(write.startAt, "write");
+
+    writeJson(path.join(ready.workdir, "candidate", "overview.md"), "partial candidate\n");
+    writeJson(path.join(ready.workdir, "analysis", "defects.json"), { version: 2, clean: false, defects: [] });
+    const retryWrite = json(ow(["prepare", "--mode", "retry-write", "--workspace", workspace], workspace));
+    assert.equal(retryWrite.startAt, "write");
+    assert.ok(fs.existsSync(path.join(ready.workdir, "analysis", "spec.json")));
+    assert.ok(fs.existsSync(path.join(ready.workdir, "analysis", "checkpoints", "discover.json")));
+    assert.deepEqual(fs.readdirSync(path.join(ready.workdir, "candidate")), []);
+
+    const retryPlan = json(ow(["prepare", "--mode", "retry-plan", "--workspace", workspace], workspace));
+    assert.equal(retryPlan.startAt, "plan");
+    assert.ok(!fs.existsSync(path.join(ready.workdir, "analysis", "spec.json")));
+    assert.ok(fs.existsSync(path.join(ready.workdir, "sources", "app", "src", "app.js")));
+
+    fs.rmSync(path.join(workspace, ".wiki-agent", "current.json"));
+    const noFallback = ow(["prepare", "--mode", "write", "--workspace", workspace], workspace);
+    assert.equal(noFallback.status, 1);
+    assert.match(noFallback.stderr, /no active run/i);
   });
 
-  it("rejects multiple workspace config files", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-multi-cfg-"));
-    const ws = path.join(tmp, "ws");
-    let r = ow(["init", ws, "--name", "multi"], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    fs.writeFileSync(path.join(ws, "workspace.json"), JSON.stringify({ version: 1, sources: [] }));
-    r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(r.status, 1, r.stderr || r.stdout);
-    assert.match(r.stderr, /multiple workspace configs/i);
-  });
+  it("requires write and final-review authority before validation trusts a candidate", () => {
+    const { workspace } = makeWorkspace();
+    const prepared = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    const ready = makePlanReady(workspace, prepared);
+    const { workdir } = ready;
 
-  it("runs the full gated lifecycle and seals a local-link candidate", () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-lifecycle-"));
-    const repo = path.join(tmp, "repo");
-    fs.mkdirSync(path.join(repo, "src"), { recursive: true });
-    fs.writeFileSync(path.join(repo, "package.json"), "{\"name\":\"demo\"}\n");
-    fs.writeFileSync(path.join(repo, "src", "A.js"), "export const answer = 42;\n");
-    const ws = path.join(tmp, "ws");
+    let validated = ow(["validate", "--workspace", workspace], workspace);
+    assert.equal(validated.status, 2);
+    assert.match(validated.stdout, /write checkpoint/i);
 
-    let r = ow(["init", ws, "--name", "demo", "--path", repo, "--id", "app"], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    r = ow(["freeze", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const frozen = JSON.parse(r.stdout);
-    const workdir = frozen.workdir;
-    fs.writeFileSync(
-      path.join(workdir, "analysis", "discovery-map.json"),
-      JSON.stringify({
-        domains: [{ id: "domain:app", coverageUnitIds: ["app"] }],
-        flows: [],
-        coverageUnits: [{ id: "app", required: true }],
+    const { write, review } = makeWriteReviewReady(workspace, ready);
+
+    validated = ow(["validate", "--workspace", workspace], workspace);
+    assert.equal(validated.status, 0, validated.stderr || validated.stdout);
+    const validatedJson = JSON.parse(validated.stdout);
+    assert.equal(validatedJson.ok, true, JSON.stringify(validatedJson));
+    assert.ok(validatedJson.manifest?.candidateDigest);
+    assert.equal(validatedJson.current.phase, "review-1");
+    assert.notEqual(validatedJson.current.status, "sealed");
+    assert.ok(fs.existsSync(path.join(workdir, "analysis", "candidate.manifest.json")));
+
+    const resumeValidate = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    assert.equal(resumeValidate.startAt, "validate");
+    assert.equal(resumeValidate.inputCheckpointDigest, review.checkpointDigest);
+    const idempotent = json(ow(["validate", "--workspace", workspace], workspace));
+    assert.equal(idempotent.ok, true);
+    assert.equal(idempotent.alreadySealed, true);
+    assert.equal(idempotent.reviewCheckpointDigest, review.checkpointDigest);
+
+    writeJson(path.join(workdir, "analysis", "validation.json"), validatedJson);
+    const terminal = checkpoint(workspace, "validate", {
+      workdir,
+      value: handoff({
+        phase: "validate",
+        inputCheckpointDigests: [review.checkpointDigest],
+        artifacts: [
+          { id: "validation-report", type: "validation", owner: "validator", path: "analysis/validation.json", dependsOn: ["review-receipt"] },
+          { id: "candidate-manifest", type: "manifest", owner: "validator", path: "analysis/candidate.manifest.json", dependsOn: ["validation-report"] },
+        ],
       }),
-    );
-    fs.writeFileSync(
-      path.join(workdir, "analysis", "spec.json"),
-      JSON.stringify({
-        version: 1,
-        pages: [{ path: "overview.md", critical: true, coverageUnitIds: ["app"] }],
+    });
+    assert.match(terminal.checkpointDigest, /^sha256:[a-f0-9]{64}$/);
+    const current = JSON.parse(fs.readFileSync(path.join(workspace, ".wiki-agent", "current.json"), "utf8"));
+    assert.equal(current.phase, "sealed");
+    assert.equal(current.status, "sealed");
+    assert.equal(current.checkpointDigest, terminal.checkpointDigest);
+  });
+
+  it("rejects a pre-repair review until a newer review is the current leaf", () => {
+    const { workspace } = makeWorkspace();
+    const prepared = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    const ready = makePlanReady(workspace, prepared);
+    const { workdir } = ready;
+    const { review } = makeWriteReviewReady(workspace, ready);
+
+    writeJson(path.join(workdir, "analysis", "receipts", "repair-1.json"), { repaired: ["overview.md"] });
+    const repair = checkpoint(workspace, "repair-1", {
+      workdir,
+      value: handoff({
+        phase: "repair-1",
+        inputCheckpointDigests: [review.checkpointDigest],
+        artifacts: [{ id: "repair-receipt", type: "repair", owner: "integration", path: "analysis/receipts/repair-1.json", dependsOn: ["review-receipt"], pagePaths: ["candidate/overview.md"] }],
       }),
-    );
+    });
+    const staleReview = ow(["validate", "--workspace", workspace], workspace);
+    assert.equal(staleReview.status, 2);
+    assert.match(staleReview.stdout, /current.*review|review.*leaf|terminal review/i);
 
-    r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(JSON.parse(r.stdout).runs[0].status, "planned");
+    writeJson(path.join(workdir, "analysis", "receipts", "review-2.json"), { clean: true });
+    const reviewTwo = checkpoint(workspace, "review-2", {
+      workdir,
+      value: handoff({
+        phase: "review-2",
+        inputCheckpointDigests: [repair.checkpointDigest],
+        artifacts: [{ id: "review-2-receipt", type: "review", owner: "reviewer", path: "analysis/receipts/review-2.json", dependsOn: ["repair-receipt"] }],
+      }),
+    });
+    const currentReview = json(ow(["validate", "--workspace", workspace], workspace));
+    assert.equal(currentReview.ok, true, JSON.stringify(currentReview));
+    assert.equal(currentReview.reviewCheckpointDigest, reviewTwo.checkpointDigest);
+  });
 
-    fs.writeFileSync(
-      path.join(workdir, "candidate", "overview.md"),
-      [
-        "---",
-        "type: Overview",
-        "title: Demo",
-        "description: A small demo.",
-        "---",
-        "",
-        "[Source: src/A.js L1](../sources/app/src/A.js#L1)",
-        "",
-      ].join("\n"),
-    );
-    r = ow(["validate", "--run", frozen.runId, "--workspace", ws], tmp);
-    assert.equal(r.status, 2, r.stderr || r.stdout);
-    assert.match(JSON.stringify(JSON.parse(r.stdout)), /plan gate receipt/i);
+  it("preserves unrecognized legacy files while force reset removes v2 run state", () => {
+    const { workspace } = makeWorkspace();
+    json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    const userSkill = path.join(workspace, ".claude", "skills", "user-owned");
+    const oldWorkflow = path.join(workspace, ".claude", "workflows", "wiki-produce.workflow.js");
+    fs.mkdirSync(userSkill, { recursive: true });
+    fs.writeFileSync(path.join(userSkill, "SKILL.md"), "user-owned\n");
+    fs.writeFileSync(oldWorkflow, "legacy\n");
+    const refused = ow(["init", workspace, "--force"], workspace);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /refusing to delete modified or user-owned legacy assets/i);
+    assert.ok(fs.existsSync(oldWorkflow));
+    assert.ok(fs.existsSync(path.join(userSkill, "SKILL.md")));
 
-    r = ow(["gate", "plan", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const gated = JSON.parse(r.stdout);
-    assert.ok(gated.receipt);
-    assert.equal(gated.workflow.command, "/wiki-write-review");
-    assert.equal(gated.nextAction.command, "/wiki-write-review");
-    r = ow(["status", "--workspace", ws], tmp);
-    const statusAfterGate = JSON.parse(r.stdout);
-    assert.equal(statusAfterGate.runs[0].status, "write-ready");
-    assert.equal(statusAfterGate.current.command, "/wiki-write-review");
-    assert.equal(statusAfterGate.active.runId, frozen.runId);
-
-    r = ow(["validate", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const validated = JSON.parse(r.stdout);
-    assert.equal(validated.ok, true);
-    assert.ok(validated.manifest.candidateDigest);
-    assert.equal(validated.nextAction.command, "done");
-    r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(JSON.parse(r.stdout).runs[0].status, "sealed");
-
-    r = ow(["validate", "--run", frozen.runId, "--workspace", ws], tmp);
-    assert.equal(r.status, 1, r.stderr || r.stdout);
-    assert.match(r.stderr, /candidate is already sealed/);
-
-    fs.appendFileSync(path.join(workdir, "candidate", "overview.md"), "tampered\n");
-    r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(JSON.parse(r.stdout).runs[0].status, "tampered");
-
-    const beforeRetry = fs.readFileSync(path.join(ws, ".wiki-agent", "runs", frozen.runId, "meta.json"), "utf8");
-    r = ow(["retry", "--from", "write", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const retried = JSON.parse(r.stdout);
-    assert.equal(retried.nextAction.command, "/wiki-write-review");
-    assert.ok(fs.existsSync(path.join(workdir, "analysis", "spec.json")));
-    assert.deepEqual(fs.readdirSync(path.join(workdir, "candidate")), []);
-    assert.equal(fs.readFileSync(path.join(ws, ".wiki-agent", "runs", frozen.runId, "meta.json"), "utf8"), beforeRetry);
-
-    r = ow(["run", "--approve-plan", "--workspace", ws], tmp);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const approvedMode = JSON.parse(r.stdout);
-    assert.equal(approvedMode.workflow.command, "/wiki-plan");
-    assert.equal(approvedMode.nextAction.approvePlan, true);
+    fs.rmSync(oldWorkflow);
+    json(ow(["init", workspace, "--force"], workspace));
+    assert.ok(!fs.existsSync(path.join(workspace, ".wiki-agent", "current.json")));
+    assert.deepEqual(fs.readdirSync(path.join(workspace, ".wiki-agent", "runs")), []);
+    assert.ok(fs.existsSync(path.join(userSkill, "SKILL.md")));
   });
 });
