@@ -160,21 +160,22 @@ export function workflowInvocation(name, root, { runId, workdir, requireArgs = f
   const base = {
     command: `/${name}`,
     cwd: root,
+    humanEntry: "/wiki",
   };
   if (requireArgs) {
     if (!runId || !workdir) throw new Error("runId and workdir required for args-mode invocation");
     return {
       ...base,
       args: { runId, workdir },
-      instructions: `From ${root}, run /${name} (args optional if .wiki-agent/current.json is present). Explicit args: ${JSON.stringify({ runId, workdir })}`,
+      instructions: `Human entry: /wiki. Advanced: from ${root}, run /${name} (args optional if .wiki-agent/current.json is present). Explicit args: ${JSON.stringify({ runId, workdir })}`,
     };
   }
   return {
     ...base,
     args: runId && workdir ? { runId, workdir } : undefined,
     instructions:
-      `From ${root}, run /${name} with no arguments. ` +
-      `The workflow resolves .wiki-agent/current.json (or next-action.json). ` +
-      (runId ? `Active runId=${runId}.` : "Run ow freeze or ow run first if no active pointer exists."),
+      `Human entry: /wiki (prepares freeze + routes here). ` +
+      `Advanced/agent: from ${root}, run /${name} with no arguments; resolves .wiki-agent/current.json. ` +
+      (runId ? `Active runId=${runId}.` : "No active pointer — invoke /wiki or host: ow run."),
   };
 }

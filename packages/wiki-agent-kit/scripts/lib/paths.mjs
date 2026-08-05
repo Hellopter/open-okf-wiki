@@ -109,6 +109,21 @@ export function agentsSkillsDir(root) {
   return path.join(root, ".agents", "skills", "repository-wiki-producer");
 }
 
+/** Human entry skill (/wiki). Not frozen into run workdir. */
+export function claudeEntrySkillDir(root) {
+  return path.join(root, ".claude", "skills", "wiki");
+}
+
+export function kitEntrySkillDir() {
+  return path.join(KIT_ROOT, "skill", "wiki");
+}
+
+export const REQUIRED_WORKFLOWS = [
+  "wiki-plan.workflow.js",
+  "wiki-write-review.workflow.js",
+  "wiki-produce.workflow.js",
+];
+
 export function candidateDir(workdir) {
   return path.join(workdir, "candidate");
 }

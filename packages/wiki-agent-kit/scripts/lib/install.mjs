@@ -1,15 +1,18 @@
 /**
- * Install kit workflows + skill into a workspace.
+ * Install kit workflows + method skill + human entry skill into a workspace.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import {
   agentsSkillsDir,
+  claudeEntrySkillDir,
   claudeSkillsDir,
   claudeWorkflowsDir,
+  kitEntrySkillDir,
   kitSkillDir,
   kitWorkflowsDir,
+  REQUIRED_WORKFLOWS,
 } from "./paths.mjs";
 import { hashTree } from "./artifacts.mjs";
 
@@ -50,13 +53,14 @@ export function installWorkflows(root, opts = {}) {
   return copyWorkflows(root, opts);
 }
 
+/** Method skill (hidden from human slash menu; frozen into runs). */
 export function installSkill(root, opts = {}) {
   const source = kitSkillDir();
   const targets = [agentsSkillsDir(root), claudeSkillsDir(root)];
   const installs = targets.map((dest) => copyDir(source, dest, opts));
   const expectedDigest = hashTree(source).digest;
   return {
-    kind: "skill",
+    kind: "method-skill",
     expectedDigest,
     installs: installs.map((install) => ({
       ...install,
@@ -65,10 +69,38 @@ export function installSkill(root, opts = {}) {
   };
 }
 
+/** Human entry skill (/wiki). Host UX only; not freeze evidence. */
+export function installEntrySkill(root, opts = {}) {
+  const source = kitEntrySkillDir();
+  if (!fs.existsSync(source)) {
+    return { kind: "entry-skill", skipped: true, note: "entry skill not in kit yet" };
+  }
+  const dest = claudeEntrySkillDir(root);
+  const install = copyDir(source, dest, opts);
+  // Pin kit root so entry.mjs can call ow.mjs without relying on PATH.
+  if (fs.existsSync(dest)) {
+    const scriptsDir = path.join(dest, "scripts");
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(scriptsDir, "kit-root.json"),
+      `${JSON.stringify({ kitRoot: path.resolve(kitEntrySkillDir(), "../.."), writtenAt: new Date().toISOString() }, null, 2)}\n`,
+      "utf8",
+    );
+  }
+  return {
+    kind: "entry-skill",
+    install: {
+      ...install,
+      digest: fs.existsSync(install.dest) ? hashTree(install.dest).digest : null,
+    },
+  };
+}
+
 export function installAll(root, opts = {}) {
   return {
     workflows: installWorkflows(root, opts),
     skill: installSkill(root, opts),
+    entrySkill: installEntrySkill(root, opts),
   };
 }
 
@@ -83,9 +115,36 @@ export function assertInstalledAssets(root) {
       errors.push(`installed skill drifted from kit: ${target}`);
     }
   }
-  for (const name of ["wiki-plan.workflow.js", "wiki-write-review.workflow.js"]) {
+
+  const entrySource = kitEntrySkillDir();
+  if (fs.existsSync(entrySource)) {
+    const entryDest = claudeEntrySkillDir(root);
+    if (!fs.existsSync(entryDest)) {
+      errors.push(`missing installed entry skill: ${entryDest}`);
+    } else {
+      const skillMd = path.join(entryDest, "SKILL.md");
+      if (!fs.existsSync(skillMd)) errors.push(`missing entry skill SKILL.md: ${skillMd}`);
+      const entryJs = path.join(entryDest, "scripts", "entry.mjs");
+      if (!fs.existsSync(entryJs)) errors.push(`missing entry helper: ${entryJs}`);
+      const pin = path.join(entryDest, "scripts", "kit-root.json");
+      if (!fs.existsSync(pin)) errors.push(`missing entry kit-root pin: ${pin}`);
+      // Compare method-critical files loosely: SKILL.md body may drift only if kit changed;
+      // full tree digest would fail because kit-root.json is install-local.
+      const kitSkillMd = path.join(entrySource, "SKILL.md");
+      if (fs.existsSync(skillMd) && fs.readFileSync(kitSkillMd, "utf8") !== fs.readFileSync(skillMd, "utf8")) {
+        errors.push(`installed entry skill drifted from kit: ${skillMd}`);
+      }
+      const kitEntry = path.join(entrySource, "scripts", "entry.mjs");
+      if (fs.existsSync(entryJs) && fs.readFileSync(kitEntry, "utf8") !== fs.readFileSync(entryJs, "utf8")) {
+        errors.push(`installed entry helper drifted from kit: ${entryJs}`);
+      }
+    }
+  }
+
+  for (const name of REQUIRED_WORKFLOWS) {
     const source = path.join(kitWorkflowsDir(), name);
     const target = path.join(claudeWorkflowsDir(root), name);
+    if (!fs.existsSync(source)) continue;
     if (!fs.existsSync(target)) errors.push(`missing installed workflow: ${target}`);
     else if (fs.readFileSync(source, "utf8") !== fs.readFileSync(target, "utf8")) {
       errors.push(`installed workflow drifted from kit: ${target}`);
@@ -99,14 +158,13 @@ export function assertInstalledAssets(root) {
 
 export function ensureWorkflowsInstalled(root) {
   const destDir = claudeWorkflowsDir(root);
-  const plan = path.join(destDir, "wiki-plan.workflow.js");
-  const writeReview = path.join(destDir, "wiki-write-review.workflow.js");
-  if (!fs.existsSync(plan) || !fs.existsSync(writeReview)) {
+  const missing = REQUIRED_WORKFLOWS.some((name) => !fs.existsSync(path.join(destDir, name)));
+  if (missing) {
     installWorkflows(root, { force: false });
   }
   return {
-    planPath: plan,
-    writeReviewPath: writeReview,
-    exists: fs.existsSync(plan) && fs.existsSync(writeReview),
+    destDir,
+    required: REQUIRED_WORKFLOWS,
+    exists: REQUIRED_WORKFLOWS.every((name) => fs.existsSync(path.join(destDir, name))),
   };
 }

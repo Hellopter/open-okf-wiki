@@ -88,7 +88,7 @@ const runId = resolved?.runId;
 const workdir = resolved?.workdir;
 const workspaceRoot = resolved?.workspaceRoot;
 if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir || typeof workspaceRoot !== "string" || !workspaceRoot) {
-  return { stopped: "no active run; run: ow run or ow freeze, then retry /wiki-plan" };
+  return { stopped: "no active run; invoke /wiki (entry skill) or host: ow run" };
 }
 const approvePlan = resolved?.approvePlan === true;
 const skillRoot = `${workdir}/skill`;

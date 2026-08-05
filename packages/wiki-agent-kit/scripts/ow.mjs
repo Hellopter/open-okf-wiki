@@ -266,6 +266,7 @@ function cmdStatus(args) {
     root,
     name: ws.name,
     wikiLanguage: ws.wikiLanguage,
+    humanEntry: "/wiki",
     sources: ws.sources.map((s) => ({
       id: s.id,
       origin: s.origin?.type,
@@ -379,8 +380,8 @@ function cmdRun(args) {
       workdir: result.workdir,
     }),
     hint:
-      "Start Claude Code from this workspace and run the workflow.command with no args. " +
-      "Host gates (gate plan/check/validate) run inside the workflow automatically unless --approve-plan.",
+      "Agent/CI prepare-run complete. Humans should use Claude entry skill /wiki (it calls this host API). " +
+      "Advanced: invoke workflow.command with no args when Dynamic Workflows are enabled.",
   });
 }
 
@@ -636,39 +637,38 @@ function cmdDoctor(args) {
 }
 
 function cmdHelp() {
-  console.log(`ow — open wiki CLI
+  console.log(`ow — wiki-agent-kit host CLI (agent / CI API)
 
-Default path (no manual args / no manual gates):
-  ow run [--focus TEXT] [--approve-plan]
-  # then in Claude Code from the workspace:
-  /wiki-produce
+Human path (not this CLI):
+  ow init ./ws --lang zh --path /repo --id app   # one-time setup
+  cd ./ws && claude
+  /wiki [focus]                                   # only daily command
 
-Usage:
-  ow init [dir] --name N --lang en|zh [--format yaml|json] [--clone URL|--path DIR] [--id ID] [--ref REF] [--preset PRESET]
-  ow source add clone <url> [--id] [--ref]
-  ow source add path <dir> [--id]
-  ow source list | remove <id>
-  ow ignore show [sourceId]
-  ow ignore set <sourceId> --add GLOB | --preset ID | --remove GLOB
-  ow ignore defaults on|off [--source id]
-  ow ignore presets
-  ow config set wikiLanguage en|zh | get
-  ow status [--workspace DIR]
-  ow install [--force]
-  ow doctor [--workspace DIR]
+This CLI is for agents, workflows (hostCli), and recovery — not a human checklist.
+
+Agent / host runtime (JSON):
   ow run [--focus TEXT] [--approve-plan] [--resume] [--from plan|write] [--run <id>]
-  ow freeze [--focus TEXT] [--approve-plan] [--workspace DIR]
+  ow freeze [--focus TEXT] [--approve-plan]
   ow gate plan|check [--run <runId>]
-  ow approve plan [--run <runId>]
   ow validate [--run <runId>]
-  ow retry [--run <runId>] --from plan|write [--approve-plan]
+  ow approve plan [--run <runId>]
+  ow retry [--run <runId>] --from plan|write
+  ow status
+  ow doctor
+  ow install --force
 
-Claude workflows (no args; resolve .wiki-agent/current.json):
-  /wiki-produce          freeze already done → plan → auto gate plan → write/review → validate
-  /wiki-plan             plan only; auto gate plan unless approvePlan
+Workspace setup:
+  ow init [dir] --name N --lang en|zh [--format yaml|json] [--clone URL|--path DIR] [--id ID]
+  ow source add clone|path … | list | remove <id>
+  ow ignore show|set|defaults|presets …
+  ow config set wikiLanguage en|zh | get
+
+Claude workflows (advanced; humans use /wiki which routes here):
+  /wiki-produce          real E2E multi-phase + host gates
+  /wiki-plan             plan + auto gate (or stop when approvePlan)
   /wiki-write-review     write/review/validate when write-ready
 
-Workspace config: workspace.yaml (default), workspace.yml, or workspace.json (exactly one).
+Pointers: .wiki-agent/current.json + next-action.json
 Global: --workspace <dir>  (default: cwd)
 `);
 }

@@ -21,6 +21,7 @@ function successfulAgent(_prompt, options = {}) {
       workdir: "/workdir",
       workspaceRoot: "/ws",
       approvePlan: false,
+      writeReady: false,
       source: "current",
       phase: "frozen",
       command: "/wiki-produce",
@@ -47,9 +48,6 @@ function successfulAgent(_prompt, options = {}) {
   }
   if (String(options.label).startsWith("reduce-defects:")) {
     return { status: "ok", path: "analysis/defects.json", summary: "clean", clean: true, blockingCount: 0 };
-  }
-  if (options.label === "produce-plan-stage" || options.label === "produce-write-stage") {
-    return { status: "ok", summary: "ok", next: "done" };
   }
   if (options.label === "auto-gate-plan") {
     return { status: "ok", path: "analysis/receipts/gate-plan.json", summary: "gate ok", digest: "g" };
@@ -251,11 +249,13 @@ describe("Claude workflow contracts", () => {
     assert.match(output.stopped, /no active run/i);
   });
 
-  it("runs wiki-produce end-to-end stages", async () => {
+  it("wiki-produce runs real multi-phase topology end-to-end", async () => {
     const { source, run } = loadWorkflow("wiki-produce.workflow.js");
     assert.match(source, /name: "wiki-produce"/);
-    assert.match(source, /produce-plan-stage/);
-    assert.match(source, /produce-write-stage/);
+    assert.doesNotMatch(source, /produce-plan-stage|produce-write-stage/);
+    assert.match(source, /auto-gate-plan/);
+    assert.match(source, /\$\{workdir\}\/analysis\/receipts\/survey/);
+    assert.match(source, /validate-and-seal/);
     const phases = [];
     const output = await run(
       successfulAgent,
@@ -264,8 +264,48 @@ describe("Claude workflow contracts", () => {
       () => {},
       {},
     );
-    assert.deepEqual(phases, ["Resolve", "Plan", "Write"]);
+    assert.deepEqual(phases, [
+      "Resolve",
+      "Discover",
+      "Plan",
+      "Gate",
+      "Preflight",
+      "Write",
+      "Review",
+      "Validate",
+    ]);
     assert.equal(output.next, "done");
-    assert.equal(output.write.status, "ok");
+    assert.equal(output.validation.status, "ok");
+    assert.equal(output.gate.status, "ok");
+  });
+
+  it("wiki-produce skips plan when writeReady and goes to preflight", async () => {
+    const { run } = loadWorkflow("wiki-produce.workflow.js");
+    const agent = (prompt, options = {}) => {
+      if (options.label === "resolve-active-run") {
+        return {
+          runId: "run-wr",
+          workdir: "/workdir",
+          workspaceRoot: "/ws",
+          approvePlan: false,
+          writeReady: true,
+          phase: "write-ready",
+          command: "/wiki-write-review",
+          source: "current",
+        };
+      }
+      return successfulAgent(prompt, options);
+    };
+    const phases = [];
+    const output = await run(
+      agent,
+      async (tasks) => Promise.all(tasks.map((task) => task())),
+      (name) => phases.push(name),
+      () => {},
+      {},
+    );
+    assert.deepEqual(phases, ["Resolve", "Preflight", "Write", "Review", "Validate"]);
+    assert.equal(output.next, "done");
+    assert.equal(output.ledger.length, 0);
   });
 });

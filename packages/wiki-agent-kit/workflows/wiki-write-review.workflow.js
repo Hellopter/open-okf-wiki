@@ -83,7 +83,7 @@ const runId = resolved?.runId;
 const workdir = resolved?.workdir;
 const workspaceRoot = resolved?.workspaceRoot;
 if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir || typeof workspaceRoot !== "string" || !workspaceRoot) {
-  return { stopped: "no write-ready run; finish /wiki-plan (or ow approve plan) first" };
+  return { stopped: "no write-ready run; invoke /wiki or finish plan gate (host: ow approve plan if needed)" };
 }
 const skillRoot = `${workdir}/skill`;
 

@@ -3,7 +3,7 @@
   "version": "0.1.0-dev",
   "private": true,
   "type": "module",
-  "description": "ow CLI + skill + workflows: source-grounded OKF wiki from git workspaces (Claude Code first)",
+  "description": "Agent-host toolkit: deterministic ow CLI + method skill + Claude workflows; human entry is /wiki",
   "bin": {
     "ow": "./scripts/ow.mjs"
   },

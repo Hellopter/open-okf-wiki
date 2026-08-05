@@ -54,6 +54,7 @@ describe("ow init + source path + freeze", () => {
     const st = JSON.parse(r.stdout);
     assert.equal(st.sources.length, 1);
     assert.equal(st.wikiLanguage, "zh");
+    assert.equal(st.humanEntry, "/wiki");
 
     r = ow(["doctor", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
@@ -81,9 +82,19 @@ describe("ow init + source path + freeze", () => {
     assert.ok(!fs.existsSync(path.join(workdir, "sources", "api", "target", "x.class")));
     assert.ok(fs.existsSync(path.join(ws, ".agents", "skills", "repository-wiki-producer", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "repository-wiki-producer", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "wiki", "SKILL.md")));
+    assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "wiki", "scripts", "entry.mjs")));
+    const methodFront = fs.readFileSync(
+      path.join(ws, ".claude", "skills", "repository-wiki-producer", "SKILL.md"),
+      "utf8",
+    );
+    assert.match(methodFront, /user-invocable:\s*false/);
+    const entryFront = fs.readFileSync(path.join(ws, ".claude", "skills", "wiki", "SKILL.md"), "utf8");
+    assert.match(entryFront, /disable-model-invocation:\s*true/);
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-plan.workflow.js")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-write-review.workflow.js")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-produce.workflow.js")));
+    assert.equal(frozen.workflow.humanEntry, "/wiki");
 
     const policy = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "run-policy.json"), "utf8"));
     assert.equal(policy.wikiLanguage, "zh");
