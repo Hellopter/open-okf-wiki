@@ -9,6 +9,7 @@ import path from "node:path";
 import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory, writeInventory } from "./inventory.mjs";
 import { assertInstalledAssets, ensureWorkflowsInstalled, installAll } from "./install.mjs";
+import { setActiveRun } from "./active-run.mjs";
 import { KIT_ROOT, kitSkillDir, runDir, runsDir } from "./paths.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
@@ -77,9 +78,9 @@ function copySkill(destSkillDir) {
 
 /**
  * Create a new run, freeze sources+skill, write inventory.
- * @returns {{ runId: string, runDir: string, workdir: string, meta: object }}
+ * @returns {{ runId: string, runDir: string, workdir: string, meta: object, inventory: object, current: object, nextAction: object }}
  */
-export function freezeRun(root, { focus } = {}) {
+export function freezeRun(root, { focus, approvePlan = false, produce = true } = {}) {
   const workspace = loadWorkspace(root);
   if (!workspace.sources?.length) {
     throw new Error("workspace has no sources; run: ow source add clone|path …");
@@ -183,7 +184,26 @@ export function freezeRun(root, { focus } = {}) {
     "utf8",
   );
 
-  return { runId, runDir: rdir, workdir, meta, inventory };
+  const command = approvePlan || !produce ? "/wiki-plan" : "/wiki-produce";
+  const pointers = setActiveRun(root, {
+    runId,
+    workdir,
+    command,
+    phase: "frozen",
+    reason: "freeze created active run",
+    approvePlan,
+    produce: !approvePlan && produce,
+  });
+
+  return {
+    runId,
+    runDir: rdir,
+    workdir,
+    meta,
+    inventory,
+    current: pointers.current,
+    nextAction: pointers.nextAction,
+  };
 }
 
 export function loadRunMeta(root, runId) {

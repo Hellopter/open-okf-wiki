@@ -71,6 +71,16 @@ export function metaDir(root) {
   return path.join(root, META_DIR);
 }
 
+/** Active-run pointer for no-arg Claude workflows. */
+export function currentRunPath(root) {
+  return path.join(metaDir(root), "current.json");
+}
+
+/** Next operator/workflow action for the active run. */
+export function nextActionPath(root) {
+  return path.join(metaDir(root), "next-action.json");
+}
+
 export function runsDir(root) {
   return path.join(metaDir(root), "runs");
 }

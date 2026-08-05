@@ -15,6 +15,17 @@ function loadWorkflow(name) {
 }
 
 function successfulAgent(_prompt, options = {}) {
+  if (options.label === "resolve-active-run") {
+    return {
+      runId: "run-1",
+      workdir: "/workdir",
+      workspaceRoot: "/ws",
+      approvePlan: false,
+      source: "current",
+      phase: "frozen",
+      command: "/wiki-produce",
+    };
+  }
   if (options.label === "load-inventory") {
     return {
       units: [{ id: "app", kind: "source" }],
@@ -37,15 +48,21 @@ function successfulAgent(_prompt, options = {}) {
   if (String(options.label).startsWith("reduce-defects:")) {
     return { status: "ok", path: "analysis/defects.json", summary: "clean", clean: true, blockingCount: 0 };
   }
+  if (options.label === "produce-plan-stage" || options.label === "produce-write-stage") {
+    return { status: "ok", summary: "ok", next: "done" };
+  }
+  if (options.label === "auto-gate-plan") {
+    return { status: "ok", path: "analysis/receipts/gate-plan.json", summary: "gate ok", digest: "g" };
+  }
   return { status: "ok", path: "analysis/receipt.json", summary: "ok", digest: "d" };
 }
 
 describe("Claude workflow contracts", () => {
-  it("runs the Discover/Plan workflow only through its planning boundary", async () => {
+  it("resolves active run without args and auto-gates plan", async () => {
     const { source, run } = loadWorkflow("wiki-plan.workflow.js");
     assert.match(source, /name: "wiki-plan"/);
-    assert.doesNotMatch(source, /wiki-produce/);
-    assert.doesNotMatch(source, /ow plan/);
+    assert.match(source, /resolve-active-run/);
+    assert.match(source, /auto-gate-plan|gate plan/);
     assert.match(source, /\$\{workdir\}\/analysis\/receipts\/survey/);
     assert.match(source, /wikiLanguage/);
     assert.match(source, /MULTI-SOURCE DEEP ANALYSIS REQUIRED/);
@@ -55,12 +72,40 @@ describe("Claude workflow contracts", () => {
       async (tasks) => Promise.all(tasks.map((task) => task())),
       (name) => phases.push(name),
       () => {},
-      { runId: "run-1", workdir: "/workdir" },
+      {},
     );
-    assert.deepEqual(phases, ["Discover", "Plan"]);
-    assert.match(output.next, /ow gate plan --run run-1/);
+    assert.deepEqual(phases, ["Resolve", "Discover", "Plan", "Gate"]);
+    assert.equal(output.next, "/wiki-write-review");
     assert.equal(output.spec.status, "ok");
+    assert.equal(output.gate.status, "ok");
     assert.equal(output.wikiLanguage, "en");
+  });
+
+  it("stops for human approval when approvePlan is set", async () => {
+    const { run } = loadWorkflow("wiki-plan.workflow.js");
+    const agent = (prompt, options = {}) => {
+      if (options.label === "resolve-active-run") {
+        return {
+          runId: "run-ap",
+          workdir: "/workdir",
+          workspaceRoot: "/ws",
+          approvePlan: true,
+          source: "current",
+        };
+      }
+      return successfulAgent(prompt, options);
+    };
+    const phases = [];
+    const output = await run(
+      agent,
+      async (tasks) => Promise.all(tasks.map((task) => task())),
+      (name) => phases.push(name),
+      () => {},
+      {},
+    );
+    assert.deepEqual(phases, ["Resolve", "Discover", "Plan"]);
+    assert.match(output.next, /ow approve plan/);
+    assert.equal(output.approvePlan, true);
   });
 
   it("propagates zh language into plan workflow outputs", async () => {
@@ -68,6 +113,15 @@ describe("Claude workflow contracts", () => {
     const prompts = [];
     const agent = (prompt, options = {}) => {
       prompts.push(prompt);
+      if (options.label === "resolve-active-run") {
+        return {
+          runId: "run-zh",
+          workdir: "/workdir",
+          workspaceRoot: "/ws",
+          approvePlan: false,
+          source: "args",
+        };
+      }
       if (options.label === "load-inventory") {
         return {
           units: [{ id: "api", kind: "source" }, { id: "web", kind: "source" }],
@@ -99,6 +153,15 @@ describe("Claude workflow contracts", () => {
     const units = Array.from({ length: 9 }, (_, index) => ({ id: `unit-${index}`, kind: "source" }));
     const waveSizes = [];
     const agent = (prompt, options = {}) => {
+      if (options.label === "resolve-active-run") {
+        return {
+          runId: "run-8",
+          workdir: "/workdir",
+          workspaceRoot: "/ws",
+          approvePlan: false,
+          source: "current",
+        };
+      }
       if (options.label === "load-inventory") {
         return { units, tier: "L2", sourceCount: 1, wikiLanguage: "en", focus: null };
       }
@@ -112,7 +175,7 @@ describe("Claude workflow contracts", () => {
       },
       () => {},
       () => {},
-      { runId: "run-8", workdir: "/workdir" },
+      {},
     );
     assert.deepEqual(waveSizes, [8, 1]);
     assert.equal(output.ledger.length, 9);
@@ -121,8 +184,8 @@ describe("Claude workflow contracts", () => {
   it("runs gated write/review to validation when every stage is clean", async () => {
     const { source, run } = loadWorkflow("wiki-write-review.workflow.js");
     assert.match(source, /name: "wiki-write-review"/);
+    assert.match(source, /resolve-active-run/);
     assert.match(source, /gate-plan\.ok\.json/);
-    assert.doesNotMatch(source, /ow write/);
     assert.match(source, /hostCli\.workspaceRoot/);
     assert.match(source, /wikiLanguage/);
     assert.match(source, /language_mismatch|thin_multi_source/);
@@ -132,9 +195,9 @@ describe("Claude workflow contracts", () => {
       async (tasks) => Promise.all(tasks.map((task) => task())),
       (name) => phases.push(name),
       () => {},
-      { runId: "run-2", workdir: "/workdir" },
+      {},
     );
-    assert.deepEqual(phases, ["Preflight", "Write", "Review", "Validate"]);
+    assert.deepEqual(phases, ["Resolve", "Preflight", "Write", "Review", "Validate"]);
     assert.equal(output.validation.status, "ok");
     assert.equal(output.wikiLanguage, "en");
   });
@@ -144,6 +207,14 @@ describe("Claude workflow contracts", () => {
     const prompts = [];
     const agent = (prompt, options = {}) => {
       prompts.push(prompt);
+      if (options.label === "resolve-active-run") {
+        return {
+          runId: "run-zh-ms",
+          workdir: "/workdir",
+          workspaceRoot: "/ws",
+          source: "current",
+        };
+      }
       if (options.label === "load-write-policy") {
         return {
           wikiLanguage: "zh",
@@ -161,7 +232,7 @@ describe("Claude workflow contracts", () => {
       async (tasks) => Promise.all(tasks.map((task) => task())),
       () => {},
       () => {},
-      { runId: "run-zh-ms", workdir: "/workdir" },
+      {},
     );
     assert.equal(output.wikiLanguage, "zh");
     assert.equal(output.sourceCount, 2);
@@ -170,9 +241,31 @@ describe("Claude workflow contracts", () => {
     assert.ok(prompts.some((p) => /language mismatches against wikiLanguage=zh/.test(p)));
   });
 
-  it("fails closed when a workflow is invoked without frozen-run arguments", async () => {
+  it("fails closed when resolve cannot find an active run", async () => {
     const { run } = loadWorkflow("wiki-plan.workflow.js");
-    const output = await run(successfulAgent, async () => [], () => {}, () => {}, {});
-    assert.match(output.stopped, /runId and absolute workdir/);
+    const agent = (prompt, options = {}) => {
+      if (options.label === "resolve-active-run") return {};
+      return successfulAgent(prompt, options);
+    };
+    const output = await run(agent, async () => [], () => {}, () => {}, {});
+    assert.match(output.stopped, /no active run/i);
+  });
+
+  it("runs wiki-produce end-to-end stages", async () => {
+    const { source, run } = loadWorkflow("wiki-produce.workflow.js");
+    assert.match(source, /name: "wiki-produce"/);
+    assert.match(source, /produce-plan-stage/);
+    assert.match(source, /produce-write-stage/);
+    const phases = [];
+    const output = await run(
+      successfulAgent,
+      async (tasks) => Promise.all(tasks.map((task) => task())),
+      (name) => phases.push(name),
+      () => {},
+      {},
+    );
+    assert.deepEqual(phases, ["Resolve", "Plan", "Write"]);
+    assert.equal(output.next, "done");
+    assert.equal(output.write.status, "ok");
   });
 });

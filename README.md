@@ -42,8 +42,12 @@ UNC/network paths need Developer Mode or an elevated shell for a symlink, or use
 ## Quick Start
 
 ```bash
-ow init ./my-ws --lang zh
-ow doctor --workspace ./my-ws
+ow init ./my-ws --lang zh --path /path/to/repo --id app
+cd my-ws
+ow run --focus "core architecture"
+# In Claude Code from my-ws (Dynamic Workflows on):
+# /wiki-produce
 ```
 
-See `packages/wiki-agent-kit/README.md`.
+No manual JSON args and no hand-run gates in the default path. See
+`packages/wiki-agent-kit/README.md`.

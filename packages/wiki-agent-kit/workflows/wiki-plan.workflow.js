@@ -1,20 +1,16 @@
 /**
- * wiki-plan - Discover and plan only. The operator runs `ow gate plan` afterwards.
+ * wiki-plan - Discover and plan, then auto-run `ow gate plan` unless approvePlan.
  * Claude Dynamic Workflow globals: agent, parallel, phase, log, args.
+ *
+ * Args are optional. Resolve order: args → .wiki-agent/current.json → next-action → newest run.
  */
 
 export const meta = {
   name: "wiki-plan",
-  description: "Survey frozen sources and produce a fail-closed WikiRunSpec",
-  phases: [{ title: "Discover" }, { title: "Plan" }],
+  description: "Survey frozen sources, produce Spec, and auto-run the plan gate unless human approval is required",
+  phases: [{ title: "Resolve" }, { title: "Discover" }, { title: "Plan" }, { title: "Gate" }],
 };
 
-const runId = args?.runId;
-const workdir = args?.workdir;
-if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir) {
-  return { stopped: "runId and absolute workdir arguments are required" };
-}
-const skillRoot = `${workdir}/skill`;
 const ENVELOPE = {
   type: "object",
   properties: {
@@ -24,6 +20,18 @@ const ENVELOPE = {
     digest: { type: "string" },
   },
   required: ["status", "path", "summary"],
+};
+
+const RESOLVE = {
+  type: "object",
+  properties: {
+    runId: { type: "string" },
+    workdir: { type: "string" },
+    workspaceRoot: { type: "string" },
+    approvePlan: { type: "boolean" },
+    source: { type: "string" },
+  },
+  required: ["runId", "workdir", "workspaceRoot"],
 };
 
 function safeId(value) {
@@ -60,8 +68,30 @@ function multiSourceDirective(sourceCount, tier) {
   ].join(" ");
 }
 
-// Leave capacity below Claude Code's default subagent concurrency for control work.
 const MAX_CONCURRENT_SURVEYS = 8;
+
+phase("Resolve");
+const resolved = await agent(
+  [
+    "Resolve the active wiki run for this workspace.",
+    `Prefer explicit args when present: ${JSON.stringify({ runId: args?.runId ?? null, workdir: args?.workdir ?? null })}.`,
+    "Else read .wiki-agent/current.json, then .wiki-agent/next-action.json.",
+    "Else pick the newest run under .wiki-agent/runs/*/meta.json whose workdir still exists.",
+    "workdir must be absolute. workspaceRoot is the workspace directory that contains .wiki-agent/.",
+    "approvePlan is true only when current.json/next-action.json sets approvePlan true.",
+    "Return {runId,workdir,workspaceRoot,approvePlan,source}. Fail closed if none found.",
+  ].join("\n"),
+  { label: "resolve-active-run", schema: RESOLVE },
+);
+
+const runId = resolved?.runId;
+const workdir = resolved?.workdir;
+const workspaceRoot = resolved?.workspaceRoot;
+if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir || typeof workspaceRoot !== "string" || !workspaceRoot) {
+  return { stopped: "no active run; run: ow run or ow freeze, then retry /wiki-plan" };
+}
+const approvePlan = resolved?.approvePlan === true;
+const skillRoot = `${workdir}/skill`;
 
 phase("Discover");
 const inventory = await agent(
@@ -171,15 +201,64 @@ const spec = await agent(
   { label: "plan-spec", schema: ENVELOPE },
 );
 
-log(`plan finished for ${runId}; operator must run ow gate plan before /wiki-write-review`);
+if (approvePlan) {
+  log(`plan finished for ${runId}; approvePlan=true — operator must run: ow approve plan --run ${runId}`);
+  return {
+    runId,
+    workdir,
+    workspaceRoot,
+    wikiLanguage,
+    tier,
+    sourceCount,
+    ledger,
+    discovery,
+    spec,
+    approvePlan: true,
+    next: `ow approve plan --run ${runId}`,
+  };
+}
+
+phase("Gate");
+const gate = await agent(
+  [
+    `Plan gate. Read ${workdir}/inputs/run-policy.json for hostCli.`,
+    `Run exactly: <hostCli.node> <hostCli.script> gate plan --run ${runId} --workspace <hostCli.workspaceRoot>,`,
+    `substituting hostCli values (workspaceRoot should be ${workspaceRoot}).`,
+    `This writes inputs/gate-plan.ok.json on success and updates .wiki-agent/current.json + next-action.json.`,
+    `Write the command JSON output to ${workdir}/analysis/receipts/gate-plan.json.`,
+    `Return ok only when the host command exits successfully; return only the envelope.`,
+  ].join("\n"),
+  { label: "auto-gate-plan", schema: ENVELOPE },
+);
+
+if (gate?.status !== "ok") {
+  log(`plan gate failed for ${runId}`);
+  return {
+    runId,
+    workdir,
+    workspaceRoot,
+    wikiLanguage,
+    tier,
+    sourceCount,
+    ledger,
+    discovery,
+    spec,
+    gate,
+    stopped: "plan gate failed; fix Spec/Discovery Map then retry /wiki-plan or ow retry --from plan",
+  };
+}
+
+log(`plan+gate finished for ${runId}; next /wiki-write-review (no args)`);
 return {
   runId,
   workdir,
+  workspaceRoot,
   wikiLanguage,
   tier,
   sourceCount,
   ledger,
   discovery,
   spec,
-  next: `ow gate plan --run ${runId}`,
+  gate,
+  next: "/wiki-write-review",
 };

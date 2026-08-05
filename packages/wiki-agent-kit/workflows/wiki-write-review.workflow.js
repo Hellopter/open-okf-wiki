@@ -1,20 +1,23 @@
 /**
  * wiki-write-review - requires a digest-valid plan receipt before any write.
  * Claude Dynamic Workflow globals: agent, parallel, phase, log, args.
+ *
+ * Args optional. Resolve order: args → .wiki-agent/current.json → next-action → newest write-ready run.
  */
 
 export const meta = {
   name: "wiki-write-review",
   description: "Write, adversarially review, repair, validate, and seal a candidate Wiki",
-  phases: [{ title: "Preflight" }, { title: "Write" }, { title: "Review" }, { title: "Repair" }, { title: "Validate" }],
+  phases: [
+    { title: "Resolve" },
+    { title: "Preflight" },
+    { title: "Write" },
+    { title: "Review" },
+    { title: "Repair" },
+    { title: "Validate" },
+  ],
 };
 
-const runId = args?.runId;
-const workdir = args?.workdir;
-if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir) {
-  return { stopped: "runId and absolute workdir arguments are required" };
-}
-const skillRoot = `${workdir}/skill`;
 const ENVELOPE = {
   type: "object",
   properties: {
@@ -36,6 +39,16 @@ const REVIEW = {
   },
   required: ["status", "path", "summary", "clean", "blockingCount"],
 };
+const RESOLVE = {
+  type: "object",
+  properties: {
+    runId: { type: "string" },
+    workdir: { type: "string" },
+    workspaceRoot: { type: "string" },
+    source: { type: "string" },
+  },
+  required: ["runId", "workdir", "workspaceRoot"],
+};
 
 function languageDirective(wikiLanguage) {
   if (wikiLanguage === "zh") {
@@ -53,6 +66,27 @@ function languageDirective(wikiLanguage) {
   ].join(" ");
 }
 
+phase("Resolve");
+const resolved = await agent(
+  [
+    "Resolve the active write-ready wiki run for this workspace.",
+    `Prefer explicit args when present: ${JSON.stringify({ runId: args?.runId ?? null, workdir: args?.workdir ?? null })}.`,
+    "Else read .wiki-agent/current.json / next-action.json (command should be /wiki-write-review or phase write-ready).",
+    "Else pick the newest run under .wiki-agent/runs that already has inputs/gate-plan.ok.json and is not sealed.",
+    "workdir must be absolute. workspaceRoot is the workspace directory that contains .wiki-agent/.",
+    "Return {runId,workdir,workspaceRoot,source}. Fail closed if none found.",
+  ].join("\n"),
+  { label: "resolve-active-run", schema: RESOLVE },
+);
+
+const runId = resolved?.runId;
+const workdir = resolved?.workdir;
+const workspaceRoot = resolved?.workspaceRoot;
+if (typeof runId !== "string" || !runId || typeof workdir !== "string" || !workdir || typeof workspaceRoot !== "string" || !workspaceRoot) {
+  return { stopped: "no write-ready run; finish /wiki-plan (or ow approve plan) first" };
+}
+const skillRoot = `${workdir}/skill`;
+
 phase("Preflight");
 const preflight = await agent(
   [
@@ -66,7 +100,7 @@ const preflight = await agent(
   { label: "verify-plan-gate", schema: ENVELOPE },
 );
 if (preflight?.status !== "ok") {
-  return { runId, workdir, preflight, stopped: "valid plan gate receipt required" };
+  return { runId, workdir, workspaceRoot, preflight, stopped: "valid plan gate receipt required" };
 }
 
 const policy = await agent(
@@ -123,7 +157,7 @@ const writer = await agent(
     .join("\n"),
   { label: "write-candidate", schema: ENVELOPE },
 );
-if (writer?.status !== "ok") return { runId, workdir, preflight, writer, stopped: "writer failed" };
+if (writer?.status !== "ok") return { runId, workdir, workspaceRoot, preflight, writer, stopped: "writer failed" };
 
 let finalReview = null;
 for (let round = 1; round <= 2; round++) {
@@ -175,10 +209,10 @@ for (let round = 1; round <= 2; round++) {
       .join("\n"),
     { label: `repair:${round}`, schema: ENVELOPE },
   );
-  if (repair?.status !== "ok") return { runId, workdir, preflight, writer, finalReview, repair, stopped: "repair failed" };
+  if (repair?.status !== "ok") return { runId, workdir, workspaceRoot, preflight, writer, finalReview, repair, stopped: "repair failed" };
 }
 if (finalReview?.status !== "ok" || !finalReview?.clean) {
-  return { runId, workdir, preflight, writer, finalReview, stopped: "candidate has unresolved defects" };
+  return { runId, workdir, workspaceRoot, preflight, writer, finalReview, stopped: "candidate has unresolved defects" };
 }
 
 phase("Validate");
@@ -191,4 +225,4 @@ const validation = await agent(
   { label: "validate-and-seal", schema: ENVELOPE },
 );
 log(`write/review finished for ${runId}: ${validation?.status ?? "unknown"}`);
-return { runId, workdir, wikiLanguage, sourceCount, preflight, writer, review: finalReview, validation };
+return { runId, workdir, workspaceRoot, wikiLanguage, sourceCount, preflight, writer, review: finalReview, validation };

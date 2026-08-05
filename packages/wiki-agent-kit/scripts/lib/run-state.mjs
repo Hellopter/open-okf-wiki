@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { setActiveRun } from "./active-run.mjs";
 import { candidateManifestPath } from "./paths.mjs";
 import { gateReceiptPath } from "./gate.mjs";
 import { loadRunMeta } from "./freeze.mjs";
@@ -12,10 +13,10 @@ function remove(target) {
   fs.rmSync(target, { recursive: true, force: true });
 }
 
-export function retryFromPhase(root, runId, fromPhase) {
+export function retryFromPhase(root, runId, fromPhase, { approvePlan = false, produce = true } = {}) {
   if (!PHASES.includes(fromPhase)) throw new Error(`unknown phase: ${fromPhase}`);
   const meta = loadRunMeta(root, runId);
-  const workdir = path.join(root, meta.workdir);
+  const workdir = path.resolve(root, meta.workdir);
   const analysis = path.join(workdir, "analysis");
   const candidate = path.join(workdir, "candidate");
   const removed = [];
@@ -45,5 +46,21 @@ export function retryFromPhase(root, runId, fromPhase) {
   }
   removeTracked(candidateManifestPath(workdir));
 
-  return { runId, fromPhase, removed };
+  const command =
+    fromPhase === "write"
+      ? "/wiki-write-review"
+      : approvePlan || !produce
+        ? "/wiki-plan"
+        : "/wiki-produce";
+  const pointers = setActiveRun(root, {
+    runId,
+    workdir,
+    command,
+    phase: fromPhase === "write" ? "write-ready" : "frozen",
+    reason: `retry --from ${fromPhase}`,
+    approvePlan,
+    produce: !approvePlan && produce,
+  });
+
+  return { runId, fromPhase, removed, current: pointers.current, nextAction: pointers.nextAction, workflow: { command } };
 }

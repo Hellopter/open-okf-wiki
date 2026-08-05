@@ -66,8 +66,13 @@ describe("ow init + source path + freeze", () => {
     assert.equal(r.status, 0, r.stderr || r.stdout);
     const frozen = JSON.parse(r.stdout);
     assert.ok(frozen.runId);
-    assert.equal(frozen.workflow.command, "/wiki-plan");
+    assert.equal(frozen.workflow.command, "/wiki-produce");
     assert.equal(frozen.workflow.args.runId, frozen.runId);
+    assert.ok(fs.existsSync(path.join(ws, ".wiki-agent", "current.json")));
+    assert.ok(fs.existsSync(path.join(ws, ".wiki-agent", "next-action.json")));
+    const current = JSON.parse(fs.readFileSync(path.join(ws, ".wiki-agent", "current.json"), "utf8"));
+    assert.equal(current.runId, frozen.runId);
+    assert.equal(current.command, "/wiki-produce");
     const workdir = frozen.workdir;
     assert.ok(fs.existsSync(path.join(workdir, "inputs", "inventory.json")));
     assert.ok(fs.existsSync(path.join(workdir, "inputs", "snapshot-manifest.json")));
@@ -78,6 +83,7 @@ describe("ow init + source path + freeze", () => {
     assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "repository-wiki-producer", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-plan.workflow.js")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-write-review.workflow.js")));
+    assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-produce.workflow.js")));
 
     const policy = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "run-policy.json"), "utf8"));
     assert.equal(policy.wikiLanguage, "zh");
@@ -106,9 +112,12 @@ describe("ow init + source path + freeze", () => {
     assert.equal(r.status, 1, r.stderr || r.stdout);
     assert.match(r.stderr, /installed skill drifted.*ow install --force/i);
 
-    r = ow(["plan", "--run", frozen.runId, "--workspace", ws], tmp);
-    assert.equal(r.status, 1, r.stderr || r.stdout);
-    assert.match(r.stderr, /unknown command: plan/i);
+    r = ow(["run", "--resume", "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const resumed = JSON.parse(r.stdout);
+    assert.equal(resumed.mode, "resume");
+    assert.equal(resumed.runId, frozen.runId);
+    assert.equal(resumed.workflow.command, "/wiki-produce");
 
     const linked = path.join(ws, "sources", "api");
     const lstat = fs.lstatSync(linked);
@@ -205,19 +214,24 @@ describe("ow init + source path + freeze", () => {
     assert.equal(r.status, 2, r.stderr || r.stdout);
     assert.match(JSON.stringify(JSON.parse(r.stdout)), /plan gate receipt/i);
 
-    r = ow(["gate", "plan", "--run", frozen.runId, "--workspace", ws], tmp);
+    r = ow(["gate", "plan", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
     const gated = JSON.parse(r.stdout);
     assert.ok(gated.receipt);
     assert.equal(gated.workflow.command, "/wiki-write-review");
+    assert.equal(gated.nextAction.command, "/wiki-write-review");
     r = ow(["status", "--workspace", ws], tmp);
-    assert.equal(JSON.parse(r.stdout).runs[0].status, "write-ready");
+    const statusAfterGate = JSON.parse(r.stdout);
+    assert.equal(statusAfterGate.runs[0].status, "write-ready");
+    assert.equal(statusAfterGate.current.command, "/wiki-write-review");
+    assert.equal(statusAfterGate.active.runId, frozen.runId);
 
-    r = ow(["validate", "--run", frozen.runId, "--workspace", ws], tmp);
+    r = ow(["validate", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
     const validated = JSON.parse(r.stdout);
     assert.equal(validated.ok, true);
     assert.ok(validated.manifest.candidateDigest);
+    assert.equal(validated.nextAction.command, "done");
     r = ow(["status", "--workspace", ws], tmp);
     assert.equal(JSON.parse(r.stdout).runs[0].status, "sealed");
 
@@ -230,10 +244,18 @@ describe("ow init + source path + freeze", () => {
     assert.equal(JSON.parse(r.stdout).runs[0].status, "tampered");
 
     const beforeRetry = fs.readFileSync(path.join(ws, ".wiki-agent", "runs", frozen.runId, "meta.json"), "utf8");
-    r = ow(["retry", "--run", frozen.runId, "--from", "write", "--workspace", ws], tmp);
+    r = ow(["retry", "--from", "write", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr || r.stdout);
+    const retried = JSON.parse(r.stdout);
+    assert.equal(retried.nextAction.command, "/wiki-write-review");
     assert.ok(fs.existsSync(path.join(workdir, "analysis", "spec.json")));
     assert.deepEqual(fs.readdirSync(path.join(workdir, "candidate")), []);
     assert.equal(fs.readFileSync(path.join(ws, ".wiki-agent", "runs", frozen.runId, "meta.json"), "utf8"), beforeRetry);
+
+    r = ow(["run", "--approve-plan", "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const approvedMode = JSON.parse(r.stdout);
+    assert.equal(approvedMode.workflow.command, "/wiki-plan");
+    assert.equal(approvedMode.nextAction.approvePlan, true);
   });
 });

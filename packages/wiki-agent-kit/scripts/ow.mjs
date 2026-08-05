@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 /**
- * ow — open wiki CLI (workspace scaffold, freeze, gates, validate).
+ * ow — open wiki CLI (workspace scaffold, freeze, gates, validate, run pointers).
  * Usage: ow <command> [args]
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  clearActivePointers,
+  readCurrent,
+  readNextAction,
+  resolveActiveRun,
+  setActiveRun,
+  setNextAction,
+  workflowInvocation,
+} from "./lib/active-run.mjs";
 import { freezeRun, listRuns, loadRunMeta } from "./lib/freeze.mjs";
 import { verifyPlanGate, writePlanGateReceipt } from "./lib/gate.mjs";
 import { effectiveSourceIgnores, listPresetSummaries, loadIgnorePresets } from "./lib/ignores.mjs";
@@ -207,7 +216,6 @@ function cmdIgnore(args) {
       const g = args.flags.add;
       if (!s.ignore.includes(g)) s.ignore.push(g);
     }
-    // multi --add via remaining _
     for (let i = 2; i < args._.length; i++) {
       if (!s.ignore.includes(args._[i])) s.ignore.push(args._[i]);
     }
@@ -253,6 +261,7 @@ function cmdStatus(args) {
   const root = workspaceRoot(args.flags);
   const ws = loadWorkspace(root);
   const runs = listRuns(root);
+  const active = resolveActiveRun(root);
   printJson({
     root,
     name: ws.name,
@@ -263,6 +272,16 @@ function cmdStatus(args) {
       applyDefaultIgnores: s.applyDefaultIgnores !== false,
       presets: s.presets || [],
     })),
+    current: readCurrent(root),
+    nextAction: readNextAction(root),
+    active: active
+      ? {
+          runId: active.runId,
+          workdir: active.workdir,
+          source: active.source,
+          status: summarizeRun(root, active.meta || loadRunMeta(root, active.runId)).status,
+        }
+      : null,
     runs: runs.slice(0, 10).map((meta) => summarizeRun(root, meta)),
   });
 }
@@ -275,28 +294,94 @@ function cmdInstall(args) {
   printJson(installAll(root, { force }));
 }
 
-function workflowInvocation(name, root, runId, workdir) {
-  return {
-    command: `/${name}`,
-    args: { runId, workdir },
-    cwd: root,
-    instructions: `Start a new Claude Code session from ${root}, then run /${name} with the args object above.`,
-  };
-}
-
 function cmdFreeze(args) {
   const root = workspaceRoot(args.flags);
   const focus = args.flags.focus;
-  const result = freezeRun(root, { focus });
+  const approvePlan = Boolean(args.flags["approve-plan"] || args.flags.approvePlan);
+  const result = freezeRun(root, { focus, approvePlan, produce: !approvePlan });
+  const command = result.nextAction.command.replace(/^\//, "");
   const out = {
     ok: true,
     runId: result.runId,
     workdir: result.workdir,
     inventoryTier: result.inventory.tier,
     coverageUnits: result.inventory.coverageUnits.length,
-    workflow: workflowInvocation("wiki-plan", root, result.runId, result.workdir),
+    current: result.current,
+    nextAction: result.nextAction,
+    workflow: workflowInvocation(command, root, {
+      runId: result.runId,
+      workdir: result.workdir,
+    }),
   };
   printJson(out);
+}
+
+/**
+ * Default one-shot entry: freeze (unless --resume) and emit the no-arg workflow to run.
+ * Deterministic host gates are executed inside Claude workflows; this CLI only prepares state.
+ */
+function cmdRun(args) {
+  const root = workspaceRoot(args.flags);
+  loadWorkspace(root);
+  const focus = args.flags.focus;
+  const approvePlan = Boolean(args.flags["approve-plan"] || args.flags.approvePlan);
+  const resume = Boolean(args.flags.resume);
+  const from = args.flags.from;
+
+  if (resume || from) {
+    const active = resolveActiveRun(root, { preferredRunId: args.flags.run });
+    if (!active) die("no active run to resume; run: ow run --focus ...");
+    if (from === "plan" || from === "write") {
+      const retried = retryFromPhase(root, active.runId, from, {
+        approvePlan,
+        produce: !approvePlan,
+      });
+      printJson({
+        ok: true,
+        mode: "retry",
+        ...retried,
+        workflow: workflowInvocation(retried.workflow.command.replace(/^\//, ""), root, {
+          runId: active.runId,
+          workdir: active.workdir,
+        }),
+      });
+      return;
+    }
+    const command = (readNextAction(root)?.command || "/wiki-produce").replace(/^\//, "");
+    printJson({
+      ok: true,
+      mode: "resume",
+      runId: active.runId,
+      workdir: active.workdir,
+      current: readCurrent(root),
+      nextAction: readNextAction(root),
+      workflow: workflowInvocation(command, root, {
+        runId: active.runId,
+        workdir: active.workdir,
+      }),
+    });
+    return;
+  }
+
+  const result = freezeRun(root, { focus, approvePlan, produce: !approvePlan });
+  const command = result.nextAction.command.replace(/^\//, "");
+  printJson({
+    ok: true,
+    mode: "fresh",
+    runId: result.runId,
+    workdir: result.workdir,
+    inventoryTier: result.inventory.tier,
+    coverageUnits: result.inventory.coverageUnits.length,
+    current: result.current,
+    nextAction: result.nextAction,
+    workflow: workflowInvocation(command, root, {
+      runId: result.runId,
+      workdir: result.workdir,
+    }),
+    hint:
+      "Start Claude Code from this workspace and run the workflow.command with no args. " +
+      "Host gates (gate plan/check/validate) run inside the workflow automatically unless --approve-plan.",
+  });
 }
 
 function runWorkdir(root, runId) {
@@ -304,12 +389,16 @@ function runWorkdir(root, runId) {
   return { meta, workdir: path.resolve(root, meta.workdir) };
 }
 
+function resolveRunId(root, args, positionalIndex = 0) {
+  return args.flags.run || args._[positionalIndex] || resolveActiveRun(root)?.runId;
+}
+
 function cmdGate(args) {
   const root = workspaceRoot(args.flags);
   const sub = args._[0];
-  if (sub !== "plan" && sub !== "check") die("usage: ow gate plan|check --run <runId>");
-  const runId = args.flags.run || args._[1];
-  if (!runId) die("usage: ow gate plan|check --run <runId>");
+  if (sub !== "plan" && sub !== "check") die("usage: ow gate plan|check [--run <runId>]");
+  const runId = resolveRunId(root, args, 1);
+  if (!runId) die("usage: ow gate plan|check --run <runId> (or set .wiki-agent/current.json)");
   const { meta, workdir } = runWorkdir(root, runId);
   if (sub === "check") {
     const check = verifyPlanGate(workdir, runId, meta.skillDigest);
@@ -318,18 +407,50 @@ function cmdGate(args) {
     return;
   }
   const { result, receipt } = writePlanGateReceipt(workdir, runId, meta.skillDigest);
+  const prev = readCurrent(root);
+  const produce = prev?.produce !== false && !prev?.approvePlan;
+  if (receipt) {
+    setActiveRun(root, {
+      runId,
+      workdir,
+      command: "/wiki-write-review",
+      phase: "write-ready",
+      reason: "plan gate passed",
+      approvePlan: Boolean(prev?.approvePlan),
+      produce,
+    });
+  } else {
+    setActiveRun(root, {
+      runId,
+      workdir,
+      command: produce ? "/wiki-produce" : "/wiki-plan",
+      phase: "plan-failed",
+      reason: "plan gate failed",
+      approvePlan: Boolean(prev?.approvePlan),
+      produce,
+    });
+  }
   printJson({
     ...result,
     receipt,
-    ...(receipt ? { workflow: workflowInvocation("wiki-write-review", root, runId, workdir) } : {}),
+    current: readCurrent(root),
+    nextAction: readNextAction(root),
+    ...(receipt
+      ? {
+          workflow: workflowInvocation("wiki-write-review", root, {
+            runId,
+            workdir,
+          }),
+        }
+      : {}),
   });
   if (!result.ok) process.exit(2);
 }
 
 function cmdValidate(args) {
   const root = workspaceRoot(args.flags);
-  const runId = args.flags.run || args._[0];
-  if (!runId) die("usage: ow validate --run <runId>");
+  const runId = resolveRunId(root, args, 0);
+  if (!runId) die("usage: ow validate --run <runId> (or set .wiki-agent/current.json)");
   const { meta, workdir } = runWorkdir(root, runId);
   const gate = verifyPlanGate(workdir, runId, meta.skillDigest);
   if (!gate.ok) {
@@ -348,16 +469,88 @@ function cmdValidate(args) {
   regenerateIndexes(candidateDir);
   const result = validateWorkdir(workdir);
   const manifest = result.ok ? sealCandidate(workdir, result) : null;
-  printJson({ ...result, manifest });
+  if (result.ok) {
+    setActiveRun(root, {
+      runId,
+      workdir,
+      command: "done",
+      phase: "sealed",
+      reason: "validate sealed candidate",
+      approvePlan: Boolean(readCurrent(root)?.approvePlan),
+      produce: readCurrent(root)?.produce !== false,
+    });
+  } else {
+    setActiveRun(root, {
+      runId,
+      workdir,
+      command: "/wiki-write-review",
+      phase: "validate-failed",
+      reason: "validate failed",
+      approvePlan: Boolean(readCurrent(root)?.approvePlan),
+      produce: readCurrent(root)?.produce !== false,
+    });
+  }
+  printJson({
+    ...result,
+    manifest,
+    current: readCurrent(root),
+    nextAction: readNextAction(root),
+  });
   if (!result.ok) process.exit(2);
 }
 
 function cmdRetry(args) {
   const root = workspaceRoot(args.flags);
-  const runId = args.flags.run || args._[0];
+  const runId = resolveRunId(root, args, 0);
   const from = args.flags.from || args._[1] || "plan";
   if (!runId) die("usage: ow retry --run <runId> --from plan|write");
-  printJson(retryFromPhase(root, runId, from));
+  const approvePlan = Boolean(args.flags["approve-plan"] || args.flags.approvePlan);
+  printJson(
+    retryFromPhase(root, runId, from, {
+      approvePlan,
+      produce: !approvePlan,
+    }),
+  );
+}
+
+function cmdApprove(args) {
+  const root = workspaceRoot(args.flags);
+  const sub = args._[0];
+  if (sub !== "plan") die("usage: ow approve plan [--run <runId>]");
+  const runId = resolveRunId(root, args, 1);
+  if (!runId) die("usage: ow approve plan --run <runId>");
+  // approve plan is an explicit human gate: same deterministic check as ow gate plan
+  const { meta, workdir } = runWorkdir(root, runId);
+  const { result, receipt } = writePlanGateReceipt(workdir, runId, meta.skillDigest);
+  if (!result.ok || !receipt) {
+    setActiveRun(root, {
+      runId,
+      workdir,
+      command: "/wiki-plan",
+      phase: "plan-failed",
+      reason: "approve plan failed gate",
+      approvePlan: true,
+      produce: false,
+    });
+    printJson({ ...result, receipt: null, current: readCurrent(root), nextAction: readNextAction(root) });
+    process.exit(2);
+  }
+  setActiveRun(root, {
+    runId,
+    workdir,
+    command: "/wiki-write-review",
+    phase: "write-ready",
+    reason: "human approved plan",
+    approvePlan: true,
+    produce: false,
+  });
+  printJson({
+    ok: true,
+    receipt,
+    current: readCurrent(root),
+    nextAction: readNextAction(root),
+    workflow: workflowInvocation("wiki-write-review", root, { runId, workdir }),
+  });
 }
 
 const MIN_CLAUDE_WORKFLOW_VERSION = [2, 1, 154];
@@ -391,6 +584,7 @@ function runSummary(meta, status, extra = {}) {
 }
 
 function summarizeRun(root, meta) {
+  if (!meta) return { status: "missing" };
   if (meta.status === "corrupt") return meta;
   try {
     const workdir = path.resolve(root, meta.workdir);
@@ -436,11 +630,18 @@ function cmdDoctor(args) {
     assets,
     claude,
     dynamicWorkflowPrerequisite,
+    current: readCurrent(root),
+    nextAction: readNextAction(root),
   });
 }
 
 function cmdHelp() {
   console.log(`ow — open wiki CLI
+
+Default path (no manual args / no manual gates):
+  ow run [--focus TEXT] [--approve-plan]
+  # then in Claude Code from the workspace:
+  /wiki-produce
 
 Usage:
   ow init [dir] --name N --lang en|zh [--format yaml|json] [--clone URL|--path DIR] [--id ID] [--ref REF] [--preset PRESET]
@@ -455,10 +656,17 @@ Usage:
   ow status [--workspace DIR]
   ow install [--force]
   ow doctor [--workspace DIR]
-  ow freeze [--focus TEXT] [--workspace DIR]
-  ow gate plan|check --run <runId>
-  ow validate --run <runId>
-  ow retry --run <runId> --from plan|write
+  ow run [--focus TEXT] [--approve-plan] [--resume] [--from plan|write] [--run <id>]
+  ow freeze [--focus TEXT] [--approve-plan] [--workspace DIR]
+  ow gate plan|check [--run <runId>]
+  ow approve plan [--run <runId>]
+  ow validate [--run <runId>]
+  ow retry [--run <runId>] --from plan|write [--approve-plan]
+
+Claude workflows (no args; resolve .wiki-agent/current.json):
+  /wiki-produce          freeze already done → plan → auto gate plan → write/review → validate
+  /wiki-plan             plan only; auto gate plan unless approvePlan
+  /wiki-write-review     write/review/validate when write-ready
 
 Workspace config: workspace.yaml (default), workspace.yml, or workspace.json (exactly one).
 Global: --workspace <dir>  (default: cwd)
@@ -489,10 +697,14 @@ async function main() {
         return cmdInstall(args);
       case "doctor":
         return cmdDoctor(args);
+      case "run":
+        return cmdRun(args);
       case "freeze":
         return cmdFreeze(args);
       case "gate":
         return cmdGate(args);
+      case "approve":
+        return cmdApprove(args);
       case "validate":
         return cmdValidate(args);
       case "retry":

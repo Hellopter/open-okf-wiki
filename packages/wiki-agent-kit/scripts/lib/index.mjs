@@ -8,3 +8,4 @@ export * from "./freeze.mjs";
 export * from "./gate.mjs";
 export * from "./validate.mjs";
 export * from "./run-state.mjs";
+export * from "./active-run.mjs";

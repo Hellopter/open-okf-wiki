@@ -106,12 +106,12 @@ ow source add clone https://github.com/example/app.git --id app
 Global `pnpm link` and local path junctions are both user-level operations; neither needs an
 administrator shell for ordinary local work.
 
-`ow init` installs the same frozen-method Skill for generic agents and Claude, plus the Claude
-project workflows:
+`ow init` installs the Skill for generic agents and Claude, plus Claude project workflows:
 
 ```text
 .agents/skills/repository-wiki-producer/
 .claude/skills/repository-wiki-producer/
+.claude/workflows/wiki-produce.workflow.js
 .claude/workflows/wiki-plan.workflow.js
 .claude/workflows/wiki-write-review.workflow.js
 ```
@@ -120,44 +120,78 @@ Use `ow install --force` after intentionally updating the kit. A freeze refuses 
 assets, so every run records the exact Skill that it copied. Start a new Claude Code session after
 installing workflows so project assets are rediscovered.
 
-## Manual Claude Flow
+## Default Claude Flow (automatic)
 
-Run commands from the workspace directory. `ow freeze` returns the exact `runId` and absolute
-`workdir` to pass to Claude.
+No JSON args. No hand-run gates. Host CLI actions run inside workflows.
 
 ```bash
-# 1. Snapshot sources, inventory, policy, and the Skill.
-ow freeze --focus "authentication and request flow"
+# 1. From the wiki workspace, freeze + set active-run pointers.
+ow run --focus "authentication and request flow"
 
 # 2. In a new Claude Code session started in this workspace:
 claude
-# Confirm Dynamic Workflows in /config, then run the command emitted by freeze:
-/wiki-plan {"runId":"<runId>","workdir":"<absolute-workdir>"}
-
-# 3. Back in the terminal, check the completed plan and obtain the next workflow arguments.
-ow gate plan --run <runId>
-
-# 4. In Claude Code, run the command emitted by the successful gate:
-/wiki-write-review {"runId":"<runId>","workdir":"<absolute-workdir>"}
+# Confirm Dynamic Workflows in /config, then:
+/wiki-produce
 ```
 
-`/wiki-plan` does discovery and planning only. It writes the Discovery Map and Spec, then stops.
-`ow gate plan` checks coverage and semantic sufficiency and records the digests it approved.
-`/wiki-write-review` rechecks that receipt, writes the Spec-defined pages, runs independent review
-lenses, repairs unresolved issues once, and calls the pinned host CLI to validate and seal.
+What happens automatically:
 
-Do not use `ow plan`, `ow write`, or `ow continue`; those workflow-launching wrappers do not exist.
-The only lifecycle commands are:
+1. `/wiki-produce` resolves `.wiki-agent/current.json` (no args required)
+2. Discover + Plan write Discovery Map and Spec
+3. Workflow runs `ow gate plan` through pinned `hostCli`
+4. Write + independent review + one repair round
+5. Workflow runs `ow gate check` and `ow validate`, then seals
+
+`ow run` / `ow freeze` write:
 
 ```text
-ow freeze [--focus TEXT]
-ow gate plan|check --run <runId>
-ow validate --run <runId>
-ow retry --run <runId> --from plan|write
+.wiki-agent/current.json
+.wiki-agent/next-action.json
 ```
 
-`ow validate` remains available for a deterministic manual final check. It refuses to seal unless
-the current plan-gate receipt matches the current inventory, Discovery Map, and Spec.
+Workflows resolve identity in this order: explicit args → `current.json` → `next-action.json` →
+newest valid run. Explicit `{runId,workdir}` args remain supported for CI/debug only.
+
+### Optional human plan approval
+
+```bash
+ow run --focus "..." --approve-plan
+# Claude:
+/wiki-plan
+# Terminal after reviewing Spec:
+ow approve plan
+# Claude:
+/wiki-write-review
+```
+
+### Split workflows
+
+| Command | Behavior |
+|---|---|
+| `/wiki-produce` | End-to-end (default) |
+| `/wiki-plan` | Plan + auto gate (or stop when `approvePlan`) |
+| `/wiki-write-review` | Write/review/validate when write-ready |
+
+### Recovery
+
+```bash
+ow status
+ow retry --from plan    # or --from write
+ow run --resume
+# then re-run the workflow named in next-action (usually /wiki-produce or /wiki-write-review)
+```
+
+Low-level host commands remain available for debugging:
+
+```text
+ow freeze [--focus TEXT] [--approve-plan]
+ow gate plan|check [--run <runId>]
+ow validate [--run <runId>]
+ow approve plan [--run <runId>]
+ow retry [--run <runId>] --from plan|write
+```
+
+When `--run` is omitted, these commands use the active pointer from `.wiki-agent/current.json`.
 
 ## Failure Handling
 
@@ -166,28 +200,31 @@ the current plan-gate receipt matches the current inventory, Discovery Map, and 
 | `ow doctor` reports asset drift | Run `ow install --force`, then start a new Claude Code session. |
 | `ow doctor` reports an unsupported or missing Claude CLI | Install or upgrade Claude Code before attempting the workflow. |
 | Dynamic Workflows is absent or disabled in `/config` | Enable the supported feature for the account/session. This kit has no alternate execution path. |
-| `ow gate plan` fails | Correct the Discovery Map or Spec in a new `/wiki-plan` attempt; use `ow retry --from plan` when discarding all plan artifacts. |
-| Write/review does not validate | Use `ow retry --from write`, then rerun `/wiki-write-review` with the same frozen `runId` and `workdir`. |
+| Plan gate fails inside `/wiki-plan` or `/wiki-produce` | Fix Discovery Map/Spec and retry; or `ow retry --from plan` then rerun the workflow. |
+| Write/review does not validate | `ow retry --from write`, then `/wiki-write-review` or `/wiki-produce`. |
 | A candidate is `sealed` or `tampered` | Do not edit or reseal it. Use `ow retry --from write` to create a replacement candidate. |
 
 ## Run Layout
 
 ```text
-.wiki-agent/runs/<runId>/
-  meta.json                         # freeze identity and immutable input summary
-  workdir/
-    sources/<sourceId>/             # filtered, content-hashed source snapshot
-    skill/                          # exact copied Skill
-    inputs/                         # inventory, policy, manifests, gate receipt
-    analysis/                       # map, Spec, receipts, defects, validation, manifest
-    candidate/                      # generated Wiki pages; never published by this kit
+.wiki-agent/
+  current.json                      # active run pointer (no-arg workflows)
+  next-action.json                  # next command + reason
+  runs/<runId>/
+    meta.json                       # freeze identity and immutable input summary
+    workdir/
+      sources/<sourceId>/           # filtered, content-hashed source snapshot
+      skill/                        # exact copied Skill
+      inputs/                       # inventory, policy, manifests, gate receipt
+      analysis/                     # map, Spec, receipts, defects, validation, manifest
+      candidate/                    # generated Wiki pages; never published by this kit
 ```
 
 `ow status` derives each run state from artifacts rather than mutating lifecycle fields in
 `meta.json`: `frozen`, `planned`, `write-ready`, `sealed`, or `tampered`. A successful validation
 writes `analysis/candidate.manifest.json`; its candidate is immutable. To make a replacement,
 explicitly run `ow retry --from write`. `ow retry --from plan` also clears the plan and gate before
-the next `/wiki-plan` run. Frozen sources and the copied Skill are never changed.
+the next plan workflow. Frozen sources and the copied Skill are never changed.
 
 ## Source Citations
 
@@ -213,7 +250,7 @@ ow ignore presets
 ow ignore set app --preset js-tests
 ow config set wikiLanguage zh
 ow status
-ow gate check --run <runId>
+ow gate check
 ow install --force
 ow help
 ```
@@ -221,7 +258,7 @@ ow help
 ### Language and multi-source depth
 
 - `wikiLanguage` (`en`|`zh`) is frozen into `inputs/run-policy.json` and `inputs/inventory.json`.
-  Both Claude workflows inject it into survey/plan/write/review prompts. For `zh`, candidate prose
+  Claude workflows inject it into survey/plan/write/review prompts. For `zh`, candidate prose
   must be Simplified Chinese; identifiers and paths stay untranslated.
 - Multi-source workspaces (`sourceCount >= 2`, inventory tier `L3`) require deep analysis: the plan
   gate rejects thin Specs. Expect overview + per-source coverage + a critical cross-source flow (or
