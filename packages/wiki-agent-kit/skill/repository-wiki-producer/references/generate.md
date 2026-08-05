@@ -8,15 +8,20 @@ Write the Spec-bound concept pages into the unsealed `candidate/` directory.
 
 ## Procedure
 
-1. Read the full Spec and the relevant Discovery Map/receipt paths. Do not re-plan from a fresh
-   survey.
+1. Read `inputs/run-policy.json` for `wikiLanguage` / `focus`, then the full Spec and the relevant
+   Discovery Map/receipt paths. Do not re-plan from a fresh survey.
 2. Re-open evidence spans inside `sources/<id>/` as needed.
 3. For each Spec page, adapt the matching template and write only below `candidate/`.
-4. Cross-link candidate pages with relative `.md` links.
-5. Leave `index.md` and `log.md` to the host; validation regenerates every `index.md`.
+4. Write all prose (title, description, headings, body) in `wikiLanguage`. When `wikiLanguage=zh`,
+   use Simplified Chinese throughout; keep paths and identifiers untranslated.
+5. Cross-link candidate pages with relative `.md` links.
+6. Leave `index.md` and `log.md` to the host; validation regenerates every `index.md`.
 
-Every critical Spec path must exist, answer its stated reader question, and have nearby verified
-evidence. Do not add a concept page absent from the Spec or change the Spec while writing.
+Every critical Spec path must exist, answer its stated reader question with concrete evidence-backed
+depth (not a README restatement), and have nearby verified Source Citations. For multi-source runs,
+the overview repository map, per-source module/architecture coverage, and any critical cross-source
+flow must name participating `sources/<id>/` trees with stage-level citations. Do not add a concept
+page absent from the Spec or change the Spec while writing.
 
 ## Frontmatter and local links
 

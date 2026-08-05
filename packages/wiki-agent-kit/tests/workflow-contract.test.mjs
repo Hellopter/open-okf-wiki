@@ -16,7 +16,23 @@ function loadWorkflow(name) {
 
 function successfulAgent(_prompt, options = {}) {
   if (options.label === "load-inventory") {
-    return { units: [{ id: "app", kind: "source" }], tier: "L1", sourceCount: 1 };
+    return {
+      units: [{ id: "app", kind: "source" }],
+      tier: "L1",
+      sourceCount: 1,
+      wikiLanguage: "en",
+      focus: null,
+    };
+  }
+  if (options.label === "load-write-policy") {
+    return {
+      wikiLanguage: "en",
+      tier: "L1",
+      sourceCount: 1,
+      pageCount: 1,
+      criticalPageCount: 1,
+      hasCrossSourceFlowPage: false,
+    };
   }
   if (String(options.label).startsWith("reduce-defects:")) {
     return { status: "ok", path: "analysis/defects.json", summary: "clean", clean: true, blockingCount: 0 };
@@ -31,6 +47,8 @@ describe("Claude workflow contracts", () => {
     assert.doesNotMatch(source, /wiki-produce/);
     assert.doesNotMatch(source, /ow plan/);
     assert.match(source, /\$\{workdir\}\/analysis\/receipts\/survey/);
+    assert.match(source, /wikiLanguage/);
+    assert.match(source, /MULTI-SOURCE DEEP ANALYSIS REQUIRED/);
     const phases = [];
     const output = await run(
       successfulAgent,
@@ -42,6 +60,38 @@ describe("Claude workflow contracts", () => {
     assert.deepEqual(phases, ["Discover", "Plan"]);
     assert.match(output.next, /ow gate plan --run run-1/);
     assert.equal(output.spec.status, "ok");
+    assert.equal(output.wikiLanguage, "en");
+  });
+
+  it("propagates zh language into plan workflow outputs", async () => {
+    const { run } = loadWorkflow("wiki-plan.workflow.js");
+    const prompts = [];
+    const agent = (prompt, options = {}) => {
+      prompts.push(prompt);
+      if (options.label === "load-inventory") {
+        return {
+          units: [{ id: "api", kind: "source" }, { id: "web", kind: "source" }],
+          tier: "L3",
+          sourceCount: 2,
+          wikiLanguage: "zh",
+          focus: "认证链路",
+        };
+      }
+      return successfulAgent(prompt, options);
+    };
+    const output = await run(
+      agent,
+      async (tasks) => Promise.all(tasks.map((task) => task())),
+      () => {},
+      () => {},
+      { runId: "run-zh", workdir: "/workdir" },
+    );
+    assert.equal(output.wikiLanguage, "zh");
+    assert.equal(output.sourceCount, 2);
+    assert.ok(prompts.some((p) => /wikiLanguage=zh/.test(p)));
+    assert.ok(prompts.some((p) => /Simplified Chinese/.test(p)));
+    assert.ok(prompts.some((p) => /MULTI-SOURCE DEEP ANALYSIS REQUIRED/.test(p)));
+    assert.ok(prompts.some((p) => /认证链路/.test(p)));
   });
 
   it("fans independent surveys out in waves of eight", async () => {
@@ -49,7 +99,9 @@ describe("Claude workflow contracts", () => {
     const units = Array.from({ length: 9 }, (_, index) => ({ id: `unit-${index}`, kind: "source" }));
     const waveSizes = [];
     const agent = (prompt, options = {}) => {
-      if (options.label === "load-inventory") return { units, tier: "L2", sourceCount: 1 };
+      if (options.label === "load-inventory") {
+        return { units, tier: "L2", sourceCount: 1, wikiLanguage: "en", focus: null };
+      }
       return successfulAgent(prompt, options);
     };
     const output = await run(
@@ -72,6 +124,8 @@ describe("Claude workflow contracts", () => {
     assert.match(source, /gate-plan\.ok\.json/);
     assert.doesNotMatch(source, /ow write/);
     assert.match(source, /hostCli\.workspaceRoot/);
+    assert.match(source, /wikiLanguage/);
+    assert.match(source, /language_mismatch|thin_multi_source/);
     const phases = [];
     const output = await run(
       successfulAgent,
@@ -82,6 +136,38 @@ describe("Claude workflow contracts", () => {
     );
     assert.deepEqual(phases, ["Preflight", "Write", "Review", "Validate"]);
     assert.equal(output.validation.status, "ok");
+    assert.equal(output.wikiLanguage, "en");
+  });
+
+  it("injects zh and multi-source depth rules into write/review prompts", async () => {
+    const { run } = loadWorkflow("wiki-write-review.workflow.js");
+    const prompts = [];
+    const agent = (prompt, options = {}) => {
+      prompts.push(prompt);
+      if (options.label === "load-write-policy") {
+        return {
+          wikiLanguage: "zh",
+          tier: "L3",
+          sourceCount: 2,
+          pageCount: 4,
+          criticalPageCount: 3,
+          hasCrossSourceFlowPage: true,
+        };
+      }
+      return successfulAgent(prompt, options);
+    };
+    const output = await run(
+      agent,
+      async (tasks) => Promise.all(tasks.map((task) => task())),
+      () => {},
+      () => {},
+      { runId: "run-zh-ms", workdir: "/workdir" },
+    );
+    assert.equal(output.wikiLanguage, "zh");
+    assert.equal(output.sourceCount, 2);
+    assert.ok(prompts.some((p) => /wikiLanguage=zh/.test(p) && /Writer/.test(p)));
+    assert.ok(prompts.some((p) => /MULTI-SOURCE DEEP ANALYSIS REQUIRED in candidate pages/.test(p)));
+    assert.ok(prompts.some((p) => /language mismatches against wikiLanguage=zh/.test(p)));
   });
 
   it("fails closed when a workflow is invoked without frozen-run arguments", async () => {

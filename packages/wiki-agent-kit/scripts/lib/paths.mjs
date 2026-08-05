@@ -2,6 +2,7 @@
  * Workspace path helpers for the ow CLI.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,14 +12,58 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const KIT_ROOT = path.resolve(__dirname, "../..");
 
 export const META_DIR = ".wiki-agent";
+/** @deprecated Prefer resolveWorkspaceConfigPath / WORKSPACE_CONFIG_CANDIDATES. */
 export const WORKSPACE_FILE = "workspace.json";
+
+/** Preferred order when multiple names are considered for creation. */
+export const WORKSPACE_CONFIG_CANDIDATES = ["workspace.yaml", "workspace.yml", "workspace.json"];
 
 export function resolveWorkspaceRoot(cwd = process.cwd(), explicit) {
   if (explicit) return path.resolve(explicit);
   return path.resolve(cwd);
 }
 
+/**
+ * Locate the on-disk workspace config.
+ * @returns {{ path: string, format: "yaml" | "json", name: string } | null}
+ */
+export function findWorkspaceConfig(root) {
+  const found = [];
+  for (const name of WORKSPACE_CONFIG_CANDIDATES) {
+    const abs = path.join(root, name);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      found.push({
+        path: abs,
+        name,
+        format: name.endsWith(".json") ? "json" : "yaml",
+      });
+    }
+  }
+  if (found.length > 1) {
+    throw new Error(
+      `multiple workspace configs found (${found.map((f) => f.name).join(", ")}); keep exactly one of workspace.yaml|workspace.yml|workspace.json`,
+    );
+  }
+  return found[0] ?? null;
+}
+
+/**
+ * Path used when creating a new workspace config.
+ * @param {"yaml"|"json"} [format]
+ */
+export function defaultWorkspaceConfigPath(root, format = "yaml") {
+  const name = format === "json" ? "workspace.json" : "workspace.yaml";
+  return {
+    path: path.join(root, name),
+    name,
+    format: format === "json" ? "json" : "yaml",
+  };
+}
+
+/** @deprecated Use findWorkspaceConfig / defaultWorkspaceConfigPath. */
 export function workspaceJsonPath(root) {
+  const existing = findWorkspaceConfig(root);
+  if (existing) return existing.path;
   return path.join(root, WORKSPACE_FILE);
 }
 

@@ -21,4 +21,5 @@ description: One sentence on what the repository does and for whom.
   `[Source: src/A.java L1-L2](../sources/app/src/A.java#L1-L2)`
 
 Open with the product's value rather than its directory tree. Omit irrelevant prompts; merge small
-topics into the narrative. Prose language follows `wikiLanguage`; paths stay untranslated.
+topics into the narrative. Prose language follows `wikiLanguage` (`zh` → Simplified Chinese for
+titles, description, and body); paths and identifiers stay untranslated.

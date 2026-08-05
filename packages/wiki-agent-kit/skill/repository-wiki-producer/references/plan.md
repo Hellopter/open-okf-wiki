@@ -37,9 +37,19 @@ Every page needs a reader purpose and inspected evidence. Bind every required in
 unit via page/domain `coverageUnitIds`, or add a `coverageCancellations` entry with
 `coverageUnitId`, `cancelled: true`, and a non-empty `reason`.
 
-For multiple sources, plan a repository/surface map plus either a `crossSource: true` Discovery Map
-flow, a domain that binds multiple units, or `crossSourceFlowCancellation` with
-`cancelled: true` and a non-empty `reason`.
+Copy `wikiLanguage` from `inputs/run-policy.json` into the Spec top-level field. Write every page
+`title` and `question` in that language (`zh` → Simplified Chinese prose; identifiers stay as-is).
+
+For multiple sources (`sourceCount >= 2` / tier L3), do **not** collapse into a thin overview:
+
+1. Plan a critical `overview.md` that includes a repository/surface map naming every source.
+2. Plan Architecture and/or per-source Module pages so each source is substantively bound via
+   `coverageUnitIds` (not merely listed).
+3. Plan at least one critical cross-source `Flow` page with multi-source evidence, **or** set
+   `crossSourceFlowCancellation` with `cancelled: true` and a non-empty `reason`.
+4. Also satisfy the Discovery Map rule: a `crossSource: true` flow, a multi-unit domain, or the
+   cancellation above.
+5. Aim for depth: at least `max(3, sourceCount + 1)` Spec pages for multi-source runs.
 
 Do not list `index.md` or `log.md` as pages. Spec paths must remain below `candidate/` and cannot
 contain an absolute or traversal path. The package's `schemas/spec.schema.json` is the

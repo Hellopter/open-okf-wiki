@@ -6,6 +6,9 @@
   "required": ["pages"],
   "properties": {
     "version": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string" },
+    "overviewPath": { "type": "string" },
+    "wikiLanguage": { "type": "string", "enum": ["en", "zh"] },
     "pages": {
       "type": "array",
       "items": {

@@ -47,12 +47,40 @@ does not require an administrator shell.
 ## Create a Workspace
 
 ```bash
-ow init ./my-wiki --name my-wiki --lang en
+ow init ./my-wiki --name my-wiki --lang zh
 cd my-wiki
 ow source add clone https://github.com/example/app.git --id app
 # or: ow source add path /absolute/path/to/repo --id app
 
 ow doctor
+```
+
+`ow init` writes `workspace.yaml` by default (YAML is easier to edit by hand). Legacy
+`workspace.json` and `workspace.yml` still load. Keep **exactly one** of those files in a workspace.
+Use `--format json` only when you intentionally want JSON:
+
+```bash
+ow init ./my-wiki --name my-wiki --lang en --format json
+```
+
+Example `workspace.yaml`:
+
+```yaml
+version: 1
+id: 2c29d313-5252-4321-97b9-1ae1ea9a9c74
+name: my-wiki
+wikiLanguage: zh
+defaultSourceIgnores:
+  enabled: true
+sources:
+  - id: app
+    path: sources/app
+    applyDefaultIgnores: true
+    ignore: []
+    presets: []
+    origin:
+      type: path
+      linkedPath: /absolute/path/to/repo
 ```
 
 ### Local path sources on Windows
@@ -189,3 +217,14 @@ ow gate check --run <runId>
 ow install --force
 ow help
 ```
+
+### Language and multi-source depth
+
+- `wikiLanguage` (`en`|`zh`) is frozen into `inputs/run-policy.json` and `inputs/inventory.json`.
+  Both Claude workflows inject it into survey/plan/write/review prompts. For `zh`, candidate prose
+  must be Simplified Chinese; identifiers and paths stay untranslated.
+- Multi-source workspaces (`sourceCount >= 2`, inventory tier `L3`) require deep analysis: the plan
+  gate rejects thin Specs. Expect overview + per-source coverage + a critical cross-source flow (or
+  an explicit `crossSourceFlowCancellation`), with at least `max(3, sourceCount + 1)` pages.
+- After `ow install --force`, start a new Claude Code session so updated workflows and Skill text
+  are rediscovered.

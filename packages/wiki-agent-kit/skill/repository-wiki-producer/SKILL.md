@@ -56,10 +56,12 @@ file-first handoff rules.
 
 ## Output Rules
 
-Write prose in the `wikiLanguage` in `inputs/run-policy.json`; keep identifiers and source paths
-unchanged. Concept pages require non-empty YAML `type`, `title`, and `description`; optional `tags`
-are allowed. Do not author `index.md`, `log.md`, `generated`, `verified`, `stale_after`, or
-`okf_version`.
+Write all human-readable prose (titles, descriptions, headings, body text, Spec questions, Discovery
+Map labels) in the `wikiLanguage` from `inputs/run-policy.json` (`en` or `zh`). When
+`wikiLanguage=zh`, use Simplified Chinese for prose; never leave the candidate mostly in English.
+Keep identifiers, source paths, package/module names, APIs, and code tokens untranslated. Concept
+pages require non-empty YAML `type`, `title`, and `description`; optional `tags` are allowed. Do not
+author `index.md`, `log.md`, `generated`, `verified`, `stale_after`, or `okf_version`.
 
 Every factual claim needs a direct local Markdown link to the frozen source and genuine one-based
 line numbers. Calculate the link relative to the candidate page:

@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OW = path.resolve(__dirname, "../scripts/ow.mjs");
@@ -14,6 +15,15 @@ function ow(args, cwd) {
     cwd,
     encoding: "utf8",
   });
+}
+
+function readWorkspace(ws) {
+  const yamlPath = path.join(ws, "workspace.yaml");
+  const ymlPath = path.join(ws, "workspace.yml");
+  const jsonPath = path.join(ws, "workspace.json");
+  if (fs.existsSync(yamlPath)) return YAML.parse(fs.readFileSync(yamlPath, "utf8"));
+  if (fs.existsSync(ymlPath)) return YAML.parse(fs.readFileSync(ymlPath, "utf8"));
+  return JSON.parse(fs.readFileSync(jsonPath, "utf8"));
 }
 
 describe("ow init + source path + freeze", () => {
@@ -34,7 +44,10 @@ describe("ow init + source path + freeze", () => {
     assert.equal(r.status, 0, r.stderr || r.stdout);
     const initOut = JSON.parse(r.stdout);
     assert.equal(initOut.wikiLanguage, "zh");
-    assert.ok(fs.existsSync(path.join(ws, "workspace.json")));
+    assert.equal(initOut.format, "yaml");
+    assert.ok(initOut.workspace.endsWith("workspace.yaml"));
+    assert.ok(fs.existsSync(path.join(ws, "workspace.yaml")));
+    assert.ok(!fs.existsSync(path.join(ws, "workspace.json")));
 
     r = ow(["status", "--workspace", ws], tmp);
     assert.equal(r.status, 0, r.stderr);
@@ -66,6 +79,11 @@ describe("ow init + source path + freeze", () => {
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-plan.workflow.js")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-write-review.workflow.js")));
 
+    const policy = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "run-policy.json"), "utf8"));
+    assert.equal(policy.wikiLanguage, "zh");
+    const inventory = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "inventory.json"), "utf8"));
+    assert.equal(inventory.wikiLanguage, "zh");
+
     // gate without spec should fail closed when units exist
     r = ow(["gate", "plan", "--run", frozen.runId, "--workspace", ws], tmp);
     assert.equal(r.status, 2, r.stderr || r.stdout);
@@ -96,10 +114,45 @@ describe("ow init + source path + freeze", () => {
     const lstat = fs.lstatSync(linked);
     assert.ok(lstat.isSymbolicLink() || lstat.isDirectory());
     assert.equal(fs.realpathSync(linked), fs.realpathSync(repo));
-    const workspace = JSON.parse(fs.readFileSync(path.join(ws, "workspace.json"), "utf8"));
+    const workspace = readWorkspace(ws);
     const src = workspace.sources.find((s) => s.id === "api");
     assert.equal(src.origin.type, "path");
     assert.equal(src.origin.linkType, process.platform === "win32" ? "junction" : "dir");
+  });
+
+  it("supports --format json and loads legacy workspace.json", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-json-ws-"));
+    const repo = path.join(tmp, "repo");
+    fs.mkdirSync(path.join(repo, "src"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "src", "A.js"), "export const x = 1;\n");
+    const ws = path.join(tmp, "ws");
+
+    let r = ow(["init", ws, "--name", "json-demo", "--format", "json", "--path", repo, "--id", "app"], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const initOut = JSON.parse(r.stdout);
+    assert.equal(initOut.format, "json");
+    assert.ok(fs.existsSync(path.join(ws, "workspace.json")));
+    assert.ok(!fs.existsSync(path.join(ws, "workspace.yaml")));
+
+    r = ow(["config", "set", "wikiLanguage", "zh", "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const after = JSON.parse(fs.readFileSync(path.join(ws, "workspace.json"), "utf8"));
+    assert.equal(after.wikiLanguage, "zh");
+
+    r = ow(["status", "--workspace", ws], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    assert.equal(JSON.parse(r.stdout).wikiLanguage, "zh");
+  });
+
+  it("rejects multiple workspace config files", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ow-multi-cfg-"));
+    const ws = path.join(tmp, "ws");
+    let r = ow(["init", ws, "--name", "multi"], tmp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    fs.writeFileSync(path.join(ws, "workspace.json"), JSON.stringify({ version: 1, sources: [] }));
+    r = ow(["status", "--workspace", ws], tmp);
+    assert.equal(r.status, 1, r.stderr || r.stdout);
+    assert.match(r.stderr, /multiple workspace configs/i);
   });
 
   it("runs the full gated lifecycle and seals a local-link candidate", () => {

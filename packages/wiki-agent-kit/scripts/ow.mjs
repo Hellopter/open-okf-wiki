@@ -70,10 +70,16 @@ function cmdInit(args) {
   const name = args.flags.name || path.basename(dir);
   const lang = args.flags.lang || args.flags.language || "en";
   const force = Boolean(args.flags.force);
-  const { created, workspace } = initWorkspace(dir, {
+  const formatFlag = args.flags.format || args.flags.config;
+  const format =
+    formatFlag === "json" || formatFlag === "workspace.json"
+      ? "json"
+      : "yaml";
+  const { created, workspace, configPath, format: configFormat } = initWorkspace(dir, {
     name,
     wikiLanguage: lang,
     force,
+    format,
   });
   const installed = installAll(dir, { force: false });
 
@@ -102,7 +108,8 @@ function cmdInit(args) {
   printJson({
     ok: true,
     created,
-    workspace: path.join(dir, "workspace.json"),
+    workspace: configPath,
+    format: configFormat,
     wikiLanguage: workspace.wikiLanguage,
     install: installed,
     source: sourceResult?.source ?? null,
@@ -436,7 +443,7 @@ function cmdHelp() {
   console.log(`ow — open wiki CLI
 
 Usage:
-  ow init [dir] --name N --lang en|zh [--clone URL|--path DIR] [--id ID] [--ref REF] [--preset PRESET]
+  ow init [dir] --name N --lang en|zh [--format yaml|json] [--clone URL|--path DIR] [--id ID] [--ref REF] [--preset PRESET]
   ow source add clone <url> [--id] [--ref]
   ow source add path <dir> [--id]
   ow source list | remove <id>
@@ -453,6 +460,7 @@ Usage:
   ow validate --run <runId>
   ow retry --run <runId> --from plan|write
 
+Workspace config: workspace.yaml (default), workspace.yml, or workspace.json (exactly one).
 Global: --workspace <dir>  (default: cwd)
 `);
 }

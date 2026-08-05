@@ -72,6 +72,86 @@ describe("gates", () => {
     assert.ok(result.errors.some((error) => error.includes("cross-source")));
   });
 
+  it("rejects thin multi-source Specs even when a cross-source flow exists", () => {
+    const result = assertSemanticSufficiency({
+      inventory: {
+        tier: "L3",
+        sourceCount: 2,
+        sources: [{ sourceId: "api" }, { sourceId: "web" }],
+        coverageUnits: [
+          { id: "api", sourceId: "api", required: true },
+          { id: "web", sourceId: "web", required: true },
+        ],
+      },
+      discoveryMap: {
+        domains: [{ id: "domain:product", coverageUnitIds: ["api", "web"] }],
+        flows: [{ id: "flow:login", crossSource: true, coverageUnitIds: ["api", "web"] }],
+      },
+      spec: {
+        pages: [
+          { path: "overview.md", critical: true, type: "Overview", coverageUnitIds: ["api"] },
+          { path: "flows/login.md", critical: true, type: "Flow", coverageUnitIds: ["api", "web"] },
+        ],
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => /deeper Spec|at least 3 pages/i.test(error)));
+  });
+
+  it("rejects multi-source Specs that omit a source from page bindings", () => {
+    const result = assertSemanticSufficiency({
+      inventory: {
+        tier: "L3",
+        sourceCount: 2,
+        sources: [{ sourceId: "api" }, { sourceId: "web" }],
+        coverageUnits: [
+          { id: "api", sourceId: "api", required: true },
+          { id: "web", sourceId: "web", required: true },
+        ],
+      },
+      discoveryMap: {
+        domains: [{ id: "domain:product", coverageUnitIds: ["api", "web"] }],
+        flows: [{ id: "flow:login", crossSource: true, coverageUnitIds: ["api", "web"] }],
+      },
+      spec: {
+        pages: [
+          { path: "overview.md", critical: true, type: "Overview", coverageUnitIds: ["api"] },
+          { path: "modules/api.md", critical: true, type: "Module", coverageUnitIds: ["api"] },
+          { path: "architecture.md", critical: true, type: "Architecture", coverageUnitIds: ["api"] },
+        ],
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => /does not bind source "web"/i.test(error)));
+  });
+
+  it("accepts a deep multi-source Spec with per-source binding and critical flow", () => {
+    const result = assertSemanticSufficiency({
+      inventory: {
+        tier: "L3",
+        sourceCount: 2,
+        sources: [{ sourceId: "api" }, { sourceId: "web" }],
+        coverageUnits: [
+          { id: "api", sourceId: "api", required: true },
+          { id: "web", sourceId: "web", required: true },
+        ],
+      },
+      discoveryMap: {
+        domains: [{ id: "domain:product", coverageUnitIds: ["api", "web"] }],
+        flows: [{ id: "flow:login", crossSource: true, coverageUnitIds: ["api", "web"] }],
+      },
+      spec: {
+        pages: [
+          { path: "overview.md", critical: true, type: "Overview", coverageUnitIds: ["api", "web"] },
+          { path: "modules/api.md", critical: true, type: "Module", coverageUnitIds: ["api"] },
+          { path: "modules/web.md", critical: true, type: "Module", coverageUnitIds: ["web"] },
+          { path: "flows/login.md", critical: true, type: "Flow", coverageUnitIds: ["api", "web"] },
+        ],
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+  });
+
   it("binds gate receipts to the exact planning artifacts", () => {
     const workdir = makePlanningWorkdir();
     assert.equal(gatePlan(workdir).ok, true);
