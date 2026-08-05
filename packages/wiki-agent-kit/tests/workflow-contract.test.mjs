@@ -44,6 +44,28 @@ describe("Claude workflow contracts", () => {
     assert.equal(output.spec.status, "ok");
   });
 
+  it("fans independent surveys out in waves of eight", async () => {
+    const { run } = loadWorkflow("wiki-plan.workflow.js");
+    const units = Array.from({ length: 9 }, (_, index) => ({ id: `unit-${index}`, kind: "source" }));
+    const waveSizes = [];
+    const agent = (prompt, options = {}) => {
+      if (options.label === "load-inventory") return { units, tier: "L2", sourceCount: 1 };
+      return successfulAgent(prompt, options);
+    };
+    const output = await run(
+      agent,
+      async (tasks) => {
+        waveSizes.push(tasks.length);
+        return Promise.all(tasks.map((task) => task()));
+      },
+      () => {},
+      () => {},
+      { runId: "run-8", workdir: "/workdir" },
+    );
+    assert.deepEqual(waveSizes, [8, 1]);
+    assert.equal(output.ledger.length, 9);
+  });
+
   it("runs gated write/review to validation when every stage is clean", async () => {
     const { source, run } = loadWorkflow("wiki-write-review.workflow.js");
     assert.match(source, /name: "wiki-write-review"/);

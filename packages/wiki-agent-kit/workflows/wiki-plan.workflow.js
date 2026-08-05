@@ -30,6 +30,9 @@ function safeId(value) {
   return String(value).replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80);
 }
 
+// Leave capacity below Claude Code's default subagent concurrency for control work.
+const MAX_CONCURRENT_SURVEYS = 8;
+
 phase("Discover");
 const inventory = await agent(
   [
@@ -51,8 +54,8 @@ const inventory = await agent(
 );
 const units = inventory?.units?.length ? inventory.units : [{ id: "source:default", kind: "source" }];
 const ledger = [];
-for (let offset = 0; offset < units.length; offset += 4) {
-  const wave = units.slice(offset, offset + 4);
+for (let offset = 0; offset < units.length; offset += MAX_CONCURRENT_SURVEYS) {
+  const wave = units.slice(offset, offset + MAX_CONCURRENT_SURVEYS);
   const results = await parallel(
     wave.map((unit, index) => () => {
       const outPath = `${workdir}/analysis/receipts/survey/${safeId(unit.id)}.json`;
