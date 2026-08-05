@@ -17,12 +17,22 @@ installed assets and Claude CLI version, but cannot verify account entitlement o
 is deliberately no fallback workflow implementation for an account or endpoint that does not
 support Dynamic Workflows.
 
-Install the CLI from this checkout, then create a workspace:
+## Global CLI Installation
+
+From the repository root, register this development package as the global `ow` command:
 
 ```bash
-cd packages/wiki-agent-kit
-pnpm link --global
+pnpm --dir packages/wiki-agent-kit link --global
+command -v ow
+ow help
+```
 
+If `ow` is not found, run `pnpm setup`, start a new shell, and rerun the link command. The new
+shell must include pnpm's global bin directory in `PATH`.
+
+## Create a Workspace
+
+```bash
 ow init ./my-wiki --name my-wiki --lang en
 cd my-wiki
 ow source add clone https://github.com/example/app.git --id app

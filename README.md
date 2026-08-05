@@ -8,12 +8,24 @@ It uses a deterministic `ow` CLI, a shared Agent Skill, and native Claude Dynami
 | `packages/wiki-agent-kit/` | `ow` CLI, Skill for `.agents` + `.claude`, Claude workflows, schemas, tests |
 | `docs/research/claude-dynamic-workflow-coding-agent-2026-08.md` | Design notes (packaging, orchestrator context) |
 
-## Quick start
+## Global CLI Installation
+
+From the repository root, link the development package into pnpm's global bin directory:
 
 ```bash
-node packages/wiki-agent-kit/scripts/ow.mjs help
-node packages/wiki-agent-kit/scripts/ow.mjs init ./my-ws --lang zh
-node packages/wiki-agent-kit/scripts/ow.mjs doctor --workspace ./my-ws
+pnpm --dir packages/wiki-agent-kit link --global
+command -v ow
+ow help
+```
+
+If `command -v ow` prints nothing, run `pnpm setup`, open a new shell so its global bin directory
+is on `PATH`, and repeat the link command.
+
+## Quick Start
+
+```bash
+ow init ./my-ws --lang zh
+ow doctor --workspace ./my-ws
 ```
 
 See `packages/wiki-agent-kit/README.md`.
