@@ -37,7 +37,7 @@ Never use mutable registered repositories after freeze. Never write in `sources/
 
 ## Agent method
 
-1. Discover: `references/research.md` -> source-first survey (`always` units; optional on-demand surface promotion) -> `analysis/discovery-map.json` -> checkpoint.
+1. Discover: `references/research.md` -> survey coverage units -> `analysis/discovery-map.json` -> checkpoint.
 2. Plan: `references/plan.md` -> `analysis/spec.json` + assignments -> plan checkpoint -> host gate.
 3. Write: `references/generate.md` -> owner-scoped pages only -> checkpoint.
 4. Review: `references/review.md` -> evidence and global lenses -> defects -> owner-scoped repair loop.

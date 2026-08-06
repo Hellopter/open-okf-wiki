@@ -105,8 +105,8 @@ Use `ow gc` to drop old non-active runs (default: keep the newest 3, always prot
 - Fan-out concurrency comes from `inputs/run-policy.json` `limits`: `batchConcurrency` default 4
   (3 multi-source), `perSourceConcurrency` 2, `maxCoveragePasses` 2, `maxRepairRounds` 2. Waves are
   fair-packed by source under the global and per-source caps.
-- Survey is source-first: pass 1 covers `survey: "always"` units (sources); later passes promote
-  missing units and retry transient rate-limit failures. Repair stops when the major/blocking defect
+- Survey pass 1 covers every inventory coverage unit (sources and surfaces). Later passes retry
+  `missingUnitIds` and transient rate-limit failures. Repair stops when the major/blocking defect
   fingerprint fails to improve.
 
 ## Failure and recovery

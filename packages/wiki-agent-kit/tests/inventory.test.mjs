@@ -14,8 +14,8 @@ function writeTree(root, files) {
   }
 }
 
-describe("inventory survey tags and limits defaults", () => {
-  it("tags source units always and package surfaces on-demand", () => {
+describe("inventory coverage units and limits defaults", () => {
+  it("emits required source and package surface units with labels", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-inv-"));
     const source = path.join(root, "repo");
     writeTree(source, {
@@ -34,14 +34,15 @@ describe("inventory survey tags and limits defaults", () => {
     });
     const sourceUnit = inventory.coverageUnits.find((u) => u.kind === "source");
     const surfaces = inventory.coverageUnits.filter((u) => u.kind === "surface");
-    assert.equal(sourceUnit.survey, "always");
+    assert.equal(sourceUnit.id, "app");
     assert.equal(sourceUnit.label, "app");
     assert.equal(sourceUnit.required, true);
+    assert.equal(sourceUnit.survey, undefined);
     assert.ok(surfaces.length >= 2);
     for (const surface of surfaces) {
-      assert.equal(surface.survey, "on-demand");
       assert.equal(surface.required, true);
       assert.equal(surface.label, surface.id);
+      assert.equal(surface.survey, undefined);
     }
   });
 

@@ -10,13 +10,11 @@ only under `sources/<id>/`; mutable registered repositories are outside the run'
 
 - Read `inputs/run-policy.json` first and honor `wikiLanguage`, optional `focus`, and `limits` in every
   receipt.
-- Survey is source-first. Inventory marks source units `survey: "always"` and surface units
-  `survey: "on-demand"`.
-- Pass 1 surveys only `always` units (sources). Do not survey every surface up front.
+- Survey every source mount and every inventory surface, not just the first README.
 - After each pass, reduce into the Discovery Map and return `missingUnitIds` for required coverage
   that is still surveyable. Do not invent missing evidence.
-- Pass 2+ promotes those `missingUnitIds` (including on-demand surfaces) and retries transient
-  rate-limit failures, up to `limits.maxCoveragePasses` (default 2).
+- Pass 2+ retries those `missingUnitIds` and transient rate-limit failures, up to
+  `limits.maxCoveragePasses` (default 2).
 - Pack survey waves fairly by `sourceId` under `limits.batchConcurrency` (default 4; 3 multi-source)
   and `limits.perSourceConcurrency` (default 2).
 - Prefer manifests, entry points, public APIs, runtime paths, and cross-source contracts over

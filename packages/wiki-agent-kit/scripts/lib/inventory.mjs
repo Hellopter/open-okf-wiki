@@ -152,7 +152,6 @@ export function buildInventory(root, workspace, opts = {}) {
       sourceId: src.id,
       path: ".",
       required: true,
-      survey: "always",
       label: src.id,
     });
     for (const s of surfaces) {
@@ -163,7 +162,6 @@ export function buildInventory(root, workspace, opts = {}) {
         sourceId: src.id,
         path: s.path,
         required: true,
-        survey: "on-demand",
         label: `${src.id}::${s.path}`,
       });
     }

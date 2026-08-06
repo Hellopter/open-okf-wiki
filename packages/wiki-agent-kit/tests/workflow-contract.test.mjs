@@ -49,7 +49,7 @@ function makeAgent({ startAt = "survey", reviews = [], inventory = null, discove
     if (label === "load-inventory") {
       return (
         inventory || {
-          units: [{ id: "api", kind: "source", sourceId: "api", survey: "always" }],
+          units: [{ id: "api", kind: "source", sourceId: "api" }],
           tier: "L1",
           sourceCount: 1,
           wikiLanguage: "en",
@@ -202,7 +202,6 @@ describe("wiki dynamic workflow contract", () => {
       id: `unit-${index}`,
       kind: "source",
       sourceId: "api",
-      survey: "always",
     }));
     const harness = makeAgent();
     const baseAgent = harness.agent;
@@ -244,13 +243,11 @@ describe("wiki dynamic workflow contract", () => {
         id: `a-${i}`,
         kind: "source",
         sourceId: "A",
-        survey: "always",
       })),
       ...Array.from({ length: 3 }, (_, i) => ({
         id: `b-${i}`,
         kind: "source",
         sourceId: "B",
-        survey: "always",
       })),
     ];
     const harness = makeAgent();
@@ -297,14 +294,14 @@ describe("wiki dynamic workflow contract", () => {
     assert.ok(bCount <= 2, `per-source B cap broken: ${bCount}`);
   });
 
-  it("surveys only always units on pass 1 when surfaces are on-demand", async () => {
+  it("surveys every inventory coverage unit on pass 1 including surfaces", async () => {
     const inventory = {
       units: [
-        { id: "app", kind: "source", sourceId: "app", survey: "always" },
-        { id: "svc", kind: "source", sourceId: "svc", survey: "always" },
-        { id: "app::packages/core", kind: "surface", sourceId: "app", path: "packages/core", survey: "on-demand" },
-        { id: "app::packages/api", kind: "surface", sourceId: "app", path: "packages/api", survey: "on-demand" },
-        { id: "svc::web", kind: "surface", sourceId: "svc", path: "web", survey: "on-demand" },
+        { id: "app", kind: "source", sourceId: "app" },
+        { id: "svc", kind: "source", sourceId: "svc" },
+        { id: "app::packages/core", kind: "surface", sourceId: "app", path: "packages/core" },
+        { id: "app::packages/api", kind: "surface", sourceId: "app", path: "packages/api" },
+        { id: "svc::web", kind: "surface", sourceId: "svc", path: "web" },
       ],
       tier: "L3",
       sourceCount: 2,
@@ -313,17 +310,25 @@ describe("wiki dynamic workflow contract", () => {
       limits: DEFAULT_LIMITS,
     };
     const { labels } = await runWorkflow("", { inventory, discoveryMissing: [[], []] });
-    const pass1 = labels.filter((l) => String(l).startsWith("survey:1:"));
-    assert.deepEqual(pass1.sort(), ["survey:1:app", "survey:1:svc"].sort());
-    assert.ok(!labels.some((l) => String(l).includes("packages") || String(l).includes("web")));
+    const pass1 = labels.filter((l) => String(l).startsWith("survey:1:")).sort();
+    assert.deepEqual(
+      pass1,
+      [
+        "survey:1:app",
+        "survey:1:app::packages-api",
+        "survey:1:app::packages-core",
+        "survey:1:svc",
+        "survey:1:svc::web",
+      ].sort(),
+    );
   });
 
-  it("promotes missing surfaces and retries rate-limited units on pass 2", async () => {
+  it("retries rate-limited units on pass 2 without re-running permanent failures", async () => {
     const inventory = {
       units: [
-        { id: "app", kind: "source", sourceId: "app", survey: "always" },
-        { id: "app::pkg", kind: "surface", sourceId: "app", path: "pkg", survey: "on-demand" },
-        { id: "svc", kind: "source", sourceId: "svc", survey: "always" },
+        { id: "app", kind: "source", sourceId: "app" },
+        { id: "app::pkg", kind: "surface", sourceId: "app", path: "pkg" },
+        { id: "svc", kind: "source", sourceId: "svc" },
       ],
       tier: "L3",
       sourceCount: 2,
@@ -332,7 +337,7 @@ describe("wiki dynamic workflow contract", () => {
       limits: DEFAULT_LIMITS,
     };
     const { run } = loadWorkflow();
-    const harness = makeAgent({ inventory, discoveryMissing: [["app::pkg"], []] });
+    const harness = makeAgent({ inventory, discoveryMissing: [[], []] });
     const baseAgent = harness.agent;
     harness.agent = async (prompt, options) => {
       if (options?.label === "survey:1:app") {
@@ -364,9 +369,10 @@ describe("wiki dynamic workflow contract", () => {
       () => {},
       "",
     );
+    const pass1 = harness.labels.filter((l) => String(l).startsWith("survey:1:"));
+    assert.ok(pass1.includes("survey:1:app::pkg") || pass1.some((l) => String(l).includes("pkg")), `surface surveyed on pass1: ${JSON.stringify(pass1)}`);
     const pass2 = harness.labels.filter((l) => String(l).startsWith("survey:2:"));
     assert.ok(pass2.includes("survey:2:app"), `rate-limited app should retry: ${JSON.stringify(pass2)}`);
-    assert.ok(pass2.includes("survey:2:app::pkg") || pass2.includes("survey:2:app-pkg") || pass2.some((l) => l.includes("pkg")), `surface promoted: ${JSON.stringify(pass2)}`);
     assert.ok(!pass2.includes("survey:2:svc"), `permanent failure must not auto-retry: ${JSON.stringify(pass2)}`);
   });
 

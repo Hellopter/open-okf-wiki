@@ -11,7 +11,7 @@ export const meta = {
   description: "Produce a source-grounded Wiki through checkpointed survey, planning, writing, verification, repair, and sealing",
   phases: [
     { title: "Bootstrap", detail: "prepare or resume a checkpointed run" },
-    { title: "Survey", detail: "source-first discovery with fair policy-limited waves" },
+    { title: "Survey", detail: "fan out full inventory coverage with fair policy-limited waves" },
     { title: "Plan", detail: "assign owned pages and gate the plan" },
     { title: "Write", detail: "write domain shards, then integration shards" },
     { title: "Verify", detail: "independently refute unsupported claims" },
@@ -89,7 +89,6 @@ const INVENTORY = {
           sourceId: { type: "string" },
           path: { type: "string" },
           label: { type: "string" },
-          survey: { type: "string", enum: ["always", "on-demand"] },
         },
       },
     },
@@ -279,14 +278,6 @@ function isTransientSurveyFailure(result) {
   if (!result || result.status === "ok") return false;
   const text = `${result.status || ""} ${result.summary || ""}`.toLowerCase();
   return /rate[\s_-]?limit|overloaded|too many requests|\b429\b|\b529\b|\b503\b|capacity|temporarily unavailable|timeout|timed out|try again later/.test(text);
-}
-
-function selectAlwaysSurveyUnits(units) {
-  return (units || []).filter((unit) => {
-    if (unit?.survey === "always") return true;
-    if (unit?.survey === "on-demand") return false;
-    return unit?.kind === "source" || !unit?.kind;
-  });
 }
 
 function selectUnitsByIds(units, ids) {
@@ -489,7 +480,7 @@ return await (async () => {
       [
         `Read ${workdir}/inputs/inventory.json and ${workdir}/inputs/run-policy.json.`,
         "Return coverage units from inventory.coverageUnits and only policy controls needed for topology. Do not return source bodies.",
-        "Each coverage unit must preserve id, kind, sourceId, path, label, and survey (always|on-demand) when present.",
+        "Each coverage unit must preserve id, kind, sourceId, path, and label when present.",
         "Return limits from run-policy.json limits (batchConcurrency, perSourceConcurrency, maxCoveragePasses, maxRepairRounds) and focus from run-policy.",
       ].join("\n"),
       { label: "load-inventory", schema: INVENTORY },
@@ -503,7 +494,7 @@ return await (async () => {
     const surveyLanguage = languageDirective(wikiLanguage, "survey receipts, labels, and planning prose");
     multiSource = multiSourceDirective(sourceCount, tier);
     focusRule = inventory.focus ? `Operator focus: ${inventory.focus}` : "";
-    let pendingUnits = selectAlwaysSurveyUnits(inventory.units);
+    let pendingUnits = inventory.units;
     let lastSurveyPass = 1;
 
     for (let pass = 1; pass <= limits.maxCoveragePasses && pendingUnits.length; pass++) {
@@ -517,18 +508,17 @@ return await (async () => {
           wave.map((unit) => () => {
             const id = safeId(unit.id);
             const proposalPath = `analysis/handoffs/survey/${id}-pass-${pass}.json`;
-            const surveyMode = unit.survey === "on-demand" ? "on-demand surface" : "always source";
             return agent(
               [
-                `Surveyor for coverage unit ${JSON.stringify(unit)} (${surveyMode}). workdir=${workdir}.`,
+                `Surveyor for coverage unit ${JSON.stringify(unit)}. workdir=${workdir}.`,
                 `Read ${methodRoot}/references/research.md and ${workdir}/inputs/run-policy.json in full.`,
                 surveyLanguage,
                 multiSource,
                 focusRule,
                 `Read frozen evidence only under ${workdir}/sources/.`,
-                unit.survey === "on-demand" || unit.kind === "surface"
+                unit.kind === "surface"
                   ? `Focus on the surface path under sources/${unit.sourceId}/${unit.path || ""}. Capture module boundaries, public APIs, and runtime entry points for this surface only.`
-                  : "Source-level survey: map entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts. Note which on-demand surfaces need dedicated follow-up.",
+                  : "Source-level survey: map entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts.",
                 `Write the detailed receipt under analysis/receipts/survey/${id}-pass-${pass}.json.`,
                 dataPlaneOnlyRule(),
                 "Declare receipt path and coverage unit in the envelope summary. Do not write analysis/handoffs/**.",
@@ -562,10 +552,10 @@ return await (async () => {
           `Read inventory and run policy, then JIT-read only survey handoffs/receipts in this ledger: ${JSON.stringify(conciseLedger(surveyLedger))}.`,
           surveyLanguage,
           multiSource,
-          `Write ${workdir}/analysis/discovery-map.json with complete coverage units (including on-demand surfaces), domains, flows, concepts, and visible failed/cancelled units. discovery-map.version may be 1.`,
+          `Write ${workdir}/analysis/discovery-map.json with complete coverage units, domains, flows, concepts, and visible failed/cancelled units. discovery-map.version may be 1.`,
           dataPlaneOnlyRule(),
           `Write ${workdir}/analysis/receipts/discovery-artifacts-pass-${pass}.json as a JSON array listing the discovery-map artifact and each survey receipt path as {id,type,owner,path,dependsOn} without version/phase.`,
-          "Return missingUnitIds only for required coverage that is still surveyable (including on-demand surfaces that need promotion). Do not guess missing evidence.",
+          "Return missingUnitIds only for required coverage that is still surveyable. Do not guess missing evidence.",
           "Do not treat pure rate-limit / overloaded / 429 failures as permanently missing; the workflow retries those via the survey ledger.",
           "Return only the bounded discovery envelope (summary + missingUnitIds). Host will publish the handoff.",
         ].filter(Boolean).join("\n"),
