@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+import { writeSurveyReceipts } from "./survey-fixtures.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OW = path.resolve(__dirname, "../scripts/ow.mjs");
@@ -47,21 +48,14 @@ function makePlanReady(workspace, prepared) {
   const inventory = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "inventory.json"), "utf8"));
   const coverageUnitIds = inventory.coverageUnits.filter((unit) => unit.required === true).map((unit) => unit.id);
   const coverageUnitId = coverageUnitIds[0];
-  writeJson(path.join(workdir, "analysis", "discovery-map.json"), {
-    version: 2,
-    sources: [{ sourceId: "app" }],
-    domains: [{ id: "domain:app", coverageUnitIds }],
-    flows: [],
-    coverageUnits: inventory.coverageUnits,
+  writeSurveyReceipts(workdir, inventory, {
+    evidencePathByUnit: { app: "sources/app/src/app.js" },
   });
-  const discoverReceipt = path.join(workdir, "analysis", "receipts", "discover.json");
-  writeJson(discoverReceipt, { coverageUnitId, evidence: ["sources/app/src/app.js"] });
-  const discover = publish(workspace, "discover", workdir, [
-    { id: "discover-receipt", type: "receipt", path: "analysis/receipts/discover.json", coverageUnitIds },
-    { id: "discovery-map", type: "discovery-map", path: "analysis/discovery-map.json", coverageUnitIds },
-  ]);
+  const surveyMerge = json(ow(["survey-merge", "--pass", "1", "--workspace", workspace], workspace));
+  const surveyArtifacts = JSON.parse(fs.readFileSync(path.join(workdir, surveyMerge.artifactsPath), "utf8"));
+  const discover = publish(workspace, "discover", workdir, surveyArtifacts);
   const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds, owner: "integration" }];
-  const pageAssignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds, dependsOn: ["discover-receipt"], sourceIds: ["app"] }];
+  const pageAssignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds, dependsOn: ["survey:app"], sourceIds: ["app"] }];
   writeJson(path.join(workdir, "analysis", "spec.json"), { version: 2, wikiLanguage: "zh", pages, pageAssignments });
   writeJson(path.join(workdir, "analysis", "page-assignments.json"), pageAssignments);
   const planReceipt = path.join(workdir, "analysis", "receipts", "plan.json");

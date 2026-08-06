@@ -5,6 +5,7 @@ import path from "node:path";
 import { readJson, sha256File, writeJson } from "./artifacts.mjs";
 import { verifyCheckpoint } from "./checkpoints.mjs";
 import { verifyFrozenSnapshot } from "./freeze.mjs";
+import { assertDiscoverSurveyQuality } from "./survey.mjs";
 
 export function gateReceiptPath(workdir) {
   return path.join(workdir, "inputs", "gate-plan.ok.json");
@@ -154,6 +155,39 @@ export function assertCoverage({ inventory, spec, discoveryMap }) {
   return { ok: !errors.length, errors, warnings };
 }
 
+/**
+ * A completed Discover can record permanent insufficiency, but later phases
+ * must not turn that absence into a claimed page. The Plan is required to
+ * preserve it as an explicit cancellation instead.
+ */
+export function assertSurveyOutcomeCoverage({ inventory, spec, surveyQuality }) {
+  const errors = [];
+  const warnings = [];
+  if (!surveyQuality?.ok) {
+    return { ok: false, errors: ["discover survey receipt quality is invalid", ...(surveyQuality?.errors ?? [])], warnings };
+  }
+  const required = new Set((inventory?.coverageUnits ?? []).filter((unit) => unit?.required !== false).map((unit) => unit.id));
+  const cancelled = new Set(
+    cancellationEntries(spec)
+      .filter((entry) => entry?.cancelled === true && typeof entry.reason === "string" && entry.reason.trim())
+      .map((entry) => entry.coverageUnitId),
+  );
+  const bound = new Set();
+  for (const page of spec?.pages ?? []) for (const id of page.coverageUnitIds ?? []) bound.add(id);
+  for (const domain of spec?.domains ?? []) for (const id of domain.coverageUnitIds ?? []) bound.add(id);
+  for (const record of surveyQuality.receipts ?? []) {
+    const unitId = record.receipt?.coverageUnit?.id;
+    if (!required.has(unitId) || record.receipt?.status === "ok") continue;
+    if (!cancelled.has(unitId)) {
+      errors.push(`insufficient surveyed coverage requires explicit cancellation: ${unitId}`);
+    }
+    if (bound.has(unitId)) {
+      errors.push(`insufficient surveyed coverage must not be bound by a page or domain: ${unitId}`);
+    }
+  }
+  return { ok: !errors.length, errors, warnings };
+}
+
 function sourceIdsFromInventory(inventory, discoveryMap) {
   const fromInventory = (inventory?.sources ?? [])
     .map((source) => source?.sourceId ?? source?.id)
@@ -260,10 +294,14 @@ export function gatePlan(workdir) {
   const spec = readJson(specPath);
   const assignments = readJson(assignmentsPath);
   const snapshot = verifyFrozenSnapshot(workdir);
+  const discoverCheckpoint = verifyCheckpoint(workdir, "discover");
+  const surveyQuality = discoverCheckpoint.ok
+    ? assertDiscoverSurveyQuality(workdir, discoverCheckpoint.checkpoint.artifacts)
+    : { ok: false, errors: ["missing or invalid discover checkpoint"] };
   const coverage = assertCoverage({ inventory, spec, discoveryMap });
+  const surveyOutcomes = assertSurveyOutcomeCoverage({ inventory, spec, surveyQuality });
   const semantic = assertSemanticSufficiency({ inventory, spec, discoveryMap });
   const ownership = assertPageAssignments({ inventory, spec, assignments });
-  const discoverCheckpoint = verifyCheckpoint(workdir, "discover");
   const digests = {
     inventory: artifactDigest(inventoryPath),
     snapshotManifest: artifactDigest(snapshotPath),
@@ -275,6 +313,7 @@ export function gatePlan(workdir) {
   const errors = [
     ...(snapshot.ok ? [] : snapshot.errors.map((error) => `frozen snapshot integrity failed: ${error}`)),
     ...coverage.errors,
+    ...surveyOutcomes.errors,
     ...semantic.errors,
     ...ownership.errors,
     ...assertCheckpointBinding(discoverCheckpoint, ["analysis/discovery-map.json"], "discover"),
@@ -283,12 +322,14 @@ export function gatePlan(workdir) {
   return {
     ok: !errors.length,
     coverage,
+    surveyQuality,
+    surveyOutcomes,
     snapshot,
     semantic,
     ownership,
     digests,
     errors,
-    warnings: [...coverage.warnings, ...semantic.warnings, ...ownership.warnings],
+    warnings: [...coverage.warnings, ...surveyOutcomes.warnings, ...semantic.warnings, ...ownership.warnings],
   };
 }
 

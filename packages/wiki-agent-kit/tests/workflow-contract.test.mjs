@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const workflowPath = path.resolve(__dirname, "../workflows/wiki.workflow.js");
+const surveyUnitPath = path.resolve(__dirname, "../method/repository-wiki-producer/references/survey-unit.md");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 const DEFAULT_LIMITS = {
@@ -83,12 +84,24 @@ function makeAgent({ startAt = "survey", reviews = [], inventory = null, discove
         summary: "resumed discovery",
       };
     }
-    if (label.startsWith("reduce-discovery:")) {
+    if (label.startsWith("survey-merge:")) {
       const missing = Array.isArray(discoveryMissing[discoveryPass])
         ? discoveryMissing[discoveryPass]
         : discoveryMissing;
       discoveryPass += 1;
-      return { ...envelope(label), missingUnitIds: missing || [] };
+      const pass = Number(/survey-merge:(\d+)/.exec(label)?.[1] || 1);
+      return {
+        status: "ok",
+        pass,
+        artifactsPath: `analysis/receipts/discovery-artifacts-pass-${pass}.json`,
+        missingUnitIds: missing || [],
+        retryUnitIds: missing || [],
+        selectedUnitIds: [],
+        invalidReceiptPaths: [],
+        needsDomainLabels: false,
+        domains: 1,
+        flows: 0,
+      };
     }
     if (label.startsWith("publish:")) {
       return {
@@ -154,10 +167,11 @@ async function runWorkflow(args, options = {}) {
 
 describe("wiki dynamic workflow contract", () => {
   it("exposes one native workflow and executes a checkpointed happy path", async () => {
-    const { source, phases, labels, result } = await runWorkflow("");
+    const { source, phases, labels, prompts, result } = await runWorkflow("");
     assert.match(source, /name: "wiki"/);
     assert.doesNotMatch(source, /wiki-produce|wiki-write-review|wiki-plan/);
     assert.match(source, /<hostCli\.node> <hostCli\.script> publish/);
+    assert.match(source, /survey-merge --workspace <hostCli\.workspaceRoot>/);
     assert.match(source, /--artifacts-json \$\{artifactsJson\}/);
     assert.match(source, /inputCheckpointDigest/);
     assert.match(source, /scheduleWaves/);
@@ -165,11 +179,14 @@ describe("wiki dynamic workflow contract", () => {
     assert.doesNotMatch(source, /handoff|checkpoint --phase|blocked-\$\{round\}/);
     assert.deepEqual(phases, ["Bootstrap", "Survey", "Plan", "Write", "Verify", "Validate"]);
     assert.ok(labels.includes("publish:discover"));
+    assert.ok(labels.includes("survey-merge:1"));
     assert.ok(labels.includes("publish:plan"));
     assert.ok(labels.includes("publish:write-sources"));
     assert.ok(labels.includes("publish:write"));
     assert.ok(labels.some((l) => String(l).startsWith("publish:review")));
     assert.ok(labels.includes("publish:validate"));
+    assert.doesNotMatch(fs.readFileSync(surveyUnitPath, "utf8"), /\bversion\b/i);
+    assert.ok(prompts.filter((prompt) => prompt.includes("Surveyor for coverage unit")).every((prompt) => !/\bversion\b/i.test(prompt)));
     assert.equal(result.next, "sealed");
   });
 
@@ -281,6 +298,8 @@ describe("wiki dynamic workflow contract", () => {
     assert.deepEqual(waveSizes.slice(0, 5), [2, 2, 2, 2, 1]);
     assert.ok(harness.prompts.some((prompt) => /wikiLanguage=zh/.test(prompt)));
     assert.ok(harness.prompts.some((prompt) => /MULTI-SOURCE DEEP ANALYSIS REQUIRED/.test(prompt)));
+    assert.ok(harness.prompts.some((prompt) => /references\/survey-unit\.md/.test(prompt)));
+    assert.ok(!harness.prompts.some((prompt) => /Discovery reducer|references\/research\.md/.test(prompt)));
   });
 
   it("interleaves multi-source survey waves under per-source caps", async () => {
@@ -384,7 +403,7 @@ describe("wiki dynamic workflow contract", () => {
       limits: DEFAULT_LIMITS,
     };
     const { run } = loadWorkflow();
-    const harness = makeAgent({ inventory, discoveryMissing: [[], []] });
+    const harness = makeAgent({ inventory, discoveryMissing: [["app"], []] });
     const baseAgent = harness.agent;
     harness.agent = async (prompt, options) => {
       if (options?.label === "survey:1:app") {

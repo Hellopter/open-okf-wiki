@@ -65,14 +65,18 @@ The workflow calls the CLI through the pinned `hostCli` recorded in `inputs/run-
 
 ```bash
 ow prepare --mode auto|plan|write|retry-plan|retry-write|restart [--focus TEXT]
+ow survey-merge --pass N [--labels REL]
 ow publish --phase PHASE --artifacts-json REL
 ow gate plan|check
 ow validate
 ```
 
-Agents write data-plane artifacts and compact `*-artifacts.json` lists. `ow publish` validates paths,
-computes digests, derives the only valid predecessor, and writes a v3 checkpoint. `ow validate` prepares
-a verified candidate manifest; its following `validate` publish is the only transition to `sealed`.
+Agents write data-plane artifacts and compact `*-artifacts.json` lists. Discover is the exception:
+workers write only content receipts, while `ow survey-merge` validates them, adds the host envelope,
+mechanically writes the Discovery Map, and produces the only publishable Discover artifact list. `ow publish`
+replays that merge list, validates paths, computes digests, derives the only valid predecessor, and writes a
+v3 checkpoint. `ow validate` prepares a verified candidate manifest; its following `validate` publish is the
+only transition to `sealed`.
 
 ## Frozen sources
 
@@ -93,12 +97,15 @@ for every frozen source; later lifecycle stages verify that copy rather than rea
 - Survey pass 1 covers every inventory coverage unit (sources and surfaces). Later passes retry
   `missingUnitIds` and transient rate-limit failures. Repair stops when the major/blocking defect
   fingerprint fails to improve.
+- A permanent failed or skipped survey receipt remains visible. Plan must cancel that coverage unit with a
+  reason and may not bind it to a page or domain.
 
 ## Failure and recovery
 
 | Condition | Result |
 |---|---|
 | Invalid artifact, stale digest, invalid predecessor, or incomplete discovery coverage | Publish rejects the transition. |
+| Old or hand-built Discover merge list | Publish rejects it; rerun the host survey merge for the current receipts. |
 | Required shard fails | Workflow stops; retry or restart is explicit. |
 | Plan gate fails | Fix the planned artifacts and rerun `/wiki --retry plan`. |
 | Candidate review or validation fails | Run `/wiki --retry write`; source and plan checkpoints remain intact. |

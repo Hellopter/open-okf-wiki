@@ -7,12 +7,15 @@ import {
   assertCoverage,
   assertPageAssignments,
   assertSemanticSufficiency,
+  assertSurveyOutcomeCoverage,
   gatePlan,
   verifyPlanGate,
   writePlanGateReceipt,
 } from "../scripts/lib/gate.mjs";
 import { publishArtifacts } from "../scripts/lib/publish.mjs";
+import { mergeSurveyReceipts } from "../scripts/lib/survey.mjs";
 import { candidateSealStatus, regenerateIndexes, sealCandidate, validateWorkdir } from "../scripts/lib/validate.mjs";
+import { writeSurveyReceipts } from "./survey-fixtures.mjs";
 
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -35,8 +38,8 @@ function setupPlanningRun() {
     sourceCount: 1,
     sources: [{ sourceId: "api" }],
     coverageUnits: [
-      { id: "api", kind: "source", sourceId: "api", required: true },
-      { id: "api::web", kind: "surface", sourceId: "api", required: true },
+      { id: "api", kind: "source", sourceId: "api", path: ".", label: "api", required: true },
+      { id: "api::web", kind: "surface", sourceId: "api", path: "web", label: "api::web", required: true },
     ],
   };
   writeJson(path.join(root, ".wiki-agent", "current.json"), {
@@ -49,20 +52,12 @@ function setupPlanningRun() {
   });
   writeJson(path.join(workdir, "inputs", "inventory.json"), inventory);
   writeJson(path.join(workdir, "inputs", "snapshot-manifest.json"), { version: 1, sources: [] });
-  writeJson(path.join(workdir, "analysis", "discovery-map.json"), {
-    version: 2,
-    sources: [{ sourceId: "api" }],
-    domains: [{ id: "domain:api", coverageUnitIds: ["api", "api::web"] }],
-    flows: [],
-    coverageUnits: inventory.coverageUnits,
-  });
-  writeJson(path.join(workdir, "analysis", "receipts", "discover.json"), { discovered: true });
-  const discover = publish(root, workdir, "discover", [
-    { id: "discover-receipt", type: "receipt", path: "analysis/receipts/discover.json", coverageUnitIds: ["api"] },
-    { id: "discovery-map", type: "discovery-map", path: "analysis/discovery-map.json", coverageUnitIds: ["api::web"] },
-  ]);
+  writeSurveyReceipts(workdir, inventory);
+  const surveyMerge = mergeSurveyReceipts(workdir, { pass: 1 });
+  const surveyArtifacts = JSON.parse(fs.readFileSync(path.join(workdir, surveyMerge.artifactsPath), "utf8"));
+  const discover = publish(root, workdir, "discover", surveyArtifacts);
   const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds: ["api", "api::web"], owner: "integration" }];
-  const assignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds: ["api", "api::web"], dependsOn: ["discover-receipt"], sourceIds: ["api"] }];
+  const assignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds: ["api", "api::web"], dependsOn: ["survey:api"], sourceIds: ["api"] }];
   writeJson(path.join(workdir, "analysis", "spec.json"), { version: 2, pages, pageAssignments: assignments });
   writeJson(path.join(workdir, "analysis", "page-assignments.json"), assignments);
   writeJson(path.join(workdir, "analysis", "receipts", "plan.json"), { planned: true });
@@ -101,6 +96,26 @@ describe("v3 checkpoint plan gate", () => {
     });
     assert.equal(ownership.ok, false);
     assert.ok(ownership.errors.some((error) => /duplicates path/i.test(error)));
+
+    const surveyQuality = {
+      ok: true,
+      receipts: [{ receipt: { coverageUnit: { id: "api" }, status: "skipped" } }],
+    };
+    const insufficientBound = assertSurveyOutcomeCoverage({
+      inventory: { coverageUnits: [{ id: "api", required: true }] },
+      surveyQuality,
+      spec: { pages: [{ coverageUnitIds: ["api"] }], domains: [], coverageCancellations: [] },
+    });
+    assert.equal(insufficientBound.ok, false);
+    assert.ok(insufficientBound.errors.some((error) => /requires explicit cancellation/i.test(error)));
+    assert.ok(insufficientBound.errors.some((error) => /must not be bound/i.test(error)));
+
+    const insufficientCancelled = assertSurveyOutcomeCoverage({
+      inventory: { coverageUnits: [{ id: "api", required: true }] },
+      surveyQuality,
+      spec: { pages: [], domains: [], coverageCancellations: [{ coverageUnitId: "api", cancelled: true, reason: "source unavailable" }] },
+    });
+    assert.equal(insufficientCancelled.ok, true);
   });
 
   it("binds write authority to snapshot, discovery checkpoint, Spec, and assignments", () => {

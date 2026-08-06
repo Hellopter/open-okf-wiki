@@ -4,8 +4,9 @@ This is an internal method pack frozen into every run as `workdir/method/`. It i
 Claude Skill and is not a user entrypoint. The only human command is the native `/wiki` workflow.
 
 **Orchestration:** `wiki.workflow.js`.
-**Host tools:** `ow prepare`, `ow publish`, `ow gate`, and `ow validate` via the pinned `hostCli` in
+**Host tools:** `ow prepare`, `ow survey-merge`, `ow publish`, `ow gate`, and `ow validate` via the pinned `hostCli` in
 `inputs/run-policy.json`. Agents write data-plane artifacts and compact artifact lists only.
+Discover artifact lists and receipt envelopes are host-owned by `ow survey-merge`.
 
 ## Lifecycle and checkpoints
 
@@ -36,7 +37,7 @@ Never use mutable registered repositories after freeze. Never write in `sources/
 
 ## Agent method
 
-1. Discover: `references/research.md` -> survey coverage units -> `analysis/discovery-map.json` -> checkpoint.
+1. Discover: `references/survey-unit.md` -> host `survey-merge` -> `analysis/discovery-map.json` -> checkpoint.
 2. Plan: `references/plan.md` -> `analysis/spec.json` + assignments -> plan checkpoint -> host gate.
 3. Write: `references/generate.md` -> owner-scoped pages only -> checkpoint.
 4. Review: `references/review.md` -> evidence and global lenses -> defects -> owner-scoped repair loop.

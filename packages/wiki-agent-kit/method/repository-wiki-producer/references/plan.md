@@ -45,6 +45,10 @@ Every page needs a reader purpose and inspected evidence. Bind every required in
 unit via page/domain `coverageUnitIds`, or add a `coverageCancellations` entry with
 `coverageUnitId`, `cancelled: true`, and a non-empty `reason`.
 
+Do not survey again. When the selected survey receipt for a required unit is `failed` or `skipped`, it
+must be explicitly cancelled with a reason and cannot be bound to a page or domain; this preserves the
+missing-evidence boundary rather than turning it into a wiki claim.
+
 Copy `wikiLanguage` from `inputs/run-policy.json` into the Spec top-level field. Write every page
 `title` and `question` in that language (`zh` → Simplified Chinese prose; identifiers stay as-is).
 

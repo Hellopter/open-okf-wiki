@@ -38,7 +38,7 @@ const ENVELOPE = {
   required: ["status", "summary"],
   properties: {
     status: { type: "string", enum: ["ok", "failed", "skipped"] },
-    summary: { type: "string", maxLength: 6000 },
+    summary: { type: "string", maxLength: 1500 },
   },
 };
 
@@ -133,13 +133,22 @@ const RESUMED_REVIEW = {
   },
 };
 
-const DISCOVERY = {
+const SURVEY_MERGE = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "summary", "missingUnitIds"],
+  required: ["status", "pass", "artifactsPath", "missingUnitIds", "retryUnitIds", "needsDomainLabels"],
   properties: {
-    ...ENVELOPE.properties,
+    status: { type: "string", enum: ["ok", "failed"] },
+    pass: { type: "integer", minimum: 1 },
+    artifactsPath: { type: "string", minLength: 1 },
     missingUnitIds: { type: "array", items: { type: "string", minLength: 1 } },
+    retryUnitIds: { type: "array", items: { type: "string", minLength: 1 } },
+    selectedUnitIds: { type: "array", items: { type: "string", minLength: 1 } },
+    invalidReceiptPaths: { type: "array", items: { type: "string", minLength: 1 } },
+    needsDomainLabels: { type: "boolean" },
+    domains: { type: "integer", minimum: 0 },
+    flows: { type: "integer", minimum: 0 },
+    summary: { type: "string", maxLength: 1500 },
   },
 };
 
@@ -223,6 +232,10 @@ function safeId(value) {
   return String(value).replace(/[^A-Za-z0-9._:-]+/g, "-").slice(0, 80) || "item";
 }
 
+function surveyFileId(value) {
+  return encodeURIComponent(String(value));
+}
+
 function clampInt(value, min, max, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -291,12 +304,6 @@ function scheduleWaves(items, { concurrency, perSourceConcurrency }, sourceKey) 
   return wavesOut;
 }
 
-function isTransientSurveyFailure(result) {
-  if (!result || result.status === "ok") return false;
-  const text = `${result.status || ""} ${result.summary || ""}`.toLowerCase();
-  return /rate[\s_-]?limit|overloaded|too many requests|\b429\b|\b529\b|\b503\b|capacity|temporarily unavailable|timeout|timed out|try again later/.test(text);
-}
-
 function selectUnitsByIds(units, ids) {
   const want = new Set([...ids].map(String));
   return (units || []).filter((unit) => want.has(String(unit.id)));
@@ -313,7 +320,7 @@ function languageDirective(wikiLanguage, scope) {
 }
 
 function multiSourceDirective(sourceCount, tier) {
-  if (!(sourceCount >= 2 || tier === "L3")) return "";
+  if (!(sourceCount >= 2 && tier === "L3")) return "";
   return [
     "MULTI-SOURCE DEEP ANALYSIS REQUIRED.",
     "Keep each source substantively represented with grounded purpose, public surfaces, key modules, and contracts.",
@@ -374,6 +381,19 @@ async function runHostPublish(agent, opts) {
       "Return status=ok, checkpointPath, and checkpointDigest from JSON stdout.",
     ].join("\n"),
     { label: label || `publish:${phase}`, schema: HOST },
+  );
+}
+
+async function runSurveyMerge(agent, { workdir, runId, pass, labelsPath }) {
+  const labels = labelsPath ? ` --labels ${labelsPath}` : "";
+  return agent(
+    [
+      `Survey merge. workdir=${workdir}.`,
+      hostCliPreamble(workdir),
+      `Run exactly: <hostCli.node> <hostCli.script> survey-merge --workspace <hostCli.workspaceRoot> --run ${runId} --pass ${pass}${labels}, substituting hostCli values.`,
+      "The host writes the Discovery Map and artifact list. Return the parsed command JSON fields exactly.",
+    ].join("\n"),
+    { label: `survey-merge:${pass}${labelsPath ? ":labels" : ""}`, schema: SURVEY_MERGE },
   );
 }
 
@@ -440,8 +460,6 @@ return await (async () => {
 
   if (startsPlanning) {
     let inventory;
-    let surveyLedger = [];
-    let discovery;
     if (startAt === "survey") {
       phase("Survey");
       inventory = await agent(
@@ -455,11 +473,11 @@ return await (async () => {
       );
       if (!inventory?.units?.length) return { runId, workdir, stopped: "inventory has no coverage units", inventory };
       applyContext(inventory);
-      const surveyLanguage = languageDirective(wikiLanguage, "survey receipts, labels, and planning prose");
+      const surveyLanguage = languageDirective(wikiLanguage, "survey receipt summaries, purposes, and open questions");
       let pendingUnits = inventory.units;
       let lastSurveyPass = 1;
+      let surveyMerge = null;
       for (let pass = 1; pass <= limits.maxCoveragePasses && pendingUnits.length; pass++) {
-        const transient = new Set();
         for (const wave of scheduleWaves(
           pendingUnits,
           { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
@@ -468,62 +486,62 @@ return await (async () => {
           const results = await parallel(
             wave.map((unit) => () => {
               const id = safeId(unit.id);
+              const receiptFile = surveyFileId(unit.id);
+              const sourceMulti = unit.kind === "source" ? multiSource : "";
               return agent(
                 [
                   `Surveyor for coverage unit ${JSON.stringify(unit)}. workdir=${workdir}.`,
-                  `Read ${methodRoot}/references/research.md and ${workdir}/inputs/run-policy.json in full.`,
+                  `Read ${methodRoot}/references/survey-unit.md and ${workdir}/inputs/run-policy.json.`,
                   surveyLanguage,
-                  multiSource,
+                  sourceMulti,
                   focusRule,
                   `Read frozen evidence only under ${workdir}/sources/.`,
                   unit.kind === "surface"
-                    ? `Focus on sources/${unit.sourceId}/${unit.path || ""} only.`
-                    : "Map source entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts.",
-                  `Write the detailed receipt under analysis/receipts/survey/${id}-pass-${pass}.json.`,
-                  "Return status and a compact summary only. Do not write candidate pages.",
+                    ? `Surface unit: inspect only sources/${unit.sourceId}/${unit.path || ""}/.`
+                    : "Source unit: index entry points, build topology, surfaces, and cross-surface contracts; list child surfaces in relatedCoverageUnitIds without deep-diving them.",
+                  `Write one schema-shaped survey receipt under analysis/receipts/survey/${receiptFile}-pass-${pass}.json even when the unit is incomplete.`,
+                  "Return status and a compact summary only. Do not write maps, artifact lists, or candidate pages.",
                 ].filter(Boolean).join("\n"),
                 { label: `survey:${pass}:${id}`, schema: ENVELOPE },
               );
             }),
           );
-          surveyLedger.push(
-            ...wave.map((unit, index) => {
-              const result = results[index];
-              const retryable = isTransientSurveyFailure(result);
-              if (retryable) transient.add(String(unit.id));
-              return {
-                id: String(unit.id),
-                owner: unit.sourceId,
-                status: result?.status ?? "failed",
-                receiptPath: `analysis/receipts/survey/${safeId(unit.id)}-pass-${pass}.json`,
-                summary: result?.summary ?? "surveyor returned no summary",
-              };
-            }),
-          );
+          if (results.some((result) => result?.status === "failed")) {
+            log(`one or more surveyors reported failure in pass ${pass}; host merge will classify the on-disk receipts`);
+          }
         }
-        discovery = await agent(
-          [
-            `Discovery reducer. workdir=${workdir}. Read ${methodRoot}/references/research.md.`,
-            `Read inventory, policy, and only these survey receipts: ${JSON.stringify(conciseLedger(surveyLedger))}.`,
-            surveyLanguage,
-            multiSource,
-            "Write analysis/discovery-map.json with complete coverage units, domains, flows, concepts, and visible failed/cancelled units.",
-            dataPlaneOnlyRule(),
-            `Write analysis/receipts/discovery-artifacts-pass-${pass}.json as a JSON array of {id,type,path,coverageUnitIds}; its coverage union must include every required unit.`,
-            "Return missingUnitIds only for required coverage that remains surveyable. Do not guess missing evidence.",
-          ].filter(Boolean).join("\n"),
-          { label: `reduce-discovery:${pass}`, schema: DISCOVERY },
-        );
-        if (discovery?.status !== "ok") return { runId, workdir, surveyLedger, discovery, stopped: "discovery reduction failed" };
+        surveyMerge = await runSurveyMerge(agent, { workdir, runId, pass });
+        if (surveyMerge?.status !== "ok") return { runId, workdir, surveyMerge, stopped: "survey merge failed" };
         lastSurveyPass = pass;
         pendingUnits = pass >= limits.maxCoveragePasses
           ? []
-          : selectUnitsByIds(inventory.units, new Set([...(discovery.missingUnitIds ?? []).map(String), ...transient]));
+          : selectUnitsByIds(inventory.units, new Set((surveyMerge.retryUnitIds ?? []).map(String)));
+      }
+      if (!surveyMerge) return { runId, workdir, stopped: "survey produced no host merge" };
+      if (surveyMerge.missingUnitIds?.length) {
+        return { runId, workdir, surveyMerge, stopped: "survey coverage remains retryable or missing after its pass budget" };
+      }
+      if (surveyMerge.needsDomainLabels) {
+        const labelsPath = `analysis/receipts/discovery-labels-pass-${lastSurveyPass}.json`;
+        const labels = await agent(
+          [
+            `Discovery labels. workdir=${workdir}.`,
+            "Read analysis/discovery-map.json only.",
+            languageDirective(wikiLanguage, "domain and flow labels"),
+            `Write ${labelsPath} as JSON {domains,flows}; each item has id, summary, coverageUnitIds, and flows may set crossSource.`,
+            "Provide at least one domain. Do not edit the Discovery Map, receipts, or artifact list.",
+            "Return status and a compact summary only.",
+          ].join("\n"),
+          { label: `discover-labels:${lastSurveyPass}`, schema: ENVELOPE },
+        );
+        if (labels?.status !== "ok") return { runId, workdir, labels, stopped: "discovery labels failed" };
+        surveyMerge = await runSurveyMerge(agent, { workdir, runId, pass: lastSurveyPass, labelsPath });
+        if (surveyMerge?.status !== "ok") return { runId, workdir, surveyMerge, stopped: "survey merge labels failed" };
       }
       discoveryCheckpoint = await runHostPublish(agent, {
         workdir,
         phase: "discover",
-        artifactsJson: `analysis/receipts/discovery-artifacts-pass-${lastSurveyPass}.json`,
+        artifactsJson: surveyMerge.artifactsPath,
         label: "publish:discover",
       });
       if (discoveryCheckpoint?.status !== "ok") return { runId, workdir, discoveryCheckpoint, stopped: "discovery checkpoint failed" };

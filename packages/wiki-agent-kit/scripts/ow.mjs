@@ -14,6 +14,7 @@ import { assertInstalledAssets, assertLegacyAssetsRemovable, installAll } from "
 import { resolveWorkspaceRoot } from "./lib/paths.mjs";
 import { prepareRun, PREPARE_MODES } from "./lib/prepare.mjs";
 import { addCloneSource, addPathSource, listSources, removeSource } from "./lib/sources.mjs";
+import { mergeSurveyReceipts } from "./lib/survey.mjs";
 import { candidateSealStatus, regenerateIndexes, sealCandidate, validateWorkdir } from "./lib/validate.mjs";
 import { findSource, initWorkspace, loadWorkspace, saveWorkspace } from "./lib/workspace.mjs";
 
@@ -385,6 +386,15 @@ function cmdPublish(args) {
   printJson({ status: "ok", ...publishArtifacts(root, run, { phase, artifactsJsonPath }) });
 }
 
+function cmdSurveyMerge(args) {
+  const root = workspaceRoot(args.flags);
+  if (args._.length) die("usage: ow survey-merge --pass <n> [--labels <relative-path>] [--run <runId>]");
+  const pass = stringFlag(args.flags.pass, "--pass");
+  if (!pass) die("usage: ow survey-merge --pass <n> [--labels <relative-path>] [--run <runId>]");
+  const run = resolveRun(root, args);
+  printJson({ status: "ok", ...mergeSurveyReceipts(run.workdir, { pass, labelsPath: stringFlag(args.flags.labels, "--labels") }) });
+}
+
 function cmdHelp() {
   console.log(`ow — wiki-agent-kit v3 host CLI
 
@@ -395,6 +405,7 @@ Human entry:
 
 Workflow host API (JSON):
   ow prepare --mode auto|plan|write|retry-plan|retry-write|restart [--focus TEXT]
+  ow survey-merge --pass <n> [--labels <relative-path>]
   ow publish --phase <phase> --artifacts-json <relative-path> [--run <runId>]
   ow gate plan|check [--run <runId>]
   ow validate [--run <runId>]
@@ -431,6 +442,7 @@ async function main() {
       case "install": return cmdInstall(args);
       case "doctor": return cmdDoctor(args);
       case "prepare": return cmdPrepare(args);
+      case "survey-merge": return cmdSurveyMerge(args);
       case "publish": return cmdPublish(args);
       case "gate": return cmdGate(args);
       case "validate": return cmdValidate(args);

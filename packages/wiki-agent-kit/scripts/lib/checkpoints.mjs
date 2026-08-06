@@ -5,6 +5,7 @@ import path from "node:path";
 import { hashTree, isInside, readJson, sha256File, sha256Json } from "./artifacts.mjs";
 import { readCurrent, setActiveRun } from "./active-run.mjs";
 import { checkpointPath, checkpointsDir } from "./paths.mjs";
+import { assertDiscoverSurveyQuality } from "./survey.mjs";
 import { candidateSealStatus, validateWorkdir } from "./validate.mjs";
 
 const CHECKPOINT_VERSION = 3;
@@ -236,7 +237,11 @@ export function publishCheckpoint(root, run, input) {
     assertSealableCandidate(run.workdir);
   }
   const artifacts = normalizeArtifacts(run.workdir, input.phase, input.artifacts);
-  if (input.phase === "discover") assertDiscoverCoverage(run.workdir, artifacts);
+  if (input.phase === "discover") {
+    assertDiscoverCoverage(run.workdir, artifacts);
+    const surveyQuality = assertDiscoverSurveyQuality(run.workdir, artifacts);
+    if (!surveyQuality.ok) throw new Error(`discover survey quality failed: ${surveyQuality.errors.join("; ")}`);
+  }
   if (input.phase === "validate") {
     const paths = new Set(artifacts.map((artifact) => artifact.path));
     for (const required of ["analysis/validation.json", "analysis/candidate.manifest.json"]) {
@@ -282,6 +287,10 @@ export function verifyCheckpoint(workdir, phase) {
       const relative = asRelativePath(artifact.path, `artifact ${artifact.id}.path`);
       const actual = ensureArtifactPath(workdir, relative).digest;
       if (`sha256:${actual}` !== artifact.digest) throw new Error(`artifact digest changed: ${artifact.id}`);
+    }
+    if (phase === "discover") {
+      const surveyQuality = assertDiscoverSurveyQuality(workdir, record.artifacts);
+      if (!surveyQuality.ok) throw new Error(`discover survey quality failed: ${surveyQuality.errors.join("; ")}`);
     }
     return { ok: true, checkpoint: record, errors: [] };
   } catch (error) {
