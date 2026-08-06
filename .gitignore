@@ -1,3 +1,6 @@
 node_modules/
 refs/
 tmp/
+.agents/
+.claude/
+skills-lock.json
