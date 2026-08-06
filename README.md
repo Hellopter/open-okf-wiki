@@ -9,10 +9,17 @@ Portable **wiki-agent-kit**: deterministic host CLI + frozen method pack + one n
 
 ## Install CLI (dev)
 
+Link the kit package (it owns the `ow` bin). Do **not** run `pnpm link --global` from the monorepo
+root — the root package has no binaries and pnpm will warn `has no binaries`.
+
 ```bash
 pnpm --dir packages/wiki-agent-kit link --global
+# equivalent: cd packages/wiki-agent-kit && pnpm link --global
 ow help
 ```
+
+If a previous root link left `open-okf-wiki-wiki-agent-kit` in the global store, remove it with
+`pnpm remove -g open-okf-wiki-wiki-agent-kit`, then link the kit again.
 
 ## Quick start
 

@@ -21,8 +21,21 @@ evidence stays in the run workdir.
 
 ## Setup
 
+Global-link **this package** so the `ow` bin is registered. From the monorepo root:
+
 ```bash
 pnpm --dir packages/wiki-agent-kit link --global
+# or: cd packages/wiki-agent-kit && pnpm link --global
+ow help
+```
+
+Do not `pnpm link --global` at the monorepo root: the root workspace package has no `bin` field, so
+pnpm prints `has no binaries` and does not install `ow`. If that already happened, clean it up with
+`pnpm remove -g open-okf-wiki-wiki-agent-kit` and re-link this package.
+
+Then initialize a workspace:
+
+```bash
 ow init ./my-wiki --name my-wiki --lang zh --path /abs/repo --id app
 cd my-wiki
 ow doctor
