@@ -9,6 +9,16 @@ import { effectiveSourceIgnores } from "./ignores.mjs";
 import { assertInsideRoot, sourcePath, sourcesDir } from "./paths.mjs";
 import { findSource, loadWorkspace, saveWorkspace, upsertSource } from "./workspace.mjs";
 
+const SOURCE_ID_RE = /^[a-z0-9][a-z0-9._-]*$/;
+
+function assertSourceId(value) {
+  const sourceId = String(value || "");
+  if (!SOURCE_ID_RE.test(sourceId)) {
+    throw new Error(`invalid source id: ${value}`);
+  }
+  return sourceId;
+}
+
 function slugId(raw) {
   const s = String(raw)
     .trim()
@@ -16,7 +26,7 @@ function slugId(raw) {
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   if (!s) throw new Error("empty source id");
-  return s;
+  return assertSourceId(s);
 }
 
 function inferIdFromUrl(url) {
@@ -167,15 +177,38 @@ export function addPathSource(root, { linkedPath, id }) {
 
 export function removeSource(root, sourceId) {
   const workspace = loadWorkspace(root);
-  const src = findSource(workspace, sourceId);
+  const id = assertSourceId(sourceId);
+  const src = findSource(workspace, id);
   if (!src) throw new Error(`unknown source: ${sourceId}`);
-  workspace.sources = workspace.sources.filter((s) => s.id !== sourceId);
-  saveWorkspace(root, workspace);
-  const dest = sourcePath(root, sourceId);
-  if (fs.existsSync(dest)) {
-    fs.rmSync(dest, { recursive: true, force: true });
+  assertSourceId(src.id);
+
+  const workspaceReal = fs.realpathSync(root);
+  const sourcesReal = fs.realpathSync(sourcesDir(root));
+  assertInsideRoot(workspaceReal, sourcesReal);
+  const dest = sourcePath(root, id);
+  const parentReal = fs.realpathSync(path.dirname(dest));
+  if (parentReal !== sourcesReal) {
+    throw new Error(`source path escapes sources directory: ${sourceId}`);
   }
-  return { removed: sourceId };
+
+  try {
+    const stat = fs.lstatSync(dest);
+    if (stat.isSymbolicLink()) {
+      // A linked local source is an entry under sources/, not its external target.
+      fs.unlinkSync(dest);
+    } else {
+      const destReal = fs.realpathSync(dest);
+      if (!isInside(sourcesReal, destReal)) {
+        throw new Error(`source path escapes sources directory: ${sourceId}`);
+      }
+      fs.rmSync(dest, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  workspace.sources = workspace.sources.filter((source) => source.id !== id);
+  saveWorkspace(root, workspace);
+  return { removed: id };
 }
 
 export function listSources(root) {

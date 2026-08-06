@@ -4,17 +4,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readCurrent, resolveActiveRun, setActiveRun } from "./lib/active-run.mjs";
-import { checkpointRun, verifyCheckpoint, verifyReviewLeaf } from "./lib/checkpoints.mjs";
+import { readCurrent, resolveActiveRun } from "./lib/active-run.mjs";
+import { verifyCheckpoint, verifyReviewLeaf } from "./lib/checkpoints.mjs";
 import { freezeRun, listRuns, loadRunMeta } from "./lib/freeze.mjs";
-import { gcWorkspace } from "./lib/gc.mjs";
 import { verifyPlanGate, writePlanGateReceipt } from "./lib/gate.mjs";
-import {
-  defaultHandoffOut,
-  handoffPublish,
-  handoffWrite,
-  validateHandoffProposalShape,
-} from "./lib/handoff.mjs";
+import { publishArtifacts } from "./lib/publish.mjs";
 import { effectiveSourceIgnores, listPresetSummaries, loadIgnorePresets } from "./lib/ignores.mjs";
 import { assertInstalledAssets, assertLegacyAssetsRemovable, installAll } from "./lib/install.mjs";
 import { resolveWorkspaceRoot } from "./lib/paths.mjs";
@@ -22,7 +16,6 @@ import { prepareRun, PREPARE_MODES } from "./lib/prepare.mjs";
 import { addCloneSource, addPathSource, listSources, removeSource } from "./lib/sources.mjs";
 import { candidateSealStatus, regenerateIndexes, sealCandidate, validateWorkdir } from "./lib/validate.mjs";
 import { findSource, initWorkspace, loadWorkspace, saveWorkspace } from "./lib/workspace.mjs";
-import { readJson } from "./lib/artifacts.mjs";
 
 function die(message, code = 1) {
   console.error(`ow: ${message}`);
@@ -47,7 +40,7 @@ function parseArgs(argv) {
       args.flags[key] = true;
       continue;
     }
-    // Collect repeated flags as arrays (--artifact, --digest, --question).
+    // Preserve repeated flags as arrays for commands that accept them.
     if (Object.prototype.hasOwnProperty.call(args.flags, key)) {
       const prev = args.flags[key];
       args.flags[key] = Array.isArray(prev) ? [...prev, next] : [prev, next];
@@ -57,11 +50,6 @@ function parseArgs(argv) {
     index++;
   }
   return args;
-}
-
-function flagList(value) {
-  if (value === undefined || value === true) return [];
-  return Array.isArray(value) ? value.map(String) : [String(value)];
 }
 
 function workspaceRoot(flags) {
@@ -75,7 +63,7 @@ function stringFlag(value, name) {
 }
 
 function cmdInit(args) {
-  if (args.flags.format || args.flags.config) die("workspace v2 always uses workspace.yaml; --format is no longer supported");
+  if (args.flags.format || args.flags.config) die("workspace v3 always uses workspace.yaml; --format is no longer supported");
   const root = path.resolve(args._[0] || ".");
   if (args.flags.force) assertLegacyAssetsRemovable(root);
   const initialized = initWorkspace(root, {
@@ -261,26 +249,10 @@ function cmdInstall(args) {
 
 function cmdPrepare(args) {
   const root = workspaceRoot(args.flags);
-  if (args._.length) die("usage: ow prepare --mode auto|plan|write|retry-plan|retry-write [--focus TEXT]");
+  if (args._.length) die("usage: ow prepare --mode auto|plan|write|retry-plan|retry-write|restart [--focus TEXT]");
   const mode = args.flags.mode || "auto";
   if (!PREPARE_MODES.has(mode)) die(`invalid prepare mode: ${mode}`);
   printJson(prepareRun(root, { mode, focus: stringFlag(args.flags.focus, "--focus") }));
-}
-
-function cmdCheckpoint(args) {
-  const root = workspaceRoot(args.flags);
-  if (args._.length) die("usage: ow checkpoint --phase <phase> --proposal <relative-path>");
-  const phase = stringFlag(args.flags.phase, "--phase");
-  const proposalPath = stringFlag(args.flags.proposal, "--proposal");
-  if (!phase || !proposalPath) die("usage: ow checkpoint --phase <phase> --proposal <relative-path>");
-  const run = resolveRun(root, args);
-  const result = checkpointRun(root, run, { phase, proposalPath });
-  printJson({
-    status: "ok",
-    checkpointPath: result.checkpointPath,
-    checkpointDigest: result.checkpointDigest,
-    summary: result.summary,
-  });
 }
 
 function cmdGate(args) {
@@ -295,14 +267,7 @@ function cmdGate(args) {
     return;
   }
   const { result, receipt } = writePlanGateReceipt(run.workdir, run.runId, run.meta.methodDigest);
-  const current = setActiveRun(root, {
-    runId: run.runId,
-    workdir: run.workdir,
-    phase: receipt ? "write-ready" : "plan-failed",
-    status: receipt ? "active" : "blocked",
-    checkpointDigest: readCurrent(root)?.checkpointDigest || null,
-  });
-  printJson({ ...result, receipt, current });
+  printJson({ ...result, receipt, current: readCurrent(root) });
   if (!result.ok) process.exit(2);
 }
 
@@ -350,17 +315,8 @@ function cmdValidate(args) {
   regenerateIndexes(path.join(run.workdir, "candidate"));
   const result = validateWorkdir(run.workdir);
   const manifest = result.ok ? sealCandidate(run.workdir, result) : null;
-  // The validate checkpoint is the only transition to sealed. Keep the trusted
-  // final review pointer intact until its handoff is checkpointed.
-  if (!result.ok) {
-    setActiveRun(root, {
-      runId: run.runId,
-      workdir: run.workdir,
-      phase: "validate-failed",
-      status: "blocked",
-      checkpointDigest: finalReview.checkpoint.checkpointDigest,
-    });
-  }
+  // The validate publish is the only transition to sealed. A failed check
+  // leaves the trusted review pointer intact so retry/repair remains possible.
   printJson({ ...result, manifest, reviewCheckpointDigest: finalReview.checkpoint.checkpointDigest, current: readCurrent(root) });
   if (!result.ok) process.exit(2);
 }
@@ -419,88 +375,18 @@ function cmdDoctor(args) {
   });
 }
 
-function cmdHandoff(args) {
+function cmdPublish(args) {
   const root = workspaceRoot(args.flags);
-  const sub = args._[0];
-  if (!["write", "validate", "publish"].includes(sub)) {
-    die("usage: ow handoff write|validate|publish --phase <phase> ...");
-  }
+  if (args._.length) die("usage: ow publish --phase <phase> --artifacts-json <relative-path> [--run <runId>]");
   const phase = stringFlag(args.flags.phase, "--phase");
-  if (!phase) die("usage: ow handoff <cmd> --phase <phase> ...");
+  const artifactsJsonPath = stringFlag(args.flags["artifacts-json"], "--artifacts-json");
+  if (!phase || !artifactsJsonPath) die("usage: ow publish --phase <phase> --artifacts-json <relative-path> [--run <runId>]");
   const run = resolveRun(root, args);
-  const out =
-    stringFlag(args.flags.out, "--out") ||
-    defaultHandoffOut(phase, { pass: args.flags.pass === true ? 1 : args.flags.pass });
-  if (sub === "validate") {
-    const proposalPath = stringFlag(args.flags.proposal, "--proposal") || out;
-    const abs = path.resolve(run.workdir, proposalPath);
-    const proposal = readJson(abs);
-    const result = validateHandoffProposalShape(proposal, { phase });
-    printJson({ ok: result.ok, proposalPath, errors: result.errors, proposal: result.ok ? proposal : undefined });
-    if (!result.ok) process.exit(2);
-    return;
-  }
-  const producer = stringFlag(args.flags.producer, "--producer");
-  if (!producer) die("usage: ow handoff write|publish --phase <phase> --producer <id> --out <path> --artifact ...");
-  const digests = flagList(args.flags.digest);
-  const artifactFlags = flagList(args.flags.artifact);
-  const questions = flagList(args.flags.question);
-  let summary = stringFlag(args.flags.summary, "--summary");
-  if (args.flags["summary-file"]) {
-    const sf = String(args.flags["summary-file"]);
-    const abs = path.isAbsolute(sf) ? sf : path.resolve(run.workdir, sf);
-    summary = fs.readFileSync(abs, "utf8").trim();
-  }
-  const artifactsJson = stringFlag(args.flags["artifacts-json"], "--artifacts-json");
-  const status = args.flags.status === "blocked" ? "blocked" : "complete";
-  const reason = stringFlag(args.flags.reason, "--reason");
-  if (!artifactFlags.length && !artifactsJson) {
-    die("handoff write|publish requires --artifact and/or --artifacts-json");
-  }
-  const opts = {
-    phase,
-    out,
-    producer,
-    inputCheckpointDigests: digests,
-    artifactFlags,
-    artifactsJsonPath: artifactsJson,
-    summary,
-    openQuestions: questions,
-    status,
-    reason,
-  };
-  if (sub === "write") {
-    const written = handoffWrite(run.workdir, opts);
-    printJson({ status: "ok", proposalPath: written.proposalPath, proposal: written.proposal });
-    return;
-  }
-  printJson(handoffPublish(root, run, opts));
-}
-
-function cmdGc(args) {
-  const root = workspaceRoot(args.flags);
-  loadWorkspace(root);
-  const keepRunsRaw = args.flags["keep-runs"];
-  const keepRuns =
-    keepRunsRaw === undefined || keepRunsRaw === true
-      ? 3
-      : Number.parseInt(String(keepRunsRaw), 10);
-  if (!Number.isFinite(keepRuns) || keepRuns < 0) die("usage: ow gc [--keep-runs N] [--dry-run] [--runs-only|--objects-only]");
-  const runsOnly = Boolean(args.flags["runs-only"]);
-  const objectsOnly = Boolean(args.flags["objects-only"]);
-  if (runsOnly && objectsOnly) die("ow gc: --runs-only and --objects-only are mutually exclusive");
-  printJson(
-    gcWorkspace(root, {
-      keepRuns,
-      dryRun: Boolean(args.flags["dry-run"]),
-      runs: objectsOnly ? false : true,
-      objects: runsOnly ? false : true,
-    }),
-  );
+  printJson({ status: "ok", ...publishArtifacts(root, run, { phase, artifactsJsonPath }) });
 }
 
 function cmdHelp() {
-  console.log(`ow — wiki-agent-kit v2 host CLI
+  console.log(`ow — wiki-agent-kit v3 host CLI
 
 Human entry:
   ow init ./ws --lang zh --path /repo --id app
@@ -508,23 +394,17 @@ Human entry:
   /wiki [focus]
 
 Workflow host API (JSON):
-  ow prepare --mode auto|plan|write|retry-plan|retry-write [--focus TEXT]
-  ow handoff write|validate|publish --phase <phase> --producer <id> --out <path> \\
-      [--digest D]... [--artifact id:type:owner:path[:deps]]... \\
-      [--artifacts-json REL] [--summary S] [--summary-file REL] [--question Q]... \\
-      [--status complete|blocked] [--reason R]
-  ow checkpoint --phase <phase> --proposal <relative-path>
+  ow prepare --mode auto|plan|write|retry-plan|retry-write|restart [--focus TEXT]
+  ow publish --phase <phase> --artifacts-json <relative-path> [--run <runId>]
   ow gate plan|check [--run <runId>]
   ow validate [--run <runId>]
   ow status | doctor | install --force
-  ow gc [--keep-runs N] [--dry-run] [--runs-only|--objects-only]
 
-Handoff proposals are host-authored (always version 2). Agents write data-plane
-artifacts and artifact lists only; they must not invent proposal version/phase.
+Agents write data-plane artifacts and a compact artifact list. ow publish
+computes digests and atomically records the next trusted phase checkpoint.
 
-Freeze stores source bytes write-once under .wiki-agent/objects and hardlinks
-(or copies) them into each run workdir. Use ow gc to drop old runs and
-unreferenced objects.
+Freeze copies source bytes directly into each run workdir. There is no shared
+object store or automatic run deletion.
 
 Workspace setup:
   ow init [dir] --name N --lang en|zh [--clone URL|--path DIR] [--id ID]
@@ -532,7 +412,7 @@ Workspace setup:
   ow ignore show|set|defaults|presets …
   ow config set wikiLanguage en|zh | get
 
-v2 installs one workflow: /wiki. State lives in .wiki-agent/current.json and run checkpoints.
+v3 installs one workflow: /wiki. State lives in .wiki-agent/current.json and run checkpoints.
 `);
 }
 
@@ -551,11 +431,9 @@ async function main() {
       case "install": return cmdInstall(args);
       case "doctor": return cmdDoctor(args);
       case "prepare": return cmdPrepare(args);
-      case "handoff": return cmdHandoff(args);
-      case "checkpoint": return cmdCheckpoint(args);
+      case "publish": return cmdPublish(args);
       case "gate": return cmdGate(args);
       case "validate": return cmdValidate(args);
-      case "gc": return cmdGc(args);
       default: return die(`unknown command: ${command} (try ow help)`);
     }
   } catch (error) {

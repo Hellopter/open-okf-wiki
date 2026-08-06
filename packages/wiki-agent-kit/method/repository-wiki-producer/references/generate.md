@@ -24,8 +24,8 @@ depth (not a README restatement), and have nearby verified Source Citations. For
 the overview repository map, per-source module/architecture coverage, and any critical cross-source
 flow must name participating `sources/<id>/` trees with stage-level citations. Do not add a concept
 page absent from the Spec or change the Spec while writing. After the shard finishes, write an
-artifacts list under `analysis/receipts/` (pages, evidence receipts, dependsOn) without version/phase.
-Host `ow handoff write|publish` creates the version-2 proposal (`write-sources` / `write`). See
+artifacts list under `analysis/receipts/` with `{id,type,path}` entries. Host `ow publish` creates
+the `write-sources` / `write` checkpoints. See
 `references/orchestrator-context.md`.
 
 ## Frontmatter and local links

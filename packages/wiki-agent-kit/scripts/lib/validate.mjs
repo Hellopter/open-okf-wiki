@@ -5,6 +5,7 @@ import path from "node:path";
 import { parseDocument } from "yaml";
 import { candidateDir, candidateManifestPath } from "./paths.mjs";
 import { hashTree, isInside, readJson, writeJson } from "./artifacts.mjs";
+import { verifyFrozenSnapshot } from "./freeze.mjs";
 
 const RESERVED = new Set(["index.md", "log.md"]);
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
@@ -143,6 +144,10 @@ export function validateWorkdir(workdir, opts = {}) {
   const sources = path.join(workdir, "sources");
   const errors = [];
   const warnings = [];
+  const snapshot = verifyFrozenSnapshot(workdir);
+  if (!snapshot.ok) {
+    errors.push(...snapshot.errors.map((error) => `frozen snapshot integrity failed: ${error}`));
+  }
   const scan = walkMd(candidate);
   const files = scan.files;
   for (const rel of scan.unsafe) errors.push(`${rel}: symlinks are not allowed in candidate/`);
@@ -218,7 +223,7 @@ export function validateWorkdir(workdir, opts = {}) {
   for (const assignedPath of owners.keys()) {
     if (!conceptRels.includes(assignedPath)) errors.push(`assigned candidate page missing: ${assignedPath}`);
   }
-  return { ok: !errors.length, errors, warnings, conceptPageCount: conceptRels.length };
+  return { ok: !errors.length, errors, warnings, conceptPageCount: conceptRels.length, snapshot };
 }
 
 /** Mechanically regenerate directory index.md listings (OKF reserved). */

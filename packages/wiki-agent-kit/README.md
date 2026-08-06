@@ -42,7 +42,7 @@ ow doctor
 claude
 ```
 
-Initialization creates `workspace.yaml` v2, `.wiki-agent/runtime.json`, source registration, and one
+Initialization creates `workspace.yaml`, `.wiki-agent/runtime.json`, source registration, and one
 workflow at `.claude/workflows/wiki.workflow.js`. Install always writes that workflow with LF line
 endings; Windows CRLF checkouts are rewritten by `ow init` / `ow install` so Claude Code's Workflow
 `script` approval path does not reject hidden `\r` control characters.
@@ -64,42 +64,27 @@ running, so `/wiki --write` is the only edge from a plan checkpoint with a valid
 The workflow calls the CLI through the pinned `hostCli` recorded in `inputs/run-policy.json`.
 
 ```bash
-ow prepare --mode auto|plan|write|retry-plan|retry-write [--focus TEXT]
-ow handoff write|validate|publish --phase PHASE --producer ID --out analysis/handoffs/NAME.json \
-  [--digest D]... [--artifact id:type:owner:path[:deps]]... [--artifacts-json REL] [--summary S]
-ow checkpoint --phase PHASE --proposal analysis/handoffs/NAME.json
+ow prepare --mode auto|plan|write|retry-plan|retry-write|restart [--focus TEXT]
+ow publish --phase PHASE --artifacts-json REL
 ow gate plan|check
 ow validate
-ow gc [--keep-runs N] [--dry-run] [--runs-only|--objects-only]
 ```
 
-Handoff proposals are **host-authored** (`ow handoff write|publish` always sets `version: 2`). Agents
-write data-plane artifacts and `*-artifacts.json` lists only — they must not invent proposal
-`version` or `phase`. `ow handoff publish` writes the proposal then checkpoints. `ow checkpoint` alone
-remains valid when a proposal file already exists. `ow validate` prepares a verified candidate
-manifest; its following `validate` checkpoint is the only transition to `sealed`.
+Agents write data-plane artifacts and compact `*-artifacts.json` lists. `ow publish` validates paths,
+computes digests, derives the only valid predecessor, and writes a v3 checkpoint. `ow validate` prepares
+a verified candidate manifest; its following `validate` publish is the only transition to `sealed`.
 
-## Freeze storage
+## Frozen sources
 
-`ow prepare` freezes each registered source into the run workdir as filtered evidence under
-`workdir/sources/<id>/`. File bytes are stored **write-once** in the workspace CAS:
+`ow prepare` copies each registered source into the run workdir as filtered evidence under
+`workdir/sources/<id>/`. The snapshot manifest records the content digest and complete file list
+for every frozen source; later lifecycle stages verify that copy rather than reading the live source.
 
-```text
-.wiki-agent/objects/sha256/<aa>/<sha256>
-```
+## Checkpoints and ownership
 
-Each run path tree hardlinks into those objects when the filesystem allows (NTFS/local same volume,
-no admin required for file hardlinks). Cross-volume or permission failures fall back to a full copy.
-The method pack remains a small recursive copy. Placement counters (`hardlinked`, `copied`,
-`objectsCreated`, `objectsReused`) are recorded on the freeze snapshot and run meta.
-
-Use `ow gc` to drop old non-active runs (default: keep the newest 3, always protect
-`.wiki-agent/current.json`) and reclaim unreferenced CAS objects. Prefer `--dry-run` first.
-
-## Handoff and ownership
-
-- `analysis/checkpoints/*.json` is the durable control plane.
-- `analysis/handoffs/*.json` are host-authored control-plane proposals; receipts, pages, and defects are the data plane.
+- `analysis/checkpoints/*.json` is the durable local control plane.
+- Receipts, pages, and defects are data-plane files. Artifact lists contain only `id`, `type`, `path`,
+  and discovery `coverageUnitIds` where applicable.
 - `analysis/page-assignments.json` assigns every page to exactly one source/domain or integration
   owner. Shards cannot write another owner's path.
 - Fan-out concurrency comes from `inputs/run-policy.json` `limits`: `batchConcurrency` default 4
@@ -113,14 +98,14 @@ Use `ow gc` to drop old non-active runs (default: keep the newest 3, always prot
 
 | Condition | Result |
 |---|---|
-| Invalid handoff, stale digest, missing dependency, duplicate owner | Checkpoint rejects the transition. |
-| Required shard fails | Run is checkpointed as blocked; no integration or validation proceeds. |
+| Invalid artifact, stale digest, invalid predecessor, or incomplete discovery coverage | Publish rejects the transition. |
+| Required shard fails | Workflow stops; retry or restart is explicit. |
 | Plan gate fails | Fix the planned artifacts and rerun `/wiki --retry plan`. |
 | Candidate review or validation fails | Run `/wiki --retry write`; source and plan checkpoints remain intact. |
 | Validate command completed but the terminal checkpoint did not | Run `/wiki`; it resumes at Validate without rewriting pages. |
-| Sealed or tampered candidate | `ow prepare` fails closed until a retry starts a replacement write. |
+| Sealed or tampered candidate | `ow prepare` fails closed; use `/wiki --restart` for a new frozen run. |
 
 ## Compatibility
 
-vNext supports only `workspace.yaml` v2 and the single `/wiki` workflow. It intentionally does not
+V3 supports only its v3 checkpoints and the single `/wiki` workflow. It intentionally does not
 read legacy workspace formats, Skills, workflow names, CLI commands, or run pointers.

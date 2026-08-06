@@ -11,7 +11,7 @@ import {
   verifyPlanGate,
   writePlanGateReceipt,
 } from "../scripts/lib/gate.mjs";
-import { checkpointRun } from "../scripts/lib/checkpoints.mjs";
+import { publishArtifacts } from "../scripts/lib/publish.mjs";
 import { candidateSealStatus, regenerateIndexes, sealCandidate, validateWorkdir } from "../scripts/lib/validate.mjs";
 
 function writeJson(file, value) {
@@ -19,61 +19,62 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function publish(root, workdir, phase, artifacts) {
+  const artifactsPath = `analysis/receipts/${phase}-artifacts.json`;
+  writeJson(path.join(workdir, artifactsPath), artifacts);
+  return publishArtifacts(root, { runId: "run-1", workdir }, { phase, artifactsJsonPath: artifactsPath });
+}
+
 function setupPlanningRun() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-gate-v2-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-gate-v3-"));
   const workdir = path.join(root, "run", "workdir");
   fs.mkdirSync(path.join(workdir, "inputs"), { recursive: true });
-  fs.mkdirSync(path.join(workdir, "analysis", "handoffs"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts"), { recursive: true });
   const inventory = {
     tier: "L1",
     sourceCount: 1,
     sources: [{ sourceId: "api" }],
-    coverageUnits: [{ id: "api", kind: "source", sourceId: "api", required: true }],
+    coverageUnits: [
+      { id: "api", kind: "source", sourceId: "api", required: true },
+      { id: "api::web", kind: "surface", sourceId: "api", required: true },
+    ],
   };
+  writeJson(path.join(root, ".wiki-agent", "current.json"), {
+    version: 3,
+    runId: "run-1",
+    workdir,
+    phase: "frozen",
+    status: "active",
+    checkpointDigest: null,
+  });
   writeJson(path.join(workdir, "inputs", "inventory.json"), inventory);
   writeJson(path.join(workdir, "inputs", "snapshot-manifest.json"), { version: 1, sources: [] });
   writeJson(path.join(workdir, "analysis", "discovery-map.json"), {
     version: 2,
     sources: [{ sourceId: "api" }],
-    domains: [{ id: "domain:api", coverageUnitIds: ["api"] }],
+    domains: [{ id: "domain:api", coverageUnitIds: ["api", "api::web"] }],
     flows: [],
     coverageUnits: inventory.coverageUnits,
   });
   writeJson(path.join(workdir, "analysis", "receipts", "discover.json"), { discovered: true });
-  const proposalPath = path.join(workdir, "analysis", "handoffs", "discover.json");
-  writeJson(proposalPath, {
-    version: 2,
-    phase: "discover",
-    producer: "survey",
-    inputCheckpointDigests: [],
-    artifacts: [
-      { id: "discover-receipt", type: "receipt", owner: "survey", path: "analysis/receipts/discover.json", dependsOn: [], coverageUnitIds: ["api"] },
-      { id: "discovery-map", type: "discovery-map", owner: "survey", path: "analysis/discovery-map.json", dependsOn: ["discover-receipt"], coverageUnitIds: ["api"] },
-    ],
-  });
-  const discover = checkpointRun(root, { runId: "run-1", workdir }, { phase: "discover", proposalPath: "analysis/handoffs/discover.json" });
-  const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds: ["api"], owner: "integration" }];
-  const assignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds: ["api"], dependsOn: ["discover-receipt"], sourceIds: ["api"] }];
+  const discover = publish(root, workdir, "discover", [
+    { id: "discover-receipt", type: "receipt", path: "analysis/receipts/discover.json", coverageUnitIds: ["api"] },
+    { id: "discovery-map", type: "discovery-map", path: "analysis/discovery-map.json", coverageUnitIds: ["api::web"] },
+  ]);
+  const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds: ["api", "api::web"], owner: "integration" }];
+  const assignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds: ["api", "api::web"], dependsOn: ["discover-receipt"], sourceIds: ["api"] }];
   writeJson(path.join(workdir, "analysis", "spec.json"), { version: 2, pages, pageAssignments: assignments });
   writeJson(path.join(workdir, "analysis", "page-assignments.json"), assignments);
   writeJson(path.join(workdir, "analysis", "receipts", "plan.json"), { planned: true });
-  writeJson(path.join(workdir, "analysis", "handoffs", "plan.json"), {
-    version: 2,
-    phase: "plan",
-    producer: "planner",
-    inputCheckpointDigests: [discover.checkpoint.checkpointDigest],
-    artifacts: [
-      { id: "plan-receipt", type: "receipt", owner: "planner", path: "analysis/receipts/plan.json", dependsOn: ["discovery-map"] },
-      { id: "spec", type: "spec", owner: "planner", path: "analysis/spec.json", dependsOn: ["discovery-map"] },
-      { id: "page-assignments", type: "assignment-map", owner: "planner", path: "analysis/page-assignments.json", dependsOn: ["spec"] },
-    ],
-  });
-  const plan = checkpointRun(root, { runId: "run-1", workdir }, { phase: "plan", proposalPath: "analysis/handoffs/plan.json" });
+  const plan = publish(root, workdir, "plan", [
+    { id: "plan-receipt", type: "receipt", path: "analysis/receipts/plan.json" },
+    { id: "spec", type: "spec", path: "analysis/spec.json" },
+    { id: "page-assignments", type: "assignment-map", path: "analysis/page-assignments.json" },
+  ]);
   return { root, workdir, discover, plan, inventory, pages, assignments };
 }
 
-describe("v2 plan gate", () => {
+describe("v3 checkpoint plan gate", () => {
   it("requires coverage, semantic sufficiency, and a complete unique ownership graph", () => {
     const inventory = { coverageUnits: [{ id: "api", required: true }] };
     assert.equal(assertCoverage({ inventory, spec: { pages: [] } }).ok, false);

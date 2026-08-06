@@ -1,4 +1,4 @@
-/** Install and verify the sole v2 Claude Code workflow asset. */
+/** Install and verify the sole V3 Claude Code workflow asset. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -173,7 +173,7 @@ function writeRuntimeManifest(root, workflowPath) {
   const methodPath = kitMethodDir();
   if (!fs.existsSync(methodPath)) throw new Error(`missing internal method pack: ${methodPath}`);
   const manifest = {
-    version: 2,
+    version: 3,
     kitVersion: kitVersion(),
     workspaceRoot: path.resolve(root),
     hostCli: {
@@ -204,7 +204,7 @@ export function installWorkflows(root, { force = false } = {}) {
   for (const name of REQUIRED_WORKFLOWS) {
     const source = path.join(sourceDir, name);
     const target = path.join(destinationDir, name);
-    if (!fs.existsSync(source)) throw new Error(`missing required v2 workflow asset: ${source}`);
+    if (!fs.existsSync(source)) throw new Error(`missing required v3 workflow asset: ${source}`);
     const existed = fs.existsSync(target);
     const upToDate = existed && workflowAssetEquals(source, target) && !workflowHasHiddenControls(target);
     // Same logical content with CRLF (or other hidden controls) is auto-healed.
@@ -261,7 +261,7 @@ export function assertInstalledAssets(root) {
     errors.push(`missing or invalid runtime manifest: ${runtimeManifestPath(root)}`);
   }
   if (runtime) {
-    if (runtime.version !== 2) errors.push("runtime manifest version is not v2");
+    if (runtime.version !== 3) errors.push("runtime manifest version is not v3");
     if (runtime.workspaceRoot !== path.resolve(root)) errors.push("runtime manifest workspaceRoot does not match workspace");
     const hostScript = path.join(KIT_ROOT, "scripts", "ow.mjs");
     if (runtime.hostCli?.script !== hostScript || runtime.hostCli?.digest !== sha256File(hostScript)) {

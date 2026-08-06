@@ -1,4 +1,4 @@
-/** v2 workspace configuration: workspace.yaml only. */
+/** V3 workspace configuration: workspace.yaml only. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -10,14 +10,13 @@ import {
   findLegacyWorkspaceConfigs,
   findWorkspaceConfig,
   metaDir,
-  objectsDir,
   runsDir,
   sourcesDir,
 } from "./paths.mjs";
 
 export function defaultWorkspace({ name, wikiLanguage = "en", rootPath }) {
   return {
-    version: 2,
+    version: 3,
     id: randomUUID(),
     name: name || path.basename(rootPath),
     wikiLanguage: wikiLanguage === "zh" ? "zh" : "en",
@@ -38,8 +37,8 @@ function parseWorkspaceText(text, file) {
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
     throw new Error(`workspace config must be a YAML mapping: ${file}`);
   }
-  if (doc.version !== 2) {
-    throw new Error(`unsupported workspace version: ${doc.version}; create a v2 workspace with ow init --force`);
+  if (doc.version !== 3) {
+    throw new Error(`unsupported workspace version: ${doc.version}; create a v3 workspace with ow init --force`);
   }
   if (!Array.isArray(doc.sources)) throw new Error(`workspace sources must be an array: ${file}`);
   return doc;
@@ -59,7 +58,7 @@ export function loadWorkspaceConfig(root) {
   if (!found) {
     const legacy = findLegacyWorkspaceConfigs(root);
     const detail = legacy.length ? `; unsupported legacy config present: ${legacy.join(", ")}` : "";
-    throw new Error(`not a v2 workspace (missing workspace.yaml under ${root})${detail}. Run: ow init ${root}`);
+    throw new Error(`not a v3 workspace (missing workspace.yaml under ${root})${detail}. Run: ow init ${root}`);
   }
   const text = fs.readFileSync(found.path, "utf8");
   return { ...found, workspace: parseWorkspaceText(text, found.name) };
@@ -71,7 +70,7 @@ export function loadWorkspace(root) {
 
 export function saveWorkspace(root, doc) {
   const target = findWorkspaceConfig(root) ?? defaultWorkspaceConfigPath(root);
-  const next = { ...doc, version: 2, updatedAt: new Date().toISOString() };
+  const next = { ...doc, version: 3, updatedAt: new Date().toISOString() };
   fs.writeFileSync(target.path, serializeWorkspace(next), "utf8");
   return next;
 }
@@ -81,11 +80,10 @@ export function ensureWorkspaceLayout(root) {
   fs.mkdirSync(sourcesDir(root), { recursive: true });
   fs.mkdirSync(metaDir(root), { recursive: true });
   fs.mkdirSync(runsDir(root), { recursive: true });
-  fs.mkdirSync(objectsDir(root), { recursive: true });
   fs.mkdirSync(claudeWorkflowsDir(root), { recursive: true });
 }
 
-/** Create a v2 workspace. --force is an explicit replacement operation. */
+/** Create a V3 workspace. --force is an explicit replacement operation. */
 export function initWorkspace(root, { name, wikiLanguage = "en", force = false } = {}) {
   ensureWorkspaceLayout(root);
   const existing = findWorkspaceConfig(root);
@@ -93,7 +91,7 @@ export function initWorkspace(root, { name, wikiLanguage = "en", force = false }
   if ((existing || legacy.length) && !force) {
     if (legacy.length && !existing) {
       throw new Error(
-        `unsupported legacy workspace config: ${legacy.join(", ")}; rerun ow init --force to replace it with workspace.yaml v2`,
+        `unsupported legacy workspace config: ${legacy.join(", ")}; rerun ow init --force to replace it with workspace.yaml v3`,
       );
     }
     return { created: false, workspace: loadWorkspace(root), configPath: existing.path, format: "yaml" };
@@ -101,12 +99,11 @@ export function initWorkspace(root, { name, wikiLanguage = "en", force = false }
   if (force) {
     for (const name of legacy) fs.rmSync(path.join(root, name), { force: true });
     if (existing) fs.rmSync(existing.path, { force: true });
-    // A replacement v2 workspace must not inherit a run pointer or frozen
+    // A replacement V3 workspace must not inherit a run pointer or frozen
     // artifacts from a schema it no longer understands.
     fs.rmSync(metaDir(root), { recursive: true, force: true });
     fs.mkdirSync(metaDir(root), { recursive: true });
     fs.mkdirSync(runsDir(root), { recursive: true });
-    fs.mkdirSync(objectsDir(root), { recursive: true });
   }
   const target = defaultWorkspaceConfigPath(root);
   const workspace = defaultWorkspace({ name, wikiLanguage, rootPath: root });

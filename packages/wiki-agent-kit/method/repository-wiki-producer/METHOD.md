@@ -4,20 +4,19 @@ This is an internal method pack frozen into every run as `workdir/method/`. It i
 Claude Skill and is not a user entrypoint. The only human command is the native `/wiki` workflow.
 
 **Orchestration:** `wiki.workflow.js`.
-**Host tools:** `ow prepare`, `ow handoff write|validate|publish`, `ow checkpoint`, `ow gate`, and
-`ow validate` via the pinned `hostCli` in `inputs/run-policy.json`. Handoff proposals are always
-host-authored with `version: 2`; agents write data-plane artifacts only.
+**Host tools:** `ow prepare`, `ow publish`, `ow gate`, and `ow validate` via the pinned `hostCli` in
+`inputs/run-policy.json`. Agents write data-plane artifacts and compact artifact lists only.
 
 ## Lifecycle and checkpoints
 
-| Workflow stage | Required handoff |
+| Workflow stage | Required checkpoint |
 |---|---|
 | Bootstrap | `ow prepare` returns a minimal RunContext. |
 | Discover | Survey receipts are indexed by a `discover` checkpoint. |
 | Plan | The `plan` checkpoint binds the Discovery Map, Spec, and assignments; the host gate then grants write authority. |
 | Write | Owner-scoped candidate pages and write receipts are indexed by a `write` checkpoint. |
 | Verify/repair | Defects and affected-owner repairs are indexed by `review-*` checkpoints. |
-| Validate | `ow validate` creates or reuses a verified candidate manifest; only `checkpoint validate` seals the run. |
+| Validate | `ow validate` creates or reuses a verified candidate manifest; only `publish validate` seals the run. |
 
 The active-run pointer is `.wiki-agent/current.json`. It names a run and its last trusted checkpoint;
 it never routes to another workflow or stores workflow arguments.
@@ -26,10 +25,10 @@ it never routes to another workflow or stores workflow arguments.
 
 | Path | Role |
 |---|---|
-| `sources/<id>/` | Filtered, content-hashed frozen evidence (CAS hardlink or copy into the run). |
+| `sources/<id>/` | Filtered, content-hashed frozen evidence copied into the run. |
 | `method/` | Exact copy of this method pack. |
 | `inputs/` | Inventory, snapshot manifest, run policy, plan-gate receipt. |
-| `analysis/` | Discovery Map, Spec, assignments, handoffs, checkpoints, receipts, defects, validation, manifest. |
+| `analysis/` | Discovery Map, Spec, assignments, checkpoints, receipts, defects, validation, manifest. |
 | `candidate/` | Spec-bound pages; writable only before seal. |
 
 Never use mutable registered repositories after freeze. Never write in `sources/`, `method/`, or
@@ -43,8 +42,8 @@ Never use mutable registered repositories after freeze. Never write in `sources/
 4. Review: `references/review.md` -> evidence and global lenses -> defects -> owner-scoped repair loop.
 5. Validate: host `validate` verifies and manifests the candidate; the validate checkpoint seals only a clean review leaf.
 
-Children return compact `{status,summary,openQuestions,...}` envelopes and data-plane files. Host
-`ow handoff publish` writes version-2 proposals and checkpoints. See `references/orchestrator-context.md`.
+Children return compact envelopes and data-plane files. Host `ow publish` computes artifact digests
+and writes v3 checkpoints. See `references/orchestrator-context.md`.
 
 ## Output rules
 

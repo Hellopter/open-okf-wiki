@@ -20,14 +20,14 @@ function json(result) {
 }
 
 function makeWorkspace() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-v2-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-v3-"));
   const source = path.join(root, "source");
   fs.mkdirSync(path.join(source, "src"), { recursive: true });
   fs.writeFileSync(path.join(source, "src", "app.js"), "export const answer = 42;\n");
   fs.mkdirSync(path.join(source, "target"), { recursive: true });
   fs.writeFileSync(path.join(source, "target", "ignored.class"), "ignored");
   const workspace = path.join(root, "workspace");
-  const initialized = json(ow(["init", workspace, "--name", "v2-demo", "--lang", "zh", "--path", source, "--id", "app"], root));
+  const initialized = json(ow(["init", workspace, "--name", "v3-demo", "--lang", "zh", "--path", source, "--id", "app"], root));
   return { root, source, workspace, initialized };
 }
 
@@ -36,69 +36,44 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function handoff({ phase, inputCheckpointDigests = [], artifacts, producer = "test" }) {
-  return {
-    version: 2,
-    phase,
-    producer,
-    status: "complete",
-    inputCheckpointDigests,
-    artifacts,
-    summary: `${phase} handoff`,
-    openQuestions: [],
-  };
-}
-
-function checkpoint(workspace, phase, proposal) {
-  const proposalPath = `analysis/handoffs/${phase}.json`;
-  writeJson(path.join(proposal.workdir, proposalPath), proposal.value);
-  return json(ow(["checkpoint", "--phase", phase, "--proposal", proposalPath, "--workspace", workspace], workspace));
+function publish(workspace, phase, workdir, artifacts) {
+  const artifactsPath = `analysis/receipts/${phase}-artifacts.json`;
+  writeJson(path.join(workdir, artifactsPath), artifacts);
+  return json(ow(["publish", "--phase", phase, "--artifacts-json", artifactsPath, "--workspace", workspace], workspace));
 }
 
 function makePlanReady(workspace, prepared) {
   const { workdir, runId } = prepared;
   const inventory = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "inventory.json"), "utf8"));
-  const coverageUnitId = inventory.coverageUnits[0].id;
+  const coverageUnitIds = inventory.coverageUnits.filter((unit) => unit.required === true).map((unit) => unit.id);
+  const coverageUnitId = coverageUnitIds[0];
   writeJson(path.join(workdir, "analysis", "discovery-map.json"), {
     version: 2,
     sources: [{ sourceId: "app" }],
-    domains: [{ id: "domain:app", coverageUnitIds: [coverageUnitId] }],
+    domains: [{ id: "domain:app", coverageUnitIds }],
     flows: [],
     coverageUnits: inventory.coverageUnits,
   });
   const discoverReceipt = path.join(workdir, "analysis", "receipts", "discover.json");
   writeJson(discoverReceipt, { coverageUnitId, evidence: ["sources/app/src/app.js"] });
-  const discover = checkpoint(workspace, "discover", {
-    workdir,
-    value: handoff({
-      phase: "discover",
-      artifacts: [
-        { id: "discover-receipt", type: "receipt", owner: "survey:app", path: "analysis/receipts/discover.json", dependsOn: [], coverageUnitIds: [coverageUnitId] },
-        { id: "discovery-map", type: "discovery-map", owner: "survey:app", path: "analysis/discovery-map.json", dependsOn: ["discover-receipt"], coverageUnitIds: [coverageUnitId] },
-      ],
-    }),
-  });
-  const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds: [coverageUnitId], owner: "integration" }];
-  const pageAssignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds: [coverageUnitId], dependsOn: ["discover-receipt"], sourceIds: ["app"] }];
+  const discover = publish(workspace, "discover", workdir, [
+    { id: "discover-receipt", type: "receipt", path: "analysis/receipts/discover.json", coverageUnitIds },
+    { id: "discovery-map", type: "discovery-map", path: "analysis/discovery-map.json", coverageUnitIds },
+  ]);
+  const pages = [{ path: "overview.md", type: "Overview", critical: true, coverageUnitIds, owner: "integration" }];
+  const pageAssignments = [{ pagePath: "overview.md", owner: "integration", role: "integration", coverageUnitIds, dependsOn: ["discover-receipt"], sourceIds: ["app"] }];
   writeJson(path.join(workdir, "analysis", "spec.json"), { version: 2, wikiLanguage: "zh", pages, pageAssignments });
   writeJson(path.join(workdir, "analysis", "page-assignments.json"), pageAssignments);
   const planReceipt = path.join(workdir, "analysis", "receipts", "plan.json");
   writeJson(planReceipt, { planned: true });
-  const plan = checkpoint(workspace, "plan", {
-    workdir,
-    value: handoff({
-      phase: "plan",
-      inputCheckpointDigests: [discover.checkpointDigest],
-      artifacts: [
-        { id: "plan-receipt", type: "receipt", owner: "planner", path: "analysis/receipts/plan.json", dependsOn: ["discovery-map"] },
-        { id: "spec", type: "spec", owner: "planner", path: "analysis/spec.json", dependsOn: ["discovery-map"] },
-        { id: "page-assignments", type: "assignment-map", owner: "planner", path: "analysis/page-assignments.json", dependsOn: ["spec"] },
-      ],
-    }),
-  });
+  const plan = publish(workspace, "plan", workdir, [
+    { id: "plan-receipt", type: "receipt", path: "analysis/receipts/plan.json" },
+    { id: "spec", type: "spec", path: "analysis/spec.json" },
+    { id: "page-assignments", type: "assignment-map", path: "analysis/page-assignments.json" },
+  ]);
   const gate = json(ow(["gate", "plan", "--workspace", workspace], workspace));
   assert.equal(gate.ok, true, JSON.stringify(gate));
-  assert.equal(gate.receipt.version, 2);
+  assert.equal(gate.receipt.version, 3);
   assert.equal(runId, gate.current.runId);
   return { workdir, runId, coverageUnitId, discover, plan, gate };
 }
@@ -116,50 +91,35 @@ function makeWriteReviewReady(workspace, ready) {
     "",
   ].join("\n"));
   writeJson(path.join(workdir, "analysis", "receipts", "write-sources.json"), { pages: ["overview.md"] });
-  const writeSources = checkpoint(workspace, "write-sources", {
-    workdir,
-    value: handoff({
-      phase: "write-sources",
-      inputCheckpointDigests: [ready.plan.checkpointDigest],
-      artifacts: [{ id: "domain-pages", type: "candidate-pages", owner: "integration", path: "candidate/overview.md", dependsOn: ["spec"], pagePaths: ["candidate/overview.md"] }],
-    }),
-  });
+  const writeSources = publish(workspace, "write-sources", workdir, [
+    { id: "domain-pages", type: "candidate-pages", path: "candidate/overview.md" },
+  ]);
   writeJson(path.join(workdir, "analysis", "receipts", "write.json"), { integrated: true });
-  const write = checkpoint(workspace, "write", {
-    workdir,
-    value: handoff({
-      phase: "write",
-      inputCheckpointDigests: [writeSources.checkpointDigest],
-      artifacts: [{ id: "write-receipt", type: "receipt", owner: "integration", path: "analysis/receipts/write.json", dependsOn: ["domain-pages"] }],
-    }),
-  });
+  const write = publish(workspace, "write", workdir, [
+    { id: "write-receipt", type: "receipt", path: "analysis/receipts/write.json" },
+  ]);
   writeJson(path.join(workdir, "analysis", "receipts", "review-1.json"), { clean: true });
-  const review = checkpoint(workspace, "review-1", {
-    workdir,
-    value: handoff({
-      phase: "review-1",
-      inputCheckpointDigests: [write.checkpointDigest],
-      artifacts: [{ id: "review-receipt", type: "review", owner: "reviewer", path: "analysis/receipts/review-1.json", dependsOn: ["write-receipt"] }],
-    }),
-  });
+  const review = publish(workspace, "review-1", workdir, [
+    { id: "review-receipt", type: "review", path: "analysis/receipts/review-1.json" },
+  ]);
   writeJson(path.join(workdir, "analysis", "defects.json"), { version: 2, clean: true, defects: [] });
   return { writeSources, write, review };
 }
 
-describe("ow v2 workspace and lifecycle", () => {
-  it("installs exactly one native workflow and a v2 runtime manifest", () => {
+describe("ow v3 workspace and lifecycle", () => {
+  it("installs exactly one native workflow and a v3 runtime manifest", () => {
     const { workspace, initialized } = makeWorkspace();
     assert.equal(initialized.format, "yaml");
     assert.equal(initialized.wikiLanguage, "zh");
     const config = YAML.parse(fs.readFileSync(path.join(workspace, "workspace.yaml"), "utf8"));
-    assert.equal(config.version, 2);
+    assert.equal(config.version, 3);
     assert.ok(!fs.existsSync(path.join(workspace, "workspace.json")));
     assert.ok(!fs.existsSync(path.join(workspace, "workspace.yml")));
 
     const workflow = path.join(workspace, ".claude", "workflows", "wiki.workflow.js");
     const runtime = JSON.parse(fs.readFileSync(path.join(workspace, ".wiki-agent", "runtime.json"), "utf8"));
     assert.ok(fs.existsSync(workflow));
-    assert.equal(runtime.version, 2);
+    assert.equal(runtime.version, 3);
     assert.equal(runtime.workflow.path, workflow);
     assert.match(runtime.workflow.digest, /^[a-f0-9]{64}$/);
     assert.ok(!fs.existsSync(path.join(workspace, ".claude", "skills", "wiki")));
@@ -171,7 +131,7 @@ describe("ow v2 workspace and lifecycle", () => {
     assert.equal(help.status, 0, help.stderr);
     assert.doesNotMatch(help.stdout, /\bow (?:run|freeze|approve|retry)\b/);
     for (const command of ["run", "freeze", "approve", "retry"]) {
-      assert.notEqual(ow([command, "--workspace", workspace], workspace).status, 0, `${command} must not remain a v2 CLI command`);
+      assert.notEqual(ow([command, "--workspace", workspace], workspace).status, 0, `${command} must not remain a v3 CLI command`);
     }
 
     const status = json(ow(["status", "--workspace", workspace], workspace));
@@ -179,7 +139,7 @@ describe("ow v2 workspace and lifecycle", () => {
     assert.equal(status.current, null);
     const rejected = ow(["init", path.join(workspace, "wrong"), "--format", "json"], workspace);
     assert.equal(rejected.status, 1);
-    assert.match(rejected.stderr, /workspace v2 always uses workspace\.yaml/i);
+    assert.match(rejected.stderr, /workspace v3 always uses workspace\.yaml/i);
   });
 
   it("rewrites CRLF workflow installs to LF without requiring --force", () => {
@@ -235,12 +195,12 @@ describe("ow v2 workspace and lifecycle", () => {
     const write = json(ow(["prepare", "--mode", "write", "--workspace", workspace], workspace));
     assert.equal(write.runId, focused.runId);
     assert.equal(write.mode, "write");
-    assert.equal(write.startAt, "write");
+    assert.equal(write.startAt, "write-sources");
 
     writeJson(path.join(ready.workdir, "candidate", "overview.md"), "partial candidate\n");
     writeJson(path.join(ready.workdir, "analysis", "defects.json"), { version: 2, clean: false, defects: [] });
     const retryWrite = json(ow(["prepare", "--mode", "retry-write", "--workspace", workspace], workspace));
-    assert.equal(retryWrite.startAt, "write");
+    assert.equal(retryWrite.startAt, "write-sources");
     assert.ok(fs.existsSync(path.join(ready.workdir, "analysis", "spec.json")));
     assert.ok(fs.existsSync(path.join(ready.workdir, "analysis", "checkpoints", "discover.json")));
     assert.deepEqual(fs.readdirSync(path.join(ready.workdir, "candidate")), []);
@@ -286,22 +246,31 @@ describe("ow v2 workspace and lifecycle", () => {
     assert.equal(idempotent.reviewCheckpointDigest, review.checkpointDigest);
 
     writeJson(path.join(workdir, "analysis", "validation.json"), validatedJson);
-    const terminal = checkpoint(workspace, "validate", {
-      workdir,
-      value: handoff({
-        phase: "validate",
-        inputCheckpointDigests: [review.checkpointDigest],
-        artifacts: [
-          { id: "validation-report", type: "validation", owner: "validator", path: "analysis/validation.json", dependsOn: ["review-receipt"] },
-          { id: "candidate-manifest", type: "manifest", owner: "validator", path: "analysis/candidate.manifest.json", dependsOn: ["validation-report"] },
-        ],
-      }),
-    });
+    const terminal = publish(workspace, "validate", workdir, [
+      { id: "validation-report", type: "validation", path: "analysis/validation.json" },
+      { id: "candidate-manifest", type: "manifest", path: "analysis/candidate.manifest.json" },
+    ]);
     assert.match(terminal.checkpointDigest, /^sha256:[a-f0-9]{64}$/);
     const current = JSON.parse(fs.readFileSync(path.join(workspace, ".wiki-agent", "current.json"), "utf8"));
     assert.equal(current.phase, "sealed");
     assert.equal(current.status, "sealed");
     assert.equal(current.checkpointDigest, terminal.checkpointDigest);
+  });
+
+  it("keeps the final review pointer when candidate validation fails", () => {
+    const { workspace } = makeWorkspace();
+    const prepared = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
+    const ready = makePlanReady(workspace, prepared);
+    const { workdir } = ready;
+    const { review } = makeWriteReviewReady(workspace, ready);
+    fs.rmSync(path.join(workdir, "candidate", "overview.md"));
+
+    const failed = ow(["validate", "--workspace", workspace], workspace);
+    assert.equal(failed.status, 2);
+    const current = JSON.parse(fs.readFileSync(path.join(workspace, ".wiki-agent", "current.json"), "utf8"));
+    assert.equal(current.phase, "review-1");
+    assert.equal(current.status, "active");
+    assert.equal(current.checkpointDigest, review.checkpointDigest);
   });
 
   it("rejects a pre-repair review until a newer review is the current leaf", () => {
@@ -312,33 +281,23 @@ describe("ow v2 workspace and lifecycle", () => {
     const { review } = makeWriteReviewReady(workspace, ready);
 
     writeJson(path.join(workdir, "analysis", "receipts", "repair-1.json"), { repaired: ["overview.md"] });
-    const repair = checkpoint(workspace, "repair-1", {
-      workdir,
-      value: handoff({
-        phase: "repair-1",
-        inputCheckpointDigests: [review.checkpointDigest],
-        artifacts: [{ id: "repair-receipt", type: "repair", owner: "integration", path: "analysis/receipts/repair-1.json", dependsOn: ["review-receipt"], pagePaths: ["candidate/overview.md"] }],
-      }),
-    });
+    const repair = publish(workspace, "repair-1", workdir, [
+      { id: "repair-receipt", type: "repair", path: "analysis/receipts/repair-1.json" },
+    ]);
     const staleReview = ow(["validate", "--workspace", workspace], workspace);
     assert.equal(staleReview.status, 2);
     assert.match(staleReview.stdout, /current.*review|review.*leaf|terminal review/i);
 
     writeJson(path.join(workdir, "analysis", "receipts", "review-2.json"), { clean: true });
-    const reviewTwo = checkpoint(workspace, "review-2", {
-      workdir,
-      value: handoff({
-        phase: "review-2",
-        inputCheckpointDigests: [repair.checkpointDigest],
-        artifacts: [{ id: "review-2-receipt", type: "review", owner: "reviewer", path: "analysis/receipts/review-2.json", dependsOn: ["repair-receipt"] }],
-      }),
-    });
+    const reviewTwo = publish(workspace, "review-2", workdir, [
+      { id: "review-2-receipt", type: "review", path: "analysis/receipts/review-2.json" },
+    ]);
     const currentReview = json(ow(["validate", "--workspace", workspace], workspace));
     assert.equal(currentReview.ok, true, JSON.stringify(currentReview));
     assert.equal(currentReview.reviewCheckpointDigest, reviewTwo.checkpointDigest);
   });
 
-  it("preserves unrecognized legacy files while force reset removes v2 run state", () => {
+  it("preserves unrecognized legacy files while force reset removes v3 run state", () => {
     const { workspace } = makeWorkspace();
     json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));
     const userSkill = path.join(workspace, ".claude", "skills", "user-owned");

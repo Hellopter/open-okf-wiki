@@ -33,27 +33,27 @@ only a short envelope such as:
 ```json
 {
   "status": "ok",
-  "proposalPath": "analysis/handoffs/survey/source-app-pass-1.json",
+  "receiptPath": "analysis/receipts/survey/source-app-pass-1.json",
   "summary": "concise bullets",
   "openQuestions": []
 }
 ```
 
-Do **not** author `analysis/handoffs/**` proposal JSON. See `references/orchestrator-context.md`.
+See `references/orchestrator-context.md` for the artifact-list format.
 
 ## Discovery Map
 
 Merge survey results into `analysis/discovery-map.json` with:
 
-- `version` may be `1` (data plane; host handoffs remain version 2)
+- `version` may be `1`
 - `domains[]` with reader-meaningful boundaries and `coverageUnitIds`
 - `flows[]`, using `crossSource: true` for a multi-source journey
 - optional `concepts[]` and `openQuestions[]`
 - the complete `coverageUnits` copied from inventory
 
 Also write `analysis/receipts/discovery-artifacts-pass-<n>.json` listing the map and survey receipts
-as `{id,type,owner,path,dependsOn}` (no version/phase). Host runs
-`ow handoff publish --phase discover` to emit the version-2 proposal and checkpoint.
+as `{id,type,path,coverageUnitIds}`. Host runs
+`ow publish --phase discover --artifacts-json analysis/receipts/discovery-artifacts-pass-<n>.json`.
 
 For non-L0 inventory tiers, an empty domain list is semantic insufficiency and the plan gate rejects
 it. The map is an input to planning, not a license to omit coverage from the Spec. The package's

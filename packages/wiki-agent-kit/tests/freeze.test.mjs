@@ -5,10 +5,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { freezeRun } from "../scripts/lib/freeze.mjs";
-import { ensureObjectFromBuffer, objectPath, placeObject } from "../scripts/lib/objects.mjs";
-import { objectsDir } from "../scripts/lib/paths.mjs";
-import { addPathSource } from "../scripts/lib/sources.mjs";
+import { freezeRun, verifyFrozenSnapshot } from "../scripts/lib/freeze.mjs";
+import { addPathSource, removeSource } from "../scripts/lib/sources.mjs";
 import { initWorkspace } from "../scripts/lib/workspace.mjs";
 import { installAll } from "../scripts/lib/install.mjs";
 import { readJson } from "../scripts/lib/artifacts.mjs";
@@ -38,18 +36,8 @@ function makeWorkspace(files = {
   return { root, source, workspace };
 }
 
-function isHardlinked(a, b) {
-  try {
-    const sa = fs.statSync(a);
-    const sb = fs.statSync(b);
-    return sa.dev === sb.dev && sa.ino === sb.ino && sa.ino !== 0;
-  } catch {
-    return false;
-  }
-}
-
-describe("CAS freeze materialization", () => {
-  it("keeps non-ignored files, drops defaults, and records placement", () => {
+describe("frozen source materialization", () => {
+  it("keeps non-ignored files and records a verifiable snapshot", () => {
     const { workspace } = makeWorkspace();
     const first = freezeRun(workspace);
     const frozen = path.join(first.workdir, "sources", "app", "src", "app.js");
@@ -64,17 +52,14 @@ describe("CAS freeze materialization", () => {
     assert.equal(snapshot.sources[0].sourceId, "app");
     assert.ok(snapshot.sources[0].contentDigest);
     assert.ok(snapshot.sources[0].fileCount >= 1);
-    assert.ok(snapshot.sources[0].placement);
-    assert.equal(
-      snapshot.sources[0].placement.hardlinked + snapshot.sources[0].placement.copied,
-      snapshot.sources[0].fileCount,
-    );
-    assert.ok(first.meta.placement);
-    assert.ok(fs.existsSync(objectsDir(workspace)));
+    assert.equal(snapshot.sources[0].placement, undefined);
+    assert.equal(first.meta.placement, undefined);
+    assert.equal(fs.existsSync(path.join(workspace, ".wiki-agent", "objects")), false);
+    assert.deepEqual(verifyFrozenSnapshot(first.workdir), { ok: true, errors: [] });
   });
 
-  it("reuses CAS objects across freezes and keeps contentDigest stable", () => {
-    const { workspace } = makeWorkspace();
+  it("creates independent run copies and detects later mutation", () => {
+    const { source, workspace } = makeWorkspace();
     const a = freezeRun(workspace, { focus: "first" });
     const b = freezeRun(workspace, { focus: "second" });
     assert.notEqual(a.runId, b.runId);
@@ -83,60 +68,15 @@ describe("CAS freeze materialization", () => {
     const snapB = readJson(path.join(b.workdir, "inputs", "snapshot-manifest.json"));
     assert.equal(snapA.sources[0].contentDigest, snapB.sources[0].contentDigest);
 
-    // Second freeze should mostly reuse objects.
-    assert.ok(snapB.sources[0].placement.objectsReused >= 1);
-    assert.equal(snapB.sources[0].placement.objectsCreated, 0);
-
     const destA = path.join(a.workdir, "sources", "app", "src", "app.js");
     const destB = path.join(b.workdir, "sources", "app", "src", "app.js");
-    const digest = snapA.sources[0].files.find((f) => f.path === "src/app.js").sha256;
-    const objectAbs = objectPath(workspace, digest);
-    assert.ok(fs.existsSync(objectAbs));
-    // Prefer hardlink when the FS allows it; otherwise accept copy.
-    if (isHardlinked(objectAbs, destA)) {
-      assert.ok(isHardlinked(objectAbs, destB));
-      assert.ok(snapA.sources[0].placement.hardlinked >= 1);
-    } else {
-      assert.ok(snapA.sources[0].placement.copied >= 1);
-    }
     assert.equal(fs.readFileSync(destA, "utf8"), fs.readFileSync(destB, "utf8"));
-  });
-
-  it("marks CAS objects readonly after create", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-obj-"));
-    const { path: objectAbs, created } = ensureObjectFromBuffer(root, Buffer.from("hello-cas\n"));
-    assert.equal(created, true);
-    const mode = fs.statSync(objectAbs).mode & 0o222;
-    // Best-effort: on Unix write bits should be clear.
-    if (process.platform !== "win32") {
-      assert.equal(mode, 0);
-    }
-    const again = ensureObjectFromBuffer(root, Buffer.from("hello-cas\n"));
-    assert.equal(again.created, false);
-    assert.equal(again.path, objectAbs);
-  });
-
-  it("falls back to copy when hardlink fails", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ow-place-"));
-    const { path: objectAbs } = ensureObjectFromBuffer(root, Buffer.from("payload\n"));
-    const dest = path.join(root, "out", "file.txt");
-    const originalLink = fs.linkSync;
-    let forced = false;
-    fs.linkSync = () => {
-      forced = true;
-      const err = new Error("cross-device");
-      err.code = "EXDEV";
-      throw err;
-    };
-    try {
-      const method = placeObject(objectAbs, dest);
-      assert.equal(method, "copy");
-      assert.equal(forced, true);
-      assert.equal(fs.readFileSync(dest, "utf8"), "payload\n");
-      assert.equal(isHardlinked(objectAbs, dest), false);
-    } finally {
-      fs.linkSync = originalLink;
-    }
+    fs.writeFileSync(destA, "mutated frozen copy\n");
+    assert.equal(fs.readFileSync(destB, "utf8"), "export const answer = 42;\n");
+    assert.equal(fs.readFileSync(path.join(source, "src", "app.js"), "utf8"), "export const answer = 42;\n");
+    const verified = verifyFrozenSnapshot(a.workdir);
+    assert.equal(verified.ok, false);
+    assert.ok(verified.errors.some((error) => /content digest mismatch/i.test(error)));
   });
 
   it("records skipped symlinks and materializes in-root file symlinks as regular files", () => {
@@ -174,8 +114,8 @@ describe("CAS freeze materialization", () => {
   });
 });
 
-describe("ow prepare smoke with CAS", () => {
-  it("prepare creates objects and placement stats", () => {
+describe("ow prepare frozen sources", () => {
+  it("prepare creates a snapshot without an object store", () => {
     const { workspace } = makeWorkspace();
     const result = spawnSync(process.execPath, [OW, "prepare", "--mode", "auto", "--workspace", workspace], {
       encoding: "utf8",
@@ -183,7 +123,42 @@ describe("ow prepare smoke with CAS", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const prepared = JSON.parse(result.stdout);
     const snapshot = readJson(path.join(prepared.workdir, "inputs", "snapshot-manifest.json"));
-    assert.ok(snapshot.sources[0].placement);
-    assert.ok(fs.readdirSync(path.join(objectsDir(workspace), "sha256")).length >= 1);
+    assert.equal(snapshot.sources[0].placement, undefined);
+    assert.equal(fs.existsSync(path.join(workspace, ".wiki-agent", "objects")), false);
+    assert.deepEqual(verifyFrozenSnapshot(prepared.workdir), { ok: true, errors: [] });
+  });
+});
+
+describe("source removal containment", () => {
+  it("rejects traversal-like source ids without touching the workspace", () => {
+    const { workspace } = makeWorkspace();
+    assert.throws(() => removeSource(workspace, ".."), /invalid source id/i);
+    assert.ok(fs.existsSync(path.join(workspace, "workspace.yaml")));
+    assert.ok(fs.existsSync(path.join(workspace, "sources", "app")));
+  });
+
+  it("refuses to remove when the sources directory resolves outside the workspace", () => {
+    const { root, workspace } = makeWorkspace();
+    const externalSources = path.join(root, "external-sources");
+    fs.mkdirSync(path.join(externalSources, "app"), { recursive: true });
+    fs.writeFileSync(path.join(externalSources, "app", "keep.txt"), "must remain\n");
+    fs.rmSync(path.join(workspace, "sources"), { recursive: true, force: true });
+    try {
+      fs.symlinkSync(externalSources, path.join(workspace, "sources"), "dir");
+    } catch (error) {
+      if (error?.code === "EPERM") return; // Windows without symlink privilege
+      throw error;
+    }
+
+    assert.throws(() => removeSource(workspace, "app"), /path escapes workspace root/i);
+    assert.ok(fs.existsSync(path.join(externalSources, "app", "keep.txt")));
+  });
+
+  it("removes a linked source entry without deleting its external target", () => {
+    const { source, workspace } = makeWorkspace();
+    const result = removeSource(workspace, "app");
+    assert.deepEqual(result, { removed: "app" });
+    assert.ok(fs.existsSync(source));
+    assert.equal(fs.existsSync(path.join(workspace, "sources", "app")), false);
   });
 });

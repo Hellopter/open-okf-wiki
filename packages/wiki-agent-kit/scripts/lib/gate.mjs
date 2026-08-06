@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readJson, sha256File, writeJson } from "./artifacts.mjs";
 import { verifyCheckpoint } from "./checkpoints.mjs";
+import { verifyFrozenSnapshot } from "./freeze.mjs";
 
 export function gateReceiptPath(workdir) {
   return path.join(workdir, "inputs", "gate-plan.ok.json");
@@ -258,6 +259,7 @@ export function gatePlan(workdir) {
   const discoveryMap = loadDiscoveryMap(workdir);
   const spec = readJson(specPath);
   const assignments = readJson(assignmentsPath);
+  const snapshot = verifyFrozenSnapshot(workdir);
   const coverage = assertCoverage({ inventory, spec, discoveryMap });
   const semantic = assertSemanticSufficiency({ inventory, spec, discoveryMap });
   const ownership = assertPageAssignments({ inventory, spec, assignments });
@@ -271,6 +273,7 @@ export function gatePlan(workdir) {
     discoverCheckpoint: artifactDigest(discoverCheckpointPath),
   };
   const errors = [
+    ...(snapshot.ok ? [] : snapshot.errors.map((error) => `frozen snapshot integrity failed: ${error}`)),
     ...coverage.errors,
     ...semantic.errors,
     ...ownership.errors,
@@ -280,6 +283,7 @@ export function gatePlan(workdir) {
   return {
     ok: !errors.length,
     coverage,
+    snapshot,
     semantic,
     ownership,
     digests,
@@ -302,7 +306,7 @@ export function writePlanGateReceipt(workdir, runId, methodDigest) {
   if (
     planCheckpoint.ok &&
     discover.ok &&
-    planCheckpoint.checkpoint.inputCheckpointDigests?.[0] !== discover.checkpoint.checkpointDigest
+    planCheckpoint.checkpoint.predecessorDigest !== discover.checkpoint.checkpointDigest
   ) {
     result.errors.push("plan checkpoint is not bound to the discover checkpoint");
   }
@@ -311,7 +315,7 @@ export function writePlanGateReceipt(workdir, runId, methodDigest) {
   fs.rmSync(receiptPath, { force: true });
   if (!result.ok) return { result, receipt: null };
   const receipt = {
-    version: 2,
+    version: 3,
     ok: true,
     runId,
     methodDigest,
@@ -326,7 +330,7 @@ export function writePlanGateReceipt(workdir, runId, methodDigest) {
 export function verifyPlanGate(workdir, runId, methodDigest) {
   const receipt = readJson(gateReceiptPath(workdir));
   if (!receipt?.ok) return { ok: false, errors: ["missing successful plan gate receipt"] };
-  if (receipt.version !== 2 || receipt.runId !== runId || receipt.methodDigest !== methodDigest) {
+  if (receipt.version !== 3 || receipt.runId !== runId || receipt.methodDigest !== methodDigest) {
     return { ok: false, errors: ["plan gate receipt belongs to another run or kit version"] };
   }
   const current = gatePlan(workdir);
@@ -347,7 +351,7 @@ export function verifyPlanGate(workdir, runId, methodDigest) {
   if (!discover.ok || discover.checkpoint.status !== "complete") {
     return { ok: false, errors: ["missing or invalid discover checkpoint", ...(discover.errors || [])] };
   }
-  if (planCheckpoint.checkpoint.inputCheckpointDigests?.[0] !== discover.checkpoint.checkpointDigest) {
+  if (planCheckpoint.checkpoint.predecessorDigest !== discover.checkpoint.checkpointDigest) {
     return { ok: false, errors: ["plan checkpoint is not bound to the discover checkpoint"] };
   }
   if (receipt.planCheckpointDigest !== planCheckpoint.checkpoint.checkpointDigest) {

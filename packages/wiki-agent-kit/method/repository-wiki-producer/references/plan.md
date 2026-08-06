@@ -5,7 +5,7 @@ Shape the complete `analysis/spec.json` before any candidate page is written.
 **Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json`, and survey receipts under
 `analysis/receipts/`.
 **Output:** `analysis/spec.json` and `analysis/page-assignments.json`.
-**Mandatory stop:** publish `ow checkpoint --phase plan` after planning, then run
+**Mandatory stop:** publish `ow publish --phase plan --artifacts-json analysis/receipts/plan-artifacts.json` after planning, then run
 `ow gate plan --run <runId>`. Do not enter Write unless both succeed.
 
 ## Required Spec shape
@@ -34,8 +34,7 @@ Shape the complete `analysis/spec.json` before any candidate page is written.
       "pagePath": "overview.md",
       "owner": "integration",
       "role": "integration",
-      "coverageUnitIds": ["app"],
-      "dependsOn": []
+      "coverageUnitIds": ["app"]
     }
   ],
   "coverageCancellations": []
@@ -65,13 +64,13 @@ contain an absolute or traversal path. The package's `schemas/spec.schema.json` 
 machine-readable reference contract.
 
 After Spec and assignments are written, write `analysis/receipts/plan-artifacts.json` (no
-version/phase). Host runs `ow handoff publish --phase plan` with the discover checkpoint digest.
-Spec document `version: 2` is separate from host handoff `version: 2`. See
+version/phase). Host runs `ow publish --phase plan --artifacts-json analysis/receipts/plan-artifacts.json`.
+Spec document `version: 2` is separate from the v3 checkpoint protocol. See
 `references/orchestrator-context.md`.
 
 `pageAssignments` is mandatory. Every Spec path belongs to exactly one owner. Use source/domain
 owners for source-specific pages and an `integration` owner for overview, navigation, glossary, and
-cross-source Flow pages. Each assignment declares the coverage it owns and the handoff ids it needs;
+cross-source Flow pages. Each assignment declares the coverage it owns;
 do not give two owners the same path.
 
 ## Gate failure

@@ -1,4 +1,4 @@
-/** The v2 workspace has one authoritative active-run pointer. */
+/** The V3 workspace has one authoritative active-run pointer. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -30,7 +30,7 @@ export function setActiveRun(root, data) {
     throw new Error("active run requires runId, absolute workdir, and phase");
   }
   const current = {
-    version: 2,
+    version: 3,
     runId: data.runId,
     workdir: path.resolve(data.workdir),
     phase: data.phase,
@@ -48,7 +48,7 @@ export function setActiveRun(root, data) {
  */
 export function resolveActiveRun(root, { preferredRunId } = {}) {
   const current = readCurrent(root);
-  if (!current?.runId || typeof current.runId !== "string") return null;
+  if (current?.version !== 3 || !current?.runId || typeof current.runId !== "string") return null;
   if (preferredRunId && preferredRunId !== current.runId) return null;
   try {
     const meta = loadRunMeta(root, current.runId);

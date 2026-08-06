@@ -5,7 +5,7 @@ import path from "node:path";
 import { setActiveRun } from "./active-run.mjs";
 import { candidateManifestPath, checkpointsDir } from "./paths.mjs";
 import { gateReceiptPath } from "./gate.mjs";
-import { loadRunMeta } from "./freeze.mjs";
+import { loadRunMeta, verifyFrozenSnapshot } from "./freeze.mjs";
 import { verifyCheckpoint } from "./checkpoints.mjs";
 
 const PHASES = new Set(["plan", "write"]);
@@ -27,7 +27,6 @@ function recreateWorkdirLayout(workdir) {
   fs.mkdirSync(path.join(workdir, "candidate"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts", "survey"), { recursive: true });
   fs.mkdirSync(path.join(workdir, "analysis", "receipts", "semantic"), { recursive: true });
-  fs.mkdirSync(path.join(workdir, "analysis", "handoffs"), { recursive: true });
   fs.mkdirSync(checkpointsDir(workdir), { recursive: true });
 }
 
@@ -42,23 +41,24 @@ function clearFromPlan(workdir, removed) {
     gateReceiptPath(workdir),
     path.join(workdir, "candidate"),
     candidateManifestPath(workdir),
-    path.join(analysis, "handoffs", "plan.json"),
-    path.join(analysis, "handoffs", "preflight.json"),
-    path.join(analysis, "handoffs", "write"),
-    path.join(analysis, "handoffs", "write.json"),
-    path.join(analysis, "handoffs", "write-sources.json"),
-    path.join(analysis, "handoffs", "validate.json"),
-    path.join(analysis, "handoffs", "review"),
-    path.join(analysis, "handoffs", "repair"),
     path.join(analysis, "receipts", "review"),
+    path.join(analysis, "receipts", "plan-artifacts.json"),
     path.join(analysis, "receipts", "gate-plan.json"),
     path.join(analysis, "receipts", "preflight.json"),
+    path.join(analysis, "receipts", "write-sources-artifacts.json"),
+    path.join(analysis, "receipts", "write-artifacts.json"),
     path.join(analysis, "receipts", "validate.json"),
+    path.join(analysis, "receipts", "validate-artifacts.json"),
   ]) remove(target, removed, workdir);
-  removeMatching(path.join(analysis, "handoffs"), (name) => /^(review|repair|blocked)-/.test(name), removed, workdir);
+  removeMatching(
+    path.join(analysis, "receipts"),
+    (name) => /^(?:review|repair)-artifacts-round-\d+\.json$/.test(name),
+    removed,
+    workdir,
+  );
   removeMatching(
     checkpointsDir(workdir),
-    (name) => /^(plan|write(?:-sources)?|review-\d+|repair-\d+|blocked-\d+|validate)\.json$/.test(name),
+    (name) => /^(plan|write(?:-sources)?|review-\d+|repair-\d+|validate)\.json$/.test(name),
     removed,
     workdir,
   );
@@ -71,21 +71,22 @@ function clearFromWrite(workdir, removed) {
     path.join(analysis, "validation.json"),
     path.join(workdir, "candidate"),
     candidateManifestPath(workdir),
-    path.join(analysis, "handoffs", "preflight.json"),
-    path.join(analysis, "handoffs", "write"),
-    path.join(analysis, "handoffs", "write.json"),
-    path.join(analysis, "handoffs", "write-sources.json"),
-    path.join(analysis, "handoffs", "validate.json"),
-    path.join(analysis, "handoffs", "review"),
-    path.join(analysis, "handoffs", "repair"),
     path.join(analysis, "receipts", "review"),
     path.join(analysis, "receipts", "preflight.json"),
+    path.join(analysis, "receipts", "write-sources-artifacts.json"),
+    path.join(analysis, "receipts", "write-artifacts.json"),
     path.join(analysis, "receipts", "validate.json"),
+    path.join(analysis, "receipts", "validate-artifacts.json"),
   ]) remove(target, removed, workdir);
-  removeMatching(path.join(analysis, "handoffs"), (name) => /^(review|repair|blocked)-/.test(name), removed, workdir);
+  removeMatching(
+    path.join(analysis, "receipts"),
+    (name) => /^(?:review|repair)-artifacts-round-\d+\.json$/.test(name),
+    removed,
+    workdir,
+  );
   removeMatching(
     checkpointsDir(workdir),
-    (name) => /^(write(?:-sources)?|review-\d+|repair-\d+|blocked-\d+|validate)\.json$/.test(name),
+    (name) => /^(write(?:-sources)?|review-\d+|repair-\d+|validate)\.json$/.test(name),
     removed,
     workdir,
   );
@@ -96,6 +97,8 @@ export function retryFromPhase(root, runId, fromPhase) {
   if (!PHASES.has(fromPhase)) throw new Error(`unknown retry phase: ${fromPhase}`);
   const meta = loadRunMeta(root, runId);
   const workdir = path.resolve(root, meta.workdir);
+  const snapshot = verifyFrozenSnapshot(workdir);
+  if (!snapshot.ok) throw new Error(`cannot retry ${fromPhase}: frozen snapshot integrity failed: ${snapshot.errors.join("; ")}`);
   const ancestorPhase = fromPhase === "plan" ? "discover" : "plan";
   const verifiedAncestor = verifyCheckpoint(workdir, ancestorPhase);
   if (!verifiedAncestor.ok || verifiedAncestor.checkpoint.status !== "complete") {

@@ -1,15 +1,16 @@
 /** Deterministic entry-state preparation for the native /wiki workflow. */
 
+import fs from "node:fs";
 import path from "node:path";
 import { assertInstalledAssets } from "./install.mjs";
-import { freezeRun } from "./freeze.mjs";
+import { freezeRun, verifyFrozenSnapshot } from "./freeze.mjs";
 import { resolveActiveRun } from "./active-run.mjs";
 import { retryFromPhase } from "./run-state.mjs";
 import { verifyPlanGate } from "./gate.mjs";
-import { verifyCheckpoint, verifyReviewLeaf } from "./checkpoints.mjs";
+import { verifyCheckpoint } from "./checkpoints.mjs";
 import { candidateSealStatus } from "./validate.mjs";
 
-export const PREPARE_MODES = new Set(["auto", "plan", "write", "retry-plan", "retry-write"]);
+export const PREPARE_MODES = new Set(["auto", "plan", "write", "restart", "retry-plan", "retry-write"]);
 
 function normalizeFocus(focus) {
   if (focus === undefined || focus === null) return null;
@@ -48,6 +49,13 @@ function checkpoint(workdir, phase) {
   return result.ok ? result.checkpoint : null;
 }
 
+function assertFrozenSnapshot(run) {
+  const snapshot = verifyFrozenSnapshot(run.workdir);
+  if (!snapshot.ok) {
+    throw new Error(`frozen snapshot integrity failed: ${(snapshot.errors || []).join("; ")}`);
+  }
+}
+
 function writeReady(run) {
   const plan = checkpoint(run.workdir, "plan");
   if (!plan || plan.status !== "complete") return { ok: false, plan, errors: ["missing valid plan checkpoint"] };
@@ -55,23 +63,105 @@ function writeReady(run) {
   return { ok: gate.ok, plan, gate, errors: gate.errors || [] };
 }
 
-function pendingValidation(run) {
+function assertCandidateSealNotTampered(run) {
   const seal = candidateSealStatus(run.workdir);
-  if (!seal.sealed) return { ok: false, seal };
-  if (!seal.valid) throw new Error("candidate manifest is tampered; use /wiki --retry write");
-  const review = verifyReviewLeaf(run.workdir, run.current);
-  return review.ok ? { ok: true, seal, review } : { ok: false, seal, review };
+  if (seal.sealed && !seal.valid) throw new Error("candidate manifest is tampered; use /wiki --retry write");
+  return seal;
 }
 
-function validateEnvelope(root, mode, run, pending) {
+function requirePointerCheckpoint(run, phase) {
+  const expectedPhase = phase === "sealed" ? "validate" : phase;
+  const verified = checkpoint(run.workdir, expectedPhase);
+  if (!verified || verified.status !== "complete") {
+    throw new Error(`active run pointer has no valid ${expectedPhase} checkpoint`);
+  }
+  if (run.current?.checkpointDigest !== verified.checkpointDigest) {
+    throw new Error(`active run pointer does not match the ${expectedPhase} checkpoint`);
+  }
+  return verified;
+}
+
+function reviewIsClean(workdir) {
+  try {
+    const defects = JSON.parse(fs.readFileSync(path.join(workdir, "analysis", "defects.json"), "utf8"));
+    return defects?.version === 2 && defects?.clean === true && Array.isArray(defects.defects) && defects.defects.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function checkpointEnvelope(root, mode, run, startAt, checkpointRecord, summary) {
   return envelope({
     root,
     mode,
     run,
-    startAt: "validate",
-    inputCheckpointDigest: pending.review.checkpoint.checkpointDigest,
-    summary: `resuming validate checkpoint for ${run.runId}`,
+    startAt,
+    inputCheckpointDigest: checkpointRecord?.checkpointDigest ?? null,
+    summary,
   });
+}
+
+/**
+ * Return the single workflow edge following the active, verified checkpoint.
+ * A gate receipt is not a state transition: it authorizes the plan ->
+ * write-sources edge while the current pointer remains on plan.
+ */
+function nextStart(run, mode) {
+  const current = run.current || {};
+  const phase = current.phase;
+  if (current.status === "sealed" || phase === "sealed") {
+    throw new Error("active run is sealed; use /wiki --restart to create a new frozen run");
+  }
+  if (phase === "frozen") {
+    if (current.checkpointDigest) throw new Error("frozen run must not have a checkpoint digest");
+    return { startAt: "survey", checkpoint: null, summary: `resuming survey for ${run.runId}` };
+  }
+
+  if (phase === "discover") {
+    const discover = requirePointerCheckpoint(run, phase);
+    return { startAt: "plan", checkpoint: discover, summary: `resuming plan for ${run.runId}` };
+  }
+  if (phase === "plan") {
+    const plan = requirePointerCheckpoint(run, phase);
+    const ready = writeReady(run);
+    return ready.ok
+      ? {
+          startAt: mode === "plan" ? "ready" : "write-sources",
+          checkpoint: plan,
+          summary: mode === "plan" ? `plan is ready for explicit write for ${run.runId}` : `resuming write sources for ${run.runId}`,
+        }
+      : { startAt: "gate", checkpoint: plan, summary: `resuming plan gate for ${run.runId}` };
+  }
+  if (phase === "write-sources") {
+    const sourceWrite = requirePointerCheckpoint(run, phase);
+    return { startAt: "write", checkpoint: sourceWrite, summary: `resuming write for ${run.runId}` };
+  }
+  if (phase === "write") {
+    const write = requirePointerCheckpoint(run, phase);
+    return { startAt: "review-1", checkpoint: write, summary: `resuming first review for ${run.runId}` };
+  }
+  const review = phase?.match(/^review-(\d+)$/);
+  if (review) {
+    const reviewCheckpoint = requirePointerCheckpoint(run, phase);
+    if (reviewIsClean(run.workdir)) {
+      return { startAt: "validate", checkpoint: reviewCheckpoint, summary: `resuming validation for ${run.runId}` };
+    }
+    return {
+      startAt: `repair-${review[1]}`,
+      checkpoint: reviewCheckpoint,
+      summary: `resuming repair ${review[1]} for ${run.runId}`,
+    };
+  }
+  const repair = phase?.match(/^repair-(\d+)$/);
+  if (repair) {
+    const repairCheckpoint = requirePointerCheckpoint(run, phase);
+    return {
+      startAt: `review-${Number(repair[1]) + 1}`,
+      checkpoint: repairCheckpoint,
+      summary: `resuming review ${Number(repair[1]) + 1} for ${run.runId}`,
+    };
+  }
+  throw new Error(`unsupported active run phase: ${phase || "(missing)"}`);
 }
 
 /**
@@ -82,10 +172,13 @@ export function prepareRun(root, { mode = "auto", focus } = {}) {
   if (!PREPARE_MODES.has(mode)) throw new Error(`invalid prepare mode: ${mode}`);
   const normalizedFocus = normalizeFocus(focus);
   assertInstalledAssets(root);
-  let active = resolveActiveRun(root);
+  const active = resolveActiveRun(root);
+
+  if (mode === "restart") return fresh(root, mode, normalizedFocus);
 
   if (mode === "retry-plan" || mode === "retry-write") {
     if (!active) throw new Error(`no active run for ${mode}`);
+    assertFrozenSnapshot(active);
     if (mode === "retry-write") {
       const ready = writeReady(active);
       if (!ready.ok) throw new Error(`cannot retry write: ${ready.errors.join("; ")}`);
@@ -95,80 +188,31 @@ export function prepareRun(root, { mode = "auto", focus } = {}) {
       root,
       mode,
       run: retried,
-      startAt: mode === "retry-plan" ? "plan" : "write",
+      startAt: mode === "retry-plan" ? "plan" : "write-sources",
       inputCheckpointDigest: retried.ancestor.checkpointDigest,
       summary: `reset ${retriesLabel(mode)} outputs for ${retried.runId}`,
     });
   }
 
-  if (mode === "write") {
-    if (!active) throw new Error("no active run for write; run /wiki --plan first");
-    const ready = writeReady(active);
-    if (!ready.ok) throw new Error(`active run is not write-ready: ${ready.errors.join("; ")}`);
-    const pending = pendingValidation(active);
-    if (pending.ok) return validateEnvelope(root, mode, active, pending);
-    return envelope({
-      root,
-      mode,
-      run: active,
-      startAt: "write",
-      inputCheckpointDigest: ready.plan.checkpointDigest,
-      summary: `resuming write from plan checkpoint for ${active.runId}`,
-    });
-  }
-
-  // A focus requests a distinct investigation. Sealed/blocked runs are not
-  // resumed implicitly: callers use explicit retry modes for those graph edges.
-  if (!active || normalizedFocus || ["sealed", "blocked"].includes(active.current?.status)) {
+  if (!active) {
+    if (mode === "write") throw new Error("no active run for write; run /wiki --plan first");
     return fresh(root, mode, normalizedFocus);
   }
-
-  const discovery = checkpoint(active.workdir, "discover");
-  if (mode === "plan") {
-    if (discovery?.status === "complete" && !checkpoint(active.workdir, "plan")) {
-      return envelope({
-        root,
-        mode,
-        run: active,
-        startAt: "plan",
-        inputCheckpointDigest: discovery.checkpointDigest,
-        summary: `resuming planning from discovery checkpoint for ${active.runId}`,
-      });
-    }
+  if (normalizedFocus) {
+    if (mode === "write") throw new Error("write does not accept a new focus; run /wiki --plan first");
     return fresh(root, mode, normalizedFocus);
   }
+  assertFrozenSnapshot(active);
 
-  const ready = writeReady(active);
-  if (ready.ok) {
-    const pending = pendingValidation(active);
-    if (pending.ok) return validateEnvelope(root, mode, active, pending);
-    return envelope({
-      root,
-      mode,
-      run: active,
-      startAt: "write",
-      inputCheckpointDigest: ready.plan.checkpointDigest,
-      summary: `resuming write from plan checkpoint for ${active.runId}`,
-    });
+  const next = nextStart(active, mode);
+  if (mode === "write" && !["write-sources", "write", "review-1", "validate"].includes(next.startAt) && !/^review-|^repair-/.test(next.startAt)) {
+    throw new Error("active run is not write-ready: a valid plan gate is required");
   }
-  if (discovery?.status === "complete") {
-    return envelope({
-      root,
-      mode,
-      run: active,
-      startAt: "plan",
-      inputCheckpointDigest: discovery.checkpointDigest,
-      summary: `resuming planning from discovery checkpoint for ${active.runId}`,
-    });
+
+  if (next.startAt === "validate") {
+    assertCandidateSealNotTampered(active);
   }
-  return envelope({
-    root,
-    mode,
-    run: active,
-    startAt: "survey",
-    inputCheckpointDigest: null,
-    summary: `resuming survey for ${active.runId}`,
-  });
+  return checkpointEnvelope(root, mode, active, next.startAt, next.checkpoint, next.summary);
 }
 
 function retriesLabel(mode) {
