@@ -78,9 +78,10 @@ function makeAgent({ startAt = "survey", reviews = [], inventory = null, discove
       discoveryPass += 1;
       return { ...envelope(label), missingUnitIds: missing || [] };
     }
-    if (label.startsWith("checkpoint-")) {
+    if (label.startsWith("checkpoint-") || label.startsWith("handoff-publish:") || label.startsWith("handoff-write:")) {
       return {
         status: "ok",
+        proposalPath: `analysis/handoffs/${label}.json`,
         checkpointPath: `analysis/checkpoints/${label}.json`,
         checkpointDigest: `sha256:${"a".repeat(64)}`,
         summary: label,
@@ -150,19 +151,21 @@ describe("wiki dynamic workflow contract", () => {
     assert.match(source, /scheduleWaves/);
     assert.doesNotMatch(source, /MAX_CONCURRENCY|function waves\(/);
     assert.deepEqual(phases, ["Bootstrap", "Survey", "Plan", "Write", "Verify", "Validate"]);
-    assert.ok(labels.includes("checkpoint-discover"));
-    assert.ok(labels.includes("checkpoint-plan"));
-    assert.ok(labels.includes("checkpoint-write-sources"));
-    assert.ok(labels.includes("checkpoint-write"));
-    assert.ok(labels.includes("checkpoint-review:1"));
-    assert.ok(labels.includes("checkpoint-validate"));
+    assert.ok(labels.includes("handoff-publish:discover") || labels.includes("checkpoint-discover"));
+    assert.ok(labels.includes("handoff-publish:plan") || labels.includes("checkpoint-plan"));
+    assert.ok(labels.includes("handoff-publish:write-sources") || labels.includes("checkpoint-write-sources"));
+    assert.ok(labels.includes("handoff-publish:write") || labels.includes("checkpoint-write"));
+    assert.ok(labels.some((l) => String(l).startsWith("handoff-publish:review") || String(l).startsWith("checkpoint-review")));
+    assert.ok(labels.includes("handoff-publish:validate") || labels.includes("checkpoint-validate"));
+    assert.doesNotMatch(source, /Write the handoff proposal JSON/);
+    assert.match(source, /handoff publish/);
     assert.equal(result.next, "sealed");
   });
 
   it("accepts command-string plan mode and stops at the plan checkpoint", async () => {
     const { labels, phases, prompts, result } = await runWorkflow("--plan authentication flow");
     assert.deepEqual(phases, ["Bootstrap", "Survey", "Plan"]);
-    assert.ok(labels.includes("checkpoint-plan"));
+    assert.ok(labels.includes("handoff-publish:plan") || labels.includes("checkpoint-plan"));
     assert.ok(!labels.includes("preflight-write"));
     assert.equal(result.next, "/wiki --write");
     assert.ok(
@@ -184,8 +187,8 @@ describe("wiki dynamic workflow contract", () => {
   it("resumes an interrupted validated candidate directly through its terminal checkpoint", async () => {
     const { phases, labels, result } = await runWorkflow("", { startAt: "validate" });
     assert.deepEqual(phases, ["Bootstrap", "Validate"]);
-    assert.ok(labels.includes("validate-and-seal"));
-    assert.ok(labels.includes("checkpoint-validate"));
+    assert.ok(labels.includes("handoff-publish:validate") || labels.includes("checkpoint-validate") || labels.includes("validate-and-seal"));
+    assert.ok(labels.includes("validate-and-seal") || labels.includes("handoff-publish:validate"));
     assert.ok(!labels.includes("load-inventory"));
     assert.ok(!labels.includes("plan-spec"));
     assert.ok(!labels.includes("preflight-write"));

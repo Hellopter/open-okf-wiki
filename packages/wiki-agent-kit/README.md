@@ -63,22 +63,25 @@ running, so `/wiki --write` is the only edge from a plan checkpoint with a valid
 
 The workflow calls the CLI through the pinned `hostCli` recorded in `inputs/run-policy.json`.
 
-```text
+```bash
 ow prepare --mode auto|plan|write|retry-plan|retry-write [--focus TEXT]
+ow handoff write|validate|publish --phase PHASE --producer ID --out analysis/handoffs/NAME.json \
+  [--digest D]... [--artifact id:type:owner:path[:deps]]... [--artifacts-json REL] [--summary S]
 ow checkpoint --phase PHASE --proposal analysis/handoffs/NAME.json
 ow gate plan|check
 ow validate
 ```
 
-`ow checkpoint` is the only state-transition authority. It validates proposal paths and ownership,
-recomputes artifact digests, checks input checkpoint dependencies, then advances
-`.wiki-agent/current.json` atomically. `ow validate` prepares a verified candidate manifest; its
-following `validate` checkpoint is the only transition to `sealed`.
+Handoff proposals are **host-authored** (`ow handoff write|publish` always sets `version: 2`). Agents
+write data-plane artifacts and `*-artifacts.json` lists only — they must not invent proposal
+`version` or `phase`. `ow handoff publish` writes the proposal then checkpoints. `ow checkpoint` alone
+remains valid when a proposal file already exists. `ow validate` prepares a verified candidate
+manifest; its following `validate` checkpoint is the only transition to `sealed`.
 
 ## Handoff and ownership
 
 - `analysis/checkpoints/*.json` is the durable control plane.
-- `analysis/handoffs/*.json`, receipts, pages, and defects are the data plane.
+- `analysis/handoffs/*.json` are host-authored control-plane proposals; receipts, pages, and defects are the data plane.
 - `analysis/page-assignments.json` assigns every page to exactly one source/domain or integration
   owner. Shards cannot write another owner's path.
 - Fan-out concurrency comes from `inputs/run-policy.json` `limits`: `batchConcurrency` default 4

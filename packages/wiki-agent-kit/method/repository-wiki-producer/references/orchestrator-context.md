@@ -5,76 +5,45 @@ unverified sentence in an agent response.
 
 | Plane | Content |
 |---|---|
-| Control | `status`, proposal path, checkpoint path/digest, owner, short summary, open questions. |
+| Control | Host-authored handoff proposals + checkpoints (`version: 2`). |
 | Data | Receipts, Discovery Map, Spec, assignments, candidate pages, defects on disk. |
 | Orchestrator | RunContext, phase, checkpoint digest, path indexes, and budgets. |
 | Workspace pointer | `.wiki-agent/current.json` identifies the active run and last trusted checkpoint. |
 
-## Handoff proposal contract (all phases)
+## Host-authored handoffs
 
-Every file under `analysis/handoffs/**` that is passed to `ow checkpoint --phase <phase>` MUST match
-`schemas/handoff-proposal.schema.json`:
+Agents **must not** freeform-write `analysis/handoffs/**` proposal JSON (no inventing `version` or
+`phase`). Protocol fields are emitted only by the host CLI:
 
-```json
-{
-  "version": 2,
-  "phase": "<exact checkpoint phase>",
-  "inputCheckpointDigests": [],
-  "producer": "owner-id",
-  "status": "complete",
-  "artifacts": [
-    {
-      "id": "artifact-id",
-      "type": "discovery-map",
-      "owner": "owner-id",
-      "path": "analysis/discovery-map.json",
-      "dependsOn": []
-    }
-  ],
-  "summary": "short summary",
-  "openQuestions": []
-}
+```bash
+ow handoff write|publish --phase <phase> --out <path> --producer <id> \
+  [--digest D]... [--artifact id:type:owner:path[:deps]]... \
+  [--artifacts-json REL] [--summary S] [--status complete|blocked]
 ```
 
-| Field | Rule |
-|---|---|
-| `version` | **Number `2` only.** Not `1`, not `"2"`. Host rejects anything else. |
-| `phase` | Must equal the later `ow checkpoint --phase` value (`discover`, `plan`, `write-sources`, `write`, `review-N`, `repair-N`, `blocked-N`, `validate`, …). |
-| `inputCheckpointDigests` | Discover uses `[]`. Later phases list predecessor checkpoint digests exactly. |
-| `producer` | Non-empty owner id matching `^[A-Za-z0-9][A-Za-z0-9._:-]*$`. |
-| `artifacts` | At least one; each has `id`, `type`, `owner`, `path`, `dependsOn`. |
+- `handoff write` — create/overwrite a version-2 proposal file.
+- `handoff publish` — write proposal then `checkpoint` in one step (preferred at graph edges).
+- `handoff validate` — shape-check without publishing.
 
-**Do not copy version numbers from data-plane files.** These may legitimately be `1` while handoffs stay `2`:
+Always `version: 2` (number). Data-plane files may use other versions (`inventory`/`discovery-map` often
+`1`; Spec/defects `2`) — never copy those into handoff proposals.
 
-- `inputs/inventory.json`, `inputs/snapshot-manifest.json`, `inputs/discovery-map.json`
-- `analysis/discovery-map.json`
-- `analysis/candidate.manifest.json`
-
-Spec and defects use version `2` for their own schemas; that still does not replace the handoff
-proposal contract.
-
-Child agents return only a short envelope `{status, proposalPath, summary, openQuestions}` (plus phase
-fields such as `missingUnitIds` or review metrics). The proposal file on disk is the authority the
-checkpoint command validates.
+Agents write data-plane artifacts, then write `analysis/receipts/*-artifacts.json` as an array of
+`{id,type,owner,path,dependsOn,...}` **without** `version`/`phase`. Return a short envelope; the
+workflow invokes `ow handoff publish`.
 
 ## Rules
 
-1. Write the full receipt or artifact before returning a proposal path.
-2. Run `ow checkpoint` after every graph boundary. The CLI recomputes artifact digests and rejects
-   undeclared paths, stale inputs, duplicate owners, missing dependencies, and non-v2 proposals.
+1. Write the full receipt or artifact before asking the host to publish a handoff.
+2. Run `ow handoff publish` (or write + `ow checkpoint`) after every graph boundary.
 3. Do not paste full receipts or child transcripts into downstream prompts. Read checkpoint-listed
    files just in time.
 4. Keep every attempted coverage unit and every failed shard in the ledger.
 5. Pack fan-out waves fairly by source under `inputs/run-policy.json` limits (`batchConcurrency`,
    `perSourceConcurrency`, `maxCoveragePasses`, `maxRepairRounds`).
-6. `page-assignments.json` gives every candidate path one owner. A source/domain shard may write
-   only its paths; the integration shard owns only overview, navigation, glossary, and cross-source
-   Flow pages.
+6. `page-assignments.json` gives every candidate path one owner.
 7. Bound schemas and summaries. A missing envelope is a failed child, not a reason to synthesize
    from chat history.
-8. Repair routes only to the defect owner. A repeated defect fingerprint or no reduction in
-   blocking/major defects is a stop condition, not a reason to loop indefinitely.
-9. Host actions are deterministic agent APIs. Agents invoke the exact pinned command from
-   `inputs/run-policy.json`; the native `/wiki` workflow is the only user entrypoint.
-10. A validate handoff may publish only from the current clean `review-N` leaf. `ow validate` is
-    idempotent for a valid manifest so an interrupted terminal checkpoint can resume without rewriting.
+8. Repair routes only to the defect owner; stop on repeated defect fingerprints.
+9. Host actions use the pinned command from `inputs/run-policy.json`; `/wiki` is the only user entry.
+10. Validate handoffs publish only from a clean current `review-N` leaf.

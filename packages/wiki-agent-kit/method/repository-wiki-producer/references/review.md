@@ -27,9 +27,9 @@ Write page evidence and global-lens findings beneath `analysis/receipts/review/`
 ```
 
 Severity is `blocking`, `major`, or `minor`. `clean` is true only when the defects array is empty.
-The package's `schemas/defects.schema.json` records the reference shape. Defects documents use
-version 2; review/repair/blocked **handoff proposals** also use version 2 with `phase` matching the
-checkpoint (`review-N`, `repair-N`, `blocked-N`). See `references/orchestrator-context.md`.
+The package's `schemas/defects.schema.json` records the reference shape (document version 2). Host
+`ow handoff publish` creates review/repair/blocked proposals (`review-N`, `repair-N`, `blocked-N`).
+Agents write defects + artifacts lists only. See `references/orchestrator-context.md`.
 
 ## Check
 

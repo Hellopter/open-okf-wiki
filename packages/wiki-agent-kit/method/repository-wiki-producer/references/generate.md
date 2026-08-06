@@ -23,10 +23,9 @@ Every critical Spec path must exist, answer its stated reader question with conc
 depth (not a README restatement), and have nearby verified Source Citations. For multi-source runs,
 the overview repository map, per-source module/architecture coverage, and any critical cross-source
 flow must name participating `sources/<id>/` trees with stage-level citations. Do not add a concept
-page absent from the Spec or change the Spec while writing. Write a handoff proposal listing the
-exact pages, evidence receipts, and unresolved dependencies after the shard finishes. Handoff
-proposals use **`version: 2`** and `phase` matching the write checkpoint (`write-sources` for domain
-shards / domain reduce; `write` for integration shards / final write reduce). See
+page absent from the Spec or change the Spec while writing. After the shard finishes, write an
+artifacts list under `analysis/receipts/` (pages, evidence receipts, dependsOn) without version/phase.
+Host `ow handoff write|publish` creates the version-2 proposal (`write-sources` / `write`). See
 `references/orchestrator-context.md`.
 
 ## Frontmatter and local links

@@ -4,8 +4,9 @@ This is an internal method pack frozen into every run as `workdir/method/`. It i
 Claude Skill and is not a user entrypoint. The only human command is the native `/wiki` workflow.
 
 **Orchestration:** `wiki.workflow.js`.
-**Host tools:** `ow prepare`, `ow checkpoint`, `ow gate`, and `ow validate` via the pinned `hostCli`
-in `inputs/run-policy.json`.
+**Host tools:** `ow prepare`, `ow handoff write|validate|publish`, `ow checkpoint`, `ow gate`, and
+`ow validate` via the pinned `hostCli` in `inputs/run-policy.json`. Handoff proposals are always
+host-authored with `version: 2`; agents write data-plane artifacts only.
 
 ## Lifecycle and checkpoints
 
@@ -42,8 +43,8 @@ Never use mutable registered repositories after freeze. Never write in `sources/
 4. Review: `references/review.md` -> evidence and global lenses -> defects -> owner-scoped repair loop.
 5. Validate: host `validate` verifies and manifests the candidate; the validate checkpoint seals only a clean review leaf.
 
-Children return compact `{status,proposalPath,summary,openQuestions}` envelopes. File-first handoffs
-are defined in `references/orchestrator-context.md`.
+Children return compact `{status,summary,openQuestions,...}` envelopes and data-plane files. Host
+`ow handoff publish` writes version-2 proposals and checkpoints. See `references/orchestrator-context.md`.
 
 ## Output rules
 

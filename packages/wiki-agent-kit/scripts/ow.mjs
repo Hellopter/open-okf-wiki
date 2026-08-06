@@ -8,6 +8,12 @@ import { readCurrent, resolveActiveRun, setActiveRun } from "./lib/active-run.mj
 import { checkpointRun, verifyCheckpoint, verifyReviewLeaf } from "./lib/checkpoints.mjs";
 import { freezeRun, listRuns, loadRunMeta } from "./lib/freeze.mjs";
 import { verifyPlanGate, writePlanGateReceipt } from "./lib/gate.mjs";
+import {
+  defaultHandoffOut,
+  handoffPublish,
+  handoffWrite,
+  validateHandoffProposalShape,
+} from "./lib/handoff.mjs";
 import { effectiveSourceIgnores, listPresetSummaries, loadIgnorePresets } from "./lib/ignores.mjs";
 import { assertInstalledAssets, assertLegacyAssetsRemovable, installAll } from "./lib/install.mjs";
 import { resolveWorkspaceRoot } from "./lib/paths.mjs";
@@ -15,6 +21,7 @@ import { prepareRun, PREPARE_MODES } from "./lib/prepare.mjs";
 import { addCloneSource, addPathSource, listSources, removeSource } from "./lib/sources.mjs";
 import { candidateSealStatus, regenerateIndexes, sealCandidate, validateWorkdir } from "./lib/validate.mjs";
 import { findSource, initWorkspace, loadWorkspace, saveWorkspace } from "./lib/workspace.mjs";
+import { readJson } from "./lib/artifacts.mjs";
 
 function die(message, code = 1) {
   console.error(`ow: ${message}`);
@@ -35,13 +42,25 @@ function parseArgs(argv) {
     }
     const key = token.slice(2);
     const next = argv[index + 1];
-    if (!next || next.startsWith("--")) args.flags[key] = true;
-    else {
-      args.flags[key] = next;
-      index++;
+    if (!next || next.startsWith("--")) {
+      args.flags[key] = true;
+      continue;
     }
+    // Collect repeated flags as arrays (--artifact, --digest, --question).
+    if (Object.prototype.hasOwnProperty.call(args.flags, key)) {
+      const prev = args.flags[key];
+      args.flags[key] = Array.isArray(prev) ? [...prev, next] : [prev, next];
+    } else {
+      args.flags[key] = next;
+    }
+    index++;
   }
   return args;
+}
+
+function flagList(value) {
+  if (value === undefined || value === true) return [];
+  return Array.isArray(value) ? value.map(String) : [String(value)];
 }
 
 function workspaceRoot(flags) {
@@ -399,6 +418,64 @@ function cmdDoctor(args) {
   });
 }
 
+function cmdHandoff(args) {
+  const root = workspaceRoot(args.flags);
+  const sub = args._[0];
+  if (!["write", "validate", "publish"].includes(sub)) {
+    die("usage: ow handoff write|validate|publish --phase <phase> ...");
+  }
+  const phase = stringFlag(args.flags.phase, "--phase");
+  if (!phase) die("usage: ow handoff <cmd> --phase <phase> ...");
+  const run = resolveRun(root, args);
+  const out =
+    stringFlag(args.flags.out, "--out") ||
+    defaultHandoffOut(phase, { pass: args.flags.pass === true ? 1 : args.flags.pass });
+  if (sub === "validate") {
+    const proposalPath = stringFlag(args.flags.proposal, "--proposal") || out;
+    const abs = path.resolve(run.workdir, proposalPath);
+    const proposal = readJson(abs);
+    const result = validateHandoffProposalShape(proposal, { phase });
+    printJson({ ok: result.ok, proposalPath, errors: result.errors, proposal: result.ok ? proposal : undefined });
+    if (!result.ok) process.exit(2);
+    return;
+  }
+  const producer = stringFlag(args.flags.producer, "--producer");
+  if (!producer) die("usage: ow handoff write|publish --phase <phase> --producer <id> --out <path> --artifact ...");
+  const digests = flagList(args.flags.digest);
+  const artifactFlags = flagList(args.flags.artifact);
+  const questions = flagList(args.flags.question);
+  let summary = stringFlag(args.flags.summary, "--summary");
+  if (args.flags["summary-file"]) {
+    const sf = String(args.flags["summary-file"]);
+    const abs = path.isAbsolute(sf) ? sf : path.resolve(run.workdir, sf);
+    summary = fs.readFileSync(abs, "utf8").trim();
+  }
+  const artifactsJson = stringFlag(args.flags["artifacts-json"], "--artifacts-json");
+  const status = args.flags.status === "blocked" ? "blocked" : "complete";
+  const reason = stringFlag(args.flags.reason, "--reason");
+  if (!artifactFlags.length && !artifactsJson) {
+    die("handoff write|publish requires --artifact and/or --artifacts-json");
+  }
+  const opts = {
+    phase,
+    out,
+    producer,
+    inputCheckpointDigests: digests,
+    artifactFlags,
+    artifactsJsonPath: artifactsJson,
+    summary,
+    openQuestions: questions,
+    status,
+    reason,
+  };
+  if (sub === "write") {
+    const written = handoffWrite(run.workdir, opts);
+    printJson({ status: "ok", proposalPath: written.proposalPath, proposal: written.proposal });
+    return;
+  }
+  printJson(handoffPublish(root, run, opts));
+}
+
 function cmdHelp() {
   console.log(`ow — wiki-agent-kit v2 host CLI
 
@@ -409,10 +486,17 @@ Human entry:
 
 Workflow host API (JSON):
   ow prepare --mode auto|plan|write|retry-plan|retry-write [--focus TEXT]
+  ow handoff write|validate|publish --phase <phase> --producer <id> --out <path> \\
+      [--digest D]... [--artifact id:type:owner:path[:deps]]... \\
+      [--artifacts-json REL] [--summary S] [--summary-file REL] [--question Q]... \\
+      [--status complete|blocked] [--reason R]
   ow checkpoint --phase <phase> --proposal <relative-path>
   ow gate plan|check [--run <runId>]
   ow validate [--run <runId>]
   ow status | doctor | install --force
+
+Handoff proposals are host-authored (always version 2). Agents write data-plane
+artifacts and artifact lists only; they must not invent proposal version/phase.
 
 Workspace setup:
   ow init [dir] --name N --lang en|zh [--clone URL|--path DIR] [--id ID]
@@ -439,6 +523,7 @@ async function main() {
       case "install": return cmdInstall(args);
       case "doctor": return cmdDoctor(args);
       case "prepare": return cmdPrepare(args);
+      case "handoff": return cmdHandoff(args);
       case "checkpoint": return cmdCheckpoint(args);
       case "gate": return cmdGate(args);
       case "validate": return cmdValidate(args);
