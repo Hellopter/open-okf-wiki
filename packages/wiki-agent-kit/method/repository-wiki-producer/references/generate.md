@@ -24,7 +24,10 @@ depth (not a README restatement), and have nearby verified Source Citations. For
 the overview repository map, per-source module/architecture coverage, and any critical cross-source
 flow must name participating `sources/<id>/` trees with stage-level citations. Do not add a concept
 page absent from the Spec or change the Spec while writing. Write a handoff proposal listing the
-exact pages, evidence receipts, and unresolved dependencies after the shard finishes.
+exact pages, evidence receipts, and unresolved dependencies after the shard finishes. Handoff
+proposals use **`version: 2`** and `phase` matching the write checkpoint (`write-sources` for domain
+shards / domain reduce; `write` for integration shards / final write reduce). See
+`references/orchestrator-context.md`.
 
 ## Frontmatter and local links
 

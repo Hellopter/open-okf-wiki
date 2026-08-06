@@ -27,7 +27,9 @@ Write page evidence and global-lens findings beneath `analysis/receipts/review/`
 ```
 
 Severity is `blocking`, `major`, or `minor`. `clean` is true only when the defects array is empty.
-The package's `schemas/defects.schema.json` records the reference shape.
+The package's `schemas/defects.schema.json` records the reference shape. Defects documents use
+version 2; review/repair/blocked **handoff proposals** also use version 2 with `phase` matching the
+checkpoint (`review-N`, `repair-N`, `blocked-N`). See `references/orchestrator-context.md`.
 
 ## Check
 

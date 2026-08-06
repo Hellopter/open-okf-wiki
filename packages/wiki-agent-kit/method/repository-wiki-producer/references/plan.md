@@ -66,6 +66,12 @@ Do not list `index.md` or `log.md` as pages. Spec paths must remain below `candi
 contain an absolute or traversal path. The package's `schemas/spec.schema.json` is the
 machine-readable reference contract.
 
+After Spec and assignments are written, publish `analysis/handoffs/plan.json` as a handoff proposal
+with **`version: 2`**, `phase: "plan"`, and `inputCheckpointDigests` exactly equal to the discover
+checkpoint digest. Spec `version: 2` is required for the Spec document itself; the handoff proposal
+also uses version 2 for a different schema (`handoff-proposal.schema.json`). See
+`references/orchestrator-context.md`.
+
 `pageAssignments` is mandatory. Every Spec path belongs to exactly one owner. Use source/domain
 owners for source-specific pages and an `integration` owner for overview, navigation, glossary, and
 cross-source Flow pages. Each assignment declares the coverage it owns and the handoff ids it needs;

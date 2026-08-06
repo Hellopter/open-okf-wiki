@@ -250,7 +250,12 @@ export function checkpointRun(root, run, input) {
     const proposal = readJson(proposalAbsolute);
     if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) throw new Error("handoff proposal must be a JSON object");
     if (proposal.version !== 2 || proposal.phase !== input.phase || !OWNER_RE.test(proposal.producer || "")) {
-      throw new Error("handoff proposal has an invalid version, phase, or producer");
+      throw new Error(
+        `handoff proposal has an invalid version, phase, or producer ` +
+          `(got version=${JSON.stringify(proposal.version)}, phase=${JSON.stringify(proposal.phase)}, ` +
+          `producer=${JSON.stringify(proposal.producer)}; want version=2 number, phase=${JSON.stringify(input.phase)}, ` +
+          `producer matching ${OWNER_RE})`,
+      );
     }
     const status = proposal.status || "complete";
     if (status !== "complete" && status !== "blocked") throw new Error(`invalid handoff proposal status: ${status}`);

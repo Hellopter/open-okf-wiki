@@ -62,6 +62,27 @@ describe("handoff checkpoints", () => {
     assert.match(invalid.errors[0], /artifact digest changed/i);
   });
 
+  it("rejects handoff proposals with version 1 or wrong phase and names the mismatch", () => {
+    const { root, workdir, run } = setup();
+    const receipt = path.join(workdir, "analysis", "receipts", "discover.json");
+    writeJson(receipt, { ok: true });
+    const artifacts = [
+      { id: "discover-receipt", type: "receipt", owner: "survey", path: "analysis/receipts/discover.json", dependsOn: [] },
+    ];
+    assert.throws(
+      () => publish(root, run, "discover", { ...proposal("discover", artifacts), version: 1 }),
+      /version=1.*want version=2/i,
+    );
+    assert.throws(
+      () => publish(root, run, "discover", { ...proposal("discover", artifacts), version: "2" }),
+      /version="2".*want version=2/i,
+    );
+    assert.throws(
+      () => publish(root, run, "discover", proposal("survey", artifacts)),
+      /phase="survey".*phase="discover"/i,
+    );
+  });
+
   it("rejects escapes, missing artifacts, invalid dependencies, duplicate ids, and conflicting page owners", () => {
     const { root, workdir, run } = setup();
     const receipt = path.join(workdir, "analysis", "receipts", "discover.json");

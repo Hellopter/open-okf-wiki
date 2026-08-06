@@ -36,19 +36,29 @@ only a short envelope such as:
 {
   "status": "ok",
   "proposalPath": "analysis/handoffs/survey/source-app-pass-1.json",
-  "summary": "At most eight concise bullets",
+  "summary": "concise bullets",
   "openQuestions": []
 }
 ```
+
+Survey and discovery **handoff proposal files** (the JSON at `proposalPath`) are not that envelope.
+They must follow `schemas/handoff-proposal.schema.json` with **`version: 2` (number)** and
+`phase: "discover"`. See `references/orchestrator-context.md`. Do not set proposal `version` to `1`
+because inventory or discovery-map use `1`.
 
 ## Discovery Map
 
 Merge survey results into `analysis/discovery-map.json` with:
 
+- `version` may be `1` (data plane; distinct from handoff proposal version 2)
 - `domains[]` with reader-meaningful boundaries and `coverageUnitIds`
 - `flows[]`, using `crossSource: true` for a multi-source journey
 - optional `concepts[]` and `openQuestions[]`
 - the complete `coverageUnits` copied from inventory
+
+After the map is written, write `analysis/handoffs/discovery-pass-<n>.json` as a **version 2** handoff
+proposal with `phase: "discover"`, `inputCheckpointDigests: []`, and artifacts declaring the map plus
+reduced survey receipts. Then `ow checkpoint --phase discover` publishes the graph edge.
 
 For non-L0 inventory tiers, an empty domain list is semantic insufficiency and the plan gate rejects
 it. The map is an input to planning, not a license to omit coverage from the Spec. The package's

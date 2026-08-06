@@ -318,12 +318,25 @@ function conciseLedger(entries) {
   return entries.map(({ id, owner, status, proposalPath, summary }) => ({ id, owner, status, proposalPath, summary }));
 }
 
+function handoffProposalDirective(phaseName, proposalPath, extraRules = []) {
+  return [
+    `Write the handoff proposal JSON to ${proposalPath}.`,
+    "Handoff proposals MUST use schemas/handoff-proposal.schema.json: version must be the number 2 (not 1, not the string \"2\").",
+    `phase must be exactly ${JSON.stringify(phaseName)} (must match the later ow checkpoint --phase).`,
+    "producer must be a non-empty owner id matching ^[A-Za-z0-9][A-Za-z0-9._:-]*$.",
+    "Include inputCheckpointDigests (array of digests; discover uses []), artifacts[] with id/type/owner/path/dependsOn, and optional summary/openQuestions/status.",
+    "Do not copy version numbers from inventory.json, discovery-map.json, snapshot-manifest.json, or candidate.manifest.json (those may be 1); handoff proposals are always version 2.",
+    ...extraRules,
+  ].join(" ");
+}
+
 async function runCheckpoint({ agent, workdir, phaseName, proposalPath, label }) {
   return agent(
     [
       `Checkpoint authority. workdir=${workdir}.`,
       `Read ${workdir}/inputs/run-policy.json to obtain hostCli.{node,script,workspaceRoot}.`,
       `Read and validate the run-local handoff proposal at ${proposalPath}. Do not modify its artifacts.`,
+      `The proposal MUST already have version: 2 (number) and phase exactly ${JSON.stringify(phaseName)}; if version is 1 or a string the host rejects it.`,
       `Run exactly: <hostCli.node> <hostCli.script> checkpoint --phase ${phaseName} --proposal ${proposalPath} --workspace <hostCli.workspaceRoot>, substituting hostCli values.`,
       "The host command must recompute artifact digests, validate ownership/dependencies, atomically write analysis/checkpoints/<phase>.json, and update current state.",
       "Artifact dependsOn entries may reference only artifacts from published predecessor checkpoints or their checkpoint digest, never uncheckpointed child handoff ids.",
@@ -429,7 +442,9 @@ return await (async () => {
                   ? `Focus on the surface path under sources/${unit.sourceId}/${unit.path || ""}. Capture module boundaries, public APIs, and runtime entry points for this surface only.`
                   : "Source-level survey: map entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts. Note which on-demand surfaces need dedicated follow-up.",
                 `Write the detailed receipt under analysis/receipts/survey/${id}-pass-${pass}.json.`,
-                `Write the handoff proposal to ${proposalPath}; declare the receipt artifact, this coverage unit, source-relative evidence, and open questions.`,
+                `Write a version-2 handoff-shaped proposal to ${proposalPath} (version must be number 2, not 1).`,
+                "Declare the survey receipt artifact, this coverage unit, source-relative evidence, and open questions.",
+                "This unit proposal is a discovery input artifact, not the discover checkpoint proposal; still use handoff-proposal version 2.",
                 "Return only the bounded handoff envelope. Do not write candidate pages.",
               ].filter(Boolean).join("\n"),
               { label: `survey:${pass}:${id}`, schema: ENVELOPE },
@@ -460,10 +475,13 @@ return await (async () => {
           `Read inventory and run policy, then JIT-read only survey handoffs/receipts in this ledger: ${JSON.stringify(conciseLedger(surveyLedger))}.`,
           surveyLanguage,
           multiSource,
-          `Write ${workdir}/analysis/discovery-map.json with complete coverage units (including on-demand surfaces), domains, flows, concepts, and visible failed/cancelled units.`,
+          `Write ${workdir}/analysis/discovery-map.json with complete coverage units (including on-demand surfaces), domains, flows, concepts, and visible failed/cancelled units. discovery-map.version may be 1.`,
           "Return missingUnitIds only for required coverage that is still surveyable (including on-demand surfaces that need promotion). Do not guess missing evidence.",
           "Do not treat pure rate-limit / overloaded / 429 failures as permanently missing; the workflow retries those via the survey ledger.",
-          `Write the aggregate discovery handoff proposal to analysis/handoffs/discovery-pass-${pass}.json with inputCheckpointDigests exactly []; it MUST declare analysis/discovery-map.json as a discovery-map artifact plus the survey receipt artifacts it reduces.`,
+          handoffProposalDirective("discover", `analysis/handoffs/discovery-pass-${pass}.json`, [
+            "inputCheckpointDigests must be exactly [].",
+            "artifacts MUST declare analysis/discovery-map.json as a discovery-map artifact plus the survey receipt artifacts it reduces.",
+          ]),
           "Return only the bounded discovery envelope.",
         ].filter(Boolean).join("\n"),
         { label: `reduce-discovery:${pass}`, schema: DISCOVERY },
@@ -518,7 +536,10 @@ return await (async () => {
         "Write analysis/page-assignments.json as the same pageAssignments control plane from the Spec, grouped only for convenient reading.",
         "Every candidate page must have one owner and one candidate path. Domain owners may write only their assigned pages. Integration owners exclusively own overview, navigation, terminology, and cross-source-flow pages.",
         "Every assignment must declare coverage units and handoff dependencies. Bind every required coverage unit or record a structured cancellation.",
-        `Write a plan handoff proposal to analysis/handoffs/plan.json with inputCheckpointDigests exactly [${discoveryCheckpoint.checkpointDigest}]; declare spec and page assignments as artifacts that depend on that discovery checkpoint.`,
+        handoffProposalDirective("plan", "analysis/handoffs/plan.json", [
+          `inputCheckpointDigests must be exactly [${discoveryCheckpoint.checkpointDigest}].`,
+          "Declare spec and page assignments as artifacts that depend on that discovery checkpoint.",
+        ]),
         "Do not write candidate pages. Return only the bounded handoff envelope.",
       ].filter(Boolean).join("\n"),
       { label: "plan-spec", schema: ENVELOPE },
@@ -571,7 +592,10 @@ return await (async () => {
       `Write preflight. workdir=${workdir}. Read run policy and the authoritative plan checkpoint.`,
       `Run exactly: <hostCli.node> <hostCli.script> gate check --run ${runId} --workspace <hostCli.workspaceRoot>, substituting hostCli from run policy.`,
       "Fail if the plan checkpoint/gate is stale or missing, the candidate is already sealed, or page assignments have no unique ownership.",
-      "Write analysis/receipts/preflight.json and a handoff proposal at analysis/handoffs/preflight.json. Return only the bounded handoff envelope.",
+      "Write analysis/receipts/preflight.json.",
+      "Write analysis/handoffs/preflight.json as a version-2 handoff-shaped record (version number 2, not 1).",
+      "Declare the preflight receipt; this proposal is not published as a write checkpoint.",
+      "Return only the bounded handoff envelope.",
     ].join("\n"),
     { label: "preflight-write", schema: ENVELOPE },
   );
@@ -617,7 +641,10 @@ return await (async () => {
             writeMultiSource,
             `Your exclusive candidate pages: ${JSON.stringify(shard.pagePaths)}. Write no other candidate page, index, navigation, or log.`,
             `Re-open frozen evidence under ${workdir}/sources/ for every source claim. Use valid local relative Source Citations; never invent ranges.`,
-            `Write a domain handoff proposal to analysis/handoffs/write/domain-${id}.json with inputCheckpointDigests exactly [${activePlanCheckpointDigest}], declaring candidate paths, coverage, dependencies, and evidence receipts.`,
+            handoffProposalDirective("write-sources", `analysis/handoffs/write/domain-${id}.json`, [
+              `inputCheckpointDigests must be exactly [${activePlanCheckpointDigest}].`,
+              "Declare candidate paths, coverage, dependencies, and evidence receipts.",
+            ]),
             "Return only the bounded handoff envelope.",
           ].filter(Boolean).join("\n"),
           { label: `write:domain:${id}`, schema: ENVELOPE },
@@ -641,7 +668,11 @@ return await (async () => {
   const sourceWriteProposal = await agent(
     [
       `Write-source reducer. workdir=${workdir}. JIT-read only these writer handoffs: ${JSON.stringify(conciseLedger(writeLedger))}.`,
-      `Verify all domain owners completed their exclusive paths. Write analysis/handoffs/write-sources.json with inputCheckpointDigests exactly [${activePlanCheckpointDigest}] and the domain candidate artifacts/dependencies.`,
+      `Verify all domain owners completed their exclusive paths.`,
+      handoffProposalDirective("write-sources", "analysis/handoffs/write-sources.json", [
+        `inputCheckpointDigests must be exactly [${activePlanCheckpointDigest}].`,
+        "Declare the domain candidate artifacts and dependencies.",
+      ]),
       "Return only the bounded handoff envelope.",
     ].join("\n"),
     { label: "reduce-write-sources", schema: ENVELOPE },
@@ -673,7 +704,10 @@ return await (async () => {
             writeMultiSource,
             "You own only integration pages such as overview, repository/surface map, terminology, navigation, and cross-source flows. Do not edit any domain page.",
             "Cross-source synthesis must retain stage-level local citations into the frozen source trees.",
-            `Write an integration handoff proposal to analysis/handoffs/write/integration-${id}.json with inputCheckpointDigests exactly [${sourceWriteCheckpoint.checkpointDigest}]. Return only the bounded handoff envelope.`,
+            handoffProposalDirective("write", `analysis/handoffs/write/integration-${id}.json`, [
+              `inputCheckpointDigests must be exactly [${sourceWriteCheckpoint.checkpointDigest}].`,
+            ]),
+            "Return only the bounded handoff envelope.",
           ].filter(Boolean).join("\n"),
           { label: `write:integration:${id}`, schema: ENVELOPE },
         );
@@ -696,7 +730,10 @@ return await (async () => {
   const writeProposal = await agent(
     [
       `Write reducer. workdir=${workdir}. JIT-read only declared writer handoffs: ${JSON.stringify(conciseLedger(writeLedger))}.`,
-      `Verify ownership and candidate path completeness against page assignments. Write analysis/handoffs/write.json with inputCheckpointDigests exactly [${sourceWriteCheckpoint.checkpointDigest}].`,
+      `Verify ownership and candidate path completeness against page assignments.`,
+      handoffProposalDirective("write", "analysis/handoffs/write.json", [
+        `inputCheckpointDigests must be exactly [${sourceWriteCheckpoint.checkpointDigest}].`,
+      ]),
       "Return only the bounded handoff envelope.",
     ].join("\n"),
     { label: "reduce-write", schema: ENVELOPE },
@@ -731,7 +768,10 @@ return await (async () => {
               `Read ${methodRoot}/references/review.md, the assigned Spec entry, page assignments, frozen sources, candidate page, and predecessor checkpoint digest ${verificationInputDigest}.`,
               writeLanguage,
               "Try to refute every source-grounded claim. An unverified claim is a finding only when the page presents it as verified evidence.",
-              `Write full findings to analysis/receipts/review/page-${id}-round-${round}.json and a handoff proposal to analysis/handoffs/review/page-${id}-round-${round}.json with inputCheckpointDigests exactly [${verificationInputDigest}].`,
+              `Write full findings to analysis/receipts/review/page-${id}-round-${round}.json.`,
+              handoffProposalDirective(`review-${round}`, `analysis/handoffs/review/page-${id}-round-${round}.json`, [
+                `inputCheckpointDigests must be exactly [${verificationInputDigest}].`,
+              ]),
               "Do not edit candidate pages. Return only the bounded handoff envelope.",
             ].join("\n"),
             { label: `review:page:${round}:${id}`, schema: ENVELOPE },
@@ -758,7 +798,10 @@ return await (async () => {
             writeLanguage,
             writeMultiSource,
             "Use refute-by-default: report only defects with concrete evidence. Verify ownership, coverage, navigation, source citation locality, and cross-source contracts.",
-            `Write findings to analysis/receipts/review/${lens}-round-${round}.json and a proposal to analysis/handoffs/review/${lens}-round-${round}.json with inputCheckpointDigests exactly [${verificationInputDigest}].`,
+            `Write findings to analysis/receipts/review/${lens}-round-${round}.json.`,
+            handoffProposalDirective(`review-${round}`, `analysis/handoffs/review/${lens}-round-${round}.json`, [
+              `inputCheckpointDigests must be exactly [${verificationInputDigest}].`,
+            ]),
             "Do not edit candidate pages. Return only the bounded handoff envelope.",
           ].filter(Boolean).join("\n"),
           { label: `review:${lens}:${round}`, schema: ENVELOPE },
@@ -783,7 +826,11 @@ return await (async () => {
         "Write analysis/defects.json conforming to schemas/defects.schema.json version 2.",
         "Every defect must have pagePath, owner, severity, category, evidence, repairSuggestion, and stable fingerprint. clean=true only when defects is empty.",
         "repairTargets may include only owners with blocking or major defects, using their assigned page paths.",
-        `Write analysis/handoffs/review-${round}.json with inputCheckpointDigests exactly [${verificationInputDigest}]. Return the bounded review envelope.`,
+        handoffProposalDirective(`review-${round}`, `analysis/handoffs/review-${round}.json`, [
+          `inputCheckpointDigests must be exactly [${verificationInputDigest}].`,
+          "Declare analysis/defects.json and the review receipt artifacts.",
+        ]),
+        "Return the bounded review envelope.",
       ].join("\n"),
       { label: `reduce-defects:${round}`, schema: REVIEW },
     );
@@ -809,8 +856,11 @@ return await (async () => {
         [
           `Proof-or-stop recorder. workdir=${workdir}.`,
           `The repair loop stopped after round ${round}: ${!progressed ? "defect fingerprint/counts made no progress" : "repair budget exhausted"}.`,
-          `Read ${workdir}/analysis/defects.json and write a blocked handoff proposal to analysis/handoffs/blocked-review-${round}.json with inputCheckpointDigests exactly [${reviewCheckpoint.checkpointDigest}].`,
-          "Set proposal status to blocked. Declare unresolved defects as artifacts, retain owner/page paths, and explain why no additional autonomous repair is justified.",
+          `Read ${workdir}/analysis/defects.json.`,
+          handoffProposalDirective(`blocked-${round}`, `analysis/handoffs/blocked-review-${round}.json`, [
+            `inputCheckpointDigests must be exactly [${reviewCheckpoint.checkpointDigest}].`,
+            "Set proposal status to blocked. Declare unresolved defects as artifacts, retain owner/page paths, and explain why no additional autonomous repair is justified.",
+          ]),
           "Return only the bounded handoff envelope.",
         ].join("\n"),
         { label: `record-blocked:${round}`, schema: ENVELOPE },
@@ -852,7 +902,10 @@ return await (async () => {
               writeLanguage,
               `You may modify only these candidate pages: ${JSON.stringify(target.pagePaths)}. Do not alter other owners' pages, the Spec, assignments, indexes, or logs.`,
               "Fix only blocking/major defects with source-grounded edits. Preserve valid local citations and ownership boundaries.",
-              `Write a repair handoff proposal to analysis/handoffs/repair/${id}-round-${round}.json with inputCheckpointDigests exactly [${reviewCheckpoint.checkpointDigest}]. Return only the bounded handoff envelope.`,
+              handoffProposalDirective(`repair-${round}`, `analysis/handoffs/repair/${id}-round-${round}.json`, [
+                `inputCheckpointDigests must be exactly [${reviewCheckpoint.checkpointDigest}].`,
+              ]),
+              "Return only the bounded handoff envelope.",
             ].join("\n"),
             { label: `repair:${round}:${id}`, schema: ENVELOPE },
           );
@@ -872,7 +925,9 @@ return await (async () => {
     const repairProposal = await agent(
       [
         `Repair reducer. workdir=${workdir}. JIT-read only repair handoffs: ${JSON.stringify(conciseLedger(repairs))}.`,
-        `Write analysis/handoffs/repair-${round}.json with inputCheckpointDigests exactly [${reviewCheckpoint.checkpointDigest}].`,
+        handoffProposalDirective(`repair-${round}`, `analysis/handoffs/repair-${round}.json`, [
+          `inputCheckpointDigests must be exactly [${reviewCheckpoint.checkpointDigest}].`,
+        ]),
         "Return only the bounded handoff envelope.",
       ].join("\n"),
       { label: `reduce-repair:${round}`, schema: ENVELOPE },
@@ -899,8 +954,11 @@ return await (async () => {
       `Validator. workdir=${workdir}. Read run policy for hostCli.`,
       `Run exactly: <hostCli.node> <hostCli.script> validate --run ${runId} --workspace <hostCli.workspaceRoot>, substituting hostCli values.`,
       `The deterministic validator must recheck the write checkpoint and final review checkpoint ${finalReviewCheckpoint?.checkpointDigest}, page ownership, coverage, local source links, indexes, and candidate digest.`,
-      `Write command output to analysis/validation.json and a handoff proposal to analysis/handoffs/validate.json with inputCheckpointDigests exactly [${finalReviewCheckpoint?.checkpointDigest}].`,
-      "The validate proposal MUST declare analysis/validation.json and analysis/candidate.manifest.json as artifacts, because the host validates both before publishing the terminal checkpoint.",
+      `Write command output to analysis/validation.json.`,
+      handoffProposalDirective("validate", "analysis/handoffs/validate.json", [
+        `inputCheckpointDigests must be exactly [${finalReviewCheckpoint?.checkpointDigest}].`,
+        "artifacts MUST declare analysis/validation.json and analysis/candidate.manifest.json.",
+      ]),
       "validate does not transition run state to sealed; the following authoritative validate checkpoint is the only sealing transition. Return status=ok only after the command succeeds, and return only the bounded handoff envelope.",
     ].join("\n"),
     { label: "validate-and-seal", schema: ENVELOPE },
