@@ -30,7 +30,9 @@ claude
 ```
 
 Initialization creates `workspace.yaml` v2, `.wiki-agent/runtime.json`, source registration, and one
-workflow at `.claude/workflows/wiki.workflow.js`.
+workflow at `.claude/workflows/wiki.workflow.js`. Install always writes that workflow with LF line
+endings; Windows CRLF checkouts are rewritten by `ow init` / `ow install` so Claude Code's Workflow
+`script` approval path does not reject hidden `\r` control characters.
 
 ## Human workflow
 

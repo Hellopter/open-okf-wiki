@@ -11,7 +11,7 @@ import {
   kitWorkflowsDir,
   runtimeManifestPath,
 } from "./paths.mjs";
-import { hashTree, sha256File, writeJson } from "./artifacts.mjs";
+import { hashTree, sha256, sha256File, writeJson } from "./artifacts.mjs";
 
 const LEGACY_ASSET_DIRS = [
   [".claude", "skills", "wiki"],
@@ -49,8 +49,49 @@ function kitVersion() {
   return JSON.parse(fs.readFileSync(packagePath, "utf8")).version;
 }
 
-function fileEquals(left, right) {
-  return fs.existsSync(left) && fs.existsSync(right) && sha256File(left) === sha256File(right);
+/**
+ * Claude Code rejects Workflow `script` bodies that contain CR or other
+ * hidden controls (only TAB/LF are allowed). Normalize installed workflow
+ * text to LF so Windows autocrlf/editor checkouts cannot poison /wiki.
+ */
+export function normalizeWorkflowText(text) {
+  return String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+export function readNormalizedWorkflow(file) {
+  return normalizeWorkflowText(fs.readFileSync(file, "utf8"));
+}
+
+export function workflowInstallDigest(file) {
+  return sha256(readNormalizedWorkflow(file));
+}
+
+/** True when the on-disk install already matches the LF-normalized kit bytes. */
+function workflowAssetEquals(source, target) {
+  return fs.existsSync(source) && fs.existsSync(target) && workflowInstallDigest(source) === sha256File(target);
+}
+
+/** True when logical workflow text matches after CR stripping (CRLF-safe). */
+function workflowContentEquals(source, target) {
+  return fs.existsSync(source) && fs.existsSync(target) && workflowInstallDigest(source) === workflowInstallDigest(target);
+}
+
+export function workflowHasHiddenControls(file) {
+  if (!fs.existsSync(file)) return false;
+  const text = fs.readFileSync(file, "utf8");
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code === 9 || code === 10) continue;
+    if (code < 32 || (code >= 127 && code <= 159)) return true;
+  }
+  return false;
+}
+
+function writeNormalizedWorkflow(source, target) {
+  const text = readNormalizedWorkflow(source);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, text, "utf8");
+  return sha256(text);
 }
 
 function fileManifest(directory, { allowKitRoot = false } = {}) {
@@ -165,11 +206,25 @@ export function installWorkflows(root, { force = false } = {}) {
     const target = path.join(destinationDir, name);
     if (!fs.existsSync(source)) throw new Error(`missing required v2 workflow asset: ${source}`);
     const existed = fs.existsSync(target);
-    if (existed && !force && !fileEquals(source, target)) {
+    const upToDate = existed && workflowAssetEquals(source, target) && !workflowHasHiddenControls(target);
+    // Same logical content with CRLF (or other hidden controls) is auto-healed.
+    // Real edits still require --force so user changes are not clobbered.
+    if (existed && !force && !upToDate && !workflowContentEquals(source, target)) {
       throw new Error(`installed workflow drifted from kit: ${target}; run ow install --force`);
     }
-    if (!existed || force) fs.copyFileSync(source, target);
-    files.push({ file: name, path: target, digest: sha256File(target), skipped: existed && !force });
+    let digest;
+    if (!existed || force || !upToDate) {
+      digest = writeNormalizedWorkflow(source, target);
+    } else {
+      digest = sha256File(target);
+    }
+    files.push({
+      file: name,
+      path: target,
+      digest,
+      skipped: Boolean(existed && !force && upToDate),
+      lineEndings: "lf",
+    });
   }
   return { files, destDir: destinationDir };
 }
@@ -188,7 +243,13 @@ export function assertInstalledAssets(root) {
   const target = path.join(claudeWorkflowsDir(root), REQUIRED_WORKFLOWS[0]);
   if (!fs.existsSync(source)) errors.push(`missing kit workflow: ${source}`);
   else if (!fs.existsSync(target)) errors.push(`missing installed workflow: ${target}`);
-  else if (!fileEquals(source, target)) errors.push(`installed workflow drifted from kit: ${target}`);
+  else if (workflowHasHiddenControls(target)) {
+    errors.push(
+      `installed workflow contains CR/control characters unsafe for Claude Workflow script approval: ${target}`,
+    );
+  } else if (!workflowAssetEquals(source, target)) {
+    errors.push(`installed workflow drifted from kit: ${target}`);
+  }
 
   const stale = legacyAssets(root);
   if (stale.length) errors.push(`legacy workflow/skill assets remain: ${stale.map((asset) => asset.path).join(", ")}`);

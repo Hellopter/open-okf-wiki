@@ -182,6 +182,29 @@ describe("ow v2 workspace and lifecycle", () => {
     assert.match(rejected.stderr, /workspace v2 always uses workspace\.yaml/i);
   });
 
+  it("rewrites CRLF workflow installs to LF without requiring --force", () => {
+    const { workspace } = makeWorkspace();
+    const workflow = path.join(workspace, ".claude", "workflows", "wiki.workflow.js");
+    const lf = fs.readFileSync(workflow, "utf8");
+    assert.equal(lf.includes("\r"), false);
+    fs.writeFileSync(workflow, lf.replace(/\n/g, "\r\n"), "utf8");
+    assert.ok(fs.readFileSync(workflow, "utf8").includes("\r"));
+
+    const doctorBefore = JSON.parse(ow(["doctor", "--workspace", workspace], workspace).stdout);
+    assert.equal(doctorBefore.ok, false);
+    assert.match(doctorBefore.assets.error, /CR\/control characters|drifted from kit/i);
+
+    const installed = json(ow(["install", "--workspace", workspace], workspace));
+    assert.equal(installed.workflows.files[0].lineEndings, "lf");
+    assert.equal(installed.workflows.files[0].skipped, false);
+    const rewritten = fs.readFileSync(workflow, "utf8");
+    assert.equal(rewritten.includes("\r"), false);
+    assert.equal(rewritten, lf);
+
+    const doctorAfter = json(ow(["doctor", "--workspace", workspace], workspace));
+    assert.equal(doctorAfter.assets.ok, true);
+  });
+
   it("prepares, resumes, gates, retries, and never falls back to the newest run", () => {
     const { workspace } = makeWorkspace();
     const first = json(ow(["prepare", "--mode", "auto", "--workspace", workspace], workspace));

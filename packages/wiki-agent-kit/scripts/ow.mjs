@@ -377,6 +377,9 @@ function cmdDoctor(args) {
     minimumVersion: MIN_CLAUDE_WORKFLOW_VERSION.join("."),
     versionSupported: isSupportedVersion(version),
   };
+  const workflowHint = !assets.ok && /CR\/control characters|drifted from kit/i.test(assets.error || "")
+    ? "Run: ow install   # rewrites workflow to LF; use --force only if content also drifted"
+    : null;
   printJson({
     ok: assets.ok && claude.found && claude.versionSupported,
     workspace: root,
@@ -386,6 +389,11 @@ function cmdDoctor(args) {
       required: true,
       locallyVerifiable: false,
       action: "In a new Claude Code session from this workspace, verify Dynamic Workflows are enabled in /config.",
+    },
+    workflowLineEndings: {
+      required: "lf",
+      reason: "Claude Code rejects Workflow script bodies that contain CR or other hidden controls (TAB/LF only).",
+      fix: workflowHint,
     },
     current: readCurrent(root),
   });
