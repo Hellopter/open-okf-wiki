@@ -3,7 +3,7 @@
  *
  * Claude Dynamic Workflow globals: agent, parallel, phase, log, args.
  * The host CLI owns run state and checkpoint authority. Agents own only
- * run-local data-plane artifacts and return bounded handoff envelopes.
+ * run-local data-plane artifacts and compact progress summaries.
  */
 
 export const meta = {
@@ -35,23 +35,9 @@ const LIMITS = {
 const ENVELOPE = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "proposalPath", "summary", "openQuestions"],
+  required: ["status", "summary"],
   properties: {
     status: { type: "string", enum: ["ok", "failed", "skipped"] },
-    proposalPath: { type: "string", minLength: 1, maxLength: 500 },
-    summary: { type: "string", maxLength: 6000 },
-    openQuestions: { type: "array", items: { type: "string", maxLength: 2000 } },
-  },
-};
-
-const CHECKPOINT = {
-  type: "object",
-  additionalProperties: false,
-  required: ["status", "checkpointPath", "checkpointDigest", "summary"],
-  properties: {
-    status: { type: "string", enum: ["ok", "failed"] },
-    checkpointPath: { type: "string", minLength: 1 },
-    checkpointDigest: { type: "string", minLength: 16 },
     summary: { type: "string", maxLength: 6000 },
   },
 };
@@ -66,8 +52,11 @@ const BOOTSTRAP = {
     runId: { type: "string", minLength: 1 },
     workdir: { type: "string", minLength: 1 },
     workspaceRoot: { type: "string", minLength: 1 },
-    mode: { type: "string", enum: ["auto", "plan", "write", "retry-plan", "retry-write"] },
-    startAt: { type: "string", enum: ["survey", "plan", "write", "validate"] },
+    mode: { type: "string", enum: ["auto", "plan", "write", "restart", "retry-plan", "retry-write"] },
+    startAt: {
+      type: "string",
+      enum: ["survey", "plan", "gate", "ready", "write-sources", "write", "review-1", "review-2", "review-3", "review-4", "repair-1", "repair-2", "repair-3", "repair-4", "validate", "sealed"],
+    },
     inputCheckpointDigest: { type: ["string", "null"] },
     summary: { type: "string", maxLength: 6000 },
   },
@@ -117,10 +106,37 @@ const RESUMED_DISCOVERY = {
   },
 };
 
+const RESUMED_REVIEW = {
+  type: "object",
+  additionalProperties: false,
+  required: ["status", "checkpointDigest", "clean", "blockingCount", "majorCount", "defectFingerprint", "repairTargets", "summary"],
+  properties: {
+    status: { type: "string", enum: ["ok", "failed"] },
+    checkpointDigest: { type: "string", minLength: 16 },
+    clean: { type: "boolean" },
+    blockingCount: { type: "integer", minimum: 0 },
+    majorCount: { type: "integer", minimum: 0 },
+    defectFingerprint: { type: "string", minLength: 16, maxLength: 256 },
+    repairTargets: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["owner", "pagePaths"],
+        properties: {
+          owner: { type: "string", minLength: 1 },
+          pagePaths: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        },
+      },
+    },
+    summary: { type: "string", maxLength: 6000 },
+  },
+};
+
 const DISCOVERY = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "proposalPath", "summary", "openQuestions", "missingUnitIds"],
+  required: ["status", "summary", "missingUnitIds"],
   properties: {
     ...ENVELOPE.properties,
     missingUnitIds: { type: "array", items: { type: "string", minLength: 1 } },
@@ -160,7 +176,7 @@ const ASSIGNMENTS = {
 const REVIEW = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "proposalPath", "summary", "openQuestions", "clean", "blockingCount", "majorCount", "defectFingerprint", "repairTargets"],
+  required: ["status", "summary", "clean", "blockingCount", "majorCount", "defectFingerprint", "repairTargets"],
   properties: {
     ...ENVELOPE.properties,
     clean: { type: "boolean" },
@@ -183,18 +199,19 @@ const REVIEW = {
 };
 
 function normalizeArgs(value) {
-  const validModes = new Set(["auto", "plan", "write", "retry-plan", "retry-write"]);
+  const validModes = new Set(["auto", "plan", "write", "restart", "retry-plan", "retry-write"]);
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const mode = validModes.has(value.mode) ? value.mode : "auto";
     const focus = typeof value.focus === "string" && value.focus.trim() ? value.focus.trim() : undefined;
     return { mode, focus };
   }
   const text = typeof value === "string" ? value.trim() : "";
-  const match = text.match(/^(--plan|--write|--retry\s+plan|--retry\s+write)(?:\s+|$)([\s\S]*)$/);
+  const match = text.match(/^(--plan|--write|--restart|--retry\s+plan|--retry\s+write)(?:\s+|$)([\s\S]*)$/);
   if (!match) return { mode: "auto", focus: text || undefined };
   const mode = {
     "--plan": "plan",
     "--write": "write",
+    "--restart": "restart",
     "--retry plan": "retry-plan",
     "--retry write": "retry-write",
   }[match[1].replace(/\s+/g, " ")];
@@ -306,16 +323,15 @@ function multiSourceDirective(sourceCount, tier) {
 }
 
 function conciseLedger(entries) {
-  return entries.map(({ id, owner, status, proposalPath, summary }) => ({ id, owner, status, proposalPath, summary }));
+  return entries.map(({ id, owner, status, receiptPath, summary }) => ({ id, owner, status, receiptPath, summary }));
 }
 
 const HOST = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "summary"],
+  required: ["status", "checkpointPath", "checkpointDigest"],
   properties: {
     status: { type: "string", enum: ["ok", "failed"] },
-    proposalPath: { type: "string" },
     checkpointPath: { type: "string" },
     checkpointDigest: { type: "string" },
     summary: { type: "string", maxLength: 6000 },
@@ -324,10 +340,9 @@ const HOST = {
 
 function dataPlaneOnlyRule() {
   return [
-    "Do NOT author analysis/handoffs/** proposal JSON and do not invent handoff version or phase.",
     "Write data-plane artifacts only (receipts, maps, specs, pages, defects, validation outputs).",
-    "When listing artifacts for the host, write analysis/receipts/*-artifacts.json as a JSON array of {id,type,owner,path,dependsOn,...} without version or phase.",
-    "The host CLI ow handoff write|publish always emits handoff proposal version 2.",
+    "When listing artifacts for the host, write analysis/receipts/*-artifacts.json as a JSON array of {id,type,path,coverageUnitIds?}.",
+    "The host CLI computes artifact digests and publishes the phase checkpoint.",
   ].join(" ");
 }
 
@@ -338,104 +353,41 @@ function hostCliPreamble(workdir) {
   ].join(" ");
 }
 
-function buildHandoffArgv({ phase, out, producer, digests = [], artifactsJson, artifactFlags = [], summary, status, reason }) {
-  const parts = [
-    "<hostCli.node> <hostCli.script> handoff",
-    "CMD_PLACEHOLDER",
+function buildPublishArgv({ phase, artifactsJson }) {
+  if (!artifactsJson) throw new Error(`publish ${phase} requires an artifactsJson path`);
+  return [
+    "<hostCli.node> <hostCli.script> publish",
     "--workspace <hostCli.workspaceRoot>",
     `--phase ${phase}`,
-    `--out ${out}`,
-    `--producer ${producer}`,
+    `--artifacts-json ${artifactsJson}`,
   ];
-  for (const digest of digests.filter(Boolean)) parts.push(`--digest ${digest}`);
-  if (artifactsJson) parts.push(`--artifacts-json ${artifactsJson}`);
-  for (const flag of artifactFlags) parts.push(`--artifact ${flag}`);
-  if (summary) parts.push(`--summary ${JSON.stringify(summary)}`);
-  if (status === "blocked") parts.push("--status blocked");
-  if (reason) parts.push(`--reason ${JSON.stringify(reason)}`);
-  return parts;
 }
 
-async function runHostHandoffPublish(agent, opts) {
-  const {
-    workdir,
-    phase,
-    out,
-    producer,
-    digests = [],
-    artifactsJson,
-    artifactFlags = [],
-    summary,
-    status,
-    reason,
-    label,
-  } = opts;
-  const argv = buildHandoffArgv({ phase, out, producer, digests, artifactsJson, artifactFlags, summary, status, reason })
-    .map((part) => (part === "CMD_PLACEHOLDER" ? "publish" : part))
-    .join(" ");
+async function runHostPublish(agent, opts) {
+  const { workdir, phase, artifactsJson, label } = opts;
+  const argv = buildPublishArgv({ phase, artifactsJson }).join(" ");
   return agent(
     [
-      `Host handoff publish. workdir=${workdir}.`,
+      `Host phase publish. workdir=${workdir}.`,
       hostCliPreamble(workdir),
       `Run exactly: ${argv}`,
-      "Do not hand-edit the proposal file; host always writes version 2.",
-      "Return status=ok, proposalPath, checkpointPath, checkpointDigest, and summary from JSON stdout.",
+      "Return status=ok, checkpointPath, and checkpointDigest from JSON stdout.",
     ].join("\n"),
-    { label: label || `handoff-publish:${phase}`, schema: HOST },
-  );
-}
-
-async function runHostHandoffWrite(agent, opts) {
-  const {
-    workdir,
-    phase,
-    out,
-    producer,
-    digests = [],
-    artifactsJson,
-    artifactFlags = [],
-    summary,
-    label,
-  } = opts;
-  const argv = buildHandoffArgv({ phase, out, producer, digests, artifactsJson, artifactFlags, summary })
-    .map((part) => (part === "CMD_PLACEHOLDER" ? "write" : part))
-    .join(" ");
-  return agent(
-    [
-      `Host handoff write. workdir=${workdir}.`,
-      hostCliPreamble(workdir),
-      `Run exactly: ${argv}`,
-      "Return status=ok, proposalPath, and summary from JSON stdout. Host forces proposal version 2.",
-    ].join("\n"),
-    { label: label || `handoff-write:${phase}`, schema: HOST },
-  );
-}
-
-async function runCheckpoint({ agent, workdir, phaseName, proposalPath, label }) {
-  return agent(
-    [
-      `Checkpoint authority. workdir=${workdir}.`,
-      hostCliPreamble(workdir),
-      `Read the host-authored handoff proposal at ${proposalPath} (must already exist; do not rewrite it).`,
-      `Run exactly: <hostCli.node> <hostCli.script> checkpoint --phase ${phaseName} --proposal ${proposalPath} --workspace <hostCli.workspaceRoot>`,
-      "Return status=ok only for a zero exit code and include checkpointPath and checkpointDigest from its JSON output.",
-    ].join("\n"),
-    { label, schema: CHECKPOINT },
+    { label: label || `publish:${phase}`, schema: HOST },
   );
 }
 
 return await (async () => {
   const input = normalizeArgs(args);
-
   phase("Bootstrap");
   const bootstrap = await agent(
     [
-      "Bootstrap a Wiki v2 run. Read .wiki-agent/runtime.json in this workspace; it is the only host-command authority.",
+      "Bootstrap a Wiki v3 run. Read .wiki-agent/runtime.json in this workspace; it is the only host-command authority.",
       `Requested business input: ${JSON.stringify(input)}.`,
       "Invoke the runtime manifest's exact node/script with `prepare --mode <requested mode>`.",
       "Pass focus only as one safely quoted argument when it is present. Do not synthesize or accept runId/workdir input.",
-      "prepare must create or resolve the run, apply retry cleanup when requested, and choose startAt=survey|plan|write from authoritative checkpoints.",
-      "Return the prepare JSON fields. Fail closed when write is requested without a valid plan checkpoint.",
+      "prepare selects the unique next edge from verified checkpoints: survey, plan, gate, write-sources, write, review-N, repair-N, or validate.",
+      "Return the prepare JSON fields exactly. Fail closed on an invalid checkpoint or frozen snapshot.",
     ].join("\n"),
     { label: "bootstrap-prepare", schema: BOOTSTRAP },
   );
@@ -443,600 +395,525 @@ return await (async () => {
 
   const { runId, workdir, workspaceRoot } = bootstrap;
   if (!runId || !workdir || !workspaceRoot) return { stopped: "prepare returned incomplete run context", input, bootstrap };
+  if (bootstrap.startAt === "sealed") return { runId, workdir, workspaceRoot, mode: input.mode, next: "sealed" };
   const methodRoot = `${workdir}/method`;
-  const shouldPlan = bootstrap.startAt === "survey" || bootstrap.startAt === "plan";
-  if (input.mode === "plan" && !shouldPlan) {
-    return {
-      runId,
-      workdir,
-      workspaceRoot,
-      mode: input.mode,
-      stopped: "a gate-ready plan already exists",
-      next: bootstrap.startAt === "write" ? "/wiki --write" : "/wiki",
-    };
+  const startsPlanning = ["survey", "plan"].includes(bootstrap.startAt);
+  const canFinishPlan = ["survey", "plan", "gate"].includes(bootstrap.startAt);
+  if (input.mode === "plan" && !canFinishPlan) {
+    return { runId, workdir, workspaceRoot, mode: input.mode, stopped: "a gate-ready plan already exists", next: "/wiki --write" };
   }
-  if (input.mode === "write" && shouldPlan) {
-    return { runId, workdir, workspaceRoot, stopped: "--write requires an authoritative plan checkpoint" };
+  if (input.mode === "write" && startsPlanning) {
+    return { runId, workdir, workspaceRoot, stopped: "--write requires an authoritative plan checkpoint and gate" };
   }
 
-  let inventory = null;
-  let surveyLedger = [];
-  let discovery = null;
-  let discoveryCheckpoint = null;
-  let plan = null;
-  let planCheckpoint = null;
   let wikiLanguage = "en";
   let sourceCount = 1;
   let tier = "L0";
   let focusRule = "";
   let multiSource = "";
   let limits = normalizeLimits(undefined, 1);
+  let discoveryCheckpoint = null;
+  let planCheckpoint = null;
+  let startAt = bootstrap.startAt;
 
-  if (shouldPlan) {
-    const resumePlan = bootstrap.startAt === "plan";
-    if (!resumePlan) {
-      phase("Survey");
-    inventory = await agent(
-      [
-        `Read ${workdir}/inputs/inventory.json and ${workdir}/inputs/run-policy.json.`,
-        "Return coverage units from inventory.coverageUnits and only policy controls needed for topology. Do not return source bodies.",
-        "Each coverage unit must preserve id, kind, sourceId, path, and label when present.",
-        "Return limits from run-policy.json limits (batchConcurrency, perSourceConcurrency, maxCoveragePasses, maxRepairRounds) and focus from run-policy.",
-      ].join("\n"),
-      { label: "load-inventory", schema: INVENTORY },
-    );
-    if (!inventory?.units?.length) return { runId, workdir, stopped: "inventory has no coverage units", inventory };
-
-    wikiLanguage = inventory.wikiLanguage === "zh" ? "zh" : "en";
-    sourceCount = Number.isFinite(inventory.sourceCount) ? inventory.sourceCount : 1;
-    tier = typeof inventory.tier === "string" ? inventory.tier : "L0";
-    limits = normalizeLimits(inventory.limits, sourceCount);
-    const surveyLanguage = languageDirective(wikiLanguage, "survey receipts, labels, and planning prose");
+  const applyContext = (context) => {
+    wikiLanguage = context.wikiLanguage === "zh" ? "zh" : "en";
+    sourceCount = Number.isFinite(context.sourceCount) ? context.sourceCount : 1;
+    tier = typeof context.tier === "string" ? context.tier : "L0";
+    limits = normalizeLimits(context.limits, sourceCount);
+    focusRule = context.focus ? `Operator focus: ${context.focus}` : "";
     multiSource = multiSourceDirective(sourceCount, tier);
-    focusRule = inventory.focus ? `Operator focus: ${inventory.focus}` : "";
-    let pendingUnits = inventory.units;
-    let lastSurveyPass = 1;
+  };
+  const hydrate = async (boundary) => {
+    const context = await agent(
+      [
+        `Resume context for ${boundary}. workdir=${workdir}.`,
+        `Read inputs/run-policy.json, inputs/inventory.json, and the verified current checkpoint bound to digest ${bootstrap.inputCheckpointDigest}.`,
+        "Return policy controls, limits, and the verified checkpoint path/digest. Do not write artifacts or advance state.",
+      ].join("\n"),
+      { label: `hydrate:${boundary}`, schema: RESUMED_DISCOVERY },
+    );
+    if (context?.status !== "ok" || context.checkpointDigest !== bootstrap.inputCheckpointDigest) return null;
+    applyContext(context);
+    return context;
+  };
 
-    for (let pass = 1; pass <= limits.maxCoveragePasses && pendingUnits.length; pass++) {
-      const passTransient = new Set();
-      for (const wave of scheduleWaves(
-        pendingUnits,
-        { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
-        (unit) => unit.sourceId,
-      )) {
-        const results = await parallel(
-          wave.map((unit) => () => {
-            const id = safeId(unit.id);
-            const proposalPath = `analysis/handoffs/survey/${id}-pass-${pass}.json`;
-            return agent(
-              [
-                `Surveyor for coverage unit ${JSON.stringify(unit)}. workdir=${workdir}.`,
-                `Read ${methodRoot}/references/research.md and ${workdir}/inputs/run-policy.json in full.`,
-                surveyLanguage,
-                multiSource,
-                focusRule,
-                `Read frozen evidence only under ${workdir}/sources/.`,
-                unit.kind === "surface"
-                  ? `Focus on the surface path under sources/${unit.sourceId}/${unit.path || ""}. Capture module boundaries, public APIs, and runtime entry points for this surface only.`
-                  : "Source-level survey: map entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts.",
-                `Write the detailed receipt under analysis/receipts/survey/${id}-pass-${pass}.json.`,
-                dataPlaneOnlyRule(),
-                "Declare receipt path and coverage unit in the envelope summary. Do not write analysis/handoffs/**.",
-                "Return only the bounded handoff envelope. Do not write candidate pages.",
-              ].filter(Boolean).join("\n"),
-              { label: `survey:${pass}:${id}`, schema: ENVELOPE },
-            );
-          }),
-        );
-        surveyLedger.push(
-          ...wave.map((unit, index) => {
-            const result = results[index];
-            const retryable = isTransientSurveyFailure(result);
-            if (retryable) passTransient.add(String(unit.id));
-            return {
-              id: String(unit.id),
-              sourceId: unit.sourceId,
-              status: result?.status ?? "failed",
-              proposalPath: result?.proposalPath ?? `analysis/handoffs/survey/${safeId(unit.id)}-pass-${pass}.json`,
-              summary: result?.summary ?? "surveyor returned no envelope",
-              pass,
-              retryable,
-            };
-          }),
-        );
-      }
-
-      discovery = await agent(
+  if (startsPlanning) {
+    let inventory;
+    let surveyLedger = [];
+    let discovery;
+    if (startAt === "survey") {
+      phase("Survey");
+      inventory = await agent(
         [
-          `Discovery reducer. workdir=${workdir}. Read ${methodRoot}/references/research.md.`,
-          `Read inventory and run policy, then JIT-read only survey handoffs/receipts in this ledger: ${JSON.stringify(conciseLedger(surveyLedger))}.`,
-          surveyLanguage,
-          multiSource,
-          `Write ${workdir}/analysis/discovery-map.json with complete coverage units, domains, flows, concepts, and visible failed/cancelled units. discovery-map.version may be 1.`,
-          dataPlaneOnlyRule(),
-          `Write ${workdir}/analysis/receipts/discovery-artifacts-pass-${pass}.json as a JSON array listing the discovery-map artifact and each survey receipt path as {id,type,owner,path,dependsOn} without version/phase.`,
-          "Return missingUnitIds only for required coverage that is still surveyable. Do not guess missing evidence.",
-          "Do not treat pure rate-limit / overloaded / 429 failures as permanently missing; the workflow retries those via the survey ledger.",
-          "Return only the bounded discovery envelope (summary + missingUnitIds). Host will publish the handoff.",
-        ].filter(Boolean).join("\n"),
-        { label: `reduce-discovery:${pass}`, schema: DISCOVERY },
-      );
-      if (discovery?.status !== "ok") return { runId, workdir, surveyLedger, discovery, stopped: "discovery reduction failed" };
-      lastSurveyPass = pass;
-      if (pass >= limits.maxCoveragePasses) {
-        pendingUnits = [];
-      } else {
-        const nextIds = new Set([...(discovery.missingUnitIds ?? []).map(String), ...passTransient]);
-        pendingUnits = selectUnitsByIds(inventory.units, nextIds);
-      }
-    }
-
-    discoveryCheckpoint = await runHostHandoffPublish(agent, {
-      workdir,
-      phase: "discover",
-      out: `analysis/handoffs/discovery-pass-${lastSurveyPass}.json`,
-      producer: "discovery-reducer",
-      digests: [],
-      artifactsJson: `analysis/receipts/discovery-artifacts-pass-${lastSurveyPass}.json`,
-      summary: discovery?.summary,
-      label: "handoff-publish:discover",
-    });
-    if (discoveryCheckpoint?.status !== "ok") {
-      return { runId, workdir, surveyLedger, discovery, discoveryCheckpoint, stopped: "discovery checkpoint failed" };
-    }
-    } else {
-      const resumedDiscovery = await agent(
-        [
-          `Resume planner input. workdir=${workdir}.`,
-          "Read the current v2 run state, inputs/run-policy.json, inputs/inventory.json, and analysis/checkpoints/discover.json.",
-          "Return the authoritative discover checkpoint path/digest, policy controls, and limits from run-policy.json. Fail closed if the checkpoint or its artifacts are stale.",
+          `Read ${workdir}/inputs/inventory.json and ${workdir}/inputs/run-policy.json.`,
+          "Return coverage units from inventory.coverageUnits and policy controls needed for topology. Do not return source bodies.",
+          "Each coverage unit must preserve id, kind, sourceId, path, and label when present.",
+          "Return limits from run-policy.json limits and focus from run-policy.",
         ].join("\n"),
-        { label: "hydrate-discovery-checkpoint", schema: RESUMED_DISCOVERY },
+        { label: "load-inventory", schema: INVENTORY },
       );
-      if (resumedDiscovery?.status !== "ok") return { runId, workdir, resumedDiscovery, stopped: "cannot resume plan without a valid discovery checkpoint" };
-      discoveryCheckpoint = resumedDiscovery;
-      wikiLanguage = resumedDiscovery.wikiLanguage;
-      sourceCount = resumedDiscovery.sourceCount;
-      tier = resumedDiscovery.tier;
-      limits = normalizeLimits(resumedDiscovery.limits, sourceCount);
-      focusRule = resumedDiscovery.focus ? `Operator focus: ${resumedDiscovery.focus}` : "";
-      multiSource = multiSourceDirective(sourceCount, tier);
+      if (!inventory?.units?.length) return { runId, workdir, stopped: "inventory has no coverage units", inventory };
+      applyContext(inventory);
+      const surveyLanguage = languageDirective(wikiLanguage, "survey receipts, labels, and planning prose");
+      let pendingUnits = inventory.units;
+      let lastSurveyPass = 1;
+      for (let pass = 1; pass <= limits.maxCoveragePasses && pendingUnits.length; pass++) {
+        const transient = new Set();
+        for (const wave of scheduleWaves(
+          pendingUnits,
+          { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+          (unit) => unit.sourceId,
+        )) {
+          const results = await parallel(
+            wave.map((unit) => () => {
+              const id = safeId(unit.id);
+              return agent(
+                [
+                  `Surveyor for coverage unit ${JSON.stringify(unit)}. workdir=${workdir}.`,
+                  `Read ${methodRoot}/references/research.md and ${workdir}/inputs/run-policy.json in full.`,
+                  surveyLanguage,
+                  multiSource,
+                  focusRule,
+                  `Read frozen evidence only under ${workdir}/sources/.`,
+                  unit.kind === "surface"
+                    ? `Focus on sources/${unit.sourceId}/${unit.path || ""} only.`
+                    : "Map source entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts.",
+                  `Write the detailed receipt under analysis/receipts/survey/${id}-pass-${pass}.json.`,
+                  "Return status and a compact summary only. Do not write candidate pages.",
+                ].filter(Boolean).join("\n"),
+                { label: `survey:${pass}:${id}`, schema: ENVELOPE },
+              );
+            }),
+          );
+          surveyLedger.push(
+            ...wave.map((unit, index) => {
+              const result = results[index];
+              const retryable = isTransientSurveyFailure(result);
+              if (retryable) transient.add(String(unit.id));
+              return {
+                id: String(unit.id),
+                owner: unit.sourceId,
+                status: result?.status ?? "failed",
+                receiptPath: `analysis/receipts/survey/${safeId(unit.id)}-pass-${pass}.json`,
+                summary: result?.summary ?? "surveyor returned no summary",
+              };
+            }),
+          );
+        }
+        discovery = await agent(
+          [
+            `Discovery reducer. workdir=${workdir}. Read ${methodRoot}/references/research.md.`,
+            `Read inventory, policy, and only these survey receipts: ${JSON.stringify(conciseLedger(surveyLedger))}.`,
+            surveyLanguage,
+            multiSource,
+            "Write analysis/discovery-map.json with complete coverage units, domains, flows, concepts, and visible failed/cancelled units.",
+            dataPlaneOnlyRule(),
+            `Write analysis/receipts/discovery-artifacts-pass-${pass}.json as a JSON array of {id,type,path,coverageUnitIds}; its coverage union must include every required unit.`,
+            "Return missingUnitIds only for required coverage that remains surveyable. Do not guess missing evidence.",
+          ].filter(Boolean).join("\n"),
+          { label: `reduce-discovery:${pass}`, schema: DISCOVERY },
+        );
+        if (discovery?.status !== "ok") return { runId, workdir, surveyLedger, discovery, stopped: "discovery reduction failed" };
+        lastSurveyPass = pass;
+        pendingUnits = pass >= limits.maxCoveragePasses
+          ? []
+          : selectUnitsByIds(inventory.units, new Set([...(discovery.missingUnitIds ?? []).map(String), ...transient]));
+      }
+      discoveryCheckpoint = await runHostPublish(agent, {
+        workdir,
+        phase: "discover",
+        artifactsJson: `analysis/receipts/discovery-artifacts-pass-${lastSurveyPass}.json`,
+        label: "publish:discover",
+      });
+      if (discoveryCheckpoint?.status !== "ok") return { runId, workdir, discoveryCheckpoint, stopped: "discovery checkpoint failed" };
+    } else {
+      const resumed = await hydrate("plan");
+      if (!resumed) return { runId, workdir, stopped: "cannot resume plan without a valid discovery checkpoint" };
+      discoveryCheckpoint = { checkpointDigest: bootstrap.inputCheckpointDigest };
     }
 
     phase("Plan");
-    plan = await agent(
+    const plan = await agent(
       [
         `Planner. workdir=${workdir}. Read ${methodRoot}/references/plan.md in full.`,
-        `Read ${workdir}/analysis/discovery-map.json, ${workdir}/inputs/inventory.json, and ${workdir}/inputs/run-policy.json; JIT-read evidence from the discovery checkpoint only as needed.`,
+        `Read analysis/discovery-map.json, inputs/inventory.json, inputs/run-policy.json, and the discover checkpoint ${discoveryCheckpoint.checkpointDigest}.`,
         languageDirective(wikiLanguage, "Spec titles, questions, labels, and prose"),
         multiSource,
         focusRule,
-        "Write analysis/spec.json conforming to schemas/spec.schema.json version 2.",
+        "Write analysis/spec.json conforming to schemas/spec.schema.json version 2 and analysis/page-assignments.json.",
         dataPlaneOnlyRule(),
-        "Write analysis/receipts/plan-artifacts.json listing spec and page-assignments artifacts without version/phase.",
-        "Write analysis/page-assignments.json as the same pageAssignments control plane from the Spec, grouped only for convenient reading.",
-        "Every candidate page must have one owner and one candidate path. Domain owners may write only their assigned pages. Integration owners exclusively own overview, navigation, terminology, and cross-source-flow pages.",
-        "Every assignment must declare coverage units and handoff dependencies. Bind every required coverage unit or record a structured cancellation.",
-        "Do not write candidate pages. Return only the bounded handoff envelope.",
+        "Write analysis/receipts/plan-artifacts.json as a JSON array of {id,type,path} for spec and page assignments.",
+        "Every candidate page has one owner and one candidate path. Bind every required coverage unit or record a structured cancellation.",
+        "Return status and a compact summary only. Do not write candidate pages.",
       ].filter(Boolean).join("\n"),
       { label: "plan-spec", schema: ENVELOPE },
     );
-    if (plan?.status !== "ok") return { runId, workdir, discoveryCheckpoint, plan, stopped: "plan generation failed" };
-
-    planCheckpoint = await runHostHandoffPublish(agent, {
+    if (plan?.status !== "ok") return { runId, workdir, plan, stopped: "plan generation failed" };
+    planCheckpoint = await runHostPublish(agent, {
       workdir,
       phase: "plan",
-      out: "analysis/handoffs/plan.json",
-      producer: "planner",
-      digests: [discoveryCheckpoint.checkpointDigest],
       artifactsJson: "analysis/receipts/plan-artifacts.json",
-      summary: plan?.summary,
-      label: "handoff-publish:plan",
+      label: "publish:plan",
     });
-    if (planCheckpoint?.status !== "ok") return { runId, workdir, plan, planCheckpoint, stopped: "plan checkpoint failed" };
+    if (planCheckpoint?.status !== "ok") return { runId, workdir, planCheckpoint, stopped: "plan checkpoint failed" };
+    startAt = "gate";
+  } else {
+    const resumed = await hydrate(startAt);
+    if (!resumed) return { runId, workdir, stopped: `cannot hydrate ${startAt}` };
+    planCheckpoint = { checkpointDigest: bootstrap.inputCheckpointDigest };
+  }
 
+  if (startAt === "gate") {
     const gate = await agent(
       [
         `Plan gate. Read ${workdir}/inputs/run-policy.json for hostCli.`,
         `Run exactly: <hostCli.node> <hostCli.script> gate plan --run ${runId} --workspace <hostCli.workspaceRoot>, substituting hostCli values.`,
-        `The gate receipt must bind plan checkpoint digest ${planCheckpoint.checkpointDigest}.`,
+        `The receipt must bind the plan checkpoint digest ${planCheckpoint?.checkpointDigest ?? bootstrap.inputCheckpointDigest}.`,
         `Write command output to ${workdir}/analysis/receipts/gate-plan.json.`,
-        "Set proposalPath in the bounded envelope to analysis/receipts/gate-plan.json; no checkpoint is published for this command receipt.",
-        "Return status=ok only after the deterministic gate succeeds. Do not rewrite a sealed checkpoint or its proposal.",
-        "Return only the bounded handoff envelope.",
+        "Return status=ok only after the deterministic gate succeeds. It must not change the active checkpoint pointer.",
       ].join("\n"),
       { label: "gate-plan", schema: ENVELOPE },
     );
-    if (gate?.status !== "ok") return { runId, workdir, discoveryCheckpoint, plan, gate, stopped: "plan gate failed" };
-
+    if (gate?.status !== "ok") return { runId, workdir, gate, stopped: "plan gate failed" };
     if (input.mode === "plan") {
       log(`plan checkpointed for ${runId}; wait for explicit /wiki --write`);
-      return { runId, workdir, workspaceRoot, mode: input.mode, discoveryCheckpoint, planCheckpoint, next: "/wiki --write" };
+      return { runId, workdir, workspaceRoot, mode: input.mode, planCheckpoint, next: "/wiki --write" };
     }
+    startAt = "write-sources";
   }
 
-  let finalReviewCheckpoint = null;
-  let finalReview = null;
-  if (bootstrap.startAt === "validate") {
-    if (typeof bootstrap.inputCheckpointDigest !== "string" || !bootstrap.inputCheckpointDigest) {
-      return { runId, workdir, stopped: "validate resume has no final review checkpoint digest" };
-    }
-    finalReviewCheckpoint = { checkpointDigest: bootstrap.inputCheckpointDigest };
-    finalReview = { clean: true, resumed: true };
+  if (startAt === "ready") startAt = "write-sources";
+  const reviewStart = /^review-(\d+)$/.exec(startAt);
+  const repairStart = /^repair-(\d+)$/.exec(startAt);
+  const needsAssignments = startAt !== "validate";
+  let assignmentState = null;
+  let writeLanguage = languageDirective(wikiLanguage, "candidate page titles, headings, and prose");
+  let writeMultiSource = multiSourceDirective(sourceCount, tier);
+  if (needsAssignments) {
+    assignmentState = await agent(
+      [
+        `Read ${workdir}/analysis/spec.json, ${workdir}/analysis/page-assignments.json, and ${workdir}/inputs/run-policy.json.`,
+        "Validate unique page ownership and return compact owner shards with assigned page paths and declared dependencies. Return limits for fan-out budgeting.",
+      ].join("\n"),
+      { label: "load-page-assignments", schema: ASSIGNMENTS },
+    );
+    if (!assignmentState?.shards?.length) return { runId, workdir, assignmentState, stopped: "no valid page assignments" };
+    wikiLanguage = assignmentState.wikiLanguage === "zh" ? "zh" : wikiLanguage;
+    sourceCount = Number.isFinite(assignmentState.sourceCount) ? assignmentState.sourceCount : sourceCount;
+    tier = typeof assignmentState.tier === "string" ? assignmentState.tier : tier;
+    limits = normalizeLimits(assignmentState.limits ?? limits, sourceCount);
+    writeLanguage = languageDirective(wikiLanguage, "candidate page titles, headings, and prose");
+    writeMultiSource = multiSourceDirective(sourceCount, tier);
   }
 
-  if (bootstrap.startAt !== "validate") {
-  phase("Write");
-  const preflight = await agent(
-    [
-      `Write preflight. workdir=${workdir}. Read run policy and the authoritative plan checkpoint.`,
-      `Run exactly: <hostCli.node> <hostCli.script> gate check --run ${runId} --workspace <hostCli.workspaceRoot>, substituting hostCli from run policy.`,
-      "Fail if the plan checkpoint/gate is stale or missing, the candidate is already sealed, or page assignments have no unique ownership.",
-      "Write analysis/receipts/preflight.json.",
-      "Write analysis/handoffs/preflight.json as a version-2 handoff-shaped record (version number 2, not 1).",
-      "Declare the preflight receipt; this proposal is not published as a write checkpoint.",
-      "Return only the bounded handoff envelope.",
-    ].join("\n"),
-    { label: "preflight-write", schema: ENVELOPE },
-  );
-  if (preflight?.status !== "ok") return { runId, workdir, preflight, stopped: "write preflight failed" };
-  const activePlanCheckpointDigest = planCheckpoint?.checkpointDigest ?? bootstrap.inputCheckpointDigest;
-  if (typeof activePlanCheckpointDigest !== "string" || !activePlanCheckpointDigest) {
-    return { runId, workdir, preflight, stopped: "write run has no authoritative plan checkpoint digest" };
+  let writeCheckpoint = null;
+  let sourceWriteCheckpoint = null;
+  if (["write-sources", "write"].includes(startAt)) {
+    phase("Write");
+    const preflight = await agent(
+      [
+        `Write preflight. workdir=${workdir}. Read run policy and plan artifacts.`,
+        `Run exactly: <hostCli.node> <hostCli.script> gate check --run ${runId} --workspace <hostCli.workspaceRoot>, substituting hostCli values.`,
+        "Write analysis/receipts/preflight.json and return status only. Do not advance state.",
+      ].join("\n"),
+      { label: "preflight-write", schema: ENVELOPE },
+    );
+    if (preflight?.status !== "ok") return { runId, workdir, preflight, stopped: "write preflight failed" };
   }
 
-  const assignmentState = await agent(
-    [
-      `Read ${workdir}/analysis/spec.json, ${workdir}/analysis/page-assignments.json, and ${workdir}/inputs/run-policy.json.`,
-      "Validate that each page path appears exactly once, every page owner is declared, and integration pages are separate from domain pages.",
-      "Return only compact owner shards, grouped by owner, with assigned page paths and declared checkpoint dependencies. Do not return page bodies.",
-      "Also return limits from run-policy.json limits for fan-out budgeting.",
-    ].join("\n"),
-    { label: "load-page-assignments", schema: ASSIGNMENTS },
-  );
-  if (!assignmentState?.shards?.length) return { runId, workdir, assignmentState, stopped: "no valid page assignments" };
-  wikiLanguage = assignmentState.wikiLanguage === "zh" ? "zh" : wikiLanguage;
-  sourceCount = Number.isFinite(assignmentState.sourceCount) ? assignmentState.sourceCount : sourceCount;
-  tier = typeof assignmentState.tier === "string" ? assignmentState.tier : tier;
-  limits = normalizeLimits(assignmentState.limits ?? limits, sourceCount);
-  const writeLanguage = languageDirective(wikiLanguage, "candidate page titles, headings, and prose");
-  const writeMultiSource = multiSourceDirective(sourceCount, tier);
-  const domainShards = assignmentState.shards.filter((shard) => shard.role === "domain");
-  const integrationShards = assignmentState.shards.filter((shard) => shard.role === "integration");
-  const writeLedger = [];
-
-  for (const wave of scheduleWaves(
-    domainShards,
-    { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
-    (shard) => shard.sourceIds?.[0] ?? shard.owner,
-  )) {
-    const results = await parallel(
-      wave.map((shard) => () => {
-        const id = safeId(shard.owner);
-        return agent(
+  if (startAt === "write-sources") {
+    const domainShards = assignmentState.shards.filter((shard) => shard.role === "domain");
+    const domainLedger = [];
+    for (const wave of scheduleWaves(
+      domainShards,
+      { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+      (shard) => shard.sourceIds?.[0] ?? shard.owner,
+    )) {
+      const results = await parallel(
+        wave.map((shard) => () => agent(
           [
             `Domain writer owner=${shard.owner}. workdir=${workdir}.`,
-            `Read ${methodRoot}/references/generate.md, run policy, Spec, plan checkpoint ${activePlanCheckpointDigest}, and only the handoffs declared by this shard: ${JSON.stringify(shard.dependsOn)}.`,
+            `Read ${methodRoot}/references/generate.md, run policy, Spec, and declared source evidence.`,
             writeLanguage,
             writeMultiSource,
             `Your exclusive candidate pages: ${JSON.stringify(shard.pagePaths)}. Write no other candidate page, index, navigation, or log.`,
-            `Re-open frozen evidence under ${workdir}/sources/ for every source claim. Use valid local relative Source Citations; never invent ranges.`,
-            "Return only the bounded handoff envelope.",
+            `Re-open frozen evidence under ${workdir}/sources/ for every source claim.`,
+            "Return status and a compact summary only.",
           ].filter(Boolean).join("\n"),
-          { label: `write:domain:${id}`, schema: ENVELOPE },
-        );
-      }),
-    );
-    writeLedger.push(
-      ...wave.map((shard, index) => ({
+          { label: `write:domain:${safeId(shard.owner)}`, schema: ENVELOPE },
+        )),
+      );
+      domainLedger.push(...wave.map((shard, index) => ({
         id: `domain:${shard.owner}`,
         owner: shard.owner,
         status: results[index]?.status ?? "failed",
-        proposalPath: results[index]?.proposalPath ?? `analysis/handoffs/write/domain-${safeId(shard.owner)}.json`,
-        summary: results[index]?.summary ?? "writer returned no envelope",
-      })),
+        receiptPath: `candidate/${shard.pagePaths?.[0] ?? ""}`,
+        summary: results[index]?.summary ?? "writer returned no summary",
+      })));
+    }
+    if (domainLedger.some((entry) => entry.status !== "ok")) return { runId, workdir, domainLedger, stopped: "one or more domain owners failed" };
+    const reduced = await agent(
+      [
+        `Write-source reducer. workdir=${workdir}. Inspect only these completed domain outputs: ${JSON.stringify(conciseLedger(domainLedger))}.`,
+        "Verify domain ownership and write analysis/receipts/write-sources-artifacts.json as a JSON array of {id,type,path}.",
+        "Return status and a compact summary only.",
+      ].join("\n"),
+      { label: "reduce-write-sources", schema: ENVELOPE },
     );
-  }
-  if (writeLedger.some((entry) => entry.status !== "ok")) {
-    return { runId, workdir, writeLedger, stopped: "one or more domain owners failed; no integration write is permitted" };
+    if (reduced?.status !== "ok") return { runId, workdir, reduced, stopped: "domain write reduction failed" };
+    sourceWriteCheckpoint = await runHostPublish(agent, {
+      workdir,
+      phase: "write-sources",
+      artifactsJson: "analysis/receipts/write-sources-artifacts.json",
+      label: "publish:write-sources",
+    });
+    if (sourceWriteCheckpoint?.status !== "ok") return { runId, workdir, sourceWriteCheckpoint, stopped: "domain write checkpoint failed" };
+    startAt = "write";
   }
 
-  const sourceWriteProposal = await agent(
-    [
-      `Write-source reducer. workdir=${workdir}. JIT-read only these writer handoffs: ${JSON.stringify(conciseLedger(writeLedger))}.`,
-      `Verify all domain owners completed their exclusive paths. Write analysis/receipts/write-sources-artifacts.json listing domain candidate artifacts without version/phase.`,
-      "Return only the bounded handoff envelope.",
-    ].join("\n"),
-    { label: "reduce-write-sources", schema: ENVELOPE },
-  );
-  if (sourceWriteProposal?.status !== "ok") return { runId, workdir, writeLedger, sourceWriteProposal, stopped: "domain write reducer failed" };
-  const sourceWriteCheckpoint = await runHostHandoffPublish(agent, {
-    workdir,
-    phase: "write-sources",
-    out: "analysis/handoffs/write-sources.json",
-    producer: "write-sources-reducer",
-    digests: [activePlanCheckpointDigest],
-    artifactsJson: "analysis/receipts/write-sources-artifacts.json",
-    summary: sourceWriteProposal?.summary,
-    label: "handoff-publish:write-sources",
-  });
-  if (sourceWriteCheckpoint?.status !== "ok") return { runId, workdir, sourceWriteCheckpoint, stopped: "domain write checkpoint failed" };
-
-  for (const wave of scheduleWaves(
-    integrationShards,
-    { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
-    (shard) => shard.owner,
-  )) {
-    const results = await parallel(
-      wave.map((shard) => () => {
-        const id = safeId(shard.owner);
-        return agent(
+  if (startAt === "write") {
+    const integrationShards = assignmentState.shards.filter((shard) => shard.role === "integration");
+    const integrationLedger = [];
+    for (const wave of scheduleWaves(
+      integrationShards,
+      { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+      (shard) => shard.owner,
+    )) {
+      const results = await parallel(
+        wave.map((shard) => () => agent(
           [
             `Integration writer owner=${shard.owner}. workdir=${workdir}.`,
-            `Read ${methodRoot}/references/generate.md, the Spec, page assignments, and source-write checkpoint ${sourceWriteCheckpoint.checkpointPath} (${sourceWriteCheckpoint.checkpointDigest}).`,
-            `JIT-read only declared domain handoffs/pages required for your pages: ${JSON.stringify(shard.pagePaths)}.`,
+            `Read ${methodRoot}/references/generate.md, Spec, page assignments, and the published write-sources checkpoint ${sourceWriteCheckpoint?.checkpointDigest ?? bootstrap.inputCheckpointDigest}.`,
             writeLanguage,
             writeMultiSource,
-            "You own only integration pages such as overview, repository/surface map, terminology, navigation, and cross-source flows. Do not edit any domain page.",
-            "Cross-source synthesis must retain stage-level local citations into the frozen source trees.",
-            "Return only the bounded handoff envelope.",
+            `You own only these integration pages: ${JSON.stringify(shard.pagePaths)}.`,
+            "Cross-source synthesis must retain local citations into frozen source trees. Return status and a compact summary only.",
           ].filter(Boolean).join("\n"),
-          { label: `write:integration:${id}`, schema: ENVELOPE },
-        );
-      }),
-    );
-    writeLedger.push(
-      ...wave.map((shard, index) => ({
+          { label: `write:integration:${safeId(shard.owner)}`, schema: ENVELOPE },
+        )),
+      );
+      integrationLedger.push(...wave.map((shard, index) => ({
         id: `integration:${shard.owner}`,
         owner: shard.owner,
         status: results[index]?.status ?? "failed",
-        proposalPath: results[index]?.proposalPath ?? `analysis/handoffs/write/integration-${safeId(shard.owner)}.json`,
-        summary: results[index]?.summary ?? "writer returned no envelope",
-      })),
+        receiptPath: `candidate/${shard.pagePaths?.[0] ?? ""}`,
+        summary: results[index]?.summary ?? "writer returned no summary",
+      })));
+    }
+    if (integrationLedger.some((entry) => entry.status !== "ok")) return { runId, workdir, integrationLedger, stopped: "one or more integration owners failed" };
+    const reduced = await agent(
+      [
+        `Write reducer. workdir=${workdir}. Inspect only these integration outputs: ${JSON.stringify(conciseLedger(integrationLedger))}.`,
+        "Verify candidate completeness and write analysis/receipts/write-artifacts.json as a JSON array of {id,type,path}.",
+        "Return status and a compact summary only.",
+      ].join("\n"),
+      { label: "reduce-write", schema: ENVELOPE },
     );
-  }
-  if (writeLedger.some((entry) => entry.status !== "ok")) {
-    return { runId, workdir, writeLedger, stopped: "one or more integration owners failed" };
+    if (reduced?.status !== "ok") return { runId, workdir, reduced, stopped: "write reduction failed" };
+    writeCheckpoint = await runHostPublish(agent, {
+      workdir,
+      phase: "write",
+      artifactsJson: "analysis/receipts/write-artifacts.json",
+      label: "publish:write",
+    });
+    if (writeCheckpoint?.status !== "ok") return { runId, workdir, writeCheckpoint, stopped: "write checkpoint failed" };
+    startAt = "review-1";
   }
 
-  const writeProposal = await agent(
-    [
-      `Write reducer. workdir=${workdir}. JIT-read only declared writer handoffs: ${JSON.stringify(conciseLedger(writeLedger))}.`,
-      `Verify ownership and candidate path completeness against page assignments. Write analysis/receipts/write-artifacts.json without version/phase.`,
-      "Return only the bounded handoff envelope.",
-    ].join("\n"),
-    { label: "reduce-write", schema: ENVELOPE },
-  );
-  if (writeProposal?.status !== "ok") return { runId, workdir, writeLedger, writeProposal, stopped: "write reduction failed" };
-  const writeCheckpoint = await runHostHandoffPublish(agent, {
-    workdir,
-    phase: "write",
-    out: "analysis/handoffs/write.json",
-    producer: "write-reducer",
-    digests: [sourceWriteCheckpoint.checkpointDigest],
-    artifactsJson: "analysis/receipts/write-artifacts.json",
-    summary: writeProposal?.summary,
-    label: "handoff-publish:write",
-  });
-  if (writeCheckpoint?.status !== "ok") return { runId, workdir, writeCheckpoint, stopped: "write checkpoint failed" };
-
-  let previousReview = null;
-  let verificationInputDigest = writeCheckpoint.checkpointDigest;
-  for (let round = 1; round <= limits.maxRepairRounds; round++) {
-    phase("Verify");
-    const pageReviews = [];
-    const pageTargets = assignmentState.shards.flatMap((shard) => shard.pagePaths.map((pagePath) => ({ owner: shard.owner, pagePath })));
-    for (const wave of scheduleWaves(
-      pageTargets,
-      { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
-      (target) => target.owner,
-    )) {
-      const results = await parallel(
-        wave.map((target) => () => {
-          const id = safeId(`${target.owner}-${target.pagePath}`);
-          return agent(
+  let finalReview = null;
+  let finalReviewCheckpoint = null;
+  if (startAt === "validate") {
+    finalReview = { clean: true, resumed: true };
+    finalReviewCheckpoint = { checkpointDigest: bootstrap.inputCheckpointDigest };
+  } else {
+    let round = reviewStart ? Number(reviewStart[1]) : repairStart ? Number(repairStart[1]) : 1;
+    let repairResume = repairStart ? Number(repairStart[1]) : null;
+    let previousReview = null;
+    let verificationInputDigest = writeCheckpoint?.checkpointDigest ?? bootstrap.inputCheckpointDigest;
+    if (typeof verificationInputDigest !== "string" || !verificationInputDigest) {
+      return { runId, workdir, stopped: "review has no authoritative predecessor checkpoint" };
+    }
+    for (; round <= limits.maxRepairRounds; round++) {
+      let reviewCheckpoint;
+      if (repairResume === round) {
+        const resumedReview = await agent(
+          [
+            `Resume repair ${round}. workdir=${workdir}.`,
+            `Read analysis/defects.json and verify the current review-${round} checkpoint ${bootstrap.inputCheckpointDigest}.`,
+            "Return the stored defect counts, fingerprint, clean flag, and repair targets without editing artifacts.",
+          ].join("\n"),
+          { label: `hydrate:review-${round}`, schema: RESUMED_REVIEW },
+        );
+        if (
+          resumedReview?.status !== "ok" ||
+          resumedReview.checkpointDigest !== bootstrap.inputCheckpointDigest ||
+          resumedReview.clean
+        ) {
+          return { runId, workdir, resumedReview, stopped: "cannot resume repair from defects" };
+        }
+        finalReview = resumedReview;
+        reviewCheckpoint = { checkpointDigest: bootstrap.inputCheckpointDigest };
+        finalReviewCheckpoint = reviewCheckpoint;
+        repairResume = null;
+      } else {
+        phase("Verify");
+        const targets = assignmentState.shards.flatMap((shard) => shard.pagePaths.map((pagePath) => ({ owner: shard.owner, pagePath })));
+        const pageReviews = [];
+        for (const wave of scheduleWaves(
+          targets,
+          { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+          (target) => target.owner,
+        )) {
+          const results = await parallel(wave.map((target) => () => agent(
             [
               `Citation reviewer for ${target.pagePath}, owner=${target.owner}. workdir=${workdir}.`,
-              `Read ${methodRoot}/references/review.md, the assigned Spec entry, page assignments, frozen sources, candidate page, and predecessor checkpoint digest ${verificationInputDigest}.`,
+              `Read ${methodRoot}/references/review.md, assigned Spec entry, candidate page, frozen sources, and predecessor checkpoint ${verificationInputDigest}.`,
               writeLanguage,
-              "Try to refute every source-grounded claim. An unverified claim is a finding only when the page presents it as verified evidence.",
-              `Write full findings to analysis/receipts/review/page-${id}-round-${round}.json.`,
-              "Do not edit candidate pages. Return only the bounded handoff envelope.",
+              `Write findings to analysis/receipts/review/page-${safeId(`${target.owner}-${target.pagePath}`)}-round-${round}.json. Do not edit candidate pages.`,
+              "Return status and a compact summary only.",
             ].join("\n"),
-            { label: `review:page:${round}:${id}`, schema: ENVELOPE },
-          );
-        }),
-      );
-      pageReviews.push(
-        ...wave.map((target, index) => ({
-          id: `page:${target.pagePath}`,
-          owner: target.owner,
-          status: results[index]?.status ?? "failed",
-          proposalPath: results[index]?.proposalPath ?? `analysis/handoffs/review/page-${safeId(`${target.owner}-${target.pagePath}`)}-round-${round}.json`,
-          summary: results[index]?.summary ?? "page reviewer returned no envelope",
-        })),
-      );
-    }
-    const globalLenses = ["coverage-completeness", "information-architecture", "cross-source-contract"];
-    const globalResults = await parallel(
-      globalLenses.map((lens) => () =>
-        agent(
+            { label: `review:page:${round}:${safeId(`${target.owner}-${target.pagePath}`)}`, schema: ENVELOPE },
+          )));
+          pageReviews.push(...wave.map((target, index) => ({
+            id: `page:${target.pagePath}`,
+            owner: target.owner,
+            status: results[index]?.status ?? "failed",
+            receiptPath: `analysis/receipts/review/page-${safeId(`${target.owner}-${target.pagePath}`)}-round-${round}.json`,
+            summary: results[index]?.summary ?? "reviewer returned no summary",
+          })));
+        }
+        const lenses = ["coverage-completeness", "information-architecture", "cross-source-contract"];
+        const global = await parallel(lenses.map((lens) => () => agent(
           [
             `Global reviewer (${lens}). workdir=${workdir}. Read ${methodRoot}/references/review.md.`,
-            `Inspect candidate, Spec, assignments, and predecessor checkpoint digest ${verificationInputDigest}.`,
+            `Inspect candidate, Spec, assignments, and predecessor checkpoint ${verificationInputDigest}.`,
             writeLanguage,
             writeMultiSource,
-            "Use refute-by-default: report only defects with concrete evidence. Verify ownership, coverage, navigation, source citation locality, and cross-source contracts.",
-            `Write findings to analysis/receipts/review/${lens}-round-${round}.json.`,
-            "Do not edit candidate pages. Return only the bounded handoff envelope.",
+            `Write findings to analysis/receipts/review/${lens}-round-${round}.json. Do not edit candidate pages.`,
+            "Return status and a compact summary only.",
           ].filter(Boolean).join("\n"),
           { label: `review:${lens}:${round}`, schema: ENVELOPE },
-        ),
-      ),
-    );
-    const reviewLedger = [
-      ...pageReviews,
-      ...globalLenses.map((lens, index) => ({
-        id: lens,
-        owner: "review",
-        status: globalResults[index]?.status ?? "failed",
-        proposalPath: globalResults[index]?.proposalPath ?? `analysis/handoffs/review/${lens}-round-${round}.json`,
-        summary: globalResults[index]?.summary ?? "global reviewer returned no envelope",
-      })),
-    ];
-
-    finalReview = await agent(
-      [
-        `Defect reducer, round ${round}. workdir=${workdir}.`,
-        `JIT-read only review handoffs/receipts in this ledger: ${JSON.stringify(conciseLedger(reviewLedger))}.`,
-        "Write analysis/defects.json conforming to schemas/defects.schema.json version 2.",
-        "Every defect must have pagePath, owner, severity, category, evidence, repairSuggestion, and stable fingerprint. clean=true only when defects is empty.",
-        "repairTargets may include only owners with blocking or major defects, using their assigned page paths.",
-        "Return the bounded review envelope.",
-      ].join("\n"),
-      { label: `reduce-defects:${round}`, schema: REVIEW },
-    );
-    if (finalReview?.status !== "ok") return { runId, workdir, reviewLedger, finalReview, stopped: "defect reduction failed" };
-    const reviewCheckpoint = await runHostHandoffPublish(agent, {
-      workdir,
-      phase: `review-${round}`,
-      out: `analysis/handoffs/review-${round}.json`,
-      producer: "review-reducer",
-      digests: [verificationInputDigest],
-      artifactsJson: `analysis/receipts/review-artifacts-round-${round}.json`,
-      summary: finalReview?.summary,
-      label: `handoff-publish:review-${round}`,
-    });
-    if (reviewCheckpoint?.status !== "ok") return { runId, workdir, finalReview, reviewCheckpoint, stopped: "review checkpoint failed" };
-    finalReviewCheckpoint = reviewCheckpoint;
-    if (finalReview.clean) break;
-
-    const progressed =
-      previousReview === null ||
-      finalReview.blockingCount < previousReview.blockingCount ||
-      finalReview.majorCount < previousReview.majorCount ||
-      finalReview.defectFingerprint !== previousReview.defectFingerprint;
-    if (!progressed || round === limits.maxRepairRounds) {
-      const blocked = await agent(
-        [
-          `Proof-or-stop recorder. workdir=${workdir}.`,
-          `The repair loop stopped after round ${round}: ${!progressed ? "defect fingerprint/counts made no progress" : "repair budget exhausted"}.`,
-          `Read ${workdir}/analysis/defects.json.`,
-          "Return only the bounded handoff envelope.",
-        ].join("\n"),
-        { label: `record-blocked:${round}`, schema: ENVELOPE },
-      );
-      const blockedCheckpoint =
-        blocked?.status === "ok"
-          ? await runHostHandoffPublish(agent, {
-              workdir,
-              phase: `blocked-${round}`,
-              out: `analysis/handoffs/blocked-review-${round}.json`,
-              producer: "review-reducer",
-              digests: [reviewCheckpoint.checkpointDigest],
-              artifactsJson: `analysis/receipts/blocked-artifacts-round-${round}.json`,
-              summary: blocked?.summary,
-              status: "blocked",
-              reason: blocked?.summary,
-              label: `handoff-publish:blocked-${round}`,
-            })
-          : null;
-      return {
-        runId,
-        workdir,
-        review: finalReview,
-        blocked,
-        blockedCheckpoint,
-        stopped: !progressed ? "repair loop made no measurable progress" : "repair loop budget exhausted",
-      };
-    }
-
-    phase("Repair");
-    const repairs = [];
-    for (const wave of scheduleWaves(
-      finalReview.repairTargets,
-      { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
-      (target) => target.owner,
-    )) {
-      const results = await parallel(
-        wave.map((target) => () => {
-          const id = safeId(target.owner);
-          return agent(
-            [
-              `Repair owner=${target.owner}. workdir=${workdir}.`,
-              `Read ${methodRoot}/references/generate.md, analysis/defects.json, the assigned Spec entries, page assignments, and review checkpoint ${reviewCheckpoint.checkpointDigest}.`,
-              writeLanguage,
-              `You may modify only these candidate pages: ${JSON.stringify(target.pagePaths)}. Do not alter other owners' pages, the Spec, assignments, indexes, or logs.`,
-              "Fix only blocking/major defects with source-grounded edits. Preserve valid local citations and ownership boundaries.",
-              "Return only the bounded handoff envelope.",
-            ].join("\n"),
-            { label: `repair:${round}:${id}`, schema: ENVELOPE },
-          );
-        }),
-      );
-      repairs.push(
-        ...wave.map((target, index) => ({
+        )));
+        const reviewLedger = [
+          ...pageReviews,
+          ...lenses.map((lens, index) => ({
+            id: lens,
+            owner: "review",
+            status: global[index]?.status ?? "failed",
+            receiptPath: `analysis/receipts/review/${lens}-round-${round}.json`,
+            summary: global[index]?.summary ?? "reviewer returned no summary",
+          })),
+        ];
+        finalReview = await agent(
+          [
+            `Defect reducer, round ${round}. workdir=${workdir}.`,
+            `Read only these review receipts: ${JSON.stringify(conciseLedger(reviewLedger))}.`,
+            "Write analysis/defects.json conforming to schemas/defects.schema.json version 2 and analysis/receipts/review-artifacts-round-${round}.json as {id,type,path}.",
+            "Every defect has pagePath, owner, severity, category, evidence, repairSuggestion, and stable fingerprint. clean=true only when defects is empty.",
+            "Return status, clean, counts, fingerprint, and repair targets.",
+          ].join("\n"),
+          { label: `reduce-defects:${round}`, schema: REVIEW },
+        );
+        if (finalReview?.status !== "ok") return { runId, workdir, finalReview, stopped: "defect reduction failed" };
+        reviewCheckpoint = await runHostPublish(agent, {
+          workdir,
+          phase: `review-${round}`,
+          artifactsJson: `analysis/receipts/review-artifacts-round-${round}.json`,
+          label: `publish:review-${round}`,
+        });
+        if (reviewCheckpoint?.status !== "ok") return { runId, workdir, finalReview, reviewCheckpoint, stopped: "review checkpoint failed" };
+        finalReviewCheckpoint = reviewCheckpoint;
+      }
+      if (finalReview.clean) break;
+      const progressed = previousReview === null ||
+        finalReview.blockingCount < previousReview.blockingCount ||
+        finalReview.majorCount < previousReview.majorCount ||
+        finalReview.defectFingerprint !== previousReview.defectFingerprint;
+      if (!progressed || round === limits.maxRepairRounds) {
+        const blocked = await agent(
+          [
+            `Proof-or-stop recorder. workdir=${workdir}.`,
+            `The repair loop stopped after round ${round}: ${!progressed ? "defect fingerprint/counts made no progress" : "repair budget exhausted"}.`,
+            "Read analysis/defects.json and record a concise local note. Do not change checkpoint state.",
+          ].join("\n"),
+          { label: `record-blocked:${round}`, schema: ENVELOPE },
+        );
+        return {
+          runId,
+          workdir,
+          review: finalReview,
+          blocked,
+          stopped: !progressed ? "repair loop made no measurable progress" : "repair loop budget exhausted",
+        };
+      }
+      phase("Repair");
+      const repairs = [];
+      for (const wave of scheduleWaves(
+        finalReview.repairTargets,
+        { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+        (target) => target.owner,
+      )) {
+        const results = await parallel(wave.map((target) => () => agent(
+          [
+            `Repair owner=${target.owner}. workdir=${workdir}.`,
+            `Read ${methodRoot}/references/generate.md, analysis/defects.json, assigned Spec entries, page assignments, and review checkpoint ${reviewCheckpoint.checkpointDigest}.`,
+            writeLanguage,
+            `You may modify only these candidate pages: ${JSON.stringify(target.pagePaths)}.`,
+            "Fix blocking or major defects with source-grounded edits. Return status and a compact summary only.",
+          ].join("\n"),
+          { label: `repair:${round}:${safeId(target.owner)}`, schema: ENVELOPE },
+        )));
+        repairs.push(...wave.map((target, index) => ({
           id: `repair:${target.owner}`,
           owner: target.owner,
           status: results[index]?.status ?? "failed",
-          proposalPath: results[index]?.proposalPath ?? `analysis/handoffs/repair/${safeId(target.owner)}-round-${round}.json`,
-          summary: results[index]?.summary ?? "repairer returned no envelope",
-        })),
+          receiptPath: `candidate/${target.pagePaths?.[0] ?? ""}`,
+          summary: results[index]?.summary ?? "repairer returned no summary",
+        })));
+      }
+      if (repairs.some((entry) => entry.status !== "ok")) return { runId, workdir, finalReview, repairs, stopped: "one or more repairs failed" };
+      const repaired = await agent(
+        [
+          `Repair reducer. workdir=${workdir}. Inspect only these repaired outputs: ${JSON.stringify(conciseLedger(repairs))}.`,
+          `Write analysis/receipts/repair-artifacts-round-${round}.json as a JSON array of {id,type,path}.`,
+          "Return status and a compact summary only.",
+        ].join("\n"),
+        { label: `reduce-repair:${round}`, schema: ENVELOPE },
       );
+      if (repaired?.status !== "ok") return { runId, workdir, repaired, stopped: "repair reduction failed" };
+      const repairCheckpoint = await runHostPublish(agent, {
+        workdir,
+        phase: `repair-${round}`,
+        artifactsJson: `analysis/receipts/repair-artifacts-round-${round}.json`,
+        label: `publish:repair-${round}`,
+      });
+      if (repairCheckpoint?.status !== "ok") return { runId, workdir, repairCheckpoint, stopped: "repair checkpoint failed" };
+      previousReview = finalReview;
+      verificationInputDigest = repairCheckpoint.checkpointDigest;
     }
-    if (repairs.some((entry) => entry.status !== "ok")) return { runId, workdir, finalReview, repairs, stopped: "one or more repairs failed" };
-    const repairProposal = await agent(
-      [
-        `Repair reducer. workdir=${workdir}. JIT-read only repair handoffs: ${JSON.stringify(conciseLedger(repairs))}.`,
-        "Return only the bounded handoff envelope.",
-      ].join("\n"),
-      { label: `reduce-repair:${round}`, schema: ENVELOPE },
-    );
-    if (repairProposal?.status !== "ok") return { runId, workdir, repairProposal, stopped: "repair reduction failed" };
-    const repairCheckpoint = await runHostHandoffPublish(agent, {
-      workdir,
-      phase: `repair-${round}`,
-      out: `analysis/handoffs/repair-${round}.json`,
-      producer: "repair-reducer",
-      digests: [reviewCheckpoint.checkpointDigest],
-      artifactsJson: `analysis/receipts/repair-artifacts-round-${round}.json`,
-      summary: repairProposal?.summary,
-      label: `handoff-publish:repair-${round}`,
-    });
-    if (repairCheckpoint?.status !== "ok") return { runId, workdir, repairCheckpoint, stopped: "repair checkpoint failed" };
-    previousReview = finalReview;
-    verificationInputDigest = repairCheckpoint.checkpointDigest;
-  }
   }
 
   if (!finalReview?.clean) return { runId, workdir, review: finalReview, stopped: "candidate has unresolved defects" };
-
   phase("Validate");
   const validation = await agent(
     [
       `Validator. workdir=${workdir}. Read run policy for hostCli.`,
       `Run exactly: <hostCli.node> <hostCli.script> validate --run ${runId} --workspace <hostCli.workspaceRoot>, substituting hostCli values.`,
-      `The deterministic validator must recheck the write checkpoint and final review checkpoint ${finalReviewCheckpoint?.checkpointDigest}, page ownership, coverage, local source links, indexes, and candidate digest.`,
-      `Write command output to analysis/validation.json.`,
-      dataPlaneOnlyRule(),
-      "Write analysis/receipts/validate-artifacts.json listing analysis/validation.json and analysis/candidate.manifest.json without version/phase.",
-      "validate does not transition run state to sealed; the following authoritative validate checkpoint is the only sealing transition. Return status=ok only after the command succeeds, and return only the bounded handoff envelope.",
+      `Recheck candidate, frozen snapshot, ownership, coverage, local source links, indexes, and final review checkpoint ${finalReviewCheckpoint?.checkpointDigest}.`,
+      "Write command output to analysis/validation.json and analysis/receipts/validate-artifacts.json as {id,type,path}.",
+      "Validation does not change run state; the following publish is the only sealing transition. Return status only after the command succeeds.",
     ].join("\n"),
     { label: "validate-and-seal", schema: ENVELOPE },
   );
   if (validation?.status !== "ok") return { runId, workdir, validation, stopped: "validation failed" };
-  const validationCheckpoint = await runHostHandoffPublish(agent, {
+  const validationCheckpoint = await runHostPublish(agent, {
     workdir,
     phase: "validate",
-    out: "analysis/handoffs/validate.json",
-    producer: "validator",
-    digests: [finalReviewCheckpoint?.checkpointDigest],
     artifactsJson: "analysis/receipts/validate-artifacts.json",
-    summary: validation?.summary,
-    label: "handoff-publish:validate",
+    label: "publish:validate",
   });
   if (validationCheckpoint?.status !== "ok") return { runId, workdir, validation, validationCheckpoint, stopped: "validation checkpoint failed" };
-
   log(`wiki sealed for ${runId}`);
   return { runId, workdir, workspaceRoot, mode: input.mode, review: finalReview, validation, validationCheckpoint, next: "sealed" };
 })();

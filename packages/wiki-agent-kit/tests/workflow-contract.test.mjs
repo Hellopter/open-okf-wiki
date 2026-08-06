@@ -22,10 +22,10 @@ function loadWorkflow() {
 }
 
 function envelope(label) {
-  return { status: "ok", proposalPath: `analysis/handoffs/${label}.json`, summary: label, openQuestions: [] };
+  return { status: "ok", summary: label };
 }
 
-function makeAgent({ startAt = "survey", reviews = [], inventory = null, discoveryMissing = [] } = {}) {
+function makeAgent({ startAt = "survey", reviews = [], inventory = null, discoveryMissing = [], hydrateDigest = `sha256:${"1".repeat(64)}` } = {}) {
   const labels = [];
   const prompts = [];
   let reviewIndex = 0;
@@ -42,7 +42,7 @@ function makeAgent({ startAt = "survey", reviews = [], inventory = null, discove
         workspaceRoot: "/workspace",
         mode: "auto",
         startAt,
-        inputCheckpointDigest: ["write", "validate"].includes(startAt) ? `sha256:${"1".repeat(64)}` : null,
+        inputCheckpointDigest: ["survey", "plan"].includes(startAt) ? null : `sha256:${"1".repeat(64)}`,
         summary: "prepared",
       };
     }
@@ -58,11 +58,23 @@ function makeAgent({ startAt = "survey", reviews = [], inventory = null, discove
         }
       );
     }
-    if (label === "hydrate-discovery-checkpoint") {
+    if (label.startsWith("hydrate:review-")) {
+      return {
+        status: "ok",
+        clean: false,
+        checkpointDigest: hydrateDigest,
+        blockingCount: 1,
+        majorCount: 0,
+        defectFingerprint: "resumed-review-fingerprint",
+        repairTargets: [{ owner: "api", pagePaths: ["modules/api.md"] }],
+        summary: "resumed review",
+      };
+    }
+    if (label.startsWith("hydrate:")) {
       return {
         status: "ok",
         checkpointPath: "analysis/checkpoints/discover.json",
-        checkpointDigest: `sha256:${"b".repeat(64)}`,
+        checkpointDigest: hydrateDigest,
         wikiLanguage: "en",
         sourceCount: 1,
         tier: "L1",
@@ -78,10 +90,9 @@ function makeAgent({ startAt = "survey", reviews = [], inventory = null, discove
       discoveryPass += 1;
       return { ...envelope(label), missingUnitIds: missing || [] };
     }
-    if (label.startsWith("checkpoint-") || label.startsWith("handoff-publish:") || label.startsWith("handoff-write:")) {
+    if (label.startsWith("publish:")) {
       return {
         status: "ok",
-        proposalPath: `analysis/handoffs/${label}.json`,
         checkpointPath: `analysis/checkpoints/${label}.json`,
         checkpointDigest: `sha256:${"a".repeat(64)}`,
         summary: label,
@@ -146,26 +157,26 @@ describe("wiki dynamic workflow contract", () => {
     const { source, phases, labels, result } = await runWorkflow("");
     assert.match(source, /name: "wiki"/);
     assert.doesNotMatch(source, /wiki-produce|wiki-write-review|wiki-plan/);
-    assert.match(source, /checkpoint --phase/);
+    assert.match(source, /<hostCli\.node> <hostCli\.script> publish/);
+    assert.match(source, /--artifacts-json \$\{artifactsJson\}/);
     assert.match(source, /inputCheckpointDigest/);
     assert.match(source, /scheduleWaves/);
     assert.doesNotMatch(source, /MAX_CONCURRENCY|function waves\(/);
+    assert.doesNotMatch(source, /handoff|checkpoint --phase|blocked-\$\{round\}/);
     assert.deepEqual(phases, ["Bootstrap", "Survey", "Plan", "Write", "Verify", "Validate"]);
-    assert.ok(labels.includes("handoff-publish:discover") || labels.includes("checkpoint-discover"));
-    assert.ok(labels.includes("handoff-publish:plan") || labels.includes("checkpoint-plan"));
-    assert.ok(labels.includes("handoff-publish:write-sources") || labels.includes("checkpoint-write-sources"));
-    assert.ok(labels.includes("handoff-publish:write") || labels.includes("checkpoint-write"));
-    assert.ok(labels.some((l) => String(l).startsWith("handoff-publish:review") || String(l).startsWith("checkpoint-review")));
-    assert.ok(labels.includes("handoff-publish:validate") || labels.includes("checkpoint-validate"));
-    assert.doesNotMatch(source, /Write the handoff proposal JSON/);
-    assert.match(source, /handoff publish/);
+    assert.ok(labels.includes("publish:discover"));
+    assert.ok(labels.includes("publish:plan"));
+    assert.ok(labels.includes("publish:write-sources"));
+    assert.ok(labels.includes("publish:write"));
+    assert.ok(labels.some((l) => String(l).startsWith("publish:review")));
+    assert.ok(labels.includes("publish:validate"));
     assert.equal(result.next, "sealed");
   });
 
   it("accepts command-string plan mode and stops at the plan checkpoint", async () => {
     const { labels, phases, prompts, result } = await runWorkflow("--plan authentication flow");
     assert.deepEqual(phases, ["Bootstrap", "Survey", "Plan"]);
-    assert.ok(labels.includes("handoff-publish:plan") || labels.includes("checkpoint-plan"));
+    assert.ok(labels.includes("publish:plan"));
     assert.ok(!labels.includes("preflight-write"));
     assert.equal(result.next, "/wiki --write");
     assert.ok(
@@ -187,13 +198,49 @@ describe("wiki dynamic workflow contract", () => {
   it("resumes an interrupted validated candidate directly through its terminal checkpoint", async () => {
     const { phases, labels, result } = await runWorkflow("", { startAt: "validate" });
     assert.deepEqual(phases, ["Bootstrap", "Validate"]);
-    assert.ok(labels.includes("handoff-publish:validate") || labels.includes("checkpoint-validate") || labels.includes("validate-and-seal"));
-    assert.ok(labels.includes("validate-and-seal") || labels.includes("handoff-publish:validate"));
+    assert.ok(labels.includes("publish:validate"));
+    assert.ok(labels.includes("validate-and-seal"));
     assert.ok(!labels.includes("load-inventory"));
     assert.ok(!labels.includes("plan-spec"));
     assert.ok(!labels.includes("preflight-write"));
     assert.ok(!labels.some((label) => label.startsWith("review-")));
     assert.equal(result.next, "sealed");
+  });
+
+  it("resumes each published boundary without replaying its predecessor", async () => {
+    const gate = await runWorkflow("", { startAt: "gate" });
+    assert.ok(gate.labels.includes("hydrate:gate"));
+    assert.ok(gate.labels.includes("gate-plan"));
+    assert.ok(!gate.labels.includes("plan-spec"));
+
+    const writeSources = await runWorkflow("", { startAt: "write-sources" });
+    assert.ok(writeSources.labels.includes("publish:write-sources"));
+    assert.ok(!writeSources.labels.includes("load-inventory"));
+    assert.ok(!writeSources.labels.includes("plan-spec"));
+
+    const write = await runWorkflow("", { startAt: "write" });
+    assert.ok(write.labels.includes("publish:write"));
+    assert.ok(!write.labels.includes("publish:write-sources"));
+    assert.ok(!write.labels.some((label) => String(label).startsWith("write:domain:")));
+
+    const review = await runWorkflow("", { startAt: "review-1" });
+    assert.ok(review.labels.some((label) => String(label).startsWith("publish:review-1")));
+    assert.ok(!review.labels.some((label) => String(label).startsWith("write:")));
+
+    const repair = await runWorkflow("", { startAt: "repair-1" });
+    assert.ok(repair.labels.includes("hydrate:review-1"));
+    assert.ok(repair.labels.includes("repair:1:api"));
+    assert.ok(!repair.labels.some((label) => String(label).startsWith("review:page:1:")));
+  });
+
+  it("fails closed when a resumed checkpoint digest is not the prepared digest", async () => {
+    const { labels, result } = await runWorkflow("", {
+      startAt: "write",
+      hydrateDigest: `sha256:${"f".repeat(64)}`,
+    });
+    assert.ok(labels.includes("hydrate:write"));
+    assert.equal(result.stopped, "cannot hydrate write");
+    assert.ok(!labels.includes("preflight-write"));
   });
 
   it("fans surveys in policy-sized waves and propagates the language policy", async () => {
@@ -345,7 +392,7 @@ describe("wiki dynamic workflow contract", () => {
         harness.prompts.push(prompt);
         return {
           status: "failed",
-          proposalPath: "analysis/handoffs/survey/app-pass-1.json",
+          receiptPath: "analysis/receipts/survey/app-pass-1.json",
           summary: "provider rate limit 429 overloaded",
           openQuestions: [],
         };
@@ -355,7 +402,7 @@ describe("wiki dynamic workflow contract", () => {
         harness.prompts.push(prompt);
         return {
           status: "failed",
-          proposalPath: "analysis/handoffs/survey/svc-pass-1.json",
+          receiptPath: "analysis/receipts/survey/svc-pass-1.json",
           summary: "module not found in frozen snapshot",
           openQuestions: [],
         };
