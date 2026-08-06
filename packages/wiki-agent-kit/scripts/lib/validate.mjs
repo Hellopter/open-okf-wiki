@@ -9,6 +9,8 @@ import { hashTree, isInside, readJson, writeJson } from "./artifacts.mjs";
 const RESERVED = new Set(["index.md", "log.md"]);
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const LINE_FRAGMENT_RE = /^L(\d+)(?:-L(\d+))?$/;
+const CJK_RE = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/;
+const MEANINGFUL_CJK_RE = /[\u3400-\u9fff\uf900-\ufaff]/;
 
 function walkMd(dir, base = "", unsafe = []) {
   const out = [];
@@ -114,6 +116,86 @@ function isRegularFile(file) {
   }
 }
 
+export function normalizeWikiLanguage(value) {
+  const raw = String(value ?? "en").trim().toLowerCase();
+  if (raw === "zh" || raw === "zh-cn" || raw === "zh_cn" || raw === "zh-hans") return "zh";
+  if (raw === "en" || raw.startsWith("en-")) return "en";
+  return raw || "en";
+}
+
+export function isChineseWikiLanguage(value) {
+  return normalizeWikiLanguage(value) === "zh";
+}
+
+/** Strip fenced/inline code so language checks focus on prose. */
+export function proseWithoutCode(text) {
+  return String(text ?? "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`\n]+`/g, " ")
+    .replace(/\[[^\]]*\]\(([^)]+)\)/g, " ")
+    .replace(/https?:\/\/\S+/g, " ");
+}
+
+/** Body text used for locale checks: ignore code, links, and heading lines. */
+export function proseBodyForLanguageCheck(text) {
+  return proseWithoutCode(text)
+    .replace(/^\s{0,3}#{1,6}\s+.*$/gm, " ")
+    .replace(/^\s*[-*+]\s+/gm, " ")
+    .replace(/^\s*\d+\.\s+/gm, " ");
+}
+
+export function containsCjk(text) {
+  return CJK_RE.test(String(text ?? ""));
+}
+
+export function containsMeaningfulCjk(text) {
+  const prose = proseBodyForLanguageCheck(text);
+  const matches = prose.match(new RegExp(MEANINGFUL_CJK_RE, "g")) ?? [];
+  return matches.length >= 2;
+}
+
+function headingTexts(body) {
+  const headings = [];
+  for (const line of String(body ?? "").split(/\r?\n/)) {
+    const match = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/);
+    if (match) headings.push(match[1].trim());
+  }
+  return headings;
+}
+
+function hasRequiredSection(body, section) {
+  const wanted = String(section ?? "").trim().toLowerCase();
+  if (!wanted) return false;
+  return headingTexts(body).some((heading) => heading.toLowerCase() === wanted);
+}
+
+function loadRunPolicyLanguage(workdir) {
+  const policyPath = path.join(workdir, "inputs", "run-policy.json");
+  if (!fs.existsSync(policyPath)) return null;
+  try {
+    const policy = readJson(policyPath);
+    return policy?.wikiLanguage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function conceptDisplay(abs, fallbackName) {
+  try {
+    const parsed = parseFrontmatter(fs.readFileSync(abs, "utf8"));
+    if (!parsed.ok) return { title: fallbackName, description: "" };
+    const title =
+      typeof parsed.data.title === "string" && parsed.data.title.trim()
+        ? parsed.data.title.trim()
+        : fallbackName;
+    const description =
+      typeof parsed.data.description === "string" ? parsed.data.description.trim() : "";
+    return { title, description };
+  } catch {
+    return { title: fallbackName, description: "" };
+  }
+}
+
 /** @param {string} workdir freeze workdir with candidate/ and sources/ */
 export function validateWorkdir(workdir, opts = {}) {
   const candidate = opts.candidateDir ?? candidateDir(workdir);
@@ -136,7 +218,13 @@ export function validateWorkdir(workdir, opts = {}) {
     errors.push(`Spec pages must be an array: ${specPath}`);
   }
 
+  const wikiLanguage = normalizeWikiLanguage(
+    opts.wikiLanguage ?? loadRunPolicyLanguage(workdir) ?? spec?.wikiLanguage ?? "en",
+  );
+  const requireChinese = isChineseWikiLanguage(wikiLanguage);
+
   const specPaths = new Set();
+  const requiredSectionsByPath = new Map();
   for (const page of spec?.pages ?? []) {
     if (!page || typeof page !== "object") {
       errors.push("Spec page must be an object");
@@ -151,6 +239,12 @@ export function validateWorkdir(workdir, opts = {}) {
     specPaths.add(rel);
     if (page.critical !== false && !isRegularFile(target)) {
       errors.push(`critical spec page missing: ${page.path}`);
+    }
+    if (Array.isArray(page.requiredSections) && page.requiredSections.length) {
+      requiredSectionsByPath.set(
+        rel,
+        page.requiredSections.filter((section) => typeof section === "string" && section.trim()),
+      );
     }
   }
 
@@ -176,6 +270,27 @@ export function validateWorkdir(workdir, opts = {}) {
         errors.push(`${rel}: model must not author frontmatter field ${banned}`);
       }
     }
+    if (requireChinese) {
+      if (typeof parsed.data.title === "string" && parsed.data.title.trim() && !containsCjk(parsed.data.title)) {
+        errors.push(`${rel}: Chinese wiki requires CJK text in title`);
+      }
+      if (
+        typeof parsed.data.description === "string" &&
+        parsed.data.description.trim() &&
+        !containsCjk(parsed.data.description)
+      ) {
+        errors.push(`${rel}: Chinese wiki requires CJK text in description`);
+      }
+      if (!containsMeaningfulCjk(parsed.body)) {
+        errors.push(`${rel}: Chinese wiki requires meaningful CJK prose in the page body`);
+      }
+    }
+    const requiredSections = requiredSectionsByPath.get(rel) ?? [];
+    for (const section of requiredSections) {
+      if (!hasRequiredSection(parsed.body, section)) {
+        errors.push(`${rel}: missing required section heading: ${section}`);
+      }
+    }
     let citationCount = 0;
     for (const link of parseLinks(parsed.body)) {
       if (validateCitation({ rel, pageAbs: abs, target: link.target, candidate, sources, errors })) {
@@ -187,41 +302,65 @@ export function validateWorkdir(workdir, opts = {}) {
   }
 
   if (!conceptRels.length) warnings.push("candidate/ has no concept pages yet");
-  return { ok: !errors.length, errors, warnings, conceptPageCount: conceptRels.length };
+  return {
+    ok: !errors.length,
+    errors,
+    warnings,
+    conceptPageCount: conceptRels.length,
+    wikiLanguage,
+  };
 }
 
 /** Mechanically regenerate directory index.md listings (OKF reserved). */
-export function regenerateIndexes(dir) {
+export function regenerateIndexes(dir, opts = {}) {
   if (!fs.existsSync(dir)) return { written: 0 };
+  const wikiLanguage = normalizeWikiLanguage(opts.wikiLanguage ?? "en");
+  const chinese = isChineseWikiLanguage(wikiLanguage);
+  const labels = chinese
+    ? { index: "索引", directories: "目录", pages: "页面" }
+    : { index: "Index", directories: "Directories", pages: "Pages" };
   let written = 0;
-  function walk(current) {
+  function walk(current, isRoot) {
     const concepts = [];
     const subdirs = [];
     for (const ent of fs.readdirSync(current, { withFileTypes: true })) {
       if (ent.name.startsWith(".")) continue;
       if (ent.isDirectory()) {
         subdirs.push(ent.name);
-        walk(path.join(current, ent.name));
+        walk(path.join(current, ent.name), false);
       } else if (ent.isFile() && ent.name.endsWith(".md") && !RESERVED.has(ent.name)) {
         concepts.push(ent.name);
       }
     }
-    const lines = ["# Index", ""];
+    const lines = [];
+    if (isRoot) {
+      lines.push("---", 'okf_version: "0.2"', "---", "");
+    }
+    lines.push(`# ${labels.index}`, "");
     if (subdirs.length) {
-      lines.push("## Directories", "");
+      lines.push(`## ${labels.directories}`, "");
       for (const child of subdirs.sort()) lines.push(`- [${child}/](./${child}/index.md)`);
       lines.push("");
     }
     if (concepts.length) {
-      lines.push("## Pages", "");
-      for (const page of concepts.sort()) lines.push(`- [${page.replace(/\.md$/, "")}](./${page})`);
+      lines.push(`## ${labels.pages}`, "");
+      for (const page of concepts.sort()) {
+        const abs = path.join(current, page);
+        const fallback = page.replace(/\.md$/, "");
+        const display = conceptDisplay(abs, fallback);
+        if (display.description) {
+          lines.push(`- [${display.title}](./${page}) — ${display.description}`);
+        } else {
+          lines.push(`- [${display.title}](./${page})`);
+        }
+      }
       lines.push("");
     }
     fs.writeFileSync(path.join(current, "index.md"), `${lines.join("\n")}\n`, "utf8");
     written++;
   }
-  walk(dir);
-  return { written };
+  walk(dir, true);
+  return { written, wikiLanguage };
 }
 
 export function sealCandidate(workdir, validation) {

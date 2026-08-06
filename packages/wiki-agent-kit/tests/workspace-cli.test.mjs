@@ -63,6 +63,16 @@ describe("ow init + source path + freeze", () => {
     assert.ok(!fs.existsSync(path.join(workdir, "sources", "api", "target", "x.class")));
     assert.ok(fs.existsSync(path.join(ws, ".agents", "skills", "repository-wiki-producer", "SKILL.md")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "skills", "repository-wiki-producer", "SKILL.md")));
+    assert.ok(
+      fs.existsSync(
+        path.join(ws, ".agents", "skills", "repository-wiki-producer", "references", "project-model.md"),
+      ),
+    );
+    assert.ok(
+      fs.existsSync(
+        path.join(ws, ".agents", "skills", "repository-wiki-producer", "templates", "business-process.md"),
+      ),
+    );
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-plan.workflow.js")));
     assert.ok(fs.existsSync(path.join(ws, ".claude", "workflows", "wiki-write-review.workflow.js")));
 
@@ -110,16 +120,69 @@ describe("ow init + source path + freeze", () => {
     fs.writeFileSync(
       path.join(workdir, "analysis", "discovery-map.json"),
       JSON.stringify({
-        domains: [{ id: "domain:app", coverageUnitIds: ["app"] }],
+        domains: [
+          {
+            id: "domain:app",
+            title: "App",
+            summary: "Demo application domain",
+            coverageUnitIds: ["app"],
+          },
+        ],
         flows: [],
         coverageUnits: [{ id: "app", required: true }],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(workdir, "analysis", "project-model.json"),
+      JSON.stringify({
+        version: 1,
+        productPurpose: "Provide a small demo package surface",
+        actors: [{ id: "actor:dev", title: "Developer" }],
+        domains: [{ id: "domain:app", title: "App", summary: "Demo application domain" }],
+        capabilities: [{ id: "capability:answer", title: "Answer", summary: "Expose answer constant" }],
+        entities: [],
+        rules: [],
+        flows: [
+          {
+            id: "flow:load",
+            title: "Load module",
+            trigger: "Module import",
+            outcome: "answer constant available",
+            steps: [{ order: 1, summary: "Export answer" }],
+            branches: [],
+            failures: [],
+            stateChanges: [],
+            sideEffects: [],
+            participatingKnowledgeIds: ["domain:app"],
+            evidenceIds: ["evidence:app:src-a"],
+          },
+        ],
+        modules: [{ id: "module:app", title: "app", coverageUnitIds: ["app"] }],
+        dataModels: [],
+        mappings: [],
+        conflicts: [],
+        gaps: [],
+        openQuestions: [],
       }),
     );
     fs.writeFileSync(
       path.join(workdir, "analysis", "spec.json"),
       JSON.stringify({
         version: 1,
-        pages: [{ path: "overview.md", critical: true, coverageUnitIds: ["app"] }],
+        pages: [
+          {
+            path: "overview.md",
+            type: "Overview",
+            title: "Demo",
+            question: "What does this demo package expose?",
+            critical: true,
+            audiences: ["new-engineer", "llm"],
+            requiredSections: ["Purpose", "Evidence"],
+            knowledgeIds: ["domain:app", "capability:answer"],
+            evidenceIds: ["evidence:app:src-a"],
+            coverageUnitIds: ["app"],
+          },
+        ],
       }),
     );
 
@@ -134,6 +197,12 @@ describe("ow init + source path + freeze", () => {
         "title: Demo",
         "description: A small demo.",
         "---",
+        "",
+        "## Purpose",
+        "",
+        "Demo package overview.",
+        "",
+        "## Evidence",
         "",
         "[Source: src/A.js L1](../sources/app/src/A.js#L1)",
         "",

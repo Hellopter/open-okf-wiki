@@ -338,8 +338,15 @@ function cmdValidate(args) {
     );
   }
   const candidateDir = path.join(workdir, "candidate");
-  regenerateIndexes(candidateDir);
-  const result = validateWorkdir(workdir);
+  let wikiLanguage = meta.wikiLanguage ?? "en";
+  try {
+    const policy = JSON.parse(fs.readFileSync(path.join(workdir, "inputs", "run-policy.json"), "utf8"));
+    if (policy?.wikiLanguage) wikiLanguage = policy.wikiLanguage;
+  } catch {
+    // Fall back to run meta / English when policy is absent.
+  }
+  regenerateIndexes(candidateDir, { wikiLanguage });
+  const result = validateWorkdir(workdir, { wikiLanguage });
   const manifest = result.ok ? sealCandidate(workdir, result) : null;
   printJson({ ...result, manifest });
   if (!result.ok) process.exit(2);

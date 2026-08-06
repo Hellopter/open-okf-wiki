@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://okf.wiki/schemas/project-model.schema.json",
+  "title": "Project Knowledge Model",
+  "type": "object",
+  "required": [
+    "version",
+    "productPurpose",
+    "actors",
+    "domains",
+    "capabilities",
+    "entities",
+    "rules",
+    "flows",
+    "modules",
+    "dataModels",
+    "mappings",
+    "conflicts",
+    "gaps",
+    "openQuestions"
+  ],
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "productPurpose": { "type": "string" },
+    "actors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/knowledgeObject" }
+    },
+    "domains": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/domain" }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/knowledgeObject" }
+    },
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "flows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/flow" }
+    },
+    "modules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/module" }
+    },
+    "dataModels": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dataModel" }
+    },
+    "mappings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mapping" }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "gaps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "externalSystems": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/knowledgeObject" }
+    }
+  },
+  "$defs": {
+    "stringId": { "type": "string", "minLength": 1 },
+    "evidenceIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "knowledgeObject": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "domain": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "responsibility": { "type": "string" },
+        "actorIds": { "type": "array", "items": { "type": "string" } },
+        "capabilityIds": { "type": "array", "items": { "type": "string" } },
+        "entityIds": { "type": "array", "items": { "type": "string" } },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "entity": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "states": { "type": "array", "items": { "type": "string" } },
+        "ownerDomainId": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "rule": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string" },
+        "statement": { "type": "string" },
+        "kind": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "flowStep": {
+      "type": "object",
+      "required": ["order", "summary"],
+      "properties": {
+        "order": { "type": "integer", "minimum": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "actorId": { "type": "string" },
+        "moduleId": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "namedNote": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "id": { "type": "string" },
+        "summary": { "type": "string", "minLength": 1 },
+        "condition": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "flow": {
+      "type": "object",
+      "required": ["id", "title", "trigger", "outcome", "steps", "evidenceIds"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" },
+        "trigger": { "type": "string", "minLength": 1 },
+        "outcome": { "type": "string", "minLength": 1 },
+        "preconditions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/flowStep" }
+        },
+        "branches": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedNote" }
+        },
+        "failures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedNote" }
+        },
+        "stateChanges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedNote" }
+        },
+        "sideEffects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedNote" }
+        },
+        "participatingKnowledgeIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidenceIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "critical": { "type": "boolean" },
+        "crossSource": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "module": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "path": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "coverageUnitIds": { "type": "array", "items": { "type": "string" } },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "dataModel": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "entityIds": { "type": "array", "items": { "type": "string" } },
+        "storage": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "mapping": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "fromId": { "type": "string" },
+        "toId": { "type": "string" },
+        "kind": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    },
+    "issue": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stringId" },
+        "summary": { "type": "string" },
+        "detail": { "type": "string" },
+        "relatedIds": { "type": "array", "items": { "type": "string" } },
+        "evidenceIds": { "$ref": "#/$defs/evidenceIds" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

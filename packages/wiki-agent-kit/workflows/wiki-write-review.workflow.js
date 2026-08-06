@@ -37,6 +37,15 @@ const REVIEW = {
   required: ["status", "path", "summary", "clean", "blockingCount"],
 };
 
+const REVIEW_LENSES = [
+  "source-grounding",
+  "business-logic",
+  "cross-layer-traceability",
+  "chinese-quality",
+  "information-architecture",
+  "okf-conformance",
+];
+
 phase("Preflight");
 const preflight = await agent(
   [
@@ -56,7 +65,9 @@ phase("Write");
 const writer = await agent(
   [
     `Writer. Read ${skillRoot}/references/generate.md in full.`,
+    `Also read ${skillRoot}/references/chinese-writing.md and ${skillRoot}/references/okf-profile.md.`,
     `Read ${workdir}/analysis/spec.json; it is the sole candidate page-set authority. Write only under ${workdir}/candidate/.`,
+    `Use Project Model knowledge via Spec knowledgeIds; re-open evidence spans under sources/ as needed.`,
     `For every source claim generate a local relative citation such as [Source: src/A.java L1-L2](../sources/api/src/A.java#L1-L2).`,
     `For nested candidate pages calculate the relative path to sources/<sourceId>/ correctly. Never use repo:, remote URLs, file://, or vscode://.`,
     `Do not write index.md or log.md. Return only the envelope.`,
@@ -68,22 +79,33 @@ if (writer?.status !== "ok") return { runId, workdir, preflight, writer, stopped
 let finalReview = null;
 for (let round = 1; round <= 2; round++) {
   phase("Review");
-  const lensNames = ["citation-grounding", "coverage-completeness", "information-architecture"];
+  const lensNames = REVIEW_LENSES;
   const lenses = await parallel(
     lensNames.map((lens) => () =>
       agent(
         [
           `Reviewer (${lens}). Read ${skillRoot}/references/review.md in full.`,
-          `Inspect ${workdir}/candidate/ against ${workdir}/analysis/spec.json and frozen sources. Write full findings to ${workdir}/analysis/receipts/review/${lens}-round-${round}.json.`,
+          `For chinese-quality also read ${skillRoot}/references/chinese-writing.md.`,
+          `For okf-conformance also read ${skillRoot}/references/okf-profile.md.`,
+          `For business-logic and cross-layer-traceability also read ${skillRoot}/references/project-model.md.`,
+          `Inspect ${workdir}/candidate/ against ${workdir}/analysis/spec.json, ${workdir}/analysis/project-model.json, and frozen sources.`,
+          `Write full findings to ${workdir}/analysis/receipts/review/${lens}-round-${round}.json.`,
           `Return only the envelope; do not edit candidate pages.`,
         ].join("\n"),
         { label: `review:${lens}:${round}`, schema: ENVELOPE },
       ),
     ),
   );
+  // Reducer always reads the instructed on-disk receipt paths for this round.
+  const lensReceipts = lensNames.map((lens, index) => ({
+    lens,
+    path: `${workdir}/analysis/receipts/review/${lens}-round-${round}.json`,
+    status: lenses[index]?.status ?? "failed",
+    envelopePath: lenses[index]?.path ?? null,
+  }));
   finalReview = await agent(
     [
-      `Review reducer. JIT-read the three review receipt paths in ${workdir}/analysis/receipts/review/ for round ${round}.`,
+      `Review reducer. JIT-read these exact lens receipt paths for round ${round}: ${JSON.stringify(lensReceipts)}.`,
       `Write ${workdir}/analysis/defects.json. clean is true only when defects is empty; blockingCount counts blocking defects.`,
       `Return {status,path,summary,clean,blockingCount}.`,
     ].join("\n"),

@@ -90,10 +90,12 @@ ow gate plan --run <runId>
 /wiki-write-review {"runId":"<runId>","workdir":"<absolute-workdir>"}
 ```
 
-`/wiki-plan` does discovery and planning only. It writes the Discovery Map and Spec, then stops.
-`ow gate plan` checks coverage and semantic sufficiency and records the digests it approved.
-`/wiki-write-review` rechecks that receipt, writes the Spec-defined pages, runs independent review
-lenses, repairs unresolved issues once, and calls the pinned host CLI to validate and seal.
+`/wiki-plan` runs Discover → Model → Plan only. It writes the Discovery Map, Project Knowledge
+Model (`analysis/project-model.json`), and Spec, then stops for the host gate. `ow gate plan`
+checks coverage and semantic sufficiency and records digests for inventory, Discovery Map, Project
+Model, and Spec. `/wiki-write-review` rechecks that receipt, writes the Spec-defined pages, runs
+six independent review lenses, repairs unresolved issues once, and calls the pinned host CLI to
+validate and seal.
 
 Do not use `ow plan`, `ow write`, or `ow continue`; those workflow-launching wrappers do not exist.
 The only lifecycle commands are:
@@ -106,7 +108,9 @@ ow retry --run <runId> --from plan|write
 ```
 
 `ow validate` remains available for a deterministic manual final check. It refuses to seal unless
-the current plan-gate receipt matches the current inventory, Discovery Map, and Spec.
+the current plan-gate receipt matches the current inventory, Discovery Map, Project Model, and Spec.
+For Chinese runs it also enforces CJK title/description/body checks and locale-aware indexes.
+Host-written provenance beyond mechanical sealing remains deferred (P1/P2).
 
 ## Failure Handling
 
@@ -115,7 +119,7 @@ the current plan-gate receipt matches the current inventory, Discovery Map, and 
 | `ow doctor` reports asset drift | Run `ow install --force`, then start a new Claude Code session. |
 | `ow doctor` reports an unsupported or missing Claude CLI | Install or upgrade Claude Code before attempting the workflow. |
 | Dynamic Workflows is absent or disabled in `/config` | Enable the supported feature for the account/session. This kit has no alternate execution path. |
-| `ow gate plan` fails | Correct the Discovery Map or Spec in a new `/wiki-plan` attempt; use `ow retry --from plan` when discarding all plan artifacts. |
+| `ow gate plan` fails | Correct the Discovery Map, Project Model, or Spec in a new `/wiki-plan` attempt; use `ow retry --from plan` when discarding all plan artifacts. |
 | Write/review does not validate | Use `ow retry --from write`, then rerun `/wiki-write-review` with the same frozen `runId` and `workdir`. |
 | A candidate is `sealed` or `tampered` | Do not edit or reseal it. Use `ow retry --from write` to create a replacement candidate. |
 
@@ -128,15 +132,25 @@ the current plan-gate receipt matches the current inventory, Discovery Map, and 
     sources/<sourceId>/             # filtered, content-hashed source snapshot
     skill/                          # exact copied Skill
     inputs/                         # inventory, policy, manifests, gate receipt
-    analysis/                       # map, Spec, receipts, defects, validation, manifest
+    analysis/                       # discovery map, project model, Spec, receipts, defects, validation, manifest
     candidate/                      # generated Wiki pages; never published by this kit
+```
+
+Planning artifacts under `analysis/` include:
+
+```text
+discovery-map.json
+project-model.json
+spec.json
+receipts/survey/
+receipts/review/
 ```
 
 `ow status` derives each run state from artifacts rather than mutating lifecycle fields in
 `meta.json`: `frozen`, `planned`, `write-ready`, `sealed`, or `tampered`. A successful validation
 writes `analysis/candidate.manifest.json`; its candidate is immutable. To make a replacement,
-explicitly run `ow retry --from write`. `ow retry --from plan` also clears the plan and gate before
-the next `/wiki-plan` run. Frozen sources and the copied Skill are never changed.
+explicitly run `ow retry --from write`. `ow retry --from plan` also clears the plan, project model,
+and gate before the next `/wiki-plan` run. Frozen sources and the copied Skill are never changed.
 
 ## Source Citations
 

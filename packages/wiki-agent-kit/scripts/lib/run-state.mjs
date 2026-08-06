@@ -27,6 +27,7 @@ export function retryFromPhase(root, runId, fromPhase) {
   if (fromPhase === "plan") {
     removeTracked(path.join(analysis, "receipts"));
     removeTracked(path.join(analysis, "discovery-map.json"));
+    removeTracked(path.join(analysis, "project-model.json"));
     removeTracked(path.join(analysis, "spec.json"));
     removeTracked(gateReceiptPath(workdir));
     removeTracked(path.join(analysis, "defects.json"));

@@ -6,26 +6,88 @@
   "required": ["pages"],
   "properties": {
     "version": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string" },
+    "overviewPath": { "type": "string" },
+    "wikiLanguage": { "type": "string" },
     "pages": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path"],
+        "required": [
+          "path",
+          "type",
+          "title",
+          "question",
+          "critical",
+          "audiences",
+          "requiredSections",
+          "knowledgeIds",
+          "evidenceIds",
+          "coverageUnitIds"
+        ],
         "properties": {
-          "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+\\.md$" },
-          "type": { "type": "string" },
-          "title": { "type": "string" },
-          "question": { "type": "string" },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*\\.\\.)[^\\\\]+\\.md$"
+          },
+          "type": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
           "critical": { "type": "boolean" },
-          "coverageUnitIds": { "type": "array", "items": { "type": "string" } }
+          "audiences": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "requiredSections": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "knowledgeIds": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "evidenceIds": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "coverageUnitIds": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "relatedPagePaths": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "domains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "coverageUnitIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
         }
       }
     },
-    "domains": { "type": "array", "items": { "type": "object" } },
     "coverageCancellations": { "$ref": "#/$defs/cancellations" },
     "crossSourceFlowCancellation": {
       "type": "object",
-      "properties": { "cancelled": { "const": true }, "reason": { "type": "string", "minLength": 1 } },
+      "properties": {
+        "cancelled": { "const": true },
+        "reason": { "type": "string", "minLength": 1 }
+      },
       "required": ["cancelled", "reason"]
     }
   },

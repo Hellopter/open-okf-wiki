@@ -32,7 +32,7 @@ Claude workflow JavaScript. Workflow agents use the pinned `hostCli` command in
 | `sources/<id>/` | Filtered, content-hashed frozen evidence. |
 | `skill/` | Exact copied Skill; read its phase reference before work. |
 | `inputs/` | Inventory, snapshot manifest, run policy, and plan-gate receipt. |
-| `analysis/` | Discovery Map, Spec, receipts, defects, validation output, and candidate manifest. |
+| `analysis/` | Discovery Map, Project Model, Spec, receipts, defects, validation, and candidate manifest. |
 | `candidate/` | Spec-bound concept pages, writable only before sealing. |
 
 Never use mutable registered repositories as evidence after `ow freeze`. Never write in `sources/`,
@@ -40,14 +40,20 @@ Never use mutable registered repositories as evidence after `ow freeze`. Never w
 
 ## Agent Method
 
-1. Discover: read `references/research.md`, survey every required inventory coverage unit from
-   frozen sources, preserve failures, and write `analysis/discovery-map.json`.
-2. Plan: read `references/plan.md`, write `analysis/spec.json`, bind every required coverage unit or
-   cancel it with a structured non-empty reason, then stop for the host gate.
-3. Write: read `references/generate.md`, treat the Spec pages as the sole page-set authority, and
-   write only those concept pages under `candidate/`.
-4. Review: read `references/review.md`, keep independent findings in `analysis/receipts/review/`,
-   consolidate `analysis/defects.json`, and repair blocking or major defects before validation.
+1. Discover: read `references/research.md` and `references/business-discovery.md`, survey every
+   required inventory coverage unit from frozen sources, preserve failures, and write
+   `analysis/discovery-map.json`.
+2. Model: read `references/project-model.md`, reduce discovery + receipts into
+   `analysis/project-model.json` without pasting the full model through parent context.
+3. Plan: read `references/plan.md`, use the Project Model as the main semantic input, write
+   `analysis/spec.json`, bind every required coverage unit or cancel it with a structured
+   non-empty reason, then stop for the host gate.
+4. Write: read `references/generate.md`, `references/chinese-writing.md`, and
+   `references/okf-profile.md`; treat Spec pages as the sole page-set authority; write only those
+   concept pages under `candidate/`.
+5. Review: read `references/review.md`, run the six quality lenses, keep independent findings in
+   `analysis/receipts/review/`, consolidate `analysis/defects.json`, and repair blocking or major
+   defects once before validation.
 
 Children write full data to disk and return compact `{status, path, summary, digest?}` envelopes.
 Maintain a ledger for all coverage units, including failed work. One writer owns `candidate/**`;
@@ -59,7 +65,7 @@ file-first handoff rules.
 Write prose in the `wikiLanguage` in `inputs/run-policy.json`; keep identifiers and source paths
 unchanged. Concept pages require non-empty YAML `type`, `title`, and `description`; optional `tags`
 are allowed. Do not author `index.md`, `log.md`, `generated`, `verified`, `stale_after`, or
-`okf_version`.
+`okf_version` on concept pages. Host may place `okf_version` only on the root index.
 
 Every factual claim needs a direct local Markdown link to the frozen source and genuine one-based
 line numbers. Calculate the link relative to the candidate page:
@@ -72,3 +78,6 @@ line numbers. Calculate the link relative to the candidate page:
 Do not use `repo:`, remote URLs, `file://`, `vscode://`, or targets outside frozen `sources/`.
 Never estimate line ranges. A successful `ow validate` writes a hash manifest and makes the
 candidate immutable; use `ow retry --from write` before creating a replacement.
+
+Host provenance fields beyond mechanical sealing remain deferred (P1/P2). Do not fake timestamps or
+human verification in model-written pages.
