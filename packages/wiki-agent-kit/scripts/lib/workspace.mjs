@@ -10,6 +10,7 @@ import {
   findLegacyWorkspaceConfigs,
   findWorkspaceConfig,
   metaDir,
+  objectsDir,
   runsDir,
   sourcesDir,
 } from "./paths.mjs";
@@ -80,6 +81,7 @@ export function ensureWorkspaceLayout(root) {
   fs.mkdirSync(sourcesDir(root), { recursive: true });
   fs.mkdirSync(metaDir(root), { recursive: true });
   fs.mkdirSync(runsDir(root), { recursive: true });
+  fs.mkdirSync(objectsDir(root), { recursive: true });
   fs.mkdirSync(claudeWorkflowsDir(root), { recursive: true });
 }
 
@@ -104,6 +106,7 @@ export function initWorkspace(root, { name, wikiLanguage = "en", force = false }
     fs.rmSync(metaDir(root), { recursive: true, force: true });
     fs.mkdirSync(metaDir(root), { recursive: true });
     fs.mkdirSync(runsDir(root), { recursive: true });
+    fs.mkdirSync(objectsDir(root), { recursive: true });
   }
   const target = defaultWorkspaceConfigPath(root);
   const workspace = defaultWorkspace({ name, wikiLanguage, rootPath: root });

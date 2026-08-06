@@ -1,5 +1,6 @@
 /**
  * Freeze sources + internal method pack into a run workdir; record digests and effective ignores.
+ * Source files are stored write-once in the workspace CAS and hardlinked (or copied) into the run.
  */
 
 import { spawnSync } from "node:child_process";
@@ -10,7 +11,8 @@ import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory, writeInventory } from "./inventory.mjs";
 import { setActiveRun } from "./active-run.mjs";
 import { normalizeLimits } from "./limits.mjs";
-import { KIT_ROOT, kitMethodDir, runDir, runsDir } from "./paths.mjs";
+import { emptyPlacement, materializeFile, mergePlacement } from "./objects.mjs";
+import { KIT_ROOT, kitMethodDir, objectsDir, runDir, runsDir } from "./paths.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
 import { hashTree, isInside, writeJson } from "./artifacts.mjs";
@@ -21,10 +23,16 @@ function gitHead(abs) {
   return null;
 }
 
-function copyTreeFiltered(srcAbs, destAbs, patterns) {
+/**
+ * Materialize a filtered source tree into destAbs via workspace CAS.
+ * Regular files are written once under .wiki-agent/objects and hardlinked (or copied) into dest.
+ * Directory symlinks are never materialised; escaping / dangling file symlinks are skipped.
+ */
+function materializeTreeFiltered(root, srcAbs, destAbs, patterns) {
   fs.mkdirSync(destAbs, { recursive: true });
   const sourceReal = fs.realpathSync(srcAbs);
   const skippedSymlinks = [];
+  const placement = emptyPlacement();
   const stack = [""];
   while (stack.length) {
     const rel = stack.pop();
@@ -46,14 +54,14 @@ function copyTreeFiltered(srcAbs, destAbs, patterns) {
       if (ent.isDirectory()) {
         stack.push(norm);
       } else if (ent.isFile()) {
-        fs.copyFileSync(from, to);
+        materializeFile(root, from, to, placement);
       } else if (ent.isSymbolicLink()) {
         try {
           const real = fs.realpathSync(from);
           if (!isInside(sourceReal, real)) {
             skippedSymlinks.push({ path: norm, reason: "target escapes source root" });
           } else if (fs.statSync(real).isFile()) {
-            fs.copyFileSync(real, to);
+            materializeFile(root, real, to, placement);
           } else {
             skippedSymlinks.push({ path: norm, reason: "directory symlink not copied" });
           }
@@ -63,7 +71,7 @@ function copyTreeFiltered(srcAbs, destAbs, patterns) {
       }
     }
   }
-  return { skippedSymlinks };
+  return { skippedSymlinks, placement };
 }
 
 function copyMethod(destMethodDir) {
@@ -85,6 +93,8 @@ export function freezeRun(root, { focus } = {}) {
   if (!workspace.sources?.length) {
     throw new Error("workspace has no sources; run: ow source add clone|path …");
   }
+  fs.mkdirSync(objectsDir(root), { recursive: true });
+
   const runId = randomUUID().slice(0, 8) + Date.now().toString(36).slice(-4);
   const rdir = runDir(root, runId);
   const workdir = path.join(rdir, "workdir");
@@ -99,14 +109,16 @@ export function freezeRun(root, { focus } = {}) {
 
   const sourceSnapshots = [];
   const sourceRoots = new Map();
+  const runPlacement = emptyPlacement();
   for (const src of workspace.sources) {
     const abs = resolveSourceAbs(root, src);
     const patterns = effectiveSourceIgnores(src);
     const head = gitHead(abs);
     const dest = path.join(workdir, "sources", src.id);
-    const copy = copyTreeFiltered(abs, dest, patterns);
+    const copy = materializeTreeFiltered(root, abs, dest, patterns);
     const tree = hashTree(dest);
     sourceRoots.set(src.id, dest);
+    mergePlacement(runPlacement, copy.placement);
     sourceSnapshots.push({
       sourceId: src.id,
       gitHead: head,
@@ -118,6 +130,7 @@ export function freezeRun(root, { focus } = {}) {
       applyDefaultIgnores: src.applyDefaultIgnores !== false,
       presets: src.presets ?? [],
       userIgnore: src.ignore ?? [],
+      placement: copy.placement,
     });
   }
 
@@ -158,6 +171,7 @@ export function freezeRun(root, { focus } = {}) {
     inventoryTier: inventory.tier,
     coverageUnitCount: inventory.coverageUnits.length,
     workdir: path.relative(root, workdir),
+    placement: runPlacement,
   };
   fs.writeFileSync(path.join(rdir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
   // Empty discovery-map shell is planning input. Discover writes the filled analysis version;

@@ -70,6 +70,7 @@ ow handoff write|validate|publish --phase PHASE --producer ID --out analysis/han
 ow checkpoint --phase PHASE --proposal analysis/handoffs/NAME.json
 ow gate plan|check
 ow validate
+ow gc [--keep-runs N] [--dry-run] [--runs-only|--objects-only]
 ```
 
 Handoff proposals are **host-authored** (`ow handoff write|publish` always sets `version: 2`). Agents
@@ -77,6 +78,23 @@ write data-plane artifacts and `*-artifacts.json` lists only — they must not i
 `version` or `phase`. `ow handoff publish` writes the proposal then checkpoints. `ow checkpoint` alone
 remains valid when a proposal file already exists. `ow validate` prepares a verified candidate
 manifest; its following `validate` checkpoint is the only transition to `sealed`.
+
+## Freeze storage
+
+`ow prepare` freezes each registered source into the run workdir as filtered evidence under
+`workdir/sources/<id>/`. File bytes are stored **write-once** in the workspace CAS:
+
+```text
+.wiki-agent/objects/sha256/<aa>/<sha256>
+```
+
+Each run path tree hardlinks into those objects when the filesystem allows (NTFS/local same volume,
+no admin required for file hardlinks). Cross-volume or permission failures fall back to a full copy.
+The method pack remains a small recursive copy. Placement counters (`hardlinked`, `copied`,
+`objectsCreated`, `objectsReused`) are recorded on the freeze snapshot and run meta.
+
+Use `ow gc` to drop old non-active runs (default: keep the newest 3, always protect
+`.wiki-agent/current.json`) and reclaim unreferenced CAS objects. Prefer `--dry-run` first.
 
 ## Handoff and ownership
 

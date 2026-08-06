@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { readCurrent, resolveActiveRun, setActiveRun } from "./lib/active-run.mjs";
 import { checkpointRun, verifyCheckpoint, verifyReviewLeaf } from "./lib/checkpoints.mjs";
 import { freezeRun, listRuns, loadRunMeta } from "./lib/freeze.mjs";
+import { gcWorkspace } from "./lib/gc.mjs";
 import { verifyPlanGate, writePlanGateReceipt } from "./lib/gate.mjs";
 import {
   defaultHandoffOut,
@@ -476,6 +477,28 @@ function cmdHandoff(args) {
   printJson(handoffPublish(root, run, opts));
 }
 
+function cmdGc(args) {
+  const root = workspaceRoot(args.flags);
+  loadWorkspace(root);
+  const keepRunsRaw = args.flags["keep-runs"];
+  const keepRuns =
+    keepRunsRaw === undefined || keepRunsRaw === true
+      ? 3
+      : Number.parseInt(String(keepRunsRaw), 10);
+  if (!Number.isFinite(keepRuns) || keepRuns < 0) die("usage: ow gc [--keep-runs N] [--dry-run] [--runs-only|--objects-only]");
+  const runsOnly = Boolean(args.flags["runs-only"]);
+  const objectsOnly = Boolean(args.flags["objects-only"]);
+  if (runsOnly && objectsOnly) die("ow gc: --runs-only and --objects-only are mutually exclusive");
+  printJson(
+    gcWorkspace(root, {
+      keepRuns,
+      dryRun: Boolean(args.flags["dry-run"]),
+      runs: objectsOnly ? false : true,
+      objects: runsOnly ? false : true,
+    }),
+  );
+}
+
 function cmdHelp() {
   console.log(`ow — wiki-agent-kit v2 host CLI
 
@@ -494,9 +517,14 @@ Workflow host API (JSON):
   ow gate plan|check [--run <runId>]
   ow validate [--run <runId>]
   ow status | doctor | install --force
+  ow gc [--keep-runs N] [--dry-run] [--runs-only|--objects-only]
 
 Handoff proposals are host-authored (always version 2). Agents write data-plane
 artifacts and artifact lists only; they must not invent proposal version/phase.
+
+Freeze stores source bytes write-once under .wiki-agent/objects and hardlinks
+(or copies) them into each run workdir. Use ow gc to drop old runs and
+unreferenced objects.
 
 Workspace setup:
   ow init [dir] --name N --lang en|zh [--clone URL|--path DIR] [--id ID]
@@ -527,6 +555,7 @@ async function main() {
       case "checkpoint": return cmdCheckpoint(args);
       case "gate": return cmdGate(args);
       case "validate": return cmdValidate(args);
+      case "gc": return cmdGc(args);
       default: return die(`unknown command: ${command} (try ow help)`);
     }
   } catch (error) {

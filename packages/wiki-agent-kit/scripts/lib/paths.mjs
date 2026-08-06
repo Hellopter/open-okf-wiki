@@ -41,6 +41,20 @@ export function metaDir(root) {
   return path.join(root, META_DIR);
 }
 
+/** Workspace-local content-addressed object store (freeze blobs). */
+export function objectsDir(root) {
+  return path.join(metaDir(root), "objects");
+}
+
+/** CAS path for a sha256 hex digest: objects/sha256/<aa>/<fullhex>. */
+export function objectPath(root, sha256Hex) {
+  const digest = String(sha256Hex || "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(digest)) {
+    throw new Error(`invalid object digest: ${sha256Hex}`);
+  }
+  return path.join(objectsDir(root), "sha256", digest.slice(0, 2), digest);
+}
+
 /** The only workspace-level run pointer. */
 export function currentRunPath(root) {
   return path.join(metaDir(root), "current.json");

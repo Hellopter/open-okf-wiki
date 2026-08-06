@@ -26,7 +26,7 @@ it never routes to another workflow or stores workflow arguments.
 
 | Path | Role |
 |---|---|
-| `sources/<id>/` | Filtered, content-hashed frozen evidence. |
+| `sources/<id>/` | Filtered, content-hashed frozen evidence (CAS hardlink or copy into the run). |
 | `method/` | Exact copy of this method pack. |
 | `inputs/` | Inventory, snapshot manifest, run policy, plan-gate receipt. |
 | `analysis/` | Discovery Map, Spec, assignments, handoffs, checkpoints, receipts, defects, validation, manifest. |
