@@ -18,14 +18,16 @@ unverified sentence in an agent response.
 3. Do not paste full receipts or child transcripts into downstream prompts. Read checkpoint-listed
    files just in time.
 4. Keep every attempted coverage unit and every failed shard in the ledger.
-5. `page-assignments.json` gives every candidate path one owner. A source/domain shard may write
+5. Pack fan-out waves fairly by source under `inputs/run-policy.json` limits (`batchConcurrency`,
+   `perSourceConcurrency`, `maxCoveragePasses`, `maxRepairRounds`).
+6. `page-assignments.json` gives every candidate path one owner. A source/domain shard may write
    only its paths; the integration shard owns only overview, navigation, glossary, and cross-source
    Flow pages.
-6. Bound schemas and summaries. A missing envelope is a failed child, not a reason to synthesize
+7. Bound schemas and summaries. A missing envelope is a failed child, not a reason to synthesize
    from chat history.
-7. Repair routes only to the defect owner. A repeated defect fingerprint or no reduction in
+8. Repair routes only to the defect owner. A repeated defect fingerprint or no reduction in
    blocking/major defects is a stop condition, not a reason to loop indefinitely.
-8. Host actions are deterministic agent APIs. Agents invoke the exact pinned command from
+9. Host actions are deterministic agent APIs. Agents invoke the exact pinned command from
    `inputs/run-policy.json`; the native `/wiki` workflow is the only user entrypoint.
-9. A validate handoff may publish only from the current clean `review-N` leaf. `ow validate` is
-   idempotent for a valid manifest so an interrupted terminal checkpoint can resume without rewriting.
+10. A validate handoff may publish only from the current clean `review-N` leaf. `ow validate` is
+    idempotent for a valid manifest so an interrupted terminal checkpoint can resume without rewriting.

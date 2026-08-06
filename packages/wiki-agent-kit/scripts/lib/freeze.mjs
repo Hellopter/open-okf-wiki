@@ -9,6 +9,7 @@ import path from "node:path";
 import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory, writeInventory } from "./inventory.mjs";
 import { setActiveRun } from "./active-run.mjs";
+import { normalizeLimits } from "./limits.mjs";
 import { KIT_ROOT, kitMethodDir, runDir, runsDir } from "./paths.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
@@ -139,11 +140,7 @@ export function freezeRun(root, { focus } = {}) {
       script: path.join(KIT_ROOT, "scripts", "ow.mjs"),
       workspaceRoot: root,
     },
-    limits: {
-      batchConcurrency: 8,
-      maxCoveragePasses: 2,
-      maxRepairRounds: 2,
-    },
+    limits: normalizeLimits(undefined, { sourceCount: inventory.sourceCount }),
   };
   fs.writeFileSync(
     path.join(workdir, "inputs", "run-policy.json"),

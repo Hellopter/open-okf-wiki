@@ -44,7 +44,9 @@ Shape the complete `analysis/spec.json` before any candidate page is written.
 
 Every page needs a reader purpose and inspected evidence. Bind every required inventory coverage
 unit via page/domain `coverageUnitIds`, or add a `coverageCancellations` entry with
-`coverageUnitId`, `cancelled: true`, and a non-empty `reason`.
+`coverageUnitId`, `cancelled: true`, and a non-empty `reason`. Surfaces may be bound via the parent
+source id, the surface id, or a cancellation. A missing surface survey receipt is not a plan-gate
+failure; required units still must bind or cancel.
 
 Copy `wikiLanguage` from `inputs/run-policy.json` into the Spec top-level field. Write every page
 `title` and `question` in that language (`zh` → Simplified Chinese prose; identifiers stay as-is).

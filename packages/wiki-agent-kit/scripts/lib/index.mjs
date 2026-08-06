@@ -4,6 +4,7 @@ export * from "./workspace.mjs";
 export * from "./sources.mjs";
 export * from "./install.mjs";
 export * from "./inventory.mjs";
+export * from "./limits.mjs";
 export * from "./freeze.mjs";
 export * from "./gate.mjs";
 export * from "./validate.mjs";

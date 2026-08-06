@@ -11,7 +11,7 @@ export const meta = {
   description: "Produce a source-grounded Wiki through checkpointed survey, planning, writing, verification, repair, and sealing",
   phases: [
     { title: "Bootstrap", detail: "prepare or resume a checkpointed run" },
-    { title: "Survey", detail: "fan out frozen-source discovery in bounded waves" },
+    { title: "Survey", detail: "source-first discovery with fair policy-limited waves" },
     { title: "Plan", detail: "assign owned pages and gate the plan" },
     { title: "Write", detail: "write domain shards, then integration shards" },
     { title: "Verify", detail: "independently refute unsupported claims" },
@@ -20,9 +20,17 @@ export const meta = {
   ],
 };
 
-const MAX_CONCURRENCY = 8;
-const MAX_SURVEY_PASSES = 2;
-const MAX_REPAIR_ROUNDS = 2;
+const LIMITS = {
+  type: "object",
+  additionalProperties: false,
+  required: ["batchConcurrency", "perSourceConcurrency", "maxCoveragePasses", "maxRepairRounds"],
+  properties: {
+    batchConcurrency: { type: "number" },
+    perSourceConcurrency: { type: "number" },
+    maxCoveragePasses: { type: "number" },
+    maxRepairRounds: { type: "number" },
+  },
+};
 
 const ENVELOPE = {
   type: "object",
@@ -68,7 +76,7 @@ const BOOTSTRAP = {
 const INVENTORY = {
   type: "object",
   additionalProperties: false,
-  required: ["units", "tier", "sourceCount", "wikiLanguage"],
+  required: ["units", "tier", "sourceCount", "wikiLanguage", "limits"],
   properties: {
     units: {
       type: "array",
@@ -81,6 +89,7 @@ const INVENTORY = {
           sourceId: { type: "string" },
           path: { type: "string" },
           label: { type: "string" },
+          survey: { type: "string", enum: ["always", "on-demand"] },
         },
       },
     },
@@ -88,13 +97,14 @@ const INVENTORY = {
     sourceCount: { type: "number" },
     wikiLanguage: { type: "string", enum: ["en", "zh"] },
     focus: { type: ["string", "null"] },
+    limits: LIMITS,
   },
 };
 
 const RESUMED_DISCOVERY = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "checkpointPath", "checkpointDigest", "wikiLanguage", "sourceCount", "tier", "summary"],
+  required: ["status", "checkpointPath", "checkpointDigest", "wikiLanguage", "sourceCount", "tier", "limits", "summary"],
   properties: {
     status: { type: "string", enum: ["ok", "failed"] },
     checkpointPath: { type: "string", minLength: 1 },
@@ -103,6 +113,7 @@ const RESUMED_DISCOVERY = {
     sourceCount: { type: "number" },
     tier: { type: "string" },
     focus: { type: ["string", "null"] },
+    limits: LIMITS,
     summary: { type: "string", maxLength: 6000 },
   },
 };
@@ -120,11 +131,12 @@ const DISCOVERY = {
 const ASSIGNMENTS = {
   type: "object",
   additionalProperties: false,
-  required: ["wikiLanguage", "sourceCount", "tier", "shards"],
+  required: ["wikiLanguage", "sourceCount", "tier", "limits", "shards"],
   properties: {
     wikiLanguage: { type: "string", enum: ["en", "zh"] },
     sourceCount: { type: "number" },
     tier: { type: "string" },
+    limits: LIMITS,
     shards: {
       type: "array",
       minItems: 1,
@@ -195,12 +207,91 @@ function safeId(value) {
   return String(value).replace(/[^A-Za-z0-9._:-]+/g, "-").slice(0, 80) || "item";
 }
 
-function waves(items) {
-  const output = [];
-  for (let offset = 0; offset < items.length; offset += MAX_CONCURRENCY) {
-    output.push(items.slice(offset, offset + MAX_CONCURRENCY));
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+function normalizeLimits(raw, sourceCount) {
+  const multi = Number(sourceCount) >= 2;
+  const defaults = {
+    batchConcurrency: multi ? 3 : 4,
+    perSourceConcurrency: 2,
+    maxCoveragePasses: 2,
+    maxRepairRounds: 2,
+  };
+  const input = raw && typeof raw === "object" ? raw : {};
+  const batchConcurrency = clampInt(input.batchConcurrency, 1, 8, defaults.batchConcurrency);
+  const perSourceConcurrency = clampInt(
+    input.perSourceConcurrency,
+    1,
+    batchConcurrency,
+    Math.min(defaults.perSourceConcurrency, batchConcurrency),
+  );
+  const maxCoveragePasses = clampInt(input.maxCoveragePasses, 1, 4, defaults.maxCoveragePasses);
+  const maxRepairRounds = clampInt(input.maxRepairRounds, 1, 4, defaults.maxRepairRounds);
+  return { batchConcurrency, perSourceConcurrency, maxCoveragePasses, maxRepairRounds };
+}
+
+function scheduleWaves(items, { concurrency, perSourceConcurrency }, sourceKey) {
+  const list = Array.isArray(items) ? items : [];
+  const conc = clampInt(concurrency, 1, 8, 4);
+  const perSrc = clampInt(perSourceConcurrency, 1, conc, Math.min(2, conc));
+  const keyFn = typeof sourceKey === "function" ? sourceKey : (item) => item?.sourceId ?? item?.owner ?? "_";
+  const queues = new Map();
+  const sourceOrder = [];
+  for (const item of list) {
+    const sid = String(keyFn(item) || "_");
+    if (!queues.has(sid)) {
+      queues.set(sid, []);
+      sourceOrder.push(sid);
+    }
+    queues.get(sid).push(item);
   }
-  return output;
+  const wavesOut = [];
+  const nextIndex = Object.fromEntries(sourceOrder.map((s) => [s, 0]));
+  while (sourceOrder.some((s) => nextIndex[s] < queues.get(s).length)) {
+    const wave = [];
+    const taken = Object.fromEntries(sourceOrder.map((s) => [s, 0]));
+    let progressed = true;
+    while (wave.length < conc && progressed) {
+      progressed = false;
+      for (const sid of sourceOrder) {
+        if (wave.length >= conc) break;
+        if (taken[sid] >= perSrc) continue;
+        const q = queues.get(sid);
+        const i = nextIndex[sid];
+        if (i >= q.length) continue;
+        wave.push(q[i]);
+        nextIndex[sid] = i + 1;
+        taken[sid] += 1;
+        progressed = true;
+      }
+    }
+    if (!wave.length) break;
+    wavesOut.push(wave);
+  }
+  return wavesOut;
+}
+
+function isTransientSurveyFailure(result) {
+  if (!result || result.status === "ok") return false;
+  const text = `${result.status || ""} ${result.summary || ""}`.toLowerCase();
+  return /rate[\s_-]?limit|overloaded|too many requests|\b429\b|\b529\b|\b503\b|capacity|temporarily unavailable|timeout|timed out|try again later/.test(text);
+}
+
+function selectAlwaysSurveyUnits(units) {
+  return (units || []).filter((unit) => {
+    if (unit?.survey === "always") return true;
+    if (unit?.survey === "on-demand") return false;
+    return unit?.kind === "source" || !unit?.kind;
+  });
+}
+
+function selectUnitsByIds(units, ids) {
+  const want = new Set([...ids].map(String));
+  return (units || []).filter((unit) => want.has(String(unit.id)));
 }
 
 function languageDirective(wikiLanguage, scope) {
@@ -288,6 +379,7 @@ return await (async () => {
   let tier = "L0";
   let focusRule = "";
   let multiSource = "";
+  let limits = normalizeLimits(undefined, 1);
 
   if (shouldPlan) {
     const resumePlan = bootstrap.startAt === "plan";
@@ -296,8 +388,9 @@ return await (async () => {
     inventory = await agent(
       [
         `Read ${workdir}/inputs/inventory.json and ${workdir}/inputs/run-policy.json.`,
-        "Return coverage units and only policy controls needed for topology. Do not return source bodies.",
-        "Each coverage unit must preserve id, kind, sourceId, path, and label when present.",
+        "Return coverage units from inventory.coverageUnits and only policy controls needed for topology. Do not return source bodies.",
+        "Each coverage unit must preserve id, kind, sourceId, path, label, and survey (always|on-demand) when present.",
+        "Return limits from run-policy.json limits (batchConcurrency, perSourceConcurrency, maxCoveragePasses, maxRepairRounds) and focus from run-policy.",
       ].join("\n"),
       { label: "load-inventory", schema: INVENTORY },
     );
@@ -306,26 +399,35 @@ return await (async () => {
     wikiLanguage = inventory.wikiLanguage === "zh" ? "zh" : "en";
     sourceCount = Number.isFinite(inventory.sourceCount) ? inventory.sourceCount : 1;
     tier = typeof inventory.tier === "string" ? inventory.tier : "L0";
+    limits = normalizeLimits(inventory.limits, sourceCount);
     const surveyLanguage = languageDirective(wikiLanguage, "survey receipts, labels, and planning prose");
     multiSource = multiSourceDirective(sourceCount, tier);
     focusRule = inventory.focus ? `Operator focus: ${inventory.focus}` : "";
-    let pendingUnits = inventory.units;
+    let pendingUnits = selectAlwaysSurveyUnits(inventory.units);
 
-    for (let pass = 1; pass <= MAX_SURVEY_PASSES && pendingUnits.length; pass++) {
-      for (const wave of waves(pendingUnits)) {
+    for (let pass = 1; pass <= limits.maxCoveragePasses && pendingUnits.length; pass++) {
+      const passTransient = new Set();
+      for (const wave of scheduleWaves(
+        pendingUnits,
+        { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+        (unit) => unit.sourceId,
+      )) {
         const results = await parallel(
           wave.map((unit) => () => {
             const id = safeId(unit.id);
             const proposalPath = `analysis/handoffs/survey/${id}-pass-${pass}.json`;
+            const surveyMode = unit.survey === "on-demand" ? "on-demand surface" : "always source";
             return agent(
               [
-                `Surveyor for coverage unit ${JSON.stringify(unit)}. workdir=${workdir}.`,
+                `Surveyor for coverage unit ${JSON.stringify(unit)} (${surveyMode}). workdir=${workdir}.`,
                 `Read ${methodRoot}/references/research.md and ${workdir}/inputs/run-policy.json in full.`,
                 surveyLanguage,
                 multiSource,
                 focusRule,
                 `Read frozen evidence only under ${workdir}/sources/.`,
-                "Prioritize entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts.",
+                unit.survey === "on-demand" || unit.kind === "surface"
+                  ? `Focus on the surface path under sources/${unit.sourceId}/${unit.path || ""}. Capture module boundaries, public APIs, and runtime entry points for this surface only.`
+                  : "Source-level survey: map entry points, public surfaces, runtime paths, module boundaries, and cross-source contracts. Note which on-demand surfaces need dedicated follow-up.",
                 `Write the detailed receipt under analysis/receipts/survey/${id}-pass-${pass}.json.`,
                 `Write the handoff proposal to ${proposalPath}; declare the receipt artifact, this coverage unit, source-relative evidence, and open questions.`,
                 "Return only the bounded handoff envelope. Do not write candidate pages.",
@@ -335,12 +437,20 @@ return await (async () => {
           }),
         );
         surveyLedger.push(
-          ...wave.map((unit, index) => ({
-            id: String(unit.id),
-            status: results[index]?.status ?? "failed",
-            proposalPath: results[index]?.proposalPath ?? `analysis/handoffs/survey/${safeId(unit.id)}-pass-${pass}.json`,
-            summary: results[index]?.summary ?? "surveyor returned no envelope",
-          })),
+          ...wave.map((unit, index) => {
+            const result = results[index];
+            const retryable = isTransientSurveyFailure(result);
+            if (retryable) passTransient.add(String(unit.id));
+            return {
+              id: String(unit.id),
+              sourceId: unit.sourceId,
+              status: result?.status ?? "failed",
+              proposalPath: result?.proposalPath ?? `analysis/handoffs/survey/${safeId(unit.id)}-pass-${pass}.json`,
+              summary: result?.summary ?? "surveyor returned no envelope",
+              pass,
+              retryable,
+            };
+          }),
         );
       }
 
@@ -350,16 +460,21 @@ return await (async () => {
           `Read inventory and run policy, then JIT-read only survey handoffs/receipts in this ledger: ${JSON.stringify(conciseLedger(surveyLedger))}.`,
           surveyLanguage,
           multiSource,
-          `Write ${workdir}/analysis/discovery-map.json with complete coverage units, domains, flows, concepts, and visible failed/cancelled units.`,
-          "Return missingUnitIds only for required coverage that is still surveyable; do not guess missing evidence.",
+          `Write ${workdir}/analysis/discovery-map.json with complete coverage units (including on-demand surfaces), domains, flows, concepts, and visible failed/cancelled units.`,
+          "Return missingUnitIds only for required coverage that is still surveyable (including on-demand surfaces that need promotion). Do not guess missing evidence.",
+          "Do not treat pure rate-limit / overloaded / 429 failures as permanently missing; the workflow retries those via the survey ledger.",
           `Write the aggregate discovery handoff proposal to analysis/handoffs/discovery-pass-${pass}.json with inputCheckpointDigests exactly []; it MUST declare analysis/discovery-map.json as a discovery-map artifact plus the survey receipt artifacts it reduces.`,
           "Return only the bounded discovery envelope.",
         ].filter(Boolean).join("\n"),
         { label: `reduce-discovery:${pass}`, schema: DISCOVERY },
       );
       if (discovery?.status !== "ok") return { runId, workdir, surveyLedger, discovery, stopped: "discovery reduction failed" };
-      const missing = new Set(discovery.missingUnitIds ?? []);
-      pendingUnits = pass < MAX_SURVEY_PASSES ? inventory.units.filter((unit) => missing.has(unit.id)) : [];
+      if (pass >= limits.maxCoveragePasses) {
+        pendingUnits = [];
+      } else {
+        const nextIds = new Set([...(discovery.missingUnitIds ?? []).map(String), ...passTransient]);
+        pendingUnits = selectUnitsByIds(inventory.units, nextIds);
+      }
     }
 
     discoveryCheckpoint = await runCheckpoint({
@@ -377,7 +492,7 @@ return await (async () => {
         [
           `Resume planner input. workdir=${workdir}.`,
           "Read the current v2 run state, inputs/run-policy.json, inputs/inventory.json, and analysis/checkpoints/discover.json.",
-          "Return the authoritative discover checkpoint path/digest and policy controls only. Fail closed if the checkpoint or its artifacts are stale.",
+          "Return the authoritative discover checkpoint path/digest, policy controls, and limits from run-policy.json. Fail closed if the checkpoint or its artifacts are stale.",
         ].join("\n"),
         { label: "hydrate-discovery-checkpoint", schema: RESUMED_DISCOVERY },
       );
@@ -386,6 +501,7 @@ return await (async () => {
       wikiLanguage = resumedDiscovery.wikiLanguage;
       sourceCount = resumedDiscovery.sourceCount;
       tier = resumedDiscovery.tier;
+      limits = normalizeLimits(resumedDiscovery.limits, sourceCount);
       focusRule = resumedDiscovery.focus ? `Operator focus: ${resumedDiscovery.focus}` : "";
       multiSource = multiSourceDirective(sourceCount, tier);
     }
@@ -467,9 +583,10 @@ return await (async () => {
 
   const assignmentState = await agent(
     [
-      `Read ${workdir}/analysis/spec.json and ${workdir}/analysis/page-assignments.json.`,
+      `Read ${workdir}/analysis/spec.json, ${workdir}/analysis/page-assignments.json, and ${workdir}/inputs/run-policy.json.`,
       "Validate that each page path appears exactly once, every page owner is declared, and integration pages are separate from domain pages.",
       "Return only compact owner shards, grouped by owner, with assigned page paths and declared checkpoint dependencies. Do not return page bodies.",
+      "Also return limits from run-policy.json limits for fan-out budgeting.",
     ].join("\n"),
     { label: "load-page-assignments", schema: ASSIGNMENTS },
   );
@@ -477,13 +594,18 @@ return await (async () => {
   wikiLanguage = assignmentState.wikiLanguage === "zh" ? "zh" : wikiLanguage;
   sourceCount = Number.isFinite(assignmentState.sourceCount) ? assignmentState.sourceCount : sourceCount;
   tier = typeof assignmentState.tier === "string" ? assignmentState.tier : tier;
+  limits = normalizeLimits(assignmentState.limits ?? limits, sourceCount);
   const writeLanguage = languageDirective(wikiLanguage, "candidate page titles, headings, and prose");
   const writeMultiSource = multiSourceDirective(sourceCount, tier);
   const domainShards = assignmentState.shards.filter((shard) => shard.role === "domain");
   const integrationShards = assignmentState.shards.filter((shard) => shard.role === "integration");
   const writeLedger = [];
 
-  for (const wave of waves(domainShards)) {
+  for (const wave of scheduleWaves(
+    domainShards,
+    { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+    (shard) => shard.sourceIds?.[0] ?? shard.owner,
+  )) {
     const results = await parallel(
       wave.map((shard) => () => {
         const id = safeId(shard.owner);
@@ -534,7 +656,11 @@ return await (async () => {
   });
   if (sourceWriteCheckpoint?.status !== "ok") return { runId, workdir, sourceWriteCheckpoint, stopped: "domain write checkpoint failed" };
 
-  for (const wave of waves(integrationShards)) {
+  for (const wave of scheduleWaves(
+    integrationShards,
+    { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+    (shard) => shard.owner,
+  )) {
     const results = await parallel(
       wave.map((shard) => () => {
         const id = safeId(shard.owner);
@@ -587,11 +713,15 @@ return await (async () => {
 
   let previousReview = null;
   let verificationInputDigest = writeCheckpoint.checkpointDigest;
-  for (let round = 1; round <= MAX_REPAIR_ROUNDS; round++) {
+  for (let round = 1; round <= limits.maxRepairRounds; round++) {
     phase("Verify");
     const pageReviews = [];
     const pageTargets = assignmentState.shards.flatMap((shard) => shard.pagePaths.map((pagePath) => ({ owner: shard.owner, pagePath })));
-    for (const wave of waves(pageTargets)) {
+    for (const wave of scheduleWaves(
+      pageTargets,
+      { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+      (target) => target.owner,
+    )) {
       const results = await parallel(
         wave.map((target) => () => {
           const id = safeId(`${target.owner}-${target.pagePath}`);
@@ -674,7 +804,7 @@ return await (async () => {
       finalReview.blockingCount < previousReview.blockingCount ||
       finalReview.majorCount < previousReview.majorCount ||
       finalReview.defectFingerprint !== previousReview.defectFingerprint;
-    if (!progressed || round === MAX_REPAIR_ROUNDS) {
+    if (!progressed || round === limits.maxRepairRounds) {
       const blocked = await agent(
         [
           `Proof-or-stop recorder. workdir=${workdir}.`,
@@ -707,7 +837,11 @@ return await (async () => {
 
     phase("Repair");
     const repairs = [];
-    for (const wave of waves(finalReview.repairTargets)) {
+    for (const wave of scheduleWaves(
+      finalReview.repairTargets,
+      { concurrency: limits.batchConcurrency, perSourceConcurrency: limits.perSourceConcurrency },
+      (target) => target.owner,
+    )) {
       const results = await parallel(
         wave.map((target) => () => {
           const id = safeId(target.owner);

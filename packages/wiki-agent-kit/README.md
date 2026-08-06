@@ -68,9 +68,12 @@ following `validate` checkpoint is the only transition to `sealed`.
 - `analysis/handoffs/*.json`, receipts, pages, and defects are the data plane.
 - `analysis/page-assignments.json` assigns every page to exactly one source/domain or integration
   owner. Shards cannot write another owner's path.
-- Survey, writer, and evidence-review fan-out is bounded to eight agents per wave.
-- Coverage has at most two passes. Repair has at most two rounds and stops when the major/blocking
-  defect fingerprint fails to improve.
+- Fan-out concurrency comes from `inputs/run-policy.json` `limits`: `batchConcurrency` default 4
+  (3 multi-source), `perSourceConcurrency` 2, `maxCoveragePasses` 2, `maxRepairRounds` 2. Waves are
+  fair-packed by source under the global and per-source caps.
+- Survey is source-first: pass 1 covers `survey: "always"` units (sources); later passes promote
+  missing units and retry transient rate-limit failures. Repair stops when the major/blocking defect
+  fingerprint fails to improve.
 
 ## Failure and recovery
 
