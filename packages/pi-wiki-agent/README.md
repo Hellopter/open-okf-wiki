@@ -153,11 +153,54 @@ final authority for checkpoints, source snapshots, plan approval, and sealing.
 
 ## Development
 
+From the monorepo root (install deps first if `node_modules` is missing):
+
 ```bash
+pnpm install
 pnpm -C packages/pi-wiki-agent build
 pnpm -C packages/pi-wiki-agent test
 pnpm -C packages/pi-wiki-agent typecheck
 ```
+
+Or from `packages/pi-wiki-agent`:
+
+```bash
+pnpm install   # if needed — provides local typescript
+pnpm build     # resolves local typescript via scripts/run-tsc.mjs
+```
+
+### Troubleshooting: `tsc` is not recognized
+
+That message means a **global** `tsc` was invoked, or dependencies were never
+installed. This package does **not** require a global TypeScript install.
+
+```bash
+# 1) Install workspace deps (creates packages/pi-wiki-agent/node_modules/typescript)
+pnpm install
+
+# 2) Build via package script only
+pnpm -C packages/pi-wiki-agent build
+```
+
+Do **not** run bare `tsc` in the shell. If `pnpm build` still fails, paste the
+full error after `pnpm install` (including the `> node ./scripts/run-tsc.mjs …`
+line).
+
+### Troubleshooting: `Cannot find module '@earendil-works/pi-ai/compat'`
+
+Pi host packages (`pi-ai`, `pi-coding-agent`, `pi-tui`, `typebox`) are
+**peerDependencies** (provided by Pi at runtime) and the same packages are
+listed again under **devDependencies** so local `pnpm test` can resolve them
+(same pattern as `pi-llm-wiki` / `pi-dynamic-workflows`).
+
+```bash
+# From monorepo root — installs peer packages via devDependencies
+pnpm install
+pnpm -C packages/pi-wiki-agent test
+```
+
+Do not move those packages into `dependencies` (would conflict with the Pi host).
+Do not rely on pnpm hoisting workarounds.
 
 Package layout:
 

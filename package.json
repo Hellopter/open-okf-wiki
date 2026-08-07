@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "build:pi-wiki-agent": "pnpm --filter @okf-wiki/pi-wiki-agent build",
     "test": "pnpm --filter @okf-wiki/wiki-agent-kit test && pnpm --filter @okf-wiki/pi-wiki-agent test",
     "typecheck": "pnpm --filter @okf-wiki/pi-wiki-agent typecheck"
   }
