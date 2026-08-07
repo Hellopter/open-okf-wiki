@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   agentStatusGlyph,
   applyInspectorKey,
   createInspectorState,
-  filteredAgents,
   formatAgentDetail,
   formatAgentLine,
   formatAgentsTable,
@@ -181,65 +181,138 @@ test("formatFleetWidget stays within ~8 lines and uses glyphs", () => {
   assert.ok(lines.some((l) => l.includes("focus:survey:1:2")));
 });
 
-test("inspector selection, keys, and render", () => {
+test("formatFleetWidget keeps the focused agent visible ahead of earlier rows", () => {
+  const snap = fixtureSnapshot({
+    focusedAgentId: "late",
+    agents: [
+      ...fixtureSnapshot().agents,
+      ...Array.from({ length: 5 }, (_, i) => ({
+        agentId: i === 4 ? "late" : `queued:${i}`,
+        label: i === 4 ? "Late focus" : `Queued ${i}`,
+        role: "survey",
+        phase: "Survey",
+        status: "queued",
+        elapsedMs: 0,
+        receiptsWritten: 0,
+      })),
+    ],
+  });
+  const lines = formatFleetWidget(snap, { now: NOW });
+  assert.ok(lines.some((line) => line.startsWith(">") && line.includes("late")));
+});
+
+test("inspector selection, effects, transcript navigation, and render", () => {
   const snap = fixtureSnapshot();
   let state = createInspectorState(snap);
   assert.equal(selectedId(state), "survey:1:2");
 
-  const down = applyInspectorKey(state, "j");
-  assert.ok(!("action" in down));
-  state = down;
+  const down = applyInspectorKey(state, "down");
+  assert.equal(down.action, undefined);
+  state = down.state;
   assert.equal(selectedId(state), "survey:1:3");
 
   const up = applyInspectorKey(state, "k");
-  assert.ok(!("action" in up));
-  state = up;
+  assert.equal(up.action, undefined);
+  state = up.state;
   assert.equal(selectedId(state), "survey:1:2");
 
-  let focused;
-  const enter = applyInspectorKey(state, "enter", {
-    onFocus: (id) => {
-      focused = id;
-    },
-  });
-  assert.ok(!("action" in enter));
-  assert.equal(focused, "survey:1:2");
-  assert.equal(enter.snapshot.focusedAgentId, "survey:1:2");
+  const enter = applyInspectorKey(state, "enter");
+  assert.equal(enter.action, "focus");
+  assert.equal(enter.agentId, "survey:1:2");
+  assert.equal(enter.state.snapshot.focusedAgentId, "survey:1:2");
 
-  assert.deepEqual(applyInspectorKey(state, "q"), { action: "close" });
-  assert.deepEqual(applyInspectorKey(state, "p"), { action: "pause" });
-  assert.deepEqual(applyInspectorKey(state, "P"), { action: "resume" });
-  assert.deepEqual(applyInspectorKey(state, "s"), { action: "stop", agentId: "survey:1:2" });
-  assert.deepEqual(applyInspectorKey(state, "r"), { action: "retry", agentId: "survey:1:2" });
+  assert.equal(applyInspectorKey(state, "q").action, "close");
+  assert.equal(applyInspectorKey(state, "p").action, "pause");
+  assert.equal(applyInspectorKey({ ...state, snapshot: { ...state.snapshot, overall: "paused" } }, "p").action, "resume");
 
-  // 1-9 jumps among running agents only (survey:1:2 then survey:1:3).
-  const jump = applyInspectorKey(createInspectorState(snap), "2");
-  assert.ok(!("action" in jump));
-  assert.equal(selectedId(jump), "survey:1:3");
+  const transcript = applyInspectorKey(state, "t");
+  assert.equal(transcript.action, "load-transcript");
+  state = {
+    ...transcript.state,
+    transcriptLoading: false,
+    transcriptLines: Array.from({ length: 16 }, (_, i) => `line-${i + 1}`),
+    transcriptOffset: 4,
+  };
+  assert.equal(state.panel, "transcript");
+  assert.equal(state.transcriptOffset, 4);
+  assert.equal(applyInspectorKey(state, "g").state.transcriptOffset, 0);
+  assert.equal(applyInspectorKey(state, "G").state.transcriptOffset, 4);
 
-  const transcript = applyInspectorKey(state, "t", {
-    getTranscript: () => ["line-a", "line-b", "line-c"],
-  });
-  assert.ok(!("action" in transcript));
-  assert.equal(transcript.panel, "transcript");
-  assert.deepEqual(transcript.transcriptLines, ["line-a", "line-b", "line-c"]);
-
-  const rendered = renderInspector(state, { now: NOW });
+  const rendered = renderInspector(createInspectorState(snap), { now: NOW, interactive: true, maxAgentRows: 2 });
   assert.ok(rendered.some((l) => l.includes("Wiki inspector")));
   assert.ok(rendered.some((l) => l.includes("survey:1:2")));
-  assert.ok(rendered.some((l) => /j\/k move/.test(l)));
+  assert.ok(rendered.some((l) => /↑\/↓ move/.test(l)));
+  assert.ok(rendered.some((l) => /more agents/.test(l)));
 
-  const filtered = filteredAgents({ ...state, filter: "plan" });
-  assert.equal(filtered.length, 1);
-  assert.equal(filtered[0].agentId, "plan:1");
+  const staticRendered = renderInspector(createInspectorState(snap), { now: NOW });
+  assert.ok(!staticRendered.some((l) => /pause\/resume/.test(l)));
+
 });
 
-test("openWikiInspector returns unsupported without custom UI", async () => {
+test("openWikiInspector uses a focused component for raw arrow keys and live updates", async () => {
+  let component;
+  let redraws = 0;
+  let focused;
+  let listener;
+  let unsubscribed = 0;
+  let transcriptCalls = 0;
+  const opened = openWikiInspector(
+    {
+      hasUI: true,
+      ui: {
+        notify: () => undefined,
+        custom: (factory) =>
+          new Promise((resolve) => {
+            component = factory(
+              { terminal: { rows: 30 }, requestRender: () => redraws++ },
+              {},
+              {},
+              resolve,
+            );
+          }),
+      },
+    },
+    {
+      getSnapshot: () => fixtureSnapshot(),
+      subscribe: (cb) => {
+        listener = cb;
+        return () => unsubscribed++;
+      },
+      getTranscript: async () => {
+        transcriptCalls++;
+        return ["first", "latest"];
+      },
+      onFocus: (agentId) => {
+        focused = agentId;
+      },
+    },
+  );
+
+  assert.ok(component);
+  assert.ok(component.render(24).every((line) => visibleWidth(line) <= 24));
+  component.handleInput("\u001b[B");
+  assert.ok(component.render(100).some((line) => line.startsWith("> ") && line.includes("survey:1:3")));
+  component.handleInput("\r");
+  assert.equal(focused, "survey:1:3");
+  component.handleInput("t");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(transcriptCalls, 1);
+  assert.ok(component.render(100).includes("latest"));
+
+  listener(fixtureSnapshot({ updatedAt: NOW + 1 }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(redraws > 0);
+  component.handleInput("q");
+  await opened;
+  assert.equal(unsubscribed, 1);
+});
+
+test("openWikiInspector returns static fallback without a TUI", async () => {
   const notes = [];
   const fallback = [];
   const result = await openWikiInspector(
     {
-      hasUI: true,
+      hasUI: false,
       ui: {
         notify: (msg) => notes.push(msg),
       },
@@ -252,9 +325,9 @@ test("openWikiInspector returns unsupported without custom UI", async () => {
   assert.equal(result, "unsupported");
   assert.ok(notes.length > 0);
   assert.ok(fallback.some((l) => /Wiki inspector/.test(l)));
+  assert.ok(!fallback.some((l) => /pause\/resume/.test(l)));
 });
 
 function selectedId(state) {
-  const agents = filteredAgents(state);
-  return agents[state.selectedIndex]?.agentId;
+  return state.snapshot.agents[state.selectedIndex]?.agentId;
 }

@@ -1,3 +1,10 @@
+import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import {
+	parseKey,
+	truncateToWidth,
+	type Component,
+	type TUI,
+} from "@earendil-works/pi-tui";
 import type { WikiAgentView, WikiProgressSnapshot } from "../orch/types.js";
 import {
   agentStatusGlyph,
@@ -13,38 +20,28 @@ export type InspectorPanel = "agents" | "transcript";
 export interface InspectorState {
   snapshot: WikiProgressSnapshot;
   selectedIndex: number;
-  filter?: string;
   panel: InspectorPanel;
   transcriptLines: string[];
   transcriptOffset: number;
+  transcriptLoading: boolean;
 }
 
-export type InspectorKeyResult =
-  | InspectorState
-  | { action: "close" }
-  | { action: "stop"; agentId: string }
-  | { action: "retry"; agentId: string }
-  | { action: "pause" }
-  | { action: "resume" };
+type InspectorAction = "close" | "focus" | "load-transcript" | "pause" | "resume";
 
-export interface InspectorKeyContext {
-  staleWarnMs?: number;
-  onFocus?: (agentId: string) => void;
-  onStop?: (agentId: string) => void;
-  getTranscript?: (agentId: string) => string[];
+export interface InspectorKeyResult {
+  state: InspectorState;
+  action?: InspectorAction;
+  agentId?: string;
+}
+
+export interface InspectorRenderOptions extends FormatTimeOpts {
+  interactive?: boolean;
+  maxAgentRows?: number;
+  transcriptRows?: number;
 }
 
 const LIVE: ReadonlySet<string> = new Set(["starting", "running", "waiting_tool"]);
-
-/** Agents matching optional substring filter (id/label/role/phase). */
-export function filteredAgents(state: InspectorState): WikiAgentView[] {
-  const filter = state.filter?.trim().toLowerCase();
-  if (!filter) return state.snapshot.agents;
-  return state.snapshot.agents.filter((agent) => {
-    const hay = `${agent.agentId} ${agent.label} ${agent.role} ${agent.phase} ${agent.status}`.toLowerCase();
-    return hay.includes(filter);
-  });
-}
+const TRANSCRIPT_PAGE_ROWS = 12;
 
 function clampIndex(index: number, length: number): number {
   if (length <= 0) return 0;
@@ -53,213 +50,211 @@ function clampIndex(index: number, length: number): number {
   return index;
 }
 
-function selectedAgent(state: InspectorState): WikiAgentView | undefined {
-  const agents = filteredAgents(state);
-  if (agents.length === 0) return undefined;
-  return agents[clampIndex(state.selectedIndex, agents.length)];
-}
-
-function withSelection(state: InspectorState, selectedIndex: number): InspectorState {
-  const agents = filteredAgents(state);
-  return { ...state, selectedIndex: clampIndex(selectedIndex, agents.length) };
-}
-
-function loadTranscript(state: InspectorState, ctx: InspectorKeyContext): InspectorState {
-  const agent = selectedAgent(state);
-  if (!agent || !ctx.getTranscript) {
-    return { ...state, transcriptLines: [], transcriptOffset: 0 };
+function defaultSelection(snapshot: WikiProgressSnapshot): number {
+  if (snapshot.focusedAgentId) {
+    const focused = snapshot.agents.findIndex((agent) => agent.agentId === snapshot.focusedAgentId);
+    if (focused >= 0) return focused;
   }
-  const lines = ctx.getTranscript(agent.agentId) ?? [];
-  return { ...state, transcriptLines: lines, transcriptOffset: 0 };
+  const live = snapshot.agents.findIndex((agent) => LIVE.has(agent.status));
+  return live >= 0 ? live : 0;
+}
+
+function selectedInspectorAgent(state: InspectorState): WikiAgentView | undefined {
+  return state.snapshot.agents[clampIndex(state.selectedIndex, state.snapshot.agents.length)];
 }
 
 export function createInspectorState(snapshot: WikiProgressSnapshot): InspectorState {
-  let selectedIndex = 0;
-  if (snapshot.focusedAgentId) {
-    const idx = snapshot.agents.findIndex((a) => a.agentId === snapshot.focusedAgentId);
-    if (idx >= 0) selectedIndex = idx;
-  } else {
-    const live = snapshot.agents.findIndex((a) => LIVE.has(a.status));
-    if (live >= 0) selectedIndex = live;
-  }
   return {
     snapshot,
-    selectedIndex,
-    filter: undefined,
+    selectedIndex: defaultSelection(snapshot),
     panel: "agents",
     transcriptLines: [],
     transcriptOffset: 0,
+    transcriptLoading: false,
   };
 }
 
-/**
- * Apply a single key to inspector state.
- * Keys: j/k/up/down, enter (focus), t transcript, q close, s stop, r retry,
- * p pause, P resume, / filter (clears when empty), 1-9 jump running, g/G scroll.
- */
-export function applyInspectorKey(
-  state: InspectorState,
-  key: string,
-  ctx: InspectorKeyContext = {},
-): InspectorKeyResult {
-  const agents = filteredAgents(state);
-  const current = selectedAgent(state);
+/** Replace a live snapshot while retaining selection whenever that agent still exists. */
+function updateInspectorSnapshot(state: InspectorState, snapshot: WikiProgressSnapshot): InspectorState {
+  const selectedId = selectedInspectorAgent(state)?.agentId;
+  const selectedIndex = selectedId
+    ? snapshot.agents.findIndex((agent) => agent.agentId === selectedId)
+    : -1;
+  const nextIndex = selectedIndex >= 0 ? selectedIndex : defaultSelection(snapshot);
+  const changedAgent = selectedId !== snapshot.agents[nextIndex]?.agentId;
+  return {
+    ...state,
+    snapshot,
+    selectedIndex: nextIndex,
+    panel: changedAgent && state.panel === "transcript" ? "agents" : state.panel,
+    transcriptLines: changedAgent ? [] : state.transcriptLines,
+    transcriptOffset: changedAgent ? 0 : state.transcriptOffset,
+    transcriptLoading: changedAgent ? false : state.transcriptLoading,
+  };
+}
 
-  // Normalize common key names.
+function setInspectorTranscript(state: InspectorState, lines: string[]): InspectorState {
+  return {
+    ...state,
+    transcriptLines: lines,
+    transcriptOffset: Math.max(0, lines.length - TRANSCRIPT_PAGE_ROWS),
+    transcriptLoading: false,
+  };
+}
+
+function withSelection(state: InspectorState, selectedIndex: number): InspectorState {
+  return {
+    ...state,
+    selectedIndex: clampIndex(selectedIndex, state.snapshot.agents.length),
+  };
+}
+
+function result(state: InspectorState, action?: InspectorAction, agentId?: string): InspectorKeyResult {
+  return action ? { state, action, agentId } : { state };
+}
+
+/** Apply a parsed key to inspector state; effects are performed by the TUI component. */
+export function applyInspectorKey(state: InspectorState, key: string): InspectorKeyResult {
   const k = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "Enter" ? "enter" : key;
+  const current = selectedInspectorAgent(state);
 
-  if (k === "q" || k === "Escape" || k === "esc") {
-    return { action: "close" };
-  }
+  if (k === "q" || k === "escape" || k === "Escape" || k === "esc") return result(state, "close");
 
-  if (k === "p") return { action: "pause" };
-  if (k === "P") return { action: "resume" };
-
-  if (k === "j" || k === "down") {
-    return withSelection(state, state.selectedIndex + 1);
-  }
-  if (k === "k" || k === "up") {
-    return withSelection(state, state.selectedIndex - 1);
-  }
-
-  if (k === "enter") {
-    if (!current) return state;
-    ctx.onFocus?.(current.agentId);
-    return {
-      ...state,
-      snapshot: {
-        ...state.snapshot,
-        focusedAgentId: current.agentId,
-        updatedAt: Date.now(),
-      },
-    };
-  }
+  if (k === "p") return result(state, state.snapshot.overall === "paused" ? "resume" : "pause");
 
   if (k === "t") {
     if (state.panel === "transcript") {
-      return { ...state, panel: "agents", transcriptOffset: 0 };
+      return result({ ...state, panel: "agents", transcriptLoading: false });
     }
-    const next: InspectorState = { ...state, panel: "transcript" };
-    return loadTranscript(next, ctx);
+    if (!current) return result(state);
+    return result(
+      { ...state, panel: "transcript", transcriptLines: [], transcriptOffset: 0, transcriptLoading: true },
+      "load-transcript",
+      current.agentId,
+    );
   }
 
-  if (k === "s") {
-    if (!current) return state;
-    ctx.onStop?.(current.agentId);
-    return { action: "stop", agentId: current.agentId };
-  }
-
-  if (k === "r") {
-    if (!current) return state;
-    return { action: "retry", agentId: current.agentId };
-  }
-
-  if (k === "/") {
-    // Filter mode is not fully interactive in v1; clear any active filter.
-    return { ...state, filter: undefined, selectedIndex: 0 };
-  }
-
-  if (/^[1-9]$/.test(k)) {
-    const n = Number(k);
-    const running = agents.filter((a) => LIVE.has(a.status));
-    const target = running[n - 1];
-    if (!target) return state;
-    const idx = agents.findIndex((a) => a.agentId === target.agentId);
-    return withSelection(state, idx >= 0 ? idx : state.selectedIndex);
-  }
-
-  if (k === "g" || k === "G") {
-    if (state.panel !== "transcript") return state;
-    const page = 8;
-    if (k === "g") {
-      return {
+  if (state.panel === "transcript") {
+    if (k === "g") return result({ ...state, transcriptOffset: 0 });
+    if (k === "G" || k === "shift+g") {
+      return result({
         ...state,
-        transcriptOffset: Math.min(
-          Math.max(0, state.transcriptLines.length - 1),
-          state.transcriptOffset + page,
-        ),
-      };
+        transcriptOffset: Math.max(0, state.transcriptLines.length - TRANSCRIPT_PAGE_ROWS),
+      });
     }
-    return { ...state, transcriptOffset: Math.max(0, state.transcriptOffset - page) };
+    return result(state);
   }
 
-  return state;
+  if (k === "j" || k === "down") return result(withSelection(state, state.selectedIndex + 1));
+  if (k === "k" || k === "up") return result(withSelection(state, state.selectedIndex - 1));
+
+  if (k === "enter" && current) {
+    return result(
+      {
+        ...state,
+        snapshot: { ...state.snapshot, focusedAgentId: current.agentId, updatedAt: Date.now() },
+      },
+      "focus",
+      current.agentId,
+    );
+  }
+
+  return result(state);
 }
 
-/** Render the inspector as plain text lines (widget / message fallback). */
-export function renderInspector(state: InspectorState, opts: FormatTimeOpts = {}): string[] {
-  const agents = filteredAgents(state);
-  const selected = selectedAgent(state);
-  const lines: string[] = [];
-  const snap = state.snapshot;
+function visibleAgents(state: InspectorState, maxRows: number): { agents: WikiAgentView[]; start: number } {
+  const agents = state.snapshot.agents;
+  if (agents.length <= maxRows) return { agents, start: 0 };
+  const selected = clampIndex(state.selectedIndex, agents.length);
+  const start = Math.min(Math.max(0, selected - Math.floor(maxRows / 2)), agents.length - maxRows);
+  return { agents: agents.slice(start, start + maxRows), start };
+}
 
-  lines.push(`Wiki inspector · ${snap.overall} · ${snap.currentPhase ?? "—"}`);
-  if (snap.phases.length) lines.push(formatPhasesLine(snap.phases));
-  if (snap.coverage) lines.push(formatCoverageLine(snap.coverage));
-  if (state.filter) lines.push(`filter: ${state.filter}`);
+/** Render text for either the interactive overlay or the non-interactive fallback. */
+export function renderInspector(state: InspectorState, opts: InspectorRenderOptions = {}): string[] {
+  const lines: string[] = [];
+  const snapshot = state.snapshot;
+  const selected = selectedInspectorAgent(state);
+  const maxAgentRows = Math.max(1, opts.maxAgentRows ?? snapshot.agents.length);
+  const transcriptRows = Math.max(1, opts.transcriptRows ?? TRANSCRIPT_PAGE_ROWS);
+
+  lines.push(`Wiki inspector · ${snapshot.overall} · ${snapshot.currentPhase ?? "—"}`);
+  if (snapshot.phases.length) lines.push(formatPhasesLine(snapshot.phases));
+  if (snapshot.coverage) lines.push(formatCoverageLine(snapshot.coverage));
   lines.push("─".repeat(40));
 
   if (state.panel === "agents") {
-    if (agents.length === 0) {
+    if (snapshot.agents.length === 0) {
       lines.push("(no agents)");
     } else {
-      agents.forEach((agent, index) => {
-        const cursor = index === clampIndex(state.selectedIndex, agents.length) ? ">" : " ";
-        const focus = agent.agentId === snap.focusedAgentId ? "*" : " ";
+      const visible = visibleAgents(state, maxAgentRows);
+      if (visible.start > 0) lines.push(`… ${visible.start} earlier agent${visible.start === 1 ? "" : "s"}`);
+      for (let index = 0; index < visible.agents.length; index++) {
+        const agent = visible.agents[index]!;
+        const sourceIndex = visible.start + index;
+        const cursor = sourceIndex === clampIndex(state.selectedIndex, snapshot.agents.length) ? ">" : " ";
+        const focus = agent.agentId === snapshot.focusedAgentId ? "*" : " ";
         lines.push(`${cursor}${focus}${formatAgentLine(agent, opts)}`);
-      });
+      }
+      const remaining = snapshot.agents.length - visible.start - visible.agents.length;
+      if (remaining > 0) lines.push(`… ${remaining} more agent${remaining === 1 ? "" : "s"}`);
     }
     lines.push("─".repeat(40));
-    if (selected) {
-      lines.push(...formatAgentDetail(selected, snap, opts).split("\n"));
-    }
+    if (selected) lines.push(...formatAgentDetail(selected, snapshot, opts).split("\n"));
   } else {
     const id = selected?.agentId ?? "(none)";
     lines.push(`Transcript: ${id}  [${agentStatusGlyph(selected?.status ?? "queued")}]`);
     lines.push("─".repeat(40));
-    const start = state.transcriptOffset;
-    const window = state.transcriptLines.slice(start, start + 12);
-    if (window.length === 0) {
+    if (state.transcriptLoading) {
+      lines.push("(loading transcript)");
+    } else if (state.transcriptLines.length === 0) {
       lines.push("(empty transcript)");
     } else {
-      for (const line of window) lines.push(line);
-      if (start + window.length < state.transcriptLines.length) {
-        lines.push(`… ${state.transcriptLines.length - start - window.length} more (g/G scroll)`);
-      }
+      const start = Math.min(state.transcriptOffset, Math.max(0, state.transcriptLines.length - 1));
+      const window = state.transcriptLines.slice(start, start + transcriptRows);
+      if (start > 0) lines.push(`… ${start} earlier line${start === 1 ? "" : "s"}`);
+      lines.push(...window);
+      const remaining = state.transcriptLines.length - start - window.length;
+      if (remaining > 0) lines.push(`… ${remaining} newer line${remaining === 1 ? "" : "s"}`);
     }
   }
 
-  lines.push("─".repeat(40));
-  lines.push("j/k move · enter focus · t transcript · s stop · r retry · p/P pause/resume · q close");
+  if (opts.interactive) {
+    lines.push("─".repeat(40));
+    lines.push(
+      state.panel === "agents"
+        ? "↑/↓ move · enter focus · t transcript · p pause/resume · q close"
+        : "t agents · g/G top/bottom · p pause/resume · q close",
+    );
+  }
   return lines;
 }
 
 export interface OpenWikiInspectorContext {
   hasUI: boolean;
-  ui: {
-    custom?: (...args: unknown[]) => unknown;
-    notify: (message: string, level?: string) => void;
-  };
+  ui: ExtensionUIContext;
 }
 
 export interface OpenWikiInspectorOptions {
   getSnapshot: () => WikiProgressSnapshot | undefined;
-  subscribe?: (cb: (s: WikiProgressSnapshot) => void) => () => void;
+  subscribe?: (cb: (snapshot: WikiProgressSnapshot) => void) => () => void;
   getTranscript?: (agentId: string) => Promise<string[]> | string[];
-  onFocus?: (agentId: string | undefined) => void;
-  onStopAgent?: (agentId: string) => void;
-  /** Optional: receive rendered text when custom TUI is unavailable. */
+  onFocus?: (agentId: string) => void;
+  onPause?: () => Promise<boolean> | boolean;
+  onResume?: () => Promise<boolean> | boolean;
   onFallbackText?: (lines: string[]) => void;
-  /** Format options (stale threshold, clock) applied to rendered text. */
   formatOpts?: FormatTimeOpts;
 }
 
-/**
- * Open a multi-agent inspector overlay when `ui.custom` is available.
- * Sprint 1: without custom TUI, deliver text via {@link onFallbackText} (when
- * provided) and return `"unsupported"`. Callers should not re-render on that
- * return value if they already supplied `onFallbackText`.
- */
+function inspectorLayout(tui: TUI, state: InspectorState): Pick<InspectorRenderOptions, "maxAgentRows" | "transcriptRows"> {
+  const terminalRows = tui.terminal?.rows ?? 24;
+  if (state.panel === "transcript") {
+    return { transcriptRows: Math.max(4, terminalRows - 8), maxAgentRows: 6 };
+  }
+  return { maxAgentRows: Math.max(3, Math.min(8, terminalRows - 16)), transcriptRows: TRANSCRIPT_PAGE_ROWS };
+}
+
+/** Open a focused, live-updating inspector in Pi TUI, with static fallback elsewhere. */
 export async function openWikiInspector(
   ctx: OpenWikiInspectorContext,
   options: OpenWikiInspectorOptions,
@@ -270,32 +265,96 @@ export async function openWikiInspector(
     return "unsupported";
   }
 
-  const formatOpts = options.formatOpts ?? {};
+  const fallback = () => {
+    options.onFallbackText?.(renderInspector(createInspectorState(snapshot), { ...options.formatOpts, interactive: false }));
+  };
 
-  if (!ctx.hasUI || typeof ctx.ui.custom !== "function") {
-    const state = createInspectorState(snapshot);
-    const lines = renderInspector(state, formatOpts);
-    options.onFallbackText?.(lines);
+  if (!ctx.hasUI) {
+    fallback();
     ctx.ui.notify("Inspector overlay unavailable; showing text fallback.", "info");
     return "unsupported";
   }
 
-  // Minimal custom-handler path: render once and close. Full interactive TUI
-  // is deferred; integrators can replace this when pi-tui wiring is ready.
   try {
-    const state = createInspectorState(snapshot);
-    const lines = renderInspector(state, formatOpts);
-    await Promise.resolve(
-      ctx.ui.custom({
-        type: "okf-wiki-inspector",
-        lines,
-        snapshot,
-      }),
+    await ctx.ui.custom<void>(
+      (tui: TUI, _theme: Theme, _keybindings, done) => {
+        let state = createInspectorState(snapshot);
+        let closed = false;
+        let transcriptRequest = 0;
+        let unsubscribe: (() => void) | undefined;
+
+        const redraw = () => tui.requestRender();
+        const cleanup = () => {
+          if (closed) return;
+          closed = true;
+          unsubscribe?.();
+          unsubscribe = undefined;
+        };
+        const close = () => {
+          cleanup();
+          done(undefined);
+        };
+        const loadTranscript = async (agentId: string) => {
+          if (!options.getTranscript) {
+            state = setInspectorTranscript(state, []);
+            redraw();
+            return;
+          }
+          const request = ++transcriptRequest;
+          try {
+            const lines = await options.getTranscript(agentId);
+            if (closed || request !== transcriptRequest || selectedInspectorAgent(state)?.agentId !== agentId) return;
+            state = setInspectorTranscript(state, lines);
+          } catch {
+            if (closed || request !== transcriptRequest) return;
+            state = setInspectorTranscript(state, ["(transcript unavailable)"]);
+          }
+          redraw();
+        };
+        const runControl = async (action: "pause" | "resume") => {
+          const callback = action === "pause" ? options.onPause : options.onResume;
+          if (!callback) return;
+          const ok = await callback();
+          if (!ok) ctx.ui.notify(`Unable to ${action} Wiki orchestration.`, "warning");
+        };
+
+        unsubscribe = options.subscribe?.((nextSnapshot) => {
+          state = updateInspectorSnapshot(state, nextSnapshot);
+          if (state.panel === "transcript") {
+            const agentId = selectedInspectorAgent(state)?.agentId;
+            if (agentId) void loadTranscript(agentId);
+          }
+          redraw();
+        });
+
+        const component: Component & { dispose?: () => void } = {
+          render: (width: number) =>
+            renderInspector(state, { ...options.formatOpts, ...inspectorLayout(tui, state), interactive: true }).map((line) =>
+              truncateToWidth(line, Math.max(1, width)),
+            ),
+          handleInput: (data: string) => {
+            const key = parseKey(data) ?? data;
+            const next = applyInspectorKey(state, key);
+            state = next.state;
+            if (next.action === "close") {
+              close();
+              return;
+            }
+            if (next.action === "focus" && next.agentId) options.onFocus?.(next.agentId);
+            if (next.action === "load-transcript" && next.agentId) void loadTranscript(next.agentId);
+            if (next.action === "pause" || next.action === "resume") void runControl(next.action);
+            redraw();
+          },
+          invalidate: () => {},
+          dispose: cleanup,
+        };
+        return component;
+      },
+      { overlay: true, overlayOptions: { width: "92%", maxHeight: "92%" } },
     );
     return "closed";
   } catch {
-    const state = createInspectorState(snapshot);
-    options.onFallbackText?.(renderInspector(state, formatOpts));
+    fallback();
     ctx.ui.notify("Inspector custom UI failed; text fallback used.", "warning");
     return "unsupported";
   }

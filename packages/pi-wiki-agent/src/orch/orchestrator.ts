@@ -25,7 +25,6 @@ export interface WikiOrchestrator {
   pause(id?: string): Promise<boolean>;
   resume(id?: string): Promise<boolean>;
   stop(id?: string): Promise<boolean>;
-  retryAgent?(id: string, agentId: string): Promise<boolean>;
 
   list(): OrchRunSummary[];
   getSnapshot(id?: string): WikiProgressSnapshot | undefined;

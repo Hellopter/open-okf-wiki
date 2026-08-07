@@ -46,7 +46,6 @@ export interface WikiExtensionOptions {
   }) => DisposableOrchestrator;
 }
 
-const TOOLSET_NAME = "okf-wiki";
 const STATUS_KEY = "okf-wiki";
 const WIDGET_KEY = "okf-wiki-fleet";
 const CONTROL_TOOL_NAME = "okf_wiki";
@@ -146,6 +145,8 @@ function formatWorkspaceStatus(status: WikiWorkspaceStatus, snap?: WikiProgressS
     lines.push("");
     lines.push("Orchestration:");
     lines.push(formatSnapshotText(snap, OBSERVE_OPTS));
+    lines.push("");
+    lines.push("Use /wiki inspect in interactive Pi to browse live agent details and transcripts.");
   } else {
     lines.push("");
     lines.push("Orchestration: no active run (start with /wiki run)");
@@ -347,10 +348,7 @@ async function executeCommand(
     await openWikiInspector(
       {
         hasUI: ctx.hasUI,
-        ui: ctx.ui as {
-          custom?: (...args: unknown[]) => unknown;
-          notify: (message: string, level?: string) => void;
-        },
+        ui: ctx.ui,
       },
       {
         getSnapshot: () => {
@@ -360,10 +358,10 @@ async function executeCommand(
         subscribe: (cb) => orch.subscribe((s) => cb(s)),
         getTranscript: async (agentId) => transcriptToLines(await orch.getTranscript(agentId, { tail: 80 })),
         onFocus: (agentId) => orch.focusAgent(agentId),
-        onStopAgent: () => {
-          void orch.stop();
-        },
+        onPause: () => orch.pause(),
+        onResume: () => orch.resume(),
         onFallbackText: (lines) => output(pi, lines.join("\n")),
+        formatOpts: OBSERVE_OPTS,
       },
     );
     await refreshObservation(core, orch, root, ctx.ui);

@@ -19,12 +19,11 @@ export { formatFleetWidget } from "./widget.js";
 export {
   applyInspectorKey,
   createInspectorState,
-  filteredAgents,
   openWikiInspector,
   renderInspector,
-  type InspectorKeyContext,
   type InspectorKeyResult,
   type InspectorPanel,
+  type InspectorRenderOptions,
   type InspectorState,
   type OpenWikiInspectorContext,
   type OpenWikiInspectorOptions,

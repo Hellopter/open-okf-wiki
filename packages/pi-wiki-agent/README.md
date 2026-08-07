@@ -187,7 +187,7 @@ Registered names: `/wiki`, `/wiki-help`, `/wiki-status`, `/wiki-init`,
 /wiki help | -h | --help
 /wiki status [--json]
 /wiki agents [agentId]
-/wiki inspect | fleet         # multi-agent inspector (text fallback in RPC)
+/wiki inspect | fleet         # live multi-agent inspector (static fallback in RPC)
 /wiki focus <agentId>
 /wiki logs [agentId] [--tail N]
 /wiki init [--name name] [--lang en|zh] [--force]
@@ -218,7 +218,7 @@ Orchestration state is tracked via `SessionWikiOrchestrator`. Live progress:
 | --- | --- |
 | `/wiki agents` | Table of lanes/agents (status, last tool, elapsed) |
 | `/wiki agents <id>` | Detail for one agent |
-| `/wiki inspect` | Switchable multi-agent inspector (text fallback in RPC) |
+| `/wiki inspect` | Interactive Pi TUI inspector: select agents and follow live transcripts; static fallback outside the TUI |
 | `/wiki focus <id>` | Pin status-bar focus to an agent |
 | `/wiki logs [id]` | Transcript tail for an agent |
 
@@ -249,6 +249,12 @@ Bootstrap → Survey (adaptive lanes, grep/find) → Plan → Gate
 
 Control: `/wiki pause` aborts in-flight agents; `/wiki resume` restarts from domain
 `prepareRun` startAt. `/wiki stop` cancels the orch run.
+
+In interactive Pi, `/wiki inspect` accepts `↑/↓` or `j/k` to select an agent,
+`Enter` to pin it to the status display, `t` to view its live transcript, `g/G`
+to jump to the transcript start/end, `p` to pause/resume the orchestration, and
+`q` or `Esc` to close. RPC and print modes use the static `/wiki agents <id>`
+and `/wiki logs <id>` views instead.
 
 Subagents use Pi `createAgentSession` with a sandboxed toolset (read/ls/write/edit/grep/find + host tools). **No bash. No pi-dynamic-workflows.**
 

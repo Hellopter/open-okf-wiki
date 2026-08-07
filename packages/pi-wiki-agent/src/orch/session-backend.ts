@@ -428,31 +428,6 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     return true;
   }
 
-  /**
-   * Best-effort agent retry: restarts a full wiki path from prepare (domain startAt).
-   * Does not re-run a single lane in isolation (no per-agent journal yet).
-   */
-  async retryAgent(_id: string, agentId: string): Promise<boolean> {
-    if (this.disposed) return false;
-    const snap = this.getActiveSnapshot();
-    const mode =
-      snap?.currentPhase && /write|verify|repair|validate/i.test(snap.currentPhase)
-        ? "retry-write"
-        : snap?.currentPhase && /plan|survey|gate/i.test(snap.currentPhase)
-          ? "retry-plan"
-          : "auto";
-    this.log?.(`retryAgent ${agentId}: restarting wiki path with mode=${mode}`);
-    if (snap && !isTerminalOverall(snap.overall)) {
-      await this.stop(snap.orchRunId);
-    }
-    const started = await this.start({
-      workspaceRoot: snap?.workspaceRoot ?? this.defaultWorkspaceRoot,
-      mode,
-      focus: snap?.focus,
-    });
-    return Boolean(started.orchRunId);
-  }
-
   list(): OrchRunSummary[] {
     return [...this.runs.values()]
       .map((t) => summaryFromSnapshot(t.store.getSnapshot()))

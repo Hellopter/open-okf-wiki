@@ -41,7 +41,16 @@ export function formatFleetWidget(
     lines.push(formatCoverageLine(snapshot.coverage));
   }
 
-  const agents = snapshot.agents;
+  const focused = snapshot.focusedAgentId
+    ? snapshot.agents.find((agent) => agent.agentId === snapshot.focusedAgentId)
+    : undefined;
+  const live = snapshot.agents.filter(
+    (agent) => agent.status === "running" || agent.status === "waiting_tool" || agent.status === "starting",
+  );
+  const agents = [focused, ...live, ...snapshot.agents].filter(
+    (agent, index, all): agent is NonNullable<typeof agent> =>
+      Boolean(agent) && all.findIndex((candidate) => candidate?.agentId === agent?.agentId) === index,
+  );
   const visible = agents.slice(0, MAX_AGENT_ROWS);
   for (const agent of visible) {
     const marker = agent.agentId === snapshot.focusedAgentId ? ">" : " ";
