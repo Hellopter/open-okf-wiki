@@ -11,16 +11,47 @@ selected workspace.
 | `packages/pi-wiki-agent/` | Pi extension, commands, constrained workflow tools, and workflow integration |
 | `docs/research/` | Reference-project analysis and design notes |
 
-## Local development install
+## Install (no npm publish)
 
-Pi can install an extension directly from this repository. The project-local
-installation is the recommended development path:
+This extension is **not on npm** yet. Install from a local checkout.
+
+### 1. Pi CLI on PATH (required on every machine)
+
+`pi install` only registers the extension. Install the host CLI globally so
+`pi` works in any directory:
+
+```bash
+npm install -g @mariozechner/pi-coding-agent
+# or: npm install -g @earendil-works/pi-coding-agent
+cd /tmp && which pi && pi --help
+```
+
+### 2a. Project-local (this monorepo only)
+
+Recommended for day-to-day development:
 
 ```bash
 pnpm install
+pnpm -C packages/pi-wiki-agent build
 pi install ./packages/pi-wiki-agent --local --approve
 pi list --approve
 ```
+
+### 2b. User-level “local global” (any project)
+
+On another machine, or when you want `/wiki` everywhere without publishing:
+
+```bash
+git clone <remote> ~/src/open-okf-wiki
+cd ~/src/open-okf-wiki
+pnpm install
+pnpm -C packages/pi-wiki-agent build
+pi install "$(pwd)/packages/pi-wiki-agent"   # no --local → ~/.pi/
+pi list
+```
+
+The path is referenced in place (not copied); keep the clone and rebuild after
+updates. Full detail: [`packages/pi-wiki-agent/README.md`](packages/pi-wiki-agent/README.md#install).
 
 Start Pi in the repository to document, then run `/wiki`. The first user
 invocation initializes the current directory as a Wiki workspace when needed.

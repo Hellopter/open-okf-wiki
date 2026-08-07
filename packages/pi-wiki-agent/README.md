@@ -39,9 +39,36 @@ Empty `/wiki` shows help; it does **not** start a workflow.
 
 ## Install
 
-### A — Project-local (development)
+This package is **not published to npm** yet. Install from a local monorepo
+checkout (or Git path). You need two things:
+
+1. The **`pi` CLI** on your `PATH` (global install of the host)
+2. This **extension** registered with `pi install` (path or Git — no `npm:` needed)
+
+### Prerequisites — install the Pi CLI globally
+
+`pi install …` only registers extensions. It does **not** put the `pi` command
+on your `PATH`. Without a global CLI, `pi` works only inside a project’s
+`node_modules/.bin` and fails in other directories.
 
 ```bash
+# Official host (or the earendil-works fork used by this monorepo)
+npm install -g @mariozechner/pi-coding-agent
+# npm install -g @earendil-works/pi-coding-agent
+
+# Confirm it works outside any project
+cd /tmp && which pi && pi --help
+```
+
+If `which pi` is empty after install, add npm’s global bin to `PATH`
+(`npm bin -g`, often `~/.npm-global/bin` or similar).
+
+### A — Project-local (development)
+
+Use this when you only need the extension inside this monorepo:
+
+```bash
+# From monorepo root (after pnpm install)
 pnpm -C packages/pi-wiki-agent build
 pi install ./packages/pi-wiki-agent --local --approve
 ```
@@ -57,26 +84,66 @@ pnpm -C packages/pi-wiki-agent build
 # in Pi: /reload
 ```
 
-### B — User / absolute path
+### B — User-level / “local global” (any directory, no npm publish)
+
+Use this on another machine or when you want `/wiki` available in **any**
+project without publishing to npm. Omit `--local` so Pi writes user settings
+under `~/.pi/` and references the absolute path on disk (no copy).
 
 ```bash
+# 1) Clone (or copy) this monorepo and install workspace deps
+git clone <your-fork-or-remote> ~/src/open-okf-wiki
+cd ~/src/open-okf-wiki
+pnpm install
+
+# 2) Build dist/ (required — entry is extensions/wiki.ts → ../dist/)
 pnpm -C packages/pi-wiki-agent build
-pi install /absolute/path/to/open-okf-wiki/packages/pi-wiki-agent
+
+# 3) User-level install: absolute path, no -l
+pi install "$(pwd)/packages/pi-wiki-agent"
+
+# 4) Confirm
+pi list
 ```
 
-User-level installs are not gated by project trust, but `dist/` must still be
-built: the entry is `extensions/wiki.ts` → `../dist/extension.js`.
+Equivalent forms Pi accepts (still no npm package required):
+
+```bash
+pi install /absolute/path/to/open-okf-wiki/packages/pi-wiki-agent
+pi install ./packages/pi-wiki-agent          # relative; resolves against cwd / settings
+# Git sources also work if the package lives at repo root of that clone:
+# pi install git:github.com/org/open-okf-wiki
+# pi install https://github.com/org/open-okf-wiki
+```
+
+Notes:
+
+- User-level installs are **not** gated by project trust.
+- The checkout path must stay on disk; Pi points at it rather than copying.
+- Keep `dist/` up to date after pulls: rebuild, then `/reload` or restart Pi.
+- Monorepo `workspace:*` deps need a full `pnpm install` at the repo root
+  before install; do not install only the package folder in isolation.
+
+| Scope | Command | Settings | Where `/wiki` loads |
+| --- | --- | --- | --- |
+| Project-local | `pi install ./packages/pi-wiki-agent --local --approve` | `.pi/settings.json` | This project only (when trusted) |
+| User-level | `pi install /abs/path/…/pi-wiki-agent` | `~/.pi/` | Any directory |
 
 ### If commands are missing
 
 1. Rebuild: `pnpm -C packages/pi-wiki-agent build`
 2. Reinstall the package path
-3. Trust the project (`--approve` or TUI trust)
-4. `pi list --approve` — package should appear
-5. Re-run the verify script below
+3. Trust the project if you used `--local` (`--approve` or TUI trust)
+4. `pi list` (add `--approve` when checking project-local installs)
+5. Confirm `which pi` points at a global CLI, not only a project `node_modules`
+6. Re-run the verify script below
 
 Untrusted projects intentionally **do not** load project-local extensions; that
 is expected Pi security behavior, not a broken install.
+
+**`pi: command not found` in other directories** means the CLI was never
+installed globally (section Prerequisites), or npm’s global bin is not on
+`PATH` — not a failure of `pi install`.
 
 ## Verify
 
