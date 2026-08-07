@@ -52,12 +52,9 @@ test("production extension registers commands and survives session_start with re
     for (const name of [
       "wiki",
       "wiki-help",
-      "wiki-status",
       "wiki-init",
       "wiki-run",
       "wiki-source",
-      "wiki-agents",
-      "wiki-inspect",
     ]) {
       assert.ok(pi.commands.has(name), `missing command ${name}`);
     }

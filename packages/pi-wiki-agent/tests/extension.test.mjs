@@ -99,12 +99,9 @@ function commandContext(root, overrides = {}) {
 const EXPECTED_COMMANDS = [
   "wiki",
   "wiki-help",
-  "wiki-status",
   "wiki-init",
   "wiki-run",
   "wiki-source",
-  "wiki-agents",
-  "wiki-inspect",
 ];
 
 async function withRoot(fn) {
@@ -157,16 +154,18 @@ test("extension registers commands and tool; session start works", async () => {
   });
 });
 
-test("empty /wiki shows help and does not start a run", async () => {
+test("empty /wiki opens the Navigator and does not start a run", async () => {
   await withRoot(async (root) => {
     const pi = fakePi();
     install(pi, root);
-    await pi.commands.get("wiki").handler("", commandContext(root));
-    assert.match(pi.sent.at(-1).message.content, /OKF Wiki/);
+    const ctx = commandContext(root);
+    await pi.commands.get("wiki").handler("", ctx);
+    assert.equal(pi.sent.length, 0);
+    assert.match(ctx.notifications.at(-1).message, /Navigator requires interactive Pi/);
   });
 });
 
-test("status inspect and stop after a run", async () => {
+test("JSON status and stop work after a run", async () => {
   await withRoot(async (root) => {
     const pi = fakePi();
     let orch;
@@ -184,11 +183,10 @@ test("status inspect and stop after a run", async () => {
     await pi.commands.get("wiki").handler("run", commandContext(root));
     await orch.waitFor?.();
 
-    await pi.commands.get("wiki").handler("status", commandContext(root));
-    assert.match(pi.sent.at(-1).message.content, /Orchestration|Wiki workspace/);
-
-    await pi.commands.get("wiki").handler("inspect", commandContext(root));
-    assert.ok(pi.sent.at(-1).message.content.length > 0);
+    await pi.commands.get("wiki").handler("status --json", commandContext(root));
+    const status = JSON.parse(pi.sent.at(-1).message.content);
+    assert.equal(status.workspace.root, root);
+    assert.ok(status.orchestration);
 
     const hangCore = {
       ...core,
@@ -218,9 +216,10 @@ test("status inspect and stop after a run", async () => {
   });
 });
 
-test("wiki-agents and wiki-inspect aliases are registered", async () => {
+test("removed observation aliases are not registered", async () => {
   const pi = fakePi();
   install(pi, "/tmp");
-  assert.ok(pi.commands.has("wiki-agents"));
-  assert.ok(pi.commands.has("wiki-inspect"));
+  for (const name of ["wiki-status", "wiki-agents", "wiki-inspect"]) {
+    assert.ok(!pi.commands.has(name));
+  }
 });

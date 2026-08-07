@@ -96,7 +96,6 @@ export interface WikiProgressSnapshot {
   phases: WikiPhaseView[];
   coverage?: WikiCoverageView;
   agents: WikiAgentView[];
-  focusedAgentId?: string;
   /** Epoch milliseconds. */
   updatedAt: number;
 }
@@ -121,8 +120,7 @@ export type WikiEventType =
   | "agent.timed_out"
   | "agent.cancelled"
   | "coverage.updated"
-  | "host.tool"
-  | "ui.focus_changed";
+  | "host.tool";
 
 export interface WikiEvent {
   ts: number;

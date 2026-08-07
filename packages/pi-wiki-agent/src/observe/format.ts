@@ -3,8 +3,6 @@ import type {
   WikiAgentView,
   WikiCoverageView,
   WikiPhaseStatus,
-  WikiPhaseView,
-  WikiProgressSnapshot,
 } from "../orch/types.js";
 
 export interface FormatTimeOpts {
@@ -132,94 +130,8 @@ export function formatAgentLine(agent: WikiAgentView, opts: FormatTimeOpts = {})
   return `${agent.agentId} ${glyph} ${agent.status} ${elapsed}${tool}${err}${stale}`;
 }
 
-/** Multi-line agent list; focused agent is marked with `>`. */
-export function formatAgentsTable(
-  snapshot: WikiProgressSnapshot,
-  opts: FormatTimeOpts = {},
-): string {
-  if (snapshot.agents.length === 0) return "(no agents)";
-  return snapshot.agents
-    .map((agent) => {
-      const marker = agent.agentId === snapshot.focusedAgentId ? ">" : " ";
-      return `${marker} ${formatAgentLine(agent, opts)}`;
-    })
-    .join("\n");
-}
-
 /** Coverage summary: `pass1 4/12 receipts missing:8`. */
 export function formatCoverageLine(coverage: WikiCoverageView): string {
   const missing = coverage.missingUnitIds.length;
   return `pass${coverage.pass} ${coverage.unitsWithReceipt}/${coverage.unitsTotal} receipts missing:${missing}`;
-}
-
-/** Phase strip: `Bootstrap✓ Survey● Plan· ...`. */
-export function formatPhasesLine(phases: readonly WikiPhaseView[]): string {
-  if (phases.length === 0) return "(no phases)";
-  return phases.map((phase) => `${phase.name}${phaseStatusGlyph(phase.status)}`).join(" ");
-}
-
-/** Multi-line detail for a single agent (and optional snapshot context). */
-export function formatAgentDetail(
-  agent: WikiAgentView,
-  snapshot?: WikiProgressSnapshot,
-  opts: FormatTimeOpts = {},
-): string {
-  const now = opts.now ?? Date.now();
-  const lines: string[] = [
-    `Agent: ${agent.agentId}`,
-    `Label: ${agent.label}`,
-    `Role: ${agent.role}`,
-    `Phase: ${agent.phase}`,
-    `Status: ${agentStatusGlyph(agent.status)} ${agent.status}`,
-    `Elapsed: ${formatDuration(agentElapsedMs(agent, now))}`,
-  ];
-  if (agent.model) lines.push(`Model: ${agent.model}`);
-  if (agent.unitIds?.length) lines.push(`Units: ${agent.unitIds.join(", ")}`);
-  if (agent.pagePaths?.length) lines.push(`Pages: ${agent.pagePaths.join(", ")}`);
-  if (agent.lastTool) {
-    const path = agent.lastTool.path ? ` ${agent.lastTool.path}` : "";
-    lines.push(`Last tool: ${agent.lastTool.name}${path}`);
-  }
-  const heartbeatAt = parseTimeMs(agent.lastHeartbeatAt);
-  if (heartbeatAt !== undefined) {
-    lines.push(`Heartbeat: ${formatDuration(now - heartbeatAt)} ago`);
-  }
-  if (agent.receiptsWritten) lines.push(`Receipts written: ${agent.receiptsWritten}`);
-  if (agent.tokens !== undefined) lines.push(`Tokens: ${agent.tokens}`);
-  if (agent.lastError) lines.push(`Error: ${agent.lastError}`);
-  if (agent.transcriptPath) lines.push(`Transcript: ${agent.transcriptPath}`);
-  if (agent.sessionKey) lines.push(`Session: ${agent.sessionKey}`);
-  if (opts.staleWarnMs !== undefined && isAgentStale(agent, opts.staleWarnMs, now)) {
-    lines.push("Stale: yes (no recent heartbeat)");
-  }
-  if (snapshot) {
-    lines.push(`Orch run: ${snapshot.orchRunId}`);
-    if (snapshot.domainRunId) lines.push(`Domain run: ${snapshot.domainRunId}`);
-    if (snapshot.focusedAgentId === agent.agentId) lines.push("Focused: yes");
-  }
-  return lines.join("\n");
-}
-
-/** Full multi-line status block for `/wiki status` / agents list. */
-export function formatSnapshotText(
-  snapshot: WikiProgressSnapshot,
-  opts: FormatTimeOpts = {},
-): string {
-  const now = opts.now ?? Date.now();
-  const lines: string[] = [];
-  lines.push(`Wiki run ${snapshot.orchRunId} [${snapshot.overall}]`);
-  if (snapshot.domainRunId) lines.push(`Domain: ${snapshot.domainRunId}`);
-  lines.push(`Backend: ${snapshot.backend}  Mode: ${snapshot.mode}`);
-  if (snapshot.focus) lines.push(`Focus text: ${snapshot.focus}`);
-  if (snapshot.currentPhase) lines.push(`Current phase: ${snapshot.currentPhase}`);
-  lines.push(`Phases: ${formatPhasesLine(snapshot.phases)}`);
-  if (snapshot.coverage) lines.push(`Coverage: ${formatCoverageLine(snapshot.coverage)}`);
-  if (snapshot.focusedAgentId) lines.push(`Focused agent: ${snapshot.focusedAgentId}`);
-  if (snapshot.workdir) lines.push(`Workdir: ${snapshot.workdir}`);
-  const updatedAt = parseTimeMs(snapshot.updatedAt) ?? now;
-  lines.push(`Updated: ${formatDuration(Math.max(0, now - updatedAt))} ago`);
-  lines.push("");
-  lines.push("Agents:");
-  lines.push(formatAgentsTable(snapshot, opts));
-  return lines.join("\n");
 }

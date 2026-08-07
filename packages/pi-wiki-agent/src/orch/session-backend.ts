@@ -459,18 +459,6 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     };
   }
 
-  focusAgent(agentId: string | undefined, id?: string): void {
-    const orchRunId = this.resolveId(id);
-    if (!orchRunId) return;
-    const tracked = this.runs.get(orchRunId);
-    if (!tracked) return;
-    tracked.store.setFocus(agentId);
-    tracked.store.appendEvent("ui.focus_changed", {
-      agentId,
-      detail: { agentId },
-    });
-  }
-
   async getTranscript(
     agentId: string,
     opts?: { tail?: number },

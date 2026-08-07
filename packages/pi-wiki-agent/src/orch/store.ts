@@ -295,16 +295,6 @@ export class WikiRunStore {
     });
   }
 
-  setFocus(agentId: string | undefined): void {
-    this.updateSnapshot((s) => {
-      if (agentId === undefined) {
-        delete s.focusedAgentId;
-      } else {
-        s.focusedAgentId = agentId;
-      }
-    });
-  }
-
   appendTranscript(agentId: string, entry: object): void {
     const safeId = safeAgentId(agentId);
     const agentDir = join(this.rootDir, "agents", safeId);

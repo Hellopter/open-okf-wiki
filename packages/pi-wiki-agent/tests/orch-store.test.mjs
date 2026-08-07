@@ -123,7 +123,7 @@ test("upsertAgent creates and merges agent rows", () => {
   assert.equal(a1.startedAt, 1_704_067_200_000);
 });
 
-test("setPhase / setOverall / setFocus update snapshot", () => {
+test("setPhase and setOverall update snapshot", () => {
   const root = tempWorkspace();
   const store = new WikiRunStore({ workspaceRoot: root });
   store.createRun({
@@ -135,22 +135,18 @@ test("setPhase / setOverall / setFocus update snapshot", () => {
 
   store.setPhase("survey", "active", "scanning units");
   store.setOverall("running");
-  store.setFocus("agent-x");
 
   let snap = store.getSnapshot();
   assert.equal(snap.overall, "running");
   assert.equal(snap.currentPhase, "survey");
-  assert.equal(snap.focusedAgentId, "agent-x");
   assert.equal(snap.phases[0].status, "active");
   assert.equal(snap.phases[0].summary, "scanning units");
   assert.ok(snap.phases[0].startedAt);
 
   store.setPhase("survey", "done");
-  store.setFocus(undefined);
   snap = store.getSnapshot();
   assert.equal(snap.phases[0].status, "done");
   assert.ok(snap.phases[0].endedAt);
-  assert.equal(snap.focusedAgentId, undefined);
 });
 
 test("appendTranscript and readTranscript with tail", () => {

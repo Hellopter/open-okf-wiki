@@ -1,12 +1,8 @@
 export {
   agentStatusGlyph,
-  formatAgentDetail,
   formatAgentLine,
-  formatAgentsTable,
   formatCoverageLine,
   formatDuration,
-  formatPhasesLine,
-  formatSnapshotText,
   isAgentStale,
   parseTimeMs,
   phaseStatusGlyph,
@@ -16,14 +12,16 @@ export {
 export { formatStatusBar } from "./status-bar.js";
 
 export {
-  applyInspectorKey,
-  createInspectorState,
-  openWikiInspector,
-  renderInspector,
-  type InspectorKeyResult,
-  type InspectorPanel,
-  type InspectorRenderOptions,
-  type InspectorState,
-  type OpenWikiInspectorContext,
-  type OpenWikiInspectorOptions,
-} from "./inspector.js";
+  applyWikiNavigatorKey,
+  createWikiNavigatorState,
+  openWikiNavigator,
+  renderWikiNavigator,
+  type OpenWikiNavigatorContext,
+  type OpenWikiNavigatorOptions,
+  type WikiNavigatorIdleInfo,
+  type WikiNavigatorKeyResult,
+  type WikiNavigatorPane,
+  type WikiNavigatorRenderOptions,
+  type WikiNavigatorState,
+  type WikiNavigatorView,
+} from "./navigator.js";

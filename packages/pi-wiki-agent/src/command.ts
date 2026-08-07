@@ -1,14 +1,11 @@
 import type { WikiLanguage, WikiRunMode } from "./core-adapter.js";
 
 export type WikiCommand =
+  | { action: "open" }
   | { action: "help" }
   | { action: "run"; mode: WikiRunMode; focus?: string }
   | { action: "init"; name?: string; wikiLanguage?: WikiLanguage; force: boolean }
-  | { action: "status"; json?: boolean }
-  | { action: "agents"; agentId?: string }
-  | { action: "inspect" }
-  | { action: "focus"; agentId: string }
-  | { action: "logs"; agentId?: string; tail?: number }
+  | { action: "status" }
   | { action: "pause" | "resume" | "stop"; workflowRunId?: string }
   | { action: "source-list" }
   | { action: "source-add-clone"; url: string; id?: string }
@@ -28,11 +25,6 @@ const KNOWN_SUBCOMMANDS = new Set([
   "run",
   "init",
   "status",
-  "agents",
-  "inspect",
-  "fleet",
-  "focus",
-  "logs",
   "pause",
   "resume",
   "stop",
@@ -45,15 +37,11 @@ const KNOWN_SUBCOMMANDS = new Set([
   "--retry",
 ]);
 
+const RETIRED_OBSERVATION_SUBCOMMANDS = new Set(["agents", "inspect", "fleet", "focus", "logs"]);
+
 const ARGUMENT_COMPLETIONS: WikiArgumentCompletion[] = [
   { value: "help", label: "help", description: "Show /wiki command help" },
-  { value: "status", label: "status", description: "Show workspace, sources, and run status" },
-  { value: "status --json", label: "status --json", description: "Show run status as JSON" },
-  { value: "agents", label: "agents", description: "List multi-agent fleet (or one agent)" },
-  { value: "inspect", label: "inspect", description: "Open multi-agent inspector" },
-  { value: "fleet", label: "fleet", description: "Alias for inspect" },
-  { value: "focus", label: "focus", description: "Focus observation on an agent id" },
-  { value: "logs", label: "logs", description: "Show agent or run transcript lines" },
+  { value: "status --json", label: "status --json", description: "Show workspace and run state as JSON" },
   { value: "init", label: "init", description: "Initialize a Wiki workspace in the current project" },
   { value: "run", label: "run", description: "Start the Wiki workflow (optional focus text)" },
   { value: "source", label: "source", description: "List, add, or remove sources" },
@@ -69,7 +57,6 @@ const ARGUMENT_COMPLETIONS: WikiArgumentCompletion[] = [
   { value: "--restart", label: "--restart", description: "Restart the domain run from bootstrap" },
   { value: "--retry plan", label: "--retry plan", description: "Retry planning from the last checkpoint" },
   { value: "--retry write", label: "--retry write", description: "Retry writing from the last checkpoint" },
-  { value: "--tail", label: "--tail", description: "Limit log lines (with logs)" },
 ];
 
 function tokens(input: string): string[] {
@@ -105,9 +92,9 @@ function parseRun(raw: string): WikiCommand {
 
 /** Short usage line for error notifications; prefer /wiki help for the full surface. */
 export const WIKI_COMMAND_USAGE =
-  "Usage: /wiki help | status | agents | inspect | focus <id> | logs | init | run [focus] | --plan|--write|--restart|--retry plan|write [focus] | pause|resume|stop [id] | source list|add|remove  (see /wiki help)";
+  "Usage: /wiki | help | status --json | init | run [focus] | --plan|--write|--restart|--retry plan|write [focus] | pause|resume|stop [id] | source list|add|remove  (see /wiki help)";
 
-/** Multi-line help for empty `/wiki`, `/wiki help`, and alias `/wiki-help`. */
+/** Multi-line help for `/wiki help` and alias `/wiki-help`. */
 export function formatWikiHelp(): string {
   return [
     "OKF Wiki — checkpointed, source-grounded repository Wiki production",
@@ -116,12 +103,9 @@ export function formatWikiHelp(): string {
     "It is not pi-llm-wiki (personal LLM knowledge-base wiki).",
     "",
     "Usage:",
+    "  /wiki                         # open the live Navigator",
     "  /wiki help",
-    "  /wiki status [--json]",
-    "  /wiki agents [agentId]",
-    "  /wiki inspect | fleet",
-    "  /wiki focus <agentId>",
-    "  /wiki logs [agentId] [--tail N]",
+    "  /wiki status --json",
     "  /wiki init [--name name] [--lang en|zh] [--force]",
     "  /wiki run [focus]",
     "  /wiki --plan [focus]",
@@ -135,13 +119,13 @@ export function formatWikiHelp(): string {
     "  /wiki source remove <id>",
     "",
     "Aliases:",
-    "  /wiki-help  /wiki-status  /wiki-init  /wiki-run  /wiki-source",
+    "  /wiki-help  /wiki-init  /wiki-run  /wiki-source",
     "",
     "Notes:",
-    "  - Empty /wiki shows this help (it does not auto-start a run).",
+    "  - Empty /wiki opens one Navigator; it does not auto-start a run.",
     "  - Multi-word free text is treated as a run focus, e.g. /wiki auth model.",
     "  - Single unknown tokens error; use /wiki run <focus> for one-word focus.",
-    "  - agents/inspect/focus/logs observe the multi-agent fleet for the active run.",
+    "  - In the Navigator, select a phase, then an agent, then enter its execution stream.",
     "  - Project-local install requires the project to be trusted by Pi.",
     "  - Orch run IDs are session orchestration jobs; domain run IDs come from Bootstrap.",
   ].join("\n");
@@ -159,7 +143,7 @@ export function getWikiArgumentCompletions(prefix: string): WikiArgumentCompleti
 /** Parse the intentionally small `/wiki` command surface. */
 export function parseWikiCommand(raw: string): WikiCommand {
   const input = raw.trim();
-  if (!input) return { action: "help" };
+  if (!input) return { action: "open" };
 
   const args = tokens(input);
   const command = args[0]?.toLowerCase() ?? "";
@@ -171,6 +155,9 @@ export function parseWikiCommand(raw: string): WikiCommand {
 
   // Mode flags at the start still mean "run".
   if (input.startsWith("--")) return parseRun(input);
+  if (RETIRED_OBSERVATION_SUBCOMMANDS.has(command)) {
+    throw new WikiCommandError(`/wiki ${command} was removed; use /wiki to observe a run.`);
+  }
 
   switch (command) {
     case "run":
@@ -186,45 +173,8 @@ export function parseWikiCommand(raw: string): WikiCommand {
       };
     }
     case "status":
-      return { action: "status", json: rest.includes("--json") || undefined };
-    case "agents": {
-      const agentId = rest[0] && !rest[0].startsWith("--") ? rest[0] : undefined;
-      return { action: "agents", agentId };
-    }
-    case "inspect":
-    case "fleet":
-      return { action: "inspect" };
-    case "focus": {
-      const agentId = rest[0] && !rest[0].startsWith("--") ? rest[0] : undefined;
-      if (!agentId) throw new WikiCommandError("Usage: /wiki focus <agentId>");
-      return { action: "focus", agentId };
-    }
-    case "logs": {
-      let agentId: string | undefined;
-      let tail: number | undefined;
-      for (let i = 0; i < rest.length; i++) {
-        const token = rest[i] ?? "";
-        if (token === "--tail") {
-          const raw = rest[i + 1];
-          if (!raw || raw.startsWith("--")) throw new WikiCommandError("--tail requires a number");
-          const n = Number(raw);
-          if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
-            throw new WikiCommandError("--tail requires a non-negative integer");
-          }
-          tail = n;
-          i++;
-          continue;
-        }
-        if (token.startsWith("--")) {
-          throw new WikiCommandError(`Unknown logs flag "${token}". Usage: /wiki logs [agentId] [--tail N]`);
-        }
-        if (agentId) {
-          throw new WikiCommandError("Usage: /wiki logs [agentId] [--tail N]");
-        }
-        agentId = token;
-      }
-      return { action: "logs", agentId, tail };
-    }
+      if (rest.length === 1 && rest[0] === "--json") return { action: "status" };
+      throw new WikiCommandError("/wiki status only supports --json; use /wiki for the Navigator.");
     case "pause":
     case "resume":
     case "stop":

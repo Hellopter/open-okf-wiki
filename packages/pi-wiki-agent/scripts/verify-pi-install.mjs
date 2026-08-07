@@ -18,12 +18,9 @@ import { fileURLToPath } from "node:url";
 const REQUIRED = [
   "wiki",
   "wiki-help",
-  "wiki-status",
   "wiki-init",
   "wiki-run",
   "wiki-source",
-  "wiki-agents",
-  "wiki-inspect",
 ];
 const TIMEOUT_MS = 45_000;
 
@@ -114,7 +111,7 @@ function trustHints(missing, stderr = "") {
     "  4. List:    pi list",
     "  5. Re-run:  pnpm -C packages/pi-wiki-agent verify:pi",
     "",
-    "This package is NOT pi-llm-wiki; expect /wiki, /wiki-status, /wiki-run, …",
+    "This package is NOT pi-llm-wiki; expect /wiki, /wiki-run, /wiki-source, …",
   ]
     .filter((line) => line !== null && line !== undefined)
     .filter((line, i, arr) => !(line === "" && arr[i - 1] === ""))

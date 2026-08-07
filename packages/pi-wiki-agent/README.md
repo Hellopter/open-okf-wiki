@@ -15,7 +15,7 @@ LLM-memory vault in the Karpathy LLM Wiki style).
 
 | Product | Purpose | Typical commands |
 | --- | --- | --- |
-| **@okf-wiki/pi-wiki-agent** (this package) | Repository Wiki from frozen sources + immutable checkpoints | `/wiki`, `/wiki-status`, `/wiki --plan` |
+| **@okf-wiki/pi-wiki-agent** (this package) | Repository Wiki from frozen sources + immutable checkpoints | `/wiki`, `/wiki --plan` |
 | **@zosmaai/pi-llm-wiki** | Personal knowledge-base wiki for LLM sessions | `/wiki-init`, `/wiki-ingest`, `/wiki-query`, … |
 
 If both packages are installed, slash names can overlap in the palette. Prefer
@@ -33,10 +33,10 @@ Then open Pi in the project, **trust the project** when prompted, and run:
 
 ```text
 /wiki help
-/wiki status
+/wiki
 ```
 
-Empty `/wiki` shows help; it does **not** start a workflow.
+Empty `/wiki` opens the live Navigator; it does **not** start a workflow.
 
 ## Install
 
@@ -166,30 +166,24 @@ pi --mode rpc --no-session --approve <<'EOF'
 EOF
 ```
 
-Expect: `wiki`, `wiki-help`, `wiki-status`, `wiki-init`, `wiki-run`,
-`wiki-source`, `wiki-agents`, `wiki-inspect`.
+Expect: `wiki`, `wiki-help`, `wiki-init`, `wiki-run`, `wiki-source`.
 
 TUI smoke:
 
-1. `/wiki` → multi-line help (no workflow start)
-2. `/wiki-status` → workspace / sources / domain + orchestration snapshot
+1. `/wiki` → bordered phase / agent Navigator (no workflow start)
+2. `↑/↓` chooses a phase; `→` enters its agents; `Enter` opens execution output
 3. `/wiki init` → create workspace and link project source
 4. `/wiki run <focus>` → start orch run
-5. `/wiki agents` / `/wiki inspect` → multi-agent observation
+5. `/wiki status --json` → machine-readable workspace and orchestration state
 
 ## Commands
 
-Registered names: `/wiki`, `/wiki-help`, `/wiki-status`, `/wiki-init`,
-`/wiki-run`, `/wiki-source`, `/wiki-agents`, `/wiki-inspect`.
+Registered names: `/wiki`, `/wiki-help`, `/wiki-init`, `/wiki-run`, `/wiki-source`.
 
 ```text
-/wiki                         # help (not auto-run)
+/wiki                         # open the live Navigator (not auto-run)
 /wiki help | -h | --help
-/wiki status [--json]
-/wiki agents [agentId]
-/wiki inspect | fleet         # live multi-agent inspector (static fallback in RPC)
-/wiki focus <agentId>
-/wiki logs [agentId] [--tail N]
+/wiki status --json           # machine-readable state
 /wiki init [--name name] [--lang en|zh] [--force]
 /wiki run [focus]
 /wiki --plan [focus]
@@ -214,32 +208,27 @@ Orchestration state is tracked via `SessionWikiOrchestrator`. Live progress:
   agents/<agentId>/transcript.jsonl
 ```
 
-| Command | Purpose |
-| --- | --- |
-| `/wiki agents` | Table of lanes/agents (status, last tool, elapsed) |
-| `/wiki agents <id>` | Detail for one agent |
-| `/wiki inspect` | Interactive Pi TUI inspector: select agents and follow live transcripts; static fallback outside the TUI |
-| `/wiki focus <id>` | Pin status-bar focus to an agent |
-| `/wiki logs [id]` | Transcript tail for an agent |
-
-Interactive Pi keeps workflow progress in the compact status bar. `/wiki inspect`
-opens the focus-capturing, bordered agent monitor; the persistent status area is
-display-only.
+Interactive Pi keeps workflow progress in a compact, display-only status bar.
+`/wiki` opens the only observation surface: select a phase, enter its agent
+list, then enter an agent to follow its execution stream. `p` pauses or resumes
+the run, `x` stops it, and `q` closes the Navigator.
 
 ### Semantics
 
 | Input | Behavior |
 | --- | --- |
-| Empty `/wiki`, `help`, `-h`, `--help` | Print help only |
+| Empty `/wiki` | Open the live Navigator without starting a workflow |
+| `help`, `-h`, `--help` | Print help only |
 | Multi-word free text | Run with that focus (`/wiki auth model`) |
 | Single unknown token | Error — use `/wiki run <focus>` for one-word focus |
-| `status` / `agents` / `inspect` / `source list` / pause·resume·stop | No auto-init; missing workspace → ask for `/wiki init` |
+| `status --json` | No auto-init; returns `initialized: false` when the workspace is missing |
+| `source list` / pause·resume·stop | No auto-init; missing workspace → ask for `/wiki init` |
 | `run` / source add | Auto-init workspace if needed and link `project` source |
 | `--plan` | Checkpoint plan; stop before write |
 | `--write` | Interactive plan approval, then candidate writing |
 
 Orch run IDs identify orchestration jobs. Domain run IDs come from Bootstrap;
-`/wiki status` shows both.
+`/wiki status --json` shows both for machine consumers.
 
 ### Orchestration path
 
@@ -254,11 +243,11 @@ Bootstrap → Survey (adaptive lanes, grep/find) → Plan → Gate
 Control: `/wiki pause` aborts in-flight agents; `/wiki resume` restarts from domain
 `prepareRun` startAt. `/wiki stop` cancels the orch run.
 
-In interactive Pi, `/wiki inspect` accepts `↑/↓` or `j/k` to select an agent,
-`Enter` to pin it to the status display, `t` to view its live transcript, `g/G`
-to jump to the transcript start/end, `p` to pause/resume the orchestration, and
-`q` or `Esc` to close. RPC and print modes use the static `/wiki agents <id>`
-and `/wiki logs <id>` views instead.
+In interactive Pi, `/wiki` accepts `↑/↓` or `j/k` to choose a phase, `→` to
+enter that phase's agent list, and `Enter` to follow the selected agent's live
+execution stream. In the stream, `g/G` jumps to the start/end and `t` refreshes.
+`p` pauses/resumes, `x` stops, and `q` or `Esc` closes or goes back. RPC and
+print modes use `/wiki status --json`.
 
 Subagents use Pi `createAgentSession` with a sandboxed toolset (read/ls/write/edit/grep/find + host tools). **No bash. No pi-dynamic-workflows.**
 

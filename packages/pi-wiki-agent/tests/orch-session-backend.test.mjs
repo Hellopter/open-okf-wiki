@@ -207,7 +207,7 @@ test("stop cancels a running session run", async () => {
   }
 });
 
-test("list / subscribe / focusAgent / updateSnapshot work", async () => {
+test("list / subscribe / updateSnapshot work", async () => {
   const root = tempRoot();
   const workdir = join(root, "wd");
   seedInventory(workdir, 1);
@@ -233,9 +233,6 @@ test("list / subscribe / focusAgent / updateSnapshot work", async () => {
     assert.equal(listed.length, 1);
     assert.equal(listed[0].orchRunId, orchRunId);
     assert.equal(listed[0].backend, "session");
-
-    orch.focusAgent("host:prepare", orchRunId);
-    assert.equal(orch.getSnapshot(orchRunId)?.focusedAgentId, "host:prepare");
 
     orch.updateSnapshot((s) => {
       s.focus = "updated-focus";

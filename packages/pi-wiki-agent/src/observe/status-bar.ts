@@ -3,7 +3,7 @@ import { formatDuration, isAgentStale, parseTimeMs, type FormatTimeOpts } from "
 
 /**
  * Compact one-liner for `ui.setStatus`.
- * Example: `Wiki Survey 4/12 · 2 running · focus:survey:1:2 · 3m`
+ * Example: `Wiki Survey 4/12 · 2 running · 3m`
  */
 export function formatStatusBar(
   snapshot: WikiProgressSnapshot,
@@ -40,8 +40,6 @@ export function formatStatusBar(
 
   if (failed > 0) mid.push(`${failed} failed`);
   if (stale > 0) mid.push(`${stale} stale`);
-  if (snapshot.focusedAgentId) mid.push(`focus:${snapshot.focusedAgentId}`);
-
   // Prefer run age from earliest agent start; fall back to updatedAt span.
   const started = snapshot.agents
     .map((a) => parseTimeMs(a.startedAt))

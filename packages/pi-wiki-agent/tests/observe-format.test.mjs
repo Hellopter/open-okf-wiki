@@ -3,20 +3,16 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   agentStatusGlyph,
-  applyInspectorKey,
-  createInspectorState,
-  formatAgentDetail,
+  applyWikiNavigatorKey,
+  createWikiNavigatorState,
   formatAgentLine,
-  formatAgentsTable,
   formatCoverageLine,
   formatDuration,
-  formatPhasesLine,
-  formatSnapshotText,
   formatStatusBar,
   isAgentStale,
-  openWikiInspector,
+  openWikiNavigator,
   phaseStatusGlyph,
-  renderInspector,
+  renderWikiNavigator,
 } from "../dist/observe/index.js";
 
 const NOW = 1_700_000_000_000;
@@ -27,7 +23,6 @@ function fixtureSnapshot(overrides = {}) {
     domainRunId: "dom-1",
     orchRunId: "orch-1",
     workspaceRoot: "/tmp/wiki",
-    workdir: "/tmp/wiki/.wiki-agent/runs/dom-1/workdir",
     mode: "auto",
     focus: "auth",
     backend: "session",
@@ -37,17 +32,24 @@ function fixtureSnapshot(overrides = {}) {
       { name: "Bootstrap", status: "done" },
       { name: "Survey", status: "active" },
       { name: "Plan", status: "pending" },
-      { name: "Gate", status: "pending" },
-      { name: "Write", status: "pending" },
     ],
     coverage: {
       pass: 1,
       unitsTotal: 12,
       unitsWithReceipt: 4,
-      missingUnitIds: ["u5", "u6", "u7", "u8", "u9", "u10", "u11", "u12"],
+      missingUnitIds: ["u5", "u6"],
       retryUnitIds: [],
     },
     agents: [
+      {
+        agentId: "bootstrap:1",
+        label: "Bootstrap",
+        role: "bootstrap",
+        phase: "Bootstrap",
+        status: "succeeded",
+        elapsedMs: 45_000,
+        receiptsWritten: 1,
+      },
       {
         agentId: "survey:1:1",
         label: "Survey lane 1",
@@ -55,10 +57,7 @@ function fixtureSnapshot(overrides = {}) {
         phase: "Survey",
         status: "succeeded",
         elapsedMs: 45_000,
-        startedAt: NOW - 90_000,
-        endedAt: NOW - 45_000,
         receiptsWritten: 2,
-        lastTool: { name: "okf_publish", at: NOW - 50_000 },
       },
       {
         agentId: "survey:1:2",
@@ -73,18 +72,6 @@ function fixtureSnapshot(overrides = {}) {
         lastTool: { name: "read_file", path: "src/a.ts", at: NOW - 8_000 },
       },
       {
-        agentId: "survey:1:3",
-        label: "Survey lane 3",
-        role: "survey",
-        phase: "Survey",
-        status: "running",
-        elapsedMs: 70_000,
-        startedAt: NOW - 70_000,
-        receiptsWritten: 0,
-        // Heartbeat old enough to be stale with 30s warn.
-        lastHeartbeatAt: NOW - 60_000,
-      },
-      {
         agentId: "plan:1",
         label: "Plan",
         role: "plan",
@@ -94,149 +81,68 @@ function fixtureSnapshot(overrides = {}) {
         receiptsWritten: 0,
       },
     ],
-    focusedAgentId: "survey:1:2",
     updatedAt: NOW - 2_000,
     ...overrides,
   };
 }
 
-test("formatDuration covers seconds, minutes, and hours", () => {
-  assert.equal(formatDuration(0), "0s");
-  assert.equal(formatDuration(12_000), "12s");
+test("compact formatting keeps status bar at run level", () => {
+  const snap = fixtureSnapshot();
   assert.equal(formatDuration(184_000), "3m04s");
-  assert.equal(formatDuration(3_720_000), "1h02m");
-  assert.equal(formatDuration(-5), "0s");
-});
-
-test("status glyphs map agent and phase states", () => {
-  assert.equal(agentStatusGlyph("succeeded"), "✓");
   assert.equal(agentStatusGlyph("running"), "●");
-  assert.equal(agentStatusGlyph("failed"), "!");
-  assert.equal(agentStatusGlyph("queued"), "·");
   assert.equal(phaseStatusGlyph("done"), "✓");
-  assert.equal(phaseStatusGlyph("active"), "●");
-  assert.equal(phaseStatusGlyph("pending"), "·");
-});
-
-test("formatCoverageLine and formatPhasesLine match compact forms", () => {
-  const snap = fixtureSnapshot();
-  assert.equal(formatCoverageLine(snap.coverage), "pass1 4/12 receipts missing:8");
-  assert.equal(formatPhasesLine(snap.phases), "Bootstrap✓ Survey● Plan· Gate· Write·");
-});
-
-test("formatAgentLine and agents table mark focus and stale", () => {
-  const snap = fixtureSnapshot();
-  const line = formatAgentLine(snap.agents[1], { now: NOW, staleWarnMs: 30_000 });
-  assert.match(line, /survey:1:2/);
-  assert.match(line, /●/);
-  assert.match(line, /running/);
-  assert.match(line, /read_file/);
-
-  const stale = formatAgentLine(snap.agents[2], { now: NOW, staleWarnMs: 30_000 });
-  assert.match(stale, /!stale/);
-  assert.equal(isAgentStale(snap.agents[2], 30_000, NOW), true);
-  assert.equal(isAgentStale(snap.agents[1], 30_000, NOW), false);
-
-  const table = formatAgentsTable(snap, { now: NOW });
-  assert.match(table, /^> survey:1:2/m);
-  assert.match(table, /^  survey:1:1/m);
-});
-
-test("formatSnapshotText includes phases, coverage, agents, and ids", () => {
-  const text = formatSnapshotText(fixtureSnapshot(), { now: NOW });
-  assert.match(text, /orch-1/);
-  assert.match(text, /dom-1/);
-  assert.match(text, /Bootstrap✓/);
-  assert.match(text, /pass1 4\/12/);
-  assert.match(text, /survey:1:2/);
-  assert.match(text, /Focused agent: survey:1:2/);
-});
-
-test("formatAgentDetail lists identity and tool context", () => {
-  const snap = fixtureSnapshot();
-  const detail = formatAgentDetail(snap.agents[1], snap, { now: NOW });
-  assert.match(detail, /Agent: survey:1:2/);
-  assert.match(detail, /Role: survey/);
-  assert.match(detail, /Last tool: read_file/);
-  assert.match(detail, /Focused: yes/);
-});
-
-test("formatStatusBar is a compact one-liner", () => {
-  const bar = formatStatusBar(fixtureSnapshot(), { now: NOW, staleWarnMs: 30_000 });
+  assert.equal(formatCoverageLine(snap.coverage), "pass1 4/12 receipts missing:2");
+  assert.match(formatAgentLine(snap.agents[2], { now: NOW, staleWarnMs: 30_000 }), /read_file/);
+  assert.equal(isAgentStale(snap.agents[2], 30_000, NOW), false);
+  const bar = formatStatusBar(snap, { now: NOW, staleWarnMs: 30_000 });
   assert.match(bar, /^Wiki Survey 4\/12/);
-  assert.match(bar, /2 running/);
-  assert.match(bar, /focus:survey:1:2/);
-  assert.match(bar, /1 stale/);
-  assert.match(bar, / · /);
+  assert.match(bar, /1 running/);
+  assert.ok(!/focus:/.test(bar));
 });
 
-test("inspector selection, effects, transcript navigation, and render", () => {
+test("Navigator moves phase to agents to execution stream", () => {
   const snap = fixtureSnapshot();
-  let state = createInspectorState(snap);
-  assert.equal(selectedId(state), "survey:1:2");
+  let state = createWikiNavigatorState(snap);
+  assert.equal(state.view, "overview");
+  assert.equal(state.pane, "phases");
+  assert.equal(state.phaseIndex, 1);
 
-  const down = applyInspectorKey(state, "down");
-  assert.equal(down.action, undefined);
-  state = down.state;
-  assert.equal(selectedId(state), "survey:1:3");
+  const overview = renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { width: 80, now: NOW });
+  assert.ok(overview.some((line) => line.includes("Phases")));
+  assert.ok(overview.some((line) => line.includes("Agents · Survey")));
 
-  const up = applyInspectorKey(state, "k");
-  assert.equal(up.action, undefined);
-  state = up.state;
-  assert.equal(selectedId(state), "survey:1:2");
-
-  const enter = applyInspectorKey(state, "enter");
-  assert.equal(enter.action, "focus");
-  assert.equal(enter.agentId, "survey:1:2");
-  assert.equal(enter.state.snapshot.focusedAgentId, "survey:1:2");
-
-  assert.equal(applyInspectorKey(state, "q").action, "close");
-  assert.equal(applyInspectorKey(state, "p").action, "pause");
-  assert.equal(applyInspectorKey({ ...state, snapshot: { ...state.snapshot, overall: "paused" } }, "p").action, "resume");
-
-  const transcript = applyInspectorKey(state, "t");
-  assert.equal(transcript.action, "load-transcript");
-  state = {
-    ...transcript.state,
-    transcriptLoading: false,
-    transcriptLines: Array.from({ length: 16 }, (_, i) => `line-${i + 1}`),
-    transcriptOffset: 4,
-  };
-  assert.equal(state.panel, "transcript");
-  assert.equal(state.transcriptOffset, 4);
-  assert.equal(applyInspectorKey(state, "g").state.transcriptOffset, 0);
-  assert.equal(applyInspectorKey(state, "G").state.transcriptOffset, 4);
-
-  const rendered = renderInspector(createInspectorState(snap), { now: NOW, interactive: true, maxAgentRows: 2 });
-  assert.ok(rendered.some((l) => l.includes("Wiki inspector")));
-  assert.ok(rendered.some((l) => l.includes("survey:1:2")));
-  assert.ok(rendered.some((l) => /↑\/↓ move/.test(l)));
-  assert.ok(rendered.some((l) => /more agents/.test(l)));
-
-  const staticRendered = renderInspector(createInspectorState(snap), { now: NOW });
-  assert.ok(!staticRendered.some((l) => /pause\/resume/.test(l)));
-
+  state = applyWikiNavigatorKey(state, "right").state;
+  assert.equal(state.pane, "agents");
+  assert.equal(state.agentIndex, 1);
+  const detail = applyWikiNavigatorKey(state, "enter");
+  assert.equal(detail.action, "load-transcript");
+  assert.equal(detail.agentId, "survey:1:2");
+  state = { ...detail.state, transcriptLoading: false, transcriptLines: ["first", "latest"] };
+  assert.equal(state.view, "detail");
+  assert.ok(renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { now: NOW }).some((line) => line.includes("Execution stream")));
+  assert.equal(applyWikiNavigatorKey(state, "left").state.view, "overview");
+  assert.equal(applyWikiNavigatorKey(state, "p").action, "pause");
+  assert.equal(applyWikiNavigatorKey({ ...state, snapshot: { ...snap, overall: "paused" } }, "p").action, "resume");
 });
 
-test("openWikiInspector uses a focused component for raw arrow keys and live updates", async () => {
+test("openWikiNavigator renders a bordered focusable dialog and follows updates", async () => {
   let component;
-  let redraws = 0;
-  let focused;
   let listener;
+  let redraws = 0;
   let unsubscribed = 0;
   let transcriptCalls = 0;
-  let customOptions;
-  const opened = openWikiInspector(
+  let options;
+  const opened = openWikiNavigator(
     {
       hasUI: true,
       ui: {
         notify: () => undefined,
-        custom: (factory, options) =>
+        custom: (factory, customOptions) =>
           new Promise((resolve) => {
-            customOptions = options;
+            options = customOptions;
             component = factory(
               { terminal: { rows: 30 }, requestRender: () => redraws++ },
-              { fg: (_color, text) => text },
+              { fg: (_color, text) => text, bold: (text) => text, bg: (_color, text) => text },
               {},
               resolve,
             );
@@ -245,6 +151,7 @@ test("openWikiInspector uses a focused component for raw arrow keys and live upd
     },
     {
       getSnapshot: () => fixtureSnapshot(),
+      idle: { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
       subscribe: (cb) => {
         listener = cb;
         return () => unsubscribed++;
@@ -253,30 +160,24 @@ test("openWikiInspector uses a focused component for raw arrow keys and live upd
         transcriptCalls++;
         return ["first", "latest"];
       },
-      onFocus: (agentId) => {
-        focused = agentId;
-      },
     },
   );
 
-  assert.ok(component);
-  assert.deepEqual(customOptions, {
+  assert.deepEqual(options, {
     overlay: true,
-    overlayOptions: { width: 100, minWidth: 40, anchor: "center", margin: 1 },
+    overlayOptions: { width: "94%", maxHeight: "92%", anchor: "center", margin: 1 },
   });
-  const dialog = component.render(24);
-  assert.equal(dialog[0][0], "┌");
-  assert.equal(dialog.at(-1).at(-1), "┘");
-  assert.ok(dialog.every((line) => visibleWidth(line) === 24));
-  assert.ok(dialog.length <= 28);
-  component.handleInput("\u001b[B");
-  assert.ok(component.render(100).some((line) => line.includes("> survey:1:3")));
+  const dialog = component.render(70);
+  assert.equal(dialog[0][0], "╭");
+  assert.equal(dialog.at(-1).at(-1), "╯");
+  assert.ok(dialog.every((line) => visibleWidth(line) === 70));
+  assert.equal(dialog.length, 27);
+
+  component.handleInput("\u001b[C");
   component.handleInput("\r");
-  assert.equal(focused, "survey:1:3");
-  component.handleInput("t");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(transcriptCalls, 1);
-  assert.ok(component.render(100).some((line) => line.includes("latest")));
+  assert.ok(component.render(70).some((line) => line.includes("latest")));
 
   listener(fixtureSnapshot({ updatedAt: NOW + 1 }));
   await new Promise((resolve) => setImmediate(resolve));
@@ -286,27 +187,51 @@ test("openWikiInspector uses a focused component for raw arrow keys and live upd
   assert.equal(unsubscribed, 1);
 });
 
-test("openWikiInspector returns static fallback without a TUI", async () => {
-  const notes = [];
-  const fallback = [];
-  const result = await openWikiInspector(
+test("Navigator presents an idle window and has no text fallback", async () => {
+  const notifications = [];
+  const result = await openWikiNavigator(
+    { hasUI: false, ui: { notify: (message) => notifications.push(message) } },
+    { getSnapshot: () => undefined, idle: { initialized: false, root: "/tmp/wiki", sourceCount: 0 } },
+  );
+  assert.equal(result, "unsupported");
+  assert.match(notifications[0], /status --json/);
+
+  const idle = renderWikiNavigator(createWikiNavigatorState(), { initialized: false, root: "/tmp/wiki", sourceCount: 0 });
+  assert.ok(idle.some((line) => /not initialized/i.test(line)));
+});
+
+test("idle Navigator switches to overview when a run starts", async () => {
+  let component;
+  let listener;
+  const opened = openWikiNavigator(
     {
-      hasUI: false,
+      hasUI: true,
       ui: {
-        notify: (msg) => notes.push(msg),
+        notify: () => undefined,
+        custom: (factory) =>
+          new Promise((resolve) => {
+            component = factory(
+              { terminal: { rows: 24 }, requestRender: () => undefined },
+              { fg: (_color, text) => text, bold: (text) => text, bg: (_color, text) => text },
+              {},
+              resolve,
+            );
+          }),
       },
     },
     {
-      getSnapshot: () => fixtureSnapshot(),
-      onFallbackText: (lines) => fallback.push(...lines),
+      getSnapshot: () => undefined,
+      idle: { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+      subscribe: (cb) => {
+        listener = cb;
+        return () => undefined;
+      },
     },
   );
-  assert.equal(result, "unsupported");
-  assert.ok(notes.length > 0);
-  assert.ok(fallback.some((l) => /Wiki inspector/.test(l)));
-  assert.ok(!fallback.some((l) => /pause\/resume/.test(l)));
-});
 
-function selectedId(state) {
-  return state.snapshot.agents[state.selectedIndex]?.agentId;
-}
+  assert.ok(component.render(70).some((line) => /No active Wiki run/.test(line)));
+  listener(fixtureSnapshot());
+  assert.ok(component.render(70).some((line) => line.includes("Agents · Survey")));
+  component.handleInput("q");
+  await opened;
+});

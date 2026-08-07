@@ -16,11 +16,8 @@ import {
 } from "./command.js";
 import { createCoreAdapter, type CoreAdapter, type WikiWorkspaceStatus } from "./core-adapter.js";
 import {
-  formatAgentDetail,
-  formatAgentsTable,
-  formatSnapshotText,
   formatStatusBar,
-  openWikiInspector,
+  openWikiNavigator,
 } from "./observe/index.js";
 import {
   createSessionOrchestrator,
@@ -53,7 +50,7 @@ const CAPABILITY_NOTICE =
   "OKF Wiki (@okf-wiki/pi-wiki-agent) is loaded: checkpointed repository Wiki production. " +
   "Not pi-llm-wiki (personal knowledge base). Use /wiki help for commands. " +
   "Session orchestration: Bootstrap→Survey→Plan→Gate→Write→Verify→Repair→Validate. " +
-  "Observe with /wiki agents | inspect | focus | logs.";
+  "Open /wiki to observe phases, agents, and execution streams.";
 
 type StatusUi = {
   setStatus: (key: string, text: string | undefined) => void;
@@ -104,11 +101,11 @@ async function enrichCoverage(orch: WikiOrchestrator, core: CoreAdapter, root: s
   }
 }
 
-function formatWorkspaceStatus(status: WikiWorkspaceStatus, snap?: WikiProgressSnapshot): string {
+function formatWorkspaceStatus(status: WikiWorkspaceStatus): string {
   const lines: string[] = [];
   if (!status.initialized) {
     lines.push(`No Wiki workspace at ${status.root}`);
-    lines.push("Run /wiki init to create one, or /wiki help for the full command surface.");
+    lines.push("Run /wiki init to create one.");
     return lines.join("\n");
   }
 
@@ -138,22 +135,17 @@ function formatWorkspaceStatus(status: WikiWorkspaceStatus, snap?: WikiProgressS
     }
   }
 
-  if (snap) {
-    lines.push("");
-    lines.push("Orchestration:");
-    lines.push(formatSnapshotText(snap, OBSERVE_OPTS));
-    lines.push("");
-    lines.push("Use /wiki inspect in interactive Pi to browse live agent details and transcripts.");
-  } else {
-    lines.push("");
-    lines.push("Orchestration: no active run (start with /wiki run)");
-  }
-
   if (status.summary) {
     lines.push("");
     lines.push(status.summary);
   }
   return lines.join("\n");
+}
+
+async function readWorkspaceStatus(core: CoreAdapter, root: string): Promise<WikiWorkspaceStatus> {
+  const workspace = await core.loadWorkspace(root);
+  if (workspace?.initialized) return core.getWorkspaceStatus(root);
+  return workspace ?? { root, initialized: false, sources: [] };
 }
 
 function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined, workspace?: WikiWorkspaceStatus): void {
@@ -231,6 +223,38 @@ function transcriptToLines(entries: unknown[]): string[] {
   });
 }
 
+async function openNavigator(
+  core: CoreAdapter,
+  orch: WikiOrchestrator,
+  root: string,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  orch.syncFromBackend();
+  await enrichCoverage(orch, core, root);
+  const workspace = await readWorkspaceStatus(core, root);
+  await openWikiNavigator(
+    { hasUI: ctx.hasUI, ui: ctx.ui },
+    {
+      getSnapshot: () => {
+        orch.syncFromBackend();
+        return orch.getActiveSnapshot();
+      },
+      idle: {
+        initialized: workspace.initialized,
+        root: workspace.root,
+        name: workspace.name,
+        sourceCount: workspace.sources.length,
+      },
+      subscribe: (cb) => orch.subscribe((snapshot) => cb(snapshot)),
+      getTranscript: async (agentId) => transcriptToLines(await orch.getTranscript(agentId, { tail: 120 })),
+      onPause: () => orch.pause(),
+      onResume: () => orch.resume(),
+      onStop: () => orch.stop(),
+      formatOpts: OBSERVE_OPTS,
+    },
+  );
+}
+
 async function executeCommand(
   pi: ExtensionAPI,
   core: CoreAdapter,
@@ -239,6 +263,12 @@ async function executeCommand(
   command: WikiCommand,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
+  if (command.action === "open") {
+    await openNavigator(core, orch, root, ctx);
+    await refreshObservation(core, orch, root, ctx.ui);
+    return;
+  }
+
   if (command.action === "help") {
     output(pi, formatWikiHelp());
     return;
@@ -257,100 +287,10 @@ async function executeCommand(
   }
 
   if (command.action === "status") {
-    const existing = await core.loadWorkspace(root);
-    if (!existing?.initialized) {
-      output(pi, NO_WORKSPACE_HINT);
-      await refreshObservation(core, orch, root, ctx.ui);
-      return;
-    }
     orch.syncFromBackend();
-    const status = await core.getWorkspaceStatus(root);
+    const status = await readWorkspaceStatus(core, root);
     const snap = orch.getActiveSnapshot();
-    if (command.json) {
-      output(
-        pi,
-        JSON.stringify({ workspace: status, orchestration: snap ?? null, orchRuns: orch.list() }, null, 2),
-      );
-    } else {
-      output(pi, formatWorkspaceStatus(status, snap));
-    }
-    await refreshObservation(core, orch, root, ctx.ui);
-    return;
-  }
-
-  if (command.action === "agents") {
-    orch.syncFromBackend();
-    const snap = orch.getActiveSnapshot();
-    if (!snap) {
-      output(pi, "No active orchestration run. Start with /wiki run.");
-      return;
-    }
-    if (command.agentId) {
-      const agent = snap.agents.find((a) => a.agentId === command.agentId || a.label === command.agentId);
-      if (!agent) throw new WikiCommandError(`Unknown agent "${command.agentId}". Use /wiki agents.`);
-      output(pi, formatAgentDetail(agent, snap, OBSERVE_OPTS));
-      return;
-    }
-    output(pi, formatAgentsTable(snap, OBSERVE_OPTS));
-    return;
-  }
-
-  if (command.action === "focus") {
-    orch.syncFromBackend();
-    const snap = orch.getActiveSnapshot();
-    if (!snap) throw new WikiCommandError("No active orchestration run to focus.");
-    const agent = snap.agents.find((a) => a.agentId === command.agentId || a.label === command.agentId);
-    if (!agent) throw new WikiCommandError(`Unknown agent "${command.agentId}". Use /wiki agents.`);
-    orch.focusAgent(agent.agentId);
-    ctx.ui.notify(`Focused agent ${agent.label} (${agent.agentId}).`, "info");
-    await refreshObservation(core, orch, root, ctx.ui);
-    return;
-  }
-
-  if (command.action === "logs") {
-    orch.syncFromBackend();
-    const snap = orch.getActiveSnapshot();
-    if (!snap) {
-      output(pi, "No active orchestration run.");
-      return;
-    }
-    const agentId =
-      command.agentId ??
-      snap.focusedAgentId ??
-      snap.agents.find((a) => a.status === "running" || a.status === "waiting_tool")?.agentId ??
-      snap.agents[0]?.agentId;
-    if (!agentId) {
-      output(pi, "No agents in the active run.");
-      return;
-    }
-    const entries = await orch.getTranscript(agentId, { tail: command.tail ?? 40 });
-    const header = `Logs for ${agentId} (tail ${command.tail ?? 40}):`;
-    const body = transcriptToLines(entries);
-    output(pi, [header, ...(body.length ? body : ["(empty)"])].join("\n"));
-    return;
-  }
-
-  if (command.action === "inspect") {
-    orch.syncFromBackend();
-    await openWikiInspector(
-      {
-        hasUI: ctx.hasUI,
-        ui: ctx.ui,
-      },
-      {
-        getSnapshot: () => {
-          orch.syncFromBackend();
-          return orch.getActiveSnapshot();
-        },
-        subscribe: (cb) => orch.subscribe((s) => cb(s)),
-        getTranscript: async (agentId) => transcriptToLines(await orch.getTranscript(agentId, { tail: 80 })),
-        onFocus: (agentId) => orch.focusAgent(agentId),
-        onPause: () => orch.pause(),
-        onResume: () => orch.resume(),
-        onFallbackText: (lines) => output(pi, lines.join("\n")),
-        formatOpts: OBSERVE_OPTS,
-      },
-    );
+    output(pi, JSON.stringify({ workspace: status, orchestration: snap ?? null, orchRuns: orch.list() }, null, 2));
     await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
@@ -433,7 +373,7 @@ async function executeCommand(
           }
           const opened = await core.openPlanGate(root, { runId });
           if (!operationSucceeded(opened)) {
-            throw new WikiCommandError("Plan approval did not complete; inspect /wiki status.");
+            throw new WikiCommandError("Plan approval did not complete; check /wiki status --json.");
           }
         }
       }
@@ -446,7 +386,7 @@ async function executeCommand(
       ctx.ui.notify(
         `Started wiki orch ${started.orchRunId}` +
           (started.domainRunId ? ` (domain ${started.domainRunId})` : "; domain run id after Bootstrap") +
-          ". Use /wiki agents or /wiki inspect to observe.",
+          ". Open /wiki to observe.",
         "info",
       );
       await refreshObservation(core, orch, root, ctx.ui);
@@ -465,7 +405,6 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
       action: Type.Union([
         Type.Literal("run"),
         Type.Literal("status"),
-        Type.Literal("agents"),
         Type.Literal("stop"),
         Type.Literal("pause"),
         Type.Literal("resume"),
@@ -481,7 +420,6 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
         ]),
       ),
       focus: Type.Optional(Type.String()),
-      agentId: Type.Optional(Type.String()),
     }),
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -489,34 +427,11 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
       const orch = getOrch();
       if (params.action === "status") {
         orch.syncFromBackend();
-        const status = await core.getWorkspaceStatus(root);
+        const status = await readWorkspaceStatus(core, root);
         const snap = orch.getActiveSnapshot();
         return {
-          content: [{ type: "text", text: formatWorkspaceStatus(status, snap) }],
+          content: [{ type: "text", text: formatWorkspaceStatus(status) }],
           details: { workspace: status, orchestration: snap ?? null },
-        };
-      }
-      if (params.action === "agents") {
-        orch.syncFromBackend();
-        const snap = orch.getActiveSnapshot();
-        if (!snap) {
-          return { content: [{ type: "text", text: "No active orchestration run." }], details: { agents: [] } };
-        }
-        if (params.agentId) {
-          const agent = snap.agents.find((a) => a.agentId === params.agentId || a.label === params.agentId);
-          return {
-            content: [
-              {
-                type: "text",
-                text: agent ? formatAgentDetail(agent, snap, OBSERVE_OPTS) : `Unknown agent ${params.agentId}`,
-              },
-            ],
-            details: { agent: agent ?? null },
-          };
-        }
-        return {
-          content: [{ type: "text", text: formatAgentsTable(snap, OBSERVE_OPTS) }],
-          details: { agents: snap.agents, orchRunId: snap.orchRunId },
         };
       }
       if (params.action === "stop") {
@@ -544,7 +459,7 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
         content: [
           {
             type: "text",
-            text: `Started wiki orch ${started.orchRunId}. Domain run id is produced by Bootstrap. Use /wiki agents to observe.`,
+            text: `Started wiki orch ${started.orchRunId}. Domain run id is produced by Bootstrap. Open /wiki to observe.`,
           },
         ],
         details: { orchRunId: started.orchRunId, domainRunId: started.domainRunId, workspaceRoot: workspace.root },
@@ -622,19 +537,16 @@ export function createWikiExtension(options: WikiExtensionOptions) {
 
     pi.registerCommand("wiki", {
       description:
-        "OKF repository Wiki: help, status, agents, inspect, run, sources, pause/resume/stop. Empty /wiki shows help.",
+        "OKF repository Wiki Navigator: phases, agents, execution streams, runs, sources, and controls.",
       getArgumentCompletions: (prefix) => getWikiArgumentCompletions(prefix),
       handler: (raw, ctx) => handleCommand(raw, ctx),
     });
 
     const aliases: Array<{ name: string; description: string; prefix: string }> = [
       { name: "wiki-help", description: "Show OKF Wiki command help", prefix: "help" },
-      { name: "wiki-status", description: "Show OKF Wiki workspace and orchestration status", prefix: "status" },
       { name: "wiki-init", description: "Initialize an OKF Wiki workspace", prefix: "init" },
       { name: "wiki-run", description: "Start the OKF Wiki workflow (optional focus)", prefix: "run" },
       { name: "wiki-source", description: "Manage OKF Wiki sources (list|add|remove)", prefix: "source" },
-      { name: "wiki-agents", description: "List or detail multi-agent fleet", prefix: "agents" },
-      { name: "wiki-inspect", description: "Open multi-agent inspector", prefix: "inspect" },
     ];
     for (const alias of aliases) {
       pi.registerCommand(alias.name, {

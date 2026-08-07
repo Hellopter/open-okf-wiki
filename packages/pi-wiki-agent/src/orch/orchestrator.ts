@@ -34,7 +34,6 @@ export interface WikiOrchestrator {
     id?: string,
   ): () => void;
 
-  focusAgent(agentId: string | undefined, id?: string): void;
   getTranscript(
     agentId: string,
     opts?: { tail?: number },
