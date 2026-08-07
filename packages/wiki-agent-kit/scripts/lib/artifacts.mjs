@@ -1,4 +1,4 @@
-/** Deterministic artifact helpers used by freeze, gates, and candidate sealing. */
+/** Deterministic filesystem and digest helpers for frozen inputs and sealed bundles. */
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";

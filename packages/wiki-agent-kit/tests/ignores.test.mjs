@@ -19,7 +19,7 @@ describe("ignores", () => {
     assert.ok(d.includes(".wiki-agent/**"));
     assert.ok(d.includes(".pi/**"));
     assert.ok(d.includes(".claude/**"));
-    assert.equal(pathMatchesIgnore(".wiki-agent/runs/a/workdir/inputs/inventory.json", d), true);
+    assert.equal(pathMatchesIgnore(".wiki-agent/runs/a/inputs/inventory.json", d), true);
     assert.equal(pathMatchesIgnore(".pi/sessions/current.json", d), true);
     assert.equal(pathMatchesIgnore(".claude/workflows/wiki.workflow.js", d), true);
   });

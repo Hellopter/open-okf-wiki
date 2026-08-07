@@ -1,7 +1,6 @@
 export {
   agentStatusGlyph,
   formatAgentLine,
-  formatCoverageLine,
   formatDuration,
   formatAgentActivity,
   formatAgentContext,
@@ -16,7 +15,6 @@ export {
 
 export {
   formatWikiObservationEntries,
-  toWikiObservationEntries,
 } from "./transcript.js";
 export type { WikiObservationEntry, WikiObservationKind } from "../orch/types.js";
 

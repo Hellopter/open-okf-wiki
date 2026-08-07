@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { buildInventory } from "../scripts/lib/inventory.mjs";
-import { defaultLimits, normalizeLimits } from "../scripts/lib/limits.mjs";
 
 function writeTree(root, files) {
   for (const [rel, body] of Object.entries(files)) {
@@ -14,7 +13,7 @@ function writeTree(root, files) {
   }
 }
 
-describe("inventory coverage units and limits defaults", () => {
+describe("inventory coverage units", () => {
   it("emits required source and package surface units with labels", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-inv-"));
     const source = path.join(root, "repo");
@@ -44,26 +43,5 @@ describe("inventory coverage units and limits defaults", () => {
       assert.equal(surface.label, surface.id);
       assert.equal(surface.survey, undefined);
     }
-  });
-
-  it("defaults batchConcurrency by source count", () => {
-    assert.equal(defaultLimits({ sourceCount: 1 }).batchConcurrency, 4);
-    assert.equal(defaultLimits({ sourceCount: 2 }).batchConcurrency, 3);
-    assert.equal(defaultLimits({ sourceCount: 1 }).perSourceConcurrency, 2);
-    const multi = normalizeLimits(undefined, { sourceCount: 3 });
-    assert.deepEqual(multi, {
-      batchConcurrency: 3,
-      perSourceConcurrency: 2,
-      maxCoveragePasses: 2,
-      maxRepairRounds: 2,
-    });
-    const clamped = normalizeLimits(
-      { batchConcurrency: 99, perSourceConcurrency: 50, maxCoveragePasses: 9, maxRepairRounds: 0 },
-      { sourceCount: 1 },
-    );
-    assert.equal(clamped.batchConcurrency, 8);
-    assert.equal(clamped.perSourceConcurrency, 8);
-    assert.equal(clamped.maxCoveragePasses, 4);
-    assert.equal(clamped.maxRepairRounds, 1);
   });
 });

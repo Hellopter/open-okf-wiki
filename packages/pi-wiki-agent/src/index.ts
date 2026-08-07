@@ -11,9 +11,11 @@ export {
   createCoreAdapter,
   type CoreAdapter,
   type PrepareRunResult,
-  type WikiDomainRunSummary,
+  type WikiRunSummary,
   type WikiLanguage,
-  type WikiRunMode,
+  type WikiPlanningResult,
+  type WikiRunState,
+  type WikiRunClaim,
   type WikiRunPaths,
   type WikiRuntimeDefinition,
   type WikiSource,
@@ -26,13 +28,18 @@ export {
   type DisposableOrchestrator,
   type WikiExtensionOptions,
 } from "./extension.js";
-export { createWikiFilesystemTools, createWikiHostTools, createWikiToolset } from "./toolset.js";
+export {
+  createWikiFilesystemTools,
+  createWikiHostTools,
+  createWikiToolset,
+  type WikiToolRole,
+  type WikiToolsetOptions,
+} from "./toolset.js";
 
 export * from "./orch/index.js";
 export {
   agentStatusGlyph,
   formatAgentLine,
-  formatCoverageLine,
   formatDuration,
   parseTimeMs,
   phaseStatusGlyph,

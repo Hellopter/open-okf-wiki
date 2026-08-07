@@ -17,14 +17,10 @@ export type AgentStatus =
   | "skipped";
 
 export type WikiAgentRole =
-  | "bootstrap"
-  | "survey"
-  | "plan"
-  | "write"
-  | "review"
-  | "repair"
-  | "host"
-  | "other";
+  | "main"
+  | "discover"
+  | "coverage-critic"
+  | "reviewer";
 
 export type WikiPhaseStatus = "pending" | "active" | "done" | "failed" | "skipped";
 
@@ -77,7 +73,6 @@ export type WikiObservationKind =
   | "text"
   | "tool_start"
   | "tool_end"
-  | "structured_output"
   | "retry_start"
   | "retry_end"
   | "compaction_start"
@@ -112,9 +107,6 @@ export interface WikiObservationEntry {
   aborted?: boolean;
 }
 
-/** JSONL rows from older runs predate WikiObservationEntry and remain readable. */
-export type WikiTranscriptEntry = WikiObservationEntry | Record<string, unknown>;
-
 export interface WikiAgentView {
   agentId: string;
   label: string;
@@ -133,7 +125,6 @@ export interface WikiAgentView {
   /** Epoch milliseconds. */
   lastHeartbeatAt?: number;
   lastError?: string;
-  receiptsWritten: number;
   /** Cumulative usage across model turns and compaction summaries. */
   tokenUsage?: WikiTokenUsage;
   /** Provider usage from the latest model turn. */
@@ -157,27 +148,17 @@ export interface WikiPhaseView {
   summary?: string;
 }
 
-export interface WikiCoverageView {
-  pass: number;
-  unitsTotal: number;
-  unitsWithReceipt: number;
-  missingUnitIds: string[];
-  retryUnitIds: string[];
-}
-
 export interface WikiProgressSnapshot {
   version: 1;
-  domainRunId?: string;
+  runId: string;
   orchRunId: string;
   workspaceRoot: string;
-  workdir?: string;
   mode: string;
   focus?: string;
   backend: WikiBackend;
   overall: WikiOverallStatus;
   currentPhase?: string;
   phases: WikiPhaseView[];
-  coverage?: WikiCoverageView;
   agents: WikiAgentView[];
   /** Epoch milliseconds. */
   updatedAt: number;
@@ -204,7 +185,6 @@ export type WikiEventType =
   | "agent.failed"
   | "agent.timed_out"
   | "agent.cancelled"
-  | "coverage.updated"
   | "host.tool";
 
 export interface WikiEvent {
@@ -212,7 +192,7 @@ export interface WikiEvent {
   seq: number;
   type: WikiEventType;
   orchRunId: string;
-  domainRunId?: string;
+  runId?: string;
   agentId?: string;
   phase?: string;
   detail?: unknown;
@@ -222,8 +202,6 @@ export interface OrchLimits {
   concurrency: number;
   maxAgents: number;
   agentTimeoutMs: number;
-  maxSurveyLanes: number;
-  targetUnitsPerLane: number;
   heartbeatMs: number;
   staleWarnMs: number;
 }
@@ -232,8 +210,6 @@ export const DEFAULT_ORCH_LIMITS: OrchLimits = {
   concurrency: 4,
   maxAgents: 48,
   agentTimeoutMs: 900_000,
-  maxSurveyLanes: 4,
-  targetUnitsPerLane: 3,
   heartbeatMs: 5_000,
   staleWarnMs: 30_000,
 };
@@ -244,7 +220,7 @@ export function mergeOrchLimits(partial?: Partial<OrchLimits>): OrchLimits {
 
 export interface OrchRunSummary {
   orchRunId: string;
-  domainRunId?: string;
+  runId?: string;
   overall: WikiOverallStatus;
   backend: WikiBackend;
   currentPhase?: string;

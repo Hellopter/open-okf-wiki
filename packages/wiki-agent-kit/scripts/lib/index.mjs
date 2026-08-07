@@ -1,6 +1,10 @@
+/** Public v4 core surface. */
+
 export * from "./paths.mjs";
 export * from "./ignores.mjs";
 export {
+  WORKSPACE_VERSION,
+  APPROVAL_MODES,
   defaultWorkspace,
   loadWorkspaceConfig,
   saveWorkspace,
@@ -20,13 +24,14 @@ export {
 } from "./sources.mjs";
 export * from "./install.mjs";
 export * from "./inventory.mjs";
-export * from "./limits.mjs";
-export * from "./freeze.mjs";
-export * from "./gate.mjs";
-export * from "./publish.mjs";
-export * from "./validate.mjs";
-export * from "./run-state.mjs";
+export { freezeRun, loadRunMeta, listRuns, verifyFrozenSnapshot } from "./freeze.mjs";
 export * from "./active-run.mjs";
-export * from "./prepare.mjs";
-export { verifyCheckpoint, verifyReviewLeaf, publishCheckpoint as publishCheckpointRecord } from "./checkpoints.mjs";
+export {
+  parseMarkdownFrontmatter,
+  stampBundleMetadata,
+  regenerateIndexes,
+  validateBundle,
+  sealBundle,
+  bundleSealStatus,
+} from "./validate.mjs";
 export * from "./host-api.mjs";

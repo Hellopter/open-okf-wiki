@@ -1,84 +1,52 @@
 # Plan
 
-Shape the complete `analysis/spec.json` before any candidate page is written.
+Create and maintain the authoritative Markdown plan at `analysis/plan.md` before writing any bundle page.
+It is working memory for the same main Agent that will later write the Wiki, not a JSON contract for
+other workers.
 
-**Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json`, and survey receipts under
-`analysis/receipts/`.
-**Output:** `analysis/spec.json` and `analysis/page-assignments.json`.
-**Mandatory stop:** call `okf_publish` for `plan` with `analysis/receipts/plan-artifacts.json`, then call
-`okf_gate` to approve the plan. Do not enter Write unless both succeed.
+## Inputs
 
-## Required Spec shape
+Read `inputs/run-policy.json`, `analysis/inventory.md`, and only the frozen source spans needed to make
+the initial hierarchy credible. When present, read relevant files in `analysis/discovery/`. Do not ask
+discovery agents to repeat work already visible in the inventory or source tree.
 
-```json
-{
-  "version": 2,
-  "title": "Example service",
-  "overviewPath": "overview.md",
-  "wikiLanguage": "en",
-  "domains": [
-    { "id": "domain:auth", "title": "Authentication", "coverageUnitIds": ["app"] }
-  ],
-  "pages": [
-    {
-      "path": "overview.md",
-      "type": "Overview",
-      "title": "Example service",
-      "question": "What does this service do and how is it organized?",
-      "critical": true,
-      "coverageUnitIds": ["app"]
-    }
-  ],
-  "pageAssignments": [
-    {
-      "pagePath": "overview.md",
-      "owner": "integration",
-      "role": "integration",
-      "coverageUnitIds": ["app"]
-    }
-  ],
-  "coverageCancellations": []
-}
+## Required plan content
+
+Use ordinary Markdown with these headings. Keep tables concise and use links to source spans instead of
+copying evidence into the plan.
+
+```md
+# Wiki Plan: <title>
+
+## Goal and Scope
+## Domain Tree
+## Planned Pages
+## Cross-domain Relationships
+## Coverage Decisions
+## Open Questions and Exclusions
 ```
 
-Every page needs a reader purpose and inspected evidence. Bind every required inventory coverage
-unit via page/domain `coverageUnitIds`, or add a `coverageCancellations` entry with
-`coverageUnitId`, `cancelled: true`, and a non-empty `reason`.
+- **Goal and Scope** states the reader, focus, and factual boundary.
+- **Domain Tree** names a small conceptual hierarchy. A domain is a coherent problem area, not merely a
+  source directory or package name.
+- **Planned Pages** gives each page's relative path below `bundle/`, page type, reader question,
+  domains, and the inventory units/source evidence it covers. Put domain-local concepts under
+  `domains/<domain>/`; put genuine cross-domain concepts and workflows under `concepts/`.
+- **Cross-domain Relationships** records the meaningful flows, shared concepts, and links the prose must
+  explain. Do not create a page merely because a dependency edge exists.
+- **Coverage Decisions** maps every required inventory unit to one or more planned pages, or explicitly
+  excludes it with a reason grounded in scope or unavailable evidence.
+- **Open Questions and Exclusions** distinguishes unresolved evidence from intentional scope boundaries.
 
-Do not survey again. When the selected survey receipt for a required unit is `failed` or `skipped`, it
-must be explicitly cancelled with a reason and cannot be bound to a page or domain; this preserves the
-missing-evidence boundary rather than turning it into a wiki claim.
+Plan enough pages to answer distinct reader questions, but merge thin or duplicate pages. Do not plan
+`index.md`, `log.md`, artificial module pages, owner assignments, receipts, or checkpoints.
 
-Copy `wikiLanguage` from `inputs/run-policy.json` into the Spec top-level field. Write every page
-`title` and `question` in that language (`zh` → Simplified Chinese prose; identifiers stay as-is).
+## Coverage criticism and proposal
 
-For multiple sources (`sourceCount >= 2` / tier L3), do **not** collapse into a thin overview:
+After the initial plan, the coverage critic writes `analysis/coverage-review.md`. Read it, re-open the
+named evidence where necessary, and revise `analysis/plan.md` to resolve supported omissions. Record a
+reason when rejecting a critique. Do not start bundle writing until the host marks planning complete; in
+proposal mode, do not write bundle pages until approval resumes this run.
 
-1. Plan a critical `overview.md` that includes a repository/surface map naming every source.
-2. Plan Architecture and/or per-source Module pages so each source is substantively bound via
-   `coverageUnitIds` (not merely listed).
-3. Plan at least one critical cross-source `Flow` page with multi-source evidence, **or** set
-   `crossSourceFlowCancellation` with `cancelled: true` and a non-empty `reason`.
-4. Also satisfy the Discovery Map rule: a `crossSource: true` flow, a multi-unit domain, or the
-   cancellation above.
-5. Aim for depth: at least `max(3, sourceCount + 1)` Spec pages for multi-source runs.
-
-Do not list `index.md` or `log.md` as pages. Spec paths must remain below `candidate/` and cannot
-contain an absolute or traversal path. The package's `schemas/spec.schema.json` is the
-machine-readable reference contract.
-
-After Spec and assignments are written, write `analysis/receipts/plan-artifacts.json` (no
-version/phase). Host calls `okf_publish` for `plan` with that artifact list.
-Spec document `version: 2` is separate from the v3 checkpoint protocol. See
-`references/orchestrator-context.md`.
-
-`pageAssignments` is mandatory. Every Spec path belongs to exactly one owner. Use source/domain
-owners for source-specific pages and an `integration` owner for overview, navigation, glossary, and
-cross-source Flow pages. Each assignment declares the coverage it owns;
-do not give two owners the same path.
-
-## Gate failure
-
-Repair the Discovery Map or Spec, publish a replacement plan checkpoint, then rerun the gate. The
-gate receipt and checkpoint are invalidated whenever inventory, Discovery Map, Spec, or assignments
-change.
+The host binds the approved plan digest to the frozen input digest. Changing the plan after proposal
+requires a new planning completion rather than silently continuing with a different plan.

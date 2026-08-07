@@ -6,7 +6,6 @@ import {
   applyWikiNavigatorKey,
   createWikiNavigatorState,
   formatAgentLine,
-  formatCoverageLine,
   formatDuration,
   formatWikiObservationEntries,
   formatStatusBar,
@@ -14,7 +13,6 @@ import {
   openWikiNavigator,
   phaseStatusGlyph,
   renderWikiNavigator,
-  toWikiObservationEntries,
 } from "../dist/observe/index.js";
 
 const NOW = 1_700_000_000_000;
@@ -22,65 +20,54 @@ const NOW = 1_700_000_000_000;
 function fixtureSnapshot(overrides = {}) {
   return {
     version: 1,
-    domainRunId: "dom-1",
+    runId: "run-1",
     orchRunId: "orch-1",
     workspaceRoot: "/tmp/wiki",
     mode: "auto",
     focus: "auth",
     backend: "session",
     overall: "running",
-    currentPhase: "Survey",
+    currentPhase: "Discover",
     phases: [
-      { name: "Bootstrap", status: "done" },
-      { name: "Survey", status: "active" },
+      { name: "Prepare", status: "done" },
+      { name: "Discover", status: "active" },
       { name: "Plan", status: "pending" },
     ],
-    coverage: {
-      pass: 1,
-      unitsTotal: 12,
-      unitsWithReceipt: 4,
-      missingUnitIds: ["u5", "u6"],
-      retryUnitIds: [],
-    },
     agents: [
       {
-        agentId: "bootstrap:1",
-        label: "Bootstrap",
-        role: "bootstrap",
-        phase: "Bootstrap",
+        agentId: "main:1",
+        label: "Main",
+        role: "main",
+        phase: "Prepare",
         status: "succeeded",
         elapsedMs: 45_000,
-        receiptsWritten: 1,
       },
       {
-        agentId: "survey:1:1",
-        label: "Survey lane 1",
-        role: "survey",
-        phase: "Survey",
+        agentId: "discover:1:1",
+        label: "Discover lane 1",
+        role: "discover",
+        phase: "Discover",
         status: "succeeded",
         elapsedMs: 45_000,
-        receiptsWritten: 2,
       },
       {
-        agentId: "survey:1:2",
-        label: "Survey lane 2",
-        role: "survey",
-        phase: "Survey",
+        agentId: "discover:1:2",
+        label: "Discover lane 2",
+        role: "discover",
+        phase: "Discover",
         status: "running",
         elapsedMs: 65_000,
         startedAt: NOW - 65_000,
-        receiptsWritten: 1,
         lastHeartbeatAt: NOW - 5_000,
         lastTool: { name: "read_file", path: "src/a.ts", at: NOW - 8_000 },
       },
       {
-        agentId: "plan:1",
-        label: "Plan",
-        role: "plan",
+        agentId: "main:2",
+        label: "Main",
+        role: "main",
         phase: "Plan",
         status: "queued",
         elapsedMs: 0,
-        receiptsWritten: 0,
       },
     ],
     updatedAt: NOW - 2_000,
@@ -93,11 +80,10 @@ test("compact formatting keeps status bar at run level", () => {
   assert.equal(formatDuration(184_000), "3m04s");
   assert.equal(agentStatusGlyph("running"), "●");
   assert.equal(phaseStatusGlyph("done"), "✓");
-  assert.equal(formatCoverageLine(snap.coverage), "pass1 4/12 receipts missing:2");
   assert.match(formatAgentLine(snap.agents[2], { now: NOW, staleWarnMs: 30_000 }), /read_file/);
   assert.equal(isAgentStale(snap.agents[2], 30_000, NOW), false);
   const bar = formatStatusBar(snap, { now: NOW, staleWarnMs: 30_000 });
-  assert.match(bar, /^Wiki Survey 4\/12/);
+  assert.match(bar, /^Wiki Discover/);
   assert.match(bar, /1 running/);
   assert.ok(!/focus:/.test(bar));
 });
@@ -111,14 +97,14 @@ test("Navigator moves phase to agents to execution stream", () => {
 
   const overview = renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { width: 80, now: NOW });
   assert.ok(overview.some((line) => line.includes("Phases")));
-  assert.ok(overview.some((line) => line.includes("Agents · Survey")));
+  assert.ok(overview.some((line) => line.includes("Agents · Discover")));
 
   state = applyWikiNavigatorKey(state, "right").state;
   assert.equal(state.pane, "agents");
   assert.equal(state.agentIndex, 1);
   const detail = applyWikiNavigatorKey(state, "enter");
   assert.equal(detail.action, "load-transcript");
-  assert.equal(detail.agentId, "survey:1:2");
+  assert.equal(detail.agentId, "discover:1:2");
   state = { ...detail.state, transcriptLoading: false, transcriptLines: ["first", "latest"] };
   assert.equal(state.view, "detail");
   assert.ok(renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { now: NOW }).some((line) => line.includes("Execution stream")));
@@ -151,8 +137,6 @@ test("observation formatter shows useful tool and agent state without serializin
     { role: "system", kind: "compaction_end", timestamp: 5, tokensBefore: 176_000, tokensAfter: 24_000, success: true },
     { role: "tool", kind: "tool_end", timestamp: 6, toolName: "write", path: "docs/wiki.md", isError: true, error: "permission denied" },
     { role: "system", kind: "text", timestamp: 7, text: '{"large":"raw JSON must not appear"}' },
-    { role: "tool", kind: "tool_start", timestamp: 8, toolName: "structured_output" },
-    { role: "tool", kind: "structured_output", timestamp: 9 },
   ]);
   assert.deepEqual(lines.slice(0, 3), [
     "→ read  src/observe/navigator.ts",
@@ -163,21 +147,13 @@ test("observation formatter shows useful tool and agent state without serializin
   assert.ok(lines.some((line) => /Context compacted.*176k → 24k/.test(line)));
   assert.ok(lines.some((line) => /write.*docs\/wiki.md.*permission denied/.test(line)));
   assert.ok(!lines.some((line) => line.includes('"large"')));
-  assert.equal(lines.filter((line) => /structured/i.test(line)).length, 1);
 
-  const legacy = formatWikiObservationEntries(
-    toWikiObservationEntries([
-      { role: "tool", kind: "tool_execution_start", toolName: "read", path: "src/a.ts" },
-      { opaque: { deeply: "nested" } },
-    ]),
-  );
-  assert.deepEqual(legacy, ["→ read  src/a.ts", "(legacy observation)"]);
 });
 
 test("Navigator renders context, usage, and transient Pi activity", () => {
   const snapshot = fixtureSnapshot({
     agents: fixtureSnapshot().agents.map((agent) =>
-      agent.agentId === "survey:1:2"
+      agent.agentId === "discover:1:2"
         ? {
             ...agent,
             context: { tokens: 24_100, contextWindow: 200_000, percent: 12 },
@@ -270,7 +246,7 @@ test("Navigator paging uses visible transcript rows after context and activity h
   let component;
   const snapshot = fixtureSnapshot({
     agents: fixtureSnapshot().agents.map((agent) =>
-      agent.agentId === "survey:1:2"
+      agent.agentId === "discover:1:2"
         ? {
             ...agent,
             context: { tokens: 24_100, contextWindow: 200_000, percent: 12 },
@@ -380,7 +356,7 @@ test("idle Navigator switches to overview when a run starts", async () => {
 
   assert.ok(component.render(70).some((line) => /No active Wiki run/.test(line)));
   listener(fixtureSnapshot());
-  assert.ok(component.render(70).some((line) => line.includes("Agents · Survey")));
+  assert.ok(component.render(70).some((line) => line.includes("Agents · Discover")));
   component.handleInput("q");
   await opened;
 });

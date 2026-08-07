@@ -1,62 +1,91 @@
 # Repository Wiki Producer Method
 
-This is an internal method pack frozen into every run as `workdir/method/`. It is not a user entrypoint.
-The only human command is the native Pi `/wiki` command.
+This method pack is copied into every Wiki run as `method/`. It guides the Pi
+workflow; users control runs through `/wiki`, not by invoking method files.
 
-**Orchestration:** the Pi `wiki` workflow.
-**Host tools:** `okf_prepare`, `okf_survey_merge`, `okf_publish`, `okf_gate`, and `okf_validate`.
-Agents write data-plane artifacts and compact artifact lists only. Discover artifact lists and receipt
-envelopes are host-owned by `okf_survey_merge`.
+## Operating model
 
-## Lifecycle and checkpoints
+One persistent main Agent owns the evolving plan and the final Wiki. It keeps
+its working memory on disk in Markdown, then resumes the same session after a
+proposal is approved. Small, independent agents are used only for isolated
+discovery and review. They do not coordinate through JSON receipts and never
+write Wiki pages.
 
-| Workflow stage | Required checkpoint |
-|---|---|
-| Bootstrap | `okf_prepare` returns a minimal RunContext. |
-| Discover | Survey receipts are indexed by a `discover` checkpoint. |
-| Plan | The `plan` checkpoint binds the Discovery Map, Spec, and assignments; the host gate then grants write authority. |
-| Write | Owner-scoped candidate pages and write receipts are indexed by a `write` checkpoint. |
-| Verify/repair | Defects and affected-owner repairs are indexed by `review-*` checkpoints. |
-| Validate | `okf_validate` creates or reuses a verified candidate manifest; only `okf_publish` for `validate` seals the run. |
+The lifecycle is deliberately small:
 
-The active-run pointer is `.wiki-agent/current.json`. It names a run and its last trusted checkpoint;
-it never routes to another workflow or stores workflow arguments.
+1. The host freezes the source snapshots and deterministically creates the inventory.
+2. For a large or multi-domain inventory, bounded discovery agents write short Markdown briefs.
+3. The main Agent writes `analysis/plan.md`; an independent critic writes `analysis/coverage-review.md`.
+4. The main Agent incorporates valid criticism into the plan. The host either pauses for approval or continues automatically.
+5. The same main Agent writes the Wiki, then responds to one independent `analysis/review.md`.
+6. The host validates, generates indexes, stamps provenance, and seals `bundle/`.
 
-## Workdir contract
+The host owns run state, digests, locks, approval, session persistence, and sealing. An Agent must never
+read or write `analysis/state.json`, `analysis/run.lock.json`, `analysis/bundle.manifest.json`, or
+`analysis/session/`; it must never write inventory data or provenance fields.
 
-| Path | Role |
-|---|---|
-| `sources/<id>/` | Filtered, content-hashed frozen evidence copied into the run. |
-| `method/` | Exact copy of this method pack. |
-| `inputs/` | Inventory, snapshot manifest, run policy, plan-gate receipt. |
-| `analysis/` | Discovery Map, Spec, assignments, checkpoints, receipts, defects, validation, manifest. |
-| `candidate/` | Spec-bound pages; writable only before seal. |
+## Run layout
 
-Never use mutable registered repositories after freeze. Never write in `sources/`, `method/`, or
-`inputs/` except host-owned gate receipts.
+| Path | Role | Writer |
+|---|---|---|
+| `inputs/` | Frozen inventory, policy, snapshot metadata, and source snapshots | host |
+| `inputs/sources/<id>/` | Read-only source evidence | host |
+| `method/` | This frozen method pack | host |
+| `analysis/state.json` | Control-plane state and digests | host |
+| `analysis/run.lock.json` | Active orchestration ownership lock | host |
+| `analysis/inventory.md` | Readable deterministic coverage inventory | host |
+| `analysis/discovery/*.md` | Optional independent research briefs | discovery Agent |
+| `analysis/plan.md` | Authoritative hierarchy, coverage decisions, and writing memory | main Agent |
+| `analysis/coverage-review.md` | Independent plan coverage critique | coverage critic |
+| `analysis/review.md` | Independent completed-bundle critique | reviewer |
+| `analysis/session/` | Persistent main-Agent session data | host/runtime |
+| `bundle/` | Final OKF v0.2 Wiki | main Agent, then host seal |
 
-## Agent method
+Never read a mutable registered repository after freeze. Never write under `inputs/`, `method/`, or
+`analysis/session/`.
 
-1. Discover: `references/survey-unit.md` -> host `survey-merge` -> `analysis/discovery-map.json` -> checkpoint.
-2. Plan: `references/plan.md` -> `analysis/spec.json` + assignments -> plan checkpoint -> host gate.
-3. Write: `references/generate.md` -> owner-scoped pages only -> checkpoint.
-4. Review: `references/review.md` -> evidence and global lenses -> defects -> owner-scoped repair loop.
-5. Validate: host `validate` verifies and manifests the candidate; the validate checkpoint seals only a clean review leaf.
+## Markdown handoffs
 
-Children return compact envelopes and data-plane files. Host `okf_publish` computes artifact digests
-and writes v3 checkpoints. See `references/orchestrator-context.md`.
+All semantic handoffs are readable Markdown. Read the smallest relevant artifact when needed; do not
+paste discovery briefs or source dumps into later prompts. A tool response may contain a short status,
+but it is not an instruction to manufacture a JSON protocol.
 
-## Output rules
+- `plan.md` is the main Agent's source of truth after planning. Revise it when scope, evidence, or page
+  structure changes.
+- Discovery briefs contain observations and source citations, not final page assignments.
+- Critic and reviewer files state concrete omissions or defects with evidence and proposed repairs.
+- The host records control decisions separately in `state.json`; it is not an Agent handoff document.
 
-Prose follows `wikiLanguage` from `inputs/run-policy.json` (`en`|`zh`). For `zh`, Simplified Chinese
-only for human-readable text; keep identifiers/paths untranslated. Concept pages need YAML `type`,
-`title`, `description`. Do not author `index.md`, `log.md`, or OKF system fields.
+## OKF bundle rules
 
-Every factual claim needs a local Markdown source link with genuine 1-based lines:
+The bundle is a domain and concept hierarchy, not a list of implementation modules:
 
-```md
-[Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
+```text
+bundle/
+  index.md                         # host generated
+  domains/<domain>/index.md        # host generated
+  domains/<domain>/overview.md     # domain narrative
+  domains/<domain>/<concept>.md    # domain-specific concept
+  concepts/<shared-concept>.md     # cross-domain concept or workflow
 ```
 
-No `repo:`, remote URLs, `file://`, `vscode://`, or targets outside frozen `sources/`. Never estimate
-line ranges.
+Every authored page has YAML frontmatter with non-empty `type`, `title`, and `sources`. `sources` is a
+YAML list of mappings, each with a stable `id` and a run-relative `resource` such as
+`inputs/sources/app/src/session.ts#L18-L86`. `description`, `tags`, and `domains` are optional when they
+improve navigation. Do not author `generated`; the host stamps it at seal time and supplies `status: draft`
+when absent. Do not author any `index.md` or depend on a hand-written table of contents: indexes are
+generated after validation.
+
+Use relative Markdown links between pages and source citations with real one-based line ranges. Cite only
+frozen content under `inputs/sources/<id>/`; do not invent ranges, cite remote URLs, or use editor links.
+All prose follows `wikiLanguage` in `inputs/run-policy.json`; for `zh`, write Simplified Chinese while
+leaving paths and identifiers unchanged.
+
+Read the phase reference in full before starting that phase:
+
+| Phase | Reference |
+|---|---|
+| Optional discovery | `references/discover.md` |
+| Planning | `references/plan.md` |
+| Bundle writing and revision | `references/generate.md` |
+| Coverage criticism and final review | `references/review.md` |

@@ -1,30 +1,107 @@
-/**
- * Host-facing API used by the Pi extension tools.
- *
- * These functions deliberately accept workspace/run identifiers rather than
- * shell arguments. Checkpoint, gate, and candidate validation modules remain
- * the authority for every state transition.
- */
+/** Small host API for the v4 persistent-agent wiki workflow. */
 
 import fs from "node:fs";
 import path from "node:path";
-import { readCurrent, resolveActiveRun } from "./active-run.mjs";
-import { verifyCheckpoint, verifyReviewLeaf } from "./checkpoints.mjs";
-import { freezeRun, listRuns } from "./freeze.mjs";
-import { verifyPlanGate, writePlanGateReceipt } from "./gate.mjs";
+import { readCurrent, resolveActiveRun, setActiveRun } from "./active-run.mjs";
+import { freezeRun, listRuns, verifyFrozenSnapshot } from "./freeze.mjs";
 import { ensureRuntimeManifest } from "./install.mjs";
-import { publishArtifacts } from "./publish.mjs";
-import { prepareRun } from "./prepare.mjs";
+import {
+  analysisDir,
+  bundleDir,
+  coverageReviewPath,
+  discoveryDir,
+  frozenSourcesDir,
+  inputsDir,
+  planPath,
+  reviewPath,
+  runLockPath,
+  sessionDir,
+  statePath,
+} from "./paths.mjs";
+import { sha256File, readJson, writeJson } from "./artifacts.mjs";
 import { addCloneSource, addPathSource, listSources as listSourceEntries } from "./sources.mjs";
-import { mergeSurveyReceipts as mergeSurveyReceiptFiles } from "./survey.mjs";
-import { candidateSealStatus, regenerateIndexes, sealCandidate, validateWorkdir } from "./validate.mjs";
+import { bundleSealStatus, regenerateIndexes, sealBundle, stampBundleMetadata, validateBundle } from "./validate.mjs";
 import { findWorkspaceConfig } from "./paths.mjs";
 import { initWorkspace as initializeWorkspaceDocument, loadWorkspace as loadWorkspaceDocument } from "./workspace.mjs";
+
+const RUN_STATUSES = new Set(["planning", "proposed", "writing", "validating", "paused", "stopped", "failed", "complete"]);
+
+function normalizeOwner(value) {
+  if (typeof value !== "string" || !value.trim() || value.length > 256) {
+    throw new Error("run lock owner must be a non-empty string up to 256 characters");
+  }
+  return value.trim();
+}
 
 function activeRun(root, runId) {
   const run = resolveActiveRun(root, { preferredRunId: runId });
   if (!run) throw new Error(runId ? `active run is not ${runId}` : "no active run");
   return run;
+}
+
+function readRunState(run) {
+  const state = readJson(statePath(run.runDir));
+  if (!state || state.version !== 4 || state.runId !== run.runId || !RUN_STATUSES.has(state.status)) {
+    throw new Error(`invalid run state for ${run.runId}`);
+  }
+  if (state.approval !== "propose" && state.approval !== "auto") throw new Error(`invalid approval mode for ${run.runId}`);
+  return state;
+}
+
+function writeRunState(root, run, state) {
+  const next = { ...state, updatedAt: new Date().toISOString() };
+  writeJson(statePath(run.runDir), next);
+  const current = setActiveRun(root, {
+    runId: run.runId,
+    runDir: run.runDir,
+    status: next.status,
+    planDigest: next.planDigest,
+    bundleDigest: next.bundle?.digest ?? null,
+  });
+  return { state: next, current };
+}
+
+function planDigest(run) {
+  const file = planPath(run.runDir);
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile() || !fs.readFileSync(file, "utf8").trim()) {
+    throw new Error("analysis/plan.md must exist and be non-empty before planning can complete");
+  }
+  return `sha256:${sha256File(file)}`;
+}
+
+function assertSnapshot(run) {
+  const snapshot = verifyFrozenSnapshot(run.runDir);
+  if (!snapshot.ok) throw new Error(`frozen snapshot integrity failed: ${snapshot.errors.join("; ")}`);
+  return snapshot;
+}
+
+function normalizeSessionPath(run, value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value) {
+    throw new Error("sessionPath must be a non-empty path under analysis/session");
+  }
+  const resolved = path.isAbsolute(value) ? path.resolve(value) : path.resolve(run.runDir, value);
+  const allowed = sessionDir(run.runDir);
+  const relative = path.relative(allowed, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("sessionPath must be under analysis/session");
+  return path.relative(run.runDir, resolved).replace(/\\/g, "/");
+}
+
+function runPaths(root, run) {
+  return {
+    root: path.resolve(root),
+    runId: run.runId,
+    runDir: run.runDir,
+    inputsDir: inputsDir(run.runDir),
+    sourcesDir: frozenSourcesDir(run.runDir),
+    analysisDir: analysisDir(run.runDir),
+    planPath: planPath(run.runDir),
+    discoveryDir: discoveryDir(run.runDir),
+    coverageReviewPath: coverageReviewPath(run.runDir),
+    reviewPath: reviewPath(run.runDir),
+    sessionDir: sessionDir(run.runDir),
+    bundleDir: bundleDir(run.runDir),
+  };
 }
 
 function piSource(source) {
@@ -36,34 +113,29 @@ function piSource(source) {
   };
 }
 
-function runSummary(root, meta) {
+function summaryForRun(root, meta) {
   if (!meta || meta.status === "corrupt") return meta || { status: "missing" };
   try {
-    const workdir = path.resolve(root, meta.workdir);
-    const seal = candidateSealStatus(workdir);
-    if (seal.sealed) return { ...meta, status: seal.valid ? "sealed" : "tampered" };
-    const gate = verifyPlanGate(workdir, meta.runId, meta.methodDigest);
-    if (gate.ok) return { ...meta, status: "write-ready" };
-    return { ...meta, status: fs.existsSync(path.join(workdir, "analysis", "spec.json")) ? "planned" : "frozen" };
+    const runDir = path.resolve(root, meta.runDir);
+    const state = readJson(statePath(runDir));
+    const seal = bundleSealStatus(runDir);
+    return {
+      ...meta,
+      status: seal.sealed ? (seal.valid ? "complete" : "tampered") : state?.status ?? "invalid",
+      planDigest: state?.planDigest ?? null,
+    };
   } catch (error) {
     return { ...meta, status: "invalid", error: error.message };
   }
 }
 
-/**
- * Create or reopen a workspace, bind it to the Pi extension, and optionally
- * register its first source. `source.type` is `path` or `clone`.
- */
+/** Create or reopen a workspace, bind it to Pi, and optionally add the first source. */
 export function initializePiWorkspace(root, { name, wikiLanguage = "en", force = false, runtime, source } = {}) {
   const status = initWorkspace(root, { name, wikiLanguage, force, runtime });
   let sourceResult = null;
-  if (source?.type === "path") {
-    sourceResult = addPathSource(root, { linkedPath: source.path, id: source.id, ignore: source.ignore });
-  } else if (source?.type === "clone") {
-    sourceResult = addCloneSource(root, { url: source.url, id: source.id, ref: source.ref, depth: source.depth });
-  } else if (source !== undefined) {
-    throw new Error("source.type must be path or clone");
-  }
+  if (source?.type === "path") sourceResult = addPathSource(root, { linkedPath: source.path, id: source.id, ignore: source.ignore });
+  else if (source?.type === "clone") sourceResult = addCloneSource(root, { url: source.url, id: source.id, ref: source.ref, depth: source.depth });
+  else if (source !== undefined) throw new Error("source.type must be path or clone");
   return {
     ok: true,
     created: status.created,
@@ -76,15 +148,9 @@ export function initializePiWorkspace(root, { name, wikiLanguage = "en", force =
   };
 }
 
-/**
- * Adapter-facing initializer. The Pi extension must supply its own workflow
- * descriptor so the workspace records the semantic identity it will execute.
- */
 export function initWorkspace(root, { name, wikiLanguage = "en", force = false, runtime, runtimeDefinition } = {}) {
   const definition = runtime || runtimeDefinition;
-  if (!definition) {
-    throw new Error("Pi runtime descriptor is required to initialize a Wiki workspace");
-  }
+  if (!definition) throw new Error("Pi runtime descriptor is required to initialize a Wiki workspace");
   const initialized = initializeWorkspaceDocument(root, { name, wikiLanguage, force });
   const runtimeResult = ensureRuntimeManifest(root, definition);
   return {
@@ -96,12 +162,10 @@ export function initWorkspace(root, { name, wikiLanguage = "en", force = false, 
   };
 }
 
-/** Refresh the Pi runtime binding from the adapter's descriptor wrapper. */
 export function ensureRuntime(root, { runtimeDefinition, runtime, ...definition } = {}) {
   return ensureRuntimeManifest(root, runtimeDefinition || runtime || definition);
 }
 
-/** Return undefined only when a workspace has not yet been initialized. */
 export function loadWorkspace(root) {
   if (!findWorkspaceConfig(root)) return undefined;
   return workspaceStatus(root, loadWorkspaceDocument(root));
@@ -114,12 +178,12 @@ function workspaceStatus(root, workspace) {
     initialized: true,
     name: workspace.name,
     wikiLanguage: workspace.wikiLanguage,
+    approval: workspace.workflow.approval,
     activeRunId: active?.runId,
     sources: (workspace.sources || []).map(piSource),
   };
 }
 
-/** Return workspace, source, active-run, and recent-run state for `/wiki status`. */
 export function getWorkspaceStatus(root) {
   const workspace = loadWorkspaceDocument(root);
   const active = resolveActiveRun(root);
@@ -128,19 +192,15 @@ export function getWorkspaceStatus(root) {
     runtime: "pi",
     sources: listSources(root),
     current: readCurrent(root),
-    active: active
-      ? { runId: active.runId, workdir: active.workdir, source: active.source, status: runSummary(root, active.meta).status }
-      : null,
-    runs: listRuns(root).slice(0, 10).map((meta) => runSummary(root, meta)),
+    active: active ? { ...runPaths(root, active), status: summaryForRun(root, active.meta).status } : null,
+    runs: listRuns(root).slice(0, 10).map((meta) => summaryForRun(root, meta)),
   };
 }
 
-/** Pi adapter source naming: clone returns a clone-kind source summary. */
 export function addClonedSource(root, { url, id, ref, depth } = {}) {
   return piSource(addCloneSource(root, { url, id, ref, depth }).source);
 }
 
-/** Pi adapter source naming: linked path returns a linked-kind source summary. */
 export function addLinkedSource(root, { path: linkedPath, id, ignore } = {}) {
   return piSource(addPathSource(root, { linkedPath, id, ignore }).source);
 }
@@ -149,108 +209,182 @@ export function listSources(root) {
   return listSourceEntries(root).map(piSource);
 }
 
-/** A direct equivalent of the workflow's survey receipt merge host operation. */
-export function mergeRunSurveyReceipts(root, { runId, pass, labelsPath } = {}) {
-  return mergeSurveyReceiptFiles(activeRun(root, runId).workdir, { pass, labelsPath });
-}
-
-export function mergeSurveyReceipts(root, options = {}) {
-  return mergeRunSurveyReceipts(root, options);
-}
-
-/** Publish an artifact-list file as the next immutable checkpoint. */
-export function publishRunArtifacts(root, { runId, phase, artifactsJsonPath } = {}) {
-  const run = activeRun(root, runId);
-  return publishArtifacts(root, run, { phase, artifactsJsonPath });
-}
-
-export function publishCheckpoint(root, options = {}) {
-  return publishRunArtifacts(root, options);
-}
-
-/** Evaluate the current plan gate without changing state. */
-export function checkRunPlanGate(root, { runId } = {}) {
-  const run = activeRun(root, runId);
-  return verifyPlanGate(run.workdir, run.runId, run.meta.methodDigest);
-}
-
-/** Persist a successful plan-gate receipt and authorize the write edge. */
-export function approveRunPlanGate(root, { runId } = {}) {
-  const run = activeRun(root, runId);
-  const { result, receipt } = writePlanGateReceipt(run.workdir, run.runId, run.meta.methodDigest);
-  return { ...result, receipt, current: readCurrent(root) };
-}
-
-export function openPlanGate(root, options = {}) {
-  return approveRunPlanGate(root, options);
-}
-
-export function checkPlanGate(root, options = {}) {
-  return checkRunPlanGate(root, options);
-}
-
-/**
- * Validate and seal a write candidate. The caller must publish its returned
- * validation report through `publishRunArtifacts` to transition to `sealed`.
- */
-export function validateRunCandidate(root, { runId } = {}) {
-  const run = activeRun(root, runId);
-  const gate = verifyPlanGate(run.workdir, run.runId, run.meta.methodDigest);
-  if (!gate.ok) return { ok: false, errors: gate.errors || ["plan gate is not valid"], current: readCurrent(root) };
-
-  const write = verifyCheckpoint(run.workdir, "write");
-  if (!write.ok || write.checkpoint.status !== "complete") {
-    return { ok: false, errors: ["missing or invalid write checkpoint", ...(write.errors || [])], current: readCurrent(root) };
+/** Start a fresh run when focused/no active, otherwise expose the resumable active run. */
+export function prepareRun(root, { focus } = {}) {
+  const active = resolveActiveRun(root);
+  if (active && !focus) {
+    const state = readRunState(active);
+    const seal = bundleSealStatus(active.runDir);
+    if (state.status !== "complete" && !seal.sealed) {
+      const resumed = resumeRun(root, { runId: active.runId });
+      return { ...resumed, status: "ok", state: readRunState(active) };
+    }
   }
-  const review = verifyReviewLeaf(run.workdir, run.current);
-  if (!review.ok) return { ok: false, errors: ["missing or invalid final review checkpoint", ...review.errors], current: readCurrent(root) };
-
-  let defects = null;
-  try {
-    defects = JSON.parse(fs.readFileSync(path.join(run.workdir, "analysis", "defects.json"), "utf8"));
-  } catch {
-    // The response below is intentionally a validation failure, not a host exception.
-  }
-  if (defects?.version !== 2 || defects?.clean !== true || !Array.isArray(defects.defects) || defects.defects.length !== 0) {
-    return { ok: false, errors: ["final review is not clean or defects.json is invalid"], current: readCurrent(root) };
-  }
-
-  const seal = candidateSealStatus(run.workdir);
-  if (seal.sealed) {
-    if (!seal.valid) throw new Error("sealed candidate was modified; use /wiki --retry write");
-    return {
-      ok: true,
-      alreadySealed: true,
-      manifest: seal.manifest,
-      reviewCheckpointDigest: review.checkpoint.checkpointDigest,
-      current: readCurrent(root),
-    };
-  }
-  regenerateIndexes(path.join(run.workdir, "candidate"));
-  const result = validateWorkdir(run.workdir);
-  const manifest = result.ok ? sealCandidate(run.workdir, result) : null;
-  return { ...result, manifest, reviewCheckpointDigest: review.checkpoint.checkpointDigest, current: readCurrent(root) };
+  const created = freezeRun(root, { focus });
+  const run = activeRun(root, created.runId);
+  const startAt = created.policy.discovery.enabled ? "discover" : "plan";
+  return { status: "ok", ok: true, ...runPaths(root, run), state: readRunState(run), startAt, adaptiveDiscovery: created.policy.discovery };
 }
 
-export function validateCandidate(root, options = {}) {
-  return validateRunCandidate(root, options);
-}
-
-/** Return the active (or explicitly selected) run's absolute data-plane roots. */
-export function getRunPaths(root, { runId } = {}) {
-  const run = resolveActiveRun(root, { preferredRunId: runId });
-  if (!run) return undefined;
+/** Record the one durable Markdown plan handoff and enter approval or writing. */
+export function completeRunPlanning(root, { runId, sessionPath: persistedSession } = {}) {
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  if (!["planning", "proposed"].includes(state.status)) throw new Error(`run ${run.runId} is not planning`);
+  assertSnapshot(run);
+  const digest = planDigest(run);
+  const sessionPath = normalizeSessionPath(run, persistedSession);
+  const status = state.approval === "propose" ? "proposed" : "writing";
+  const persisted = writeRunState(root, run, {
+    ...state,
+    status,
+    planDigest: digest,
+    ...(sessionPath !== undefined ? { sessionPath } : {}),
+  });
   return {
-    root: path.resolve(root),
-    runId: run.runId,
-    workdir: run.workdir,
-    inputsDir: path.join(run.workdir, "inputs"),
-    sourcesDir: path.join(run.workdir, "sources"),
-    methodDir: path.join(run.workdir, "method"),
-    analysisDir: path.join(run.workdir, "analysis"),
-    candidateDir: path.join(run.workdir, "candidate"),
+    ok: true,
+    ...runPaths(root, run),
+    planDigest: digest,
+    requiresApproval: state.approval === "propose",
+    status,
+    state: persisted.state,
   };
 }
 
-// These aliases make the host contract discoverable from a single import.
-export { freezeRun, prepareRun };
+/** Explicit approval only succeeds when the frozen input and proposed plan remain unchanged. */
+export function approveRun(root, { runId, planDigest: expectedDigest } = {}) {
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  if (state.approval !== "propose" || state.status !== "proposed") {
+    throw new Error(`run ${run.runId} does not have a proposed plan awaiting approval`);
+  }
+  assertSnapshot(run);
+  const actual = planDigest(run);
+  if (state.planDigest !== actual || (expectedDigest && expectedDigest !== actual)) {
+    throw new Error("plan changed after proposal; complete planning again before approval");
+  }
+  const persisted = writeRunState(root, run, { ...state, status: "writing", approvedAt: new Date().toISOString() });
+  return { ok: true, ...runPaths(root, run), planDigest: actual, requiresApproval: false, status: "writing", state: persisted.state };
+}
+
+/** Recover a non-terminal run without inventing a phase from file names. */
+export function resumeRun(root, { runId } = {}) {
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  const seal = bundleSealStatus(run.runDir);
+  if (seal.sealed && !seal.valid) throw new Error("sealed bundle was modified; create a new run");
+  if (state.status === "complete" || seal.sealed) throw new Error("run is complete; create a new run");
+  if (state.status === "stopped") throw new Error("run was stopped; create a new run");
+  if (state.status === "proposed") throw new Error("run has a proposed plan; use /wiki approve before resuming");
+  assertSnapshot(run);
+  const status = state.status === "paused" ? state.resumeStatus || "planning" : state.status;
+  const resumed = state.status === "paused"
+    ? writeRunState(root, run, { ...state, status, resumeStatus: null }).state
+    : state;
+  return { ok: true, ...runPaths(root, run), ...resumed, startAt: status, adaptiveDiscovery: readJson(path.join(inputsDir(run.runDir), "run-policy.json"))?.discovery };
+}
+
+/** The agent runtime may report progress/pause/failure; durable completion belongs to validation. */
+export function setRunStatus(root, { runId, status, sessionPath: persistedSession, error } = {}) {
+  if (!RUN_STATUSES.has(status) || status === "complete" || status === "proposed") {
+    throw new Error(`unsupported externally-set run status: ${status}`);
+  }
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  if (state.status === "complete" || state.status === "stopped") throw new Error(`run ${run.runId} is terminal`);
+  const sessionPath = normalizeSessionPath(run, persistedSession);
+  const next = {
+    ...state,
+    status,
+    ...(status === "paused" ? { resumeStatus: state.status } : {}),
+    ...(sessionPath !== undefined ? { sessionPath } : {}),
+    ...(error === undefined ? {} : { error: String(error) }),
+  };
+  const persisted = writeRunState(root, run, next);
+  return { ok: true, ...runPaths(root, run), status, state: persisted.state };
+}
+
+/** Stamp host metadata, project navigation, verify the bundle, and atomically seal a valid result. */
+export function validateRunBundle(root, { runId } = {}) {
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  const existing = bundleSealStatus(run.runDir);
+  if (existing.sealed) {
+    if (!existing.valid) throw new Error("sealed bundle was modified; create a new run");
+    return { ok: true, alreadySealed: true, manifest: existing.manifest, ...runPaths(root, run), status: "complete", state };
+  }
+  if (!["writing", "validating"].includes(state.status)) {
+    throw new Error(`run ${run.runId} is not ready to validate`);
+  }
+  writeRunState(root, run, { ...state, status: "validating" });
+  const stamped = stampBundleMetadata(run.runDir);
+  if (!stamped.ok) return { ok: false, errors: stamped.errors, ...runPaths(root, run), state: readRunState(run) };
+  const indexes = regenerateIndexes(run.runDir);
+  const validation = validateBundle(run.runDir);
+  if (!validation.ok) return { ...validation, indexes, ...runPaths(root, run), state: readRunState(run) };
+  const manifest = sealBundle(run.runDir, validation);
+  const persisted = writeRunState(root, run, {
+    ...readRunState(run),
+    status: "complete",
+    bundle: { digest: manifest.bundleDigest, sealedAt: manifest.sealedAt },
+  });
+  return { ...validation, indexes, manifest, ...runPaths(root, run), status: "complete", state: persisted.state };
+}
+
+export function getRunPaths(root, { runId } = {}) {
+  const run = activeRun(root, runId);
+  return runPaths(root, run);
+}
+
+/** Read-only state inspection for the adapter's status tool. */
+export function getRunState(root, { runId } = {}) {
+  const run = activeRun(root, runId);
+  return readRunState(run);
+}
+
+/**
+ * Atomically claim a run before opening its persisted main-agent session.
+ * The lock intentionally has no automatic timeout: stealing a live session
+ * risks corrupting its JSONL history, so recovery is an explicit operator act.
+ */
+export function claimRun(root, { runId, owner } = {}) {
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  if (["complete", "stopped"].includes(state.status)) throw new Error(`run ${run.runId} is terminal and cannot be claimed`);
+  const normalizedOwner = normalizeOwner(owner);
+  const file = runLockPath(run.runDir);
+  const claim = { version: 1, runId: run.runId, owner: normalizedOwner, claimedAt: new Date().toISOString() };
+  try {
+    const descriptor = fs.openSync(file, "wx");
+    try {
+      fs.writeFileSync(descriptor, `${JSON.stringify(claim, null, 2)}\n`, "utf8");
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    return { ok: true, claimed: true, claim };
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const existing = readJson(file);
+    if (existing?.version === 1 && existing.runId === run.runId && existing.owner === normalizedOwner) {
+      return { ok: true, claimed: false, claim: existing };
+    }
+    const holder = typeof existing?.owner === "string" ? existing.owner : "an unknown owner";
+    throw new Error(`run ${run.runId} is already claimed by ${holder}`);
+  }
+}
+
+/** Release only the lock owned by this orchestration session. */
+export function releaseRun(root, { runId, owner } = {}) {
+  const run = activeRun(root, runId);
+  const normalizedOwner = normalizeOwner(owner);
+  const file = runLockPath(run.runDir);
+  if (!fs.existsSync(file)) return { ok: true, released: false };
+  const claim = readJson(file);
+  if (claim?.version !== 1 || claim.runId !== run.runId || claim.owner !== normalizedOwner) {
+    throw new Error(`run ${run.runId} lock is not owned by ${normalizedOwner}`);
+  }
+  fs.rmSync(file, { force: false });
+  return { ok: true, released: true };
+}
+
+export { freezeRun };

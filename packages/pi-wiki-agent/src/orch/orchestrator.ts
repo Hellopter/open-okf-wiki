@@ -4,19 +4,20 @@
 import type {
   OrchRunSummary,
   WikiEvent,
+  WikiObservationEntry,
   WikiProgressSnapshot,
-  WikiTranscriptEntry,
 } from "./types.js";
 
 export interface WikiOrchestratorStartInput {
   workspaceRoot: string;
-  mode: string;
+  action: "generate" | "approve" | "resume";
+  runId?: string;
   focus?: string;
 }
 
 export interface WikiOrchestratorStartResult {
   orchRunId: string;
-  domainRunId?: string;
+  runId?: string;
 }
 
 export interface WikiOrchestrator {
@@ -39,14 +40,14 @@ export interface WikiOrchestrator {
     agentId: string,
     opts?: { tail?: number },
     id?: string,
-  ): Promise<WikiTranscriptEntry[]>;
+  ): Promise<WikiObservationEntry[]>;
 
-  /** No-op for session backend (source of truth is local store). */
+  /** Synchronize local observation state when a backend supports it. */
   syncFromBackend(): void;
 
   /**
    * Best-effort mutate the active (or specified) observation snapshot.
-   * Used by the extension to attach survey coverage without knowing the backend store.
+   * Used by the extension to update observation state without exposing the backend store.
    */
   updateSnapshot?(mutator: (s: WikiProgressSnapshot) => void, id?: string): void;
 }
@@ -76,7 +77,7 @@ export function isTerminalOverall(overall: WikiProgressSnapshot["overall"]): boo
 export function summaryFromSnapshot(snap: WikiProgressSnapshot): OrchRunSummary {
   return {
     orchRunId: snap.orchRunId,
-    domainRunId: snap.domainRunId,
+    runId: snap.runId,
     overall: snap.overall,
     backend: snap.backend,
     currentPhase: snap.currentPhase,

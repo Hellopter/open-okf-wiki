@@ -1,53 +1,44 @@
 # @okf-wiki/wiki-agent-kit
 
-Framework-neutral, deterministic domain core for source-grounded repository
-Wiki production. The Pi extension owns user interaction and agent execution;
-this package owns workspace data, frozen sources, checkpoints, gates, and
-candidate sealing.
+Framework-neutral deterministic core for source-grounded repository Wikis.
+The Pi extension owns user interaction and model execution; this package owns
+workspace state, frozen source snapshots, OKF bundle validation, and sealing.
 
-## Runtime Boundary
+## Design
 
-`initializePiWorkspace()` creates `workspace.yaml`, binds the workspace to a
-Pi extension runtime, and optionally adds a path or cloned source. It never
-copies host workflow files into the workspace.
+Each run produces one self-contained `bundle/` in Google Open Knowledge Format
+(OKF) v0.2. The bundle is plain Markdown with YAML frontmatter, so it is both
+human-readable and usable as an agent handoff. The host keeps only small JSON
+control state for run identity, frozen input digests, approval, session location,
+locking, and bundle sealing. Model analysis is Markdown under `analysis/`.
 
-The Pi extension provides a runtime descriptor:
+The core retains a deterministic source inventory. Every required inventory unit
+must either be represented in the Wiki plan and bundle or explicitly excluded in
+that plan. It uses no model-authored receipts, page ownership maps, or staged
+JSON gates.
 
-```js
-{
-  extension: "@okf-wiki/pi-wiki-agent",
-  workflow: { id: "wiki", digest: "sha256:<digest>" }
-}
+## Run Layout
+
+```text
+.wiki-agent/runs/<run-id>/
+  inputs/                 # manifest, inventory, and immutable source copies
+    sources/
+  method/                 # frozen agent method guidance
+  analysis/               # plan, discovery/review Markdown, session and state
+  bundle/                 # sealed OKF v0.2 Wiki delivery
 ```
 
-The core persists this in `.wiki-agent/runtime.json` with the current core and
-method digests. `prepareRun()` fails closed if that binding is stale. Frozen
-run policy records only the Pi runtime identity; it contains no executable
-CLI path or shell authority.
+`bundle/index.md` declares `okf_version: "0.2"`. Directory indexes are generated
+deterministically. Concept pages use the minimal traceability set: `type`,
+`title`, `sources`, `generated`, and `status`.
 
 ## Host API
 
-The package exports direct ESM functions for Pi tools:
+The exported ESM API initializes workspaces and sources, prepares frozen runs,
+reads run paths/state, claims a run before session execution, approves a
+proposed plan, validates an OKF bundle, and seals a valid bundle. The Pi adapter
+is the public interactive surface; this package does not install a command-line
+workflow.
 
-- `initializePiWorkspace`, `getWorkspaceStatus`
-- `prepareRun`, `mergeRunSurveyReceipts`, `publishRunArtifacts`
-- `checkRunPlanGate`, `approveRunPlanGate`, `validateRunCandidate`
-- `installRuntime`, `ensureRuntime`, `assertRuntime`
-
-Artifacts remain run-local. `publishRunArtifacts()` calculates digests and
-records the only valid next checkpoint. `validateRunCandidate()` seals a valid
-candidate but does not advance the run; the caller publishes the validation
-report as the terminal `validate` checkpoint.
-
-## Domain Guarantees
-
-The graph is `Bootstrap -> Discover -> Plan -> Write -> Verify/Repair ->
-Validate`. Every edge is checkpointed. Source files are copied into each run,
-and later stages verify those frozen bytes rather than reading live sources.
-
-Plan gates require coverage, survey outcomes, semantic sufficiency, and unique
-page ownership. Candidate validation requires assigned pages, valid local
-citations, clean review defects, and an intact frozen snapshot. The default
-source ignore set excludes `.wiki-agent/`, `.pi/`, and `.claude/`, allowing a
-Pi workspace to document its current directory without ingesting its own
-runtime output.
+Workspace configuration is v4 and contains `workflow.approval: propose | auto`.
+Older workspace formats are intentionally unsupported.

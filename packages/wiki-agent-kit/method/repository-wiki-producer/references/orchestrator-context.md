@@ -1,41 +1,17 @@
-# Orchestrator Context
+# Run Context
 
-The workflow parent carries only the run context, phase, checkpoint digest, and bounded child
-envelopes. Receipts, maps, specifications, pages, defects, and validation output stay on disk.
+The workflow injects a small run context: run identifier, frozen input location, current phase, and the
+main session identity. Semantic state stays in Markdown files under `analysis/`; host control state stays
+in `analysis/state.json` and is not Agent-authored.
 
-| Plane | Content |
-|---|---|
-| Checkpoint | `analysis/checkpoints/*.json`, written only by `okf_publish`. |
-| Data | Receipts, Discovery Map, Spec, assignments, candidate pages, defects, and validation output. |
-| Workspace pointer | `.wiki-agent/current.json` identifies the active run and last trusted checkpoint. |
+Use this order:
 
-## Publishing a phase
+1. Prepare and inspect the frozen inventory.
+2. Run optional independent discovery for broad inventories.
+3. Main Agent writes `plan.md`; independent critic writes `coverage-review.md`; main Agent revises plan.
+4. Host completes planning, proposes or approves it according to workspace policy.
+5. The resumed main Agent writes `bundle/`; an independent reviewer writes `review.md`; main Agent repairs.
+6. Host validates, generates indexes, stamps provenance, and seals the bundle.
 
-For phases other than Discover, agents write data-plane files first, then write one artifact list under
-`analysis/receipts/`. Discover is different: `okf_survey_merge` writes its artifact list and the workflow
-passes that exact path to `okf_publish`.
-
-```json
-[
-  { "id": "discovery-map", "type": "discovery-map", "path": "analysis/discovery-map.json" },
-  { "id": "survey:app", "type": "survey-receipt", "path": "analysis/receipts/survey-host/app-pass-1.json", "coverageUnitIds": ["app"] },
-  { "id": "survey-merge", "type": "survey-merge", "path": "analysis/receipts/discovery-artifacts-pass-1.json" }
-]
-```
-
-Only discover artifacts may declare `coverageUnitIds`. The host calls `okf_publish` with the phase and
-artifact-list path.
-
-The host validates each listed path, computes its digest, derives the required predecessor checkpoint,
-and advances the active pointer atomically. Do not write checkpoint JSON, checkpoint digests, phase
-metadata, producer identities, ownership metadata, or artifact dependencies.
-
-## Rules
-
-1. Publish once after every completed graph boundary.
-2. Do not paste full receipts or child transcripts into later prompts; read checkpoint-listed files just in time.
-3. Discover needs exactly one valid, checkpoint-listed survey receipt for every required inventory unit;
-   map-level IDs alone are not evidence.
-4. `page-assignments.json` is the only owner map for candidate paths.
-5. Host actions use the injected `okf_*` tools; `/wiki` is the user entry.
-6. The validate phase can publish only from a clean current `review-N` checkpoint.
+No phase publishes an artifact list. Do not hand-author state files, run digests, locks, session records,
+generated fields, or indexes. A phase result is a short status plus the named Markdown artifact.

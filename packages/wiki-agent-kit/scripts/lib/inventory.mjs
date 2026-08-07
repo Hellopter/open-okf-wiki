@@ -186,11 +186,3 @@ export function buildInventory(root, workspace, opts = {}) {
     coverageUnits: units,
   };
 }
-
-export function writeInventory(workdir, inventory) {
-  const inputs = path.join(workdir, "inputs");
-  fs.mkdirSync(inputs, { recursive: true });
-  const file = path.join(inputs, "inventory.json");
-  fs.writeFileSync(file, `${JSON.stringify(inventory, null, 2)}\n`, "utf8");
-  return file;
-}

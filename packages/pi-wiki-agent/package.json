@@ -3,7 +3,7 @@
   "version": "0.1.0-dev",
   "private": true,
   "type": "module",
-  "description": "Pi extension for checkpointed, source-grounded repository Wiki production",
+  "description": "Pi extension for persistent-session, source-grounded OKF repository Wiki production",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

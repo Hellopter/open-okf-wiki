@@ -3,7 +3,7 @@ import { formatDuration, isAgentStale, parseTimeMs, type FormatTimeOpts } from "
 
 /**
  * Compact one-liner for `ui.setStatus`.
- * Example: `Wiki Survey 4/12 · 2 running · 3m`
+ * Example: `Wiki Plan · 2 running · 3m`
  */
 export function formatStatusBar(
   snapshot: WikiProgressSnapshot,
@@ -14,10 +14,6 @@ export function formatStatusBar(
 
   const phase = snapshot.currentPhase ?? snapshot.phases.find((p) => p.status === "active")?.name;
   if (phase) parts.push(phase);
-
-  if (snapshot.coverage) {
-    parts.push(`${snapshot.coverage.unitsWithReceipt}/${snapshot.coverage.unitsTotal}`);
-  }
 
   const running = snapshot.agents.filter(
     (a) => a.status === "running" || a.status === "waiting_tool" || a.status === "starting",
@@ -48,7 +44,7 @@ export function formatStatusBar(
   const origin = started.length > 0 ? Math.min(...started) : updatedAt;
   mid.push(formatDuration(Math.max(0, now - origin)));
 
-  // First segment is "Wiki [Phase] [coverage]"; rest joined with middots.
+  // First segment is "Wiki [Phase]"; rest joined with middots.
   const head = parts.join(" ");
   return `${head} · ${mid.join(" · ")}`;
 }

@@ -3,76 +3,35 @@ import test from "node:test";
 import { createCoreAdapter } from "../dist/core-adapter.js";
 
 const names = [
-  "initWorkspace",
-  "ensureRuntime",
-  "loadWorkspace",
-  "getWorkspaceStatus",
-  "addClonedSource",
-  "addLinkedSource",
-  "removeSource",
-  "listSources",
-  "prepareRun",
-  "mergeSurveyReceipts",
-  "publishCheckpoint",
-  "openPlanGate",
-  "checkPlanGate",
-  "validateCandidate",
-  "getRunPaths",
+  "initWorkspace", "ensureRuntime", "loadWorkspace", "getWorkspaceStatus", "addClonedSource", "addLinkedSource",
+  "removeSource", "listSources", "prepareRun", "completeRunPlanning", "approveRun", "resumeRun", "setRunStatus",
+  "validateRunBundle", "getRunPaths", "getRunState", "claimRun", "releaseRun",
 ];
 
 function complete(module = {}) {
-  return Object.fromEntries(names.map((name) => [name, module[name] ?? (async () => ({ ok: true }))]));
+  return Object.fromEntries(names.map((name) => [name, module[name] ?? (() => ({ ok: true }))]));
 }
 
-test("rejects an incomplete core surface at extension load", () => {
-  assert.throws(() => createCoreAdapter({}), /missing Pi core exports/);
-});
-
-test("accepts the complete semantic core surface", () => {
-  const core = createCoreAdapter(complete());
-  assert.equal(typeof core.prepareRun, "function");
-});
-
-test("wraps sync host methods so await and .then work", async () => {
-  const core = createCoreAdapter(
-    complete({
-      loadWorkspace: (root) => ({ root, initialized: true, sources: [] }),
-      getWorkspaceStatus: (root) => ({ root, initialized: true, sources: [], activeRunId: "r1" }),
-    }),
-  );
-
-  const loaded = await core.loadWorkspace("/ws");
-  assert.deepEqual(loaded, { root: "/ws", initialized: true, sources: [] });
-
-  const viaThen = await core.getWorkspaceStatus("/ws").then((status) => status.activeRunId);
-  assert.equal(viaThen, "r1");
-});
-
-test("sync throws become rejected promises", async () => {
-  const core = createCoreAdapter(
-    complete({
-      loadWorkspace: () => {
-        throw new Error("disk offline");
-      },
-    }),
-  );
-
-  await assert.rejects(() => core.loadWorkspace("/ws"), /disk offline/);
-  // Also .then rejection path
-  let rejected;
-  await core.loadWorkspace("/ws").then(
-    () => {
-      rejected = false;
-    },
-    (error) => {
-      rejected = error.message;
-    },
-  );
-  assert.equal(rejected, "disk offline");
-});
-
-test("missing individual required methods are reported", () => {
+test("requires exactly the v4 Markdown-run core API", () => {
+  assert.throws(() => createCoreAdapter({}), /prepareRun/);
   const partial = complete();
-  delete partial.getRunPaths;
-  assert.throws(() => createCoreAdapter(partial), /getRunPaths/);
+  delete partial.validateRunBundle;
+  assert.throws(() => createCoreAdapter(partial), /validateRunBundle/);
+  const core = createCoreAdapter(complete());
+  assert.equal(typeof core.completeRunPlanning, "function");
+  assert.equal(typeof core.approveRun, "function");
+});
+
+test("normalizes synchronous host exports to awaitable methods", async () => {
+  const core = createCoreAdapter(complete({
+    getRunState: () => ({ runId: "r1", status: "proposed", approval: "propose" }),
+    loadWorkspace: (root) => ({ root, initialized: true, sources: [] }),
+  }));
+  assert.deepEqual(await core.loadWorkspace("/ws"), { root: "/ws", initialized: true, sources: [] });
+  assert.equal((await core.getRunState("/ws", { runId: "r1" })).status, "proposed");
+});
+
+test("turns synchronous host errors into rejected promises", async () => {
+  const core = createCoreAdapter(complete({ getRunState: () => { throw new Error("disk offline"); } }));
+  await assert.rejects(() => core.getRunState("/ws", { runId: "r1" }), /disk offline/);
 });

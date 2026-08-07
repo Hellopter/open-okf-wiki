@@ -12,14 +12,13 @@ import type {
   WikiPhaseStatus,
   WikiPhaseView,
   WikiProgressSnapshot,
-  WikiTranscriptEntry,
+  WikiObservationEntry,
 } from "../orch/types.js";
 import {
   agentStatusGlyph,
   formatAgentActivity,
   formatAgentLine,
   formatAgentContext,
-  formatCoverageLine,
   formatDuration,
   formatLatestUsage,
   formatRunUsage,
@@ -27,7 +26,7 @@ import {
   phaseStatusGlyph,
   type FormatTimeOpts,
 } from "./format.js";
-import { formatWikiObservationEntries, toWikiObservationEntries } from "./transcript.js";
+import { formatWikiObservationEntries } from "./transcript.js";
 
 export type WikiNavigatorView = "idle" | "overview" | "detail";
 export type WikiNavigatorPane = "phases" | "agents";
@@ -77,7 +76,7 @@ export interface OpenWikiNavigatorOptions {
   getSnapshot: () => WikiProgressSnapshot | undefined;
   idle: WikiNavigatorIdleInfo;
   subscribe?: (cb: (snapshot: WikiProgressSnapshot) => void) => () => void;
-  getTranscript?: (agentId: string) => Promise<WikiTranscriptEntry[]> | WikiTranscriptEntry[];
+  getTranscript?: (agentId: string) => Promise<WikiObservationEntry[]> | WikiObservationEntry[];
   onPause?: () => Promise<boolean> | boolean;
   onResume?: () => Promise<boolean> | boolean;
   onStop?: () => Promise<boolean> | boolean;
@@ -207,8 +206,8 @@ function withAgentSelection(state: WikiNavigatorState, agentIndex: number): Wiki
   return { ...state, agentIndex: clampIndex(agentIndex, phaseAgents(state.snapshot, state.phaseIndex).length) };
 }
 
-function withTranscript(state: WikiNavigatorState, entries: readonly unknown[]): WikiNavigatorState {
-  const lines = formatWikiObservationEntries(toWikiObservationEntries(entries));
+function withTranscript(state: WikiNavigatorState, entries: readonly WikiObservationEntry[]): WikiNavigatorState {
+  const lines = formatWikiObservationEntries(entries);
   const maxOffset = Math.max(0, lines.length - transcriptPageRows(state));
   return {
     ...state,
@@ -381,7 +380,7 @@ function renderOverview(state: WikiNavigatorState, opts: WikiNavigatorRenderOpti
   const maxRows = Math.max(2, opts.maxRows ?? 12);
   const phases = navigatorPhases(snapshot);
   const agents = phaseAgents(snapshot, state.phaseIndex);
-  const lines = [`Wiki ${snapshot.overall} · ${snapshot.currentPhase ?? "—"}`, snapshot.coverage ? formatCoverageLine(snapshot.coverage) : ""];
+  const lines = [`Wiki ${snapshot.overall} · ${snapshot.currentPhase ?? "—"}`];
 
   if (width < 52) {
     lines.push(theme.fg("dim", "Phases"));

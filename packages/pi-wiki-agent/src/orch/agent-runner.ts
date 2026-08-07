@@ -1,7 +1,7 @@
 /**
  * Injectable agent runner for session orchestration.
  *
- * Production: Pi `createAgentSession` + wiki tools + structured_output.
+ * Production: Pi `createAgentSession` + role-scoped Wiki tools.
  * Tests: createMockAgentRunner.
  *
  * No dependency on pi-dynamic-workflows.
@@ -22,7 +22,6 @@ import type {
   WikiObservationEntry,
   WikiTokenUsage,
 } from "./types.js";
-import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 export interface WikiAgentRunRequest {
   agentId: string;
@@ -30,8 +29,6 @@ export interface WikiAgentRunRequest {
   phase: string;
   role: WikiAgentRole;
   prompt: string;
-  /** JSON schema object for structured_output. */
-  schema?: Record<string, unknown>;
   unitIds?: string[];
   pagePaths?: string[];
   signal: AbortSignal;
@@ -56,6 +53,12 @@ export interface PiAgentRunnerOptions {
   tools: ToolDefinition[];
   mainModel?: string;
   modelRegistry?: unknown;
+}
+
+/** A main-agent runner backed by one run-scoped, persisted Pi session. */
+export interface PersistentPiAgentRunner extends WikiAgentRunner {
+  /** The JSONL file persisted by Pi, available immediately after construction. */
+  getSessionFile(): string | undefined;
 }
 
 function normalizeResult(value: unknown): WikiAgentRunResult {
@@ -205,35 +208,16 @@ function assistantText(content: unknown): string | undefined {
   return text ? text.slice(0, MAX_OBSERVATION_TEXT) : undefined;
 }
 
-function buildPrompt(req: WikiAgentRunRequest): string {
-  if (!req.schema) return req.prompt;
-  return [
-    req.prompt,
-    "",
-    "Final output contract:",
-    "- Your final action MUST be a structured_output tool call.",
-    "- The structured_output arguments are the return value of this subagent.",
-    "- Do not emit a prose final answer instead of structured_output.",
-    "- If you need to inspect files first, do so, then call structured_output exactly once.",
-  ].join("\n");
-}
-
 /**
  * Default production runner: one short-lived Pi AgentSession per task.
  */
-export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRunner {
+function createPiAgentRunnerWithSessionManager(
+  options: PiAgentRunnerOptions,
+  getSessionManager: () => SessionManager,
+): WikiAgentRunner {
   return {
     async run(req: WikiAgentRunRequest): Promise<WikiAgentRunResult | null> {
-      const capture: StructuredOutputCapture = { called: false, value: undefined };
       const customTools: ToolDefinition[] = [...(req.tools?.length ? req.tools : options.tools)];
-      if (req.schema) {
-        customTools.push(
-          createStructuredOutputTool({
-            schema: req.schema,
-            capture,
-          }),
-        );
-      }
 
       const agentDir = getAgentDir();
       let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -244,9 +228,9 @@ export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRun
           cwd: req.cwd || options.cwd,
           agentDir,
           customTools,
-          // Disable default bash/read/etc.; only our sandboxed wiki tools + structured_output.
+          // Disable default bash/read/etc.; only our sandboxed Wiki tools remain.
           noTools: "builtin",
-          sessionManager: SessionManager.inMemory(),
+          sessionManager: getSessionManager(),
           settingsManager: SettingsManager.create(req.cwd || options.cwd, agentDir),
           excludeTools: ["workflow", "workflow_control", "bash"],
         });
@@ -279,25 +263,15 @@ export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRun
                   result: unknown;
                   isError: boolean;
                 };
-                if (e.toolName === "structured_output" && !e.isError) {
-                  req.onHistory?.({
-                    role: "system",
-                    kind: "structured_output",
-                    toolName: e.toolName,
-                    toolCallId: e.toolCallId,
-                    timestamp,
-                  });
-                } else {
-                  req.onHistory?.({
-                    role: "tool",
-                    kind: "tool_end",
-                    toolName: e.toolName,
-                    toolCallId: e.toolCallId,
-                    isError: e.isError,
-                    error: e.isError ? toolError(e.result) : undefined,
-                    timestamp,
-                  });
-                }
+                req.onHistory?.({
+                  role: "tool",
+                  kind: "tool_end",
+                  toolName: e.toolName,
+                  toolCallId: e.toolCallId,
+                  isError: e.isError,
+                  error: e.isError ? toolError(e.result) : undefined,
+                  timestamp,
+                });
               } else if (type === "message_end") {
                 const e = event as {
                   message?: { role?: string; content?: unknown; usage?: unknown };
@@ -428,15 +402,11 @@ export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRun
         else req.signal.addEventListener("abort", onAbort, { once: true });
 
         try {
-          await session.prompt(buildPrompt(req));
+          await session.prompt(req.prompt);
         } finally {
           req.signal.removeEventListener("abort", onAbort);
         }
 
-        if (req.schema) {
-          if (capture.called) return normalizeResult(capture.value);
-          return { status: "failed", summary: "Subagent did not produce structured_output" };
-        }
         return { status: "ok", summary: "done" };
       } catch (err) {
         if (isAbortLike(err, req.signal)) {
@@ -460,9 +430,26 @@ export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRun
   };
 }
 
-/** @deprecated Use createPiAgentRunner — kept as alias during rename. */
-export const createWorkflowAgentRunner = createPiAgentRunner;
-export type WorkflowAgentRunnerOptions = PiAgentRunnerOptions;
+/** One isolated in-memory session per invocation, for short-lived critics and discovery agents. */
+export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRunner {
+  return createPiAgentRunnerWithSessionManager(options, () => SessionManager.inMemory(options.cwd));
+}
+
+/**
+ * Keep the main Wiki agent's conversation in a run-owned JSONL file. A fresh
+ * AgentSession is created for each turn so it can be safely paused, while the
+ * SessionManager preserves the branch and compaction history between turns and
+ * after `/wiki approve` or `/wiki resume` reopens the run.
+ */
+export function createPersistentPiAgentRunner(
+  options: PiAgentRunnerOptions & { sessionManager: SessionManager },
+): PersistentPiAgentRunner {
+  const runner = createPiAgentRunnerWithSessionManager(options, () => options.sessionManager);
+  return {
+    ...runner,
+    getSessionFile: () => options.sessionManager.getSessionFile(),
+  };
+}
 
 /** Test helper: fully deterministic runner driven by a handler function. */
 export function createMockAgentRunner(

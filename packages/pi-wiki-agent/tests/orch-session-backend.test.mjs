@@ -3,519 +3,153 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import {
-  createMockAgentRunner,
-  createSessionOrchestrator,
-  WikiRunStore,
-} from "../dist/orch/index.js";
+import { createMockAgentRunner, createSessionOrchestrator } from "../dist/orch/index.js";
 
-function tempRoot() {
-  return mkdtempSync(join(tmpdir(), "orch-session-"));
-}
-
-function writeJson(file, value) {
-  mkdirSync(join(file, ".."), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function seedInventory(workdir, n = 4) {
-  mkdirSync(join(workdir, "inputs"), { recursive: true });
-  const units = Array.from({ length: n }, (_, i) => ({
-    id: `unit-${i + 1}`,
-    kind: "source",
-    sourceId: `s${i + 1}`,
-    path: ".",
-    required: true,
-  }));
-  writeJson(join(workdir, "inputs", "inventory.json"), { version: 1, coverageUnits: units });
-  writeJson(join(workdir, "inputs", "run-policy.json"), { limits: { maxCoveragePasses: 2 } });
-}
-
-function makeCore(workdir, { startAt = "survey", hangPrepare = false } = {}) {
-  const calls = { prepare: 0, merge: 0, publish: [] };
+function makeCore(root, approval = "auto") {
+  const runId = "run-1";
+  const runRoot = join(root, ".wiki-agent", "runs", runId);
+  const paths = {
+    root: runRoot,
+    runId,
+    inputsDir: join(runRoot, "inputs"),
+    sourcesDir: join(runRoot, "sources"),
+    analysisDir: join(runRoot, "analysis"),
+    bundleDir: join(runRoot, "bundle"),
+    sessionDir: join(runRoot, "analysis", "session"),
+  };
+  for (const dir of Object.values(paths).filter((value) => typeof value === "string" && value.startsWith(root))) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(paths.inputsDir, "inventory.json"), JSON.stringify({ coverageUnits: [{ id: "entry", sourceId: "project" }] }));
+  const state = { runId, status: "prepared", approval };
+  const calls = { prepare: 0, approve: 0, resume: 0, validate: 0, statuses: [], claim: [], release: [] };
   return {
-    calls,
+    paths, state, calls,
     core: {
-      async prepareRun(root, opts) {
-        calls.prepare += 1;
-        if (hangPrepare) {
-          await new Promise(() => {});
-        }
-        return {
-          status: "ok",
-          runId: "domain-session-1",
-          workdir,
-          workspaceRoot: root,
-          mode: opts.mode,
-          startAt,
-        };
+      async prepareRun() { calls.prepare += 1; return { status: "ok", runId, root }; },
+      async getRunPaths() { return paths; },
+      async getRunState() { return { ...state }; },
+      async completeRunPlanning(_root, { sessionPath }) {
+        state.sessionPath = sessionPath;
+        const requiresApproval = approval === "propose";
+        state.status = requiresApproval ? "proposed" : "writing";
+        return { ok: true, runId, planDigest: "sha256:plan", requiresApproval, status: state.status, state: { ...state } };
       },
-      async mergeSurveyReceipts(_root, opts) {
-        calls.merge += 1;
-        return {
-          status: "ok",
-          pass: opts.pass,
-          artifactsPath: `analysis/receipts/discovery-artifacts-pass-${opts.pass}.json`,
-          missingUnitIds: [],
-          retryUnitIds: [],
-          needsDomainLabels: false,
-        };
-      },
-      async publishCheckpoint(_root, opts) {
-        calls.publish.push(opts.phase);
-        return { status: "ok", summary: `published ${opts.phase}` };
-      },
+      async approveRun() { calls.approve += 1; state.status = "writing"; return { ...state }; },
+      async resumeRun() { calls.resume += 1; return { ...state }; },
+      async setRunStatus(_root, input) { calls.statuses.push(input.status); Object.assign(state, input); return { ...state }; },
+      async validateRunBundle() { calls.validate += 1; state.status = "completed"; return { ...state }; },
+      async getWorkspaceStatus() { return { root, initialized: true, activeRunId: runId, sources: [] }; },
+      async claimRun(_root, input) { calls.claim.push(input); return { ok: true, claimed: true }; },
+      async releaseRun(_root, input) { calls.release.push(input); return { ok: true, released: true }; },
     },
   };
 }
 
-test("start returns orchRunId immediately and backend is session", async () => {
+function tempRoot() { return mkdtempSync(join(tmpdir(), "okf-wiki-session-")); }
+
+test("auto approval keeps one main session through plan, write, review, and validation", async () => {
   const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir);
-  const { core } = makeCore(workdir);
-
-  // Slow agent so start can return before completion
-  const agentRunner = createMockAgentRunner(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-    return { status: "ok", summary: "ok" };
-  });
-
-  const orch = createSessionOrchestrator({
-    workspaceRoot: root,
-    core,
-    getTools: () => [],
-    agentRunner,
-    limits: { heartbeatMs: 60_000 },
-  });
-
-  try {
-    const started = await orch.start({ workspaceRoot: root, mode: "plan" });
-    assert.ok(started.orchRunId);
-    assert.match(started.orchRunId, /^session-/);
-    assert.equal(orch.backend, "session");
-
-    const snap = orch.getSnapshot(started.orchRunId);
-    assert.ok(snap);
-    assert.equal(snap.backend, "session");
-    assert.equal(snap.overall, "running");
-    assert.equal(snap.mode, "plan");
-
-    await orch.waitFor(started.orchRunId);
-    const done = orch.getSnapshot(started.orchRunId);
-    assert.equal(done.overall, "completed");
-    assert.equal(done.domainRunId, "domain-session-1");
-    assert.ok(done.phases.some((p) => p.name === "Gate" && p.status === "done"));
-  } finally {
-    orch.dispose();
-  }
-});
-
-test("agents appear in snapshot during/after plan path", async () => {
-  const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 5);
-  const { core } = makeCore(workdir);
+  const { core, calls } = makeCore(root, "auto");
   const seen = [];
-
-  const agentRunner = createMockAgentRunner(async (req) => {
-    seen.push(req.label);
-    return { status: "ok", summary: req.label };
-  });
-
   const orch = createSessionOrchestrator({
     workspaceRoot: root,
     core,
-    getTools: () => [],
-    agentRunner,
-    limits: { maxSurveyLanes: 4, targetUnitsPerLane: 2, heartbeatMs: 60_000 },
+    getTools: (_root, role) => [{ name: role }],
+    agentRunner: createMockAgentRunner(async (req) => { seen.push({ role: req.role, phase: req.phase, tools: req.tools.map((tool) => tool.name) }); return { status: "ok", summary: req.phase }; }),
   });
-
   try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "auto" });
-    await orch.waitFor(orchRunId);
-
-    const snap = orch.getSnapshot(orchRunId);
-    assert.ok(snap.agents.length >= 2, `expected agents, got ${snap.agents.length}`);
-    // host prepare row + survey lanes + plan
-    assert.ok(snap.agents.some((a) => a.agentId === "host:prepare"));
-    assert.ok(snap.agents.some((a) => a.role === "survey"));
-    assert.ok(snap.agents.some((a) => a.role === "plan" || a.label === "plan-spec"));
-    assert.ok(seen.some((l) => l.startsWith("survey:")));
-    assert.ok(seen.includes("plan-spec"));
-
-    // Transcript path may be empty (no onHistory from mock), but getTranscript is safe
-    const planAgent = snap.agents.find((a) => a.label === "plan-spec");
-    assert.ok(planAgent);
-    const lines = await orch.getTranscript(planAgent.agentId, {}, orchRunId);
-    assert.ok(Array.isArray(lines));
-  } finally {
-    orch.dispose();
-  }
+    const started = await orch.start({ workspaceRoot: root, action: "generate" });
+    const result = await orch.waitFor(started.orchRunId);
+    assert.equal(result.status, "completed");
+    assert.equal(calls.prepare, 1);
+    assert.equal(calls.validate, 1);
+    assert.deepEqual(seen.map((entry) => entry.phase), ["Plan", "Coverage review", "Plan revision", "Write", "Review", "Repair"]);
+    assert.ok(seen.filter((entry) => entry.role === "main").every((entry) => entry.tools[0] === "main"));
+    assert.ok(seen.some((entry) => entry.phase === "Coverage review" && entry.tools[0] === "coverage-critic"));
+    assert.ok(seen.some((entry) => entry.phase === "Review" && entry.tools[0] === "reviewer"));
+    assert.equal(orch.getSnapshot(started.orchRunId).overall, "completed");
+    assert.equal(calls.claim.length, 1);
+    assert.equal(calls.release.length, 1);
+    assert.equal(calls.claim[0].runId, "run-1");
+    assert.equal(calls.release[0].runId, "run-1");
+    assert.equal(calls.claim[0].owner, calls.release[0].owner);
+  } finally { orch.dispose(); }
 });
 
-test("session observations update tool state, context usage, retry, and compaction", async () => {
+test("propose approval stops after the Markdown plan and approve resumes writing", async () => {
   const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 1);
-  const { core } = makeCore(workdir);
-
-  const agentRunner = createMockAgentRunner(async (req) => {
-    if (req.role === "survey") {
-      req.onHistory?.({
-        role: "tool",
-        kind: "tool_start",
-        toolCallId: "read-1",
-        toolName: "read",
-        path: "src/index.ts",
-        timestamp: 10,
-      });
-      req.onHistory?.({
-        role: "tool",
-        kind: "tool_end",
-        toolCallId: "read-1",
-        toolName: "read",
-        isError: false,
-        timestamp: 11,
-      });
-      req.onHistory?.({
-        role: "assistant",
-        kind: "text",
-        text: "I found the entrypoint.",
-        usage: { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, total: 17 },
-        context: { tokens: 120, contextWindow: 1_000, percent: 12 },
-        timestamp: 12,
-      });
-      req.onHistory?.({
-        role: "system",
-        kind: "retry_start",
-        attempt: 1,
-        maxAttempts: 3,
-        delayMs: 2000,
-        error: "rate limited",
-        timestamp: 13,
-      });
-      req.onHistory?.({
-        role: "system",
-        kind: "retry_end",
-        attempt: 1,
-        success: true,
-        timestamp: 14,
-      });
-      req.onHistory?.({
-        role: "system",
-        kind: "compaction_start",
-        reason: "threshold",
-        timestamp: 15,
-      });
-      req.onHistory?.({
-        role: "system",
-        kind: "compaction_end",
-        reason: "threshold",
-        success: true,
-        tokensBefore: 900,
-        tokensAfter: 150,
-        usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, total: 5 },
-        // The backend must trust post-compaction tokensAfter over a stale
-        // pre-compaction context estimate supplied by an older runner.
-        context: { tokens: 900, contextWindow: 1_000, percent: 90 },
-        timestamp: 16,
-      });
-    }
-    return { status: "ok", summary: "ok" };
-  });
-
+  const { core, calls, state } = makeCore(root, "propose");
+  const phases = [];
   const orch = createSessionOrchestrator({
     workspaceRoot: root,
     core,
     getTools: () => [],
-    agentRunner,
-    limits: { heartbeatMs: 60_000 },
+    agentRunner: createMockAgentRunner(async (req) => { phases.push(req.phase); return { status: "ok" }; }),
   });
-
   try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
-    await orch.waitFor(orchRunId);
-
-    const survey = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
-    assert.ok(survey);
-    assert.equal(survey.status, "succeeded");
-    assert.equal(survey.lastTool?.name, "read");
-    assert.equal(survey.lastTool?.path, "src/index.ts");
-    assert.equal(survey.activity, undefined);
-    assert.equal(survey.compactionCount, 1);
-    assert.deepEqual(survey.latestUsage, { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, total: 17 });
-    assert.deepEqual(survey.tokenUsage, { input: 13, output: 6, cacheRead: 2, cacheWrite: 1, total: 22 });
-    assert.deepEqual(survey.context, { tokens: 150, contextWindow: 1_000, percent: 15 });
-
-    const transcript = await orch.getTranscript(survey.agentId, {}, orchRunId);
-    assert.equal(transcript.length, 7);
-    assert.equal(transcript[0].kind, "tool_start");
-    assert.equal(transcript[1].kind, "tool_end");
-    assert.equal(transcript.at(-1).kind, "compaction_end");
-  } finally {
-    orch.dispose();
-  }
+    const planned = await orch.start({ workspaceRoot: root, action: "generate" });
+    assert.equal((await orch.waitFor(planned.orchRunId)).status, "proposed");
+    assert.equal(state.status, "proposed");
+    assert.ok(!phases.includes("Write"));
+    const approved = await orch.start({ workspaceRoot: root, action: "approve", runId: "run-1" });
+    assert.equal((await orch.waitFor(approved.orchRunId)).status, "completed");
+    assert.equal(calls.approve, 1);
+    assert.ok(phases.includes("Write"));
+  } finally { orch.dispose(); }
 });
 
-test("compaction retry preserves compacting activity and terminal agent state clears it", async () => {
+test("large inventories fan out only independent discovery roles", async () => {
   const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 1);
-  const { core } = makeCore(workdir);
-  let releaseSurvey;
-  let observationsReady;
-  const surveyBlocked = new Promise((resolve) => {
-    releaseSurvey = resolve;
-  });
-  const ready = new Promise((resolve) => {
-    observationsReady = resolve;
-  });
-
-  const agentRunner = createMockAgentRunner(async (req) => {
-    if (req.role === "survey") {
-      req.onHistory?.({
-        role: "system",
-        kind: "compaction_start",
-        reason: "overflow",
-        timestamp: 10,
-      });
-      req.onHistory?.({
-        role: "system",
-        kind: "summarization_retry",
-        attempt: 1,
-        maxAttempts: 3,
-        delayMs: 2_000,
-        error: "rate limited",
-        timestamp: 11,
-      });
-      observationsReady();
-      await surveyBlocked;
-    }
-    return { status: "ok", summary: "ok" };
-  });
-
+  const fixture = makeCore(root, "propose");
+  writeFileSync(join(fixture.paths.inputsDir, "inventory.json"), JSON.stringify({ coverageUnits: Array.from({ length: 13 }, (_, i) => ({ id: `u${i}`, sourceId: "project" })) }));
+  const roles = [];
   const orch = createSessionOrchestrator({
     workspaceRoot: root,
-    core,
-    getTools: () => [],
-    agentRunner,
-    limits: { heartbeatMs: 60_000 },
+    core: fixture.core,
+    getTools: (_root, role) => [{ name: role }],
+    agentRunner: createMockAgentRunner(async (req) => { roles.push({ role: req.role, tools: req.tools[0]?.name }); return { status: "ok" }; }),
   });
-
   try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
-    await ready;
-    const inFlight = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
-    assert.equal(inFlight?.activity?.kind, "compacting");
-    assert.equal(inFlight?.activity?.reason, "overflow");
-
-    releaseSurvey();
-    await orch.waitFor(orchRunId);
-    const settled = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
-    assert.equal(settled?.status, "succeeded");
-    assert.equal(settled?.activity, undefined);
-  } finally {
-    orch.dispose();
-  }
+    const started = await orch.start({ workspaceRoot: root, action: "generate" });
+    await orch.waitFor(started.orchRunId);
+    assert.ok(roles.some((entry) => entry.role === "discover" && entry.tools === "discover"));
+    assert.ok(roles.filter((entry) => entry.role === "main").every((entry) => entry.tools === "main"));
+  } finally { orch.dispose(); }
 });
 
-test("terminal agent state clears an unfinished retry activity", async () => {
+test("resume honors the core recovery point for a paused write instead of re-planning", async () => {
   const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 1);
-  const { core } = makeCore(workdir);
-  const agentRunner = createMockAgentRunner(async (req) => {
-    if (req.role === "survey") {
-      req.onHistory?.({
-        role: "system",
-        kind: "retry_start",
-        attempt: 3,
-        maxAttempts: 3,
-        delayMs: 8_000,
-        error: "rate limited",
-        timestamp: 10,
-      });
-      return { status: "failed", summary: "retry exhausted" };
-    }
-    return { status: "ok", summary: "ok" };
-  });
-
+  const fixture = makeCore(root, "auto");
+  fixture.state.status = "paused";
+  fixture.state.sessionPath = join(fixture.paths.sessionDir, "main.jsonl");
+  fixture.core.resumeRun = async () => ({ ...fixture.state, startAt: "writing" });
+  const phases = [];
   const orch = createSessionOrchestrator({
     workspaceRoot: root,
-    core,
+    core: fixture.core,
     getTools: () => [],
-    agentRunner,
-    limits: { heartbeatMs: 60_000 },
+    agentRunner: createMockAgentRunner(async (req) => { phases.push(req.phase); return { status: "ok" }; }),
   });
-
   try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
-    await orch.waitFor(orchRunId);
-    const survey = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
-    assert.equal(survey?.status, "failed");
-    assert.equal(survey?.activity, undefined);
-  } finally {
-    orch.dispose();
-  }
+    const started = await orch.start({ workspaceRoot: root, action: "resume", runId: "run-1" });
+    assert.equal((await orch.waitFor(started.orchRunId)).status, "completed");
+    assert.ok(phases.includes("Write"));
+    assert.ok(!phases.includes("Plan"));
+  } finally { orch.dispose(); }
 });
 
-test("stop cancels a running session run", async () => {
+test("releases the core claim and removes local tracking when session setup fails", async () => {
   const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir);
-  const { core } = makeCore(workdir);
-
-  let releaseAgent;
-  const gate = new Promise((resolve) => {
-    releaseAgent = resolve;
-  });
-
-  const agentRunner = createMockAgentRunner(async (req) => {
-    if (req.role === "survey") {
-      await gate;
-      if (req.signal.aborted) {
-        const err = new Error("aborted");
-        err.name = "AbortError";
-        throw err;
-      }
-    }
-    return { status: "ok", summary: "ok" };
-  });
-
+  const { core, calls } = makeCore(root, "auto");
   const orch = createSessionOrchestrator({
     workspaceRoot: root,
     core,
-    getTools: () => [],
-    agentRunner,
-    limits: { heartbeatMs: 60_000, agentTimeoutMs: 120_000 },
-  });
-
-  try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
-    // Wait until overall is running and preferably an agent has started
-    for (let i = 0; i < 50; i++) {
-      const s = orch.getSnapshot(orchRunId);
-      if (s?.agents.some((a) => a.role === "survey" && a.status === "running")) break;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-
-    const stopped = await orch.stop(orchRunId);
-    assert.equal(stopped, true);
-    assert.equal(orch.getSnapshot(orchRunId)?.overall, "cancelled");
-
-    releaseAgent();
-    await orch.waitFor(orchRunId);
-    // Remains cancelled (not overwritten to completed)
-    assert.equal(orch.getSnapshot(orchRunId)?.overall, "cancelled");
-  } finally {
-    orch.dispose();
-  }
-});
-
-test("list / subscribe / updateSnapshot work", async () => {
-  const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 1);
-  const { core } = makeCore(workdir, { startAt: "gate" });
-
-  const orch = createSessionOrchestrator({
-    workspaceRoot: root,
-    core,
-    getTools: () => [],
-    agentRunner: createMockAgentRunner(async () => ({ status: "ok" })),
-  });
-
-  try {
-    const events = [];
-    const unsub = orch.subscribe((snap, e) => {
-      if (e) events.push(e.type);
-    });
-
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan", focus: "auth" });
-    await orch.waitFor(orchRunId);
-
-    const listed = orch.list();
-    assert.equal(listed.length, 1);
-    assert.equal(listed[0].orchRunId, orchRunId);
-    assert.equal(listed[0].backend, "session");
-
-    orch.updateSnapshot((s) => {
-      s.focus = "updated-focus";
-    }, orchRunId);
-    assert.equal(orch.getSnapshot(orchRunId)?.focus, "updated-focus");
-
-    assert.ok(events.includes("orch.started"));
-    assert.ok(events.includes("orch.completed") || events.includes("phase.completed"));
-    unsub();
-  } finally {
-    orch.dispose();
-  }
-});
-
-test("resume restarts wiki path from prepare after pause", async () => {
-  const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 1);
-  let prepareCalls = 0;
-  const base = makeCore(workdir, { startAt: "gate" });
-  const core = {
-    ...base.core,
-    prepareRun: async (...args) => {
-      prepareCalls++;
-      if (prepareCalls === 1) {
-        // Hang the first run so we can pause while running.
-        return new Promise(() => {});
-      }
-      return base.core.prepareRun(...args);
-    },
-  };
-  const orch = createSessionOrchestrator({
-    workspaceRoot: root,
-    core,
-    getTools: () => [],
+    getTools: () => { throw new Error("tool setup failed"); },
     agentRunner: createMockAgentRunner(async () => ({ status: "ok" })),
   });
   try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
-    assert.equal(await orch.pause(orchRunId), true);
-    assert.equal(orch.getSnapshot(orchRunId).overall, "paused");
-    assert.equal(await orch.resume(orchRunId), true);
-    assert.equal(orch.getSnapshot(orchRunId).overall, "running");
-    await orch.waitFor(orchRunId);
-    assert.ok(["completed", "failed", "cancelled"].includes(orch.getSnapshot(orchRunId).overall));
-    assert.ok(prepareCalls >= 2);
-  } finally {
-    orch.dispose();
-  }
-});
-
-test("getSnapshot reloads observation via real WikiRunStore paths", async () => {
-  const root = tempRoot();
-  const workdir = join(root, "wd");
-  seedInventory(workdir, 1);
-  const { core } = makeCore(workdir, { startAt: "gate" });
-  const orch = createSessionOrchestrator({
-    workspaceRoot: root,
-    core,
-    getTools: () => [],
-    agentRunner: createMockAgentRunner(async () => ({ status: "ok" })),
-  });
-  try {
-    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
-    await orch.waitFor(orchRunId);
-    const snap = orch.getSnapshot(orchRunId);
-    assert.ok(snap.domainRunId);
-
-    // Bound store path after prepare bindDomain
-    const reloaded = new WikiRunStore({
-      workspaceRoot: root,
-      domainRunId: snap.domainRunId,
-      orchRunId,
-    });
-    assert.equal(reloaded.getSnapshot().overall, "completed");
-    assert.ok(reloaded.listEvents().some((e) => e.type === "orch.started"));
-  } finally {
-    orch.dispose();
-  }
+    await assert.rejects(orch.start({ workspaceRoot: root, action: "generate" }), /tool setup failed/);
+    assert.equal(calls.claim.length, 1);
+    assert.equal(calls.release.length, 1);
+    assert.equal(orch.list().length, 0);
+  } finally { orch.dispose(); }
 });

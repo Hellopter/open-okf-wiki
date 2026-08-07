@@ -1,15 +1,12 @@
-# Concept template
+# Concept Template
 
-Frontmatter: `type: Concept` plus non-empty `title` and one-sentence `description`.
+Use for a domain-specific or shared concept with a distinct reader question.
 
-Use when repository-specific language or an invariant needs explanation:
+- Explain the concept, its practical relevance, and the boundary it owns.
+- Describe rules, lifecycle, inputs, outputs, and failure behavior only when source evidence supports them.
+- Link to the domain overview and concepts/workflows where readers apply it.
+- Keep source citations next to the claims they support.
 
-- concise definition and reader relevance
-- where the concept enters the system
-- rules, lifecycle, or invariants visible in source
-- concrete examples and common confusions when source supports them
-- links to modules and flows where the concept is applied
-- Source Citations beside each factual rule
-
-Prefer the repository's own stable terminology. Merge when it does not support a distinct reader
-question. Never invent citation line ranges.
+Use `type: concept`, a clear `title`, and non-empty `sources` frontmatter. Each source needs a stable `id`
+and an `inputs/sources/...#Lx-Ly` resource. Merge it into a neighboring page when it would only restate a
+file or implementation name.

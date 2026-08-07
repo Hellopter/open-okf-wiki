@@ -13,8 +13,6 @@ test("mergeOrchLimits applies defaults and partial overrides", () => {
   assert.equal(DEFAULT_ORCH_LIMITS.concurrency, 4);
   assert.equal(DEFAULT_ORCH_LIMITS.maxAgents, 48);
   assert.equal(DEFAULT_ORCH_LIMITS.agentTimeoutMs, 900_000);
-  assert.equal(DEFAULT_ORCH_LIMITS.maxSurveyLanes, 4);
-  assert.equal(DEFAULT_ORCH_LIMITS.targetUnitsPerLane, 3);
   assert.equal(DEFAULT_ORCH_LIMITS.heartbeatMs, 5_000);
   assert.equal(DEFAULT_ORCH_LIMITS.staleWarnMs, 30_000);
 
@@ -26,15 +24,16 @@ test("mergeOrchLimits applies defaults and partial overrides", () => {
 });
 
 test("safeAgentId replaces non-alnum with underscore", () => {
-  assert.equal(safeAgentId("survey::lane-1"), "survey__lane_1");
+  assert.equal(safeAgentId("discover::lane-1"), "discover__lane_1");
   assert.equal(safeAgentId("abc"), "abc");
 });
 
-test("createRun writes snapshot under unbound orchestration path", () => {
+test("createRun writes snapshot under its run path", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root, orchRunId: "orch-1" });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-1", orchRunId: "orch-1" });
   const snap = store.createRun({
     orchRunId: "orch-1",
+    runId: "run-1",
     backend: "session",
     mode: "auto",
     focus: "auth",
@@ -51,7 +50,7 @@ test("createRun writes snapshot under unbound orchestration path", () => {
   assert.equal(snap.phases.length, 0);
   assert.ok(snap.updatedAt);
 
-  const expectedDir = join(root, ".wiki-agent", "orchestration", "orch-1");
+  const expectedDir = join(root, ".wiki-agent", "runs", "run-1", "orchestration");
   assert.equal(store.storeDir, expectedDir);
   assert.ok(existsSync(join(expectedDir, "snapshot.json")));
   const disk = JSON.parse(readFileSync(join(expectedDir, "snapshot.json"), "utf8"));
@@ -60,17 +59,18 @@ test("createRun writes snapshot under unbound orchestration path", () => {
 
 test("appendEvent bumps seq and listEvents supports tail", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-seq" });
   store.createRun({
     orchRunId: "orch-seq",
+    runId: "run-seq",
     backend: "session",
     mode: "plan",
     workspaceRoot: root,
   });
 
   const e1 = store.appendEvent("orch.started", { detail: { hello: 1 } });
-  const e2 = store.appendEvent("phase.started", { phase: "survey" });
-  const e3 = store.appendEvent("agent.queued", { agentId: "a1", phase: "survey" });
+  const e2 = store.appendEvent("phase.started", { phase: "discover" });
+  const e3 = store.appendEvent("agent.queued", { agentId: "a1", phase: "discover" });
 
   assert.equal(e1.seq, 1);
   assert.equal(e2.seq, 2);
@@ -93,56 +93,57 @@ test("appendEvent bumps seq and listEvents supports tail", () => {
 
 test("upsertAgent creates and merges agent rows", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-agents" });
   store.createRun({
     orchRunId: "orch-agents",
-    backend: "subagents",
+    runId: "run-agents",
+    backend: "session",
     mode: "auto",
     workspaceRoot: root,
   });
 
-  store.upsertAgent({ agentId: "survey-1", role: "survey", label: "Lane 1", status: "queued" });
+  store.upsertAgent({ agentId: "discover-1", role: "discover", label: "Lane 1", status: "queued" });
   store.upsertAgent({
-    agentId: "survey-1",
+    agentId: "discover-1",
     status: "running",
     startedAt: 1_704_067_200_000,
     lastHeartbeatAt: 1_704_067_205_000,
   });
-  store.upsertAgent({ agentId: "survey-2", role: "survey", status: "queued" });
+  store.upsertAgent({ agentId: "discover-2", role: "discover", status: "queued" });
 
   const snap = store.getSnapshot();
   assert.equal(snap.agents.length, 2);
-  const a1 = snap.agents.find((a) => a.agentId === "survey-1");
+  const a1 = snap.agents.find((a) => a.agentId === "discover-1");
   assert.ok(a1);
   assert.equal(a1.status, "running");
   assert.equal(a1.label, "Lane 1");
-  assert.equal(a1.role, "survey");
-  assert.equal(a1.receiptsWritten, 0);
+  assert.equal(a1.role, "discover");
   assert.equal(a1.elapsedMs, 0);
   assert.equal(a1.startedAt, 1_704_067_200_000);
 });
 
 test("setPhase and setOverall update snapshot", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-phase" });
   store.createRun({
     orchRunId: "orch-phase",
+    runId: "run-phase",
     backend: "session",
     mode: "auto",
     workspaceRoot: root,
   });
 
-  store.setPhase("survey", "active", "scanning units");
+  store.setPhase("discover", "active", "scanning sources");
   store.setOverall("running");
 
   let snap = store.getSnapshot();
   assert.equal(snap.overall, "running");
-  assert.equal(snap.currentPhase, "survey");
+  assert.equal(snap.currentPhase, "discover");
   assert.equal(snap.phases[0].status, "active");
-  assert.equal(snap.phases[0].summary, "scanning units");
+  assert.equal(snap.phases[0].summary, "scanning sources");
   assert.ok(snap.phases[0].startedAt);
 
-  store.setPhase("survey", "done");
+  store.setPhase("discover", "done");
   snap = store.getSnapshot();
   assert.equal(snap.phases[0].status, "done");
   assert.ok(snap.phases[0].endedAt);
@@ -150,18 +151,19 @@ test("setPhase and setOverall update snapshot", () => {
 
 test("appendTranscript and readTranscript with tail", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-tx" });
   store.createRun({
     orchRunId: "orch-tx",
+    runId: "run-tx",
     backend: "session",
     mode: "auto",
     workspaceRoot: root,
   });
-  store.upsertAgent({ agentId: "lane::1", role: "survey" });
+  store.upsertAgent({ agentId: "lane::1", role: "discover" });
 
-  store.appendTranscript("lane::1", { role: "user", text: "one" });
-  store.appendTranscript("lane::1", { role: "assistant", text: "two" });
-  store.appendTranscript("lane::1", { role: "assistant", text: "three" });
+  store.appendTranscript("lane::1", { role: "assistant", kind: "text", timestamp: 1, text: "one" });
+  store.appendTranscript("lane::1", { role: "assistant", kind: "text", timestamp: 2, text: "two" });
+  store.appendTranscript("lane::1", { role: "assistant", kind: "text", timestamp: 3, text: "three" });
 
   const all = store.readTranscript("lane::1");
   assert.equal(all.length, 3);
@@ -180,9 +182,10 @@ test("appendTranscript and readTranscript with tail", () => {
 
 test("updateSnapshot persists atomically and getSnapshot returns a clone", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-atomic" });
   store.createRun({
     orchRunId: "orch-atomic",
+    runId: "run-atomic",
     backend: "session",
     mode: "write",
     workspaceRoot: root,
@@ -192,60 +195,23 @@ test("updateSnapshot persists atomically and getSnapshot returns a clone", () =>
   a.overall = "failed"; // mutate clone only
   assert.equal(store.getSnapshot().overall, "idle");
 
-  store.updateSnapshot((s) => {
-    s.coverage = {
-      pass: 1,
-      unitsTotal: 2,
-      unitsWithReceipt: 1,
-      missingUnitIds: ["u2"],
-      retryUnitIds: [],
-    };
-  });
+  store.updateSnapshot((s) => { s.currentPhase = "Plan"; });
 
   const path = join(store.storeDir, "snapshot.json");
   const disk = JSON.parse(readFileSync(path, "utf8"));
-  assert.equal(disk.coverage.unitsTotal, 2);
-  assert.equal(disk.coverage.missingUnitIds[0], "u2");
+  assert.equal(disk.currentPhase, "Plan");
 
   // No leftover tmp files from atomic write
   const leftovers = readdirSync(store.storeDir).filter((n) => n.endsWith(".tmp"));
   assert.deepEqual(leftovers, []);
 });
 
-test("bindDomain relocates unbound store under domain run path", () => {
-  const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root, orchRunId: "orch-bind" });
-  store.createRun({
-    orchRunId: "orch-bind",
-    backend: "session",
-    mode: "auto",
-    workspaceRoot: root,
-  });
-  store.appendEvent("orch.started");
-  store.upsertAgent({ agentId: "a1", status: "running" });
-  store.appendTranscript("a1", { n: 1 });
-
-  const unbound = join(root, ".wiki-agent", "orchestration", "orch-bind");
-  assert.ok(existsSync(join(unbound, "snapshot.json")));
-
-  const snap = store.bindDomain("dom-99", "/ws/workdir");
-  assert.equal(snap.domainRunId, "dom-99");
-  assert.equal(snap.workdir, "/ws/workdir");
-
-  const bound = join(root, ".wiki-agent", "runs", "dom-99", "orchestration");
-  assert.equal(store.storeDir, bound);
-  assert.ok(existsSync(join(bound, "snapshot.json")));
-  assert.ok(existsSync(join(bound, "events.jsonl")));
-  assert.equal(store.listEvents().length, 1);
-  assert.equal(store.readTranscript("a1").length, 1);
-  assert.equal(store.getSnapshot().agents[0].agentId, "a1");
-});
-
 test("subscribe receives snapshot updates and events", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "run-sub" });
   store.createRun({
     orchRunId: "orch-sub",
+    runId: "run-sub",
     backend: "session",
     mode: "auto",
     workspaceRoot: root,
@@ -268,21 +234,21 @@ test("subscribe receives snapshot updates and events", () => {
 
 test("reloading store from disk restores snapshot and event seq", () => {
   const root = tempWorkspace();
-  const store = new WikiRunStore({ workspaceRoot: root, domainRunId: "dom-reload", orchRunId: "orch-reload" });
+  const store = new WikiRunStore({ workspaceRoot: root, runId: "dom-reload", orchRunId: "orch-reload" });
   store.createRun({
     orchRunId: "orch-reload",
     backend: "session",
     mode: "auto",
     workspaceRoot: root,
-    domainRunId: "dom-reload",
+    runId: "dom-reload",
   });
   store.appendEvent("orch.started");
-  store.appendEvent("phase.started", { phase: "survey" });
+  store.appendEvent("phase.started", { phase: "discover" });
   store.upsertAgent({ agentId: "x", status: "succeeded" });
 
   const reloaded = new WikiRunStore({
     workspaceRoot: root,
-    domainRunId: "dom-reload",
+    runId: "dom-reload",
     orchRunId: "orch-reload",
   });
   const snap = reloaded.getSnapshot();

@@ -1,12 +1,10 @@
 /**
  * Durable orchestration store: atomic snapshot.json + append-only events.jsonl.
  *
- * Layout:
- * - Bound: `{workspaceRoot}/.wiki-agent/runs/{domainRunId}/orchestration/`
- * - Unbound: `{workspaceRoot}/.wiki-agent/orchestration/{orchRunId}/`
+ * Layout: `{workspaceRoot}/.wiki-agent/runs/{runId}/orchestration/`
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, appendFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type {
   AgentStatus,
@@ -17,15 +15,15 @@ import type {
   WikiEventType,
   WikiObservationEntry,
   WikiOverallStatus,
+  WikiObservationKind,
   WikiPhaseStatus,
   WikiPhaseView,
   WikiProgressSnapshot,
-  WikiTranscriptEntry,
 } from "./types.js";
 
 export interface WikiRunStoreOptions {
   workspaceRoot: string;
-  domainRunId?: string;
+  runId: string;
   orchRunId?: string;
 }
 
@@ -35,8 +33,7 @@ export interface CreateRunOptions {
   mode: string;
   focus?: string;
   workspaceRoot: string;
-  domainRunId?: string;
-  workdir?: string;
+  runId: string;
 }
 
 /** Alias used by orchestrator backends / package index. */
@@ -83,16 +80,13 @@ function readJsonl(filePath: string): unknown[] {
   return out;
 }
 
-function orchestrationDir(workspaceRoot: string, domainRunId: string | undefined, orchRunId: string): string {
-  if (domainRunId) {
-    return join(workspaceRoot, ".wiki-agent", "runs", domainRunId, "orchestration");
-  }
-  return join(workspaceRoot, ".wiki-agent", "orchestration", orchRunId);
+function orchestrationDir(workspaceRoot: string, runId: string): string {
+  return join(workspaceRoot, ".wiki-agent", "runs", runId, "orchestration");
 }
 
 export class WikiRunStore {
   private workspaceRoot: string;
-  private domainRunId: string | undefined;
+  private runId: string;
   private orchRunId: string;
   private rootDir: string;
   private snapshot: WikiProgressSnapshot | null = null;
@@ -101,9 +95,9 @@ export class WikiRunStore {
 
   constructor(options: WikiRunStoreOptions) {
     this.workspaceRoot = options.workspaceRoot;
-    this.domainRunId = options.domainRunId;
+    this.runId = options.runId;
     this.orchRunId = options.orchRunId ?? "";
-    this.rootDir = orchestrationDir(this.workspaceRoot, this.domainRunId, this.orchRunId || "_pending");
+    this.rootDir = orchestrationDir(this.workspaceRoot, this.runId);
     this.loadFromDisk();
   }
 
@@ -114,17 +108,16 @@ export class WikiRunStore {
 
   createRun(options: CreateRunOptions): WikiProgressSnapshot {
     this.workspaceRoot = options.workspaceRoot;
-    this.domainRunId = options.domainRunId;
+    this.runId = options.runId;
     this.orchRunId = options.orchRunId;
-    this.rootDir = orchestrationDir(this.workspaceRoot, this.domainRunId, this.orchRunId);
+    this.rootDir = orchestrationDir(this.workspaceRoot, this.runId);
     mkdirSync(this.rootDir, { recursive: true });
 
     const snap: WikiProgressSnapshot = {
       version: 1,
-      domainRunId: options.domainRunId,
+      runId: options.runId,
       orchRunId: options.orchRunId,
       workspaceRoot: options.workspaceRoot,
-      workdir: options.workdir,
       mode: options.mode,
       focus: options.focus,
       backend: options.backend,
@@ -141,42 +134,6 @@ export class WikiRunStore {
     writeFileSync(this.eventsPath(), "", "utf8");
     this.notify(snap);
     return this.cloneSnapshot(snap);
-  }
-
-  /**
-   * Bind this store to a domain run id, relocating files from the unbound
-   * temp path into `.wiki-agent/runs/{domainRunId}/orchestration/` when needed.
-   */
-  bindDomain(domainRunId: string, workdir?: string): WikiProgressSnapshot {
-    if (!this.orchRunId) {
-      throw new Error("WikiRunStore.bindDomain requires an orchRunId (call createRun first)");
-    }
-
-    const previousDir = this.rootDir;
-    const nextDir = orchestrationDir(this.workspaceRoot, domainRunId, this.orchRunId);
-    const relocating = previousDir !== nextDir && existsSync(previousDir);
-
-    if (relocating) {
-      mkdirSync(dirname(nextDir), { recursive: true });
-      if (existsSync(nextDir)) {
-        // Merge: copy any missing pieces then remove source
-        this.copyDirContents(previousDir, nextDir);
-        rmSync(previousDir, { recursive: true, force: true });
-      } else {
-        renameSync(previousDir, nextDir);
-      }
-      // Best-effort cleanup of empty unbound parent
-      this.tryRemoveEmptyParents(previousDir);
-    }
-
-    this.domainRunId = domainRunId;
-    this.rootDir = nextDir;
-    mkdirSync(this.rootDir, { recursive: true });
-
-    return this.updateSnapshot((s) => {
-      s.domainRunId = domainRunId;
-      if (workdir !== undefined) s.workdir = workdir;
-    });
   }
 
   getSnapshot(): WikiProgressSnapshot {
@@ -209,7 +166,7 @@ export class WikiRunStore {
       agentId?: string;
       phase?: string;
       detail?: unknown;
-      domainRunId?: string;
+      runId?: string;
     } = {},
   ): WikiEvent {
     if (!this.snapshot && !this.orchRunId) {
@@ -222,7 +179,7 @@ export class WikiRunStore {
       seq: this.seq,
       type,
       orchRunId,
-      domainRunId: fields.domainRunId ?? this.domainRunId ?? this.snapshot?.domainRunId,
+      runId: fields.runId ?? this.runId,
       agentId: fields.agentId,
       phase: fields.phase,
       detail: fields.detail,
@@ -250,11 +207,10 @@ export class WikiRunStore {
       const created: WikiAgentView = {
         agentId: partial.agentId,
         label: partial.label ?? partial.agentId,
-        role: (partial.role ?? "other") as WikiAgentRole,
+        role: (partial.role ?? "main") as WikiAgentRole,
         phase: partial.phase ?? s.currentPhase ?? "",
         status: (partial.status ?? "queued") as AgentStatus,
         elapsedMs: partial.elapsedMs ?? 0,
-        receiptsWritten: partial.receiptsWritten ?? 0,
         unitIds: partial.unitIds,
         pagePaths: partial.pagePaths,
         model: partial.model,
@@ -316,10 +272,10 @@ export class WikiRunStore {
     }
   }
 
-  readTranscript(agentId: string, options: { tail?: number } = {}): WikiTranscriptEntry[] {
+  readTranscript(agentId: string, options: { tail?: number } = {}): WikiObservationEntry[] {
     const file = join(this.rootDir, "agents", safeAgentId(agentId), "transcript.jsonl");
     const rows = readJsonl(file).filter(
-      (r): r is WikiTranscriptEntry => r !== null && typeof r === "object",
+      isWikiObservationEntry,
     );
     if (options.tail != null && options.tail >= 0) {
       return rows.slice(-options.tail);
@@ -362,7 +318,7 @@ export class WikiRunStore {
       const raw = JSON.parse(readFileSync(snapPath, "utf8")) as WikiProgressSnapshot;
       this.snapshot = raw;
       this.orchRunId = raw.orchRunId || this.orchRunId;
-      this.domainRunId = raw.domainRunId ?? this.domainRunId;
+      this.runId = raw.runId;
       if (raw.workspaceRoot) this.workspaceRoot = raw.workspaceRoot;
     } catch {
       this.snapshot = null;
@@ -389,44 +345,25 @@ export class WikiRunStore {
     return structuredClone(snap);
   }
 
-  private copyDirContents(from: string, to: string): void {
-    mkdirSync(to, { recursive: true });
-    for (const entry of readdirSync(from, { withFileTypes: true })) {
-      const src = join(from, entry.name);
-      const dest = join(to, entry.name);
-      if (entry.isDirectory()) {
-        this.copyDirContents(src, dest);
-      } else if (!existsSync(dest)) {
-        cpSync(src, dest);
-      }
-    }
-  }
-
-  private tryRemoveEmptyParents(startDir: string): void {
-    // Remove the old orch dir's empty ancestors up to `.wiki-agent/orchestration`
-    let current = startDir;
-    for (let i = 0; i < 3; i++) {
-      if (!existsSync(current)) {
-        current = dirname(current);
-        continue;
-      }
-      try {
-        const entries = readdirSync(current);
-        if (entries.length === 0) {
-          rmSync(current, { recursive: true, force: true });
-          current = dirname(current);
-        } else {
-          break;
-        }
-      } catch {
-        break;
-      }
-    }
-  }
 }
 
 function isWikiEvent(value: unknown): value is WikiEvent {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return typeof v.seq === "number" && typeof v.type === "string" && typeof v.orchRunId === "string";
+}
+
+function isWikiObservationEntry(value: unknown): value is WikiObservationEntry {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  const validRoles = new Set(["assistant", "tool", "system"]);
+  const validKinds: ReadonlySet<WikiObservationKind> = new Set([
+    "text", "tool_start", "tool_end", "retry_start", "retry_end",
+    "compaction_start", "compaction_end", "summarization_retry",
+  ]);
+  return typeof row.timestamp === "number"
+    && typeof row.role === "string"
+    && validRoles.has(row.role)
+    && typeof row.kind === "string"
+    && validKinds.has(row.kind as WikiObservationKind);
 }

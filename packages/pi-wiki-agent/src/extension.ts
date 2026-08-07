@@ -18,12 +18,10 @@ import { createCoreAdapter, type CoreAdapter, type WikiWorkspaceStatus } from ".
 import {
   formatStatusBar,
   openWikiNavigator,
-  toWikiObservationEntries,
 } from "./observe/index.js";
 import {
   createSessionOrchestrator,
   DEFAULT_ORCH_LIMITS,
-  scanSurveyCoverage,
   type WikiOrchestrator,
   type WikiProgressSnapshot,
 } from "./orch/index.js";
@@ -48,10 +46,9 @@ const CONTROL_TOOL_NAME = "okf_wiki";
 const OBSERVE_OPTS = { staleWarnMs: DEFAULT_ORCH_LIMITS.staleWarnMs };
 
 const CAPABILITY_NOTICE =
-  "OKF Wiki (@okf-wiki/pi-wiki-agent) is loaded: checkpointed repository Wiki production. " +
-  "Not pi-llm-wiki (personal knowledge base). Use /wiki help for commands. " +
-  "Session orchestration: Bootstrap→Survey→Plan→Gate→Write→Verify→Repair→Validate. " +
-  "Open /wiki to observe phases, agents, and execution streams.";
+  "OKF Wiki (@okf-wiki/pi-wiki-agent) is loaded: source-grounded repository Wiki production. " +
+  "Use /wiki generate to create a Markdown plan and OKF bundle; /wiki approve resumes proposed runs. " +
+  "The main agent keeps a run-scoped persisted session. Open /wiki to observe phases and execution streams.";
 
 type StatusUi = {
   setStatus: (key: string, text: string | undefined) => void;
@@ -72,34 +69,8 @@ function mainModelSpec(ctx: ExtensionContext): string | undefined {
   return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
-function operationSucceeded(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const result = value as { ok?: unknown; status?: unknown };
-  return result.ok === true || result.status === "ok";
-}
-
 function output(pi: ExtensionAPI, content: string): void {
   pi.sendMessage({ customType: "okf-wiki", content, display: true });
-}
-
-async function enrichCoverage(orch: WikiOrchestrator, core: CoreAdapter, root: string): Promise<void> {
-  try {
-    const snap = orch.getActiveSnapshot();
-    let workdir = snap?.workdir;
-    if (!workdir) {
-      const paths = await core.getRunPaths(root);
-      workdir = paths?.workdir;
-    }
-    if (!workdir || !orch.updateSnapshot) return;
-    const coverage = await scanSurveyCoverage(workdir);
-    if (!coverage) return;
-    orch.updateSnapshot((s) => {
-      s.coverage = coverage;
-      if (!s.workdir) s.workdir = workdir;
-    });
-  } catch {
-    // ignore
-  }
 }
 
 function formatWorkspaceStatus(status: WikiWorkspaceStatus): string {
@@ -124,8 +95,7 @@ function formatWorkspaceStatus(status: WikiWorkspaceStatus): string {
   if (status.active?.runId || status.activeRunId) {
     const id = status.active?.runId ?? status.activeRunId;
     const st = status.active?.status ? ` [${status.active.status}]` : "";
-    const workdir = status.active?.workdir ? ` workdir=${status.active.workdir}` : "";
-    lines.push(`- active: ${id}${st}${workdir}`);
+    lines.push(`- active: ${id}${st}`);
   } else {
     lines.push("- active: none");
   }
@@ -172,7 +142,6 @@ async function refreshObservation(
 ): Promise<void> {
   try {
     orch.syncFromBackend();
-    await enrichCoverage(orch, core, root);
     let workspace: WikiWorkspaceStatus | undefined;
     try {
       workspace = await core.loadWorkspace(root);
@@ -218,7 +187,6 @@ async function openNavigator(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   orch.syncFromBackend();
-  await enrichCoverage(orch, core, root);
   const workspace = await readWorkspaceStatus(core, root);
   await openWikiNavigator(
     { hasUI: ctx.hasUI, ui: ctx.ui },
@@ -234,7 +202,7 @@ async function openNavigator(
         sourceCount: workspace.sources.length,
       },
       subscribe: (cb) => orch.subscribe((snapshot) => cb(snapshot)),
-      getTranscript: async (agentId) => toWikiObservationEntries(await orch.getTranscript(agentId, { tail: 120 })),
+      getTranscript: async (agentId) => await orch.getTranscript(agentId, { tail: 120 }),
       onPause: () => orch.pause(),
       onResume: () => orch.resume(),
       onStop: () => orch.stop(),
@@ -339,44 +307,24 @@ async function executeCommand(
       await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
-    case "run": {
-      if (command.mode === "write") {
-        const status = await core.getWorkspaceStatus(root);
-        if (!status.activeRunId && !status.active?.runId) {
-          throw new WikiCommandError("No planned domain run is available for writing.");
-        }
-        const runId = status.activeRunId ?? status.active!.runId;
-        const gate = await core.checkPlanGate(root, { runId });
-        if (!operationSucceeded(gate)) {
-          if (!ctx.hasUI) {
-            throw new WikiCommandError("The plan gate requires interactive approval; run /wiki --write in Pi TUI.");
-          }
-          const approved = await ctx.ui.confirm(
-            "Approve Wiki plan",
-            "Start writing the checkpointed candidate Wiki from the current plan?",
-          );
-          if (!approved) {
-            ctx.ui.notify("Plan remains unapproved; no Wiki writing started.", "info");
-            return;
-          }
-          const opened = await core.openPlanGate(root, { runId });
-          if (!operationSucceeded(opened)) {
-            throw new WikiCommandError("Plan approval did not complete; check /wiki status --json.");
-          }
-        }
-      }
-
+    case "generate": {
       const started = await orch.start({
         workspaceRoot: workspace.root,
-        mode: command.mode,
+        action: "generate",
         focus: command.focus,
       });
       ctx.ui.notify(
         `Started wiki orch ${started.orchRunId}` +
-          (started.domainRunId ? ` (domain ${started.domainRunId})` : "; domain run id after Bootstrap") +
+          (started.runId ? ` (run ${started.runId})` : "") +
           ". Open /wiki to observe.",
         "info",
       );
+      await refreshObservation(core, orch, root, ctx.ui);
+      return;
+    }
+    case "approve": {
+      const started = await orch.start({ workspaceRoot: workspace.root, action: "approve", runId: command.runId });
+      ctx.ui.notify(`Approved and resumed Wiki run ${started.runId ?? command.runId ?? ""}. Open /wiki to observe.`, "info");
       await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
@@ -388,25 +336,17 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
     name: CONTROL_TOOL_NAME,
     label: "OKF Wiki",
     description:
-      "Start or inspect the checkpointed OKF repository Wiki workflow. Prefer /wiki for interactive control.",
+      "Start or inspect the Markdown-first OKF repository Wiki workflow. Prefer /wiki for interactive control.",
     parameters: Type.Object({
       action: Type.Union([
-        Type.Literal("run"),
+        Type.Literal("generate"),
+        Type.Literal("approve"),
         Type.Literal("status"),
         Type.Literal("stop"),
         Type.Literal("pause"),
         Type.Literal("resume"),
       ]),
-      mode: Type.Optional(
-        Type.Union([
-          Type.Literal("auto"),
-          Type.Literal("plan"),
-          Type.Literal("write"),
-          Type.Literal("restart"),
-          Type.Literal("retry-plan"),
-          Type.Literal("retry-write"),
-        ]),
-      ),
+      runId: Type.Optional(Type.String()),
       focus: Type.Optional(Type.String()),
     }),
     executionMode: "sequential",
@@ -434,23 +374,21 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
         const ok = await orch.resume();
         return { content: [{ type: "text", text: ok ? "Resumed." : "Nothing to resume." }], details: { ok } };
       }
-      if (params.mode === "write") {
-        throw new Error("Use /wiki --write to approve a plan before starting candidate writing");
-      }
       const workspace = await ensureWorkspace(core, root, { linkProjectOnCreate: true });
       const started = await orch.start({
         workspaceRoot: workspace.root,
-        mode: params.mode ?? "auto",
+        action: params.action,
+        runId: params.runId,
         focus: params.focus,
       });
       return {
         content: [
           {
             type: "text",
-            text: `Started wiki orch ${started.orchRunId}. Domain run id is produced by Bootstrap. Open /wiki to observe.`,
+            text: `Started wiki orch ${started.orchRunId}. Open /wiki to observe.`,
           },
         ],
-        details: { orchRunId: started.orchRunId, domainRunId: started.domainRunId, workspaceRoot: workspace.root },
+        details: { orchRunId: started.orchRunId, runId: started.runId, workspaceRoot: workspace.root },
       };
     },
   });
@@ -489,7 +427,7 @@ export function createWikiExtension(options: WikiExtensionOptions) {
       return createSessionOrchestrator({
         workspaceRoot: root,
         core,
-        getTools: (r) => createWikiToolset(r, core),
+        getTools: (r, role) => createWikiToolset(r, core, { role }),
         getMainModel: () => mainModel,
         getModelRegistry: () => modelRegistry,
       });
@@ -533,7 +471,7 @@ export function createWikiExtension(options: WikiExtensionOptions) {
     const aliases: Array<{ name: string; description: string; prefix: string }> = [
       { name: "wiki-help", description: "Show OKF Wiki command help", prefix: "help" },
       { name: "wiki-init", description: "Initialize an OKF Wiki workspace", prefix: "init" },
-      { name: "wiki-run", description: "Start the OKF Wiki workflow (optional focus)", prefix: "run" },
+      { name: "wiki-generate", description: "Generate an OKF Wiki (optional focus)", prefix: "generate" },
       { name: "wiki-source", description: "Manage OKF Wiki sources (list|add|remove)", prefix: "source" },
     ];
     for (const alias of aliases) {

@@ -1,48 +1,57 @@
-# Generate
+# Generate and Revise
 
-Write only the owner-scoped, Spec-bound concept pages into the unsealed `candidate/` directory.
+Write the approved Wiki into `bundle/` using `analysis/plan.md` as the authority. This is one continuous
+main-Agent task: do not divide pages into owner shards, reconstruct a new plan, or create an artifact list.
 
-**Prerequisites:** `analysis/spec.json` exists and `okf_gate` check succeeds.
-**Authority:** the `pages` array in `analysis/spec.json` is the sole page-set authority.
-**Next:** independent review, then `okf_validate` followed by the terminal validate
-checkpoint.
+## Before writing
 
-## Procedure
+1. Read the full plan, relevant discovery briefs, and `analysis/coverage-review.md` when it exists.
+2. Re-open the load-bearing spans in `inputs/sources/<id>/`. A discovery brief is a lead, not proof.
+3. Read `inputs/run-policy.json` and keep all human-facing prose in its `wikiLanguage`.
 
-1. Read `inputs/run-policy.json` for `wikiLanguage` / `focus`, then the full Spec and the relevant
-   Discovery Map/receipt paths. Do not re-plan from a fresh survey.
-2. Re-open evidence spans inside `sources/<id>/` as needed.
-3. Read `analysis/page-assignments.json`. Write only the paths owned by your shard; never edit a
-   path owned by another shard.
-4. Write all prose (title, description, headings, body) in `wikiLanguage`. When `wikiLanguage=zh`,
-   use Simplified Chinese throughout; keep paths and identifiers untranslated.
-5. Cross-link candidate pages with relative `.md` links.
-6. Leave `index.md` and `log.md` to the host; validation regenerates every `index.md`.
+## Write the hierarchy
 
-Every critical Spec path must exist, answer its stated reader question with concrete evidence-backed
-depth (not a README restatement), and have nearby verified Source Citations. For multi-source runs,
-the overview repository map, per-source module/architecture coverage, and any critical cross-source
-flow must name participating `sources/<id>/` trees with stage-level citations. Do not add a concept
-page absent from the Spec or change the Spec while writing. After the shard finishes, write an
-artifacts list under `analysis/receipts/` with `{id,type,path}` entries. Host `okf_publish` creates
-the `write-sources` / `write` checkpoints. See
-`references/orchestrator-context.md`.
+- Write domain narratives at `bundle/domains/<domain>/overview.md` and domain-specific concepts alongside
+  them. Put a concept or workflow that genuinely crosses domains in `bundle/concepts/` and link to all
+  participating domains.
+- Create pages only when they have a distinct reader question in the plan. Merge thin implementation
+  details into the domain or concept that makes them understandable.
+- Never write `index.md`; validation generates the root and directory indexes. Never write `log.md`.
+- Use relative `.md` links for internal navigation. Links must resolve within `bundle/`.
 
-## Frontmatter and local links
+## Frontmatter and evidence
 
-Each concept page needs non-empty YAML `type`, `title`, and `description`. `tags` are optional.
-Never write `generated`, `verified`, `stale_after`, or `okf_version`.
+Every authored page starts with YAML frontmatter:
 
-Link a factual claim directly to its frozen source file with a real line range. The link target is
-relative to the page being written:
-
-```md
-<!-- candidate/overview.md -->
-[Source: src/A.java L10-L20](../sources/app/src/A.java#L10-L20)
-
-<!-- candidate/modules/auth.md -->
-[Source: src/A.java L10-L20](../../sources/app/src/A.java#L10-L20)
+```yaml
+---
+type: concept
+title: Authentication lifecycle
+sources:
+  - id: app-session
+    resource: inputs/sources/app/src/auth/session.ts#L18-L86
+domains: [identity]
+---
 ```
 
-Do not use `repo:`, remote URLs, `file://`, `vscode://`, a plain source path without `#Lx-Ly`, or
-any target outside frozen `sources/`. The line range must come from an actual read, never an estimate.
+`type`, `title`, and `sources` are required and must be non-empty. Every source entry needs a stable `id`
+and a `resource` under `inputs/sources/` with a real line fragment. `description`, `tags`, and `domains`
+are optional. Do not write `generated`; the host adds provenance when it seals the bundle. Do not claim
+that a page is verified.
+
+Support factual prose with nearby links to real frozen source lines, for example:
+
+```md
+The session is renewed only after the token check succeeds.
+[Source: session renewal](../../inputs/sources/app/src/auth/session.ts#L42-L68)
+```
+
+Choose paths relative to the authored page. Never cite a mutable checkout, an external URL, `file://`,
+or an editor URI. Do not estimate line ranges.
+
+## Revision after review
+
+The reviewer writes `analysis/review.md` without changing the bundle. Read every finding, verify it
+against the plan and frozen source, and repair concrete defects in the existing pages. Update `plan.md`
+only when the review changes scope or coverage reasoning. Do not write a repair receipt or begin an
+unbounded review loop; one targeted revision pass is part of this run, after which the host validates.

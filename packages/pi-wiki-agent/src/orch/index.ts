@@ -8,7 +8,6 @@ export type {
   WikiAgentRole,
   WikiAgentView,
   WikiBackend,
-  WikiCoverageView,
   WikiEvent,
   WikiEventType,
   WikiOverallStatus,
@@ -20,7 +19,6 @@ export type {
   WikiProgressSnapshot,
   WikiTokenUsage,
   WikiContextUsage,
-  WikiTranscriptEntry,
 } from "./types.js";
 export { DEFAULT_ORCH_LIMITS, mergeOrchLimits } from "./types.js";
 
@@ -34,8 +32,6 @@ export {
   type WikiRunStoreOptions,
 } from "./store.js";
 
-export type { ScanSurveyCoverageOptions } from "./progress.js";
-export { isAgentStale, sanitizeForMatch, scanSurveyCoverage } from "./progress.js";
 
 export type {
   WikiOrchestrator,
@@ -50,40 +46,25 @@ export {
 
 export {
   createPiAgentRunner,
-  createWorkflowAgentRunner,
+  createPersistentPiAgentRunner,
   createMockAgentRunner,
   type WikiAgentRunRequest,
   type WikiAgentRunResult,
   type WikiAgentRunner,
   type PiAgentRunnerOptions,
-  type WorkflowAgentRunnerOptions,
+  type PersistentPiAgentRunner,
 } from "./agent-runner.js";
 
-export { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
-
 export {
-  runPlanPath,
   runWikiPath,
   loadInventory,
   shardUnits,
-  adaptiveLaneCount,
+  adaptiveDiscoveryLaneCount,
   setPhaseStatus,
-  PLAN_PATH_ENVELOPE,
-  type PlanPathContext,
-  type PlanPathResult,
   type CoverageUnit,
   type LoadedInventory,
 } from "./phase-graph.js";
 
-export {
-  runWritePath,
-  loadAssignmentsFromDisk,
-  ASSIGNMENTS_SCHEMA,
-  REVIEW_SCHEMA,
-  type WritePathContext,
-  type PageShard,
-  type AssignmentsBundle,
-} from "./write-path.js";
 
 export {
   SessionWikiOrchestrator,

@@ -2,7 +2,6 @@ import type {
   AgentStatus,
   WikiAgentActivity,
   WikiAgentView,
-  WikiCoverageView,
   WikiContextUsage,
   WikiPhaseStatus,
   WikiTokenUsage,
@@ -189,7 +188,7 @@ function compactAgentStats(agent: WikiAgentView): string {
 
 /**
  * One table row for an agent.
- * Example: `survey:1:2 ● running 1m23s read_file  !stale`
+ * Example: `discover:1:2 ● running 1m23s read_file  !stale`
  */
 export function formatAgentLine(agent: WikiAgentView, opts: FormatTimeOpts = {}): string {
   const now = opts.now ?? Date.now();
@@ -208,10 +207,4 @@ export function formatAgentLine(agent: WikiAgentView, opts: FormatTimeOpts = {})
       : "";
   const stats = compactAgentStats(agent);
   return `${agent.agentId} ${glyph} ${agent.status} ${elapsed}${tool}${stats ? ` · ${stats}` : ""}${err}${stale}`;
-}
-
-/** Coverage summary: `pass1 4/12 receipts missing:8`. */
-export function formatCoverageLine(coverage: WikiCoverageView): string {
-  const missing = coverage.missingUnitIds.length;
-  return `pass${coverage.pass} ${coverage.unitsWithReceipt}/${coverage.unitsTotal} receipts missing:${missing}`;
 }

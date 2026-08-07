@@ -1,25 +1,16 @@
-# Overview template
+# Root Overview Guidance
 
-Adapt this into **`overview.md`**. Frontmatter example:
+The host generates `bundle/index.md`; do not turn it into a narrative. A repository-wide overview belongs
+in a domain overview or a shared concept only when it answers a real reader question that cannot be owned
+by a smaller domain.
 
-```yaml
----
-type: Overview
-title: Repository name
-description: One sentence on what the repository does and for whom.
----
-```
+When such a page is warranted:
 
-`index.md` is a reserved mechanical listing (host-regenerated) — not this narrative.
+- explain the product's purpose and the smallest useful mental model;
+- introduce the major domains and their most important relationships;
+- link to the domain pages readers should visit next;
+- cite source-grounded factual statements;
+- keep the hierarchy conceptual rather than mirroring the repository tree.
 
-- What the repository (or multi-source product) does and for whom
-- The smallest useful mental model
-- Main capabilities and boundaries
-- **Repository / surface map** when multiple sources or monorepo packages exist
-- Links to the pages this Wiki actually needs
-- Source Citations beside factual explanations, using a local relative link such as
-  `[Source: src/A.java L1-L2](../sources/app/src/A.java#L1-L2)`
-
-Open with the product's value rather than its directory tree. Omit irrelevant prompts; merge small
-topics into the narrative. Prose language follows `wikiLanguage` (`zh` → Simplified Chinese for
-titles, description, and body); paths and identifiers stay untranslated.
+Use `type: concept` or `type: domain` according to the plan, plus non-empty `title` and `sources` entries
+with stable `id` values and `inputs/sources/...#Lx-Ly` resources.
