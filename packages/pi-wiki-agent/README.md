@@ -186,21 +186,40 @@ Do **not** run bare `tsc` in the shell. If `pnpm build` still fails, paste the
 full error after `pnpm install` (including the `> node ./scripts/run-tsc.mjs …`
 line).
 
-### Troubleshooting: `Cannot find module '@earendil-works/pi-ai/compat'`
+### Troubleshooting: monorepo tests vs Pi host extensions
 
-Pi host packages (`pi-ai`, `pi-coding-agent`, `pi-tui`, `typebox`) are
-**peerDependencies** (provided by Pi at runtime) and the same packages are
-listed again under **devDependencies** so local `pnpm test` can resolve them
-(same pattern as `pi-llm-wiki` / `pi-dynamic-workflows`).
+**A) `pnpm test` cannot find `@earendil-works/pi-ai/compat`**
+
+Peers are listed again under **devDependencies** (same as pi-llm-wiki). From the
+monorepo root:
 
 ```bash
-# From monorepo root — installs peer packages via devDependencies
 pnpm install
 pnpm -C packages/pi-wiki-agent test
 ```
 
-Do not move those packages into `dependencies` (would conflict with the Pi host).
-Do not rely on pnpm hoisting workarounds.
+Do not put Pi host packages into `dependencies`.
+
+**B) Pi runtime: `…/pi-ai/dist/index.js/compat` (pi-web-access / pi-subagents)**
+
+This is a **host Pi / jiti alias** bug, not OKF wiki-agent. Older Pi maps
+`@earendil-works/pi-ai` → `dist/index.js`, then appends `/compat` → invalid path.
+Upgrade the host:
+
+```bash
+pi update --self
+# expect pi --version >= 0.80 (prefer 0.82+)
+pi remove npm:pi-web-access
+pi remove npm:pi-subagents
+pi install npm:pi-web-access
+pi install npm:pi-subagents
+```
+
+**C) `Unknown option: --approve`**
+
+Your Pi CLI is older than the flag on the main entrypoint. Trust the project
+once in interactive Pi, then run `verify:pi` (the script omits `--approve` when
+`pi --help` does not list it).
 
 Package layout:
 
