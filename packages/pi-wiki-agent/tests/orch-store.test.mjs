@@ -13,7 +13,6 @@ test("mergeOrchLimits applies defaults and partial overrides", () => {
   assert.equal(DEFAULT_ORCH_LIMITS.concurrency, 4);
   assert.equal(DEFAULT_ORCH_LIMITS.maxAgents, 48);
   assert.equal(DEFAULT_ORCH_LIMITS.agentTimeoutMs, 900_000);
-  assert.equal(DEFAULT_ORCH_LIMITS.agentRetries, 1);
   assert.equal(DEFAULT_ORCH_LIMITS.maxSurveyLanes, 4);
   assert.equal(DEFAULT_ORCH_LIMITS.targetUnitsPerLane, 3);
   assert.equal(DEFAULT_ORCH_LIMITS.heartbeatMs, 5_000);

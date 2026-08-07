@@ -8,11 +8,13 @@ import {
   formatAgentLine,
   formatCoverageLine,
   formatDuration,
+  formatWikiObservationEntries,
   formatStatusBar,
   isAgentStale,
   openWikiNavigator,
   phaseStatusGlyph,
   renderWikiNavigator,
+  toWikiObservationEntries,
 } from "../dist/observe/index.js";
 
 const NOW = 1_700_000_000_000;
@@ -125,6 +127,80 @@ test("Navigator moves phase to agents to execution stream", () => {
   assert.equal(applyWikiNavigatorKey({ ...state, snapshot: { ...snap, overall: "paused" } }, "p").action, "resume");
 });
 
+test("Navigator keeps the wide phase-agent divider through every body row", () => {
+  const state = createWikiNavigatorState(fixtureSnapshot());
+  const lines = renderWikiNavigator(
+    state,
+    { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+    { width: 80, maxRows: 14, interactive: true, now: NOW },
+  );
+  const top = lines.findIndex((line) => line.includes("┌") && line.includes("┬") && line.includes("┐"));
+  const bottom = lines.findIndex((line) => line.includes("└") && line.includes("┴") && line.includes("┘"));
+  assert.ok(top >= 0);
+  assert.ok(bottom > top + 1);
+  for (const line of lines.slice(top + 1, bottom)) assert.match(line, /│.*│.*│/);
+  assert.equal(lines.length, 14);
+});
+
+test("observation formatter shows useful tool and agent state without serializing JSON", () => {
+  const lines = formatWikiObservationEntries([
+    { role: "tool", kind: "tool_start", timestamp: 1, toolCallId: "one", toolName: "read", path: "src/observe/navigator.ts" },
+    { role: "tool", kind: "tool_end", timestamp: 2, toolCallId: "one", toolName: "read", isError: false },
+    { role: "assistant", kind: "text", timestamp: 3, text: "The pane uses a fixed frame.\nThe divider now reaches the bottom." },
+    { role: "system", kind: "retry_start", timestamp: 4, attempt: 2, maxAttempts: 3, delayMs: 4_000, error: "rate limited" },
+    { role: "system", kind: "compaction_end", timestamp: 5, tokensBefore: 176_000, tokensAfter: 24_000, success: true },
+    { role: "tool", kind: "tool_end", timestamp: 6, toolName: "write", path: "docs/wiki.md", isError: true, error: "permission denied" },
+    { role: "system", kind: "text", timestamp: 7, text: '{"large":"raw JSON must not appear"}' },
+    { role: "tool", kind: "tool_start", timestamp: 8, toolName: "structured_output" },
+    { role: "tool", kind: "structured_output", timestamp: 9 },
+  ]);
+  assert.deepEqual(lines.slice(0, 3), [
+    "→ read  src/observe/navigator.ts",
+    "assistant  The pane uses a fixed frame.",
+    "           The divider now reaches the bottom.",
+  ]);
+  assert.ok(lines.some((line) => /Retry 2\/3.*waiting 4s.*rate limited/.test(line)));
+  assert.ok(lines.some((line) => /Context compacted.*176k → 24k/.test(line)));
+  assert.ok(lines.some((line) => /write.*docs\/wiki.md.*permission denied/.test(line)));
+  assert.ok(!lines.some((line) => line.includes('"large"')));
+  assert.equal(lines.filter((line) => /structured/i.test(line)).length, 1);
+
+  const legacy = formatWikiObservationEntries(
+    toWikiObservationEntries([
+      { role: "tool", kind: "tool_execution_start", toolName: "read", path: "src/a.ts" },
+      { opaque: { deeply: "nested" } },
+    ]),
+  );
+  assert.deepEqual(legacy, ["→ read  src/a.ts", "(legacy observation)"]);
+});
+
+test("Navigator renders context, usage, and transient Pi activity", () => {
+  const snapshot = fixtureSnapshot({
+    agents: fixtureSnapshot().agents.map((agent) =>
+      agent.agentId === "survey:1:2"
+        ? {
+            ...agent,
+            context: { tokens: 24_100, contextWindow: 200_000, percent: 12 },
+            latestUsage: { input: 4_800, output: 700, cacheRead: 3_100, total: 8_600 },
+            tokenUsage: { total: 46_200 },
+            compactionCount: 1,
+            activity: { kind: "retrying", attempt: 1, maxAttempts: 3, delayMs: 2_000, message: "rate limited" },
+          }
+        : agent,
+    ),
+  });
+  let state = createWikiNavigatorState(snapshot);
+  state = applyWikiNavigatorKey(state, "right").state;
+  state = applyWikiNavigatorKey(state, "enter").state;
+  state = { ...state, transcriptLoading: false };
+  const lines = renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { now: NOW, maxRows: 30 });
+  assert.ok(lines.some((line) => /Context 24k \/ 200k \(12%\)/.test(line)));
+  assert.ok(lines.some((line) => /Retry 1\/3.*waiting 2s.*rate limited/.test(line)));
+  assert.ok(lines.some((line) => /This turn in 4\.8k.*out 700.*cache 3\.1k/.test(line)));
+  assert.ok(lines.some((line) => /Run total 46k/.test(line)));
+  assert.ok(lines.some((line) => /Context compacted 1x/.test(line)));
+});
+
 test("openWikiNavigator renders a bordered focusable dialog and follows updates", async () => {
   let component;
   let listener;
@@ -158,7 +234,10 @@ test("openWikiNavigator renders a bordered focusable dialog and follows updates"
       },
       getTranscript: async () => {
         transcriptCalls++;
-        return ["first", "latest"];
+        return [
+          { role: "assistant", kind: "text", timestamp: 1, text: "first" },
+          { role: "assistant", kind: "text", timestamp: 2, text: "latest" },
+        ];
       },
     },
   );
@@ -185,6 +264,76 @@ test("openWikiNavigator renders a bordered focusable dialog and follows updates"
   component.handleInput("q");
   await opened;
   assert.equal(unsubscribed, 1);
+});
+
+test("Navigator paging uses visible transcript rows after context and activity headers", async () => {
+  let component;
+  const snapshot = fixtureSnapshot({
+    agents: fixtureSnapshot().agents.map((agent) =>
+      agent.agentId === "survey:1:2"
+        ? {
+            ...agent,
+            context: { tokens: 24_100, contextWindow: 200_000, percent: 12 },
+            latestUsage: { input: 4_800, output: 700, cacheRead: 3_100, cacheWrite: 0, total: 8_600 },
+            tokenUsage: { input: 20_000, output: 5_000, cacheRead: 20_000, cacheWrite: 1_200, total: 46_200 },
+            compactionCount: 1,
+            activity: { kind: "retrying", at: NOW, attempt: 1, maxAttempts: 3, delayMs: 2_000, message: "rate limited" },
+          }
+        : agent,
+    ),
+  });
+  const opened = openWikiNavigator(
+    {
+      hasUI: true,
+      ui: {
+        notify: () => undefined,
+        custom: (factory) =>
+          new Promise((resolve) => {
+            component = factory(
+              { terminal: { rows: 20 }, requestRender: () => undefined },
+              { fg: (_color, text) => text, bold: (text) => text, bg: (_color, text) => text },
+              {},
+              resolve,
+            );
+          }),
+      },
+    },
+    {
+      getSnapshot: () => snapshot,
+      idle: { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+      getTranscript: async () =>
+        Array.from({ length: 8 }, (_value, index) => ({ role: "assistant", kind: "text", timestamp: index, text: `stream-${index}` })),
+    },
+  );
+
+  component.render(70);
+  component.handleInput("\u001b[C");
+  component.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  let dialog = component.render(70);
+  assert.ok(dialog.some((line) => line.includes("stream-7")));
+  assert.ok(dialog.some((line) => line.includes("Execution stream · following")));
+
+  component.handleInput("g");
+  dialog = component.render(70);
+  assert.ok(dialog.some((line) => line.includes("stream-0")));
+  assert.ok(!dialog.some((line) => line.includes("stream-7")));
+
+  for (let index = 0; index < 20; index++) component.handleInput("\u001b[B");
+  dialog = component.render(70);
+  assert.ok(dialog.some((line) => line.includes("stream-7")));
+  assert.ok(dialog.some((line) => line.includes("Execution stream · following")));
+  assert.ok(!dialog.some((line) => line.includes("newer line")));
+
+  component.handleInput("g");
+  component.render(70);
+  component.handleInput("G");
+  dialog = component.render(70);
+  assert.ok(dialog.some((line) => line.includes("stream-7")));
+  assert.ok(dialog.some((line) => line.includes("Execution stream · following")));
+
+  component.handleInput("q");
+  await opened;
 });
 
 test("Navigator presents an idle window and has no text fallback", async () => {

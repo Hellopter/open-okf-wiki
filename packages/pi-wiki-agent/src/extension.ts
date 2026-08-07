@@ -18,6 +18,7 @@ import { createCoreAdapter, type CoreAdapter, type WikiWorkspaceStatus } from ".
 import {
   formatStatusBar,
   openWikiNavigator,
+  toWikiObservationEntries,
 } from "./observe/index.js";
 import {
   createSessionOrchestrator,
@@ -210,19 +211,6 @@ async function ensureWorkspace(
   return workspace;
 }
 
-function transcriptToLines(entries: unknown[]): string[] {
-  return entries.map((entry) => {
-    if (!entry || typeof entry !== "object") return String(entry);
-    const row = entry as Record<string, unknown>;
-    const role = row.role ?? row.kind ?? "entry";
-    const tool = row.toolName ? ` ${row.toolName}` : "";
-    const path = row.path ? ` ${row.path}` : "";
-    const text = typeof row.text === "string" ? row.text : JSON.stringify(row);
-    const clipped = text.length > 200 ? `${text.slice(0, 200)}…` : text;
-    return `[${role}${tool}${path}] ${clipped}`;
-  });
-}
-
 async function openNavigator(
   core: CoreAdapter,
   orch: WikiOrchestrator,
@@ -246,7 +234,7 @@ async function openNavigator(
         sourceCount: workspace.sources.length,
       },
       subscribe: (cb) => orch.subscribe((snapshot) => cb(snapshot)),
-      getTranscript: async (agentId) => transcriptToLines(await orch.getTranscript(agentId, { tail: 120 })),
+      getTranscript: async (agentId) => toWikiObservationEntries(await orch.getTranscript(agentId, { tail: 120 })),
       onPause: () => orch.pause(),
       onResume: () => orch.resume(),
       onStop: () => orch.stop(),

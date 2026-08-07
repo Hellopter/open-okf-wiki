@@ -8,13 +8,20 @@
  */
 
 import {
+  calculateContextTokens,
   createAgentSession,
+  estimateTokens,
   getAgentDir,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { WikiAgentRole } from "./types.js";
+import type {
+  WikiAgentRole,
+  WikiContextUsage,
+  WikiObservationEntry,
+  WikiTokenUsage,
+} from "./types.js";
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 export interface WikiAgentRunRequest {
@@ -30,8 +37,8 @@ export interface WikiAgentRunRequest {
   signal: AbortSignal;
   tools: ToolDefinition[];
   cwd: string;
-  /** Called with individual transcript/tool entries as they appear. */
-  onHistory?: (entry: object) => void;
+  /** Called with display-safe session observations as they appear. */
+  onHistory?: (entry: WikiObservationEntry) => void;
 }
 
 export interface WikiAgentRunResult {
@@ -67,6 +74,135 @@ function isAbortLike(err: unknown, signal: AbortSignal): boolean {
   if (!err || typeof err !== "object") return false;
   const name = (err as { name?: string }).name;
   return name === "AbortError" || name === "TimeoutError";
+}
+
+const MAX_OBSERVATION_TEXT = 4_000;
+const MAX_OBSERVATION_FIELD = 320;
+
+function clippedString(value: unknown, max = MAX_OBSERVATION_FIELD): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized;
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function firstString(record: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = clippedString(record[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function toolTarget(args: unknown): { path?: string; query?: string } {
+  const record = recordOf(args);
+  return {
+    path: firstString(record, ["path", "file_path", "filePath", "filename", "fileName"]),
+    query: firstString(record, ["query", "pattern", "search", "term"]),
+  };
+}
+
+function toolError(result: unknown): string | undefined {
+  const direct = clippedString(result);
+  if (direct) return direct;
+  const record = recordOf(result);
+  const directField = firstString(record, ["error", "errorMessage", "message", "stderr", "text"]);
+  if (directField) return directField;
+  if (Array.isArray(record?.content)) {
+    for (const content of record.content) {
+      const text = clippedString(content) ?? firstString(recordOf(content), ["text", "error", "message"]);
+      if (text) return text;
+    }
+  }
+  return undefined;
+}
+
+function numberOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeUsage(value: unknown): WikiTokenUsage | undefined {
+  const usage = recordOf(value);
+  if (!usage) return undefined;
+  const input = numberOrZero(usage.input);
+  const output = numberOrZero(usage.output);
+  const cacheRead = numberOrZero(usage.cacheRead);
+  const cacheWrite = numberOrZero(usage.cacheWrite);
+  const total = numberOrZero(usage.totalTokens) || input + output + cacheRead + cacheWrite;
+  if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0 && total === 0) return undefined;
+  return { input, output, cacheRead, cacheWrite, total };
+}
+
+type PiAgentMessage = Parameters<typeof estimateTokens>[0];
+type PiUsage = Parameters<typeof calculateContextTokens>[0];
+
+interface ContextSession {
+  messages: readonly PiAgentMessage[];
+  model?: { contextWindow?: number };
+}
+
+function contextForTokens(tokens: number, contextWindow?: number): WikiContextUsage {
+  const validWindow = contextWindow && contextWindow > 0 ? contextWindow : undefined;
+  return {
+    tokens,
+    contextWindow: validWindow,
+    percent: validWindow ? Math.round((tokens / validWindow) * 100) : undefined,
+  };
+}
+
+function sessionContext(
+  session: ContextSession | undefined,
+): WikiContextUsage | undefined {
+  if (!session) return undefined;
+  const messages = session.messages;
+  let lastUsageIndex: number | undefined;
+  let usageTokens = 0;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || message.stopReason === "aborted" || message.stopReason === "error") continue;
+    const usage = "usage" in message ? (message.usage as PiUsage | undefined) : undefined;
+    if (!usage) continue;
+    const tokens = calculateContextTokens(usage);
+    if (tokens <= 0) continue;
+    lastUsageIndex = index;
+    usageTokens = tokens;
+    break;
+  }
+
+  const start = lastUsageIndex === undefined ? 0 : lastUsageIndex + 1;
+  let trailingTokens = 0;
+  for (let index = start; index < messages.length; index += 1) {
+    trailingTokens += estimateTokens(messages[index]);
+  }
+  return contextForTokens(usageTokens + trailingTokens, session.model?.contextWindow);
+}
+
+function assistantText(content: unknown): string | undefined {
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((block) =>
+              block && typeof block === "object" && "text" in block
+                ? String((block as { text?: string }).text ?? "")
+                : "",
+            )
+            .join("")
+        : "";
+  return text ? text.slice(0, MAX_OBSERVATION_TEXT) : undefined;
 }
 
 function buildPrompt(req: WikiAgentRunRequest): string {
@@ -120,52 +256,155 @@ export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRun
           unsub = session.subscribe((event) => {
             try {
               const type = (event as { type?: string }).type;
-              if (type === "tool_execution_start" || type === "tool_execution_end") {
+              const timestamp = Date.now();
+              if (type === "tool_execution_start") {
                 const e = event as {
-                  type: string;
-                  toolName?: string;
-                  toolCallId?: string;
-                  input?: Record<string, unknown>;
-                  isError?: boolean;
+                  toolName: string;
+                  toolCallId: string;
+                  args: unknown;
                 };
-                const path =
-                  e.input && typeof e.input.path === "string"
-                    ? e.input.path
-                    : e.input && typeof e.input.file_path === "string"
-                      ? e.input.file_path
-                      : undefined;
+                const target = toolTarget(e.args);
                 req.onHistory?.({
                   role: "tool",
-                  kind: e.type,
+                  kind: "tool_start",
                   toolName: e.toolName,
-                  path,
-                  isError: e.isError,
-                  timestamp: Date.now(),
+                  toolCallId: e.toolCallId,
+                  ...target,
+                  timestamp,
                 });
+              } else if (type === "tool_execution_end") {
+                const e = event as {
+                  toolName: string;
+                  toolCallId: string;
+                  result: unknown;
+                  isError: boolean;
+                };
+                if (e.toolName === "structured_output" && !e.isError) {
+                  req.onHistory?.({
+                    role: "system",
+                    kind: "structured_output",
+                    toolName: e.toolName,
+                    toolCallId: e.toolCallId,
+                    timestamp,
+                  });
+                } else {
+                  req.onHistory?.({
+                    role: "tool",
+                    kind: "tool_end",
+                    toolName: e.toolName,
+                    toolCallId: e.toolCallId,
+                    isError: e.isError,
+                    error: e.isError ? toolError(e.result) : undefined,
+                    timestamp,
+                  });
+                }
               } else if (type === "message_end") {
-                const e = event as { message?: { role?: string; content?: unknown } };
+                const e = event as {
+                  message?: { role?: string; content?: unknown; usage?: unknown };
+                };
                 if (e.message?.role === "assistant") {
-                  const text =
-                    typeof e.message.content === "string"
-                      ? e.message.content
-                      : Array.isArray(e.message.content)
-                        ? e.message.content
-                            .map((c) =>
-                              c && typeof c === "object" && "text" in c
-                                ? String((c as { text?: string }).text ?? "")
-                                : "",
-                            )
-                            .join("")
-                        : "";
-                  if (text) {
+                  const text = assistantText(e.message.content);
+                  const usage = normalizeUsage(e.message.usage);
+                  const context = sessionContext(session);
+                  if (text || usage || context) {
                     req.onHistory?.({
                       role: "assistant",
                       kind: "text",
-                      text: text.slice(0, 2000),
-                      timestamp: Date.now(),
+                      text,
+                      usage,
+                      context,
+                      timestamp,
                     });
                   }
                 }
+              } else if (type === "auto_retry_start") {
+                const e = event as {
+                  attempt: number;
+                  maxAttempts: number;
+                  delayMs: number;
+                  errorMessage: string;
+                };
+                req.onHistory?.({
+                  role: "system",
+                  kind: "retry_start",
+                  attempt: e.attempt,
+                  maxAttempts: e.maxAttempts,
+                  delayMs: e.delayMs,
+                  error: clippedString(e.errorMessage),
+                  timestamp,
+                });
+              } else if (type === "auto_retry_end") {
+                const e = event as { success: boolean; attempt: number; finalError?: string };
+                req.onHistory?.({
+                  role: "system",
+                  kind: "retry_end",
+                  success: e.success,
+                  attempt: e.attempt,
+                  error: clippedString(e.finalError),
+                  timestamp,
+                });
+              } else if (type === "compaction_start") {
+                const e = event as { reason: "manual" | "threshold" | "overflow" };
+                req.onHistory?.({
+                  role: "system",
+                  kind: "compaction_start",
+                  reason: e.reason,
+                  timestamp,
+                });
+              } else if (type === "compaction_end") {
+                const e = event as {
+                  reason: "manual" | "threshold" | "overflow";
+                  aborted: boolean;
+                  errorMessage?: string;
+                  result?: {
+                    tokensBefore?: number;
+                    estimatedTokensAfter?: number;
+                    usage?: unknown;
+                  };
+                };
+                const tokensBefore = nonNegativeNumber(e.result?.tokensBefore);
+                const tokensAfter = nonNegativeNumber(e.result?.estimatedTokensAfter);
+                req.onHistory?.({
+                  role: "system",
+                  kind: "compaction_end",
+                  reason: e.reason,
+                  aborted: e.aborted,
+                  success: !e.aborted && !e.errorMessage,
+                  isError: Boolean(e.errorMessage),
+                  error: clippedString(e.errorMessage),
+                  tokensBefore,
+                  tokensAfter,
+                  usage: normalizeUsage(e.result?.usage),
+                  // SessionManager's branch can still reflect the pre-compaction
+                  // turn here; Pi's result is the authoritative post-summary size.
+                  context: tokensAfter !== undefined
+                    ? contextForTokens(tokensAfter, session?.model?.contextWindow)
+                    : sessionContext(session),
+                  timestamp,
+                });
+              } else if (type === "summarization_retry_scheduled") {
+                const e = event as {
+                  attempt: number;
+                  maxAttempts: number;
+                  delayMs: number;
+                  errorMessage: string;
+                };
+                req.onHistory?.({
+                  role: "system",
+                  kind: "summarization_retry",
+                  attempt: e.attempt,
+                  maxAttempts: e.maxAttempts,
+                  delayMs: e.delayMs,
+                  error: clippedString(e.errorMessage),
+                  timestamp,
+                });
+              } else if (type === "summarization_retry_finished") {
+                req.onHistory?.({
+                  role: "system",
+                  kind: "retry_end",
+                  success: true,
+                  timestamp,
+                });
               }
             } catch {
               // observation must not break the agent
@@ -175,7 +414,12 @@ export function createPiAgentRunner(options: PiAgentRunnerOptions): WikiAgentRun
 
         const onAbort = (): void => {
           try {
-            session?.abort?.();
+            // session.abort() cancels an active turn/retry, while compaction and
+            // branch summary use their own controllers inside Pi.
+            session?.abortCompaction();
+            session?.abortBranchSummary();
+            session?.abortRetry();
+            void session?.abort().catch(() => undefined);
           } catch {
             // ignore
           }

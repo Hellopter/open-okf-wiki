@@ -32,7 +32,10 @@ import {
   type OrchLimits,
   type OrchRunSummary,
   type WikiEvent,
+  type WikiObservationEntry,
   type WikiProgressSnapshot,
+  type WikiTokenUsage,
+  type WikiTranscriptEntry,
 } from "./types.js";
 
 export interface SessionWikiOrchestratorOptions {
@@ -66,6 +69,40 @@ interface TrackedSessionRun {
   pool: TaskPool;
   promise?: Promise<PlanPathResult | undefined>;
   unsubStore?: () => void;
+}
+
+function addUsage(current: WikiTokenUsage | undefined, next: WikiTokenUsage): WikiTokenUsage {
+  return {
+    input: (current?.input ?? 0) + next.input,
+    output: (current?.output ?? 0) + next.output,
+    cacheRead: (current?.cacheRead ?? 0) + next.cacheRead,
+    cacheWrite: (current?.cacheWrite ?? 0) + next.cacheWrite,
+    total: (current?.total ?? 0) + next.total,
+  };
+}
+
+function currentAgent(tracked: TrackedSessionRun, agentId: string) {
+  return tracked.store.getSnapshot().agents.find((agent) => agent.agentId === agentId);
+}
+
+function clearActivity(
+  tracked: TrackedSessionRun,
+  agentId: string,
+  kind: "retrying" | "compacting",
+): void {
+  if (currentAgent(tracked, agentId)?.activity?.kind === kind) {
+    tracked.store.upsertAgent({ agentId, activity: undefined, lastHeartbeatAt: Date.now() });
+  }
+}
+
+function contextAfterCompaction(entry: WikiObservationEntry): WikiObservationEntry["context"] {
+  if (entry.tokensAfter === undefined) return entry.context;
+  const contextWindow = entry.context?.contextWindow;
+  return {
+    tokens: entry.tokensAfter,
+    contextWindow,
+    percent: contextWindow && contextWindow > 0 ? Math.round((entry.tokensAfter / contextWindow) * 100) : undefined,
+  };
 }
 
 function mapPlanResultOverall(
@@ -463,7 +500,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     agentId: string,
     opts?: { tail?: number },
     id?: string,
-  ): Promise<unknown[]> {
+  ): Promise<WikiTranscriptEntry[]> {
     const orchRunId = this.resolveId(id);
     if (!orchRunId) return [];
     const tracked = this.runs.get(orchRunId);
@@ -518,6 +555,122 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     if (id) return id;
     const fromList = resolveActiveOrchRunId(this.list(), undefined);
     return fromList ?? this.activeOrchRunId;
+  }
+
+  private recordObservation(
+    tracked: TrackedSessionRun,
+    phase: string,
+    agentId: string,
+    entry: WikiObservationEntry,
+  ): void {
+    const { store } = tracked;
+    const now = entry.timestamp || Date.now();
+
+    switch (entry.kind) {
+      case "tool_start":
+        store.upsertAgent({
+          agentId,
+          status: "waiting_tool",
+          lastTool: {
+            name: entry.toolName ?? "tool",
+            path: entry.path,
+            at: now,
+          },
+          lastHeartbeatAt: now,
+        });
+        store.appendEvent("agent.tool", { agentId, phase, detail: entry });
+        return;
+
+      case "tool_end":
+      case "structured_output":
+        // Tool completion means the session can return to model work. Do this
+        // even on a tool error: Pi may recover or select a different tool next.
+        store.upsertAgent({ agentId, status: "running", lastHeartbeatAt: now });
+        store.appendEvent("agent.tool", { agentId, phase, detail: entry });
+        return;
+
+      case "text": {
+        const agent = currentAgent(tracked, agentId);
+        store.upsertAgent({
+          agentId,
+          status: "running",
+          tokenUsage: entry.usage ? addUsage(agent?.tokenUsage, entry.usage) : agent?.tokenUsage,
+          latestUsage: entry.usage ?? agent?.latestUsage,
+          context: entry.context ?? agent?.context,
+          lastHeartbeatAt: now,
+        });
+        if (entry.usage || entry.context) {
+          store.appendEvent("agent.token", {
+            agentId,
+            phase,
+            detail: { usage: entry.usage, context: entry.context },
+          });
+        }
+        return;
+      }
+
+      case "retry_start":
+        store.upsertAgent({
+          agentId,
+          status: "running",
+          activity: {
+            kind: "retrying",
+            at: now,
+            attempt: entry.attempt,
+            maxAttempts: entry.maxAttempts,
+            delayMs: entry.delayMs,
+            message: entry.error,
+          },
+          lastHeartbeatAt: now,
+        });
+        store.appendEvent("agent.retry", { agentId, phase, detail: entry });
+        return;
+
+      case "summarization_retry":
+        // Pi emits this while a compaction summary is retrying. Keep the more
+        // useful compacting indicator instead of replacing it with retrying.
+        store.upsertAgent({ agentId, lastHeartbeatAt: now });
+        store.appendEvent("agent.retry", { agentId, phase, detail: entry });
+        return;
+
+      case "retry_end":
+        clearActivity(tracked, agentId, "retrying");
+        store.appendEvent("agent.retry", { agentId, phase, detail: entry });
+        return;
+
+      case "compaction_start":
+        store.upsertAgent({
+          agentId,
+          status: "running",
+          activity: { kind: "compacting", at: now, reason: entry.reason },
+          lastHeartbeatAt: now,
+        });
+        store.appendEvent("agent.compaction", { agentId, phase, detail: entry });
+        return;
+
+      case "compaction_end": {
+        const agent = currentAgent(tracked, agentId);
+        store.upsertAgent({
+          agentId,
+          status: "running",
+          tokenUsage: entry.usage ? addUsage(agent?.tokenUsage, entry.usage) : agent?.tokenUsage,
+          context: contextAfterCompaction(entry) ?? agent?.context,
+          compactionCount: entry.success ? (agent?.compactionCount ?? 0) + 1 : agent?.compactionCount,
+          activity: agent?.activity?.kind === "compacting" ? undefined : agent?.activity,
+          lastHeartbeatAt: now,
+        });
+        const context = contextAfterCompaction(entry);
+        if (entry.usage || context) {
+          store.appendEvent("agent.token", {
+            agentId,
+            phase,
+            detail: { usage: entry.usage, context, source: "compaction" },
+          });
+        }
+        store.appendEvent("agent.compaction", { agentId, phase, detail: entry });
+        return;
+      }
+    }
   }
 
   private makeRunAgent(
@@ -594,30 +747,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
           cwd,
           onHistory: (entry) => {
             store.appendTranscript(agentId, entry);
-            // Tool observation when history looks like a tool call.
-            const rec = entry as {
-              kind?: string;
-              toolName?: string;
-              path?: string;
-              role?: string;
-            };
-            if (rec.kind === "toolCall" || rec.toolName) {
-              store.upsertAgent({
-                agentId,
-                status: "waiting_tool",
-                lastTool: {
-                  name: rec.toolName ?? "tool",
-                  path: rec.path,
-                  at: Date.now(),
-                },
-                lastHeartbeatAt: Date.now(),
-              });
-              store.appendEvent("agent.tool", {
-                agentId,
-                phase: req.phase,
-                detail: entry,
-              });
-            }
+            this.recordObservation(tracked, req.phase, agentId, entry);
           },
         });
 
@@ -626,6 +756,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
         store.upsertAgent({
           agentId,
           status: ok ? "succeeded" : combined.aborted ? "cancelled" : "failed",
+          activity: undefined,
           endedAt,
           elapsedMs: endedAt - startedAt,
           lastError: ok
@@ -646,6 +777,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
         store.upsertAgent({
           agentId,
           status: cancelled ? "cancelled" : "failed",
+          activity: undefined,
           endedAt,
           elapsedMs: endedAt - startedAt,
           lastError: message,

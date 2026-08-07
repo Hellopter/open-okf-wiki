@@ -15,10 +15,12 @@ import type {
   WikiBackend,
   WikiEvent,
   WikiEventType,
+  WikiObservationEntry,
   WikiOverallStatus,
   WikiPhaseStatus,
   WikiPhaseView,
   WikiProgressSnapshot,
+  WikiTranscriptEntry,
 } from "./types.js";
 
 export interface WikiRunStoreOptions {
@@ -261,7 +263,11 @@ export class WikiRunStore {
         lastTool: partial.lastTool,
         lastHeartbeatAt: partial.lastHeartbeatAt,
         lastError: partial.lastError,
-        tokens: partial.tokens,
+        tokenUsage: partial.tokenUsage,
+        latestUsage: partial.latestUsage,
+        context: partial.context,
+        activity: partial.activity,
+        compactionCount: partial.compactionCount,
         transcriptPath: partial.transcriptPath,
         sessionKey: partial.sessionKey,
       };
@@ -295,7 +301,7 @@ export class WikiRunStore {
     });
   }
 
-  appendTranscript(agentId: string, entry: object): void {
+  appendTranscript(agentId: string, entry: WikiObservationEntry): void {
     const safeId = safeAgentId(agentId);
     const agentDir = join(this.rootDir, "agents", safeId);
     mkdirSync(agentDir, { recursive: true });
@@ -310,9 +316,11 @@ export class WikiRunStore {
     }
   }
 
-  readTranscript(agentId: string, options: { tail?: number } = {}): object[] {
+  readTranscript(agentId: string, options: { tail?: number } = {}): WikiTranscriptEntry[] {
     const file = join(this.rootDir, "agents", safeAgentId(agentId), "transcript.jsonl");
-    const rows = readJsonl(file).filter((r): r is object => r !== null && typeof r === "object");
+    const rows = readJsonl(file).filter(
+      (r): r is WikiTranscriptEntry => r !== null && typeof r === "object",
+    );
     if (options.tail != null && options.tail >= 0) {
       return rows.slice(-options.tail);
     }

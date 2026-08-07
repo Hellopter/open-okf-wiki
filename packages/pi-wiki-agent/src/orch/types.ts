@@ -40,6 +40,81 @@ export interface WikiAgentLastTool {
   at: number;
 }
 
+/** Provider-reported token usage for one completion or an accumulated agent run. */
+export interface WikiTokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+/** Estimated context currently held by a Pi session. */
+export interface WikiContextUsage {
+  tokens: number;
+  contextWindow?: number;
+  /** Rounded percent of the model context window when it is known. */
+  percent?: number;
+}
+
+export type WikiAgentActivityKind = "retrying" | "compacting";
+
+/** A transient Pi session operation that should remain visible without changing lifecycle status. */
+export interface WikiAgentActivity {
+  kind: WikiAgentActivityKind;
+  /** Epoch milliseconds. */
+  at: number;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  reason?: "manual" | "threshold" | "overflow";
+  message?: string;
+}
+
+export type WikiObservationRole = "assistant" | "tool" | "system";
+
+export type WikiObservationKind =
+  | "text"
+  | "tool_start"
+  | "tool_end"
+  | "structured_output"
+  | "retry_start"
+  | "retry_end"
+  | "compaction_start"
+  | "compaction_end"
+  | "summarization_retry";
+
+/**
+ * A display-safe, durable execution observation. Tool arguments/results are reduced
+ * to paths, search terms, and short error messages before they reach transcript.jsonl.
+ */
+export interface WikiObservationEntry {
+  role: WikiObservationRole;
+  kind: WikiObservationKind;
+  /** Epoch milliseconds. */
+  timestamp: number;
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  path?: string;
+  query?: string;
+  isError?: boolean;
+  error?: string;
+  usage?: WikiTokenUsage;
+  context?: WikiContextUsage;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  success?: boolean;
+  reason?: "manual" | "threshold" | "overflow";
+  tokensBefore?: number;
+  tokensAfter?: number;
+  aborted?: boolean;
+}
+
+/** JSONL rows from older runs predate WikiObservationEntry and remain readable. */
+export type WikiTranscriptEntry = WikiObservationEntry | Record<string, unknown>;
+
 export interface WikiAgentView {
   agentId: string;
   label: string;
@@ -59,7 +134,15 @@ export interface WikiAgentView {
   lastHeartbeatAt?: number;
   lastError?: string;
   receiptsWritten: number;
-  tokens?: number;
+  /** Cumulative usage across model turns and compaction summaries. */
+  tokenUsage?: WikiTokenUsage;
+  /** Provider usage from the latest model turn. */
+  latestUsage?: WikiTokenUsage;
+  /** Current estimated session context, not cumulative spend. */
+  context?: WikiContextUsage;
+  /** Present only while Pi is retrying a turn or compacting context. */
+  activity?: WikiAgentActivity;
+  compactionCount?: number;
   transcriptPath?: string;
   sessionKey?: string;
 }
@@ -114,6 +197,8 @@ export type WikiEventType =
   | "agent.started"
   | "agent.tool"
   | "agent.token"
+  | "agent.retry"
+  | "agent.compaction"
   | "agent.heartbeat"
   | "agent.succeeded"
   | "agent.failed"
@@ -137,7 +222,6 @@ export interface OrchLimits {
   concurrency: number;
   maxAgents: number;
   agentTimeoutMs: number;
-  agentRetries: number;
   maxSurveyLanes: number;
   targetUnitsPerLane: number;
   heartbeatMs: number;
@@ -148,7 +232,6 @@ export const DEFAULT_ORCH_LIMITS: OrchLimits = {
   concurrency: 4,
   maxAgents: 48,
   agentTimeoutMs: 900_000,
-  agentRetries: 1,
   maxSurveyLanes: 4,
   targetUnitsPerLane: 3,
   heartbeatMs: 5_000,

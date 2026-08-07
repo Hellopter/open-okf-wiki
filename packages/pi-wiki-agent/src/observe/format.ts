@@ -1,8 +1,11 @@
 import type {
   AgentStatus,
+  WikiAgentActivity,
   WikiAgentView,
   WikiCoverageView,
+  WikiContextUsage,
   WikiPhaseStatus,
+  WikiTokenUsage,
 } from "../orch/types.js";
 
 export interface FormatTimeOpts {
@@ -108,6 +111,82 @@ function shorten(text: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
+/** Compact token formatter for narrow TUI rows. */
+export function formatTokenCount(tokens: number | undefined): string {
+  if (tokens === undefined || !Number.isFinite(tokens) || tokens < 0) return "";
+  if (tokens < 1_000) return `${Math.round(tokens)}`;
+  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`;
+  return `${(tokens / 1_000_000).toFixed(tokens < 10_000_000 ? 1 : 0)}m`;
+}
+
+function usageTotal(usage: WikiTokenUsage | undefined): number | undefined {
+  if (!usage) return undefined;
+  if (typeof usage.total === "number" && Number.isFinite(usage.total)) return usage.total;
+  const parts = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite].filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  return parts.length > 0 ? parts.reduce((total, value) => total + value, 0) : undefined;
+}
+
+/** Current context pressure, without inventing a model-window percentage. */
+export function formatAgentContext(agent: WikiAgentView): string {
+  const context: WikiContextUsage | undefined = agent.context;
+  const tokens = formatTokenCount(context?.tokens);
+  const window = formatTokenCount(context?.contextWindow);
+  const percent = context?.percent;
+  if (tokens && window) return `Context ${tokens} / ${window}${percent !== undefined ? ` (${Math.round(percent)}%)` : ""}`;
+  if (tokens) return `Context ~${tokens}${percent !== undefined ? ` (${Math.round(percent)}%)` : ""}`;
+  return "";
+}
+
+/** Provider-reported usage for the most recent assistant turn. */
+export function formatLatestUsage(agent: WikiAgentView): string {
+  const usage = agent.latestUsage;
+  if (!usage) return "";
+  const segments: string[] = [];
+  const input = formatTokenCount(usage.input);
+  const output = formatTokenCount(usage.output);
+  const cache = formatTokenCount((usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0));
+  if (input) segments.push(`in ${input}`);
+  if (output) segments.push(`out ${output}`);
+  if (cache && cache !== "0") segments.push(`cache ${cache}`);
+  return segments.length > 0 ? `This turn ${segments.join(" · ")}` : "";
+}
+
+/** Cumulative usage for one agent session. */
+export function formatRunUsage(agent: WikiAgentView): string {
+  const total = usageTotal(agent.tokenUsage);
+  const display = formatTokenCount(total);
+  return display ? `Run total ${display}` : "";
+}
+
+/** A transient Pi retry/compaction activity line. */
+export function formatAgentActivity(agent: WikiAgentView): string {
+  const activity: WikiAgentActivity | undefined = agent.activity;
+  if (!activity) return "";
+  if (activity.kind === "compacting") return `Compacting context${activity.reason ? ` · ${shorten(activity.reason, 50)}` : ""}`;
+  if (activity.kind === "retrying") {
+    const attempt = activity.attempt !== undefined ? ` ${activity.attempt}/${activity.maxAttempts ?? "?"}` : "";
+    const delay = activity.delayMs !== undefined ? ` · waiting ${Math.max(0, activity.delayMs) / 1_000}s` : "";
+    const reason = activity.message ?? activity.reason;
+    return `Retry${attempt}${delay}${reason ? ` · ${shorten(reason, 70)}` : ""}`;
+  }
+  return "";
+}
+
+function compactAgentStats(agent: WikiAgentView): string {
+  if (agent.activity?.kind === "compacting") return "compacting";
+  if (agent.activity?.kind === "retrying") {
+    return agent.activity.attempt !== undefined ? `retry ${agent.activity.attempt}/${agent.activity.maxAttempts ?? "?"}` : "retrying";
+  }
+  const context = agent.context;
+  if (context?.percent !== undefined) return `ctx ${Math.round(context.percent)}%`;
+  const contextTokens = formatTokenCount(context?.tokens);
+  if (contextTokens) return `ctx ${contextTokens}`;
+  const total = formatTokenCount(usageTotal(agent.tokenUsage));
+  return total ? `${total} tok` : "";
+}
+
 /**
  * One table row for an agent.
  * Example: `survey:1:2 ● running 1m23s read_file  !stale`
@@ -127,7 +206,8 @@ export function formatAgentLine(agent: WikiAgentView, opts: FormatTimeOpts = {})
     opts.staleWarnMs !== undefined && isAgentStale(agent, opts.staleWarnMs, now)
       ? " !stale"
       : "";
-  return `${agent.agentId} ${glyph} ${agent.status} ${elapsed}${tool}${err}${stale}`;
+  const stats = compactAgentStats(agent);
+  return `${agent.agentId} ${glyph} ${agent.status} ${elapsed}${tool}${stats ? ` · ${stats}` : ""}${err}${stale}`;
 }
 
 /** Coverage summary: `pass1 4/12 receipts missing:8`. */

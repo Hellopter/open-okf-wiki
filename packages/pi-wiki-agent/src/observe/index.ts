@@ -3,11 +3,22 @@ export {
   formatAgentLine,
   formatCoverageLine,
   formatDuration,
+  formatAgentActivity,
+  formatAgentContext,
+  formatLatestUsage,
+  formatRunUsage,
+  formatTokenCount,
   isAgentStale,
   parseTimeMs,
   phaseStatusGlyph,
   type FormatTimeOpts,
 } from "./format.js";
+
+export {
+  formatWikiObservationEntries,
+  toWikiObservationEntries,
+} from "./transcript.js";
+export type { WikiObservationEntry, WikiObservationKind } from "../orch/types.js";
 
 export { formatStatusBar } from "./status-bar.js";
 

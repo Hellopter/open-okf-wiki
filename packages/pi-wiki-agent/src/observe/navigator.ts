@@ -7,16 +7,27 @@ import {
   type Focusable,
   type TUI,
 } from "@earendil-works/pi-tui";
-import type { WikiAgentView, WikiPhaseStatus, WikiPhaseView, WikiProgressSnapshot } from "../orch/types.js";
+import type {
+  WikiAgentView,
+  WikiPhaseStatus,
+  WikiPhaseView,
+  WikiProgressSnapshot,
+  WikiTranscriptEntry,
+} from "../orch/types.js";
 import {
   agentStatusGlyph,
+  formatAgentActivity,
   formatAgentLine,
+  formatAgentContext,
   formatCoverageLine,
   formatDuration,
+  formatLatestUsage,
+  formatRunUsage,
   isAgentStale,
   phaseStatusGlyph,
   type FormatTimeOpts,
 } from "./format.js";
+import { formatWikiObservationEntries, toWikiObservationEntries } from "./transcript.js";
 
 export type WikiNavigatorView = "idle" | "overview" | "detail";
 export type WikiNavigatorPane = "phases" | "agents";
@@ -31,6 +42,8 @@ export interface WikiNavigatorState {
   transcriptOffset: number;
   transcriptLoading: boolean;
   followTranscript: boolean;
+  /** Effective transcript rows from the most recent interactive render. */
+  transcriptPageRows?: number;
 }
 
 type NavigatorAction = "close" | "load-transcript" | "pause" | "resume" | "stop";
@@ -64,7 +77,7 @@ export interface OpenWikiNavigatorOptions {
   getSnapshot: () => WikiProgressSnapshot | undefined;
   idle: WikiNavigatorIdleInfo;
   subscribe?: (cb: (snapshot: WikiProgressSnapshot) => void) => () => void;
-  getTranscript?: (agentId: string) => Promise<string[]> | string[];
+  getTranscript?: (agentId: string) => Promise<WikiTranscriptEntry[]> | WikiTranscriptEntry[];
   onPause?: () => Promise<boolean> | boolean;
   onResume?: () => Promise<boolean> | boolean;
   onStop?: () => Promise<boolean> | boolean;
@@ -151,6 +164,7 @@ export function createWikiNavigatorState(snapshot?: WikiProgressSnapshot): WikiN
     transcriptOffset: 0,
     transcriptLoading: false,
     followTranscript: true,
+    transcriptPageRows: TRANSCRIPT_PAGE_ROWS,
   };
 }
 
@@ -193,13 +207,29 @@ function withAgentSelection(state: WikiNavigatorState, agentIndex: number): Wiki
   return { ...state, agentIndex: clampIndex(agentIndex, phaseAgents(state.snapshot, state.phaseIndex).length) };
 }
 
-function withTranscript(state: WikiNavigatorState, lines: string[]): WikiNavigatorState {
-  const maxOffset = Math.max(0, lines.length - TRANSCRIPT_PAGE_ROWS);
+function withTranscript(state: WikiNavigatorState, entries: readonly unknown[]): WikiNavigatorState {
+  const lines = formatWikiObservationEntries(toWikiObservationEntries(entries));
+  const maxOffset = Math.max(0, lines.length - transcriptPageRows(state));
   return {
     ...state,
     transcriptLines: lines,
     transcriptOffset: state.followTranscript ? maxOffset : Math.min(state.transcriptOffset, maxOffset),
     transcriptLoading: false,
+  };
+}
+
+function transcriptPageRows(state: WikiNavigatorState): number {
+  return Math.max(1, state.transcriptPageRows ?? TRANSCRIPT_PAGE_ROWS);
+}
+
+function withTranscriptPageRows(state: WikiNavigatorState, rows: number): WikiNavigatorState {
+  const transcriptRows = Math.max(1, Math.floor(rows));
+  if (state.transcriptPageRows === transcriptRows) return state;
+  const maxOffset = Math.max(0, state.transcriptLines.length - transcriptRows);
+  return {
+    ...state,
+    transcriptPageRows: transcriptRows,
+    transcriptOffset: state.followTranscript ? maxOffset : Math.min(state.transcriptOffset, maxOffset),
   };
 }
 
@@ -246,13 +276,13 @@ export function applyWikiNavigatorKey(state: WikiNavigatorState, key: string): W
       return result({ ...state, transcriptOffset: 0, followTranscript: false });
     }
     if (normalized === "G" || normalized === "shift+g" || normalized === "end") {
-      return result({ ...state, transcriptOffset: Math.max(0, state.transcriptLines.length - TRANSCRIPT_PAGE_ROWS), followTranscript: true });
+      return result({ ...state, transcriptOffset: Math.max(0, state.transcriptLines.length - transcriptPageRows(state)), followTranscript: true });
     }
     if (normalized === "up" || normalized === "k") {
       return result({ ...state, transcriptOffset: Math.max(0, state.transcriptOffset - 1), followTranscript: false });
     }
     if (normalized === "down" || normalized === "j") {
-      const maxOffset = Math.max(0, state.transcriptLines.length - TRANSCRIPT_PAGE_ROWS);
+      const maxOffset = Math.max(0, state.transcriptLines.length - transcriptPageRows(state));
       const transcriptOffset = Math.min(maxOffset, state.transcriptOffset + 1);
       return result({ ...state, transcriptOffset, followTranscript: transcriptOffset === maxOffset });
     }
@@ -308,24 +338,61 @@ function agentLine(agent: WikiAgentView, selected: boolean, opts: WikiNavigatorR
   return truncateToWidth(selected ? `${marker}${theme.fg("accent", theme.bold(line))}` : `${marker}${line}`, width, "", true);
 }
 
+function fillCell(text: string, width: number): string {
+  const clipped = truncateToWidth(text, width, "", true);
+  return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
+}
+
+function frameTitle(title: string, width: number, theme: NavigatorTheme): string {
+  const label = truncateToWidth(` ${title} `, Math.max(0, width - 1), "", true);
+  return theme.fg("dim", label) + theme.fg("border", "─".repeat(Math.max(1, width - visibleWidth(label))));
+}
+
+interface TwoPaneFrameOptions {
+  width: number;
+  bodyRows: number;
+  leftWidth: number;
+  leftTitle: string;
+  rightTitle: string;
+  left: readonly string[];
+  right: readonly string[];
+  theme: NavigatorTheme;
+}
+
+/** Full-height two-pane frame. Every allocated body row retains the divider. */
+function renderTwoPaneFrame(options: TwoPaneFrameOptions): string[] {
+  const rightWidth = options.width - options.leftWidth - 3;
+  const border = (value: string) => options.theme.fg("border", value);
+  const lines = [
+    `${border("┌")}${frameTitle(options.leftTitle, options.leftWidth, options.theme)}${border("┬")}${frameTitle(options.rightTitle, rightWidth, options.theme)}${border("┐")}`,
+  ];
+  for (let index = 0; index < options.bodyRows; index++) {
+    lines.push(
+      `${border("│")}${fillCell(options.left[index] ?? "", options.leftWidth)}${border("│")}${fillCell(options.right[index] ?? "", rightWidth)}${border("│")}`,
+    );
+  }
+  lines.push(`${border("└")}${border("─".repeat(options.leftWidth))}${border("┴")}${border("─".repeat(rightWidth))}${border("┘")}`);
+  return lines;
+}
+
 function renderOverview(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions, theme: NavigatorTheme): string[] {
   const snapshot = state.snapshot!;
   const width = Math.max(1, opts.width ?? 80);
   const maxRows = Math.max(2, opts.maxRows ?? 12);
   const phases = navigatorPhases(snapshot);
   const agents = phaseAgents(snapshot, state.phaseIndex);
-  const lines = [`Wiki ${snapshot.overall} · ${snapshot.currentPhase ?? "—"}`];
-  if (snapshot.coverage) lines.push(formatCoverageLine(snapshot.coverage));
+  const lines = [`Wiki ${snapshot.overall} · ${snapshot.currentPhase ?? "—"}`, snapshot.coverage ? formatCoverageLine(snapshot.coverage) : ""];
 
   if (width < 52) {
     lines.push(theme.fg("dim", "Phases"));
-    const phaseRows = listWindow(phases, state.phaseIndex, Math.max(1, Math.floor(maxRows / 2)));
+    const paneRows = Math.max(1, Math.floor((maxRows - lines.length - (opts.interactive ? 1 : 0) - 2) / 2));
+    const phaseRows = listWindow(phases, state.phaseIndex, paneRows);
     for (let index = 0; index < phaseRows.items.length; index++) {
       lines.push(phaseLine(phaseRows.items[index]!, snapshot, state.pane === "phases" && phaseRows.start + index === state.phaseIndex, width, theme));
     }
     if (phaseRows.more) lines.push(theme.fg("dim", "  …"));
     lines.push(theme.fg("dim", `Agents · ${selectedPhase(state)?.name ?? "—"}`));
-    const agentRows = listWindow(agents, state.agentIndex, Math.max(1, Math.floor(maxRows / 2)));
+    const agentRows = listWindow(agents, state.agentIndex, paneRows);
     for (let index = 0; index < agentRows.items.length; index++) {
       lines.push(agentLine(agentRows.items[index]!, state.pane === "agents" && agentRows.start + index === state.agentIndex, opts, width, theme));
     }
@@ -333,40 +400,66 @@ function renderOverview(state: WikiNavigatorState, opts: WikiNavigatorRenderOpti
     if (agentRows.more) lines.push(theme.fg("dim", "  …"));
   } else {
     const leftWidth = Math.min(30, Math.max(20, Math.floor((width - 3) * 0.32)));
-    const rightWidth = Math.max(1, width - leftWidth - 3);
-    const rows = Math.max(1, maxRows - 3);
-    const phaseRows = listWindow(phases, state.phaseIndex, rows);
-    const agentRows = listWindow(agents, state.agentIndex, rows);
-    lines.push(`${truncateToWidth(theme.bold("Phases"), leftWidth, "", true)} │ ${truncateToWidth(theme.bold(`Agents · ${selectedPhase(state)?.name ?? "—"}`), rightWidth, "", true)}`);
-    lines.push(`${"─".repeat(leftWidth)}─┼─${"─".repeat(rightWidth)}`);
-    const count = Math.max(phaseRows.items.length, agentRows.items.length, 1);
-    for (let index = 0; index < count; index++) {
+    const rightWidth = width - leftWidth - 3;
+    const reservedRows = lines.length + (opts.interactive ? 1 : 0) + 2;
+    const bodyRows = Math.max(1, maxRows - reservedRows);
+    const phaseRows = listWindow(phases, state.phaseIndex, bodyRows);
+    const agentRows = listWindow(agents, state.agentIndex, bodyRows);
+    const left: string[] = [];
+    const right: string[] = [];
+    for (let index = 0; index < bodyRows; index++) {
       const phase = phaseRows.items[index];
       const agent = agentRows.items[index];
-      const left = phase
+      let leftLine = phase
         ? phaseLine(phase, snapshot, state.pane === "phases" && phaseRows.start + index === state.phaseIndex, leftWidth, theme)
-        : " ".repeat(leftWidth);
-      const right = agent
+        : "";
+      let rightLine = agent
         ? agentLine(agent, state.pane === "agents" && agentRows.start + index === state.agentIndex, opts, rightWidth, theme)
         : agents.length === 0 && index === 0
           ? truncateToWidth(theme.fg("dim", "  no agents"), rightWidth, "", true)
-          : " ".repeat(rightWidth);
-      lines.push(`${left} │ ${right}`);
+          : "";
+      if (index === bodyRows - 1 && phaseRows.more) leftLine = theme.fg("dim", "  …");
+      if (index === bodyRows - 1 && agentRows.more) rightLine = theme.fg("dim", "  …");
+      left.push(leftLine);
+      right.push(rightLine);
     }
-    if (phaseRows.more || agentRows.more) lines.push(theme.fg("dim", "… more items available"));
+    lines.push(
+      ...renderTwoPaneFrame({
+        width,
+        bodyRows,
+        leftWidth,
+        leftTitle: "Phases",
+        rightTitle: `Agents · ${selectedPhase(state)?.name ?? "—"}`,
+        left,
+        right,
+        theme,
+      }),
+    );
   }
 
   if (opts.interactive) lines.push("←/→ pane · ↑/↓ select · enter observe · p pause/resume · x stop · q close");
   return lines;
 }
 
-function renderDetail(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions, theme: NavigatorTheme): string[] {
-  const snapshot = state.snapshot!;
+function detailPreamble(
+  state: WikiNavigatorState,
+  opts: WikiNavigatorRenderOptions,
+  theme: NavigatorTheme,
+): { agent?: WikiAgentView; lines: string[] } {
   const agent = selectedAgent(state);
-  if (!agent) return [theme.fg("warning", "Selected agent is no longer available."), "← back · q close"];
+  if (!agent) return { lines: [theme.fg("warning", "Selected agent is no longer available."), "← back · q close"] };
 
-  const transcriptRows = Math.max(1, opts.transcriptRows ?? TRANSCRIPT_PAGE_ROWS);
   const lines = [theme.bold(agent.label), `${agent.phase} · ${agentStatusGlyph(agent.status)} ${agent.status} · ${formatDuration(agent.elapsedMs)}`];
+  const context = formatAgentContext(agent);
+  if (context) lines.push(context);
+  const activity = formatAgentActivity(agent);
+  if (activity) lines.push(theme.fg("warning", activity));
+  const latestUsage = formatLatestUsage(agent);
+  if (latestUsage) lines.push(latestUsage);
+  const runUsage = formatRunUsage(agent);
+  if (runUsage) lines.push(runUsage);
+  const compactionCount = (agent as WikiAgentView & { compactionCount?: number }).compactionCount;
+  if (compactionCount) lines.push(`Context compacted ${compactionCount}x`);
   if (agent.lastTool) lines.push(`Last tool: ${agent.lastTool.name}${agent.lastTool.path ? ` ${agent.lastTool.path}` : ""}`);
   if (agent.lastError) lines.push(theme.fg("error", `Error: ${agent.lastError}`));
   if (opts.staleWarnMs !== undefined && isAgentStale(agent, opts.staleWarnMs, opts.now)) {
@@ -374,6 +467,27 @@ function renderDetail(state: WikiNavigatorState, opts: WikiNavigatorRenderOption
   }
   lines.push(theme.fg("dim", `Execution stream${state.followTranscript ? " · following" : ""}`));
   lines.push("─".repeat(40));
+  return { agent, lines };
+}
+
+function detailTranscriptRows(preambleRows: number, opts: WikiNavigatorRenderOptions): number {
+  const maxRows = Math.max(1, opts.maxRows ?? Number.POSITIVE_INFINITY);
+  const footerRows = opts.interactive ? 1 : 0;
+  // Reserve the optional paging hints so transcript rows never push controls off-screen.
+  return Math.max(1, Math.min(opts.transcriptRows ?? TRANSCRIPT_PAGE_ROWS, maxRows - preambleRows - footerRows - 2));
+}
+
+function effectiveTranscriptPageRows(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions): number {
+  if (state.view !== "detail") return TRANSCRIPT_PAGE_ROWS;
+  const preamble = detailPreamble(state, opts, PLAIN_THEME);
+  return preamble.agent ? detailTranscriptRows(preamble.lines.length, opts) : TRANSCRIPT_PAGE_ROWS;
+}
+
+function renderDetail(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions, theme: NavigatorTheme): string[] {
+  const preamble = detailPreamble(state, opts, theme);
+  if (!preamble.agent) return preamble.lines;
+  const lines = preamble.lines;
+  const transcriptRows = detailTranscriptRows(lines.length, opts);
 
   if (state.transcriptLoading) {
     lines.push(theme.fg("dim", "Loading execution stream…"));
@@ -381,7 +495,7 @@ function renderDetail(state: WikiNavigatorState, opts: WikiNavigatorRenderOption
     lines.push(theme.fg("dim", "No execution output yet."));
   } else {
     const maxOffset = Math.max(0, state.transcriptLines.length - transcriptRows);
-    const start = Math.min(state.transcriptOffset, maxOffset);
+    const start = state.followTranscript ? maxOffset : Math.min(state.transcriptOffset, maxOffset);
     const window = state.transcriptLines.slice(start, start + transcriptRows);
     if (start > 0) lines.push(theme.fg("dim", `↑ ${start} earlier line${start === 1 ? "" : "s"}`));
     lines.push(...window);
@@ -430,29 +544,47 @@ function fixedDialogContent(lines: string[], rows: number): string[] {
   return [...frame.slice(0, -1), ...Array(rows - frame.length).fill(""), footer];
 }
 
-function renderNavigatorDialog(
-  state: WikiNavigatorState,
-  tui: TUI,
-  theme: Theme,
-  options: OpenWikiNavigatorOptions,
-  width: number,
-): string[] {
+interface NavigatorDialogLayout {
+  panelWidth: number;
+  innerWidth: number;
+  contentRows: number;
+  renderOptions: WikiNavigatorRenderOptions;
+}
+
+function navigatorDialogLayout(tui: TUI, options: OpenWikiNavigatorOptions, width: number): NavigatorDialogLayout {
   const panelWidth = Math.max(1, width);
   const terminalRows = Math.max(3, tui.terminal?.rows ?? 24);
   const availableRows = Math.max(3, terminalRows - DIALOG_MARGIN * 2);
   const overlayRows = Math.max(3, Math.min(Math.floor(terminalRows * 0.92), availableRows));
   const contentRows = Math.max(1, overlayRows - 2);
   const innerWidth = Math.max(1, panelWidth - BOX_BORDER_OVERHEAD);
-  const content = renderWikiNavigator(
-    state,
-    options.idle,
-    {
+  return {
+    panelWidth,
+    innerWidth,
+    contentRows,
+    renderOptions: {
       ...options.formatOpts,
       width: innerWidth,
       maxRows: contentRows,
       transcriptRows: Math.max(1, contentRows - 8),
       interactive: true,
     },
+  };
+}
+
+function renderNavigatorDialog(
+  state: WikiNavigatorState,
+  tui: TUI,
+  theme: Theme,
+  options: OpenWikiNavigatorOptions,
+  width: number,
+  layout: NavigatorDialogLayout = navigatorDialogLayout(tui, options, width),
+): string[] {
+  const { panelWidth, innerWidth, contentRows, renderOptions } = layout;
+  const content = renderWikiNavigator(
+    state,
+    options.idle,
+    renderOptions,
     theme,
   );
 
@@ -491,6 +623,7 @@ export async function openWikiNavigator(
         let closed = false;
         let transcriptRequest = 0;
         let unsubscribe: (() => void) | undefined;
+        let lastRenderOptions: WikiNavigatorRenderOptions | undefined;
 
         const redraw = () => tui.requestRender();
         const cleanup = () => {
@@ -511,12 +644,12 @@ export async function openWikiNavigator(
           }
           const request = ++transcriptRequest;
           try {
-            const lines = await options.getTranscript(agentId);
+            const entries = await options.getTranscript(agentId);
             if (closed || request !== transcriptRequest || selectedAgent(state)?.agentId !== agentId) return;
-            state = withTranscript(state, lines);
+            state = withTranscript(state, entries);
           } catch {
             if (closed || request !== transcriptRequest) return;
-            state = withTranscript(state, ["(execution stream unavailable)"]);
+            state = withTranscript(state, [{ role: "system", kind: "text", timestamp: Date.now(), text: "(execution stream unavailable)" }]);
           }
           redraw();
         };
@@ -549,10 +682,17 @@ export async function openWikiNavigator(
           set focused(value: boolean) {
             focused = value;
           },
-          render: (width: number) => renderNavigatorDialog(state, tui, theme, options, width),
+          render: (width: number) => {
+            const layout = navigatorDialogLayout(tui, options, width);
+            lastRenderOptions = layout.renderOptions;
+            state = withTranscriptPageRows(state, effectiveTranscriptPageRows(state, layout.renderOptions));
+            return renderNavigatorDialog(state, tui, theme, options, width, layout);
+          },
           handleInput: (data: string) => {
             const next = applyWikiNavigatorKey(state, parseKey(data) ?? data);
-            state = next.state;
+            state = lastRenderOptions
+              ? withTranscriptPageRows(next.state, effectiveTranscriptPageRows(next.state, lastRenderOptions))
+              : next.state;
             if (next.action === "close") {
               close();
               return;

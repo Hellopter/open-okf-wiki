@@ -3,6 +3,8 @@ export type {
   OrchLimits,
   OrchRunSummary,
   WikiAgentLastTool,
+  WikiAgentActivity,
+  WikiAgentActivityKind,
   WikiAgentRole,
   WikiAgentView,
   WikiBackend,
@@ -10,9 +12,15 @@ export type {
   WikiEvent,
   WikiEventType,
   WikiOverallStatus,
+  WikiObservationEntry,
+  WikiObservationKind,
+  WikiObservationRole,
   WikiPhaseStatus,
   WikiPhaseView,
   WikiProgressSnapshot,
+  WikiTokenUsage,
+  WikiContextUsage,
+  WikiTranscriptEntry,
 } from "./types.js";
 export { DEFAULT_ORCH_LIMITS, mergeOrchLimits } from "./types.js";
 

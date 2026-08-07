@@ -154,6 +154,212 @@ test("agents appear in snapshot during/after plan path", async () => {
   }
 });
 
+test("session observations update tool state, context usage, retry, and compaction", async () => {
+  const root = tempRoot();
+  const workdir = join(root, "wd");
+  seedInventory(workdir, 1);
+  const { core } = makeCore(workdir);
+
+  const agentRunner = createMockAgentRunner(async (req) => {
+    if (req.role === "survey") {
+      req.onHistory?.({
+        role: "tool",
+        kind: "tool_start",
+        toolCallId: "read-1",
+        toolName: "read",
+        path: "src/index.ts",
+        timestamp: 10,
+      });
+      req.onHistory?.({
+        role: "tool",
+        kind: "tool_end",
+        toolCallId: "read-1",
+        toolName: "read",
+        isError: false,
+        timestamp: 11,
+      });
+      req.onHistory?.({
+        role: "assistant",
+        kind: "text",
+        text: "I found the entrypoint.",
+        usage: { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, total: 17 },
+        context: { tokens: 120, contextWindow: 1_000, percent: 12 },
+        timestamp: 12,
+      });
+      req.onHistory?.({
+        role: "system",
+        kind: "retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+        error: "rate limited",
+        timestamp: 13,
+      });
+      req.onHistory?.({
+        role: "system",
+        kind: "retry_end",
+        attempt: 1,
+        success: true,
+        timestamp: 14,
+      });
+      req.onHistory?.({
+        role: "system",
+        kind: "compaction_start",
+        reason: "threshold",
+        timestamp: 15,
+      });
+      req.onHistory?.({
+        role: "system",
+        kind: "compaction_end",
+        reason: "threshold",
+        success: true,
+        tokensBefore: 900,
+        tokensAfter: 150,
+        usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, total: 5 },
+        // The backend must trust post-compaction tokensAfter over a stale
+        // pre-compaction context estimate supplied by an older runner.
+        context: { tokens: 900, contextWindow: 1_000, percent: 90 },
+        timestamp: 16,
+      });
+    }
+    return { status: "ok", summary: "ok" };
+  });
+
+  const orch = createSessionOrchestrator({
+    workspaceRoot: root,
+    core,
+    getTools: () => [],
+    agentRunner,
+    limits: { heartbeatMs: 60_000 },
+  });
+
+  try {
+    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
+    await orch.waitFor(orchRunId);
+
+    const survey = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
+    assert.ok(survey);
+    assert.equal(survey.status, "succeeded");
+    assert.equal(survey.lastTool?.name, "read");
+    assert.equal(survey.lastTool?.path, "src/index.ts");
+    assert.equal(survey.activity, undefined);
+    assert.equal(survey.compactionCount, 1);
+    assert.deepEqual(survey.latestUsage, { input: 10, output: 4, cacheRead: 2, cacheWrite: 1, total: 17 });
+    assert.deepEqual(survey.tokenUsage, { input: 13, output: 6, cacheRead: 2, cacheWrite: 1, total: 22 });
+    assert.deepEqual(survey.context, { tokens: 150, contextWindow: 1_000, percent: 15 });
+
+    const transcript = await orch.getTranscript(survey.agentId, {}, orchRunId);
+    assert.equal(transcript.length, 7);
+    assert.equal(transcript[0].kind, "tool_start");
+    assert.equal(transcript[1].kind, "tool_end");
+    assert.equal(transcript.at(-1).kind, "compaction_end");
+  } finally {
+    orch.dispose();
+  }
+});
+
+test("compaction retry preserves compacting activity and terminal agent state clears it", async () => {
+  const root = tempRoot();
+  const workdir = join(root, "wd");
+  seedInventory(workdir, 1);
+  const { core } = makeCore(workdir);
+  let releaseSurvey;
+  let observationsReady;
+  const surveyBlocked = new Promise((resolve) => {
+    releaseSurvey = resolve;
+  });
+  const ready = new Promise((resolve) => {
+    observationsReady = resolve;
+  });
+
+  const agentRunner = createMockAgentRunner(async (req) => {
+    if (req.role === "survey") {
+      req.onHistory?.({
+        role: "system",
+        kind: "compaction_start",
+        reason: "overflow",
+        timestamp: 10,
+      });
+      req.onHistory?.({
+        role: "system",
+        kind: "summarization_retry",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2_000,
+        error: "rate limited",
+        timestamp: 11,
+      });
+      observationsReady();
+      await surveyBlocked;
+    }
+    return { status: "ok", summary: "ok" };
+  });
+
+  const orch = createSessionOrchestrator({
+    workspaceRoot: root,
+    core,
+    getTools: () => [],
+    agentRunner,
+    limits: { heartbeatMs: 60_000 },
+  });
+
+  try {
+    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
+    await ready;
+    const inFlight = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
+    assert.equal(inFlight?.activity?.kind, "compacting");
+    assert.equal(inFlight?.activity?.reason, "overflow");
+
+    releaseSurvey();
+    await orch.waitFor(orchRunId);
+    const settled = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
+    assert.equal(settled?.status, "succeeded");
+    assert.equal(settled?.activity, undefined);
+  } finally {
+    orch.dispose();
+  }
+});
+
+test("terminal agent state clears an unfinished retry activity", async () => {
+  const root = tempRoot();
+  const workdir = join(root, "wd");
+  seedInventory(workdir, 1);
+  const { core } = makeCore(workdir);
+  const agentRunner = createMockAgentRunner(async (req) => {
+    if (req.role === "survey") {
+      req.onHistory?.({
+        role: "system",
+        kind: "retry_start",
+        attempt: 3,
+        maxAttempts: 3,
+        delayMs: 8_000,
+        error: "rate limited",
+        timestamp: 10,
+      });
+      return { status: "failed", summary: "retry exhausted" };
+    }
+    return { status: "ok", summary: "ok" };
+  });
+
+  const orch = createSessionOrchestrator({
+    workspaceRoot: root,
+    core,
+    getTools: () => [],
+    agentRunner,
+    limits: { heartbeatMs: 60_000 },
+  });
+
+  try {
+    const { orchRunId } = await orch.start({ workspaceRoot: root, mode: "plan" });
+    await orch.waitFor(orchRunId);
+    const survey = orch.getSnapshot(orchRunId)?.agents.find((agent) => agent.role === "survey");
+    assert.equal(survey?.status, "failed");
+    assert.equal(survey?.activity, undefined);
+  } finally {
+    orch.dispose();
+  }
+});
+
 test("stop cancels a running session run", async () => {
   const root = tempRoot();
   const workdir = join(root, "wd");

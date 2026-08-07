@@ -5,6 +5,7 @@ import type {
   OrchRunSummary,
   WikiEvent,
   WikiProgressSnapshot,
+  WikiTranscriptEntry,
 } from "./types.js";
 
 export interface WikiOrchestratorStartInput {
@@ -38,7 +39,7 @@ export interface WikiOrchestrator {
     agentId: string,
     opts?: { tail?: number },
     id?: string,
-  ): Promise<unknown[]>;
+  ): Promise<WikiTranscriptEntry[]>;
 
   /** No-op for session backend (source of truth is local store). */
   syncFromBackend(): void;
