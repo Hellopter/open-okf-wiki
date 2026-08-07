@@ -15,7 +15,16 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REQUIRED = ["wiki", "wiki-help", "wiki-status", "wiki-init", "wiki-run", "wiki-source"];
+const REQUIRED = [
+  "wiki",
+  "wiki-help",
+  "wiki-status",
+  "wiki-init",
+  "wiki-run",
+  "wiki-source",
+  "wiki-agents",
+  "wiki-inspect",
+];
 const TIMEOUT_MS = 45_000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

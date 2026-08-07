@@ -40,8 +40,7 @@
     ]
   },
   "dependencies": {
-    "@okf-wiki/wiki-agent-kit": "workspace:*",
-    "@quintinshaw/pi-dynamic-workflows": "^3.5.1"
+    "@okf-wiki/wiki-agent-kit": "workspace:*"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

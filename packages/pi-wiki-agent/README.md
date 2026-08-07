@@ -3,8 +3,9 @@
 Checkpointed, source-grounded **repository Wiki** production for the [Pi](https://pi.dev) coding agent.
 
 Deterministic state (sources, snapshots, checkpoints, plan gate, seal) lives in
-`@okf-wiki/wiki-agent-kit`. Orchestration (background runs, task panel,
-pause/resume) uses [Pi Dynamic Workflows](https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows).
+`@okf-wiki/wiki-agent-kit`. Orchestration is a **session-native** multi-agent
+runtime inside this extension (Pi `createAgentSession` subagents + observation
+store). There is **no** dependency on pi-dynamic-workflows.
 
 ## Product disambiguation
 
@@ -165,36 +166,61 @@ pi --mode rpc --no-session --approve <<'EOF'
 EOF
 ```
 
-Expect: `wiki`, `wiki-help`, `wiki-status`, `wiki-init`, `wiki-run`, `wiki-source`.
+Expect: `wiki`, `wiki-help`, `wiki-status`, `wiki-init`, `wiki-run`,
+`wiki-source`, `wiki-agents`, `wiki-inspect`.
 
 TUI smoke:
 
 1. `/wiki` → multi-line help (no workflow start)
-2. `/wiki-status` → workspace / sources / domain run + Pi workflow ids
+2. `/wiki-status` → workspace / sources / domain + orchestration snapshot
 3. `/wiki init` → create workspace and link project source
-4. `/wiki run <focus>` or multi-word `/wiki repository architecture` → start run
+4. `/wiki run <focus>` → start orch run
+5. `/wiki agents` / `/wiki inspect` → multi-agent observation
 
 ## Commands
 
 Registered names: `/wiki`, `/wiki-help`, `/wiki-status`, `/wiki-init`,
-`/wiki-run`, `/wiki-source` (aliases share one executor).
+`/wiki-run`, `/wiki-source`, `/wiki-agents`, `/wiki-inspect`.
 
 ```text
 /wiki                         # help (not auto-run)
 /wiki help | -h | --help
-/wiki status
+/wiki status [--json]
+/wiki agents [agentId]
+/wiki inspect | fleet         # multi-agent inspector (text fallback in RPC)
+/wiki focus <agentId>
+/wiki logs [agentId] [--tail N]
 /wiki init [--name name] [--lang en|zh] [--force]
 /wiki run [focus]
 /wiki --plan [focus]
 /wiki --write [focus]
 /wiki --restart [focus]
 /wiki --retry plan|write [focus]
-/wiki pause|resume|stop [pi-workflow-run-id]
+/wiki pause|resume|stop [orch-run-id]
 /wiki source list
 /wiki source add clone <url> [--id id]
 /wiki source add link|path <path> [--id id]
 /wiki source remove <id>
 ```
+
+### Multi-agent observation
+
+Orchestration state is tracked via `SessionWikiOrchestrator`. Live progress:
+
+```text
+.wiki-agent/runs/<domainRunId>/orchestration/
+  snapshot.json
+  events.jsonl
+  agents/<agentId>/transcript.jsonl
+```
+
+| Command | Purpose |
+| --- | --- |
+| `/wiki agents` | Table of lanes/agents (status, last tool, elapsed) |
+| `/wiki agents <id>` | Detail for one agent |
+| `/wiki inspect` | Switchable multi-agent inspector (text fallback in RPC) |
+| `/wiki focus <id>` | Pin status-bar focus to an agent |
+| `/wiki logs [id]` | Transcript tail for an agent |
 
 ### Semantics
 
@@ -203,20 +229,36 @@ Registered names: `/wiki`, `/wiki-help`, `/wiki-status`, `/wiki-init`,
 | Empty `/wiki`, `help`, `-h`, `--help` | Print help only |
 | Multi-word free text | Run with that focus (`/wiki auth model`) |
 | Single unknown token | Error — use `/wiki run <focus>` for one-word focus |
-| `status` / `source list` / pause·resume·stop | No auto-init; missing workspace → ask for `/wiki init` |
+| `status` / `agents` / `inspect` / `source list` / pause·resume·stop | No auto-init; missing workspace → ask for `/wiki init` |
 | `run` / source add | Auto-init workspace if needed and link `project` source |
 | `--plan` | Checkpoint plan; stop before write |
 | `--write` | Interactive plan approval, then candidate writing |
 
-Pi workflow IDs identify orchestration jobs. The core returns a separate
-**domain run ID** after Bootstrap; `/wiki status` shows both.
+Orch run IDs identify orchestration jobs. Domain run IDs come from Bootstrap;
+`/wiki status` shows both.
+
+### Orchestration path
+
+1. `/wiki run` or `/wiki --plan` → `Bootstrap → Survey → Plan → Gate` (stops for approval)
+2. `/wiki --write` → `Write → Verify → Repair* → Validate` (seals candidate)
+
+```text
+Bootstrap → Survey (adaptive lanes, grep/find) → Plan → Gate
+    → (approve) → Write sources/integration → Verify lenses → Repair* → Validate
+```
+
+Control: `/wiki pause` aborts in-flight agents; `/wiki resume` restarts from domain
+`prepareRun` startAt. `/wiki stop` cancels the orch run.
+
+Subagents use Pi `createAgentSession` with a sandboxed toolset (read/ls/write/edit/grep/find + host tools). **No bash. No pi-dynamic-workflows.**
 
 ## Security model
 
-Workflow subagents receive **no shell tool**. Reads are limited to the active
-run’s frozen inputs, sources, method, analysis, and candidates. Writes are
-limited to receipts, plan artifacts, and candidate pages. The core remains the
-final authority for checkpoints, source snapshots, plan approval, and sealing.
+Workflow subagents receive **no shell tool**. They may use sandboxed `read`,
+`ls`, `grep`, `find`, `write`, and `edit` within the active run data plane.
+Writes are limited to receipts, plan artifacts, and candidate pages. The core
+remains the final authority for checkpoints, source snapshots, plan approval,
+and sealing.
 
 ## Development
 
@@ -291,5 +333,5 @@ once in interactive Pi, then run `verify:pi` (the script omits `--approve` when
 Package layout:
 
 - `extensions/wiki.ts` — Pi package entry (loads `dist/`)
-- `src/` — command surface, core adapter, workflow script, toolset
+- `src/` — command surface, core adapter, session orch, observation, toolset
 - `scripts/verify-pi-install.mjs` — live `get_commands` smoke check

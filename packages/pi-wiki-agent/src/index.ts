@@ -23,8 +23,35 @@ export { WIKI_RUNTIME_DEFINITION, WIKI_WORKFLOW_DIGEST, WIKI_WORKFLOW_ID } from 
 export {
   createProductionExtension,
   createWikiExtension,
+  type DisposableOrchestrator,
   type WikiExtensionOptions,
-  type WikiWorkflowInvocation,
 } from "./extension.js";
 export { createWikiFilesystemTools, createWikiHostTools, createWikiToolset } from "./toolset.js";
-export { WIKI_WORKFLOW_SCRIPT } from "./wiki-workflow.js";
+
+export * from "./orch/index.js";
+export {
+  agentStatusGlyph,
+  formatAgentDetail,
+  formatAgentLine,
+  formatAgentsTable,
+  formatCoverageLine,
+  formatDuration,
+  formatPhasesLine,
+  formatSnapshotText,
+  parseTimeMs,
+  phaseStatusGlyph,
+  type FormatTimeOpts,
+  formatStatusBar,
+  formatFleetWidget,
+  applyInspectorKey,
+  createInspectorState,
+  filteredAgents,
+  openWikiInspector,
+  renderInspector,
+  type InspectorKeyContext,
+  type InspectorKeyResult,
+  type InspectorPanel,
+  type InspectorState,
+  type OpenWikiInspectorContext,
+  type OpenWikiInspectorOptions,
+} from "./observe/index.js";

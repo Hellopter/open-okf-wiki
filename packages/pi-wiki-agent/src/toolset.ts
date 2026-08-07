@@ -1,8 +1,10 @@
-import { access, lstat, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve, sep } from "node:path";
+import { access, glob as fsGlob, lstat, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import {
   createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
@@ -113,12 +115,110 @@ async function assertWritableDirectory(adapter: CoreAdapter, root: string, targe
   await noSymlinkBetween(paths.workdir, candidate);
 }
 
+function resolveAgainstRoot(root: string, target: string): string {
+  return isAbsolute(target) ? resolve(target) : resolve(root, target);
+}
+
+async function defaultSourcesSearchPath(adapter: CoreAdapter, root: string): Promise<string> {
+  const paths = await requireRunPaths(adapter, root);
+  return paths.sourcesDir;
+}
+
 /**
- * The only filesystem tools exposed to workflow subagents. `bash`, `grep`, and
- * `find` intentionally stay absent: every writable target is checked against
- * the active run's data plane before the Pi built-in performs I/O.
+ * Force readonly search tools onto the active run data plane: missing `path`
+ * defaults to `sourcesDir`, and the resolved search root must be readable.
+ */
+function withDataPlaneSearchRoot<TDetails>(
+  tool: ToolDefinition<any, TDetails>,
+  root: string,
+  adapter: CoreAdapter,
+): ToolDefinition<any, TDetails> {
+  const execute = tool.execute;
+  return {
+    ...tool,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const input = (params ?? {}) as { path?: string; [key: string]: unknown };
+      const rawPath = typeof input.path === "string" ? input.path.trim() : "";
+      const path = rawPath || (await defaultSourcesSearchPath(adapter, root));
+      await assertReadable(adapter, root, resolveAgainstRoot(root, path));
+      return execute(toolCallId, { ...input, path }, signal, onUpdate, ctx);
+    },
+  };
+}
+
+async function isInsideAllowedReadableDirs(adapter: CoreAdapter, root: string, target: string): Promise<boolean> {
+  try {
+    await assertReadable(adapter, root, target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Filesystem tools exposed to workflow subagents. `bash` stays absent; readonly
+ * `grep` and `find` are allowed but sandboxed to the active run data plane.
+ * Every writable target is checked against the active run before Pi built-ins perform I/O.
  */
 export function createWikiFilesystemTools(root: string, adapter: CoreAdapter): ToolDefinition<any, any>[] {
+  const grep = withDataPlaneSearchRoot(
+    createGrepToolDefinition(root, {
+      operations: {
+        async isDirectory(absolutePath) {
+          await assertReadable(adapter, root, absolutePath);
+          return (await stat(absolutePath)).isDirectory();
+        },
+        async readFile(absolutePath) {
+          await assertReadable(adapter, root, absolutePath);
+          return readFile(absolutePath, "utf8");
+        },
+      },
+    }),
+    root,
+    adapter,
+  );
+
+  const find = withDataPlaneSearchRoot(
+    createFindToolDefinition(root, {
+      operations: {
+        async exists(absolutePath) {
+          try {
+            await assertReadable(adapter, root, absolutePath);
+            await access(absolutePath);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        async glob(pattern, cwd, options) {
+          const matches: string[] = [];
+          const ignore = options.ignore ?? [];
+          for await (const entry of fsGlob(pattern, {
+            cwd,
+            withFileTypes: false,
+            exclude: (name) => {
+              const rel = typeof name === "string" ? name : String(name);
+              return ignore.some((rule) => {
+                // Node glob exclude receives path segments; honor common ignore globs by basename/path.
+                if (rule.includes("node_modules") && (rel === "node_modules" || rel.includes(`${sep}node_modules`))) return true;
+                if (rule.includes(".git") && (rel === ".git" || rel.includes(`${sep}.git`))) return true;
+                return false;
+              });
+            },
+          })) {
+            const absolute = isAbsolute(entry) ? resolve(entry) : resolve(cwd, entry);
+            if (!(await isInsideAllowedReadableDirs(adapter, root, absolute))) continue;
+            matches.push(absolute);
+            if (matches.length >= options.limit) break;
+          }
+          return matches;
+        },
+      },
+    }),
+    root,
+    adapter,
+  );
+
   return [
     createReadToolDefinition(root, {
       operations: {
@@ -153,6 +253,8 @@ export function createWikiFilesystemTools(root: string, adapter: CoreAdapter): T
         },
       },
     }),
+    grep,
+    find,
     createWriteToolDefinition(root, {
       operations: {
         async mkdir(path) {

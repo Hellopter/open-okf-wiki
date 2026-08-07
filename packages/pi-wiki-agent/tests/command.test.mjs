@@ -66,8 +66,43 @@ test("parses explicit initialization and source management", () => {
     id: "service",
   });
   assert.deepEqual(parseWikiCommand("source remove --id service"), { action: "source-remove", sourceId: "service" });
-  assert.deepEqual(parseWikiCommand("status"), { action: "status" });
+  assert.deepEqual(parseWikiCommand("status"), { action: "status", json: undefined });
+  assert.deepEqual(parseWikiCommand("status --json"), { action: "status", json: true });
   assert.deepEqual(parseWikiCommand("pause pi-1"), { action: "pause", workflowRunId: "pi-1" });
+});
+
+test("parses agents, inspect/fleet, focus, and logs", () => {
+  assert.deepEqual(parseWikiCommand("agents"), { action: "agents", agentId: undefined });
+  assert.deepEqual(parseWikiCommand("agents survey:1:2"), { action: "agents", agentId: "survey:1:2" });
+  assert.deepEqual(parseWikiCommand("inspect"), { action: "inspect" });
+  assert.deepEqual(parseWikiCommand("fleet"), { action: "inspect" });
+  assert.deepEqual(parseWikiCommand("focus survey:1:2"), { action: "focus", agentId: "survey:1:2" });
+  assert.throws(() => parseWikiCommand("focus"), WikiCommandError);
+  assert.throws(() => parseWikiCommand("focus"), /focus <agentId>/);
+
+  assert.deepEqual(parseWikiCommand("logs"), { action: "logs", agentId: undefined, tail: undefined });
+  assert.deepEqual(parseWikiCommand("logs survey:1:2"), {
+    action: "logs",
+    agentId: "survey:1:2",
+    tail: undefined,
+  });
+  assert.deepEqual(parseWikiCommand("logs --tail 50"), {
+    action: "logs",
+    agentId: undefined,
+    tail: 50,
+  });
+  assert.deepEqual(parseWikiCommand("logs survey:1:2 --tail 20"), {
+    action: "logs",
+    agentId: "survey:1:2",
+    tail: 20,
+  });
+  assert.deepEqual(parseWikiCommand("logs --tail 10 survey:1:3"), {
+    action: "logs",
+    agentId: "survey:1:3",
+    tail: 10,
+  });
+  assert.throws(() => parseWikiCommand("logs --tail"), WikiCommandError);
+  assert.throws(() => parseWikiCommand("logs --tail no"), WikiCommandError);
 });
 
 test("rejects malformed source operations", () => {
@@ -83,19 +118,28 @@ test("formatWikiHelp covers usage, trust, and disambiguation", () => {
   assert.match(help, /trusted/i);
   assert.match(help, /wiki-status/);
   assert.match(help, /does not auto-start/i);
+  assert.match(help, /\/wiki agents/);
+  assert.match(help, /\/wiki inspect/);
+  assert.match(help, /\/wiki focus/);
+  assert.match(help, /\/wiki logs/);
 });
 
 test("getWikiArgumentCompletions filters by prefix", () => {
   const all = getWikiArgumentCompletions("");
   assert.ok(all.length >= 5);
   assert.ok(all.some((item) => item.value === "status"));
+  assert.ok(all.some((item) => item.value === "agents"));
+  assert.ok(all.some((item) => item.value === "inspect"));
 
   const status = getWikiArgumentCompletions("sta");
   assert.deepEqual(
     status.map((item) => item.value),
-    ["status"],
+    ["status", "status --json"],
   );
 
   const sources = getWikiArgumentCompletions("source");
   assert.ok(sources.every((item) => item.value.startsWith("source")));
+
+  const agents = getWikiArgumentCompletions("ag");
+  assert.ok(agents.some((item) => item.value === "agents"));
 });

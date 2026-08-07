@@ -7,13 +7,6 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-  installResultDelivery,
-  installTaskPanel,
-  resumeResultDelivery,
-  suspendResultDelivery,
-  WorkflowManager,
-} from "@quintinshaw/pi-dynamic-workflows";
-import {
   formatWikiHelp,
   getWikiArgumentCompletions,
   parseWikiCommand,
@@ -22,36 +15,55 @@ import {
   type WikiCommand,
 } from "./command.js";
 import { createCoreAdapter, type CoreAdapter, type WikiWorkspaceStatus } from "./core-adapter.js";
+import {
+  formatAgentDetail,
+  formatAgentsTable,
+  formatFleetWidget,
+  formatSnapshotText,
+  formatStatusBar,
+  openWikiInspector,
+} from "./observe/index.js";
+import {
+  createSessionOrchestrator,
+  DEFAULT_ORCH_LIMITS,
+  scanSurveyCoverage,
+  type WikiOrchestrator,
+  type WikiProgressSnapshot,
+} from "./orch/index.js";
 import { createWikiToolset } from "./toolset.js";
 import { WIKI_RUNTIME_DEFINITION } from "./runtime.js";
-import { WIKI_WORKFLOW_SCRIPT } from "./wiki-workflow.js";
 
-export interface WikiWorkflowInvocation {
-  /** Pi's background workflow id. Never confuse this with domainRunId. */
-  workflowRunId?: string;
-  workspaceRoot: string;
-  request: { mode: string; focus?: string };
-}
+export type DisposableOrchestrator = WikiOrchestrator & { dispose?: () => void };
 
 export interface WikiExtensionOptions {
   core: CoreAdapter;
-  managerFactory?: (options: ConstructorParameters<typeof WorkflowManager>[0]) => WorkflowManager;
+  /** Inject orchestrator (tests). Defaults to SessionWikiOrchestrator. */
+  orchestratorFactory?: (options: {
+    workspaceRoot: string;
+    core: CoreAdapter;
+    getMainModel: () => string | undefined;
+    getModelRegistry: () => unknown;
+  }) => DisposableOrchestrator;
 }
 
 const TOOLSET_NAME = "okf-wiki";
 const STATUS_KEY = "okf-wiki";
+const WIDGET_KEY = "okf-wiki-fleet";
 const CONTROL_TOOL_NAME = "okf_wiki";
+const OBSERVE_OPTS = { staleWarnMs: DEFAULT_ORCH_LIMITS.staleWarnMs };
 
 const CAPABILITY_NOTICE =
   "OKF Wiki (@okf-wiki/pi-wiki-agent) is loaded: checkpointed repository Wiki production. " +
   "Not pi-llm-wiki (personal knowledge base). Use /wiki help for commands. " +
-  "Aliases: /wiki-status /wiki-init /wiki-run /wiki-source /wiki-help.";
+  "Session orchestration: Bootstrap→Survey→Plan→Gate→Write→Verify→Repair→Validate. " +
+  "Observe with /wiki agents | inspect | focus | logs.";
 
-type StatusUi = { setStatus: (key: string, text: string | undefined) => void };
+type StatusUi = {
+  setStatus: (key: string, text: string | undefined) => void;
+  setWidget?: (key: string, content: string[] | undefined) => void;
+};
 
 function projectSource(root: string): { id: "project"; path: string; ignore: ["sources/**"] } {
-  // The project source points at the workspace root. Managed source links live
-  // under sources/, so it must not re-ingest those links as project files.
   return { id: "project", path: root, ignore: ["sources/**"] };
 }
 
@@ -60,28 +72,43 @@ function formatSourceList(status: WikiWorkspaceStatus): string {
   return status.sources.map((source) => `- ${source.id} (${source.kind}): ${source.root ?? source.url ?? ""}`).join("\n");
 }
 
-function formatPiWorkflowRuns(manager: WorkflowManager): string {
-  const runs = manager.listRuns();
-  if (runs.length === 0) return "none";
-  const active = runs.filter((run) => run.status === "running" || run.status === "paused");
-  const shown = (active.length ? active : runs.slice(0, 5)).map((entry) => `${entry.runId} (${entry.status})`);
-  return shown.join(", ") || "none";
+function mainModelSpec(ctx: ExtensionContext): string | undefined {
+  const model = ctx.model as { provider?: string; id?: string } | undefined;
+  if (!model?.id) return undefined;
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
-/** Compact one-line status for the Pi status bar. */
-function compactStatus(status: WikiWorkspaceStatus, manager: WorkflowManager): string {
-  if (!status.initialized) return "Wiki not initialized. Run /wiki init or /wiki help.";
-  const sourceCount = status.sources.length;
-  const domain =
-    status.active?.runId || status.activeRunId
-      ? `domain ${status.active?.runId ?? status.activeRunId}${status.active?.status ? ` (${status.active.status})` : ""}`
-      : "no active domain run";
-  const piRuns = formatPiWorkflowRuns(manager);
-  return `Wiki: ${sourceCount} source${sourceCount === 1 ? "" : "s"}; ${domain}; Pi: ${piRuns}.`;
+function operationSucceeded(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const result = value as { ok?: unknown; status?: unknown };
+  return result.ok === true || result.status === "ok";
 }
 
-/** Full multi-line status for `/wiki status`. */
-function formatFullStatus(status: WikiWorkspaceStatus, manager: WorkflowManager): string {
+function output(pi: ExtensionAPI, content: string): void {
+  pi.sendMessage({ customType: "okf-wiki", content, display: true });
+}
+
+async function enrichCoverage(orch: WikiOrchestrator, core: CoreAdapter, root: string): Promise<void> {
+  try {
+    const snap = orch.getActiveSnapshot();
+    let workdir = snap?.workdir;
+    if (!workdir) {
+      const paths = await core.getRunPaths(root);
+      workdir = paths?.workdir;
+    }
+    if (!workdir || !orch.updateSnapshot) return;
+    const coverage = await scanSurveyCoverage(workdir);
+    if (!coverage) return;
+    orch.updateSnapshot((s) => {
+      s.coverage = coverage;
+      if (!s.workdir) s.workdir = workdir;
+    });
+  } catch {
+    // ignore
+  }
+}
+
+function formatWorkspaceStatus(status: WikiWorkspaceStatus, snap?: WikiProgressSnapshot): string {
   const lines: string[] = [];
   if (!status.initialized) {
     lines.push(`No Wiki workspace at ${status.root}`);
@@ -113,12 +140,17 @@ function formatFullStatus(status: WikiWorkspaceStatus, manager: WorkflowManager)
       const marker = run.runId === (status.active?.runId ?? status.activeRunId) ? " (current)" : "";
       lines.push(`- ${run.runId}${run.status ? ` [${run.status}]` : ""}${marker}`);
     }
-  } else if (!status.active?.runId && !status.activeRunId) {
-    lines.push("- recent: none");
   }
 
-  lines.push("");
-  lines.push(`Pi workflow runs: ${formatPiWorkflowRuns(manager)}`);
+  if (snap) {
+    lines.push("");
+    lines.push("Orchestration:");
+    lines.push(formatSnapshotText(snap, OBSERVE_OPTS));
+  } else {
+    lines.push("");
+    lines.push("Orchestration: no active run (start with /wiki run)");
+  }
+
   if (status.summary) {
     lines.push("");
     lines.push(status.summary);
@@ -126,67 +158,66 @@ function formatFullStatus(status: WikiWorkspaceStatus, manager: WorkflowManager)
   return lines.join("\n");
 }
 
-function mainModelSpec(ctx: ExtensionContext): string | undefined {
-  const model = ctx.model as { provider?: string; id?: string } | undefined;
-  if (!model?.id) return undefined;
-  return model.provider ? `${model.provider}/${model.id}` : model.id;
-}
-
-function activeWorkflowRunId(manager: WorkflowManager): string | undefined {
-  return manager
-    .listRuns()
-    .filter((run) => run.status === "running" || run.status === "paused")
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]?.runId;
-}
-
-function operationSucceeded(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const result = value as { ok?: unknown; status?: unknown };
-  return result.ok === true || result.status === "ok";
-}
-
-function output(pi: ExtensionAPI, content: string): void {
-  pi.sendMessage({ customType: "okf-wiki", content, display: true });
-}
-
-function pauseLiveRuns(manager: WorkflowManager): number {
-  let paused = 0;
-  const live =
-    typeof manager.listLiveRuns === "function"
-      ? manager.listLiveRuns()
-      : manager.listRuns().filter((run) => run.status === "running" || run.status === "paused");
-  for (const run of live) {
-    if (run.status === "running" && manager.pause(run.runId)) paused++;
+function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined, workspace?: WikiWorkspaceStatus): void {
+  if (snap) {
+    ui.setStatus(STATUS_KEY, formatStatusBar(snap, OBSERVE_OPTS));
+    try {
+      ui.setWidget?.(WIDGET_KEY, formatFleetWidget(snap, OBSERVE_OPTS));
+    } catch {
+      // optional
+    }
+    return;
   }
-  return paused;
+  if (workspace && !workspace.initialized) {
+    ui.setStatus(STATUS_KEY, "Wiki not initialized. Run /wiki init or /wiki help.");
+  } else if (workspace) {
+    const n = workspace.sources.length;
+    ui.setStatus(STATUS_KEY, `Wiki: ${n} source${n === 1 ? "" : "s"}; no active orch run.`);
+  } else {
+    ui.setStatus(STATUS_KEY, "Wiki not initialized. Run /wiki init or /wiki help.");
+  }
+  try {
+    ui.setWidget?.(WIDGET_KEY, undefined);
+  } catch {
+    // ignore
+  }
 }
 
-async function refreshStatus(
+async function refreshObservation(
   core: CoreAdapter,
-  manager: WorkflowManager,
+  orch: WikiOrchestrator,
   root: string,
   ui: StatusUi,
 ): Promise<void> {
   try {
-    const status = await core.loadWorkspace(root);
-    if (status?.initialized) {
-      // Prefer full status when available for richer domain run info.
-      let full = status;
-      try {
-        full = await core.getWorkspaceStatus(root);
-      } catch {
-        // loadWorkspace summary is enough for the status bar.
+    orch.syncFromBackend();
+    await enrichCoverage(orch, core, root);
+    let workspace: WikiWorkspaceStatus | undefined;
+    try {
+      workspace = await core.loadWorkspace(root);
+      if (workspace?.initialized) {
+        try {
+          workspace = await core.getWorkspaceStatus(root);
+        } catch {
+          // keep loadWorkspace
+        }
       }
-      ui.setStatus(STATUS_KEY, compactStatus(full, manager));
-    } else {
-      ui.setStatus(STATUS_KEY, "Wiki not initialized. Run /wiki init or /wiki help.");
+    } catch {
+      workspace = undefined;
     }
+    applyObservationUi(ui, orch.getActiveSnapshot(), workspace);
   } catch {
-    // Status refresh must never surface as a session failure.
+    // never fail session
   }
 }
 
-async function ensureWorkspace(core: CoreAdapter, root: string, options: { linkProjectOnCreate?: boolean } = {}): Promise<WikiWorkspaceStatus> {
+const NO_WORKSPACE_HINT = "No Wiki workspace. Run /wiki init.";
+
+async function ensureWorkspace(
+  core: CoreAdapter,
+  root: string,
+  options: { linkProjectOnCreate?: boolean } = {},
+): Promise<WikiWorkspaceStatus> {
   const existing = await core.loadWorkspace(root);
   const created = !existing?.initialized;
   const workspace = existing?.initialized
@@ -199,12 +230,23 @@ async function ensureWorkspace(core: CoreAdapter, root: string, options: { linkP
   return workspace;
 }
 
-const NO_WORKSPACE_HINT = "No Wiki workspace. Run /wiki init.";
+function transcriptToLines(entries: unknown[]): string[] {
+  return entries.map((entry) => {
+    if (!entry || typeof entry !== "object") return String(entry);
+    const row = entry as Record<string, unknown>;
+    const role = row.role ?? row.kind ?? "entry";
+    const tool = row.toolName ? ` ${row.toolName}` : "";
+    const path = row.path ? ` ${row.path}` : "";
+    const text = typeof row.text === "string" ? row.text : JSON.stringify(row);
+    const clipped = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+    return `[${role}${tool}${path}] ${clipped}`;
+  });
+}
 
 async function executeCommand(
   pi: ExtensionAPI,
   core: CoreAdapter,
-  manager: WorkflowManager,
+  orch: WikiOrchestrator,
   root: string,
   command: WikiCommand,
   ctx: ExtensionCommandContext,
@@ -221,22 +263,110 @@ async function executeCommand(
       await core.addLinkedSource(root, projectSource(root));
     }
     await core.ensureRuntime(root, { runtimeDefinition: WIKI_RUNTIME_DEFINITION });
-    ctx.ui.notify(compactStatus(initialized, manager), "info");
-    await refreshStatus(core, manager, root, ctx.ui);
+    ctx.ui.notify(`Wiki initialized at ${initialized.root}`, "info");
+    await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
 
-  // Read/control commands must not auto-init a workspace.
   if (command.action === "status") {
     const existing = await core.loadWorkspace(root);
     if (!existing?.initialized) {
       output(pi, NO_WORKSPACE_HINT);
-      await refreshStatus(core, manager, root, ctx.ui);
+      await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
+    orch.syncFromBackend();
     const status = await core.getWorkspaceStatus(root);
-    output(pi, formatFullStatus(status, manager));
-    await refreshStatus(core, manager, root, ctx.ui);
+    const snap = orch.getActiveSnapshot();
+    if (command.json) {
+      output(
+        pi,
+        JSON.stringify({ workspace: status, orchestration: snap ?? null, orchRuns: orch.list() }, null, 2),
+      );
+    } else {
+      output(pi, formatWorkspaceStatus(status, snap));
+    }
+    await refreshObservation(core, orch, root, ctx.ui);
+    return;
+  }
+
+  if (command.action === "agents") {
+    orch.syncFromBackend();
+    const snap = orch.getActiveSnapshot();
+    if (!snap) {
+      output(pi, "No active orchestration run. Start with /wiki run.");
+      return;
+    }
+    if (command.agentId) {
+      const agent = snap.agents.find((a) => a.agentId === command.agentId || a.label === command.agentId);
+      if (!agent) throw new WikiCommandError(`Unknown agent "${command.agentId}". Use /wiki agents.`);
+      output(pi, formatAgentDetail(agent, snap, OBSERVE_OPTS));
+      return;
+    }
+    output(pi, formatAgentsTable(snap, OBSERVE_OPTS));
+    return;
+  }
+
+  if (command.action === "focus") {
+    orch.syncFromBackend();
+    const snap = orch.getActiveSnapshot();
+    if (!snap) throw new WikiCommandError("No active orchestration run to focus.");
+    const agent = snap.agents.find((a) => a.agentId === command.agentId || a.label === command.agentId);
+    if (!agent) throw new WikiCommandError(`Unknown agent "${command.agentId}". Use /wiki agents.`);
+    orch.focusAgent(agent.agentId);
+    ctx.ui.notify(`Focused agent ${agent.label} (${agent.agentId}).`, "info");
+    await refreshObservation(core, orch, root, ctx.ui);
+    return;
+  }
+
+  if (command.action === "logs") {
+    orch.syncFromBackend();
+    const snap = orch.getActiveSnapshot();
+    if (!snap) {
+      output(pi, "No active orchestration run.");
+      return;
+    }
+    const agentId =
+      command.agentId ??
+      snap.focusedAgentId ??
+      snap.agents.find((a) => a.status === "running" || a.status === "waiting_tool")?.agentId ??
+      snap.agents[0]?.agentId;
+    if (!agentId) {
+      output(pi, "No agents in the active run.");
+      return;
+    }
+    const entries = await orch.getTranscript(agentId, { tail: command.tail ?? 40 });
+    const header = `Logs for ${agentId} (tail ${command.tail ?? 40}):`;
+    const body = transcriptToLines(entries);
+    output(pi, [header, ...(body.length ? body : ["(empty)"])].join("\n"));
+    return;
+  }
+
+  if (command.action === "inspect") {
+    orch.syncFromBackend();
+    await openWikiInspector(
+      {
+        hasUI: ctx.hasUI,
+        ui: ctx.ui as {
+          custom?: (...args: unknown[]) => unknown;
+          notify: (message: string, level?: string) => void;
+        },
+      },
+      {
+        getSnapshot: () => {
+          orch.syncFromBackend();
+          return orch.getActiveSnapshot();
+        },
+        subscribe: (cb) => orch.subscribe((s) => cb(s)),
+        getTranscript: async (agentId) => transcriptToLines(await orch.getTranscript(agentId, { tail: 80 })),
+        onFocus: (agentId) => orch.focusAgent(agentId),
+        onStopAgent: () => {
+          void orch.stop();
+        },
+        onFallbackText: (lines) => output(pi, lines.join("\n")),
+      },
+    );
+    await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
 
@@ -244,61 +374,56 @@ async function executeCommand(
     const existing = await core.loadWorkspace(root);
     if (!existing?.initialized) {
       output(pi, NO_WORKSPACE_HINT);
-      await refreshStatus(core, manager, root, ctx.ui);
+      await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
     output(pi, formatSourceList(await core.getWorkspaceStatus(root)));
-    await refreshStatus(core, manager, root, ctx.ui);
     return;
   }
 
-  // Pause/resume/stop operate only on Pi WorkflowManager state.
   if (command.action === "pause") {
-    const workflowRunId = command.workflowRunId ?? activeWorkflowRunId(manager);
-    if (!workflowRunId) throw new WikiCommandError("No active Pi workflow run to pause.");
-    ctx.ui.notify(manager.pause(workflowRunId) ? `Paused Pi workflow ${workflowRunId}.` : `Cannot pause ${workflowRunId}.`, "info");
-    await refreshStatus(core, manager, root, ctx.ui);
+    const ok = await orch.pause(command.workflowRunId);
+    if (!ok) throw new WikiCommandError("No active orchestration run to pause (or pause failed).");
+    ctx.ui.notify("Paused wiki orchestration run.", "info");
+    await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
   if (command.action === "resume") {
-    const workflowRunId = command.workflowRunId ?? activeWorkflowRunId(manager);
-    if (!workflowRunId) throw new WikiCommandError("No paused Pi workflow run to resume.");
-    const resumed = await manager.resume(workflowRunId);
-    ctx.ui.notify(resumed ? `Resumed Pi workflow ${workflowRunId}.` : `Cannot resume ${workflowRunId}.`, resumed ? "info" : "warning");
-    await refreshStatus(core, manager, root, ctx.ui);
+    const ok = await orch.resume(command.workflowRunId);
+    if (!ok) throw new WikiCommandError("No paused orchestration run to resume (or resume failed).");
+    ctx.ui.notify("Resumed wiki orchestration run.", "info");
+    await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
   if (command.action === "stop") {
-    const workflowRunId = command.workflowRunId ?? activeWorkflowRunId(manager);
-    if (!workflowRunId) throw new WikiCommandError("No active Pi workflow run to stop.");
-    ctx.ui.notify(manager.stop(workflowRunId) ? `Stopped Pi workflow ${workflowRunId}.` : `Cannot stop ${workflowRunId}.`, "info");
-    await refreshStatus(core, manager, root, ctx.ui);
+    const ok = await orch.stop(command.workflowRunId);
+    if (!ok) throw new WikiCommandError("No active orchestration run to stop (or stop failed).");
+    ctx.ui.notify("Stopped wiki orchestration run.", "info");
+    await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
 
-  // Source removal requires an existing workspace; do not silently create one.
   if (command.action === "source-remove") {
     const existing = await core.loadWorkspace(root);
     if (!existing?.initialized) throw new WikiCommandError(NO_WORKSPACE_HINT);
     await core.removeSource(root, command.sourceId);
     ctx.ui.notify(`Removed source ${command.sourceId}.`, "info");
-    await refreshStatus(core, manager, root, ctx.ui);
+    await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
 
-  // Productive paths: source-add and run may auto-init on first use.
   const workspace = await ensureWorkspace(core, root, { linkProjectOnCreate: true });
   switch (command.action) {
     case "source-add-clone": {
       const source = await core.addClonedSource(root, command);
       ctx.ui.notify(`Added cloned source ${source.id}.`, "info");
-      await refreshStatus(core, manager, root, ctx.ui);
+      await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
     case "source-add-link": {
       const source = await core.addLinkedSource(root, { ...command, path: resolve(root, command.path) });
       ctx.ui.notify(`Added linked source ${source.id}.`, "info");
-      await refreshStatus(core, manager, root, ctx.ui);
+      await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
     case "run": {
@@ -310,44 +435,56 @@ async function executeCommand(
         const runId = status.activeRunId ?? status.active!.runId;
         const gate = await core.checkPlanGate(root, { runId });
         if (!operationSucceeded(gate)) {
-          if (!ctx.hasUI) throw new WikiCommandError("The plan gate requires interactive approval; run /wiki --write in Pi TUI.");
-          const approved = await ctx.ui.confirm("Approve Wiki plan", "Start writing the checkpointed candidate Wiki from the current plan?");
+          if (!ctx.hasUI) {
+            throw new WikiCommandError("The plan gate requires interactive approval; run /wiki --write in Pi TUI.");
+          }
+          const approved = await ctx.ui.confirm(
+            "Approve Wiki plan",
+            "Start writing the checkpointed candidate Wiki from the current plan?",
+          );
           if (!approved) {
             ctx.ui.notify("Plan remains unapproved; no Wiki writing started.", "info");
             return;
           }
           const opened = await core.openPlanGate(root, { runId });
-          if (!operationSucceeded(opened)) throw new WikiCommandError("Plan approval did not complete; inspect /wiki status.");
+          if (!operationSucceeded(opened)) {
+            throw new WikiCommandError("Plan approval did not complete; inspect /wiki status.");
+          }
         }
       }
-      const invocation: WikiWorkflowInvocation = {
+
+      const started = await orch.start({
         workspaceRoot: workspace.root,
-        request: { mode: command.mode, focus: command.focus },
-      };
-      const started = manager.startInBackground(WIKI_WORKFLOW_SCRIPT, invocation, {
-        toolset: TOOLSET_NAME,
-        concurrency: 4,
-        maxAgents: 48,
-        agentRetries: 1,
+        mode: command.mode,
+        focus: command.focus,
       });
-      // The manager's run id is scheduler state. The core's domain run id is
-      // returned by okf_prepare and is reported by workflow results/status.
-      invocation.workflowRunId = started.runId;
-      ctx.ui.notify(`Started Pi workflow ${started.runId}; domain run id will be reported after Bootstrap.`, "info");
-      await refreshStatus(core, manager, root, ctx.ui);
+      ctx.ui.notify(
+        `Started wiki orch ${started.orchRunId}` +
+          (started.domainRunId ? ` (domain ${started.domainRunId})` : "; domain run id after Bootstrap") +
+          ". Use /wiki agents or /wiki inspect to observe.",
+        "info",
+      );
+      await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
   }
 }
 
-function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getManager: () => WorkflowManager) {
+function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => WikiOrchestrator) {
   return defineTool({
     name: CONTROL_TOOL_NAME,
     label: "OKF Wiki",
     description:
-      "Start or inspect the checkpointed OKF repository Wiki workflow. Prefer the /wiki command for interactive run control. Not pi-llm-wiki.",
+      "Start or inspect the checkpointed OKF repository Wiki workflow. Prefer /wiki for interactive control.",
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("run"), Type.Literal("status")]),
+      action: Type.Union([
+        Type.Literal("run"),
+        Type.Literal("status"),
+        Type.Literal("agents"),
+        Type.Literal("stop"),
+        Type.Literal("pause"),
+        Type.Literal("resume"),
+      ]),
       mode: Type.Optional(
         Type.Union([
           Type.Literal("auto"),
@@ -359,35 +496,73 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getManager: () =
         ]),
       ),
       focus: Type.Optional(Type.String()),
+      agentId: Type.Optional(Type.String()),
     }),
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const root = resolve(ctx.cwd);
+      const orch = getOrch();
       if (params.action === "status") {
+        orch.syncFromBackend();
         const status = await core.getWorkspaceStatus(root);
-        return { content: [{ type: "text", text: formatFullStatus(status, getManager()) }], details: status };
+        const snap = orch.getActiveSnapshot();
+        return {
+          content: [{ type: "text", text: formatWorkspaceStatus(status, snap) }],
+          details: { workspace: status, orchestration: snap ?? null },
+        };
       }
-      // Block only `write`: that mode opens the plan gate and requires interactive
-      // `/wiki --write` approval. `retry-write` resumes an already-approved write
-      // path and does not re-open the gate from this tool.
+      if (params.action === "agents") {
+        orch.syncFromBackend();
+        const snap = orch.getActiveSnapshot();
+        if (!snap) {
+          return { content: [{ type: "text", text: "No active orchestration run." }], details: { agents: [] } };
+        }
+        if (params.agentId) {
+          const agent = snap.agents.find((a) => a.agentId === params.agentId || a.label === params.agentId);
+          return {
+            content: [
+              {
+                type: "text",
+                text: agent ? formatAgentDetail(agent, snap, OBSERVE_OPTS) : `Unknown agent ${params.agentId}`,
+              },
+            ],
+            details: { agent: agent ?? null },
+          };
+        }
+        return {
+          content: [{ type: "text", text: formatAgentsTable(snap, OBSERVE_OPTS) }],
+          details: { agents: snap.agents, orchRunId: snap.orchRunId },
+        };
+      }
+      if (params.action === "stop") {
+        const ok = await orch.stop();
+        return { content: [{ type: "text", text: ok ? "Stopped." : "Nothing to stop." }], details: { ok } };
+      }
+      if (params.action === "pause") {
+        const ok = await orch.pause();
+        return { content: [{ type: "text", text: ok ? "Paused." : "Nothing to pause." }], details: { ok } };
+      }
+      if (params.action === "resume") {
+        const ok = await orch.resume();
+        return { content: [{ type: "text", text: ok ? "Resumed." : "Nothing to resume." }], details: { ok } };
+      }
       if (params.mode === "write") {
         throw new Error("Use /wiki --write to approve a plan before starting candidate writing");
       }
       const workspace = await ensureWorkspace(core, root, { linkProjectOnCreate: true });
-      const invocation: WikiWorkflowInvocation = {
+      const started = await orch.start({
         workspaceRoot: workspace.root,
-        request: { mode: params.mode ?? "auto", focus: params.focus },
-      };
-      const started = getManager().startInBackground(WIKI_WORKFLOW_SCRIPT, invocation, {
-        toolset: TOOLSET_NAME,
-        concurrency: 4,
-        maxAgents: 48,
-        agentRetries: 1,
+        mode: params.mode ?? "auto",
+        focus: params.focus,
       });
-      invocation.workflowRunId = started.runId;
       return {
-        content: [{ type: "text", text: `Started Pi workflow ${started.runId}. The domain run id is produced by Bootstrap.` }],
-        details: { workflowRunId: started.runId, workspaceRoot: workspace.root },
+        content: [
+          {
+            type: "text",
+            text: `Started wiki orch ${started.orchRunId}. Domain run id is produced by Bootstrap. Use /wiki agents to observe.`,
+          },
+        ],
+        details: { orchRunId: started.orchRunId, domainRunId: started.domainRunId, workspaceRoot: workspace.root },
       };
     },
   });
@@ -401,47 +576,59 @@ function ensureControlToolActive(pi: ExtensionAPI): void {
       pi.setActiveTools([...active, CONTROL_TOOL_NAME]);
     }
   } catch {
-    // Optional capability — older Pi hosts may not expose tool activation APIs.
-  }
-}
-
-function adoptLiveRunsIfSupported(manager: WorkflowManager, sessionId: string | undefined): void {
-  const adopt = (manager as WorkflowManager & { adoptLiveRunsToSession?: (id: string | undefined) => number }).adoptLiveRunsToSession;
-  if (typeof adopt === "function") {
-    try {
-      adopt.call(manager, sessionId);
-    } catch {
-      // Feature-detect only; adoption is best-effort across manager versions.
-    }
+    // optional
   }
 }
 
 /** Register the Pi extension with an injectable core for integration tests. */
 export function createWikiExtension(options: WikiExtensionOptions) {
   const { core } = options;
+
   return function wikiExtension(pi: ExtensionAPI): void {
     let cwd = resolve(process.cwd());
-    const makeManager = (root: string): WorkflowManager => {
-      const factory = options.managerFactory ?? ((managerOptions) => new WorkflowManager(managerOptions));
-      return factory({
-        cwd: root,
-        concurrency: 4,
-        defaultAgentRetries: 1,
-        toolsets: { [TOOLSET_NAME]: () => createWikiToolset(root, core) },
+    let mainModel: string | undefined;
+    let modelRegistry: unknown;
+
+    const makeOrch = (root: string): DisposableOrchestrator => {
+      if (options.orchestratorFactory) {
+        return options.orchestratorFactory({
+          workspaceRoot: root,
+          core,
+          getMainModel: () => mainModel,
+          getModelRegistry: () => modelRegistry,
+        });
+      }
+      return createSessionOrchestrator({
+        workspaceRoot: root,
+        core,
+        getTools: (r) => createWikiToolset(r, core),
+        getMainModel: () => mainModel,
+        getModelRegistry: () => modelRegistry,
       });
     };
-    let manager = makeManager(cwd);
-    const getManager = () => manager;
-    let capabilityNoticeSent = false;
 
-    // Factory order: install delivery → suspend → register tools/commands → hooks.
-    installResultDelivery(pi, manager);
-    suspendResultDelivery(manager);
-    pi.registerTool(createControlTool(pi, core, getManager));
+    let orch = makeOrch(cwd);
+    let unsubOrch: (() => void) | undefined;
+    let capabilityNoticeSent = false;
+    let lastUi: StatusUi | undefined;
+
+    const bindObservation = (root: string, ui?: StatusUi) => {
+      unsubOrch?.();
+      if (ui) lastUi = ui;
+      const targetUi = ui ?? lastUi;
+      unsubOrch = orch.subscribe((snap) => {
+        if (!targetUi) return;
+        applyObservationUi(targetUi, snap);
+      });
+      if (targetUi) void refreshObservation(core, orch, root, targetUi);
+    };
+
+    const getOrch = () => orch;
+    pi.registerTool(createControlTool(pi, core, getOrch));
 
     const handleCommand = async (raw: string, ctx: ExtensionCommandContext): Promise<void> => {
       try {
-        await executeCommand(pi, core, getManager(), resolve(ctx.cwd), parseWikiCommand(raw), ctx);
+        await executeCommand(pi, core, getOrch(), resolve(ctx.cwd), parseWikiCommand(raw), ctx);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`${message}\n${WIKI_COMMAND_USAGE}`, "warning");
@@ -450,18 +637,19 @@ export function createWikiExtension(options: WikiExtensionOptions) {
 
     pi.registerCommand("wiki", {
       description:
-        "OKF repository Wiki: help, status, init, run, sources, pause/resume/stop. Empty /wiki shows help (not auto-run). Not pi-llm-wiki.",
+        "OKF repository Wiki: help, status, agents, inspect, run, sources, pause/resume/stop. Empty /wiki shows help.",
       getArgumentCompletions: (prefix) => getWikiArgumentCompletions(prefix),
       handler: (raw, ctx) => handleCommand(raw, ctx),
     });
 
-    // Convenience aliases share the same executor with a fixed subcommand prefix.
     const aliases: Array<{ name: string; description: string; prefix: string }> = [
       { name: "wiki-help", description: "Show OKF Wiki command help", prefix: "help" },
-      { name: "wiki-status", description: "Show OKF Wiki workspace and run status", prefix: "status" },
+      { name: "wiki-status", description: "Show OKF Wiki workspace and orchestration status", prefix: "status" },
       { name: "wiki-init", description: "Initialize an OKF Wiki workspace", prefix: "init" },
       { name: "wiki-run", description: "Start the OKF Wiki workflow (optional focus)", prefix: "run" },
       { name: "wiki-source", description: "Manage OKF Wiki sources (list|add|remove)", prefix: "source" },
+      { name: "wiki-agents", description: "List or detail multi-agent fleet", prefix: "agents" },
+      { name: "wiki-inspect", description: "Open multi-agent inspector", prefix: "inspect" },
     ];
     for (const alias of aliases) {
       pi.registerCommand(alias.name, {
@@ -472,75 +660,64 @@ export function createWikiExtension(options: WikiExtensionOptions) {
     }
 
     pi.on("session_start", async (_event, ctx) => {
-      // session_start must NEVER throw — wrap the entire status path.
       try {
         const sessionCwd = resolve(ctx.cwd || process.cwd());
-        let pausedForMismatch = 0;
+        mainModel = mainModelSpec(ctx);
+        modelRegistry = ctx.modelRegistry;
 
         if (sessionCwd !== cwd) {
-          suspendResultDelivery(manager);
-          pausedForMismatch = pauseLiveRuns(manager);
-          cwd = sessionCwd;
-          manager = makeManager(cwd);
-          // Install delivery for the new manager but stay suspended until bound.
-          installResultDelivery(pi, manager);
-          suspendResultDelivery(manager);
-        }
-
-        let sessionId: string | undefined;
-        try {
-          sessionId = ctx.sessionManager?.getSessionId();
-        } catch {
-          // sessionManager may be unavailable — fall back to unbound history.
-        }
-        manager.setSessionId(sessionId);
-        manager.setMainModel(mainModelSpec(ctx));
-        manager.setModelRegistry(ctx.modelRegistry);
-        adoptLiveRunsIfSupported(manager, sessionId);
-        ensureControlToolActive(pi);
-
-        if (ctx.hasUI) {
           try {
-            installTaskPanel(pi, manager, ctx.ui);
+            orch.dispose?.();
           } catch {
-            // Task panel is optional UI chrome.
+            // ignore
           }
+          unsubOrch?.();
+          cwd = sessionCwd;
+          orch = makeOrch(cwd);
         }
 
-        resumeResultDelivery(manager);
-
-        if (pausedForMismatch > 0) {
-          ctx.ui.notify(
-            `Paused ${pausedForMismatch} active wiki workflow(s) that could not safely continue after switching projects. Resume with /wiki resume when ready.`,
-            "warning",
-          );
-        }
+        ensureControlToolActive(pi);
+        bindObservation(cwd, ctx.ui);
 
         if (!capabilityNoticeSent) {
           capabilityNoticeSent = true;
           try {
             pi.sendMessage(
-              { customType: "okf-wiki-capability", content: CAPABILITY_NOTICE, display: false },
+              {
+                customType: "okf-wiki-capability",
+                content: `${CAPABILITY_NOTICE} Backend: ${orch.backend}.`,
+                display: false,
+              },
               { deliverAs: "nextTurn" },
             );
           } catch {
-            // Optional context injection — ignore hosts that reject it.
+            // ignore
           }
         }
 
-        await refreshStatus(core, manager, cwd, ctx.ui);
+        await refreshObservation(core, orch, cwd, ctx.ui);
       } catch {
-        // Intentionally swallow: a bad status refresh must not kill the session.
+        // session_start must never throw
       }
     });
 
     pi.on("session_shutdown", (_event, ctx) => {
       try {
-        suspendResultDelivery(manager);
-        pauseLiveRuns(manager);
+        unsubOrch?.();
+        unsubOrch = undefined;
+        try {
+          orch.dispose?.();
+        } catch {
+          // ignore
+        }
         ctx.ui?.setStatus?.(STATUS_KEY, undefined);
+        try {
+          ctx.ui?.setWidget?.(WIDGET_KEY, undefined);
+        } catch {
+          // ignore
+        }
       } catch {
-        // Shutdown cleanup is best-effort.
+        // best-effort
       }
     });
   };

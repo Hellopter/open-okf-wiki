@@ -20,7 +20,6 @@ const REQUIRED_MODULES = [
   "@earendil-works/pi-coding-agent",
   "@earendil-works/pi-tui",
   "typebox",
-  "@quintinshaw/pi-dynamic-workflows",
   "@okf-wiki/wiki-agent-kit",
 ];
 
