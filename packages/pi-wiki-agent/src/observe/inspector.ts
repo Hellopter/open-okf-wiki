@@ -1,9 +1,10 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
-	parseKey,
-	truncateToWidth,
-	type Component,
-	type TUI,
+  parseKey,
+  truncateToWidth,
+  visibleWidth,
+  type Component,
+  type TUI,
 } from "@earendil-works/pi-tui";
 import type { WikiAgentView, WikiProgressSnapshot } from "../orch/types.js";
 import {
@@ -42,6 +43,8 @@ export interface InspectorRenderOptions extends FormatTimeOpts {
 
 const LIVE: ReadonlySet<string> = new Set(["starting", "running", "waiting_tool"]);
 const TRANSCRIPT_PAGE_ROWS = 12;
+const DIALOG_MARGIN = 1;
+const DIALOG_WIDTH = 100;
 
 function clampIndex(index: number, length: number): number {
   if (length <= 0) return 0;
@@ -248,10 +251,55 @@ export interface OpenWikiInspectorOptions {
 
 function inspectorLayout(tui: TUI, state: InspectorState): Pick<InspectorRenderOptions, "maxAgentRows" | "transcriptRows"> {
   const terminalRows = tui.terminal?.rows ?? 24;
+  const contentRows = Math.max(1, terminalRows - DIALOG_MARGIN * 2 - 2);
   if (state.panel === "transcript") {
-    return { transcriptRows: Math.max(4, terminalRows - 8), maxAgentRows: 6 };
+    return { transcriptRows: Math.max(1, contentRows - 10), maxAgentRows: 1 };
   }
-  return { maxAgentRows: Math.max(3, Math.min(8, terminalRows - 16)), transcriptRows: TRANSCRIPT_PAGE_ROWS };
+  return {
+    maxAgentRows: Math.max(1, Math.min(6, Math.floor(Math.max(1, contentRows - 10) / 2))),
+    transcriptRows: TRANSCRIPT_PAGE_ROWS,
+  };
+}
+
+function fitDialogContent(lines: string[], maxRows: number): string[] {
+  if (lines.length <= maxRows) return lines;
+  if (maxRows === 1) return ["…"];
+  if (maxRows === 2) return [lines[0]!, lines[lines.length - 1]!];
+  const footer = lines.slice(-2);
+  const head = lines.slice(0, Math.max(1, maxRows - footer.length - 1));
+  return [...head, "…", ...footer];
+}
+
+function renderInspectorDialog(
+  state: InspectorState,
+  tui: TUI,
+  theme: Theme,
+  options: OpenWikiInspectorOptions,
+  width: number,
+): string[] {
+  const panelWidth = Math.max(1, width);
+  const terminalRows = tui.terminal?.rows ?? 24;
+  const maxContentRows = Math.max(1, terminalRows - DIALOG_MARGIN * 2 - 2);
+  const content = renderInspector(state, {
+    ...options.formatOpts,
+    ...inspectorLayout(tui, state),
+    interactive: true,
+  });
+
+  if (panelWidth < 6 || maxContentRows < 1) {
+    return content.slice(0, maxContentRows).map((line) => truncateToWidth(line, panelWidth));
+  }
+
+  const innerWidth = panelWidth - 2;
+  const title = truncateToWidth(" Wiki Inspector ", Math.max(1, innerWidth - 2), "");
+  const titleFill = Math.max(0, innerWidth - 2 - visibleWidth(title));
+  const border = (line: string) => theme.fg("border", line);
+  const frame = fitDialogContent(content, maxContentRows);
+  return [
+    `${border("┌─")}${theme.fg("accent", title)}${border(`${"─".repeat(titleFill)}─┐`)}`,
+    ...frame.map((line) => `${border("│")}${truncateToWidth(line, innerWidth, "…", true)}${border("│")}`),
+    border(`└${"─".repeat(innerWidth)}┘`),
+  ];
 }
 
 /** Open a focused, live-updating inspector in Pi TUI, with static fallback elsewhere. */
@@ -277,7 +325,7 @@ export async function openWikiInspector(
 
   try {
     await ctx.ui.custom<void>(
-      (tui: TUI, _theme: Theme, _keybindings, done) => {
+      (tui: TUI, theme: Theme, _keybindings, done) => {
         let state = createInspectorState(snapshot);
         let closed = false;
         let transcriptRequest = 0;
@@ -328,10 +376,7 @@ export async function openWikiInspector(
         });
 
         const component: Component & { dispose?: () => void } = {
-          render: (width: number) =>
-            renderInspector(state, { ...options.formatOpts, ...inspectorLayout(tui, state), interactive: true }).map((line) =>
-              truncateToWidth(line, Math.max(1, width)),
-            ),
+          render: (width: number) => renderInspectorDialog(state, tui, theme, options, width),
           handleInput: (data: string) => {
             const key = parseKey(data) ?? data;
             const next = applyInspectorKey(state, key);
@@ -350,7 +395,10 @@ export async function openWikiInspector(
         };
         return component;
       },
-      { overlay: true, overlayOptions: { width: "92%", maxHeight: "92%" } },
+      {
+        overlay: true,
+        overlayOptions: { width: DIALOG_WIDTH, minWidth: 40, anchor: "center", margin: DIALOG_MARGIN },
+      },
     );
     return "closed";
   } catch {

@@ -69,7 +69,6 @@ test("production extension registers commands and survives session_start with re
       ui: {
         notify: () => undefined,
         setStatus: (key, text) => statuses.push({ key, text }),
-        setWidget: () => undefined,
       },
       modelRegistry: {},
       model: { provider: "test", id: "m" },

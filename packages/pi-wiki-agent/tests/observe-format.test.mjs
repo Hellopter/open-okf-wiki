@@ -10,7 +10,6 @@ import {
   formatAgentsTable,
   formatCoverageLine,
   formatDuration,
-  formatFleetWidget,
   formatPhasesLine,
   formatSnapshotText,
   formatStatusBar,
@@ -171,36 +170,6 @@ test("formatStatusBar is a compact one-liner", () => {
   assert.match(bar, / · /);
 });
 
-test("formatFleetWidget stays within ~8 lines and uses glyphs", () => {
-  const lines = formatFleetWidget(fixtureSnapshot(), { now: NOW, staleWarnMs: 30_000 });
-  assert.ok(lines.length <= 8, `expected ≤8 lines, got ${lines.length}: ${lines.join(" | ")}`);
-  assert.match(lines[0], /Wiki Survey/);
-  assert.ok(lines.some((l) => l.includes("Bootstrap✓")));
-  assert.ok(lines.some((l) => l.includes("pass1")));
-  assert.ok(lines.some((l) => l.startsWith(">") || l.includes("survey:1:2")));
-  assert.ok(lines.some((l) => l.includes("focus:survey:1:2")));
-});
-
-test("formatFleetWidget keeps the focused agent visible ahead of earlier rows", () => {
-  const snap = fixtureSnapshot({
-    focusedAgentId: "late",
-    agents: [
-      ...fixtureSnapshot().agents,
-      ...Array.from({ length: 5 }, (_, i) => ({
-        agentId: i === 4 ? "late" : `queued:${i}`,
-        label: i === 4 ? "Late focus" : `Queued ${i}`,
-        role: "survey",
-        phase: "Survey",
-        status: "queued",
-        elapsedMs: 0,
-        receiptsWritten: 0,
-      })),
-    ],
-  });
-  const lines = formatFleetWidget(snap, { now: NOW });
-  assert.ok(lines.some((line) => line.startsWith(">") && line.includes("late")));
-});
-
 test("inspector selection, effects, transcript navigation, and render", () => {
   const snap = fixtureSnapshot();
   let state = createInspectorState(snap);
@@ -256,16 +225,18 @@ test("openWikiInspector uses a focused component for raw arrow keys and live upd
   let listener;
   let unsubscribed = 0;
   let transcriptCalls = 0;
+  let customOptions;
   const opened = openWikiInspector(
     {
       hasUI: true,
       ui: {
         notify: () => undefined,
-        custom: (factory) =>
+        custom: (factory, options) =>
           new Promise((resolve) => {
+            customOptions = options;
             component = factory(
               { terminal: { rows: 30 }, requestRender: () => redraws++ },
-              {},
+              { fg: (_color, text) => text },
               {},
               resolve,
             );
@@ -289,15 +260,23 @@ test("openWikiInspector uses a focused component for raw arrow keys and live upd
   );
 
   assert.ok(component);
-  assert.ok(component.render(24).every((line) => visibleWidth(line) <= 24));
+  assert.deepEqual(customOptions, {
+    overlay: true,
+    overlayOptions: { width: 100, minWidth: 40, anchor: "center", margin: 1 },
+  });
+  const dialog = component.render(24);
+  assert.equal(dialog[0][0], "┌");
+  assert.equal(dialog.at(-1).at(-1), "┘");
+  assert.ok(dialog.every((line) => visibleWidth(line) === 24));
+  assert.ok(dialog.length <= 28);
   component.handleInput("\u001b[B");
-  assert.ok(component.render(100).some((line) => line.startsWith("> ") && line.includes("survey:1:3")));
+  assert.ok(component.render(100).some((line) => line.includes("> survey:1:3")));
   component.handleInput("\r");
   assert.equal(focused, "survey:1:3");
   component.handleInput("t");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(transcriptCalls, 1);
-  assert.ok(component.render(100).includes("latest"));
+  assert.ok(component.render(100).some((line) => line.includes("latest")));
 
   listener(fixtureSnapshot({ updatedAt: NOW + 1 }));
   await new Promise((resolve) => setImmediate(resolve));

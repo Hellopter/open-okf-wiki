@@ -14,7 +14,6 @@ export {
 } from "./format.js";
 
 export { formatStatusBar } from "./status-bar.js";
-export { formatFleetWidget } from "./widget.js";
 
 export {
   applyInspectorKey,

@@ -80,21 +80,18 @@ function fakePi() {
 function commandContext(root, overrides = {}) {
   const statuses = [];
   const notifications = [];
-  const widgets = [];
   return {
     cwd: root,
     hasUI: false,
     ui: {
       notify: (message, level) => notifications.push({ message, level }),
       setStatus: (key, text) => statuses.push({ key, text }),
-      setWidget: (key, content) => widgets.push({ key, content }),
     },
     modelRegistry: { id: "registry" },
     model: { provider: "test", id: "model" },
     sessionManager: { getSessionId: () => "session-1" },
     statuses,
     notifications,
-    widgets,
     ...overrides,
   };
 }

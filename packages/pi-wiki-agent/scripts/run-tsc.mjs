@@ -11,12 +11,14 @@
  *   node scripts/run-tsc.mjs -p tsconfig.json --noEmit
  */
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(join(packageRoot, "package.json"));
+const tscArgs = process.argv.slice(2);
 
 let tscJs;
 try {
@@ -36,7 +38,12 @@ try {
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, [tscJs, ...process.argv.slice(2)], {
+// TypeScript does not remove output for deleted source files.
+if (!tscArgs.includes("--noEmit")) {
+  rmSync(join(packageRoot, "dist"), { recursive: true, force: true });
+}
+
+const result = spawnSync(process.execPath, [tscJs, ...tscArgs], {
   cwd: packageRoot,
   stdio: "inherit",
   env: process.env,

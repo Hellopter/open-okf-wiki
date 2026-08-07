@@ -18,7 +18,6 @@ import { createCoreAdapter, type CoreAdapter, type WikiWorkspaceStatus } from ".
 import {
   formatAgentDetail,
   formatAgentsTable,
-  formatFleetWidget,
   formatSnapshotText,
   formatStatusBar,
   openWikiInspector,
@@ -47,7 +46,6 @@ export interface WikiExtensionOptions {
 }
 
 const STATUS_KEY = "okf-wiki";
-const WIDGET_KEY = "okf-wiki-fleet";
 const CONTROL_TOOL_NAME = "okf_wiki";
 const OBSERVE_OPTS = { staleWarnMs: DEFAULT_ORCH_LIMITS.staleWarnMs };
 
@@ -59,7 +57,6 @@ const CAPABILITY_NOTICE =
 
 type StatusUi = {
   setStatus: (key: string, text: string | undefined) => void;
-  setWidget?: (key: string, content: string[] | undefined) => void;
 };
 
 function projectSource(root: string): { id: "project"; path: string; ignore: ["sources/**"] } {
@@ -162,11 +159,6 @@ function formatWorkspaceStatus(status: WikiWorkspaceStatus, snap?: WikiProgressS
 function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined, workspace?: WikiWorkspaceStatus): void {
   if (snap) {
     ui.setStatus(STATUS_KEY, formatStatusBar(snap, OBSERVE_OPTS));
-    try {
-      ui.setWidget?.(WIDGET_KEY, formatFleetWidget(snap, OBSERVE_OPTS));
-    } catch {
-      // optional
-    }
     return;
   }
   if (workspace && !workspace.initialized) {
@@ -176,11 +168,6 @@ function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined
     ui.setStatus(STATUS_KEY, `Wiki: ${n} source${n === 1 ? "" : "s"}; no active orch run.`);
   } else {
     ui.setStatus(STATUS_KEY, "Wiki not initialized. Run /wiki init or /wiki help.");
-  }
-  try {
-    ui.setWidget?.(WIDGET_KEY, undefined);
-  } catch {
-    // ignore
   }
 }
 
@@ -709,11 +696,6 @@ export function createWikiExtension(options: WikiExtensionOptions) {
           // ignore
         }
         ctx.ui?.setStatus?.(STATUS_KEY, undefined);
-        try {
-          ctx.ui?.setWidget?.(WIDGET_KEY, undefined);
-        } catch {
-          // ignore
-        }
       } catch {
         // best-effort
       }

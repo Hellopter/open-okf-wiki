@@ -42,7 +42,6 @@ export {
   phaseStatusGlyph,
   type FormatTimeOpts,
   formatStatusBar,
-  formatFleetWidget,
   applyInspectorKey,
   createInspectorState,
   openWikiInspector,

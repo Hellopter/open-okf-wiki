@@ -222,6 +222,10 @@ Orchestration state is tracked via `SessionWikiOrchestrator`. Live progress:
 | `/wiki focus <id>` | Pin status-bar focus to an agent |
 | `/wiki logs [id]` | Transcript tail for an agent |
 
+Interactive Pi keeps workflow progress in the compact status bar. `/wiki inspect`
+opens the focus-capturing, bordered agent monitor; the persistent status area is
+display-only.
+
 ### Semantics
 
 | Input | Behavior |
