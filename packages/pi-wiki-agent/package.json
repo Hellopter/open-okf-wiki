@@ -13,6 +13,7 @@
   "files": [
     "dist/",
     "extensions/",
+    "scripts/",
     "src/",
     "README.md"
   ],
@@ -21,6 +22,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test tests/**/*.test.mjs",
+    "verify:pi": "node scripts/verify-pi-install.mjs",
     "pack:check": "pnpm pack --dry-run"
   },
   "engines": {

@@ -22,6 +22,14 @@ export interface WikiSource {
   label?: string;
 }
 
+export interface WikiDomainRunSummary {
+  runId: string;
+  workdir?: string;
+  source?: string;
+  status?: string;
+  error?: string;
+}
+
 export interface WikiWorkspaceStatus {
   root: string;
   name?: string;
@@ -30,6 +38,11 @@ export interface WikiWorkspaceStatus {
   activeRunId?: string;
   sources: WikiSource[];
   summary?: string;
+  /** Present on full getWorkspaceStatus responses from the host API. */
+  runtime?: string;
+  current?: unknown;
+  active?: WikiDomainRunSummary | null;
+  runs?: WikiDomainRunSummary[];
 }
 
 export interface WikiRunPaths {
@@ -92,11 +105,27 @@ const REQUIRED_METHODS = [
   "getRunPaths",
 ] as const;
 
-/** Reject incomplete core exports at extension load rather than mid-run. */
+type RequiredMethod = (typeof REQUIRED_METHODS)[number];
+
+/**
+ * Reject incomplete core exports at extension load rather than mid-run.
+ *
+ * Host-api methods may be synchronous. Wrap every required method so callers
+ * can safely `await` / `.then` without crashing when the kit returns plain values.
+ */
 export function createCoreAdapter(module: Partial<CoreModule>): CoreAdapter {
   const missing = REQUIRED_METHODS.filter((key) => typeof module[key] !== "function");
   if (missing.length > 0) {
     throw new Error(`@okf-wiki/wiki-agent-kit is missing Pi core exports: ${missing.join(", ")}`);
   }
-  return module as CoreAdapter;
+
+  const adapter = {} as CoreAdapter;
+  for (const key of REQUIRED_METHODS) {
+    const method = module[key] as (...args: never[]) => unknown;
+    // Always return a Promise so sync host-api results and throws are await-safe.
+    (adapter as Record<RequiredMethod, (...args: never[]) => Promise<unknown>>)[key] = async (
+      ...args: never[]
+    ) => method(...args);
+  }
+  return adapter;
 }

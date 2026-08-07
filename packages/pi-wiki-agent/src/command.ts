@@ -1,6 +1,7 @@
 import type { WikiLanguage, WikiRunMode } from "./core-adapter.js";
 
 export type WikiCommand =
+  | { action: "help" }
   | { action: "run"; mode: WikiRunMode; focus?: string }
   | { action: "init"; name?: string; wikiLanguage?: WikiLanguage; force: boolean }
   | { action: "status" }
@@ -11,6 +12,49 @@ export type WikiCommand =
   | { action: "source-remove"; sourceId: string };
 
 export class WikiCommandError extends Error {}
+
+export interface WikiArgumentCompletion {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+const KNOWN_SUBCOMMANDS = new Set([
+  "help",
+  "run",
+  "init",
+  "status",
+  "pause",
+  "resume",
+  "stop",
+  "source",
+  "-h",
+  "--help",
+  "--plan",
+  "--write",
+  "--restart",
+  "--retry",
+]);
+
+const ARGUMENT_COMPLETIONS: WikiArgumentCompletion[] = [
+  { value: "help", label: "help", description: "Show /wiki command help" },
+  { value: "status", label: "status", description: "Show workspace, sources, and run status" },
+  { value: "init", label: "init", description: "Initialize a Wiki workspace in the current project" },
+  { value: "run", label: "run", description: "Start the Wiki workflow (optional focus text)" },
+  { value: "source", label: "source", description: "List, add, or remove sources" },
+  { value: "source list", label: "source list", description: "List registered sources" },
+  { value: "source add clone", label: "source add clone", description: "Clone a git URL as a source" },
+  { value: "source add link", label: "source add link", description: "Link a local path as a source" },
+  { value: "source remove", label: "source remove", description: "Remove a registered source" },
+  { value: "pause", label: "pause", description: "Pause an active Pi workflow run" },
+  { value: "resume", label: "resume", description: "Resume a paused Pi workflow run" },
+  { value: "stop", label: "stop", description: "Stop an active Pi workflow run" },
+  { value: "--plan", label: "--plan", description: "Plan mode: produce a plan and stop before write" },
+  { value: "--write", label: "--write", description: "Write mode: approve plan and write candidates" },
+  { value: "--restart", label: "--restart", description: "Restart the domain run from bootstrap" },
+  { value: "--retry plan", label: "--retry plan", description: "Retry planning from the last checkpoint" },
+  { value: "--retry write", label: "--retry write", description: "Retry writing from the last checkpoint" },
+];
 
 function tokens(input: string): string[] {
   const parsed: string[] = [];
@@ -43,19 +87,82 @@ function parseRun(raw: string): WikiCommand {
   return { action: "run", mode, focus };
 }
 
+/** Short usage line for error notifications; prefer /wiki help for the full surface. */
+export const WIKI_COMMAND_USAGE =
+  "Usage: /wiki help | status | init | run [focus] | --plan|--write|--restart|--retry plan|write [focus] | pause|resume|stop [id] | source list|add|remove  (see /wiki help)";
+
+/** Multi-line help for empty `/wiki`, `/wiki help`, and alias `/wiki-help`. */
+export function formatWikiHelp(): string {
+  return [
+    "OKF Wiki — checkpointed, source-grounded repository Wiki production",
+    "",
+    "This is @okf-wiki/pi-wiki-agent (repository Wiki workflow).",
+    "It is not pi-llm-wiki (personal LLM knowledge-base wiki).",
+    "",
+    "Usage:",
+    "  /wiki help",
+    "  /wiki status",
+    "  /wiki init [--name name] [--lang en|zh] [--force]",
+    "  /wiki run [focus]",
+    "  /wiki --plan [focus]",
+    "  /wiki --write [focus]",
+    "  /wiki --restart [focus]",
+    "  /wiki --retry plan|write [focus]",
+    "  /wiki pause|resume|stop [pi-workflow-run-id]",
+    "  /wiki source list",
+    "  /wiki source add clone <url> [--id id]",
+    "  /wiki source add link|path <path> [--id id]",
+    "  /wiki source remove <id>",
+    "",
+    "Aliases:",
+    "  /wiki-help  /wiki-status  /wiki-init  /wiki-run  /wiki-source",
+    "",
+    "Notes:",
+    "  - Empty /wiki shows this help (it does not auto-start a run).",
+    "  - Multi-word free text is treated as a run focus, e.g. /wiki auth model.",
+    "  - Single unknown tokens error; use /wiki run <focus> for one-word focus.",
+    "  - Project-local install requires the project to be trusted by Pi.",
+    "  - Pi workflow IDs are orchestration jobs; domain run IDs come from Bootstrap.",
+  ].join("\n");
+}
+
+/** Pure argument completions for the /wiki command surface. */
+export function getWikiArgumentCompletions(prefix: string): WikiArgumentCompletion[] {
+  const lower = prefix.trim().toLowerCase();
+  if (!lower) return ARGUMENT_COMPLETIONS.slice();
+  return ARGUMENT_COMPLETIONS.filter(
+    (item) => item.value.toLowerCase().startsWith(lower) || item.label.toLowerCase().startsWith(lower),
+  );
+}
+
 /** Parse the intentionally small `/wiki` command surface. */
 export function parseWikiCommand(raw: string): WikiCommand {
   const input = raw.trim();
-  if (!input || input.startsWith("--")) return parseRun(input);
+  if (!input) return { action: "help" };
+
   const args = tokens(input);
-  const command = args[0]?.toLowerCase();
+  const command = args[0]?.toLowerCase() ?? "";
   const rest = args.slice(1);
 
+  if (command === "help" || command === "-h" || command === "--help") {
+    return { action: "help" };
+  }
+
+  // Mode flags at the start still mean "run".
+  if (input.startsWith("--")) return parseRun(input);
+
   switch (command) {
+    case "run":
+      return parseRun(rest.join(" "));
     case "init": {
       const language = valueAfter(rest, "--lang");
       if (language && language !== "en" && language !== "zh") throw new WikiCommandError("--lang must be en or zh");
-      return { action: "init", name: valueAfter(rest, "--name"), wikiLanguage: language as WikiLanguage | undefined, force: rest.includes("--force") };
+      return {
+        action: "init",
+        name: valueAfter(rest, "--name"),
+        wikiLanguage: language as WikiLanguage | undefined,
+        force: rest.includes("--force"),
+      };
     }
     case "status":
       return { action: "status" };
@@ -82,12 +189,17 @@ export function parseWikiCommand(raw: string): WikiCommand {
           return { action: "source-add-link", path, id };
         }
       }
-      throw new WikiCommandError("Usage: /wiki source list | add clone <url> [--id id] | add link|path <path> [--id id] | remove <id>");
+      throw new WikiCommandError(
+        "Usage: /wiki source list | add clone <url> [--id id] | add link|path <path> [--id id] | remove <id>",
+      );
     }
-    default:
+    default: {
+      // Multi-word free text is a run focus. A single unknown token is an error
+      // (use `/wiki run <focus>` for one-word focuses).
+      if (args.length === 1 && !KNOWN_SUBCOMMANDS.has(command)) {
+        throw new WikiCommandError(`Unknown subcommand "${command}". Use /wiki help or /wiki run ${command}.`);
+      }
       return parseRun(input);
+    }
   }
 }
-
-export const WIKI_COMMAND_USAGE =
-  "Usage: /wiki [--plan|--write|--restart|--retry plan|--retry write] [focus] | init [--name name] [--lang en|zh] [--force] | status | pause|resume|stop [workflow-run-id] | source list|add|remove";
