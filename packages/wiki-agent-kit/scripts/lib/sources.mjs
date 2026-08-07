@@ -11,6 +11,18 @@ import { findSource, loadWorkspace, saveWorkspace, upsertSource } from "./worksp
 
 const SOURCE_ID_RE = /^[a-z0-9][a-z0-9._-]*$/;
 
+function normalizeIgnorePatterns(ignore) {
+  if (ignore === undefined) return [];
+  if (!Array.isArray(ignore)) throw new Error("source ignore must be an array of patterns");
+  const patterns = ignore.map((pattern) => {
+    if (typeof pattern !== "string") throw new Error("source ignore patterns must be strings");
+    const normalized = pattern.trim();
+    if (normalized.startsWith("!")) throw new Error("negated source ignore patterns are not supported");
+    return normalized;
+  }).filter(Boolean);
+  return [...new Set(patterns)];
+}
+
 function assertSourceId(value) {
   const sourceId = String(value || "");
   if (!SOURCE_ID_RE.test(sourceId)) {
@@ -38,7 +50,7 @@ function detectJavaHint(checkoutAbs) {
   try {
     const names = fs.readdirSync(checkoutAbs);
     if (names.includes("pom.xml") || names.some((n) => n.startsWith("build.gradle"))) {
-      return "Java project detected; defaults include target/, *.class, .gradle/. Use: ow ignore set <id> --preset java-tests to drop tests.";
+      return "Java project detected; defaults include target/, *.class, .gradle/. Use /wiki source configuration to apply the java-tests preset.";
     }
   } catch {
     /* ignore */
@@ -131,7 +143,7 @@ export function linkPathSource(absTarget, dest) {
       `failed to link path source${code}: ${target} -> ${dest}. ` +
         "On Windows, local paths use a directory junction (no admin). " +
         "Network/UNC paths need Developer Mode or an elevated shell for a symlink, " +
-        "or use: ow source add clone <path-or-url>",
+        "or add the source as a clone through /wiki source add clone <path-or-url>",
       { cause: err },
     );
   }
@@ -140,7 +152,7 @@ export function linkPathSource(absTarget, dest) {
 /**
  * @returns {{ source: object, hint?: string }}
  */
-export function addPathSource(root, { linkedPath, id }) {
+export function addPathSource(root, { linkedPath, id, ignore } = {}) {
   const workspace = loadWorkspace(root);
   const abs = path.resolve(linkedPath);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
@@ -150,6 +162,7 @@ export function addPathSource(root, { linkedPath, id }) {
   if (findSource(workspace, sourceId)) {
     throw new Error(`source already exists: ${sourceId}`);
   }
+  const userIgnore = normalizeIgnorePatterns(ignore);
   const dest = sourcePath(root, sourceId);
   fs.mkdirSync(sourcesDir(root), { recursive: true });
   if (fs.existsSync(dest)) {
@@ -161,7 +174,7 @@ export function addPathSource(root, { linkedPath, id }) {
     id: sourceId,
     path: path.relative(root, dest) || `sources/${sourceId}`,
     applyDefaultIgnores,
-    ignore: [],
+    ignore: userIgnore,
     presets: [],
     origin: {
       type: "path",

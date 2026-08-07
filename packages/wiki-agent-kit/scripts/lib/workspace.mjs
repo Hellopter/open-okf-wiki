@@ -5,7 +5,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import {
-  claudeWorkflowsDir,
   defaultWorkspaceConfigPath,
   findLegacyWorkspaceConfigs,
   findWorkspaceConfig,
@@ -38,7 +37,7 @@ function parseWorkspaceText(text, file) {
     throw new Error(`workspace config must be a YAML mapping: ${file}`);
   }
   if (doc.version !== 3) {
-    throw new Error(`unsupported workspace version: ${doc.version}; create a v3 workspace with ow init --force`);
+    throw new Error(`unsupported workspace version: ${doc.version}; recreate it with /wiki init --force`);
   }
   if (!Array.isArray(doc.sources)) throw new Error(`workspace sources must be an array: ${file}`);
   return doc;
@@ -58,7 +57,7 @@ export function loadWorkspaceConfig(root) {
   if (!found) {
     const legacy = findLegacyWorkspaceConfigs(root);
     const detail = legacy.length ? `; unsupported legacy config present: ${legacy.join(", ")}` : "";
-    throw new Error(`not a v3 workspace (missing workspace.yaml under ${root})${detail}. Run: ow init ${root}`);
+    throw new Error(`not a v3 workspace (missing workspace.yaml under ${root})${detail}. Run: /wiki init ${root}`);
   }
   const text = fs.readFileSync(found.path, "utf8");
   return { ...found, workspace: parseWorkspaceText(text, found.name) };
@@ -80,7 +79,6 @@ export function ensureWorkspaceLayout(root) {
   fs.mkdirSync(sourcesDir(root), { recursive: true });
   fs.mkdirSync(metaDir(root), { recursive: true });
   fs.mkdirSync(runsDir(root), { recursive: true });
-  fs.mkdirSync(claudeWorkflowsDir(root), { recursive: true });
 }
 
 /** Create a V3 workspace. --force is an explicit replacement operation. */
@@ -91,7 +89,7 @@ export function initWorkspace(root, { name, wikiLanguage = "en", force = false }
   if ((existing || legacy.length) && !force) {
     if (legacy.length && !existing) {
       throw new Error(
-        `unsupported legacy workspace config: ${legacy.join(", ")}; rerun ow init --force to replace it with workspace.yaml v3`,
+        `unsupported legacy workspace config: ${legacy.join(", ")}; rerun /wiki init --force to replace it with workspace.yaml v3`,
       );
     }
     return { created: false, workspace: loadWorkspace(root), configPath: existing.path, format: "yaml" };

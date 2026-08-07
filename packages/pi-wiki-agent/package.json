@@ -1,0 +1,54 @@
+{
+  "name": "@okf-wiki/pi-wiki-agent",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension for checkpointed, source-grounded repository Wiki production",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "extensions/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test tests/**/*.test.mjs",
+    "pack:check": "pnpm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "wiki",
+    "repository-wiki"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/wiki.ts"
+    ]
+  },
+  "dependencies": {
+    "@okf-wiki/wiki-agent-kit": "workspace:*",
+    "@quintinshaw/pi-dynamic-workflows": "^3.5.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-tui": "^0.82.1",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.3"
+  }
+}

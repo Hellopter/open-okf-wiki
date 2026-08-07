@@ -5,8 +5,8 @@ Shape the complete `analysis/spec.json` before any candidate page is written.
 **Inputs:** `inputs/inventory.json`, `analysis/discovery-map.json`, and survey receipts under
 `analysis/receipts/`.
 **Output:** `analysis/spec.json` and `analysis/page-assignments.json`.
-**Mandatory stop:** publish `ow publish --phase plan --artifacts-json analysis/receipts/plan-artifacts.json` after planning, then run
-`ow gate plan --run <runId>`. Do not enter Write unless both succeed.
+**Mandatory stop:** call `okf_publish` for `plan` with `analysis/receipts/plan-artifacts.json`, then call
+`okf_gate` to approve the plan. Do not enter Write unless both succeed.
 
 ## Required Spec shape
 
@@ -68,7 +68,7 @@ contain an absolute or traversal path. The package's `schemas/spec.schema.json` 
 machine-readable reference contract.
 
 After Spec and assignments are written, write `analysis/receipts/plan-artifacts.json` (no
-version/phase). Host runs `ow publish --phase plan --artifacts-json analysis/receipts/plan-artifacts.json`.
+version/phase). Host calls `okf_publish` for `plan` with that artifact list.
 Spec document `version: 2` is separate from the v3 checkpoint protocol. See
 `references/orchestrator-context.md`.
 

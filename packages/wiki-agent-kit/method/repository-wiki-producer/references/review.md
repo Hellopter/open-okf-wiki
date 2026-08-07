@@ -28,7 +28,7 @@ Write page evidence and global-lens findings beneath `analysis/receipts/review/`
 
 Severity is `blocking`, `major`, or `minor`. `clean` is true only when the defects array is empty.
 The package's `schemas/defects.schema.json` records the reference shape (document version 2). Host
-`ow publish` creates `review-N` and `repair-N` checkpoints. Agents write defects and artifact lists
+`okf_publish` creates `review-N` and `repair-N` checkpoints. Agents write defects and artifact lists
 only. See `references/orchestrator-context.md`.
 
 ## Check
@@ -48,5 +48,5 @@ only. See `references/orchestrator-context.md`.
 
 Blocking and major defects require owner-scoped repair before the validator runs. A repair loop may
 run at most twice and must stop when its defect fingerprint repeats or it makes no progress.
-`ow validate --run <runId>` regenerates indexes, mechanically validates the candidate, and creates
+`okf_validate` regenerates indexes, mechanically validates the candidate, and creates
 the candidate manifest. The subsequent `validate` checkpoint seals only a clean current review leaf.

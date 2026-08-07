@@ -1,8 +1,8 @@
-/** Deterministic entry-state preparation for the native /wiki workflow. */
+/** Deterministic entry-state preparation for the Pi /wiki workflow. */
 
 import fs from "node:fs";
 import path from "node:path";
-import { assertInstalledAssets } from "./install.mjs";
+import { assertRuntime } from "./install.mjs";
 import { freezeRun, verifyFrozenSnapshot } from "./freeze.mjs";
 import { resolveActiveRun } from "./active-run.mjs";
 import { retryFromPhase } from "./run-state.mjs";
@@ -53,6 +53,30 @@ function assertFrozenSnapshot(run) {
   const snapshot = verifyFrozenSnapshot(run.workdir);
   if (!snapshot.ok) {
     throw new Error(`frozen snapshot integrity failed: ${(snapshot.errors || []).join("; ")}`);
+  }
+}
+
+function hasSameRuntimeBinding(frozen, current) {
+  return frozen?.kind === current?.kind
+    && frozen?.extension === current?.extension
+    && frozen?.workflow?.id === current?.workflow?.id
+    && frozen?.workflow?.digest === current?.workflow?.digest;
+}
+
+/**
+ * Runs are frozen against a concrete Pi workflow descriptor. The workspace
+ * binding can be refreshed when the extension changes, but that must never
+ * silently resume the old run with a different workflow.
+ */
+function assertRunRuntimeBinding(run, runtime) {
+  let policy;
+  try {
+    policy = JSON.parse(fs.readFileSync(path.join(run.workdir, "inputs", "run-policy.json"), "utf8"));
+  } catch {
+    throw new Error(`active run ${run.runId} has no readable frozen runtime policy; use /wiki --restart to create a new frozen run`);
+  }
+  if (!hasSameRuntimeBinding(policy?.runtime, runtime)) {
+    throw new Error(`active run ${run.runId} was frozen for a different Pi runtime; use /wiki --restart to create a new frozen run`);
   }
 }
 
@@ -171,13 +195,14 @@ function nextStart(run, mode) {
 export function prepareRun(root, { mode = "auto", focus } = {}) {
   if (!PREPARE_MODES.has(mode)) throw new Error(`invalid prepare mode: ${mode}`);
   const normalizedFocus = normalizeFocus(focus);
-  assertInstalledAssets(root);
+  const { runtime } = assertRuntime(root);
   const active = resolveActiveRun(root);
 
   if (mode === "restart") return fresh(root, mode, normalizedFocus);
 
   if (mode === "retry-plan" || mode === "retry-write") {
     if (!active) throw new Error(`no active run for ${mode}`);
+    assertRunRuntimeBinding(active, runtime);
     assertFrozenSnapshot(active);
     if (mode === "retry-write") {
       const ready = writeReady(active);
@@ -202,6 +227,7 @@ export function prepareRun(root, { mode = "auto", focus } = {}) {
     if (mode === "write") throw new Error("write does not accept a new focus; run /wiki --plan first");
     return fresh(root, mode, normalizedFocus);
   }
+  assertRunRuntimeBinding(active, runtime);
   assertFrozenSnapshot(active);
 
   const next = nextStart(active, mode);

@@ -1,37 +1,43 @@
-# open-okf-wiki (wiki-agent-kit slice)
+# open-okf-wiki
 
-Portable **wiki-agent-kit**: deterministic host CLI + frozen method pack + one native Claude workflow.
+`open-okf-wiki` is a Pi extension for producing repository wikis through a
+checkpointed, source-grounded workflow. The domain state, frozen source
+snapshots, review gates, and candidate sealing live under `.wiki-agent` in the
+selected workspace.
 
 | Path | Role |
-|------|------|
-| `packages/wiki-agent-kit/` | `ow` host API, `/wiki` workflow, frozen method pack, handoff schemas, tests |
-| `docs/research/claude-dynamic-workflow-coding-agent-2026-08.md` | Design notes |
+| --- | --- |
+| `packages/wiki-agent-kit/` | Framework-neutral deterministic Wiki core, method pack, schemas, and tests |
+| `packages/pi-wiki-agent/` | Pi extension, commands, constrained workflow tools, and workflow integration |
+| `docs/research/` | Reference-project analysis and design notes |
 
-## Install CLI (dev)
+## Local development install
 
-Link the kit package (it owns the `ow` bin). Do **not** run `pnpm link --global` from the monorepo
-root — the root package has no binaries and pnpm will warn `has no binaries`.
-
-```bash
-pnpm --dir packages/wiki-agent-kit link --global
-# equivalent: cd packages/wiki-agent-kit && pnpm link --global
-ow help
-```
-
-If a previous root link left `open-okf-wiki-wiki-agent-kit` in the global store, remove it with
-`pnpm remove -g open-okf-wiki-wiki-agent-kit`, then link the kit again.
-
-## Quick start
+Pi can install an extension directly from this repository. The project-local
+installation is the recommended development path:
 
 ```bash
-ow init ./my-ws --lang zh --path /path/to/repo --id app
-cd my-ws
-claude
-# /wiki core architecture
+pnpm install
+pi install ./packages/pi-wiki-agent --local --approve
+pi list --approve
 ```
 
-Humans use **`/wiki` only** for generation. `ow` is the deterministic host API for workflow agents,
-checkpoints, and validation; there is no Skill-to-Workflow handoff. Existing workspaces must be
-reinitialized as `workspace.yaml` v2.
+Start Pi in the repository to document, then run `/wiki`. The first user
+invocation initializes the current directory as a Wiki workspace when needed.
+Use `/wiki init --lang zh` to initialize explicitly, or `/wiki source add path
+<directory>` and `/wiki source add clone <url>` to add sources.
 
-Details: `packages/wiki-agent-kit/README.md`.
+## Commands
+
+`/wiki` starts or resumes the complete production workflow. `/wiki --plan`
+produces and checkpoints the plan, then stops before approval. `/wiki --write`
+prompts for explicit approval and then continues a write-ready run.
+Use `/wiki status`, `/wiki pause`, `/wiki resume`, and `/wiki stop` to control
+background work. The extension keeps Pi workflow execution state separate from
+the authoritative `.wiki-agent` domain run state.
+
+Run the verification suite with:
+
+```bash
+pnpm test
+```

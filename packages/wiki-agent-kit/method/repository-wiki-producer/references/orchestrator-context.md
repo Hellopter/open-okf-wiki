@@ -5,15 +5,15 @@ envelopes. Receipts, maps, specifications, pages, defects, and validation output
 
 | Plane | Content |
 |---|---|
-| Checkpoint | `analysis/checkpoints/*.json`, written only by `ow publish`. |
+| Checkpoint | `analysis/checkpoints/*.json`, written only by `okf_publish`. |
 | Data | Receipts, Discovery Map, Spec, assignments, candidate pages, defects, and validation output. |
 | Workspace pointer | `.wiki-agent/current.json` identifies the active run and last trusted checkpoint. |
 
 ## Publishing a phase
 
 For phases other than Discover, agents write data-plane files first, then write one artifact list under
-`analysis/receipts/`. Discover is different: `ow survey-merge` writes its artifact list and the workflow
-passes that exact path to `ow publish`.
+`analysis/receipts/`. Discover is different: `okf_survey_merge` writes its artifact list and the workflow
+passes that exact path to `okf_publish`.
 
 ```json
 [
@@ -23,13 +23,10 @@ passes that exact path to `ow publish`.
 ]
 ```
 
-Only discover artifacts may declare `coverageUnitIds`. The host runs:
+Only discover artifacts may declare `coverageUnitIds`. The host calls `okf_publish` with the phase and
+artifact-list path.
 
-```bash
-ow publish --phase <phase> --artifacts-json analysis/receipts/<phase>-artifacts.json
-```
-
-The CLI validates each listed path, computes its digest, derives the required predecessor checkpoint,
+The host validates each listed path, computes its digest, derives the required predecessor checkpoint,
 and advances the active pointer atomically. Do not write checkpoint JSON, checkpoint digests, phase
 metadata, producer identities, ownership metadata, or artifact dependencies.
 
@@ -40,5 +37,5 @@ metadata, producer identities, ownership metadata, or artifact dependencies.
 3. Discover needs exactly one valid, checkpoint-listed survey receipt for every required inventory unit;
    map-level IDs alone are not evidence.
 4. `page-assignments.json` is the only owner map for candidate paths.
-5. Host actions use the pinned command in `inputs/run-policy.json`; `/wiki` is the user entry.
+5. Host actions use the injected `okf_*` tools; `/wiki` is the user entry.
 6. The validate phase can publish only from a clean current `review-N` checkpoint.

@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import { freezeRun, verifyFrozenSnapshot } from "../scripts/lib/freeze.mjs";
 import { addPathSource, removeSource } from "../scripts/lib/sources.mjs";
 import { initWorkspace } from "../scripts/lib/workspace.mjs";
-import { installAll } from "../scripts/lib/install.mjs";
+import { installRuntime } from "../scripts/lib/install.mjs";
+import { prepareRun } from "../scripts/lib/prepare.mjs";
 import { readJson } from "../scripts/lib/artifacts.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OW = path.resolve(__dirname, "../scripts/ow.mjs");
+const RUNTIME = {
+  extension: "@okf-wiki/pi-wiki-agent",
+  workflow: { id: "wiki", digest: `sha256:${"2".repeat(64)}` },
+};
 
 function writeTree(root, files) {
   for (const [rel, body] of Object.entries(files)) {
@@ -31,7 +32,7 @@ function makeWorkspace(files = {
   writeTree(source, files);
   const workspace = path.join(root, "workspace");
   initWorkspace(workspace, { name: "freeze-demo", wikiLanguage: "en" });
-  installAll(workspace, { force: true });
+  installRuntime(workspace, RUNTIME);
   addPathSource(workspace, { linkedPath: source, id: "app" });
   return { root, source, workspace };
 }
@@ -98,7 +99,7 @@ describe("frozen source materialization", () => {
 
     const workspace = path.join(root, "workspace");
     initWorkspace(workspace, { name: "sym", wikiLanguage: "en" });
-    installAll(workspace, { force: true });
+    installRuntime(workspace, RUNTIME);
     addPathSource(workspace, { linkedPath: source, id: "app" });
     const frozen = freezeRun(workspace);
     const linkDest = path.join(frozen.workdir, "sources", "app", "src", "link.js");
@@ -112,16 +113,30 @@ describe("frozen source materialization", () => {
     assert.ok(!fs.existsSync(path.join(frozen.workdir, "sources", "app", "escape.txt")));
     assert.ok(!fs.existsSync(path.join(frozen.workdir, "sources", "app", "src-link")));
   });
+
+  it("can freeze the workspace itself without ingesting Pi or Wiki runtime output", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-same-cwd-"));
+    writeTree(root, {
+      "src/app.js": "export const app = true;\n",
+      ".pi/sessions/current.json": "{}\n",
+      ".claude/workflows/old.js": "legacy\n",
+    });
+    initWorkspace(root, { name: "same-cwd", wikiLanguage: "en" });
+    installRuntime(root, RUNTIME);
+    addPathSource(root, { linkedPath: root, id: "project" });
+    const frozen = freezeRun(root);
+    const sourceRoot = path.join(frozen.workdir, "sources", "project");
+    assert.ok(fs.existsSync(path.join(sourceRoot, "src", "app.js")));
+    assert.equal(fs.existsSync(path.join(sourceRoot, ".wiki-agent")), false);
+    assert.equal(fs.existsSync(path.join(sourceRoot, ".pi")), false);
+    assert.equal(fs.existsSync(path.join(sourceRoot, ".claude")), false);
+  });
 });
 
-describe("ow prepare frozen sources", () => {
+describe("Pi prepare frozen sources", () => {
   it("prepare creates a snapshot without an object store", () => {
     const { workspace } = makeWorkspace();
-    const result = spawnSync(process.execPath, [OW, "prepare", "--mode", "auto", "--workspace", workspace], {
-      encoding: "utf8",
-    });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const prepared = JSON.parse(result.stdout);
+    const prepared = prepareRun(workspace, { mode: "auto" });
     const snapshot = readJson(path.join(prepared.workdir, "inputs", "snapshot-manifest.json"));
     assert.equal(snapshot.sources[0].placement, undefined);
     assert.equal(fs.existsSync(path.join(workspace, ".wiki-agent", "objects")), false);

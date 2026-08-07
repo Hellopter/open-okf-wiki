@@ -1,23 +1,23 @@
 # Repository Wiki Producer Method
 
-This is an internal method pack frozen into every run as `workdir/method/`. It is not installed as a
-Claude Skill and is not a user entrypoint. The only human command is the native `/wiki` workflow.
+This is an internal method pack frozen into every run as `workdir/method/`. It is not a user entrypoint.
+The only human command is the native Pi `/wiki` command.
 
-**Orchestration:** `wiki.workflow.js`.
-**Host tools:** `ow prepare`, `ow survey-merge`, `ow publish`, `ow gate`, and `ow validate` via the pinned `hostCli` in
-`inputs/run-policy.json`. Agents write data-plane artifacts and compact artifact lists only.
-Discover artifact lists and receipt envelopes are host-owned by `ow survey-merge`.
+**Orchestration:** the Pi `wiki` workflow.
+**Host tools:** `okf_prepare`, `okf_survey_merge`, `okf_publish`, `okf_gate`, and `okf_validate`.
+Agents write data-plane artifacts and compact artifact lists only. Discover artifact lists and receipt
+envelopes are host-owned by `okf_survey_merge`.
 
 ## Lifecycle and checkpoints
 
 | Workflow stage | Required checkpoint |
 |---|---|
-| Bootstrap | `ow prepare` returns a minimal RunContext. |
+| Bootstrap | `okf_prepare` returns a minimal RunContext. |
 | Discover | Survey receipts are indexed by a `discover` checkpoint. |
 | Plan | The `plan` checkpoint binds the Discovery Map, Spec, and assignments; the host gate then grants write authority. |
 | Write | Owner-scoped candidate pages and write receipts are indexed by a `write` checkpoint. |
 | Verify/repair | Defects and affected-owner repairs are indexed by `review-*` checkpoints. |
-| Validate | `ow validate` creates or reuses a verified candidate manifest; only `publish validate` seals the run. |
+| Validate | `okf_validate` creates or reuses a verified candidate manifest; only `okf_publish` for `validate` seals the run. |
 
 The active-run pointer is `.wiki-agent/current.json`. It names a run and its last trusted checkpoint;
 it never routes to another workflow or stores workflow arguments.
@@ -43,7 +43,7 @@ Never use mutable registered repositories after freeze. Never write in `sources/
 4. Review: `references/review.md` -> evidence and global lenses -> defects -> owner-scoped repair loop.
 5. Validate: host `validate` verifies and manifests the candidate; the validate checkpoint seals only a clean review leaf.
 
-Children return compact envelopes and data-plane files. Host `ow publish` computes artifact digests
+Children return compact envelopes and data-plane files. Host `okf_publish` computes artifact digests
 and writes v3 checkpoints. See `references/orchestrator-context.md`.
 
 ## Output rules

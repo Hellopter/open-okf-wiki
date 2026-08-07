@@ -1,4 +1,4 @@
-/** Workspace and kit path helpers for the ow CLI. */
+/** Workspace and kit path helpers for the framework-neutral Wiki core. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -74,27 +74,12 @@ export function sourcePath(root, sourceId) {
   return path.join(sourcesDir(root), sourceId);
 }
 
-export function claudeWorkflowsDir(root) {
-  return path.join(root, ".claude", "workflows");
-}
-
-export const REQUIRED_WORKFLOWS = ["wiki.workflow.js"];
-export const LEGACY_WORKFLOWS = [
-  "wiki-plan.workflow.js",
-  "wiki-write-review.workflow.js",
-  "wiki-produce.workflow.js",
-];
-
 export function candidateDir(workdir) {
   return path.join(workdir, "candidate");
 }
 
 export function candidateManifestPath(workdir) {
   return path.join(workdir, "analysis", "candidate.manifest.json");
-}
-
-export function kitWorkflowsDir() {
-  return path.join(KIT_ROOT, "workflows");
 }
 
 /** Private method material, frozen into run workdirs but never installed. */

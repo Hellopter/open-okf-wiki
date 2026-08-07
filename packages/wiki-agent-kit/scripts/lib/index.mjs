@@ -1,7 +1,23 @@
 export * from "./paths.mjs";
 export * from "./ignores.mjs";
-export * from "./workspace.mjs";
-export * from "./sources.mjs";
+export {
+  defaultWorkspace,
+  loadWorkspaceConfig,
+  saveWorkspace,
+  ensureWorkspaceLayout,
+  initWorkspace as initializeWorkspaceDocument,
+  loadWorkspace as loadWorkspaceDocument,
+  findSource,
+  upsertSource,
+} from "./workspace.mjs";
+export {
+  addCloneSource,
+  addPathSource,
+  linkPathSource,
+  removeSource,
+  listSources as listWorkspaceSources,
+  resolveSourceAbs,
+} from "./sources.mjs";
 export * from "./install.mjs";
 export * from "./inventory.mjs";
 export * from "./limits.mjs";
@@ -12,4 +28,5 @@ export * from "./validate.mjs";
 export * from "./run-state.mjs";
 export * from "./active-run.mjs";
 export * from "./prepare.mjs";
-export * from "./checkpoints.mjs";
+export { verifyCheckpoint, verifyReviewLeaf, publishCheckpoint as publishCheckpointRecord } from "./checkpoints.mjs";
+export * from "./host-api.mjs";

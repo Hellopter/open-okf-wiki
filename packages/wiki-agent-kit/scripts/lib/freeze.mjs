@@ -11,7 +11,8 @@ import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory, writeInventory } from "./inventory.mjs";
 import { setActiveRun } from "./active-run.mjs";
 import { normalizeLimits } from "./limits.mjs";
-import { KIT_ROOT, kitMethodDir, runDir, runsDir } from "./paths.mjs";
+import { kitMethodDir, runDir, runsDir } from "./paths.mjs";
+import { assertRuntime } from "./install.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
 import { hashTree, isInside, readJson, writeJson } from "./artifacts.mjs";
@@ -83,12 +84,13 @@ function copyMethod(destMethodDir) {
 
 /**
  * Create a new run, freeze sources+internal method pack, and write inventory.
- * This is a host primitive; the public CLI entry point is `ow prepare`.
+ * This is a host primitive; Pi invokes it through `prepareRun`.
  */
 export function freezeRun(root, { focus } = {}) {
   const workspace = loadWorkspace(root);
+  const runtime = assertRuntime(root).runtime;
   if (!workspace.sources?.length) {
-    throw new Error("workspace has no sources; run: ow source add clone|path …");
+    throw new Error("workspace has no sources; add a source with /wiki source add clone|path …");
   }
 
   const runId = randomUUID().slice(0, 8) + Date.now().toString(36).slice(-4);
@@ -136,14 +138,14 @@ export function freezeRun(root, { focus } = {}) {
   });
 
   const runPolicy = {
-    version: 3,
+    version: 4,
     wikiLanguage: workspace.wikiLanguage,
     focus: focus || null,
     tier: inventory.tier,
-    hostCli: {
-      node: process.execPath,
-      script: path.join(KIT_ROOT, "scripts", "ow.mjs"),
-      workspaceRoot: root,
+    runtime: {
+      kind: runtime.kind,
+      extension: runtime.extension,
+      workflow: runtime.workflow,
     },
     limits: normalizeLimits(undefined, { sourceCount: inventory.sourceCount }),
   };

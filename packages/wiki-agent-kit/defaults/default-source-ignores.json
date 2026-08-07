@@ -1,4 +1,7 @@
 [
+  ".wiki-agent/**",
+  ".pi/**",
+  ".claude/**",
   ".git/**",
   "node_modules/**",
   ".pnpm-store/**",

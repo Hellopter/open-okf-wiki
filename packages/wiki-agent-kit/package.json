@@ -3,16 +3,12 @@
   "version": "0.1.0-dev",
   "private": true,
   "type": "module",
-  "description": "Agent-host toolkit: deterministic ow CLI + internal method pack + native Claude workflow; human entry is /wiki",
-  "bin": {
-    "ow": "./scripts/ow.mjs"
-  },
+  "description": "Framework-neutral deterministic Wiki production core for the Pi extension",
   "exports": {
     ".": "./scripts/lib/index.mjs"
   },
   "scripts": {
-    "test": "node --test tests/**/*.test.mjs",
-    "ow": "node scripts/ow.mjs"
+    "test": "node --test tests/**/*.test.mjs"
   },
   "engines": {
     "node": ">=22"

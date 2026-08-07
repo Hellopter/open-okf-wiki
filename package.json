@@ -2,13 +2,13 @@
   "name": "open-okf-wiki-wiki-agent-kit",
   "private": true,
   "version": "0.1.0-dev",
-  "description": "Slim branch: ow CLI + internal method pack + native workflow only",
+  "description": "Pi extension and deterministic core for source-grounded repository wikis",
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm --filter @okf-wiki/wiki-agent-kit test",
-    "ow": "node packages/wiki-agent-kit/scripts/ow.mjs"
+    "test": "pnpm --filter @okf-wiki/wiki-agent-kit test && pnpm --filter @okf-wiki/pi-wiki-agent test",
+    "typecheck": "pnpm --filter @okf-wiki/pi-wiki-agent typecheck"
   }
 }
