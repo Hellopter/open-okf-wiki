@@ -58,10 +58,13 @@ export {
 export {
   runWikiPath,
   loadInventory,
-  shardUnits,
-  adaptiveDiscoveryLaneCount,
+  buildSurveyTaskGraph,
+  buildEvidenceTasks,
   setPhaseStatus,
   type CoverageUnit,
+  type SurveyTask,
+  type EvidenceTask,
+  type InventorySource,
   type LoadedInventory,
 } from "./phase-graph.js";
 

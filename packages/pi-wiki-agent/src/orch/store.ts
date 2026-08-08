@@ -209,6 +209,7 @@ export class WikiRunStore {
         label: partial.label ?? partial.agentId,
         role: (partial.role ?? "main") as WikiAgentRole,
         phase: partial.phase ?? s.currentPhase ?? "",
+        prompt: partial.prompt,
         status: (partial.status ?? "queued") as AgentStatus,
         elapsedMs: partial.elapsedMs ?? 0,
         unitIds: partial.unitIds,

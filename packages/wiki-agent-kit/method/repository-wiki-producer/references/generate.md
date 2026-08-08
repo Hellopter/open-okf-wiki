@@ -5,7 +5,7 @@ main-Agent task: do not divide pages into owner shards, reconstruct a new plan, 
 
 ## Before writing
 
-1. Read the full plan, relevant discovery briefs, and `analysis/coverage-review.md` when it exists.
+1. Read the full plan, relevant discovery briefs, every referenced evidence brief, and the passed coverage reviews.
 2. Re-open the load-bearing spans in `inputs/sources/<id>/`. A discovery brief is a lead, not proof.
 3. Read `inputs/run-policy.json` and keep all human-facing prose in its `wikiLanguage`.
 
@@ -51,7 +51,8 @@ or an editor URI. Do not estimate line ranges.
 
 ## Revision after review
 
-The reviewer writes `analysis/review.md` without changing the bundle. Read every finding, verify it
-against the plan and frozen source, and repair concrete defects in the existing pages. Update `plan.md`
-only when the review changes scope or coverage reasoning. Do not write a repair receipt or begin an
-unbounded review loop; one targeted revision pass is part of this run, after which the host validates.
+The independent reviewers write their assigned files under `analysis/reviews/` without changing the
+bundle. Read every failed finding, verify it against the plan and frozen source, and repair concrete
+defects in the existing pages. Update `plan.md` only when the review changes scope or coverage reasoning.
+Do not write a repair receipt or begin an unbounded review loop: after one targeted revision pass, rerun
+only the reports that failed. The host blocks sealing when any final verdict remains `FAIL`.

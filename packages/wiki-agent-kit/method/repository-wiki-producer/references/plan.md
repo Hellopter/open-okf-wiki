@@ -38,15 +38,28 @@ copying evidence into the plan.
   excludes it with a reason grounded in scope or unavailable evidence.
 - **Open Questions and Exclusions** distinguishes unresolved evidence from intentional scope boundaries.
 
+## Page Matrix and evidence briefs
+
+The host seals only a plan with one contiguous `## Page Matrix` Markdown table. It has exactly these
+required columns: `Page`, `Coverage Units`, `Evidence Brief`, and `Diagram`. Each page row names a
+bundle-relative domain/concept page, one or more required coverage-unit ids, an existing
+`analysis/evidence/*.md` brief, and a diagram decision of `required`, `useful`, or `omitted`.
+
+Write the brief before the row. It is concise and cites frozen source lines while recording the page's
+entry point, state/data changes, failure or retry behavior, upstream/downstream relationships, and tests.
+Every generated page must appear once in the matrix; required inventory units cannot be excluded from the
+matrix. A `required` decision means the page must contain an evidence-backed Mermaid diagram.
+
 Plan enough pages to answer distinct reader questions, but merge thin or duplicate pages. Do not plan
 `index.md`, `log.md`, artificial module pages, owner assignments, receipts, or checkpoints.
 
 ## Coverage criticism and proposal
 
 After the initial plan, the coverage critic writes `analysis/coverage-review.md`. Read it, re-open the
-named evidence where necessary, and revise `analysis/plan.md` to resolve supported omissions. Record a
-reason when rejecting a critique. Do not start bundle writing until the host marks planning complete; in
-proposal mode, do not write bundle pages until approval resumes this run.
+named evidence where necessary, and revise `analysis/plan.md` to resolve supported omissions. A second
+critic writes `analysis/reviews/coverage-rereview.md`; it must pass before approval. Record a reason when
+rejecting a critique. Do not start bundle writing until the host marks planning complete; in proposal mode,
+do not write bundle pages until approval resumes this run.
 
 The host binds the approved plan digest to the frozen input digest. Changing the plan after proposal
 requires a new planning completion rather than silently continuing with a different plan.

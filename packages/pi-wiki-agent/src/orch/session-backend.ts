@@ -26,6 +26,7 @@ import {
   type OrchLimits,
   type OrchRunSummary,
   type WikiEvent,
+  type WikiAgentRole,
   type WikiObservationEntry,
   type WikiProgressSnapshot,
 } from "./types.js";
@@ -33,7 +34,7 @@ import {
 export interface SessionWikiOrchestratorOptions {
   workspaceRoot: string;
   core: CoreAdapter;
-  getTools: (root: string, role: "main" | "discover" | "coverage-critic" | "reviewer") => ToolDefinition[];
+  getTools: (root: string, role: WikiAgentRole) => ToolDefinition[];
   /** Test hook. Production uses a persisted main runner plus short-lived critics. */
   agentRunner?: WikiAgentRunner;
   limits?: Partial<OrchLimits>;
@@ -62,13 +63,13 @@ function sessionPathForOpen(paths: WikiRunPaths, raw: string): string {
 }
 
 function startForState(state: WikiRunState | undefined): "planning" | "writing" {
-  return state?.status === "writing" || state?.status === "validating" || state?.status === "approved"
+  return state?.status === "writing" || state?.status === "validating" || state?.status === "approved" || state?.status === "quality_blocked"
     ? "writing"
     : "planning";
 }
 
 function startForCorePhase(value: unknown, fallback: WikiRunState | undefined): "planning" | "writing" {
-  return value === "writing" || value === "validating" ? "writing" : startForState(fallback);
+  return value === "writing" || value === "validating" || value === "quality_blocked" ? "writing" : startForState(fallback);
 }
 
 export class SessionWikiOrchestrator implements WikiOrchestrator {
@@ -76,7 +77,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
 
   private readonly defaultWorkspaceRoot: string;
   private readonly core: CoreAdapter;
-  private readonly getTools: (root: string, role: "main" | "discover" | "coverage-critic" | "reviewer") => ToolDefinition[];
+  private readonly getTools: (root: string, role: WikiAgentRole) => ToolDefinition[];
   private readonly agentRunnerOption?: WikiAgentRunner;
   private readonly limits: OrchLimits;
   private readonly mainModel?: string;
@@ -332,7 +333,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     });
   }
 
-  private ephemeralRunner(workspaceRoot: string, role: "discover" | "coverage-critic" | "reviewer"): WikiAgentRunner {
+  private ephemeralRunner(workspaceRoot: string, role: Exclude<WikiAgentRole, "main">): WikiAgentRunner {
     if (this.agentRunnerOption) return this.agentRunnerOption;
     return createPiAgentRunner({
       cwd: workspaceRoot,
@@ -364,7 +365,13 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     }, { start: options.start }).then(async (result): Promise<WikiPathResult> => {
       const snapshot = tracked.store.getSnapshot();
       if (tracked.controller.signal.aborted || isTerminalOverall(snapshot.overall)) return result;
-      if (result.status === "failed") {
+      if (result.status === "proposed") {
+        tracked.store.setOverall("proposed");
+        tracked.store.appendEvent("orch.proposed", { detail: { status: result.status, summary: result.summary, runId: tracked.runId } });
+      } else if (result.status === "quality_blocked") {
+        tracked.store.setOverall("quality_blocked");
+        tracked.store.appendEvent("orch.quality_blocked", { detail: { status: result.status, error: result.error, runId: tracked.runId } });
+      } else if (result.status === "failed") {
         tracked.store.setOverall("failed");
         tracked.store.appendEvent("orch.failed", { detail: { error: result.error, runId: tracked.runId } });
       } else {

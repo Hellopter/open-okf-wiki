@@ -102,22 +102,22 @@ test("upsertAgent creates and merges agent rows", () => {
     workspaceRoot: root,
   });
 
-  store.upsertAgent({ agentId: "discover-1", role: "discover", label: "Lane 1", status: "queued" });
+  store.upsertAgent({ agentId: "source-researcher-1", role: "source-researcher", label: "Source 1", status: "queued" });
   store.upsertAgent({
-    agentId: "discover-1",
+    agentId: "source-researcher-1",
     status: "running",
     startedAt: 1_704_067_200_000,
     lastHeartbeatAt: 1_704_067_205_000,
   });
-  store.upsertAgent({ agentId: "discover-2", role: "discover", status: "queued" });
+  store.upsertAgent({ agentId: "source-researcher-2", role: "source-researcher", status: "queued" });
 
   const snap = store.getSnapshot();
   assert.equal(snap.agents.length, 2);
-  const a1 = snap.agents.find((a) => a.agentId === "discover-1");
+  const a1 = snap.agents.find((a) => a.agentId === "source-researcher-1");
   assert.ok(a1);
   assert.equal(a1.status, "running");
-  assert.equal(a1.label, "Lane 1");
-  assert.equal(a1.role, "discover");
+  assert.equal(a1.label, "Source 1");
+  assert.equal(a1.role, "source-researcher");
   assert.equal(a1.elapsedMs, 0);
   assert.equal(a1.startedAt, 1_704_067_200_000);
 });
@@ -159,7 +159,7 @@ test("appendTranscript and readTranscript with tail", () => {
     mode: "auto",
     workspaceRoot: root,
   });
-  store.upsertAgent({ agentId: "lane::1", role: "discover" });
+  store.upsertAgent({ agentId: "lane::1", role: "source-researcher" });
 
   store.appendTranscript("lane::1", { role: "assistant", kind: "text", timestamp: 1, text: "one" });
   store.appendTranscript("lane::1", { role: "assistant", kind: "text", timestamp: 2, text: "two" });

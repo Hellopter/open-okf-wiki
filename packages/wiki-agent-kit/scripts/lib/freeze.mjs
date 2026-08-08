@@ -7,7 +7,7 @@ import path from "node:path";
 import { effectiveSourceIgnores, pathMatchesIgnore } from "./ignores.mjs";
 import { buildInventory } from "./inventory.mjs";
 import { setActiveRun } from "./active-run.mjs";
-import { inputsDir, frozenSourcesDir, analysisDir, bundleDir, kitMethodDir, runDir, runMethodDir, runsDir, statePath } from "./paths.mjs";
+import { inputsDir, frozenSourcesDir, analysisDir, bundleDir, evidenceDir, kitMethodDir, qualityReportsDir, runDir, runMethodDir, runsDir, statePath } from "./paths.mjs";
 import { assertRuntime } from "./install.mjs";
 import { resolveSourceAbs } from "./sources.mjs";
 import { loadWorkspace } from "./workspace.mjs";
@@ -109,6 +109,8 @@ export function freezeRun(root, { focus } = {}) {
   fs.mkdirSync(sources, { recursive: true });
   fs.mkdirSync(analysisDir(rootDir), { recursive: true });
   fs.mkdirSync(path.join(analysisDir(rootDir), "discovery"), { recursive: true });
+  fs.mkdirSync(evidenceDir(rootDir), { recursive: true });
+  fs.mkdirSync(qualityReportsDir(rootDir), { recursive: true });
   fs.mkdirSync(path.join(analysisDir(rootDir), "session"), { recursive: true });
   fs.mkdirSync(bundleDir(rootDir), { recursive: true });
   const methodDigest = freezeMethod(rootDir);
@@ -161,6 +163,7 @@ export function freezeRun(root, { focus } = {}) {
     approvedAt: null,
     sessionPath: null,
     bundle: null,
+    quality: { status: "pending", recoveryCount: 0, reports: [], errors: [] },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

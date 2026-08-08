@@ -13,9 +13,11 @@ control state for run identity, frozen input digests, approval, session location
 locking, and bundle sealing. Model analysis is Markdown under `analysis/`.
 
 The core retains a deterministic source inventory. Every required inventory unit
-must either be represented in the Wiki plan and bundle or explicitly excluded in
-that plan. It uses no model-authored receipts, page ownership maps, or staged
-JSON gates.
+must appear in a host-validated page matrix with a frozen-source-citing evidence
+brief and a diagram decision. It uses no model-authored receipts, page ownership
+maps, or staged JSON gates. Before sealing, the host requires the bounded
+coverage review, four passing final quality reports, and conservative local
+Mermaid fence validation; it does not launch a browser renderer.
 
 ## Run Layout
 

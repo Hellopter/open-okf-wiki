@@ -10,9 +10,12 @@ import {
   bundleDir,
   coverageReviewPath,
   discoveryDir,
+  evidenceDir,
   frozenSourcesDir,
   inputsDir,
   planPath,
+  qualityReportPath,
+  qualityReportsDir,
   reviewPath,
   runLockPath,
   sessionDir,
@@ -20,11 +23,12 @@ import {
 } from "./paths.mjs";
 import { sha256File, readJson, writeJson } from "./artifacts.mjs";
 import { addCloneSource, addPathSource, listSources as listSourceEntries } from "./sources.mjs";
-import { bundleSealStatus, regenerateIndexes, sealBundle, stampBundleMetadata, validateBundle } from "./validate.mjs";
+import { bundleSealStatus, parseQualityReports, regenerateIndexes, sealBundle, stampBundleMetadata, validateBundle, validatePlanningQuality } from "./validate.mjs";
 import { findWorkspaceConfig } from "./paths.mjs";
 import { initWorkspace as initializeWorkspaceDocument, loadWorkspace as loadWorkspaceDocument } from "./workspace.mjs";
 
-const RUN_STATUSES = new Set(["planning", "proposed", "writing", "validating", "paused", "stopped", "failed", "complete"]);
+const RUN_STATUSES = new Set(["planning", "proposed", "writing", "validating", "quality_blocked", "paused", "stopped", "failed", "complete"]);
+const QUALITY_STATUSES = new Set(["pending", "repairing", "blocked", "passed"]);
 
 function normalizeOwner(value) {
   if (typeof value !== "string" || !value.trim() || value.length > 256) {
@@ -45,6 +49,9 @@ function readRunState(run) {
     throw new Error(`invalid run state for ${run.runId}`);
   }
   if (state.approval !== "propose" && state.approval !== "auto") throw new Error(`invalid approval mode for ${run.runId}`);
+  if (!state.quality || !QUALITY_STATUSES.has(state.quality.status) || !Number.isInteger(state.quality.recoveryCount) || state.quality.recoveryCount < 0) {
+    throw new Error(`invalid quality state for ${run.runId}`);
+  }
   return state;
 }
 
@@ -75,6 +82,24 @@ function assertSnapshot(run) {
   return snapshot;
 }
 
+function qualitySnapshot(run, state, errors = []) {
+  const reports = parseQualityReports(run.runDir);
+  const combinedErrors = [...reports.errors, ...errors];
+  return {
+    status: combinedErrors.length ? "blocked" : "passed",
+    checkedAt: new Date().toISOString(),
+    recoveryCount: state.quality.recoveryCount,
+    reports: reports.reports,
+    errors: combinedErrors,
+  };
+}
+
+function blockForQuality(root, run, state, errors = []) {
+  const quality = qualitySnapshot(run, state, errors);
+  const persisted = writeRunState(root, run, { ...state, status: "quality_blocked", quality });
+  return { ok: false, errors: quality.errors, quality, ...runPaths(root, run), status: "quality_blocked", state: persisted.state };
+}
+
 function normalizeSessionPath(run, value) {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !value) {
@@ -97,8 +122,11 @@ function runPaths(root, run) {
     analysisDir: analysisDir(run.runDir),
     planPath: planPath(run.runDir),
     discoveryDir: discoveryDir(run.runDir),
+    evidenceDir: evidenceDir(run.runDir),
     coverageReviewPath: coverageReviewPath(run.runDir),
     reviewPath: reviewPath(run.runDir),
+    qualityReportsDir: qualityReportsDir(run.runDir),
+    qualityReportPaths: Object.fromEntries(["coverage-rereview", "evidence", "workflow", "navigation", "reader-qa"].map((id) => [id, qualityReportPath(run.runDir, id)])),
     sessionDir: sessionDir(run.runDir),
     bundleDir: bundleDir(run.runDir),
   };
@@ -232,6 +260,8 @@ export function completeRunPlanning(root, { runId, sessionPath: persistedSession
   const state = readRunState(run);
   if (!["planning", "proposed"].includes(state.status)) throw new Error(`run ${run.runId} is not planning`);
   assertSnapshot(run);
+  const planningQuality = validatePlanningQuality(run.runDir);
+  if (!planningQuality.ok) throw new Error(`plan quality gate failed: ${planningQuality.errors.join("; ")}`);
   const digest = planDigest(run);
   const sessionPath = normalizeSessionPath(run, persistedSession);
   const status = state.approval === "propose" ? "proposed" : "writing";
@@ -278,6 +308,32 @@ export function resumeRun(root, { runId } = {}) {
   if (state.status === "proposed") throw new Error("run has a proposed plan; use /wiki approve before resuming");
   assertSnapshot(run);
   const status = state.status === "paused" ? state.resumeStatus || "planning" : state.status;
+  if (status === "quality_blocked") {
+    if (state.quality.recoveryCount >= 1) {
+      throw new Error("quality repair limit reached; inspect the quality reports and create a new run");
+    }
+    const reports = parseQualityReports(run.runDir);
+    const resumed = writeRunState(root, run, {
+      ...state,
+      status: "writing",
+      resumeStatus: null,
+      quality: {
+        status: "repairing",
+        recoveryCount: state.quality.recoveryCount + 1,
+        reports: reports.reports,
+        errors: reports.errors,
+        resumedAt: new Date().toISOString(),
+      },
+    }).state;
+    return {
+      ok: true,
+      ...runPaths(root, run),
+      ...resumed,
+      startAt: "writing",
+      qualityRecovery: true,
+      adaptiveDiscovery: readJson(path.join(inputsDir(run.runDir), "run-policy.json"))?.discovery,
+    };
+  }
   const resumed = state.status === "paused"
     ? writeRunState(root, run, { ...state, status, resumeStatus: null }).state
     : state;
@@ -292,6 +348,9 @@ export function setRunStatus(root, { runId, status, sessionPath: persistedSessio
   const run = activeRun(root, runId);
   const state = readRunState(run);
   if (state.status === "complete" || state.status === "stopped") throw new Error(`run ${run.runId} is terminal`);
+  if (state.status === "quality_blocked" && !["quality_blocked", "paused", "stopped", "failed"].includes(status)) {
+    throw new Error("quality-blocked runs must use resumeRun for their bounded repair pass");
+  }
   const sessionPath = normalizeSessionPath(run, persistedSession);
   const next = {
     ...state,
@@ -300,6 +359,10 @@ export function setRunStatus(root, { runId, status, sessionPath: persistedSessio
     ...(sessionPath !== undefined ? { sessionPath } : {}),
     ...(error === undefined ? {} : { error: String(error) }),
   };
+  if (status === "quality_blocked") {
+    const quality = qualitySnapshot(run, state, error === undefined ? [] : [String(error)]);
+    next.quality = quality;
+  }
   const persisted = writeRunState(root, run, next);
   return { ok: true, ...runPaths(root, run), status, state: persisted.state };
 }
@@ -316,17 +379,21 @@ export function validateRunBundle(root, { runId } = {}) {
   if (!["writing", "validating"].includes(state.status)) {
     throw new Error(`run ${run.runId} is not ready to validate`);
   }
-  writeRunState(root, run, { ...state, status: "validating" });
+  const reportGate = parseQualityReports(run.runDir);
+  if (!reportGate.ok) return blockForQuality(root, run, state);
+  const validatingState = writeRunState(root, run, { ...state, status: "validating" }).state;
   const stamped = stampBundleMetadata(run.runDir);
-  if (!stamped.ok) return { ok: false, errors: stamped.errors, ...runPaths(root, run), state: readRunState(run) };
+  if (!stamped.ok) return blockForQuality(root, run, validatingState, stamped.errors);
   const indexes = regenerateIndexes(run.runDir);
   const validation = validateBundle(run.runDir);
-  if (!validation.ok) return { ...validation, indexes, ...runPaths(root, run), state: readRunState(run) };
+  if (!validation.ok) return { ...validation, indexes, ...blockForQuality(root, run, readRunState(run), validation.errors) };
   const manifest = sealBundle(run.runDir, validation);
+  const completedState = readRunState(run);
   const persisted = writeRunState(root, run, {
-    ...readRunState(run),
+    ...completedState,
     status: "complete",
     bundle: { digest: manifest.bundleDigest, sealedAt: manifest.sealedAt },
+    quality: qualitySnapshot(run, completedState),
   });
   return { ...validation, indexes, manifest, ...runPaths(root, run), status: "complete", state: persisted.state };
 }
@@ -340,6 +407,20 @@ export function getRunPaths(root, { runId } = {}) {
 export function getRunState(root, { runId } = {}) {
   const run = activeRun(root, runId);
   return readRunState(run);
+}
+
+/** Read host-derived quality status without granting agents access to state.json. */
+export function getRunQuality(root, { runId } = {}) {
+  const run = activeRun(root, runId);
+  const state = readRunState(run);
+  const reports = parseQualityReports(run.runDir);
+  return {
+    runId: run.runId,
+    status: reports.ok ? state.quality.status : "blocked",
+    recoveryCount: state.quality.recoveryCount,
+    reports: reports.reports,
+    errors: reports.errors,
+  };
 }
 
 /**

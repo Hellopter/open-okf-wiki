@@ -71,20 +71,29 @@ test("subagents have no shell and only write Markdown handoffs or the active bun
 
 test("role-scoped tools enforce independent discovery and review handoff ownership", async () => {
   const { root, paths, adapter } = await fixture();
-  const discovery = createWikiFilesystemTools(root, adapter, { role: "discover" }).find((tool) => tool.name === "write");
+  const discovery = createWikiFilesystemTools(root, adapter, { role: "source-researcher" }).find((tool) => tool.name === "write");
+  const integration = createWikiFilesystemTools(root, adapter, { role: "integration-researcher" }).find((tool) => tool.name === "write");
+  const evidence = createWikiFilesystemTools(root, adapter, { role: "evidence-researcher" }).find((tool) => tool.name === "write");
   const coverage = createWikiFilesystemTools(root, adapter, { role: "coverage-critic" }).find((tool) => tool.name === "write");
-  const reviewer = createWikiFilesystemTools(root, adapter, { role: "reviewer" }).find((tool) => tool.name === "write");
+  const reviewer = createWikiFilesystemTools(root, adapter, { role: "reviewer-evidence" }).find((tool) => tool.name === "write");
+  const questionFinder = createWikiFilesystemTools(root, adapter, { role: "qa-question-finder" }).find((tool) => tool.name === "write");
+  const answerVerifier = createWikiFilesystemTools(root, adapter, { role: "qa-answer-verifier" }).find((tool) => tool.name === "write");
 
-  await discovery.execute("discover", { path: join(paths.analysisDir, "discovery", "identity.md"), content: "# Discovery\n" });
+  await discovery.execute("discover", { path: join(paths.analysisDir, "discovery", "sources", "identity.md"), content: "# Discovery\n" });
+  await integration.execute("integration", { path: join(paths.analysisDir, "discovery", "integration.md"), content: "# Integration\n" });
+  await evidence.execute("evidence", { path: join(paths.analysisDir, "evidence", "identity.md"), content: "# Evidence\n" });
   await coverage.execute("coverage", { path: join(paths.analysisDir, "coverage-review.md"), content: "# Coverage Review\n" });
-  await reviewer.execute("review", { path: join(paths.analysisDir, "review.md"), content: "# Review\n" });
+  await coverage.execute("coverage-rereview", { path: join(paths.analysisDir, "reviews", "coverage-rereview.md"), content: "# Coverage Re-review\n" });
+  await reviewer.execute("review", { path: join(paths.analysisDir, "reviews", "evidence.md"), content: "# Review\n" });
+  await questionFinder.execute("questions", { path: join(paths.analysisDir, "qa", "questions.md"), content: "# Questions\n" });
+  await answerVerifier.execute("answers", { path: join(paths.analysisDir, "reviews", "reader-qa.md"), content: "# Answers\n" });
 
   await assert.rejects(
     () => discovery.execute("discover-plan", { path: join(paths.analysisDir, "plan.md"), content: "unsafe" }),
-    /discover agent cannot (write|create)/,
+    /source-researcher agent cannot (write|create)/,
   );
   await assert.rejects(
-    () => discovery.execute("discover-json", { path: join(paths.analysisDir, "discovery", "identity.json"), content: "{}" }),
+    () => discovery.execute("discover-json", { path: join(paths.analysisDir, "discovery", "sources", "identity.json"), content: "{}" }),
     /only author Markdown/,
   );
   await assert.rejects(
@@ -93,8 +102,29 @@ test("role-scoped tools enforce independent discovery and review handoff ownersh
   );
   await assert.rejects(
     () => reviewer.execute("review-coverage", { path: join(paths.analysisDir, "coverage-review.md"), content: "unsafe" }),
-    /reviewer agent cannot write/,
+    /reviewer-evidence agent cannot (write|create)/,
   );
+});
+
+test("QA roles have separated read planes and reader QA report ownership", async () => {
+  const { root, paths, adapter } = await fixture();
+  const sourceFile = join(paths.sourcesDir, "service.md");
+  const bundleFile = join(paths.bundleDir, "concepts", "service.md");
+  await mkdir(dirname(bundleFile), { recursive: true });
+  await writeFile(sourceFile, "# Frozen source\n", "utf8");
+  await writeFile(bundleFile, "# Generated Wiki\n", "utf8");
+  const questionTools = createWikiFilesystemTools(root, adapter, { role: "qa-question-finder" });
+  const answerTools = createWikiFilesystemTools(root, adapter, { role: "qa-answer-verifier" });
+  const questionRead = questionTools.find((tool) => tool.name === "read");
+  const answerRead = answerTools.find((tool) => tool.name === "read");
+  const answerGrep = answerTools.find((tool) => tool.name === "grep");
+
+  await questionRead.execute("source", { path: sourceFile });
+  await assert.rejects(() => questionRead.execute("bundle", { path: bundleFile }), /inputs, method, analysis, and bundle/);
+  await answerRead.execute("bundle", { path: bundleFile });
+  await assert.rejects(() => answerRead.execute("source", { path: sourceFile }), /inputs, method, analysis, and bundle/);
+  const defaultSearch = await answerGrep.execute("bundle-search", { pattern: "Generated" });
+  assert.match(toolText(defaultSearch), /Generated/);
 });
 
 test("grep and find cannot search outside the active run data plane", async () => {

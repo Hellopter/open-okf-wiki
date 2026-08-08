@@ -57,7 +57,7 @@ export interface WikiRunPaths {
 
 export interface WikiRunState {
   runId: string;
-  status: "prepared" | "planning" | "proposed" | "approved" | "writing" | "validating" | "completed" | "failed" | "paused" | "stopped" | string;
+  status: "prepared" | "planning" | "proposed" | "approved" | "writing" | "validating" | "quality_blocked" | "completed" | "failed" | "paused" | "stopped" | string;
   approval?: "propose" | "auto";
   requiresApproval?: boolean;
   focus?: string;

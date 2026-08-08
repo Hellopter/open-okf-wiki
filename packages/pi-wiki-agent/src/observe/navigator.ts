@@ -3,6 +3,7 @@ import {
   parseKey,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type Component,
   type Focusable,
   type TUI,
@@ -28,7 +29,7 @@ import {
 } from "./format.js";
 import { formatWikiObservationEntries } from "./transcript.js";
 
-export type WikiNavigatorView = "idle" | "overview" | "detail";
+export type WikiNavigatorView = "idle" | "overview" | "detail" | "proposal";
 export type WikiNavigatorPane = "phases" | "agents";
 
 export interface WikiNavigatorState {
@@ -43,9 +44,13 @@ export interface WikiNavigatorState {
   followTranscript: boolean;
   /** Effective transcript rows from the most recent interactive render. */
   transcriptPageRows?: number;
+  /** Visible rows allocated to the scrollable proposal preview. */
+  proposalOffset: number;
+  proposalPageRows?: number;
+  proposalPreviewRows?: number;
 }
 
-type NavigatorAction = "close" | "load-transcript" | "pause" | "resume" | "stop";
+type NavigatorAction = "close" | "load-transcript" | "pause" | "resume" | "stop" | "approve" | "reject";
 
 export interface WikiNavigatorKeyResult {
   state: WikiNavigatorState;
@@ -80,6 +85,10 @@ export interface OpenWikiNavigatorOptions {
   onPause?: () => Promise<boolean> | boolean;
   onResume?: () => Promise<boolean> | boolean;
   onStop?: () => Promise<boolean> | boolean;
+  /** Approves the active proposed run; the run id remains internal to the extension. */
+  onApprove?: () => Promise<boolean> | boolean;
+  /** Rejects the active proposal. The extension may implement this as stopping the run. */
+  onReject?: () => Promise<boolean> | boolean;
   formatOpts?: FormatTimeOpts;
 }
 
@@ -92,6 +101,28 @@ const TRANSCRIPT_PAGE_ROWS = 12;
 const BOX_BORDER_LEFT = "│ ";
 const BOX_BORDER_RIGHT = " │";
 const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
+
+interface NavigatorPlanQuality {
+  verdict?: string;
+  passed?: number;
+  failed?: number;
+  blocked?: number;
+  findings?: number;
+}
+
+interface NavigatorSnapshotExtras {
+  planPreview?: string;
+  planSummary?: string;
+  qualitySummary?: NavigatorPlanQuality;
+}
+
+function isProposedSnapshot(snapshot: WikiProgressSnapshot | undefined): boolean {
+  return String(snapshot?.overall ?? "") === "proposed";
+}
+
+function snapshotExtras(snapshot: WikiProgressSnapshot): NavigatorSnapshotExtras {
+  return snapshot as WikiProgressSnapshot & NavigatorSnapshotExtras;
+}
 
 function clampIndex(index: number, length: number): number {
   if (length <= 0) return 0;
@@ -155,7 +186,7 @@ export function createWikiNavigatorState(snapshot?: WikiProgressSnapshot): WikiN
   const phaseIndex = snapshot ? defaultPhaseIndex(snapshot) : 0;
   return {
     snapshot,
-    view: snapshot ? "overview" : "idle",
+    view: snapshot ? (isProposedSnapshot(snapshot) ? "proposal" : "overview") : "idle",
     pane: "phases",
     phaseIndex,
     agentIndex: snapshot ? defaultAgentIndex(snapshot, phaseIndex) : 0,
@@ -164,11 +195,15 @@ export function createWikiNavigatorState(snapshot?: WikiProgressSnapshot): WikiN
     transcriptLoading: false,
     followTranscript: true,
     transcriptPageRows: TRANSCRIPT_PAGE_ROWS,
+    proposalOffset: 0,
+    proposalPageRows: TRANSCRIPT_PAGE_ROWS,
+    proposalPreviewRows: 0,
   };
 }
 
 function updateNavigatorSnapshot(state: WikiNavigatorState, snapshot: WikiProgressSnapshot): WikiNavigatorState {
   const wasIdle = !state.snapshot || state.view === "idle";
+  const proposed = isProposedSnapshot(snapshot);
   const previousPhase = selectedPhase(state)?.name;
   const previousAgent = selectedAgent(state)?.agentId;
   const phases = navigatorPhases(snapshot);
@@ -181,13 +216,14 @@ function updateNavigatorSnapshot(state: WikiNavigatorState, snapshot: WikiProgre
   return {
     ...state,
     snapshot,
-    view: wasIdle || (agentChanged && state.view === "detail") ? "overview" : state.view,
+    view: proposed ? "proposal" : wasIdle || state.view === "proposal" || (agentChanged && state.view === "detail") ? "overview" : state.view,
     pane: wasIdle ? "phases" : agentChanged ? "agents" : state.pane,
     phaseIndex: nextPhaseIndex,
     agentIndex: nextAgentIndex,
     transcriptLines: agentChanged ? [] : state.transcriptLines,
     transcriptOffset: agentChanged ? 0 : state.transcriptOffset,
     transcriptLoading: agentChanged ? false : state.transcriptLoading,
+    proposalOffset: proposed ? state.proposalOffset : 0,
   };
 }
 
@@ -232,6 +268,18 @@ function withTranscriptPageRows(state: WikiNavigatorState, rows: number): WikiNa
   };
 }
 
+function withProposalPageRows(state: WikiNavigatorState, rows: number, previewRows: number): WikiNavigatorState {
+  const proposalPageRows = Math.max(1, Math.floor(rows));
+  const maxOffset = Math.max(0, previewRows - proposalPageRows);
+  if (state.proposalPageRows === proposalPageRows && state.proposalPreviewRows === previewRows && state.proposalOffset <= maxOffset) return state;
+  return {
+    ...state,
+    proposalPageRows,
+    proposalPreviewRows: previewRows,
+    proposalOffset: Math.min(state.proposalOffset, maxOffset),
+  };
+}
+
 function result(state: WikiNavigatorState, action?: NavigatorAction, agentId?: string): WikiNavigatorKeyResult {
   return action ? { state, action, agentId } : { state };
 }
@@ -253,18 +301,51 @@ function openDetail(state: WikiNavigatorState): WikiNavigatorKeyResult {
   );
 }
 
+function proposalPreview(snapshot: WikiProgressSnapshot, width: number): string[] {
+  const preview = snapshotExtras(snapshot).planPreview;
+  if (!preview?.trim()) return ["Plan preview is unavailable."];
+  return wrapTextWithAnsi(preview, Math.max(1, width));
+}
+
+function proposalPageRows(state: WikiNavigatorState): number {
+  return Math.max(1, state.proposalPageRows ?? TRANSCRIPT_PAGE_ROWS);
+}
+
+function proposalMaxOffset(state: WikiNavigatorState): number {
+  return Math.max(0, (state.proposalPreviewRows ?? 0) - proposalPageRows(state));
+}
+
 /** Apply a parsed key to the single-window phase -> agent -> execution navigator. */
 export function applyWikiNavigatorKey(state: WikiNavigatorState, key: string): WikiNavigatorKeyResult {
   const normalized = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "Enter" ? "enter" : key;
 
   if (normalized === "q") return result(state, "close");
-  if (normalized === "p" && state.snapshot) {
+  if (normalized === "a" && isProposedSnapshot(state.snapshot)) return result(state, "approve");
+  if (normalized === "r" && isProposedSnapshot(state.snapshot)) return result(state, "reject");
+  if (normalized === "p" && state.snapshot && !isProposedSnapshot(state.snapshot)) {
     return result(state, state.snapshot.overall === "paused" ? "resume" : "pause");
   }
   if (normalized === "x" && state.snapshot) return result(state, "stop");
 
   if (state.view === "idle") {
     return normalized === "escape" || normalized === "esc" || normalized === "left" ? result(state, "close") : result(state);
+  }
+
+  if (state.view === "proposal") {
+    if (normalized === "escape" || normalized === "esc" || normalized === "left") {
+      return result({ ...state, view: "overview", pane: "phases" });
+    }
+    if (normalized === "g" || normalized === "home") return result({ ...state, proposalOffset: 0 });
+    if (normalized === "G" || normalized === "shift+g" || normalized === "end") {
+      return result({ ...state, proposalOffset: proposalMaxOffset(state) });
+    }
+    if (normalized === "up" || normalized === "k") {
+      return result({ ...state, proposalOffset: Math.max(0, state.proposalOffset - 1) });
+    }
+    if (normalized === "down" || normalized === "j") {
+      return result({ ...state, proposalOffset: Math.min(proposalMaxOffset(state), state.proposalOffset + 1) });
+    }
+    return result(state);
   }
 
   if (state.view === "detail") {
@@ -299,6 +380,9 @@ export function applyWikiNavigatorKey(state: WikiNavigatorState, key: string): W
   }
   if (normalized === "left") {
     return state.pane === "agents" ? result({ ...state, pane: "phases" }) : result(state, "close");
+  }
+  if (normalized === "v" && isProposedSnapshot(state.snapshot)) {
+    return result({ ...state, view: "proposal", proposalOffset: 0 });
   }
   if (normalized === "right" || normalized === "enter") {
     return state.pane === "phases" ? result({ ...state, pane: "agents" }) : openDetail(state);
@@ -436,7 +520,92 @@ function renderOverview(state: WikiNavigatorState, opts: WikiNavigatorRenderOpti
     );
   }
 
-  if (opts.interactive) lines.push("←/→ pane · ↑/↓ select · enter observe · p pause/resume · x stop · q close");
+  if (opts.interactive) {
+    lines.push(
+      isProposedSnapshot(snapshot)
+        ? "←/→ pane · ↑/↓ select · enter observe · v plan · a approve · r reject plan · q close"
+        : "←/→ pane · ↑/↓ select · enter observe · p pause/resume · x stop · q close",
+    );
+  }
+  return lines;
+}
+
+function formatQualitySummary(snapshot: WikiProgressSnapshot): string {
+  const quality = snapshotExtras(snapshot).qualitySummary;
+  if (!quality) return "Quality: awaiting review";
+  const parts: string[] = [];
+  if (quality.verdict) parts.push(quality.verdict.toUpperCase());
+  if (typeof quality.passed === "number") parts.push(`${quality.passed} passed`);
+  if (typeof quality.failed === "number") parts.push(`${quality.failed} failed`);
+  if (typeof quality.blocked === "number") parts.push(`${quality.blocked} blocked`);
+  if (typeof quality.findings === "number") parts.push(`${quality.findings} findings`);
+  return parts.length > 0 ? `Quality: ${parts.join(" · ")}` : "Quality: awaiting review";
+}
+
+function proposalIntro(snapshot: WikiProgressSnapshot, width: number): string[] {
+  const summary = snapshotExtras(snapshot).planSummary;
+  return [
+    "Plan approval",
+    ...wrapTextWithAnsi(summary?.trim() ? `Summary: ${summary.trim()}` : "Summary: source-grounded plan is ready for review.", Math.max(1, width)),
+    ...wrapTextWithAnsi(formatQualitySummary(snapshot), Math.max(1, width)),
+    "",
+    "Plan preview",
+  ];
+}
+
+function renderProposal(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions, theme: NavigatorTheme): string[] {
+  const snapshot = state.snapshot!;
+  const width = Math.max(1, opts.width ?? 80);
+  const maxRows = Math.max(2, opts.maxRows ?? 12);
+  const phases = navigatorPhases(snapshot);
+  const lines = [theme.bold("Wiki proposed · approval required")];
+  const footer = opts.interactive ? "↑/↓ scroll plan · g/G start/end · a approve · r reject plan · ← phases · q close" : undefined;
+
+  if (width < 52) {
+    const headerRows = lines.length + (footer ? 1 : 0);
+    const intro = proposalIntro(snapshot, width);
+    const previewRows = Math.max(1, maxRows - headerRows - intro.length - 1);
+    const preview = proposalPreview(snapshot, width);
+    const maxOffset = Math.max(0, preview.length - previewRows);
+    const start = Math.min(state.proposalOffset, maxOffset);
+    lines.push(...intro, ...preview.slice(start, start + previewRows));
+    if (preview.length > previewRows) lines.push(theme.fg("dim", `${start + 1}-${Math.min(preview.length, start + previewRows)} / ${preview.length}`));
+  } else {
+    const leftWidth = Math.min(30, Math.max(20, Math.floor((width - 3) * 0.32)));
+    const rightWidth = width - leftWidth - 3;
+    const reservedRows = lines.length + (footer ? 1 : 0) + 2;
+    const bodyRows = Math.max(1, maxRows - reservedRows);
+    const phaseRows = listWindow(phases, state.phaseIndex, bodyRows);
+    const intro = proposalIntro(snapshot, rightWidth);
+    const previewRows = Math.max(1, bodyRows - intro.length - 1);
+    const preview = proposalPreview(snapshot, rightWidth);
+    const maxOffset = Math.max(0, preview.length - previewRows);
+    const start = Math.min(state.proposalOffset, maxOffset);
+    const left: string[] = [];
+    const right = [...intro, ...preview.slice(start, start + previewRows)];
+    if (preview.length > previewRows) right.push(theme.fg("dim", `${start + 1}-${Math.min(preview.length, start + previewRows)} / ${preview.length}`));
+    for (let index = 0; index < bodyRows; index++) {
+      const phase = phaseRows.items[index];
+      left.push(
+        phase
+          ? phaseLine(phase, snapshot, phaseRows.start + index === state.phaseIndex, leftWidth, theme)
+          : "",
+      );
+    }
+    lines.push(
+      ...renderTwoPaneFrame({
+        width,
+        bodyRows,
+        leftWidth,
+        leftTitle: "Phases",
+        rightTitle: "Plan",
+        left,
+        right,
+        theme,
+      }),
+    );
+  }
+  if (footer) lines.push(footer);
   return lines;
 }
 
@@ -449,6 +618,8 @@ function detailPreamble(
   if (!agent) return { lines: [theme.fg("warning", "Selected agent is no longer available."), "← back · q close"] };
 
   const lines = [theme.bold(agent.label), `${agent.phase} · ${agentStatusGlyph(agent.status)} ${agent.status} · ${formatDuration(agent.elapsedMs)}`];
+  const prompt = (agent as WikiAgentView & { prompt?: unknown }).prompt;
+  if (typeof prompt === "string" && prompt.trim()) lines.push(`Input prompt: ${prompt.trim()}`);
   const context = formatAgentContext(agent);
   if (context) lines.push(context);
   const activity = formatAgentActivity(agent);
@@ -480,6 +651,26 @@ function effectiveTranscriptPageRows(state: WikiNavigatorState, opts: WikiNaviga
   if (state.view !== "detail") return TRANSCRIPT_PAGE_ROWS;
   const preamble = detailPreamble(state, opts, PLAIN_THEME);
   return preamble.agent ? detailTranscriptRows(preamble.lines.length, opts) : TRANSCRIPT_PAGE_ROWS;
+}
+
+function proposalPagination(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions): { pageRows: number; previewRows: number } {
+  const snapshot = state.snapshot;
+  if (!snapshot) return { pageRows: TRANSCRIPT_PAGE_ROWS, previewRows: 0 };
+  const width = Math.max(1, opts.width ?? 80);
+  const maxRows = Math.max(2, opts.maxRows ?? 12);
+  const footerRows = opts.interactive ? 1 : 0;
+  if (width < 52) {
+    const introRows = proposalIntro(snapshot, width).length;
+    const pageRows = Math.max(1, maxRows - 1 - footerRows - introRows - 1);
+    return { pageRows, previewRows: proposalPreview(snapshot, width).length };
+  }
+  const leftWidth = Math.min(30, Math.max(20, Math.floor((width - 3) * 0.32)));
+  const rightWidth = width - leftWidth - 3;
+  const bodyRows = Math.max(1, maxRows - 1 - footerRows - 2);
+  return {
+    pageRows: Math.max(1, bodyRows - proposalIntro(snapshot, rightWidth).length - 1),
+    previewRows: proposalPreview(snapshot, rightWidth).length,
+  };
 }
 
 function renderDetail(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions, theme: NavigatorTheme): string[] {
@@ -521,7 +712,9 @@ export function renderWikiNavigator(
   theme: NavigatorTheme = PLAIN_THEME,
 ): string[] {
   if (state.view === "idle" || !state.snapshot) return renderIdle(idle, Boolean(opts.interactive), theme);
-  return state.view === "detail" ? renderDetail(state, opts, theme) : renderOverview(state, opts, theme);
+  if (state.view === "detail") return renderDetail(state, opts, theme);
+  if (state.view === "proposal") return renderProposal(state, opts, theme);
+  return renderOverview(state, opts, theme);
 }
 
 function fixedDialogContent(lines: string[], rows: number): string[] {
@@ -588,17 +781,17 @@ function renderNavigatorDialog(
   );
 
   if (panelWidth < BOX_BORDER_OVERHEAD + 6) {
-    return fixedDialogContent(content, contentRows).map((line) => truncateToWidth(line, panelWidth));
+    return fixedDialogContent(content.flatMap((line) => wrapTextWithAnsi(line, panelWidth)), contentRows).map((line) => truncateToWidth(line, panelWidth));
   }
 
-  const frame = fixedDialogContent(content, contentRows);
+  const frame = fixedDialogContent(content.flatMap((line) => wrapTextWithAnsi(line, innerWidth)), contentRows);
   const border = (line: string) => theme.fg("border", line);
   const title = theme.fg("accent", theme.bold(" wiki "));
   const titleWidth = visibleWidth(title);
   const top = border("╭─") + title + border("─".repeat(Math.max(0, innerWidth - titleWidth + 1)) + "╮");
   const bottom = border(`╰${"─".repeat(innerWidth + 2)}╯`);
   const wrap = (line: string) => {
-    const body = truncateToWidth(line, innerWidth, "…", true);
+    const body = truncateToWidth(line, innerWidth, "", true);
     const framed = border(BOX_BORDER_LEFT) + body + border(BOX_BORDER_RIGHT);
     return theme.bg("customMessageBg", framed + " ".repeat(Math.max(0, panelWidth - visibleWidth(framed))));
   };
@@ -652,14 +845,23 @@ export async function openWikiNavigator(
           }
           redraw();
         };
-        const runControl = async (action: "pause" | "resume" | "stop") => {
-          const callback = action === "pause" ? options.onPause : action === "resume" ? options.onResume : options.onStop;
+        const runControl = async (action: "pause" | "resume" | "stop" | "approve" | "reject") => {
+          const callback =
+            action === "pause"
+              ? options.onPause
+              : action === "resume"
+                ? options.onResume
+                : action === "stop"
+                  ? options.onStop
+                  : action === "approve"
+                    ? options.onApprove
+                    : options.onReject;
           if (!callback) return;
           try {
             const ok = await callback();
-            if (!ok) ctx.ui.notify(`Unable to ${action} Wiki orchestration.`, "warning");
+            if (!ok) ctx.ui.notify(`Unable to ${action === "reject" ? "reject the" : action} Wiki ${action === "reject" ? "plan" : "orchestration"}.`, "warning");
           } catch {
-            ctx.ui.notify(`Unable to ${action} Wiki orchestration.`, "warning");
+            ctx.ui.notify(`Unable to ${action === "reject" ? "reject the" : action} Wiki ${action === "reject" ? "plan" : "orchestration"}.`, "warning");
           }
           redraw();
         };
@@ -685,6 +887,10 @@ export async function openWikiNavigator(
             const layout = navigatorDialogLayout(tui, options, width);
             lastRenderOptions = layout.renderOptions;
             state = withTranscriptPageRows(state, effectiveTranscriptPageRows(state, layout.renderOptions));
+            if (state.view === "proposal") {
+              const pagination = proposalPagination(state, layout.renderOptions);
+              state = withProposalPageRows(state, pagination.pageRows, pagination.previewRows);
+            }
             return renderNavigatorDialog(state, tui, theme, options, width, layout);
           },
           handleInput: (data: string) => {
@@ -697,7 +903,9 @@ export async function openWikiNavigator(
               return;
             }
             if (next.action === "load-transcript" && next.agentId) void loadTranscript(next.agentId);
-            if (next.action === "pause" || next.action === "resume" || next.action === "stop") void runControl(next.action);
+            if (next.action === "pause" || next.action === "resume" || next.action === "stop" || next.action === "approve" || next.action === "reject") {
+              void runControl(next.action);
+            }
             redraw();
           },
           invalidate: () => {},

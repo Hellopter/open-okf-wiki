@@ -21,7 +21,7 @@ Pi project trust.
 /wiki init [--name name] [--lang en|zh]
 /wiki source add path <path> [--id id]
 /wiki generate [focus]
-/wiki approve <run-id>       # only when workflow.approval is propose
+/wiki approve                # only when workflow.approval is propose
 /wiki resume [run-id]
 /wiki status [--json]
 ```
@@ -37,11 +37,13 @@ workflow:
 an inventory, optionally asks read-only discovery agents for independent domain
 briefs, writes `analysis/plan.md`, and obtains one independent coverage review.
 
-With `propose`, the run pauses at that reviewed plan. `/wiki approve <run-id>`
-checks the frozen input and plan digest, then resumes the exact same agent
-session to write, review, validate, and seal the Wiki. With `auto`, it continues
-without a human pause. `/wiki resume` recovers a paused or interrupted run; a
-run lock prevents concurrent resume of the same session.
+With `propose`, the run pauses at that reviewed plan. Open `/wiki` to inspect
+the plan and approve it in the Navigator; `/wiki approve` is the equivalent
+command shortcut for the active run. Approval checks the frozen input and plan
+digest, then resumes the exact same agent session to write, review, validate,
+and seal the Wiki. With `auto`, it continues without a human pause. `/wiki
+resume` recovers a paused, interrupted, or once quality-blocked run; a run lock
+prevents concurrent resume of the same session.
 
 ## Artifacts
 

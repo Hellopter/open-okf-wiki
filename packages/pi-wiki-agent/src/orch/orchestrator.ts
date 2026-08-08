@@ -52,7 +52,7 @@ export interface WikiOrchestrator {
   updateSnapshot?(mutator: (s: WikiProgressSnapshot) => void, id?: string): void;
 }
 
-const ACTIVE_OVERALL = new Set(["running", "paused"]);
+const ACTIVE_OVERALL = new Set(["running", "paused", "proposed", "quality_blocked"]);
 
 /**
  * Resolve which orch run id to control when the caller omits one.

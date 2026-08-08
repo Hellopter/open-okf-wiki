@@ -25,7 +25,7 @@ import {
   type WikiOrchestrator,
   type WikiProgressSnapshot,
 } from "./orch/index.js";
-import { createWikiToolset } from "./toolset.js";
+import { createWikiToolset, type WikiToolRole } from "./toolset.js";
 import { WIKI_RUNTIME_DEFINITION } from "./runtime.js";
 
 export type DisposableOrchestrator = WikiOrchestrator & { dispose?: () => void };
@@ -52,6 +52,7 @@ const CAPABILITY_NOTICE =
 
 type StatusUi = {
   setStatus: (key: string, text: string | undefined) => void;
+  notify?: (message: string, level?: "info" | "warning" | "error") => void;
 };
 
 function projectSource(root: string): { id: "project"; path: string; ignore: ["sources/**"] } {
@@ -206,6 +207,20 @@ async function openNavigator(
       onPause: () => orch.pause(),
       onResume: () => orch.resume(),
       onStop: () => orch.stop(),
+      onApprove: async () => {
+        try {
+          await orch.start({ workspaceRoot: workspace.root, action: "approve" });
+          ctx.ui.notify("Approved Wiki plan. Continuing the active run.", "info");
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      onReject: async () => {
+        const stopped = await orch.stop();
+        if (stopped) ctx.ui.notify("Rejected Wiki plan and stopped the active run.", "info");
+        return stopped;
+      },
       formatOpts: OBSERVE_OPTS,
     },
   );
@@ -427,7 +442,7 @@ export function createWikiExtension(options: WikiExtensionOptions) {
       return createSessionOrchestrator({
         workspaceRoot: root,
         core,
-        getTools: (r, role) => createWikiToolset(r, core, { role }),
+        getTools: (r, role: WikiToolRole) => createWikiToolset(r, core, { role }),
         getMainModel: () => mainModel,
         getModelRegistry: () => modelRegistry,
       });
@@ -437,6 +452,7 @@ export function createWikiExtension(options: WikiExtensionOptions) {
     let unsubOrch: (() => void) | undefined;
     let capabilityNoticeSent = false;
     let lastUi: StatusUi | undefined;
+    let proposedNoticeRunId: string | undefined;
 
     const bindObservation = (root: string, ui?: StatusUi) => {
       unsubOrch?.();
@@ -445,6 +461,10 @@ export function createWikiExtension(options: WikiExtensionOptions) {
       unsubOrch = orch.subscribe((snap) => {
         if (!targetUi) return;
         applyObservationUi(targetUi, snap);
+        if (snap.overall === "proposed" && proposedNoticeRunId !== snap.orchRunId) {
+          proposedNoticeRunId = snap.orchRunId;
+          targetUi.notify?.("Wiki plan is ready. Open /wiki to review it, then press a to approve or r to reject. Non-interactive: /wiki approve.", "info");
+        }
       });
       if (targetUi) void refreshObservation(core, orch, root, targetUi);
     };

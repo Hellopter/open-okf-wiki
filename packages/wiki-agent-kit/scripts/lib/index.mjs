@@ -28,6 +28,8 @@ export { freezeRun, loadRunMeta, listRuns, verifyFrozenSnapshot } from "./freeze
 export * from "./active-run.mjs";
 export {
   parseMarkdownFrontmatter,
+  parseQualityReports,
+  validatePlanningQuality,
   stampBundleMetadata,
   regenerateIndexes,
   validateBundle,

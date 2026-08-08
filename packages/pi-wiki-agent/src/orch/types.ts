@@ -18,13 +18,19 @@ export type AgentStatus =
 
 export type WikiAgentRole =
   | "main"
-  | "discover"
+  | "source-researcher"
+  | "integration-researcher"
+  | "evidence-researcher"
   | "coverage-critic"
-  | "reviewer";
+  | "reviewer-evidence"
+  | "reviewer-workflow"
+  | "reviewer-navigation"
+  | "qa-question-finder"
+  | "qa-answer-verifier";
 
 export type WikiPhaseStatus = "pending" | "active" | "done" | "failed" | "skipped";
 
-export type WikiOverallStatus = "idle" | "running" | "paused" | "failed" | "completed" | "cancelled";
+export type WikiOverallStatus = "idle" | "running" | "paused" | "proposed" | "quality_blocked" | "failed" | "completed" | "cancelled";
 
 /** Only session orchestration is supported (pi-dynamic-workflows removed). */
 export type WikiBackend = "session";
@@ -112,6 +118,8 @@ export interface WikiAgentView {
   label: string;
   role: WikiAgentRole;
   phase: string;
+  /** Original task prompt, retained so the run workbench can explain intent. */
+  prompt?: string;
   status: AgentStatus;
   unitIds?: string[];
   pagePaths?: string[];
@@ -148,6 +156,15 @@ export interface WikiPhaseView {
   summary?: string;
 }
 
+/** Aggregated result of the bounded coverage and bundle-quality gates. */
+export interface WikiQualitySummary {
+  verdict?: "pending" | "passed" | "failed" | "blocked";
+  passed?: number;
+  failed?: number;
+  blocked?: number;
+  findings?: number;
+}
+
 export interface WikiProgressSnapshot {
   version: 1;
   runId: string;
@@ -160,6 +177,10 @@ export interface WikiProgressSnapshot {
   currentPhase?: string;
   phases: WikiPhaseView[];
   agents: WikiAgentView[];
+  /** Full Markdown proposal for the approval workbench; only set after coverage passes. */
+  planPreview?: string;
+  planSummary?: string;
+  qualitySummary?: WikiQualitySummary;
   /** Epoch milliseconds. */
   updatedAt: number;
 }
@@ -170,7 +191,9 @@ export type WikiEventType =
   | "orch.resumed"
   | "orch.stopped"
   | "orch.completed"
+  | "orch.proposed"
   | "orch.failed"
+  | "orch.quality_blocked"
   | "phase.started"
   | "phase.completed"
   | "phase.failed"

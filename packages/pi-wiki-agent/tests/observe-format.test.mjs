@@ -27,10 +27,10 @@ function fixtureSnapshot(overrides = {}) {
     focus: "auth",
     backend: "session",
     overall: "running",
-    currentPhase: "Discover",
+    currentPhase: "Survey",
     phases: [
       { name: "Prepare", status: "done" },
-      { name: "Discover", status: "active" },
+      { name: "Survey", status: "active" },
       { name: "Plan", status: "pending" },
     ],
     agents: [
@@ -43,18 +43,18 @@ function fixtureSnapshot(overrides = {}) {
         elapsedMs: 45_000,
       },
       {
-        agentId: "discover:1:1",
-        label: "Discover lane 1",
-        role: "discover",
-        phase: "Discover",
+        agentId: "source:project",
+        label: "Source survey: project",
+        role: "source-researcher",
+        phase: "Survey",
         status: "succeeded",
         elapsedMs: 45_000,
       },
       {
-        agentId: "discover:1:2",
-        label: "Discover lane 2",
-        role: "discover",
-        phase: "Discover",
+        agentId: "source:shared",
+        label: "Source survey: shared",
+        role: "source-researcher",
+        phase: "Survey",
         status: "running",
         elapsedMs: 65_000,
         startedAt: NOW - 65_000,
@@ -83,7 +83,7 @@ test("compact formatting keeps status bar at run level", () => {
   assert.match(formatAgentLine(snap.agents[2], { now: NOW, staleWarnMs: 30_000 }), /read_file/);
   assert.equal(isAgentStale(snap.agents[2], 30_000, NOW), false);
   const bar = formatStatusBar(snap, { now: NOW, staleWarnMs: 30_000 });
-  assert.match(bar, /^Wiki Discover/);
+  assert.match(bar, /^Wiki Survey/);
   assert.match(bar, /1 running/);
   assert.ok(!/focus:/.test(bar));
 });
@@ -97,14 +97,14 @@ test("Navigator moves phase to agents to execution stream", () => {
 
   const overview = renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { width: 80, now: NOW });
   assert.ok(overview.some((line) => line.includes("Phases")));
-  assert.ok(overview.some((line) => line.includes("Agents · Discover")));
+  assert.ok(overview.some((line) => line.includes("Agents · Survey")));
 
   state = applyWikiNavigatorKey(state, "right").state;
   assert.equal(state.pane, "agents");
   assert.equal(state.agentIndex, 1);
   const detail = applyWikiNavigatorKey(state, "enter");
   assert.equal(detail.action, "load-transcript");
-  assert.equal(detail.agentId, "discover:1:2");
+  assert.equal(detail.agentId, "source:shared");
   state = { ...detail.state, transcriptLoading: false, transcriptLines: ["first", "latest"] };
   assert.equal(state.view, "detail");
   assert.ok(renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { now: NOW }).some((line) => line.includes("Execution stream")));
@@ -153,7 +153,7 @@ test("observation formatter shows useful tool and agent state without serializin
 test("Navigator renders context, usage, and transient Pi activity", () => {
   const snapshot = fixtureSnapshot({
     agents: fixtureSnapshot().agents.map((agent) =>
-      agent.agentId === "discover:1:2"
+      agent.agentId === "source:shared"
         ? {
             ...agent,
             context: { tokens: 24_100, contextWindow: 200_000, percent: 12 },
@@ -175,6 +175,163 @@ test("Navigator renders context, usage, and transient Pi activity", () => {
   assert.ok(lines.some((line) => /This turn in 4\.8k.*out 700.*cache 3\.1k/.test(line)));
   assert.ok(lines.some((line) => /Run total 46k/.test(line)));
   assert.ok(lines.some((line) => /Context compacted 1x/.test(line)));
+});
+
+test("Navigator presents an approval workbench without exposing a run id", () => {
+  const snapshot = fixtureSnapshot({
+    overall: "proposed",
+    currentPhase: "Approval",
+    planSummary: "6 pages, 3 evidence briefs, 2 required diagrams",
+    qualitySummary: { verdict: "pass", passed: 9, failed: 0, findings: 2 },
+    planPreview: "# Plan\n\n## Runtime\n" + Array.from({ length: 24 }, (_value, index) => `- Concept ${index + 1}`).join("\n"),
+  });
+  let state = createWikiNavigatorState(snapshot);
+  assert.equal(state.view, "proposal");
+  const lines = renderWikiNavigator(state, { initialized: true, root: "/tmp/wiki", sourceCount: 1 }, { width: 80, maxRows: 20, interactive: true });
+  assert.ok(lines.some((line) => line.includes("Plan approval")));
+  assert.ok(lines.some((line) => line.includes("PASS") && line.includes("9 passed")));
+  assert.ok(lines.some((line) => line.includes("Concept 1")));
+  assert.ok(!lines.some((line) => line.includes("run-1")));
+  assert.equal(applyWikiNavigatorKey(state, "a").action, "approve");
+  assert.equal(applyWikiNavigatorKey(state, "r").action, "reject");
+
+  state = { ...state, proposalPageRows: 2, proposalPreviewRows: 24 };
+  assert.equal(applyWikiNavigatorKey(state, "G").state.proposalOffset, 22);
+  assert.equal(applyWikiNavigatorKey(state, "left").state.view, "overview");
+  assert.equal(applyWikiNavigatorKey({ ...state, view: "overview" }, "v").state.view, "proposal");
+});
+
+test("Navigator dialog wraps long prompts, messages, and file paths", async () => {
+  let component;
+  const longPath = `src/${"very-long-segment-".repeat(12)}file.ts`;
+  const snapshot = fixtureSnapshot({
+    agents: fixtureSnapshot().agents.map((agent) =>
+      agent.agentId === "source:shared"
+        ? { ...agent, prompt: `Inspect ${longPath}`, lastTool: { name: "read_file", path: longPath, at: NOW } }
+        : agent,
+    ),
+  });
+  const opened = openWikiNavigator(
+    {
+      hasUI: true,
+      ui: {
+        notify: () => undefined,
+        custom: (factory) =>
+          new Promise((resolve) => {
+            component = factory(
+              { terminal: { rows: 30 }, requestRender: () => undefined },
+              { fg: (_color, text) => text, bold: (text) => text, bg: (_color, text) => text },
+              {},
+              resolve,
+            );
+          }),
+      },
+    },
+    {
+      getSnapshot: () => snapshot,
+      idle: { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+      getTranscript: async () => [{ role: "assistant", kind: "text", timestamp: NOW, text: `Checked ${longPath}` }],
+    },
+  );
+
+  component.render(66);
+  component.handleInput("\u001b[C");
+  component.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  const dialog = component.render(66);
+  assert.ok(dialog.some((line) => line.includes("Input prompt:")));
+  assert.ok(dialog.some((line) => line.includes("Last tool: read_file")));
+  assert.ok(dialog.some((line) => line.includes("very-long-segment")));
+  assert.ok(dialog.every((line) => visibleWidth(line) === 66));
+
+  component.handleInput("q");
+  await opened;
+});
+
+test("Navigator approval controls invoke active-run callbacks", async () => {
+  let component;
+  let approved = 0;
+  let rejected = 0;
+  const opened = openWikiNavigator(
+    {
+      hasUI: true,
+      ui: {
+        notify: () => undefined,
+        custom: (factory) =>
+          new Promise((resolve) => {
+            component = factory(
+              { terminal: { rows: 24 }, requestRender: () => undefined },
+              { fg: (_color, text) => text, bold: (text) => text, bg: (_color, text) => text },
+              {},
+              resolve,
+            );
+          }),
+      },
+    },
+    {
+      getSnapshot: () => fixtureSnapshot({ overall: "proposed", planPreview: "# Plan\n- one" }),
+      idle: { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+      onApprove: async () => {
+        approved++;
+        return true;
+      },
+      onReject: async () => {
+        rejected++;
+        return true;
+      },
+    },
+  );
+
+  component.handleInput("a");
+  component.handleInput("r");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(approved, 1);
+  assert.equal(rejected, 1);
+  component.handleInput("q");
+  await opened;
+});
+
+test("Navigator switches from live execution to the proposal workbench on a proposed snapshot", async () => {
+  let component;
+  let listener;
+  const opened = openWikiNavigator(
+    {
+      hasUI: true,
+      ui: {
+        notify: () => undefined,
+        custom: (factory) =>
+          new Promise((resolve) => {
+            component = factory(
+              { terminal: { rows: 24 }, requestRender: () => undefined },
+              { fg: (_color, text) => text, bold: (text) => text, bg: (_color, text) => text },
+              {},
+              resolve,
+            );
+          }),
+      },
+    },
+    {
+      getSnapshot: () => fixtureSnapshot(),
+      idle: { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+      subscribe: (cb) => {
+        listener = cb;
+        return () => undefined;
+      },
+    },
+  );
+
+  assert.ok(component.render(70).some((line) => line.includes("Agents · Survey")));
+  listener(fixtureSnapshot({
+    overall: "proposed",
+    currentPhase: "Approval",
+    planSummary: "Plan ready for review",
+    planPreview: "# Plan\n\n- Write the runtime page",
+  }));
+  const dialog = component.render(70);
+  assert.ok(dialog.some((line) => line.includes("approval required")));
+  assert.ok(dialog.some((line) => line.includes("Write the runtime page")));
+  component.handleInput("q");
+  await opened;
 });
 
 test("openWikiNavigator renders a bordered focusable dialog and follows updates", async () => {
@@ -246,7 +403,7 @@ test("Navigator paging uses visible transcript rows after context and activity h
   let component;
   const snapshot = fixtureSnapshot({
     agents: fixtureSnapshot().agents.map((agent) =>
-      agent.agentId === "discover:1:2"
+      agent.agentId === "source:shared"
         ? {
             ...agent,
             context: { tokens: 24_100, contextWindow: 200_000, percent: 12 },
@@ -356,7 +513,7 @@ test("idle Navigator switches to overview when a run starts", async () => {
 
   assert.ok(component.render(70).some((line) => /No active Wiki run/.test(line)));
   listener(fixtureSnapshot());
-  assert.ok(component.render(70).some((line) => line.includes("Agents · Discover")));
+  assert.ok(component.render(70).some((line) => line.includes("Agents · Survey")));
   component.handleInput("q");
   await opened;
 });

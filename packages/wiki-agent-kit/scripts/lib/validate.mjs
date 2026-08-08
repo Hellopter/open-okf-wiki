@@ -7,9 +7,13 @@ import {
   analysisDir,
   bundleDir,
   bundleManifestPath,
+  coverageReviewPath,
+  evidenceDir,
   frozenSourcesDir,
   inputsDir,
   planPath,
+  qualityReportPath,
+  QUALITY_REPORT_IDS,
 } from "./paths.mjs";
 import { hashTree, isInside, readJson, sha256, writeJson } from "./artifacts.mjs";
 import { verifyFrozenSnapshot } from "./freeze.mjs";
@@ -19,6 +23,29 @@ const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const LINE_FRAGMENT_RE = /^L(\d+)(?:-L(\d+))?$/;
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
 const GENERATED_BY = "okf-wiki-agent/0.1.0";
+const PAGE_MATRIX_COLUMNS = ["page", "coverage units", "evidence brief", "diagram"];
+const MERMAID_DIRECTIVES = new Set([
+  "architecture-beta",
+  "block-beta",
+  "classdiagram",
+  "erdiagram",
+  "flowchart",
+  "gantt",
+  "gitgraph",
+  "graph",
+  "journey",
+  "kanban",
+  "mindmap",
+  "pie",
+  "quadrantchart",
+  "requirementdiagram",
+  "sankey-beta",
+  "sequencediagram",
+  "statediagram",
+  "statediagram-v2",
+  "timeline",
+  "xychart-beta",
+]);
 
 function walkBundle(dir, base = "", result = { markdown: [], unsafe: [] }) {
   if (!fs.existsSync(dir)) return result;
@@ -163,24 +190,254 @@ function validatePagePath(rel, frontmatter, errors) {
   }
 }
 
-function validateCoveragePlan(runRootPath, errors) {
-  const inventory = readJson(path.join(inputsDir(runRootPath), "inventory.json"));
-  let plan = "";
+function markdownCell(value) {
+  return value.trim().replace(/^`(.+)`$/, "$1").trim();
+}
+
+function parseTableRow(line) {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+  const row = trimmed.replace(/^\|/, "").replace(/\|$/, "").split("|").map(markdownCell);
+  return row.length ? row : null;
+}
+
+function planSection(markdown, name) {
+  const lines = markdown.split(/\r?\n/);
+  const heading = new RegExp(`^#{1,6}\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i");
+  const index = lines.findIndex((line) => heading.test(line));
+  if (index < 0) return [];
+  const section = [];
+  for (let cursor = index + 1; cursor < lines.length; cursor++) {
+    if (/^#{1,6}\s+/.test(lines[cursor])) break;
+    section.push(lines[cursor]);
+  }
+  return section;
+}
+
+function parseCoverageUnits(value) {
+  const codeSpans = [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1].trim()).filter(Boolean);
+  if (codeSpans.length) return codeSpans;
+  return value
+    .split(/[,;]/)
+    .map((item) => markdownCell(item))
+    .filter((item) => item && !/^none$/i.test(item));
+}
+
+function parsePageMatrix(runRootPath, errors) {
+  let plan;
   try {
     plan = fs.readFileSync(planPath(runRootPath), "utf8");
   } catch {
     errors.push("missing analysis/plan.md");
-    return;
+    return { entries: [], errors: ["missing analysis/plan.md"] };
   }
   if (!plan.trim()) {
     errors.push("analysis/plan.md is empty");
-    return;
+    return { entries: [], errors: ["analysis/plan.md is empty"] };
   }
+
+  const section = planSection(plan, "Page Matrix");
+  const headerIndex = section.findIndex((line) => parseTableRow(line));
+  if (headerIndex < 0 || !section[headerIndex + 1]) {
+    const message = "analysis/plan.md must contain a Page Matrix Markdown table";
+    errors.push(message);
+    return { entries: [], errors: [message] };
+  }
+  const header = parseTableRow(section[headerIndex]).map((value) => value.toLowerCase());
+  const separator = parseTableRow(section[headerIndex + 1]);
+  const missingColumns = PAGE_MATRIX_COLUMNS.filter((name) => !header.includes(name));
+  if (!separator || separator.some((cell) => !/^:?-{3,}:?$/.test(cell)) || missingColumns.length) {
+    const message = `Page Matrix must have columns: ${PAGE_MATRIX_COLUMNS.join(", ")}`;
+    errors.push(message);
+    return { entries: [], errors: [message] };
+  }
+  const columns = Object.fromEntries(header.map((name, index) => [name, index]));
+  const entries = [];
+  const matrixErrors = [];
+  for (const line of section.slice(headerIndex + 2)) {
+    if (!line.trim()) continue;
+    const row = parseTableRow(line);
+    // A plan may continue with prose after its contiguous matrix table.
+    if (!row) break;
+    if (row.length !== header.length) {
+      matrixErrors.push(`Page Matrix row has ${row.length} cells; expected ${header.length}`);
+      continue;
+    }
+    const page = markdownCell(row[columns.page] ?? "");
+    const evidence = markdownCell(row[columns["evidence brief"]] ?? "");
+    const diagram = markdownCell(row[columns.diagram] ?? "").toLowerCase();
+    const coverageUnits = parseCoverageUnits(row[columns["coverage units"]] ?? "");
+    if (!page || page.startsWith("/") || page.includes("\\") || page.split("/").includes("..") || !isConceptPath(page)) {
+      matrixErrors.push(`Page Matrix has an invalid bundle-relative page: ${page || "(empty)"}`);
+    }
+    if (!coverageUnits.length) matrixErrors.push(`Page Matrix ${page || "row"} must name at least one coverage unit`);
+    if (!evidence.startsWith("analysis/evidence/") || evidence.includes("\\") || evidence.split("/").includes("..")) {
+      matrixErrors.push(`Page Matrix ${page || "row"} evidence brief must be under analysis/evidence/: ${evidence || "(empty)"}`);
+    } else {
+      const evidenceAbs = path.resolve(runRootPath, evidence);
+      if (!isInside(evidenceDir(runRootPath), evidenceAbs) || !fs.existsSync(evidenceAbs) || !fs.statSync(evidenceAbs).isFile()) {
+        matrixErrors.push(`Page Matrix ${page || "row"} evidence brief is missing: ${evidence}`);
+      } else {
+        const brief = fs.readFileSync(evidenceAbs, "utf8");
+        if (!brief.trim()) matrixErrors.push(`Page Matrix ${page || "row"} evidence brief is empty: ${evidence}`);
+        if (!/inputs\/sources\/[^\s)#]+#L\d+(?:-L\d+)?/.test(brief)) {
+          matrixErrors.push(`Page Matrix ${page || "row"} evidence brief has no frozen-source citation: ${evidence}`);
+        }
+      }
+    }
+    if (!new Set(["required", "useful", "omitted"]).has(diagram)) {
+      matrixErrors.push(`Page Matrix ${page || "row"} diagram must be required, useful, or omitted`);
+    }
+    entries.push({ page, evidence, diagram, coverageUnits });
+  }
+  if (!entries.length) matrixErrors.push("Page Matrix must contain at least one page row");
+  const duplicates = entries.map((entry) => entry.page).filter((page, index, all) => page && all.indexOf(page) !== index);
+  if (duplicates.length) matrixErrors.push(`Page Matrix contains duplicate page rows: ${[...new Set(duplicates)].join(", ")}`);
+  errors.push(...matrixErrors);
+  return { entries, errors: matrixErrors };
+}
+
+function extractMermaidFences(markdown) {
+  const lines = markdown.split(/\r?\n/);
+  const fences = [];
+  let open = null;
+  let genericMarker = null;
+  for (let index = 0; index < lines.length; index++) {
+    const match = /^(\s*)(`{3,})\s*(\S*)\s*$/.exec(lines[index]);
+    if (open) {
+      if (match && match[2].length >= open.marker.length && !match[3]) {
+        fences.push({ body: open.lines.join("\n"), line: open.line, closed: true });
+        open = null;
+      } else {
+        open.lines.push(lines[index]);
+      }
+      continue;
+    }
+    if (genericMarker) {
+      if (match && match[2].length >= genericMarker.length && !match[3]) genericMarker = null;
+      continue;
+    }
+    if (match && match[3].toLowerCase() === "mermaid") {
+      open = { marker: match[2], line: index + 1, lines: [] };
+    } else if (match && match[3]) {
+      genericMarker = match[2];
+    }
+  }
+  if (open) fences.push({ body: open.lines.join("\n"), line: open.line, closed: false });
+  return fences;
+}
+
+function mermaidSyntaxError(body) {
+  const first = body.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (!first) return "diagram is empty";
+  if (!MERMAID_DIRECTIVES.has(first)) return `unknown Mermaid diagram directive: ${first}`;
+  const flowchart = first === "flowchart" || first === "graph";
+  if (flowchart && (/(?:^|\n|\s)end\s*[[({]/.test(body) || /-->\s*end\s*(?:$|\n|;)/m.test(body))) {
+    return "flowchart uses reserved word `end` as a node id";
+  }
+  if (/[[({][^)\]}]*;[^)\]}]*[)\]}]/.test(body)) return "diagram contains a semicolon inside a label";
+  if (/[[({][^)\]}]*[<>][^)\]}]*[)\]}]/.test(body)) return "diagram contains an unescaped angle bracket inside a label";
+  return null;
+}
+
+function validateMermaidFences(markdown, rel, errors) {
+  const fences = extractMermaidFences(markdown);
+  for (const fence of fences) {
+    if (!fence.closed) {
+      errors.push(`${rel}: Mermaid fence opened on line ${fence.line} is not closed`);
+      continue;
+    }
+    const syntaxError = mermaidSyntaxError(fence.body);
+    if (syntaxError) errors.push(`${rel}: Mermaid fence on line ${fence.line} is invalid: ${syntaxError}`);
+  }
+  return fences;
+}
+
+const QUALITY_REPORTS = [
+  { id: "coverage", file: coverageReviewPath, mustPass: false },
+  ...QUALITY_REPORT_IDS.map((id) => ({ id, file: (runRootPath) => qualityReportPath(runRootPath, id), mustPass: true })),
+];
+
+function reportField(markdown, name) {
+  const matches = [...markdown.matchAll(new RegExp(`^${name}:\\s*(.+?)\\s*$`, "gim"))];
+  return matches.length === 1 ? matches[0][1].trim() : null;
+}
+
+/** Parse the host-required review verdict format without trusting agent-authored state. */
+export function parseQualityReports(runRootPath, { ids } = {}) {
+  const requested = ids === undefined ? null : new Set(ids);
+  if (requested) {
+    const known = new Set(QUALITY_REPORTS.map((spec) => spec.id));
+    for (const id of requested) {
+      if (!known.has(id)) throw new Error(`unknown quality report: ${id}`);
+    }
+  }
+  const reports = [];
+  const errors = [];
+  for (const spec of QUALITY_REPORTS.filter((candidate) => !requested || requested.has(candidate.id))) {
+    const file = spec.file(runRootPath);
+    const rel = path.relative(runRootPath, file).replace(/\\/g, "/");
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      const error = `missing quality report: ${rel}`;
+      reports.push({ id: spec.id, path: rel, valid: false, verdict: null, errors: [error] });
+      errors.push(error);
+      continue;
+    }
+    const markdown = fs.readFileSync(file, "utf8");
+    const verdict = reportField(markdown, "Verdict");
+    const affectedPages = reportField(markdown, "Affected pages");
+    const findings = reportField(markdown, "Findings");
+    const requiredRepair = reportField(markdown, "Required repair");
+    const reportErrors = [];
+    if (verdict !== "PASS" && verdict !== "FAIL") reportErrors.push(`${rel}: Verdict must be PASS or FAIL`);
+    if (!affectedPages) reportErrors.push(`${rel}: Affected pages must be a non-empty line`);
+    if (!findings) reportErrors.push(`${rel}: Findings must be a non-empty line`);
+    if (!requiredRepair) reportErrors.push(`${rel}: Required repair must be a non-empty line`);
+    if (verdict === "FAIL" && (/^none$/i.test(findings || "") || /^none$/i.test(requiredRepair || ""))) {
+      reportErrors.push(`${rel}: FAIL reports must name findings and required repair`);
+    }
+    if (spec.mustPass && verdict !== "PASS") reportErrors.push(`${rel}: final quality report must pass before sealing`);
+    reports.push({ id: spec.id, path: rel, valid: reportErrors.length === 0, verdict: verdict ?? null, errors: reportErrors });
+    errors.push(...reportErrors);
+  }
+  return { ok: errors.length === 0, reports, errors };
+}
+
+function validateMatrixCoverage(runRootPath, matrix, errors) {
+  const inventory = readJson(path.join(inputsDir(runRootPath), "inventory.json"));
+  const covered = new Set(matrix.entries.flatMap((entry) => entry.coverageUnits));
   const missing = (inventory?.coverageUnits ?? [])
-    .filter((unit) => unit?.required)
-    .map((unit) => unit.id)
-    .filter((id) => typeof id === "string" && !plan.includes(id));
-  if (missing.length) errors.push(`plan does not account for required coverage units: ${missing.join(", ")}`);
+    .filter((unit) => unit?.required && typeof unit.id === "string" && !covered.has(unit.id))
+    .map((unit) => unit.id);
+  if (missing.length) errors.push(`Page Matrix does not cover required units: ${missing.join(", ")}`);
+}
+
+/** Validate the pre-approval plan and the two bounded coverage-review reports. */
+export function validatePlanningQuality(runRootPath) {
+  const errors = [];
+  const pageMatrix = parsePageMatrix(runRootPath, errors);
+  validateMatrixCoverage(runRootPath, pageMatrix, errors);
+  const coverage = parseQualityReports(runRootPath, { ids: ["coverage", "coverage-rereview"] });
+  errors.push(...coverage.errors);
+  return { ok: errors.length === 0, errors, pageMatrix, coverage };
+}
+
+function validatePageMatrix(runRootPath, matrix, pages, errors) {
+  const byPage = new Map(matrix.entries.map((entry) => [entry.page, entry]));
+  for (const page of pages) {
+    if (!byPage.has(page.rel)) errors.push(`${page.rel}: page is not declared in the Page Matrix`);
+  }
+  for (const entry of matrix.entries) {
+    const page = pages.find((candidate) => candidate.rel === entry.page);
+    if (!page) {
+      errors.push(`Page Matrix declares a page that was not written: ${entry.page}`);
+      continue;
+    }
+    const mermaidCount = page.mermaidFences.length;
+    if (entry.diagram === "required" && mermaidCount === 0) errors.push(`${entry.page}: Page Matrix requires a Mermaid diagram`);
+    if (entry.diagram === "omitted" && mermaidCount > 0) errors.push(`${entry.page}: Page Matrix marks Mermaid as omitted but the page contains a diagram`);
+  }
+  validateMatrixCoverage(runRootPath, matrix, errors);
 }
 
 function validateRootIndex(bundle, errors) {
@@ -231,7 +488,7 @@ export function validateBundle(runRootPath) {
   const scan = walkBundle(bundle);
   for (const rel of scan.unsafe) errors.push(`${rel}: symlinks are not allowed in bundle/`);
   validateRootIndex(bundle, errors);
-  validateCoveragePlan(runRootPath, errors);
+  const pageMatrix = parsePageMatrix(runRootPath, errors);
 
   const pages = [];
   for (const { abs, rel } of scan.markdown) {
@@ -241,12 +498,14 @@ export function validateBundle(runRootPath) {
       errors.push(`${rel}: log.md is reserved and not emitted by this producer`);
       continue;
     }
-    pages.push(rel);
-    const parsed = parseMarkdownFrontmatter(fs.readFileSync(abs, "utf8"));
+    const text = fs.readFileSync(abs, "utf8");
+    const parsed = parseMarkdownFrontmatter(text);
     if (!parsed.ok) {
       errors.push(`${rel}: ${parsed.error}`);
       continue;
     }
+    const mermaidFences = validateMermaidFences(parsed.body, rel, errors);
+    pages.push({ rel, mermaidFences });
     validatePagePath(rel, parsed.data, errors);
     for (const key of ["type", "title", "status"]) {
       if (typeof parsed.data[key] !== "string" || !parsed.data[key].trim()) errors.push(`${rel}: frontmatter missing non-empty ${key}`);
@@ -278,8 +537,16 @@ export function validateBundle(runRootPath) {
     }
     if (!citationCount) errors.push(`${rel}: page has no frozen-source Markdown citation with #Lx-Ly`);
   }
+  validatePageMatrix(runRootPath, pageMatrix, pages, errors);
   if (!pages.length) warnings.push("bundle has no concept or domain pages yet");
-  return { ok: errors.length === 0, errors, warnings, pageCount: pages.length, snapshot };
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    pageCount: pages.length,
+    pageMatrix: { ok: pageMatrix.errors.length === 0, entries: pageMatrix.entries, errors: pageMatrix.errors },
+    snapshot,
+  };
 }
 
 /** Regenerate root and directory navigation after agent-authored pages are complete. */
@@ -319,6 +586,8 @@ export function regenerateIndexes(runRootPath) {
 
 export function sealBundle(runRootPath, validation) {
   if (!validation?.ok) throw new Error("cannot seal an invalid bundle");
+  const quality = parseQualityReports(runRootPath);
+  if (!quality.ok) throw new Error(`cannot seal without passing quality reports: ${quality.errors.join("; ")}`);
   const manifestPath = bundleManifestPath(runRootPath);
   if (fs.existsSync(manifestPath)) throw new Error("bundle is already sealed; create a new run to regenerate it");
   const tree = hashTree(bundleDir(runRootPath));

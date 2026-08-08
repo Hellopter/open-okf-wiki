@@ -96,12 +96,36 @@ export function discoveryDir(runRootPath) {
   return path.join(analysisDir(runRootPath), "discovery");
 }
 
+/** Source-grounded research briefs selected by the planner before writing begins. */
+export function evidenceDir(runRootPath) {
+  return path.join(analysisDir(runRootPath), "evidence");
+}
+
 export function coverageReviewPath(runRootPath) {
   return path.join(analysisDir(runRootPath), "coverage-review.md");
 }
 
 export function reviewPath(runRootPath) {
   return path.join(analysisDir(runRootPath), "review.md");
+}
+
+/** Independent quality reports produced after the main bundle draft. */
+export function qualityReportsDir(runRootPath) {
+  return path.join(analysisDir(runRootPath), "reviews");
+}
+
+export const QUALITY_REPORT_IDS = Object.freeze([
+  "coverage-rereview",
+  "evidence",
+  "workflow",
+  "navigation",
+  "reader-qa",
+]);
+
+/** Resolve one canonical post-write quality report. */
+export function qualityReportPath(runRootPath, reportId) {
+  if (!QUALITY_REPORT_IDS.includes(reportId)) throw new Error(`unknown quality report: ${reportId}`);
+  return path.join(qualityReportsDir(runRootPath), `${reportId}.md`);
 }
 
 export function sessionDir(runRootPath) {

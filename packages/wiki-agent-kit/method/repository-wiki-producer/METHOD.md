@@ -15,10 +15,10 @@ The lifecycle is deliberately small:
 
 1. The host freezes the source snapshots and deterministically creates the inventory.
 2. For a large or multi-domain inventory, bounded discovery agents write short Markdown briefs.
-3. The main Agent writes `analysis/plan.md`; an independent critic writes `analysis/coverage-review.md`.
+3. The main Agent writes `analysis/plan.md` and source-grounded `analysis/evidence/*.md`; an independent critic writes `analysis/coverage-review.md`, then one re-review.
 4. The main Agent incorporates valid criticism into the plan. The host either pauses for approval or continues automatically.
-5. The same main Agent writes the Wiki, then responds to one independent `analysis/review.md`.
-6. The host validates, generates indexes, stamps provenance, and seals `bundle/`.
+5. The same main Agent writes the Wiki. Independent evidence, workflow, navigation, and reader-QA reviewers write their own reports; the main Agent gets one repair and failed-item re-verification pass.
+6. The host validates the page matrix, evidence briefs, quality verdicts, Mermaid structure, indexes, provenance, and then seals `bundle/`.
 
 The host owns run state, digests, locks, approval, session persistence, and sealing. An Agent must never
 read or write `analysis/state.json`, `analysis/run.lock.json`, `analysis/bundle.manifest.json`, or
@@ -35,9 +35,11 @@ read or write `analysis/state.json`, `analysis/run.lock.json`, `analysis/bundle.
 | `analysis/run.lock.json` | Active orchestration ownership lock | host |
 | `analysis/inventory.md` | Readable deterministic coverage inventory | host |
 | `analysis/discovery/*.md` | Optional independent research briefs | discovery Agent |
+| `analysis/evidence/*.md` | Source-grounded page evidence briefs | evidence researcher |
 | `analysis/plan.md` | Authoritative hierarchy, coverage decisions, and writing memory | main Agent |
 | `analysis/coverage-review.md` | Independent plan coverage critique | coverage critic |
-| `analysis/review.md` | Independent completed-bundle critique | reviewer |
+| `analysis/reviews/coverage-rereview.md` | Final coverage re-review | coverage critic |
+| `analysis/reviews/{evidence,workflow,navigation,reader-qa}.md` | Independent completed-bundle quality reports | reviewers |
 | `analysis/session/` | Persistent main-Agent session data | host/runtime |
 | `bundle/` | Final OKF v0.2 Wiki | main Agent, then host seal |
 
@@ -53,7 +55,8 @@ but it is not an instruction to manufacture a JSON protocol.
 - `plan.md` is the main Agent's source of truth after planning. Revise it when scope, evidence, or page
   structure changes.
 - Discovery briefs contain observations and source citations, not final page assignments.
-- Critic and reviewer files state concrete omissions or defects with evidence and proposed repairs.
+- Every evidence brief cites frozen source line ranges and is named by a `Page Matrix` row in `plan.md`.
+- Critic and reviewer files state concrete omissions or defects with evidence and proposed repairs. Final quality reports use the host-parseable lines `Verdict: PASS|FAIL`, `Affected pages:`, `Findings:`, and `Required repair:`.
 - The host records control decisions separately in `state.json`; it is not an Agent handoff document.
 
 ## OKF bundle rules
@@ -80,6 +83,13 @@ Use relative Markdown links between pages and source citations with real one-bas
 frozen content under `inputs/sources/<id>/`; do not invent ranges, cite remote URLs, or use editor links.
 All prose follows `wikiLanguage` in `inputs/run-policy.json`; for `zh`, write Simplified Chinese while
 leaving paths and identifiers unchanged.
+
+`plan.md` must contain one contiguous `## Page Matrix` table with columns `Page`, `Coverage Units`,
+`Evidence Brief`, and `Diagram`. Every generated page maps to a frozen-source-citing brief under
+`analysis/evidence/`; every required inventory unit appears in at least one row. `Diagram` is exactly
+`required`, `useful`, or `omitted`. Required rows need a Mermaid fence. The host performs conservative
+local structural validation of Mermaid fences (including malformed fences and known unsafe syntax); this
+is not a browser rendering check.
 
 Read the phase reference in full before starting that phase:
 
