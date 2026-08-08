@@ -1,29 +1,30 @@
 # Open OKF Wiki
 
-Source-grounded repository Wiki generation for Pi. It freezes repository inputs,
-uses a persistent primary agent session to build a Markdown plan, and delivers a
-self-contained [OKF v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle.
+Git-native repository Wiki production for Pi dynamic workflows. Source code is
+read directly from the current Git workspace; generated pages live only in
+`wiki/` and cite paths relative to the workspace root.
 
-The system is deliberately small:
+Install the Pi dynamic-workflows package, then register this project's commands:
 
-- deterministic inventory prevents source-domain omissions;
-- optional parallel discovery and independent review add breadth without
-  fragmenting the writing context;
-- `analysis/*.md` is the agent's reviewable working memory;
-- host JSON is limited to run, lock, approval, digest, and session control;
-- the final delivery is `bundle/`, not a graph of JSON receipts.
-
-Configure approval in `workspace.yaml`:
-
-```yaml
-version: 4
-workflow:
-  approval: propose # or auto
+```bash
+pnpm --filter @okf-wiki/wiki-workflows build
+pnpm --filter @okf-wiki/wiki-workflows exec node dist/cli.js install
 ```
 
-`propose` stops after `analysis/plan.md` and coverage review. Approving the run
-resumes the same persisted agent session after verifying that the frozen input
-and plan digest did not change. `auto` continues directly to generation,
-independent review, validation, and bundle sealing.
+Pi then provides two background commands backed by `pi-dynamic-workflows`:
 
-See the package READMEs for installation and command details.
+```text
+/wiki-generate lang=zh
+/wiki-refresh lang=zh
+```
+
+`/wiki-generate` rebuilds the managed `wiki/` directory. `/wiki-refresh` uses
+Git history, the index, and page citations to target changed code; it falls back
+to a full regeneration when the existing Wiki cannot be trusted as a baseline.
+Use `/workflows` to inspect, pause, resume, or retry one settled agent from its
+detail view. The retry replays the completed prefix and reruns its downstream
+work. There is no source registry, copied snapshot, approval gate, Wiki-specific
+run store, or custom Navigator.
+
+The package requires a local Git repository. `wiki/` is fully generator-managed;
+Git remains the only history and rollback mechanism.

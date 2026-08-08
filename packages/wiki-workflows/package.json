@@ -1,0 +1,38 @@
+{
+  "name": "@okf-wiki/wiki-workflows",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Git-native repository Wiki workflows for pi-dynamic-workflows",
+  "bin": {
+    "okf-wiki": "./dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "skills/"
+  ],
+  "pi": {
+    "skills": [
+      "skills/git-native-wiki"
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@quintinshaw/pi-dynamic-workflows": "^3.5.1",
+    "yaml": "^2.8.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.3"
+  }
+}

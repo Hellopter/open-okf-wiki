@@ -1,15 +1,15 @@
 {
-  "name": "open-okf-wiki-wiki-agent-kit",
+  "name": "open-okf-wiki-workflows",
   "private": true,
   "version": "0.1.0-dev",
-  "description": "Pi extension and deterministic core for source-grounded repository wikis",
+  "description": "Git-native repository Wiki workflows for pi-dynamic-workflows",
   "packageManager": "pnpm@10.33.2",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build:pi-wiki-agent": "pnpm --filter @okf-wiki/pi-wiki-agent build",
-    "test": "pnpm --filter @okf-wiki/wiki-agent-kit test && pnpm --filter @okf-wiki/pi-wiki-agent test",
-    "typecheck": "pnpm --filter @okf-wiki/pi-wiki-agent typecheck"
+    "build": "pnpm --filter @okf-wiki/wiki-workflows build",
+    "test": "pnpm --filter @okf-wiki/wiki-workflows test",
+    "typecheck": "pnpm --filter @okf-wiki/wiki-workflows typecheck"
   }
 }
