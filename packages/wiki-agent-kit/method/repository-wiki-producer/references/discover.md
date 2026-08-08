@@ -4,8 +4,10 @@ Discovery is optional and only for broad inventories. The workflow gives each di
 source or conceptual area. It is for evidence gathering, not for proposing a complete Wiki or returning a
 machine-validated receipt.
 
-Read the assigned inventory entries and frozen content under `inputs/sources/`. Write one concise report
-at the assigned `analysis/discovery/<slug>.md` path:
+Read the assigned inventory entries and frozen content under `inputs/sources/`. A source researcher writes
+one concise report at its assigned `analysis/discovery/sources/<slug>.md` path. The single cross-source
+integration researcher, when assigned for a multi-source run, writes
+`analysis/discovery/integration.md` instead:
 
 ```md
 # Discovery: <scope>

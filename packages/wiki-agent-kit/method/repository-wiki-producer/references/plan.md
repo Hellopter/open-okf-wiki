@@ -7,8 +7,9 @@ other workers.
 ## Inputs
 
 Read `inputs/run-policy.json`, `analysis/inventory.md`, and only the frozen source spans needed to make
-the initial hierarchy credible. When present, read relevant files in `analysis/discovery/`. Do not ask
-discovery agents to repeat work already visible in the inventory or source tree.
+the initial hierarchy credible. When present, read relevant source briefs in
+`analysis/discovery/sources/` and the cross-source brief at `analysis/discovery/integration.md`. Do not
+ask discovery agents to repeat work already visible in the inventory or source tree.
 
 ## Required plan content
 

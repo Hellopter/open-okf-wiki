@@ -11,7 +11,7 @@ import {
   defineTool,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { CoreAdapter, WikiRunPaths } from "./core-adapter.js";
+import type { ToolCore, WikiRunPaths } from "./core.js";
 
 export type WikiToolRole =
   | "main"
@@ -39,10 +39,6 @@ function json(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function methodDir(paths: WikiRunPaths): string {
-  return resolve(paths.inputsDir, "..", "method");
-}
-
 async function noSymlinkBetween(root: string, target: string): Promise<void> {
   const normalizedRoot = resolve(root);
   const normalizedTarget = resolve(target);
@@ -61,42 +57,80 @@ async function noSymlinkBetween(root: string, target: string): Promise<void> {
   }
 }
 
-async function requireRunPaths(adapter: CoreAdapter, root: string): Promise<WikiRunPaths> {
-  const paths = await adapter.getRunPaths(root);
-  if (!paths) throw new Error("No active Wiki run. Start /wiki generate before using Wiki workflow tools.");
-  return paths;
+async function requireRunPaths(core: ToolCore, root: string): Promise<WikiRunPaths> {
+  const workspace = await core.getWorkspaceStatus(root);
+  if (!workspace.activeRunId) throw new Error("No active Wiki run. Start /wiki generate before using Wiki workflow tools.");
+  return core.getRunPaths(root, { runId: workspace.activeRunId });
 }
 
-async function assertRunWritable(adapter: CoreAdapter, root: string, paths: WikiRunPaths): Promise<void> {
-  const state = await adapter.getRunState(root, { runId: paths.runId });
-  if (state?.status === "complete" || state?.status === "completed") {
+async function assertRunWritable(core: ToolCore, root: string, paths: WikiRunPaths): Promise<void> {
+  const state = await core.getRunState(root, { runId: paths.runId });
+  if (state.status === "complete") {
     throw new Error("The Wiki bundle is sealed and cannot be modified by agents");
   }
 }
 
-function readableRoots(paths: WikiRunPaths, role: WikiToolRole): string[] {
-  const inputs = resolve(paths.inputsDir);
-  const method = methodDir(paths);
+type Scope =
+  | "inputs" | "method" | "analysis" | "bundle" | "plan" | "discovery" | "discoverySources"
+  | "integration" | "evidence" | "coverageReview" | "coverageRereview" | "reviews" | "qa"
+  | "evidenceReview" | "workflowReview" | "navigationReview" | "questions" | "readerQa";
+type PathRule = `${Scope}:exact` | `${Scope}:tree`;
+
+const ROLE_POLICY: Readonly<Record<WikiToolRole, { read: readonly PathRule[]; files: readonly PathRule[]; directories: readonly PathRule[] }>> = {
+  main: { read: ["inputs:tree", "method:tree", "analysis:tree", "bundle:tree"], files: ["plan:exact", "bundle:tree"], directories: ["analysis:exact", "bundle:tree"] },
+  "source-researcher": { read: ["inputs:tree", "method:tree", "analysis:tree"], files: ["discoverySources:tree"], directories: ["discoverySources:tree"] },
+  "integration-researcher": { read: ["inputs:tree", "method:tree", "analysis:tree"], files: ["integration:exact"], directories: ["discovery:exact"] },
+  "evidence-researcher": { read: ["inputs:tree", "method:tree", "analysis:tree"], files: ["evidence:tree"], directories: ["evidence:tree"] },
+  "coverage-critic": { read: ["inputs:tree", "method:tree", "analysis:tree"], files: ["coverageReview:exact", "coverageRereview:exact"], directories: ["analysis:exact", "reviews:tree"] },
+  "reviewer-evidence": { read: ["inputs:tree", "method:tree", "analysis:tree", "bundle:tree"], files: ["evidenceReview:exact"], directories: ["reviews:tree"] },
+  "reviewer-workflow": { read: ["inputs:tree", "method:tree", "analysis:tree", "bundle:tree"], files: ["workflowReview:exact"], directories: ["reviews:tree"] },
+  "reviewer-navigation": { read: ["inputs:tree", "method:tree", "analysis:tree", "bundle:tree"], files: ["navigationReview:exact"], directories: ["reviews:tree"] },
+  "qa-question-finder": { read: ["inputs:tree", "method:tree"], files: ["questions:exact"], directories: ["qa:tree"] },
+  "qa-answer-verifier": { read: ["bundle:tree", "method:tree"], files: ["readerQa:exact"], directories: ["reviews:tree"] },
+};
+
+function scopePath(paths: WikiRunPaths, scope: Scope): string {
   const analysis = resolve(paths.analysisDir);
-  const bundle = resolve(paths.bundleDir);
-  if (role === "main") return [inputs, method, analysis, bundle];
-  if (role === "qa-question-finder") return [inputs, method];
-  if (role === "qa-answer-verifier") return [bundle, method];
-  if (role === "reviewer-evidence" || role === "reviewer-workflow" || role === "reviewer-navigation") {
-    return [inputs, method, analysis, bundle];
+  const reviews = resolve(analysis, "reviews");
+  switch (scope) {
+    case "inputs": return resolve(paths.inputsDir);
+    case "method": return resolve(paths.methodDir);
+    case "analysis": return analysis;
+    case "bundle": return resolve(paths.bundleDir);
+    case "plan": return resolve(analysis, "plan.md");
+    case "discovery": return resolve(analysis, "discovery");
+    case "discoverySources": return resolve(analysis, "discovery", "sources");
+    case "integration": return resolve(analysis, "discovery", "integration.md");
+    case "evidence": return resolve(analysis, "evidence");
+    case "coverageReview": return resolve(analysis, "coverage-review.md");
+    case "coverageRereview": return resolve(reviews, "coverage-rereview.md");
+    case "reviews": return reviews;
+    case "qa": return resolve(analysis, "qa");
+    case "evidenceReview": return resolve(reviews, "evidence.md");
+    case "workflowReview": return resolve(reviews, "workflow.md");
+    case "navigationReview": return resolve(reviews, "navigation.md");
+    case "questions": return resolve(analysis, "qa", "questions.md");
+    case "readerQa": return resolve(reviews, "reader-qa.md");
   }
-  return [inputs, method, analysis];
 }
 
-async function assertReadable(adapter: CoreAdapter, root: string, target: string, role: WikiToolRole): Promise<void> {
-  const paths = await requireRunPaths(adapter, root);
+function allows(paths: WikiRunPaths, candidate: string, rules: readonly PathRule[]): boolean {
+  return rules.some((rule) => {
+    const [scope, mode] = rule.split(":") as [Scope, "exact" | "tree"];
+    const root = scopePath(paths, scope);
+    return mode === "exact" ? candidate === root : inside(root, candidate);
+  });
+}
+
+async function assertReadable(core: ToolCore, root: string, target: string, role: WikiToolRole): Promise<void> {
+  const paths = await requireRunPaths(core, root);
   const candidate = resolve(target);
-  const allowed = readableRoots(paths, role).some((dir) => inside(dir, candidate));
+  const allowed = allows(paths, candidate, ROLE_POLICY[role].read);
   if (!allowed) throw new Error("Read is limited to the active Wiki run's inputs, method, analysis, and bundle directories");
   if (inside(resolve(paths.analysisDir), candidate) && extname(candidate) === ".json") {
     throw new Error("Run state, locks, and persisted sessions are host-owned and cannot be read by agents");
   }
-  if (inside(resolve(paths.sessionDir), candidate)) throw new Error("Run state, locks, and persisted sessions are host-owned and cannot be read by agents");
+  if (inside(resolve(paths.mainSessionDir), candidate)) throw new Error("Run state, locks, and persisted sessions are host-owned and cannot be read by agents");
   await noSymlinkBetween(resolve(paths.inputsDir, ".."), candidate);
 }
 
@@ -105,35 +139,15 @@ async function assertReadable(adapter: CoreAdapter, root: string, target: string
  * provenance, and sealing. Agents may only author Markdown handoffs or pages.
  */
 function assertRoleWritable(paths: WikiRunPaths, candidate: string, role: WikiToolRole): void {
-  const plan = resolve(paths.analysisDir, "plan.md");
-  const discoverySources = resolve(paths.analysisDir, "discovery", "sources");
-  const integration = resolve(paths.analysisDir, "discovery", "integration.md");
-  const evidence = resolve(paths.analysisDir, "evidence");
-  const coverage = resolve(paths.analysisDir, "coverage");
-  const reviews = resolve(paths.analysisDir, "reviews");
-  const qa = resolve(paths.analysisDir, "qa");
-  const bundle = resolve(paths.bundleDir);
-
-  const allowed =
-    (role === "main" && (candidate === plan || inside(bundle, candidate))) ||
-    (role === "source-researcher" && inside(discoverySources, candidate)) ||
-    (role === "integration-researcher" && candidate === integration) ||
-    (role === "evidence-researcher" && inside(evidence, candidate)) ||
-    (role === "coverage-critic" && (candidate === resolve(paths.analysisDir, "coverage-review.md") || candidate === resolve(reviews, "coverage-rereview.md"))) ||
-    (role === "reviewer-evidence" && candidate === resolve(reviews, "evidence.md")) ||
-    (role === "reviewer-workflow" && candidate === resolve(reviews, "workflow.md")) ||
-    (role === "reviewer-navigation" && candidate === resolve(reviews, "navigation.md")) ||
-    (role === "qa-question-finder" && candidate === resolve(qa, "questions.md")) ||
-    (role === "qa-answer-verifier" && candidate === resolve(reviews, "reader-qa.md"));
-  if (!allowed) {
+  if (!allows(paths, candidate, ROLE_POLICY[role].files)) {
     throw new Error(`The ${role} agent cannot write this Wiki run path`);
   }
   if (extname(candidate) !== ".md") throw new Error("Agents may only author Markdown files");
 }
 
-async function assertWritable(adapter: CoreAdapter, root: string, target: string, role: WikiToolRole): Promise<void> {
-  const paths = await requireRunPaths(adapter, root);
-  await assertRunWritable(adapter, root, paths);
+async function assertWritable(core: ToolCore, root: string, target: string, role: WikiToolRole): Promise<void> {
+  const paths = await requireRunPaths(core, root);
+  await assertRunWritable(core, root, paths);
   const candidate = resolve(target);
   assertRoleWritable(paths, candidate, role);
   if (inside(resolve(paths.bundleDir), candidate) && (basename(candidate) === "index.md" || basename(candidate) === "log.md")) {
@@ -142,25 +156,11 @@ async function assertWritable(adapter: CoreAdapter, root: string, target: string
   await noSymlinkBetween(resolve(paths.inputsDir, ".."), candidate);
 }
 
-async function assertWritableDirectory(adapter: CoreAdapter, root: string, target: string, role: WikiToolRole): Promise<void> {
-  const paths = await requireRunPaths(adapter, root);
-  await assertRunWritable(adapter, root, paths);
+async function assertWritableDirectory(core: ToolCore, root: string, target: string, role: WikiToolRole): Promise<void> {
+  const paths = await requireRunPaths(core, root);
+  await assertRunWritable(core, root, paths);
   const candidate = resolve(target);
-  const discoverySources = resolve(paths.analysisDir, "discovery", "sources");
-  const evidence = resolve(paths.analysisDir, "evidence");
-  const coverage = resolve(paths.analysisDir, "coverage");
-  const reviews = resolve(paths.analysisDir, "reviews");
-  const qa = resolve(paths.analysisDir, "qa");
-  const allowed =
-    (role === "main" && candidate === resolve(paths.analysisDir)) ||
-    (role === "source-researcher" && inside(discoverySources, candidate)) ||
-    (role === "integration-researcher" && candidate === resolve(paths.analysisDir, "discovery")) ||
-    (role === "evidence-researcher" && inside(evidence, candidate)) ||
-    (role === "coverage-critic" && (candidate === resolve(paths.analysisDir) || inside(coverage, candidate) || inside(reviews, candidate))) ||
-    ((role === "reviewer-evidence" || role === "reviewer-workflow" || role === "reviewer-navigation" || role === "qa-answer-verifier") && inside(reviews, candidate)) ||
-    (role === "qa-question-finder" && inside(qa, candidate)) ||
-    (role === "main" && inside(resolve(paths.bundleDir), candidate));
-  if (!allowed) throw new Error(`The ${role} agent cannot create this Wiki run directory`);
+  if (!allows(paths, candidate, ROLE_POLICY[role].directories)) throw new Error(`The ${role} agent cannot create this Wiki run directory`);
   await noSymlinkBetween(resolve(paths.inputsDir, ".."), candidate);
 }
 
@@ -168,8 +168,8 @@ function resolveAgainstRoot(root: string, target: string): string {
   return isAbsolute(target) ? resolve(target) : resolve(root, target);
 }
 
-async function defaultSearchPath(adapter: CoreAdapter, root: string, role: WikiToolRole): Promise<string> {
-  const paths = await requireRunPaths(adapter, root);
+async function defaultSearchPath(core: ToolCore, root: string, role: WikiToolRole): Promise<string> {
+  const paths = await requireRunPaths(core, root);
   return role === "qa-answer-verifier" ? paths.bundleDir : paths.sourcesDir;
 }
 
@@ -180,7 +180,7 @@ async function defaultSearchPath(adapter: CoreAdapter, root: string, role: WikiT
 function withDataPlaneSearchRoot<TDetails>(
   tool: ToolDefinition<any, TDetails>,
   root: string,
-  adapter: CoreAdapter,
+  core: ToolCore,
   role: WikiToolRole,
 ): ToolDefinition<any, TDetails> {
   const execute = tool.execute;
@@ -189,16 +189,16 @@ function withDataPlaneSearchRoot<TDetails>(
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const input = (params ?? {}) as { path?: string; [key: string]: unknown };
       const rawPath = typeof input.path === "string" ? input.path.trim() : "";
-      const path = rawPath || (await defaultSearchPath(adapter, root, role));
-      await assertReadable(adapter, root, resolveAgainstRoot(root, path), role);
+      const path = rawPath || (await defaultSearchPath(core, root, role));
+      await assertReadable(core, root, resolveAgainstRoot(root, path), role);
       return execute(toolCallId, { ...input, path }, signal, onUpdate, ctx);
     },
   };
 }
 
-async function isInsideAllowedReadableDirs(adapter: CoreAdapter, root: string, target: string, role: WikiToolRole): Promise<boolean> {
+async function isInsideAllowedReadableDirs(core: ToolCore, root: string, target: string, role: WikiToolRole): Promise<boolean> {
   try {
-    await assertReadable(adapter, root, target, role);
+    await assertReadable(core, root, target, role);
     return true;
   } catch {
     return false;
@@ -212,7 +212,7 @@ async function isInsideAllowedReadableDirs(adapter: CoreAdapter, root: string, t
  */
 export function createWikiFilesystemTools(
   root: string,
-  adapter: CoreAdapter,
+  core: ToolCore,
   options: WikiToolsetOptions = {},
 ): ToolDefinition<any, any>[] {
   const role = options.role ?? "main";
@@ -220,17 +220,17 @@ export function createWikiFilesystemTools(
     createGrepToolDefinition(root, {
       operations: {
         async isDirectory(absolutePath) {
-          await assertReadable(adapter, root, absolutePath, role);
+          await assertReadable(core, root, absolutePath, role);
           return (await stat(absolutePath)).isDirectory();
         },
         async readFile(absolutePath) {
-          await assertReadable(adapter, root, absolutePath, role);
+          await assertReadable(core, root, absolutePath, role);
           return readFile(absolutePath, "utf8");
         },
       },
     }),
     root,
-    adapter,
+    core,
     role,
   );
 
@@ -239,7 +239,7 @@ export function createWikiFilesystemTools(
       operations: {
         async exists(absolutePath) {
           try {
-            await assertReadable(adapter, root, absolutePath, role);
+            await assertReadable(core, root, absolutePath, role);
             await access(absolutePath);
             return true;
           } catch {
@@ -262,7 +262,7 @@ export function createWikiFilesystemTools(
             },
           })) {
             const absolute = isAbsolute(entry) ? resolve(entry) : resolve(cwd, entry);
-            if (!(await isInsideAllowedReadableDirs(adapter, root, absolute, role))) continue;
+            if (!(await isInsideAllowedReadableDirs(core, root, absolute, role))) continue;
             matches.push(absolute);
             if (matches.length >= options.limit) break;
           }
@@ -271,7 +271,7 @@ export function createWikiFilesystemTools(
       },
     }),
     root,
-    adapter,
+    core,
     role,
   );
 
@@ -279,11 +279,11 @@ export function createWikiFilesystemTools(
     createReadToolDefinition(root, {
       operations: {
         async readFile(path) {
-          await assertReadable(adapter, root, path, role);
+          await assertReadable(core, root, path, role);
           return readFile(path);
         },
         async access(path) {
-          await assertReadable(adapter, root, path, role);
+          await assertReadable(core, root, path, role);
           await access(path);
         },
       },
@@ -292,7 +292,7 @@ export function createWikiFilesystemTools(
       operations: {
         async exists(path) {
           try {
-            await assertReadable(adapter, root, path, role);
+            await assertReadable(core, root, path, role);
             await access(path);
             return true;
           } catch {
@@ -300,11 +300,11 @@ export function createWikiFilesystemTools(
           }
         },
         async stat(path) {
-          await assertReadable(adapter, root, path, role);
+          await assertReadable(core, root, path, role);
           return stat(path);
         },
         async readdir(path) {
-          await assertReadable(adapter, root, path, role);
+          await assertReadable(core, root, path, role);
           return readdir(path);
         },
       },
@@ -314,11 +314,11 @@ export function createWikiFilesystemTools(
     createWriteToolDefinition(root, {
       operations: {
         async mkdir(path) {
-          await assertWritableDirectory(adapter, root, path, role);
+          await assertWritableDirectory(core, root, path, role);
           await mkdir(path, { recursive: true });
         },
         async writeFile(path, content) {
-          await assertWritable(adapter, root, path, role);
+          await assertWritable(core, root, path, role);
           await writeFile(path, content, "utf8");
         },
       },
@@ -326,15 +326,15 @@ export function createWikiFilesystemTools(
     createEditToolDefinition(root, {
       operations: {
         async readFile(path) {
-          await assertWritable(adapter, root, path, role);
+          await assertWritable(core, root, path, role);
           return readFile(path);
         },
         async writeFile(path, content) {
-          await assertWritable(adapter, root, path, role);
+          await assertWritable(core, root, path, role);
           await writeFile(path, content, "utf8");
         },
         async access(path) {
-          await assertWritable(adapter, root, path, role);
+          await assertWritable(core, root, path, role);
           await access(path);
         },
       },
@@ -364,24 +364,24 @@ function hostTool<T>(
 
 /**
  * Workflow state transitions are deliberately not agent tools. Pi calls the
- * CoreAdapter directly after its phase gates; agents can only inspect state.
+ * The core directly after its phase gates; agents can only inspect state.
  */
-export function createWikiHostTools(root: string, adapter: CoreAdapter): ToolDefinition<any, any>[] {
+export function createWikiHostTools(root: string, core: ToolCore): ToolDefinition<any, any>[] {
   return [
     hostTool(
       "okf_run_status",
       "Read Wiki run status",
       "Read the current state of one Wiki run. This tool cannot prepare, approve, resume, validate, or otherwise change the run.",
       Type.Object({ runId: Type.String({ minLength: 1 }) }),
-      (params: { runId: string }) => adapter.getRunState(root, params),
+      (params: { runId: string }) => core.getRunState(root, params),
     ),
   ];
 }
 
 export function createWikiToolset(
   root: string,
-  adapter: CoreAdapter,
+  core: ToolCore,
   options: WikiToolsetOptions = {},
 ): ToolDefinition<any, any>[] {
-  return [...createWikiFilesystemTools(root, adapter, options), ...createWikiHostTools(root, adapter)];
+  return [...createWikiFilesystemTools(root, core, options), ...createWikiHostTools(root, core)];
 }

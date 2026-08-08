@@ -26,7 +26,7 @@ Pi project trust.
 /wiki status [--json]
 ```
 
-`workspace.yaml` uses version 4 and chooses one approval policy:
+`workspace.yaml` uses version 5 and chooses one approval policy:
 
 ```yaml
 workflow:

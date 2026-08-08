@@ -29,7 +29,7 @@ export function formatStatusBar(
   const mid: string[] = [];
   if (snapshot.overall === "paused") mid.push("paused");
   else if (snapshot.overall === "failed") mid.push("failed");
-  else if (snapshot.overall === "completed") mid.push("done");
+  else if (snapshot.overall === "complete") mid.push("done");
   else if (snapshot.overall === "cancelled") mid.push("cancelled");
   else if (running > 0) mid.push(`${running} running`);
   else mid.push(snapshot.overall);

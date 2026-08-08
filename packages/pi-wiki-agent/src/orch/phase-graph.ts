@@ -6,10 +6,11 @@
  * persistent main session is the only agent permitted to write the Wiki bundle.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { CoreAdapter, WikiRunPaths } from "../core-adapter.js";
+import type { OrchestrationCore, WikiRunPaths } from "../core.js";
+import { WIKI_WORKFLOW_PHASE, type WikiWorkflowPhase } from "../runtime.js";
 import type { WikiAgentRunRequest, WikiAgentRunResult, WikiAgentRunner } from "./agent-runner.js";
 import type { TaskPool } from "./pool.js";
 import type { WikiRunStore } from "./store.js";
@@ -25,6 +26,7 @@ import type {
 
 const MAX_SOURCE_SURVEY_TASKS = 5;
 const MAX_EVIDENCE_TASKS = 4;
+const PHASE = WIKI_WORKFLOW_PHASE;
 
 type EphemeralRole = Exclude<WikiAgentRole, "main">;
 
@@ -67,11 +69,10 @@ export interface EvidenceTask {
 }
 
 export interface WikiPathContext {
-  core: CoreAdapter;
+  core: OrchestrationCore;
   workspaceRoot: string;
   runId: string;
   paths: WikiRunPaths;
-  sessionPath?: string;
   focus?: string;
   store: WikiRunStore;
   pool: TaskPool;
@@ -81,10 +82,13 @@ export interface WikiPathContext {
   cwd: string;
   limits: OrchLimits;
   signal: AbortSignal;
+  now: () => number;
 }
 
+export type WikiPathStart = "discover" | "plan" | "write";
+
 export interface WikiPathResult {
-  status: "completed" | "proposed" | "failed" | "blocked" | "quality_blocked";
+  status: "complete" | "proposed" | "failed" | "blocked" | "quality_blocked";
   runId: string;
   summary?: string;
   error?: string;
@@ -142,14 +146,14 @@ function throwIfAborted(signal: AbortSignal): void {
 function hostOk(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const result = value as { ok?: unknown; status?: unknown };
-  return result.ok === true || result.status === "ok" || result.status === "completed" || result.status === "complete";
+  return result.ok === true || result.status === "ok" || result.status === "complete";
 }
 
 /** Set phase status and emit the matching observation event. */
-export function setPhaseStatus(store: WikiRunStore, name: string, status: WikiPhaseStatus, summary?: string): void {
+export function setPhaseStatus(store: WikiRunStore, name: WikiWorkflowPhase, status: WikiPhaseStatus, summary?: string): void {
   store.setPhase(name, status, summary);
   if (status === "active") store.appendEvent("phase.started", { phase: name });
-  else if (status === "done") store.appendEvent("phase.completed", { phase: name, detail: summary ? { summary } : undefined });
+  else if (status === "done") store.appendEvent("phase.complete", { phase: name, detail: summary ? { summary } : undefined });
   else if (status === "failed") store.appendEvent("phase.failed", { phase: name, detail: summary ? { summary } : undefined });
 }
 
@@ -161,22 +165,20 @@ function nonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
 
-/** Read only deterministic inventory data used to build the host-owned task graph. */
-export function loadInventory(inputsDir: string): LoadedInventory {
-  const inventoryPath = join(inputsDir, "inventory.json");
-  if (!existsSync(inventoryPath)) return { units: [], sourceRoots: 0, sources: [] };
+/** Parse deterministic inventory data without coupling task planning to disk I/O. */
+export function parseInventory(raw: unknown): LoadedInventory {
   try {
-    const raw = JSON.parse(readFileSync(inventoryPath, "utf8")) as {
+    const inventory = raw as {
       coverageUnits?: unknown;
       units?: unknown;
       sources?: unknown;
       sourceCount?: unknown;
     };
-    const rawUnits = Array.isArray(raw.coverageUnits) ? raw.coverageUnits : Array.isArray(raw.units) ? raw.units : [];
+    const rawUnits = Array.isArray(inventory.coverageUnits) ? inventory.coverageUnits : Array.isArray(inventory.units) ? inventory.units : [];
     const units = rawUnits.filter(
       (item): item is CoverageUnit => Boolean(item && typeof item === "object" && typeof (item as CoverageUnit).id === "string"),
     );
-    const sources = (Array.isArray(raw.sources) ? raw.sources : []).flatMap((item): InventorySource[] => {
+    const sources = (Array.isArray(inventory.sources) ? inventory.sources : []).flatMap((item): InventorySource[] => {
       if (!item || typeof item !== "object") return [];
       const record = item as Record<string, unknown>;
       const id = typeof record.sourceId === "string" ? record.sourceId : typeof record.id === "string" ? record.id : undefined;
@@ -185,8 +187,17 @@ export function loadInventory(inputsDir: string): LoadedInventory {
       return [{ id, fileCount: nonNegativeInteger(record.fileCount), surfaceCount: surfaces }];
     });
     const sourceIds = new Set([...sources.map((source) => source.id), ...units.flatMap((unit) => unit.sourceId ? [unit.sourceId] : [])]);
-    const declaredCount = nonNegativeInteger(raw.sourceCount);
+    const declaredCount = nonNegativeInteger(inventory.sourceCount);
     return { units, sourceRoots: declaredCount ?? sourceIds.size, sources };
+  } catch {
+    return { units: [], sourceRoots: 0, sources: [] };
+  }
+}
+
+/** Read only deterministic inventory data used to build the host-owned task graph. */
+export async function loadInventory(inputsDir: string): Promise<LoadedInventory> {
+  try {
+    return parseInventory(JSON.parse(await readFile(join(inputsDir, "inventory.json"), "utf8")));
   } catch {
     return { units: [], sourceRoots: 0, sources: [] };
   }
@@ -355,13 +366,13 @@ function runAgent(
   runner: WikiAgentRunner,
   details: Pick<WikiAgentRunRequest, "agentId" | "label" | "phase" | "role" | "prompt" | "unitIds">,
 ): Promise<WikiAgentRunResult | null> {
-  const startedAt = Date.now();
+  const startedAt = ctx.now();
   ctx.store.upsertAgent({
     ...details,
     status: "running",
     startedAt,
     lastHeartbeatAt: startedAt,
-    sessionKey: details.role === "main" ? ctx.paths.sessionDir : undefined,
+    sessionKey: details.role === "main" ? ctx.paths.mainSessionDir : undefined,
   });
   ctx.store.appendEvent("agent.started", { agentId: details.agentId, phase: details.phase });
 
@@ -379,7 +390,8 @@ function runAgent(
       if (ctx.signal.aborted) {
         const error = new Error("Agent run was cancelled");
         error.name = "AbortError";
-        ctx.store.upsertAgent({ agentId: details.agentId, status: "cancelled", endedAt: Date.now(), elapsedMs: Date.now() - startedAt, lastError: error.message });
+        const endedAt = ctx.now();
+        ctx.store.upsertAgent({ agentId: details.agentId, status: "cancelled", endedAt, elapsedMs: endedAt - startedAt, lastError: error.message });
         ctx.store.appendEvent("agent.cancelled", { agentId: details.agentId, phase: details.phase });
         throw error;
       }
@@ -387,8 +399,8 @@ function runAgent(
       ctx.store.upsertAgent({
         agentId: details.agentId,
         status: failed ? "failed" : "succeeded",
-        endedAt: Date.now(),
-        elapsedMs: Date.now() - startedAt,
+        endedAt: ctx.now(),
+        elapsedMs: ctx.now() - startedAt,
         lastError: failed ? result?.summary ?? "Agent returned no result" : undefined,
       });
       ctx.store.appendEvent(failed ? "agent.failed" : "agent.succeeded", { agentId: details.agentId, phase: details.phase, detail: { summary: result?.summary } });
@@ -396,7 +408,8 @@ function runAgent(
     },
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.store.upsertAgent({ agentId: details.agentId, status: ctx.signal.aborted ? "cancelled" : "failed", endedAt: Date.now(), elapsedMs: Date.now() - startedAt, lastError: message });
+      const endedAt = ctx.now();
+      ctx.store.upsertAgent({ agentId: details.agentId, status: ctx.signal.aborted ? "cancelled" : "failed", endedAt, elapsedMs: endedAt - startedAt, lastError: message });
       ctx.store.appendEvent(ctx.signal.aborted ? "agent.cancelled" : "agent.failed", { agentId: details.agentId, phase: details.phase, detail: { error: message } });
       throw error;
     },
@@ -413,16 +426,16 @@ function promptPaths(paths: WikiRunPaths): string {
 }
 
 function methodPath(paths: WikiRunPaths, file: "discover.md" | "plan.md" | "generate.md" | "review.md"): string {
-  return join(paths.inputsDir, "..", "method", "references", file);
+  return join(paths.methodDir, "references", file);
 }
 
 function methodContractPath(paths: WikiRunPaths): string {
-  return join(paths.inputsDir, "..", "method", "METHOD.md");
+  return join(paths.methodDir, "METHOD.md");
 }
 
-function markdownAt(path: string): string | undefined {
+async function markdownAt(path: string): Promise<string | undefined> {
   try {
-    return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+    return await readFile(path, "utf8");
   } catch {
     return undefined;
   }
@@ -439,8 +452,7 @@ function qualityContract(): string {
   ].join("\n");
 }
 
-function parseQualityReport(id: string, path: string): QualityReport {
-  const text = markdownAt(path);
+export function parseQualityReportText(id: string, path: string, text: string | undefined): QualityReport {
   if (!text) return { id, path, verdict: "FAIL", findings: 1, blocked: true, error: "Required report was not written" };
   const verdict = /^Verdict:\s*(PASS|FAIL)\s*$/im.exec(text)?.[1] as "PASS" | "FAIL" | undefined;
   const affectedPages = /^Affected pages:\s*(.+?)\s*$/im.exec(text)?.[1];
@@ -451,6 +463,10 @@ function parseQualityReport(id: string, path: string): QualityReport {
   }
   const findingCount = /^none$/i.test(findings.trim()) ? 0 : findings.split(/[;|]/).filter((item) => item.trim().length > 0).length;
   return { id, path, verdict, findings: findingCount, blocked: false };
+}
+
+async function parseQualityReport(id: string, path: string): Promise<QualityReport> {
+  return parseQualityReportText(id, path, await markdownAt(path));
 }
 
 function qualitySummary(reports: readonly QualityReport[]): WikiQualitySummary {
@@ -472,16 +488,10 @@ function setQualitySummary(ctx: WikiPathContext, reports: readonly QualityReport
   });
 }
 
-async function failQualityGate(ctx: WikiPathContext, phase: string, summary: string, reports: readonly QualityReport[]): Promise<WikiPathResult> {
+async function failQualityGate(ctx: WikiPathContext, phase: WikiWorkflowPhase, summary: string, reports: readonly QualityReport[]): Promise<WikiPathResult> {
   setPhaseStatus(ctx.store, phase, "failed", summary);
   setQualitySummary(ctx, reports);
   ctx.store.setOverall("quality_blocked");
-  await ctx.core.setRunStatus(ctx.workspaceRoot, {
-    runId: ctx.runId,
-    status: "quality_blocked",
-    sessionPath: ctx.sessionPath,
-    error: summary,
-  }).catch(() => undefined);
   return { status: "quality_blocked", runId: ctx.runId, summary, error: summary };
 }
 
@@ -491,14 +501,14 @@ async function assertAgentOk(result: WikiAgentRunResult | null, error: string): 
 
 async function runSurvey(ctx: WikiPathContext, inventory: LoadedInventory): Promise<void> {
   const graph = buildSurveyTaskGraph(inventory);
-  setPhaseStatus(ctx.store, "Survey", "active", `${graph.waveOne.length} source task(s) planned.`);
+  setPhaseStatus(ctx.store, PHASE.survey, "active", `${graph.waveOne.length} source task(s) planned.`);
   const waveOne = graph.waveOne.map((task) => ctx.pool.run(async () => {
     throwIfAborted(ctx.signal);
     const output = join(ctx.paths.analysisDir, task.outputRelativePath);
     const result = await runAgent(ctx, ctx.createEphemeralAgent(task.role), {
       agentId: task.id,
       label: task.label,
-      phase: "Survey",
+      phase: PHASE.survey,
       role: task.role,
       unitIds: task.unitIds,
       prompt: [
@@ -515,7 +525,7 @@ async function runSurvey(ctx: WikiPathContext, inventory: LoadedInventory): Prom
   const firstWave = await Promise.allSettled(waveOne);
   const failures = firstWave.filter((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failures.length > 0) {
-    setPhaseStatus(ctx.store, "Survey", "failed", `${failures.length} source survey task(s) failed.`);
+    setPhaseStatus(ctx.store, PHASE.survey, "failed", `${failures.length} source survey task(s) failed.`);
     throw new Error(failures.map((failure) => String(failure.reason)).join("; "));
   }
 
@@ -527,7 +537,7 @@ async function runSurvey(ctx: WikiPathContext, inventory: LoadedInventory): Prom
       return runAgent(ctx, ctx.createEphemeralAgent(task.role), {
         agentId: task.id,
         label: task.label,
-        phase: "Survey",
+        phase: PHASE.survey,
         role: task.role,
         unitIds: task.unitIds,
         prompt: [
@@ -541,19 +551,19 @@ async function runSurvey(ctx: WikiPathContext, inventory: LoadedInventory): Prom
     }, { timeoutMs: ctx.limits.agentTimeoutMs, label: task.label });
     await assertAgentOk(result, "Cross-source integration research failed");
   }
-  setPhaseStatus(ctx.store, "Survey", "done", `${graph.waveOne.length} source brief(s)${graph.integration ? " and one integration brief" : ""} written.`);
+  setPhaseStatus(ctx.store, PHASE.survey, "done", `${graph.waveOne.length} source brief(s)${graph.integration ? " and one integration brief" : ""} written.`);
 }
 
 async function runEvidence(ctx: WikiPathContext, inventory: LoadedInventory): Promise<void> {
   const tasks = buildEvidenceTasks(inventory);
-  setPhaseStatus(ctx.store, "Evidence", "active", `${tasks.length} deep-research scope(s) planned.`);
+  setPhaseStatus(ctx.store, PHASE.evidence, "active", `${tasks.length} deep-research scope(s) planned.`);
   const settled = await Promise.allSettled(tasks.map((task) => ctx.pool.run(async () => {
     throwIfAborted(ctx.signal);
     const output = join(ctx.paths.analysisDir, task.outputRelativePath);
     const result = await runAgent(ctx, ctx.createEphemeralAgent("evidence-researcher"), {
       agentId: task.id,
       label: task.label,
-      phase: "Evidence",
+      phase: PHASE.evidence,
       role: "evidence-researcher",
       unitIds: task.unitIds,
       prompt: [
@@ -568,13 +578,13 @@ async function runEvidence(ctx: WikiPathContext, inventory: LoadedInventory): Pr
   }, { timeoutMs: ctx.limits.agentTimeoutMs, label: task.label })));
   const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
   if (failures.length > 0) {
-    setPhaseStatus(ctx.store, "Evidence", "failed", `${failures.length} evidence task(s) failed.`);
+    setPhaseStatus(ctx.store, PHASE.evidence, "failed", `${failures.length} evidence task(s) failed.`);
     throw new Error(failures.map((failure) => String(failure.reason)).join("; "));
   }
-  setPhaseStatus(ctx.store, "Evidence", "done", `${tasks.length} evidence brief(s) written.`);
+  setPhaseStatus(ctx.store, PHASE.evidence, "done", `${tasks.length} evidence brief(s) written.`);
 }
 
-async function runMain(ctx: WikiPathContext, phase: string, prompt: string): Promise<WikiAgentRunResult | null> {
+async function runMain(ctx: WikiPathContext, phase: WikiWorkflowPhase, prompt: string): Promise<WikiAgentRunResult | null> {
   return runAgent(ctx, ctx.mainAgent, {
     agentId: "main",
     label: "main-agent",
@@ -587,11 +597,11 @@ async function runMain(ctx: WikiPathContext, phase: string, prompt: string): Pro
 async function runCoverage(ctx: WikiPathContext): Promise<WikiPathResult | undefined> {
   const initialPath = join(ctx.paths.analysisDir, "coverage-review.md");
   const verificationPath = join(ctx.paths.analysisDir, "reviews", "coverage-rereview.md");
-  setPhaseStatus(ctx.store, "Coverage initial", "active");
+  setPhaseStatus(ctx.store, PHASE.coverageInitial, "active");
   const initial = await runAgent(ctx, ctx.createEphemeralAgent("coverage-critic"), {
     agentId: "coverage:initial",
     label: "coverage-critic:initial",
-    phase: "Coverage initial",
+    phase: PHASE.coverageInitial,
     role: "coverage-critic",
     prompt: [
       "Independently map the frozen repository before auditing the proposed Wiki plan. Do not trust the plan's coverage claims.",
@@ -603,24 +613,24 @@ async function runCoverage(ctx: WikiPathContext): Promise<WikiPathResult | undef
     ].join("\n\n"),
   });
   await assertAgentOk(initial, "Initial coverage critic failed");
-  const initialReport = parseQualityReport("coverage-initial", initialPath);
+  const initialReport = await parseQualityReport("coverage-initial", initialPath);
   setQualitySummary(ctx, [initialReport]);
-  setPhaseStatus(ctx.store, "Coverage initial", "done", initialReport.verdict === "PASS" ? "Initial coverage audit passed." : "Initial coverage findings require plan revision.");
+  setPhaseStatus(ctx.store, PHASE.coverageInitial, "done", initialReport.verdict === "PASS" ? "Initial coverage audit passed." : "Initial coverage findings require plan revision.");
 
-  setPhaseStatus(ctx.store, "Coverage revision", "active");
-  const revision = await runMain(ctx, "Coverage revision", [
+  setPhaseStatus(ctx.store, PHASE.coverageRevision, "active");
+  const revision = await runMain(ctx, PHASE.coverageRevision, [
     `Read ${initialPath}, all evidence briefs, and revise ${join(ctx.paths.analysisDir, "plan.md")} to address every justified coverage finding.`,
     `Keep ${methodContractPath(ctx.paths)} and ${methodPath(ctx.paths, "plan.md")} as controlling contracts.`,
     "The plan must include a source-grounded page matrix, evidence-brief references, cross-domain links, and an explicit diagram decision for each flow-heavy page. Do not write bundle pages.",
   ].join("\n\n"));
   await assertAgentOk(revision, "Coverage plan revision failed");
-  setPhaseStatus(ctx.store, "Coverage revision", "done", revision?.summary ?? "Plan revised after initial coverage audit.");
+  setPhaseStatus(ctx.store, PHASE.coverageRevision, "done", revision?.summary ?? "Plan revised after initial coverage audit.");
 
-  setPhaseStatus(ctx.store, "Coverage verification", "active");
+  setPhaseStatus(ctx.store, PHASE.coverageVerification, "active");
   const verification = await runAgent(ctx, ctx.createEphemeralAgent("coverage-critic"), {
     agentId: "coverage:verification",
     label: "coverage-critic:verification",
-    phase: "Coverage verification",
+    phase: PHASE.coverageVerification,
     role: "coverage-critic",
     prompt: [
       "Re-audit only unresolved or newly introduced gaps after the bounded plan revision. This is the final coverage pass; do not request another review loop.",
@@ -632,16 +642,16 @@ async function runCoverage(ctx: WikiPathContext): Promise<WikiPathResult | undef
     ].join("\n\n"),
   });
   await assertAgentOk(verification, "Coverage verification critic failed");
-  const verificationReport = parseQualityReport("coverage-verification", verificationPath);
+  const verificationReport = await parseQualityReport("coverage-verification", verificationPath);
   if (verificationReport.verdict === "FAIL") {
     setQualitySummary(ctx, [initialReport, verificationReport]);
-    return failQualityGate(ctx, "Coverage verification", "Coverage verification failed after the bounded plan revision.", [initialReport, verificationReport]);
+    return failQualityGate(ctx, PHASE.coverageVerification, "Coverage verification failed after the bounded plan revision.", [initialReport, verificationReport]);
   }
   // The initial audit may intentionally find gaps. The proposal-facing verdict is
   // determined solely by the bounded verification after the main revision.
   setQualitySummary(ctx, [verificationReport]);
-  setPhaseStatus(ctx.store, "Coverage verification", "done", "Coverage passed after one bounded revision.");
-  const planPreview = markdownAt(join(ctx.paths.analysisDir, "plan.md"));
+  setPhaseStatus(ctx.store, PHASE.coverageVerification, "done", "Coverage passed after one bounded revision.");
+  const planPreview = await markdownAt(join(ctx.paths.analysisDir, "plan.md"));
   ctx.store.updateSnapshot((snapshot) => {
     snapshot.planPreview = planPreview;
     snapshot.planSummary = "Plan, evidence matrix, and two-pass coverage review passed.";
@@ -649,11 +659,11 @@ async function runCoverage(ctx: WikiPathContext): Promise<WikiPathResult | undef
   return undefined;
 }
 
-async function runPlan(ctx: WikiPathContext): Promise<"proposed" | "writing" | WikiPathResult> {
-  const inventory = loadInventory(ctx.paths.inputsDir);
-  await runSurvey(ctx, inventory);
-  setPhaseStatus(ctx.store, "Plan", "active");
-  const planned = await runMain(ctx, "Plan", [
+async function runPlan(ctx: WikiPathContext, resumeAt: "discover" | "plan"): Promise<"proposed" | "writing" | WikiPathResult> {
+  const inventory = await loadInventory(ctx.paths.inputsDir);
+  if (resumeAt === "discover") await runSurvey(ctx, inventory);
+  setPhaseStatus(ctx.store, PHASE.plan, "active");
+  const planned = await runMain(ctx, PHASE.plan, [
     "You are the persistent main agent for an OKF repository Wiki.",
     promptPaths(ctx.paths),
     `Before planning, read ${methodContractPath(ctx.paths)} and ${methodPath(ctx.paths, "plan.md")}.`,
@@ -663,21 +673,20 @@ async function runPlan(ctx: WikiPathContext): Promise<"proposed" | "writing" | W
     ctx.focus ? `Requested focus: ${ctx.focus}` : "",
   ].filter(Boolean).join("\n\n"));
   await assertAgentOk(planned, "Planning failed");
-  setPhaseStatus(ctx.store, "Plan", "done", planned?.summary ?? "Initial plan written.");
+  setPhaseStatus(ctx.store, PHASE.plan, "done", planned?.summary ?? "Initial plan written.");
 
   await runEvidence(ctx, inventory);
-  setPhaseStatus(ctx.store, "Evidence synthesis", "active");
-  const synthesis = await runMain(ctx, "Evidence synthesis", [
+  setPhaseStatus(ctx.store, PHASE.evidenceSynthesis, "active");
+  const synthesis = await runMain(ctx, PHASE.evidenceSynthesis, [
     `Read every evidence brief under ${join(ctx.paths.analysisDir, "evidence")} and integrate their verified source paths, tests, state transitions, cross-links, and diagram decisions into ${join(ctx.paths.analysisDir, "plan.md")}.`,
     "Retain only source-grounded claims. The revised plan is still a proposal; do not write bundle pages.",
   ].join("\n\n"));
   await assertAgentOk(synthesis, "Evidence synthesis failed");
-  setPhaseStatus(ctx.store, "Evidence synthesis", "done", synthesis?.summary ?? "Evidence integrated into plan.");
+  setPhaseStatus(ctx.store, PHASE.evidenceSynthesis, "done", synthesis?.summary ?? "Evidence integrated into plan.");
 
   const coverageResult = await runCoverage(ctx);
   if (coverageResult) return coverageResult;
-  const result = await ctx.core.completeRunPlanning(ctx.workspaceRoot, { runId: ctx.runId, sessionPath: ctx.sessionPath });
-  if (!result || result.ok === false) throw new Error("The core rejected the completed Wiki plan");
+  const result = await ctx.core.completeRunPlanning(ctx.workspaceRoot, { runId: ctx.runId });
   return result.requiresApproval ? "proposed" : "writing";
 }
 
@@ -685,7 +694,7 @@ function reviewPath(ctx: WikiPathContext, task: ReviewTask): string {
   return join(ctx.paths.analysisDir, task.outputRelativePath);
 }
 
-async function runReviewTask(ctx: WikiPathContext, task: ReviewTask, phase: string, previous?: QualityReport): Promise<QualityReport> {
+async function runReviewTask(ctx: WikiPathContext, task: ReviewTask, phase: WikiWorkflowPhase, previous?: QualityReport): Promise<QualityReport> {
   const output = reviewPath(ctx, task);
   const result = await runAgent(ctx, ctx.createEphemeralAgent(task.role), {
     agentId: `review:${task.id}${previous ? ":verification" : ""}`,
@@ -696,17 +705,17 @@ async function runReviewTask(ctx: WikiPathContext, task: ReviewTask, phase: stri
       `Independently review this generated OKF Wiki for ${task.focus}.`,
       promptPaths(ctx.paths),
       `Read ${methodContractPath(ctx.paths)}, ${methodPath(ctx.paths, "review.md")}, frozen sources, and the complete bundle.`,
-      previous ? `This is a bounded verification of the earlier failed report:\n${markdownAt(previous.path) ?? previous.error ?? "missing prior report"}` : "",
+      previous ? `This is a bounded verification of the earlier failed report:\n${await markdownAt(previous.path) ?? previous.error ?? "missing prior report"}` : "",
       `Create parent directories if needed and write the report to ${output}.`,
       qualityContract(),
       "Do not edit analysis, plan, or bundle files.",
     ].filter(Boolean).join("\n\n"),
   });
   await assertAgentOk(result, `${task.label} failed`);
-  return parseQualityReport(`review-${task.id}`, output);
+  return await parseQualityReport(`review-${task.id}`, output);
 }
 
-async function runQuestionFinder(ctx: WikiPathContext, phase: string, previous?: QualityReport): Promise<QualityReport> {
+async function runQuestionFinder(ctx: WikiPathContext, phase: WikiWorkflowPhase, previous?: QualityReport): Promise<QualityReport> {
   const output = join(ctx.paths.analysisDir, "qa", "questions.md");
   const result = await runAgent(ctx, ctx.createEphemeralAgent("qa-question-finder"), {
     agentId: `qa:questions${previous ? ":verification" : ""}`,
@@ -716,20 +725,20 @@ async function runQuestionFinder(ctx: WikiPathContext, phase: string, previous?:
     prompt: [
       "Generate realistic reader questions from the frozen repository and tests only. Do not inspect the generated Wiki.",
       promptPaths(ctx.paths),
-      previous ? `The previous question-set report failed:\n${markdownAt(previous.path) ?? previous.error ?? "missing prior report"}` : "",
+      previous ? `The previous question-set report failed:\n${await markdownAt(previous.path) ?? previous.error ?? "missing prior report"}` : "",
       `Create parent directories if needed and write 6-10 source-grounded questions, expected answer evidence, and the report fields to ${output}.`,
       qualityContract(),
       "Do not edit plan or bundle files.",
     ].filter(Boolean).join("\n\n"),
   });
   await assertAgentOk(result, "Question finder failed");
-  return parseQualityReport("qa-questions", output);
+  return await parseQualityReport("qa-questions", output);
 }
 
-async function runAnswerVerifier(ctx: WikiPathContext, phase: string, previous?: QualityReport): Promise<QualityReport> {
+async function runAnswerVerifier(ctx: WikiPathContext, phase: WikiWorkflowPhase, previous?: QualityReport): Promise<QualityReport> {
   const questionsPath = join(ctx.paths.analysisDir, "qa", "questions.md");
   const output = join(ctx.paths.analysisDir, "reviews", "reader-qa.md");
-  const questions = markdownAt(questionsPath);
+  const questions = await markdownAt(questionsPath);
   if (!questions) return { id: "qa-answers", path: output, verdict: "FAIL", findings: 1, blocked: true, error: "Question set is unavailable" };
   const result = await runAgent(ctx, ctx.createEphemeralAgent("qa-answer-verifier"), {
     agentId: `qa:answers${previous ? ":verification" : ""}`,
@@ -740,20 +749,20 @@ async function runAnswerVerifier(ctx: WikiPathContext, phase: string, previous?:
       "Answer and verify the supplied reader questions using only the generated Wiki bundle. Do not inspect frozen source files.",
       `Final OKF bundle: ${ctx.paths.bundleDir}`,
       `Reader questions:\n${questions}`,
-      previous ? `Verify only prior failed answers where possible:\n${markdownAt(previous.path) ?? previous.error ?? "missing prior report"}` : "",
+      previous ? `Verify only prior failed answers where possible:\n${await markdownAt(previous.path) ?? previous.error ?? "missing prior report"}` : "",
       `Create parent directories if needed and write the report to ${output}.`,
       qualityContract(),
       "Do not edit plan or bundle files.",
     ].filter(Boolean).join("\n\n"),
   });
   await assertAgentOk(result, "Answer verifier failed");
-  return parseQualityReport("qa-answers", output);
+  return await parseQualityReport("qa-answers", output);
 }
 
 async function runInitialReviews(ctx: WikiPathContext): Promise<QualityReport[]> {
-  setPhaseStatus(ctx.store, "Review", "active");
-  const reviewers = REVIEW_TASKS.map((task) => ctx.pool.run(() => runReviewTask(ctx, task, "Review"), { timeoutMs: ctx.limits.agentTimeoutMs, label: task.label }));
-  const questionFinder = ctx.pool.run(() => runQuestionFinder(ctx, "Review"), { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-question-finder" });
+  setPhaseStatus(ctx.store, PHASE.review, "active");
+  const reviewers = REVIEW_TASKS.map((task) => ctx.pool.run(() => runReviewTask(ctx, task, PHASE.review), { timeoutMs: ctx.limits.agentTimeoutMs, label: task.label }));
+  const questionFinder = ctx.pool.run(() => runQuestionFinder(ctx, PHASE.review), { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-question-finder" });
   const settled = await Promise.allSettled([...reviewers, questionFinder]);
   const reports: QualityReport[] = [];
   const rejected = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -763,25 +772,25 @@ async function runInitialReviews(ctx: WikiPathContext): Promise<QualityReport[]>
   }
   const questions = reports.find((report) => report.id === "qa-questions");
   if (questions?.verdict === "PASS") {
-    reports.push(await ctx.pool.run(() => runAnswerVerifier(ctx, "Review"), { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-answer-verifier" }));
+    reports.push(await ctx.pool.run(() => runAnswerVerifier(ctx, PHASE.review), { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-answer-verifier" }));
   } else {
     reports.push({ id: "qa-answers", path: join(ctx.paths.analysisDir, "reviews", "reader-qa.md"), verdict: "FAIL", findings: 1, blocked: true, error: "Question finder did not produce a valid question set" });
   }
   setQualitySummary(ctx, reports);
-  setPhaseStatus(ctx.store, "Review", "done", `${reports.filter((report) => report.verdict === "FAIL").length} review/QA report(s) require repair.`);
+  setPhaseStatus(ctx.store, PHASE.review, "done", `${reports.filter((report) => report.verdict === "FAIL").length} review/QA report(s) require repair.`);
   return reports;
 }
 
 async function runVerification(ctx: WikiPathContext, failed: readonly QualityReport[]): Promise<QualityReport[]> {
-  setPhaseStatus(ctx.store, "Verification", "active", `Re-running ${failed.length} failed quality check(s) only.`);
+  setPhaseStatus(ctx.store, PHASE.verification, "active", `Re-running ${failed.length} failed quality check(s) only.`);
   const byId = new Map(failed.map((report) => [report.id, report]));
   const reviewers = REVIEW_TASKS.filter((task) => byId.has(`review-${task.id}`)).map((task) => ctx.pool.run(
-    () => runReviewTask(ctx, task, "Verification", byId.get(`review-${task.id}`)),
+    () => runReviewTask(ctx, task, PHASE.verification, byId.get(`review-${task.id}`)),
     { timeoutMs: ctx.limits.agentTimeoutMs, label: `${task.label}:verification` },
   ));
   const questionFailure = byId.get("qa-questions");
   const questions = questionFailure
-    ? ctx.pool.run(() => runQuestionFinder(ctx, "Verification", questionFailure), { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-question-finder:verification" })
+    ? ctx.pool.run(() => runQuestionFinder(ctx, PHASE.verification, questionFailure), { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-question-finder:verification" })
     : undefined;
   const settled = await Promise.allSettled([...reviewers, ...(questions ? [questions] : [])]);
   const rejected = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -793,67 +802,66 @@ async function runVerification(ctx: WikiPathContext, failed: readonly QualityRep
   const refreshedQuestions = reports.find((report) => report.id === "qa-questions");
   if (answerFailure || refreshedQuestions) {
     reports.push(await ctx.pool.run(
-      () => runAnswerVerifier(ctx, "Verification", answerFailure),
+      () => runAnswerVerifier(ctx, PHASE.verification, answerFailure),
       { timeoutMs: ctx.limits.agentTimeoutMs, label: "qa-answer-verifier:verification" },
     ));
   }
   setQualitySummary(ctx, reports);
   const remaining = reports.filter((report) => report.verdict === "FAIL").length;
-  setPhaseStatus(ctx.store, "Verification", remaining > 0 ? "failed" : "done", remaining > 0 ? `${remaining} bounded verification check(s) still failed.` : "All previously failed checks passed.");
+  setPhaseStatus(ctx.store, PHASE.verification, remaining > 0 ? "failed" : "done", remaining > 0 ? `${remaining} bounded verification check(s) still failed.` : "All previously failed checks passed.");
   return reports;
 }
 
 async function runWriteReviewValidate(ctx: WikiPathContext): Promise<WikiPathResult> {
-  setPhaseStatus(ctx.store, "Write", "active");
-  const write = await runMain(ctx, "Write", [
-    "Continue the same OKF Wiki run using the persisted, approved plan.",
+  setPhaseStatus(ctx.store, PHASE.write, "active");
+  const write = await runMain(ctx, PHASE.write, [
+    "Continue the same OKF Wiki run using the persisted plan.",
     promptPaths(ctx.paths),
     `Before writing, read ${methodContractPath(ctx.paths)} and ${methodPath(ctx.paths, "generate.md")}.`,
     `Read ${join(ctx.paths.analysisDir, "plan.md")} and all evidence briefs. Write the complete source-grounded OKF bundle beneath ${ctx.paths.bundleDir}.`,
     "Implement every required diagram decision with grounded Mermaid. Use valid YAML frontmatter and Markdown links. Do not create JSON handoffs or agent-authored indexes.",
   ].join("\n\n"));
   await assertAgentOk(write, "Wiki writing failed");
-  setPhaseStatus(ctx.store, "Write", "done", write?.summary ?? "Bundle drafted.");
+  setPhaseStatus(ctx.store, PHASE.write, "done", write?.summary ?? "Bundle drafted.");
 
   const initialReports = await runInitialReviews(ctx);
   const failed = initialReports.filter((report) => report.verdict === "FAIL");
   if (failed.length > 0) {
-    setPhaseStatus(ctx.store, "Repair", "active");
-    const repair = await runMain(ctx, "Repair", [
+    setPhaseStatus(ctx.store, PHASE.repair, "active");
+    const repair = await runMain(ctx, PHASE.repair, [
       `Read these independent review reports and repair every justified issue in ${ctx.paths.bundleDir}:`,
       ...failed.map((report) => `- ${report.path}`),
       `Use ${methodContractPath(ctx.paths)} and ${methodPath(ctx.paths, "generate.md")} while repairing.`,
       "Preserve hierarchy and source grounding. This is the one repair pass; do not create reports, JSON artifacts, or a new review loop.",
     ].join("\n\n"));
     await assertAgentOk(repair, "Bundle repair failed");
-    setPhaseStatus(ctx.store, "Repair", "done", repair?.summary ?? "Bundle repaired after quality findings.");
+    setPhaseStatus(ctx.store, PHASE.repair, "done", repair?.summary ?? "Bundle repaired after quality findings.");
     const verification = await runVerification(ctx, failed);
     if (verification.some((report) => report.verdict === "FAIL")) {
-      return failQualityGate(ctx, "Verification", "Bounded verification still has failing quality checks; review reports before resuming.", verification);
+      return failQualityGate(ctx, PHASE.verification, "Bounded verification still has failing quality checks; review reports before resuming.", verification);
     }
   } else {
-    setPhaseStatus(ctx.store, "Repair", "skipped", "No quality findings required repair.");
-    setPhaseStatus(ctx.store, "Verification", "skipped", "All initial quality checks passed.");
+    setPhaseStatus(ctx.store, PHASE.repair, "skipped", "No quality findings required repair.");
+    setPhaseStatus(ctx.store, PHASE.verification, "skipped", "All initial quality checks passed.");
   }
 
-  setPhaseStatus(ctx.store, "Validate", "active");
-  await ctx.core.setRunStatus(ctx.workspaceRoot, { runId: ctx.runId, status: "validating", sessionPath: ctx.sessionPath });
+  setPhaseStatus(ctx.store, PHASE.validate, "active");
   const validation = await ctx.core.validateRunBundle(ctx.workspaceRoot, { runId: ctx.runId });
   if (!hostOk(validation)) {
-    const report: QualityReport = { id: "deterministic-validation", path: join(ctx.paths.bundleDir), verdict: "FAIL", findings: 1, blocked: true, error: (validation as { error?: string } | undefined)?.error ?? "Deterministic bundle validation failed" };
-    return failQualityGate(ctx, "Validate", report.error!, [report]);
+    const report: QualityReport = { id: "deterministic-validation", path: join(ctx.paths.bundleDir), verdict: "FAIL", findings: 1, blocked: true, error: validation.errors.join("; ") || "Deterministic bundle validation failed" };
+    return failQualityGate(ctx, PHASE.validate, report.error!, [report]);
   }
   setQualitySummary(ctx, [] , "passed");
-  setPhaseStatus(ctx.store, "Validate", "done", "Bundle validated and sealed.");
-  return { status: "completed", runId: ctx.runId, summary: "OKF Wiki bundle validated and sealed." };
+  setPhaseStatus(ctx.store, PHASE.validate, "done", "Bundle validated and sealed.");
+  return { status: "complete", runId: ctx.runId, summary: "OKF Wiki bundle validated and sealed." };
 }
 
 /** Execute planning, then either wait for approval or continue in the same main session. */
-export async function runWikiPath(ctx: WikiPathContext, options: { start: "planning" | "writing" }): Promise<WikiPathResult> {
+export async function runWikiPath(ctx: WikiPathContext, options: { start: WikiPathStart }): Promise<WikiPathResult> {
   try {
     throwIfAborted(ctx.signal);
-    if (options.start === "planning") {
-      const next = await runPlan(ctx);
+    if (options.start !== "write") {
+      const next = await runPlan(ctx, options.start);
       if (typeof next !== "string") return next;
       if (next === "proposed") return { status: "proposed", runId: ctx.runId, summary: "Plan proposed; review it in /wiki and approve when ready." };
     }
@@ -861,7 +869,7 @@ export async function runWikiPath(ctx: WikiPathContext, options: { start: "plann
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!ctx.signal.aborted) {
-      await ctx.core.setRunStatus(ctx.workspaceRoot, { runId: ctx.runId, status: "failed", sessionPath: ctx.sessionPath, error: message }).catch(() => undefined);
+      await ctx.core.reportRunStatus(ctx.workspaceRoot, { runId: ctx.runId, status: "failed", error: message }).catch(() => undefined);
     }
     return { status: "failed", runId: ctx.runId, error: message, summary: message };
   }

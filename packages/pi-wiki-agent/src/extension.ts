@@ -14,7 +14,8 @@ import {
   WikiCommandError,
   type WikiCommand,
 } from "./command.js";
-import { createCoreAdapter, type CoreAdapter, type WikiWorkspaceStatus } from "./core-adapter.js";
+import { createWikiCore } from "@okf-wiki/wiki-agent-kit";
+import type { WikiCore, WikiWorkspaceStatus } from "./core.js";
 import {
   formatStatusBar,
   openWikiNavigator,
@@ -28,14 +29,14 @@ import {
 import { createWikiToolset, type WikiToolRole } from "./toolset.js";
 import { WIKI_RUNTIME_DEFINITION } from "./runtime.js";
 
-export type DisposableOrchestrator = WikiOrchestrator & { dispose?: () => void };
+export type DisposableOrchestrator = WikiOrchestrator & { dispose?: () => Promise<void> };
 
 export interface WikiExtensionOptions {
-  core: CoreAdapter;
+  core: WikiCore;
   /** Inject orchestrator (tests). Defaults to SessionWikiOrchestrator. */
   orchestratorFactory?: (options: {
     workspaceRoot: string;
-    core: CoreAdapter;
+    core: WikiCore;
     getMainModel: () => string | undefined;
     getModelRegistry: () => unknown;
   }) => DisposableOrchestrator;
@@ -55,8 +56,8 @@ type StatusUi = {
   notify?: (message: string, level?: "info" | "warning" | "error") => void;
 };
 
-function projectSource(root: string): { id: "project"; path: string; ignore: ["sources/**"] } {
-  return { id: "project", path: root, ignore: ["sources/**"] };
+function projectSource(root: string): { type: "path"; id: "project"; path: string; ignore: ["sources/**"] } {
+  return { type: "path", id: "project", path: root, ignore: ["sources/**"] };
 }
 
 function formatSourceList(status: WikiWorkspaceStatus): string {
@@ -76,12 +77,6 @@ function output(pi: ExtensionAPI, content: string): void {
 
 function formatWorkspaceStatus(status: WikiWorkspaceStatus): string {
   const lines: string[] = [];
-  if (!status.initialized) {
-    lines.push(`No Wiki workspace at ${status.root}`);
-    lines.push("Run /wiki init to create one.");
-    return lines.join("\n");
-  }
-
   lines.push(`Wiki workspace: ${status.root}`);
   if (status.name) lines.push(`Name: ${status.name}`);
   if (status.wikiLanguage) lines.push(`Language: ${status.wikiLanguage}`);
@@ -107,17 +102,15 @@ function formatWorkspaceStatus(status: WikiWorkspaceStatus): string {
     }
   }
 
-  if (status.summary) {
-    lines.push("");
-    lines.push(status.summary);
-  }
   return lines.join("\n");
 }
 
-async function readWorkspaceStatus(core: CoreAdapter, root: string): Promise<WikiWorkspaceStatus> {
-  const workspace = await core.loadWorkspace(root);
-  if (workspace?.initialized) return core.getWorkspaceStatus(root);
-  return workspace ?? { root, initialized: false, sources: [] };
+async function readWorkspaceStatus(core: WikiCore, root: string): Promise<WikiWorkspaceStatus | undefined> {
+  try {
+    return await core.getWorkspaceStatus(root);
+  } catch {
+    return undefined;
+  }
 }
 
 function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined, workspace?: WikiWorkspaceStatus): void {
@@ -125,9 +118,7 @@ function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined
     ui.setStatus(STATUS_KEY, formatStatusBar(snap, OBSERVE_OPTS));
     return;
   }
-  if (workspace && !workspace.initialized) {
-    ui.setStatus(STATUS_KEY, "Wiki not initialized. Run /wiki init or /wiki help.");
-  } else if (workspace) {
+  if (workspace) {
     const n = workspace.sources.length;
     ui.setStatus(STATUS_KEY, `Wiki: ${n} source${n === 1 ? "" : "s"}; no active orch run.`);
   } else {
@@ -136,7 +127,7 @@ function applyObservationUi(ui: StatusUi, snap: WikiProgressSnapshot | undefined
 }
 
 async function refreshObservation(
-  core: CoreAdapter,
+  core: WikiCore,
   orch: WikiOrchestrator,
   root: string,
   ui: StatusUi,
@@ -145,14 +136,7 @@ async function refreshObservation(
     orch.syncFromBackend();
     let workspace: WikiWorkspaceStatus | undefined;
     try {
-      workspace = await core.loadWorkspace(root);
-      if (workspace?.initialized) {
-        try {
-          workspace = await core.getWorkspaceStatus(root);
-        } catch {
-          // keep loadWorkspace
-        }
-      }
+      workspace = await readWorkspaceStatus(core, root);
     } catch {
       workspace = undefined;
     }
@@ -165,30 +149,30 @@ async function refreshObservation(
 const NO_WORKSPACE_HINT = "No Wiki workspace. Run /wiki init.";
 
 async function ensureWorkspace(
-  core: CoreAdapter,
+  core: WikiCore,
   root: string,
   options: { linkProjectOnCreate?: boolean } = {},
 ): Promise<WikiWorkspaceStatus> {
-  const existing = await core.loadWorkspace(root);
-  const created = !existing?.initialized;
-  const workspace = existing?.initialized
-    ? existing
-    : await core.initWorkspace(root, { runtimeDefinition: WIKI_RUNTIME_DEFINITION });
-  if (created && options.linkProjectOnCreate) {
-    await core.addLinkedSource(root, projectSource(root));
+  try {
+    return await core.getWorkspaceStatus(root);
+  } catch {
+    const initialized = await core.initializeWorkspace(root, {
+      runtime: WIKI_RUNTIME_DEFINITION,
+      ...(options.linkProjectOnCreate ? { source: projectSource(root) } : {}),
+    });
+    return initialized.workspace;
   }
-  await core.ensureRuntime(root, { runtimeDefinition: WIKI_RUNTIME_DEFINITION });
-  return workspace;
 }
 
 async function openNavigator(
-  core: CoreAdapter,
+  core: WikiCore,
   orch: WikiOrchestrator,
   root: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   orch.syncFromBackend();
   const workspace = await readWorkspaceStatus(core, root);
+  if (!workspace) throw new WikiCommandError(NO_WORKSPACE_HINT);
   await openWikiNavigator(
     { hasUI: ctx.hasUI, ui: ctx.ui },
     {
@@ -228,7 +212,7 @@ async function openNavigator(
 
 async function executeCommand(
   pi: ExtensionAPI,
-  core: CoreAdapter,
+  core: WikiCore,
   orch: WikiOrchestrator,
   root: string,
   command: WikiCommand,
@@ -246,13 +230,14 @@ async function executeCommand(
   }
 
   if (command.action === "init") {
-    const existing = await core.loadWorkspace(root);
-    const initialized = await core.initWorkspace(root, { ...command, runtimeDefinition: WIKI_RUNTIME_DEFINITION });
-    if (!existing?.initialized || command.force) {
-      await core.addLinkedSource(root, projectSource(root));
-    }
-    await core.ensureRuntime(root, { runtimeDefinition: WIKI_RUNTIME_DEFINITION });
-    ctx.ui.notify(`Wiki initialized at ${initialized.root}`, "info");
+    const initialized = await core.initializeWorkspace(root, {
+      name: command.name,
+      wikiLanguage: command.wikiLanguage,
+      force: command.force,
+      runtime: WIKI_RUNTIME_DEFINITION,
+      source: projectSource(root),
+    });
+    ctx.ui.notify(`Wiki initialized at ${initialized.workspace.root}`, "info");
     await refreshObservation(core, orch, root, ctx.ui);
     return;
   }
@@ -267,13 +252,13 @@ async function executeCommand(
   }
 
   if (command.action === "source-list") {
-    const existing = await core.loadWorkspace(root);
-    if (!existing?.initialized) {
+    const workspace = await readWorkspaceStatus(core, root);
+    if (!workspace) {
       output(pi, NO_WORKSPACE_HINT);
       await refreshObservation(core, orch, root, ctx.ui);
       return;
     }
-    output(pi, formatSourceList(await core.getWorkspaceStatus(root)));
+    output(pi, formatSourceList(workspace));
     return;
   }
 
@@ -300,8 +285,7 @@ async function executeCommand(
   }
 
   if (command.action === "source-remove") {
-    const existing = await core.loadWorkspace(root);
-    if (!existing?.initialized) throw new WikiCommandError(NO_WORKSPACE_HINT);
+    if (!(await readWorkspaceStatus(core, root))) throw new WikiCommandError(NO_WORKSPACE_HINT);
     await core.removeSource(root, command.sourceId);
     ctx.ui.notify(`Removed source ${command.sourceId}.`, "info");
     await refreshObservation(core, orch, root, ctx.ui);
@@ -329,7 +313,7 @@ async function executeCommand(
         focus: command.focus,
       });
       ctx.ui.notify(
-        `Started wiki orch ${started.orchRunId}` +
+        `Started wiki orchestration ${started.orchestrationId}` +
           (started.runId ? ` (run ${started.runId})` : "") +
           ". Open /wiki to observe.",
         "info",
@@ -346,7 +330,7 @@ async function executeCommand(
   }
 }
 
-function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => WikiOrchestrator) {
+function createControlTool(pi: ExtensionAPI, core: WikiCore, getOrch: () => WikiOrchestrator) {
   return defineTool({
     name: CONTROL_TOOL_NAME,
     label: "OKF Wiki",
@@ -373,7 +357,7 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
         const status = await readWorkspaceStatus(core, root);
         const snap = orch.getActiveSnapshot();
         return {
-          content: [{ type: "text", text: formatWorkspaceStatus(status) }],
+          content: [{ type: "text", text: status ? formatWorkspaceStatus(status) : NO_WORKSPACE_HINT }],
           details: { workspace: status, orchestration: snap ?? null },
         };
       }
@@ -400,10 +384,10 @@ function createControlTool(pi: ExtensionAPI, core: CoreAdapter, getOrch: () => W
         content: [
           {
             type: "text",
-            text: `Started wiki orch ${started.orchRunId}. Open /wiki to observe.`,
+            text: `Started wiki orchestration ${started.orchestrationId}. Open /wiki to observe.`,
           },
         ],
-        details: { orchRunId: started.orchRunId, runId: started.runId, workspaceRoot: workspace.root },
+        details: { orchestrationId: started.orchestrationId, runId: started.runId, workspaceRoot: workspace.root },
       };
     },
   });
@@ -461,8 +445,8 @@ export function createWikiExtension(options: WikiExtensionOptions) {
       unsubOrch = orch.subscribe((snap) => {
         if (!targetUi) return;
         applyObservationUi(targetUi, snap);
-        if (snap.overall === "proposed" && proposedNoticeRunId !== snap.orchRunId) {
-          proposedNoticeRunId = snap.orchRunId;
+        if (snap.overall === "proposed" && proposedNoticeRunId !== snap.orchestrationId) {
+          proposedNoticeRunId = snap.orchestrationId;
           targetUi.notify?.("Wiki plan is ready. Open /wiki to review it, then press a to approve or r to reject. Non-interactive: /wiki approve.", "info");
         }
       });
@@ -510,7 +494,7 @@ export function createWikiExtension(options: WikiExtensionOptions) {
 
         if (sessionCwd !== cwd) {
           try {
-            orch.dispose?.();
+            await orch.dispose?.();
           } catch {
             // ignore
           }
@@ -544,15 +528,15 @@ export function createWikiExtension(options: WikiExtensionOptions) {
       }
     });
 
-    pi.on("session_shutdown", (_event, ctx) => {
+    pi.on("session_shutdown", async (_event, ctx) => {
       try {
-        unsubOrch?.();
-        unsubOrch = undefined;
         try {
-          orch.dispose?.();
+          await orch.dispose?.();
         } catch {
           // ignore
         }
+        unsubOrch?.();
+        unsubOrch = undefined;
         ctx.ui?.setStatus?.(STATUS_KEY, undefined);
       } catch {
         // best-effort
@@ -561,7 +545,7 @@ export function createWikiExtension(options: WikiExtensionOptions) {
   };
 }
 
-/** Build the production extension from the core package's direct API exports. */
-export function createProductionExtension(coreModule: Partial<CoreAdapter>) {
-  return createWikiExtension({ core: createCoreAdapter(coreModule) });
+/** Build the production extension from the kit's async core. */
+export function createProductionExtension(core: WikiCore = createWikiCore()) {
+  return createWikiExtension({ core });
 }

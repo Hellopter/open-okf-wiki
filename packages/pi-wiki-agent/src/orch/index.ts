@@ -7,7 +7,6 @@ export type {
   WikiAgentActivityKind,
   WikiAgentRole,
   WikiAgentView,
-  WikiBackend,
   WikiEvent,
   WikiEventType,
   WikiOverallStatus,
@@ -40,7 +39,7 @@ export type {
 } from "./orchestrator.js";
 export {
   isTerminalOverall,
-  resolveActiveOrchRunId,
+  resolveActiveOrchestrationId,
   summaryFromSnapshot,
 } from "./orchestrator.js";
 
@@ -58,6 +57,8 @@ export {
 export {
   runWikiPath,
   loadInventory,
+  parseInventory,
+  parseQualityReportText,
   buildSurveyTaskGraph,
   buildEvidenceTasks,
   setPhaseStatus,
@@ -66,6 +67,7 @@ export {
   type EvidenceTask,
   type InventorySource,
   type LoadedInventory,
+  type WikiPathStart,
 } from "./phase-graph.js";
 
 

@@ -8,20 +8,27 @@ export {
   type WikiCommand,
 } from "./command.js";
 export {
-  createCoreAdapter,
-  type CoreAdapter,
-  type PrepareRunResult,
-  type WikiRunSummary,
+  type OrchestrationCore,
+  type RunAccessCore,
+  type RunLifecycleCore,
+  type ToolCore,
+  type WikiCore,
   type WikiLanguage,
-  type WikiPlanningResult,
-  type WikiRunState,
-  type WikiRunClaim,
   type WikiRunPaths,
+  type WikiRunState,
   type WikiRuntimeDefinition,
   type WikiSource,
   type WikiWorkspaceStatus,
-} from "./core-adapter.js";
-export { WIKI_RUNTIME_DEFINITION, WIKI_WORKFLOW_DIGEST, WIKI_WORKFLOW_ID } from "./runtime.js";
+  type WorkspaceCore,
+} from "./core.js";
+export {
+  WIKI_RUNTIME_DEFINITION,
+  WIKI_WORKFLOW_DIGEST,
+  WIKI_WORKFLOW_ID,
+  WIKI_WORKFLOW_PHASE,
+  WIKI_WORKFLOW_PHASES,
+  type WikiWorkflowPhase,
+} from "./runtime.js";
 export {
   createProductionExtension,
   createWikiExtension,

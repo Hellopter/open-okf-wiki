@@ -18,8 +18,10 @@
     "README.md"
   ],
   "scripts": {
+    "prebuild": "pnpm --filter @okf-wiki/wiki-agent-kit build",
     "build": "node ./scripts/run-tsc.mjs -p tsconfig.json",
     "check": "node ./scripts/run-tsc.mjs -p tsconfig.json --noEmit",
+    "pretypecheck": "pnpm --filter @okf-wiki/wiki-agent-kit build",
     "typecheck": "node ./scripts/run-tsc.mjs -p tsconfig.json --noEmit",
     "test": "pnpm build && node ./scripts/run-tests.mjs",
     "verify:pi": "node scripts/verify-pi-install.mjs",

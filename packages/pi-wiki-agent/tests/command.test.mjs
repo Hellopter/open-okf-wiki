@@ -18,21 +18,20 @@ test("parses generate, approve, controls, sources, and free-text focus", () => {
   assert.deepEqual(parseWikiCommand("status --json"), { action: "status" });
 });
 
-test("rejects removed phase controls and malformed inputs", () => {
+test("rejects malformed and unsupported commands", () => {
   for (const command of ["run", "--plan", "--write", "restart", "retry"]) {
-    assert.throws(() => parseWikiCommand(command), /was removed/);
+    assert.throws(() => parseWikiCommand(command), /Unknown subcommand/);
   }
   assert.throws(() => parseWikiCommand("approve a b"), WikiCommandError);
   assert.throws(() => parseWikiCommand("source add clone"), WikiCommandError);
   assert.throws(() => parseWikiCommand("init --lang ja"), WikiCommandError);
 });
 
-test("help and completions expose only the v4 workflow", () => {
+test("help and completions expose only the current workflow", () => {
   const help = formatWikiHelp();
   assert.match(help, /\/wiki generate/);
   assert.match(help, /\/wiki approve/);
   assert.match(help, /run-scoped main-agent session/);
-  assert.match(help, /`--plan`, `--write`/);
   const values = getWikiArgumentCompletions("").map((item) => item.value);
   assert.ok(values.includes("generate"));
   assert.ok(values.includes("approve"));

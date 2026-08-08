@@ -1,4 +1,4 @@
-import type { WikiLanguage } from "./core-adapter.js";
+import type { WikiLanguage } from "./core.js";
 
 export type WikiCommand =
   | { action: "open" }
@@ -24,8 +24,6 @@ export interface WikiArgumentCompletion {
 const KNOWN_SUBCOMMANDS = new Set([
   "help", "generate", "approve", "init", "status", "pause", "resume", "stop", "source", "-h", "--help",
 ]);
-
-const RETIRED_SUBCOMMANDS = new Set(["run", "plan", "write", "retry", "restart", "agents", "inspect", "fleet", "focus", "logs"]);
 
 const ARGUMENT_COMPLETIONS: WikiArgumentCompletion[] = [
   { value: "help", label: "help", description: "Show /wiki command help" },
@@ -84,7 +82,7 @@ export function formatWikiHelp(): string {
     "Aliases: /wiki-help  /wiki-init  /wiki-generate  /wiki-source",
     "",
     "`generate` plans and writes when workspace approval is auto; otherwise it leaves a Markdown proposal.",
-    "`approve` resumes the same run-scoped main-agent session. `/wiki run`, `--plan`, `--write`, restart and retry were removed.",
+    "`approve` resumes the same run-scoped main-agent session.",
   ].join("\n");
 }
 
@@ -96,7 +94,7 @@ export function getWikiArgumentCompletions(prefix: string): WikiArgumentCompleti
   );
 }
 
-/** Parse the intentionally small `/wiki` command surface. */
+/** Parse the intentionally small v5 `/wiki` command surface. */
 export function parseWikiCommand(raw: string): WikiCommand {
   const input = raw.trim();
   if (!input) return { action: "open" };
@@ -105,10 +103,6 @@ export function parseWikiCommand(raw: string): WikiCommand {
   const rest = args.slice(1);
 
   if (command === "help" || command === "-h" || command === "--help") return { action: "help" };
-  if (RETIRED_SUBCOMMANDS.has(command) || input.startsWith("--")) {
-    throw new WikiCommandError(`/wiki ${command.startsWith("--") ? command : command} was removed; use /wiki generate or /wiki approve.`);
-  }
-
   switch (command) {
     case "generate":
       return { action: "generate", focus: rest.join(" ").trim() || undefined };
@@ -150,7 +144,7 @@ export function parseWikiCommand(raw: string): WikiCommand {
       throw new WikiCommandError("Usage: /wiki source list | add clone <url> [--id id] | add link|path <path> [--id id] | remove <id>");
     }
     default:
-      if (args.length === 1 && !KNOWN_SUBCOMMANDS.has(command)) {
+      if (args.length === 1 && (!KNOWN_SUBCOMMANDS.has(command) || input.startsWith("--"))) {
         throw new WikiCommandError(`Unknown subcommand "${command}". Use /wiki help or /wiki generate ${command}.`);
       }
       return { action: "generate", focus: input };

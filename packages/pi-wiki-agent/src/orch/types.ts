@@ -30,10 +30,7 @@ export type WikiAgentRole =
 
 export type WikiPhaseStatus = "pending" | "active" | "done" | "failed" | "skipped";
 
-export type WikiOverallStatus = "idle" | "running" | "paused" | "proposed" | "quality_blocked" | "failed" | "completed" | "cancelled";
-
-/** Only session orchestration is supported (pi-dynamic-workflows removed). */
-export type WikiBackend = "session";
+export type WikiOverallStatus = "idle" | "running" | "paused" | "proposed" | "quality_blocked" | "failed" | "complete" | "cancelled";
 
 export interface WikiAgentLastTool {
   name: string;
@@ -168,11 +165,11 @@ export interface WikiQualitySummary {
 export interface WikiProgressSnapshot {
   version: 1;
   runId: string;
-  orchRunId: string;
+  orchestrationId: string;
   workspaceRoot: string;
   mode: string;
   focus?: string;
-  backend: WikiBackend;
+  backend: "session";
   overall: WikiOverallStatus;
   currentPhase?: string;
   phases: WikiPhaseView[];
@@ -190,12 +187,12 @@ export type WikiEventType =
   | "orch.paused"
   | "orch.resumed"
   | "orch.stopped"
-  | "orch.completed"
+  | "orch.complete"
   | "orch.proposed"
   | "orch.failed"
   | "orch.quality_blocked"
   | "phase.started"
-  | "phase.completed"
+  | "phase.complete"
   | "phase.failed"
   | "agent.queued"
   | "agent.started"
@@ -214,7 +211,7 @@ export interface WikiEvent {
   ts: number;
   seq: number;
   type: WikiEventType;
-  orchRunId: string;
+  orchestrationId: string;
   runId?: string;
   agentId?: string;
   phase?: string;
@@ -242,10 +239,10 @@ export function mergeOrchLimits(partial?: Partial<OrchLimits>): OrchLimits {
 }
 
 export interface OrchRunSummary {
-  orchRunId: string;
+  orchestrationId: string;
   runId?: string;
   overall: WikiOverallStatus;
-  backend: WikiBackend;
+  backend: "session";
   currentPhase?: string;
   /** Epoch milliseconds. */
   updatedAt: number;

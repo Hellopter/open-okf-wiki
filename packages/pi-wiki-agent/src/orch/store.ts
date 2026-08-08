@@ -1,21 +1,17 @@
-/**
- * Durable orchestration store: atomic snapshot.json + append-only events.jsonl.
- *
- * Layout: `{workspaceRoot}/.wiki-agent/runs/{runId}/orchestration/`
- */
+/** Durable observation store: ordered snapshot, event, and transcript writes. */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type {
   AgentStatus,
   WikiAgentRole,
   WikiAgentView,
-  WikiBackend,
   WikiEvent,
   WikiEventType,
   WikiObservationEntry,
-  WikiOverallStatus,
   WikiObservationKind,
+  WikiOverallStatus,
   WikiPhaseStatus,
   WikiPhaseView,
   WikiProgressSnapshot,
@@ -24,99 +20,121 @@ import type {
 export interface WikiRunStoreOptions {
   workspaceRoot: string;
   runId: string;
-  orchRunId?: string;
+  orchestrationId?: string;
+  now?: () => number;
 }
 
 export interface CreateRunOptions {
-  orchRunId: string;
-  backend: WikiBackend;
+  orchestrationId: string;
+  backend: "session";
   mode: string;
   focus?: string;
   workspaceRoot: string;
   runId: string;
 }
 
-/** Alias used by orchestrator backends / package index. */
 export type CreateRunInput = CreateRunOptions;
-
 export type WikiRunStoreListener = (snap: WikiProgressSnapshot, event?: WikiEvent) => void;
-
-/** Alias used by orchestrator backends / package index. */
 export type SnapshotListener = WikiRunStoreListener;
 
 const SNAPSHOT_FILE = "snapshot.json";
 const EVENTS_FILE = "events.jsonl";
 
-/** Path-safe agent id: non-alphanumeric characters become `_`. */
 export function safeAgentId(agentId: string): string {
   return agentId.replace(/[^a-zA-Z0-9]/g, "_");
-}
-
-function nowMs(): number {
-  return Date.now();
-}
-
-function writeJsonAtomic(filePath: string, data: unknown): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  renameSync(tmp, filePath);
-}
-
-function readJsonl(filePath: string): unknown[] {
-  if (!existsSync(filePath)) return [];
-  const text = readFileSync(filePath, "utf8");
-  if (!text.trim()) return [];
-  const out: unknown[] = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      out.push(JSON.parse(trimmed));
-    } catch {
-      // skip corrupt lines
-    }
-  }
-  return out;
 }
 
 function orchestrationDir(workspaceRoot: string, runId: string): string {
   return join(workspaceRoot, ".wiki-agent", "runs", runId, "orchestration");
 }
 
+function parseJsonl(text: string): unknown[] {
+  const rows: unknown[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      rows.push(JSON.parse(line));
+    } catch {
+      // A partially-written line must not prevent recovery of prior observations.
+    }
+  }
+  return rows;
+}
+
+async function readJsonl(file: string): Promise<unknown[]> {
+  try {
+    return parseJsonl(await readFile(file, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  await rename(temporary, file);
+}
+
+/**
+ * Mutations update the in-memory projection synchronously, then share one write
+ * chain. This preserves event sequence and disk ordering even when callers do
+ * not await individual observation updates from agent callbacks.
+ */
 export class WikiRunStore {
   private workspaceRoot: string;
   private runId: string;
-  private orchRunId: string;
+  private orchestrationId: string;
   private rootDir: string;
   private snapshot: WikiProgressSnapshot | null = null;
   private seq = 0;
+  private writeChain: Promise<void> = Promise.resolve();
+  private persistenceFailure: unknown;
   private readonly listeners = new Set<WikiRunStoreListener>();
+  private readonly now: () => number;
 
   constructor(options: WikiRunStoreOptions) {
     this.workspaceRoot = options.workspaceRoot;
     this.runId = options.runId;
-    this.orchRunId = options.orchRunId ?? "";
+    this.orchestrationId = options.orchestrationId ?? "";
     this.rootDir = orchestrationDir(this.workspaceRoot, this.runId);
-    this.loadFromDisk();
+    this.now = options.now ?? Date.now;
   }
 
-  /** Absolute directory holding snapshot.json / events.jsonl / agents/. */
   get storeDir(): string {
     return this.rootDir;
+  }
+
+  /** Explicit recovery is async; normal new runs call createRun instead. */
+  async load(): Promise<boolean> {
+    await this.flush();
+    try {
+      const raw = JSON.parse(await readFile(this.snapshotPath(), "utf8")) as WikiProgressSnapshot;
+      if (!isWikiProgressSnapshot(raw)) return false;
+      this.snapshot = raw;
+      this.workspaceRoot = raw.workspaceRoot;
+      this.runId = raw.runId;
+      this.orchestrationId = raw.orchestrationId;
+      this.rootDir = orchestrationDir(this.workspaceRoot, this.runId);
+      const events = (await readJsonl(this.eventsPath())).filter(isWikiEvent);
+      this.seq = events.at(-1)?.seq ?? 0;
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
   }
 
   createRun(options: CreateRunOptions): WikiProgressSnapshot {
     this.workspaceRoot = options.workspaceRoot;
     this.runId = options.runId;
-    this.orchRunId = options.orchRunId;
+    this.orchestrationId = options.orchestrationId;
     this.rootDir = orchestrationDir(this.workspaceRoot, this.runId);
-    mkdirSync(this.rootDir, { recursive: true });
-
-    const snap: WikiProgressSnapshot = {
+    const snapshot: WikiProgressSnapshot = {
       version: 1,
       runId: options.runId,
-      orchRunId: options.orchRunId,
+      orchestrationId: options.orchestrationId,
       workspaceRoot: options.workspaceRoot,
       mode: options.mode,
       focus: options.focus,
@@ -124,247 +142,197 @@ export class WikiRunStore {
       overall: "idle",
       phases: [],
       agents: [],
-      updatedAt: nowMs(),
+      updatedAt: this.now(),
     };
-
-    this.snapshot = snap;
+    this.snapshot = snapshot;
     this.seq = 0;
-    this.persistSnapshot();
-    // Fresh event log for a new run
-    writeFileSync(this.eventsPath(), "", "utf8");
-    this.notify(snap);
-    return this.cloneSnapshot(snap);
+    void this.enqueue(async () => {
+      await mkdir(this.rootDir, { recursive: true });
+      await writeFile(this.eventsPath(), "", "utf8");
+      await writeJsonAtomic(this.snapshotPath(), snapshot);
+    });
+    this.notify(snapshot);
+    return this.clone(snapshot);
   }
 
   getSnapshot(): WikiProgressSnapshot {
-    if (!this.snapshot) {
-      this.loadFromDisk();
-    }
-    if (!this.snapshot) {
-      throw new Error("WikiRunStore has no snapshot; call createRun() first");
-    }
-    return this.cloneSnapshot(this.snapshot);
+    if (!this.snapshot) throw new Error("WikiRunStore has no snapshot; call createRun() or load() first");
+    return this.clone(this.snapshot);
   }
 
-  updateSnapshot(mutator: (s: WikiProgressSnapshot) => void): WikiProgressSnapshot {
-    if (!this.snapshot) {
-      this.loadFromDisk();
-    }
-    if (!this.snapshot) {
-      throw new Error("WikiRunStore has no snapshot; call createRun() first");
-    }
-    mutator(this.snapshot);
-    this.snapshot.updatedAt = nowMs();
+  updateSnapshot(mutator: (snapshot: WikiProgressSnapshot) => void): WikiProgressSnapshot {
+    const snapshot = this.requireSnapshot();
+    mutator(snapshot);
+    snapshot.updatedAt = this.now();
     this.persistSnapshot();
-    this.notify(this.snapshot);
-    return this.cloneSnapshot(this.snapshot);
+    this.notify(snapshot);
+    return this.clone(snapshot);
   }
 
   appendEvent(
     type: WikiEventType,
-    fields: {
-      agentId?: string;
-      phase?: string;
-      detail?: unknown;
-      runId?: string;
-    } = {},
+    fields: { agentId?: string; phase?: string; detail?: unknown; runId?: string } = {},
   ): WikiEvent {
-    if (!this.snapshot && !this.orchRunId) {
-      throw new Error("WikiRunStore.appendEvent requires createRun() first");
-    }
-    const orchRunId = this.snapshot?.orchRunId ?? this.orchRunId;
-    this.seq += 1;
+    const snapshot = this.requireSnapshot();
     const event: WikiEvent = {
-      ts: Date.now(),
-      seq: this.seq,
+      ts: this.now(),
+      seq: ++this.seq,
       type,
-      orchRunId,
+      orchestrationId: snapshot.orchestrationId,
       runId: fields.runId ?? this.runId,
       agentId: fields.agentId,
       phase: fields.phase,
       detail: fields.detail,
     };
-
-    mkdirSync(this.rootDir, { recursive: true });
-    appendFileSync(this.eventsPath(), `${JSON.stringify(event)}\n`, "utf8");
-
-    if (this.snapshot) {
-      this.snapshot.updatedAt = nowMs();
-      this.persistSnapshot();
-      this.notify(this.snapshot, event);
-    }
-
+    void this.enqueue(async () => {
+      await mkdir(this.rootDir, { recursive: true });
+      await appendFile(this.eventsPath(), `${JSON.stringify(event)}\n`, "utf8");
+    });
+    snapshot.updatedAt = this.now();
+    this.persistSnapshot();
+    this.notify(snapshot, event);
     return event;
   }
 
   upsertAgent(partial: Partial<WikiAgentView> & { agentId: string }): void {
-    this.updateSnapshot((s) => {
-      const idx = s.agents.findIndex((a) => a.agentId === partial.agentId);
-      if (idx >= 0) {
-        s.agents[idx] = { ...s.agents[idx], ...partial };
+    this.updateSnapshot((snapshot) => {
+      const index = snapshot.agents.findIndex((agent) => agent.agentId === partial.agentId);
+      if (index >= 0) {
+        snapshot.agents[index] = { ...snapshot.agents[index], ...partial };
         return;
       }
-      const created: WikiAgentView = {
+      snapshot.agents.push({
+        ...partial,
         agentId: partial.agentId,
         label: partial.label ?? partial.agentId,
         role: (partial.role ?? "main") as WikiAgentRole,
-        phase: partial.phase ?? s.currentPhase ?? "",
-        prompt: partial.prompt,
+        phase: partial.phase ?? snapshot.currentPhase ?? "",
         status: (partial.status ?? "queued") as AgentStatus,
         elapsedMs: partial.elapsedMs ?? 0,
-        unitIds: partial.unitIds,
-        pagePaths: partial.pagePaths,
-        model: partial.model,
-        startedAt: partial.startedAt,
-        endedAt: partial.endedAt,
-        lastTool: partial.lastTool,
-        lastHeartbeatAt: partial.lastHeartbeatAt,
-        lastError: partial.lastError,
-        tokenUsage: partial.tokenUsage,
-        latestUsage: partial.latestUsage,
-        context: partial.context,
-        activity: partial.activity,
-        compactionCount: partial.compactionCount,
-        transcriptPath: partial.transcriptPath,
-        sessionKey: partial.sessionKey,
-      };
-      s.agents.push(created);
+      });
     });
   }
 
   setPhase(name: string, status: WikiPhaseStatus, summary?: string): void {
-    this.updateSnapshot((s) => {
-      let phase: WikiPhaseView | undefined = s.phases.find((p) => p.name === name);
+    this.updateSnapshot((snapshot) => {
+      let phase = snapshot.phases.find((entry) => entry.name === name);
       if (!phase) {
         phase = { name, status };
-        s.phases.push(phase);
+        snapshot.phases.push(phase);
       } else {
         phase.status = status;
       }
       if (summary !== undefined) phase.summary = summary;
       if (status === "active") {
-        phase.startedAt = phase.startedAt ?? nowMs();
-        s.currentPhase = name;
+        phase.startedAt ??= this.now();
+        snapshot.currentPhase = name;
       }
-      if (status === "done" || status === "failed" || status === "skipped") {
-        phase.endedAt = nowMs();
-      }
+      if (status === "done" || status === "failed" || status === "skipped") phase.endedAt = this.now();
     });
   }
 
   setOverall(overall: WikiOverallStatus): void {
-    this.updateSnapshot((s) => {
-      s.overall = overall;
-    });
+    this.updateSnapshot((snapshot) => { snapshot.overall = overall; });
   }
 
   appendTranscript(agentId: string, entry: WikiObservationEntry): void {
-    const safeId = safeAgentId(agentId);
-    const agentDir = join(this.rootDir, "agents", safeId);
-    mkdirSync(agentDir, { recursive: true });
-    const file = join(agentDir, "transcript.jsonl");
-    appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
-
+    const file = join(this.rootDir, "agents", safeAgentId(agentId), "transcript.jsonl");
+    void this.enqueue(async () => {
+      await mkdir(dirname(file), { recursive: true });
+      await appendFile(file, `${JSON.stringify(entry)}\n`, "utf8");
+    });
     if (this.snapshot) {
-      this.updateSnapshot((s) => {
-        const agent = s.agents.find((a) => a.agentId === agentId);
+      this.updateSnapshot((snapshot) => {
+        const agent = snapshot.agents.find((candidate) => candidate.agentId === agentId);
         if (agent) agent.transcriptPath = file;
       });
     }
   }
 
-  readTranscript(agentId: string, options: { tail?: number } = {}): WikiObservationEntry[] {
+  async readTranscript(agentId: string, options: { tail?: number } = {}): Promise<WikiObservationEntry[]> {
+    await this.flush();
     const file = join(this.rootDir, "agents", safeAgentId(agentId), "transcript.jsonl");
-    const rows = readJsonl(file).filter(
-      isWikiObservationEntry,
-    );
-    if (options.tail != null && options.tail >= 0) {
-      return rows.slice(-options.tail);
-    }
-    return rows;
+    const entries = (await readJsonl(file)).filter(isWikiObservationEntry);
+    return options.tail != null && options.tail >= 0 ? entries.slice(-options.tail) : entries;
   }
 
-  listEvents(options: { tail?: number } = {}): WikiEvent[] {
-    const rows = readJsonl(this.eventsPath()).filter(isWikiEvent);
-    if (options.tail != null && options.tail >= 0) {
-      return rows.slice(-options.tail);
-    }
-    return rows;
+  async listEvents(options: { tail?: number } = {}): Promise<WikiEvent[]> {
+    await this.flush();
+    const events = (await readJsonl(this.eventsPath())).filter(isWikiEvent);
+    return options.tail != null && options.tail >= 0 ? events.slice(-options.tail) : events;
+  }
+
+  /** Wait until every mutation queued before this call is durable. */
+  flush(): Promise<void> {
+    return this.writeChain.then(() => {
+      if (this.persistenceFailure) throw this.persistenceFailure;
+    });
   }
 
   subscribe(listener: WikiRunStoreListener): () => void {
     this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return () => this.listeners.delete(listener);
   }
 
-  private eventsPath(): string {
-    return join(this.rootDir, EVENTS_FILE);
+  private requireSnapshot(): WikiProgressSnapshot {
+    if (!this.snapshot) throw new Error("WikiRunStore has no snapshot; call createRun() or load() first");
+    return this.snapshot;
   }
 
-  private snapshotPath(): string {
-    return join(this.rootDir, SNAPSHOT_FILE);
-  }
+  private eventsPath(): string { return join(this.rootDir, EVENTS_FILE); }
+  private snapshotPath(): string { return join(this.rootDir, SNAPSHOT_FILE); }
 
   private persistSnapshot(): void {
-    if (!this.snapshot) return;
-    writeJsonAtomic(this.snapshotPath(), this.snapshot);
+    const snapshot = this.requireSnapshot();
+    void this.enqueue(() => writeJsonAtomic(this.snapshotPath(), this.clone(snapshot)));
   }
 
-  private loadFromDisk(): void {
-    const snapPath = this.snapshotPath();
-    if (!existsSync(snapPath)) return;
-    try {
-      const raw = JSON.parse(readFileSync(snapPath, "utf8")) as WikiProgressSnapshot;
-      this.snapshot = raw;
-      this.orchRunId = raw.orchRunId || this.orchRunId;
-      this.runId = raw.runId;
-      if (raw.workspaceRoot) this.workspaceRoot = raw.workspaceRoot;
-    } catch {
-      this.snapshot = null;
-    }
-
-    const events = this.listEvents();
-    if (events.length > 0) {
-      this.seq = events[events.length - 1]!.seq;
-    }
-  }
-
-  private notify(snap: WikiProgressSnapshot, event?: WikiEvent): void {
-    const clone = this.cloneSnapshot(snap);
-    for (const listener of this.listeners) {
+  private enqueue(operation: () => Promise<void>): Promise<void> {
+    const write = this.writeChain.then(async () => {
+      if (this.persistenceFailure) return;
       try {
-        listener(clone, event);
-      } catch {
-        // listeners must not break the store
+        await operation();
+      } catch (error) {
+        this.persistenceFailure ??= error;
       }
+    });
+    this.writeChain = write;
+    return write;
+  }
+
+  private notify(snapshot: WikiProgressSnapshot, event?: WikiEvent): void {
+    const clone = this.clone(snapshot);
+    for (const listener of this.listeners) {
+      try { listener(clone, event); } catch { /* observers cannot affect persistence */ }
     }
   }
 
-  private cloneSnapshot(snap: WikiProgressSnapshot): WikiProgressSnapshot {
-    return structuredClone(snap);
+  private clone(snapshot: WikiProgressSnapshot): WikiProgressSnapshot {
+    return structuredClone(snapshot);
   }
+}
 
+function isWikiProgressSnapshot(value: unknown): value is WikiProgressSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Record<string, unknown>;
+  return typeof snapshot.runId === "string" && typeof snapshot.orchestrationId === "string";
 }
 
 function isWikiEvent(value: unknown): value is WikiEvent {
   if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.seq === "number" && typeof v.type === "string" && typeof v.orchRunId === "string";
+  const event = value as Record<string, unknown>;
+  return typeof event.seq === "number" && typeof event.type === "string" && typeof event.orchestrationId === "string";
 }
 
 function isWikiObservationEntry(value: unknown): value is WikiObservationEntry {
   if (!value || typeof value !== "object") return false;
-  const row = value as Record<string, unknown>;
-  const validRoles = new Set(["assistant", "tool", "system"]);
-  const validKinds: ReadonlySet<WikiObservationKind> = new Set([
+  const entry = value as Record<string, unknown>;
+  const kinds: ReadonlySet<WikiObservationKind> = new Set([
     "text", "tool_start", "tool_end", "retry_start", "retry_end",
     "compaction_start", "compaction_end", "summarization_retry",
   ]);
-  return typeof row.timestamp === "number"
-    && typeof row.role === "string"
-    && validRoles.has(row.role)
-    && typeof row.kind === "string"
-    && validKinds.has(row.kind as WikiObservationKind);
+  return typeof entry.timestamp === "number"
+    && (entry.role === "assistant" || entry.role === "tool" || entry.role === "system")
+    && typeof entry.kind === "string"
+    && kinds.has(entry.kind as WikiObservationKind);
 }

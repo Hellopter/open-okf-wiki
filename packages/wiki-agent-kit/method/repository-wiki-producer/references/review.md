@@ -19,8 +19,9 @@ findings or required repair.
 
 ## Coverage critic
 
-Read `analysis/inventory.md`, `analysis/plan.md`, relevant discovery briefs, and enough frozen sources to
-test a suspected omission. Write `analysis/coverage-review.md` with:
+Read `analysis/inventory.md`, `analysis/plan.md`, relevant briefs in `analysis/discovery/sources/`, the
+optional `analysis/discovery/integration.md`, and enough frozen sources to test a suspected omission. Write
+`analysis/coverage-review.md` with:
 
 ```md
 # Coverage Review

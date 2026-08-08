@@ -14,7 +14,7 @@ write Wiki pages.
 The lifecycle is deliberately small:
 
 1. The host freezes the source snapshots and deterministically creates the inventory.
-2. For a large or multi-domain inventory, bounded discovery agents write short Markdown briefs.
+2. For a large or multi-domain inventory, bounded discovery agents write short Markdown briefs; multi-source runs also get one cross-source integration brief.
 3. The main Agent writes `analysis/plan.md` and source-grounded `analysis/evidence/*.md`; an independent critic writes `analysis/coverage-review.md`, then one re-review.
 4. The main Agent incorporates valid criticism into the plan. The host either pauses for approval or continues automatically.
 5. The same main Agent writes the Wiki. Independent evidence, workflow, navigation, and reader-QA reviewers write their own reports; the main Agent gets one repair and failed-item re-verification pass.
@@ -34,7 +34,8 @@ read or write `analysis/state.json`, `analysis/run.lock.json`, `analysis/bundle.
 | `analysis/state.json` | Control-plane state and digests | host |
 | `analysis/run.lock.json` | Active orchestration ownership lock | host |
 | `analysis/inventory.md` | Readable deterministic coverage inventory | host |
-| `analysis/discovery/*.md` | Optional independent research briefs | discovery Agent |
+| `analysis/discovery/sources/<source>.md` | Optional independent source research briefs | discovery Agent |
+| `analysis/discovery/integration.md` | Optional cross-source integration brief | integration Agent |
 | `analysis/evidence/*.md` | Source-grounded page evidence briefs | evidence researcher |
 | `analysis/plan.md` | Authoritative hierarchy, coverage decisions, and writing memory | main Agent |
 | `analysis/coverage-review.md` | Independent plan coverage critique | coverage critic |
@@ -54,7 +55,7 @@ but it is not an instruction to manufacture a JSON protocol.
 
 - `plan.md` is the main Agent's source of truth after planning. Revise it when scope, evidence, or page
   structure changes.
-- Discovery briefs contain observations and source citations, not final page assignments.
+- Discovery briefs, including the optional cross-source integration brief, contain observations and source citations, not final page assignments.
 - Every evidence brief cites frozen source line ranges and is named by a `Page Matrix` row in `plan.md`.
 - Critic and reviewer files state concrete omissions or defects with evidence and proposed repairs. Final quality reports use the host-parseable lines `Verdict: PASS|FAIL`, `Affected pages:`, `Findings:`, and `Required repair:`.
 - The host records control decisions separately in `state.json`; it is not an Agent handoff document.

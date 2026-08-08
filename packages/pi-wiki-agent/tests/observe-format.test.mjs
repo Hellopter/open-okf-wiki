@@ -21,7 +21,7 @@ function fixtureSnapshot(overrides = {}) {
   return {
     version: 1,
     runId: "run-1",
-    orchRunId: "orch-1",
+    orchestrationId: "orch-1",
     workspaceRoot: "/tmp/wiki",
     mode: "auto",
     focus: "auth",

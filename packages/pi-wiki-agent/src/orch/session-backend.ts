@@ -1,26 +1,21 @@
-/** Run-scoped persistent-session orchestrator for the v4 Markdown Wiki workflow. */
+/** Run-scoped persistent-session orchestrator for the v5 Markdown Wiki workflow. */
 
 import { randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { CoreAdapter, WikiRunPaths, WikiRunState } from "../core-adapter.js";
-import {
-  createPersistentPiAgentRunner,
-  createPiAgentRunner,
-  type PersistentPiAgentRunner,
-  type WikiAgentRunner,
-} from "./agent-runner.js";
+import type { OrchestrationCore, WikiRunPaths, WikiRunState } from "../core.js";
+import { createPersistentPiAgentRunner, createPiAgentRunner, type WikiAgentRunner } from "./agent-runner.js";
 import {
   isTerminalOverall,
-  resolveActiveOrchRunId,
+  resolveActiveOrchestrationId,
   summaryFromSnapshot,
   type WikiOrchestrator,
   type WikiOrchestratorStartInput,
   type WikiOrchestratorStartResult,
 } from "./orchestrator.js";
 import { createTaskPool, type TaskPool } from "./pool.js";
-import { runWikiPath, type WikiPathResult } from "./phase-graph.js";
-import { WikiRunStore, type WikiRunStoreOptions } from "./store.js";
+import { runWikiPath, type WikiPathResult, type WikiPathStart } from "./phase-graph.js";
+import { WikiRunStore } from "./store.js";
 import {
   mergeOrchLimits,
   type OrchLimits,
@@ -33,7 +28,7 @@ import {
 
 export interface SessionWikiOrchestratorOptions {
   workspaceRoot: string;
-  core: CoreAdapter;
+  core: OrchestrationCore;
   getTools: (root: string, role: WikiAgentRole) => ToolDefinition[];
   /** Test hook. Production uses a persisted main runner plus short-lived critics. */
   agentRunner?: WikiAgentRunner;
@@ -42,12 +37,11 @@ export interface SessionWikiOrchestratorOptions {
   modelRegistry?: unknown;
   getMainModel?: () => string | undefined;
   getModelRegistry?: () => unknown;
-  storeFactory?: (opts: WikiRunStoreOptions) => WikiRunStore;
+  now?: () => number;
 }
 
 interface TrackedSessionRun {
-  orchRunId: string;
-  lockOwner: string;
+  orchestrationId: string;
   runId: string;
   store: WikiRunStore;
   workspaceRoot: string;
@@ -58,25 +52,20 @@ interface TrackedSessionRun {
   unsubStore?: () => void;
 }
 
-function sessionPathForOpen(paths: WikiRunPaths, raw: string): string {
+interface MainSessionAgent {
+  runner: WikiAgentRunner;
+  mainSessionPath: string;
+}
+
+function resolveMainSessionPath(paths: WikiRunPaths, raw: string): string {
   return isAbsolute(raw) ? raw : resolve(dirname(paths.inputsDir), raw);
-}
-
-function startForState(state: WikiRunState | undefined): "planning" | "writing" {
-  return state?.status === "writing" || state?.status === "validating" || state?.status === "approved" || state?.status === "quality_blocked"
-    ? "writing"
-    : "planning";
-}
-
-function startForCorePhase(value: unknown, fallback: WikiRunState | undefined): "planning" | "writing" {
-  return value === "writing" || value === "validating" || value === "quality_blocked" ? "writing" : startForState(fallback);
 }
 
 export class SessionWikiOrchestrator implements WikiOrchestrator {
   readonly backend = "session" as const;
 
   private readonly defaultWorkspaceRoot: string;
-  private readonly core: CoreAdapter;
+  private readonly core: OrchestrationCore;
   private readonly getTools: (root: string, role: WikiAgentRole) => ToolDefinition[];
   private readonly agentRunnerOption?: WikiAgentRunner;
   private readonly limits: OrchLimits;
@@ -84,11 +73,13 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
   private readonly modelRegistry?: unknown;
   private readonly getMainModel?: () => string | undefined;
   private readonly getModelRegistry?: () => unknown;
-  private readonly storeFactory: (opts: WikiRunStoreOptions) => WikiRunStore;
+  private readonly now: () => number;
   private readonly runs = new Map<string, TrackedSessionRun>();
-  private activeOrchRunId?: string;
+  private readonly starting = new Set<Promise<WikiOrchestratorStartResult>>();
+  private activeOrchestrationId?: string;
   private readonly globalListeners = new Set<(s: WikiProgressSnapshot, e?: WikiEvent) => void>();
   private disposed = false;
+  private disposePromise?: Promise<void>;
 
   constructor(options: SessionWikiOrchestratorOptions) {
     this.defaultWorkspaceRoot = options.workspaceRoot;
@@ -100,20 +91,31 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     this.modelRegistry = options.modelRegistry;
     this.getMainModel = options.getMainModel;
     this.getModelRegistry = options.getModelRegistry;
-    this.storeFactory = options.storeFactory ?? ((opts) => new WikiRunStore(opts));
+    this.now = options.now ?? Date.now;
   }
 
-  async start(input: WikiOrchestratorStartInput): Promise<WikiOrchestratorStartResult> {
-    if (this.disposed) throw new Error("SessionWikiOrchestrator has been disposed");
+  start(input: WikiOrchestratorStartInput): Promise<WikiOrchestratorStartResult> {
+    if (this.disposed) return Promise.reject(new Error("SessionWikiOrchestrator has been disposed"));
+    const starting = this.startInternal(input);
+    this.starting.add(starting);
+    starting.then(
+      () => this.starting.delete(starting),
+      () => this.starting.delete(starting),
+    );
+    return starting;
+  }
+
+  private async startInternal(input: WikiOrchestratorStartInput): Promise<WikiOrchestratorStartResult> {
     const workspaceRoot = input.workspaceRoot || this.defaultWorkspaceRoot;
-    const orchRunId = `session-${randomUUID()}`;
+    const orchestrationId = `session-${randomUUID()}`;
     let prepared: Awaited<ReturnType<SessionWikiOrchestrator["openRun"]>> | undefined;
     let tracked: TrackedSessionRun | undefined;
     try {
-      prepared = await this.openRun(workspaceRoot, input, orchRunId);
-      const store = this.storeFactory({ workspaceRoot, runId: prepared.runId, orchRunId });
+      prepared = await this.openRun(workspaceRoot, input, orchestrationId);
+      if (this.disposed) throw new Error("SessionWikiOrchestrator has been disposed");
+      const store = new WikiRunStore({ workspaceRoot, runId: prepared.runId, orchestrationId, now: this.now });
       store.createRun({
-        orchRunId,
+        orchestrationId,
         runId: prepared.runId,
         backend: "session",
         mode: input.action,
@@ -123,8 +125,7 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
       const controller = new AbortController();
       const pool = createTaskPool({ concurrency: this.limits.concurrency });
       tracked = {
-        orchRunId,
-        lockOwner: orchRunId,
+        orchestrationId,
         runId: prepared.runId,
         store,
         workspaceRoot,
@@ -137,37 +138,34 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
           try { listener(snapshot, event); } catch { /* observers cannot stop a run */ }
         }
       });
-      this.runs.set(orchRunId, tracked);
-      this.activeOrchRunId = orchRunId;
+      this.runs.set(orchestrationId, tracked);
+      this.activeOrchestrationId = orchestrationId;
       store.setOverall("running");
       store.appendEvent("orch.started", { detail: { action: input.action, runId: prepared.runId } });
 
       const tools = this.getTools(workspaceRoot, "main");
-      const mainAgent = this.mainRunner(workspaceRoot, tools, prepared.paths, prepared.state);
-      const sessionPath = mainAgent.getSessionFile();
-      if (!sessionPath) throw new Error("Pi did not create a persisted Wiki session file");
-      await this.core.setRunStatus(workspaceRoot, {
+      const mainSession = this.mainRunner(workspaceRoot, tools, prepared.paths, prepared.state);
+      await this.core.recordMainSession(workspaceRoot, {
         runId: prepared.runId,
-        status: prepared.start === "planning" ? "planning" : "writing",
-        sessionPath,
+        mainSessionPath: mainSession.mainSessionPath,
       });
-
+      if (this.disposed) throw new Error("SessionWikiOrchestrator has been disposed");
       this.startBackground(tracked, {
         runId: prepared.runId,
         paths: prepared.paths,
         start: prepared.start,
         focus: input.focus,
         tools,
-        mainAgent,
+        mainSession,
       });
-      return { orchRunId, runId: prepared.runId };
+      return { orchestrationId, runId: prepared.runId };
     } catch (error) {
       tracked?.controller.abort(error);
       tracked?.pool.dispose();
       tracked?.unsubStore?.();
-      this.runs.delete(orchRunId);
-      if (this.activeOrchRunId === orchRunId) this.activeOrchRunId = undefined;
-      if (prepared) await this.releaseRun(workspaceRoot, prepared.runId, orchRunId);
+      this.runs.delete(orchestrationId);
+      if (this.activeOrchestrationId === orchestrationId) this.activeOrchestrationId = undefined;
+      if (prepared) await this.releaseRun(workspaceRoot, prepared.runId, orchestrationId);
       throw error;
     }
   }
@@ -175,15 +173,17 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
   async pause(id?: string): Promise<boolean> {
     const tracked = this.tracked(id);
     if (!tracked || isTerminalOverall(tracked.store.getSnapshot().overall)) return false;
-    tracked.controller.abort(new Error("paused"));
-    tracked.pool.dispose();
-    await this.core.setRunStatus(tracked.workspaceRoot, {
+      tracked.controller.abort(new Error("paused"));
+      tracked.pool.dispose();
+    await this.core.reportRunStatus(tracked.workspaceRoot, {
       runId: tracked.runId,
       status: "paused",
-      sessionPath: await this.persistedSessionPath(tracked),
     }).catch(() => undefined);
     tracked.store.setOverall("paused");
     tracked.store.appendEvent("orch.paused", { detail: { runId: tracked.runId } });
+    await tracked.store.flush();
+    // A resumed run must claim only after this aborted workflow releases its claim.
+    await tracked.promise;
     return true;
   }
 
@@ -208,16 +208,16 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
   async stop(id?: string): Promise<boolean> {
     const tracked = this.tracked(id);
     if (!tracked) return false;
-    tracked.controller.abort(new Error("stopped"));
-    tracked.pool.dispose();
-    await this.core.setRunStatus(tracked.workspaceRoot, {
+      tracked.controller.abort(new Error("stopped"));
+      tracked.pool.dispose();
+    await this.core.reportRunStatus(tracked.workspaceRoot, {
       runId: tracked.runId,
       status: "stopped",
-      sessionPath: await this.persistedSessionPath(tracked),
       error: "Stopped by user",
     }).catch(() => undefined);
     if (!isTerminalOverall(tracked.store.getSnapshot().overall)) tracked.store.setOverall("cancelled");
     tracked.store.appendEvent("orch.stopped", { detail: { runId: tracked.runId } });
+    await tracked.store.flush();
     return true;
   }
 
@@ -251,32 +251,42 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     return this.tracked(id)?.promise;
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
-    for (const tracked of this.runs.values()) {
+    const draining = [...this.runs.values()];
+    const starting = [...this.starting];
+    for (const tracked of draining) {
       tracked.controller.abort(new Error("disposed"));
       tracked.pool.dispose();
-      void this.releaseRun(tracked.workspaceRoot, tracked.runId, tracked.lockOwner);
-      tracked.unsubStore?.();
     }
-    this.runs.clear();
-    this.globalListeners.clear();
-    this.activeOrchRunId = undefined;
+    this.disposePromise = (async () => {
+      await Promise.allSettled([
+        ...draining.map((tracked) => tracked.promise ?? Promise.resolve()),
+        ...starting,
+      ]);
+      await Promise.allSettled([...this.runs.values()].map((tracked) => tracked.promise ?? Promise.resolve()));
+      for (const tracked of this.runs.values()) tracked.unsubStore?.();
+      this.runs.clear();
+      this.starting.clear();
+      this.globalListeners.clear();
+      this.activeOrchestrationId = undefined;
+    })();
+    return this.disposePromise;
   }
 
   private async openRun(
     workspaceRoot: string,
     input: WikiOrchestratorStartInput,
-    lockOwner: string,
-  ): Promise<{ runId: string; paths: WikiRunPaths; state?: WikiRunState; start: "planning" | "writing" }> {
+    orchestrationId: string,
+  ): Promise<{ runId: string; paths: WikiRunPaths; state?: WikiRunState; start: WikiPathStart }> {
     let runId = input.runId;
     let state: WikiRunState | undefined;
-    let start: "planning" | "writing" = "planning";
-    let generated: Awaited<ReturnType<CoreAdapter["prepareRun"]>> | undefined;
+    let start: WikiPathStart = "discover";
+    let generated: Awaited<ReturnType<OrchestrationCore["prepareRun"]>> | undefined;
     let claimed = false;
     if (input.action === "generate") {
       generated = await this.core.prepareRun(workspaceRoot, { focus: input.focus });
-      if (generated.status !== "ok") throw new Error(generated.summary ?? "Wiki run preparation failed");
       runId = generated.runId;
     } else {
       if (!runId) {
@@ -287,27 +297,23 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     }
     if (!runId) throw new Error("Wiki core did not return a run id");
     try {
-      await this.core.claimRun(workspaceRoot, { runId, owner: lockOwner });
+      await this.core.claimRun(workspaceRoot, { runId, orchestrationId });
       claimed = true;
       if (input.action === "generate") {
         state = await this.core.getRunState(workspaceRoot, { runId });
-        start = startForCorePhase(generated?.startAt, state);
+        start = generated!.resumeAt;
       } else {
         const transition = input.action === "approve"
           ? await this.core.approveRun(workspaceRoot, { runId })
           : await this.core.resumeRun(workspaceRoot, { runId });
-        const transitionState = (transition as { state?: WikiRunState }).state ?? transition;
-        state = (await this.core.getRunState(workspaceRoot, { runId })) ?? transitionState;
-        // The core returns a transient recovery point; retain it even after state reload.
-        start = input.action === "approve"
-          ? "writing"
-          : startForCorePhase((transition as { startAt?: unknown }).startAt, transitionState);
+        state = transition.state;
+        start = transition.resumeAt;
       }
       const paths = await this.core.getRunPaths(workspaceRoot, { runId });
       if (!paths) throw new Error(`Wiki run ${runId} has no accessible run paths`);
       return { runId, paths, state, start };
     } catch (error) {
-      if (claimed) await this.releaseRun(workspaceRoot, runId, lockOwner);
+      if (claimed) await this.releaseRun(workspaceRoot, runId, orchestrationId);
       throw error;
     }
   }
@@ -317,20 +323,26 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
     tools: ToolDefinition[],
     paths: WikiRunPaths,
     state: WikiRunState | undefined,
-  ): PersistentPiAgentRunner {
+  ): MainSessionAgent {
     if (this.agentRunnerOption) {
-      return { run: (request) => this.agentRunnerOption!.run(request), getSessionFile: () => state?.sessionPath ?? join(paths.sessionDir, "main.jsonl") };
+      return {
+        runner: this.agentRunnerOption,
+        mainSessionPath: state?.mainSessionPath ?? join(paths.mainSessionDir, "main.jsonl"),
+      };
     }
-    const sessionManager = state?.sessionPath
-      ? SessionManager.open(sessionPathForOpen(paths, state.sessionPath), paths.sessionDir, workspaceRoot)
-      : SessionManager.create(workspaceRoot, paths.sessionDir);
-    return createPersistentPiAgentRunner({
+    const sessionManager = state?.mainSessionPath
+      ? SessionManager.open(resolveMainSessionPath(paths, state.mainSessionPath), paths.mainSessionDir, workspaceRoot)
+      : SessionManager.create(workspaceRoot, paths.mainSessionDir);
+    const runner = createPersistentPiAgentRunner({
       cwd: workspaceRoot,
       tools,
       mainModel: this.getMainModel?.() ?? this.mainModel,
       modelRegistry: this.getModelRegistry?.() ?? this.modelRegistry,
       sessionManager,
     });
+    const mainSessionPath = runner.getSessionFile();
+    if (!mainSessionPath) throw new Error("Pi did not create a persisted Wiki session file");
+    return { runner, mainSessionPath };
   }
 
   private ephemeralRunner(workspaceRoot: string, role: Exclude<WikiAgentRole, "main">): WikiAgentRunner {
@@ -345,23 +357,23 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
 
   private startBackground(
     tracked: TrackedSessionRun,
-    options: { runId: string; paths: WikiRunPaths; start: "planning" | "writing"; focus?: string; tools: ToolDefinition[]; mainAgent: PersistentPiAgentRunner },
+    options: { runId: string; paths: WikiRunPaths; start: WikiPathStart; focus?: string; tools: ToolDefinition[]; mainSession: MainSessionAgent },
   ): void {
     tracked.promise = runWikiPath({
       core: this.core,
       workspaceRoot: tracked.workspaceRoot,
       runId: options.runId,
       paths: options.paths,
-      sessionPath: options.mainAgent.getSessionFile(),
       focus: options.focus,
       store: tracked.store,
       pool: tracked.pool,
-      mainAgent: options.mainAgent,
+      mainAgent: options.mainSession.runner,
       createEphemeralAgent: (role) => this.ephemeralRunner(tracked.workspaceRoot, role),
       toolsForRole: (role) => role === "main" ? options.tools : this.getTools(tracked.workspaceRoot, role),
       cwd: tracked.workspaceRoot,
       limits: this.limits,
       signal: tracked.controller.signal,
+      now: this.now,
     }, { start: options.start }).then(async (result): Promise<WikiPathResult> => {
       const snapshot = tracked.store.getSnapshot();
       if (tracked.controller.signal.aborted || isTerminalOverall(snapshot.overall)) return result;
@@ -376,17 +388,16 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
         tracked.store.appendEvent("orch.failed", { detail: { error: result.error, runId: tracked.runId } });
       } else {
         // A proposed plan is a successful terminal state for the current command.
-        tracked.store.setOverall("completed");
-        tracked.store.appendEvent("orch.completed", { detail: { status: result.status, summary: result.summary, runId: tracked.runId } });
+        tracked.store.setOverall("complete");
+        tracked.store.appendEvent("orch.complete", { detail: { status: result.status, summary: result.summary, runId: tracked.runId } });
       }
       return result;
     }).catch(async (error: unknown): Promise<WikiPathResult> => {
       const message = error instanceof Error ? error.message : String(error);
       if (!tracked.controller.signal.aborted && !isTerminalOverall(tracked.store.getSnapshot().overall)) {
-        await this.core.setRunStatus(tracked.workspaceRoot, {
+        await this.core.reportRunStatus(tracked.workspaceRoot, {
           runId: tracked.runId,
           status: "failed",
-          sessionPath: await this.persistedSessionPath(tracked),
           error: message,
         }).catch(() => undefined);
         tracked.store.setOverall("failed");
@@ -395,22 +406,19 @@ export class SessionWikiOrchestrator implements WikiOrchestrator {
       return { status: "failed", runId: tracked.runId, error: message };
     }).finally(async () => {
       try { tracked.pool.dispose(); } catch { /* ignore */ }
-      await this.releaseRun(tracked.workspaceRoot, tracked.runId, tracked.lockOwner);
+      await this.releaseRun(tracked.workspaceRoot, tracked.runId, tracked.orchestrationId);
+      await tracked.store.flush();
     });
     void tracked.promise!.catch(() => undefined);
   }
 
   private tracked(id?: string): TrackedSessionRun | undefined {
-    const resolved = id ?? resolveActiveOrchRunId(this.list(), undefined) ?? this.activeOrchRunId;
+    const resolved = id ?? resolveActiveOrchestrationId(this.list(), undefined) ?? this.activeOrchestrationId;
     return resolved ? this.runs.get(resolved) : undefined;
   }
 
-  private async persistedSessionPath(tracked: TrackedSessionRun): Promise<string | undefined> {
-    return (await this.core.getRunState(tracked.workspaceRoot, { runId: tracked.runId }).catch(() => undefined))?.sessionPath;
-  }
-
-  private async releaseRun(workspaceRoot: string, runId: string, owner: string): Promise<void> {
-    await this.core.releaseRun(workspaceRoot, { runId, owner }).catch(() => undefined);
+  private async releaseRun(workspaceRoot: string, runId: string, orchestrationId: string): Promise<void> {
+    await this.core.releaseRun(workspaceRoot, { runId, orchestrationId }).catch(() => undefined);
   }
 }
 

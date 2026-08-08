@@ -16,7 +16,7 @@ export interface WikiOrchestratorStartInput {
 }
 
 export interface WikiOrchestratorStartResult {
-  orchRunId: string;
+  orchestrationId: string;
   runId?: string;
 }
 
@@ -27,6 +27,7 @@ export interface WikiOrchestrator {
   pause(id?: string): Promise<boolean>;
   resume(id?: string): Promise<boolean>;
   stop(id?: string): Promise<boolean>;
+  dispose(): Promise<void>;
 
   list(): OrchRunSummary[];
   getSnapshot(id?: string): WikiProgressSnapshot | undefined;
@@ -55,10 +56,10 @@ export interface WikiOrchestrator {
 const ACTIVE_OVERALL = new Set(["running", "paused", "proposed", "quality_blocked"]);
 
 /**
- * Resolve which orch run id to control when the caller omits one.
+ * Resolve which orchestration id to control when the caller omits one.
  * Prefers the most recently updated running/paused run, else the newest overall.
  */
-export function resolveActiveOrchRunId(
+export function resolveActiveOrchestrationId(
   runs: readonly OrchRunSummary[],
   id?: string,
 ): string | undefined {
@@ -66,17 +67,17 @@ export function resolveActiveOrchRunId(
   if (runs.length === 0) return undefined;
   const byRecency = (a: OrchRunSummary, b: OrchRunSummary) => b.updatedAt - a.updatedAt;
   const active = runs.filter((r) => ACTIVE_OVERALL.has(r.overall)).sort(byRecency);
-  if (active[0]) return active[0].orchRunId;
-  return [...runs].sort(byRecency)[0]?.orchRunId;
+  if (active[0]) return active[0].orchestrationId;
+  return [...runs].sort(byRecency)[0]?.orchestrationId;
 }
 
 export function isTerminalOverall(overall: WikiProgressSnapshot["overall"]): boolean {
-  return overall === "completed" || overall === "failed" || overall === "cancelled";
+  return overall === "complete" || overall === "failed" || overall === "cancelled";
 }
 
 export function summaryFromSnapshot(snap: WikiProgressSnapshot): OrchRunSummary {
   return {
-    orchRunId: snap.orchRunId,
+    orchestrationId: snap.orchestrationId,
     runId: snap.runId,
     overall: snap.overall,
     backend: snap.backend,

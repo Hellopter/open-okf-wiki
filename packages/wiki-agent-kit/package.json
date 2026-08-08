@@ -5,10 +5,21 @@
   "type": "module",
   "description": "Framework-neutral deterministic Wiki production core for the Pi extension",
   "exports": {
-    ".": "./scripts/lib/index.mjs"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist/",
+    "defaults/",
+    "method/",
+    "README.md"
+  ],
   "scripts": {
-    "test": "node --test tests/**/*.test.mjs"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test tests/**/*.test.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -16,5 +27,8 @@
   "dependencies": {
     "yaml": "^2.8.1"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.3"
+  }
 }
