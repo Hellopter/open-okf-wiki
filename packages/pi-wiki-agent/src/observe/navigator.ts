@@ -29,7 +29,7 @@ import {
 } from "./format.js";
 import { formatWikiObservationEntries } from "./transcript.js";
 
-export type WikiNavigatorView = "idle" | "overview" | "detail" | "proposal";
+export type WikiNavigatorView = "idle" | "overview" | "detail" | "prompt" | "proposal";
 export type WikiNavigatorPane = "phases" | "agents";
 
 export interface WikiNavigatorState {
@@ -48,6 +48,10 @@ export interface WikiNavigatorState {
   proposalOffset: number;
   proposalPageRows?: number;
   proposalPreviewRows?: number;
+  /** Visible rows allocated to the full input-prompt view. */
+  promptOffset: number;
+  promptPageRows?: number;
+  promptPreviewRows?: number;
 }
 
 type NavigatorAction = "close" | "load-transcript" | "pause" | "resume" | "stop" | "approve" | "reject";
@@ -98,6 +102,7 @@ const PLAIN_THEME: NavigatorTheme = { fg: (_color, text) => text, bold: (text) =
 const LIVE: ReadonlySet<WikiAgentView["status"]> = new Set(["starting", "running", "waiting_tool"]);
 const DIALOG_MARGIN = 1;
 const TRANSCRIPT_PAGE_ROWS = 12;
+const PROMPT_PREVIEW_ROWS = 2;
 const BOX_BORDER_LEFT = "│ ";
 const BOX_BORDER_RIGHT = " │";
 const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
@@ -198,6 +203,9 @@ export function createWikiNavigatorState(snapshot?: WikiProgressSnapshot): WikiN
     proposalOffset: 0,
     proposalPageRows: TRANSCRIPT_PAGE_ROWS,
     proposalPreviewRows: 0,
+    promptOffset: 0,
+    promptPageRows: TRANSCRIPT_PAGE_ROWS,
+    promptPreviewRows: 0,
   };
 }
 
@@ -216,7 +224,7 @@ function updateNavigatorSnapshot(state: WikiNavigatorState, snapshot: WikiProgre
   return {
     ...state,
     snapshot,
-    view: proposed ? "proposal" : wasIdle || state.view === "proposal" || (agentChanged && state.view === "detail") ? "overview" : state.view,
+    view: proposed ? "proposal" : wasIdle || state.view === "proposal" || (agentChanged && (state.view === "detail" || state.view === "prompt")) ? "overview" : state.view,
     pane: wasIdle ? "phases" : agentChanged ? "agents" : state.pane,
     phaseIndex: nextPhaseIndex,
     agentIndex: nextAgentIndex,
@@ -224,6 +232,7 @@ function updateNavigatorSnapshot(state: WikiNavigatorState, snapshot: WikiProgre
     transcriptOffset: agentChanged ? 0 : state.transcriptOffset,
     transcriptLoading: agentChanged ? false : state.transcriptLoading,
     proposalOffset: proposed ? state.proposalOffset : 0,
+    promptOffset: agentChanged ? 0 : state.promptOffset,
   };
 }
 
@@ -280,6 +289,18 @@ function withProposalPageRows(state: WikiNavigatorState, rows: number, previewRo
   };
 }
 
+function withPromptPageRows(state: WikiNavigatorState, rows: number, previewRows: number): WikiNavigatorState {
+  const promptPageRows = Math.max(1, Math.floor(rows));
+  const maxOffset = Math.max(0, previewRows - promptPageRows);
+  if (state.promptPageRows === promptPageRows && state.promptPreviewRows === previewRows && state.promptOffset <= maxOffset) return state;
+  return {
+    ...state,
+    promptPageRows,
+    promptPreviewRows: previewRows,
+    promptOffset: Math.min(state.promptOffset, maxOffset),
+  };
+}
+
 function result(state: WikiNavigatorState, action?: NavigatorAction, agentId?: string): WikiNavigatorKeyResult {
   return action ? { state, action, agentId } : { state };
 }
@@ -315,6 +336,19 @@ function proposalMaxOffset(state: WikiNavigatorState): number {
   return Math.max(0, (state.proposalPreviewRows ?? 0) - proposalPageRows(state));
 }
 
+function promptPreview(agent: WikiAgentView | undefined, width: number): string[] {
+  const prompt = agent?.prompt?.trim();
+  return wrapTextWithAnsi(prompt || "No input prompt was recorded for this agent.", Math.max(1, width));
+}
+
+function promptPageRows(state: WikiNavigatorState): number {
+  return Math.max(1, state.promptPageRows ?? TRANSCRIPT_PAGE_ROWS);
+}
+
+function promptMaxOffset(state: WikiNavigatorState): number {
+  return Math.max(0, (state.promptPreviewRows ?? 0) - promptPageRows(state));
+}
+
 /** Apply a parsed key to the single-window phase -> agent -> execution navigator. */
 export function applyWikiNavigatorKey(state: WikiNavigatorState, key: string): WikiNavigatorKeyResult {
   const normalized = key === "ArrowUp" ? "up" : key === "ArrowDown" ? "down" : key === "Enter" ? "enter" : key;
@@ -348,6 +382,23 @@ export function applyWikiNavigatorKey(state: WikiNavigatorState, key: string): W
     return result(state);
   }
 
+  if (state.view === "prompt") {
+    if (normalized === "escape" || normalized === "esc" || normalized === "left") {
+      return result({ ...state, view: "detail" });
+    }
+    if (normalized === "g" || normalized === "home") return result({ ...state, promptOffset: 0 });
+    if (normalized === "G" || normalized === "shift+g" || normalized === "end") {
+      return result({ ...state, promptOffset: promptMaxOffset(state) });
+    }
+    if (normalized === "up" || normalized === "k") {
+      return result({ ...state, promptOffset: Math.max(0, state.promptOffset - 1) });
+    }
+    if (normalized === "down" || normalized === "j") {
+      return result({ ...state, promptOffset: Math.min(promptMaxOffset(state), state.promptOffset + 1) });
+    }
+    return result(state);
+  }
+
   if (state.view === "detail") {
     if (normalized === "escape" || normalized === "esc" || normalized === "left") {
       return result({ ...state, view: "overview", pane: "agents", transcriptLoading: false });
@@ -372,6 +423,7 @@ export function applyWikiNavigatorKey(state: WikiNavigatorState, key: string): W
         ? result({ ...state, transcriptLoading: true, followTranscript: true }, "load-transcript", agent.agentId)
         : result(state);
     }
+    if (normalized === "i") return result({ ...state, view: "prompt", promptOffset: 0 });
     return result(state);
   }
 
@@ -617,27 +669,53 @@ function detailPreamble(
   const agent = selectedAgent(state);
   if (!agent) return { lines: [theme.fg("warning", "Selected agent is no longer available."), "← back · q close"] };
 
-  const lines = [theme.bold(agent.label), `${agent.phase} · ${agentStatusGlyph(agent.status)} ${agent.status} · ${formatDuration(agent.elapsedMs)}`];
-  const prompt = (agent as WikiAgentView & { prompt?: unknown }).prompt;
-  if (typeof prompt === "string" && prompt.trim()) lines.push(`Input prompt: ${prompt.trim()}`);
+  const width = Math.max(1, opts.width ?? 80);
+  const lines: string[] = [];
+  const append = (text: string) => lines.push(...wrapTextWithAnsi(text, width));
+  append(theme.bold(agent.label));
+  append(`${agent.phase} · ${agentStatusGlyph(agent.status)} ${agent.status} · ${formatDuration(agent.elapsedMs)}`);
+  if (agent.prompt?.trim()) {
+    const promptRows = wrapTextWithAnsi(`Input prompt: ${agent.prompt.trim()}`, width);
+    if (promptRows.length <= PROMPT_PREVIEW_ROWS) lines.push(...promptRows);
+    else {
+      lines.push(...promptRows.slice(0, PROMPT_PREVIEW_ROWS - 1));
+      lines.push(theme.fg("dim", `Input prompt: … (${promptRows.length} rows; i to inspect)`));
+    }
+  }
   const context = formatAgentContext(agent);
-  if (context) lines.push(context);
+  if (context) append(context);
   const activity = formatAgentActivity(agent);
-  if (activity) lines.push(theme.fg("warning", activity));
+  if (activity) append(theme.fg("warning", activity));
   const latestUsage = formatLatestUsage(agent);
-  if (latestUsage) lines.push(latestUsage);
+  if (latestUsage) append(latestUsage);
   const runUsage = formatRunUsage(agent);
-  if (runUsage) lines.push(runUsage);
+  if (runUsage) append(runUsage);
   const compactionCount = (agent as WikiAgentView & { compactionCount?: number }).compactionCount;
-  if (compactionCount) lines.push(`Context compacted ${compactionCount}x`);
-  if (agent.lastTool) lines.push(`Last tool: ${agent.lastTool.name}${agent.lastTool.path ? ` ${agent.lastTool.path}` : ""}`);
-  if (agent.lastError) lines.push(theme.fg("error", `Error: ${agent.lastError}`));
+  if (compactionCount) append(`Context compacted ${compactionCount}x`);
+  if (agent.lastTool) append(`Last tool: ${agent.lastTool.name}${agent.lastTool.path ? ` ${agent.lastTool.path}` : ""}`);
+  if (agent.lastError) append(theme.fg("error", `Error: ${agent.lastError}`));
   if (opts.staleWarnMs !== undefined && isAgentStale(agent, opts.staleWarnMs, opts.now)) {
-    lines.push(theme.fg("warning", "Stale: no recent heartbeat"));
+    append(theme.fg("warning", "Stale: no recent heartbeat"));
   }
   lines.push(theme.fg("dim", `Execution stream${state.followTranscript ? " · following" : ""}`));
   lines.push("─".repeat(40));
   return { agent, lines };
+}
+
+function renderPrompt(state: WikiNavigatorState, opts: WikiNavigatorRenderOptions, theme: NavigatorTheme): string[] {
+  const agent = selectedAgent(state);
+  if (!agent) return [theme.fg("warning", "Selected agent is no longer available."), "← execution · q close"];
+  const width = Math.max(1, opts.width ?? 80);
+  const maxRows = Math.max(2, opts.maxRows ?? 12);
+  const footer = opts.interactive ? "↑/↓ scroll · g/G start/end · ← execution · q close" : undefined;
+  const pageRows = Math.max(1, maxRows - 1 - (footer ? 1 : 0) - 1);
+  const preview = promptPreview(agent, width);
+  const maxOffset = Math.max(0, preview.length - pageRows);
+  const start = Math.min(state.promptOffset, maxOffset);
+  const lines = [theme.bold(`Input prompt · ${agent.label}`), ...preview.slice(start, start + pageRows)];
+  if (preview.length > pageRows) lines.push(theme.fg("dim", `${start + 1}-${Math.min(preview.length, start + pageRows)} / ${preview.length}`));
+  if (footer) lines.push(footer);
+  return lines;
 }
 
 function detailTranscriptRows(preambleRows: number, opts: WikiNavigatorRenderOptions): number {
@@ -692,7 +770,7 @@ function renderDetail(state: WikiNavigatorState, opts: WikiNavigatorRenderOption
     const remaining = state.transcriptLines.length - start - window.length;
     if (remaining > 0) lines.push(theme.fg("dim", `↓ ${remaining} newer line${remaining === 1 ? "" : "s"}`));
   }
-  if (opts.interactive) lines.push("↑/↓ scroll · g/G start/end · t refresh · ← back · p pause/resume · x stop · q close");
+  if (opts.interactive) lines.push("↑/↓ scroll · g/G start/end · i input prompt · t refresh · ← back · p pause/resume · x stop · q close");
   return lines;
 }
 
@@ -713,6 +791,7 @@ export function renderWikiNavigator(
 ): string[] {
   if (state.view === "idle" || !state.snapshot) return renderIdle(idle, Boolean(opts.interactive), theme);
   if (state.view === "detail") return renderDetail(state, opts, theme);
+  if (state.view === "prompt") return renderPrompt(state, opts, theme);
   if (state.view === "proposal") return renderProposal(state, opts, theme);
   return renderOverview(state, opts, theme);
 }
@@ -890,6 +969,11 @@ export async function openWikiNavigator(
             if (state.view === "proposal") {
               const pagination = proposalPagination(state, layout.renderOptions);
               state = withProposalPageRows(state, pagination.pageRows, pagination.previewRows);
+            }
+            if (state.view === "prompt") {
+              const agent = selectedAgent(state);
+              const pageRows = Math.max(1, layout.renderOptions.maxRows! - 1 - 1 - 1);
+              state = withPromptPageRows(state, pageRows, promptPreview(agent, layout.renderOptions.width ?? 80).length);
             }
             return renderNavigatorDialog(state, tui, theme, options, width, layout);
           },

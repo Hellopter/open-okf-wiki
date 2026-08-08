@@ -248,6 +248,43 @@ test("Navigator dialog wraps long prompts, messages, and file paths", async () =
   await opened;
 });
 
+test("Navigator keeps the execution stream visible when an input prompt is long", () => {
+  const snapshot = fixtureSnapshot({
+    agents: fixtureSnapshot().agents.map((agent) =>
+      agent.agentId === "source:shared"
+        ? { ...agent, prompt: Array.from({ length: 40 }, (_value, index) => `Prompt instruction ${index + 1}`).join("\n") }
+        : agent,
+    ),
+  });
+  let state = createWikiNavigatorState(snapshot);
+  state = applyWikiNavigatorKey(state, "right").state;
+  state = applyWikiNavigatorKey(state, "enter").state;
+  state = {
+    ...state,
+    transcriptLoading: false,
+    transcriptLines: ["assistant  inspected the source", "→ read  src/service.ts"],
+  };
+
+  const detail = renderWikiNavigator(
+    state,
+    { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+    { width: 70, maxRows: 16, interactive: true, now: NOW },
+  );
+  assert.ok(detail.some((line) => line.includes("Input prompt: …")));
+  assert.ok(detail.some((line) => line.includes("Execution stream")));
+  assert.ok(detail.some((line) => line.includes("assistant  inspected the source")));
+
+  const prompt = applyWikiNavigatorKey(state, "i").state;
+  assert.equal(prompt.view, "prompt");
+  const fullPrompt = renderWikiNavigator(
+    prompt,
+    { initialized: true, root: "/tmp/wiki", sourceCount: 1 },
+    { width: 70, maxRows: 16, interactive: true, now: NOW },
+  );
+  assert.ok(fullPrompt.some((line) => line.includes("Prompt instruction 1")));
+  assert.equal(applyWikiNavigatorKey(prompt, "left").state.view, "detail");
+});
+
 test("Navigator approval controls invoke active-run callbacks", async () => {
   let component;
   let approved = 0;
