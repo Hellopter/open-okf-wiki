@@ -1,0 +1,805 @@
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { createPiAgentExecutor } from "./executor.js";
+import { inspectWiki } from "./inspect.js";
+import { createWikiRunSession, parseWikiRunSession } from "./session.js";
+import type { WikiInspection, WikiMode, WikiValidation } from "./types.js";
+import { validateWiki } from "./validate.js";
+import {
+  EMPTY_NODE_METRICS,
+  type WikiAgentExecutionResult,
+  type WikiNode,
+  type WikiNodeActivity,
+  type WikiNodeKind,
+  type WikiNodeMetrics,
+  type WikiNodeStatus,
+  type WikiPlanResult,
+  type WikiReviewDefect,
+  type WikiReviewResult,
+  type WikiRunEvent,
+  type WikiRunEventKind,
+  type WikiRunRequest,
+  type WikiRunSession,
+  type WikiRunSnapshot,
+  type WikiWorkflowDependencies,
+  type WikiWorkflowListener,
+  type WikiWriteResult,
+} from "./workflow-types.js";
+
+const MAX_RESEARCH_CONCURRENCY = 4;
+const MAX_NODE_ATTEMPTS = 3;
+const MAX_STRUCTURAL_REPLANS = 2;
+const MAX_NODE_OUTPUT_CHARS = 48 * 1024;
+const MAX_EVENTS = 200;
+const ACTIVITY_EVENT_INTERVAL_MS = 250;
+
+export interface WikiWorkflowEngineOptions extends Partial<Omit<WikiWorkflowDependencies, "executor">> {
+  executor?: WikiWorkflowDependencies["executor"];
+}
+
+/**
+ * Wiki-specific dynamic DAG coordinator. It owns only Wiki semantics; Pi owns
+ * the model loop, tool execution, retry, compaction, and agent transcripts.
+ */
+export class WikiWorkflowEngine {
+  private readonly dependencies: WikiWorkflowDependencies;
+  private current?: WikiRunSnapshot;
+  private readonly listeners = new Set<WikiWorkflowListener>();
+  private readonly controllers = new Map<string, AbortController>();
+  private readonly lastActivityEventAt = new Map<string, number>();
+  private pumping?: Promise<void>;
+
+  constructor(options: WikiWorkflowEngineOptions = {}) {
+    this.dependencies = {
+      inspect: options.inspect ?? inspectWiki,
+      validate: options.validate ?? validateWiki,
+      executor: options.executor ?? createPiAgentExecutor(),
+      now: options.now,
+      createId: options.createId,
+    };
+  }
+
+  start(request: WikiRunRequest): WikiRunSnapshot {
+    if (this.current && (this.current.status === "running" || this.current.status === "paused")) {
+      throw new Error("A Wiki workflow is already active for this Pi session");
+    }
+    const createdAt = this.now();
+    const inspectionNode = this.newNode("inspect", "Inspect Git scope", [], { requestedMode: request.mode });
+    this.current = {
+      version: 1,
+      id: this.newId(),
+      cwd: path.resolve(request.cwd),
+      requestedMode: request.mode,
+      language: request.language === "en" ? "en" : "zh",
+      focus: normalizeText(request.focus),
+      status: "running",
+      round: 0,
+      nodes: [inspectionNode],
+      events: [],
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.emit("run_started", undefined, `Started ${request.mode} Wiki run`);
+    this.emit("node_queued", inspectionNode.id, inspectionNode.label);
+    this.schedule();
+    return this.getSnapshot()!;
+  }
+
+  getSnapshot(): WikiRunSnapshot | undefined {
+    return this.current ? clone(this.current) : undefined;
+  }
+
+  listSnapshots(): WikiRunSnapshot[] {
+    const snapshot = this.getSnapshot();
+    return snapshot ? [snapshot] : [];
+  }
+
+  subscribe(listener: WikiWorkflowListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  serialize(): WikiRunSession | undefined {
+    return this.current ? createWikiRunSession(this.current) : undefined;
+  }
+
+  restore(serialized: WikiRunSession | WikiRunSnapshot | unknown): WikiRunSnapshot | undefined {
+    const session = isSnapshot(serialized)
+      ? createWikiRunSession(serialized)
+      : parseWikiRunSession(serialized);
+    if (!session) return undefined;
+
+    this.abortControllers();
+    this.current = clone(session.snapshot);
+    let recovered = false;
+    for (const node of this.current.nodes) {
+      if (node.status !== "running") continue;
+      node.status = "queued";
+      node.activity = { state: "waiting", message: "Interrupted; will re-inspect before dispatch", updatedAt: this.now() };
+      recovered = true;
+    }
+    if (this.current.status === "running") {
+      this.current.status = "paused";
+      recovered = true;
+    }
+    if (recovered) this.emit("recovered", undefined, "Recovered run is paused and will re-inspect before dispatch");
+    return this.getSnapshot();
+  }
+
+  async retryNode(nodeId: string): Promise<WikiRunSnapshot> {
+    const run = this.requireRun();
+    const node = this.requireNode(nodeId);
+    if (node.status === "running") throw new Error("A running node cannot be retried; cancel or wait for it first");
+    if (!["succeeded", "failed", "invalidated", "blocked", "cancelled"].includes(node.status)) {
+      throw new Error(`Node ${nodeId} is not retryable`);
+    }
+
+    if (await this.reconcileGitInputs()) {
+      run.status = "running";
+      this.schedule();
+      return this.getSnapshot()!;
+    }
+
+    this.invalidateFrom(node.id, `Retry requested for ${node.label}`, true);
+    run.status = "running";
+    run.blockedReason = undefined;
+    this.emit("node_retried", node.id, `Retrying ${node.label}`);
+    this.schedule();
+    return this.getSnapshot()!;
+  }
+
+  pause(): WikiRunSnapshot | undefined {
+    const run = this.requireRun();
+    if (run.status !== "running") return this.getSnapshot();
+    run.status = "paused";
+    this.emit("run_paused", undefined, "Scheduling paused; active agents may finish");
+    return this.getSnapshot();
+  }
+
+  async resume(): Promise<WikiRunSnapshot | undefined> {
+    const run = this.requireRun();
+    if (run.status === "failed") throw new Error("A failed Wiki run requires targeted node retry");
+    if (run.status !== "paused" && run.status !== "blocked") return this.getSnapshot();
+    if (run.status === "blocked" && !run.nodes.some((node) => node.status === "queued")) {
+      throw new Error("A blocked Wiki run requires targeted node retry or cancellation");
+    }
+    await this.reconcileGitInputs();
+    run.status = "running";
+    run.blockedReason = undefined;
+    this.emit("run_resumed", undefined, "Scheduling resumed");
+    this.schedule();
+    return this.getSnapshot();
+  }
+
+  async cancel(): Promise<WikiRunSnapshot | undefined> {
+    const run = this.requireRun();
+    if (["succeeded", "cancelled"].includes(run.status)) return this.getSnapshot();
+    run.status = "cancelled";
+    for (const node of run.nodes) {
+      if (node.status === "queued" || node.status === "invalidated" || node.status === "blocked" || node.status === "running") {
+        node.status = "cancelled";
+        node.activity = { state: "completed", message: "Cancelled", updatedAt: this.now() };
+        node.finishedAt = this.now();
+        this.emit("node_cancelled", node.id, node.label);
+      }
+    }
+    this.abortControllers();
+    run.completedAt = this.now();
+    this.emit("run_cancelled", undefined, "Run cancelled");
+    return this.getSnapshot();
+  }
+
+  /** Called during extension shutdown: preserve the next attempt as queued. */
+  async interrupt(): Promise<WikiRunSnapshot | undefined> {
+    const run = this.requireRun();
+    if (run.status !== "running" && run.status !== "paused") return this.getSnapshot();
+    for (const node of run.nodes) {
+      if (node.status !== "running") continue;
+      node.status = "queued";
+      node.activity = { state: "waiting", message: "Interrupted; will resume after Git re-inspection", updatedAt: this.now() };
+      this.emit("node_cancelled", node.id, "Interrupted for session shutdown");
+    }
+    this.abortControllers();
+    run.status = "paused";
+    this.emit("run_paused", undefined, "Run interrupted for session shutdown");
+    return this.getSnapshot();
+  }
+
+  /** Useful for tests and non-interactive callers that need a settled snapshot. */
+  async waitForIdle(): Promise<WikiRunSnapshot | undefined> {
+    while (this.pumping) await this.pumping;
+    return this.getSnapshot();
+  }
+
+  private schedule(): void {
+    if (this.pumping || this.current?.status !== "running") return;
+    this.pumping = this.pump().catch((error: unknown) => this.failRun(error)).finally(() => {
+      this.pumping = undefined;
+      if (this.current?.status === "running" && this.runnableNodes().length > 0) this.schedule();
+    });
+  }
+
+  private async pump(): Promise<void> {
+    while (this.current?.status === "running") {
+      const runnable = this.runnableNodes();
+      if (runnable.length === 0) return;
+      const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_RESEARCH_CONCURRENCY);
+      if (research.length > 0) {
+        await Promise.all(research.map(async (node) => await this.executeNode(node)));
+      } else {
+        await this.executeNode(runnable[0]);
+      }
+    }
+  }
+
+  private runnableNodes(): WikiNode[] {
+    const run = this.current;
+    if (!run || run.status !== "running") return [];
+    return run.nodes.filter((node) => node.status === "queued" && node.dependsOn.every((id) => this.nodeById(id)?.status === "succeeded"));
+  }
+
+  private async executeNode(node: WikiNode): Promise<void> {
+    const run = this.requireRun();
+    if (node.attempt >= MAX_NODE_ATTEMPTS) {
+      node.status = "blocked";
+      node.activity = { state: "waiting", message: "Maximum node attempts reached", updatedAt: this.now() };
+      run.status = "blocked";
+      run.blockedReason = `${node.label} reached ${MAX_NODE_ATTEMPTS} attempts`;
+      this.emit("run_blocked", node.id, run.blockedReason);
+      return;
+    }
+    if (node.result !== undefined || node.error || node.output) this.archiveAttempt(node);
+    node.status = "running";
+    node.attempt += 1;
+    node.result = undefined;
+    node.output = undefined;
+    node.error = undefined;
+    node.metrics = clone(EMPTY_NODE_METRICS);
+    node.startedAt = this.now();
+    node.finishedAt = undefined;
+    node.activity = { state: "running", message: "Starting", updatedAt: this.now() };
+    const controller = new AbortController();
+    this.controllers.set(node.id, controller);
+    this.emit("node_started", node.id, node.label);
+
+    try {
+      const result = await this.executeNodeWork(node, controller.signal);
+      if (node.status !== "running") return;
+      node.result = normalizeNodeResult(node.kind, result.result);
+      node.output = retainedOutput(result.output ?? node.output);
+      node.metrics = mergeMetrics(node.metrics, result.metrics);
+      // Dynamic expansion can still reject a result. Keep the node running
+      // until all result parsing and downstream queueing has completed.
+      this.afterSuccess(node);
+      node.status = "succeeded";
+      node.activity = { state: "completed", message: "Completed", updatedAt: this.now() };
+      node.finishedAt = this.now();
+      this.emit("node_succeeded", node.id, node.label);
+    } catch (error) {
+      if (node.status !== "running") return;
+      node.status = controller.signal.aborted ? "cancelled" : "failed";
+      node.error = { message: errorMessage(error), code: controller.signal.aborted ? "cancelled" : "execution_failed" };
+      node.activity = { state: "completed", message: node.error.message, updatedAt: this.now() };
+      node.finishedAt = this.now();
+      this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
+      if (run.status === "running" && node.status === "failed") {
+        run.status = "failed";
+        run.blockedReason = `${node.label} failed`;
+      }
+    } finally {
+      this.controllers.delete(node.id);
+    }
+  }
+
+  private async executeNodeWork(node: WikiNode, signal: AbortSignal): Promise<WikiAgentExecutionResult> {
+    const run = this.requireRun();
+    if (node.kind === "inspect") {
+      const inspection = await this.dependencies.inspect(run.cwd);
+      return { result: inspection };
+    }
+    if (node.kind === "validate") {
+      const validation = await this.dependencies.validate(run.cwd);
+      return { result: validation };
+    }
+    const role = roleFor(node.kind);
+    return await this.dependencies.executor.execute({
+      runId: run.id,
+      node: clone(node),
+      cwd: run.cwd,
+      prompt: promptFor(node, run),
+      role,
+      language: run.language,
+      signal,
+      validateResult: (value) => {
+        try {
+          normalizeNodeResult(node.kind, value);
+          return undefined;
+        } catch (error) {
+          return errorMessage(error);
+        }
+      },
+      onActivity: (activity, metrics) => this.updateActivity(node.id, activity, metrics),
+      onOutput: (output) => this.updateOutput(node.id, output),
+    });
+  }
+
+  private afterSuccess(node: WikiNode): void {
+    const run = this.requireRun();
+    switch (node.kind) {
+      case "inspect": {
+        const inspection = parseInspection(node.result);
+        run.inspection = inspection;
+        run.effectiveMode = run.requestedMode === "generate" ? "generate" : inspection.mode;
+        run.inspectionFingerprint = inspectionFingerprint(inspection);
+        this.queuePlan("plan", [node.id]);
+        return;
+      }
+      case "plan":
+      case "replan": {
+        const plan = parsePlan(node.result);
+        node.result = plan;
+        const scopeNodes = plan.researchScopes.map((scope) => this.queueNode(
+          "research",
+          `Research: ${scope.id}`,
+          [node.id],
+          scope,
+        ));
+        if (scopeNodes.length === 0) this.queueWrite(node.id, []);
+        return;
+      }
+      case "research": {
+        const planNodeId = node.dependsOn[0];
+        if (!planNodeId) throw new Error("Research node has no plan dependency");
+        const siblings = run.nodes.filter((candidate) => candidate.kind === "research" && candidate.dependsOn[0] === planNodeId);
+        if (siblings.every((candidate) => candidate.id === node.id || candidate.status === "succeeded")) {
+          this.queueWrite(planNodeId, siblings.map((candidate) => candidate.id));
+        }
+        return;
+      }
+      case "write":
+      case "repair": {
+        const result = parseWrite(node.result);
+        node.result = result;
+        this.queueNode("validate", "Validate Wiki", [node.id], { sourceNodeId: node.id });
+        return;
+      }
+      case "validate": {
+        const validation = parseValidation(node.result);
+        node.result = validation;
+        if (validation.ok) {
+          this.queueNode("review", "Review Wiki", [node.id], { validation });
+        } else {
+          const signature = stableStringify(validation.errors);
+          if (signature === this.previousValidationSignature(node.id)) {
+            run.status = "blocked";
+            run.blockedReason = "Validation produced the same unresolved error set twice";
+            this.emit("run_blocked", node.id, run.blockedReason);
+            return;
+          }
+          this.queueRepair([node.id], { validation });
+        }
+        return;
+      }
+      case "review": {
+        const review = parseReview(node.result);
+        node.result = review;
+        if (review.defects.length === 0) {
+          run.status = "succeeded";
+          run.completedAt = this.now();
+          this.emit("run_completed", undefined, "Wiki validation and review passed");
+          return;
+        }
+        const signature = defectsFingerprint(review.defects);
+        const previous = this.previousReviewSignature(node.id);
+        if (signature === previous) {
+          run.status = "blocked";
+          run.blockedReason = "Review produced the same unresolved defect set twice";
+          this.emit("run_blocked", node.id, run.blockedReason);
+          return;
+        }
+        const structural = review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
+        if (structural) {
+          const replans = run.nodes.filter((candidate) => candidate.kind === "replan"
+            && candidate.status !== "invalidated" && candidate.status !== "cancelled").length;
+          if (replans >= MAX_STRUCTURAL_REPLANS) {
+            run.status = "blocked";
+            run.blockedReason = `Structural review exceeded the ${MAX_STRUCTURAL_REPLANS}-replan budget`;
+            this.emit("run_blocked", node.id, run.blockedReason);
+            return;
+          }
+          this.queuePlan("replan", [node.id]);
+        } else this.queueRepair([node.id], { review });
+        return;
+      }
+    }
+  }
+
+  private queuePlan(kind: "plan" | "replan", dependsOn: string[]): WikiNode {
+    const run = this.requireRun();
+    run.round += 1;
+    const trigger = kind === "replan"
+      ? dependsOn.map((id) => this.nodeById(id)?.result).filter((value) => value !== undefined)
+      : undefined;
+    return this.queueNode(kind, kind === "plan" ? `Plan Wiki (round ${run.round})` : `Replan Wiki (round ${run.round})`, dependsOn, {
+      inspection: run.inspection,
+      focus: run.focus,
+      round: run.round,
+      trigger,
+    });
+  }
+
+  private queueWrite(planNodeId: string, researchIds: string[]): WikiNode | undefined {
+    const run = this.requireRun();
+    const existing = run.nodes.find((node) => node.kind === "write"
+      && valueIs(node.input, "planNodeId", planNodeId)
+      && !["invalidated", "cancelled", "failed", "blocked"].includes(node.status));
+    if (existing) return undefined;
+    return this.queueNode("write", "Write Wiki", [planNodeId, ...researchIds], { planNodeId, researchIds });
+  }
+
+  private queueRepair(dependsOn: string[], input: Record<string, unknown>): WikiNode {
+    return this.queueNode("repair", "Repair Wiki", dependsOn, input);
+  }
+
+  private queueNode(kind: WikiNodeKind, label: string, dependsOn: string[], input: unknown): WikiNode {
+    const node = this.newNode(kind, label, dependsOn, input);
+    this.requireRun().nodes.push(node);
+    this.emit("node_queued", node.id, node.label);
+    return node;
+  }
+
+  private newNode(kind: WikiNodeKind, label: string, dependsOn: string[], input: unknown): WikiNode {
+    const now = this.now();
+    return {
+      id: `${kind}-${this.newId()}`,
+      kind,
+      label,
+      status: "queued",
+      dependsOn,
+      attempt: 0,
+      inputFingerprint: stableStringify(input),
+      input: clone(input),
+      attemptHistory: [],
+      metrics: clone(EMPTY_NODE_METRICS),
+      activity: { state: "idle", updatedAt: now },
+    };
+  }
+
+  private async reconcileGitInputs(): Promise<boolean> {
+    const run = this.requireRun();
+    if (!run.inspectionFingerprint) return false;
+    const latest = await this.dependencies.inspect(run.cwd);
+    if (inspectionFingerprint(latest) === run.inspectionFingerprint) return false;
+
+    const inspectNode = run.nodes.find((node) => node.kind === "inspect");
+    if (!inspectNode) throw new Error("Run has no inspect node");
+    this.invalidateFrom(inspectNode.id, "Git inputs changed since this run was planned", true);
+    run.inspection = undefined;
+    run.inspectionFingerprint = undefined;
+    run.effectiveMode = undefined;
+    return true;
+  }
+
+  private invalidateFrom(nodeId: string, reason: string, queueRoot: boolean): void {
+    const run = this.requireRun();
+    const affected = new Set<string>([nodeId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of run.nodes) {
+        if (affected.has(node.id) || !node.dependsOn.some((id) => affected.has(id))) continue;
+        affected.add(node.id);
+        changed = true;
+      }
+    }
+    for (const node of run.nodes) {
+      if (!affected.has(node.id)) continue;
+      if (node.status === "running") this.controllers.get(node.id)?.abort();
+      node.status = node.id === nodeId && queueRoot ? "queued" : "invalidated";
+      node.error = undefined;
+      node.activity = { state: "idle", message: reason, updatedAt: this.now() };
+      this.emit(node.id === nodeId && queueRoot ? "node_retried" : "node_invalidated", node.id, reason);
+    }
+  }
+
+  private updateActivity(nodeId: string, activity: Partial<WikiNodeActivity>, metrics?: Partial<WikiNodeMetrics>): void {
+    const node = this.nodeById(nodeId);
+    if (!node || node.status !== "running") return;
+    node.activity = { ...node.activity, ...activity, updatedAt: this.now() };
+    node.metrics = mergeMetrics(node.metrics, metrics, true);
+    this.emitActivity(node);
+  }
+
+  private updateOutput(nodeId: string, output: string): void {
+    const node = this.nodeById(nodeId);
+    if (!node || node.status !== "running") return;
+    node.output = retainedOutput(output);
+    this.emitActivity(node);
+  }
+
+  private emitActivity(node: WikiNode): void {
+    const now = Date.now();
+    const previous = this.lastActivityEventAt.get(node.id) ?? 0;
+    if (now - previous < ACTIVITY_EVENT_INTERVAL_MS) return;
+    this.lastActivityEventAt.set(node.id, now);
+    this.emit("node_activity", node.id, node.activity.message);
+  }
+
+  private previousReviewSignature(currentNodeId: string): string | undefined {
+    const reviews = this.requireRun().nodes
+      .filter((node) => node.kind === "review" && node.id !== currentNodeId && node.status === "succeeded")
+      .map((node) => parseReview(node.result));
+    const latest = reviews.at(-1);
+    return latest ? defectsFingerprint(latest.defects) : undefined;
+  }
+
+  private previousValidationSignature(currentNodeId: string): string | undefined {
+    const validations = this.requireRun().nodes
+      .filter((node) => node.kind === "validate" && node.id !== currentNodeId && node.status === "succeeded")
+      .map((node) => parseValidation(node.result))
+      .filter((validation) => !validation.ok);
+    const latest = validations.at(-1);
+    return latest ? stableStringify(latest.errors) : undefined;
+  }
+
+  private archiveAttempt(node: WikiNode): void {
+    node.attemptHistory.push({
+      attempt: node.attempt,
+      startedAt: node.startedAt,
+      finishedAt: node.finishedAt,
+      result: clone(node.result),
+      output: node.output,
+      error: node.error ? clone(node.error) : undefined,
+      metrics: clone(node.metrics),
+    });
+  }
+
+  private abortControllers(): void {
+    for (const controller of this.controllers.values()) controller.abort();
+    this.controllers.clear();
+  }
+
+  private failRun(error: unknown): void {
+    if (!this.current || this.current.status !== "running") return;
+    this.current.status = "failed";
+    this.current.blockedReason = errorMessage(error);
+    this.emit("run_blocked", undefined, this.current.blockedReason);
+  }
+
+  private emit(kind: WikiRunEventKind, nodeId?: string, message?: string, data?: Record<string, unknown>): void {
+    const run = this.current;
+    if (!run) return;
+    const event: WikiRunEvent = { id: this.newId(), at: this.now(), kind, nodeId, message, data };
+    run.events.push(event);
+    if (run.events.length > MAX_EVENTS) run.events.splice(0, run.events.length - MAX_EVENTS);
+    run.updatedAt = event.at;
+    const snapshot = clone(run);
+    for (const listener of this.listeners) listener(snapshot, event);
+  }
+
+  private nodeById(id: string): WikiNode | undefined {
+    return this.current?.nodes.find((node) => node.id === id);
+  }
+
+  private requireNode(id: string): WikiNode {
+    const node = this.nodeById(id);
+    if (!node) throw new Error(`Unknown Wiki workflow node: ${id}`);
+    return node;
+  }
+
+  private requireRun(): WikiRunSnapshot {
+    if (!this.current) throw new Error("No Wiki workflow is available");
+    return this.current;
+  }
+
+  private now(): string {
+    return (this.dependencies.now?.() ?? new Date()).toISOString();
+  }
+
+  private newId(): string {
+    return this.dependencies.createId?.() ?? randomUUID();
+  }
+}
+
+export function createWikiWorkflowEngine(options: WikiWorkflowEngineOptions = {}): WikiWorkflowEngine {
+  return new WikiWorkflowEngine(options);
+}
+
+function roleFor(kind: WikiNodeKind): "planner" | "researcher" | "writer" | "reviewer" {
+  if (kind === "plan" || kind === "replan") return "planner";
+  if (kind === "research") return "researcher";
+  if (kind === "write" || kind === "repair") return "writer";
+  return "reviewer";
+}
+
+function promptFor(node: WikiNode, run: WikiRunSnapshot): string {
+  const language = run.language === "en" ? "English" : "Chinese";
+  const shared = [
+    "Work only in the current workspace.",
+    "Never create a source layer, snapshot, manifest, or workflow state file.",
+    "All source references must be workspace-relative path#Lx-Ly ranges.",
+    `Write user-facing Wiki content in ${language}.`,
+  ].join(" ");
+  switch (node.kind) {
+    case "plan":
+    case "replan":
+      return `${shared} You are the Wiki planner. Return JSON only with pages [{path,title,purpose,sources}], researchScopes [{id,task}] (maximum four), and rationale. Plan only pages below wiki/. Current Git inspection: ${stableStringify(run.inspection)}. Focus: ${run.focus ?? "none"}. Replan trigger: ${stableStringify(node.input)}.`;
+    case "research":
+      return `${shared} You are a read-only repository researcher. Return concise evidence for this scope as JSON or plain text. Do not edit files. Scope: ${stableStringify(node.input)}.`;
+    case "write":
+      return `${shared} You are the only Wiki writer. Edit only wiki/. Use YAML frontmatter type/title/description/sources and body citations [label](repo:path#Lx-Ly). Return JSON only with updatedPages, deletedPages, and notes. Plan and evidence: ${nodeContext(node, run)}.`;
+    case "repair":
+      return `${shared} You are the only Wiki writer. Repair the current wiki/ using the supplied validation or review defects. Edit only wiki/. Return JSON only with updatedPages, deletedPages, and notes. Defects: ${nodeContext(node, run)}.`;
+    case "review":
+      return `${shared} You are a read-only Wiki reviewer. Inspect wiki/ and source evidence. Return JSON only with defects [{id,page,kind,detail}] where kind is evidence, link, format, topology, or coverage, plus summary. Do not edit files.`;
+    default:
+      throw new Error(`No prompt available for ${node.kind}`);
+  }
+}
+
+function nodeContext(node: WikiNode, run: WikiRunSnapshot): string {
+  const input = node.input as Record<string, unknown>;
+  const context: Record<string, unknown> = { input };
+  if (typeof input.planNodeId === "string") context.plan = run.nodes.find((candidate) => candidate.id === input.planNodeId)?.result;
+  if (Array.isArray(input.researchIds)) {
+    context.research = input.researchIds.map((id) => run.nodes.find((candidate) => candidate.id === id)?.result);
+  }
+  return stableStringify(context);
+}
+
+/** Validate before publishing a successful node state, so bad agent JSON is a real failure. */
+function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
+  switch (kind) {
+    case "inspect":
+      return parseInspection(value);
+    case "plan":
+    case "replan":
+      return parsePlan(value);
+    case "write":
+    case "repair":
+      return parseWrite(value);
+    case "validate":
+      return parseValidation(value);
+    case "review":
+      return parseReview(value);
+    case "research":
+      return value;
+  }
+}
+
+function parseInspection(value: unknown): WikiInspection {
+  if (!isRecord(value) || typeof value.root !== "string" || typeof value.sourceFingerprint !== "string" || (value.mode !== "generate" && value.mode !== "refresh")) {
+    throw new Error("Inspect returned an invalid Wiki inspection");
+  }
+  return value as WikiInspection;
+}
+
+function parseValidation(value: unknown): WikiValidation {
+  if (!isRecord(value) || typeof value.ok !== "boolean" || !isStringArray(value.errors) || !isStringArray(value.pages)) {
+    throw new Error("Validator returned an invalid result");
+  }
+  return { ok: value.ok, errors: [...value.errors], pages: [...value.pages] };
+}
+
+function parsePlan(value: unknown): WikiPlanResult {
+  if (!isRecord(value) || !Array.isArray(value.pages) || !Array.isArray(value.researchScopes) || typeof value.rationale !== "string") {
+    throw new Error("Planner must return pages, researchScopes, and rationale as JSON");
+  }
+  const pages = value.pages.map((page) => {
+    if (!isRecord(page) || !isWikiPagePath(page.path) || typeof page.title !== "string" || typeof page.purpose !== "string" || !isStringArray(page.sources)) {
+      throw new Error("Planner returned an invalid page plan");
+    }
+    return { path: page.path, title: page.title, purpose: page.purpose, sources: [...page.sources] };
+  });
+  const seen = new Set<string>();
+  const researchScopes = value.researchScopes.slice(0, MAX_RESEARCH_CONCURRENCY).map((scope) => {
+    if (!isRecord(scope) || typeof scope.id !== "string" || !scope.id.trim() || typeof scope.task !== "string" || !scope.task.trim() || seen.has(scope.id)) {
+      throw new Error("Planner returned invalid or duplicate research scopes");
+    }
+    seen.add(scope.id);
+    return { id: scope.id, task: scope.task };
+  });
+  return { pages, researchScopes, rationale: value.rationale };
+}
+
+function parseWrite(value: unknown): WikiWriteResult {
+  if (!isRecord(value) || !isStringArray(value.updatedPages) || !isStringArray(value.deletedPages) || !isStringArray(value.notes)) {
+    throw new Error("Writer must return updatedPages, deletedPages, and notes as JSON");
+  }
+  return { updatedPages: [...value.updatedPages], deletedPages: [...value.deletedPages], notes: [...value.notes] };
+}
+
+function parseReview(value: unknown): WikiReviewResult {
+  if (!isRecord(value) || !Array.isArray(value.defects) || typeof value.summary !== "string") {
+    throw new Error("Reviewer must return defects and summary as JSON");
+  }
+  const defects = value.defects.map((defect) => {
+    if (!isRecord(defect) || typeof defect.id !== "string" || typeof defect.page !== "string" || !isReviewKind(defect.kind) || typeof defect.detail !== "string") {
+      throw new Error("Reviewer returned an invalid defect");
+    }
+    return { id: defect.id, page: defect.page, kind: defect.kind, detail: defect.detail };
+  });
+  return { defects, summary: value.summary };
+}
+
+function isReviewKind(value: unknown): value is WikiReviewDefect["kind"] {
+  return value === "evidence" || value === "link" || value === "format" || value === "topology" || value === "coverage";
+}
+
+function isWikiPagePath(value: unknown): value is string {
+  if (typeof value !== "string" || !value.endsWith(".md")) return false;
+  const normalized = value.replaceAll("\\", "/");
+  return !normalized.startsWith("/") && !normalized.startsWith("wiki/") && !normalized.split("/").some((part) => part === "" || part === "." || part === "..");
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function inspectionFingerprint(inspection: WikiInspection): string {
+  return stableStringify({
+    changed: inspection.changed,
+    changedPaths: inspection.changedPaths,
+    sourceFingerprint: inspection.sourceFingerprint,
+  });
+}
+
+function retainedOutput(output: string | undefined): string | undefined {
+  if (output === undefined || output.length <= MAX_NODE_OUTPUT_CHARS) return output;
+  // Reserve room for the marker as well as the retained tail. This makes the
+  // operation idempotent when a streamed result is finalized or archived.
+  let retainedLength = MAX_NODE_OUTPUT_CHARS;
+  let marker = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    marker = `[..., ${output.length - retainedLength} earlier characters omitted ...]\n`;
+    retainedLength = MAX_NODE_OUTPUT_CHARS - marker.length;
+  }
+  marker = `[... ${output.length - retainedLength} earlier characters omitted ...]\n`;
+  return `${marker}${output.slice(-retainedLength)}`;
+}
+
+function defectsFingerprint(defects: WikiReviewDefect[]): string {
+  return stableStringify(defects.map((defect) => ({ page: defect.page, kind: defect.kind, detail: defect.detail })).sort((left, right) => stableStringify(left).localeCompare(stableStringify(right))));
+}
+
+function mergeMetrics(current: WikiNodeMetrics, update?: Partial<WikiNodeMetrics>, incremental = false): WikiNodeMetrics {
+  if (!update) return current;
+  const next = { ...current, ...update };
+  if (incremental) {
+    if (update.compactions !== undefined) next.compactions = current.compactions + update.compactions;
+    if (update.autoRetries !== undefined) next.autoRetries = current.autoRetries + update.autoRetries;
+  }
+  return next;
+}
+
+function valueIs(value: unknown, key: string, expected: string): boolean {
+  return isRecord(value) && value[key] === expected;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+}
+
+function normalizeText(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  return text || undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === "object";
+}
+
+function isSnapshot(value: unknown): value is WikiRunSnapshot {
+  return isRecord(value) && value.version === 1 && typeof value.id === "string" && Array.isArray(value.nodes);
+}
+
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}

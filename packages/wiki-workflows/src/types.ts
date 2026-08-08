@@ -14,6 +14,8 @@ export interface WikiInspection {
   lastWikiCommit: string | null;
   changed: SourceChange[];
   changedPaths: string[];
+  /** Hash of the current Git-derived source state, excluding wiki/. */
+  sourceFingerprint: string;
   impactedPages: string[];
   wikiDrift: boolean;
 }

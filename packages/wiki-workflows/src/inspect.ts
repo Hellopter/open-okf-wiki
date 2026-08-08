@@ -1,4 +1,5 @@
-import { readFile, realpath, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readFile, readlink, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { exists, markdownFiles, readText } from "./files.js";
 import { inside } from "./files.js";
@@ -187,6 +188,41 @@ async function hasWikiDrift(root: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Hash only the Git-reported source changes and their current contents. This
+ * catches edits to an already-modified path without recording a source copy.
+ */
+async function sourceFingerprint(root: string, changes: SourceChange[], bootstrapHead?: string): Promise<string> {
+  const hash = createHash("sha256");
+  if (bootstrapHead) {
+    hash.update("head");
+    hash.update("\0");
+    hash.update(bootstrapHead);
+    hash.update("\0");
+  }
+  const ordered = [...changes].sort((left, right) => `${left.status}\0${left.paths.join("\0")}`.localeCompare(`${right.status}\0${right.paths.join("\0")}`));
+  for (const change of ordered) {
+    hash.update(change.status);
+    hash.update("\0");
+    for (const relative of change.paths) {
+      hash.update(relative);
+      hash.update("\0");
+      const candidate = inside(root, path.resolve(root, relative));
+      try {
+        const entry = await lstat(candidate);
+        if (entry.isSymbolicLink()) hash.update(await readlink(candidate));
+        else if (entry.isFile()) hash.update(await readFile(candidate));
+        else hash.update(`non-file:${entry.mode}`);
+      } catch {
+        // A deleted/renamed-away path is still part of the Git-derived state.
+        hash.update("missing");
+      }
+      hash.update("\0");
+    }
+  }
+  return hash.digest("hex");
+}
+
 function impactedPages(graph: PageGraph, changedPaths: string[]): string[] {
   const impacted = new Set<string>();
   for (const changed of changedPaths) {
@@ -234,6 +270,9 @@ export async function inspectWiki(cwd: string): Promise<WikiInspection> {
   const untracked = await untrackedChanges(root);
   const changed = uniqueChanges([...committed, ...staged, ...unstaged, ...untracked]);
   const changedPaths = [...new Set(changed.flatMap((change) => change.paths).filter((candidate) => !isWikiPath(candidate)))].sort();
+  // Before any Wiki commit exists there is no merge-base diff; HEAD is the
+  // stable Git source identity until the first Wiki baseline is committed.
+  const currentSourceFingerprint = await sourceFingerprint(root, changed, baseCommit ? undefined : head);
   const wikiDrift = await hasWikiDrift(root);
   const graph = wikiExists ? await inspectPageGraph(workspaceRoot, wikiRoot) : { pages: [], sources: new Map(), inbound: new Map(), reliable: true };
 
@@ -247,6 +286,7 @@ export async function inspectWiki(cwd: string): Promise<WikiInspection> {
     lastWikiCommit,
     changed,
     changedPaths,
+    sourceFingerprint: currentSourceFingerprint,
     impactedPages: mode === "refresh" ? impactedPages(graph, changedPaths) : graph.pages,
     wikiDrift,
   };

@@ -3,36 +3,44 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Git-native repository Wiki workflows for pi-dynamic-workflows",
-  "bin": {
-    "okf-wiki": "./dist/cli.js"
-  },
+  "description": "Git-native repository Wiki workflow extension for Pi",
   "files": [
     "dist/",
     "skills/"
   ],
   "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ],
     "skills": [
       "skills/git-native-wiki"
     ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test tests/*.test.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "dependencies": {
-    "@quintinshaw/pi-dynamic-workflows": "^3.5.1",
     "yaml": "^2.8.1"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.8"
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-tui": "^0.82.1",
     "@types/node": "^22.10.2",
+    "typebox": "^1.0.56",
     "typescript": "^5.7.3"
   }
 }

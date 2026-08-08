@@ -2,10 +2,10 @@
   "name": "open-okf-wiki-workflows",
   "private": true,
   "version": "0.1.0-dev",
-  "description": "Git-native repository Wiki workflows for pi-dynamic-workflows",
+  "description": "Git-native repository Wiki workflow extension for Pi",
   "packageManager": "pnpm@10.33.2",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "pnpm --filter @okf-wiki/wiki-workflows build",

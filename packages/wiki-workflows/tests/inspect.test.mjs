@@ -93,6 +93,20 @@ test("falls back to a full generation when the Wiki working tree drifts", async 
   assert.deepEqual(inspection.changedPaths, []);
 });
 
+test("changes the source fingerprint when an already-modified path changes again", async () => {
+  const root = await createRepository();
+  const source = path.join(root, "src", "service.ts");
+  await writeFile(source, "export const service = 2;\n");
+  const first = await inspectWiki(root);
+  await writeFile(source, "export const service = 3;\n");
+  const second = await inspectWiki(root);
+
+  assert.deepEqual(first.changedPaths, ["src/service.ts"]);
+  assert.deepEqual(second.changedPaths, ["src/service.ts"]);
+  assert.equal(first.changed[0].status, second.changed[0].status);
+  assert.notEqual(first.sourceFingerprint, second.sourceFingerprint);
+});
+
 test("falls back to a full generation for source provenance without a line range", async () => {
   const root = await createRepository();
   await writeFile(path.join(root, "wiki", "concepts", "service.md"), [
