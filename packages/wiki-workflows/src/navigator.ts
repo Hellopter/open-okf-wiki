@@ -60,13 +60,13 @@ const PLAIN_THEME: WikiNavigatorTheme = {
 };
 
 const STATUS_ICON: Record<WikiNodeStatus, string> = {
-  queued: "o",
-  running: ">",
-  succeeded: "+",
-  failed: "x",
-  invalidated: "~",
+  queued: "○",
+  running: "●",
+  succeeded: "✓",
+  failed: "✗",
+  invalidated: "↻",
   blocked: "!",
-  cancelled: "-",
+  cancelled: "–",
 };
 
 const STATUS_COLOR: Record<WikiNodeStatus, "accent" | "success" | "error" | "warning" | "muted"> = {
@@ -78,6 +78,8 @@ const STATUS_COLOR: Record<WikiNodeStatus, "accent" | "success" | "error" | "war
   blocked: "warning",
   cancelled: "muted",
 };
+
+const NAVIGATOR_FOOTER_ROWS = 2;
 
 export type WikiNavigatorView = "runs" | "phases" | "agents" | "detail";
 
@@ -326,24 +328,25 @@ export function renderWikiNavigator(
 ): string[] {
   const safeWidth = Math.max(20, width);
   const safeRows = Math.max(8, viewportRows);
+  const contentRows = Math.max(1, safeRows - NAVIGATOR_FOOTER_ROWS);
   const normalized = ensureSelection(state, run, runs);
   if (normalized.view === "runs") {
-    if (normalized.showHelp) return fitRows([theme.bold("Wiki Run Controls"), ...renderHelp(safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
-    if (normalized.confirmation) return fitRows([...renderConfirmation(normalized.confirmation, run, safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
-    return fitRows(renderRuns(normalized, runs, activeRunId, safeWidth, theme, safeRows - 1).concat(footerHint(normalized)), safeRows, safeWidth);
+    if (normalized.showHelp) return withNavigatorFooter([theme.bold("Wiki Run Controls"), ...renderHelp(safeWidth, theme)], normalized, safeRows, safeWidth, theme);
+    if (normalized.confirmation) return withNavigatorFooter(renderConfirmation(normalized.confirmation, run, safeWidth, theme), normalized, safeRows, safeWidth, theme);
+    return withNavigatorFooter(renderRuns(normalized, runs, activeRunId, safeWidth, theme, contentRows), normalized, safeRows, safeWidth, theme);
   }
-  if (!run) return fitRows(renderLoadingWorkspace(safeWidth, theme, workspace), safeRows, safeWidth);
+  if (!run) return withNavigatorFooter(renderLoadingWorkspace(safeWidth, theme, workspace), normalized, safeRows, safeWidth, theme);
 
   const header = renderHeader(run, safeWidth, theme);
-  const bodyRows = Math.max(4, safeRows - header.length - 1);
-  if (normalized.showHelp) return fitRows([...header, ...renderHelp(safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
-  if (normalized.confirmation) return fitRows([...header, ...renderConfirmation(normalized.confirmation, run, safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
+  const bodyRows = Math.max(4, contentRows - header.length);
+  if (normalized.showHelp) return withNavigatorFooter([...header, ...renderHelp(safeWidth, theme)], normalized, safeRows, safeWidth, theme);
+  if (normalized.confirmation) return withNavigatorFooter([...header, ...renderConfirmation(normalized.confirmation, run, safeWidth, theme)], normalized, safeRows, safeWidth, theme);
 
   let body: string[];
   if (normalized.view === "phases") body = renderPhaseChooser(normalized, run, safeWidth, theme, bodyRows);
   else if (normalized.view === "agents") body = renderAgentList(normalized, run, safeWidth, theme, bodyRows);
   else body = renderAgentDetail(normalized, run, safeWidth, theme, bodyRows);
-  return fitRows([...header, ...body, footerHint(normalized)], safeRows, safeWidth);
+  return withNavigatorFooter([...header, ...body], normalized, safeRows, safeWidth, theme);
 }
 
 /** Plain text is also used by /wiki status and non-interactive command output. */
@@ -673,10 +676,11 @@ function renderHeader(run: WikiRunView, width: number, theme: WikiNavigatorTheme
   const progress = `${run.nodes.filter((node) => node.status === "succeeded").length}/${run.nodes.length}`;
   const head = run.inspection?.head ? ` | ${shortHash(run.inspection.head)}` : "";
   const title = truncateToWidth(`${run.effectiveMode ?? run.requestedMode} Wiki run${run.parentRunId ? " (fork)" : ""}`, width, "", true);
-  const detail = `${run.status}  ${progress} agents | ${changed} changed${head}`;
+  const status = theme.fg(runStatusColor(run.status), `${runStatusIcon(run.status)} ${run.status}`);
+  const detail = `${status}${theme.fg("dim", `  ${progress} agents | ${changed} changed${head}`)}`;
   return [
     theme.fg("accent", theme.bold(title)),
-    truncateToWidth(theme.fg("dim", detail), width, "", true),
+    truncateToWidth(detail, width, "", true),
   ];
 }
 
@@ -702,10 +706,9 @@ function renderRuns(
     const icon = runStatusIcon(run.status);
     const metadata = `${run.effectiveMode ?? run.requestedMode}${parent}${active} | ${run.succeededNodes}/${run.totalNodes} | ${formatTimestamp(run.updatedAt)}`;
     const title = truncateToWidth(run.focus || "Wiki generation", Math.max(12, width - visibleWidth(metadata) - 7), "…", false);
-    const primary = `${marker} ${icon} ${title}`;
     lines.push(truncateToWidth(
       run.id === state.selectedRunId
-        ? theme.fg("accent", theme.bold(`${primary}  ${metadata}`))
+        ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(runStatusColor(run.status), theme.bold(icon))}${theme.fg("accent", theme.bold(` ${title}  ${metadata}`))}`
         : `${marker} ${theme.fg(runStatusColor(run.status), icon)} ${title}  ${theme.fg("dim", metadata)}`,
       width,
       "",
@@ -790,11 +793,12 @@ function renderSidebar(state: WikiNavigatorState, run: WikiRunView, width: numbe
     const status = phaseStatus(nodes);
     const marker = phase.id === state.selectedPhaseId ? "›" : " ";
     const count = `${nodes.filter((node) => node.status === "succeeded").length}/${nodes.length}`;
-    const text = `${marker} ${STATUS_ICON[status]} ${phase.title} ${count}`;
+    const icon = STATUS_ICON[status];
+    const text = `${marker} ${icon} ${phase.title} ${count}`;
     lines.push(truncateToWidth(
       phase.id === state.selectedPhaseId
-        ? theme.fg("accent", theme.bold(text))
-        : `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])}${text.slice(2)}`,
+        ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(STATUS_COLOR[status], theme.bold(icon))}${theme.fg("accent", theme.bold(` ${phase.title} ${count}`))}`
+        : `${theme.fg(STATUS_COLOR[status], icon)}${text.slice(2)}`,
       width,
       "",
       true,
@@ -817,11 +821,12 @@ function renderNodeRow(node: WikiRunNode, selected: boolean, width: number, them
   const marker = selected ? "›" : " ";
   const attempt = node.attempt > 1 ? ` #${node.attempt}` : "";
   const activity = node.status === "running" ? ` | ${activityText(node)}` : "";
-  const text = `${marker} ${STATUS_ICON[node.status]} ${node.label}${attempt}${activity}`;
+  const icon = STATUS_ICON[node.status];
+  const text = `${marker} ${icon} ${node.label}${attempt}${activity}`;
   return truncateToWidth(
     selected
-      ? theme.fg("accent", theme.bold(text))
-      : `${text.slice(0, 2)}${theme.fg(STATUS_COLOR[node.status], STATUS_ICON[node.status])}${text.slice(3)}`,
+      ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(STATUS_COLOR[node.status], theme.bold(icon))}${theme.fg("accent", theme.bold(` ${node.label}${attempt}${activity}`))}`
+      : `${text.slice(0, 2)}${theme.fg(STATUS_COLOR[node.status], icon)}${text.slice(3)}`,
     width,
     "",
     true,
@@ -1002,6 +1007,22 @@ function footerHint(state: WikiNavigatorState): string {
   if (state.view === "detail") return "j/k scroll | Enter raw | [/] attempts | g/G ends | f follow | Esc back | ? help";
   if (state.view === "agents") return "j/k agents | Enter detail | g/G ends | Esc phases | ? help";
   return "j/k phases | Enter agents | R retry phase | g/G ends | Esc runs | ? help";
+}
+
+/** Reserve the final line for controls in every view, including short lists. */
+function withNavigatorFooter(
+  content: string[],
+  state: WikiNavigatorState,
+  rows: number,
+  width: number,
+  theme: WikiNavigatorTheme,
+): string[] {
+  const bodyRows = Math.max(1, rows - NAVIGATOR_FOOTER_ROWS);
+  return [
+    ...fitRows(content, bodyRows, width),
+    "",
+    truncateToWidth(theme.fg("muted", `  ${footerHint(state)}`), width, "", true),
+  ];
 }
 
 function joinColumns(

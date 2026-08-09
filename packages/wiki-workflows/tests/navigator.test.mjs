@@ -188,6 +188,30 @@ test("views render into a fixed-height viewport", () => {
   assert.match(plain(lines.join("\n")), /\d+-\d+\/\d+ follow/);
 });
 
+test("pins navigator controls to the footer and gives execution states distinct icons", () => {
+  const runs = [summary(run)];
+  const root = renderWikiNavigator(createWikiNavigatorState(run, runs), run, 80, undefined, 12, undefined, runs, run.id);
+  assert.equal(plain(root.at(-2)).trim(), "");
+  assert.match(plain(root.at(-1)), /j\/k runs/);
+  assert.match(plain(root.join("\n")), /●/);
+
+  let state = createWikiNavigatorState(run, runs);
+  ({ state } = reduceWikiNavigator(state, "enter", run, runs, run.id));
+  const phases = renderWikiNavigator(state, run, 80, undefined, 12, undefined, runs, run.id);
+  assert.equal(plain(phases.at(-2)).trim(), "");
+  assert.match(plain(phases.at(-1)), /j\/k phases/);
+  assert.match(plain(phases.join("\n")), /✓/);
+
+  const detail = renderWikiNavigator(drillToResearchDetail(), run, 80, undefined, 12, undefined, runs, run.id);
+  assert.equal(plain(detail.at(-2)).trim(), "");
+  assert.match(plain(detail.at(-1)), /j\/k scroll/);
+
+  const succeeded = { ...run, status: "succeeded" };
+  const failed = { ...run, status: "failed" };
+  assert.match(plain(renderWikiNavigator(createWikiNavigatorState(succeeded, [summary(succeeded)]), succeeded, 80, undefined, 12, undefined, [summary(succeeded)], succeeded.id).join("\n")), /✓/);
+  assert.match(plain(renderWikiNavigator(createWikiNavigatorState(failed, [summary(failed)]), failed, 80, undefined, 12, undefined, [summary(failed)], failed.id).join("\n")), /✗/);
+});
+
 test("g/G and scrolling remain local to the current view", () => {
   let state = createWikiNavigatorState(run, [summary(run)]);
   ({ state } = reduceWikiNavigator(state, "enter", run, [summary(run)], run.id));
