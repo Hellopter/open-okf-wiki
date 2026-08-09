@@ -40,3 +40,10 @@ code and preserve valid Wiki links.
 console, which exposes validation errors, agent context and compaction activity,
 provider retries, and targeted retry for a settled node. Retrying preserves
 valid upstream work and invalidates only downstream nodes.
+
+For phase-specific operating guidance, read the relevant reference:
+
+- [Planning](references/plan.md)
+- [Research receipts](references/research.md)
+- [Writing and repair](references/write.md)
+- [Review](references/review.md)

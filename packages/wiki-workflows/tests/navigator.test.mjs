@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createWikiNavigatorState,
   layoutForWidth,
+  phaseRows,
   reduceWikiNavigator,
   renderWikiNavigator,
   renderWikiRunText,
@@ -22,10 +23,7 @@ const run = {
   round: 2,
   createdAt: "2026-08-08T00:00:00.000Z",
   updatedAt: "2026-08-08T00:00:00.000Z",
-  events: [
-    { id: "event-1", at: "2026-08-08T00:00:01.000Z", kind: "node_started", nodeId: "research", message: "Research started" },
-    { id: "event-2", at: "2026-08-08T00:00:02.000Z", kind: "node_activity", nodeId: "research", message: "Compacting context" },
-  ],
+  events: [],
   inspection: { head: "abcdef0123456789", changedPaths: ["src/engine.ts", "src/ui.ts"] },
   nodes: [
     { id: "inspect", kind: "inspect", label: "Inspect Git scope", status: "succeeded", dependsOn: [], attempt: 1, inputFingerprint: "head:abc", input: {}, metrics: {}, activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" } },
@@ -43,29 +41,47 @@ const run = {
       activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
     },
     {
-      id: "research",
+      id: "research-a",
       kind: "research",
       label: "Research workflow engine",
       status: "running",
       dependsOn: ["plan"],
       attempt: 2,
       input: {},
+      history: [
+        { at: "2026-08-08T00:00:01.000Z", kind: "message", text: "I will inspect the workflow engine." },
+        { at: "2026-08-08T00:00:02.000Z", kind: "tool_call", toolName: "read", text: "{\"path\":\"src/engine.ts\"}" },
+        { at: "2026-08-08T00:00:03.000Z", kind: "tool_result", toolName: "read", text: "export class WikiWorkflowEngine {}" },
+      ],
       activity: { state: "compacting", message: "Compacting context", updatedAt: "2026-08-08T00:00:00.000Z", retryDelayMs: 1500 },
       metrics: { model: "openai/gpt-5", contextTokens: 90000, contextWindow: 128000, contextEstimated: true, compactions: 1, autoRetries: 2 },
+      output: "streamed evidence from the active agent",
       startedAt: "2026-08-08T00:00:00.000Z",
     },
-    { id: "write", kind: "write", label: "Write Wiki pages", status: "queued", dependsOn: ["research"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
+    { id: "research-b", kind: "research", label: "Research source citations", status: "queued", dependsOn: ["plan"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
+    { id: "write", kind: "write", label: "Write Wiki pages", status: "queued", dependsOn: ["research-a", "research-b"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
   ],
 };
 
-test("selects the documented responsive layouts", () => {
-  assert.equal(layoutForWidth(96), 3);
-  assert.equal(layoutForWidth(72), 2);
-  assert.equal(layoutForWidth(71), 1);
+function drillToResearchDetail(value = run) {
+  let state = createWikiNavigatorState(value);
+  ({ state } = reduceWikiNavigator(state, "down", value));
+  ({ state } = reduceWikiNavigator(state, "down", value));
+  ({ state } = reduceWikiNavigator(state, "enter", value));
+  ({ state } = reduceWikiNavigator(state, "enter", value));
+  return state;
+}
+
+test("keeps a sidebar only where the terminal has room", () => {
+  assert.equal(layoutForWidth(68), 2);
+  assert.equal(layoutForWidth(67), 1);
+  assert.deepEqual(phaseRows(run).map((phase) => [phase.title, phase.nodeIds.length]), [
+    ["Inspect", 1], ["Plan", 1], ["Research", 2], ["Write", 1],
+  ]);
 });
 
 test("idle console exposes the configured workspace without creating a run", () => {
-  const rendered = plain(renderWikiNavigator(createWikiNavigatorState(), undefined, 80, undefined, 24, {
+  const rendered = plain(renderWikiNavigator(createWikiNavigatorState(), undefined, 80, undefined, 12, {
     root: "/docs",
     language: "en",
     sources: [{ path: "api" }, { path: "web" }],
@@ -77,52 +93,104 @@ test("idle console exposes the configured workspace without creating a run", () 
   assert.match(rendered, /No Wiki run/);
 });
 
-test("three-column rendering includes tree, telemetry, and Git scope", () => {
-  const lines = renderWikiNavigator(createWikiNavigatorState(run), run, 120);
-  const rendered = plain(lines.join("\n"));
-  assert.match(rendered, /Nodes/);
-  assert.match(rendered, /Node: Inspect Git scope/);
-  assert.match(rendered, /Changed: 2 files/);
+test("drills from phase selection to a selected agent transcript", () => {
+  let state = createWikiNavigatorState(run);
+  const phaseScreen = plain(renderWikiNavigator(state, run, 100, undefined, 12).join("\n"));
+  assert.match(phaseScreen, /Phases/);
+  assert.match(phaseScreen, /Select a phase/);
+  assert.match(phaseScreen, /Research 0\/2/);
 
-  const state = { ...createWikiNavigatorState(run), selectedNodeId: "research" };
-  const telemetry = plain(renderWikiNavigator(state, run, 120).join("\n"));
-  assert.match(telemetry, /Inspect/);
-  assert.match(telemetry, /Plan/);
-  assert.match(telemetry, /Research/);
-  assert.match(telemetry, /selected/);
-  assert.match(telemetry, /90,000 \/ 128,000 \(70%\) estimated/);
-  assert.match(telemetry, /compactions 1/);
-  assert.match(telemetry, /auto retries 2/);
-  assert.match(telemetry, /Started: 2026-08-08 00:00:00Z/);
-  assert.match(telemetry, /Recent run events/);
-  assert.match(telemetry, /node_activity/);
+  ({ state } = reduceWikiNavigator(state, "down", run));
+  ({ state } = reduceWikiNavigator(state, "down", run));
+  assert.equal(state.selectedNodeId, "research-a");
+  ({ state } = reduceWikiNavigator(state, "enter", run));
+  assert.equal(state.view, "agents");
+  const agents = plain(renderWikiNavigator(state, run, 100, undefined, 12).join("\n"));
+  assert.match(agents, /Research \| 2 agents/);
+  assert.match(agents, /Research source citations/);
 
-  const relations = plain(renderWikiNavigator({ ...createWikiNavigatorState(run), selectedNodeId: "plan" }, run, 160).join("\n"));
-  assert.match(relations, /\[succeeded\] <upstream> Inspect Git scope/);
-  assert.match(relations, /\[running\] <downstream> Research/);
+  ({ state } = reduceWikiNavigator(state, "enter", run));
+  assert.equal(state.view, "detail");
+  const detail = plain(renderWikiNavigator(state, run, 100, undefined, 40).join("\n"));
+  assert.match(detail, /Messages & tool calls/);
+  assert.match(detail, /assistant tool read/);
+  assert.match(detail, /tool read/);
+  assert.match(detail, /Latest assistant output/);
+  assert.match(detail, /streamed evidence from the active agent/);
+  assert.match(detail, /Markdown handoff/);
+  assert.match(detail, /90,000 \/ 128,000 \(70%\) estimated/);
+});
+
+test("protocol failures identify the required control submission in the detail view", () => {
+  const failed = structuredClone(run);
+  failed.nodes[2].status = "failed";
+  failed.nodes[2].error = {
+    message: "Agent did not call wiki_submit_plan before completing",
+    code: "missing_submission",
+    requiredSubmissionTool: "wiki_submit_plan",
+  };
+  const detail = plain(renderWikiNavigator(drillToResearchDetail(failed), failed, 100, undefined, 40).join("\n"));
+  assert.match(detail, /Failure/);
+  assert.match(detail, /Required submission: wiki_submit_plan/);
+});
+
+test("views render into a fixed-height viewport", () => {
+  const state = drillToResearchDetail();
+  const lines = renderWikiNavigator(state, run, 80, undefined, 11);
+  assert.equal(lines.length, 11);
+  assert.match(plain(lines.join("\n")), /\d+-\d+\/\d+ follow/);
+});
+
+test("g/G and scrolling remain local to the current view", () => {
+  let state = createWikiNavigatorState(run);
+  ({ state } = reduceWikiNavigator(state, "G", run));
+  assert.equal(state.selectedNodeId, "write");
+  ({ state } = reduceWikiNavigator(state, "g", run));
+  assert.equal(state.selectedNodeId, "inspect");
+
+  state = drillToResearchDetail();
+  const page = reduceWikiNavigator(state, "pageDown", run);
+  assert.equal(page.state.selectedNodeId, "research-a");
+  assert.equal(page.state.detailScroll, 12);
+  assert.equal(page.state.followOutput, false);
+  const start = reduceWikiNavigator(page.state, "g", run);
+  assert.equal(start.state.detailFromEnd, false);
+  const end = reduceWikiNavigator(start.state, "G", run);
+  assert.equal(end.state.detailFromEnd, true);
+  assert.equal(end.state.followOutput, true);
+});
+
+test("escape follows the phase, agent, detail hierarchy", () => {
+  let state = drillToResearchDetail();
+  ({ state } = reduceWikiNavigator(state, "escape", run));
+  assert.equal(state.view, "agents");
+  ({ state } = reduceWikiNavigator(state, "escape", run));
+  assert.equal(state.view, "phases");
+  assert.deepEqual(reduceWikiNavigator(state, "escape", run).action, { type: "close" });
 });
 
 test("retry confirmation preserves upstream and invalidates only downstream", () => {
   const impact = retryImpact(run, "plan");
   assert.deepEqual(impact?.preservedUpstream, ["inspect"]);
-  assert.deepEqual(impact?.invalidatedDownstream, ["research", "write"]);
+  assert.deepEqual(impact?.invalidatedDownstream, ["research-a", "research-b", "write"]);
   assert.equal(impact?.writesWiki, true);
 
-  let state = { ...createWikiNavigatorState(run), selectedNodeId: "plan" };
+  let state = createWikiNavigatorState(run);
+  ({ state } = reduceWikiNavigator(state, "down", run));
+  ({ state } = reduceWikiNavigator(state, "enter", run));
   ({ state } = reduceWikiNavigator(state, "r", run));
   assert.deepEqual(state.confirmation, { kind: "retry", nodeId: "plan" });
   const transition = reduceWikiNavigator(state, "enter", run);
   assert.deepEqual(transition.action, { type: "retry", nodeId: "plan" });
   const rendered = plain(renderWikiNavigator(state, run, 80).join("\n"));
   assert.match(rendered, /Keep upstream: Inspect Git scope/);
-  assert.match(rendered, /Re-run: Plan Wiki changes, Research workflow engine, Write Wiki pages/);
   assert.match(rendered, /can write wiki/);
 });
 
-test("running nodes refuse retry, while pause and cancel preserve explicit intent", () => {
-  const running = { ...createWikiNavigatorState(run), selectedNodeId: "research" };
+test("running agents refuse retry, while pause and cancel preserve explicit intent", () => {
+  const running = drillToResearchDetail();
   const denied = reduceWikiNavigator(running, "r", run);
-  assert.deepEqual(denied.action, { type: "notify", message: "Wait for the selected node to settle before retrying", level: "warning" });
+  assert.deepEqual(denied.action, { type: "notify", message: "Wait for the selected agent to settle before retrying", level: "warning" });
 
   assert.deepEqual(reduceWikiNavigator(running, "p", run).action, { type: "pause" });
   const cancel = reduceWikiNavigator(running, "c", run);
@@ -130,57 +198,12 @@ test("running nodes refuse retry, while pause and cancel preserve explicit inten
   assert.deepEqual(reduceWikiNavigator(cancel.state, "enter", run).action, { type: "cancel" });
 });
 
-test("detail paging scrolls output and toggles live follow without changing node selection", () => {
-  const state = { ...createWikiNavigatorState(run), selectedNodeId: "research", showDetail: true };
-  const page = reduceWikiNavigator(state, "pageDown", run);
-  assert.equal(page.state.selectedNodeId, "research");
-  assert.equal(page.state.detailScroll, 12);
-  assert.equal(page.state.followOutput, false);
-  const follow = reduceWikiNavigator(page.state, "f", run);
-  assert.equal(follow.state.followOutput, true);
-  const start = reduceWikiNavigator(follow.state, "g", run);
-  assert.equal(start.state.detailFromEnd, false);
-  assert.equal(start.state.followOutput, false);
-  const end = reduceWikiNavigator(start.state, "G", run);
-  assert.equal(end.state.detailFromEnd, true);
-  assert.equal(end.state.followOutput, true);
-
-  const long = structuredClone(run);
-  long.nodes[2].output = "word ".repeat(300);
-  const output = plain(renderWikiNavigator(end.state, long, 70, undefined, 8).join("\n"));
-  assert.match(output, /Output \d+-\d+\/\d+ follow/);
-});
-
-test("renders raw agent output beside the structured result", () => {
-  const live = structuredClone(run);
-  live.nodes[2].result = { evidence: "parsed" };
-  live.nodes[2].output = "streamed evidence from the active agent";
-  const rendered = plain(renderWikiNavigator({ ...createWikiNavigatorState(live), selectedNodeId: "research" }, live, 120).join("\n"));
-  assert.match(rendered, /Result/);
-  assert.match(rendered, /Output/);
-  assert.match(rendered, /streamed evidence from the active agent/);
-});
-
-test("retry telemetry exposes attempt count and backoff", () => {
-  const retrying = structuredClone(run);
-  retrying.nodes[2].activity = {
-    state: "retrying",
-    message: "Provider retry",
-    retryAttempt: 2,
-    retryMaxAttempts: 3,
-    retryDelayMs: 1500,
-    updatedAt: "2026-08-08T00:00:03.000Z",
-  };
-  const rendered = plain(renderWikiNavigator({ ...createWikiNavigatorState(retrying), selectedNodeId: "research" }, retrying, 120).join("\n"));
-  assert.match(rendered, /Provider retry 2\/3 in 1.5s/);
-});
-
 test("plain fallback exposes status and node failures without terminal UI", () => {
   const failed = structuredClone(run);
   failed.status = "blocked";
   failed.blockedReason = "Repeated review defects";
-  failed.nodes[3].status = "failed";
-  failed.nodes[3].error = { message: "wiki/index.md citation is invalid" };
+  failed.nodes[4].status = "failed";
+  failed.nodes[4].error = { message: "wiki/index.md citation is invalid" };
   const text = renderWikiRunText(failed);
   assert.match(text, /Wiki Run run-1 \| refresh \| blocked/);
   assert.match(text, /Blocked: Repeated review defects/);

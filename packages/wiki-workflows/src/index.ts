@@ -63,6 +63,7 @@ export type {
   WikiNodeStatus,
   WikiPlanPage,
   WikiPlanResult,
+  WikiResearchReceipt,
   WikiResearchScope,
   WikiReviewDefect,
   WikiReviewDefectKind,
@@ -75,5 +76,4 @@ export type {
   WikiRunStatus,
   WikiWorkflowDependencies,
   WikiWorkflowListener,
-  WikiWriteResult,
 } from "./workflow-types.js";

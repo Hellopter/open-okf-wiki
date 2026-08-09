@@ -33,18 +33,102 @@ function fakeSession() {
   };
 }
 
-function executionRequest(cwd, role = "researcher", onOutput) {
+function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = "research") {
   return {
     runId: "run",
-    node: { id: "node", kind: "research", label: "Research", status: "running", dependsOn: [], attempt: 1, inputFingerprint: "", input: {}, attemptHistory: [], metrics: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, cost: 0, compactions: 0, autoRetries: 0 }, activity: { state: "running", updatedAt: new Date().toISOString() } },
+    node: { id: "node", kind, label: "Research", status: "running", dependsOn: [], attempt: 1, inputFingerprint: "", input: {}, attemptHistory: [], metrics: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, cost: 0, compactions: 0, autoRetries: 0 }, activity: { state: "running", updatedAt: new Date().toISOString() } },
     cwd,
     prompt: "test",
     role,
     language: "zh",
     signal: new AbortController().signal,
     onOutput,
+    onHistory,
   };
 }
+
+test("planner submits control data through a dedicated tool instead of final JSON text", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-plan-");
+  let tools;
+  const session = fakeSession();
+  session.getLastAssistantText = () => "## Planning notes\nThe plan is ready.";
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_plan");
+    await submit.execute("submit-plan", {
+      pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["api/src/index.ts#L1-L2"] }],
+      researchScopes: [],
+      rationale: "One page covers the current scope.",
+    });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(executionRequest(workspace, "planner", undefined, undefined, "plan"));
+  assert.deepEqual(result.result, {
+    pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["api/src/index.ts#L1-L2"] }],
+    researchScopes: [],
+    rationale: "One page covers the current scope.",
+  });
+  assert.equal(result.output, "## Planning notes\nThe plan is ready.");
+  assert.equal(tools.some((tool) => tool.name === "wiki_submit_review"), false);
+});
+
+test("reviewer submits control data through its dedicated tool", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-review-");
+  let tools;
+  const session = fakeSession();
+  session.getLastAssistantText = () => "## Review complete\nNo defects found.";
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await submit.execute("submit-review", { defects: [], summary: "All checks passed." });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review"));
+  assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
+  assert.equal(result.output, "## Review complete\nNo defects found.");
+  assert.equal(tools.some((tool) => tool.name === "wiki_submit_plan"), false);
+});
+
+test("missing planner submission preserves final text and reports the required tool", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-missing-plan-");
+  let followUps = 0;
+  const outputs = [];
+  const session = fakeSession();
+  session.getLastAssistantText = () => "I have a prose plan but no control submission.";
+  session.followUp = async () => { followUps += 1; };
+  const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
+
+  await assert.rejects(
+    () => executor.execute(executionRequest(workspace, "planner", (output) => outputs.push(output), undefined, "plan")),
+    /wiki_submit_plan/,
+  );
+  assert.equal(followUps, 1);
+  assert.deepEqual(outputs, [
+    "I have a prose plan but no control submission.",
+    "I have a prose plan but no control submission.",
+  ]);
+});
+
+test("writer completion is Markdown text and has no JSON result contract", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-write-summary-");
+  const session = fakeSession();
+  session.getLastAssistantText = () => "## Changed\n- `architecture.md`";
+  const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
+
+  const result = await executor.execute(executionRequest(workspace, "writer", undefined, undefined, "write"));
+  assert.equal(result.result, undefined);
+  assert.equal(result.output, "## Changed\n- `architecture.md`");
+});
 
 test("writer tools permit only real paths under wiki", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-");
@@ -109,7 +193,37 @@ test("forwards streamed assistant text to the workflow engine", async () => {
   };
   const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
   await executor.execute(executionRequest(workspace, "researcher", (value) => output.push(value)));
-  assert.deepEqual(output, ["live response"]);
+  assert.deepEqual(output, ["live response", "{}"]);
+});
+
+test("retains completed assistant messages and tool calls for the run navigator", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-history-");
+  const snapshots = [];
+  const session = fakeSession();
+  session.subscribe = (listener) => {
+    listener({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "I will inspect the source." }] },
+    });
+    listener({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/index.ts" } });
+    listener({
+      type: "tool_execution_end",
+      toolCallId: "read-1",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "export const ready = true;" }] },
+      isError: false,
+    });
+    return () => {};
+  };
+  const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
+  const result = await executor.execute(executionRequest(workspace, "researcher", undefined, (history) => snapshots.push(history)));
+
+  assert.equal(snapshots.length, 3);
+  assert.deepEqual(result.history?.map((entry) => [entry.kind, entry.toolName]), [
+    ["message", undefined], ["tool_call", "read"], ["tool_result", "read"],
+  ]);
+  assert.match(result.history?.[1].text ?? "", /src\/index\.ts/);
+  assert.match(result.history?.[2].text ?? "", /ready = true/);
 });
 
 test("research tools may read only sources declared by workspace.yaml", async () => {

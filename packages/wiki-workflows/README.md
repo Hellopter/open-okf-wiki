@@ -28,6 +28,14 @@ model selection, and tool execution. The console reports those runtime events
 and permits targeted retry of a settled node without rerunning valid upstream
 work.
 
+Planner and reviewer nodes submit DAG-control data through dedicated typed
+tools, rather than asking the model to emit JSON in its final text. Research
+nodes hand Markdown receipts directly to the writer; writer and repair nodes
+make filesystem changes and may finish with a Markdown summary. Static phase
+guidance and the receipt example live in the packaged Wiki skill references,
+which the workflow injects into isolated child sessions without loading ambient
+skills.
+
 Generated pages are always under `wiki/`. Source citations begin with the
 declared project directory and include source line ranges, for example
 `api/src/index.ts#L12-L38`. Current Git changes are used for a trusted affected

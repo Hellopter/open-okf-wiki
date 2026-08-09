@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { createPiAgentExecutor } from "./executor.js";
+import { createPiAgentExecutor, WikiAgentProtocolError } from "./executor.js";
 import { inspectWiki } from "./inspect.js";
+import { loadWikiPromptGuidance } from "./prompt-guidance.js";
 import { createWikiRunSession, parseWikiRunSession } from "./session.js";
 import type { WikiInspection, WikiMode, WikiValidation } from "./types.js";
 import { validateWiki } from "./validate.js";
@@ -10,10 +11,12 @@ import {
   type WikiAgentExecutionResult,
   type WikiNode,
   type WikiNodeActivity,
+  type WikiNodeHistoryEntry,
   type WikiNodeKind,
   type WikiNodeMetrics,
   type WikiNodeStatus,
   type WikiPlanResult,
+  type WikiResearchReceipt,
   type WikiReviewDefect,
   type WikiReviewResult,
   type WikiRunEvent,
@@ -23,13 +26,15 @@ import {
   type WikiRunSnapshot,
   type WikiWorkflowDependencies,
   type WikiWorkflowListener,
-  type WikiWriteResult,
 } from "./workflow-types.js";
 
 const MAX_RESEARCH_CONCURRENCY = 4;
 const MAX_NODE_ATTEMPTS = 3;
 const MAX_STRUCTURAL_REPLANS = 2;
 const MAX_NODE_OUTPUT_CHARS = 48 * 1024;
+const MAX_NODE_HISTORY_ENTRIES = 48;
+const MAX_NODE_HISTORY_CHARS = 24 * 1024;
+const MAX_RESEARCH_RECEIPT_CHARS = 16 * 1024;
 const MAX_EVENTS = 200;
 const ACTIVITY_EVENT_INTERVAL_MS = 250;
 
@@ -248,11 +253,12 @@ export class WikiWorkflowEngine {
       this.emit("run_blocked", node.id, run.blockedReason);
       return;
     }
-    if (node.result !== undefined || node.error || node.output) this.archiveAttempt(node);
+    if (node.result !== undefined || node.error || node.output || node.history?.length) this.archiveAttempt(node);
     node.status = "running";
     node.attempt += 1;
     node.result = undefined;
     node.output = undefined;
+    node.history = [];
     node.error = undefined;
     node.metrics = clone(EMPTY_NODE_METRICS);
     node.startedAt = this.now();
@@ -267,6 +273,7 @@ export class WikiWorkflowEngine {
       if (node.status !== "running") return;
       node.result = normalizeNodeResult(node.kind, result.result);
       node.output = retainedOutput(result.output ?? node.output);
+      node.history = retainedHistory(result.history ?? node.history);
       node.metrics = mergeMetrics(node.metrics, result.metrics);
       // Dynamic expansion can still reject a result. Keep the node running
       // until all result parsing and downstream queueing has completed.
@@ -278,7 +285,17 @@ export class WikiWorkflowEngine {
     } catch (error) {
       if (node.status !== "running") return;
       node.status = controller.signal.aborted ? "cancelled" : "failed";
-      node.error = { message: errorMessage(error), code: controller.signal.aborted ? "cancelled" : "execution_failed" };
+      if (error instanceof WikiAgentProtocolError) {
+        node.output = retainedOutput(error.output || node.output);
+        node.history = retainedHistory(error.history.length ? error.history : node.history);
+        node.error = {
+          message: error.message,
+          code: error.code,
+          requiredSubmissionTool: error.requiredSubmissionTool,
+        };
+      } else {
+        node.error = { message: errorMessage(error), code: controller.signal.aborted ? "cancelled" : "execution_failed" };
+      }
       node.activity = { state: "completed", message: node.error.message, updatedAt: this.now() };
       node.finishedAt = this.now();
       this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
@@ -306,20 +323,13 @@ export class WikiWorkflowEngine {
       runId: run.id,
       node: clone(node),
       cwd: run.cwd,
-      prompt: promptFor(node, run),
+      prompt: await promptFor(node, run),
       role,
       language: run.language,
       signal,
-      validateResult: (value) => {
-        try {
-          normalizeNodeResult(node.kind, value);
-          return undefined;
-        } catch (error) {
-          return errorMessage(error);
-        }
-      },
       onActivity: (activity, metrics) => this.updateActivity(node.id, activity, metrics),
       onOutput: (output) => this.updateOutput(node.id, output),
+      onHistory: (history) => this.updateHistory(node.id, history),
     });
   }
 
@@ -348,6 +358,7 @@ export class WikiWorkflowEngine {
         return;
       }
       case "research": {
+        node.result = createResearchReceipt(node, run, node.result);
         const planNodeId = node.dependsOn[0];
         if (!planNodeId) throw new Error("Research node has no plan dependency");
         const siblings = run.nodes.filter((candidate) => candidate.kind === "research" && candidate.dependsOn[0] === planNodeId);
@@ -358,8 +369,6 @@ export class WikiWorkflowEngine {
       }
       case "write":
       case "repair": {
-        const result = parseWrite(node.result);
-        node.result = result;
         this.queueNode("validate", "Validate Wiki", [node.id], { sourceNodeId: node.id });
         return;
       }
@@ -517,6 +526,13 @@ export class WikiWorkflowEngine {
     this.emitActivity(node);
   }
 
+  private updateHistory(nodeId: string, history: WikiNodeHistoryEntry[]): void {
+    const node = this.nodeById(nodeId);
+    if (!node || node.status !== "running") return;
+    node.history = retainedHistory(history);
+    this.emitActivity(node);
+  }
+
   private emitActivity(node: WikiNode): void {
     const now = Date.now();
     const previous = this.lastActivityEventAt.get(node.id) ?? 0;
@@ -549,6 +565,7 @@ export class WikiWorkflowEngine {
       finishedAt: node.finishedAt,
       result: clone(node.result),
       output: node.output,
+      history: node.history ? clone(node.history) : undefined,
       error: node.error ? clone(node.error) : undefined,
       metrics: clone(node.metrics),
     });
@@ -612,42 +629,53 @@ function roleFor(kind: WikiNodeKind): "planner" | "researcher" | "writer" | "rev
   return "reviewer";
 }
 
-function promptFor(node: WikiNode, run: WikiRunSnapshot): string {
-  const language = run.language === "en" ? "English" : "Chinese";
-  const shared = [
-    "Work only in the current workspace.",
-    "Never create a source layer, snapshot, manifest, or workflow state file.",
-    "All source references must be workspace-relative path#Lx-Ly ranges.",
-    `Write user-facing Wiki content in ${language}.`,
-  ].join(" ");
+async function promptFor(node: WikiNode, run: WikiRunSnapshot): Promise<string> {
+  const guidance = await loadWikiPromptGuidance(node.kind, run.language);
   switch (node.kind) {
     case "plan":
     case "replan":
-      return `${shared} You are the Wiki planner. Return JSON only with pages [{path,title,purpose,sources}], researchScopes [{id,task}] (maximum four), and rationale. Plan only pages below wiki/. Current Git inspection: ${stableStringify(run.inspection)}. Focus: ${run.focus ?? "none"}. Replan trigger: ${stableStringify(node.input)}.`;
+      return `${guidance}\n\n## Runtime Context\nCurrent Git inspection:\n\`\`\`json\n${prettyJson(run.inspection)}\n\`\`\`\nFocus: ${run.focus ?? "none"}\nReplan trigger:\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     case "research":
-      return `${shared} You are a read-only repository researcher. Return concise evidence for this scope as JSON or plain text. Do not edit files. Scope: ${stableStringify(node.input)}.`;
+      return `${guidance}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     case "write":
-      return `${shared} You are the only Wiki writer. Edit only wiki/. Use YAML frontmatter type/title/description/sources and body citations [label](repo:path#Lx-Ly). Return JSON only with updatedPages, deletedPages, and notes. Plan and evidence: ${nodeContext(node, run)}.`;
+      return `${guidance}\n\n${writerContext(node, run)}`;
     case "repair":
-      return `${shared} You are the only Wiki writer. Repair the current wiki/ using the supplied validation or review defects. Edit only wiki/. Return JSON only with updatedPages, deletedPages, and notes. Defects: ${nodeContext(node, run)}.`;
+      return `${guidance}\n\n## Repair Input\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     case "review":
-      return `${shared} You are a read-only Wiki reviewer. Inspect wiki/ and source evidence. Return JSON only with defects [{id,page,kind,detail}] where kind is evidence, link, format, topology, or coverage, plus summary. Do not edit files.`;
+      return `${guidance}\n\n## Validation Context\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     default:
       throw new Error(`No prompt available for ${node.kind}`);
   }
 }
 
-function nodeContext(node: WikiNode, run: WikiRunSnapshot): string {
+function writerContext(node: WikiNode, run: WikiRunSnapshot): string {
   const input = node.input as Record<string, unknown>;
-  const context: Record<string, unknown> = { input };
-  if (typeof input.planNodeId === "string") context.plan = run.nodes.find((candidate) => candidate.id === input.planNodeId)?.result;
-  if (Array.isArray(input.researchIds)) {
-    context.research = input.researchIds.map((id) => run.nodes.find((candidate) => candidate.id === id)?.result);
+  const plan = typeof input.planNodeId === "string"
+    ? run.nodes.find((candidate) => candidate.id === input.planNodeId)?.result
+    : undefined;
+  const receipts = Array.isArray(input.researchIds)
+    ? input.researchIds
+      .map((id) => run.nodes.find((candidate) => candidate.id === id)?.result)
+      .filter((receipt): receipt is WikiResearchReceipt => isResearchReceipt(receipt))
+    : [];
+  const sections = [
+    "## Approved Plan",
+    "```json",
+    prettyJson(plan),
+    "```",
+  ];
+  for (const receipt of receipts) {
+    sections.push(
+      `## Research Receipt: ${receipt.scopeId}`,
+      `Task: ${receipt.task}`,
+      `Source fingerprint: ${receipt.sourceFingerprint}`,
+      receipt.markdown,
+    );
   }
-  return stableStringify(context);
+  return sections.join("\n");
 }
 
-/** Validate before publishing a successful node state, so bad agent JSON is a real failure. */
+/** Validate control submissions and local service results before publishing node state. */
 function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
   switch (kind) {
     case "inspect":
@@ -655,14 +683,13 @@ function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
     case "plan":
     case "replan":
       return parsePlan(value);
-    case "write":
-    case "repair":
-      return parseWrite(value);
     case "validate":
       return parseValidation(value);
     case "review":
       return parseReview(value);
     case "research":
+    case "write":
+    case "repair":
       return value;
   }
 }
@@ -683,7 +710,7 @@ function parseValidation(value: unknown): WikiValidation {
 
 function parsePlan(value: unknown): WikiPlanResult {
   if (!isRecord(value) || !Array.isArray(value.pages) || !Array.isArray(value.researchScopes) || typeof value.rationale !== "string") {
-    throw new Error("Planner must return pages, researchScopes, and rationale as JSON");
+    throw new Error("Planner submission must include pages, researchScopes, and rationale");
   }
   const pages = value.pages.map((page) => {
     if (!isRecord(page) || !isWikiPagePath(page.path) || typeof page.title !== "string" || typeof page.purpose !== "string" || !isStringArray(page.sources)) {
@@ -702,16 +729,9 @@ function parsePlan(value: unknown): WikiPlanResult {
   return { pages, researchScopes, rationale: value.rationale };
 }
 
-function parseWrite(value: unknown): WikiWriteResult {
-  if (!isRecord(value) || !isStringArray(value.updatedPages) || !isStringArray(value.deletedPages) || !isStringArray(value.notes)) {
-    throw new Error("Writer must return updatedPages, deletedPages, and notes as JSON");
-  }
-  return { updatedPages: [...value.updatedPages], deletedPages: [...value.deletedPages], notes: [...value.notes] };
-}
-
 function parseReview(value: unknown): WikiReviewResult {
   if (!isRecord(value) || !Array.isArray(value.defects) || typeof value.summary !== "string") {
-    throw new Error("Reviewer must return defects and summary as JSON");
+    throw new Error("Reviewer submission must include defects and summary");
   }
   const defects = value.defects.map((defect) => {
     if (!isRecord(defect) || typeof defect.id !== "string" || typeof defect.page !== "string" || !isReviewKind(defect.kind) || typeof defect.detail !== "string") {
@@ -720,6 +740,28 @@ function parseReview(value: unknown): WikiReviewResult {
     return { id: defect.id, page: defect.page, kind: defect.kind, detail: defect.detail };
   });
   return { defects, summary: value.summary };
+}
+
+function createResearchReceipt(node: WikiNode, run: WikiRunSnapshot, value: unknown): WikiResearchReceipt {
+  const scope = node.input;
+  if (!isRecord(scope) || typeof scope.id !== "string" || !scope.id.trim() || typeof scope.task !== "string" || !scope.task.trim()) {
+    throw new Error("Research node has an invalid scope");
+  }
+  if (typeof value !== "string" || !value.trim()) throw new Error("Researcher must return a Markdown receipt");
+  return {
+    scopeId: scope.id,
+    task: scope.task,
+    sourceFingerprint: run.inspection?.sourceFingerprint ?? "unknown",
+    markdown: retainedText(value.trim(), MAX_RESEARCH_RECEIPT_CHARS),
+  };
+}
+
+function isResearchReceipt(value: unknown): value is WikiResearchReceipt {
+  return isRecord(value)
+    && typeof value.scopeId === "string"
+    && typeof value.task === "string"
+    && typeof value.sourceFingerprint === "string"
+    && typeof value.markdown === "string";
 }
 
 function isReviewKind(value: unknown): value is WikiReviewDefect["kind"] {
@@ -758,6 +800,34 @@ function retainedOutput(output: string | undefined): string | undefined {
   return `${marker}${output.slice(-retainedLength)}`;
 }
 
+function retainedHistory(history: WikiNodeHistoryEntry[] | undefined): WikiNodeHistoryEntry[] | undefined {
+  if (!history?.length) return history;
+  const retained: WikiNodeHistoryEntry[] = [];
+  let chars = 0;
+  for (const entry of history.slice(-MAX_NODE_HISTORY_ENTRIES).reverse()) {
+    const remaining = MAX_NODE_HISTORY_CHARS - chars;
+    if (remaining <= 0) break;
+    const text = retainedText(entry.text, remaining);
+    retained.unshift({ ...entry, text });
+    chars += text.length;
+  }
+  return retained;
+}
+
+function retainedText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  if (limit <= 40) return text.slice(-limit);
+  let retainedLength = limit;
+  let marker = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    marker = `[... ${text.length - retainedLength} earlier characters omitted ...]\n`;
+    const nextLength = Math.max(0, limit - marker.length);
+    if (nextLength === retainedLength) break;
+    retainedLength = nextLength;
+  }
+  return `${marker}${text.slice(-retainedLength)}`;
+}
+
 function defectsFingerprint(defects: WikiReviewDefect[]): string {
   return stableStringify(defects.map((defect) => ({ page: defect.page, kind: defect.kind, detail: defect.detail })).sort((left, right) => stableStringify(left).localeCompare(stableStringify(right))));
 }
@@ -781,6 +851,14 @@ function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+}
+
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2) ?? "null";
+  } catch {
+    return String(value);
+  }
 }
 
 function normalizeText(value: string | undefined): string | undefined {

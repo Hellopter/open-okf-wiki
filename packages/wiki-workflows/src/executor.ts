@@ -24,6 +24,7 @@ import type {
   WikiAgentExecutionRequest,
   WikiAgentExecutionResult,
   WikiAgentExecutor,
+  WikiNodeHistoryEntry,
   WikiNodeMetrics,
 } from "./workflow-types.js";
 import { loadWikiWorkspace } from "./workspace.js";
@@ -39,6 +40,26 @@ export interface PiAgentExecutorOptions {
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
 }
 
+type SubmissionToolName = "wiki_submit_plan" | "wiki_submit_review";
+
+interface SubmissionCollector {
+  toolName: SubmissionToolName;
+  value?: unknown;
+}
+
+/** A node ended without the tool submission required to advance the Wiki DAG. */
+export class WikiAgentProtocolError extends Error {
+  readonly code = "missing_submission";
+
+  constructor(
+    readonly requiredSubmissionTool: SubmissionToolName,
+    readonly output: string,
+    readonly history: WikiNodeHistoryEntry[],
+  ) {
+    super(`Agent did not call ${requiredSubmissionTool} before completing`);
+  }
+}
+
 /**
  * Pi-native child-agent executor. Each workflow node receives a fresh in-memory
  * AgentSession so its transcript can compact and retry without contaminating a
@@ -52,10 +73,12 @@ export class PiAgentExecutor implements WikiAgentExecutor {
   }
 
   async execute(request: WikiAgentExecutionRequest): Promise<WikiAgentExecutionResult> {
-    const session = await this.createIsolatedSession(request);
+    const submission = submissionFor(request.node.kind);
+    const session = await this.createIsolatedSession(request, submission);
     session.setAutoCompactionEnabled(true);
     session.setAutoRetryEnabled(true);
-    const unsubscribe = session.subscribe((event) => this.handleEvent(session, event, request));
+    const history: WikiNodeHistoryEntry[] = [];
+    const unsubscribe = session.subscribe((event) => this.handleEvent(session, event, request, history));
     const abort = () => { void session.abort(); };
     request.signal.addEventListener("abort", abort, { once: true });
 
@@ -64,26 +87,31 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       await session.prompt(request.prompt);
       await session.waitForIdle();
       if (request.signal.aborted) throw new Error("Workflow node was cancelled");
+      let output = session.getLastAssistantText() ?? "";
+      request.onOutput?.(output);
       if (session.state.errorMessage) throw new Error(session.state.errorMessage);
 
-      let output = session.getLastAssistantText() ?? "";
-      let parsed = parseStructuredOutput(output);
-      const firstValidationError = request.validateResult?.(parsed);
-      if (firstValidationError) {
-        request.onActivity?.({ state: "waiting", message: "Repairing structured response" });
-        await session.followUp(`Your preceding response was not valid for this task: ${firstValidationError}. Return one corrected JSON object only, with no Markdown fence or explanation.`);
+      if (submission && submission.value === undefined) {
+        request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` });
+        await session.followUp(`Before completing this node, call ${submission.toolName} exactly once with the final result. Do not reply with JSON text.`);
         await session.waitForIdle();
         if (request.signal.aborted) throw new Error("Workflow node was cancelled");
-        if (session.state.errorMessage) throw new Error(session.state.errorMessage);
         output = session.getLastAssistantText() ?? "";
-        parsed = parseStructuredOutput(output);
-        const repairError = request.validateResult?.(parsed);
-        if (repairError) throw new Error(`Structured output remained invalid after repair: ${repairError}`);
+        request.onOutput?.(output);
+        if (session.state.errorMessage) throw new Error(session.state.errorMessage);
+        if (submission.value === undefined) {
+          throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history));
+        }
       }
       const stats = session.getSessionStats();
       const context = session.getContextUsage();
       request.onActivity?.({ state: "completed", message: "Completed" }, metricsFromSession(session));
-      return { result: parsed, output, metrics: metricsFromStats(stats, context, session) };
+      return {
+        result: submission?.value ?? (request.node.kind === "research" ? output : undefined),
+        output,
+        history: retainedHistory(history),
+        metrics: metricsFromStats(stats, context, session),
+      };
     } finally {
       request.signal.removeEventListener("abort", abort);
       unsubscribe();
@@ -91,7 +119,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     }
   }
 
-  private async createIsolatedSession(request: WikiAgentExecutionRequest): Promise<AgentSession> {
+  private async createIsolatedSession(request: WikiAgentExecutionRequest, submission?: SubmissionCollector): Promise<AgentSession> {
     const toolPolicy = await workspaceToolPolicy(request.cwd);
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(toolPolicy.workspaceRoot, agentDir);
@@ -119,12 +147,17 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       tools: request.role === "writer"
         ? ["read", "grep", "find", "ls", "edit", "write", "wiki_delete"]
         : ["read", "grep", "find", "ls"],
-      customTools: workflowTools(toolPolicy, request.role),
+      customTools: workflowTools(toolPolicy, request.role, submission),
     });
     return result.session;
   }
 
-  private handleEvent(session: AgentSession, event: AgentSessionEvent, request: WikiAgentExecutionRequest): void {
+  private handleEvent(
+    session: AgentSession,
+    event: AgentSessionEvent,
+    request: WikiAgentExecutionRequest,
+    history: WikiNodeHistoryEntry[],
+  ): void {
     switch (event.type) {
       case "compaction_start":
         request.onActivity?.({ state: "compacting", message: `Compacting (${event.reason})` }, { compactions: 1 });
@@ -169,13 +202,98 @@ export class PiAgentExecutor implements WikiAgentExecutor {
         }
         request.onActivity?.({ state: "running", message: "Streaming response" }, metricsFromSession(session));
         return;
+      case "message_end": {
+        const text = assistantText(event.message);
+        if (text) appendHistory(history, request, { at: new Date().toISOString(), kind: "message", text });
+        const messageError = assistantError(event.message);
+        if (messageError) appendHistory(history, request, { at: new Date().toISOString(), kind: "error", text: messageError, isError: true });
+        return;
+      }
       case "tool_execution_start":
+        appendHistory(history, request, {
+          at: new Date().toISOString(),
+          kind: "tool_call",
+          toolName: event.toolName,
+          text: compactJson(event.args),
+        });
         request.onActivity?.({ state: "running", message: `Using ${event.toolName}` });
+        return;
+      case "tool_execution_end":
+        appendHistory(history, request, {
+          at: new Date().toISOString(),
+          kind: event.isError ? "error" : "tool_result",
+          toolName: event.toolName,
+          text: toolResultText(event.result),
+          isError: event.isError,
+        });
         return;
       default:
         return;
     }
   }
+}
+
+const MAX_HISTORY_ENTRIES = 48;
+const MAX_HISTORY_ENTRY_CHARS = 2_000;
+const MAX_HISTORY_CHARS = 24 * 1024;
+
+function appendHistory(
+  history: WikiNodeHistoryEntry[],
+  request: WikiAgentExecutionRequest,
+  entry: WikiNodeHistoryEntry,
+): void {
+  history.push({ ...entry, text: retainedText(entry.text, MAX_HISTORY_ENTRY_CHARS) });
+  const retained = retainedHistory(history);
+  history.splice(0, history.length, ...retained);
+  request.onHistory?.(retained);
+}
+
+function retainedHistory(history: WikiNodeHistoryEntry[]): WikiNodeHistoryEntry[] {
+  const retained: WikiNodeHistoryEntry[] = [];
+  let chars = 0;
+  for (const entry of history.slice(-MAX_HISTORY_ENTRIES).reverse()) {
+    const remaining = MAX_HISTORY_CHARS - chars;
+    if (remaining <= 0) break;
+    const text = retainedText(entry.text, remaining);
+    retained.unshift({ ...entry, text });
+    chars += text.length;
+  }
+  return retained;
+}
+
+function retainedText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  if (limit <= 40) return text.slice(-limit);
+  let retainedLength = limit;
+  let marker = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    marker = `[... ${text.length - retainedLength} earlier characters omitted ...]\n`;
+    const nextLength = Math.max(0, limit - marker.length);
+    if (nextLength === retainedLength) break;
+    retainedLength = nextLength;
+  }
+  return `${marker}${text.slice(-retainedLength)}`;
+}
+
+function compactJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolResultText(value: unknown): string {
+  if (!value || typeof value !== "object") return compactJson(value);
+  const result = value as { content?: unknown };
+  if (!Array.isArray(result.content)) return compactJson(value);
+  const text = result.content
+    .map((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+      ? (part as { text: string }).text
+      : "")
+    .filter(Boolean)
+    .join("\n");
+  return text || compactJson(value);
 }
 
 function assistantText(message: unknown): string {
@@ -187,6 +305,14 @@ function assistantText(message: unknown): string {
       && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string")
     .map((part) => part.text)
     .join("");
+}
+
+function assistantError(message: unknown): string | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  const value = message as { role?: unknown; errorMessage?: unknown };
+  return value.role === "assistant" && typeof value.errorMessage === "string" && value.errorMessage.trim()
+    ? value.errorMessage
+    : undefined;
 }
 
 export function createPiAgentExecutor(options: PiAgentExecutorOptions = {}): PiAgentExecutor {
@@ -216,14 +342,18 @@ async function workspaceToolPolicy(cwd: string): Promise<WorkspaceToolPolicy> {
   };
 }
 
-function workflowTools(policy: WorkspaceToolPolicy, role: WikiAgentExecutionRequest["role"]): ToolDefinition<any, any, any>[] {
+function workflowTools(
+  policy: WorkspaceToolPolicy,
+  role: WikiAgentExecutionRequest["role"],
+  submission?: SubmissionCollector,
+): ToolDefinition<any, any, any>[] {
   const readOnly = [
     guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
     guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
     guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
     guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
   ];
-  if (role !== "writer") return readOnly;
+  if (role !== "writer") return submission ? [...readOnly, submissionTool(submission)] : readOnly;
 
   const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
@@ -246,6 +376,76 @@ function workflowTools(policy: WorkspaceToolPolicy, role: WikiAgentExecutionRequ
     guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path", true),
     createDeleteToolDefinition(policy),
   ];
+}
+
+const planSubmissionSchema = Type.Object({
+  pages: Type.Array(Type.Object({
+    path: Type.String({ description: "Wiki-relative Markdown page path" }),
+    title: Type.String({ description: "Reader-facing page title" }),
+    purpose: Type.String({ description: "Question the page answers" }),
+    sources: Type.Array(Type.String({ description: "Workspace-relative path#Lx-Ly" })),
+  })),
+  researchScopes: Type.Array(Type.Object({
+    id: Type.String({ description: "Distinct research scope ID" }),
+    task: Type.String({ description: "Bounded source research task" }),
+  })),
+  rationale: Type.String({ description: "Why this page set and research split fit the current scope" }),
+});
+
+const reviewSubmissionSchema = Type.Object({
+  defects: Type.Array(Type.Object({
+    id: Type.String({ description: "Stable actionable defect ID" }),
+    page: Type.String({ description: "Affected Wiki page" }),
+    kind: Type.Union([
+      Type.Literal("evidence"),
+      Type.Literal("link"),
+      Type.Literal("format"),
+      Type.Literal("topology"),
+      Type.Literal("coverage"),
+    ], { description: "Defect class that selects repair or replan" }),
+    detail: Type.String({ description: "Specific correction needed" }),
+  })),
+  summary: Type.String({ description: "Concise overall review result" }),
+});
+
+function submissionFor(kind: WikiAgentExecutionRequest["node"]["kind"]): SubmissionCollector | undefined {
+  if (kind === "plan" || kind === "replan") return { toolName: "wiki_submit_plan" };
+  if (kind === "review") return { toolName: "wiki_submit_review" };
+  return undefined;
+}
+
+function submissionTool(submission: SubmissionCollector): ToolDefinition<any, any, any> {
+  if (submission.toolName === "wiki_submit_plan") {
+    return {
+      name: submission.toolName,
+      label: submission.toolName,
+      description: "Submit the final Wiki page plan exactly once after source inspection is complete.",
+      promptSnippet: "Submit the final Wiki plan",
+      promptGuidelines: ["Call wiki_submit_plan exactly once when the final page plan is ready."],
+      parameters: planSubmissionSchema,
+      async execute(_toolCallId, params) {
+        recordSubmission(submission, params);
+        return { content: [{ type: "text", text: "Wiki plan recorded." }], details: undefined };
+      },
+    };
+  }
+  return {
+    name: submission.toolName,
+    label: submission.toolName,
+    description: "Submit the final Wiki review exactly once after inspecting the Wiki and source evidence.",
+    promptSnippet: "Submit the final Wiki review",
+    promptGuidelines: ["Call wiki_submit_review exactly once when the review is complete."],
+    parameters: reviewSubmissionSchema,
+    async execute(_toolCallId, params) {
+      recordSubmission(submission, params);
+      return { content: [{ type: "text", text: "Wiki review recorded." }], details: undefined };
+    },
+  };
+}
+
+function recordSubmission(submission: SubmissionCollector, value: unknown): void {
+  if (submission.value !== undefined) throw new Error(`${submission.toolName} may only be called once per node attempt`);
+  submission.value = structuredClone(value);
 }
 
 function guardWorkspaceTool(
@@ -406,17 +606,6 @@ function assertPathPrefix(root: string, target: string): void {
   const relative = path.relative(root, target);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return;
   throw new Error(`Path escapes the Wiki root: ${target}`);
-}
-
-function parseStructuredOutput(output: string): unknown {
-  const trimmed = output.trim();
-  if (!trimmed) return "";
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed)?.[1] ?? trimmed;
-  try {
-    return JSON.parse(fenced);
-  } catch {
-    return output;
-  }
 }
 
 function metricsFromSession(session: AgentSession): Partial<WikiNodeMetrics> {

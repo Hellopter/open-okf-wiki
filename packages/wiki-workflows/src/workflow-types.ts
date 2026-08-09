@@ -56,6 +56,8 @@ export interface WikiNodeError {
   message: string;
   code?: string;
   retryable?: boolean;
+  /** Present when the model ended without the required control-flow submission. */
+  requiredSubmissionTool?: "wiki_submit_plan" | "wiki_submit_review";
 }
 
 export interface WikiNodeAttempt {
@@ -64,8 +66,20 @@ export interface WikiNodeAttempt {
   finishedAt?: string;
   result?: unknown;
   output?: string;
+  history?: WikiNodeHistoryEntry[];
   error?: WikiNodeError;
   metrics: WikiNodeMetrics;
+}
+
+/** A compact, durable record of the subagent activity shown in the run console. */
+export type WikiNodeHistoryKind = "message" | "tool_call" | "tool_result" | "error";
+
+export interface WikiNodeHistoryEntry {
+  at: string;
+  kind: WikiNodeHistoryKind;
+  text: string;
+  toolName?: string;
+  isError?: boolean;
 }
 
 export interface WikiNode {
@@ -79,6 +93,7 @@ export interface WikiNode {
   input: unknown;
   result?: unknown;
   output?: string;
+  history?: WikiNodeHistoryEntry[];
   error?: WikiNodeError;
   attemptHistory: WikiNodeAttempt[];
   metrics: WikiNodeMetrics;
@@ -165,10 +180,12 @@ export interface WikiPlanResult {
   rationale: string;
 }
 
-export interface WikiWriteResult {
-  updatedPages: string[];
-  deletedPages: string[];
-  notes: string[];
+/** A bounded, human-readable handoff from a researcher to the Wiki writer. */
+export interface WikiResearchReceipt {
+  scopeId: string;
+  task: string;
+  sourceFingerprint: string;
+  markdown: string;
 }
 
 export type WikiReviewDefectKind = "evidence" | "link" | "format" | "topology" | "coverage";
@@ -193,16 +210,17 @@ export interface WikiAgentExecutionRequest {
   role: "planner" | "researcher" | "writer" | "reviewer";
   language: "zh" | "en";
   signal: AbortSignal;
-  /** Return a diagnostic when the final response is not the node's required JSON shape. */
-  validateResult?: (value: unknown) => string | undefined;
   onActivity?: (activity: Partial<WikiNodeActivity>, metrics?: Partial<WikiNodeMetrics>) => void;
   /** A bounded live assistant-text snapshot for the Navigator detail pane. */
   onOutput?: (output: string) => void;
+  /** A bounded transcript of completed assistant messages and tool calls. */
+  onHistory?: (history: WikiNodeHistoryEntry[]) => void;
 }
 
 export interface WikiAgentExecutionResult {
   result: unknown;
   output?: string;
+  history?: WikiNodeHistoryEntry[];
   metrics?: Partial<WikiNodeMetrics>;
 }
 

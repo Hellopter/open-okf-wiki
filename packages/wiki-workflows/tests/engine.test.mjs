@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WikiWorkflowEngine } from "../dist/engine.js";
+import { WikiAgentProtocolError } from "../dist/executor.js";
 
 const inspection = {
   root: "/workspace",
@@ -39,7 +40,7 @@ function createExecutor(options = {}) {
           output: request.node.kind === "plan" ? options.finalOutput : undefined,
         };
       }
-      if (request.node.kind === "research") return { result: { evidence: request.node.input } };
+      if (request.node.kind === "research") return { result: "## Findings\n- Verified evidence. Source: `src/index.ts#L1-L2`\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Explain the researched area." };
       if (request.node.kind === "write" || request.node.kind === "repair") {
         return { result: { updatedPages: ["architecture.md"], deletedPages: [], notes: [] } };
       }
@@ -70,6 +71,61 @@ test("dynamically plans, researches, writes, validates, and reviews", async () =
   assert.deepEqual(executor.calls, ["plan", "research", "research", "write", "review"]);
   assert.equal(snapshot.nodes.filter((node) => node.kind === "research").length, 2);
   assert.equal(snapshot.nodes.find((node) => node.kind === "write").metrics.inputTokens, 12);
+});
+
+test("research becomes a bounded Markdown handoff instead of a JSON-shaped result", async () => {
+  let writerPrompt = "";
+  const researchMarkdown = `## Findings\n- ${"x".repeat(20 * 1024)}\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Keep the page source-grounded.`;
+  const engine = createEngine({
+    async execute(request) {
+      if (request.node.kind === "plan") return {
+        result: {
+          pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["src/index.ts#L1-L2"] }],
+          researchScopes: [{ id: "core", task: "Research core" }],
+          rationale: "test",
+        },
+      };
+      if (request.node.kind === "research") return { result: researchMarkdown };
+      if (request.node.kind === "write") {
+        writerPrompt = request.prompt;
+        return { result: undefined, output: "## Changed\n- `architecture.md`" };
+      }
+      if (request.node.kind === "review") return { result: { defects: [], summary: "ok" } };
+      throw new Error(`unexpected ${request.node.kind}`);
+    },
+  });
+
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  await engine.waitForIdle();
+  const snapshot = engine.getSnapshot();
+  const research = snapshot.nodes.find((node) => node.kind === "research");
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(research.result.scopeId, "core");
+  assert.equal(research.result.sourceFingerprint, "source-baseline");
+  assert.ok(research.result.markdown.length <= 16 * 1024);
+  assert.match(writerPrompt, /# Writing And Repair/);
+  assert.match(writerPrompt, /## Research Receipt: core/);
+  assert.match(writerPrompt, /## Approved Plan/);
+});
+
+test("protocol failures retain the final text, history, and required submission", async () => {
+  const engine = createEngine({
+    async execute(request) {
+      if (request.node.kind !== "plan") throw new Error("unexpected");
+      throw new WikiAgentProtocolError("wiki_submit_plan", "A prose plan without a tool call.", [
+        { at: "2026-08-08T00:00:00.000Z", kind: "message", text: "A prose plan without a tool call." },
+      ]);
+    },
+  });
+
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  await engine.waitForIdle();
+  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
+  assert.equal(plan.status, "failed");
+  assert.equal(plan.output, "A prose plan without a tool call.");
+  assert.equal(plan.history?.[0]?.text, "A prose plan without a tool call.");
+  assert.equal(plan.error?.code, "missing_submission");
+  assert.equal(plan.error?.requiredSubmissionTool, "wiki_submit_plan");
 });
 
 test("retry retains upstream work and invalidates only the selected downstream graph", async () => {
@@ -108,7 +164,7 @@ test("retrying a plan re-dispatches its invalidated writer instead of reusing it
   assert.equal(snapshot.nodes.filter((node) => node.kind === "write" && node.status === "succeeded").length, 1);
 });
 
-test("malformed structured agent output fails the node instead of publishing success", async () => {
+test("malformed control submission fails the node instead of publishing success", async () => {
   const engine = createEngine({
     async execute(request) {
       if (request.node.kind === "plan") return { result: { pages: "not-an-array" } };
@@ -155,7 +211,7 @@ test("structural review defects produce a replan and no more than four research 
           rationale: "test",
         },
       };
-      if (request.node.kind === "research") return { result: { ok: true } };
+      if (request.node.kind === "research") return { result: "## Findings\n- Verified evidence. Source: `src/index.ts#L1-L2`\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Explain the researched area." };
       if (request.node.kind === "write" || request.node.kind === "repair") return { result: { updatedPages: ["architecture.md"], deletedPages: [], notes: [] } };
       if (request.node.kind === "review") return { result: reviewRound++ === 0
         ? { defects: [{ id: "coverage", page: "architecture.md", kind: "coverage", detail: "missing area" }], summary: "missing" }
@@ -276,6 +332,27 @@ test("final agent output is bounded before it reaches the durable run state", as
   const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
   assert.match(plan.output, /^\[\.\.\. \d+ earlier characters omitted \.\.\.\]/);
   assert.ok(plan.output.length <= 48 * 1024);
+});
+
+test("agent transcripts are bounded before they reach durable run state", async () => {
+  const executor = createExecutor({ research: false });
+  const execute = executor.execute.bind(executor);
+  executor.execute = async (request) => {
+    if (request.node.kind === "plan") {
+      request.onHistory?.(Array.from({ length: 80 }, (_, index) => ({
+        at: "2026-08-08T00:00:00.000Z",
+        kind: index % 2 ? "tool_result" : "message",
+        text: String(index).repeat(2_000),
+      })));
+    }
+    return await execute(request);
+  };
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  await engine.waitForIdle();
+  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
+  assert.ok(plan.history.length <= 48);
+  assert.ok(plan.history.reduce((total, entry) => total + entry.text.length, 0) <= 24 * 1024);
 });
 
 test("Wiki-only drift does not invalidate otherwise reusable source work", async () => {
