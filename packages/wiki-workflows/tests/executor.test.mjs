@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { PiAgentExecutor } from "../dist/executor.js";
+import { addWikiSource, initializeWikiWorkspace } from "../dist/workspace.js";
+
+async function initializedWorkspace(prefix) {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  await initializeWikiWorkspace({ cwd: root });
+  return root;
+}
+
+function git(root, ...args) {
+  return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+}
 
 function fakeSession() {
   return {
@@ -35,7 +47,7 @@ function executionRequest(cwd, role = "researcher", onOutput) {
 }
 
 test("writer tools permit only real paths under wiki", async () => {
-  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-executor-"));
+  const workspace = await initializedWorkspace("okf-wiki-executor-");
   const outside = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-outside-"));
   let tools;
   const executor = new PiAgentExecutor({
@@ -65,7 +77,7 @@ test("writer tools permit only real paths under wiki", async () => {
 });
 
 test("resolves Pi model selection immediately before every child session", async () => {
-  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-executor-model-"));
+  const workspace = await initializedWorkspace("okf-wiki-executor-model-");
   const first = { provider: "test", id: "first" };
   const second = { provider: "test", id: "second" };
   let selected = first;
@@ -84,7 +96,7 @@ test("resolves Pi model selection immediately before every child session", async
 });
 
 test("forwards streamed assistant text to the workflow engine", async () => {
-  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-executor-stream-"));
+  const workspace = await initializedWorkspace("okf-wiki-executor-stream-");
   const output = [];
   const session = fakeSession();
   session.subscribe = (listener) => {
@@ -98,4 +110,28 @@ test("forwards streamed assistant text to the workflow engine", async () => {
   const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
   await executor.execute(executionRequest(workspace, "researcher", (value) => output.push(value)));
   assert.deepEqual(output, ["live response"]);
+});
+
+test("research tools may read only sources declared by workspace.yaml", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-executor-source-"));
+  const source = path.join(parent, "api");
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await writeFile(path.join(source, "src", "index.ts"), "export const api = true;\n");
+  git(source, "init", "--quiet");
+  const docs = path.join(parent, "docs");
+  await initializeWikiWorkspace({ cwd: docs });
+  await addWikiSource({ cwd: docs, source: { kind: "link", path: source } });
+  let tools;
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session: fakeSession() };
+    },
+  });
+
+  await executor.execute(executionRequest(docs));
+  const read = tools.find((tool) => tool.name === "read");
+  const result = await read.execute("call-1", { path: "api/src/index.ts" });
+  assert.match(result.content[0].text, /api = true/);
+  await assert.rejects(() => read.execute("call-2", { path: "../api/src/index.ts" }));
 });

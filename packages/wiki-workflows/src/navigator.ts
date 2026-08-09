@@ -18,11 +18,19 @@ export interface WikiRetryImpact {
 /** Engine adapter. UI owns no workflow state and never edits the workspace. */
 export interface WikiNavigatorController {
   getRun(): WikiRunSnapshot | undefined;
+  getWorkspace?(): WikiNavigatorWorkspace | undefined;
   subscribe(listener: () => void): () => void;
   retryNode(nodeId: string): Promise<void> | void;
   pause(): Promise<void> | void;
   resume(): Promise<void> | void;
   cancel(): Promise<void> | void;
+}
+
+/** Static workspace metadata for the idle console; run state remains in the engine. */
+export interface WikiNavigatorWorkspace {
+  root: string;
+  language: "zh" | "en";
+  sources: Array<{ path: string }>;
 }
 
 export interface WikiNavigatorTheme {
@@ -210,9 +218,10 @@ export function renderWikiNavigator(
   width: number,
   theme: WikiNavigatorTheme = PLAIN_THEME,
   viewportRows = 24,
+  workspace?: WikiNavigatorWorkspace,
 ): string[] {
   const safeWidth = Math.max(20, width);
-  if (!run) return [theme.bold("Wiki Run"), theme.fg("muted", "No Wiki run in this Pi session.")];
+  if (!run) return renderIdleWorkspace(safeWidth, theme, workspace);
 
   const normalized = ensureSelection(state, run);
   const lines = [renderHeader(run, safeWidth, theme)];
@@ -316,7 +325,7 @@ export function openWikiRunNavigator(ui: ExtensionUIContext, controller: WikiNav
       }
     };
     const component: Component & { dispose(): void } = {
-      render: (width) => renderWikiNavigator(state, controller.getRun(), width, theme, tui.terminal.rows),
+      render: (width) => renderWikiNavigator(state, controller.getRun(), width, theme, tui.terminal.rows, controller.getWorkspace?.()),
       handleInput: (data) => {
         const transition = reduceWikiNavigator(state, parseKey(data), controller.getRun());
         state = transition.state;
@@ -333,6 +342,22 @@ export function openWikiRunNavigator(ui: ExtensionUIContext, controller: WikiNav
     };
     return component;
   }, { overlay: true, overlayOptions: { width: "92%", minWidth: 56, maxHeight: "88%", anchor: "center" } });
+}
+
+function renderIdleWorkspace(width: number, theme: WikiNavigatorTheme, workspace?: WikiNavigatorWorkspace): string[] {
+  if (!workspace) return [
+    theme.bold("Wiki Workspace"),
+    theme.fg("muted", "No workspace.yaml found. Run /wiki init first."),
+  ];
+  const sources = workspace.sources.length ? workspace.sources.map((source) => source.path).join(", ") : "none";
+  return [
+    theme.bold("Wiki Workspace"),
+    truncateToWidth(`Path: ${workspace.root}`, width, "", true),
+    `Language: ${workspace.language === "zh" ? "Chinese" : "English"}`,
+    truncateToWidth(`Sources: ${sources}`, width, "", true),
+    "",
+    theme.fg("muted", "No Wiki run in this Pi session."),
+  ];
 }
 
 function ensureSelection(state: WikiNavigatorState, run: WikiRunView | undefined): WikiNavigatorState {

@@ -1,17 +1,26 @@
 # OKF Wiki
 
 `@okf-wiki/wiki-workflows` is a Pi extension for Git-native repository Wiki
-production. It does not expose a CLI or save generic workflows.
+production. It does not expose a CLI or save generic workflows. A workspace is
+a plain directory configured by `workspace.yaml`; each source is an
+independent Git project linked or cloned directly into that directory.
 
 ```bash
 pnpm build
 pi install ./packages/wiki-workflows
 ```
 
-Use `/wiki generate [lang=zh|en]` to create a Wiki and `/wiki refresh` to
-refresh it from current Git changes. `/wiki` opens the dedicated run console;
-`/wiki status` prints the current run, `/wiki pause` and `/wiki resume` control
-scheduling, and `/wiki cancel` stops it.
+Initialize once with `/wiki init --lang zh` (or `en`), then add sources with
+`/wiki source add link <local-repository>` or
+`/wiki source add clone <git-url> [--ref <branch>]`. Add
+`--workspace <directory>` to either command when initialization was performed
+from a parent directory. The project directory name is the source identity,
+with no `id` alias. `/wiki generate` uses the saved language; `lang=zh|en` is
+only a one-run override. `/wiki` is a non-blocking status command. Use
+`/wiki open` to explicitly open the dedicated run console; `/wiki status`
+prints the current run, `/wiki pause` and `/wiki resume` control scheduling,
+and `/wiki cancel` stops it. Run Pi from the workspace directory when starting
+or recovering a Wiki run.
 
 The extension owns the Wiki plan/write/review DAG and Pi-session run state.
 Pi supplies subagent sessions, automatic context compaction, provider retry,
@@ -19,6 +28,8 @@ model selection, and tool execution. The console reports those runtime events
 and permits targeted retry of a settled node without rerunning valid upstream
 work.
 
-Generated pages are always under `wiki/`. Source citations are relative to the
-workspace root and include source line ranges. Git history is the only refresh
-baseline and rollback mechanism.
+Generated pages are always under `wiki/`. Source citations begin with the
+declared project directory and include source line ranges, for example
+`api/src/index.ts#L12-L38`. Current Git changes are used for a trusted affected
+subset; otherwise refresh safely rebuilds the Wiki. The YAML configuration is
+not a snapshot, source copy, or run checkpoint.

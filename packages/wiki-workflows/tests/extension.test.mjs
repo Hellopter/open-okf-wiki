@@ -54,12 +54,13 @@ function fakeEngine(initial) {
   };
 }
 
-function fixture({ entries = [], mode = "print", hasUI = false } = {}) {
+function fixture({ entries = [], mode = "print", hasUI = false, workspace = { root: "/workspace", language: "zh" } } = {}) {
   const commands = new Map();
   const handlers = new Map();
   const appended = [];
   const messages = [];
   const notices = [];
+  const workspaceCalls = [];
   const engine = fakeEngine();
   const pi = {
     registerCommand(name, definition) { commands.set(name, definition); },
@@ -76,11 +77,26 @@ function fixture({ entries = [], mode = "print", hasUI = false } = {}) {
     ui: {
       notify(message, level) { notices.push({ message, level }); },
       setStatus() {},
+      setWorkingMessage() {},
     },
     sessionManager: { getEntries: () => entries },
   };
-  createWikiExtension({ createEngine: () => engine })(pi);
-  return { appended, commands, ctx, engine, handlers, messages, notices };
+  const workspaceService = {
+    async initialize(request) {
+      workspaceCalls.push(["initialize", request]);
+      return { action: "initialized", workspace: request.workspace ?? request.cwd, language: request.language ?? "zh" };
+    },
+    async addSource(request) {
+      workspaceCalls.push(["addSource", request]);
+      return { action: request.source.kind === "link" ? "linked" : "cloned", workspace: workspace.root, language: workspace.language, sourcePath: request.source.kind === "link" ? "api" : "web" };
+    },
+    async load(cwd) {
+      workspaceCalls.push(["load", cwd]);
+      return { ...workspace, sources: [] };
+    },
+  };
+  createWikiExtension({ createEngine: () => engine, workspaceService })(pi);
+  return { appended, commands, ctx, engine, handlers, messages, notices, workspaceCalls };
 }
 
 test("registers one command, starts in the background, and persists non-context run state", async () => {
@@ -141,4 +157,45 @@ test("TUI status uses native notification instead of a model-context message", a
   assert.equal(subject.messages.length, 0);
   assert.equal(subject.notices.length, 2);
   assert.match(subject.notices.at(-1).message, /Wiki Run run-1/);
+});
+
+test("the bare command reports status and does not open a blocking Navigator", async () => {
+  const subject = fixture();
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("", subject.ctx);
+
+  assert.equal(subject.engine.calls.length, 0);
+  assert.equal(subject.messages.length, 1);
+  assert.match(subject.messages[0].content, /Wiki Run: no run/);
+});
+
+test("initialization persists language and source commands use project names without IDs", async () => {
+  const subject = fixture({ workspace: { root: "/docs", language: "en" } });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  const command = subject.commands.get("wiki");
+
+  await command.handler("init --workspace docs --lang en", subject.ctx);
+  await command.handler("source add link /projects/api --workspace docs", subject.ctx);
+  await command.handler("source add clone https://example.test/web.git --ref main --workspace docs", subject.ctx);
+  await command.handler("source add link /projects/api --id ignored", subject.ctx);
+
+  assert.deepEqual(subject.workspaceCalls, [
+    ["initialize", { cwd: "/workspace", workspace: "docs", language: "en" }],
+    ["addSource", { cwd: "/workspace", workspace: "docs", source: { kind: "link", path: "/projects/api" } }],
+    ["addSource", { cwd: "/workspace", workspace: "docs", source: { kind: "clone", url: "https://example.test/web.git", ref: "main" } }],
+  ]);
+  assert.match(subject.notices.at(-1).message, /Usage: \/wiki source add link/);
+});
+
+test("generation uses the workspace language by default and starts from its root", async () => {
+  const subject = fixture({ workspace: { root: "/docs", language: "en" } });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate architecture", subject.ctx);
+
+  assert.deepEqual(subject.engine.calls[0], ["start", {
+    cwd: "/docs",
+    mode: "generate",
+    language: "en",
+    focus: "architecture",
+  }]);
 });

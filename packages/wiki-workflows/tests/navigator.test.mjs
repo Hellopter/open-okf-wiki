@@ -64,6 +64,19 @@ test("selects the documented responsive layouts", () => {
   assert.equal(layoutForWidth(71), 1);
 });
 
+test("idle console exposes the configured workspace without creating a run", () => {
+  const rendered = plain(renderWikiNavigator(createWikiNavigatorState(), undefined, 80, undefined, 24, {
+    root: "/docs",
+    language: "en",
+    sources: [{ path: "api" }, { path: "web" }],
+  }).join("\n"));
+  assert.match(rendered, /Wiki Workspace/);
+  assert.match(rendered, /Path: \/docs/);
+  assert.match(rendered, /Language: English/);
+  assert.match(rendered, /Sources: api, web/);
+  assert.match(rendered, /No Wiki run/);
+});
+
 test("three-column rendering includes tree, telemetry, and Git scope", () => {
   const lines = renderWikiNavigator(createWikiNavigatorState(run), run, 120);
   const rendered = plain(lines.join("\n"));

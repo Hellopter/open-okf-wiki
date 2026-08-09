@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { inspectWiki } from "../dist/inspect.js";
+import { addWikiSource, initializeWikiWorkspace } from "../dist/workspace.js";
 
 const temporaryDirectories = [];
 
@@ -13,34 +14,42 @@ function git(root, ...args) {
 }
 
 async function createRepository() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-"));
-  temporaryDirectories.push(root);
-  git(root, "init", "--quiet");
-  git(root, "config", "user.email", "wiki@example.test");
-  git(root, "config", "user.name", "Wiki Test");
-  await mkdir(path.join(root, "src"), { recursive: true });
-  await mkdir(path.join(root, "wiki", "concepts"), { recursive: true });
-  await writeFile(path.join(root, "src", "service.ts"), "export const service = 1;\n");
-  await writeFile(path.join(root, "src", "utility.ts"), "export const utility = true;\n");
-  await writeFile(path.join(root, "wiki", "concepts", "service.md"), [
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-"));
+  temporaryDirectories.push(parent);
+  const source = path.join(parent, "api");
+  const workspace = path.join(parent, "docs");
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await writeFile(path.join(source, "src", "service.ts"), "export const service = 1;\n");
+  await writeFile(path.join(source, "src", "utility.ts"), "export const utility = true;\n");
+  await writeFile(path.join(source, "src", "consumer.ts"), "export const consumer = 1;\n");
+  git(source, "init", "--quiet");
+  git(source, "config", "user.email", "wiki@example.test");
+  git(source, "config", "user.name", "Wiki Test");
+  git(source, "add", ".");
+  git(source, "commit", "--quiet", "-m", "Initial source");
+
+  await initializeWikiWorkspace({ cwd: workspace });
+  await addWikiSource({ cwd: workspace, source: { kind: "link", path: source } });
+  await mkdir(path.join(workspace, "wiki", "concepts"), { recursive: true });
+  await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), [
     "---",
     "type: concept",
     "title: Service",
     "description: Service implementation",
     "sources:",
-    "  - src/service.ts#L1-L1",
+    "  - api/src/service.ts#L1-L1",
     "---",
     "",
     "# Service",
     "",
   ].join("\n"));
-  await writeFile(path.join(root, "wiki", "concepts", "consumer.md"), [
+  await writeFile(path.join(workspace, "wiki", "concepts", "consumer.md"), [
     "---",
     "type: concept",
     "title: Consumer",
     "description: Uses Service",
     "sources:",
-    "  - src/consumer.ts#L1-L1",
+    "  - api/src/consumer.ts#L1-L1",
     "---",
     "",
     "# Consumer",
@@ -48,68 +57,65 @@ async function createRepository() {
     "See [Service](./service.md).",
     "",
   ].join("\n"));
-  await writeFile(path.join(root, "src", "consumer.ts"), "export const consumer = 1;\n");
-  git(root, "add", ".");
-  git(root, "commit", "--quiet", "-m", "Generate wiki");
-  return root;
+  return { source, workspace };
 }
 
 test.after(async () => {
   await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-test("uses the Wiki commit merge-base and propagates source impact through inbound links", async () => {
-  const root = await createRepository();
-  const wikiCommit = git(root, "rev-parse", "HEAD");
-  await writeFile(path.join(root, "src", "service.ts"), "export const service = 2;\n");
-  git(root, "add", "src/service.ts");
-  git(root, "commit", "--quiet", "-m", "Change service");
-  git(root, "mv", "src/utility.ts", "src/utility-renamed.ts");
-  await writeFile(path.join(root, "src", "local.ts"), "export const local = true;\n");
-  await writeFile(path.join(root, "src", "untracked.ts"), "export const untracked = true;\n");
+test("uses declared source Git changes and propagates source impact through inbound links", async () => {
+  const { source, workspace } = await createRepository();
+  await writeFile(path.join(source, "src", "service.ts"), "export const service = 2;\n");
+  git(source, "add", "src/service.ts");
+  git(source, "mv", "src/utility.ts", "src/utility-renamed.ts");
+  await writeFile(path.join(source, "src", "local.ts"), "export const local = true;\n");
+  await writeFile(path.join(source, "src", "untracked.ts"), "export const untracked = true;\n");
 
-  const inspection = await inspectWiki(path.join(root, "src"));
+  const inspection = await inspectWiki(path.join(workspace, "api", "src"));
 
-  assert.equal(inspection.root, root);
+  assert.equal(inspection.root, workspace);
   assert.equal(inspection.mode, "refresh");
-  assert.equal(inspection.lastWikiCommit, wikiCommit);
-  assert.equal(inspection.baseCommit, wikiCommit);
+  assert.equal(inspection.lastWikiCommit, null);
+  assert.equal(inspection.baseCommit, null);
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
-  assert.deepEqual(inspection.changedPaths, ["src/local.ts", "src/service.ts", "src/untracked.ts", "src/utility-renamed.ts", "src/utility.ts"]);
-  assert.ok(inspection.changed.some((change) => change.status.startsWith("R") && change.paths.includes("src/utility.ts") && change.paths.includes("src/utility-renamed.ts")));
-  assert.ok(inspection.changed.some((change) => change.status === "??" && change.paths[0] === "src/untracked.ts"));
+  assert.deepEqual(inspection.changedPaths, [
+    "api/src/local.ts",
+    "api/src/service.ts",
+    "api/src/untracked.ts",
+    "api/src/utility-renamed.ts",
+    "api/src/utility.ts",
+  ]);
+  assert.ok(inspection.changed.some((change) => change.status.startsWith("R") && change.paths.includes("api/src/utility.ts") && change.paths.includes("api/src/utility-renamed.ts")));
+  assert.ok(inspection.changed.some((change) => change.status === "??" && change.paths[0] === "api/src/untracked.ts"));
   assert.equal(inspection.wikiDrift, false);
 });
 
-test("falls back to a full generation when the Wiki working tree drifts", async () => {
-  const root = await createRepository();
-  await writeFile(path.join(root, "wiki", "concepts", "service.md"), "manual edit\n");
+test("uses full generation when there is no trustworthy incremental source range", async () => {
+  const { workspace } = await createRepository();
+  const inspection = await inspectWiki(workspace);
 
-  const inspection = await inspectWiki(root);
-
-  assert.equal(inspection.wikiDrift, true);
   assert.equal(inspection.mode, "generate");
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
-  assert.deepEqual(inspection.changedPaths, []);
 });
 
 test("changes the source fingerprint when an already-modified path changes again", async () => {
-  const root = await createRepository();
-  const source = path.join(root, "src", "service.ts");
-  await writeFile(source, "export const service = 2;\n");
-  const first = await inspectWiki(root);
-  await writeFile(source, "export const service = 3;\n");
-  const second = await inspectWiki(root);
+  const { source, workspace } = await createRepository();
+  const sourceFile = path.join(source, "src", "service.ts");
+  await writeFile(sourceFile, "export const service = 2;\n");
+  const first = await inspectWiki(workspace);
+  await writeFile(sourceFile, "export const service = 3;\n");
+  const second = await inspectWiki(workspace);
 
-  assert.deepEqual(first.changedPaths, ["src/service.ts"]);
-  assert.deepEqual(second.changedPaths, ["src/service.ts"]);
+  assert.deepEqual(first.changedPaths, ["api/src/service.ts"]);
+  assert.deepEqual(second.changedPaths, ["api/src/service.ts"]);
   assert.equal(first.changed[0].status, second.changed[0].status);
   assert.notEqual(first.sourceFingerprint, second.sourceFingerprint);
 });
 
-test("falls back to a full generation for source provenance without a line range", async () => {
-  const root = await createRepository();
-  await writeFile(path.join(root, "wiki", "concepts", "service.md"), [
+test("uses full generation for source provenance without a declared project prefix or line range", async () => {
+  const { workspace } = await createRepository();
+  await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), [
     "---",
     "type: concept",
     "title: Service",
@@ -119,39 +125,33 @@ test("falls back to a full generation for source provenance without a line range
     "---",
     "",
   ].join("\n"));
-  git(root, "add", "wiki/concepts/service.md");
-  git(root, "commit", "--quiet", "-m", "Invalid wiki provenance");
 
-  const inspection = await inspectWiki(root);
+  const inspection = await inspectWiki(workspace);
 
-  assert.equal(inspection.wikiDrift, false);
   assert.equal(inspection.mode, "generate");
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
 });
 
-test("falls back to a full generation when a source is missing or resolves outside the workspace", async () => {
-  const root = await createRepository();
+test("uses full generation when a declared source link escapes its Git root", async () => {
+  const { source, workspace } = await createRepository();
   const outside = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-outside-"));
   temporaryDirectories.push(outside);
   await writeFile(path.join(outside, "external.ts"), "export const external = true;\n");
-  await symlink(path.join(outside, "external.ts"), path.join(root, "src", "external.ts"), "file");
-  await writeFile(path.join(root, "wiki", "concepts", "service.md"), [
+  await symlink(path.join(outside, "external.ts"), path.join(source, "src", "external.ts"), "file");
+  await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), [
     "---",
     "type: concept",
     "title: Service",
     "description: Service implementation",
     "sources:",
-    "  - src/external.ts#L1-L1",
-    "  - src/missing.ts#L1-L1",
+    "  - api/src/external.ts#L1-L1",
+    "  - api/src/missing.ts#L1-L1",
     "---",
     "",
   ].join("\n"));
-  git(root, "add", "wiki/concepts/service.md", "src/external.ts");
-  git(root, "commit", "--quiet", "-m", "Unsafe source provenance");
 
-  const inspection = await inspectWiki(root);
+  const inspection = await inspectWiki(workspace);
 
-  assert.equal(inspection.wikiDrift, false);
   assert.equal(inspection.mode, "generate");
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
 });

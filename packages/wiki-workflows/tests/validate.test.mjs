@@ -1,25 +1,50 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { validateWiki } from "../dist/validate.js";
 
+const temporaryDirectories = [];
+
+function git(root, ...args) {
+  return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+}
+
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-validate-"));
-  await mkdir(path.join(root, "src"), { recursive: true });
-  await writeFile(path.join(root, "src", "index.ts"), "export const answer = 42;\nexport default answer;\n");
+  temporaryDirectories.push(root);
+  const source = path.join(root, "api");
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await writeFile(path.join(source, "src", "index.ts"), "export const answer = 42;\nexport default answer;\n");
+  git(source, "init", "--quiet");
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1",
+    "language: zh",
+    "defaultSourceIgnores: true",
+    "sources:",
+    "  - path: api",
+    "    origin:",
+    "      type: clone",
+    "      remoteUrl: https://example.test/api.git",
+    "",
+  ].join("\n"));
   await mkdir(path.join(root, "wiki", "architecture"), { recursive: true });
   return root;
 }
 
-function page({ sources = ["src/index.ts#L1-L2"], body = "" } = {}) {
+function page({ sources = ["api/src/index.ts#L1-L2"], body = "" } = {}) {
   return `---\ntype: concept\ntitle: Example\ndescription: Example documentation\nsources:\n${sources.map((source) => `  - ${source}`).join("\n")}\n---\n\n${body}`;
 }
 
+test.after(async () => {
+  await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
 test("finalization rebuilds deterministic nested indexes and validates a source-grounded page", async () => {
   const root = await fixture();
-  await writeFile(path.join(root, "wiki", "overview.md"), page({ body: "[Source](repo:src/index.ts#L1-L1)\n[Architecture](./architecture/design.md)\n" }));
+  await writeFile(path.join(root, "wiki", "overview.md"), page({ body: "[Source](repo:api/src/index.ts#L1-L1)\n[Architecture](./architecture/design.md)\n" }));
   await writeFile(path.join(root, "wiki", "architecture", "design.md"), page({ body: "```mermaid\nflowchart TD\n  A --> B\n```\n" }));
 
   const result = await validateWiki(root);
@@ -35,9 +60,9 @@ test("finalization rebuilds deterministic nested indexes and validates a source-
   );
 });
 
-test("rejects malformed frontmatter and invalid workspace source ranges", async () => {
+test("rejects malformed frontmatter and invalid declared-source ranges", async () => {
   const root = await fixture();
-  await writeFile(path.join(root, "wiki", "invalid.md"), "---\ntype: \ntitle: Example\ndescription: 1\nsources: [../src/index.ts#L1-L1, src/index.ts#L8-L2, src/index.ts#L3-L3, src/missing.ts#L1-L1]\n---\n");
+  await writeFile(path.join(root, "wiki", "invalid.md"), "---\ntype: \ntitle: Example\ndescription: 1\nsources: [../api/src/index.ts#L1-L1, api/src/index.ts#L8-L2, api/src/index.ts#L3-L3, api/src/missing.ts#L1-L1]\n---\n");
 
   const result = await validateWiki(root);
 
@@ -45,18 +70,19 @@ test("rejects malformed frontmatter and invalid workspace source ranges", async 
   assert.deepEqual(result.errors, [
     "invalid.md: frontmatter requires a non-empty type",
     "invalid.md: frontmatter requires a non-empty description",
-    "invalid.md: frontmatter source must be workspace-relative with #Lx-Ly: ../src/index.ts#L1-L1",
-    "invalid.md: frontmatter source has an invalid line range: src/index.ts#L8-L2",
-    "invalid.md: frontmatter source line range exceeds file: src/index.ts#L3-L3",
-    "invalid.md: frontmatter source file is missing: src/missing.ts#L1-L1",
+    "invalid.md: frontmatter source must be workspace-relative with #Lx-Ly: ../api/src/index.ts#L1-L1",
+    "invalid.md: frontmatter source has an invalid line range: api/src/index.ts#L8-L2",
+    "invalid.md: frontmatter source line range exceeds file: api/src/index.ts#L3-L3",
+    "invalid.md: frontmatter source file is missing: api/src/missing.ts#L1-L1",
   ]);
 });
 
 test("rejects invalid repo citations, escaping Wiki links, missing links, and unsafe Mermaid", async () => {
   const root = await fixture();
   await writeFile(path.join(root, "wiki", "invalid.md"), page({ body: [
-    "[Bad repo](repo:../src/index.ts#L1-L1)",
-    "[Malformed repo](repo:src/index.ts)",
+    "[Bad repo](repo:../api/src/index.ts#L1-L1)",
+    "[Malformed repo](repo:api/src/index.ts)",
+    "[Unknown source](repo:web/src/index.ts#L1-L1)",
     "[Escape](../README.md)",
     "[Missing](./missing.md)",
     "```mermaid",
@@ -75,11 +101,12 @@ test("rejects invalid repo citations, escaping Wiki links, missing links, and un
 
   assert.equal(result.ok, false);
   assert.deepEqual(result.errors, [
-    "invalid.md: Mermaid fence on line 6 is invalid: flowchart uses reserved word `end` as a node id",
-    "invalid.md: Mermaid fence on line 10 is invalid: interactive Mermaid callbacks are not allowed",
-    "invalid.md: Mermaid fence opened on line 14 is not closed",
-    "invalid.md: repo citation must be repo:<workspace-relative-path>#Lx-Ly: repo:../src/index.ts#L1-L1",
-    "invalid.md: repo citation must be repo:<workspace-relative-path>#Lx-Ly: repo:src/index.ts",
+    "invalid.md: Mermaid fence on line 7 is invalid: flowchart uses reserved word `end` as a node id",
+    "invalid.md: Mermaid fence on line 11 is invalid: interactive Mermaid callbacks are not allowed",
+    "invalid.md: Mermaid fence opened on line 15 is not closed",
+    "invalid.md: repo citation must be repo:<workspace-relative-path>#Lx-Ly: repo:../api/src/index.ts#L1-L1",
+    "invalid.md: repo citation must be repo:<workspace-relative-path>#Lx-Ly: repo:api/src/index.ts",
+    "invalid.md: repo citation must start with a declared source directory: web/src/index.ts#L1-L1",
     "invalid.md: internal Markdown link escapes wiki/: ../README.md",
     "invalid.md: internal Markdown link target is missing: ./missing.md",
   ]);
@@ -94,7 +121,8 @@ test("only finalizes the fixed wiki output directory and rejects a linked Wiki r
     pages: [],
   });
 
-  const linkedRoot = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-linked-root-"));
+  const linkedRoot = await fixture();
+  await rm(path.join(linkedRoot, "wiki"), { recursive: true });
   await mkdir(path.join(linkedRoot, "outside"));
   await symlink(path.join(linkedRoot, "outside"), path.join(linkedRoot, "wiki"), "dir");
   const linked = await validateWiki(linkedRoot);
@@ -106,18 +134,33 @@ test("only finalizes the fixed wiki output directory and rejects a linked Wiki r
   await assert.rejects(readFile(path.join(linkedRoot, "outside", "index.md"), "utf8"));
 });
 
-test("does not follow sources out of the workspace through symbolic links", async () => {
+test("allows a declared project link outside the workspace but rejects paths escaping that project", async () => {
   const root = await fixture();
   const outside = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-outside-source-"));
+  temporaryDirectories.push(outside);
   await writeFile(path.join(outside, "external.ts"), "export const external = true;\n");
-  await symlink(path.join(outside, "external.ts"), path.join(root, "src", "linked.ts"), "file");
-  await writeFile(path.join(root, "wiki", "linked.md"), page({ sources: ["src/linked.ts#L1-L1"] }));
+  await symlink(path.join(outside, "external.ts"), path.join(root, "api", "src", "linked.ts"), "file");
+  await writeFile(path.join(root, "wiki", "linked.md"), page({ sources: ["api/src/linked.ts#L1-L1"] }));
 
   const result = await validateWiki(root);
 
   assert.deepEqual(result.errors, [
-    "linked.md: frontmatter source resolves outside the workspace: src/linked.ts#L1-L1",
+    "linked.md: frontmatter source resolves outside declared source api: api/src/linked.ts#L1-L1",
   ]);
+});
+
+test("validates citations through a declared source link outside the workspace", async () => {
+  const root = await fixture();
+  const outside = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-linked-source-"));
+  temporaryDirectories.push(outside);
+  await mkdir(path.join(outside, "src"), { recursive: true });
+  await writeFile(path.join(outside, "src", "external.ts"), "export const external = true;\n");
+  git(outside, "init", "--quiet");
+  await rm(path.join(root, "api"), { recursive: true });
+  await symlink(outside, path.join(root, "api"), "dir");
+  await writeFile(path.join(root, "wiki", "linked.md"), page({ sources: ["api/src/external.ts#L1-L1"] }));
+
+  assert.deepEqual(await validateWiki(root), { ok: true, errors: [], pages: ["linked.md"] });
 });
 
 test("validates reference links while ignoring Markdown links in fenced and inline code", async () => {
@@ -126,14 +169,14 @@ test("validates reference links while ignoring Markdown links in fenced and inli
   await writeFile(path.join(root, "wiki", "references.md"), page({ body: [
     "[Source][code]",
     "[Target][target]",
-    "[code]: repo:src/index.ts#L1-L1",
+    "[code]: repo:api/src/index.ts#L1-L1",
     "[target]: ./target.md",
     "",
-    "`[Ignored inline](repo:src/missing.ts#L1-L1)`",
+    "`[Ignored inline](repo:api/src/missing.ts#L1-L1)`",
     "```markdown",
-    "[Ignored fence](repo:src/missing.ts#L1-L1)",
+    "[Ignored fence](repo:api/src/missing.ts#L1-L1)",
     "[Ignored link](./missing.md)",
-    "[ignored]: repo:src/missing.ts#L1-L1",
+    "[ignored]: repo:api/src/missing.ts#L1-L1",
     "```",
   ].join("\n") }));
 

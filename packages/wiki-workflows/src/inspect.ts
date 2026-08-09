@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readlink, realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { exists, markdownFiles, readText } from "./files.js";
-import { inside } from "./files.js";
+import { exists, inside, markdownFiles, readText } from "./files.js";
 import { parsePage } from "./frontmatter.js";
-import { git, gitText, repositoryRoot } from "./git.js";
+import { git } from "./git.js";
 import type { SourceChange, WikiInspection, WikiMode } from "./types.js";
+import { loadWikiWorkspace, sourceIsIgnored, type ResolvedWikiSource, type ResolvedWikiWorkspace } from "./workspace.js";
 
 const WIKI_DIRECTORY = "wiki";
 const SOURCE_REFERENCE = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
@@ -17,10 +17,6 @@ interface PageGraph {
   reliable: boolean;
 }
 
-function isWikiPath(candidate: string): boolean {
-  return candidate === WIKI_DIRECTORY || candidate.startsWith(`${WIKI_DIRECTORY}/`);
-}
-
 function normalizePath(candidate: string): string {
   return candidate.replaceAll("\\", "/");
 }
@@ -28,7 +24,6 @@ function normalizePath(candidate: string): string {
 function parseNameStatus(output: string): SourceChange[] {
   const fields = output.split("\0");
   const changes: SourceChange[] = [];
-
   for (let index = 0; index < fields.length - 1;) {
     const status = fields[index++];
     if (!status) continue;
@@ -37,7 +32,6 @@ function parseNameStatus(output: string): SourceChange[] {
     index += pathCount;
     if (paths.length === pathCount && paths.every(Boolean)) changes.push({ status, paths });
   }
-
   return changes;
 }
 
@@ -55,21 +49,26 @@ function uniqueChanges(changes: SourceChange[]): SourceChange[] {
   });
 }
 
-async function sourcePath(workspaceRoot: string, resource: string): Promise<string | null> {
+function workspacePath(source: ResolvedWikiSource, relative: string): string {
+  return relative ? `${source.path}/${relative}` : source.path;
+}
+
+async function sourcePath(workspace: ResolvedWikiWorkspace, resource: string): Promise<string | null> {
   const match = SOURCE_REFERENCE.exec(resource);
   if (!match) return null;
   const source = match[1];
   const segments = source.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  const configured = workspace.sources.find((candidate) => source === candidate.path || source.startsWith(`${candidate.path}/`));
+  if (!configured || source === configured.path) return null;
   const start = Number(match[2]);
   const end = Number(match[3] ?? match[2]);
   if (end < start) return null;
 
-  let sourceFile: string;
   try {
-    sourceFile = inside(workspaceRoot, path.resolve(workspaceRoot, source));
+    const sourceFile = inside(workspace.root, path.resolve(workspace.root, source));
     const physicalSource = await realpath(sourceFile);
-    inside(workspaceRoot, physicalSource);
+    inside(configured.realPath, physicalSource);
     if (!(await stat(physicalSource)).isFile()) return null;
     if (lineCount(await readFile(physicalSource, "utf8")) < end) return null;
   } catch {
@@ -91,14 +90,12 @@ function markdownTargets(body: string): string[] {
 function resolveWikiLink(from: string, target: string, pages: Set<string>): string | null {
   const location = target.split(/[?#]/, 1)[0]?.trim() ?? "";
   if (!location || location.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(location)) return null;
-
   let decoded = location;
   try {
     decoded = decodeURIComponent(location);
   } catch {
     return null;
   }
-
   const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(from), decoded));
   if (resolved === "." || resolved === ".." || resolved.startsWith("../")) return null;
   const candidates = [resolved];
@@ -107,14 +104,13 @@ function resolveWikiLink(from: string, target: string, pages: Set<string>): stri
   return candidates.find((candidate) => pages.has(candidate)) ?? null;
 }
 
-async function inspectPageGraph(workspaceRoot: string, wikiRoot: string): Promise<PageGraph> {
+async function inspectPageGraph(workspace: ResolvedWikiWorkspace, wikiRoot: string): Promise<PageGraph> {
   const allMarkdown = await markdownFiles(wikiRoot);
   const pages = allMarkdown.filter((relative) => path.posix.basename(relative) !== "index.md");
   const pageSet = new Set(pages);
   const sources = new Map<string, Set<string>>();
   const inbound = new Map<string, Set<string>>();
   let reliable = pages.length > 0;
-
   for (const relative of pages) {
     let parsed;
     try {
@@ -123,14 +119,13 @@ async function inspectPageGraph(workspaceRoot: string, wikiRoot: string): Promis
       reliable = false;
       continue;
     }
-
     const resources = parsed.frontmatter.sources;
     if (!Array.isArray(resources) || !resources.length || resources.some((resource) => typeof resource !== "string" || !resource.trim())) {
       reliable = false;
       continue;
     }
     for (const resource of resources) {
-      const source = await sourcePath(workspaceRoot, resource);
+      const source = await sourcePath(workspace, resource);
       if (!source) {
         reliable = false;
         continue;
@@ -139,7 +134,6 @@ async function inspectPageGraph(workspaceRoot: string, wikiRoot: string): Promis
       citedPages.add(relative);
       sources.set(source, citedPages);
     }
-
     for (const target of markdownTargets(parsed.body)) {
       const linkedPage = resolveWikiLink(relative, target, pageSet);
       if (!linkedPage) continue;
@@ -148,7 +142,6 @@ async function inspectPageGraph(workspaceRoot: string, wikiRoot: string): Promis
       inbound.set(linkedPage, inboundPages);
     }
   }
-
   return { pages, sources, inbound, reliable };
 }
 
@@ -158,69 +151,48 @@ function lineCount(text: string): number {
   return text.endsWith("\n") ? lines - 1 : lines;
 }
 
-async function gitChanges(root: string, args: string[]): Promise<SourceChange[]> {
+async function gitChanges(root: string, args: string[], source: ResolvedWikiSource, defaultsEnabled: boolean): Promise<SourceChange[]> {
   const result = await git(root, args);
   if (result.code !== 0) throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
   return parseNameStatus(result.stdout)
-    .map((change) => ({ ...change, paths: change.paths.filter((candidate) => !isWikiPath(candidate)) }))
+    .map((change) => ({ ...change, paths: change.paths.filter((candidate) => !sourceIsIgnored(source, candidate, defaultsEnabled)) }))
     .filter((change) => change.paths.length > 0);
 }
 
-async function untrackedChanges(root: string): Promise<SourceChange[]> {
+async function untrackedChanges(root: string, source: ResolvedWikiSource, defaultsEnabled: boolean): Promise<SourceChange[]> {
   const result = await git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
   if (result.code !== 0) throw new Error(result.stderr.trim() || "git ls-files failed");
   return parsePaths(result.stdout)
-    .filter((candidate) => !isWikiPath(candidate))
+    .filter((candidate) => !sourceIsIgnored(source, candidate, defaultsEnabled))
     .map((candidate) => ({ status: "??", paths: [candidate] }));
 }
 
-async function hasWikiDrift(root: string): Promise<boolean> {
-  const commands = [
-    ["diff", "--name-only", "-z", "--", WIKI_DIRECTORY],
-    ["diff", "--cached", "--name-only", "-z", "--", WIKI_DIRECTORY],
-    ["ls-files", "--others", "--exclude-standard", "-z", "--", WIKI_DIRECTORY],
-  ];
-  const results = await Promise.all(commands.map((args) => git(root, args)));
-  for (const result of results) {
-    if (result.code !== 0) throw new Error(result.stderr.trim() || "failed to inspect wiki drift");
-    if (parsePaths(result.stdout).some(isWikiPath)) return true;
-  }
-  return false;
-}
-
-/**
- * Hash only the Git-reported source changes and their current contents. This
- * catches edits to an already-modified path without recording a source copy.
- */
-async function sourceFingerprint(root: string, changes: SourceChange[], bootstrapHead?: string): Promise<string> {
+async function sourceState(source: ResolvedWikiSource, defaultsEnabled: boolean): Promise<{ head: string; changes: SourceChange[]; fingerprint: string }> {
+  const headResult = await git(source.repositoryRoot, ["rev-parse", "HEAD"]);
+  const head = headResult.code === 0 ? headResult.stdout.trim() : "";
+  const staged = await gitChanges(source.repositoryRoot, ["diff", "--cached", "--name-status", "-z"], source, defaultsEnabled);
+  const unstaged = await gitChanges(source.repositoryRoot, ["diff", "--name-status", "-z"], source, defaultsEnabled);
+  const untracked = await untrackedChanges(source.repositoryRoot, source, defaultsEnabled);
+  const changes = uniqueChanges([...staged, ...unstaged, ...untracked]);
   const hash = createHash("sha256");
-  if (bootstrapHead) {
-    hash.update("head");
-    hash.update("\0");
-    hash.update(bootstrapHead);
-    hash.update("\0");
-  }
-  const ordered = [...changes].sort((left, right) => `${left.status}\0${left.paths.join("\0")}`.localeCompare(`${right.status}\0${right.paths.join("\0")}`));
-  for (const change of ordered) {
+  hash.update(source.path);
+  hash.update("\0");
+  hash.update(head);
+  for (const change of [...changes].sort((left, right) => `${left.status}\0${left.paths.join("\0")}`.localeCompare(`${right.status}\0${right.paths.join("\0")}`))) {
     hash.update(change.status);
     hash.update("\0");
     for (const relative of change.paths) {
       hash.update(relative);
       hash.update("\0");
-      const candidate = inside(root, path.resolve(root, relative));
       try {
-        const entry = await lstat(candidate);
-        if (entry.isSymbolicLink()) hash.update(await readlink(candidate));
-        else if (entry.isFile()) hash.update(await readFile(candidate));
-        else hash.update(`non-file:${entry.mode}`);
+        hash.update(await readFile(path.join(source.realPath, relative)));
       } catch {
-        // A deleted/renamed-away path is still part of the Git-derived state.
         hash.update("missing");
       }
       hash.update("\0");
     }
   }
-  return hash.digest("hex");
+  return { head, changes, fingerprint: hash.digest("hex") };
 }
 
 function impactedPages(graph: PageGraph, changedPaths: string[]): string[] {
@@ -228,7 +200,6 @@ function impactedPages(graph: PageGraph, changedPaths: string[]): string[] {
   for (const changed of changedPaths) {
     for (const page of graph.sources.get(changed) ?? []) impacted.add(page);
   }
-
   const queue = [...impacted];
   while (queue.length) {
     const page = queue.shift()!;
@@ -238,56 +209,42 @@ function impactedPages(graph: PageGraph, changedPaths: string[]): string[] {
       queue.push(inbound);
     }
   }
-
   return [...impacted].sort();
 }
 
-/**
- * Inspect the current Git worktree without creating snapshots or state files.
- * A `generate` result means the caller must rebuild the whole Wiki; `refresh`
- * carries only the pages that can be safely updated incrementally.
- */
+/** Inspect declared Git sources without copying them into workspace state. */
 export async function inspectWiki(cwd: string): Promise<WikiInspection> {
-  const root = await repositoryRoot(cwd);
-  const workspaceRoot = await realpath(root);
-  const headResult = await git(root, ["rev-parse", "HEAD"]);
-  const head = headResult.code === 0 ? headResult.stdout.trim() : "";
-  const wikiRoot = path.join(root, WIKI_DIRECTORY);
+  const workspace = await loadWikiWorkspace(cwd);
+  if (workspace.sources.length === 0) throw new Error("workspace.yaml has no sources. Run /wiki source add first.");
+  const wikiRoot = path.join(workspace.root, WIKI_DIRECTORY);
   const wikiExists = await exists(wikiRoot);
-  const lastWikiCommit = head
-    ? await git(root, ["log", "-1", "--format=%H", "--", WIKI_DIRECTORY]).then((result) => {
-      if (result.code !== 0) throw new Error(result.stderr.trim() || "failed to find the last Wiki commit");
-      return result.stdout.trim() || null;
-    })
-    : null;
-  const baseCommit = lastWikiCommit && head
-    ? await gitText(root, ["merge-base", lastWikiCommit, head])
-    : null;
-
-  const committed = baseCommit ? await gitChanges(root, ["diff", "--name-status", "-z", baseCommit, "HEAD"]) : [];
-  const staged = await gitChanges(root, ["diff", "--cached", "--name-status", "-z"]);
-  const unstaged = await gitChanges(root, ["diff", "--name-status", "-z"]);
-  const untracked = await untrackedChanges(root);
-  const changed = uniqueChanges([...committed, ...staged, ...unstaged, ...untracked]);
-  const changedPaths = [...new Set(changed.flatMap((change) => change.paths).filter((candidate) => !isWikiPath(candidate)))].sort();
-  // Before any Wiki commit exists there is no merge-base diff; HEAD is the
-  // stable Git source identity until the first Wiki baseline is committed.
-  const currentSourceFingerprint = await sourceFingerprint(root, changed, baseCommit ? undefined : head);
-  const wikiDrift = await hasWikiDrift(root);
-  const graph = wikiExists ? await inspectPageGraph(workspaceRoot, wikiRoot) : { pages: [], sources: new Map(), inbound: new Map(), reliable: true };
-
-  const mode: WikiMode = lastWikiCommit && wikiExists && !wikiDrift && graph.reliable ? "refresh" : "generate";
+  const states = await Promise.all(workspace.sources.map(async (source) => ({ source, ...await sourceState(source, workspace.defaultSourceIgnores) })));
+  const changed = uniqueChanges(states.flatMap(({ source, changes }) => changes.map((change) => ({
+    ...change,
+    paths: change.paths.map((relative) => workspacePath(source, relative)),
+  }))));
+  const changedPaths = [...new Set(changed.flatMap((change) => change.paths))].sort();
+  const graph = wikiExists ? await inspectPageGraph(workspace, wikiRoot) : { pages: [], sources: new Map(), inbound: new Map(), reliable: false };
+  const directlyImpactedPages = impactedPages(graph, changedPaths);
+  // A plain workspace has no trusted cross-repository generation baseline. A
+  // current Git diff can safely drive refresh only when valid citations map it
+  // to existing pages. All other states rebuild rather than risk stale prose.
+  const mode: WikiMode = wikiExists && graph.reliable && changedPaths.length > 0 && directlyImpactedPages.length > 0
+    ? "refresh"
+    : "generate";
+  const sourceFingerprint = createHash("sha256").update(states.map(({ fingerprint }) => fingerprint).sort().join("\0")).digest("hex");
+  const head = states.map(({ source, head }) => `${source.path}:${head}`).sort().join(",");
   return {
-    root,
+    root: workspace.root,
     wikiRoot,
     mode,
     head,
-    baseCommit,
-    lastWikiCommit,
+    baseCommit: null,
+    lastWikiCommit: null,
     changed,
     changedPaths,
-    sourceFingerprint: currentSourceFingerprint,
-    impactedPages: mode === "refresh" ? impactedPages(graph, changedPaths) : graph.pages,
-    wikiDrift,
+    sourceFingerprint,
+    impactedPages: mode === "refresh" ? directlyImpactedPages : graph.pages,
+    wikiDrift: false,
   };
 }

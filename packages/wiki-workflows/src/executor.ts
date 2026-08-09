@@ -26,6 +26,7 @@ import type {
   WikiAgentExecutor,
   WikiNodeMetrics,
 } from "./workflow-types.js";
+import { loadWikiWorkspace } from "./workspace.js";
 
 export interface PiAgentExecutorOptions {
   /** The selected Pi model supplied by the extension context, when available. */
@@ -91,10 +92,11 @@ export class PiAgentExecutor implements WikiAgentExecutor {
   }
 
   private async createIsolatedSession(request: WikiAgentExecutionRequest): Promise<AgentSession> {
+    const toolPolicy = await workspaceToolPolicy(request.cwd);
     const agentDir = getAgentDir();
-    const settingsManager = SettingsManager.create(request.cwd, agentDir);
+    const settingsManager = SettingsManager.create(toolPolicy.workspaceRoot, agentDir);
     const resourceLoader = new DefaultResourceLoader({
-      cwd: request.cwd,
+      cwd: toolPolicy.workspaceRoot,
       agentDir,
       settingsManager,
       // Workflow children never load the host extension, skills, or prompts.
@@ -105,10 +107,10 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     await resourceLoader.reload();
 
     const result = await (this.options.createSession ?? createAgentSession)({
-      cwd: request.cwd,
+      cwd: toolPolicy.workspaceRoot,
       model: this.options.getModel?.() ?? this.options.model,
       thinkingLevel: this.options.getThinkingLevel?.() ?? this.options.thinkingLevel,
-      sessionManager: SessionManager.inMemory(request.cwd),
+      sessionManager: SessionManager.inMemory(toolPolicy.workspaceRoot),
       settingsManager,
       resourceLoader,
       // "builtin" preserves custom definitions. `tools` is also an allowlist,
@@ -117,7 +119,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       tools: request.role === "writer"
         ? ["read", "grep", "find", "ls", "edit", "write", "wiki_delete"]
         : ["read", "grep", "find", "ls"],
-      customTools: workflowTools(request.cwd, request.role),
+      customTools: workflowTools(toolPolicy, request.role),
     });
     return result.session;
   }
@@ -191,42 +193,65 @@ export function createPiAgentExecutor(options: PiAgentExecutorOptions = {}): PiA
   return new PiAgentExecutor(options);
 }
 
-function workflowTools(cwd: string, role: WikiAgentExecutionRequest["role"]): ToolDefinition<any, any, any>[] {
+interface WorkspaceToolPolicy {
+  workspaceRoot: string;
+  readableRoots: PermittedToolRoot[];
+  wikiRoot: string;
+}
+
+interface PermittedToolRoot {
+  logicalRoot: string;
+  physicalRoot?: string;
+}
+
+async function workspaceToolPolicy(cwd: string): Promise<WorkspaceToolPolicy> {
+  const workspace = await loadWikiWorkspace(cwd);
+  return {
+    workspaceRoot: workspace.root,
+    readableRoots: [
+      { logicalRoot: workspace.root, physicalRoot: await realpath(workspace.root) },
+      ...workspace.sources.map((source) => ({ logicalRoot: source.absolutePath, physicalRoot: source.realPath })),
+    ],
+    wikiRoot: path.join(workspace.root, "wiki"),
+  };
+}
+
+function workflowTools(policy: WorkspaceToolPolicy, role: WikiAgentExecutionRequest["role"]): ToolDefinition<any, any, any>[] {
   const readOnly = [
-    guardWorkspaceTool(createReadToolDefinition(cwd), cwd, "path"),
-    guardWorkspaceTool(createGrepToolDefinition(cwd), cwd, "path"),
-    guardWorkspaceTool(createFindToolDefinition(cwd), cwd, "path"),
-    guardWorkspaceTool(createLsToolDefinition(cwd), cwd, "path"),
+    guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
+    guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
+    guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
+    guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
   ];
   if (role !== "writer") return readOnly;
 
-  const wikiRoot = path.join(cwd, "wiki");
-  const write = createWriteToolDefinition(cwd, {
+  const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
-      mkdir: async (directory) => await guardedMkdir(wikiRoot, directory),
-      writeFile: async (file, content) => await guardedWrite(wikiRoot, file, content),
+      mkdir: async (directory) => await guardedMkdir(policy.wikiRoot, directory),
+      writeFile: async (file, content) => await guardedWrite(policy.wikiRoot, file, content),
     },
   });
-  const edit = createEditToolDefinition(cwd, {
+  const edit = createEditToolDefinition(policy.workspaceRoot, {
     operations: {
-      access: async (file) => await guardedAccess(wikiRoot, file),
-      readFile: async (file) => await guardedRead(wikiRoot, file),
-      writeFile: async (file, content) => await guardedWrite(wikiRoot, file, content),
+      access: async (file) => await guardedAccess(policy.wikiRoot, file),
+      readFile: async (file) => await guardedRead(policy.wikiRoot, file),
+      writeFile: async (file, content) => await guardedWrite(policy.wikiRoot, file, content),
     },
   });
   return [
     ...readOnly,
     // Inputs are resolved by Pi's built-in definitions against the workspace.
     // The guarded operations below receive those absolute paths and enforce wiki/.
-    guardWorkspaceTool(edit, cwd, "path"),
-    guardWorkspaceTool(write, cwd, "path", true),
-    createDeleteToolDefinition(cwd, wikiRoot),
+    guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path"),
+    guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path", true),
+    createDeleteToolDefinition(policy),
   ];
 }
 
 function guardWorkspaceTool(
   definition: ToolDefinition<any, any, any>,
-  root: string,
+  workspaceRoot: string,
+  permittedRoots: PermittedToolRoot[],
   pathField: string,
   allowMissing = false,
 ): ToolDefinition<any, any, any> {
@@ -235,7 +260,7 @@ function guardWorkspaceTool(
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, context) {
       const rawPath = valueAt(params, pathField);
-      if (typeof rawPath === "string") await assertContainedPath(root, rawPath, allowMissing);
+      if (typeof rawPath === "string") await assertAllowedWorkspacePath(workspaceRoot, permittedRoots, rawPath, allowMissing);
       return await execute(toolCallId, params, signal, onUpdate, context);
     },
   } as ToolDefinition<any, any, any>;
@@ -245,7 +270,7 @@ const deleteSchema = Type.Object({
   path: Type.String({ description: "Workspace-relative Wiki page path to remove" }),
 });
 
-function createDeleteToolDefinition(cwd: string, wikiRoot: string): ToolDefinition<typeof deleteSchema> {
+function createDeleteToolDefinition(policy: WorkspaceToolPolicy): ToolDefinition<typeof deleteSchema> {
   return {
     name: "wiki_delete",
     label: "wiki_delete",
@@ -254,9 +279,8 @@ function createDeleteToolDefinition(cwd: string, wikiRoot: string): ToolDefiniti
     promptGuidelines: ["Use wiki_delete only for obsolete files under wiki/"],
     parameters: deleteSchema,
     async execute(_toolCallId, { path: rawPath }) {
-      const workspacePath = await assertContainedPath(cwd, rawPath, false);
-      await assertContainedAbsolutePath(wikiRoot, workspacePath, false);
-      if (path.resolve(workspacePath) === path.resolve(wikiRoot)) throw new Error("Cannot delete the Wiki root");
+      const workspacePath = await assertAllowedWorkspacePath(policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], rawPath, false);
+      if (path.resolve(workspacePath) === path.resolve(policy.wikiRoot)) throw new Error("Cannot delete the Wiki root");
       const entry = await lstat(workspacePath);
       if (!entry.isFile()) throw new Error("wiki_delete only accepts regular files");
       await rm(workspacePath);
@@ -291,8 +315,59 @@ async function guardedAccess(root: string, file: string): Promise<void> {
   await access(file);
 }
 
-async function assertContainedPath(root: string, candidate: string, allowMissing: boolean): Promise<string> {
-  return await assertContainedAbsolutePath(root, path.resolve(root, candidate), allowMissing);
+async function assertAllowedWorkspacePath(
+  workspaceRoot: string,
+  permittedRoots: PermittedToolRoot[],
+  candidate: string,
+  allowMissing: boolean,
+): Promise<string> {
+  const absolute = insideWorkspace(workspaceRoot, candidate);
+  const permitted = permittedRoots
+    .filter((root) => pathIsInside(path.resolve(root.logicalRoot), absolute))
+    .sort((left, right) => path.resolve(right.logicalRoot).length - path.resolve(left.logicalRoot).length)[0];
+  if (!permitted) throw new Error(`Path is outside the permitted workspace scope: ${candidate}`);
+
+  const permittedPhysical = permitted.physicalRoot ?? await realpath(permitted.logicalRoot).catch(() => path.resolve(permitted.logicalRoot));
+  let existing = absolute;
+  while (true) {
+    try {
+      const physical = await realpath(existing);
+      if (pathIsInside(permittedPhysical, physical)) return absolute;
+      if (allowMissing && !(await pathExists(permitted.logicalRoot))) return absolute;
+      throw new Error(`Path escapes the permitted workspace scope: ${candidate}`);
+    } catch (error) {
+      if (!isMissingPath(error)) throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw new Error(`Path escapes the permitted workspace scope: ${candidate}`);
+      if (!allowMissing && existing === absolute) throw error;
+      existing = parent;
+    }
+  }
+}
+
+function insideWorkspace(root: string, candidate: string): string {
+  const absolute = path.resolve(root, candidate);
+  if (!pathIsInside(path.resolve(root), absolute)) throw new Error(`Path is outside the workspace: ${candidate}`);
+  return absolute;
+}
+
+function pathIsInside(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function pathExists(location: string): Promise<boolean> {
+  try {
+    await lstat(location);
+    return true;
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw error;
+  }
+}
+
+function isMissingPath(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
 }
 
 async function assertContainedAbsolutePath(root: string, candidate: string, allowMissing: boolean): Promise<string> {

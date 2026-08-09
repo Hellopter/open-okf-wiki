@@ -3,6 +3,7 @@ import path from "node:path";
 import { inside, markdownFiles, readText, writeText } from "./files.js";
 import { parsePage } from "./frontmatter.js";
 import type { WikiValidation } from "./types.js";
+import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
 
 const SOURCE_REFERENCE = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
 const REPOSITORY_CITATION = /^repo:(.+)$/;
@@ -37,12 +38,13 @@ interface SourceRange {
 }
 
 interface WorkspaceRoots {
+  sources: Map<string, ResolvedWikiSource>;
   wiki: string;
   workspace: string;
 }
 
 /**
- * Finalize a generated Wiki in the current Git workspace.
+ * Finalize a generated Wiki in the configured workspace.
  *
  * Index files are generated before validation so writers never need to manage
  * navigation and a failed validation still leaves deterministic indexes behind.
@@ -52,9 +54,10 @@ export async function validateWiki(root: string, wikiDirectory = "wiki"): Promis
     return { ok: false, errors: ["Wiki output is fixed at workspace-relative wiki/"], pages: [] };
   }
 
-  const requestedWorkspace = path.resolve(root);
   let roots: WorkspaceRoots;
   try {
+    const configured = await loadWikiWorkspace(root);
+    const requestedWorkspace = path.resolve(configured.root);
     const workspace = await realpath(requestedWorkspace);
     const requestedWiki = inside(requestedWorkspace, path.join(requestedWorkspace, "wiki"));
     const wikiEntry = await lstat(requestedWiki);
@@ -66,9 +69,9 @@ export async function validateWiki(root: string, wikiDirectory = "wiki"): Promis
     }
     const wiki = await realpath(requestedWiki);
     inside(workspace, wiki);
-    roots = { workspace, wiki };
-  } catch {
-    return { ok: false, errors: ["wiki directory is missing or escapes the workspace"], pages: [] };
+    roots = { workspace, wiki, sources: new Map(configured.sources.map((source) => [source.path, source])) };
+  } catch (error) {
+    return { ok: false, errors: [errorMessage(error)], pages: [] };
   }
 
   await regenerateIndexes(roots.wiki);
@@ -86,7 +89,7 @@ export async function validateWiki(root: string, wikiDirectory = "wiki"): Promis
       continue;
     }
 
-    await validateFrontmatter(page, parsed.frontmatter, roots.workspace, errors);
+    await validateFrontmatter(page, parsed.frontmatter, roots, errors);
     await validateBody(page, absolute, parsed.body, roots, errors);
   }
 
@@ -119,7 +122,7 @@ async function regenerateIndexes(wikiRoot: string): Promise<void> {
   await writeIndex(wikiRoot, "");
 }
 
-async function validateFrontmatter(page: string, frontmatter: Record<string, unknown>, workspaceRoot: string, errors: string[]): Promise<void> {
+async function validateFrontmatter(page: string, frontmatter: Record<string, unknown>, roots: WorkspaceRoots, errors: string[]): Promise<void> {
   for (const field of ["type", "title", "description"] as const) {
     if (typeof frontmatter[field] !== "string" || !frontmatter[field].trim()) {
       errors.push(`${page}: frontmatter requires a non-empty ${field}`);
@@ -133,7 +136,7 @@ async function validateFrontmatter(page: string, frontmatter: Record<string, unk
   }
 
   for (const source of sources) {
-    await validateSourceReference(page, source, workspaceRoot, "frontmatter source", errors);
+    await validateSourceReference(page, source, roots, "frontmatter source", errors);
   }
 }
 
@@ -160,7 +163,7 @@ async function validateBody(
         errors.push(`${page}: repo citation must be repo:<workspace-relative-path>#Lx-Ly: ${target}`);
         continue;
       }
-      await validateSourceReference(page, repositoryCitation[1], roots.workspace, "repo citation", errors);
+      await validateSourceReference(page, repositoryCitation[1], roots, "repo citation", errors);
       continue;
     }
     if (target.startsWith("repo:")) {
@@ -171,7 +174,7 @@ async function validateBody(
   }
 }
 
-async function validateSourceReference(page: string, reference: string, workspaceRoot: string, label: string, errors: string[]): Promise<void> {
+async function validateSourceReference(page: string, reference: string, roots: WorkspaceRoots, label: string, errors: string[]): Promise<void> {
   const parsed = parseSourceReference(reference);
   if (!parsed) {
     errors.push(`${page}: ${label} must be workspace-relative with #Lx-Ly: ${reference}`);
@@ -182,20 +185,27 @@ async function validateSourceReference(page: string, reference: string, workspac
     return;
   }
 
+  const [sourceName] = parsed.path.split("/", 1);
+  const source = roots.sources.get(sourceName);
+  if (!source) {
+    errors.push(`${page}: ${label} must start with a declared source directory: ${reference}`);
+    return;
+  }
+
   let sourceFile: string;
   try {
-    sourceFile = inside(workspaceRoot, path.resolve(workspaceRoot, parsed.path));
+    sourceFile = inside(roots.workspace, path.resolve(roots.workspace, parsed.path));
   } catch {
     errors.push(`${page}: ${label} escapes the workspace: ${reference}`);
     return;
   }
 
-  await validateSourceFile(page, workspaceRoot, sourceFile, reference, label, parsed, errors);
+  await validateSourceFile(page, source, sourceFile, reference, label, parsed, errors);
 }
 
 async function validateSourceFile(
   page: string,
-  workspaceRoot: string,
+  source: ResolvedWikiSource,
   sourceFile: string,
   reference: string,
   label: string,
@@ -205,9 +215,9 @@ async function validateSourceFile(
   try {
     const physicalSource = await realpath(sourceFile);
     try {
-      inside(workspaceRoot, physicalSource);
+      inside(source.realPath, physicalSource);
     } catch {
-      errors.push(`${page}: ${label} resolves outside the workspace: ${reference}`);
+      errors.push(`${page}: ${label} resolves outside declared source ${source.path}: ${reference}`);
       return;
     }
     if (!(await stat(sourceFile)).isFile()) {
