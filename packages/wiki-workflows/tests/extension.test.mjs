@@ -169,6 +169,21 @@ test("the bare command reports status and does not open a blocking Navigator", a
   assert.match(subject.messages[0].content, /Wiki Run: no run/);
 });
 
+test("Wiki subcommands are discoverable through Pi argument completion", () => {
+  const subject = fixture();
+  const complete = subject.commands.get("wiki").getArgumentCompletions;
+
+  assert.deepEqual(complete("").map(({ value }) => value), [
+    "init ", "source ", "generate ", "refresh ", "open", "status", "pause", "resume", "cancel", "help",
+  ]);
+  assert.deepEqual(complete("in").map(({ value }) => value), ["init "]);
+  assert.deepEqual(complete("source ").map(({ value }) => value), ["source add "]);
+  assert.deepEqual(complete("source add ").map(({ value }) => value), ["source add link ", "source add clone "]);
+  assert.deepEqual(complete("init --lang ").map(({ value }) => value), ["init --lang zh", "init --lang en"]);
+  assert.equal(complete("init --workspace "), null);
+  assert.deepEqual(complete("generate ").map(({ value }) => value), ["generate lang=zh", "generate lang=en"]);
+});
+
 test("initialization persists language and source commands use project names without IDs", async () => {
   const subject = fixture({ workspace: { root: "/docs", language: "en" } });
   await subject.handlers.get("session_start")({}, subject.ctx);

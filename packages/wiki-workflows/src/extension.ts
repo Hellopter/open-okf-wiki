@@ -4,6 +4,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { createPiAgentExecutor } from "./executor.js";
 import { createWikiWorkflowEngine, type WikiWorkflowEngine } from "./engine.js";
 import { openWikiRunNavigator, renderWikiRunText, type WikiNavigatorController, type WikiNavigatorWorkspace } from "./navigator.js";
@@ -97,7 +98,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     });
 
     pi.registerCommand("wiki", {
-      description: "Generate, refresh, inspect, and control the Git-native repository Wiki",
+      description: "Set up, generate, and control a source-grounded Wiki workspace",
+      getArgumentCompletions: wikiArgumentCompletions,
       async handler(rawArgs: string, context: ExtensionCommandContext): Promise<void> {
         let command: ParsedCommand;
         try {
@@ -361,6 +363,130 @@ function parseLanguage(value: string): "zh" | "en" {
   throw new Error("lang must be zh or en");
 }
 
+const WIKI_COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
+  { value: "init ", label: "init", description: "Create or update workspace.yaml" },
+  { value: "source ", label: "source", description: "Add a linked or cloned source repository" },
+  { value: "generate ", label: "generate", description: "Generate the Wiki from all configured sources" },
+  { value: "refresh ", label: "refresh", description: "Refresh Wiki pages affected by source changes" },
+  { value: "open", label: "open", description: "Open the Wiki run Navigator" },
+  { value: "status", label: "status", description: "Show the current run without opening the Navigator" },
+  { value: "pause", label: "pause", description: "Pause scheduling after active agents finish" },
+  { value: "resume", label: "resume", description: "Resume a paused run after source re-inspection" },
+  { value: "cancel", label: "cancel", description: "Cancel the active Wiki run" },
+  { value: "help", label: "help", description: "Show all Wiki workspace commands" },
+];
+
+const LANGUAGE_COMPLETIONS = (prefix: string): AutocompleteItem[] => [
+  { value: `${prefix}zh`, label: "zh", description: "Chinese Wiki" },
+  { value: `${prefix}en`, label: "en", description: "English Wiki" },
+];
+
+/**
+ * Pi exposes one slash-command namespace. Its argument completion API provides
+ * the native, discoverable `/wiki <subcommand>` menu without registering a
+ * second command system or relying on a CLI.
+ */
+export function wikiArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  const input = argumentPrefix.trimStart();
+  if (!input) return WIKI_COMMAND_COMPLETIONS.slice();
+
+  const words = tokenize(input);
+  const trailingSpace = /\s$/.test(input);
+  const command = words[0]?.toLowerCase();
+  if (!command) return WIKI_COMMAND_COMPLETIONS.slice();
+
+  if (words.length === 1 && !trailingSpace) {
+    return filterCompletions(WIKI_COMMAND_COMPLETIONS, command);
+  }
+
+  switch (command) {
+    case "source":
+      return sourceArgumentCompletions(words, trailingSpace);
+    case "init":
+      return initArgumentCompletions(input, words, trailingSpace);
+    case "generate":
+    case "refresh":
+      return generationArgumentCompletions(words, trailingSpace);
+    default:
+      return null;
+  }
+}
+
+function sourceArgumentCompletions(words: string[], trailingSpace: boolean): AutocompleteItem[] | null {
+  if (words.length === 1 && trailingSpace) {
+    return [{ value: "source add ", label: "add", description: "Register a source repository" }];
+  }
+
+  if (words.length === 2 && !trailingSpace) {
+    return filterCompletions([
+      { value: "source add ", label: "add", description: "Register a source repository" },
+    ], words[1]);
+  }
+
+  if (words[1] !== "add") return null;
+  if (words.length === 2 && trailingSpace) {
+    return sourceKindCompletions("source add ");
+  }
+  if (words.length === 3 && !trailingSpace) {
+    return filterCompletions(sourceKindCompletions("source add "), words[2]);
+  }
+  return null;
+}
+
+function sourceKindCompletions(prefix: string): AutocompleteItem[] {
+  return [
+    { value: `${prefix}link `, label: "link", description: "Link an existing local repository" },
+    { value: `${prefix}clone `, label: "clone", description: "Clone a Git repository into the workspace" },
+  ];
+}
+
+function initArgumentCompletions(input: string, words: string[], trailingSpace: boolean): AutocompleteItem[] | null {
+  const last = words.at(-1);
+  const beforeLast = words.at(-2);
+  if (last === "--lang" && trailingSpace) return LANGUAGE_COMPLETIONS(input);
+  if (last === "--workspace" && trailingSpace) return null;
+  if (beforeLast === "--lang" && last && !trailingSpace) {
+    return filterCompletions(LANGUAGE_COMPLETIONS(`${input.slice(0, input.length - last.length)}`), last);
+  }
+  if (beforeLast === "--workspace") return null;
+  if (trailingSpace) return initOptionCompletions(input, words);
+  return filterCompletions(initOptionCompletions(input.slice(0, input.length - (last?.length ?? 0)), words), last ?? "");
+}
+
+function initOptionCompletions(prefix: string, words: string[]): AutocompleteItem[] {
+  const valuePrefix = `${prefix}${prefix.endsWith(" ") ? "" : " "}`;
+  const options: AutocompleteItem[] = [];
+  if (!words.includes("--lang")) {
+    options.push({ value: `${valuePrefix}--lang `, label: "--lang", description: "Set the default Wiki language" });
+  }
+  if (!words.includes("--workspace")) {
+    options.push({ value: `${valuePrefix}--workspace `, label: "--workspace", description: "Set the workspace directory" });
+  }
+  return options;
+}
+
+function generationArgumentCompletions(words: string[], trailingSpace: boolean): AutocompleteItem[] | null {
+  const command = words[0];
+  const last = words.at(-1);
+  if (words.length === 1 && trailingSpace) return generationLanguageCompletions(`${command} `);
+  if (words.length === 2 && !trailingSpace && last?.startsWith("lang=")) {
+    return filterCompletions(generationLanguageCompletions(`${command} `), last);
+  }
+  return null;
+}
+
+function generationLanguageCompletions(prefix: string): AutocompleteItem[] {
+  return [
+    { value: `${prefix}lang=zh`, label: "lang=zh", description: "Generate in Chinese" },
+    { value: `${prefix}lang=en`, label: "lang=en", description: "Generate in English" },
+  ];
+}
+
+function filterCompletions(completions: readonly AutocompleteItem[], query: string): AutocompleteItem[] {
+  const normalized = query.toLowerCase();
+  return completions.filter((item) => item.label.toLowerCase().startsWith(normalized));
+}
+
 function isCriticalEvent(event: WikiRunEvent): boolean {
   return event.kind !== "node_activity";
 }
@@ -388,6 +514,7 @@ function helpText(): string {
     "  /wiki generate [lang=zh|en] [focus]",
     "  /wiki refresh [lang=zh|en] [focus]",
     "  /wiki status | pause | resume | cancel",
+    "  /wiki help",
     "  /wiki init [--workspace <directory>] [--lang zh|en]",
     "  /wiki source add link <local-repository> [--workspace <directory>]",
     "  /wiki source add clone <git-url> [--ref <branch>] [--workspace <directory>]",
