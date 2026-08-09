@@ -7,6 +7,7 @@ import type {
   WikiNodeMetrics,
   WikiNodeStatus,
   WikiRunSnapshot,
+  WikiRunSummary,
   WikiRunStatus,
 } from "./workflow-types.js";
 
@@ -17,6 +18,8 @@ export type { WikiNodeMetrics, WikiNodeStatus, WikiRunStatus } from "./workflow-
 
 export interface WikiRetryImpact {
   targetId: string;
+  targetIds: string[];
+  phaseId?: string;
   preservedUpstream: string[];
   invalidatedDownstream: string[];
   writesWiki: boolean;
@@ -25,10 +28,15 @@ export interface WikiRetryImpact {
 
 /** Engine adapter. UI owns no workflow state and never edits the workspace. */
 export interface WikiNavigatorController {
-  getRun(): WikiRunSnapshot | undefined;
+  listRuns(): WikiRunSummary[];
+  getRun(runId?: string): WikiRunSnapshot | undefined;
+  loadRun(runId: string): Promise<WikiRunSnapshot | undefined>;
+  getActiveRunId(): string | undefined;
   getWorkspace?(): WikiNavigatorWorkspace | undefined;
   subscribe(listener: () => void): () => void;
-  retryNode(nodeId: string): Promise<void> | void;
+  retryNode(runId: string, nodeId: string): Promise<WikiRunSnapshot | undefined> | WikiRunSnapshot | undefined;
+  retryPhase(runId: string, phaseId: string): Promise<WikiRunSnapshot | undefined> | WikiRunSnapshot | undefined;
+  deleteRun(runId: string): Promise<void> | void;
   pause(): Promise<void> | void;
   resume(): Promise<void> | void;
   cancel(): Promise<void> | void;
@@ -42,7 +50,7 @@ export interface WikiNavigatorWorkspace {
 }
 
 export interface WikiNavigatorTheme {
-  fg(color: "accent" | "success" | "error" | "warning" | "muted" | "dim" | "text", text: string): string;
+  fg(color: "accent" | "borderMuted" | "success" | "error" | "warning" | "muted" | "dim" | "text", text: string): string;
   bold(text: string): string;
 }
 
@@ -71,7 +79,7 @@ const STATUS_COLOR: Record<WikiNodeStatus, "accent" | "success" | "error" | "war
   cancelled: "muted",
 };
 
-export type WikiNavigatorView = "phases" | "agents" | "detail";
+export type WikiNavigatorView = "runs" | "phases" | "agents" | "detail";
 
 export interface WikiPhase {
   id: string;
@@ -81,10 +89,13 @@ export interface WikiPhase {
 
 export interface WikiNavigatorState {
   view: WikiNavigatorView;
+  selectedRunId?: string;
   selectedPhaseId?: string;
   selectedNodeId?: string;
   showHelp: boolean;
-  confirmation?: { kind: "retry" | "cancel"; nodeId?: string };
+  detailExpanded: boolean;
+  selectedAttempt?: number;
+  confirmation?: { kind: "retry" | "retryPhase" | "cancel" | "delete"; nodeId?: string; phaseId?: string; runId?: string };
   /** Offset from the selected anchor. `detailFromEnd` makes G/f stable without knowing terminal height. */
   detailScroll: number;
   detailFromEnd: boolean;
@@ -97,7 +108,10 @@ export type WikiNavigatorAction =
   | { type: "pause" }
   | { type: "resume" }
   | { type: "cancel" }
-  | { type: "retry"; nodeId: string }
+  | { type: "loadRun"; runId: string }
+  | { type: "retry"; runId: string; nodeId: string }
+  | { type: "retryPhase"; runId: string; phaseId: string }
+  | { type: "deleteRun"; runId: string }
   | { type: "notify"; message: string; level: "info" | "warning" };
 
 export interface WikiNavigatorTransition {
@@ -114,6 +128,15 @@ export function phaseRows(run: WikiRunView): WikiPhase[] {
   const phases: WikiPhase[] = [];
   for (const node of run.nodes) {
     const previous = phases.at(-1);
+    if (node.phaseId) {
+      const explicit = phases.find((phase) => phase.id === node.phaseId);
+      if (explicit) {
+        explicit.nodeIds.push(node.id);
+        continue;
+      }
+      phases.push({ id: node.phaseId, title: node.phaseTitle ?? stageLabel(node.kind), nodeIds: [node.id] });
+      continue;
+    }
     if (previous && phaseKind(previous, run) === node.kind) {
       previous.nodeIds.push(node.id);
       continue;
@@ -123,13 +146,15 @@ export function phaseRows(run: WikiRunView): WikiPhase[] {
   return phases;
 }
 
-export function createWikiNavigatorState(run?: WikiRunView): WikiNavigatorState {
+export function createWikiNavigatorState(run?: WikiRunView, runs: WikiRunSummary[] = []): WikiNavigatorState {
   const firstPhase = run ? phaseRows(run)[0] : undefined;
   return {
-    view: "phases",
+    view: "runs",
+    selectedRunId: run?.id ?? runs[0]?.id,
     selectedPhaseId: firstPhase?.id,
     selectedNodeId: firstPhase?.nodeIds[0],
     showHelp: false,
+    detailExpanded: false,
     detailScroll: 0,
     detailFromEnd: false,
     followOutput: true,
@@ -139,13 +164,26 @@ export function createWikiNavigatorState(run?: WikiRunView): WikiNavigatorState 
 export function retryImpact(run: WikiRunView, targetId: string): WikiRetryImpact | undefined {
   const target = nodeById(run, targetId);
   if (!target) return undefined;
+  return retryImpactFor(run, [targetId], targetId);
+}
 
-  const upstream = upstreamIds(run, targetId);
-  const downstream = downstreamIds(run, targetId);
-  const affected = [targetId, ...downstream];
+export function phaseRetryImpact(run: WikiRunView, phaseId: string): WikiRetryImpact | undefined {
+  const phase = phaseRows(run).find((item) => item.id === phaseId);
+  if (!phase?.nodeIds.length) return undefined;
+  return retryImpactFor(run, phase.nodeIds, phase.nodeIds[0]!, phaseId);
+}
+
+function retryImpactFor(run: WikiRunView, targetIds: string[], targetId: string, phaseId?: string): WikiRetryImpact {
+  const targetSet = new Set(targetIds);
+  const upstream = new Set<string>();
+  for (const id of targetIds) for (const upstreamId of upstreamIds(run, id)) upstream.add(upstreamId);
+  const downstream = downstreamIds(run, targetIds);
+  const affected = [...targetIds, ...downstream];
   return {
     targetId,
-    preservedUpstream: [...upstream],
+    targetIds,
+    phaseId,
+    preservedUpstream: [...upstream].filter((id) => !targetSet.has(id)),
     invalidatedDownstream: [...downstream],
     writesWiki: affected.some((id) => nodeById(run, id)?.kind === "write" || nodeById(run, id)?.kind === "repair"),
     rechecksGit: true,
@@ -156,8 +194,10 @@ export function reduceWikiNavigator(
   state: WikiNavigatorState,
   key: string | undefined,
   run: WikiRunView | undefined,
+  runs: WikiRunSummary[] = [],
+  activeRunId?: string,
 ): WikiNavigatorTransition {
-  const next = ensureSelection({ ...state }, run);
+  const next = ensureSelection({ ...state }, run, runs);
   const action: WikiNavigatorAction = { type: "none" };
   const selected = selectedNode(next, run);
 
@@ -178,7 +218,15 @@ export function reduceWikiNavigator(
     if (key === "enter" || key === "return") {
       const confirmation = next.confirmation;
       delete next.confirmation;
-      if (confirmation.kind === "retry" && confirmation.nodeId) return { state: next, action: { type: "retry", nodeId: confirmation.nodeId } };
+      if (confirmation.kind === "retry" && confirmation.nodeId && next.selectedRunId) {
+        return { state: next, action: { type: "retry", runId: next.selectedRunId, nodeId: confirmation.nodeId } };
+      }
+      if (confirmation.kind === "retryPhase" && confirmation.phaseId && next.selectedRunId) {
+        return { state: next, action: { type: "retryPhase", runId: next.selectedRunId, phaseId: confirmation.phaseId } };
+      }
+      if (confirmation.kind === "delete" && confirmation.runId) {
+        return { state: next, action: { type: "deleteRun", runId: confirmation.runId } };
+      }
       return { state: next, action: { type: "cancel" } };
     }
     return { state: next, action };
@@ -187,7 +235,13 @@ export function reduceWikiNavigator(
   if (key === "q") return { state: next, action: { type: "close" } };
   if (key === "escape" || key === "esc" || key === "left") return goBack(next);
 
-  if (key === "enter" || key === "return" || key === "right") return drill(next, run);
+  if (key === "enter" || key === "return" || key === "right") {
+    if (next.view === "runs" && next.selectedRunId) {
+      return { state: { ...next, view: "phases" }, action: { type: "loadRun", runId: next.selectedRunId } };
+    }
+    if (next.view === "detail") return { state: { ...next, detailExpanded: !next.detailExpanded }, action };
+    return drill(next, run);
+  }
   if (next.view === "detail" && (key === "up" || key === "k")) return scrollDetail(next, -1);
   if (next.view === "detail" && (key === "down" || key === "j")) return scrollDetail(next, 1);
   if (next.view === "detail" && (key === "pageUp" || key === "ctrl+u" || key === "ctrl+b")) return scrollDetail(next, -12);
@@ -202,10 +256,19 @@ export function reduceWikiNavigator(
     const followOutput = !next.followOutput;
     return { state: { ...next, followOutput, detailScroll: followOutput ? 0 : next.detailScroll, detailFromEnd: followOutput || next.detailFromEnd }, action };
   }
-  if (key === "up" || key === "k") return moveSelection(next, run, -1);
-  if (key === "down" || key === "j") return moveSelection(next, run, 1);
-  if (key === "g" || key === "home") return selectEdge(next, run, "start");
-  if (key === "G" || key === "shift+g" || key === "end") return selectEdge(next, run, "end");
+  if (next.view === "detail" && (key === "[" || key === "]")) {
+    const attempts = [...new Set([...(selected?.attemptHistory ?? []).map((item) => item.attempt), selected?.attempt ?? 0])]
+      .filter((attempt) => attempt > 0)
+      .sort((left, right) => left - right);
+    if (attempts.length < 2) return { state: next, action };
+    const current = attempts.indexOf(next.selectedAttempt ?? selected?.attempt ?? attempts.at(-1)!);
+    const selectedAttempt = attempts[Math.max(0, Math.min(attempts.length - 1, current + (key === "[" ? -1 : 1)))];
+    return { state: { ...next, selectedAttempt }, action };
+  }
+  if (key === "up" || key === "k") return moveSelection(next, run, runs, -1);
+  if (key === "down" || key === "j") return moveSelection(next, run, runs, 1);
+  if (key === "g" || key === "home") return selectEdge(next, run, runs, "start");
+  if (key === "G" || key === "shift+g" || key === "end") return selectEdge(next, run, runs, "end");
   if (key === "r") {
     if (!selected) return { state: next, action: { type: "notify", message: "Open a phase and select an agent to retry", level: "warning" } };
     if (selected.status === "running" || selected.status === "queued") {
@@ -214,15 +277,38 @@ export function reduceWikiNavigator(
     next.confirmation = { kind: "retry", nodeId: selected.id };
     return { state: next, action };
   }
+  if (key === "R" || key === "shift+r") {
+    if (next.view !== "phases" || !run || !next.selectedPhaseId) {
+      return { state: next, action: { type: "notify", message: "Select a phase before retrying it", level: "warning" } };
+    }
+    const phase = selectedPhase(next, run);
+    const nodes = phase?.nodeIds.map((id) => nodeById(run, id)).filter((node): node is WikiRunNode => Boolean(node)) ?? [];
+    if (nodes.some((node) => node.status === "running")) {
+      return { state: next, action: { type: "notify", message: "Wait for running agents in the selected phase to settle before retrying it", level: "warning" } };
+    }
+    next.confirmation = { kind: "retryPhase", phaseId: next.selectedPhaseId };
+    return { state: next, action };
+  }
   if (key === "p") {
-    if (!run) return { state: next, action: { type: "notify", message: "No Wiki run is active", level: "info" } };
+    if (!run || next.selectedRunId !== activeRunId) return { state: next, action: { type: "notify", message: "Select the active Wiki run to pause or resume", level: "info" } };
     if (run.status === "paused") return { state: next, action: { type: "resume" } };
     if (run.status === "running") return { state: next, action: { type: "pause" } };
     return { state: next, action: { type: "notify", message: "Only a running or paused run can be paused", level: "warning" } };
   }
   if (key === "c") {
-    if (!run || !isActiveRun(run)) return { state: next, action: { type: "notify", message: "No active Wiki run to cancel", level: "info" } };
+    if (!run || next.selectedRunId !== activeRunId || !isActiveRun(run)) return { state: next, action: { type: "notify", message: "No active Wiki run to cancel", level: "info" } };
     next.confirmation = { kind: "cancel" };
+    return { state: next, action };
+  }
+  if (key === "x") {
+    if (next.view !== "runs") {
+      return { state: next, action: { type: "notify", message: "Return to the Wiki run list to delete history", level: "info" } };
+    }
+    const selectedRun = runs.find((item) => item.id === next.selectedRunId);
+    if (!selectedRun || selectedRun.id === activeRunId || !isTerminalRun(selectedRun.status)) {
+      return { state: next, action: { type: "notify", message: "Only inactive completed history can be deleted", level: "warning" } };
+    }
+    next.confirmation = { kind: "delete", runId: selectedRun.id };
     return { state: next, action };
   }
   return { state: next, action };
@@ -235,22 +321,29 @@ export function renderWikiNavigator(
   theme: WikiNavigatorTheme = PLAIN_THEME,
   viewportRows = 24,
   workspace?: WikiNavigatorWorkspace,
+  runs: WikiRunSummary[] = run ? [summarizeRun(run)] : [],
+  activeRunId?: string,
 ): string[] {
   const safeWidth = Math.max(20, width);
   const safeRows = Math.max(8, viewportRows);
-  if (!run) return fitRows(renderIdleWorkspace(safeWidth, theme, workspace), safeRows, safeWidth);
+  const normalized = ensureSelection(state, run, runs);
+  if (normalized.view === "runs") {
+    if (normalized.showHelp) return fitRows([theme.bold("Wiki Run Controls"), ...renderHelp(safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
+    if (normalized.confirmation) return fitRows([...renderConfirmation(normalized.confirmation, run, safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
+    return fitRows(renderRuns(normalized, runs, activeRunId, safeWidth, theme, safeRows - 1).concat(footerHint(normalized)), safeRows, safeWidth);
+  }
+  if (!run) return fitRows(renderLoadingWorkspace(safeWidth, theme, workspace), safeRows, safeWidth);
 
-  const normalized = ensureSelection(state, run);
   const header = renderHeader(run, safeWidth, theme);
-  const bodyRows = Math.max(4, safeRows - 2);
-  if (normalized.showHelp) return fitRows([header, ...renderHelp(safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
-  if (normalized.confirmation) return fitRows([header, ...renderConfirmation(normalized.confirmation, run, safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
+  const bodyRows = Math.max(4, safeRows - header.length - 1);
+  if (normalized.showHelp) return fitRows([...header, ...renderHelp(safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
+  if (normalized.confirmation) return fitRows([...header, ...renderConfirmation(normalized.confirmation, run, safeWidth, theme), footerHint(normalized)], safeRows, safeWidth);
 
   let body: string[];
   if (normalized.view === "phases") body = renderPhaseChooser(normalized, run, safeWidth, theme, bodyRows);
   else if (normalized.view === "agents") body = renderAgentList(normalized, run, safeWidth, theme, bodyRows);
   else body = renderAgentDetail(normalized, run, safeWidth, theme, bodyRows);
-  return fitRows([header, ...body, footerHint(normalized)], safeRows, safeWidth);
+  return fitRows([...header, ...body, footerHint(normalized)], safeRows, safeWidth);
 }
 
 /** Plain text is also used by /wiki status and non-interactive command output. */
@@ -265,18 +358,28 @@ export function renderWikiRunText(run: WikiRunView | undefined): string {
   return [header, ...reason, ...nodes].join("\n");
 }
 
+/** Non-interactive history stays concise; selection and full detail belong in the TUI. */
+export function renderWikiRunHistoryText(runs: WikiRunSummary[]): string {
+  if (!runs.length) return "Wiki History: no runs for this project.";
+  return ["Wiki History", ...runs.map((run) => {
+    const focus = run.focus ? ` | ${run.focus}` : "";
+    const fork = run.parentRunId ? " | fork" : "";
+    return `${formatTimestamp(run.updatedAt)} | ${run.effectiveMode ?? run.requestedMode} | ${run.status} | ${run.succeededNodes}/${run.totalNodes}${fork}${focus}`;
+  })].join("\n");
+}
+
 /**
  * Opens a bordered, fixed-height Pi overlay. The state reducer above keeps the
  * keyboard navigation testable without a terminal runtime.
  */
 export function openWikiRunNavigator(ui: ExtensionUIContext, controller: WikiNavigatorController): Promise<void> {
   return ui.custom<void>((tui: TUI, theme: Theme, _keybindings, done) => {
-    let state = createWikiNavigatorState(controller.getRun());
+    let state = createWikiNavigatorState(controller.getRun(controller.getActiveRunId()), controller.listRuns());
     let closed = false;
     let focused = false;
     const rerender = () => tui.requestRender();
     const unsubscribe = controller.subscribe(() => {
-      state = ensureSelection(state, controller.getRun());
+      state = ensureSelection(state, controller.getRun(state.selectedRunId), controller.listRuns());
       rerender();
     });
 
@@ -290,10 +393,37 @@ export function openWikiRunNavigator(ui: ExtensionUIContext, controller: WikiNav
       try {
         if (action.type === "close") return close();
         if (action.type === "notify") return ui.notify(action.message, action.level);
+        if (action.type === "loadRun") {
+          void controller.loadRun(action.runId).then((loaded) => {
+            if (!loaded) return ui.notify("Wiki run history is unavailable", "warning");
+            const firstPhase = phaseRows(loaded)[0];
+            state = { ...state, view: "phases", selectedRunId: loaded.id, selectedPhaseId: firstPhase?.id, selectedNodeId: firstPhase?.nodeIds[0], detailExpanded: false, selectedAttempt: undefined };
+            rerender();
+          }, (error: unknown) => ui.notify(`Could not load Wiki history: ${errorMessage(error)}`, "error"));
+        }
         if (action.type === "retry") {
-          void Promise.resolve(controller.retryNode(action.nodeId)).then(rerender, (error: unknown) => {
-            ui.notify(`Retry failed: ${errorMessage(error)}`, "error");
-          });
+          void Promise.resolve(controller.retryNode(action.runId, action.nodeId)).then((snapshot) => {
+            if (snapshot) {
+              const firstPhase = phaseRows(snapshot)[0];
+              state = { ...state, view: "phases", selectedRunId: snapshot.id, selectedPhaseId: firstPhase?.id, selectedNodeId: firstPhase?.nodeIds[0], detailExpanded: false, selectedAttempt: undefined };
+            }
+            rerender();
+          }, (error: unknown) => ui.notify(`Retry failed: ${errorMessage(error)}`, "error"));
+        }
+        if (action.type === "retryPhase") {
+          void Promise.resolve(controller.retryPhase(action.runId, action.phaseId)).then((snapshot) => {
+            if (snapshot) {
+              const firstPhase = phaseRows(snapshot)[0];
+              state = { ...state, view: "phases", selectedRunId: snapshot.id, selectedPhaseId: firstPhase?.id, selectedNodeId: firstPhase?.nodeIds[0], detailExpanded: false, selectedAttempt: undefined };
+            }
+            rerender();
+          }, (error: unknown) => ui.notify(`Phase retry failed: ${errorMessage(error)}`, "error"));
+        }
+        if (action.type === "deleteRun") {
+          void Promise.resolve(controller.deleteRun(action.runId)).then(() => {
+            state = ensureSelection({ ...state, selectedRunId: undefined }, controller.getRun(), controller.listRuns());
+            rerender();
+          }, (error: unknown) => ui.notify(`Delete failed: ${errorMessage(error)}`, "error"));
         }
         if (action.type === "pause") {
           void Promise.resolve(controller.pause()).then(rerender, (error: unknown) => ui.notify(`Pause failed: ${errorMessage(error)}`, "error"));
@@ -320,21 +450,21 @@ export function openWikiRunNavigator(ui: ExtensionUIContext, controller: WikiNav
         const sideOverhead = 4;
         const innerWidth = Math.max(20, width - sideOverhead);
         const terminalRows = tui.terminal?.rows ?? 24;
-        const modalRows = Math.max(8, Math.floor(terminalRows * 0.82));
+        const modalRows = Math.max(8, Math.floor(terminalRows * 0.92));
         const contentRows = Math.max(6, modalRows - 2);
-        const raw = renderWikiNavigator(state, controller.getRun(), innerWidth, theme, contentRows, controller.getWorkspace?.());
-        const border = (value: string) => theme.fg(focused ? "accent" : "muted", value);
+        const raw = renderWikiNavigator(state, controller.getRun(state.selectedRunId), innerWidth, theme, contentRows, controller.getWorkspace?.(), controller.listRuns(), controller.getActiveRunId());
+        const border = (value: string) => theme.fg(focused ? "accent" : "borderMuted", value);
         const title = " wiki workflow ";
-        const top = border(`+-${title}${"-".repeat(Math.max(0, innerWidth - title.length + 1))}+`);
-        const bottom = border(`+${"-".repeat(Math.max(0, innerWidth + 2))}+`);
+        const top = border(`╭─${title}${"─".repeat(Math.max(0, innerWidth - visibleWidth(title) + 1))}╮`);
+        const bottom = border(`╰${"─".repeat(Math.max(0, innerWidth + 2))}╯`);
         const body = raw.map((line) => {
           const padded = padToWidth(line, innerWidth);
-          return border("| ") + padded + border(" |");
+          return border("│ ") + padded + border(" │");
         });
         return [top, ...body, bottom];
       },
       handleInput: (data) => {
-        const transition = reduceWikiNavigator(state, parseKey(data), controller.getRun());
+        const transition = reduceWikiNavigator(state, parseKey(data), controller.getRun(state.selectedRunId), controller.listRuns(), controller.getActiveRunId());
         state = transition.state;
         runAction(transition.action);
         rerender();
@@ -348,34 +478,38 @@ export function openWikiRunNavigator(ui: ExtensionUIContext, controller: WikiNav
       },
     };
     return component;
-  }, { overlay: true, overlayOptions: { width: "88%", minWidth: 68, maxHeight: "82%", anchor: "center", margin: 1 } });
+  }, { overlay: true, overlayOptions: { width: "88%", minWidth: 68, maxHeight: "92%", anchor: "center", margin: 1 } });
 }
 
-function renderIdleWorkspace(width: number, theme: WikiNavigatorTheme, workspace?: WikiNavigatorWorkspace): string[] {
+function renderLoadingWorkspace(width: number, theme: WikiNavigatorTheme, workspace?: WikiNavigatorWorkspace): string[] {
   if (!workspace) return [
-    theme.bold("Wiki Workspace"),
-    theme.fg("muted", "No workspace.yaml found. Run /wiki init first."),
+    theme.bold("Loading Wiki run"),
+    theme.fg("muted", "The selected history is being loaded."),
   ];
   const sources = workspace.sources.length ? workspace.sources.map((source) => source.path).join(", ") : "none";
   return [
-    theme.bold("Wiki Workspace"),
+    theme.bold("Loading Wiki run"),
     truncateToWidth(`Path: ${workspace.root}`, width, "", true),
     `Language: ${workspace.language === "zh" ? "Chinese" : "English"}`,
     truncateToWidth(`Sources: ${sources}`, width, "", true),
     "",
-    theme.fg("muted", "No Wiki run in this Pi session."),
+    theme.fg("muted", "The selected history is being loaded."),
   ];
 }
 
-function ensureSelection(state: WikiNavigatorState, run: WikiRunView | undefined): WikiNavigatorState {
-  if (!run) return state;
+function ensureSelection(state: WikiNavigatorState, run: WikiRunView | undefined, runs: WikiRunSummary[] = []): WikiNavigatorState {
+  const selectedRunId = runs.some((item) => item.id === state.selectedRunId)
+    ? state.selectedRunId
+    : run?.id ?? runs[0]?.id;
+  if (state.view === "runs") return { ...state, selectedRunId };
+  if (!run) return { ...state, selectedRunId };
   const phases = phaseRows(run);
-  if (!phases.length) return { ...state, view: "phases", selectedPhaseId: undefined, selectedNodeId: undefined };
+  if (!phases.length) return { ...state, selectedRunId: run.id, view: "phases", selectedPhaseId: undefined, selectedNodeId: undefined };
   const phase = phases.find((item) => item.id === state.selectedPhaseId) ?? phases[0];
   const node = phase && nodeById(run, state.selectedNodeId ?? "") && phase.nodeIds.includes(state.selectedNodeId ?? "")
     ? nodeById(run, state.selectedNodeId ?? "")
     : nodeById(run, phase?.nodeIds[0] ?? "");
-  return { ...state, selectedPhaseId: phase?.id, selectedNodeId: node?.id };
+  return { ...state, selectedRunId: run.id, selectedPhaseId: phase?.id, selectedNodeId: node?.id };
 }
 
 function selectedPhase(state: WikiNavigatorState, run: WikiRunView | undefined): WikiPhase | undefined {
@@ -407,20 +541,20 @@ function upstreamIds(run: WikiRunView, targetId: string): Set<string> {
   return ids;
 }
 
-function downstreamIds(run: WikiRunView, targetId: string): Set<string> {
-  const ids = new Set<string>();
+function downstreamIds(run: WikiRunView, targetIds: string[]): Set<string> {
+  const ids = new Set<string>(targetIds);
   let changed = true;
   while (changed) {
     changed = false;
     for (const node of run.nodes) {
-      if (ids.has(node.id) || !node.dependsOn.includes(targetId) && !node.dependsOn.some((id) => ids.has(id))) continue;
+      if (ids.has(node.id) || !node.dependsOn.some((id) => ids.has(id))) continue;
       ids.add(node.id);
       changed = true;
     }
   }
   // Preserve the run's declared order, not the depth-first traversal order,
   // for predictable retry confirmation and stage rendering.
-  return new Set(run.nodes.filter((node) => ids.has(node.id)).map((node) => node.id));
+  return new Set(run.nodes.filter((node) => ids.has(node.id) && !targetIds.includes(node.id)).map((node) => node.id));
 }
 
 function stageLabel(kind: WikiRunNode["kind"]): string {
@@ -440,21 +574,28 @@ function drill(state: WikiNavigatorState, run: WikiRunView | undefined): WikiNav
   if (!run) return { state, action: { type: "none" } };
   if (state.view === "phases") {
     const phase = selectedPhase(state, run);
-    return { state: phase ? { ...state, view: "agents", selectedNodeId: phase.nodeIds[0] } : state, action: { type: "none" } };
+    return { state: phase ? { ...state, view: "agents", selectedNodeId: phase.nodeIds[0], detailExpanded: false, selectedAttempt: undefined } : state, action: { type: "none" } };
   }
   if (state.view === "agents") {
-    return { state: selectedNode(state, run) ? { ...state, view: "detail", detailScroll: 0, detailFromEnd: false, followOutput: true } : state, action: { type: "none" } };
+    return { state: selectedNode(state, run) ? { ...state, view: "detail", detailScroll: 0, detailFromEnd: false, followOutput: true, detailExpanded: false, selectedAttempt: undefined } : state, action: { type: "none" } };
   }
   return { state, action: { type: "none" } };
 }
 
 function goBack(state: WikiNavigatorState): WikiNavigatorTransition {
-  if (state.view === "detail") return { state: { ...state, view: "agents", detailScroll: 0, detailFromEnd: false }, action: { type: "none" } };
+  if (state.view === "detail") return { state: { ...state, view: "agents", detailScroll: 0, detailFromEnd: false, detailExpanded: false, selectedAttempt: undefined }, action: { type: "none" } };
   if (state.view === "agents") return { state: { ...state, view: "phases" }, action: { type: "none" } };
+  if (state.view === "phases") return { state: { ...state, view: "runs", selectedPhaseId: undefined, selectedNodeId: undefined }, action: { type: "none" } };
   return { state, action: { type: "close" } };
 }
 
-function moveSelection(state: WikiNavigatorState, run: WikiRunView | undefined, delta: -1 | 1): WikiNavigatorTransition {
+function moveSelection(state: WikiNavigatorState, run: WikiRunView | undefined, runs: WikiRunSummary[], delta: -1 | 1): WikiNavigatorTransition {
+  if (state.view === "runs") {
+    if (!runs.length) return { state, action: { type: "none" } };
+    const index = Math.max(0, runs.findIndex((item) => item.id === state.selectedRunId));
+    const item = runs[(index + delta + runs.length) % runs.length];
+    return { state: item ? { ...state, selectedRunId: item.id } : state, action: { type: "none" } };
+  }
   if (!run) return { state, action: { type: "none" } };
   if (state.view === "phases") {
     const phases = phaseRows(run);
@@ -469,7 +610,11 @@ function moveSelection(state: WikiNavigatorState, run: WikiRunView | undefined, 
   return { state: { ...state, selectedNodeId: id, detailScroll: 0, detailFromEnd: false, followOutput: true }, action: { type: "none" } };
 }
 
-function selectEdge(state: WikiNavigatorState, run: WikiRunView | undefined, edge: "start" | "end"): WikiNavigatorTransition {
+function selectEdge(state: WikiNavigatorState, run: WikiRunView | undefined, runs: WikiRunSummary[], edge: "start" | "end"): WikiNavigatorTransition {
+  if (state.view === "runs") {
+    const item = edge === "start" ? runs[0] : runs.at(-1);
+    return { state: item ? { ...state, selectedRunId: item.id } : state, action: { type: "none" } };
+  }
   if (!run) return { state, action: { type: "none" } };
   if (state.view === "phases") {
     const phase = edge === "start" ? phaseRows(run)[0] : phaseRows(run).at(-1);
@@ -489,11 +634,86 @@ function isActiveRun(run: WikiRunView): boolean {
   return run.status === "running" || run.status === "paused" || run.status === "blocked";
 }
 
-function renderHeader(run: WikiRunView, width: number, theme: WikiNavigatorTheme): string {
+function isTerminalRun(status: WikiRunStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "blocked" || status === "cancelled";
+}
+
+function runStatusIcon(status: WikiRunStatus): string {
+  if (status === "paused") return "‖";
+  return STATUS_ICON[status];
+}
+
+function runStatusColor(status: WikiRunStatus): "accent" | "success" | "error" | "warning" | "muted" {
+  if (status === "paused") return "warning";
+  return STATUS_COLOR[status];
+}
+
+function summarizeRun(run: WikiRunView): WikiRunSummary {
+  return {
+    id: run.id,
+    cwd: run.cwd,
+    requestedMode: run.requestedMode,
+    effectiveMode: run.effectiveMode,
+    focus: run.focus,
+    status: run.status,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    completedAt: run.completedAt,
+    parentRunId: run.parentRunId,
+    head: run.inspection?.head,
+    changedPaths: run.inspection?.changedPaths.length ?? 0,
+    totalNodes: run.nodes.length,
+    succeededNodes: run.nodes.filter((node) => node.status === "succeeded").length,
+    failedNodes: run.nodes.filter((node) => node.status === "failed" || node.status === "blocked").length,
+  };
+}
+
+function renderHeader(run: WikiRunView, width: number, theme: WikiNavigatorTheme): string[] {
   const changed = run.inspection?.changedPaths.length ?? 0;
   const progress = `${run.nodes.filter((node) => node.status === "succeeded").length}/${run.nodes.length}`;
   const head = run.inspection?.head ? ` | ${shortHash(run.inspection.head)}` : "";
-  return truncateToWidth(theme.bold(`Wiki Run | ${run.effectiveMode ?? run.requestedMode} | ${run.status} | ${progress} agents | ${changed} changed${head}`), width, "", true);
+  const title = truncateToWidth(`${run.effectiveMode ?? run.requestedMode} Wiki run${run.parentRunId ? " (fork)" : ""}`, width, "", true);
+  const detail = `${run.status}  ${progress} agents | ${changed} changed${head}`;
+  return [
+    theme.fg("accent", theme.bold(title)),
+    truncateToWidth(theme.fg("dim", detail), width, "", true),
+  ];
+}
+
+function renderRuns(
+  state: WikiNavigatorState,
+  runs: WikiRunSummary[],
+  activeRunId: string | undefined,
+  width: number,
+  theme: WikiNavigatorTheme,
+  rows: number,
+): string[] {
+  const lines = [theme.fg("accent", theme.bold("Wiki Runs"))];
+  if (!runs.length) {
+    lines.push(theme.fg("muted", "No Wiki generation history yet."));
+    return lines;
+  }
+  const selected = Math.max(0, runs.findIndex((item) => item.id === state.selectedRunId));
+  const window = scrollWindow(runs.length, selected, Math.max(1, rows - 1));
+  for (const run of runs.slice(window.start, window.end)) {
+    const active = run.id === activeRunId ? " active" : "";
+    const parent = run.parentRunId ? " fork" : "";
+    const marker = run.id === state.selectedRunId ? "›" : " ";
+    const icon = runStatusIcon(run.status);
+    const metadata = `${run.effectiveMode ?? run.requestedMode}${parent}${active} | ${run.succeededNodes}/${run.totalNodes} | ${formatTimestamp(run.updatedAt)}`;
+    const title = truncateToWidth(run.focus || "Wiki generation", Math.max(12, width - visibleWidth(metadata) - 7), "…", false);
+    const primary = `${marker} ${icon} ${title}`;
+    lines.push(truncateToWidth(
+      run.id === state.selectedRunId
+        ? theme.fg("accent", theme.bold(`${primary}  ${metadata}`))
+        : `${marker} ${theme.fg(runStatusColor(run.status), icon)} ${title}  ${theme.fg("dim", metadata)}`,
+      width,
+      "",
+      true,
+    ));
+  }
+  if (window.total > window.end) lines.push(theme.fg("dim", `  ${window.end}/${window.total} runs`));
+  return lines;
 }
 
 function renderPhaseChooser(state: WikiNavigatorState, run: WikiRunView, width: number, theme: WikiNavigatorTheme, rows: number): string[] {
@@ -526,7 +746,7 @@ function renderAgentDetail(state: WikiNavigatorState, run: WikiRunView, width: n
   if (!node) return withSidebar(state, run, width, theme, rows, [theme.fg("muted", "No agent selected.")]);
   const sidebarWidth = layoutForWidth(width) === 2 ? Math.max(20, Math.min(28, Math.floor(width * 0.30))) : 0;
   const mainWidth = sidebarWidth ? Math.max(20, width - sidebarWidth - 3) : width;
-  const content = renderAgentTranscript(node, mainWidth, theme);
+  const content = renderAgentTranscript(state, node, mainWidth, theme);
   const viewport = Math.max(2, rows - 1);
   const maxScroll = Math.max(0, content.length - viewport);
   const follow = state.followOutput && node.status === "running";
@@ -568,17 +788,25 @@ function renderSidebar(state: WikiNavigatorState, run: WikiRunView, width: numbe
   for (const phase of phases.slice(window.start, window.end)) {
     const nodes = phase.nodeIds.map((id) => nodeById(run, id)).filter((node): node is WikiRunNode => Boolean(node));
     const status = phaseStatus(nodes);
-    const marker = phase.id === state.selectedPhaseId ? ">" : " ";
+    const marker = phase.id === state.selectedPhaseId ? "›" : " ";
     const count = `${nodes.filter((node) => node.status === "succeeded").length}/${nodes.length}`;
-    lines.push(truncateToWidth(theme.fg(STATUS_COLOR[status], `${marker} ${STATUS_ICON[status]} ${phase.title} ${count}`), width, "", true));
+    const text = `${marker} ${STATUS_ICON[status]} ${phase.title} ${count}`;
+    lines.push(truncateToWidth(
+      phase.id === state.selectedPhaseId
+        ? theme.fg("accent", theme.bold(text))
+        : `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])}${text.slice(2)}`,
+      width,
+      "",
+      true,
+    ));
   }
   return fitRows(lines, rows, width);
 }
 
 function phaseStatus(nodes: WikiRunNode[]): WikiNodeStatus {
-  if (nodes.some((node) => node.status === "running")) return "running";
   if (nodes.some((node) => node.status === "failed")) return "failed";
   if (nodes.some((node) => node.status === "blocked")) return "blocked";
+  if (nodes.some((node) => node.status === "running")) return "running";
   if (nodes.some((node) => node.status === "queued")) return "queued";
   if (nodes.some((node) => node.status === "invalidated")) return "invalidated";
   if (nodes.every((node) => node.status === "cancelled")) return "cancelled";
@@ -586,43 +814,53 @@ function phaseStatus(nodes: WikiRunNode[]): WikiNodeStatus {
 }
 
 function renderNodeRow(node: WikiRunNode, selected: boolean, width: number, theme: WikiNavigatorTheme): string {
-  const marker = selected ? ">" : " ";
+  const marker = selected ? "›" : " ";
   const attempt = node.attempt > 1 ? ` #${node.attempt}` : "";
   const activity = node.status === "running" ? ` | ${activityText(node)}` : "";
-  return truncateToWidth(theme.fg(STATUS_COLOR[node.status], `${marker} ${STATUS_ICON[node.status]} ${node.label}${attempt}${activity}`), width, "", true);
+  const text = `${marker} ${STATUS_ICON[node.status]} ${node.label}${attempt}${activity}`;
+  return truncateToWidth(
+    selected
+      ? theme.fg("accent", theme.bold(text))
+      : `${text.slice(0, 2)}${theme.fg(STATUS_COLOR[node.status], STATUS_ICON[node.status])}${text.slice(3)}`,
+    width,
+    "",
+    true,
+  );
 }
 
-function renderAgentTranscript(node: WikiRunNode, width: number, theme: WikiNavigatorTheme): string[] {
+function renderAgentTranscript(state: WikiNavigatorState, node: WikiRunNode, width: number, theme: WikiNavigatorTheme): string[] {
+  const attempt = attemptView(node, state.selectedAttempt);
+  const attemptSuffix = attempt.attempt !== node.attempt ? " (archived)" : "";
   const lines = [theme.bold(`Agent: ${node.label}`)];
-  lines.push(truncateToWidth(theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${node.status} | attempt ${node.attempt} | ${stageLabel(node.kind)}`), width, "", true));
+  lines.push(truncateToWidth(theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${node.status} | attempt ${attempt.attempt}${attemptSuffix} | ${stageLabel(node.kind)}`), width, "", true));
   if (node.activity.message || node.activity.state !== "idle") lines.push(truncateToWidth(theme.fg("accent", activityText(node)), width, "", true));
   lines.push("");
-  lines.push(theme.bold("Messages & tool calls"));
-  if (node.history?.length) {
-    for (const entry of node.history) lines.push(...renderHistoryEntry(entry, width, theme));
+  lines.push(theme.bold(`Messages & tool calls${state.detailExpanded ? " (raw)" : ""}`));
+  if (attempt.history?.length) {
+    for (const entry of attempt.history) lines.push(...renderHistoryEntry(entry, width, theme, state.detailExpanded));
   } else {
     lines.push(theme.fg("muted", "No completed message or tool call recorded yet."));
   }
-  if (node.output) {
+  if (attempt.output) {
     lines.push("");
     lines.push(theme.bold("Latest assistant output"));
-    lines.push(...renderObject(node.output, width, theme));
+    lines.push(...renderObject(attempt.output, width, theme));
   }
   lines.push("");
-  if (node.error) {
+  if (attempt.error) {
     lines.push(theme.bold("Failure"));
-    lines.push(...renderObject(`Error: ${node.error.message}`, width, { ...theme, fg: (_color, text) => theme.fg("error", text) }));
-    if (node.error.requiredSubmissionTool) {
-      lines.push(...renderObject(`Required submission: ${node.error.requiredSubmissionTool}`, width, { ...theme, fg: (_color, text) => theme.fg("warning", text) }));
+    lines.push(...renderObject(`Error: ${attempt.error.message}`, width, { ...theme, fg: (_color, text) => theme.fg("error", text) }));
+    if (attempt.error.requiredSubmissionTool) {
+      lines.push(...renderObject(`Required submission: ${attempt.error.requiredSubmissionTool}`, width, { ...theme, fg: (_color, text) => theme.fg("warning", text) }));
     }
   } else {
     lines.push(theme.bold(resultLabel(node.kind)));
-    lines.push(...renderObject(node.result ?? "No node result recorded.", width, theme));
+    lines.push(...renderObject(attempt.result ?? "No node result recorded.", width, theme));
   }
   lines.push("");
   lines.push(theme.bold("Execution"));
-  lines.push(...renderTiming(node, width, theme));
-  lines.push(...renderMetrics(node, width, theme));
+  lines.push(...renderTiming(attempt, width, theme));
+  lines.push(...renderMetrics(attempt, width, theme));
   return lines;
 }
 
@@ -632,22 +870,43 @@ function resultLabel(kind: WikiNodeKind): string {
   return "Node result";
 }
 
-function renderHistoryEntry(entry: WikiNodeHistoryEntry, width: number, theme: WikiNavigatorTheme): string[] {
+function renderHistoryEntry(entry: WikiNodeHistoryEntry, width: number, theme: WikiNavigatorTheme, expanded: boolean): string[] {
   const label = historyLabel(entry);
   const color = entry.isError || entry.kind === "error" ? "error" : entry.kind === "tool_call" ? "accent" : "muted";
   const lines = [truncateToWidth(theme.fg(color, `  ${formatTimestamp(entry.at)} ${label}`), width, "", true)];
-  lines.push(...wrapLines(entry.text || "(no text)", Math.max(12, width - 4)).map((line) => truncateToWidth(theme.fg(color, `    ${line}`), width, "", true)));
+  const text = expanded || entry.kind === "message" || entry.kind === "error"
+    ? entry.text || "(no text)"
+    : historySummary(entry);
+  lines.push(...wrapLines(text, Math.max(12, width - 4)).map((line) => truncateToWidth(theme.fg(color, `    ${line}`), width, "", true)));
   return lines;
 }
 
 function historyLabel(entry: WikiNodeHistoryEntry): string {
+  const target = entry.target ? ` ${entry.target}` : "";
   if (entry.kind === "message") return "assistant";
-  if (entry.kind === "tool_call") return `assistant tool ${entry.toolName ?? "call"}`;
-  if (entry.kind === "tool_result") return `tool ${entry.toolName ?? "result"}`;
-  return entry.toolName ? `tool ${entry.toolName} error` : "agent error";
+  if (entry.kind === "tool_call") return `assistant tool ${entry.toolName ?? "call"}${target}`;
+  if (entry.kind === "tool_result") return `tool ${entry.toolName ?? "result"}${target}`;
+  return entry.toolName ? `tool ${entry.toolName} error${target}` : "agent error";
 }
 
-function renderMetrics(node: WikiRunNode, width: number, theme: WikiNavigatorTheme): string[] {
+function historySummary(entry: WikiNodeHistoryEntry): string {
+  if (entry.summary) return entry.summary;
+  if (entry.kind === "tool_call") return "Running";
+  if (entry.target) return "Completed";
+  return entry.isError ? "Tool failed" : "Completed";
+}
+
+type WikiAttemptView = Pick<WikiRunNode, "attempt" | "startedAt" | "finishedAt" | "result" | "output" | "history" | "error" | "metrics">;
+
+function attemptView(node: WikiRunNode, selectedAttempt: number | undefined): WikiAttemptView {
+  if (selectedAttempt !== undefined && selectedAttempt !== node.attempt) {
+    const archived = (node.attemptHistory ?? []).find((item) => item.attempt === selectedAttempt);
+    if (archived) return archived;
+  }
+  return node;
+}
+
+function renderMetrics(node: Pick<WikiRunNode, "metrics"> & Partial<Pick<WikiRunNode, "activity">>, width: number, theme: WikiNavigatorTheme): string[] {
   const metrics = node.metrics;
   const context = formatContext(metrics.contextTokens, metrics.contextWindow, metrics.contextEstimated);
   const usage = [
@@ -658,7 +917,7 @@ function renderMetrics(node: WikiRunNode, width: number, theme: WikiNavigatorThe
   const recovery = [
     metrics.compactions ? `compactions ${metrics.compactions}` : "",
     metrics.autoRetries ? `auto retries ${metrics.autoRetries}` : "",
-    node.activity.retryDelayMs ? `backoff ${formatDuration(node.activity.retryDelayMs)}` : "",
+    node.activity?.retryDelayMs ? `backoff ${formatDuration(node.activity.retryDelayMs)}` : "",
   ].filter(Boolean).join(" | ");
   const lines = [
     metrics.model ? `Model: ${metrics.model}` : "",
@@ -670,7 +929,7 @@ function renderMetrics(node: WikiRunNode, width: number, theme: WikiNavigatorThe
   return lines.map((line) => truncateToWidth(line, width, "", true));
 }
 
-function renderTiming(node: WikiRunNode, width: number, theme: WikiNavigatorTheme): string[] {
+function renderTiming(node: Pick<WikiRunNode, "startedAt" | "finishedAt">, width: number, theme: WikiNavigatorTheme): string[] {
   const lines = [
     node.startedAt ? `Started: ${formatTimestamp(node.startedAt)}` : "",
     node.finishedAt ? `Ended: ${formatTimestamp(node.finishedAt)}` : "",
@@ -681,10 +940,18 @@ function renderTiming(node: WikiRunNode, width: number, theme: WikiNavigatorThem
 
 function renderConfirmation(
   confirmation: NonNullable<WikiNavigatorState["confirmation"]>,
-  run: WikiRunView,
+  run: WikiRunView | undefined,
   width: number,
   theme: WikiNavigatorTheme,
 ): string[] {
+  if (confirmation.kind === "delete") {
+    return [
+      theme.bold("Delete Wiki History?"),
+      theme.fg("warning", "The saved run record will be removed. Git files and generated Wiki pages are unchanged."),
+      "",
+      theme.fg("muted", "Enter delete | Esc keep history"),
+    ].map((line) => truncateToWidth(line, width, "", true));
+  }
   if (confirmation.kind === "cancel") {
     return [
       theme.bold("Cancel Wiki Run?"),
@@ -693,13 +960,17 @@ function renderConfirmation(
       theme.fg("muted", "Enter confirm | Esc keep running"),
     ].map((line) => truncateToWidth(line, width, "", true));
   }
-  const impact = confirmation.nodeId ? retryImpact(run, confirmation.nodeId) : undefined;
+  if (!run) return [theme.fg("error", "Selected retry target is no longer loaded.")];
+  const impact = confirmation.kind === "retryPhase" && confirmation.phaseId
+    ? phaseRetryImpact(run, confirmation.phaseId)
+    : confirmation.nodeId ? retryImpact(run, confirmation.nodeId) : undefined;
   const target = impact ? nodeById(run, impact.targetId) : undefined;
   if (!impact || !target) return [theme.fg("error", "Selected retry target no longer exists.")];
   const preserved = describeNodes(run, impact.preservedUpstream) || "none";
-  const rerun = describeNodes(run, [impact.targetId, ...impact.invalidatedDownstream]) || target.label;
+  const rerun = describeNodes(run, [...impact.targetIds, ...impact.invalidatedDownstream]) || target.label;
+  const phase = impact.phaseId ? phaseRows(run).find((item) => item.id === impact.phaseId) : undefined;
   return [
-    theme.bold(`Retry ${target.label}?`),
+    theme.bold(`Retry ${phase?.title ?? target.label}?`),
     `Keep upstream: ${preserved}`,
     `Re-run: ${rerun}`,
     "Git: will be re-checked before retry.",
@@ -712,18 +983,20 @@ function renderConfirmation(
 function renderHelp(width: number, theme: WikiNavigatorTheme): string[] {
   return [
     theme.bold("Wiki Run Controls"),
-    "Phases: Up/Down or j/k select, Enter opens agents",
+    "Runs: Up/Down or j/k select, Enter opens a run, x deletes completed history",
+    "Phases: Up/Down or j/k select, Enter opens agents, R retries a settled phase",
     "Agents: Up/Down or j/k select, Enter opens transcript",
-    "Detail: j/k arrows or PgUp/PgDn scroll; g/G ends; f follows live output",
+    "Detail: j/k arrows or PgUp/PgDn scroll; Enter toggles raw tool payloads; [/] changes attempts",
     "Esc or Left goes back; q closes; ? closes help",
-    "p pause or resume scheduling; c cancel active run; r retry settled agent",
+    "p pause or resume scheduling; c cancel active run; r retries a settled agent",
   ].map((line) => truncateToWidth(line, width, "", true));
 }
 
 function footerHint(state: WikiNavigatorState): string {
-  if (state.view === "detail") return "j/k scroll | PgUp/PgDn page | g/G ends | f follow | Esc back | ? help";
+  if (state.view === "runs") return "j/k runs | Enter open | x delete completed | q close | ? help";
+  if (state.view === "detail") return "j/k scroll | Enter raw | [/] attempts | g/G ends | f follow | Esc back | ? help";
   if (state.view === "agents") return "j/k agents | Enter detail | g/G ends | Esc phases | ? help";
-  return "j/k phases | Enter agents | g/G ends | q close | ? help";
+  return "j/k phases | Enter agents | R retry phase | g/G ends | Esc runs | ? help";
 }
 
 function joinColumns(
@@ -734,7 +1007,7 @@ function joinColumns(
   rows: number,
   theme: WikiNavigatorTheme,
 ): string[] {
-  const divider = theme.fg("muted", " | ");
+  const divider = theme.fg("borderMuted", " │ ");
   return Array.from({ length: rows }, (_, index) => `${padToWidth(first[index] ?? "", firstWidth)}${divider}${padToWidth(second[index] ?? "", secondWidth)}`);
 }
 

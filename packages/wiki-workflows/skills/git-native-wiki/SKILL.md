@@ -14,8 +14,10 @@ Do not clone repositories, create source registries, copy source trees,
 snapshot inputs, or write run manifests. Source onboarding is performed by the
 user through `/wiki source add link` or `/wiki source add clone`. Add
 `--workspace <directory>` when the Pi session was started from the workspace's
-parent directory. The extension manages its run state inside the active Pi
-session and writes generated pages only under `wiki/`.
+parent directory. The extension manages the active run in Pi and keeps bounded,
+project-scoped execution history under Pi's agent directory; it writes generated
+pages only under `wiki/`. History is Agent output and execution metadata, never
+copied source trees or Wiki snapshots.
 
 Every page requires YAML frontmatter with workspace-relative sources and line
 ranges:
@@ -36,10 +38,13 @@ declared project directory. Never emit `sources/`, `inputs/`, source IDs,
 absolute paths, or temporary run paths. Keep code facts tied to exact current
 code and preserve valid Wiki links.
 
-`/wiki` returns status without opening a modal. `/wiki open` opens the workflow
-console, which exposes validation errors, agent context and compaction activity,
-provider retries, and targeted retry for a settled node. Retrying preserves
-valid upstream work and invalidates only downstream nodes.
+`/wiki` returns status without opening a modal and `/wiki history` prints a
+concise project history. `/wiki open` opens the workflow console, which selects
+live or historical runs and exposes validation errors, Agent context and
+compaction activity, provider retries, and targeted retry for a settled node.
+Phase retry is refused while that phase has a running Agent. Retrying preserved
+history forks a new run; current-run retries preserve valid upstream work and
+invalidate only downstream nodes.
 
 For phase-specific operating guidance, read the relevant reference:
 

@@ -164,6 +164,57 @@ test("retrying a plan re-dispatches its invalidated writer instead of reusing it
   assert.equal(snapshot.nodes.filter((node) => node.kind === "write" && node.status === "succeeded").length, 1);
 });
 
+test("phase retry uses the stable research phase and preserves its upstream plan", async () => {
+  const executor = createExecutor();
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  await engine.waitForIdle();
+  const before = engine.getSnapshot();
+  const research = before.nodes.filter((node) => node.kind === "research");
+  const phaseId = research[0].phaseId;
+
+  assert.ok(phaseId);
+  assert.ok(research.every((node) => node.phaseId === phaseId));
+  await engine.retryPhase(phaseId);
+  await engine.waitForIdle();
+
+  const after = engine.getSnapshot();
+  assert.equal(after.nodes.find((node) => node.kind === "plan").attempt, 1);
+  assert.ok(after.nodes.filter((node) => node.kind === "research").every((node) => node.attempt === 2));
+  assert.ok(after.events.some((event) => event.kind === "phase_retried" && event.data?.phaseId === phaseId));
+});
+
+test("retrying a historical snapshot forks an immutable branch", async () => {
+  const executor = createExecutor({ research: false });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  await engine.waitForIdle();
+  const historical = engine.getSnapshot();
+  const write = historical.nodes.find((node) => node.kind === "write");
+
+  await engine.forkAndRetryNode(historical, write.id);
+  await engine.waitForIdle();
+  const fork = engine.getSnapshot();
+
+  assert.notEqual(fork.id, historical.id);
+  assert.equal(fork.parentRunId, historical.id);
+  assert.equal(fork.forkedFromNodeId, write.id);
+  assert.equal(historical.nodes.find((node) => node.id === write.id).attempt, 1);
+  assert.equal(fork.nodes.find((node) => node.id === write.id).attempt, 1, "forked retry starts a new attempt lineage");
+  assert.ok(fork.events.some((event) => event.kind === "run_forked"));
+});
+
+test("invalid historical retry targets do not replace the current run", async () => {
+  const engine = createEngine(createExecutor({ research: false }));
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  await engine.waitForIdle();
+  const historical = engine.getSnapshot();
+
+  await assert.rejects(() => engine.forkAndRetryNode(historical, "missing"), /no longer exists/);
+  await assert.rejects(() => engine.forkAndRetryNode({ ...historical, status: "paused" }, historical.nodes[0].id), /Only completed/);
+  assert.equal(engine.getSnapshot().id, historical.id);
+});
+
 test("malformed control submission fails the node instead of publishing success", async () => {
   const engine = createEngine({
     async execute(request) {

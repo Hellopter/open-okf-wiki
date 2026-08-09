@@ -224,6 +224,9 @@ test("retains completed assistant messages and tool calls for the run navigator"
   ]);
   assert.match(result.history?.[1].text ?? "", /src\/index\.ts/);
   assert.match(result.history?.[2].text ?? "", /ready = true/);
+  assert.equal(result.history?.[1].target, "src/index.ts");
+  assert.equal(result.history?.[2].target, "src/index.ts");
+  assert.equal(result.history?.[2].summary, "Completed");
 });
 
 test("research tools may read only sources declared by workspace.yaml", async () => {

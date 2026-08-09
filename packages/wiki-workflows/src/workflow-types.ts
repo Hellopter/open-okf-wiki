@@ -79,6 +79,12 @@ export interface WikiNodeHistoryEntry {
   kind: WikiNodeHistoryKind;
   text: string;
   toolName?: string;
+  /** Pi's stable call correlation id, retained for compact result rendering. */
+  toolCallId?: string;
+  /** File or directory target supplied to a file-oriented tool. */
+  target?: string;
+  /** Small display-oriented description; raw payload remains in text. */
+  summary?: string;
   isError?: boolean;
 }
 
@@ -86,6 +92,9 @@ export interface WikiNode {
   id: string;
   kind: WikiNodeKind;
   label: string;
+  /** Stable execution group. Legacy snapshots omit this and are grouped by kind. */
+  phaseId?: string;
+  phaseTitle?: string;
   status: WikiNodeStatus;
   dependsOn: string[];
   attempt: number;
@@ -117,6 +126,8 @@ export type WikiRunEventKind =
   | "node_invalidated"
   | "node_cancelled"
   | "node_retried"
+  | "phase_retried"
+  | "run_forked"
   | "recovered";
 
 export interface WikiRunEvent {
@@ -153,6 +164,30 @@ export interface WikiRunSnapshot {
   updatedAt: string;
   completedAt?: string;
   blockedReason?: string;
+  /** The immutable terminal run from which this retry branch was created. */
+  parentRunId?: string;
+  forkedFromNodeId?: string;
+  forkedFromPhaseId?: string;
+  forkedAt?: string;
+}
+
+/** Lightweight record used by the Navigator's historical run list. */
+export interface WikiRunSummary {
+  id: string;
+  cwd: string;
+  requestedMode: WikiMode;
+  effectiveMode?: WikiMode;
+  focus?: string;
+  status: WikiRunStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  parentRunId?: string;
+  head?: string;
+  changedPaths: number;
+  totalNodes: number;
+  succeededNodes: number;
+  failedNodes: number;
 }
 
 /** Serializable payload stored by the extension as a Pi custom entry. */

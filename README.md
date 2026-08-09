@@ -32,7 +32,8 @@ directory name as its identity; there is no separate source ID or alias.
 
 After setup, start Pi with `docs` as its current directory before running
 `/wiki generate`, `/wiki refresh`, or `/wiki open`. One Pi session owns one
-active Wiki workspace and its recoverable run state.
+active Wiki run. Completed and interrupted run records are also retained per
+workspace across Pi sessions.
 
 On Windows, local sources use a directory junction where possible, avoiding
 the symlink privilege requirement. UNC paths fall back to a directory symlink
@@ -53,7 +54,7 @@ sources:
 
 It stores declared source locations, the default language, and whether common
 generated directories are ignored. It never stores source snapshots, copied
-inputs, or run checkpoints.
+inputs, or run history.
 
 ## Commands
 
@@ -63,6 +64,7 @@ inputs, or run checkpoints.
 /wiki generate [lang=zh|en] [focus]
 /wiki refresh [lang=zh|en] [focus]
 /wiki status
+/wiki history
 /wiki pause
 /wiki resume
 /wiki cancel
@@ -78,13 +80,19 @@ citations to find an affected subset. Independent source repositories have no
 shared generation baseline, so it falls back to a full rebuild whenever that
 incremental range cannot be trusted.
 
-`/wiki` and `/wiki status` return immediately with the run status. `/wiki open`
-explicitly opens the run console, so a normal command never waits on the
-modal. The console shows the idle workspace configuration or the live dynamic
-plan/write/review loop, node context, automatic Pi compaction and retry
-activity, token/context figures, validation failures, and targeted node retry.
-Retrying a node retains valid upstream results and invalidates only that node's
-downstream work.
+`/wiki` and `/wiki status` return immediately with the current run status;
+`/wiki history` returns a concise project history. `/wiki open` explicitly
+opens the run console, whose root view selects live and historical runs. It
+shows phase and Agent state, compact tool targets and result summaries, token
+and context figures, validation failures, and Pi compaction and retry activity.
+Enter an Agent detail to reveal its retained raw tool payloads only when needed.
+
+Retrying one settled Agent retains valid upstream results and invalidates its
+downstream work. `R` on a settled phase retries its Agents together and is
+refused while that phase has a running Agent. Retrying a historical terminal
+run creates a new branch run; the selected history remains immutable.
+Non-current completed history can be deleted from the console, while the newest
+100 terminal runs are otherwise retained.
 
 ## Guarantees
 
@@ -95,7 +103,9 @@ downstream work.
 - Source references begin with the declared project directory, for example
   `api/src/server.ts#L12-L38`; body citations use
   `repo:api/src/server.ts#L12-L38`.
-- Pi session custom entries retain workflow state for the current session only.
-  They contain execution state, not copied source files or Wiki snapshots.
+- Pi session custom entries retain the active-session recovery state. Project
+  history is stored under Pi's agent directory as bounded run snapshots (Agent
+  outputs, attempt history, and tool summaries), never copied source files or
+  Wiki snapshots. Git remains the rollback path.
 - Pi's own auto-compaction and provider retry capabilities are enabled for
   subagents; the console reports their activity without reimplementing them.

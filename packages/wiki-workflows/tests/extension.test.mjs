@@ -61,6 +61,7 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
   const messages = [];
   const notices = [];
   const workspaceCalls = [];
+  const history = new Map();
   const engine = fakeEngine();
   const pi = {
     registerCommand(name, definition) { commands.set(name, definition); },
@@ -95,8 +96,23 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
       return { ...workspace, sources: [] };
     },
   };
-  createWikiExtension({ createEngine: () => engine, workspaceService })(pi);
-  return { appended, commands, ctx, engine, handlers, messages, notices, workspaceCalls };
+  const historyStore = {
+    async save(value) { history.set(value.id, structuredClone(value)); },
+    async load(id) { return history.has(id) ? structuredClone(history.get(id)) : undefined; },
+    async list() {
+      return [...history.values()].map((value) => ({
+        id: value.id, cwd: value.cwd, requestedMode: value.requestedMode, effectiveMode: value.effectiveMode,
+        focus: value.focus, status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt,
+        totalNodes: value.nodes.length, succeededNodes: value.nodes.filter((node) => node.status === "succeeded").length,
+        failedNodes: value.nodes.filter((node) => node.status === "failed" || node.status === "blocked").length,
+        changedPaths: value.inspection?.changedPaths.length ?? 0,
+      }));
+    },
+    async delete(id) { return history.delete(id); },
+    getRunsDir: () => "/history",
+  };
+  createWikiExtension({ createEngine: () => engine, workspaceService, createHistoryStore: () => historyStore })(pi);
+  return { appended, commands, ctx, engine, handlers, history, messages, notices, workspaceCalls };
 }
 
 test("registers one command, starts in the background, and persists non-context run state", async () => {
@@ -149,6 +165,19 @@ test("status, pause, resume, and cancel use the same single-run controller", asy
   assert.deepEqual(subject.engine.calls.slice(-3).map(([name]) => name), ["pause", "resume", "cancel"]);
 });
 
+test("history prints a concise project summary without requiring run IDs", async () => {
+  const subject = fixture();
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  const command = subject.commands.get("wiki");
+  await command.handler("generate architecture", subject.ctx);
+  await command.handler("history", subject.ctx);
+
+  assert.equal(subject.history.size, 1);
+  assert.match(subject.messages.at(-1).content, /Wiki History/);
+  assert.match(subject.messages.at(-1).content, /architecture/);
+  assert.doesNotMatch(subject.messages.at(-1).content, /run-1/);
+});
+
 test("TUI status uses native notification instead of a model-context message", async () => {
   const subject = fixture({ mode: "tui", hasUI: true });
   await subject.handlers.get("session_start")({}, subject.ctx);
@@ -184,7 +213,7 @@ test("Wiki subcommands are discoverable through Pi argument completion", () => {
   const complete = subject.commands.get("wiki").getArgumentCompletions;
 
   assert.deepEqual(complete("").map(({ value }) => value), [
-    "init ", "source ", "generate ", "refresh ", "open", "status", "pause", "resume", "cancel", "help",
+    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "pause", "resume", "cancel", "help",
   ]);
   assert.deepEqual(complete("in").map(({ value }) => value), ["init "]);
   assert.deepEqual(complete("source ").map(({ value }) => value), ["source add "]);

@@ -78,7 +78,8 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     session.setAutoCompactionEnabled(true);
     session.setAutoRetryEnabled(true);
     const history: WikiNodeHistoryEntry[] = [];
-    const unsubscribe = session.subscribe((event) => this.handleEvent(session, event, request, history));
+    const toolTargets = new Map<string, { target?: string; summary?: string }>();
+    const unsubscribe = session.subscribe((event) => this.handleEvent(session, event, request, history, toolTargets));
     const abort = () => { void session.abort(); };
     request.signal.addEventListener("abort", abort, { once: true });
 
@@ -157,6 +158,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     event: AgentSessionEvent,
     request: WikiAgentExecutionRequest,
     history: WikiNodeHistoryEntry[],
+    toolTargets: Map<string, { target?: string; summary?: string }>,
   ): void {
     switch (event.type) {
       case "compaction_start":
@@ -210,22 +212,38 @@ export class PiAgentExecutor implements WikiAgentExecutor {
         return;
       }
       case "tool_execution_start":
+        {
+          const target = toolTarget(event.args);
+          const summary = toolCallSummary(event.toolName, event.args);
+          toolTargets.set(event.toolCallId, { target, summary });
         appendHistory(history, request, {
           at: new Date().toISOString(),
           kind: "tool_call",
           toolName: event.toolName,
+          toolCallId: event.toolCallId,
+          target,
+          summary,
           text: compactJson(event.args),
         });
+        }
         request.onActivity?.({ state: "running", message: `Using ${event.toolName}` });
         return;
       case "tool_execution_end":
+        {
+          const source = toolTargets.get(event.toolCallId);
+          const text = toolResultText(event.result);
         appendHistory(history, request, {
           at: new Date().toISOString(),
           kind: event.isError ? "error" : "tool_result",
           toolName: event.toolName,
-          text: toolResultText(event.result),
+          toolCallId: event.toolCallId,
+          target: source?.target,
+          summary: event.isError ? firstLine(text) : toolResultSummary(event.toolName, text, source?.summary),
+          text,
           isError: event.isError,
         });
+        toolTargets.delete(event.toolCallId);
+        }
         return;
       default:
         return;
@@ -294,6 +312,34 @@ function toolResultText(value: unknown): string {
     .filter(Boolean)
     .join("\n");
   return text || compactJson(value);
+}
+
+function toolTarget(args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const record = args as Record<string, unknown>;
+  for (const key of ["path", "file", "directory"]) {
+    if (typeof record[key] === "string" && record[key]) return record[key];
+  }
+  return undefined;
+}
+
+function toolCallSummary(toolName: string, args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const record = args as Record<string, unknown>;
+  if ((toolName === "grep" || toolName === "find") && typeof record.pattern === "string") return record.pattern;
+  return undefined;
+}
+
+function toolResultSummary(toolName: string, text: string, callSummary?: string): string {
+  if (toolName === "grep" || toolName === "find" || toolName === "ls") {
+    const count = text.split("\n").filter(Boolean).length;
+    return count ? `${count} result${count === 1 ? "" : "s"}` : "No results";
+  }
+  return callSummary ?? "Completed";
+}
+
+function firstLine(value: string): string {
+  return value.split("\n", 1)[0] ?? value;
 }
 
 function assistantText(message: unknown): string {

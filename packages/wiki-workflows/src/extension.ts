@@ -7,9 +7,10 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { createPiAgentExecutor } from "./executor.js";
 import { createWikiWorkflowEngine, type WikiWorkflowEngine } from "./engine.js";
-import { openWikiRunNavigator, renderWikiRunText, type WikiNavigatorController, type WikiNavigatorWorkspace } from "./navigator.js";
+import { openWikiRunNavigator, renderWikiRunHistoryText, renderWikiRunText, type WikiNavigatorController, type WikiNavigatorWorkspace } from "./navigator.js";
+import { createWikiRunHistoryStore, summarizeWikiRun, type WikiRunHistoryStore } from "./run-history.js";
 import { parseWikiRunSession, WIKI_RUN_CUSTOM_TYPE } from "./session.js";
-import type { WikiRunEvent, WikiRunSnapshot } from "./workflow-types.js";
+import type { WikiRunEvent, WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
 import { wikiWorkspaceService, type WikiWorkspaceResult, type WikiWorkspaceService } from "./workspace.js";
 
 const STATE_FLUSH_MS = 500;
@@ -18,10 +19,12 @@ const STATUS_KEY = "okf-wiki";
 export interface WikiExtensionOptions {
   createEngine?: (context: ExtensionContext) => WikiWorkflowEngine;
   workspaceService?: WikiWorkspaceService;
+  /** Test seam for project-scoped durable Wiki run history. */
+  createHistoryStore?: (workspace: string) => WikiRunHistoryStore;
 }
 
 interface ParsedRunCommand {
-  action: "open" | "generate" | "refresh" | "status" | "pause" | "resume" | "cancel" | "help";
+  action: "open" | "generate" | "refresh" | "status" | "history" | "pause" | "resume" | "cancel" | "help";
   focus?: string;
   language?: "zh" | "en";
 }
@@ -39,6 +42,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     let engine: WikiWorkflowEngine | undefined;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     const workspaceService = options.workspaceService ?? wikiWorkspaceService;
+    const historyStores = new Map<string, WikiRunHistoryStore>();
+    const historySummaries = new Map<string, WikiRunSummary[]>();
+    const cachedSnapshots = new Map<string, WikiRunSnapshot>();
+    const historyListeners = new Set<() => void>();
 
     const createEngine = (context: ExtensionContext): WikiWorkflowEngine => options.createEngine?.(context) ?? createWikiWorkflowEngine({
       executor: createPiAgentExecutor({
@@ -55,6 +62,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       const session = engine?.serialize();
       if (!session) return;
       pi.appendEntry(WIKI_RUN_CUSTOM_TYPE, session);
+      rememberSnapshot(session.snapshot);
+      saveHistory(session.snapshot);
     };
 
     const schedulePersist = (): void => {
@@ -68,6 +77,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     const bindEngine = (context: ExtensionContext): WikiWorkflowEngine => {
       engine = createEngine(context);
       engine.subscribe((snapshot, event) => {
+        rememberSnapshot(snapshot);
         if (isCriticalEvent(event)) persistNow();
         else schedulePersist();
       });
@@ -79,7 +89,11 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     const restoreForWorkspace = (context: ExtensionContext): void => {
       const restored = latestSessionState(context);
       if (!restored) return;
-      currentEngine(context).restore(restored);
+      const snapshot = currentEngine(context).restore(restored);
+      if (snapshot) {
+        rememberSnapshot(snapshot);
+        saveHistory(snapshot);
+      }
     };
 
     pi.on("session_start", (_event, context) => {
@@ -133,6 +147,12 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           case "status":
             output(pi, context, renderWikiRunText(currentEngine(context).getSnapshot()));
             return;
+          case "history": {
+            const workspace = await workspaceForNavigator(context.cwd);
+            const root = workspace?.root ?? context.cwd;
+            output(pi, context, renderWikiRunHistoryText(await historyForWorkspace(root, currentEngine(context))));
+            return;
+          }
           case "generate":
           case "refresh": {
             try {
@@ -186,28 +206,78 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         return;
       }
       const workspace = await workspaceForNavigator(context.cwd);
+      const historyRoot = workspace?.root ?? active.getSnapshot()?.cwd ?? context.cwd;
+      await historyForWorkspace(historyRoot, active);
       const unsubscribeStatus = active.subscribe((snapshot) => {
         context.ui.setStatus(STATUS_KEY, statusText(snapshot));
       });
       context.ui.setStatus(STATUS_KEY, statusText(active.getSnapshot()));
       try {
-        await openWikiRunNavigator(context.ui, controller(active, workspace));
+        await openWikiRunNavigator(context.ui, controller(active, workspace, historyRoot));
       } finally {
         unsubscribeStatus();
         context.ui.setStatus(STATUS_KEY, undefined);
       }
     }
 
-    function controller(active: WikiWorkflowEngine, workspace: WikiNavigatorWorkspace | undefined): WikiNavigatorController {
+    function controller(
+      active: WikiWorkflowEngine,
+      workspace: WikiNavigatorWorkspace | undefined,
+      historyRoot: string,
+    ): WikiNavigatorController {
       return {
-        getRun: () => active.getSnapshot(),
+        listRuns: () => runsForWorkspace(historyRoot, active),
+        getRun: (runId) => {
+          const current = active.getSnapshot();
+          if (!runId || current?.id === runId) return current;
+          return cachedSnapshots.get(runId);
+        },
+        loadRun: async (runId) => {
+          const current = active.getSnapshot();
+          if (current?.id === runId) return current;
+          const snapshot = await historyStoreFor(historyRoot).load(runId);
+          if (snapshot) rememberSnapshot(snapshot);
+          return snapshot;
+        },
+        getActiveRunId: () => active.getSnapshot()?.id,
         getWorkspace: () => workspace,
         subscribe(listener) {
-          return active.subscribe(() => listener());
+          historyListeners.add(listener);
+          const unsubscribe = active.subscribe(() => listener());
+          return () => {
+            historyListeners.delete(listener);
+            unsubscribe();
+          };
         },
-        retryNode: async (nodeId) => {
-          await active.retryNode(nodeId);
+        retryNode: async (runId, nodeId) => {
+          const current = active.getSnapshot();
+          const retryCurrent = current?.id === runId && isExecutingRun(current);
+          const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
+          if (!snapshot) throw new Error("Wiki run history is unavailable");
+          const retried = retryCurrent
+            ? await active.retryNode(nodeId)
+            : await active.forkAndRetryNode(snapshot, nodeId);
           persistNow();
+          return retried;
+        },
+        retryPhase: async (runId, phaseId) => {
+          const current = active.getSnapshot();
+          const retryCurrent = current?.id === runId && isExecutingRun(current);
+          const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
+          if (!snapshot) throw new Error("Wiki run history is unavailable");
+          const retried = retryCurrent
+            ? await active.retryPhase(phaseId)
+            : await active.forkAndRetryPhase(snapshot, phaseId);
+          persistNow();
+          return retried;
+        },
+        deleteRun: async (runId) => {
+          if (runId === active.getSnapshot()?.id) throw new Error("The active Wiki run cannot be deleted");
+          const snapshot = cachedSnapshots.get(runId) ?? await historyStoreFor(historyRoot).load(runId);
+          if (!snapshot || !isTerminalRun(snapshot)) throw new Error("Only completed Wiki history can be deleted");
+          await historyStoreFor(historyRoot).delete(runId);
+          cachedSnapshots.delete(runId);
+          await refreshHistory(historyRoot);
         },
         pause: () => {
           active.pause();
@@ -222,6 +292,57 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           persistNow();
         },
       };
+    }
+
+    function historyStoreFor(workspace: string): WikiRunHistoryStore {
+      const root = path.resolve(workspace);
+      let store = historyStores.get(root);
+      if (!store) {
+        store = options.createHistoryStore?.(root) ?? createWikiRunHistoryStore({ workspace: root });
+        historyStores.set(root, store);
+      }
+      return store;
+    }
+
+    function rememberSnapshot(snapshot: WikiRunSnapshot): void {
+      cachedSnapshots.set(snapshot.id, structuredClone(snapshot));
+      const workspace = path.resolve(snapshot.cwd);
+      const next = summarizeWikiRun(snapshot);
+      const previous = historySummaries.get(workspace) ?? [];
+      historySummaries.set(workspace, mergeRunSummary(previous, next));
+    }
+
+    function saveHistory(snapshot: WikiRunSnapshot): void {
+      const workspace = path.resolve(snapshot.cwd);
+      void (async () => {
+        try {
+          await historyStoreFor(workspace).save(snapshot);
+          await refreshHistory(workspace);
+        } catch {
+          // Durable history is supplemental to Pi's session entry; a later event retries it.
+        }
+      })();
+    }
+
+    async function refreshHistory(workspace: string): Promise<WikiRunSummary[]> {
+      const root = path.resolve(workspace);
+      const summaries = await historyStoreFor(root).list();
+      historySummaries.set(root, summaries);
+      for (const listener of historyListeners) listener();
+      return summaries;
+    }
+
+    async function historyForWorkspace(workspace: string, active: WikiWorkflowEngine): Promise<WikiRunSummary[]> {
+      await refreshHistory(workspace);
+      return runsForWorkspace(workspace, active);
+    }
+
+    function runsForWorkspace(workspace: string, active: WikiWorkflowEngine): WikiRunSummary[] {
+      const root = path.resolve(workspace);
+      const summaries = historySummaries.get(root) ?? [];
+      const current = active.getSnapshot();
+      const currentSummary = current && path.resolve(current.cwd) === root ? summarizeWikiRun(current) : undefined;
+      return currentSummary ? mergeRunSummary(summaries, currentSummary) : summaries.slice();
     }
 
     function latestSessionState(context: ExtensionContext) {
@@ -268,16 +389,29 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
 export default createWikiExtension();
 
+function mergeRunSummary(existing: WikiRunSummary[], next: WikiRunSummary): WikiRunSummary[] {
+  return [next, ...existing.filter((item) => item.id !== next.id)]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function isTerminalRun(snapshot: WikiRunSnapshot): boolean {
+  return snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "blocked" || snapshot.status === "cancelled";
+}
+
+function isExecutingRun(snapshot: WikiRunSnapshot): boolean {
+  return snapshot.status === "running" || snapshot.status === "paused";
+}
+
 function parseWikiCommand(raw: string): ParsedCommand {
   const values = tokenize(raw);
   const candidate = (values.shift() ?? "help").toLowerCase();
   if (candidate === "init") return parseInitCommand(values);
   if (candidate === "source") return parseSourceCommand(values);
   if (!isWikiAction(candidate)) {
-    throw new Error("Usage: /wiki init | source add | generate | refresh | open | status");
+    throw new Error("Usage: /wiki init | source add | generate | refresh | open | status | history");
   }
   const action = candidate;
-  if (action === "open" || action === "status" || action === "pause" || action === "resume" || action === "cancel" || action === "help") {
+  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "resume" || action === "cancel" || action === "help") {
     if (values.length) throw new Error(`/wiki ${action} does not accept arguments`);
     return { action };
   }
@@ -300,7 +434,7 @@ function parseWikiCommand(raw: string): ParsedCommand {
 }
 
 function isWikiAction(value: string): value is ParsedRunCommand["action"] {
-  return value === "open" || value === "generate" || value === "refresh" || value === "status"
+  return value === "open" || value === "generate" || value === "refresh" || value === "status" || value === "history"
     || value === "pause" || value === "resume" || value === "cancel" || value === "help";
 }
 
@@ -370,6 +504,7 @@ const WIKI_COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: "refresh ", label: "refresh", description: "Refresh Wiki pages affected by source changes" },
   { value: "open", label: "open", description: "Open the Wiki run Navigator" },
   { value: "status", label: "status", description: "Show the current run without opening the Navigator" },
+  { value: "history", label: "history", description: "Show project Wiki run history" },
   { value: "pause", label: "pause", description: "Pause scheduling after active agents finish" },
   { value: "resume", label: "resume", description: "Resume a paused run after source re-inspection" },
   { value: "cancel", label: "cancel", description: "Cancel the active Wiki run" },
@@ -515,7 +650,7 @@ function helpText(): string {
     "  /wiki open",
     "  /wiki generate [lang=zh|en] [focus]",
     "  /wiki refresh [lang=zh|en] [focus]",
-    "  /wiki status | pause | resume | cancel",
+    "  /wiki status | history | pause | resume | cancel",
     "  /wiki help",
     "  /wiki init [--workspace <directory>] [--lang zh|en]",
     "  /wiki source add link <local-repository> [--workspace <directory>]",

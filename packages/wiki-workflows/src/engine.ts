@@ -132,12 +132,90 @@ export class WikiWorkflowEngine {
   }
 
   async retryNode(nodeId: string): Promise<WikiRunSnapshot> {
-    const run = this.requireRun();
     const node = this.requireNode(nodeId);
     if (node.status === "running") throw new Error("A running node cannot be retried; cancel or wait for it first");
     if (!["succeeded", "failed", "invalidated", "blocked", "cancelled"].includes(node.status)) {
       throw new Error(`Node ${nodeId} is not retryable`);
     }
+    return await this.retryRoots([node.id], `Retry requested for ${node.label}`, "node");
+  }
+
+  /** Re-run every settled node in one stable execution phase. */
+  async retryPhase(phaseId: string): Promise<WikiRunSnapshot> {
+    const run = this.requireRun();
+    const nodes = nodesInPhase(run, phaseId);
+    if (!nodes.length) throw new Error(`Unknown Wiki workflow phase: ${phaseId}`);
+    if (nodes.some((node) => node.status === "running")) {
+      throw new Error("Wait for running agents in the selected phase to settle before retrying the phase");
+    }
+    if (nodes.some((node) => !["queued", "succeeded", "failed", "invalidated", "blocked", "cancelled"].includes(node.status))) {
+      throw new Error("Selected phase is not retryable");
+    }
+    return await this.retryRoots(nodes.map((node) => node.id), `Phase retry requested for ${phaseTitle(nodes[0])}`, "phase", phaseId);
+  }
+
+  /** Fork an immutable historical run before retrying one selected node. */
+  async forkAndRetryNode(snapshot: WikiRunSnapshot, nodeId: string): Promise<WikiRunSnapshot> {
+    return await this.forkAndRetry(snapshot, [nodeId], { nodeId });
+  }
+
+  /** Fork an immutable historical run before retrying a complete phase. */
+  async forkAndRetryPhase(snapshot: WikiRunSnapshot, phaseId: string): Promise<WikiRunSnapshot> {
+    const nodes = nodesInPhase(snapshot, phaseId);
+    if (!nodes.length) throw new Error(`Unknown Wiki workflow phase: ${phaseId}`);
+    return await this.forkAndRetry(snapshot, nodes.map((node) => node.id), { phaseId });
+  }
+
+  private async forkAndRetry(
+    snapshot: WikiRunSnapshot,
+    rootIds: string[],
+    source: { nodeId?: string; phaseId?: string },
+  ): Promise<WikiRunSnapshot> {
+    if (this.current && (this.current.status === "running" || this.current.status === "paused")) {
+      throw new Error("A Wiki workflow is already active for this Pi session");
+    }
+    if (!isTerminalRun(snapshot)) throw new Error("Only completed Wiki history can be forked for retry");
+    const branch = clone(snapshot);
+    const now = this.now();
+    branch.id = this.newId();
+    branch.status = "paused";
+    branch.createdAt = now;
+    branch.updatedAt = now;
+    branch.completedAt = undefined;
+    branch.blockedReason = undefined;
+    branch.parentRunId = snapshot.id;
+    branch.forkedFromNodeId = source.nodeId;
+    branch.forkedFromPhaseId = source.phaseId;
+    branch.forkedAt = now;
+    branch.events = [];
+    const targets = rootIds.map((id) => branch.nodes.find((node) => node.id === id));
+    if (targets.some((node) => !node)) throw new Error("Selected historical retry target no longer exists");
+    const settledTargets = targets as WikiNode[];
+    if (settledTargets.some((node) => node.status === "running")) {
+      throw new Error("Only settled history can be forked for retry");
+    }
+    this.abortControllers();
+    this.current = branch;
+    const affected = affectedNodeIds(branch, rootIds);
+    for (const node of branch.nodes) {
+      if (affected.has(node.id)) resetForkedNode(node, now);
+    }
+    this.emit("run_forked", undefined, `Forked from Wiki run ${snapshot.id}`);
+    return await this.retryRoots(
+      rootIds,
+      source.phaseId ? `Phase retry requested for ${phaseTitle(settledTargets[0])}` : `Retry requested for ${settledTargets[0]?.label ?? "node"}`,
+      source.phaseId ? "phase" : "node",
+      source.phaseId,
+    );
+  }
+
+  private async retryRoots(
+    rootIds: string[],
+    reason: string,
+    kind: "node" | "phase",
+    phaseId?: string,
+  ): Promise<WikiRunSnapshot> {
+    const run = this.requireRun();
 
     if (await this.reconcileGitInputs()) {
       run.status = "running";
@@ -145,10 +223,11 @@ export class WikiWorkflowEngine {
       return this.getSnapshot()!;
     }
 
-    this.invalidateFrom(node.id, `Retry requested for ${node.label}`, true);
+    this.invalidateFromMany(rootIds, reason, true);
     run.status = "running";
     run.blockedReason = undefined;
-    this.emit("node_retried", node.id, `Retrying ${node.label}`);
+    if (kind === "phase") this.emit("phase_retried", undefined, reason, phaseId ? { phaseId } : undefined);
+    else this.emit("node_retried", rootIds[0], reason);
     this.schedule();
     return this.getSnapshot()!;
   }
@@ -348,11 +427,13 @@ export class WikiWorkflowEngine {
       case "replan": {
         const plan = parsePlan(node.result);
         node.result = plan;
+        const phase = { id: `research:${node.id}`, title: "Research" };
         const scopeNodes = plan.researchScopes.map((scope) => this.queueNode(
           "research",
           `Research: ${scope.id}`,
           [node.id],
           scope,
+          phase,
         ));
         if (scopeNodes.length === 0) this.queueWrite(node.id, []);
         return;
@@ -450,19 +531,34 @@ export class WikiWorkflowEngine {
     return this.queueNode("repair", "Repair Wiki", dependsOn, input);
   }
 
-  private queueNode(kind: WikiNodeKind, label: string, dependsOn: string[], input: unknown): WikiNode {
-    const node = this.newNode(kind, label, dependsOn, input);
+  private queueNode(
+    kind: WikiNodeKind,
+    label: string,
+    dependsOn: string[],
+    input: unknown,
+    phase?: { id: string; title: string },
+  ): WikiNode {
+    const node = this.newNode(kind, label, dependsOn, input, phase);
     this.requireRun().nodes.push(node);
     this.emit("node_queued", node.id, node.label);
     return node;
   }
 
-  private newNode(kind: WikiNodeKind, label: string, dependsOn: string[], input: unknown): WikiNode {
+  private newNode(
+    kind: WikiNodeKind,
+    label: string,
+    dependsOn: string[],
+    input: unknown,
+    phase?: { id: string; title: string },
+  ): WikiNode {
     const now = this.now();
+    const id = `${kind}-${this.newId()}`;
     return {
-      id: `${kind}-${this.newId()}`,
+      id,
       kind,
       label,
+      phaseId: phase?.id ?? `phase:${id}`,
+      phaseTitle: phase?.title ?? phaseTitleFor(kind),
       status: "queued",
       dependsOn,
       attempt: 0,
@@ -490,24 +586,20 @@ export class WikiWorkflowEngine {
   }
 
   private invalidateFrom(nodeId: string, reason: string, queueRoot: boolean): void {
+    this.invalidateFromMany([nodeId], reason, queueRoot);
+  }
+
+  private invalidateFromMany(rootIds: string[], reason: string, queueRoots: boolean): void {
     const run = this.requireRun();
-    const affected = new Set<string>([nodeId]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const node of run.nodes) {
-        if (affected.has(node.id) || !node.dependsOn.some((id) => affected.has(id))) continue;
-        affected.add(node.id);
-        changed = true;
-      }
-    }
+    const roots = new Set(rootIds);
+    const affected = affectedNodeIds(run, rootIds);
     for (const node of run.nodes) {
       if (!affected.has(node.id)) continue;
       if (node.status === "running") this.controllers.get(node.id)?.abort();
-      node.status = node.id === nodeId && queueRoot ? "queued" : "invalidated";
+      node.status = roots.has(node.id) && queueRoots ? "queued" : "invalidated";
       node.error = undefined;
       node.activity = { state: "idle", message: reason, updatedAt: this.now() };
-      this.emit(node.id === nodeId && queueRoot ? "node_retried" : "node_invalidated", node.id, reason);
+      this.emit(roots.has(node.id) && queueRoots ? "node_retried" : "node_invalidated", node.id, reason);
     }
   }
 
@@ -620,6 +712,70 @@ export class WikiWorkflowEngine {
 
 export function createWikiWorkflowEngine(options: WikiWorkflowEngineOptions = {}): WikiWorkflowEngine {
   return new WikiWorkflowEngine(options);
+}
+
+function nodesInPhase(run: WikiRunSnapshot, phaseId: string): WikiNode[] {
+  const explicit = run.nodes.filter((node) => node.phaseId === phaseId);
+  if (explicit.length) return explicit;
+  const legacyNodeId = phaseId.startsWith("phase:") ? phaseId.slice("phase:".length) : "";
+  const start = run.nodes.findIndex((node) => node.id === legacyNodeId);
+  if (start < 0) return [];
+  const kind = run.nodes[start]?.kind;
+  const nodes: WikiNode[] = [];
+  for (const node of run.nodes.slice(start)) {
+    if (node.phaseId || node.kind !== kind) break;
+    nodes.push(node);
+  }
+  return nodes;
+}
+
+function affectedNodeIds(run: WikiRunSnapshot, rootIds: string[]): Set<string> {
+  const affected = new Set(rootIds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of run.nodes) {
+      if (affected.has(node.id) || !node.dependsOn.some((id) => affected.has(id))) continue;
+      affected.add(node.id);
+      changed = true;
+    }
+  }
+  return affected;
+}
+
+function resetForkedNode(node: WikiNode, at: string): void {
+  node.status = "invalidated";
+  node.attempt = 0;
+  node.attemptHistory = [];
+  node.result = undefined;
+  node.output = undefined;
+  node.history = undefined;
+  node.error = undefined;
+  node.metrics = clone(EMPTY_NODE_METRICS);
+  node.startedAt = undefined;
+  node.finishedAt = undefined;
+  node.activity = { state: "idle", message: "Forked retry", updatedAt: at };
+}
+
+function phaseTitle(node: WikiNode | undefined): string {
+  return node?.phaseTitle ?? (node ? phaseTitleFor(node.kind) : "phase");
+}
+
+function phaseTitleFor(kind: WikiNodeKind): string {
+  switch (kind) {
+    case "inspect": return "Inspect";
+    case "plan": return "Plan";
+    case "research": return "Research";
+    case "write": return "Write";
+    case "validate": return "Validate";
+    case "review": return "Review";
+    case "repair": return "Repair";
+    case "replan": return "Replan";
+  }
+}
+
+function isTerminalRun(snapshot: WikiRunSnapshot): boolean {
+  return snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "blocked" || snapshot.status === "cancelled";
 }
 
 function roleFor(kind: WikiNodeKind): "planner" | "researcher" | "writer" | "reviewer" {

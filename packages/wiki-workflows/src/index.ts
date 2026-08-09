@@ -35,6 +35,14 @@ export {
   WIKI_RUN_CUSTOM_TYPE,
 } from "./session.js";
 export {
+  createWikiRunHistoryStore,
+  DEFAULT_MAX_TERMINAL_WIKI_RUNS,
+  summarizeWikiRun,
+  wikiHistoryProjectKey,
+  type WikiRunHistoryStore,
+  type WikiRunHistoryStoreOptions,
+} from "./run-history.js";
+export {
   createWikiExtension,
   default as wikiExtension,
   type WikiExtensionOptions,
@@ -45,7 +53,9 @@ export {
   openWikiRunNavigator,
   reduceWikiNavigator,
   renderWikiNavigator,
+  renderWikiRunHistoryText,
   renderWikiRunText,
+  phaseRetryImpact,
   retryImpact,
   type WikiNavigatorController,
   type WikiNavigatorWorkspace,
@@ -73,6 +83,7 @@ export type {
   WikiRunRequest,
   WikiRunSession,
   WikiRunSnapshot,
+  WikiRunSummary,
   WikiRunStatus,
   WikiWorkflowDependencies,
   WikiWorkflowListener,
