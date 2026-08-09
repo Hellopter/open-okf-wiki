@@ -500,7 +500,9 @@ function statusText(snapshot: WikiRunSnapshot | undefined): string {
 
 function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: string): void {
   if (context.hasUI && context.mode === "tui") {
-    context.ui.notify(content.replace(/\s*\n\s*/g, " "), "info");
+    // Pi renders notifications with its wrapping Text component. Preserve the
+    // structure of command help and run reports instead of flattening it.
+    context.ui.notify(content, "info");
     return;
   }
   pi.sendMessage({ customType: "okf-wiki", content, display: true });

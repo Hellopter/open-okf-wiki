@@ -159,6 +159,16 @@ test("TUI status uses native notification instead of a model-context message", a
   assert.match(subject.notices.at(-1).message, /Wiki Run run-1/);
 });
 
+test("TUI help preserves line breaks for Pi's wrapping text renderer", async () => {
+  const subject = fixture({ mode: "tui", hasUI: true });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("help", subject.ctx);
+
+  assert.equal(subject.messages.length, 0);
+  assert.match(subject.notices.at(-1).message, /Usage:\n/);
+  assert.match(subject.notices.at(-1).message, /\n  \/wiki init/);
+});
+
 test("the bare command shows help and does not open a blocking Navigator", async () => {
   const subject = fixture();
   await subject.handlers.get("session_start")({}, subject.ctx);
