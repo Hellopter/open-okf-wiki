@@ -798,7 +798,7 @@ function renderSidebar(state: WikiNavigatorState, run: WikiRunView, width: numbe
     lines.push(truncateToWidth(
       phase.id === state.selectedPhaseId
         ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(STATUS_COLOR[status], theme.bold(icon))}${theme.fg("accent", theme.bold(` ${phase.title} ${count}`))}`
-        : `${theme.fg(STATUS_COLOR[status], icon)}${text.slice(2)}`,
+        : `${theme.fg(STATUS_COLOR[status], icon)}${text.slice(3)}`,
       width,
       "",
       true,

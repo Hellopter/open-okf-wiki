@@ -201,6 +201,7 @@ test("pins navigator controls to the footer and gives execution states distinct 
   assert.equal(plain(phases.at(-2)).trim(), "");
   assert.match(plain(phases.at(-1)), /j\/k phases/);
   assert.match(plain(phases.join("\n")), /✓/);
+  assert.doesNotMatch(plain(phases.join("\n")), /✓✓|●●/);
 
   const detail = renderWikiNavigator(drillToResearchDetail(), run, 80, undefined, 12, undefined, runs, run.id);
   assert.equal(plain(detail.at(-2)).trim(), "");
