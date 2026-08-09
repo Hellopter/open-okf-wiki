@@ -873,7 +873,8 @@ function resultLabel(kind: WikiNodeKind): string {
 function renderHistoryEntry(entry: WikiNodeHistoryEntry, width: number, theme: WikiNavigatorTheme, expanded: boolean): string[] {
   const label = historyLabel(entry);
   const color = entry.isError || entry.kind === "error" ? "error" : entry.kind === "tool_call" ? "accent" : "muted";
-  const lines = [truncateToWidth(theme.fg(color, `  ${formatTimestamp(entry.at)} ${label}`), width, "", true)];
+  const timestamp = historyNeedsTimestamp(entry) ? `${formatTimestamp(entry.at)} ` : "";
+  const lines = [truncateToWidth(theme.fg(color, `  ${timestamp}${label}`), width, "", true)];
   const text = expanded || entry.kind === "message" || entry.kind === "error"
     ? entry.text || "(no text)"
     : historySummary(entry);
@@ -894,6 +895,10 @@ function historySummary(entry: WikiNodeHistoryEntry): string {
   if (entry.kind === "tool_call") return "Running";
   if (entry.target) return "Completed";
   return entry.isError ? "Tool failed" : "Completed";
+}
+
+function historyNeedsTimestamp(entry: WikiNodeHistoryEntry): boolean {
+  return entry.kind === "message" || (entry.kind === "error" && !entry.toolName);
 }
 
 type WikiAttemptView = Pick<WikiRunNode, "attempt" | "startedAt" | "finishedAt" | "result" | "output" | "history" | "error" | "metrics">;
@@ -1089,7 +1094,15 @@ function formatDuration(milliseconds: number): string {
 function formatTimestamp(value: string): string {
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) return value;
-  return new Date(timestamp).toISOString().replace("T", " ").replace(".000Z", "Z");
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(timestamp));
 }
 
 function formatNodeDuration(startedAt: string, finishedAt: string | undefined): string {

@@ -152,6 +152,7 @@ test("drills from phase selection to a selected agent transcript", () => {
   assert.match(detail, /tool read/);
   assert.match(detail, /src\/engine\.ts/);
   assert.doesNotMatch(detail, /\{"path":"src\/engine\.ts"\}/);
+  assert.doesNotMatch(detail, /2026.*tool read/);
   assert.match(detail, /Latest assistant output/);
   assert.match(detail, /streamed evidence from the active agent/);
   assert.match(detail, /Markdown handoff/);
