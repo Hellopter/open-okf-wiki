@@ -270,7 +270,7 @@ export default createWikiExtension();
 
 function parseWikiCommand(raw: string): ParsedCommand {
   const values = tokenize(raw);
-  const candidate = (values.shift() ?? "status").toLowerCase();
+  const candidate = (values.shift() ?? "help").toLowerCase();
   if (candidate === "init") return parseInitCommand(values);
   if (candidate === "source") return parseSourceCommand(values);
   if (!isWikiAction(candidate)) {
@@ -509,7 +509,7 @@ function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: str
 function helpText(): string {
   return [
     "Usage:",
-    "  /wiki                  # non-blocking status",
+    "  /wiki                  # show this help",
     "  /wiki open",
     "  /wiki generate [lang=zh|en] [focus]",
     "  /wiki refresh [lang=zh|en] [focus]",
