@@ -25,7 +25,7 @@ function fakeEngine(initial) {
   const listeners = new Set();
   const calls = [];
   const publish = (kind) => {
-    for (const listener of listeners) listener(current, { kind, at: current.updatedAt, id: `${kind}-1` });
+    for (const listener of [...listeners]) listener(current, { kind, at: current?.updatedAt ?? "2026-08-08T00:00:00.000Z", id: `${kind}-1` });
   };
   return {
     calls,
@@ -46,6 +46,14 @@ function fakeEngine(initial) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    /** Test helper: mark the current run terminal and emit a completion event. */
+    complete(status = "succeeded") {
+      if (!current) return;
+      current = { ...current, status, updatedAt: "2026-08-08T00:01:00.000Z" };
+      const kind = status === "cancelled" ? "run_cancelled" : status === "blocked" ? "run_blocked" : "run_completed";
+      publish(kind);
+      return structuredClone(current);
+    },
     pause() { calls.push(["pause"]); },
     async resume() { calls.push(["resume"]); },
     async cancel() { calls.push(["cancel"]); },
@@ -60,6 +68,8 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
   const appended = [];
   const messages = [];
   const notices = [];
+  const statuses = [];
+  const widgets = [];
   const workspaceCalls = [];
   const history = new Map();
   const engine = fakeEngine();
@@ -67,7 +77,7 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
     registerCommand(name, definition) { commands.set(name, definition); },
     on(name, handler) { handlers.set(name, handler); },
     appendEntry(customType, data) { appended.push({ customType, data }); },
-    sendMessage(message) { messages.push(message); },
+    sendMessage(message, options) { messages.push({ ...message, options }); },
   };
   const ctx = {
     cwd: "/workspace",
@@ -77,8 +87,11 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
     hasUI,
     ui: {
       notify(message, level) { notices.push({ message, level }); },
-      setStatus() {},
+      setStatus(key, text) { statuses.push({ key, text }); },
+      setWidget(key, content, options) { widgets.push({ key, content, options }); },
       setWorkingMessage() {},
+      confirm: async () => false,
+      custom: async () => undefined,
     },
     sessionManager: { getEntries: () => entries },
   };
@@ -112,7 +125,7 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
     getRunsDir: () => "/history",
   };
   createWikiExtension({ createEngine: () => engine, workspaceService, createHistoryStore: () => historyStore })(pi);
-  return { appended, commands, ctx, engine, handlers, history, messages, notices, workspaceCalls };
+  return { appended, commands, ctx, engine, handlers, history, messages, notices, statuses, widgets, workspaceCalls };
 }
 
 test("registers one command, starts in the background, and persists non-context run state", async () => {
@@ -185,7 +198,21 @@ test("TUI status uses native notification instead of a model-context message", a
   await subject.commands.get("wiki").handler("status", subject.ctx);
   assert.equal(subject.messages.length, 0);
   assert.equal(subject.notices.length, 2);
+  assert.match(subject.notices[0].message, /\/wiki open/);
+  assert.match(subject.notices[0].message, /generate/);
   assert.match(subject.notices.at(-1).message, /Wiki Run run-1/);
+});
+
+test("session host installs setStatus and setWidget without auto-opening the navigator", async () => {
+  const subject = fixture({ mode: "tui", hasUI: true });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.ok(subject.widgets.some((item) => item.key === "okf-wiki-tasks"));
+  assert.ok(subject.statuses.some((item) => item.key === "okf-wiki"));
+
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  assert.ok(subject.statuses.some((item) => item.key === "okf-wiki" && /Wiki/.test(String(item.text ?? ""))));
+  assert.ok(subject.widgets.filter((item) => item.key === "okf-wiki-tasks").length >= 2);
+  assert.equal(subject.messages.filter((item) => item.customType === "okf-wiki-result").length, 0);
 });
 
 test("TUI help preserves line breaks for Pi's wrapping text renderer", async () => {
@@ -233,7 +260,7 @@ test("initialization persists language and source commands use project names wit
   await command.handler("source add clone https://example.test/web.git --ref main --workspace docs", subject.ctx);
   await command.handler("source add link /projects/api --id ignored", subject.ctx);
 
-  assert.deepEqual(subject.workspaceCalls, [
+  assert.deepEqual(subject.workspaceCalls.filter(([name]) => name !== "load"), [
     ["initialize", { cwd: "/workspace", workspace: "docs", language: "en" }],
     ["addSource", { cwd: "/workspace", workspace: "docs", source: { kind: "link", path: "/projects/api" } }],
     ["addSource", { cwd: "/workspace", workspace: "docs", source: { kind: "clone", url: "https://example.test/web.git", ref: "main" } }],
@@ -252,4 +279,62 @@ test("generation uses the workspace language by default and starts from its root
     language: "en",
     focus: "architecture",
   }]);
+});
+
+test("generate does not call ui.custom (navigator stays on-demand)", async () => {
+  let customCalls = 0;
+  const subject = fixture({ mode: "tui", hasUI: true });
+  subject.ctx.ui.custom = async () => {
+    customCalls += 1;
+    return undefined;
+  };
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  assert.equal(customCalls, 0);
+  assert.equal(subject.messages.filter((item) => item.customType === "okf-wiki-result").length, 0);
+});
+
+test("terminal run event delivers sendMessage with okf-wiki-result", async () => {
+  const subject = fixture({ mode: "tui", hasUI: true });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  subject.engine.complete("succeeded");
+
+  const deliveries = subject.messages.filter((item) => item.customType === "okf-wiki-result");
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].display, true);
+  assert.deepEqual(deliveries[0].options, { triggerTurn: false, deliverAs: "followUp" });
+  assert.match(String(deliveries[0].content), /Wiki|generate|succeeded|run/i);
+});
+
+test("open lands on runs list when the only snapshot is terminal", async () => {
+  const openLandings = [];
+  const subject = fixture({ mode: "tui", hasUI: true });
+  subject.ctx.ui.custom = async (factory) => {
+    // Capture whether open opened a navigator; the factory builds the overlay component.
+    openLandings.push("opened");
+    // Immediately dispose without rendering a full TUI.
+    const component = factory(
+      { terminal: { rows: 24 }, requestRender() {} },
+      {
+        fg: (_c, text) => text,
+        bold: (text) => text,
+      },
+      {},
+      () => {},
+    );
+    // Component should exist; dispose must call done safely.
+    assert.equal(typeof component.render, "function");
+    assert.equal(typeof component.dispose, "function");
+    component.dispose();
+    return undefined;
+  };
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  subject.engine.complete("succeeded");
+
+  await subject.commands.get("wiki").handler("open", subject.ctx);
+  assert.equal(openLandings.length, 1);
+  // Terminal snapshots are not "active"; host still opens navigator (runs list landing).
+  assert.ok(subject.statuses.some((item) => item.key === "okf-wiki"));
 });

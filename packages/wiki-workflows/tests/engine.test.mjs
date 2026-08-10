@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WikiWorkflowEngine } from "../dist/engine.js";
-import { phaseRows } from "../dist/navigator.js";
+import { phaseRows } from "../dist/ui/stages.js";
 
 const inspection = {
   root: "/workspace",

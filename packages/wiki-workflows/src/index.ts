@@ -47,19 +47,95 @@ export {
   default as wikiExtension,
   type WikiExtensionOptions,
 } from "./extension.js";
+
+// Dual-track UI public API
 export {
-  createWikiNavigatorState,
-  layoutForWidth,
+  openWikiNavigator,
   openWikiRunNavigator,
-  reduceWikiNavigator,
-  renderWikiNavigator,
-  renderWikiRunHistoryText,
+  renderWikiNavigatorFrame,
+  type OpenWikiNavigatorOptions,
+} from "./ui/navigator.js";
+export {
+  createWikiUiHost,
+  WikiUiHost,
+  notifyRunStarted,
+  type WikiUiHostBindOptions,
+} from "./ui/host.js";
+export {
+  renderPanel,
+  statusLine,
+  installTaskPanel,
+  clearTaskPanel,
+  createTaskPanelWidget,
+  TASK_PANEL_KEY,
+  STATUS_KEY,
+  type TaskPanelSnapshot,
+  type ProgressMode,
+} from "./ui/task-panel.js";
+export {
   renderWikiRunText,
-  phaseRetryImpact,
+  renderWikiRunHistoryText,
+  renderWikiResultDelivery,
+} from "./ui/text.js";
+export {
+  phaseRows,
+  WIKI_WORKFLOW_STAGES,
+  type WikiPhase,
+  type WikiRunView,
+  type WikiWorkflowStage,
+} from "./ui/stages.js";
+export {
   retryImpact,
+  phaseRetryImpact,
+  describeNodes,
+  type WikiRetryImpact,
+} from "./ui/impact.js";
+export {
+  WikiUiModel,
   type WikiNavigatorController,
   type WikiNavigatorWorkspace,
-} from "./navigator.js";
+} from "./ui/model.js";
+export {
+  NavigatorState,
+  keyToNavigatorIntent,
+  type NavigatorView,
+  type DashboardPane,
+  type WikiNavigatorAction,
+} from "./ui/state.js";
+export {
+  layoutForWidth,
+  renderDashboard,
+} from "./ui/render/dashboard.js";
+export {
+  renderRunsList,
+  renderRunsEmpty,
+  buildRunSelectItems,
+} from "./ui/render/runs.js";
+export {
+  renderAgentView,
+  attemptNumbers,
+} from "./ui/render/agent.js";
+export {
+  PLAIN_THEME,
+  STATUS_ICON,
+  STATUS_COLOR,
+  runTitle,
+  asText,
+  type WikiUiTheme,
+} from "./ui/format.js";
+export {
+  uiStrings,
+  type WikiUiLanguage,
+  type WikiUiStrings,
+} from "./ui/strings.js";
+export {
+  cancelConfirm,
+  deleteConfirm,
+  retryAgentConfirm,
+  retryPhaseConfirm,
+  type ConfirmPrompt,
+} from "./ui/confirm.js";
+
 export type {
   WikiAgentExecutionRequest,
   WikiAgentExecutionResult,
