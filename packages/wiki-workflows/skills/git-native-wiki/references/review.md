@@ -25,3 +25,22 @@ re-synthesis: keep the summary and every defect detail short, actionable, and
 tied to one page. If it rejects the artifact, correct that artifact and submit
 again; do not copy source excerpts or a long review narrative into the tool
 call.
+
+Use this exact JSON shape. `defects` and `summary` are always required; use
+`[]` when no actionable defects remain. Every defect field is required and
+uses the exact camelCase names shown here:
+
+```json
+{
+  "defects": [
+    {
+      "id": "short-stable-id",
+      "domainId": "domain-id",
+      "page": "domain-id/page.md",
+      "kind": "evidence|link|format|topology|coverage|depth|diagram",
+      "detail": "A concise, actionable repair instruction."
+    }
+  ],
+  "summary": "A concise global review conclusion."
+}
+```

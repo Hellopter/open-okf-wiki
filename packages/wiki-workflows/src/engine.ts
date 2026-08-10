@@ -1527,7 +1527,10 @@ function specForSynthesis(run: WikiRunSnapshot, synthesisNodeId: string): WikiSp
 }
 
 function isSynthesisFinalizeResult(value: unknown): value is Extract<WikiSynthesisResult, { decision: "finalize" }> {
-  return isRecord(value) && value.decision === "finalize" && isRecord(value.spec) && Array.isArray(value.spec.domains);
+  return isRecord(value) && value.decision === "finalize" && isRecord(value.spec)
+    && Array.isArray(value.spec.domains)
+    && Array.isArray(value.spec.crossLinks)
+    && Array.isArray(value.spec.sharedTerms);
 }
 
 function domainsForValidation(spec: WikiSpec, validation: WikiValidation): string[] {

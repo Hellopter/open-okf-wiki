@@ -7,14 +7,13 @@ is sufficient to finalize the WikiSpec.
 
 The finalized WikiSpec must include exactly one small, receipt-free Overview
 domain/page at `overview/overview.md` for global orientation, with
-`researchScopeIds: []`. Then define the remaining final domains and pages, the
-reader question and required sections for each page, shared terminology,
-verified cross-domain links, and a diagram contract for every selected diagram.
-A diagram contract states its Mermaid type, reader question, required
-source-backed nodes or relationships, and the evidence references. Include a
-non-empty `reason` only when a diagram is `not_applicable`; omit it when the
-diagram is required. Use `[]`, not an omitted field, whenever a list has no
-values.
+`researchScopeIds: []`. Then define the remaining final domains and pages,
+each page's `purpose` and required sections, shared terminology, verified
+cross-domain links, and a diagram contract for every selected diagram. A
+diagram contract uses `kind`, `applicability`, and `purpose`; the page's
+`sources` carry its evidence references. Include a non-empty `reason` only
+when a diagram is `not_applicable`; omit it when the diagram is required. Use
+`[]`, not an omitted field, whenever a list has no values.
 
 Partition the finalized Spec into one DomainPacket per domain. Each packet
 contains only its pages, relevant receipts or extracted evidence, shared terms,
@@ -44,3 +43,48 @@ Use one natural JSON branch: an expansion contains `decision: "expand"`,
 `researchScopes`, and `rationale`; a final decision contains
 `decision: "finalize"`, `spec`, and `rationale`. Omit the inactive branch
 field entirely; never encode it as `null`.
+
+For a final decision, use this exact JSON shape. `domains`, `crossLinks`, and
+`sharedTerms` are mandatory arrays with these exact camelCase names, even when
+`crossLinks` or `sharedTerms` have no values:
+
+```json
+{
+  "decision": "finalize",
+  "spec": {
+    "domains": [
+      {
+        "id": "lowercase-domain-id",
+        "title": "...",
+        "purpose": "...",
+        "researchScopeIds": ["receipt-scope-id"],
+        "pages": [
+          {
+            "pageType": "overview|architecture|module|flow|concept",
+            "path": "domain-id/page.md",
+            "title": "...",
+            "purpose": "...",
+            "sources": ["project/path.ext#L1-L2"],
+            "requiredSections": ["..."],
+            "diagrams": [
+              {
+                "kind": "flowchart|sequence|state|er|class",
+                "applicability": "required|not_applicable",
+                "purpose": "..."
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "crossLinks": [{ "fromPath": "domain-id/page.md", "toPath": "other-domain/page.md", "purpose": "..." }],
+    "sharedTerms": [{ "term": "...", "definition": "..." }]
+  },
+  "rationale": "..."
+}
+```
+
+For a `not_applicable` diagram, add a non-empty `reason`; omit `reason` for a
+`required` diagram. The `overview` domain is the sole exception to receipt
+assignment: it uses `researchScopeIds: []`, has one `overview` page at
+`overview/overview.md`, and still includes the normal page fields.

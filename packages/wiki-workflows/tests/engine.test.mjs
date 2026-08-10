@@ -154,6 +154,8 @@ test("source surveys converge through synthesis before parallel domain writers a
   assert.ok(synthesis.artifactPaths.every((artifactPath) => artifactPath.startsWith(".okf-wiki/runs/")));
   assert.doesNotMatch(synthesis.prompt, /source-survey:src-core is verified/);
   assert.match(synthesis.prompt, /\.okf-wiki\/runs\//);
+  assert.match(synthesis.prompt, /"crossLinks": \[/);
+  assert.match(synthesis.prompt, /"sharedTerms": \[/);
   const surveys = executor.requests.filter((request) => request.node.kind === "research");
   assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "source-survey:src-core").readRoots, ["src-core"]);
   assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "source-survey:src-api").readRoots, ["src-api"]);
@@ -161,6 +163,8 @@ test("source surveys converge through synthesis before parallel domain writers a
   const review = executor.requests.find((request) => request.node.kind === "review");
   assert.deepEqual(review.readRoots, ["src-core", "src-api"]);
   assert.deepEqual(review.reviewPaths, ["wiki/overview/overview.md", "wiki/core/architecture.md", "wiki/api/request-flow.md"]);
+  assert.match(review.prompt, /"domainId": "domain-id"/);
+  assert.match(review.prompt, /"summary": "A concise global review conclusion\."/);
 });
 
 test("synthesis receives only exact artifact paths for Markdown receipts", async () => {
@@ -384,6 +388,27 @@ test("final WikiSpec rejects pages outside their domain directory and unknown re
   await unknownReceipt.waitForIdle();
   assert.equal(unknownReceipt.getSnapshot().status, "failed");
   assert.match(unknownReceipt.getSnapshot().nodes.find((node) => node.kind === "synthesis").error.message, /unknown research scope/);
+});
+
+test("a restored malformed final synthesis result is not treated as a usable WikiSpec", async () => {
+  const artifactRoot = path.join(os.tmpdir(), `okf-wiki-restored-malformed-spec-${process.pid}-${++artifactStoreId}`);
+  artifactRoots.push(artifactRoot);
+  const artifactStore = createWikiArtifactStore({ workspace: "/workspace", rootDir: artifactRoot });
+  const completed = createEngine(createExecutor(), undefined, undefined, artifactStore);
+  completed.start({ cwd: "/workspace", mode: "generate" });
+  await completed.waitForIdle();
+  const serialized = completed.serialize();
+  const synthesis = serialized.snapshot.nodes.find((node) => node.kind === "synthesis");
+  delete synthesis.result.spec.sharedTerms;
+  const writer = serialized.snapshot.nodes.find((node) => node.kind === "write");
+
+  const restored = createEngine(createExecutor(), undefined, undefined, artifactStore);
+  assert.ok(restored.restore(serialized));
+  await restored.retryNode(writer.id);
+  const snapshot = await restored.waitForIdle();
+
+  assert.equal(snapshot.status, "failed");
+  assert.match(snapshot.nodes.find((node) => node.id === writer.id).error.message, /No finalized WikiSpec exists/);
 });
 
 test("engine supplies run-scoped control validation before synthesis and review submission", async () => {

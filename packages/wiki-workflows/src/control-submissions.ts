@@ -84,9 +84,9 @@ export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
 /** Canonicalize the reviewer's typed control submission before it changes the DAG. */
 export function parseReviewSubmission(value: unknown): WikiReviewResult {
   assertControlSubmissionSize(value, "Reviewer submission");
-  if (!isRecord(value) || !Array.isArray(value.defects)) {
-    throw new Error("Reviewer submission must include defects and summary");
-  }
+  if (!isRecord(value)) throw new Error("Reviewer submission must be an object");
+  if (!Array.isArray(value.defects)) throw new Error("Reviewer submission must include defects as an array");
+  const summary = requiredText(value.summary, "Review summary");
   const defectIds = new Set<string>();
   const defects = value.defects.map((defect) => {
     if (!isRecord(defect) || !isReviewKind(defect.kind)) throw new Error("Reviewer returned an invalid defect");
@@ -101,7 +101,7 @@ export function parseReviewSubmission(value: unknown): WikiReviewResult {
       detail: requiredText(defect.detail, `Review detail for ${id}`),
     };
   });
-  return { defects, summary: requiredText(value.summary, "Review summary") };
+  return { defects, summary };
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -110,9 +110,10 @@ function requiredText(value: unknown, label: string): string {
 }
 
 function parseWikiSpec(value: unknown): WikiSpec {
-  if (!isRecord(value) || !Array.isArray(value.domains) || !Array.isArray(value.crossLinks) || !Array.isArray(value.sharedTerms)) {
-    throw new Error("Final WikiSpec must include domains, crossLinks, and sharedTerms");
-  }
+  if (!isRecord(value)) throw new Error("Final WikiSpec must be an object");
+  if (!Array.isArray(value.domains)) throw new Error("Final WikiSpec must include domains as an array");
+  if (!Array.isArray(value.crossLinks)) throw new Error("Final WikiSpec must include crossLinks as an array");
+  if (!Array.isArray(value.sharedTerms)) throw new Error("Final WikiSpec must include sharedTerms as an array");
   const domainIds = new Set<string>();
   const pagePaths = new Set<string>();
   const domains = value.domains.map((domain) => {

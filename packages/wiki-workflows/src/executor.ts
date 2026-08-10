@@ -120,7 +120,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       if (submission && submission.value === undefined) {
         request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` });
         const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
-        await session.followUp(`Before completing this node, submit a valid final result with ${submission.toolName}.${correction} If a submission is rejected, correct it and submit again; after it is recorded, stop. Do not reply with JSON text.`);
+        await session.followUp(`Before completing this node, submit a valid final result with ${submission.toolName}.${correction} ${submissionContractGuidance(submission.toolName)} Rewrite the complete handoff artifact before resubmitting; do not reply with JSON text. After it is recorded, stop.`);
         await session.waitForIdle();
         if (request.signal.aborted) throw new Error("Workflow node was cancelled");
         output = session.getLastAssistantText() ?? "";
@@ -457,7 +457,7 @@ function workflowTools(
     guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
     guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
   ];
-  const artifactWriter = artifactWritePath ? createArtifactWriteToolDefinition(policy, artifactWritePath) : undefined;
+  const artifactWriter = artifactWritePath ? createArtifactWriteToolDefinition(policy, artifactWritePath, submission?.toolName) : undefined;
   if (role !== "writer") return [
     ...readOnly,
     ...(artifactWriter ? [artifactWriter] : []),
@@ -529,9 +529,9 @@ function submissionTool(policy: WorkspaceToolPolicy, submission: SubmissionColle
     return {
       name: submission.toolName,
       label: submission.toolName,
-      description: "Submit the synthesis result by referencing the exact JSON handoff artifact written for this node.",
+      description: `Submit the synthesis result by referencing the exact JSON handoff artifact written for this node. ${submissionContractGuidance(submission.toolName)}`,
       promptSnippet: "Submit the Wiki synthesis decision",
-      promptGuidelines: ["Write the complete JSON handoff artifact, then submit its exact path. Correct and resubmit if rejected; after it is recorded, stop."],
+      promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
       parameters: artifactSubmissionSchema(submission.artifactPath),
       constrainedSampling: { type: "json_schema", strict: "prefer" },
       async execute(_toolCallId, params) {
@@ -548,9 +548,9 @@ function submissionTool(policy: WorkspaceToolPolicy, submission: SubmissionColle
   return {
     name: submission.toolName,
     label: submission.toolName,
-    description: "Submit the review result by referencing the exact JSON handoff artifact written for this node.",
+    description: `Submit the review result by referencing the exact JSON handoff artifact written for this node. ${submissionContractGuidance(submission.toolName)}`,
     promptSnippet: "Submit the final Wiki review",
-    promptGuidelines: ["Write the complete JSON handoff artifact, then submit its exact path. Correct and resubmit if rejected; after it is recorded, stop."],
+    promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
     parameters: artifactSubmissionSchema(submission.artifactPath),
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params) {
@@ -584,14 +584,19 @@ const artifactWriteSchema = Type.Object({
 }, { additionalProperties: false });
 
 /** Write only the engine-assigned handoff file; the model never chooses its path. */
-function createArtifactWriteToolDefinition(policy: WorkspaceToolPolicy, artifactPath: string): ToolDefinition<typeof artifactWriteSchema> {
+function createArtifactWriteToolDefinition(
+  policy: WorkspaceToolPolicy,
+  artifactPath: string,
+  submissionToolName?: SubmissionToolName,
+): ToolDefinition<typeof artifactWriteSchema> {
   const expectedPath = resolveArtifactPath(policy, artifactPath);
+  const contract = submissionToolName ? submissionContractGuidance(submissionToolName) : undefined;
   return {
     name: "wiki_write_handoff",
     label: "wiki_write_handoff",
-    description: `Write the complete handoff artifact at ${expectedPath}. This is the only handoff path available to this node.`,
+    description: `Write the complete handoff artifact at ${expectedPath}. This is the only handoff path available to this node.${contract ? ` ${contract}` : ""}`,
     promptSnippet: "Write the node handoff artifact",
-    promptGuidelines: ["Write the complete artifact once it is ready. Do not write handoff data to any other path."],
+    promptGuidelines: [`Write the complete artifact once it is ready. Do not write handoff data to any other path.${contract ? ` ${contract}` : ""}`],
     parameters: artifactWriteSchema,
     async execute(_toolCallId, params) {
       if (typeof params.content !== "string") throw new Error("Handoff artifact content must be text");
@@ -599,6 +604,14 @@ function createArtifactWriteToolDefinition(policy: WorkspaceToolPolicy, artifact
       return { content: [{ type: "text", text: `Handoff artifact recorded at ${expectedPath}.` }], details: undefined };
     },
   };
+}
+
+/** Keep every model-facing control surface explicit about its JSON contract. */
+function submissionContractGuidance(toolName: SubmissionToolName): string {
+  if (toolName === "wiki_submit_synthesis") {
+    return "For a final decision, use exactly {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...]},\"rationale\":\"...\"}. domains, crossLinks, and sharedTerms are required arrays with exact camelCase names; use [] when either optional list is empty. For expansion, omit spec and use decision, researchScopes, and rationale.";
+  }
+  return "Use exactly {\"defects\":[{\"id\":\"...\",\"domainId\":\"...\",\"page\":\"...\",\"kind\":\"evidence|link|format|topology|coverage|depth|diagram\",\"detail\":\"...\"}],\"summary\":\"...\"}. defects and summary are always required; use [] for defects when there are no actionable defects.";
 }
 
 function exactArtifactReadRoot(policy: WorkspaceToolPolicy, artifactPath: string): PermittedToolRoot {

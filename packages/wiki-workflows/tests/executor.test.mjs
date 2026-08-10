@@ -151,6 +151,8 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
   assert.equal(submit.parameters.properties.artifactPath.const, request.artifactWritePath);
   assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
   assert.match(submit.description, /exact JSON handoff artifact/);
+  assert.match(submit.promptGuidelines[0], /"crossLinks":\[\.\.\.\]/);
+  assert.match(submit.promptGuidelines[0], /"sharedTerms":\[\.\.\.\]/);
   assert.match(submit.promptGuidelines[0], /Correct and resubmit if rejected/);
   assert.doesNotMatch(submit.promptGuidelines[0], /exactly once/);
   assert.equal(submitResult.terminate, true);
@@ -187,6 +189,8 @@ test("reviewer submits control data through its dedicated tool", async () => {
   assert.deepEqual(submit.parameters.required, ["artifactPath"]);
   assert.equal(submit.parameters.properties.artifactPath.const, request.artifactWritePath);
   assert.match(submit.description, /exact JSON handoff artifact/);
+  assert.match(submit.promptGuidelines[0], /"domainId":\"\.\.\.\"/);
+  assert.match(submit.promptGuidelines[0], /"summary":\"\.\.\.\"/);
   assert.match(submit.promptGuidelines[0], /Correct and resubmit if rejected/);
   assert.doesNotMatch(submit.promptGuidelines[0], /exactly once/);
   assert.equal(submitResult.terminate, true);
@@ -357,6 +361,78 @@ test("a contextual synthesis rejection can be corrected before the submission te
   const result = await executor.execute(request);
   assert.equal(result.result.decision, "finalize");
   assert.equal(followUps, 1);
+});
+
+test("a synthesis retry names each required final WikiSpec array", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-shape-recovery-");
+  const request = executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis");
+  let tools;
+  let correction;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const invalidSpec = finalizedSpec();
+    delete invalidSpec.crossLinks;
+    await assert.rejects(
+      () => writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
+        decision: "finalize",
+        spec: invalidSpec,
+        rationale: "The contract is ready.",
+      }, "invalid-synthesis-shape"),
+      /crossLinks as an array/,
+    );
+  };
+  session.followUp = async (prompt) => {
+    correction = prompt;
+    await writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
+      decision: "finalize",
+      spec: finalizedSpec(),
+      rationale: "The contract is ready.",
+    }, "valid-synthesis-shape");
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(request);
+  assert.equal(result.result.decision, "finalize");
+  assert.match(correction, /"domains":\[\.\.\.\]/);
+  assert.match(correction, /"crossLinks":\[\.\.\.\]/);
+  assert.match(correction, /"sharedTerms":\[\.\.\.\]/);
+  assert.match(correction, /crossLinks as an array/);
+});
+
+test("a review retry names its complete structured result", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-review-shape-recovery-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
+  let tools;
+  let correction;
+  const session = fakeSession();
+  session.prompt = async () => {
+    await assert.rejects(
+      () => writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, { defects: [] }, "invalid-review-shape"),
+      /Review summary must be non-empty/,
+    );
+  };
+  session.followUp = async (prompt) => {
+    correction = prompt;
+    await writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, { defects: [], summary: "All checks passed." }, "valid-review-shape");
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(request);
+  assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
+  assert.match(correction, /"defects":\[/);
+  assert.match(correction, /"domainId":\"\.\.\.\"/);
+  assert.match(correction, /"summary":\"\.\.\.\"/);
+  assert.match(correction, /Review summary must be non-empty/);
 });
 
 test("a contextual review rejection can be corrected before the submission terminates", async () => {
