@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WikiWorkflowEngine } from "../dist/engine.js";
+import { phaseRows } from "../dist/navigator.js";
 
 const inspection = {
   root: "/workspace",
   wikiRoot: "/workspace/wiki",
+  sourcePaths: ["src-core", "src-api"],
   mode: "refresh",
   head: "abc123",
   baseCommit: "base",
@@ -17,20 +19,6 @@ const inspection = {
 };
 
 const validation = { ok: true, errors: [], pages: ["overview/overview.md", "core/architecture.md", "api/request-flow.md"] };
-
-function draftPlan(scopes = [
-  { id: "core", task: "Research core implementation" },
-  { id: "api", task: "Research API flow" },
-]) {
-  return {
-    candidateDomains: [
-      { id: "core", title: "Core", purpose: "Explain core architecture" },
-      { id: "api", title: "API", purpose: "Explain request processing" },
-    ],
-    researchScopes: scopes,
-    rationale: "The two source areas are independently researchable.",
-  };
-}
 
 function finalizedSpec(options = {}) {
   return {
@@ -54,7 +42,7 @@ function finalizedSpec(options = {}) {
         id: "core",
         title: "Core",
         purpose: "Explain core architecture",
-        researchScopeIds: options.coreScopes ?? ["core"],
+        researchScopeIds: options.coreScopes ?? ["source-survey:src-core"],
         pages: [{
           pageType: "architecture",
           path: "core/architecture.md",
@@ -69,7 +57,7 @@ function finalizedSpec(options = {}) {
         id: "api",
         title: "API",
         purpose: "Explain request processing",
-        researchScopeIds: options.apiScopes ?? ["api"],
+        researchScopeIds: options.apiScopes ?? ["source-survey:src-api"],
         pages: [{
           pageType: "flow",
           path: "api/request-flow.md",
@@ -105,7 +93,6 @@ function createExecutor(options = {}) {
     async execute(request) {
       calls.push(request.node.kind);
       requests.push(request);
-      if (request.node.kind === "plan" || request.node.kind === "replan") return { result: options.plan?.(request) ?? draftPlan() };
       if (request.node.kind === "research") return { result: options.research?.(request) ?? receipt(request.node.input.scope.id) };
       if (request.node.kind === "synthesis") {
         const result = options.synthesis?.(request, synthesisCount++) ?? finalize();
@@ -134,23 +121,27 @@ function createEngine(executor, inspect = async () => inspection, validate = asy
   });
 }
 
-test("draft plan converges through synthesis before parallel domain writers and global review", async () => {
+test("source surveys converge through synthesis before parallel domain writers and global review", async () => {
   const executor = createExecutor();
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate", language: "zh" });
   const snapshot = await engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded");
-  assert.equal(executor.calls.filter((kind) => kind === "plan").length, 1);
-  assert.equal(executor.calls.filter((kind) => kind === "research").length, 2);
+  assert.equal(executor.calls.filter((kind) => kind === "plan").length, 0);
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, 3);
   assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 1);
   assert.equal(executor.calls.filter((kind) => kind === "write").length, 3);
   assert.equal(executor.calls.filter((kind) => kind === "review").length, 1);
   assert.equal(snapshot.nodes.filter((node) => node.kind === "write").length, 3);
   assert.ok(snapshot.nodes.find((node) => node.kind === "review").dependsOn.every((id) => snapshot.nodes.find((node) => node.id === id)?.kind === "validate"));
   const synthesis = executor.requests.find((request) => request.node.kind === "synthesis");
-  assert.match(synthesis.prompt, /core is verified/);
-  assert.match(synthesis.prompt, /api is verified/);
+  assert.match(synthesis.prompt, /source-survey:src-core is verified/);
+  assert.match(synthesis.prompt, /source-survey:src-api is verified/);
+  const surveys = executor.requests.filter((request) => request.node.kind === "research");
+  assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "source-survey:src-core").readRoots, ["src-core"]);
+  assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "source-survey:src-api").readRoots, ["src-api"]);
+  assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "workspace-map").readRoots, ["src-core", "src-api"]);
 });
 
 test("a domain writer receives only its DomainPacket, selected receipt, and exact write paths", async () => {
@@ -163,21 +154,21 @@ test("a domain writer receives only its DomainPacket, selected receipt, and exac
   const apiWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "api");
   assert.deepEqual(coreWriter.writePaths, ["wiki/core/architecture.md"]);
   assert.deepEqual(apiWriter.writePaths, ["wiki/api/request-flow.md"]);
-  assert.match(coreWriter.prompt, /core is verified/);
-  assert.doesNotMatch(coreWriter.prompt, /api is verified/);
+  assert.match(coreWriter.prompt, /source-survey:src-core is verified/);
+  assert.doesNotMatch(coreWriter.prompt, /source-survey:src-api is verified/);
   assert.match(coreWriter.prompt, /Domain Packet/);
   assert.doesNotMatch(coreWriter.prompt, /wiki\/index\.md/);
   const overviewWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "overview");
   assert.deepEqual(overviewWriter.writePaths, ["wiki/overview/overview.md"]);
-  assert.doesNotMatch(overviewWriter.prompt, /core is verified/);
-  assert.doesNotMatch(overviewWriter.prompt, /api is verified/);
+  assert.doesNotMatch(overviewWriter.prompt, /source-survey:src-core is verified/);
+  assert.doesNotMatch(overviewWriter.prompt, /source-survey:src-api is verified/);
 });
 
 test("synthesis may expand source research once before finalizing the WikiSpec", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => index === 0
-      ? { decision: "expand", researchScopes: [{ id: "storage", task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
-      : finalize(finalizedSpec({ coreScopes: ["core", "storage"] })),
+      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
+      : finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] })),
   });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
@@ -185,13 +176,31 @@ test("synthesis may expand source research once before finalizing the WikiSpec",
 
   assert.equal(snapshot.status, "succeeded");
   assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 2);
-  assert.equal(executor.calls.filter((kind) => kind === "research").length, 3);
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, 4);
   assert.equal(snapshot.nodes.filter((node) => node.kind === "research" && node.input.batch === 1).length, 1);
 });
 
-test("a second supplemental research request in the same plan round fails closed", async () => {
+test("phase retry after supplemental research reruns only the latest synthesis iteration", async () => {
   const executor = createExecutor({
-    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", task: "Research another gap" }], rationale: "More research." }),
+    synthesis: (_request, index) => index === 0
+      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
+      : finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] })),
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const completed = await engine.waitForIdle();
+  const synthesisIds = completed.nodes.filter((node) => node.phaseId === "synthesis").map((node) => node.id);
+  assert.equal(synthesisIds.length, 2);
+
+  await engine.retryPhase("synthesis");
+  const retried = await engine.waitForIdle();
+  const attempts = synthesisIds.map((id) => retried.nodes.find((node) => node.id === id)?.attempt);
+  assert.deepEqual(attempts, [1, 2]);
+});
+
+test("a second supplemental research request in the same run fails closed", async () => {
+  const executor = createExecutor({
+    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", sourcePaths: ["src-core"], task: "Research another gap" }], rationale: "More research." }),
   });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
@@ -199,7 +208,7 @@ test("a second supplemental research request in the same plan round fails closed
 
   assert.equal(snapshot.status, "failed");
   assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 2);
-  assert.equal(executor.calls.filter((kind) => kind === "research").length, 3);
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, 4);
   assert.match(snapshot.nodes.filter((node) => node.kind === "synthesis").at(-1).error.message, /at most 1 supplemental/);
 });
 
@@ -272,7 +281,7 @@ test("review defects must name a declared domain page", async () => {
   assert.match(snapshot.nodes.find((node) => node.kind === "review").error.message, /does not belong to domain/);
 });
 
-test("one global structural replan is allowed, then the run blocks", async () => {
+test("one global structural re-synthesis is allowed, then the run blocks", async () => {
   let reviews = 0;
   const executor = createExecutor({
     review: () => ({
@@ -291,16 +300,16 @@ test("one global structural replan is allowed, then the run blocks", async () =>
   const snapshot = await engine.waitForIdle();
 
   assert.equal(snapshot.status, "blocked");
-  assert.equal(executor.calls.filter((kind) => kind === "replan").length, 1);
-  assert.match(snapshot.blockedReason, /1-replan budget/);
+  assert.equal(snapshot.nodes.filter((node) => node.phaseId === "structural-resynthesis").length, 1);
+  assert.match(snapshot.blockedReason, /1-resynthesis budget/);
 });
 
-test("a single structural replan can converge with a fresh final spec", async () => {
+test("a single structural re-synthesis can converge with a fresh final spec", async () => {
   const executor = createExecutor({
     review: (_request, index) => index === 0
       ? {
         defects: [{ id: "coverage", domainId: "core", page: "core/architecture.md", kind: "topology", detail: "Split the lifecycle boundary." }],
-        summary: "replan needed",
+        summary: "structural re-synthesis needed",
       }
       : { defects: [], summary: "complete" },
   });
@@ -309,6 +318,107 @@ test("a single structural replan can converge with a fresh final spec", async ()
   const snapshot = await engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded");
-  assert.equal(executor.calls.filter((kind) => kind === "replan").length, 1);
+  assert.equal(snapshot.nodes.filter((node) => node.phaseId === "structural-resynthesis").length, 1);
   assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 2);
+});
+
+test("structural synthesis retains the prior WikiSpec and review trigger after supplemental research", async () => {
+  const executor = createExecutor({
+    synthesis: (request, index) => {
+      if (index === 0) return finalize();
+      if (index === 1) {
+        assert.match(request.prompt, /Prior Final WikiSpec/);
+        assert.match(request.prompt, /core\/architecture\.md/);
+        assert.match(request.prompt, /Structural Validation And Review Trigger/);
+        assert.match(request.prompt, /"ok": true/);
+        assert.match(request.prompt, /coverage/);
+        return {
+          decision: "expand",
+          researchScopes: [{ id: "lifecycle", sourcePaths: ["src-core"], task: "Verify the lifecycle boundary." }],
+          rationale: "The structural defect needs one source-backed lifecycle check.",
+        };
+      }
+      assert.match(request.prompt, /Prior Final WikiSpec/);
+      assert.match(request.prompt, /core\/architecture\.md/);
+      assert.match(request.prompt, /coverage/);
+      return finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "lifecycle"] }));
+    },
+    review: (_request, index) => index === 0
+      ? {
+        defects: [{ id: "coverage", domainId: "core", page: "core/architecture.md", kind: "coverage", detail: "Missing lifecycle coverage." }],
+        summary: "Structural coverage is incomplete.",
+      }
+      : { defects: [], summary: "complete" },
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 3);
+  const structuralIds = snapshot.nodes.filter((node) => node.phaseId === "structural-resynthesis").map((node) => node.id);
+  assert.equal(structuralIds.length, 2);
+
+  await engine.retryPhase("structural-resynthesis");
+  const retried = await engine.waitForIdle();
+  const attempts = structuralIds.map((id) => retried.nodes.find((node) => node.id === id)?.attempt);
+  assert.deepEqual(attempts, [1, 2]);
+});
+
+test("synthesis fails before dispatch when more than four oversized source receipts exceed the aggregate budget", async () => {
+  const sourcePaths = ["source-1", "source-2", "source-3", "source-4", "source-5"];
+  const executor = createExecutor({ research: () => "x".repeat(16 * 1024) });
+  const engine = createEngine(executor, async () => ({ ...inspection, sourcePaths }));
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "failed");
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, sourcePaths.length + 1);
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 0);
+  assert.match(snapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /Synthesis receipt payload exceeds/);
+});
+
+test("all dynamic branch nodes remain visible in the declared navigator stages", async () => {
+  const executor = createExecutor({
+    synthesis: (_request, index) => {
+      if (index === 0) {
+        return {
+          decision: "expand",
+          researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }],
+          rationale: "Persistence evidence is needed before the Wiki contract can be finalized.",
+        };
+      }
+      return finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] }));
+    },
+    review: (_request, index) => {
+      if (index === 0) {
+        return {
+          defects: [{ id: "depth", domainId: "api", page: "api/request-flow.md", kind: "depth", detail: "Explain retry handling." }],
+          summary: "Targeted domain repair is required.",
+        };
+      }
+      if (index === 1) {
+        return {
+          defects: [{ id: "coverage", domainId: "core", page: "core/architecture.md", kind: "coverage", detail: "Restructure lifecycle coverage." }],
+          summary: "A structural re-synthesis is required.",
+        };
+      }
+      return { defects: [], summary: "complete" };
+    },
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+  const phases = phaseRows(snapshot);
+  const represented = new Set(phases.flatMap((phase) => phase.nodeIds));
+  assert.deepEqual(new Set(phases.map((phase) => phase.id)), new Set([
+    "inspect", "source-survey", "synthesis", "targeted-research", "domain-writing",
+    "validation", "global-review", "domain-repair", "structural-resynthesis",
+  ]));
+  for (const node of snapshot.nodes) assert.ok(represented.has(node.id), `${node.id} is missing from the navigator`);
+  for (const phaseId of ["targeted-research", "domain-repair", "structural-resynthesis"]) {
+    assert.ok(phases.find((phase) => phase.id === phaseId)?.nodeIds.length, `${phaseId} should have a runtime node`);
+  }
 });

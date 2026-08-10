@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   MAX_RESEARCH_SCOPES_PER_BATCH,
-  parsePlanSubmission,
   parseReviewSubmission,
   parseSynthesisSubmission,
 } from "./control-submissions.js";
 import { createPiAgentExecutor, WikiAgentProtocolError } from "./executor.js";
 import { inspectWiki } from "./inspect.js";
 import { loadWikiPromptGuidance } from "./prompt-guidance.js";
+import { latestPhaseIteration } from "./phase-iterations.js";
 import { createWikiRunSession, parseWikiRunSession } from "./session.js";
 import type { WikiInspection, WikiMode, WikiValidation } from "./types.js";
 import { validateWiki } from "./validate.js";
@@ -24,6 +24,7 @@ import {
   type WikiSpec,
   type WikiSynthesisResult,
   type WikiResearchReceipt,
+  type WikiResearchScope,
   type WikiReviewDefect,
   type WikiRunEvent,
   type WikiRunEventKind,
@@ -35,12 +36,13 @@ import {
 } from "./workflow-types.js";
 
 const MAX_NODE_ATTEMPTS = 3;
-const MAX_STRUCTURAL_REPLANS = 1;
+const MAX_STRUCTURAL_RESYNTHESES = 1;
 const MAX_SUPPLEMENTAL_RESEARCH_BATCHES = 1;
 const MAX_NODE_OUTPUT_CHARS = 48 * 1024;
 const MAX_NODE_HISTORY_ENTRIES = 48;
 const MAX_NODE_HISTORY_CHARS = 24 * 1024;
 const MAX_RESEARCH_RECEIPT_CHARS = 16 * 1024;
+const MAX_SYNTHESIS_RECEIPT_CHARS = 64 * 1024;
 const MAX_EVENTS = 200;
 const ACTIVITY_EVENT_INTERVAL_MS = 250;
 
@@ -75,9 +77,9 @@ export class WikiWorkflowEngine {
       throw new Error("A Wiki workflow is already active for this Pi session");
     }
     const createdAt = this.now();
-    const inspectionNode = this.newNode("inspect", "Inspect Git scope", [], { requestedMode: request.mode });
+    const inspectionNode = this.newNode("inspect", "Inspect Git scope", [], { requestedMode: request.mode }, { id: "inspect", title: "Inspect" });
     this.current = {
-      version: 2,
+      version: 3,
       id: this.newId(),
       cwd: path.resolve(request.cwd),
       requestedMode: request.mode,
@@ -146,7 +148,7 @@ export class WikiWorkflowEngine {
     return await this.retryRoots([node.id], `Retry requested for ${node.label}`, "node");
   }
 
-  /** Re-run every settled node in one stable execution phase. */
+  /** Re-run the latest settled execution iteration in one displayed workflow stage. */
   async retryPhase(phaseId: string): Promise<WikiRunSnapshot> {
     const run = this.requireRun();
     const nodes = nodesInPhase(run, phaseId);
@@ -415,6 +417,7 @@ export class WikiWorkflowEngine {
       cwd: run.cwd,
       prompt: await promptFor(node, run),
       role,
+      readRoots: readRootsFor(node),
       writePaths: writePathsFor(node),
       language: run.language,
       signal,
@@ -432,15 +435,7 @@ export class WikiWorkflowEngine {
         run.inspection = inspection;
         run.effectiveMode = run.requestedMode === "generate" ? "generate" : inspection.mode;
         run.inspectionFingerprint = inspectionFingerprint(inspection);
-        this.queuePlan("plan", [node.id]);
-        return;
-      }
-      case "plan":
-      case "replan": {
-        const plan = parsePlanSubmission(node.result);
-        node.result = plan;
-        const scopeNodes = this.queueResearch(node.id, plan.researchScopes, 0);
-        if (scopeNodes.length === 0) this.queueSynthesis(node.id, [], 0);
+        this.queueInitialSourceSurveys(node.id, inspection);
         return;
       }
       case "research": {
@@ -449,10 +444,17 @@ export class WikiWorkflowEngine {
         const siblings = run.nodes.filter((candidate) => candidate.kind === "research" && sameResearchBatch(candidate, researchInput));
         if (siblings.every((candidate) => candidate.id === node.id || candidate.status === "succeeded")) {
           const receiptIds = run.nodes
-            .filter((candidate) => candidate.kind === "research" && researchPlanId(candidate) === researchInput.planNodeId
-              && (candidate.status === "succeeded" || candidate.id === node.id))
+            .filter((candidate) => candidate.kind === "research" && (candidate.status === "succeeded" || candidate.id === node.id))
             .map((candidate) => candidate.id);
-          this.queueSynthesis(researchInput.planNodeId, receiptIds, researchInput.batch);
+          this.queueSynthesis({
+            dependsOn: receiptIds,
+            researchIds: receiptIds,
+            supplementalBatch: researchInput.batch,
+            mode: researchInput.continuationMode,
+            priorSynthesisNodeId: researchInput.priorSynthesisNodeId,
+            structuralRoundId: researchInput.structuralRoundId,
+            trigger: researchInput.trigger,
+          });
         }
         return;
       }
@@ -461,14 +463,15 @@ export class WikiWorkflowEngine {
         node.result = synthesis;
         const input = synthesisInputFor(node);
         if (synthesis.decision === "expand") {
-          if (input.supplementalBatch >= MAX_SUPPLEMENTAL_RESEARCH_BATCHES) {
-            throw new Error(`Synthesis may request at most ${MAX_SUPPLEMENTAL_RESEARCH_BATCHES} supplemental research batch per planning round`);
+          if (this.hasSupplementalResearch()) {
+            throw new Error(`Synthesis may request at most ${MAX_SUPPLEMENTAL_RESEARCH_BATCHES} supplemental research batch per run`);
           }
-          this.ensureNewResearchScopes(input.planNodeId, synthesis.researchScopes);
-          this.queueResearch(input.planNodeId, synthesis.researchScopes, input.supplementalBatch + 1);
+          this.ensureNewResearchScopes(synthesis.researchScopes);
+          this.ensureResearchSourcePaths(synthesis.researchScopes);
+          this.queueSupplementalResearch(node.id, synthesis.researchScopes, input);
           return;
         }
-        this.ensureSynthesisSpecReceipts(input.planNodeId, synthesis.spec);
+        this.ensureSynthesisSpecReceipts(synthesis.spec);
         this.queueDomainWriters(node.id, synthesis.spec);
         return;
       }
@@ -493,7 +496,7 @@ export class WikiWorkflowEngine {
         node.result = validation;
         const synthesisNodeId = synthesisNodeIdFor(node, run);
         if (validation.ok) {
-          this.queueNode("review", "Review Wiki", [node.id], { validation, synthesisNodeId });
+          this.queueNode("review", "Review Wiki", [node.id], { validation, synthesisNodeId }, { id: "global-review", title: "Global Review" });
         } else {
           const signature = stableStringify(validation.errors);
           if (signature === this.previousValidationSignature(node.id)) {
@@ -530,15 +533,18 @@ export class WikiWorkflowEngine {
         ensureReviewTargets(review.defects, spec);
         const structural = review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
         if (structural) {
-          const replans = run.nodes.filter((candidate) => candidate.kind === "replan"
-            && candidate.status !== "invalidated" && candidate.status !== "cancelled").length;
-          if (replans >= MAX_STRUCTURAL_REPLANS) {
+          const resyntheses = new Set(run.nodes
+            .filter((candidate) => candidate.kind === "synthesis" && candidate.status !== "invalidated" && candidate.status !== "cancelled")
+            .map((candidate) => synthesisInputFor(candidate))
+            .filter((input) => input.mode === "structural" && input.structuralRoundId)
+            .map((input) => input.structuralRoundId)).size;
+          if (resyntheses >= MAX_STRUCTURAL_RESYNTHESES) {
             run.status = "blocked";
-            run.blockedReason = `Structural review exceeded the ${MAX_STRUCTURAL_REPLANS}-replan budget`;
+            run.blockedReason = `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`;
             this.emit("run_blocked", node.id, run.blockedReason);
             return;
           }
-          this.queuePlan("replan", [node.id]);
+          this.queueStructuralSynthesis(node.id, synthesisNodeId, review);
         } else this.queueDomainRepairs(
           [node.id],
           synthesisNodeId,
@@ -550,54 +556,98 @@ export class WikiWorkflowEngine {
     }
   }
 
-  private queuePlan(kind: "plan" | "replan", dependsOn: string[]): WikiNode {
-    const run = this.requireRun();
-    run.round += 1;
-    const trigger = kind === "replan"
-      ? dependsOn.map((id) => this.nodeById(id)?.result).filter((value) => value !== undefined)
-      : undefined;
-    return this.queueNode(kind, kind === "plan" ? `Plan Wiki (round ${run.round})` : `Replan Wiki (round ${run.round})`, dependsOn, {
-      inspection: run.inspection,
-      focus: run.focus,
-      round: run.round,
-      trigger,
-    });
+  private queueInitialSourceSurveys(inspectNodeId: string, inspection: WikiInspection): WikiNode[] {
+    const sourcePaths = uniqueStrings(inspection.sourcePaths);
+    if (sourcePaths.length === 0) throw new Error("Inspect returned no declared source paths");
+    const scopes: WikiResearchScope[] = [
+      ...sourcePaths.map((sourcePath) => ({
+        id: `source-survey:${sourcePath}`,
+        sourcePaths: [sourcePath],
+        task: `Survey ${sourcePath}: identify responsibilities, entry points, verified flows, state/data evidence, and diagram evidence within this source only.`,
+      })),
+      {
+        id: "workspace-map",
+        sourcePaths,
+        task: "Map cross-source boundaries, dependencies, call/data flows, shared terminology, and unresolved coverage gaps. Do not duplicate per-source implementation summaries.",
+      },
+    ];
+    return this.queueResearch(inspectNodeId, scopes, 0, "source-survey", "Source Survey");
   }
 
-  private queueResearch(planNodeId: string, scopes: { id: string; task: string }[], batch: number): WikiNode[] {
-    const phase = { id: `research:${planNodeId}:${batch}`, title: batch === 0 ? "Source Research" : "Supplemental Research" };
+  private queueSupplementalResearch(synthesisNodeId: string, scopes: WikiResearchScope[], parent: SynthesisNodeInput): WikiNode[] {
+    return this.queueResearch(
+      synthesisNodeId,
+      scopes,
+      1,
+      "targeted-research",
+      "Targeted Research",
+      parent.mode === "structural" ? "structural" : "supplemental",
+      parent.priorSynthesisNodeId,
+      parent.structuralRoundId,
+      parent.trigger,
+    );
+  }
+
+  private queueResearch(
+    dependsOn: string,
+    scopes: WikiResearchScope[],
+    batch: number,
+    phaseId: "source-survey" | "targeted-research",
+    phaseTitle: "Source Survey" | "Targeted Research",
+    continuationMode: ResearchNodeInput["continuationMode"] = "initial",
+    priorSynthesisNodeId?: string,
+    structuralRoundId?: string,
+    trigger?: unknown,
+  ): WikiNode[] {
     return scopes.map((scope) => this.queueNode(
       "research",
-      `Research: ${scope.id}`,
-      [planNodeId],
-      { planNodeId, batch, scope },
-      phase,
+      batch === 0 ? `Survey: ${scope.id}` : `Research: ${scope.id}`,
+      [dependsOn],
+      { batch, scope, continuationMode, priorSynthesisNodeId, structuralRoundId, trigger },
+      { id: phaseId, title: phaseTitle },
     ));
   }
 
-  private queueSynthesis(planNodeId: string, researchIds: string[], supplementalBatch: number): WikiNode | undefined {
+  private queueSynthesis(input: QueueSynthesisInput): WikiNode | undefined {
     const run = this.requireRun();
     const existing = run.nodes.find((node) => node.kind === "synthesis"
-      && valueIs(node.input, "planNodeId", planNodeId)
-      && valueIs(node.input, "supplementalBatch", supplementalBatch)
+      && sameStringSet(synthesisInputFor(node).researchIds, input.researchIds)
+      && synthesisInputFor(node).mode === input.mode
       && !["invalidated", "cancelled", "failed", "blocked"].includes(node.status));
     if (existing) return undefined;
+    run.round += 1;
+    const structural = input.mode === "structural";
     return this.queueNode(
       "synthesis",
-      supplementalBatch === 0 ? "Synthesize Wiki Spec" : "Re-synthesize Wiki Spec",
-      [planNodeId, ...researchIds],
-      { planNodeId, researchIds, supplementalBatch },
-      { id: `synthesis:${planNodeId}:${supplementalBatch}`, title: "Synthesis" },
+      structural ? "Re-synthesize Wiki Structure" : input.supplementalBatch === 0 ? "Synthesize Wiki Spec" : "Re-synthesize Wiki Spec",
+      input.dependsOn,
+      { ...input, round: run.round, inspection: run.inspection, focus: run.focus },
+      structural ? { id: "structural-resynthesis", title: "Structural Re-synthesis" } : { id: "synthesis", title: "Synthesis" },
     );
+  }
+
+  private queueStructuralSynthesis(reviewNodeId: string, synthesisNodeId: string, review: unknown): WikiNode | undefined {
+    const researchIds = this.requireRun().nodes
+      .filter((node) => node.kind === "research" && node.status === "succeeded" && isResearchReceipt(node.result))
+      .map((node) => node.id);
+    return this.queueSynthesis({
+      dependsOn: [reviewNodeId],
+      researchIds,
+      supplementalBatch: this.hasSupplementalResearch() ? 1 : 0,
+      mode: "structural",
+      priorSynthesisNodeId: synthesisNodeId,
+      structuralRoundId: reviewNodeId,
+      trigger: { validation: recordValue(this.nodeById(reviewNodeId)?.input, "validation"), review },
+    });
   }
 
   private queueDomainWriters(synthesisNodeId: string, spec: WikiSpec): WikiNode[] {
     const run = this.requireRun();
     const synthesisNode = run.nodes.find((node) => node.id === synthesisNodeId);
     if (!synthesisNode) throw new Error(`Unknown synthesis node: ${synthesisNodeId}`);
-    const planNodeId = synthesisInputFor(synthesisNode).planNodeId;
-    const researchNodes = run.nodes.filter((node) => node.kind === "research" && node.status === "succeeded" && researchPlanId(node) === planNodeId);
-    const phase = { id: `write:${synthesisNodeId}`, title: "Domain Writing" };
+    const researchIdsForSynthesis = new Set(synthesisInputFor(synthesisNode).researchIds);
+    const researchNodes = run.nodes.filter((node) => node.kind === "research" && node.status === "succeeded" && researchIdsForSynthesis.has(node.id));
+    const phase = { id: "domain-writing", title: "Domain Writing" };
     return spec.domains.map((domain) => {
       const researchIds = domain.researchScopeIds.map((scopeId) => {
         const research = researchNodes.find((candidate) => isResearchReceipt(candidate.result) && candidate.result.scopeId === scopeId);
@@ -621,7 +671,7 @@ export class WikiWorkflowEngine {
       && sameStringSet(recordStringArray(node.input, "sourceNodeIds"), sourceNodeIds)
       && !["invalidated", "cancelled", "failed", "blocked"].includes(node.status));
     if (existing) return undefined;
-    return this.queueNode("validate", "Validate Wiki", sourceNodeIds, { sourceNodeIds, synthesisNodeId });
+    return this.queueNode("validate", "Validate Wiki", sourceNodeIds, { sourceNodeIds, synthesisNodeId }, { id: "validation", title: "Validation" });
   }
 
   private queueDomainRepairs(
@@ -633,17 +683,15 @@ export class WikiWorkflowEngine {
     const spec = specForSynthesis(this.requireRun(), synthesisNodeId);
     const synthesisNode = this.nodeById(synthesisNodeId);
     if (!synthesisNode) throw new Error(`Unknown synthesis node: ${synthesisNodeId}`);
-    const planNodeId = synthesisInputFor(synthesisNode).planNodeId;
     const repairGroupId = dependsOn[0];
     if (!repairGroupId) throw new Error("Domain repair requires a triggering node");
-    const phase = { id: `repair:${repairGroupId}`, title: "Domain Repair" };
+    const phase = { id: "domain-repair", title: "Domain Repair" };
     return [...new Set(domainIds)].map((domainId) => {
       const domain = spec.domains.find((candidate) => candidate.id === domainId);
       if (!domain) throw new Error(`Repair targets unknown Wiki domain: ${domainId}`);
       const researchIds = domain.researchScopeIds.map((scopeId) => {
         const research = this.requireRun().nodes.find((candidate) => candidate.kind === "research"
           && candidate.status === "succeeded"
-          && researchPlanId(candidate) === planNodeId
           && isResearchReceipt(candidate.result)
           && candidate.result.scopeId === scopeId);
         if (!research) throw new Error(`No completed research receipt exists for repair domain ${domain.id} scope ${scopeId}`);
@@ -666,18 +714,31 @@ export class WikiWorkflowEngine {
     });
   }
 
-  private ensureNewResearchScopes(planNodeId: string, scopes: { id: string }[]): void {
+  private hasSupplementalResearch(): boolean {
+    return this.requireRun().nodes.some((node) => node.kind === "research" && researchInputFor(node).batch > 0);
+  }
+
+  private ensureNewResearchScopes(scopes: WikiResearchScope[]): void {
     const existingIds = new Set(this.requireRun().nodes
-      .filter((node) => node.kind === "research" && researchPlanId(node) === planNodeId)
+      .filter((node) => node.kind === "research")
       .map((node) => researchInputFor(node).scope.id));
     for (const scope of scopes) {
       if (existingIds.has(scope.id)) throw new Error(`Supplemental research scope repeats existing scope: ${scope.id}`);
     }
   }
 
-  private ensureSynthesisSpecReceipts(planNodeId: string, spec: WikiSpec): void {
+  private ensureResearchSourcePaths(scopes: WikiResearchScope[]): void {
+    const allowed = new Set(this.requireRun().inspection?.sourcePaths ?? []);
+    for (const scope of scopes) {
+      for (const sourcePath of scope.sourcePaths) {
+        if (!allowed.has(sourcePath)) throw new Error(`Supplemental research scope ${scope.id} targets undeclared source: ${sourcePath}`);
+      }
+    }
+  }
+
+  private ensureSynthesisSpecReceipts(spec: WikiSpec): void {
     const receiptIds = new Set(this.requireRun().nodes
-      .filter((node) => node.kind === "research" && researchPlanId(node) === planNodeId && isResearchReceipt(node.result))
+      .filter((node) => node.kind === "research" && isResearchReceipt(node.result))
       .map((node) => (node.result as WikiResearchReceipt).scopeId));
     for (const domain of spec.domains) {
       for (const scopeId of domain.researchScopeIds) {
@@ -870,7 +931,7 @@ export function createWikiWorkflowEngine(options: WikiWorkflowEngineOptions = {}
 }
 
 function nodesInPhase(run: WikiRunSnapshot, phaseId: string): WikiNode[] {
-  const explicit = run.nodes.filter((node) => node.phaseId === phaseId);
+  const explicit = latestPhaseIteration(run.nodes, phaseId);
   if (explicit.length) return explicit;
   const legacyNodeId = phaseId.startsWith("phase:") ? phaseId.slice("phase:".length) : "";
   const start = run.nodes.findIndex((node) => node.id === legacyNodeId);
@@ -919,14 +980,12 @@ function phaseTitle(node: WikiNode | undefined): string {
 function phaseTitleFor(kind: WikiNodeKind): string {
   switch (kind) {
     case "inspect": return "Inspect";
-    case "plan": return "Plan";
     case "research": return "Research";
     case "synthesis": return "Synthesis";
     case "write": return "Write";
     case "validate": return "Validate";
     case "review": return "Review";
     case "repair": return "Repair";
-    case "replan": return "Replan";
   }
 }
 
@@ -934,8 +993,7 @@ function isTerminalRun(snapshot: WikiRunSnapshot): boolean {
   return snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "blocked" || snapshot.status === "cancelled";
 }
 
-function roleFor(kind: WikiNodeKind): "planner" | "researcher" | "synthesizer" | "writer" | "reviewer" {
-  if (kind === "plan" || kind === "replan") return "planner";
+function roleFor(kind: WikiNodeKind): "researcher" | "synthesizer" | "writer" | "reviewer" {
   if (kind === "research") return "researcher";
   if (kind === "synthesis") return "synthesizer";
   if (kind === "write" || kind === "repair") return "writer";
@@ -949,10 +1007,6 @@ async function promptFor(node: WikiNode, run: WikiRunSnapshot): Promise<string> 
     node.kind === "write" || node.kind === "repair" ? { pageTypes: domainPageTypesFor(node, run) } : undefined,
   );
   switch (node.kind) {
-    case "plan":
-      return `${guidance}\n\n## Runtime Context\nCurrent Git inspection:\n\`\`\`json\n${prettyJson(run.inspection)}\n\`\`\`\nFocus: ${run.focus ?? "none"}\nReplan trigger:\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
-    case "replan":
-      return `${guidance}\n\n## Runtime Context\nCurrent Git inspection:\n\`\`\`json\n${prettyJson(run.inspection)}\n\`\`\`\nFocus: ${run.focus ?? "none"}\nReplan trigger:\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\`\n\n${approvedPlanContext(node, run, "Previous Approved Plan")}`;
     case "research":
       return `${guidance}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     case "synthesis":
@@ -1007,24 +1061,50 @@ function domainPageTypesFor(node: WikiNode, run: WikiRunSnapshot): Array<"overvi
 
 function synthesisContext(node: WikiNode, run: WikiRunSnapshot): string {
   const input = synthesisInputFor(node);
-  const plan = run.nodes.find((candidate) => candidate.id === input.planNodeId)?.result;
-  const receipts = input.researchIds
-    .map((id) => run.nodes.find((candidate) => candidate.id === id)?.result)
-    .filter((receipt): receipt is WikiResearchReceipt => isResearchReceipt(receipt));
-  return [
-    "## Draft Plan",
+  const receipts = synthesisReceipts(node, run);
+  const sections = [
+    "## Workspace Context",
     "```json",
-    prettyJson(plan),
+    prettyJson({ inspection: input.inspection ?? run.inspection, focus: input.focus ?? run.focus, sourcePaths: run.inspection?.sourcePaths ?? [] }),
     "```",
+  ];
+  if (input.mode === "structural") {
+    if (!input.priorSynthesisNodeId) throw new Error("Structural synthesis has no prior finalized WikiSpec");
+    sections.push(
+      "## Prior Final WikiSpec",
+      "```json",
+      prettyJson(specForSynthesis(run, input.priorSynthesisNodeId)),
+      "```",
+      "## Structural Validation And Review Trigger",
+      "```json",
+      prettyJson(input.trigger),
+      "```",
+    );
+  }
+  sections.push(
     "## Research Receipts",
     "```json",
     prettyJson(receipts),
     "```",
     "## Synthesis Round",
     "```json",
-    prettyJson({ supplementalBatch: input.supplementalBatch, maxSupplementalBatches: MAX_SUPPLEMENTAL_RESEARCH_BATCHES }),
+    prettyJson({ mode: input.mode, supplementalBatch: input.supplementalBatch, maxSupplementalBatches: MAX_SUPPLEMENTAL_RESEARCH_BATCHES }),
     "```",
-  ].join("\n");
+  );
+  return sections.join("\n");
+}
+
+/** Keep the coordinator's aggregate evidence context within a fixed attention budget. */
+function synthesisReceipts(node: WikiNode, run: WikiRunSnapshot): WikiResearchReceipt[] {
+  const input = synthesisInputFor(node);
+  const receipts = input.researchIds
+    .map((id) => run.nodes.find((candidate) => candidate.id === id)?.result)
+    .filter((receipt): receipt is WikiResearchReceipt => isResearchReceipt(receipt));
+  const payloadChars = prettyJson(receipts).length;
+  if (payloadChars > MAX_SYNTHESIS_RECEIPT_CHARS) {
+    throw new Error(`Synthesis receipt payload exceeds the ${MAX_SYNTHESIS_RECEIPT_CHARS}-character budget (${payloadChars}); narrow source scope or add a compact evidence handoff`);
+  }
+  return receipts;
 }
 
 function reviewContext(node: WikiNode, run: WikiRunSnapshot): string {
@@ -1043,34 +1123,11 @@ function reviewContext(node: WikiNode, run: WikiRunSnapshot): string {
   ].join("\n");
 }
 
-function approvedPlanContext(node: WikiNode, run: WikiRunSnapshot, heading: string): string {
-  const plan = upstreamPlan(node, run)?.result;
-  return `## ${heading}\n\`\`\`json\n${prettyJson(plan)}\n\`\`\``;
-}
-
-function upstreamPlan(node: WikiNode, run: WikiRunSnapshot): WikiNode | undefined {
-  const queue = [...node.dependsOn];
-  const visited = new Set<string>();
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    const candidate = run.nodes.find((item) => item.id === id);
-    if (!candidate) continue;
-    if (candidate.kind === "plan" || candidate.kind === "replan") return candidate;
-    queue.push(...candidate.dependsOn);
-  }
-  return undefined;
-}
-
 /** Validate control submissions and local service results before publishing node state. */
 function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
   switch (kind) {
     case "inspect":
       return parseInspection(value);
-    case "plan":
-    case "replan":
-      return parsePlanSubmission(value);
     case "synthesis":
       return parseSynthesisSubmission(value);
     case "validate":
@@ -1085,10 +1142,12 @@ function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
 }
 
 function parseInspection(value: unknown): WikiInspection {
-  if (!isRecord(value) || typeof value.root !== "string" || typeof value.sourceFingerprint !== "string" || (value.mode !== "generate" && value.mode !== "refresh")) {
+  if (!isRecord(value) || typeof value.root !== "string" || typeof value.sourceFingerprint !== "string"
+    || !isStringArray(value.sourcePaths) || value.sourcePaths.length === 0
+    || (value.mode !== "generate" && value.mode !== "refresh")) {
     throw new Error("Inspect returned an invalid Wiki inspection");
   }
-  return value as WikiInspection;
+  return { ...value, sourcePaths: uniqueStrings(value.sourcePaths) } as WikiInspection;
 }
 
 function parseValidation(value: unknown): WikiValidation {
@@ -1110,15 +1169,34 @@ function createResearchReceipt(node: WikiNode, run: WikiRunSnapshot, value: unkn
 }
 
 interface ResearchNodeInput {
-  planNodeId: string;
   batch: number;
-  scope: { id: string; task: string };
+  scope: WikiResearchScope;
+  continuationMode: "initial" | "supplemental" | "structural";
+  priorSynthesisNodeId?: string;
+  structuralRoundId?: string;
+  trigger?: unknown;
 }
 
 interface SynthesisNodeInput {
-  planNodeId: string;
   researchIds: string[];
   supplementalBatch: number;
+  mode: "initial" | "supplemental" | "structural";
+  round: number;
+  inspection?: WikiInspection;
+  focus?: string;
+  priorSynthesisNodeId?: string;
+  structuralRoundId?: string;
+  trigger?: unknown;
+}
+
+interface QueueSynthesisInput {
+  dependsOn: string[];
+  researchIds: string[];
+  supplementalBatch: number;
+  mode: SynthesisNodeInput["mode"];
+  priorSynthesisNodeId?: string;
+  structuralRoundId?: string;
+  trigger?: unknown;
 }
 
 interface DomainPacketInput {
@@ -1134,30 +1212,27 @@ interface DomainRepairInput extends DomainPacketInput {
 
 function researchInputFor(node: WikiNode): ResearchNodeInput {
   const input = node.input;
-  if (!isRecord(input) || typeof input.planNodeId !== "string" || !Number.isInteger(input.batch) || !isRecord(input.scope)
-    || typeof input.scope.id !== "string" || !input.scope.id.trim() || typeof input.scope.task !== "string" || !input.scope.task.trim()) {
+  if (!isRecord(input) || !Number.isInteger(input.batch) || input.batch < 0
+    || (input.continuationMode !== "initial" && input.continuationMode !== "supplemental" && input.continuationMode !== "structural")
+    || !isRecord(input.scope)
+    || typeof input.scope.id !== "string" || !input.scope.id.trim() || typeof input.scope.task !== "string" || !input.scope.task.trim()
+    || !Array.isArray(input.scope.sourcePaths) || input.scope.sourcePaths.length === 0 || !input.scope.sourcePaths.every((value) => typeof value === "string" && value.trim())) {
     throw new Error("Research node has an invalid input");
   }
   return {
-    planNodeId: input.planNodeId,
     batch: input.batch,
-    scope: { id: input.scope.id, task: input.scope.task },
+    scope: { id: input.scope.id, sourcePaths: uniqueStrings(input.scope.sourcePaths), task: input.scope.task },
+    continuationMode: input.continuationMode,
+    priorSynthesisNodeId: typeof input.priorSynthesisNodeId === "string" ? input.priorSynthesisNodeId : undefined,
+    structuralRoundId: typeof input.structuralRoundId === "string" ? input.structuralRoundId : undefined,
+    trigger: input.trigger,
   };
-}
-
-function researchPlanId(node: WikiNode): string | undefined {
-  if (node.kind !== "research") return undefined;
-  try {
-    return researchInputFor(node).planNodeId;
-  } catch {
-    return undefined;
-  }
 }
 
 function sameResearchBatch(node: WikiNode, expected: ResearchNodeInput): boolean {
   try {
     const input = researchInputFor(node);
-    return input.planNodeId === expected.planNodeId && input.batch === expected.batch;
+    return input.batch === expected.batch;
   } catch {
     return false;
   }
@@ -1165,11 +1240,22 @@ function sameResearchBatch(node: WikiNode, expected: ResearchNodeInput): boolean
 
 function synthesisInputFor(node: WikiNode): SynthesisNodeInput {
   const input = node.input;
-  if (!isRecord(input) || typeof input.planNodeId !== "string" || !Number.isInteger(input.supplementalBatch)
+  if (!isRecord(input) || !Number.isInteger(input.supplementalBatch) || input.supplementalBatch < 0 || !Number.isInteger(input.round)
+    || (input.mode !== "initial" && input.mode !== "supplemental" && input.mode !== "structural")
     || !Array.isArray(input.researchIds) || !input.researchIds.every((id) => typeof id === "string")) {
     throw new Error("Synthesis node has an invalid input");
   }
-  return { planNodeId: input.planNodeId, researchIds: [...input.researchIds], supplementalBatch: input.supplementalBatch };
+  return {
+    researchIds: [...input.researchIds],
+    supplementalBatch: input.supplementalBatch,
+    mode: input.mode,
+    round: input.round,
+    inspection: isRecord(input.inspection) ? input.inspection as WikiInspection : undefined,
+    focus: typeof input.focus === "string" ? input.focus : undefined,
+    priorSynthesisNodeId: typeof input.priorSynthesisNodeId === "string" ? input.priorSynthesisNodeId : undefined,
+    structuralRoundId: typeof input.structuralRoundId === "string" ? input.structuralRoundId : undefined,
+    trigger: input.trigger,
+  };
 }
 
 function domainPacketInputFor(node: WikiNode): DomainPacketInput {
@@ -1203,6 +1289,11 @@ function domainRepairInputFor(node: WikiNode): DomainRepairInput {
 function writePathsFor(node: WikiNode): string[] | undefined {
   if (node.kind !== "write" && node.kind !== "repair") return undefined;
   return domainPacketInputFor(node).writePaths;
+}
+
+/** Surveys and targeted researchers never receive a workspace-level read root. */
+function readRootsFor(node: WikiNode): string[] | undefined {
+  return node.kind === "research" ? researchInputFor(node).scope.sourcePaths : undefined;
 }
 
 function workspaceWikiPath(pagePath: string): string {
@@ -1272,6 +1363,10 @@ function recordStringArray(value: unknown, key: string): string[] {
     : [];
 }
 
+function recordValue(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
+}
+
 function sameStringSet(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   return [...left].sort().every((item, index) => item === [...right].sort()[index]);
@@ -1289,10 +1384,15 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
 function inspectionFingerprint(inspection: WikiInspection): string {
   return stableStringify({
     changed: inspection.changed,
     changedPaths: inspection.changedPaths,
+    sourcePaths: inspection.sourcePaths,
     sourceFingerprint: inspection.sourceFingerprint,
   });
 }
@@ -1386,7 +1486,7 @@ function isRecord(value: unknown): value is Record<string, any> {
 }
 
 function isSnapshot(value: unknown): value is WikiRunSnapshot {
-  return isRecord(value) && value.version === 2 && typeof value.id === "string" && Array.isArray(value.nodes);
+  return isRecord(value) && value.version === 3 && typeof value.id === "string" && Array.isArray(value.nodes);
 }
 
 function clone<T>(value: T): T {

@@ -7,7 +7,7 @@ import { createWikiRunHistoryStore, wikiHistoryProjectKey } from "../dist/run-hi
 
 function snapshot(id, status, updatedAt) {
   return {
-    version: 2,
+    version: 3,
     id,
     cwd: "/workspace",
     requestedMode: "generate",
@@ -16,9 +16,9 @@ function snapshot(id, status, updatedAt) {
     status,
     round: 0,
     nodes: [{
-      id: "plan",
-      kind: "plan",
-      label: "Plan Wiki changes",
+      id: "inspect",
+      kind: "inspect",
+      label: "Inspect Git scope",
       status: status === "failed" ? "failed" : "succeeded",
       dependsOn: [],
       attempt: 1,
@@ -48,7 +48,7 @@ test("project-scoped run history persists complete snapshots and supports deleti
 
   const loaded = await store.load("first");
   loaded.nodes[0].label = "Changed in memory";
-  assert.equal((await store.load("first")).nodes[0].label, "Plan Wiki changes");
+  assert.equal((await store.load("first")).nodes[0].label, "Inspect Git scope");
   assert.equal(await store.delete("first"), true);
   assert.equal(await store.load("first"), undefined);
   assert.match(store.getRunsDir(), /runs$/);

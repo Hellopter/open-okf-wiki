@@ -68,8 +68,6 @@ export type {
   WikiDiagramKind,
   WikiDiagramRequirement,
   WikiDomain,
-  WikiDraftDomain,
-  WikiDraftPlanResult,
   WikiNode,
   WikiNodeActivity,
   WikiNodeActivityState,

@@ -31,13 +31,15 @@ runtime events and permits a settled Agent retry or a phase retry without
 rerunning valid upstream work. Retrying historical terminal history forks a new
 run so the selected record stays immutable.
 
-The bounded workflow is `Inspect -> Draft Plan -> Source Research -> Synthesis`.
+The bounded workflow is `Inspect -> Source Survey -> Synthesis`. Source Survey
+starts one isolated agent for each declared source plus one workspace mapper for
+cross-source boundaries; at most four research agents run at once.
 Synthesis may request one supplemental research batch, then emits the final
 domain-scoped WikiSpec. One writer runs per domain in parallel, followed by
 validation and one global review. Evidence, link, format, depth, and diagram
 defects return only to their owning domain writer; topology or coverage defects
-can trigger one structural replan before the run blocks. Planner, synthesizer,
-and reviewer nodes submit control data through dedicated typed tools rather
+can trigger one structural re-synthesis before the run blocks. Synthesizer and
+reviewer nodes submit control data through dedicated typed tools rather
 than asking the model to emit JSON in final text.
 
 Research nodes produce Markdown receipts. A writer receives only its

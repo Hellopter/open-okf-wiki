@@ -174,7 +174,7 @@ async function enforceRetention(runsDir: string, maximum: number): Promise<void>
 function isSnapshot(value: unknown): value is WikiRunSnapshot {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
-  return candidate.version === 2
+  return candidate.version === 3
     && typeof candidate.id === "string"
     && typeof candidate.cwd === "string"
     && (candidate.requestedMode === "generate" || candidate.requestedMode === "refresh")

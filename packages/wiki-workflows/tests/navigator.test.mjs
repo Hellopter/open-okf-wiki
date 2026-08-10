@@ -33,7 +33,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 2,
+  version: 3,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -45,26 +45,15 @@ const run = {
   events: [],
   inspection: { head: "abcdef0123456789", changedPaths: ["src/engine.ts", "src/ui.ts"] },
   nodes: [
-    { id: "inspect", kind: "inspect", label: "Inspect Git scope", status: "succeeded", dependsOn: [], attempt: 1, inputFingerprint: "head:abc", input: {}, metrics: {}, activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" } },
-    {
-      id: "plan",
-      kind: "plan",
-      label: "Plan Wiki changes",
-      status: "succeeded",
-      dependsOn: ["inspect"],
-      attempt: 1,
-      inputFingerprint: "head:abc",
-      input: {},
-      result: { pages: ["wiki/architecture.md"] },
-      metrics: {},
-      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
-    },
+    { id: "inspect", kind: "inspect", label: "Inspect Git scope", phaseId: "inspect", phaseTitle: "Inspect", status: "succeeded", dependsOn: [], attempt: 1, inputFingerprint: "head:abc", input: {}, metrics: {}, activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" } },
     {
       id: "research-a",
       kind: "research",
       label: "Research workflow engine",
+      phaseId: "source-survey",
+      phaseTitle: "Source Survey",
       status: "running",
-      dependsOn: ["plan"],
+      dependsOn: ["inspect"],
       attempt: 2,
       input: {},
       history: [
@@ -78,15 +67,14 @@ const run = {
       output: "streamed evidence from the active agent",
       startedAt: "2026-08-08T00:00:00.000Z",
     },
-    { id: "research-b", kind: "research", label: "Research source citations", status: "queued", dependsOn: ["plan"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
-    { id: "write", kind: "write", label: "Write Wiki pages", status: "queued", dependsOn: ["research-a", "research-b"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
+    { id: "research-b", kind: "research", label: "Research source citations", phaseId: "source-survey", phaseTitle: "Source Survey", status: "queued", dependsOn: ["inspect"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
+    { id: "write", kind: "write", label: "Write Wiki pages", phaseId: "domain-writing", phaseTitle: "Domain Writing", status: "queued", dependsOn: ["research-a", "research-b"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" } },
   ],
 };
 
 function drillToResearchDetail(value = run) {
   let state = createWikiNavigatorState(value, [summary(value)]);
   ({ state } = reduceWikiNavigator(state, "enter", value, [summary(value)], value.id));
-  ({ state } = reduceWikiNavigator(state, "down", value));
   ({ state } = reduceWikiNavigator(state, "down", value));
   ({ state } = reduceWikiNavigator(state, "enter", value));
   ({ state } = reduceWikiNavigator(state, "enter", value));
@@ -97,16 +85,46 @@ test("keeps a sidebar only where the terminal has room", () => {
   assert.equal(layoutForWidth(68), 2);
   assert.equal(layoutForWidth(67), 1);
   assert.deepEqual(phaseRows(run).map((phase) => [phase.title, phase.nodeIds.length]), [
-    ["Inspect", 1], ["Plan", 1], ["Research", 2], ["Write", 1],
+    ["Inspect", 1], ["Source Survey", 2], ["Synthesis", 0], ["Targeted Research", 0], ["Domain Writing", 1],
+    ["Validation", 0], ["Global Review", 0], ["Domain Repair", 0], ["Structural Re-synthesis", 0],
   ]);
+});
+
+test("shows the complete workflow before dynamic stages are scheduled", () => {
+  const initial = { ...run, nodes: [run.nodes[0]] };
+  let state = createWikiNavigatorState(initial, [summary(initial)]);
+  ({ state } = reduceWikiNavigator(state, "enter", initial, [summary(initial)], initial.id));
+  const allStages = plain(renderWikiNavigator(state, initial, 100, undefined, 20).join("\n"));
+  assert.match(allStages, /Inspect 1\/1/);
+  assert.match(allStages, /Source Survey not started/);
+  assert.match(allStages, /Targeted Research conditional/);
+  assert.match(allStages, /Structural Re-synthesis conditional/);
+
+  ({ state } = reduceWikiNavigator(state, "down", initial));
+  ({ state } = reduceWikiNavigator(state, "down", initial));
+  ({ state } = reduceWikiNavigator(state, "down", initial));
+  assert.equal(state.selectedPhaseId, "targeted-research");
+  const selected = plain(renderWikiNavigator(state, initial, 100, undefined, 20).join("\n"));
+  assert.match(selected, /Targeted Research \| conditional/);
+  assert.match(selected, /Runs only when synthesis identifies an evidence gap/);
+  assert.match(selected, /No agents are scheduled/);
+  assert.doesNotMatch(selected, /R retry phase/);
+  assert.equal(reduceWikiNavigator(state, "enter", initial).state.view, "phases");
+  assert.deepEqual(reduceWikiNavigator(state, "R", initial).action, {
+    type: "notify",
+    message: "Targeted Research has not been scheduled yet",
+    level: "info",
+  });
 });
 
 test("renders synthesis as an independent control-submission stage", () => {
   const synthesized = structuredClone(run);
-  synthesized.nodes.splice(4, 0, {
+  synthesized.nodes.splice(3, 0, {
     id: "synthesis",
     kind: "synthesis",
     label: "Synthesize Wiki specification",
+    phaseId: "synthesis",
+    phaseTitle: "Synthesis",
     status: "succeeded",
     dependsOn: ["research-a", "research-b"],
     attempt: 1,
@@ -116,15 +134,15 @@ test("renders synthesis as an independent control-submission stage", () => {
     metrics: {},
     activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
   });
-  synthesized.nodes.at(-1).dependsOn = ["synthesis"];
+  synthesized.nodes.find((node) => node.id === "write").dependsOn = ["synthesis"];
 
   assert.deepEqual(phaseRows(synthesized).map((phase) => [phase.title, phase.nodeIds.length]), [
-    ["Inspect", 1], ["Plan", 1], ["Research", 2], ["Synthesis", 1], ["Write", 1],
+    ["Inspect", 1], ["Source Survey", 2], ["Synthesis", 1], ["Targeted Research", 0], ["Domain Writing", 1],
+    ["Validation", 0], ["Global Review", 0], ["Domain Repair", 0], ["Structural Re-synthesis", 0],
   ]);
 
   let state = createWikiNavigatorState(synthesized, [summary(synthesized)]);
   ({ state } = reduceWikiNavigator(state, "enter", synthesized, [summary(synthesized)], synthesized.id));
-  ({ state } = reduceWikiNavigator(state, "down", synthesized));
   ({ state } = reduceWikiNavigator(state, "down", synthesized));
   ({ state } = reduceWikiNavigator(state, "down", synthesized));
   ({ state } = reduceWikiNavigator(state, "enter", synthesized));
@@ -133,6 +151,60 @@ test("renders synthesis as an independent control-submission stage", () => {
   assert.match(detail, /\| Synthesis/);
   assert.match(detail, /Control submission/);
   assert.match(detail, /finalize/);
+});
+
+test("phase retry confirmation targets only the latest synthesis iteration", () => {
+  const repeated = structuredClone(run);
+  for (const node of repeated.nodes) node.status = "succeeded";
+  repeated.nodes.push(
+    {
+      id: "synthesis-expand",
+      kind: "synthesis",
+      label: "Synthesize Wiki specification",
+      phaseId: "synthesis",
+      phaseTitle: "Synthesis",
+      status: "succeeded",
+      dependsOn: ["research-a", "research-b"],
+      attempt: 1,
+      inputFingerprint: "",
+      input: { round: 1 },
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+    },
+    {
+      id: "research-targeted",
+      kind: "research",
+      label: "Research persistence",
+      phaseId: "targeted-research",
+      phaseTitle: "Targeted Research",
+      status: "succeeded",
+      dependsOn: ["synthesis-expand"],
+      attempt: 1,
+      inputFingerprint: "",
+      input: { batch: 1 },
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+    },
+    {
+      id: "synthesis-final",
+      kind: "synthesis",
+      label: "Re-synthesize Wiki specification",
+      phaseId: "synthesis",
+      phaseTitle: "Synthesis",
+      status: "succeeded",
+      dependsOn: ["research-targeted"],
+      attempt: 1,
+      inputFingerprint: "",
+      input: { round: 2 },
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+    },
+  );
+  repeated.nodes.find((node) => node.id === "write").dependsOn = ["synthesis-final"];
+
+  const impact = phaseRetryImpact(repeated, "synthesis");
+  assert.deepEqual(impact?.targetIds, ["synthesis-final"]);
+  assert.deepEqual(impact?.invalidatedDownstream, ["write"]);
 });
 
 test("root view lists project history without exposing manual run IDs", () => {
@@ -167,15 +239,14 @@ test("drills from phase selection to a selected agent transcript", () => {
   const phaseScreen = plain(renderWikiNavigator(state, run, 100, undefined, 12).join("\n"));
   assert.match(phaseScreen, /Phases/);
   assert.match(phaseScreen, /Select a phase/);
-  assert.match(phaseScreen, /Research 0\/2/);
+  assert.match(phaseScreen, /Source Survey 0\/2/);
 
-  ({ state } = reduceWikiNavigator(state, "down", run));
   ({ state } = reduceWikiNavigator(state, "down", run));
   assert.equal(state.selectedNodeId, "research-a");
   ({ state } = reduceWikiNavigator(state, "enter", run));
   assert.equal(state.view, "agents");
   const agents = plain(renderWikiNavigator(state, run, 100, undefined, 12).join("\n"));
-  assert.match(agents, /Research \| 2 agents/);
+  assert.match(agents, /Source Survey \| 2 agents/);
   assert.match(agents, /Research source citations/);
 
   ({ state } = reduceWikiNavigator(state, "enter", run));
@@ -205,15 +276,15 @@ test("drills from phase selection to a selected agent transcript", () => {
 
 test("protocol failures identify the required control submission in the detail view", () => {
   const failed = structuredClone(run);
-  failed.nodes[2].status = "failed";
-  failed.nodes[2].error = {
-    message: "Agent did not call wiki_submit_plan before completing",
+  failed.nodes[1].status = "failed";
+  failed.nodes[1].error = {
+    message: "Agent did not call wiki_submit_synthesis before completing",
     code: "missing_submission",
-    requiredSubmissionTool: "wiki_submit_plan",
+    requiredSubmissionTool: "wiki_submit_synthesis",
   };
   const detail = plain(renderWikiNavigator(drillToResearchDetail(failed), failed, 100, undefined, 40).join("\n"));
   assert.match(detail, /Failure/);
-  assert.match(detail, /Required submission: wiki_submit_plan/);
+  assert.match(detail, /Required submission: wiki_submit_synthesis/);
 });
 
 test("views render into a fixed-height viewport", () => {
@@ -261,8 +332,10 @@ test("g/G and scrolling remain local to the current view", () => {
   let state = createWikiNavigatorState(run, [summary(run)]);
   ({ state } = reduceWikiNavigator(state, "enter", run, [summary(run)], run.id));
   ({ state } = reduceWikiNavigator(state, "G", run));
-  assert.equal(state.selectedNodeId, "write");
+  assert.equal(state.selectedPhaseId, "structural-resynthesis");
+  assert.equal(state.selectedNodeId, undefined);
   ({ state } = reduceWikiNavigator(state, "g", run));
+  assert.equal(state.selectedPhaseId, "inspect");
   assert.equal(state.selectedNodeId, "inspect");
 
   state = drillToResearchDetail();
@@ -289,20 +362,22 @@ test("escape follows the phase, agent, detail hierarchy", () => {
 });
 
 test("retry confirmation preserves upstream and invalidates only downstream", () => {
-  const impact = retryImpact(run, "plan");
+  const retryable = structuredClone(run);
+  retryable.nodes.find((node) => node.id === "research-a").status = "succeeded";
+  const impact = retryImpact(retryable, "research-a");
   assert.deepEqual(impact?.preservedUpstream, ["inspect"]);
-  assert.deepEqual(impact?.invalidatedDownstream, ["research-a", "research-b", "write"]);
+  assert.deepEqual(impact?.invalidatedDownstream, ["write"]);
   assert.equal(impact?.writesWiki, true);
 
-  let state = createWikiNavigatorState(run, [summary(run)]);
-  ({ state } = reduceWikiNavigator(state, "enter", run, [summary(run)], run.id));
-  ({ state } = reduceWikiNavigator(state, "down", run));
-  ({ state } = reduceWikiNavigator(state, "enter", run));
-  ({ state } = reduceWikiNavigator(state, "r", run));
-  assert.deepEqual(state.confirmation, { kind: "retry", nodeId: "plan" });
-  const transition = reduceWikiNavigator(state, "enter", run);
-  assert.deepEqual(transition.action, { type: "retry", runId: "run-1", nodeId: "plan" });
-  const rendered = plain(renderWikiNavigator(state, run, 80).join("\n"));
+  let state = createWikiNavigatorState(retryable, [summary(retryable)]);
+  ({ state } = reduceWikiNavigator(state, "enter", retryable, [summary(retryable)], retryable.id));
+  ({ state } = reduceWikiNavigator(state, "down", retryable));
+  ({ state } = reduceWikiNavigator(state, "enter", retryable));
+  ({ state } = reduceWikiNavigator(state, "r", retryable));
+  assert.deepEqual(state.confirmation, { kind: "retry", nodeId: "research-a" });
+  const transition = reduceWikiNavigator(state, "enter", retryable);
+  assert.deepEqual(transition.action, { type: "retry", runId: "run-1", nodeId: "research-a" });
+  const rendered = plain(renderWikiNavigator(state, retryable, 80).join("\n"));
   assert.match(rendered, /Keep upstream: Inspect Git scope/);
   assert.match(rendered, /can write wiki/);
 });
@@ -312,21 +387,20 @@ test("phase retry groups explicit phase identities and refuses only running agen
   completed.status = "succeeded";
   for (const node of completed.nodes) {
     node.status = "succeeded";
-    node.phaseId = node.kind === "research" ? "research:batch" : `phase:${node.id}`;
-    node.phaseTitle = node.kind === "research" ? "Research" : undefined;
+    node.phaseId = node.kind === "research" ? "source-survey" : node.kind === "write" ? "domain-writing" : "inspect";
+    node.phaseTitle = node.kind === "research" ? "Source Survey" : undefined;
   }
-  assert.deepEqual(phaseRows(completed).find((phase) => phase.id === "research:batch")?.nodeIds, ["research-a", "research-b"]);
-  const impact = phaseRetryImpact(completed, "research:batch");
+  assert.deepEqual(phaseRows(completed).find((phase) => phase.id === "source-survey")?.nodeIds, ["research-a", "research-b"]);
+  const impact = phaseRetryImpact(completed, "source-survey");
   assert.deepEqual(impact?.targetIds, ["research-a", "research-b"]);
   assert.deepEqual(impact?.invalidatedDownstream, ["write"]);
 
   let state = createWikiNavigatorState(completed, [summary(completed)]);
   ({ state } = reduceWikiNavigator(state, "enter", completed, [summary(completed)], completed.id));
   ({ state } = reduceWikiNavigator(state, "down", completed));
-  ({ state } = reduceWikiNavigator(state, "down", completed));
   ({ state } = reduceWikiNavigator(state, "R", completed, [summary(completed)], completed.id));
-  assert.deepEqual(state.confirmation, { kind: "retryPhase", phaseId: "research:batch" });
-  assert.deepEqual(reduceWikiNavigator(state, "enter", completed).action, { type: "retryPhase", runId: "run-1", phaseId: "research:batch" });
+  assert.deepEqual(state.confirmation, { kind: "retryPhase", phaseId: "source-survey" });
+  assert.deepEqual(reduceWikiNavigator(state, "enter", completed).action, { type: "retryPhase", runId: "run-1", phaseId: "source-survey" });
 
   completed.nodes.find((node) => node.id === "research-a").status = "running";
   state = { ...state, confirmation: undefined };
@@ -352,8 +426,8 @@ test("plain fallback exposes status and node failures without terminal UI", () =
   const failed = structuredClone(run);
   failed.status = "blocked";
   failed.blockedReason = "Repeated review defects";
-  failed.nodes[4].status = "failed";
-  failed.nodes[4].error = { message: "wiki/index.md citation is invalid" };
+  failed.nodes[3].status = "failed";
+  failed.nodes[3].error = { message: "wiki/index.md citation is invalid" };
   const text = renderWikiRunText(failed);
   assert.match(text, /Wiki Run run-1 \| refresh \| blocked/);
   assert.match(text, /Blocked: Repeated review defects/);

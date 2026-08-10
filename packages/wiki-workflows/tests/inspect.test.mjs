@@ -75,6 +75,7 @@ test("uses declared source Git changes and propagates source impact through inbo
   const inspection = await inspectWiki(path.join(workspace, "api", "src"));
 
   assert.equal(inspection.root, workspace);
+  assert.deepEqual(inspection.sourcePaths, ["api"]);
   assert.equal(inspection.mode, "refresh");
   assert.equal(inspection.lastWikiCommit, null);
   assert.equal(inspection.baseCommit, null);

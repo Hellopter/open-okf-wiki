@@ -4,7 +4,7 @@ import { createWikiExtension } from "../dist/extension.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 2,
+    version: 3,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",

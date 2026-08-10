@@ -50,7 +50,6 @@ invalidate only downstream nodes.
 
 For phase-specific operating guidance, read the relevant reference:
 
-- [Planning](references/plan.md)
 - [Research receipts](references/research.md)
 - [Research synthesis](references/synthesis.md)
 - [Writing and repair](references/write.md)

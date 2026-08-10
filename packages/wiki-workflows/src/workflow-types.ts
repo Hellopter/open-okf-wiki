@@ -5,14 +5,12 @@ export type { WikiMode } from "./types.js";
 /** A durable, Wiki-domain node type. It deliberately does not model generic workflows. */
 export type WikiNodeKind =
   | "inspect"
-  | "plan"
   | "research"
   | "synthesis"
   | "write"
   | "validate"
   | "review"
-  | "repair"
-  | "replan";
+  | "repair";
 
 export type WikiNodeStatus =
   | "queued"
@@ -58,7 +56,7 @@ export interface WikiNodeError {
   code?: string;
   retryable?: boolean;
   /** Present when the model ended without the required control-flow submission. */
-  requiredSubmissionTool?: "wiki_submit_plan" | "wiki_submit_synthesis" | "wiki_submit_review";
+  requiredSubmissionTool?: "wiki_submit_synthesis" | "wiki_submit_review";
 }
 
 export interface WikiNodeAttempt {
@@ -148,7 +146,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 2;
+  version: 3;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -198,22 +196,11 @@ export interface WikiRunSession {
   snapshot: WikiRunSnapshot;
 }
 
-/** A candidate documentation area. The final page set is decided by synthesis. */
-export interface WikiDraftDomain {
-  id: string;
-  title: string;
-  purpose: string;
-}
-
 export interface WikiResearchScope {
   id: string;
+  /** The declared source roots this bounded investigation may inspect. */
+  sourcePaths: string[];
   task: string;
-}
-
-export interface WikiDraftPlanResult {
-  candidateDomains: WikiDraftDomain[];
-  researchScopes: WikiResearchScope[];
-  rationale: string;
 }
 
 export type WikiDiagramKind = "flowchart" | "sequence" | "state" | "er" | "class";
@@ -305,7 +292,9 @@ export interface WikiAgentExecutionRequest {
   node: Readonly<WikiNode>;
   cwd: string;
   prompt: string;
-  role: "planner" | "researcher" | "synthesizer" | "writer" | "reviewer";
+  role: "researcher" | "synthesizer" | "writer" | "reviewer";
+  /** Declared source roots this agent may inspect. Omitted agents retain workspace read policy. */
+  readRoots?: string[];
   /** Exact Wiki-relative files a domain writer may create or change. */
   writePaths?: string[];
   language: "zh" | "en";

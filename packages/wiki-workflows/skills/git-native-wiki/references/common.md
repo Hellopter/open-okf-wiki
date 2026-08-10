@@ -11,7 +11,7 @@ Wiki content must be written in {{language}}. Generated pages belong only under
 Keep claims tied to inspected source evidence. Do not cite absolute paths,
 temporary paths, `sources/`, `inputs/`, or source IDs.
 
-The workflow separates an initial Draft Plan from the finalized WikiSpec.
+The workflow surveys each declared source in parallel before finalizing the WikiSpec.
 Research, synthesis, and review are source-grounded coordination phases; only
 writers and repair writers edit `wiki/`. A DomainPacket is authoritative for a
 writer's assigned domain: it contains the page contracts, relevant evidence,

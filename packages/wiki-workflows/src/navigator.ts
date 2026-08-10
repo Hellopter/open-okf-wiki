@@ -10,6 +10,7 @@ import type {
   WikiRunSummary,
   WikiRunStatus,
 } from "./workflow-types.js";
+import { latestPhaseIteration } from "./phase-iterations.js";
 
 /** The UI reads the durable session snapshot directly; no duplicate view model. */
 export type WikiRunView = WikiRunSnapshot;
@@ -87,7 +88,48 @@ export interface WikiPhase {
   id: string;
   title: string;
   nodeIds: string[];
+  /** Optional branches are visible from the start but are not scheduled unless triggered. */
+  conditional: boolean;
+  waitingMessage: string;
 }
+
+type WikiPhaseDisplayStatus = WikiNodeStatus | "not_started" | "conditional";
+
+interface WikiWorkflowStage {
+  id: string;
+  title: string;
+  conditional: boolean;
+  waitingMessage: string;
+}
+
+/**
+ * This is deliberately a Wiki-specific execution map, rather than a generic
+ * workflow configuration. It lets the console explain the complete run before
+ * the engine has dynamically queued every subagent.
+ */
+const WIKI_WORKFLOW_STAGES: readonly WikiWorkflowStage[] = [
+  { id: "inspect", title: "Inspect", conditional: false, waitingMessage: "Waiting for the run to inspect the repository." },
+  { id: "source-survey", title: "Source Survey", conditional: false, waitingMessage: "Waiting for repository inspection to complete." },
+  { id: "synthesis", title: "Synthesis", conditional: false, waitingMessage: "Waiting for source survey receipts." },
+  { id: "targeted-research", title: "Targeted Research", conditional: true, waitingMessage: "Runs only when synthesis identifies an evidence gap." },
+  { id: "domain-writing", title: "Domain Writing", conditional: false, waitingMessage: "Waiting for a finalized Wiki specification." },
+  { id: "validation", title: "Validation", conditional: false, waitingMessage: "Waiting for domain pages to be written." },
+  { id: "global-review", title: "Global Review", conditional: false, waitingMessage: "Waiting for validation to complete." },
+  { id: "domain-repair", title: "Domain Repair", conditional: true, waitingMessage: "Runs only when global review finds domain-specific defects." },
+  { id: "structural-resynthesis", title: "Structural Re-synthesis", conditional: true, waitingMessage: "Runs only when review finds structural or coverage defects." },
+];
+
+const PHASE_STATUS_ICON: Record<WikiPhaseDisplayStatus, string> = {
+  ...STATUS_ICON,
+  not_started: "○",
+  conditional: "·",
+};
+
+const PHASE_STATUS_COLOR: Record<WikiPhaseDisplayStatus, "accent" | "success" | "error" | "warning" | "muted"> = {
+  ...STATUS_COLOR,
+  not_started: "muted",
+  conditional: "muted",
+};
 
 export interface WikiNavigatorState {
   view: WikiNavigatorView;
@@ -127,23 +169,10 @@ export function layoutForWidth(width: number): 1 | 2 {
 }
 
 export function phaseRows(run: WikiRunView): WikiPhase[] {
-  const phases: WikiPhase[] = [];
+  const phases: WikiPhase[] = WIKI_WORKFLOW_STAGES.map((stage) => ({ ...stage, nodeIds: [] }));
   for (const node of run.nodes) {
-    const previous = phases.at(-1);
-    if (node.phaseId) {
-      const explicit = phases.find((phase) => phase.id === node.phaseId);
-      if (explicit) {
-        explicit.nodeIds.push(node.id);
-        continue;
-      }
-      phases.push({ id: node.phaseId, title: node.phaseTitle ?? stageLabel(node.kind), nodeIds: [node.id] });
-      continue;
-    }
-    if (previous && phaseKind(previous, run) === node.kind) {
-      previous.nodeIds.push(node.id);
-      continue;
-    }
-    phases.push({ id: `phase:${node.id}`, title: stageLabel(node.kind), nodeIds: [node.id] });
+    const phase = phases.find((item) => item.id === workflowStageIdFor(node));
+    if (phase) phase.nodeIds.push(node.id);
   }
   return phases;
 }
@@ -170,9 +199,10 @@ export function retryImpact(run: WikiRunView, targetId: string): WikiRetryImpact
 }
 
 export function phaseRetryImpact(run: WikiRunView, phaseId: string): WikiRetryImpact | undefined {
-  const phase = phaseRows(run).find((item) => item.id === phaseId);
-  if (!phase?.nodeIds.length) return undefined;
-  return retryImpactFor(run, phase.nodeIds, phase.nodeIds[0]!, phaseId);
+  const nodes = latestPhaseIteration(run.nodes, phaseId);
+  if (!nodes.length) return undefined;
+  const nodeIds = nodes.map((node) => node.id);
+  return retryImpactFor(run, nodeIds, nodeIds[0]!, phaseId);
 }
 
 function retryImpactFor(run: WikiRunView, targetIds: string[], targetId: string, phaseId?: string): WikiRetryImpact {
@@ -284,7 +314,10 @@ export function reduceWikiNavigator(
       return { state: next, action: { type: "notify", message: "Select a phase before retrying it", level: "warning" } };
     }
     const phase = selectedPhase(next, run);
-    const nodes = phase?.nodeIds.map((id) => nodeById(run, id)).filter((node): node is WikiRunNode => Boolean(node)) ?? [];
+    if (!phase?.nodeIds.length) {
+      return { state: next, action: { type: "notify", message: `${phase?.title ?? "This stage"} has not been scheduled yet`, level: "info" } };
+    }
+    const nodes = latestPhaseIteration(run.nodes, next.selectedPhaseId);
     if (nodes.some((node) => node.status === "running")) {
       return { state: next, action: { type: "notify", message: "Wait for running agents in the selected phase to settle before retrying it", level: "warning" } };
     }
@@ -339,14 +372,14 @@ export function renderWikiNavigator(
 
   const header = renderHeader(run, safeWidth, theme);
   const bodyRows = Math.max(4, contentRows - header.length);
-  if (normalized.showHelp) return withNavigatorFooter([...header, ...renderHelp(safeWidth, theme)], normalized, safeRows, safeWidth, theme);
-  if (normalized.confirmation) return withNavigatorFooter([...header, ...renderConfirmation(normalized.confirmation, run, safeWidth, theme)], normalized, safeRows, safeWidth, theme);
+  if (normalized.showHelp) return withNavigatorFooter([...header, ...renderHelp(safeWidth, theme)], normalized, safeRows, safeWidth, theme, run);
+  if (normalized.confirmation) return withNavigatorFooter([...header, ...renderConfirmation(normalized.confirmation, run, safeWidth, theme)], normalized, safeRows, safeWidth, theme, run);
 
   let body: string[];
   if (normalized.view === "phases") body = renderPhaseChooser(normalized, run, safeWidth, theme, bodyRows);
   else if (normalized.view === "agents") body = renderAgentList(normalized, run, safeWidth, theme, bodyRows);
   else body = renderAgentDetail(normalized, run, safeWidth, theme, bodyRows);
-  return withNavigatorFooter([...header, ...body], normalized, safeRows, safeWidth, theme);
+  return withNavigatorFooter([...header, ...body], normalized, safeRows, safeWidth, theme, run);
 }
 
 /** Plain text is also used by /wiki status and non-interactive command output. */
@@ -527,10 +560,6 @@ function nodeById(run: WikiRunView, id: string): WikiRunNode | undefined {
   return run.nodes.find((node) => node.id === id);
 }
 
-function phaseKind(phase: WikiPhase, run: WikiRunView): WikiRunNode["kind"] | undefined {
-  return nodeById(run, phase.nodeIds[0] ?? "")?.kind;
-}
-
 function upstreamIds(run: WikiRunView, targetId: string): Set<string> {
   const ids = new Set<string>();
   const visit = (id: string) => {
@@ -563,22 +592,25 @@ function downstreamIds(run: WikiRunView, targetIds: string[]): Set<string> {
 function stageLabel(kind: WikiRunNode["kind"]): string {
   switch (kind) {
     case "inspect": return "Inspect";
-    case "plan": return "Plan";
     case "research": return "Research";
     case "synthesis": return "Synthesis";
     case "write": return "Write";
     case "validate": return "Validate";
     case "review": return "Review";
     case "repair": return "Repair";
-    case "replan": return "Replan";
   }
+}
+
+function workflowStageIdFor(node: WikiRunNode): string | undefined {
+  return WIKI_WORKFLOW_STAGES.some((stage) => stage.id === node.phaseId) ? node.phaseId : undefined;
 }
 
 function drill(state: WikiNavigatorState, run: WikiRunView | undefined): WikiNavigatorTransition {
   if (!run) return { state, action: { type: "none" } };
   if (state.view === "phases") {
     const phase = selectedPhase(state, run);
-    return { state: phase ? { ...state, view: "agents", selectedNodeId: phase.nodeIds[0], detailExpanded: false, selectedAttempt: undefined } : state, action: { type: "none" } };
+    if (!phase?.nodeIds.length) return { state, action: { type: "none" } };
+    return { state: { ...state, view: "agents", selectedNodeId: phase.nodeIds[0], detailExpanded: false, selectedAttempt: undefined }, action: { type: "none" } };
   }
   if (state.view === "agents") {
     return { state: selectedNode(state, run) ? { ...state, view: "detail", detailScroll: 0, detailFromEnd: false, followOutput: true, detailExpanded: false, selectedAttempt: undefined } : state, action: { type: "none" } };
@@ -726,10 +758,16 @@ function renderPhaseChooser(state: WikiNavigatorState, run: WikiRunView, width: 
   if (phase) {
     const agents = phase.nodeIds.map((id) => nodeById(run, id)).filter((node): node is WikiRunNode => Boolean(node));
     preview.push("");
-    preview.push(theme.bold(`${phase.title} | ${agents.length} agents`));
-    preview.push(...agents.slice(0, Math.max(1, rows - 5)).map((node) => renderNodeRow(node, node.id === state.selectedNodeId, width, theme)));
+    if (!agents.length) {
+      preview.push(theme.bold(`${phase.title} | ${phase.conditional ? "conditional" : "not started"}`));
+      preview.push(theme.fg("muted", phase.waitingMessage));
+      preview.push(theme.fg("muted", "No agents are scheduled for this stage yet."));
+    } else {
+      preview.push(theme.bold(`${phase.title} | ${agents.length} agents`));
+      preview.push(...agents.slice(0, Math.max(1, rows - 5)).map((node) => renderNodeRow(node, node.id === state.selectedNodeId, width, theme)));
+    }
   } else {
-    preview.push(theme.fg("muted", "No phases planned yet."));
+    preview.push(theme.fg("muted", "No workflow stages are available."));
   }
   return withSidebar(state, run, width, theme, rows, preview);
 }
@@ -738,6 +776,14 @@ function renderAgentList(state: WikiNavigatorState, run: WikiRunView, width: num
   const phase = selectedPhase(state, run);
   if (!phase) return withSidebar(state, run, width, theme, rows, [theme.fg("muted", "No phase selected.")]);
   const agents = phase.nodeIds.map((id) => nodeById(run, id)).filter((node): node is WikiRunNode => Boolean(node));
+  if (!agents.length) {
+    return withSidebar(state, run, width, theme, rows, [
+      theme.bold(`${phase.title} | ${phase.conditional ? "conditional" : "not started"}`),
+      theme.fg("muted", phase.waitingMessage),
+      "",
+      theme.fg("muted", "No agent details are available until this stage is scheduled."),
+    ]);
+  }
   const main = [theme.bold(`${phase.title} | ${agents.length} agents`), theme.fg("muted", "Enter opens the selected agent")];
   const window = scrollWindow(agents.length, Math.max(0, agents.findIndex((node) => node.id === state.selectedNodeId)), Math.max(1, rows - main.length));
   for (const node of agents.slice(window.start, window.end)) main.push(renderNodeRow(node, node.id === state.selectedNodeId, width, theme));
@@ -748,7 +794,7 @@ function renderAgentList(state: WikiNavigatorState, run: WikiRunView, width: num
 function renderAgentDetail(state: WikiNavigatorState, run: WikiRunView, width: number, theme: WikiNavigatorTheme, rows: number): string[] {
   const node = selectedNode(state, run);
   if (!node) return withSidebar(state, run, width, theme, rows, [theme.fg("muted", "No agent selected.")]);
-  const sidebarWidth = layoutForWidth(width) === 2 ? Math.max(20, Math.min(28, Math.floor(width * 0.30))) : 0;
+  const sidebarWidth = layoutForWidth(width) === 2 ? sidebarWidthFor(width) : 0;
   const mainWidth = sidebarWidth ? Math.max(20, width - sidebarWidth - 3) : width;
   const attempt = attemptView(node, state.selectedAttempt);
   const content = renderAgentTranscript(state, node, attempt, mainWidth, theme);
@@ -777,7 +823,7 @@ function withSidebar(
   main: string[],
 ): string[] {
   if (layoutForWidth(width) === 1) return fitRows(main, rows, width);
-  const sidebarWidth = Math.max(20, Math.min(28, Math.floor(width * 0.30)));
+  const sidebarWidth = sidebarWidthFor(width);
   const mainWidth = Math.max(20, width - sidebarWidth - 3);
   return joinColumns(
     renderSidebar(state, run, sidebarWidth, theme, rows),
@@ -789,6 +835,10 @@ function withSidebar(
   );
 }
 
+function sidebarWidthFor(width: number): number {
+  return Math.max(22, Math.min(40, Math.floor(width * 0.40)));
+}
+
 function renderSidebar(state: WikiNavigatorState, run: WikiRunView, width: number, theme: WikiNavigatorTheme, rows: number): string[] {
   const phases = phaseRows(run);
   const selected = Math.max(0, phases.findIndex((phase) => phase.id === state.selectedPhaseId));
@@ -796,15 +846,15 @@ function renderSidebar(state: WikiNavigatorState, run: WikiRunView, width: numbe
   const window = scrollWindow(phases.length, selected, Math.max(1, rows - 1));
   for (const phase of phases.slice(window.start, window.end)) {
     const nodes = phase.nodeIds.map((id) => nodeById(run, id)).filter((node): node is WikiRunNode => Boolean(node));
-    const status = phaseStatus(nodes);
+    const status = phaseStatus(phase, nodes);
     const marker = phase.id === state.selectedPhaseId ? "›" : " ";
-    const count = `${nodes.filter((node) => node.status === "succeeded").length}/${nodes.length}`;
-    const icon = STATUS_ICON[status];
+    const count = nodes.length ? `${nodes.filter((node) => node.status === "succeeded").length}/${nodes.length}` : status === "conditional" ? "conditional" : "not started";
+    const icon = PHASE_STATUS_ICON[status];
     const text = `${marker} ${icon} ${phase.title} ${count}`;
     lines.push(truncateToWidth(
       phase.id === state.selectedPhaseId
-        ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(STATUS_COLOR[status], theme.bold(icon))}${theme.fg("accent", theme.bold(` ${phase.title} ${count}`))}`
-        : `${theme.fg(STATUS_COLOR[status], icon)}${text.slice(3)}`,
+        ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(PHASE_STATUS_COLOR[status], theme.bold(icon))}${theme.fg("accent", theme.bold(` ${phase.title} ${count}`))}`
+        : `${theme.fg(PHASE_STATUS_COLOR[status], icon)}${text.slice(3)}`,
       width,
       "",
       true,
@@ -813,7 +863,8 @@ function renderSidebar(state: WikiNavigatorState, run: WikiRunView, width: numbe
   return fitRows(lines, rows, width);
 }
 
-function phaseStatus(nodes: WikiRunNode[]): WikiNodeStatus {
+function phaseStatus(phase: WikiPhase, nodes: WikiRunNode[]): WikiPhaseDisplayStatus {
+  if (!nodes.length) return phase.conditional ? "conditional" : "not_started";
   if (nodes.some((node) => node.status === "failed")) return "failed";
   if (nodes.some((node) => node.status === "blocked")) return "blocked";
   if (nodes.some((node) => node.status === "running")) return "running";
@@ -910,7 +961,7 @@ function renderExecutionFooter(node: WikiRunNode, attempt: WikiAttemptView, widt
 
 function resultLabel(kind: WikiNodeKind): string {
   if (kind === "research") return "Markdown handoff";
-  if (kind === "plan" || kind === "replan" || kind === "synthesis" || kind === "review") return "Control submission";
+  if (kind === "synthesis" || kind === "review") return "Control submission";
   return "Node result";
 }
 
@@ -1001,7 +1052,7 @@ function renderHelp(width: number, theme: WikiNavigatorTheme): string[] {
   return [
     theme.bold("Wiki Run Controls"),
     "Runs: Up/Down or j/k select, Enter opens a run, x deletes completed history",
-    "Phases: Up/Down or j/k select, Enter opens agents, R retries a settled phase",
+    "Phases: Up/Down or j/k select, Enter opens scheduled agents, R retries a settled stage",
     "Agents: Up/Down or j/k select, Enter opens transcript",
     "Detail: j/k arrows or PgUp/PgDn scroll; Enter toggles raw tool payloads; [/] changes attempts",
     "Esc or Left goes back; q closes; ? closes help",
@@ -1009,10 +1060,11 @@ function renderHelp(width: number, theme: WikiNavigatorTheme): string[] {
   ].map((line) => truncateToWidth(line, width, "", true));
 }
 
-function footerHint(state: WikiNavigatorState): string {
+function footerHint(state: WikiNavigatorState, run: WikiRunView | undefined): string {
   if (state.view === "runs") return "j/k runs | Enter open | x delete completed | q close | ? help";
   if (state.view === "detail") return "j/k scroll | Enter raw | [/] attempts | g/G ends | f follow | Esc back | ? help";
   if (state.view === "agents") return "j/k agents | Enter detail | g/G ends | Esc phases | ? help";
+  if (!selectedPhase(state, run)?.nodeIds.length) return "j/k phases | Enter waits for stage | g/G ends | Esc runs | ? help";
   return "j/k phases | Enter agents | R retry phase | g/G ends | Esc runs | ? help";
 }
 
@@ -1023,12 +1075,13 @@ function withNavigatorFooter(
   rows: number,
   width: number,
   theme: WikiNavigatorTheme,
+  run?: WikiRunView,
 ): string[] {
   const bodyRows = Math.max(1, rows - NAVIGATOR_FOOTER_ROWS);
   return [
     ...fitRows(content, bodyRows, width),
     "",
-    truncateToWidth(theme.fg("muted", `  ${footerHint(state)}`), width, "", true),
+    truncateToWidth(theme.fg("muted", `  ${footerHint(state, run)}`), width, "", true),
   ];
 }
 

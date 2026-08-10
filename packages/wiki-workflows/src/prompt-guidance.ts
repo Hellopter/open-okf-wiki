@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { WikiNodeKind } from "./workflow-types.js";
 
-type GuidanceName = "common" | "plan" | "research" | "synthesis" | "write" | "review";
+type GuidanceName = "common" | "research" | "synthesis" | "write" | "review";
 
 const guidanceCache = new Map<GuidanceName, Promise<string>>();
 const templateCache = new Map<WikiPageTemplateType, Promise<string>>();
@@ -36,7 +36,6 @@ export async function loadWikiPromptGuidance(
 }
 
 function guidanceFor(kind: WikiPromptGuidanceKind): GuidanceName {
-  if (kind === "plan" || kind === "replan") return "plan";
   if (kind === "research") return "research";
   if (kind === "synthesis") return "synthesis";
   if (kind === "write" || kind === "repair") return "write";

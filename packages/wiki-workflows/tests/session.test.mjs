@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createWikiRunSession, isWikiRunSession, parseWikiRunSession } from "../dist/session.js";
 
-function snapshot(version = 2) {
+function snapshot(version = 3) {
   return {
     version,
     id: "run-1",

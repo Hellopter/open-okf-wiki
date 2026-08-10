@@ -237,6 +237,7 @@ export async function inspectWiki(cwd: string): Promise<WikiInspection> {
   return {
     root: workspace.root,
     wikiRoot,
+    sourcePaths: workspace.sources.map((source) => source.path).sort(),
     mode,
     head,
     baseCommit: null,

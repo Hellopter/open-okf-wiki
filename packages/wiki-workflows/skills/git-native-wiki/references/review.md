@@ -15,9 +15,9 @@ necessary explanation as a depth defect.
 
 Route evidence, link, format, depth, and diagram defects to the owning domain
 for targeted repair. Use coverage or topology only when the finalized WikiSpec
-itself needs to change; this requests the workflow's bounded structural replan,
-not a domain-local rewrite. Do not create additional reviewer agents.
+itself needs to change; this requests the workflow's bounded structural
+re-synthesis, not a domain-local rewrite. Do not create additional reviewer agents.
 
 When review is complete, call `wiki_submit_review` exactly once. Its fields are
-the control protocol for repair versus replan. Do not put the review in a JSON
-response.
+the control protocol for repair versus structural re-synthesis. Do not put the
+review in a JSON response.

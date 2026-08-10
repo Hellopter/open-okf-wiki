@@ -17,7 +17,7 @@ function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
 
-function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write", "wiki_delete", "wiki_submit_plan", "wiki_submit_synthesis", "wiki_submit_review"]) {
+function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write", "wiki_delete", "wiki_submit_synthesis", "wiki_submit_review"]) {
   return {
     subscribe: () => () => {},
     setAutoCompactionEnabled() {},
@@ -88,40 +88,6 @@ function finalizedSpec() {
   };
 }
 
-test("planner submits control data through a dedicated tool instead of final JSON text", async () => {
-  const workspace = await initializedWorkspace("okf-wiki-executor-plan-");
-  let tools;
-  let enabledTools;
-  const session = fakeSession();
-  session.getLastAssistantText = () => "## Planning notes\nThe plan is ready.";
-  session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_plan");
-    await submit.execute("submit-plan", {
-      candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain the system" }],
-      researchScopes: [],
-      rationale: "One domain covers the current scope.",
-    });
-  };
-  const executor = new PiAgentExecutor({
-    createSession: async (options) => {
-      tools = options.customTools;
-      enabledTools = options.tools;
-      session.getActiveToolNames = () => enabledTools;
-      return { session };
-    },
-  });
-
-  const result = await executor.execute(executionRequest(workspace, "planner", undefined, undefined, "plan"));
-  assert.deepEqual(result.result, {
-    candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain the system" }],
-    researchScopes: [],
-    rationale: "One domain covers the current scope.",
-  });
-  assert.equal(result.output, "## Planning notes\nThe plan is ready.");
-  assert.ok(enabledTools.includes("wiki_submit_plan"));
-  assert.equal(tools.some((tool) => tool.name === "wiki_submit_review"), false);
-});
-
 test("synthesizer submits a typed finalized WikiSpec through its dedicated tool", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-");
   let tools;
@@ -148,7 +114,7 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
   assert.equal(result.result.decision, "finalize");
   assert.equal(result.result.spec.domains[1].pages[0].path, "domain/page.md");
   assert.ok(enabledTools.includes("wiki_submit_synthesis"));
-  assert.equal(tools.some((tool) => tool.name === "wiki_submit_plan"), false);
+  assert.equal(tools.some((tool) => tool.name === "wiki_submit_review"), false);
 });
 
 test("reviewer submits control data through its dedicated tool", async () => {
@@ -174,7 +140,7 @@ test("reviewer submits control data through its dedicated tool", async () => {
   assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
   assert.equal(result.output, "## Review complete\nNo defects found.");
   assert.ok(enabledTools.includes("wiki_submit_review"));
-  assert.equal(tools.some((tool) => tool.name === "wiki_submit_plan"), false);
+  assert.equal(tools.some((tool) => tool.name === "wiki_submit_synthesis"), false);
 });
 
 test("fails closed when Pi does not activate the required control tool", async () => {
@@ -185,70 +151,10 @@ test("fails closed when Pi does not activate the required control tool", async (
   const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
 
   await assert.rejects(
-    () => executor.execute(executionRequest(workspace, "planner", undefined, undefined, "plan")),
-    /wiki_submit_plan is not active/,
+    () => executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis")),
+    /wiki_submit_synthesis is not active/,
   );
   assert.equal(prompted, false);
-});
-
-test("planner submission rejects semantic contract violations before completing the node", async () => {
-  const workspace = await initializedWorkspace("okf-wiki-executor-plan-contract-");
-  let tools;
-  const session = fakeSession();
-  session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_plan");
-    await assert.rejects(
-      () => submit.execute("invalid-plan", {
-        candidateDomains: [],
-        researchScopes: [],
-        rationale: "test",
-      }),
-      /candidate domain/,
-    );
-    await assert.rejects(
-      () => submit.execute("too-many-scopes", {
-        candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain" }],
-        researchScopes: ["a", "b", "c", "d", "e"].map((id) => ({ id, task: id })),
-        rationale: "test",
-      }),
-      /at most 4 research scopes/,
-    );
-    await submit.execute("valid-plan", {
-      candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain" }],
-      researchScopes: [],
-      rationale: "test",
-    });
-  };
-  const executor = new PiAgentExecutor({
-    createSession: async (options) => {
-      tools = options.customTools;
-      session.getActiveToolNames = () => options.tools;
-      return { session };
-    },
-  });
-
-  const result = await executor.execute(executionRequest(workspace, "planner", undefined, undefined, "plan"));
-  assert.equal(result.result.candidateDomains[0].id, "architecture");
-});
-
-test("missing planner submission preserves final text and reports the required tool", async () => {
-  const workspace = await initializedWorkspace("okf-wiki-executor-missing-plan-");
-  let followUps = 0;
-  const outputs = [];
-  const session = fakeSession();
-  session.getLastAssistantText = () => "I have a prose plan but no control submission.";
-  session.followUp = async () => { followUps += 1; };
-  const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
-
-  await assert.rejects(
-    () => executor.execute(executionRequest(workspace, "planner", (output) => outputs.push(output), undefined, "plan")),
-    /wiki_submit_plan/,
-  );
-  assert.equal(followUps, 1);
-  assert.deepEqual(outputs, [
-    "I have a prose plan but no control submission.",
-    "I have a prose plan but no control submission.",
-  ]);
 });
 
 test("writer completion is Markdown text and has no JSON result contract", async () => {
@@ -319,6 +225,29 @@ test("writer execution rejects index pages owned by validator navigation", async
   await assert.rejects(() => executor.execute(request), /non-index Markdown page/);
 });
 
+test("researcher execution requires non-empty source roots before starting a child session", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-research-roots-");
+  let sessions = 0;
+  const executor = new PiAgentExecutor({
+    createSession: async () => {
+      sessions += 1;
+      return { session: fakeSession() };
+    },
+  });
+
+  await assert.rejects(
+    () => executor.execute(executionRequest(workspace)),
+    /researcher requests require at least one source root/,
+  );
+  const emptyRoots = executionRequest(workspace);
+  emptyRoots.readRoots = [];
+  await assert.rejects(
+    () => executor.execute(emptyRoots),
+    /researcher requests require at least one source root/,
+  );
+  assert.equal(sessions, 0);
+});
+
 test("resolves Pi model selection immediately before every child session", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-model-");
   const first = { provider: "test", id: "first" };
@@ -332,9 +261,9 @@ test("resolves Pi model selection immediately before every child session", async
       return { session: fakeSession() };
     },
   });
-  await executor.execute(executionRequest(workspace));
+  await executor.execute(executionRequest(workspace, "writer", undefined, undefined, "write"));
   selected = second;
-  await executor.execute(executionRequest(workspace));
+  await executor.execute(executionRequest(workspace, "writer", undefined, undefined, "write"));
   assert.deepEqual(observed, [first, second]);
 });
 
@@ -351,7 +280,7 @@ test("forwards streamed assistant text to the workflow engine", async () => {
     return () => {};
   };
   const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
-  await executor.execute(executionRequest(workspace, "researcher", (value) => output.push(value)));
+  await executor.execute(executionRequest(workspace, "writer", (value) => output.push(value), undefined, "write"));
   assert.deepEqual(output, ["live response", "{}"]);
 });
 
@@ -375,7 +304,7 @@ test("retains completed assistant messages and tool calls for the run navigator"
     return () => {};
   };
   const executor = new PiAgentExecutor({ createSession: async () => ({ session }) });
-  const result = await executor.execute(executionRequest(workspace, "researcher", undefined, (history) => snapshots.push(history)));
+  const result = await executor.execute(executionRequest(workspace, "writer", undefined, (history) => snapshots.push(history), "write"));
 
   assert.equal(snapshots.length, 3);
   assert.deepEqual(result.history?.map((entry) => [entry.kind, entry.toolName]), [
@@ -391,12 +320,17 @@ test("retains completed assistant messages and tool calls for the run navigator"
 test("research tools may read only sources declared by workspace.yaml", async () => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-executor-source-"));
   const source = path.join(parent, "api");
+  const otherSource = path.join(parent, "web");
   await mkdir(path.join(source, "src"), { recursive: true });
+  await mkdir(path.join(otherSource, "src"), { recursive: true });
   await writeFile(path.join(source, "src", "index.ts"), "export const api = true;\n");
+  await writeFile(path.join(otherSource, "src", "index.ts"), "export const web = true;\n");
   git(source, "init", "--quiet");
+  git(otherSource, "init", "--quiet");
   const docs = path.join(parent, "docs");
   await initializeWikiWorkspace({ cwd: docs });
   await addWikiSource({ cwd: docs, source: { kind: "link", path: source } });
+  await addWikiSource({ cwd: docs, source: { kind: "link", path: otherSource } });
   let tools;
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -405,9 +339,20 @@ test("research tools may read only sources declared by workspace.yaml", async ()
     },
   });
 
-  await executor.execute(executionRequest(docs));
+  const sourceSurvey = executionRequest(docs);
+  sourceSurvey.readRoots = ["api"];
+  await executor.execute(sourceSurvey);
   const read = tools.find((tool) => tool.name === "read");
   const result = await read.execute("call-1", { path: "api/src/index.ts" });
   assert.match(result.content[0].text, /api = true/);
   await assert.rejects(() => read.execute("call-2", { path: "../api/src/index.ts" }));
+  await assert.rejects(() => read.execute("call-3", { path: "web/src/index.ts" }), /permitted workspace scope/);
+  await assert.rejects(() => read.execute("call-4", { path: "wiki/overview/overview.md" }), /permitted workspace scope/);
+
+  const mapper = executionRequest(docs);
+  mapper.readRoots = ["api", "web"];
+  await executor.execute(mapper);
+  const mapperRead = tools.find((tool) => tool.name === "read");
+  const mapperResult = await mapperRead.execute("call-5", { path: "web/src/index.ts" });
+  assert.match(mapperResult.content[0].text, /web = true/);
 });

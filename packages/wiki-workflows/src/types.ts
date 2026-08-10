@@ -8,6 +8,8 @@ export interface SourceChange {
 export interface WikiInspection {
   root: string;
   wikiRoot: string;
+  /** Declared workspace source roots available to source-survey agents. */
+  sourcePaths: string[];
   mode: WikiMode;
   head: string;
   baseCommit: string | null;

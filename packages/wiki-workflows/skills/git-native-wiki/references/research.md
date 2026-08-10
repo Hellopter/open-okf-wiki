@@ -1,6 +1,8 @@
 # Research Receipt
 
-Read source only. Investigate the assigned scope and finish with a concise
+Read only the declared `sourcePaths` in the assigned scope. The tool policy
+enforces this boundary; do not attempt to inspect `wiki/`, the workspace root,
+or another configured source. Investigate the assigned scope and finish with a concise
 Markdown receipt, even when there are no findings. Focus on evidence a
 synthesis coordinator can assign safely to one DomainPacket. Use this shape:
 

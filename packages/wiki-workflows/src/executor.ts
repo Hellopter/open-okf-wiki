@@ -21,10 +21,8 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import {
-  parsePlanSubmission,
   parseReviewSubmission,
   parseSynthesisSubmission,
-  planSubmissionSchema,
   reviewSubmissionSchema,
   synthesisSubmissionSchema,
 } from "./control-submissions.js";
@@ -48,7 +46,7 @@ export interface PiAgentExecutorOptions {
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
 }
 
-type SubmissionToolName = "wiki_submit_plan" | "wiki_submit_synthesis" | "wiki_submit_review";
+type SubmissionToolName = "wiki_submit_synthesis" | "wiki_submit_review";
 
 interface SubmissionCollector {
   toolName: SubmissionToolName;
@@ -129,6 +127,9 @@ export class PiAgentExecutor implements WikiAgentExecutor {
   }
 
   private async createIsolatedSession(request: WikiAgentExecutionRequest, submission?: SubmissionCollector): Promise<AgentSession> {
+    if (request.role === "researcher" && !request.readRoots?.length) {
+      throw new Error("Workflow configuration error: researcher requests require at least one source root");
+    }
     const toolPolicy = await workspaceToolPolicy(request.cwd);
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(toolPolicy.workspaceRoot, agentDir);
@@ -143,7 +144,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     });
     await resourceLoader.reload();
 
-    const customTools = workflowTools(toolPolicy, request.role, submission, request.writePaths);
+    const customTools = workflowTools(toolPolicy, request.role, submission, request.writePaths, request.readRoots);
     const result = await (this.options.createSession ?? createAgentSession)({
       cwd: toolPolicy.workspaceRoot,
       model: this.options.getModel?.() ?? this.options.model,
@@ -380,6 +381,7 @@ export function createPiAgentExecutor(options: PiAgentExecutorOptions = {}): PiA
 interface WorkspaceToolPolicy {
   workspaceRoot: string;
   readableRoots: PermittedToolRoot[];
+  sourceRoots: Map<string, PermittedToolRoot>;
   wikiRoot: string;
 }
 
@@ -390,12 +392,17 @@ interface PermittedToolRoot {
 
 async function workspaceToolPolicy(cwd: string): Promise<WorkspaceToolPolicy> {
   const workspace = await loadWikiWorkspace(cwd);
+  const sourceRoots = new Map(workspace.sources.map((source) => [
+    source.path,
+    { logicalRoot: source.absolutePath, physicalRoot: source.realPath } satisfies PermittedToolRoot,
+  ]));
   return {
     workspaceRoot: workspace.root,
     readableRoots: [
       { logicalRoot: workspace.root, physicalRoot: await realpath(workspace.root) },
-      ...workspace.sources.map((source) => ({ logicalRoot: source.absolutePath, physicalRoot: source.realPath })),
+      ...sourceRoots.values(),
     ],
+    sourceRoots,
     wikiRoot: path.join(workspace.root, "wiki"),
   };
 }
@@ -405,12 +412,14 @@ function workflowTools(
   role: WikiAgentExecutionRequest["role"],
   submission?: SubmissionCollector,
   writePaths?: readonly string[],
+  readRoots?: readonly string[],
 ): ToolDefinition<any, any, any>[] {
+  const readableRoots = readRootsForPolicy(policy, readRoots);
   const readOnly = [
-    guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
-    guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
-    guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
-    guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
+    guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
+    guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
+    guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
+    guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
   ];
   if (role !== "writer") return submission ? [...readOnly, submissionTool(submission)] : readOnly;
 
@@ -440,28 +449,23 @@ function workflowTools(
   ];
 }
 
+function readRootsForPolicy(policy: WorkspaceToolPolicy, requested: readonly string[] | undefined): PermittedToolRoot[] {
+  if (!requested) return policy.readableRoots;
+  if (requested.length === 0) throw new Error("Workflow configuration error: a restricted reader needs at least one source root");
+  return requested.map((sourcePath) => {
+    const root = policy.sourceRoots.get(sourcePath);
+    if (!root) throw new Error(`Workflow configuration error: undeclared source root: ${sourcePath}`);
+    return root;
+  });
+}
+
 function submissionFor(kind: WikiAgentExecutionRequest["node"]["kind"]): SubmissionCollector | undefined {
-  if (kind === "plan" || kind === "replan") return { toolName: "wiki_submit_plan" };
   if (kind === "synthesis") return { toolName: "wiki_submit_synthesis" };
   if (kind === "review") return { toolName: "wiki_submit_review" };
   return undefined;
 }
 
 function submissionTool(submission: SubmissionCollector): ToolDefinition<any, any, any> {
-  if (submission.toolName === "wiki_submit_plan") {
-    return {
-      name: submission.toolName,
-      label: submission.toolName,
-      description: "Submit the final Wiki page plan exactly once after source inspection is complete.",
-      promptSnippet: "Submit the final Wiki plan",
-      promptGuidelines: ["Call wiki_submit_plan exactly once when the final page plan is ready."],
-      parameters: planSubmissionSchema,
-      async execute(_toolCallId, params) {
-        recordSubmission(submission, parsePlanSubmission(params));
-        return { content: [{ type: "text", text: "Wiki plan recorded." }], details: undefined };
-      },
-    };
-  }
   if (submission.toolName === "wiki_submit_synthesis") {
     return {
       name: submission.toolName,

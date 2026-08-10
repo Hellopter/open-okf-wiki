@@ -1,14 +1,13 @@
 import { Type } from "typebox";
 import type {
   WikiDiagramKind,
-  WikiDraftPlanResult,
   WikiReviewDefect,
   WikiReviewResult,
   WikiSpec,
   WikiSynthesisResult,
 } from "./workflow-types.js";
 
-/** Maximum concurrent research requests in an initial or supplemental batch. */
+/** Maximum research agents the engine dispatches concurrently. */
 export const MAX_RESEARCH_SCOPES_PER_BATCH = 4;
 
 const wikiPagePath = Type.String({ minLength: 1, description: "Wiki-relative Markdown page path" });
@@ -16,6 +15,7 @@ const pageTitle = Type.String({ minLength: 1, description: "Reader-facing page t
 const pagePurpose = Type.String({ minLength: 1, description: "Question the page answers" });
 const sourceReference = Type.String({ minLength: 1, description: "Workspace-relative path#Lx-Ly" });
 const researchScopeId = Type.String({ minLength: 1, description: "Distinct research scope ID" });
+const researchSourcePath = Type.String({ minLength: 1, description: "Declared workspace source root to inspect" });
 const researchTask = Type.String({ minLength: 1, description: "Bounded source research task" });
 const domainId = Type.String({ minLength: 1, pattern: "^[a-z0-9][a-z0-9-]*$", description: "Stable documentation domain ID and output directory" });
 const sectionTitle = Type.String({ minLength: 1, description: "Required page section" });
@@ -45,17 +45,10 @@ const diagramRequirement = Type.Object({
   reason: Type.Optional(Type.String({ minLength: 1, description: "Why this diagram is not applicable" })),
 }, { additionalProperties: false });
 
-export const planSubmissionSchema = Type.Object({
-  candidateDomains: Type.Array(Type.Object({
-    id: domainId,
-    title: pageTitle,
-    purpose: pagePurpose,
-  }, { additionalProperties: false }), { minItems: 1 }),
-  researchScopes: Type.Array(Type.Object({
-    id: researchScopeId,
-    task: researchTask,
-  }, { additionalProperties: false }), { maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }),
-  rationale,
+const researchScopeSchema = Type.Object({
+  id: researchScopeId,
+  sourcePaths: Type.Array(researchSourcePath, { minItems: 1 }),
+  task: researchTask,
 }, { additionalProperties: false });
 
 const specPage = Type.Object({
@@ -90,10 +83,7 @@ const wikiSpecSchema = Type.Object({
 export const synthesisSubmissionSchema = Type.Union([
   Type.Object({
     decision: Type.Literal("expand"),
-    researchScopes: Type.Array(Type.Object({
-      id: researchScopeId,
-      task: researchTask,
-    }, { additionalProperties: false }), { minItems: 1, maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }),
+    researchScopes: Type.Array(researchScopeSchema, { minItems: 1, maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }),
     rationale,
   }, { additionalProperties: false }),
   Type.Object({
@@ -121,37 +111,6 @@ export const reviewSubmissionSchema = Type.Object({
   }, { additionalProperties: false })),
   summary: reviewSummary,
 }, { additionalProperties: false });
-
-/**
- * Canonicalize the planner's typed control submission. This runs both at tool
- * invocation time and before the engine expands the DAG, so mocks and future
- * executor implementations cannot bypass the workflow contract.
- */
-export function parsePlanSubmission(value: unknown): WikiDraftPlanResult {
-  if (!isRecord(value) || !Array.isArray(value.candidateDomains) || !Array.isArray(value.researchScopes)) {
-    throw new Error("Planner submission must include candidateDomains, researchScopes, and rationale");
-  }
-  const planRationale = requiredText(value.rationale, "Planner rationale");
-  if (value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
-    throw new Error(`Planner may request at most ${MAX_RESEARCH_SCOPES_PER_BATCH} research scopes per batch`);
-  }
-
-  const domainIds = new Set<string>();
-  const candidateDomains = value.candidateDomains.map((domain) => {
-    if (!isRecord(domain)) throw new Error("Planner returned an invalid candidate domain");
-    const id = parseDomainId(domain.id, "Candidate domain ID");
-    if (domainIds.has(id)) throw new Error(`Planner returned duplicate candidate domain: ${id}`);
-    domainIds.add(id);
-    return {
-      id,
-      title: requiredText(domain.title, `Candidate domain title for ${id}`),
-      purpose: requiredText(domain.purpose, `Candidate domain purpose for ${id}`),
-    };
-  });
-  if (candidateDomains.length === 0) throw new Error("Planner must submit at least one candidate domain");
-
-  return { candidateDomains, researchScopes: parseResearchScopes(value.researchScopes, "Planner"), rationale: planRationale };
-}
 
 /** Canonicalize the synthesis decision before it can expand or finalize the DAG. */
 export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
@@ -302,7 +261,16 @@ function parseResearchScopes(value: unknown[], owner: string) {
     const id = requiredText(scope.id, "Research scope ID");
     if (scopeIds.has(id)) throw new Error(`${owner} returned duplicate research scope: ${id}`);
     scopeIds.add(id);
-    return { id, task: requiredText(scope.task, `Research task for ${id}`) };
+    if (!Array.isArray(scope.sourcePaths) || scope.sourcePaths.length === 0) {
+      throw new Error(`${owner} research scope ${id} must include sourcePaths`);
+    }
+    const sourcePaths = new Set<string>();
+    for (const sourcePath of scope.sourcePaths) {
+      const parsed = requiredText(sourcePath, `Research source path for ${id}`);
+      if (sourcePaths.has(parsed)) throw new Error(`${owner} research scope ${id} repeats source path: ${parsed}`);
+      sourcePaths.add(parsed);
+    }
+    return { id, sourcePaths: [...sourcePaths], task: requiredText(scope.task, `Research task for ${id}`) };
   });
 }
 
