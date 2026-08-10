@@ -182,8 +182,8 @@ test("drills from phase selection to a selected agent transcript", () => {
   assert.equal(state.view, "detail");
   const detail = plain(renderWikiNavigator(state, run, 100, undefined, 40).join("\n"));
   assert.match(detail, /Messages & tool calls/);
-  assert.match(detail, /assistant tool read/);
   assert.match(detail, /tool read/);
+  assert.doesNotMatch(detail, /assistant tool/);
   assert.match(detail, /src\/engine\.ts/);
   assert.doesNotMatch(detail, /\{"path":"src\/engine\.ts"\}/);
   assert.doesNotMatch(detail, /2026.*tool read/);
@@ -191,6 +191,7 @@ test("drills from phase selection to a selected agent transcript", () => {
   assert.match(detail, /streamed evidence from the active agent/);
   assert.match(detail, /Markdown handoff/);
   assert.match(detail, /90,000 \/ 128,000 \(70%\) estimated/);
+  assert.match(detail, /Execution \| Context: 90,000 \/ 128,000 \(70%\) estimated/);
 
   ({ state } = reduceWikiNavigator(state, "enter", run));
   const expanded = plain(renderWikiNavigator(state, run, 100, undefined, 40).join("\n"));
@@ -220,6 +221,15 @@ test("views render into a fixed-height viewport", () => {
   const lines = renderWikiNavigator(state, run, 80, undefined, 11);
   assert.equal(lines.length, 11);
   assert.match(plain(lines.join("\n")), /\d+-\d+\/\d+ follow/);
+});
+
+test("keeps execution stats at the bottom of the agent detail", () => {
+  const state = drillToResearchDetail();
+  const detail = plain(renderWikiNavigator(state, run, 80, undefined, 18).join("\n"));
+  const execution = detail.indexOf("Execution | Context:");
+  const controls = detail.indexOf("j/k scroll");
+  assert.ok(execution > detail.indexOf("Markdown handoff"));
+  assert.ok(execution < controls);
 });
 
 test("pins navigator controls to the footer and gives execution states distinct icons", () => {

@@ -750,8 +750,11 @@ function renderAgentDetail(state: WikiNavigatorState, run: WikiRunView, width: n
   if (!node) return withSidebar(state, run, width, theme, rows, [theme.fg("muted", "No agent selected.")]);
   const sidebarWidth = layoutForWidth(width) === 2 ? Math.max(20, Math.min(28, Math.floor(width * 0.30))) : 0;
   const mainWidth = sidebarWidth ? Math.max(20, width - sidebarWidth - 3) : width;
-  const content = renderAgentTranscript(state, node, mainWidth, theme);
-  const viewport = Math.max(2, rows - 1);
+  const attempt = attemptView(node, state.selectedAttempt);
+  const content = renderAgentTranscript(state, node, attempt, mainWidth, theme);
+  const execution = renderExecutionFooter(node, attempt, mainWidth, theme);
+  const transcriptRows = Math.max(2, rows - execution.length);
+  const viewport = Math.max(1, transcriptRows - 1);
   const maxScroll = Math.max(0, content.length - viewport);
   const follow = state.followOutput && node.status === "running";
   const scroll = state.detailFromEnd || follow
@@ -760,6 +763,8 @@ function renderAgentDetail(state: WikiNavigatorState, run: WikiRunView, width: n
   const main = content.slice(scroll, scroll + viewport);
   const range = `${scroll + 1}-${Math.min(scroll + viewport, content.length)}/${content.length}`;
   main.push(theme.fg("dim", `  ${range}${follow ? " follow" : ""}`));
+  while (main.length < transcriptRows) main.push("");
+  main.push(...execution);
   return withSidebar(state, run, width, theme, rows, main);
 }
 
@@ -834,8 +839,13 @@ function renderNodeRow(node: WikiRunNode, selected: boolean, width: number, them
   );
 }
 
-function renderAgentTranscript(state: WikiNavigatorState, node: WikiRunNode, width: number, theme: WikiNavigatorTheme): string[] {
-  const attempt = attemptView(node, state.selectedAttempt);
+function renderAgentTranscript(
+  state: WikiNavigatorState,
+  node: WikiRunNode,
+  attempt: WikiAttemptView,
+  width: number,
+  theme: WikiNavigatorTheme,
+): string[] {
   const attemptSuffix = attempt.attempt !== node.attempt ? " (archived)" : "";
   const lines = [theme.bold(`Agent: ${node.label}`)];
   lines.push(truncateToWidth(theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${node.status} | attempt ${attempt.attempt}${attemptSuffix} | ${stageLabel(node.kind)}`), width, "", true));
@@ -863,11 +873,39 @@ function renderAgentTranscript(state: WikiNavigatorState, node: WikiRunNode, wid
     lines.push(theme.bold(resultLabel(node.kind)));
     lines.push(...renderObject(attempt.result ?? "No node result recorded.", width, theme));
   }
-  lines.push("");
-  lines.push(theme.bold("Execution"));
-  lines.push(...renderTiming(attempt, width, theme));
-  lines.push(...renderMetrics(attempt, width, theme));
   return lines;
+}
+
+/** Execution stats stay visible while the transcript scrolls. */
+function renderExecutionFooter(node: WikiRunNode, attempt: WikiAttemptView, width: number, theme: WikiNavigatorTheme): string[] {
+  const metrics = attempt.metrics;
+  const context = formatContext(metrics.contextTokens, metrics.contextWindow, metrics.contextEstimated);
+  const timing = attempt.startedAt ? `Duration: ${formatNodeDuration(attempt.startedAt, attempt.finishedAt)}` : "";
+  const usage = [
+    metrics.inputTokens !== undefined ? `in ${formatCount(metrics.inputTokens)}` : "",
+    metrics.outputTokens !== undefined ? `out ${formatCount(metrics.outputTokens)}` : "",
+    metrics.cacheReadTokens !== undefined ? `cache ${formatCount(metrics.cacheReadTokens)}` : "",
+  ].filter(Boolean).join(" | ");
+  const recovery = [
+    metrics.compactions ? `compactions ${metrics.compactions}` : "",
+    metrics.autoRetries ? `auto retries ${metrics.autoRetries}` : "",
+    node.activity.retryDelayMs ? `backoff ${formatDuration(node.activity.retryDelayMs)}` : "",
+  ].filter(Boolean).join(" | ");
+  const details = [
+    metrics.model ? `Model: ${metrics.model}` : "",
+    usage,
+    recovery,
+    metrics.cost !== undefined ? `Cost: $${metrics.cost.toFixed(4)}` : "",
+  ].filter(Boolean).join(" | ");
+  const summary = [
+    "Execution",
+    context ? `Context: ${context}` : "",
+    timing,
+  ].filter(Boolean).join(" | ");
+  return [
+    truncateToWidth(theme.bold(summary), width, "", true),
+    truncateToWidth(theme.fg("muted", details || "No execution metrics reported."), width, "", true),
+  ];
 }
 
 function resultLabel(kind: WikiNodeKind): string {
@@ -891,7 +929,7 @@ function renderHistoryEntry(entry: WikiNodeHistoryEntry, width: number, theme: W
 function historyLabel(entry: WikiNodeHistoryEntry): string {
   const target = entry.target ? ` ${entry.target}` : "";
   if (entry.kind === "message") return "assistant";
-  if (entry.kind === "tool_call") return `assistant tool ${entry.toolName ?? "call"}${target}`;
+  if (entry.kind === "tool_call") return `tool ${entry.toolName ?? "call"}${target}`;
   if (entry.kind === "tool_result") return `tool ${entry.toolName ?? "result"}${target}`;
   return entry.toolName ? `tool ${entry.toolName} error${target}` : "agent error";
 }
@@ -915,38 +953,6 @@ function attemptView(node: WikiRunNode, selectedAttempt: number | undefined): Wi
     if (archived) return archived;
   }
   return node;
-}
-
-function renderMetrics(node: Pick<WikiRunNode, "metrics"> & Partial<Pick<WikiRunNode, "activity">>, width: number, theme: WikiNavigatorTheme): string[] {
-  const metrics = node.metrics;
-  const context = formatContext(metrics.contextTokens, metrics.contextWindow, metrics.contextEstimated);
-  const usage = [
-    metrics.inputTokens !== undefined ? `in ${formatCount(metrics.inputTokens)}` : "",
-    metrics.outputTokens !== undefined ? `out ${formatCount(metrics.outputTokens)}` : "",
-    metrics.cacheReadTokens !== undefined ? `cache ${formatCount(metrics.cacheReadTokens)}` : "",
-  ].filter(Boolean).join(" | ");
-  const recovery = [
-    metrics.compactions ? `compactions ${metrics.compactions}` : "",
-    metrics.autoRetries ? `auto retries ${metrics.autoRetries}` : "",
-    node.activity?.retryDelayMs ? `backoff ${formatDuration(node.activity.retryDelayMs)}` : "",
-  ].filter(Boolean).join(" | ");
-  const lines = [
-    metrics.model ? `Model: ${metrics.model}` : "",
-    context ? `Context: ${context}` : "",
-    usage,
-    recovery,
-    metrics.cost !== undefined ? `Cost: $${metrics.cost.toFixed(4)}` : "",
-  ].filter(Boolean);
-  return lines.map((line) => truncateToWidth(line, width, "", true));
-}
-
-function renderTiming(node: Pick<WikiRunNode, "startedAt" | "finishedAt">, width: number, theme: WikiNavigatorTheme): string[] {
-  const lines = [
-    node.startedAt ? `Started: ${formatTimestamp(node.startedAt)}` : "",
-    node.finishedAt ? `Ended: ${formatTimestamp(node.finishedAt)}` : "",
-    node.startedAt ? `Duration: ${formatNodeDuration(node.startedAt, node.finishedAt)}` : "",
-  ].filter(Boolean);
-  return lines.map((line) => truncateToWidth(theme.fg("muted", line), width, "", true));
 }
 
 function renderConfirmation(
