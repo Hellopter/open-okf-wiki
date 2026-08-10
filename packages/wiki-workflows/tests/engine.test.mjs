@@ -247,6 +247,71 @@ test("a domain writer receives only its DomainPacket, selected receipt, and exac
   assert.doesNotMatch(overviewWriter.prompt, /source-survey:src-api is verified/);
 });
 
+test("writers and repairs receive raw Markdown receipts inside system-generated delimiters", async () => {
+  const rawReceipt = `\r\n${[
+    "## Findings",
+    "- CJK evidence: 中文. Source: `src/core.ts#L1-L20`",
+    "",
+    "```mermaid",
+    "flowchart LR",
+    "  A[\\\"quoted\\\"] --> B[backtick: `value`]",
+    "```",
+    "",
+    "## Gaps",
+    "- Preserve literal CRLF and `\\` characters.",
+  ].join("\r\n")}\r\n`;
+  const executor = createExecutor({
+    research: () => rawReceipt,
+    review: (_request, index) => index === 0
+      ? {
+        defects: [{ id: "core-detail", domainId: "core", page: "core/architecture.md", kind: "depth", detail: "Explain the verified boundary." }],
+        summary: "Core needs one repair.",
+      }
+      : { defects: [], summary: "complete" },
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+  for (const kind of ["write", "repair"]) {
+    const request = executor.requests.find((candidate) => candidate.node.kind === kind && candidate.node.input.domainId === "core");
+    assert.ok(request.prompt.includes(rawReceipt));
+    assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-begin -->/);
+    assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-end -->/);
+    assert.doesNotMatch(request.prompt, /"markdown"\s*:/);
+  }
+});
+
+test("writer receipt context accepts 32KiB and rejects one byte over", async () => {
+  const receiptAtLimit = "x".repeat(16 * 1024);
+  const coreScopes = ["source-survey:src-core", "source-survey:src-api"];
+  const exactExecutor = createExecutor({
+    research: () => receiptAtLimit,
+    synthesis: () => finalize(finalizedSpec({ coreScopes })),
+  });
+  const exactEngine = createEngine(exactExecutor);
+  exactEngine.start({ cwd: "/workspace", mode: "generate" });
+  const exactSnapshot = await exactEngine.waitForIdle();
+
+  assert.equal(exactSnapshot.status, "succeeded");
+  assert.equal(exactExecutor.calls.filter((kind) => kind === "write").length, 3);
+
+  const overExecutor = createExecutor({
+    research: () => receiptAtLimit,
+    synthesis: () => finalize(finalizedSpec({
+      coreScopes: [...coreScopes, "workspace-map"],
+    })),
+  });
+  const overEngine = createEngine(overExecutor);
+  overEngine.start({ cwd: "/workspace", mode: "generate" });
+  const overSnapshot = await overEngine.waitForIdle();
+
+  assert.equal(overSnapshot.status, "failed");
+  assert.equal(overExecutor.calls.filter((kind) => kind === "write").length, 2);
+  assert.match(overSnapshot.nodes.find((node) => node.kind === "write" && node.input.domainId === "core")?.error?.message ?? "", /Writer research receipt payload exceeds the 32768-byte budget \(49152\)/);
+});
+
 test("synthesis may expand source research once before finalizing the WikiSpec", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => index === 0
@@ -323,6 +388,64 @@ test("final WikiSpec rejects pages outside their domain directory and unknown re
   await unknownReceipt.waitForIdle();
   assert.equal(unknownReceipt.getSnapshot().status, "failed");
   assert.match(unknownReceipt.getSnapshot().nodes.find((node) => node.kind === "synthesis").error.message, /unknown research scope/);
+});
+
+test("engine supplies run-scoped control validation before synthesis and review submission", async () => {
+  let synthesisValidated = false;
+  let reviewValidated = false;
+  const executor = createExecutor({
+    synthesis: (request) => {
+      assert.throws(
+        () => request.validateControlSubmission({
+          decision: "expand",
+          researchScopes: [{ id: "source-survey:src-core", sourcePaths: ["src-core"], task: "Duplicate an existing survey." }],
+          spec: null,
+          rationale: "This should be rejected before submission.",
+        }),
+        /Supplemental research scope repeats existing scope: source-survey:src-core/,
+      );
+      assert.throws(
+        () => request.validateControlSubmission({
+          decision: "expand",
+          researchScopes: [{ id: "undeclared", sourcePaths: ["not-a-source"], task: "Inspect an undeclared source." }],
+          spec: null,
+          rationale: "This should be rejected before submission.",
+        }),
+        /Supplemental research scope undeclared targets undeclared source: not-a-source/,
+      );
+      const unavailableReceipt = finalizedSpec({ coreScopes: ["not-in-this-synthesis"] });
+      assert.throws(
+        () => request.validateControlSubmission(finalize(unavailableReceipt)),
+        /WikiSpec domain core references unknown research scope: not-in-this-synthesis/,
+      );
+      const result = finalize();
+      request.validateControlSubmission(result);
+      synthesisValidated = true;
+      return result;
+    },
+    review: (request) => {
+      const invalidTarget = {
+        defects: [{ id: "wrong-page", domainId: "core", page: "core/missing.md", kind: "coverage", detail: "Add the missing page." }],
+        summary: "The target needs correction.",
+      };
+      assert.throws(
+        () => request.validateControlSubmission(invalidTarget),
+        /Review defect wrong-page page core\/missing\.md does not belong to domain core/,
+      );
+      const result = { defects: [], summary: "complete" };
+      request.validateControlSubmission(result);
+      reviewValidated = true;
+      return result;
+    },
+  });
+  const engine = createEngine(executor);
+
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(synthesisValidated, true);
+  assert.equal(reviewValidated, true);
 });
 
 test("global review routes depth and diagram defects only to their target domain writer", async () => {

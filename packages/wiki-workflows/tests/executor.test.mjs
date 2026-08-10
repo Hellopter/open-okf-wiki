@@ -41,7 +41,7 @@ function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write
   };
 }
 
-function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = "research") {
+function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = "research", validateControlSubmission) {
   return {
     runId: "run",
     node: { id: "node", kind, label: "Research", status: "running", dependsOn: [], attempt: 1, inputFingerprint: "", input: {}, attemptHistory: [], metrics: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, cost: 0, compactions: 0, autoRetries: 0 }, activity: { state: "running", updatedAt: new Date().toISOString() } },
@@ -53,6 +53,7 @@ function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = 
     signal: new AbortController().signal,
     onOutput,
     onHistory,
+    validateControlSubmission,
   };
 }
 
@@ -133,6 +134,9 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
   assert.deepEqual(submit.parameters.properties.spec.anyOf.map((item) => item.type), ["object", "null"]);
   assert.deepEqual(submit.parameters.properties.spec.anyOf[0].properties.domains.items.properties.pages.items.properties.diagrams.items.required, ["kind", "applicability", "purpose", "reason"]);
   assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
+  assert.match(submit.description, /spec: null/);
+  assert.match(submit.promptGuidelines[0], /Correct and resubmit if rejected/);
+  assert.doesNotMatch(submit.promptGuidelines[0], /exactly once/);
   assert.equal(submitResult.terminate, true);
   assert.equal(followUps, 0);
 });
@@ -164,6 +168,9 @@ test("reviewer submits control data through its dedicated tool", async () => {
   assert.equal(tools.some((tool) => tool.name === "wiki_submit_synthesis"), false);
   const submit = tools.find((tool) => tool.name === "wiki_submit_review");
   assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
+  assert.match(submit.description, /defects: \[\]/);
+  assert.match(submit.promptGuidelines[0], /Correct and resubmit if rejected/);
+  assert.doesNotMatch(submit.promptGuidelines[0], /exactly once/);
   assert.equal(submitResult.terminate, true);
 });
 
@@ -281,6 +288,109 @@ test("a later valid submission recovers from a rejected control call", async () 
   });
 
   const result = await executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review"));
+  assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
+  assert.equal(followUps, 1);
+});
+
+test("a contextual synthesis rejection can be corrected before the submission terminates", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-contextual-synthesis-");
+  let tools;
+  let followUps = 0;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+    const unavailableReceipt = finalizedSpec();
+    unavailableReceipt.domains[1].researchScopeIds = ["not-available-in-this-synthesis"];
+    await assert.rejects(
+      () => submit.execute("invalid-synthesis", {
+        decision: "finalize",
+        researchScopes: null,
+        spec: unavailableReceipt,
+        rationale: "The contract is ready.",
+      }),
+      /unknown research scope: not-available-in-this-synthesis/,
+    );
+  };
+  session.followUp = async () => {
+    followUps += 1;
+    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+    await submit.execute("valid-synthesis", {
+      decision: "finalize",
+      researchScopes: null,
+      spec: finalizedSpec(),
+      rationale: "The contract is ready.",
+    });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+  const validateControlSubmission = (submission) => {
+    if (submission.decision !== "finalize") return;
+    for (const domain of submission.spec.domains) {
+      for (const scopeId of domain.researchScopeIds) {
+        if (scopeId !== "available") throw new Error(`WikiSpec domain ${domain.id} references unknown research scope: ${scopeId}`);
+      }
+    }
+  };
+
+  const result = await executor.execute(executionRequest(
+    workspace,
+    "synthesizer",
+    undefined,
+    undefined,
+    "synthesis",
+    validateControlSubmission,
+  ));
+  assert.equal(result.result.decision, "finalize");
+  assert.equal(followUps, 1);
+});
+
+test("a contextual review rejection can be corrected before the submission terminates", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-contextual-review-");
+  let tools;
+  let followUps = 0;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await assert.rejects(
+      () => submit.execute("invalid-review", {
+        defects: [{ id: "wrong-page", domainId: "domain", page: "domain/missing.md", kind: "coverage", detail: "Add a missing page." }],
+        summary: "One invalid target.",
+      }),
+      /does not belong to domain domain/,
+    );
+  };
+  session.followUp = async () => {
+    followUps += 1;
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await submit.execute("valid-review", { defects: [], summary: "All checks passed." });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+  const validateControlSubmission = (submission) => {
+    if (!("defects" in submission)) return;
+    for (const defect of submission.defects) {
+      if (defect.domainId === "domain" && defect.page !== "domain/page.md") {
+        throw new Error(`Review defect ${defect.id} page ${defect.page} does not belong to domain ${defect.domainId}`);
+      }
+    }
+  };
+
+  const result = await executor.execute(executionRequest(
+    workspace,
+    "reviewer",
+    undefined,
+    undefined,
+    "review",
+    validateControlSubmission,
+  ));
   assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
   assert.equal(followUps, 1);
 });

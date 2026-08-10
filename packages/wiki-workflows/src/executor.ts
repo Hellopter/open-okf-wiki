@@ -31,6 +31,7 @@ import type {
   WikiAgentExecutionRequest,
   WikiAgentExecutionResult,
   WikiAgentExecutor,
+  WikiControlSubmission,
   WikiNodeHistoryEntry,
   WikiNodeMetrics,
 } from "./workflow-types.js";
@@ -53,6 +54,7 @@ interface SubmissionCollector {
   toolName: SubmissionToolName;
   value?: unknown;
   failure?: SubmissionFailure;
+  validate?: (submission: WikiControlSubmission) => void;
 }
 
 type SubmissionFailureCode = "invalid_submission" | "submission_too_large";
@@ -92,7 +94,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
   }
 
   async execute(request: WikiAgentExecutionRequest): Promise<WikiAgentExecutionResult> {
-    const submission = submissionFor(request.node.kind);
+    const submission = submissionFor(request);
     const session = await this.createIsolatedSession(request, submission);
     session.setAutoCompactionEnabled(true);
     session.setAutoRetryEnabled(true);
@@ -114,7 +116,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       if (submission && submission.value === undefined) {
         request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` });
         const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
-        await session.followUp(`Before completing this node, call ${submission.toolName} exactly once with the final result.${correction} Do not reply with JSON text.`);
+        await session.followUp(`Before completing this node, submit a valid final result with ${submission.toolName}.${correction} If a submission is rejected, correct it and submit again; after it is recorded, stop. Do not reply with JSON text.`);
         await session.waitForIdle();
         if (request.signal.aborted) throw new Error("Workflow node was cancelled");
         output = session.getLastAssistantText() ?? "";
@@ -473,9 +475,9 @@ function readRootsForPolicy(policy: WorkspaceToolPolicy, requested: readonly str
   });
 }
 
-function submissionFor(kind: WikiAgentExecutionRequest["node"]["kind"]): SubmissionCollector | undefined {
-  if (kind === "synthesis") return { toolName: "wiki_submit_synthesis" };
-  if (kind === "review") return { toolName: "wiki_submit_review" };
+function submissionFor(request: WikiAgentExecutionRequest): SubmissionCollector | undefined {
+  if (request.node.kind === "synthesis") return { toolName: "wiki_submit_synthesis", validate: request.validateControlSubmission };
+  if (request.node.kind === "review") return { toolName: "wiki_submit_review", validate: request.validateControlSubmission };
   return undefined;
 }
 
@@ -484,13 +486,17 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
     return {
       name: submission.toolName,
       label: submission.toolName,
-      description: "Submit either a bounded follow-up research request or the finalized domain-scoped WikiSpec.",
+      description: "Submit a compact synthesis decision. Every call includes researchScopes and spec: expand uses spec: null, finalize uses researchScopes: null.",
       promptSnippet: "Submit the Wiki synthesis decision",
-      promptGuidelines: ["Call wiki_submit_synthesis exactly once with either expand or finalize."],
+      promptGuidelines: ["Use wiki_submit_synthesis for the final decision. Correct and resubmit if rejected; after it is recorded, stop."],
       parameters: synthesisSubmissionSchema,
       constrainedSampling: { type: "json_schema", strict: "prefer" },
       async execute(_toolCallId, params) {
-        recordSubmission(submission, () => parseSynthesisSubmission(params));
+        recordSubmission(submission, () => {
+          const parsed = parseSynthesisSubmission(params);
+          submission.validate?.(parsed);
+          return parsed;
+        });
         return { content: [{ type: "text", text: "Wiki synthesis recorded." }], details: undefined, terminate: true };
       },
     };
@@ -498,13 +504,17 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
   return {
     name: submission.toolName,
     label: submission.toolName,
-    description: "Submit the final Wiki review exactly once after inspecting the Wiki and source evidence.",
+    description: "Submit the compact Wiki review after inspecting the Wiki and source evidence; use defects: [] when there are no actionable defects.",
     promptSnippet: "Submit the final Wiki review",
-    promptGuidelines: ["Call wiki_submit_review exactly once when the review is complete."],
+    promptGuidelines: ["Use wiki_submit_review when the review is complete. Correct and resubmit if rejected; after it is recorded, stop."],
     parameters: reviewSubmissionSchema,
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params) {
-      recordSubmission(submission, () => parseReviewSubmission(params));
+      recordSubmission(submission, () => {
+        const parsed = parseReviewSubmission(params);
+        submission.validate?.(parsed);
+        return parsed;
+      });
       return { content: [{ type: "text", text: "Wiki review recorded." }], details: undefined, terminate: true };
     },
   };

@@ -287,6 +287,8 @@ export interface WikiReviewResult {
   summary: string;
 }
 
+export type WikiControlSubmission = WikiSynthesisResult | WikiReviewResult;
+
 export interface WikiAgentExecutionRequest {
   runId: string;
   node: Readonly<WikiNode>;
@@ -304,6 +306,12 @@ export interface WikiAgentExecutionRequest {
   onOutput?: (output: string) => void;
   /** A bounded transcript of completed assistant messages and tool calls. */
   onHistory?: (history: WikiNodeHistoryEntry[]) => void;
+  /**
+   * Checks a parsed control submission against facts from this run before the
+   * submit tool records it. This ephemeral callback is never persisted or
+   * exposed in the model-facing JSON schema.
+   */
+  validateControlSubmission?: (submission: WikiControlSubmission) => void;
 }
 
 export interface WikiAgentExecutionResult {
