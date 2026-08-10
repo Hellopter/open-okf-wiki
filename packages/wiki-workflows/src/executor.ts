@@ -20,6 +20,12 @@ import {
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
+import {
+  parsePlanSubmission,
+  parseReviewSubmission,
+  planSubmissionSchema,
+  reviewSubmissionSchema,
+} from "./control-submissions.js";
 import type {
   WikiAgentExecutionRequest,
   WikiAgentExecutionResult,
@@ -135,6 +141,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     });
     await resourceLoader.reload();
 
+    const customTools = workflowTools(toolPolicy, request.role, submission);
     const result = await (this.options.createSession ?? createAgentSession)({
       cwd: toolPolicy.workspaceRoot,
       model: this.options.getModel?.() ?? this.options.model,
@@ -142,14 +149,17 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       sessionManager: SessionManager.inMemory(toolPolicy.workspaceRoot),
       settingsManager,
       resourceLoader,
-      // "builtin" preserves custom definitions. `tools` is also an allowlist,
-      // so neither bash nor an unguarded built-in edit/write can be activated.
+      // These guarded definitions are the complete child-agent tool surface.
+      // Deriving the allowlist from them prevents a custom tool being registered
+      // yet silently hidden from the model.
       noTools: "builtin",
-      tools: request.role === "writer"
-        ? ["read", "grep", "find", "ls", "edit", "write", "wiki_delete"]
-        : ["read", "grep", "find", "ls"],
-      customTools: workflowTools(toolPolicy, request.role, submission),
+      tools: customTools.map((tool) => tool.name),
+      customTools,
     });
+    if (submission && !result.session.getActiveToolNames().includes(submission.toolName)) {
+      result.session.dispose();
+      throw new Error(`Workflow configuration error: ${submission.toolName} is not active for ${request.node.kind}`);
+    }
     return result.session;
   }
 
@@ -424,36 +434,6 @@ function workflowTools(
   ];
 }
 
-const planSubmissionSchema = Type.Object({
-  pages: Type.Array(Type.Object({
-    path: Type.String({ description: "Wiki-relative Markdown page path" }),
-    title: Type.String({ description: "Reader-facing page title" }),
-    purpose: Type.String({ description: "Question the page answers" }),
-    sources: Type.Array(Type.String({ description: "Workspace-relative path#Lx-Ly" })),
-  })),
-  researchScopes: Type.Array(Type.Object({
-    id: Type.String({ description: "Distinct research scope ID" }),
-    task: Type.String({ description: "Bounded source research task" }),
-  })),
-  rationale: Type.String({ description: "Why this page set and research split fit the current scope" }),
-});
-
-const reviewSubmissionSchema = Type.Object({
-  defects: Type.Array(Type.Object({
-    id: Type.String({ description: "Stable actionable defect ID" }),
-    page: Type.String({ description: "Affected Wiki page" }),
-    kind: Type.Union([
-      Type.Literal("evidence"),
-      Type.Literal("link"),
-      Type.Literal("format"),
-      Type.Literal("topology"),
-      Type.Literal("coverage"),
-    ], { description: "Defect class that selects repair or replan" }),
-    detail: Type.String({ description: "Specific correction needed" }),
-  })),
-  summary: Type.String({ description: "Concise overall review result" }),
-});
-
 function submissionFor(kind: WikiAgentExecutionRequest["node"]["kind"]): SubmissionCollector | undefined {
   if (kind === "plan" || kind === "replan") return { toolName: "wiki_submit_plan" };
   if (kind === "review") return { toolName: "wiki_submit_review" };
@@ -470,7 +450,7 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
       promptGuidelines: ["Call wiki_submit_plan exactly once when the final page plan is ready."],
       parameters: planSubmissionSchema,
       async execute(_toolCallId, params) {
-        recordSubmission(submission, params);
+        recordSubmission(submission, parsePlanSubmission(params));
         return { content: [{ type: "text", text: "Wiki plan recorded." }], details: undefined };
       },
     };
@@ -483,7 +463,7 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
     promptGuidelines: ["Call wiki_submit_review exactly once when the review is complete."],
     parameters: reviewSubmissionSchema,
     async execute(_toolCallId, params) {
-      recordSubmission(submission, params);
+      recordSubmission(submission, parseReviewSubmission(params));
       return { content: [{ type: "text", text: "Wiki review recorded." }], details: undefined };
     },
   };

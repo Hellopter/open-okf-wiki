@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { MAX_RESEARCH_SCOPES, parsePlanSubmission, parseReviewSubmission } from "./control-submissions.js";
 import { createPiAgentExecutor, WikiAgentProtocolError } from "./executor.js";
 import { inspectWiki } from "./inspect.js";
 import { loadWikiPromptGuidance } from "./prompt-guidance.js";
@@ -15,10 +16,8 @@ import {
   type WikiNodeKind,
   type WikiNodeMetrics,
   type WikiNodeStatus,
-  type WikiPlanResult,
   type WikiResearchReceipt,
   type WikiReviewDefect,
-  type WikiReviewResult,
   type WikiRunEvent,
   type WikiRunEventKind,
   type WikiRunRequest,
@@ -28,7 +27,6 @@ import {
   type WikiWorkflowListener,
 } from "./workflow-types.js";
 
-const MAX_RESEARCH_CONCURRENCY = 4;
 const MAX_NODE_ATTEMPTS = 3;
 const MAX_STRUCTURAL_REPLANS = 2;
 const MAX_NODE_OUTPUT_CHARS = 48 * 1024;
@@ -307,7 +305,7 @@ export class WikiWorkflowEngine {
     while (this.current?.status === "running") {
       const runnable = this.runnableNodes();
       if (runnable.length === 0) return;
-      const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_RESEARCH_CONCURRENCY);
+      const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_RESEARCH_SCOPES);
       if (research.length > 0) {
         await Promise.all(research.map(async (node) => await this.executeNode(node)));
       } else {
@@ -425,7 +423,7 @@ export class WikiWorkflowEngine {
       }
       case "plan":
       case "replan": {
-        const plan = parsePlan(node.result);
+        const plan = parsePlanSubmission(node.result);
         node.result = plan;
         const phase = { id: `research:${node.id}`, title: "Research" };
         const scopeNodes = plan.researchScopes.map((scope) => this.queueNode(
@@ -471,7 +469,7 @@ export class WikiWorkflowEngine {
         return;
       }
       case "review": {
-        const review = parseReview(node.result);
+        const review = parseReviewSubmission(node.result);
         node.result = review;
         if (review.defects.length === 0) {
           run.status = "succeeded";
@@ -636,7 +634,7 @@ export class WikiWorkflowEngine {
   private previousReviewSignature(currentNodeId: string): string | undefined {
     const reviews = this.requireRun().nodes
       .filter((node) => node.kind === "review" && node.id !== currentNodeId && node.status === "succeeded")
-      .map((node) => parseReview(node.result));
+      .map((node) => parseReviewSubmission(node.result));
     const latest = reviews.at(-1);
     return latest ? defectsFingerprint(latest.defects) : undefined;
   }
@@ -789,8 +787,9 @@ async function promptFor(node: WikiNode, run: WikiRunSnapshot): Promise<string> 
   const guidance = await loadWikiPromptGuidance(node.kind, run.language);
   switch (node.kind) {
     case "plan":
-    case "replan":
       return `${guidance}\n\n## Runtime Context\nCurrent Git inspection:\n\`\`\`json\n${prettyJson(run.inspection)}\n\`\`\`\nFocus: ${run.focus ?? "none"}\nReplan trigger:\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
+    case "replan":
+      return `${guidance}\n\n## Runtime Context\nCurrent Git inspection:\n\`\`\`json\n${prettyJson(run.inspection)}\n\`\`\`\nFocus: ${run.focus ?? "none"}\nReplan trigger:\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\`\n\n${approvedPlanContext(node, run, "Previous Approved Plan")}`;
     case "research":
       return `${guidance}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     case "write":
@@ -798,7 +797,7 @@ async function promptFor(node: WikiNode, run: WikiRunSnapshot): Promise<string> 
     case "repair":
       return `${guidance}\n\n## Repair Input\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     case "review":
-      return `${guidance}\n\n## Validation Context\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
+      return `${guidance}\n\n## Review Scope\nFocus: ${run.focus ?? "none"}\n\n${approvedPlanContext(node, run, "Approved Plan")}\n\n## Validation Context\n\`\`\`json\n${prettyJson(node.input)}\n\`\`\``;
     default:
       throw new Error(`No prompt available for ${node.kind}`);
   }
@@ -831,6 +830,26 @@ function writerContext(node: WikiNode, run: WikiRunSnapshot): string {
   return sections.join("\n");
 }
 
+function approvedPlanContext(node: WikiNode, run: WikiRunSnapshot, heading: string): string {
+  const plan = upstreamPlan(node, run)?.result;
+  return `## ${heading}\n\`\`\`json\n${prettyJson(plan)}\n\`\`\``;
+}
+
+function upstreamPlan(node: WikiNode, run: WikiRunSnapshot): WikiNode | undefined {
+  const queue = [...node.dependsOn];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const candidate = run.nodes.find((item) => item.id === id);
+    if (!candidate) continue;
+    if (candidate.kind === "plan" || candidate.kind === "replan") return candidate;
+    queue.push(...candidate.dependsOn);
+  }
+  return undefined;
+}
+
 /** Validate control submissions and local service results before publishing node state. */
 function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
   switch (kind) {
@@ -838,11 +857,11 @@ function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
       return parseInspection(value);
     case "plan":
     case "replan":
-      return parsePlan(value);
+      return parsePlanSubmission(value);
     case "validate":
       return parseValidation(value);
     case "review":
-      return parseReview(value);
+      return parseReviewSubmission(value);
     case "research":
     case "write":
     case "repair":
@@ -862,40 +881,6 @@ function parseValidation(value: unknown): WikiValidation {
     throw new Error("Validator returned an invalid result");
   }
   return { ok: value.ok, errors: [...value.errors], pages: [...value.pages] };
-}
-
-function parsePlan(value: unknown): WikiPlanResult {
-  if (!isRecord(value) || !Array.isArray(value.pages) || !Array.isArray(value.researchScopes) || typeof value.rationale !== "string") {
-    throw new Error("Planner submission must include pages, researchScopes, and rationale");
-  }
-  const pages = value.pages.map((page) => {
-    if (!isRecord(page) || !isWikiPagePath(page.path) || typeof page.title !== "string" || typeof page.purpose !== "string" || !isStringArray(page.sources)) {
-      throw new Error("Planner returned an invalid page plan");
-    }
-    return { path: page.path, title: page.title, purpose: page.purpose, sources: [...page.sources] };
-  });
-  const seen = new Set<string>();
-  const researchScopes = value.researchScopes.slice(0, MAX_RESEARCH_CONCURRENCY).map((scope) => {
-    if (!isRecord(scope) || typeof scope.id !== "string" || !scope.id.trim() || typeof scope.task !== "string" || !scope.task.trim() || seen.has(scope.id)) {
-      throw new Error("Planner returned invalid or duplicate research scopes");
-    }
-    seen.add(scope.id);
-    return { id: scope.id, task: scope.task };
-  });
-  return { pages, researchScopes, rationale: value.rationale };
-}
-
-function parseReview(value: unknown): WikiReviewResult {
-  if (!isRecord(value) || !Array.isArray(value.defects) || typeof value.summary !== "string") {
-    throw new Error("Reviewer submission must include defects and summary");
-  }
-  const defects = value.defects.map((defect) => {
-    if (!isRecord(defect) || typeof defect.id !== "string" || typeof defect.page !== "string" || !isReviewKind(defect.kind) || typeof defect.detail !== "string") {
-      throw new Error("Reviewer returned an invalid defect");
-    }
-    return { id: defect.id, page: defect.page, kind: defect.kind, detail: defect.detail };
-  });
-  return { defects, summary: value.summary };
 }
 
 function createResearchReceipt(node: WikiNode, run: WikiRunSnapshot, value: unknown): WikiResearchReceipt {
@@ -918,16 +903,6 @@ function isResearchReceipt(value: unknown): value is WikiResearchReceipt {
     && typeof value.task === "string"
     && typeof value.sourceFingerprint === "string"
     && typeof value.markdown === "string";
-}
-
-function isReviewKind(value: unknown): value is WikiReviewDefect["kind"] {
-  return value === "evidence" || value === "link" || value === "format" || value === "topology" || value === "coverage";
-}
-
-function isWikiPagePath(value: unknown): value is string {
-  if (typeof value !== "string" || !value.endsWith(".md")) return false;
-  const normalized = value.replaceAll("\\", "/");
-  return !normalized.startsWith("/") && !normalized.startsWith("wiki/") && !normalized.split("/").some((part) => part === "" || part === "." || part === "..");
 }
 
 function isStringArray(value: unknown): value is string[] {

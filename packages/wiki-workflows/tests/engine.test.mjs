@@ -108,6 +108,45 @@ test("research becomes a bounded Markdown handoff instead of a JSON-shaped resul
   assert.match(writerPrompt, /## Approved Plan/);
 });
 
+test("review and replan receive the plan and focus needed for coverage decisions", async () => {
+  let reviewPrompt = "";
+  let replanPrompt = "";
+  let reviews = 0;
+  const engine = createEngine({
+    async execute(request) {
+      if (request.node.kind === "plan" || request.node.kind === "replan") {
+        if (request.node.kind === "replan") replanPrompt = request.prompt;
+        return {
+          result: {
+            pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["src/index.ts#L1-L2"] }],
+            researchScopes: [],
+            rationale: "test",
+          },
+        };
+      }
+      if (request.node.kind === "write") return { result: undefined };
+      if (request.node.kind === "review") {
+        reviewPrompt = request.prompt;
+        return {
+          result: reviews++ === 0
+            ? { defects: [{ id: "coverage", page: "architecture.md", kind: "coverage", detail: "Add lifecycle coverage." }], summary: "missing coverage" }
+            : { defects: [], summary: "complete" },
+        };
+      }
+      throw new Error(`unexpected ${request.node.kind}`);
+    },
+  });
+
+  engine.start({ cwd: "/workspace", mode: "generate", focus: "document lifecycle" });
+  const snapshot = await engine.waitForIdle();
+  assert.equal(snapshot.status, "succeeded");
+  assert.match(reviewPrompt, /## Approved Plan/);
+  assert.match(reviewPrompt, /architecture\.md/);
+  assert.match(reviewPrompt, /Focus: document lifecycle/);
+  assert.match(replanPrompt, /## Previous Approved Plan/);
+  assert.match(replanPrompt, /architecture\.md/);
+});
+
 test("protocol failures retain the final text, history, and required submission", async () => {
   const engine = createEngine({
     async execute(request) {
@@ -258,7 +297,7 @@ test("structural review defects produce a replan and no more than four research 
       if (request.node.kind === "plan" || request.node.kind === "replan") return {
         result: {
           pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: ["src/index.ts#L1-L2"] }],
-          researchScopes: ["a", "b", "c", "d", "e"].map((id) => ({ id, task: id })),
+          researchScopes: ["a", "b", "c", "d"].map((id) => ({ id, task: id })),
           rationale: "test",
         },
       };
