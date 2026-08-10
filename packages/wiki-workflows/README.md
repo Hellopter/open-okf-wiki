@@ -16,16 +16,28 @@ Initialize once with `/wiki init --lang zh` (or `en`), then add sources with
 `--workspace <directory>` to either command when initialization was performed
 from a parent directory. The project directory name is the source identity,
 with no `id` alias. `/wiki generate` uses the saved language; `lang=zh|en` is
-only a one-run override. `/wiki` is a non-blocking status command. Use
+only a one-run override. `/wiki` shows command help without blocking. Use
 `/wiki open` to explicitly open the dedicated run console; `/wiki status`
 prints the current run, `/wiki history` prints a concise project history,
-`/wiki pause` and `/wiki resume` control scheduling, and `/wiki cancel` stops
-it. Run Pi from the workspace directory when starting or recovering a Wiki run.
+`/wiki pause` and `/wiki resume [runId]` control scheduling, and `/wiki cancel`
+stops it. Run Pi from the workspace directory when starting or recovering a
+Wiki run.
+
+On Pi session shutdown, active Agents are interrupted back to queued state and
+the run is persisted as paused to both the current Pi session branch and the
+project-scoped history. Pi's `/resume` restores the snapshot from that exact
+branch; `/wiki resume` then re-inspects Git before dispatch. A fresh Pi session
+can explicitly run `/wiki resume` to recover the most recently updated
+`running` or `paused` project run, or `/wiki resume <runId>` to select one.
+Another active run is never overwritten. `failed` and `blocked` records require
+an Agent (`r`) or phase (`R`) retry, while `succeeded` and `cancelled` records
+cannot be resumed.
 
 The extension owns the Wiki-specific dynamic DAG and active Pi-session state.
 It also retains the newest 100 terminal, project-scoped execution snapshots
 under Pi's agent directory, including bounded Agent output, attempts, and tool
-summaries. Pi supplies subagent sessions, automatic context compaction,
+summaries. History writes are serialized, awaited during shutdown, and report
+write failures through Pi. Pi supplies subagent sessions, automatic context compaction,
 provider retry, model selection, and tool execution. The console reports those
 runtime events and permits a settled Agent retry or a phase retry without
 rerunning valid upstream work. Retrying historical terminal history forks a new

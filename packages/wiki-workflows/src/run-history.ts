@@ -89,7 +89,7 @@ export function createWikiRunHistoryStore(options: WikiRunHistoryStoreOptions): 
     async list(): Promise<WikiRunSummary[]> {
       const now = Date.now();
       if (cached && now - cachedAt < LIST_CACHE_TTL_MS) return cached.map(clone);
-      const summaries = (await loadAll()).map(summarizeWikiRun).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const summaries = (await loadAll()).map(summarizeWikiRun).sort(compareRunRecency);
       cached = summaries;
       cachedAt = now;
       return summaries.map(clone);
@@ -201,4 +201,8 @@ function isMissing(error: unknown): error is NodeJS.ErrnoException {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function compareRunRecency(left: Pick<WikiRunSummary, "id" | "updatedAt">, right: Pick<WikiRunSummary, "id" | "updatedAt">): number {
+  return right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id);
 }

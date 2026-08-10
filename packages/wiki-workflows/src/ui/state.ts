@@ -436,7 +436,7 @@ export type WikiNavigatorAction =
   | { type: "none" }
   | { type: "close" }
   | { type: "pause" }
-  | { type: "resume" }
+  | { type: "resume"; runId?: string }
   | { type: "cancel" }
   | { type: "loadRun"; runId: string }
   | { type: "retry"; runId: string; nodeId: string }

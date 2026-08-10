@@ -16,7 +16,7 @@ import { uiStrings, type WikiUiLanguage } from "./strings.js";
 import { renderWikiResultDelivery } from "./text.js";
 
 const RESULT_CUSTOM_TYPE = "okf-wiki-result";
-const TERMINAL_EVENTS = new Set(["run_completed", "run_cancelled", "run_blocked"]);
+const TERMINAL_EVENTS = new Set(["run_completed", "run_cancelled", "run_failed", "run_blocked"]);
 
 export interface WikiUiHostBindOptions {
   engine: WikiWorkflowEngine;

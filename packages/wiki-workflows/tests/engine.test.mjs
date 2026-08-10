@@ -92,6 +92,7 @@ async function fixture(t, options = {}) {
     async execute(request) {
       requests.push(request);
       if (request.node.kind === "research") {
+        if (options.onResearch) return await options.onResearch(request);
         return { result: `## Verified Evidence\n- ${request.node.input.scope.id}: \`src-core/index.ts#L1\`\n\n## Gaps\n- None.\n` };
       }
       if (request.node.kind === "synthesis") {
@@ -171,6 +172,91 @@ test("restore rejects a structurally corrupt bare v5 snapshot", () => {
   };
 
   assert.equal(engine.restore(malformed), undefined);
+});
+
+test("interrupt is idempotent before any Wiki run starts", async () => {
+  const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
+  assert.equal(await engine.interrupt(), undefined);
+});
+
+test("execution failure publishes terminal snapshots and a run_failed event", async () => {
+  let id = 0;
+  const observed = [];
+  const engine = new WikiWorkflowEngine({
+    executor: { execute: async () => ({ result: undefined }) },
+    inspect: async () => { throw new Error("inspection unavailable"); },
+    createId: () => `failure-${++id}`,
+    now: () => new Date("2026-08-10T00:00:00.000Z"),
+  });
+  engine.subscribe((value, event) => observed.push({ value, event }));
+
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const failed = await engine.waitForIdle();
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.completedAt, "2026-08-10T00:00:00.000Z");
+  const nodeFailure = observed.find(({ event }) => event.kind === "node_failed");
+  assert.equal(nodeFailure.value.status, "failed", "node failure persistence must already contain the terminal run status");
+  assert.equal(nodeFailure.value.completedAt, "2026-08-10T00:00:00.000Z");
+  assert.equal(observed.at(-1).event.kind, "run_failed");
+});
+
+test("parallel failure aborts sibling agents before publishing one terminal event", async (t) => {
+  let siblingAborted = false;
+  const f = await fixture(t, {
+    onResearch: async (request) => {
+      if (request.node.input.scope.id.includes("src-core")) throw new Error("primary research failed");
+      return await new Promise((resolve, reject) => {
+        const onAbort = () => {
+          siblingAborted = true;
+          reject(new Error("sibling research aborted"));
+        };
+        if (request.signal.aborted) onAbort();
+        else request.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  });
+  const observed = [];
+  f.engine.subscribe((value, event) => observed.push({ value, event }));
+
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  const failed = await f.engine.waitForIdle();
+
+  assert.equal(failed.status, "failed");
+  assert.equal(siblingAborted, true);
+  assert.deepEqual(
+    failed.nodes.filter((node) => node.kind === "research").map((node) => node.status).sort(),
+    ["cancelled", "failed"],
+  );
+  assert.equal(failed.nodes.some((node) => node.status === "running"), false);
+  assert.equal(observed.filter(({ event }) => event.kind === "run_failed").length, 1);
+  assert.equal(observed.at(-1).event.kind, "run_failed");
+  assert.equal(observed.at(-1).value.nodes.some((node) => node.status === "running"), false);
+});
+
+test("an active agent failure while scheduling is paused makes the run failed", async (t) => {
+  let rejectResearch;
+  let researchStarted;
+  const started = new Promise((resolve) => { researchStarted = resolve; });
+  const f = await fixture(t, {
+    inspection: { sourcePaths: ["src-core"] },
+    onResearch: async () => await new Promise((_resolve, reject) => {
+      rejectResearch = reject;
+      researchStarted();
+    }),
+  });
+  const eventKinds = [];
+  f.engine.subscribe((_value, event) => eventKinds.push(event.kind));
+
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  await started;
+  f.engine.pause();
+  rejectResearch(new Error("research failed while paused"));
+  const failed = await f.engine.waitForIdle();
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.nodes.find((node) => node.kind === "research").status, "failed");
+  assert.equal(eventKinds.at(-1), "run_failed");
 });
 
 test("generate fans out fresh page writers four at a time and gates Overview", async (t) => {

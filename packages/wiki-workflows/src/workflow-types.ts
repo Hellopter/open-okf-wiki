@@ -120,6 +120,7 @@ export type WikiRunEventKind =
   | "run_resumed"
   | "run_cancelled"
   | "run_completed"
+  | "run_failed"
   | "run_blocked"
   | "node_queued"
   | "node_started"

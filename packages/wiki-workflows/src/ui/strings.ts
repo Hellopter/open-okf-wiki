@@ -38,6 +38,7 @@ export interface WikiUiStrings {
   stageNotScheduled: (title: string) => string;
   waitPhaseSettle: string;
   selectActivePause: string;
+  anotherRunActive: string;
   onlyRunningPause: string;
   noActiveCancel: string;
   onlyCompletedDelete: string;
@@ -120,6 +121,7 @@ const EN: WikiUiStrings = {
   stageNotScheduled: (title) => `${title} has not been scheduled yet`,
   waitPhaseSettle: "Wait for running agents in the selected stage to settle before retrying it",
   selectActivePause: "Select the active Wiki run to pause or resume",
+  anotherRunActive: "Another Wiki run is active; open it before using pause or resume",
   onlyRunningPause: "Only a running or paused run can be paused",
   noActiveCancel: "No active Wiki run to cancel",
   onlyCompletedDelete: "Only inactive completed history can be deleted",
@@ -200,6 +202,7 @@ const ZH: WikiUiStrings = {
   stageNotScheduled: (title) => `${title} 尚未调度`,
   waitPhaseSettle: "请等待该阶段运行中的代理结束后再重试",
   selectActivePause: "请选择活动的 Wiki 运行以暂停或恢复",
+  anotherRunActive: "另一个 Wiki 运行处于活动状态；请先打开该运行再暂停或恢复",
   onlyRunningPause: "仅运行中或已暂停的运行可暂停",
   noActiveCancel: "没有可取消的活动 Wiki 运行",
   onlyCompletedDelete: "仅可删除非活动的已完成历史",

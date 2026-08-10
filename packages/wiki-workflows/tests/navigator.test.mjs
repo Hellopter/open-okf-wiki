@@ -405,6 +405,35 @@ test("live navigator keeps a complete frame and refreshes SelectList entries on 
   await pending;
 });
 
+test("navigator resumes the selected recoverable history by run id", async () => {
+  const historical = { ...structuredClone(run), id: "run-history", status: "paused" };
+  const resumed = [];
+  const controller = {
+    ...controllerFor(historical),
+    getActiveRunId: () => undefined,
+    resume: async (runId) => { resumed.push(runId); },
+  };
+  const tui = { terminal: { rows: 24 }, requestRender() {} };
+  let component;
+  const ui = {
+    custom(factory) {
+      return new Promise((resolve) => {
+        component = factory(tui, PLAIN_THEME, {}, resolve);
+      });
+    },
+    notify() {},
+  };
+
+  const pending = openWikiNavigator(ui, controller, { initialRunId: historical.id, language: "en" });
+  component.handleInput("p");
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(resumed, ["run-history"]);
+
+  component.dispose();
+  await pending;
+});
+
 test("navigator confirmation stays inside the overlay and keeps its keyboard ownership", async () => {
   const calls = [];
   const controller = {

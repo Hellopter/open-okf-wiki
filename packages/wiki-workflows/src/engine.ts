@@ -69,6 +69,12 @@ export class WikiWorkflowEngine {
   private artifactStore?: WikiArtifactStore;
   private artifactStoreWorkspace?: string;
   private pumping?: Promise<void>;
+  private pendingTerminalEvent?: {
+    runId: string;
+    kind: "run_completed" | "run_failed" | "run_blocked";
+    nodeId?: string;
+    message: string;
+  };
 
   constructor(options: WikiWorkflowEngineOptions = {}) {
     this.dependencies = {
@@ -106,6 +112,7 @@ export class WikiWorkflowEngine {
       createdAt,
       updatedAt: createdAt,
     };
+    this.pendingTerminalEvent = undefined;
     this.emit("run_started", undefined, `Started ${request.mode} Wiki run`);
     this.emit("node_queued", inspectionNode.id, inspectionNode.label);
     this.schedule();
@@ -139,6 +146,7 @@ export class WikiWorkflowEngine {
     this.ensureArtifactStore(session.snapshot.cwd);
     this.abortControllers();
     this.current = clone(session.snapshot);
+    this.pendingTerminalEvent = undefined;
     let recovered = false;
     for (const node of this.current.nodes) {
       if (node.status !== "running") continue;
@@ -222,6 +230,7 @@ export class WikiWorkflowEngine {
     this.abortControllers();
     await this.copyArtifactsForFork(snapshot, branch);
     this.current = branch;
+    this.pendingTerminalEvent = undefined;
     const affected = affectedNodeIds(branch, rootIds);
     for (const node of branch.nodes) {
       if (affected.has(node.id)) resetForkedNode(node, now);
@@ -252,6 +261,8 @@ export class WikiWorkflowEngine {
     this.invalidateFromMany(rootIds, reason, true);
     run.status = "running";
     run.blockedReason = undefined;
+    run.completedAt = undefined;
+    this.pendingTerminalEvent = undefined;
     if (kind === "phase") this.emit("phase_retried", undefined, reason, phaseId ? { phaseId } : undefined);
     else this.emit("node_retried", rootIds[0], reason);
     this.schedule();
@@ -276,6 +287,8 @@ export class WikiWorkflowEngine {
     await this.reconcileGitInputs();
     run.status = "running";
     run.blockedReason = undefined;
+    run.completedAt = undefined;
+    this.pendingTerminalEvent = undefined;
     this.emit("run_resumed", undefined, "Scheduling resumed");
     this.schedule();
     return this.getSnapshot();
@@ -285,6 +298,7 @@ export class WikiWorkflowEngine {
     const run = this.requireRun();
     if (["succeeded", "cancelled"].includes(run.status)) return this.getSnapshot();
     run.status = "cancelled";
+    this.pendingTerminalEvent = undefined;
     for (const node of run.nodes) {
       if (node.status === "queued" || node.status === "invalidated" || node.status === "blocked" || node.status === "running") {
         node.status = "cancelled";
@@ -301,8 +315,12 @@ export class WikiWorkflowEngine {
 
   /** Called during extension shutdown: preserve the next attempt as queued. */
   async interrupt(): Promise<WikiRunSnapshot | undefined> {
-    const run = this.requireRun();
-    if (run.status !== "running" && run.status !== "paused") return this.getSnapshot();
+    const run = this.current;
+    if (!run) return undefined;
+    if (run.status !== "running" && run.status !== "paused") {
+      this.abortControllers();
+      return this.getSnapshot();
+    }
     for (const node of run.nodes) {
       if (node.status !== "running") continue;
       node.status = "queued";
@@ -335,16 +353,24 @@ export class WikiWorkflowEngine {
       if (runnable.length === 0) return;
       const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_RESEARCH_SCOPES_PER_BATCH);
       if (research.length > 0) {
-        await Promise.all(research.map(async (node) => await this.executeNode(node)));
+        await this.executeBatch(research);
+        this.emitPendingTerminalEvent();
         continue;
       }
       const pageWrites = runnable.filter((node) => node.kind === "write").slice(0, MAX_CONCURRENT_WRITERS);
       if (pageWrites.length > 0) {
-        await Promise.all(pageWrites.map(async (node) => await this.executeNode(node)));
+        await this.executeBatch(pageWrites);
       } else {
         await this.executeNode(runnable[0]);
       }
+      this.emitPendingTerminalEvent();
     }
+  }
+
+  private async executeBatch(nodes: WikiNode[]): Promise<void> {
+    const results = await Promise.allSettled(nodes.map(async (node) => await this.executeNode(node)));
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (rejected) throw rejected.reason;
   }
 
   private runnableNodes(): WikiNode[] {
@@ -358,9 +384,7 @@ export class WikiWorkflowEngine {
     if (node.attempt >= MAX_NODE_ATTEMPTS) {
       node.status = "blocked";
       node.activity = { state: "waiting", message: "Maximum node attempts reached", updatedAt: this.now() };
-      run.status = "blocked";
-      run.blockedReason = `${node.label} reached ${MAX_NODE_ATTEMPTS} attempts`;
-      this.emit("run_blocked", node.id, run.blockedReason);
+      this.markTerminalRun("blocked", `${node.label} reached ${MAX_NODE_ATTEMPTS} attempts`, node.id);
       return;
     }
     if (node.result !== undefined || node.error || node.output || node.history?.length) this.archiveAttempt(node);
@@ -409,17 +433,15 @@ export class WikiWorkflowEngine {
       } else {
         node.error = { message: errorMessage(error), code: controller.signal.aborted ? "cancelled" : "execution_failed" };
       }
-      node.activity = { state: "completed", message: node.error.message, updatedAt: this.now() };
-      node.finishedAt = this.now();
-      this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
-      if (run.status === "running" && loopBudgetExceeded) {
-        run.status = "blocked";
-        run.blockedReason = node.error.message;
-        this.emit("run_blocked", node.id, run.blockedReason);
-      } else if (run.status === "running" && node.status === "failed") {
-        run.status = "failed";
-        run.blockedReason = `${node.label} failed`;
+      const finishedAt = this.now();
+      node.activity = { state: "completed", message: node.error.message, updatedAt: finishedAt };
+      node.finishedAt = finishedAt;
+      if ((run.status === "running" || run.status === "paused") && loopBudgetExceeded) {
+        this.markTerminalRun("blocked", node.error.message, node.id, finishedAt);
+      } else if ((run.status === "running" || run.status === "paused") && node.status === "failed") {
+        this.markTerminalRun("failed", `${node.label} failed`, node.id, finishedAt);
       }
+      this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
     } finally {
       this.controllers.delete(node.id);
     }
@@ -614,9 +636,7 @@ export class WikiWorkflowEngine {
         if (input.intent === "repair" && input.checkNoProgress) {
           const afterSha256 = await hashWikiPage(run.cwd, input.page.path) ?? MISSING_PAGE_SHA256;
           if (afterSha256 === input.beforeSha256) {
-            run.status = "blocked";
-            run.blockedReason = `Repair made no change to ${input.page.path}`;
-            this.emit("run_blocked", node.id, run.blockedReason);
+            this.markTerminalRun("blocked", `Repair made no change to ${input.page.path}`, node.id);
             return;
           }
         }
@@ -639,15 +659,11 @@ export class WikiWorkflowEngine {
         } else {
           const signature = validationIssuesFingerprint(validation.issues);
           if (signature === this.previousValidationSignature(node.id)) {
-            run.status = "blocked";
-            run.blockedReason = "Validation produced the same unresolved error set twice";
-            this.emit("run_blocked", node.id, run.blockedReason);
+            this.markTerminalRun("blocked", "Validation produced the same unresolved error set twice", node.id);
             return;
           }
           if (validation.issues.some((issue) => !issue.page)) {
-            run.status = "blocked";
-            run.blockedReason = "Validation found a global safety issue that cannot be routed to one page";
-            this.emit("run_blocked", node.id, run.blockedReason);
+            this.markTerminalRun("blocked", "Validation found a global safety issue that cannot be routed to one page", node.id);
             return;
           }
           await this.queuePageRepairs([node.id], synthesisNodeId, validation.issues.map((issue) => issue.page!), { validation });
@@ -668,9 +684,7 @@ export class WikiWorkflowEngine {
         const signature = defectsFingerprint(review.defects);
         const previous = this.previousReviewSignature(node.id);
         if (signature === previous) {
-          run.status = "blocked";
-          run.blockedReason = "Review produced the same unresolved defect set twice";
-          this.emit("run_blocked", node.id, run.blockedReason);
+          this.markTerminalRun("blocked", "Review produced the same unresolved defect set twice", node.id);
           return;
         }
         const synthesisNodeId = synthesisNodeIdFor(node, run);
@@ -683,9 +697,7 @@ export class WikiWorkflowEngine {
             .filter((input) => input.mode === "structural" && input.structuralRoundId)
             .map((input) => input.structuralRoundId)).size;
           if (resyntheses >= MAX_STRUCTURAL_RESYNTHESES) {
-            run.status = "blocked";
-            run.blockedReason = `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`;
-            this.emit("run_blocked", node.id, run.blockedReason);
+            this.markTerminalRun("blocked", `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`, node.id);
             return;
           }
           this.queueStructuralSynthesis(node.id, synthesisNodeId, routedReview);
@@ -700,9 +712,7 @@ export class WikiWorkflowEngine {
       case "finalize": {
         if (isSourceDriftResult(node.result)) {
           if (run.sourceRestartCount >= 1) {
-            run.status = "blocked";
-            run.blockedReason = "Source fingerprint changed twice during this Wiki run";
-            this.emit("run_blocked", node.id, run.blockedReason);
+            this.markTerminalRun("blocked", "Source fingerprint changed twice during this Wiki run", node.id);
             return;
           }
           run.sourceRestartCount += 1;
@@ -716,9 +726,7 @@ export class WikiWorkflowEngine {
           this.queueNode("inspect", "Re-inspect Git scope", [], { requestedMode: run.requestedMode, sourceRestart: run.sourceRestartCount }, { id: "inspect", title: "Inspect" });
           return;
         }
-        run.status = "succeeded";
-        run.completedAt = this.now();
-        this.emit("run_completed", undefined, "Wiki validation, review, and finalization passed");
+        this.markTerminalRun("succeeded", "Wiki validation, review, and finalization passed");
         return;
       }
     }
@@ -892,9 +900,7 @@ export class WikiWorkflowEngine {
       .filter((packet): packet is PagePacketInput => packet?.intent === "repair" && packet.synthesisNodeId === synthesisNodeId)
       .map((packet) => packet.writeGroupId)).size;
     if (previousRounds >= MAX_LOCAL_REPAIR_ROUNDS_PER_PLAN) {
-      run.status = "blocked";
-      run.blockedReason = `Local repair exceeded the ${MAX_LOCAL_REPAIR_ROUNDS_PER_PLAN}-round budget for this Plan`;
-      this.emit("run_blocked", dependsOn[0], run.blockedReason);
+      this.markTerminalRun("blocked", `Local repair exceeded the ${MAX_LOCAL_REPAIR_ROUNDS_PER_PLAN}-round budget for this Plan`, dependsOn[0]);
       return [];
     }
     const requested = new Set(pagePaths.map(normalizePagePath));
@@ -1158,11 +1164,45 @@ export class WikiWorkflowEngine {
     this.controllers.clear();
   }
 
+  private markTerminalRun(
+    status: "succeeded" | "failed" | "blocked",
+    message: string,
+    nodeId?: string,
+    at = this.now(),
+  ): void {
+    const run = this.requireRun();
+    if (isTerminalRun(run)) return;
+    run.status = status;
+    run.blockedReason = status === "succeeded" ? undefined : message;
+    run.completedAt = at;
+    this.pendingTerminalEvent = {
+      runId: run.id,
+      kind: status === "succeeded" ? "run_completed" : status === "failed" ? "run_failed" : "run_blocked",
+      nodeId,
+      message,
+    };
+    if (status !== "succeeded") this.abortControllers();
+  }
+
+  private emitPendingTerminalEvent(): void {
+    const pending = this.pendingTerminalEvent;
+    const run = this.current;
+    if (!pending || !run || pending.runId !== run.id) return;
+    const expectedStatus = pending.kind === "run_completed" ? "succeeded"
+      : pending.kind === "run_failed" ? "failed"
+        : "blocked";
+    if (run.status !== expectedStatus) {
+      this.pendingTerminalEvent = undefined;
+      return;
+    }
+    this.pendingTerminalEvent = undefined;
+    this.emit(pending.kind, pending.nodeId, pending.message);
+  }
+
   private failRun(error: unknown): void {
     if (!this.current || this.current.status !== "running") return;
-    this.current.status = "failed";
-    this.current.blockedReason = errorMessage(error);
-    this.emit("run_blocked", undefined, this.current.blockedReason);
+    this.markTerminalRun("failed", errorMessage(error));
+    this.emitPendingTerminalEvent();
   }
 
   private emit(kind: WikiRunEventKind, nodeId?: string, message?: string, data?: Record<string, unknown>): void {

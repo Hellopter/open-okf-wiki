@@ -6,7 +6,7 @@ const RUN_STATUSES = new Set(["running", "paused", "succeeded", "failed", "block
 const ACTIVITY_STATES = new Set(["idle", "running", "compacting", "retrying", "waiting", "completed"]);
 const HISTORY_KINDS = new Set(["message", "tool_call", "tool_result", "error"]);
 const EVENT_KINDS = new Set([
-  "run_started", "run_paused", "run_resumed", "run_cancelled", "run_completed", "run_blocked",
+  "run_started", "run_paused", "run_resumed", "run_cancelled", "run_completed", "run_failed", "run_blocked",
   "node_queued", "node_started", "node_activity", "node_succeeded", "node_failed", "node_invalidated",
   "node_cancelled", "node_retried", "phase_retried", "run_forked", "recovered",
 ]);

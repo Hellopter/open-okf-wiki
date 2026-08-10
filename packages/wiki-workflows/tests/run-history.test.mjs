@@ -56,10 +56,12 @@ test("project-scoped run history persists complete snapshots and supports deleti
   const store = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
   const first = snapshot("first", "succeeded", "2026-08-08T00:00:00.000Z");
   const second = snapshot("second", "failed", "2026-08-09T00:00:00.000Z");
+  const zeta = snapshot("zeta", "succeeded", "2026-08-09T00:00:00.000Z");
 
   await store.save(first);
   await store.save(second);
-  assert.deepEqual((await store.list()).map((item) => item.id), ["second", "first"]);
+  await store.save(zeta);
+  assert.deepEqual((await store.list()).map((item) => item.id), ["zeta", "second", "first"]);
 
   const loaded = await store.load("first");
   loaded.nodes[0].label = "Changed in memory";

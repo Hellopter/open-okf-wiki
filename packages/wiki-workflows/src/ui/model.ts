@@ -13,7 +13,7 @@ export interface WikiNavigatorController {
   retryPhase(runId: string, phaseId: string): Promise<WikiRunSnapshot | undefined> | WikiRunSnapshot | undefined;
   deleteRun(runId: string): Promise<void> | void;
   pause(): Promise<void> | void;
-  resume(): Promise<void> | void;
+  resume(runId?: string): Promise<void> | void;
   cancel(): Promise<void> | void;
 }
 

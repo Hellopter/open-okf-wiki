@@ -29,6 +29,7 @@ interface ParsedRunCommand {
   action: "open" | "generate" | "refresh" | "status" | "history" | "pause" | "resume" | "cancel" | "help";
   focus?: string;
   language?: "zh" | "en";
+  runId?: string;
 }
 
 interface ParsedArtifactsCommand {
@@ -48,8 +49,12 @@ type ParsedCommand = ParsedRunCommand
 export function createWikiExtension(options: WikiExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
     let engine: WikiWorkflowEngine | undefined;
+    let unsubscribeEngine: (() => void) | undefined;
     let host: WikiUiHost | undefined;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    let historyWriteChain = Promise.resolve();
+    let historyWriteFailure: unknown;
+    let persistenceErrorReporter: ((message: string) => void) | undefined;
     const workspaceService = options.workspaceService ?? wikiWorkspaceService;
     const historyStores = new Map<string, WikiRunHistoryStore>();
     const historySummaries = new Map<string, WikiRunSummary[]>();
@@ -63,7 +68,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       }),
     });
 
-    const persistNow = (): void => {
+    const persistNow = async (): Promise<void> => {
       if (flushTimer) {
         clearTimeout(flushTimer);
         flushTimer = undefined;
@@ -72,22 +77,23 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       if (!session) return;
       pi.appendEntry(WIKI_RUN_CUSTOM_TYPE, session);
       rememberSnapshot(session.snapshot);
-      saveHistory(session.snapshot);
+      await enqueueHistorySave(session.snapshot);
     };
 
     const schedulePersist = (): void => {
       if (flushTimer) return;
       flushTimer = setTimeout(() => {
         flushTimer = undefined;
-        persistNow();
+        void persistNow();
       }, STATE_FLUSH_MS);
     };
 
     const bindEngine = (context: ExtensionContext): WikiWorkflowEngine => {
+      unsubscribeEngine?.();
       engine = createEngine(context);
-      engine.subscribe((snapshot, event) => {
+      unsubscribeEngine = engine.subscribe((snapshot, event) => {
         rememberSnapshot(snapshot);
-        if (isCriticalEvent(event)) persistNow();
+        if (isCriticalEvent(event)) void persistNow();
         else schedulePersist();
       });
       return engine;
@@ -95,13 +101,14 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
     const currentEngine = (context: ExtensionContext): WikiWorkflowEngine => engine ?? bindEngine(context);
 
-    const restoreForWorkspace = (context: ExtensionContext): void => {
-      const restored = latestSessionState(context);
+    const restoreForWorkspace = async (context: ExtensionContext): Promise<void> => {
+      const workspace = await workspaceForNavigator(context.cwd);
+      const restored = latestSessionState(context, workspace?.root ?? context.cwd);
       if (!restored) return;
       const snapshot = currentEngine(context).restore(restored);
       if (snapshot) {
         rememberSnapshot(snapshot);
-        saveHistory(snapshot);
+        await enqueueHistorySave(snapshot);
       }
     };
 
@@ -110,8 +117,9 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         clearTimeout(flushTimer);
         flushTimer = undefined;
       }
+      persistenceErrorReporter = (message) => context.ui.notify(message, "error");
       bindEngine(context);
-      restoreForWorkspace(context);
+      await restoreForWorkspace(context);
       host?.unbind({ clearRetention: true });
       host = undefined;
       // Bind panel/status for the session. openNavigator rebinds with a fresh controller.
@@ -121,9 +129,17 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     pi.on("session_shutdown", async () => {
       host?.unbind({ clearRetention: true });
       host = undefined;
-      if (!engine) return;
-      await engine.interrupt();
-      persistNow();
+      if (engine) {
+        await engine.interrupt();
+        await engine.waitForIdle();
+        await persistNow();
+      } else {
+        await historyWriteChain;
+      }
+      unsubscribeEngine?.();
+      unsubscribeEngine = undefined;
+      engine = undefined;
+      persistenceErrorReporter = undefined;
     });
 
     async function bindHost(context: ExtensionContext): Promise<void> {
@@ -209,7 +225,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
                 language: command.language ?? workspace.language,
                 focus: command.focus,
               });
-              persistNow();
+              await persistNow();
               await ensureHost(context);
               host?.onRunStarted(snapshot);
               notifyRunStarted(context.ui, snapshot, command.language ?? workspace.language);
@@ -221,7 +237,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           case "pause":
             try {
               currentEngine(context).pause();
-              persistNow();
+              await persistNow();
               host?.refresh();
               context.ui.notify("Wiki scheduling paused.", "info");
             } catch (error) {
@@ -230,8 +246,9 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
             return;
           case "resume":
             try {
-              await currentEngine(context).resume();
-              persistNow();
+              const workspace = await workspaceService.load(context.cwd);
+              await resumeRun(currentEngine(context), workspace.root, command.runId);
+              await persistNow();
               host?.refresh();
               context.ui.notify("Wiki scheduling resumed after Git re-inspection.", "info");
             } catch (error) {
@@ -241,7 +258,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           case "cancel":
             try {
               await currentEngine(context).cancel();
-              persistNow();
+              await persistNow();
               host?.refresh();
               context.ui.notify("Wiki run cancelled.", "info");
             } catch (error) {
@@ -292,6 +309,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         loadRun: async (runId) => {
           const current = active.getSnapshot();
           if (current?.id === runId) return current;
+          await historyWriteChain;
           const snapshot = await historyStoreFor(historyRoot).load(runId);
           if (snapshot) rememberSnapshot(snapshot);
           return snapshot;
@@ -314,44 +332,47 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         retryNode: async (runId, nodeId) => {
           const current = active.getSnapshot();
           const retryCurrent = current?.id === runId && current && isExecutingRunStatus(current.status);
+          await historyWriteChain;
           const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
           if (!snapshot) throw new Error("Wiki run history is unavailable");
           const retried = retryCurrent
             ? await active.retryNode(nodeId)
             : await active.forkAndRetryNode(snapshot, nodeId);
-          persistNow();
+          await persistNow();
           return retried;
         },
         retryPhase: async (runId, phaseId) => {
           const current = active.getSnapshot();
           const retryCurrent = current?.id === runId && current && isExecutingRunStatus(current.status);
+          await historyWriteChain;
           const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
           if (!snapshot) throw new Error("Wiki run history is unavailable");
           const retried = retryCurrent
             ? await active.retryPhase(phaseId)
             : await active.forkAndRetryPhase(snapshot, phaseId);
-          persistNow();
+          await persistNow();
           return retried;
         },
         deleteRun: async (runId) => {
           if (runId === active.getSnapshot()?.id) throw new Error("The active Wiki run cannot be deleted");
+          await historyWriteChain;
           const snapshot = cachedSnapshots.get(runId) ?? await historyStoreFor(historyRoot).load(runId);
           if (!snapshot || !isTerminalRunStatus(snapshot.status)) throw new Error("Only completed Wiki history can be deleted");
           await historyStoreFor(historyRoot).delete(runId);
           cachedSnapshots.delete(runId);
           await refreshHistory(historyRoot);
         },
-        pause: () => {
+        pause: async () => {
           active.pause();
-          persistNow();
+          await persistNow();
         },
-        resume: async () => {
-          await active.resume();
-          persistNow();
+        resume: async (runId) => {
+          await resumeRun(active, historyRoot, runId);
+          await persistNow();
         },
         cancel: async () => {
           await active.cancel();
-          persistNow();
+          await persistNow();
         },
       };
     }
@@ -374,16 +395,72 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       historySummaries.set(workspace, mergeRunSummary(previous, next));
     }
 
-    function saveHistory(snapshot: WikiRunSnapshot): void {
-      const workspace = path.resolve(snapshot.cwd);
-      void (async () => {
-        try {
-          await historyStoreFor(workspace).save(snapshot);
-          await refreshHistory(workspace);
-        } catch {
-          // Durable history is supplemental to Pi's session entry; a later event retries it.
+    function enqueueHistorySave(snapshot: WikiRunSnapshot): Promise<void> {
+      const value = structuredClone(snapshot);
+      const workspace = path.resolve(value.cwd);
+      const operation = historyWriteChain.then(async () => {
+        await historyStoreFor(workspace).save(value);
+        await refreshHistory(workspace);
+        historyWriteFailure = undefined;
+      });
+      historyWriteChain = operation.catch((error: unknown) => {
+        const message = `Wiki run history could not be saved: ${errorMessage(error)}`;
+        if (historyWriteFailure !== message) {
+          console.warn(`[okf-wiki] ${message}`);
+          persistenceErrorReporter?.(message);
         }
-      })();
+        historyWriteFailure = message;
+      });
+      return historyWriteChain;
+    }
+
+    async function resumeRun(
+      active: WikiWorkflowEngine,
+      workspace: string,
+      runId?: string,
+    ): Promise<WikiRunSnapshot | undefined> {
+      const root = path.resolve(workspace);
+      const current = active.getSnapshot();
+
+      if (current && (!runId || current.id === runId)) {
+        assertResumable(current);
+        return await active.resume();
+      }
+      if (current && isExecutingRunStatus(current.status)) {
+        throw new Error(`Wiki run ${current.id} is already active; pause, resume, or cancel it before restoring another run`);
+      }
+
+      await historyWriteChain;
+      let snapshot: WikiRunSnapshot | undefined;
+      if (runId) {
+        snapshot = await historyStoreFor(root).load(runId);
+        if (!snapshot) throw new Error(`Wiki run ${runId} was not found in this workspace`);
+      } else {
+        const candidates = (await historyForWorkspace(root, active))
+          .filter((summary) => isRecoverableRunStatus(summary.status))
+          .sort(compareRunRecency);
+        for (const candidate of candidates) {
+          snapshot = await historyStoreFor(root).load(candidate.id);
+          if (snapshot) break;
+        }
+        if (!snapshot) throw new Error("No paused or interrupted Wiki run is available in this workspace");
+      }
+
+      if (path.resolve(snapshot.cwd) !== root) {
+        throw new Error(`Wiki run ${snapshot.id} belongs to a different workspace`);
+      }
+      assertResumable(snapshot);
+      const restored = active.restore(snapshot);
+      if (!restored) throw new Error(`Wiki run ${snapshot.id} could not be restored`);
+      return await active.resume();
+    }
+
+    function assertResumable(snapshot: WikiRunSnapshot): void {
+      if (isRecoverableRunStatus(snapshot.status)) return;
+      if (snapshot.status === "failed" || snapshot.status === "blocked") {
+        throw new Error(`Wiki run ${snapshot.id} requires a targeted node or phase retry`);
+      }
+      throw new Error(`Wiki run ${snapshot.id} is ${snapshot.status} and cannot be resumed`);
     }
 
     async function refreshHistory(workspace: string): Promise<WikiRunSummary[]> {
@@ -395,6 +472,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     }
 
     async function historyForWorkspace(workspace: string, active: WikiWorkflowEngine): Promise<WikiRunSummary[]> {
+      await historyWriteChain;
       await refreshHistory(workspace);
       return runsForWorkspace(workspace, active);
     }
@@ -407,9 +485,9 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       return currentSummary ? mergeRunSummary(summaries, currentSummary) : summaries.slice();
     }
 
-    function latestSessionState(context: ExtensionContext) {
-      const workspace = path.resolve(context.cwd);
-      const entries = context.sessionManager.getEntries();
+    function latestSessionState(context: ExtensionContext, workspaceRoot: string) {
+      const workspace = path.resolve(workspaceRoot);
+      const entries = context.sessionManager.getBranch();
       for (let index = entries.length - 1; index >= 0; index--) {
         const entry = entries[index];
         if (entry?.type !== "custom" || entry.customType !== WIKI_RUN_CUSTOM_TYPE) continue;
@@ -453,7 +531,11 @@ export default createWikiExtension();
 
 function mergeRunSummary(existing: WikiRunSummary[], next: WikiRunSummary): WikiRunSummary[] {
   return [next, ...existing.filter((item) => item.id !== next.id)]
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    .sort(compareRunRecency);
+}
+
+function compareRunRecency(left: Pick<WikiRunSummary, "id" | "updatedAt">, right: Pick<WikiRunSummary, "id" | "updatedAt">): number {
+  return right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id);
 }
 
 function parseWikiCommand(raw: string): ParsedCommand {
@@ -471,7 +553,13 @@ function parseWikiCommand(raw: string): ParsedCommand {
     throw new Error("Usage: /wiki init | source add | generate | refresh | open | status | history | artifacts");
   }
   const action = candidate;
-  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "resume" || action === "cancel" || action === "help") {
+  if (action === "resume") {
+    if (values.length > 1) throw new Error("Usage: /wiki resume [runId]");
+    const runId = values[0];
+    if (runId && !isSafeRunId(runId)) throw new Error("Invalid Wiki run history identifier");
+    return { action, runId };
+  }
+  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "cancel" || action === "help") {
     if (values.length) throw new Error(`/wiki ${action} does not accept arguments`);
     return { action };
   }
@@ -557,6 +645,10 @@ function parseLanguage(value: string): "zh" | "en" {
   throw new Error("lang must be zh or en");
 }
 
+function isSafeRunId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+}
+
 const WIKI_COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: "init ", label: "init", description: "Create or update workspace.yaml" },
   { value: "source ", label: "source", description: "Add a linked or cloned source repository" },
@@ -567,7 +659,7 @@ const WIKI_COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: "history", label: "history", description: "Show project Wiki run history" },
   { value: "artifacts ", label: "artifacts", description: "List persisted handoffs for a run" },
   { value: "pause", label: "pause", description: "Pause scheduling after active agents finish" },
-  { value: "resume", label: "resume", description: "Resume a paused run after source re-inspection" },
+  { value: "resume ", label: "resume", description: "Resume the current, latest, or selected paused run" },
   { value: "cancel", label: "cancel", description: "Cancel the active Wiki run" },
   { value: "help", label: "help", description: "Show all Wiki workspace commands" },
 ];
@@ -704,7 +796,7 @@ function helpText(): string {
     "  /wiki open",
     "  /wiki generate [lang=zh|en] [focus]",
     "  /wiki refresh [lang=zh|en] [focus]",
-    "  /wiki status | history | artifacts [runId] | pause | resume | cancel",
+    "  /wiki status | history | artifacts [runId] | pause | resume [runId] | cancel",
     "  /wiki help",
     "  /wiki init [--workspace <directory>] [--lang zh|en]",
     "  /wiki source add link <local-repository> [--workspace <directory>]",
@@ -727,4 +819,8 @@ function errorMessage(error: unknown): string {
 function sameWorkspaceOrChild(workspace: string, cwd: string): boolean {
   const relative = path.relative(workspace, cwd);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isRecoverableRunStatus(status: WikiRunSnapshot["status"]): boolean {
+  return status === "running" || status === "paused";
 }

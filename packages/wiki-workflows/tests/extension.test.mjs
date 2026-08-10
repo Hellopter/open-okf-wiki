@@ -21,7 +21,7 @@ function snapshot(overrides = {}) {
   };
 }
 
-function fakeEngine(initial) {
+function fakeEngine(initial, hooks = {}) {
   let current = initial;
   const listeners = new Set();
   const calls = [];
@@ -30,6 +30,7 @@ function fakeEngine(initial) {
   };
   return {
     calls,
+    get listenerCount() { return listeners.size; },
     start(request) {
       calls.push(["start", request]);
       current = snapshot({ requestedMode: request.mode, effectiveMode: request.mode, language: request.language ?? "zh", focus: request.focus });
@@ -51,7 +52,10 @@ function fakeEngine(initial) {
     complete(status = "succeeded") {
       if (!current) return;
       current = { ...current, status, updatedAt: "2026-08-08T00:01:00.000Z" };
-      const kind = status === "cancelled" ? "run_cancelled" : status === "blocked" ? "run_blocked" : "run_completed";
+      const kind = status === "cancelled" ? "run_cancelled"
+        : status === "blocked" ? "run_blocked"
+          : status === "failed" ? "run_failed"
+            : "run_completed";
       publish(kind);
       return structuredClone(current);
     },
@@ -59,11 +63,36 @@ function fakeEngine(initial) {
     async resume() { calls.push(["resume"]); },
     async cancel() { calls.push(["cancel"]); },
     async interrupt() { calls.push(["interrupt"]); },
+    async waitForIdle() {
+      calls.push(["waitForIdle"]);
+      await hooks.onWaitForIdle?.();
+      return current && structuredClone(current);
+    },
     async retryNode(nodeId) { calls.push(["retry", nodeId]); },
+    async retryPhase(phaseId) { calls.push(["retryPhase", phaseId]); },
+    async forkAndRetryNode(value, nodeId) {
+      calls.push(["forkAndRetryNode", value.id, nodeId]);
+      current = snapshot({ id: `${value.id}-retry`, status: "running", parentRunId: value.id });
+      return structuredClone(current);
+    },
+    async forkAndRetryPhase(value, phaseId) {
+      calls.push(["forkAndRetryPhase", value.id, phaseId]);
+      current = snapshot({ id: `${value.id}-retry`, status: "running", parentRunId: value.id });
+      return structuredClone(current);
+    },
   };
 }
 
-function fixture({ entries = [], mode = "print", hasUI = false, workspace = { root: "/workspace", language: "zh" } } = {}) {
+function fixture(options = {}) {
+  const {
+    entries = [],
+    branchEntries = entries,
+    mode = "print",
+    hasUI = false,
+    workspace = { root: "/workspace", language: "zh" },
+    onHistorySave,
+    onWaitForIdle,
+  } = options;
   const commands = new Map();
   const handlers = new Map();
   const appended = [];
@@ -73,7 +102,7 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
   const widgets = [];
   const workspaceCalls = [];
   const history = new Map();
-  const engine = fakeEngine();
+  const engine = fakeEngine(undefined, { onWaitForIdle });
   const pi = {
     registerCommand(name, definition) { commands.set(name, definition); },
     on(name, handler) { handlers.set(name, handler); },
@@ -94,7 +123,10 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
       confirm: async () => false,
       custom: async () => undefined,
     },
-    sessionManager: { getEntries: () => entries },
+    sessionManager: {
+      getEntries: () => entries,
+      getBranch: () => branchEntries,
+    },
   };
   const workspaceService = {
     async initialize(request) {
@@ -111,7 +143,10 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
     },
   };
   const historyStore = {
-    async save(value) { history.set(value.id, structuredClone(value)); },
+    async save(value) {
+      await onHistorySave?.(value);
+      history.set(value.id, structuredClone(value));
+    },
     async load(id) { return history.has(id) ? structuredClone(history.get(id)) : undefined; },
     async list() {
       return [...history.values()].map((value) => ({
@@ -120,7 +155,7 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
         totalNodes: value.nodes.length, succeededNodes: value.nodes.filter((node) => node.status === "succeeded").length,
         failedNodes: value.nodes.filter((node) => node.status === "failed" || node.status === "blocked").length,
         changedPaths: value.inspection?.changedPaths.length ?? 0,
-      }));
+      })).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id));
     },
     async delete(id) { return history.delete(id); },
     getRunsDir: () => "/history",
@@ -151,18 +186,206 @@ test("registers one command, starts in the background, and persists non-context 
 test("restores only the latest matching-workspace custom entry and persists interruption", async () => {
   const other = { customType: "okf-wiki-run", workspace: "/other", snapshot: snapshot({ cwd: "/other" }) };
   const restored = { customType: "okf-wiki-run", workspace: "/workspace", snapshot: snapshot({ id: "restored" }) };
-  const subject = fixture({ entries: [
+  const staleFork = { customType: "okf-wiki-run", workspace: "/workspace", snapshot: snapshot({ id: "stale-fork" }) };
+  const subject = fixture({
+    entries: [
+      { type: "custom", customType: "okf-wiki-run", data: other },
+      { type: "custom", customType: "okf-wiki-run", data: restored },
+      { type: "custom", customType: "okf-wiki-run", data: staleFork },
+    ],
+    branchEntries: [
     { type: "custom", customType: "okf-wiki-run", data: other },
     { type: "custom", customType: "okf-wiki-run", data: restored },
-  ] });
+    ],
+  });
 
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls[0][0], "restore");
   assert.equal(subject.engine.calls[0][1].snapshot.id, "restored");
 
   await subject.handlers.get("session_shutdown")({}, subject.ctx);
-  assert.equal(subject.engine.calls.at(-1)[0], "interrupt");
+  assert.deepEqual(subject.engine.calls.slice(-2).map(([name]) => name), ["interrupt", "waitForIdle"]);
   assert.equal(subject.appended.at(-1).data.workspace, "/workspace");
+});
+
+test("session shutdown is idempotent when no Wiki run exists", async () => {
+  const subject = fixture();
+  await subject.handlers.get("session_start")({}, subject.ctx);
+
+  await subject.handlers.get("session_shutdown")({}, subject.ctx);
+
+  assert.deepEqual(subject.engine.calls, [["interrupt"], ["waitForIdle"]]);
+  assert.equal(subject.appended.length, 0);
+  assert.equal(subject.engine.listenerCount, 0);
+});
+
+test("session shutdown waits for engine quiescence before final persistence", async () => {
+  let releaseIdle;
+  let idleStarted;
+  const idleGate = new Promise((resolve) => { releaseIdle = resolve; });
+  const idleSignal = new Promise((resolve) => { idleStarted = resolve; });
+  const subject = fixture({
+    onWaitForIdle: async () => {
+      idleStarted();
+      await idleGate;
+    },
+  });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  const appendedBeforeShutdown = subject.appended.length;
+
+  const shutdown = subject.handlers.get("session_shutdown")({}, subject.ctx);
+  await idleSignal;
+  assert.equal(subject.appended.length, appendedBeforeShutdown);
+
+  releaseIdle();
+  await shutdown;
+  assert.ok(subject.appended.length > appendedBeforeShutdown);
+  assert.equal(subject.engine.listenerCount, 0);
+});
+
+test("fresh sessions resume the latest recoverable project run", async () => {
+  const subject = fixture();
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  subject.history.set("run-older", snapshot({
+    id: "run-older",
+    status: "paused",
+    updatedAt: "2026-08-08T00:01:00.000Z",
+  }));
+  subject.history.set("run-alpha", snapshot({
+    id: "run-alpha",
+    status: "running",
+    updatedAt: "2026-08-08T00:02:00.000Z",
+  }));
+  subject.history.set("run-zeta", snapshot({
+    id: "run-zeta",
+    status: "paused",
+    updatedAt: "2026-08-08T00:02:00.000Z",
+  }));
+
+  await subject.commands.get("wiki").handler("resume", subject.ctx);
+
+  assert.deepEqual(subject.engine.calls.slice(-2).map((call) => call[0]), ["restore", "resume"]);
+  assert.equal(subject.engine.calls.at(-2)[1].id, "run-zeta");
+  assert.equal(subject.appended.at(-1).data.snapshot.id, "run-zeta");
+});
+
+test("resume accepts an exact historical run id and rejects terminal runs", async () => {
+  const selected = fixture();
+  await selected.handlers.get("session_start")({}, selected.ctx);
+  selected.history.set("run-selected", snapshot({ id: "run-selected", status: "paused" }));
+  selected.history.set("run-newer", snapshot({
+    id: "run-newer",
+    status: "paused",
+    updatedAt: "2026-08-08T00:02:00.000Z",
+  }));
+
+  await selected.commands.get("wiki").handler("resume run-selected", selected.ctx);
+  assert.equal(selected.engine.calls.at(-2)[0], "restore");
+  assert.equal(selected.engine.calls.at(-2)[1].id, "run-selected");
+
+  const failed = fixture();
+  await failed.handlers.get("session_start")({}, failed.ctx);
+  failed.history.set("run-failed", snapshot({ id: "run-failed", status: "failed" }));
+  await failed.commands.get("wiki").handler("resume run-failed", failed.ctx);
+
+  assert.equal(failed.engine.calls.some(([name]) => name === "restore"), false);
+  assert.match(failed.notices.at(-1).message, /targeted node or phase retry/);
+});
+
+test("navigator r forks a failed historical run for targeted retry", async () => {
+  const subject = fixture({ mode: "tui", hasUI: true });
+  const failedRun = snapshot({
+    id: "run-failed-retry",
+    status: "failed",
+    nodes: [{
+      id: "inspect",
+      kind: "inspect",
+      label: "Inspect Git scope",
+      phaseId: "inspect",
+      phaseTitle: "Inspect",
+      status: "failed",
+      dependsOn: [],
+      attempt: 1,
+      inputFingerprint: "input",
+      input: {},
+      attemptHistory: [],
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+      error: { message: "inspection failed", code: "execution_failed" },
+    }],
+  });
+  subject.history.set(failedRun.id, failedRun);
+  let component;
+  subject.ctx.ui.custom = (factory) => new Promise((resolve) => {
+    component = factory(
+      { terminal: { rows: 24 }, requestRender() {} },
+      { fg: (_color, text) => text, bold: (text) => text },
+      {},
+      resolve,
+    );
+  });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+
+  const opening = subject.commands.get("wiki").handler("open", subject.ctx);
+  while (!component) await new Promise((resolve) => setImmediate(resolve));
+  component.render(80);
+  component.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+  component.render(80);
+  component.handleInput("l");
+  component.render(80);
+  component.handleInput("r");
+  assert.match(component.render(80).join("\n"), /Inspect Git scope/);
+  component.handleInput("\r");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(subject.engine.calls.some((call) => call[0] === "forkAndRetryNode"
+    && call[1] === "run-failed-retry" && call[2] === "inspect"));
+  component.dispose();
+  await opening;
+});
+
+test("session shutdown waits for pending terminal history writes", async () => {
+  let releaseTerminalSave;
+  let terminalSaveStarted;
+  const terminalSaveGate = new Promise((resolve) => { releaseTerminalSave = resolve; });
+  const terminalSaveSignal = new Promise((resolve) => { terminalSaveStarted = resolve; });
+  const subject = fixture({
+    onHistorySave: async (value) => {
+      if (value.status !== "succeeded") return;
+      terminalSaveStarted();
+      await terminalSaveGate;
+    },
+  });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  subject.engine.complete("succeeded");
+  await terminalSaveSignal;
+
+  let shutdownFinished = false;
+  const shutdown = subject.handlers.get("session_shutdown")({}, subject.ctx).then(() => { shutdownFinished = true; });
+  await Promise.resolve();
+  assert.equal(shutdownFinished, false);
+
+  releaseTerminalSave();
+  await shutdown;
+  assert.equal(subject.history.get("run-1").status, "succeeded");
+});
+
+test("project history write failures are reported without losing Pi session state", async () => {
+  const subject = fixture({
+    mode: "tui",
+    hasUI: true,
+    onHistorySave: async () => { throw new Error("disk unavailable"); },
+  });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+
+  assert.equal(subject.appended.at(-1).data.snapshot.id, "run-1");
+  assert.ok(subject.notices.some(({ message, level }) => level === "error"
+    && /history could not be saved: disk unavailable/.test(message)));
 });
 
 test("does not restore legacy v4 session entries", async () => {
@@ -308,7 +531,7 @@ test("Wiki subcommands are discoverable through Pi argument completion", () => {
   const complete = subject.commands.get("wiki").getArgumentCompletions;
 
   assert.deepEqual(complete("").map(({ value }) => value), [
-    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "artifacts ", "pause", "resume", "cancel", "help",
+    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "artifacts ", "pause", "resume ", "cancel", "help",
   ]);
   assert.deepEqual(complete("in").map(({ value }) => value), ["init "]);
   assert.deepEqual(complete("source ").map(({ value }) => value), ["source add "]);
@@ -373,6 +596,17 @@ test("terminal run event delivers sendMessage with okf-wiki-result", async () =>
   assert.equal(deliveries[0].display, true);
   assert.deepEqual(deliveries[0].options, { triggerTurn: false, deliverAs: "followUp" });
   assert.match(String(deliveries[0].content), /Wiki|generate|succeeded|run/i);
+});
+
+test("run_failed delivers one terminal result message", async () => {
+  const subject = fixture({ mode: "tui", hasUI: true });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  subject.engine.complete("failed");
+
+  const deliveries = subject.messages.filter((item) => item.customType === "okf-wiki-result");
+  assert.equal(deliveries.length, 1);
+  assert.match(String(deliveries[0].content), /failed/i);
 });
 
 test("open lands on runs list when the only snapshot is terminal", async () => {

@@ -251,7 +251,7 @@ export function openWikiNavigator(
             await Promise.resolve(controller.pause());
             return;
           case "resume":
-            await Promise.resolve(controller.resume());
+            await Promise.resolve(controller.resume(action.runId));
             return;
           case "cancel":
             await Promise.resolve(controller.cancel());
@@ -390,11 +390,19 @@ export function openWikiNavigator(
           return { type: "none" };
         }
         case "pause": {
-          if (!run || state.runId !== activeRunId) {
+          if (!run || !state.runId) {
             return { type: "notify", message: s.selectActivePause, level: "info" };
           }
-          if (run.status === "paused") return { type: "resume" };
-          if (run.status === "running") return { type: "pause" };
+          if (state.runId === activeRunId) {
+            if (run.status === "paused") return { type: "resume", runId: run.id };
+            if (run.status === "running") return { type: "pause" };
+          }
+          if (!activeRunId && (run.status === "running" || run.status === "paused")) {
+            return { type: "resume", runId: run.id };
+          }
+          if (activeRunId !== undefined) {
+            return { type: "notify", message: s.anotherRunActive, level: "warning" };
+          }
           return { type: "notify", message: s.onlyRunningPause, level: "warning" };
         }
         case "cancel": {

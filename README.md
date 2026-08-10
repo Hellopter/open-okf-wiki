@@ -91,7 +91,7 @@ keep research, planning, page writing, and review prompts separate.
 /wiki status
 /wiki history
 /wiki pause
-/wiki resume
+/wiki resume [runId]
 /wiki cancel
 /wiki init [--workspace <directory>] [--lang zh|en]
 /wiki source add link <local-repository> [--workspace <directory>]
@@ -105,12 +105,21 @@ citations to find an affected subset. Independent source repositories have no
 shared generation baseline, so it falls back to a full rebuild whenever that
 incremental range cannot be trusted.
 
-`/wiki` and `/wiki status` return immediately with the current run status;
+`/wiki` shows command help and `/wiki status` returns the current run status;
 `/wiki history` returns a concise project history. `/wiki open` explicitly
 opens the run console, whose root view selects live and historical runs. It
 shows phase and Agent state, compact tool targets and result summaries, token
 and context figures, validation failures, and Pi compaction and retry activity.
 Enter an Agent detail to reveal its retained raw tool payloads only when needed.
+
+Stopping Pi or switching sessions interrupts an active run safely: running
+Agents are returned to the queue, the run becomes paused, and the same snapshot
+is written to the current Pi session branch and project history before shutdown
+finishes. Returning with Pi's `/resume` restores only that branch's Wiki state;
+run `/wiki resume` to re-inspect Git and continue scheduling. In a fresh Pi
+session, `/wiki resume` restores the most recently updated `running` or `paused`
+run for the workspace, while `/wiki resume <runId>` selects an exact record.
+An existing active run is never overwritten.
 
 Retrying one settled Agent retains valid upstream results and invalidates its
 downstream work. `R` on a settled phase retries its Agents together and is
@@ -118,6 +127,11 @@ refused while that phase has a running Agent. Retrying a historical terminal
 run creates a new branch run; the selected history remains immutable.
 Non-current completed history can be deleted from the console, while the newest
 100 terminal runs are otherwise retained.
+
+`failed` and `blocked` runs are terminal and cannot be resumed. Open the run and
+use `r` for a settled Agent or `R` for a phase; the retry forks historical
+terminal state when necessary. `succeeded` and `cancelled` runs are also not
+resumable.
 
 ## Guarantees
 
@@ -132,5 +146,7 @@ Non-current completed history can be deleted from the console, while the newest
   history is stored under Pi's agent directory as bounded run snapshots (Agent
   outputs, attempt history, and tool summaries), never copied source files or
   Wiki snapshots. Git remains the rollback path.
+- Project-history writes are serialized and shutdown waits for the final write;
+  persistence failures are reported in Pi instead of being silently ignored.
 - Pi's own auto-compaction and provider retry capabilities are enabled for
   subagents; the console reports their activity without reimplementing them.
