@@ -338,3 +338,27 @@ test("open lands on runs list when the only snapshot is terminal", async () => {
   // Terminal snapshots are not "active"; host still opens navigator (runs list landing).
   assert.ok(subject.statuses.some((item) => item.key === "okf-wiki"));
 });
+
+test("blocked runs are terminal history and open on the runs list", async () => {
+  const subject = fixture({ mode: "tui", hasUI: true });
+  subject.ctx.ui.custom = async (factory) => {
+    let doneCalls = 0;
+    const component = factory(
+      { terminal: { rows: 24 }, requestRender() {} },
+      { fg: (_c, text) => text, bold: (text) => text },
+      {},
+      () => { doneCalls++; },
+    );
+    // Escape closes the root runs view. A dashboard landing would only pop back
+    // to that list, leaving the overlay open.
+    component.handleInput("\x1b");
+    assert.equal(doneCalls, 1);
+    return undefined;
+  };
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  subject.engine.complete("blocked");
+
+  await subject.commands.get("wiki").handler("open", subject.ctx);
+});

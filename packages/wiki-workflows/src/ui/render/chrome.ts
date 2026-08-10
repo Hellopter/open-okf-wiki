@@ -30,6 +30,7 @@ export function renderRunHeader(run: WikiRunSnapshot, width: number, theme: Wiki
 
 export function footerHint(state: NavigatorState, language?: WikiUiLanguage): string {
   const s = uiStrings(language);
+  if (state.confirmation) return s.footerConfirm;
   if (state.showHelp) return s.footerHelp;
   if (state.view === "runs") return s.footerRuns;
   if (state.view === "agent") return state.pagerOpen ? s.footerAgentPager : s.footerAgentCompact;
@@ -65,15 +66,18 @@ export function renderHelp(width: number, theme: WikiUiTheme, language?: WikiUiL
 
 export function borderTitle(title: string, innerWidth: number, theme: WikiUiTheme, focused: boolean): { top: string; bottom: string } {
   const border = (value: string) => theme.fg(focused ? "accent" : "borderMuted", value);
-  const label = ` ${title} `;
-  const top = border(`╭─${label}${"─".repeat(Math.max(0, innerWidth - visibleWidth(label) + 1))}╮`);
-  const bottom = border(`╰${"─".repeat(Math.max(0, innerWidth + 2))}╯`);
+  const safeInnerWidth = Math.max(0, Math.floor(innerWidth));
+  // The top has one more title column than the body because of its leading ─.
+  const label = truncateToWidth(` ${title} `, safeInnerWidth + 1, "", true);
+  const top = border(`╭─${label}${"─".repeat(Math.max(0, safeInnerWidth + 1 - visibleWidth(label)))}╮`);
+  const bottom = border(`╰${"─".repeat(safeInnerWidth + 2)}╯`);
   return { top, bottom };
 }
 
 export function wrapBorderedBody(lines: string[], innerWidth: number, theme: WikiUiTheme, focused: boolean): string[] {
   const border = (value: string) => theme.fg(focused ? "accent" : "borderMuted", value);
-  return lines.map((line) => border("│ ") + padToWidth(line, innerWidth) + border(" │"));
+  const safeInnerWidth = Math.max(0, Math.floor(innerWidth));
+  return lines.map((line) => border("│ ") + (safeInnerWidth ? padToWidth(line, safeInnerWidth) : "") + border(" │"));
 }
 
 export function formatRunMeta(updatedAt: string): string {

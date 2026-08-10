@@ -100,6 +100,8 @@ export {
   keyToNavigatorIntent,
   type NavigatorView,
   type DashboardPane,
+  type NavigatorConfirmation,
+  type NavigatorConfirmationKind,
   type WikiNavigatorAction,
 } from "./ui/state.js";
 export {

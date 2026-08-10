@@ -14,7 +14,7 @@ import { createWikiRunHistoryStore, summarizeWikiRun, type WikiRunHistoryStore }
 import { parseWikiRunSession, WIKI_RUN_CUSTOM_TYPE } from "./session.js";
 import type { WikiRunEvent, WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
 import { wikiWorkspaceService, type WikiWorkspaceResult, type WikiWorkspaceService } from "./workspace.js";
-import { isActiveRunStatus, isExecutingRunStatus, isTerminalRunStatus } from "./ui/format.js";
+import { isExecutingRunStatus, isTerminalRunStatus } from "./ui/format.js";
 
 const STATE_FLUSH_MS = 500;
 
@@ -276,8 +276,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         },
         getActiveRunId: () => {
           const snapshot = active.getSnapshot();
-          // Only treat executing/active runs as "active" for open-landing and panel focus.
-          if (!snapshot || !isActiveRunStatus(snapshot.status)) return undefined;
+          // Terminal snapshots stay in history, but do not own navigator landing or actions.
+          if (!snapshot || !isExecutingRunStatus(snapshot.status)) return undefined;
           return snapshot.id;
         },
         getWorkspace: () => workspace,

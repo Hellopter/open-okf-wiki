@@ -1,14 +1,11 @@
 import {
-  DynamicBorder,
   getSelectListTheme,
   type ExtensionUIContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
-  Container,
   parseKey,
   SelectList,
-  Text,
   type Component,
   type Focusable,
   type SelectItem,
@@ -22,10 +19,16 @@ import {
   retryAgentConfirm,
   retryPhaseConfirm,
 } from "./confirm.js";
-import { asText, errorMessage, isActiveRunStatus, isTerminalRunStatus, PLAIN_THEME } from "./format.js";
+import { errorMessage, fitRows, isActiveRunStatus, isTerminalRunStatus, PLAIN_THEME } from "./format.js";
 import { WikiUiModel, type WikiNavigatorController } from "./model.js";
 import { attemptNumbers } from "./render/agent.js";
-import { NAVIGATOR_FOOTER_ROWS, renderHelp, withNavigatorFooter } from "./render/chrome.js";
+import {
+  borderTitle,
+  NAVIGATOR_FOOTER_ROWS,
+  renderHelp,
+  withNavigatorFooter,
+  wrapBorderedBody,
+} from "./render/chrome.js";
 import { renderDashboard } from "./render/dashboard.js";
 import { renderAgentView } from "./render/agent.js";
 import { buildRunSelectItems, renderLoadingRun, renderRunsList } from "./render/runs.js";
@@ -37,6 +40,13 @@ export interface OpenWikiNavigatorOptions {
   /** When set, land on the dashboard for this run (active-run open). */
   initialRunId?: string;
   language?: WikiUiLanguage;
+}
+
+/** Matches Pi's 92%-height overlay after its one-cell top/bottom margins. */
+function navigatorOverlayRows(terminalRows: number): number {
+  const rows = Math.max(1, Math.floor(terminalRows));
+  const availableRows = Math.max(1, rows - 2);
+  return Math.max(1, Math.min(Math.floor(rows * 0.92), availableRows));
 }
 
 /**
@@ -51,10 +61,21 @@ export function renderWikiNavigatorFrame(
   language?: WikiUiLanguage,
 ): string[] {
   return model.withRenderFrame(() => {
-    const safeWidth = Math.max(20, width);
-    const safeRows = Math.max(8, viewportRows);
+    const safeWidth = Math.max(1, width);
+    const safeRows = Math.max(3, viewportRows);
     state.sync(model);
-    state.setPageSize(Math.max(1, safeRows - 6));
+    state.setPageSize(Math.max(1, safeRows - NAVIGATOR_FOOTER_ROWS));
+
+    if (state.confirmation) {
+      return withNavigatorFooter(
+        renderNavigatorConfirmation(state.confirmation.title, state.confirmation.message, theme),
+        state,
+        safeRows,
+        safeWidth,
+        theme,
+        language,
+      );
+    }
 
     if (state.showHelp) {
       return withNavigatorFooter(renderHelp(safeWidth, theme, language), state, safeRows, safeWidth, theme, language);
@@ -101,11 +122,8 @@ export function renderWikiNavigatorFrame(
 }
 
 /**
- * Opens the on-demand Wiki navigator overlay.
- * Confirmations use `ui.confirm` outside nested custom UI.
- *
- * Live shell uses Pi framework Container + DynamicBorder; the runs view wires
- * a live SelectList. Pure frame rendering remains available for tests.
+ * Opens the on-demand Wiki navigator overlay. Confirmations are rendered in the
+ * navigator itself so focus and keyboard ownership stay with this overlay.
  */
 export function openWikiNavigator(
   ui: ExtensionUIContext,
@@ -134,19 +152,7 @@ export function openWikiNavigator(
     let runsList: SelectList | undefined;
     let runsListKey = "";
 
-    const shell = new Container();
     const borderColor = (text: string) => theme.fg(focused ? "accent" : "borderMuted", text);
-    const topBorder = new DynamicBorder(borderColor);
-    const bottomBorder = new DynamicBorder(borderColor);
-    const titleText = new Text(theme.fg("accent", theme.bold(" wiki workflow ")), 0, 0);
-    const bodyText = new Text("", 0, 0);
-    const footerText = new Text("", 0, 0);
-
-    shell.addChild(topBorder);
-    shell.addChild(titleText);
-    shell.addChild(bodyText);
-    shell.addChild(footerText);
-    shell.addChild(bottomBorder);
 
     const rerender = () => tui.requestRender();
     const unsubscribe = model.subscribe(() => {
@@ -163,7 +169,15 @@ export function openWikiNavigator(
 
     const selectTheme = (): SelectListTheme => {
       try {
-        return getSelectListTheme();
+        const selectListTheme = getSelectListTheme();
+        // getSelectListTheme can return callbacks backed by an uninitialized
+        // global theme in non-interactive hosts, so validate before retaining it.
+        selectListTheme.selectedPrefix("");
+        selectListTheme.selectedText("");
+        selectListTheme.description("");
+        selectListTheme.scrollInfo("");
+        selectListTheme.noMatch("");
+        return selectListTheme;
       } catch {
         return {
           selectedPrefix: (text) => theme.fg("accent", text),
@@ -176,7 +190,10 @@ export function openWikiNavigator(
     };
 
     const ensureRunsList = (items: SelectItem[], maxVisible: number): SelectList => {
-      const key = items.map((item) => item.value).join("\0");
+      // Labels and descriptions carry status/progress. Recreate when either changes,
+      // and when resizing changes the visible window. The cursor lives in state, so
+      // rebuilding does not disrupt keyboard navigation.
+      const key = JSON.stringify({ items, maxVisible: Math.max(1, maxVisible) });
       if (!runsList || runsListKey !== key) {
         runsList = new SelectList(items, Math.max(1, maxVisible), selectTheme(), {
           minPrimaryColumnWidth: 16,
@@ -256,60 +273,6 @@ export function openWikiNavigator(
             state.openRuns();
             rerender();
             return;
-          case "confirmCancel": {
-            const prompt = cancelConfirm(language);
-            const ok = await ui.confirm(prompt.title, prompt.message);
-            if (ok) await Promise.resolve(controller.cancel());
-            return;
-          }
-          case "confirmDelete": {
-            const prompt = deleteConfirm(language);
-            const ok = await ui.confirm(prompt.title, prompt.message);
-            if (ok) {
-              await Promise.resolve(controller.deleteRun(action.runId));
-              state.openRuns();
-              rerender();
-            }
-            return;
-          }
-          case "confirmRetry": {
-            const run = model.getRun(action.runId) ?? await controller.loadRun(action.runId);
-            if (!run) {
-              notify("Wiki run history is unavailable", "warning");
-              return;
-            }
-            const prompt = retryAgentConfirm(run, action.nodeId, language);
-            if (!prompt) {
-              notify("Selected retry target no longer exists", "warning");
-              return;
-            }
-            const ok = await ui.confirm(prompt.title, prompt.message);
-            if (ok) {
-              const snapshot = await Promise.resolve(controller.retryNode(action.runId, action.nodeId));
-              if (snapshot) state.openDashboard(snapshot.id);
-              rerender();
-            }
-            return;
-          }
-          case "confirmRetryPhase": {
-            const run = model.getRun(action.runId) ?? await controller.loadRun(action.runId);
-            if (!run) {
-              notify("Wiki run history is unavailable", "warning");
-              return;
-            }
-            const prompt = retryPhaseConfirm(run, action.phaseId, language);
-            if (!prompt) {
-              notify("Selected retry target no longer exists", "warning");
-              return;
-            }
-            const ok = await ui.confirm(prompt.title, prompt.message);
-            if (ok) {
-              const snapshot = await Promise.resolve(controller.retryPhase(action.runId, action.phaseId));
-              if (snapshot) state.openDashboard(snapshot.id);
-              rerender();
-            }
-            return;
-          }
           default:
             return;
         }
@@ -325,6 +288,49 @@ export function openWikiNavigator(
       const run = model.getRun(state.runId);
 
       switch (intent) {
+        case "confirm": {
+          const confirmation = state.takeConfirmation();
+          if (!confirmation) return { type: "none" };
+          const confirmedRun = model.getRun(confirmation.runId);
+          if (confirmation.kind === "cancel") {
+            if (!confirmedRun || model.getActiveRunId() !== confirmation.runId || !isActiveRunStatus(confirmedRun.status)) {
+              return { type: "notify", message: s.noActiveCancel, level: "info" };
+            }
+            return { type: "cancel" };
+          }
+          if (confirmation.kind === "delete") {
+            const selected = model.listRuns().find((item) => item.id === confirmation.runId);
+            const current = model.getRun();
+            if (!selected || selected.id === current?.id) {
+              return { type: "notify", message: s.currentRunCannotDelete, level: "info" };
+            }
+            if (!isTerminalRunStatus(selected.status)) {
+              return { type: "notify", message: s.onlyCompletedDelete, level: "warning" };
+            }
+            return { type: "deleteRun", runId: confirmation.runId };
+          }
+          if (!confirmedRun) {
+            return { type: "notify", message: "Wiki run history is unavailable", level: "warning" };
+          }
+          if (confirmation.kind === "retry") {
+            const node = confirmation.nodeId && confirmedRun.nodes.find((item) => item.id === confirmation.nodeId);
+            if (!node) return { type: "notify", message: s.selectAgentRetry, level: "warning" };
+            if (node.status === "running" || node.status === "queued") {
+              return { type: "notify", message: s.waitAgentSettle, level: "warning" };
+            }
+            return { type: "retry", runId: confirmation.runId, nodeId: node.id };
+          }
+          const phase = confirmation.phaseId
+            ? phaseRows(confirmedRun).find((item) => item.id === confirmation.phaseId)
+            : undefined;
+          if (!phase?.nodeIds.length) {
+            return { type: "notify", message: s.stageNotScheduled(phase?.title ?? "This stage"), level: "info" };
+          }
+          if (latestPhaseIteration(confirmedRun.nodes, phase.id).some((node) => node.status === "running")) {
+            return { type: "notify", message: s.waitPhaseSettle, level: "warning" };
+          }
+          return { type: "retryPhase", runId: confirmation.runId, phaseId: phase.id };
+        }
         case "help":
           state.showHelp = !state.showHelp;
           return { type: "none" };
@@ -395,17 +401,23 @@ export function openWikiNavigator(
           if (!run || state.runId !== activeRunId || !isActiveRunStatus(run.status)) {
             return { type: "notify", message: s.noActiveCancel, level: "info" };
           }
-          return { type: "confirmCancel" };
+          const prompt = cancelConfirm(language);
+          state.openConfirmation({ kind: "cancel", runId: run.id, title: prompt.title, message: prompt.message });
+          return { type: "none" };
         }
         case "retry": {
-          const node = model.node(state.runId, state.nodeId);
-          if (!node || !state.runId) {
+          const nodeId = state.selectedAgentId(model);
+          const node = model.node(state.runId, nodeId);
+          if (!node || !run || !state.runId) {
             return { type: "notify", message: s.selectAgentRetry, level: "warning" };
           }
           if (node.status === "running" || node.status === "queued") {
             return { type: "notify", message: s.waitAgentSettle, level: "warning" };
           }
-          return { type: "confirmRetry", runId: state.runId, nodeId: node.id };
+          const prompt = retryAgentConfirm(run, node.id, language);
+          if (!prompt) return { type: "notify", message: s.selectAgentRetry, level: "warning" };
+          state.openConfirmation({ kind: "retry", runId: state.runId, nodeId: node.id, title: prompt.title, message: prompt.message });
+          return { type: "none" };
         }
         case "retryPhase": {
           if (state.view !== "dashboard" || !run || !state.stageId) {
@@ -419,17 +431,26 @@ export function openWikiNavigator(
           if (nodes.some((node) => node.status === "running")) {
             return { type: "notify", message: s.waitPhaseSettle, level: "warning" };
           }
-          return { type: "confirmRetryPhase", runId: run.id, phaseId: state.stageId };
+          const prompt = retryPhaseConfirm(run, state.stageId, language);
+          if (!prompt) return { type: "notify", message: s.selectStageRetry, level: "warning" };
+          state.openConfirmation({ kind: "retryPhase", runId: run.id, phaseId: state.stageId, title: prompt.title, message: prompt.message });
+          return { type: "none" };
         }
         case "delete": {
           if (state.view !== "runs") {
             return { type: "notify", message: s.returnToRunsDelete, level: "info" };
           }
           const selected = model.listRuns()[state.runCursor];
+          const current = model.getRun();
+          if (selected?.id === current?.id) {
+            return { type: "notify", message: s.currentRunCannotDelete, level: "info" };
+          }
           if (!selected || selected.id === activeRunId || !isTerminalRunStatus(selected.status)) {
             return { type: "notify", message: s.onlyCompletedDelete, level: "warning" };
           }
-          return { type: "confirmDelete", runId: selected.id };
+          const prompt = deleteConfirm(language);
+          state.openConfirmation({ kind: "delete", runId: selected.id, title: prompt.title, message: prompt.message });
+          return { type: "none" };
         }
         default:
           return { type: "none" };
@@ -444,48 +465,49 @@ export function openWikiNavigator(
         focused = value;
       },
       render: (width) => {
-        const terminalRows = tui.terminal?.rows ?? 24;
-        const modalRows = Math.max(8, Math.floor(terminalRows * 0.92));
-        // DynamicBorder top/bottom + title + footer consume rows outside the body.
-        const chromeRows = 4;
-        const contentRows = Math.max(6, modalRows - chromeRows);
+        const targetRows = navigatorOverlayRows(tui.terminal?.rows ?? 24);
+        const contentWidth = Math.max(0, width - 4);
+        const innerRows = Math.max(1, targetRows - 2);
         const s = uiStrings(language);
-        const title = theme.fg(focused ? "accent" : "borderMuted", theme.bold(" wiki workflow "));
-        titleText.setText(title);
+
+        // A frame needs two corners and at least one interior row. On a terminal
+        // smaller than that, render the available rows without exceeding the overlay
+        // maxHeight that Pi applies.
+        if (width < 4 || targetRows < 3) {
+          return Array.from({ length: targetRows }, () => borderColor("─".repeat(Math.max(1, width))));
+        }
+
+        let inner: string[];
 
         // Runs view: live SelectList; other views: pure frame body as Text.
         if (state.view === "runs" && !state.showHelp) {
           state.sync(model);
           const runs = model.listRuns();
           const items = buildRunSelectItems(runs, model.getActiveRunId(), language);
-          const listRows = Math.max(3, contentRows - 2);
           if (!items.length) {
-            const empty = renderWikiNavigatorFrame(state, model, Math.max(20, width - 2), theme, contentRows, language);
-            bodyText.setText(empty.slice(0, Math.max(1, contentRows - 1)).join("\n"));
-            footerText.setText(theme.fg("muted", `  ${s.footerRuns}`));
-            return shell.render(width);
+            inner = renderWikiNavigatorFrame(state, model, contentWidth, theme, innerRows, language);
+          } else {
+            // Leave space for the header and, when needed, SelectList's scroll row.
+            const bodyRows = Math.max(1, innerRows - NAVIGATOR_FOOTER_ROWS);
+            const listRows = Math.max(1, bodyRows - 2);
+            const list = ensureRunsList(items, listRows);
+            const listLines = list.render(contentWidth);
+            const header = theme.fg("accent", theme.bold(s.runsTitle));
+            const body = [header, ...listLines];
+            inner = withNavigatorFooter(body, state, innerRows, contentWidth, theme, language);
           }
-          const list = ensureRunsList(items, listRows);
-          const listLines = list.render(Math.max(20, width - 2));
-          const header = theme.fg("accent", theme.bold(s.runsTitle));
-          bodyText.setText([header, ...listLines].join("\n"));
-          footerText.setText(theme.fg("muted", `  ${s.footerRuns}`));
-          return shell.render(width);
+        } else {
+          inner = renderWikiNavigatorFrame(state, model, contentWidth, theme, innerRows, language);
         }
 
-        const raw = renderWikiNavigatorFrame(state, model, Math.max(20, width - 2), theme, contentRows, language);
-        // Split footer from body for DynamicBorder chrome (last non-empty hint line kept).
-        const body = raw.slice(0, Math.max(0, raw.length - NAVIGATOR_FOOTER_ROWS));
-        const footer = raw.slice(Math.max(0, raw.length - 1));
-        bodyText.setText(body.join("\n"));
-        footerText.setText(footer.join("\n") || theme.fg("muted", `  ${asText(s.footerHelp)}`));
-        return shell.render(width);
+        const frame = borderTitle(theme.bold("wiki workflow"), contentWidth, theme, focused);
+        return [frame.top, ...wrapBorderedBody(fitRows(inner, innerRows, contentWidth), contentWidth, theme, focused), frame.bottom];
       },
       handleInput: (data) => {
         if (busy || closed) return;
 
         // Prefer SelectList for runs navigation when present.
-        if (state.view === "runs" && !state.showHelp && runsList && model.listRuns().length) {
+        if (state.view === "runs" && !state.showHelp && !state.confirmation && runsList && model.listRuns().length) {
           const key = parseKey(data);
           // Keys SelectList owns: arrows/enter/escape via its keybindings. Also allow j/k/q/x/? via dispatch.
           if (key === "up" || key === "down" || key === "enter" || key === "return" || key === "escape" || key === "esc") {
@@ -513,11 +535,7 @@ export function openWikiNavigator(
           return;
         }
         if (
-          action.type === "confirmCancel"
-          || action.type === "confirmDelete"
-          || action.type === "confirmRetry"
-          || action.type === "confirmRetryPhase"
-          || action.type === "loadRun"
+          action.type === "loadRun"
           || action.type === "retry"
           || action.type === "retryPhase"
           || action.type === "deleteRun"
@@ -536,7 +554,7 @@ export function openWikiNavigator(
         rerender();
       },
       invalidate: () => {
-        shell.invalidate();
+        runsList?.invalidate();
         rerender();
       },
       dispose: () => {
@@ -557,4 +575,8 @@ export const openWikiRunNavigator = openWikiNavigator;
 function syncDashboardSelection(state: NavigatorState, model: WikiUiModel): void {
   if (state.view !== "dashboard" || !state.runId) return;
   state.sync(model);
+}
+
+function renderNavigatorConfirmation(title: string, message: string, theme: typeof PLAIN_THEME): string[] {
+  return [theme.bold(title), ...message.split("\n").map((line) => theme.fg("muted", line))];
 }

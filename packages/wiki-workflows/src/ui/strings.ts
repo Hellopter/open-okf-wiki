@@ -41,6 +41,7 @@ export interface WikiUiStrings {
   onlyRunningPause: string;
   noActiveCancel: string;
   onlyCompletedDelete: string;
+  currentRunCannotDelete: string;
   returnToRunsDelete: string;
   footerRuns: string;
   footerDashboardStages: string;
@@ -48,6 +49,7 @@ export interface WikiUiStrings {
   footerAgentCompact: string;
   footerAgentPager: string;
   footerHelp: string;
+  footerConfirm: string;
   active: string;
   fork: string;
   follow: string;
@@ -121,6 +123,7 @@ const EN: WikiUiStrings = {
   onlyRunningPause: "Only a running or paused run can be paused",
   noActiveCancel: "No active Wiki run to cancel",
   onlyCompletedDelete: "Only inactive completed history can be deleted",
+  currentRunCannotDelete: "The current Wiki run remains in this session; start another run before deleting its history.",
   returnToRunsDelete: "Return to the Wiki run list to delete history",
   footerRuns: "j/k runs · Enter open · x delete · q close · ? help",
   footerDashboardStages: "j/k stages · Tab/l agents · Enter agent · R retry stage · Esc runs · q close",
@@ -128,6 +131,7 @@ const EN: WikiUiStrings = {
   footerAgentCompact: "Enter pager · r retry · [/] attempts · Esc dashboard · q close · ? help",
   footerAgentPager: "j/k scroll · f follow · [/] attempts · Esc compact · q close · ? help",
   footerHelp: "Esc/? close help · q close navigator",
+  footerConfirm: "Enter confirm · Esc cancel",
   active: "active",
   fork: "fork",
   follow: "follow",
@@ -199,6 +203,7 @@ const ZH: WikiUiStrings = {
   onlyRunningPause: "仅运行中或已暂停的运行可暂停",
   noActiveCancel: "没有可取消的活动 Wiki 运行",
   onlyCompletedDelete: "仅可删除非活动的已完成历史",
+  currentRunCannotDelete: "当前 Wiki 运行仍保留在此会话中；请先启动下一次运行再删除其历史。",
   returnToRunsDelete: "请返回运行列表删除历史",
   footerRuns: "j/k 选择 · Enter 打开 · x 删除 · q 关闭 · ? 帮助",
   footerDashboardStages: "j/k 阶段 · Tab/l 代理 · Enter 代理 · R 重试阶段 · Esc 列表 · q 关闭",
@@ -206,6 +211,7 @@ const ZH: WikiUiStrings = {
   footerAgentCompact: "Enter 分页 · r 重试 · [/] 尝试 · Esc 仪表盘 · q 关闭 · ? 帮助",
   footerAgentPager: "j/k 滚动 · f 跟随 · [/] 尝试 · Esc 摘要 · q 关闭 · ? 帮助",
   footerHelp: "Esc/? 关闭帮助 · q 关闭导航器",
+  footerConfirm: "Enter 确认 · Esc 取消",
   active: "活动",
   fork: "分支",
   follow: "跟随",

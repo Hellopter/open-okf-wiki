@@ -7,6 +7,7 @@ import {
   keyToNavigatorIntent,
   layoutForWidth,
   NavigatorState,
+  openWikiNavigator,
   phaseRetryImpact,
   phaseRows,
   PLAIN_THEME,
@@ -21,6 +22,7 @@ import {
 } from "../dist/index.js";
 
 const plain = (value) => value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+const overlayRows = (rows) => Math.max(1, Math.min(Math.floor(rows * 0.92), Math.max(1, rows - 2)));
 
 function summary(value) {
   return {
@@ -173,6 +175,23 @@ test("navigator stack is runs → dashboard → agent only", () => {
   assert.equal(state.view, "runs");
 });
 
+test("agent retry target requires an agent context, never the focused stage's first agent", () => {
+  const model = new WikiUiModel(controllerFor(run));
+  const state = openDashboard(model);
+  state.move(1, phaseRows(run).length); // source-survey, whose first agent is research-a
+  state.sync(model);
+
+  assert.equal(state.pane, "stages");
+  assert.equal(state.selectedAgentId(model), undefined);
+
+  state.switchPane("agents");
+  assert.equal(state.selectedAgentId(model), "research-a");
+
+  assert.equal(state.drill(model), true);
+  assert.equal(state.view, "agent");
+  assert.equal(state.selectedAgentId(model), "research-a");
+});
+
 test("agent compact view and attempt cycling", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
@@ -222,6 +241,10 @@ test("key map covers dual-track navigator intents", () => {
   assert.equal(keyToNavigatorIntent("r", state), "retry");
   assert.equal(keyToNavigatorIntent("c", state), "cancel");
   assert.equal(keyToNavigatorIntent("x", state), "delete");
+  state.openConfirmation({ kind: "cancel", runId: "run-1", title: "Cancel?", message: "Keep output" });
+  assert.equal(keyToNavigatorIntent("enter", state), "confirm");
+  assert.equal(keyToNavigatorIntent("q", state), "back");
+  assert.equal(keyToNavigatorIntent("j", state), "none");
 });
 
 test("task panel renders compact progress and retains terminal runs", () => {
@@ -266,6 +289,111 @@ test("runs list frame and empty state", () => {
   const model = new WikiUiModel(controllerFor(run, [summary(run), { ...summary(run), id: "run-history", status: "succeeded", focus: "architecture" }]));
   const list = plain(renderWikiNavigatorFrame(new NavigatorState(), model, 80, PLAIN_THEME, 12, "en").join("\n"));
   assert.match(list, /Wiki Runs|architecture|Wiki generation/);
+});
+
+test("live navigator keeps a complete frame and refreshes SelectList entries on updates and resize", async () => {
+  const summaries = Array.from({ length: 40 }, (_, index) => ({
+    ...summary(run),
+    id: `run-${index + 1}`,
+    focus: `Run ${index + 1}`,
+  }));
+  const listeners = new Set();
+  const controller = {
+    ...controllerFor(run, summaries),
+    getActiveRunId: () => undefined,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const tui = {
+    terminal: { rows: 24 },
+    requestRender() {},
+  };
+  let component;
+  const ui = {
+    custom(factory) {
+      return new Promise((resolve) => {
+        component = factory(tui, PLAIN_THEME, {}, resolve);
+      });
+    },
+    notify() {},
+  };
+
+  const pending = openWikiNavigator(ui, controller, { language: "en" });
+  const initial = component.render(80).map(plain);
+  assert.equal(initial.length, overlayRows(24));
+  assert.match(initial[0], /^╭─ wiki workflow /);
+  assert.match(initial[0], /╮$/);
+  assert.match(initial.at(-1), /^╰─+╯$/);
+  assert.ok(initial.slice(1, -1).every((line) => line.startsWith("│ ") && line.endsWith(" │")));
+
+  component.handleInput("\x1b[B");
+  summaries[0].focus = "Updated Run";
+  summaries[0].status = "succeeded";
+  for (const listener of listeners) listener();
+  const refreshed = component.render(80).map(plain);
+  assert.match(refreshed.join("\n"), /Updated Run/);
+  assert.match(refreshed.find((line) => /Run 2/.test(line)), /^│ → /);
+
+  tui.terminal.rows = 40;
+  const resized = component.render(80).map(plain);
+  assert.equal(resized.length, overlayRows(40));
+  assert.ok(
+    resized.filter((line) => /Run \d+/.test(line)).length > refreshed.filter((line) => /Run \d+/.test(line)).length,
+    "resize should increase SelectList's visible window",
+  );
+
+  tui.terminal.rows = 5;
+  const compact = component.render(80).map(plain);
+  assert.equal(compact.length, overlayRows(5));
+  assert.match(compact[0], /╮$/);
+  assert.match(compact.at(-1), /^╰─+╯$/);
+
+  component.dispose();
+  await pending;
+});
+
+test("navigator confirmation stays inside the overlay and keeps its keyboard ownership", async () => {
+  const calls = [];
+  const controller = {
+    ...controllerFor(run),
+    cancel: async () => { calls.push("cancel"); },
+  };
+  const tui = { terminal: { rows: 24 }, requestRender() {} };
+  let component;
+  let doneCalls = 0;
+  const ui = {
+    custom(factory) {
+      return new Promise((resolve) => {
+        component = factory(tui, PLAIN_THEME, {}, (value) => {
+          doneCalls++;
+          resolve(value);
+        });
+      });
+    },
+    confirm: () => { throw new Error("navigator must not delegate confirmation to Pi"); },
+    notify() {},
+  };
+
+  const pending = openWikiNavigator(ui, controller, { language: "en" });
+  component.handleInput("c");
+  assert.match(component.render(80).map(plain).join("\n"), /Cancel Wiki Run\?/);
+
+  component.handleInput("q");
+  assert.equal(doneCalls, 0, "q dismisses a confirmation before it closes the navigator");
+  assert.doesNotMatch(component.render(80).map(plain).join("\n"), /Cancel Wiki Run\?/);
+
+  component.handleInput("c");
+  component.handleInput("\r");
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["cancel"]);
+  assert.equal(doneCalls, 0);
+
+  component.handleInput("q");
+  await pending;
+  assert.equal(doneCalls, 1);
 });
 
 test("synthesis remains an independent stage in phaseRows", () => {

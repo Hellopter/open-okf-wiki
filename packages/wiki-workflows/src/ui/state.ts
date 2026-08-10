@@ -3,6 +3,16 @@ import { phaseRows } from "./stages.js";
 
 export type NavigatorView = "runs" | "dashboard" | "agent";
 export type DashboardPane = "stages" | "agents";
+export type NavigatorConfirmationKind = "cancel" | "delete" | "retry" | "retryPhase";
+
+export interface NavigatorConfirmation {
+  kind: NavigatorConfirmationKind;
+  runId: string;
+  title: string;
+  message: string;
+  nodeId?: string;
+  phaseId?: string;
+}
 
 interface StackFrame {
   view: NavigatorView;
@@ -28,6 +38,7 @@ export class NavigatorState {
   /** Last computed max scroll from agent pager render (for unfollow / scroll-up conversion). */
   lastMaxScroll = 0;
   selectedAttempt?: number;
+  confirmation?: NavigatorConfirmation;
   private pageSize = 1;
 
   private top(): StackFrame {
@@ -248,6 +259,7 @@ export class NavigatorState {
     this.followOutput = true;
     this.detailScroll = 0;
     this.selectedAttempt = undefined;
+    this.confirmation = undefined;
   }
 
   openRuns(runCursor = 0): void {
@@ -258,6 +270,7 @@ export class NavigatorState {
     this.followOutput = true;
     this.detailScroll = 0;
     this.selectedAttempt = undefined;
+    this.confirmation = undefined;
   }
 
   drill(model: WikiUiModel): boolean {
@@ -323,6 +336,10 @@ export class NavigatorState {
 
   /** Pop one level. Returns false when already at the top (caller should close). */
   back(): boolean {
+    if (this.confirmation) {
+      this.confirmation = undefined;
+      return true;
+    }
     if (this.showHelp) {
       this.showHelp = false;
       return true;
@@ -390,6 +407,29 @@ export class NavigatorState {
     if (this.runId) return this.runId;
     return model.listRuns()[this.runCursor]?.id;
   }
+
+  /**
+   * Return an agent retry target only when the user is actually operating in
+   * agent context. The dashboard stages pane intentionally has no implicit
+   * agent selection, even though it renders the first agent beside a stage.
+   */
+  selectedAgentId(model: WikiUiModel): string | undefined {
+    if (this.view === "agent") return this.nodeId;
+    if (this.view !== "dashboard" || this.pane !== "agents" || !this.runId) return undefined;
+    const stage = model.phases(this.runId)[this.stageCursor];
+    return model.agents(this.runId, stage?.id)[this.agentCursor]?.id;
+  }
+
+  openConfirmation(confirmation: NavigatorConfirmation): void {
+    this.confirmation = confirmation;
+    this.showHelp = false;
+  }
+
+  takeConfirmation(): NavigatorConfirmation | undefined {
+    const confirmation = this.confirmation;
+    this.confirmation = undefined;
+    return confirmation;
+  }
 }
 
 export type WikiNavigatorAction =
@@ -402,11 +442,7 @@ export type WikiNavigatorAction =
   | { type: "retry"; runId: string; nodeId: string }
   | { type: "retryPhase"; runId: string; phaseId: string }
   | { type: "deleteRun"; runId: string }
-  | { type: "notify"; message: string; level: "info" | "warning" | "error" }
-  | { type: "confirmCancel" }
-  | { type: "confirmDelete"; runId: string }
-  | { type: "confirmRetry"; runId: string; nodeId: string }
-  | { type: "confirmRetryPhase"; runId: string; phaseId: string };
+  | { type: "notify"; message: string; level: "info" | "warning" | "error" };
 
 /** Map a parsed key id into a high-level navigator action (side-effect free). */
 export function keyToNavigatorIntent(
@@ -414,9 +450,14 @@ export function keyToNavigatorIntent(
   state: NavigatorState,
 ): "moveUp" | "moveDown" | "pageUp" | "pageDown" | "jumpStart" | "jumpEnd"
   | "drill" | "back" | "close" | "help" | "pause" | "cancel" | "retry" | "retryPhase"
-  | "delete" | "follow" | "attemptPrev" | "attemptNext" | "paneLeft" | "paneRight" | "paneToggle"
+  | "delete" | "follow" | "attemptPrev" | "attemptNext" | "paneLeft" | "paneRight" | "paneToggle" | "confirm"
   | "none" {
   if (!key) return "none";
+  if (state.confirmation) {
+    if (key === "enter" || key === "return") return "confirm";
+    if (key === "escape" || key === "esc" || key === "q") return "back";
+    return "none";
+  }
   if (key === "?" || key === "shift+/") return "help";
   if (state.showHelp) {
     if (key === "escape" || key === "esc" || key === "q") return "back";

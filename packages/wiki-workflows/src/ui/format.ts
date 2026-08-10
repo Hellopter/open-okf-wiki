@@ -159,7 +159,7 @@ export function isTerminalRunStatus(status: WikiRunStatus): boolean {
 }
 
 export function isActiveRunStatus(status: WikiRunStatus): boolean {
-  return status === "running" || status === "paused" || status === "blocked";
+  return status === "running" || status === "paused";
 }
 
 export function isExecutingRunStatus(status: WikiRunStatus): boolean {
