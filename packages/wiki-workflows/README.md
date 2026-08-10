@@ -22,7 +22,7 @@ prints the current run, `/wiki history` prints a concise project history,
 `/wiki pause` and `/wiki resume` control scheduling, and `/wiki cancel` stops
 it. Run Pi from the workspace directory when starting or recovering a Wiki run.
 
-The extension owns the Wiki plan/write/review DAG and active Pi-session state.
+The extension owns the Wiki-specific dynamic DAG and active Pi-session state.
 It also retains the newest 100 terminal, project-scoped execution snapshots
 under Pi's agent directory, including bounded Agent output, attempts, and tool
 summaries. Pi supplies subagent sessions, automatic context compaction,
@@ -31,13 +31,23 @@ runtime events and permits a settled Agent retry or a phase retry without
 rerunning valid upstream work. Retrying historical terminal history forks a new
 run so the selected record stays immutable.
 
-Planner and reviewer nodes submit DAG-control data through dedicated typed
-tools, rather than asking the model to emit JSON in its final text. Research
-nodes hand Markdown receipts directly to the writer; writer and repair nodes
-make filesystem changes and may finish with a Markdown summary. Static phase
-guidance and the receipt example live in the packaged Wiki skill references,
-which the workflow injects into isolated child sessions without loading ambient
-skills.
+The bounded workflow is `Inspect -> Draft Plan -> Source Research -> Synthesis`.
+Synthesis may request one supplemental research batch, then emits the final
+domain-scoped WikiSpec. One writer runs per domain in parallel, followed by
+validation and one global review. Evidence, link, format, depth, and diagram
+defects return only to their owning domain writer; topology or coverage defects
+can trigger one structural replan before the run blocks. Planner, synthesizer,
+and reviewer nodes submit control data through dedicated typed tools rather
+than asking the model to emit JSON in final text.
+
+Research nodes produce Markdown receipts. A writer receives only its
+DomainPacket: page contracts, selected receipts, shared terms, and approved
+cross-links. The executor permits that writer to create, edit, or delete only
+the explicit pages in its domain, while source and Wiki reads remain available
+for grounded links. Static behavior guidance, diagram rules, and optional
+Overview/Architecture/Module/Flow/Concept skeletons live in the packaged Wiki
+skill references, which the workflow injects into isolated child sessions
+without loading ambient skills.
 
 Generated pages are always under `wiki/`. Source citations begin with the
 declared project directory and include source line ranges, for example

@@ -7,6 +7,7 @@ export type WikiNodeKind =
   | "inspect"
   | "plan"
   | "research"
+  | "synthesis"
   | "write"
   | "validate"
   | "review"
@@ -57,7 +58,7 @@ export interface WikiNodeError {
   code?: string;
   retryable?: boolean;
   /** Present when the model ended without the required control-flow submission. */
-  requiredSubmissionTool?: "wiki_submit_plan" | "wiki_submit_review";
+  requiredSubmissionTool?: "wiki_submit_plan" | "wiki_submit_synthesis" | "wiki_submit_review";
 }
 
 export interface WikiNodeAttempt {
@@ -147,7 +148,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 1;
+  version: 2;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -197,11 +198,11 @@ export interface WikiRunSession {
   snapshot: WikiRunSnapshot;
 }
 
-export interface WikiPlanPage {
-  path: string;
+/** A candidate documentation area. The final page set is decided by synthesis. */
+export interface WikiDraftDomain {
+  id: string;
   title: string;
   purpose: string;
-  sources: string[];
 }
 
 export interface WikiResearchScope {
@@ -209,11 +210,72 @@ export interface WikiResearchScope {
   task: string;
 }
 
-export interface WikiPlanResult {
-  pages: WikiPlanPage[];
+export interface WikiDraftPlanResult {
+  candidateDomains: WikiDraftDomain[];
   researchScopes: WikiResearchScope[];
   rationale: string;
 }
+
+export type WikiDiagramKind = "flowchart" | "sequence" | "state" | "er" | "class";
+
+export interface WikiDiagramRequirement {
+  kind: WikiDiagramKind;
+  applicability: "required" | "not_applicable";
+  purpose: string;
+  /** Required when a diagram is intentionally omitted. */
+  reason?: string;
+}
+
+export interface WikiSpecPage {
+  pageType: "overview" | "architecture" | "module" | "flow" | "concept";
+  path: string;
+  title: string;
+  purpose: string;
+  sources: string[];
+  requiredSections: string[];
+  diagrams: WikiDiagramRequirement[];
+}
+
+export interface WikiDomain {
+  id: string;
+  title: string;
+  purpose: string;
+  pages: WikiSpecPage[];
+  /** Receipts selected by synthesis for this writer's bounded context. */
+  researchScopeIds: string[];
+}
+
+export interface WikiCrossLink {
+  fromPath: string;
+  toPath: string;
+  purpose: string;
+}
+
+export interface WikiSharedTerm {
+  term: string;
+  definition: string;
+}
+
+/** Immutable writing contract emitted only when source research is sufficient. */
+export interface WikiSpec {
+  domains: WikiDomain[];
+  crossLinks: WikiCrossLink[];
+  sharedTerms: WikiSharedTerm[];
+}
+
+export interface WikiSynthesisExpandResult {
+  decision: "expand";
+  researchScopes: WikiResearchScope[];
+  rationale: string;
+}
+
+export interface WikiSynthesisFinalizeResult {
+  decision: "finalize";
+  spec: WikiSpec;
+  rationale: string;
+}
+
+export type WikiSynthesisResult = WikiSynthesisExpandResult | WikiSynthesisFinalizeResult;
 
 /** A bounded, human-readable handoff from a researcher to the Wiki writer. */
 export interface WikiResearchReceipt {
@@ -223,10 +285,11 @@ export interface WikiResearchReceipt {
   markdown: string;
 }
 
-export type WikiReviewDefectKind = "evidence" | "link" | "format" | "topology" | "coverage";
+export type WikiReviewDefectKind = "evidence" | "link" | "format" | "topology" | "coverage" | "depth" | "diagram";
 
 export interface WikiReviewDefect {
   id: string;
+  domainId: string;
   page: string;
   kind: WikiReviewDefectKind;
   detail: string;
@@ -242,7 +305,9 @@ export interface WikiAgentExecutionRequest {
   node: Readonly<WikiNode>;
   cwd: string;
   prompt: string;
-  role: "planner" | "researcher" | "writer" | "reviewer";
+  role: "planner" | "researcher" | "synthesizer" | "writer" | "reviewer";
+  /** Exact Wiki-relative files a domain writer may create or change. */
+  writePaths?: string[];
   language: "zh" | "en";
   signal: AbortSignal;
   onActivity?: (activity: Partial<WikiNodeActivity>, metrics?: Partial<WikiNodeMetrics>) => void;

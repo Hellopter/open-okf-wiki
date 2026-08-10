@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,7 +7,7 @@ import { createWikiRunHistoryStore, wikiHistoryProjectKey } from "../dist/run-hi
 
 function snapshot(id, status, updatedAt) {
   return {
-    version: 1,
+    version: 2,
     id,
     cwd: "/workspace",
     requestedMode: "generate",
@@ -78,4 +78,19 @@ test("history never treats a run ID as a filesystem path", async (t) => {
   t.after(async () => await rm(rootDir, { recursive: true, force: true }));
   const store = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
   await assert.rejects(() => store.save(snapshot("../outside", "succeeded", "2026-08-08T00:00:00.000Z")), /Invalid Wiki run history identifier/);
+});
+
+test("history ignores incompatible v1 snapshots", async (t) => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-history-version-"));
+  t.after(async () => await rm(rootDir, { recursive: true, force: true }));
+  const store = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
+  const runsDir = store.getRunsDir();
+  await mkdir(runsDir, { recursive: true });
+  await writeFile(
+    path.join(runsDir, "legacy.json"),
+    `${JSON.stringify({ ...snapshot("legacy", "succeeded", "2026-08-08T00:00:00.000Z"), version: 1 })}\n`,
+    "utf8",
+  );
+  assert.equal(await store.load("legacy"), undefined);
+  assert.deepEqual(await store.list(), []);
 });

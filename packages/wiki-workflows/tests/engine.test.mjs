@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WikiWorkflowEngine } from "../dist/engine.js";
-import { WikiAgentProtocolError } from "../dist/executor.js";
 
 const inspection = {
   root: "/workspace",
@@ -17,34 +16,108 @@ const inspection = {
   wikiDrift: false,
 };
 
-const validation = { ok: true, errors: [], pages: ["architecture.md"] };
+const validation = { ok: true, errors: [], pages: ["overview/overview.md", "core/architecture.md", "api/request-flow.md"] };
+
+function draftPlan(scopes = [
+  { id: "core", task: "Research core implementation" },
+  { id: "api", task: "Research API flow" },
+]) {
+  return {
+    candidateDomains: [
+      { id: "core", title: "Core", purpose: "Explain core architecture" },
+      { id: "api", title: "API", purpose: "Explain request processing" },
+    ],
+    researchScopes: scopes,
+    rationale: "The two source areas are independently researchable.",
+  };
+}
+
+function finalizedSpec(options = {}) {
+  return {
+    domains: [
+      {
+        id: "overview",
+        title: "Overview",
+        purpose: "Summarize the system across domains",
+        researchScopeIds: [],
+        pages: [{
+          pageType: "overview",
+          path: "overview/overview.md",
+          title: "System Overview",
+          purpose: "Orient readers to the documented system",
+          sources: ["src/core.ts#L1-L20"],
+          requiredSections: ["Scope", "Domain Map"],
+          diagrams: [{ kind: "flowchart", applicability: "not_applicable", purpose: "Show system boundaries", reason: "The domain pages provide the verified diagrams." }],
+        }],
+      },
+      {
+        id: "core",
+        title: "Core",
+        purpose: "Explain core architecture",
+        researchScopeIds: options.coreScopes ?? ["core"],
+        pages: [{
+          pageType: "architecture",
+          path: "core/architecture.md",
+          title: "Architecture",
+          purpose: "Explain runtime boundaries",
+          sources: ["src/core.ts#L1-L20"],
+          requiredSections: ["Responsibilities", "Boundaries"],
+          diagrams: [{ kind: "flowchart", applicability: "required", purpose: "Show component boundaries" }],
+        }],
+      },
+      {
+        id: "api",
+        title: "API",
+        purpose: "Explain request processing",
+        researchScopeIds: options.apiScopes ?? ["api"],
+        pages: [{
+          pageType: "flow",
+          path: "api/request-flow.md",
+          title: "Request Flow",
+          purpose: "Explain request lifecycle",
+          sources: ["src/api.ts#L1-L20"],
+          requiredSections: ["Entry Point", "Failure Handling"],
+          diagrams: [{ kind: "sequence", applicability: "required", purpose: "Show request interactions" }],
+        }],
+      },
+    ],
+    crossLinks: [{ fromPath: "core/architecture.md", toPath: "api/request-flow.md", purpose: "Connect boundaries to request flow" }],
+    sharedTerms: [{ term: "request", definition: "A single API invocation." }],
+  };
+}
+
+function finalize(spec = finalizedSpec()) {
+  return { decision: "finalize", spec, rationale: "The receipts support a bounded final Wiki contract." };
+}
+
+function receipt(scopeId) {
+  return `## Findings\n- ${scopeId} is verified. Source: \`src/${scopeId}.ts#L1-L20\`\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Keep ${scopeId} source-grounded.`;
+}
 
 function createExecutor(options = {}) {
   const calls = [];
+  const requests = [];
+  let synthesisCount = 0;
+  let reviewCount = 0;
   return {
     calls,
+    requests,
     async execute(request) {
       calls.push(request.node.kind);
-      request.onActivity?.({ state: "running", message: "fake" }, { inputTokens: 12 });
-      if (options.streamOutput) request.onOutput?.(options.streamOutput);
-      if (request.node.kind === "plan" || request.node.kind === "replan") {
-        return {
-          result: {
-            pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain system", sources: ["src/index.ts#L1-L2"] }],
-            researchScopes: options.research === false ? [] : [
-              { id: "core", task: "Research core" },
-              { id: "api", task: "Research API" },
-            ],
-            rationale: "test",
-          },
-          output: request.node.kind === "plan" ? options.finalOutput : undefined,
-        };
+      requests.push(request);
+      if (request.node.kind === "plan" || request.node.kind === "replan") return { result: options.plan?.(request) ?? draftPlan() };
+      if (request.node.kind === "research") return { result: options.research?.(request) ?? receipt(request.node.input.scope.id) };
+      if (request.node.kind === "synthesis") {
+        const result = options.synthesis?.(request, synthesisCount++) ?? finalize();
+        return { result };
       }
-      if (request.node.kind === "research") return { result: "## Findings\n- Verified evidence. Source: `src/index.ts#L1-L2`\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Explain the researched area." };
       if (request.node.kind === "write" || request.node.kind === "repair") {
-        return { result: { updatedPages: ["architecture.md"], deletedPages: [], notes: [] } };
+        return { result: { updatedPages: request.writePaths ?? [], deletedPages: [], notes: [] } };
       }
-      if (request.node.kind === "review") return { result: { defects: options.defects ?? [], summary: "ok" } };
+      if (request.node.kind === "review") {
+        const result = options.review?.(request, reviewCount++) ?? { defects: [], summary: "complete" };
+        return { result };
+      }
       throw new Error(`unexpected node ${request.node.kind}`);
     },
   };
@@ -57,460 +130,185 @@ function createEngine(executor, inspect = async () => inspection, validate = asy
     inspect,
     validate,
     createId: () => `id-${++id}`,
-    now: () => new Date("2026-08-08T00:00:00.000Z"),
+    now: () => new Date("2026-08-10T00:00:00.000Z"),
   });
 }
 
-test("dynamically plans, researches, writes, validates, and reviews", async () => {
+test("draft plan converges through synthesis before parallel domain writers and global review", async () => {
   const executor = createExecutor();
   const engine = createEngine(executor);
-  engine.start({ cwd: "/workspace", mode: "refresh", language: "zh" });
+  engine.start({ cwd: "/workspace", mode: "generate", language: "zh" });
   const snapshot = await engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded");
-  assert.deepEqual(executor.calls, ["plan", "research", "research", "write", "review"]);
-  assert.equal(snapshot.nodes.filter((node) => node.kind === "research").length, 2);
-  assert.equal(snapshot.nodes.find((node) => node.kind === "write").metrics.inputTokens, 12);
+  assert.equal(executor.calls.filter((kind) => kind === "plan").length, 1);
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, 2);
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 1);
+  assert.equal(executor.calls.filter((kind) => kind === "write").length, 3);
+  assert.equal(executor.calls.filter((kind) => kind === "review").length, 1);
+  assert.equal(snapshot.nodes.filter((node) => node.kind === "write").length, 3);
+  assert.ok(snapshot.nodes.find((node) => node.kind === "review").dependsOn.every((id) => snapshot.nodes.find((node) => node.id === id)?.kind === "validate"));
+  const synthesis = executor.requests.find((request) => request.node.kind === "synthesis");
+  assert.match(synthesis.prompt, /core is verified/);
+  assert.match(synthesis.prompt, /api is verified/);
 });
 
-test("research becomes a bounded Markdown handoff instead of a JSON-shaped result", async () => {
-  let writerPrompt = "";
-  const researchMarkdown = `## Findings\n- ${"x".repeat(20 * 1024)}\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Keep the page source-grounded.`;
-  const engine = createEngine({
-    async execute(request) {
-      if (request.node.kind === "plan") return {
-        result: {
-          pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["src/index.ts#L1-L2"] }],
-          researchScopes: [{ id: "core", task: "Research core" }],
-          rationale: "test",
-        },
-      };
-      if (request.node.kind === "research") return { result: researchMarkdown };
-      if (request.node.kind === "write") {
-        writerPrompt = request.prompt;
-        return { result: undefined, output: "## Changed\n- `architecture.md`" };
-      }
-      if (request.node.kind === "review") return { result: { defects: [], summary: "ok" } };
-      throw new Error(`unexpected ${request.node.kind}`);
-    },
-  });
-
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const snapshot = engine.getSnapshot();
-  const research = snapshot.nodes.find((node) => node.kind === "research");
-  assert.equal(snapshot.status, "succeeded");
-  assert.equal(research.result.scopeId, "core");
-  assert.equal(research.result.sourceFingerprint, "source-baseline");
-  assert.ok(research.result.markdown.length <= 16 * 1024);
-  assert.match(writerPrompt, /# Writing And Repair/);
-  assert.match(writerPrompt, /## Research Receipt: core/);
-  assert.match(writerPrompt, /## Approved Plan/);
-});
-
-test("review and replan receive the plan and focus needed for coverage decisions", async () => {
-  let reviewPrompt = "";
-  let replanPrompt = "";
-  let reviews = 0;
-  const engine = createEngine({
-    async execute(request) {
-      if (request.node.kind === "plan" || request.node.kind === "replan") {
-        if (request.node.kind === "replan") replanPrompt = request.prompt;
-        return {
-          result: {
-            pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["src/index.ts#L1-L2"] }],
-            researchScopes: [],
-            rationale: "test",
-          },
-        };
-      }
-      if (request.node.kind === "write") return { result: undefined };
-      if (request.node.kind === "review") {
-        reviewPrompt = request.prompt;
-        return {
-          result: reviews++ === 0
-            ? { defects: [{ id: "coverage", page: "architecture.md", kind: "coverage", detail: "Add lifecycle coverage." }], summary: "missing coverage" }
-            : { defects: [], summary: "complete" },
-        };
-      }
-      throw new Error(`unexpected ${request.node.kind}`);
-    },
-  });
-
-  engine.start({ cwd: "/workspace", mode: "generate", focus: "document lifecycle" });
-  const snapshot = await engine.waitForIdle();
-  assert.equal(snapshot.status, "succeeded");
-  assert.match(reviewPrompt, /## Approved Plan/);
-  assert.match(reviewPrompt, /architecture\.md/);
-  assert.match(reviewPrompt, /Focus: document lifecycle/);
-  assert.match(replanPrompt, /## Previous Approved Plan/);
-  assert.match(replanPrompt, /architecture\.md/);
-});
-
-test("protocol failures retain the final text, history, and required submission", async () => {
-  const engine = createEngine({
-    async execute(request) {
-      if (request.node.kind !== "plan") throw new Error("unexpected");
-      throw new WikiAgentProtocolError("wiki_submit_plan", "A prose plan without a tool call.", [
-        { at: "2026-08-08T00:00:00.000Z", kind: "message", text: "A prose plan without a tool call." },
-      ]);
-    },
-  });
-
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
-  assert.equal(plan.status, "failed");
-  assert.equal(plan.output, "A prose plan without a tool call.");
-  assert.equal(plan.history?.[0]?.text, "A prose plan without a tool call.");
-  assert.equal(plan.error?.code, "missing_submission");
-  assert.equal(plan.error?.requiredSubmissionTool, "wiki_submit_plan");
-});
-
-test("retry retains upstream work and invalidates only the selected downstream graph", async () => {
-  const executor = createExecutor({ research: false });
-  const engine = createEngine(executor);
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const before = engine.getSnapshot();
-  const write = before.nodes.find((node) => node.kind === "write");
-  const plan = before.nodes.find((node) => node.kind === "plan");
-
-  await engine.retryNode(write.id);
-  await engine.waitForIdle();
-  const after = engine.getSnapshot();
-  const updatedPlan = after.nodes.find((node) => node.id === plan.id);
-  const updatedWrite = after.nodes.find((node) => node.id === write.id);
-
-  assert.equal(updatedPlan.attempt, 1);
-  assert.equal(updatedWrite.attempt, 2);
-  assert.equal(updatedWrite.attemptHistory.length, 1);
-  assert.equal(after.status, "succeeded");
-});
-
-test("retrying a plan re-dispatches its invalidated writer instead of reusing it", async () => {
-  const executor = createExecutor({ research: false });
-  const engine = createEngine(executor);
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
-
-  await engine.retryNode(plan.id);
-  await engine.waitForIdle();
-  const snapshot = engine.getSnapshot();
-  assert.equal(executor.calls.filter((kind) => kind === "plan").length, 2);
-  assert.equal(executor.calls.filter((kind) => kind === "write").length, 2);
-  assert.equal(snapshot.nodes.filter((node) => node.kind === "write" && node.status === "succeeded").length, 1);
-});
-
-test("phase retry uses the stable research phase and preserves its upstream plan", async () => {
+test("a domain writer receives only its DomainPacket, selected receipt, and exact write paths", async () => {
   const executor = createExecutor();
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
   await engine.waitForIdle();
-  const before = engine.getSnapshot();
-  const research = before.nodes.filter((node) => node.kind === "research");
-  const phaseId = research[0].phaseId;
 
-  assert.ok(phaseId);
-  assert.ok(research.every((node) => node.phaseId === phaseId));
-  await engine.retryPhase(phaseId);
-  await engine.waitForIdle();
-
-  const after = engine.getSnapshot();
-  assert.equal(after.nodes.find((node) => node.kind === "plan").attempt, 1);
-  assert.ok(after.nodes.filter((node) => node.kind === "research").every((node) => node.attempt === 2));
-  assert.ok(after.events.some((event) => event.kind === "phase_retried" && event.data?.phaseId === phaseId));
+  const coreWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "core");
+  const apiWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "api");
+  assert.deepEqual(coreWriter.writePaths, ["wiki/core/architecture.md"]);
+  assert.deepEqual(apiWriter.writePaths, ["wiki/api/request-flow.md"]);
+  assert.match(coreWriter.prompt, /core is verified/);
+  assert.doesNotMatch(coreWriter.prompt, /api is verified/);
+  assert.match(coreWriter.prompt, /Domain Packet/);
+  assert.doesNotMatch(coreWriter.prompt, /wiki\/index\.md/);
+  const overviewWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "overview");
+  assert.deepEqual(overviewWriter.writePaths, ["wiki/overview/overview.md"]);
+  assert.doesNotMatch(overviewWriter.prompt, /core is verified/);
+  assert.doesNotMatch(overviewWriter.prompt, /api is verified/);
 });
 
-test("retrying a historical snapshot forks an immutable branch", async () => {
-  const executor = createExecutor({ research: false });
+test("synthesis may expand source research once before finalizing the WikiSpec", async () => {
+  const executor = createExecutor({
+    synthesis: (_request, index) => index === 0
+      ? { decision: "expand", researchScopes: [{ id: "storage", task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
+      : finalize(finalizedSpec({ coreScopes: ["core", "storage"] })),
+  });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const historical = engine.getSnapshot();
-  const write = historical.nodes.find((node) => node.kind === "write");
+  const snapshot = await engine.waitForIdle();
 
-  await engine.forkAndRetryNode(historical, write.id);
-  await engine.waitForIdle();
-  const fork = engine.getSnapshot();
-
-  assert.notEqual(fork.id, historical.id);
-  assert.equal(fork.parentRunId, historical.id);
-  assert.equal(fork.forkedFromNodeId, write.id);
-  assert.equal(historical.nodes.find((node) => node.id === write.id).attempt, 1);
-  assert.equal(fork.nodes.find((node) => node.id === write.id).attempt, 1, "forked retry starts a new attempt lineage");
-  assert.ok(fork.events.some((event) => event.kind === "run_forked"));
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 2);
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, 3);
+  assert.equal(snapshot.nodes.filter((node) => node.kind === "research" && node.input.batch === 1).length, 1);
 });
 
-test("invalid historical retry targets do not replace the current run", async () => {
-  const engine = createEngine(createExecutor({ research: false }));
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const historical = engine.getSnapshot();
-
-  await assert.rejects(() => engine.forkAndRetryNode(historical, "missing"), /no longer exists/);
-  await assert.rejects(() => engine.forkAndRetryNode({ ...historical, status: "paused" }, historical.nodes[0].id), /Only completed/);
-  assert.equal(engine.getSnapshot().id, historical.id);
-});
-
-test("malformed control submission fails the node instead of publishing success", async () => {
-  const engine = createEngine({
-    async execute(request) {
-      if (request.node.kind === "plan") return { result: { pages: "not-an-array" } };
-      throw new Error("unexpected");
-    },
+test("a second supplemental research request in the same plan round fails closed", async () => {
+  const executor = createExecutor({
+    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", task: "Research another gap" }], rationale: "More research." }),
   });
+  const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const snapshot = engine.getSnapshot();
-  const plan = snapshot.nodes.find((node) => node.kind === "plan");
+  const snapshot = await engine.waitForIdle();
+
   assert.equal(snapshot.status, "failed");
-  assert.equal(plan.status, "failed");
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 2);
+  assert.equal(executor.calls.filter((kind) => kind === "research").length, 3);
+  assert.match(snapshot.nodes.filter((node) => node.kind === "synthesis").at(-1).error.message, /at most 1 supplemental/);
 });
 
-test("validation failure runs a writer repair and repeated validation blocks", async () => {
-  const executor = createExecutor({ research: false });
-  let validations = 0;
-  const engine = createEngine(executor, async () => inspection, async () => {
-    validations += 1;
-    return validations === 1 ? { ok: false, errors: ["architecture.md: missing citation"], pages: [] } : validation;
+test("final WikiSpec rejects pages outside their domain directory and unknown research receipts", async () => {
+  const wrongPath = finalizedSpec();
+  wrongPath.domains.find((domain) => domain.id === "core").pages[0].path = "architecture.md";
+  const malformed = createEngine(createExecutor({ synthesis: () => finalize(wrongPath) }));
+  malformed.start({ cwd: "/workspace", mode: "generate" });
+  await malformed.waitForIdle();
+  assert.equal(malformed.getSnapshot().status, "failed");
+
+  const indexPage = finalizedSpec();
+  indexPage.domains.find((domain) => domain.id === "core").pages[0].path = "core/index.md";
+  const rejectedIndex = createEngine(createExecutor({ synthesis: () => finalize(indexPage) }));
+  rejectedIndex.start({ cwd: "/workspace", mode: "generate" });
+  await rejectedIndex.waitForIdle();
+  assert.equal(rejectedIndex.getSnapshot().status, "failed");
+
+  const overviewReceipt = finalizedSpec();
+  overviewReceipt.domains.find((domain) => domain.id === "overview").researchScopeIds = ["core"];
+  const rejectedOverviewReceipt = createEngine(createExecutor({ synthesis: () => finalize(overviewReceipt) }));
+  rejectedOverviewReceipt.start({ cwd: "/workspace", mode: "generate" });
+  await rejectedOverviewReceipt.waitForIdle();
+  assert.equal(rejectedOverviewReceipt.getSnapshot().status, "failed");
+
+  const wrongReceipt = finalizedSpec({ coreScopes: ["missing"] });
+  const unknownReceipt = createEngine(createExecutor({ synthesis: () => finalize(wrongReceipt) }));
+  unknownReceipt.start({ cwd: "/workspace", mode: "generate" });
+  await unknownReceipt.waitForIdle();
+  assert.equal(unknownReceipt.getSnapshot().status, "failed");
+  assert.match(unknownReceipt.getSnapshot().nodes.find((node) => node.kind === "synthesis").error.message, /unknown research scope/);
+});
+
+test("global review routes depth and diagram defects only to their target domain writer", async () => {
+  const executor = createExecutor({
+    review: (_request, index) => index === 0
+      ? {
+        defects: [
+          { id: "depth-api", domainId: "api", page: "api/request-flow.md", kind: "depth", detail: "Explain the retry branch." },
+          { id: "diagram-api", domainId: "api", page: "api/request-flow.md", kind: "diagram", detail: "Add the timeout interaction." },
+        ],
+        summary: "API page needs depth and diagram repairs.",
+      }
+      : { defects: [], summary: "complete" },
   });
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  assert.equal(engine.getSnapshot().status, "succeeded");
-  assert.equal(executor.calls.filter((kind) => kind === "repair").length, 1);
-
-  const duplicate = createEngine(createExecutor({ research: false }), async () => inspection, async () => ({ ok: false, errors: ["same error"], pages: [] }));
-  duplicate.start({ cwd: "/workspace", mode: "generate" });
-  await duplicate.waitForIdle();
-  assert.equal(duplicate.getSnapshot().status, "blocked");
-  assert.match(duplicate.getSnapshot().blockedReason, /same unresolved error set/);
-});
-
-test("structural review defects produce a replan and no more than four research nodes", async () => {
-  const calls = [];
-  let reviewRound = 0;
-  const engine = createEngine({
-    async execute(request) {
-      calls.push(request.node.kind);
-      if (request.node.kind === "plan" || request.node.kind === "replan") return {
-        result: {
-          pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: ["src/index.ts#L1-L2"] }],
-          researchScopes: ["a", "b", "c", "d"].map((id) => ({ id, task: id })),
-          rationale: "test",
-        },
-      };
-      if (request.node.kind === "research") return { result: "## Findings\n- Verified evidence. Source: `src/index.ts#L1-L2`\n\n## Gaps\n- None.\n\n## Writer Guidance\n- Explain the researched area." };
-      if (request.node.kind === "write" || request.node.kind === "repair") return { result: { updatedPages: ["architecture.md"], deletedPages: [], notes: [] } };
-      if (request.node.kind === "review") return { result: reviewRound++ === 0
-        ? { defects: [{ id: "coverage", page: "architecture.md", kind: "coverage", detail: "missing area" }], summary: "missing" }
-        : { defects: [], summary: "done" } };
-      throw new Error(`unexpected ${request.node.kind}`);
-    },
-  });
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  assert.equal(engine.getSnapshot().status, "succeeded");
-  assert.equal(calls.filter((kind) => kind === "replan").length, 1);
-  assert.equal(engine.getSnapshot().nodes.filter((node) => node.kind === "research").length, 8);
-});
-
-test("structural review blocks after the bounded replan budget despite changing defect text", async () => {
-  const calls = [];
-  let reviewRound = 0;
-  const engine = createEngine({
-    async execute(request) {
-      calls.push(request.node.kind);
-      if (request.node.kind === "plan" || request.node.kind === "replan") return {
-        result: {
-          pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: ["src/index.ts#L1-L2"] }],
-          researchScopes: [],
-          rationale: "test",
-        },
-      };
-      if (request.node.kind === "write") return { result: { updatedPages: ["architecture.md"], deletedPages: [], notes: [] } };
-      if (request.node.kind === "review") return {
-        result: {
-          defects: [{ id: `coverage-${reviewRound}`, page: "architecture.md", kind: "coverage", detail: `missing area ${reviewRound++}` }],
-          summary: "still incomplete",
-        },
-      };
-      throw new Error(`unexpected ${request.node.kind}`);
-    },
-  });
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const snapshot = engine.getSnapshot();
-  assert.equal(snapshot.status, "blocked");
-  assert.match(snapshot.blockedReason, /2-replan budget/);
-  assert.equal(calls.filter((kind) => kind === "replan").length, 2);
-});
-
-test("source reconciliation restores the structural-replan budget for its new DAG", async () => {
-  const calls = [];
-  let reviewRound = 0;
-  let inspectionRound = 0;
-  const engine = createEngine({
-    async execute(request) {
-      calls.push(request.node.kind);
-      if (request.node.kind === "plan" || request.node.kind === "replan") return {
-        result: {
-          pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: ["src/index.ts#L1-L2"] }],
-          researchScopes: [],
-          rationale: "test",
-        },
-      };
-      if (request.node.kind === "write") return { result: { updatedPages: ["architecture.md"], deletedPages: [], notes: [] } };
-      if (request.node.kind === "review") return {
-        result: {
-          defects: [{ id: `coverage-${reviewRound}`, page: "architecture.md", kind: "coverage", detail: `missing area ${reviewRound++}` }],
-          summary: "still incomplete",
-        },
-      };
-      throw new Error(`unexpected ${request.node.kind}`);
-    },
-  }, async () => ({ ...inspection, sourceFingerprint: `source-${inspectionRound++}` }));
-
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const first = engine.getSnapshot();
-  assert.equal(first.status, "blocked");
-  assert.equal(calls.filter((kind) => kind === "replan").length, 2);
-
-  const completedWrite = first.nodes.filter((node) => node.kind === "write" && node.status === "succeeded").at(-1);
-  await engine.retryNode(completedWrite.id);
-  await engine.waitForIdle();
-  assert.equal(calls.filter((kind) => kind === "replan").length, 4);
-  assert.equal(engine.getSnapshot().status, "blocked");
-});
-
-test("a source-content fingerprint change restarts retry from Git inspection", async () => {
-  const executor = createExecutor({ research: false });
-  let inspections = 0;
-  const engine = createEngine(executor, async () => ({
-    ...inspection,
-    changed: [{ status: "M", paths: ["src/a.ts"] }],
-    changedPaths: ["src/a.ts"],
-    sourceFingerprint: inspections++ === 0 ? "source-one" : "source-two",
-  }));
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const write = engine.getSnapshot().nodes.find((node) => node.kind === "write");
-  await engine.retryNode(write.id);
-  await engine.waitForIdle();
-  const snapshot = engine.getSnapshot();
-  assert.equal(snapshot.nodes.find((node) => node.kind === "inspect").attempt, 2);
-  assert.equal(executor.calls.filter((kind) => kind === "plan").length, 2);
-});
-
-test("live output is bounded before it reaches the durable run state", async () => {
-  const executor = createExecutor({ research: false, streamOutput: "x".repeat(60 * 1024) });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
-  assert.match(plan.output, /^\[\.\.\. \d+ earlier characters omitted \.\.\.\]/);
-  assert.ok(plan.output.length <= 48 * 1024);
-});
+  const snapshot = await engine.waitForIdle();
 
-test("final agent output is bounded before it reaches the durable run state", async () => {
-  const executor = createExecutor({ research: false, finalOutput: "y".repeat(60 * 1024) });
-  const engine = createEngine(executor);
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
-  assert.match(plan.output, /^\[\.\.\. \d+ earlier characters omitted \.\.\.\]/);
-  assert.ok(plan.output.length <= 48 * 1024);
-});
-
-test("agent transcripts are bounded before they reach durable run state", async () => {
-  const executor = createExecutor({ research: false });
-  const execute = executor.execute.bind(executor);
-  executor.execute = async (request) => {
-    if (request.node.kind === "plan") {
-      request.onHistory?.(Array.from({ length: 80 }, (_, index) => ({
-        at: "2026-08-08T00:00:00.000Z",
-        kind: index % 2 ? "tool_result" : "message",
-        text: String(index).repeat(2_000),
-      })));
-    }
-    return await execute(request);
-  };
-  const engine = createEngine(executor);
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const plan = engine.getSnapshot().nodes.find((node) => node.kind === "plan");
-  assert.ok(plan.history.length <= 48);
-  assert.ok(plan.history.reduce((total, entry) => total + entry.text.length, 0) <= 24 * 1024);
-});
-
-test("Wiki-only drift does not invalidate otherwise reusable source work", async () => {
-  const executor = createExecutor({ research: false });
-  let inspections = 0;
-  const engine = createEngine(executor, async () => {
-    inspections += 1;
-    return inspections === 1 ? inspection : { ...inspection, mode: "generate", wikiDrift: true, impactedPages: ["architecture.md"] };
-  });
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  const write = engine.getSnapshot().nodes.find((node) => node.kind === "write");
-  await engine.retryNode(write.id);
-  await engine.waitForIdle();
-  assert.equal(engine.getSnapshot().nodes.find((node) => node.kind === "inspect").attempt, 1);
-  assert.equal(executor.calls.filter((kind) => kind === "write").length, 2);
-});
-
-test("cancelling an active node aborts it and leaves a durable cancelled run", async () => {
-  let started;
-  const startedPromise = new Promise((resolve) => { started = resolve; });
-  const engine = createEngine({
-    async execute(request) {
-      started();
-      return await new Promise((_resolve, reject) => {
-        request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-      });
-    },
-  });
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await startedPromise;
-  await engine.cancel();
-  assert.equal(engine.serialize().snapshot.nodes.some((node) => node.status === "running"), false);
-  await engine.waitForIdle();
-  const snapshot = engine.getSnapshot();
-  assert.equal(snapshot.status, "cancelled");
-  assert.equal(snapshot.nodes.find((node) => node.kind === "plan").status, "cancelled");
-});
-
-test("failed runs require targeted retry instead of resume", async () => {
-  const engine = createEngine({
-    async execute() {
-      throw new Error("provider failure");
-    },
-  });
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  await engine.waitForIdle();
-  await assert.rejects(() => engine.resume(), /requires targeted node retry/);
-  assert.equal(engine.getSnapshot().status, "failed");
-});
-
-test("restored runs are paused and invalidate from inspect when Git changes", async () => {
-  const executor = createExecutor({ research: false });
-  const initial = createEngine(executor);
-  initial.start({ cwd: "/workspace", mode: "refresh" });
-  await initial.waitForIdle();
-  const session = initial.serialize();
-
-  const changedInspection = { ...inspection, head: "def456", changedPaths: ["src/changed.ts"] };
-  const restored = createEngine(createExecutor({ research: false }), async () => changedInspection);
-  const snapshot = restored.restore(session);
   assert.equal(snapshot.status, "succeeded");
+  const repairs = executor.requests.filter((request) => request.node.kind === "repair");
+  assert.equal(repairs.length, 1);
+  assert.equal(repairs[0].node.input.domainId, "api");
+  assert.deepEqual(repairs[0].writePaths, ["wiki/api/request-flow.md"]);
+  assert.equal(executor.calls.filter((kind) => kind === "write").length, 3);
+  assert.equal(executor.calls.filter((kind) => kind === "review").length, 2);
+});
 
-  // Completed runs remain terminal; a retry is what creates a new dispatch.
-  const write = snapshot.nodes.find((node) => node.kind === "write");
-  await restored.retryNode(write.id);
-  await restored.waitForIdle();
-  const afterRetry = restored.getSnapshot();
-  assert.equal(afterRetry.nodes.find((node) => node.kind === "inspect").attempt, 2);
-  assert.equal(afterRetry.status, "succeeded");
+test("review defects must name a declared domain page", async () => {
+  const executor = createExecutor({
+    review: () => ({
+      defects: [{ id: "bad", domainId: "core", page: "api/request-flow.md", kind: "link", detail: "Bad target." }],
+      summary: "bad reviewer target",
+    }),
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+  assert.equal(snapshot.status, "failed");
+  assert.match(snapshot.nodes.find((node) => node.kind === "review").error.message, /does not belong to domain/);
+});
+
+test("one global structural replan is allowed, then the run blocks", async () => {
+  let reviews = 0;
+  const executor = createExecutor({
+    review: () => ({
+      defects: [{
+        id: `coverage-${reviews}`,
+        domainId: "core",
+        page: "core/architecture.md",
+        kind: "coverage",
+        detail: `Missing lifecycle segment ${reviews++}.`,
+      }],
+      summary: "coverage incomplete",
+    }),
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "blocked");
+  assert.equal(executor.calls.filter((kind) => kind === "replan").length, 1);
+  assert.match(snapshot.blockedReason, /1-replan budget/);
+});
+
+test("a single structural replan can converge with a fresh final spec", async () => {
+  const executor = createExecutor({
+    review: (_request, index) => index === 0
+      ? {
+        defects: [{ id: "coverage", domainId: "core", page: "core/architecture.md", kind: "topology", detail: "Split the lifecycle boundary." }],
+        summary: "replan needed",
+      }
+      : { defects: [], summary: "complete" },
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(executor.calls.filter((kind) => kind === "replan").length, 1);
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 2);
 });

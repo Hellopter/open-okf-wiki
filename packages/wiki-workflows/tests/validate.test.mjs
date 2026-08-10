@@ -35,7 +35,7 @@ async function fixture() {
 }
 
 function page({ sources = ["api/src/index.ts#L1-L2"], body = "" } = {}) {
-  return `---\ntype: concept\ntitle: Example\ndescription: Example documentation\nsources:\n${sources.map((source) => `  - ${source}`).join("\n")}\n---\n\n${body}`;
+  return `---\ntype: concept\ntitle: Example\ndescription: Example documentation\ntags:\n  - documentation\nsources:\n${sources.map((source) => `  - ${source}`).join("\n")}\n---\n\n${body}`;
 }
 
 test.after(async () => {
@@ -70,11 +70,21 @@ test("rejects malformed frontmatter and invalid declared-source ranges", async (
   assert.deepEqual(result.errors, [
     "invalid.md: frontmatter requires a non-empty type",
     "invalid.md: frontmatter requires a non-empty description",
+    "invalid.md: frontmatter tags must be a non-empty string array",
     "invalid.md: frontmatter source must be workspace-relative with #Lx-Ly: ../api/src/index.ts#L1-L1",
     "invalid.md: frontmatter source has an invalid line range: api/src/index.ts#L8-L2",
     "invalid.md: frontmatter source line range exceeds file: api/src/index.ts#L3-L3",
     "invalid.md: frontmatter source file is missing: api/src/missing.ts#L1-L1",
   ]);
+});
+
+test("requires concise string tags in page frontmatter", async () => {
+  const root = await fixture();
+  await writeFile(path.join(root, "wiki", "invalid-tags.md"), page().replace("tags:\n  - documentation", "tags: [documentation, 2]"));
+
+  const result = await validateWiki(root);
+
+  assert.deepEqual(result.errors, ["invalid-tags.md: frontmatter tags must be a non-empty string array"]);
 });
 
 test("rejects invalid repo citations, escaping Wiki links, missing links, and unsafe Mermaid", async () => {

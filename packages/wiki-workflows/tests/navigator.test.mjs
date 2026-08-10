@@ -33,7 +33,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 1,
+  version: 2,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -99,6 +99,40 @@ test("keeps a sidebar only where the terminal has room", () => {
   assert.deepEqual(phaseRows(run).map((phase) => [phase.title, phase.nodeIds.length]), [
     ["Inspect", 1], ["Plan", 1], ["Research", 2], ["Write", 1],
   ]);
+});
+
+test("renders synthesis as an independent control-submission stage", () => {
+  const synthesized = structuredClone(run);
+  synthesized.nodes.splice(4, 0, {
+    id: "synthesis",
+    kind: "synthesis",
+    label: "Synthesize Wiki specification",
+    status: "succeeded",
+    dependsOn: ["research-a", "research-b"],
+    attempt: 1,
+    inputFingerprint: "",
+    input: {},
+    result: { decision: "finalize", spec: { domains: [] }, rationale: "Research is sufficient." },
+    metrics: {},
+    activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+  });
+  synthesized.nodes.at(-1).dependsOn = ["synthesis"];
+
+  assert.deepEqual(phaseRows(synthesized).map((phase) => [phase.title, phase.nodeIds.length]), [
+    ["Inspect", 1], ["Plan", 1], ["Research", 2], ["Synthesis", 1], ["Write", 1],
+  ]);
+
+  let state = createWikiNavigatorState(synthesized, [summary(synthesized)]);
+  ({ state } = reduceWikiNavigator(state, "enter", synthesized, [summary(synthesized)], synthesized.id));
+  ({ state } = reduceWikiNavigator(state, "down", synthesized));
+  ({ state } = reduceWikiNavigator(state, "down", synthesized));
+  ({ state } = reduceWikiNavigator(state, "down", synthesized));
+  ({ state } = reduceWikiNavigator(state, "enter", synthesized));
+  ({ state } = reduceWikiNavigator(state, "enter", synthesized));
+  const detail = plain(renderWikiNavigator(state, synthesized, 100, undefined, 40).join("\n"));
+  assert.match(detail, /\| Synthesis/);
+  assert.match(detail, /Control submission/);
+  assert.match(detail, /finalize/);
 });
 
 test("root view lists project history without exposing manual run IDs", () => {

@@ -129,6 +129,11 @@ async function validateFrontmatter(page: string, frontmatter: Record<string, unk
     }
   }
 
+  const tags = frontmatter.tags;
+  if (!Array.isArray(tags) || !tags.length || tags.some((tag) => typeof tag !== "string" || !tag.trim())) {
+    errors.push(`${page}: frontmatter tags must be a non-empty string array`);
+  }
+
   const sources = frontmatter.sources;
   if (!Array.isArray(sources) || !sources.length || sources.some((source) => typeof source !== "string" || !source.trim())) {
     errors.push(`${page}: frontmatter sources must be a non-empty string array`);

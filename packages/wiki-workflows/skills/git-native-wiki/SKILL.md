@@ -27,6 +27,8 @@ ranges:
 type: component
 title: Example component
 description: What this page explains.
+tags:
+  - architecture
 sources:
   - api/src/example.ts#L12-L38
 ---
@@ -50,5 +52,13 @@ For phase-specific operating guidance, read the relevant reference:
 
 - [Planning](references/plan.md)
 - [Research receipts](references/research.md)
+- [Research synthesis](references/synthesis.md)
 - [Writing and repair](references/write.md)
 - [Review](references/review.md)
+
+Writers receive page skeletons only when their finalized DomainPacket selects a
+page type. The available skeletons are [Overview](references/templates/overview.md),
+[Architecture](references/templates/architecture.md), [Module](references/templates/module.md),
+[Flow](references/templates/flow.md), and [Concept](references/templates/concept.md).
+They are structural guidance, never pages to copy verbatim or fill with
+unsupported placeholders.

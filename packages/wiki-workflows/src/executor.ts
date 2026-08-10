@@ -23,8 +23,10 @@ import { Type } from "typebox";
 import {
   parsePlanSubmission,
   parseReviewSubmission,
+  parseSynthesisSubmission,
   planSubmissionSchema,
   reviewSubmissionSchema,
+  synthesisSubmissionSchema,
 } from "./control-submissions.js";
 import type {
   WikiAgentExecutionRequest,
@@ -46,7 +48,7 @@ export interface PiAgentExecutorOptions {
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
 }
 
-type SubmissionToolName = "wiki_submit_plan" | "wiki_submit_review";
+type SubmissionToolName = "wiki_submit_plan" | "wiki_submit_synthesis" | "wiki_submit_review";
 
 interface SubmissionCollector {
   toolName: SubmissionToolName;
@@ -141,7 +143,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     });
     await resourceLoader.reload();
 
-    const customTools = workflowTools(toolPolicy, request.role, submission);
+    const customTools = workflowTools(toolPolicy, request.role, submission, request.writePaths);
     const result = await (this.options.createSession ?? createAgentSession)({
       cwd: toolPolicy.workspaceRoot,
       model: this.options.getModel?.() ?? this.options.model,
@@ -402,6 +404,7 @@ function workflowTools(
   policy: WorkspaceToolPolicy,
   role: WikiAgentExecutionRequest["role"],
   submission?: SubmissionCollector,
+  writePaths?: readonly string[],
 ): ToolDefinition<any, any, any>[] {
   const readOnly = [
     guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, policy.readableRoots, "path"),
@@ -411,17 +414,20 @@ function workflowTools(
   ];
   if (role !== "writer") return submission ? [...readOnly, submissionTool(submission)] : readOnly;
 
+  const allowedPaths = exactWriterPaths(policy, writePaths);
+  const allowedDirectories = writerDirectories(policy.wikiRoot, allowedPaths);
+
   const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
-      mkdir: async (directory) => await guardedMkdir(policy.wikiRoot, directory),
-      writeFile: async (file, content) => await guardedWrite(policy.wikiRoot, file, content),
+      mkdir: async (directory) => await guardedMkdir(policy.wikiRoot, directory, allowedDirectories),
+      writeFile: async (file, content) => await guardedWrite(policy.wikiRoot, file, content, allowedPaths),
     },
   });
   const edit = createEditToolDefinition(policy.workspaceRoot, {
     operations: {
-      access: async (file) => await guardedAccess(policy.wikiRoot, file),
-      readFile: async (file) => await guardedRead(policy.wikiRoot, file),
-      writeFile: async (file, content) => await guardedWrite(policy.wikiRoot, file, content),
+      access: async (file) => await guardedAccess(policy.wikiRoot, file, allowedPaths),
+      readFile: async (file) => await guardedRead(policy.wikiRoot, file, allowedPaths),
+      writeFile: async (file, content) => await guardedWrite(policy.wikiRoot, file, content, allowedPaths),
     },
   });
   return [
@@ -430,12 +436,13 @@ function workflowTools(
     // The guarded operations below receive those absolute paths and enforce wiki/.
     guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path"),
     guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path", true),
-    createDeleteToolDefinition(policy),
+    createDeleteToolDefinition(policy, allowedPaths),
   ];
 }
 
 function submissionFor(kind: WikiAgentExecutionRequest["node"]["kind"]): SubmissionCollector | undefined {
   if (kind === "plan" || kind === "replan") return { toolName: "wiki_submit_plan" };
+  if (kind === "synthesis") return { toolName: "wiki_submit_synthesis" };
   if (kind === "review") return { toolName: "wiki_submit_review" };
   return undefined;
 }
@@ -452,6 +459,20 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
       async execute(_toolCallId, params) {
         recordSubmission(submission, parsePlanSubmission(params));
         return { content: [{ type: "text", text: "Wiki plan recorded." }], details: undefined };
+      },
+    };
+  }
+  if (submission.toolName === "wiki_submit_synthesis") {
+    return {
+      name: submission.toolName,
+      label: submission.toolName,
+      description: "Submit either a bounded follow-up research request or the finalized domain-scoped WikiSpec.",
+      promptSnippet: "Submit the Wiki synthesis decision",
+      promptGuidelines: ["Call wiki_submit_synthesis exactly once with either expand or finalize."],
+      parameters: synthesisSubmissionSchema,
+      async execute(_toolCallId, params) {
+        recordSubmission(submission, parseSynthesisSubmission(params));
+        return { content: [{ type: "text", text: "Wiki synthesis recorded." }], details: undefined };
       },
     };
   }
@@ -496,7 +517,7 @@ const deleteSchema = Type.Object({
   path: Type.String({ description: "Workspace-relative Wiki page path to remove" }),
 });
 
-function createDeleteToolDefinition(policy: WorkspaceToolPolicy): ToolDefinition<typeof deleteSchema> {
+function createDeleteToolDefinition(policy: WorkspaceToolPolicy, allowedPaths: ReadonlySet<string>): ToolDefinition<typeof deleteSchema> {
   return {
     name: "wiki_delete",
     label: "wiki_delete",
@@ -506,6 +527,7 @@ function createDeleteToolDefinition(policy: WorkspaceToolPolicy): ToolDefinition
     parameters: deleteSchema,
     async execute(_toolCallId, { path: rawPath }) {
       const workspacePath = await assertAllowedWorkspacePath(policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], rawPath, false);
+      assertExactWriterPath(allowedPaths, workspacePath);
       if (path.resolve(workspacePath) === path.resolve(policy.wikiRoot)) throw new Error("Cannot delete the Wiki root");
       const entry = await lstat(workspacePath);
       if (!entry.isFile()) throw new Error("wiki_delete only accepts regular files");
@@ -519,24 +541,63 @@ function valueAt(value: unknown, field: string): unknown {
   return value && typeof value === "object" ? (value as Record<string, unknown>)[field] : undefined;
 }
 
-async function guardedMkdir(root: string, directory: string): Promise<void> {
+function exactWriterPaths(policy: WorkspaceToolPolicy, writePaths: readonly string[] | undefined): Set<string> {
+  if (!writePaths?.length) throw new Error("Workflow configuration error: writers require at least one assigned Wiki page");
+  const allowed = new Set<string>();
+  for (const rawPath of writePaths) {
+    if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid writer page path");
+    const absolute = insideWorkspace(policy.workspaceRoot, rawPath);
+    const relative = path.relative(policy.wikiRoot, absolute);
+    if (!rawPath.startsWith("wiki/") || !relative || path.basename(relative) === "index.md" || !relative.endsWith(".md")
+      || relative.split(path.sep).some((part) => part === "." || part === ".." || !part)) {
+      throw new Error(`Workflow configuration error: writer path must be a non-index Markdown page under wiki/: ${rawPath}`);
+    }
+    allowed.add(path.resolve(absolute));
+  }
+  return allowed;
+}
+
+function writerDirectories(wikiRoot: string, allowedPaths: ReadonlySet<string>): Set<string> {
+  const directories = new Set<string>([path.resolve(wikiRoot)]);
+  for (const file of allowedPaths) {
+    let directory = path.dirname(file);
+    while (pathIsInside(path.resolve(wikiRoot), directory)) {
+      directories.add(directory);
+      if (directory === path.resolve(wikiRoot)) break;
+      directory = path.dirname(directory);
+    }
+  }
+  return directories;
+}
+
+function assertExactWriterPath(allowedPaths: ReadonlySet<string>, candidate: string): void {
+  if (!allowedPaths.has(path.resolve(candidate))) {
+    throw new Error(`Path is not assigned to this Wiki domain: ${candidate}`);
+  }
+}
+
+async function guardedMkdir(root: string, directory: string, allowedDirectories: ReadonlySet<string>): Promise<void> {
   await ensureWikiRoot(root);
+  if (!allowedDirectories.has(path.resolve(directory))) throw new Error(`Directory is not assigned to this Wiki domain: ${directory}`);
   await assertContainedAbsolutePath(root, directory, true);
   await mkdir(directory, { recursive: true });
 }
 
-async function guardedWrite(root: string, file: string, content: string): Promise<void> {
+async function guardedWrite(root: string, file: string, content: string, allowedPaths: ReadonlySet<string>): Promise<void> {
   await ensureWikiRoot(root);
+  assertExactWriterPath(allowedPaths, file);
   await assertContainedAbsolutePath(root, file, true);
   await writeFile(file, content, "utf8");
 }
 
-async function guardedRead(root: string, file: string): Promise<Buffer> {
+async function guardedRead(root: string, file: string, allowedPaths: ReadonlySet<string>): Promise<Buffer> {
+  assertExactWriterPath(allowedPaths, file);
   await assertContainedAbsolutePath(root, file, false);
   return await readFile(file);
 }
 
-async function guardedAccess(root: string, file: string): Promise<void> {
+async function guardedAccess(root: string, file: string, allowedPaths: ReadonlySet<string>): Promise<void> {
+  assertExactWriterPath(allowedPaths, file);
   await assertContainedAbsolutePath(root, file, false);
   await access(file);
 }

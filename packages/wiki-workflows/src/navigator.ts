@@ -565,6 +565,7 @@ function stageLabel(kind: WikiRunNode["kind"]): string {
     case "inspect": return "Inspect";
     case "plan": return "Plan";
     case "research": return "Research";
+    case "synthesis": return "Synthesis";
     case "write": return "Write";
     case "validate": return "Validate";
     case "review": return "Review";
@@ -871,7 +872,7 @@ function renderAgentTranscript(state: WikiNavigatorState, node: WikiRunNode, wid
 
 function resultLabel(kind: WikiNodeKind): string {
   if (kind === "research") return "Markdown handoff";
-  if (kind === "plan" || kind === "replan" || kind === "review") return "Control submission";
+  if (kind === "plan" || kind === "replan" || kind === "synthesis" || kind === "review") return "Control submission";
   return "Node result";
 }
 

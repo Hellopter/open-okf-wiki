@@ -10,3 +10,18 @@ Wiki content must be written in {{language}}. Generated pages belong only under
 
 Keep claims tied to inspected source evidence. Do not cite absolute paths,
 temporary paths, `sources/`, `inputs/`, or source IDs.
+
+The workflow separates an initial Draft Plan from the finalized WikiSpec.
+Research, synthesis, and review are source-grounded coordination phases; only
+writers and repair writers edit `wiki/`. A DomainPacket is authoritative for a
+writer's assigned domain: it contains the page contracts, relevant evidence,
+shared terminology, and allowed cross-domain links. Do not ask a writer to
+reconstruct or document another domain from omitted receipts.
+
+Use diagrams as compact explanations of verified relationships, not as
+decoration or independent evidence. Every Mermaid node and edge must be
+traceable to the packet's source evidence, with nearby prose and repository
+citations explaining the key facts and relevant boundary or failure case. Do
+not invent entities, calls, states, ownership, or cardinality to make a diagram
+look complete. If the finalized WikiSpec marks a diagram inapplicable, preserve
+that decision rather than adding an empty or speculative diagram.

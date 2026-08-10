@@ -1,38 +1,112 @@
 import { Type } from "typebox";
-import type { WikiPlanResult, WikiReviewDefect, WikiReviewResult } from "./workflow-types.js";
+import type {
+  WikiDiagramKind,
+  WikiDraftPlanResult,
+  WikiReviewDefect,
+  WikiReviewResult,
+  WikiSpec,
+  WikiSynthesisResult,
+} from "./workflow-types.js";
 
-export const MAX_RESEARCH_SCOPES = 4;
+/** Maximum concurrent research requests in an initial or supplemental batch. */
+export const MAX_RESEARCH_SCOPES_PER_BATCH = 4;
 
-const nonEmptyString = Type.String({ minLength: 1 });
 const wikiPagePath = Type.String({ minLength: 1, description: "Wiki-relative Markdown page path" });
 const pageTitle = Type.String({ minLength: 1, description: "Reader-facing page title" });
 const pagePurpose = Type.String({ minLength: 1, description: "Question the page answers" });
 const sourceReference = Type.String({ minLength: 1, description: "Workspace-relative path#Lx-Ly" });
 const researchScopeId = Type.String({ minLength: 1, description: "Distinct research scope ID" });
 const researchTask = Type.String({ minLength: 1, description: "Bounded source research task" });
-const planRationale = Type.String({ minLength: 1, description: "Why this page set and research split fit the current scope" });
+const domainId = Type.String({ minLength: 1, pattern: "^[a-z0-9][a-z0-9-]*$", description: "Stable documentation domain ID and output directory" });
+const sectionTitle = Type.String({ minLength: 1, description: "Required page section" });
+const pageType = Type.Union([
+  Type.Literal("overview"),
+  Type.Literal("architecture"),
+  Type.Literal("module"),
+  Type.Literal("flow"),
+  Type.Literal("concept"),
+]);
+const rationale = Type.String({ minLength: 1, description: "Why this research or Wiki contract fits the current scope" });
 const defectId = Type.String({ minLength: 1, description: "Stable actionable defect ID" });
 const defectPage = Type.String({ minLength: 1, description: "Affected Wiki page" });
 const defectDetail = Type.String({ minLength: 1, description: "Specific correction needed" });
 const reviewSummary = Type.String({ minLength: 1, description: "Concise overall review result" });
+const diagramKind = Type.Union([
+  Type.Literal("flowchart"),
+  Type.Literal("sequence"),
+  Type.Literal("state"),
+  Type.Literal("er"),
+  Type.Literal("class"),
+]);
+const diagramRequirement = Type.Object({
+  kind: diagramKind,
+  applicability: Type.Union([Type.Literal("required"), Type.Literal("not_applicable")]),
+  purpose: pagePurpose,
+  reason: Type.Optional(Type.String({ minLength: 1, description: "Why this diagram is not applicable" })),
+}, { additionalProperties: false });
 
 export const planSubmissionSchema = Type.Object({
-  pages: Type.Array(Type.Object({
-    path: wikiPagePath,
+  candidateDomains: Type.Array(Type.Object({
+    id: domainId,
     title: pageTitle,
     purpose: pagePurpose,
-    sources: Type.Array(sourceReference, { minItems: 1 }),
   }, { additionalProperties: false }), { minItems: 1 }),
   researchScopes: Type.Array(Type.Object({
     id: researchScopeId,
     task: researchTask,
-  }, { additionalProperties: false }), { maxItems: MAX_RESEARCH_SCOPES }),
-  rationale: planRationale,
+  }, { additionalProperties: false }), { maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }),
+  rationale,
 }, { additionalProperties: false });
+
+const specPage = Type.Object({
+  pageType,
+  path: wikiPagePath,
+  title: pageTitle,
+  purpose: pagePurpose,
+  sources: Type.Array(sourceReference, { minItems: 1 }),
+  requiredSections: Type.Array(sectionTitle, { minItems: 1 }),
+  diagrams: Type.Array(diagramRequirement, { minItems: 1 }),
+}, { additionalProperties: false });
+
+const wikiSpecSchema = Type.Object({
+  domains: Type.Array(Type.Object({
+    id: domainId,
+    title: pageTitle,
+    purpose: pagePurpose,
+    pages: Type.Array(specPage, { minItems: 1 }),
+    researchScopeIds: Type.Array(researchScopeId),
+  }, { additionalProperties: false }), { minItems: 1 }),
+  crossLinks: Type.Array(Type.Object({
+    fromPath: wikiPagePath,
+    toPath: wikiPagePath,
+    purpose: pagePurpose,
+  }, { additionalProperties: false })),
+  sharedTerms: Type.Array(Type.Object({
+    term: Type.String({ minLength: 1 }),
+    definition: Type.String({ minLength: 1 }),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+export const synthesisSubmissionSchema = Type.Union([
+  Type.Object({
+    decision: Type.Literal("expand"),
+    researchScopes: Type.Array(Type.Object({
+      id: researchScopeId,
+      task: researchTask,
+    }, { additionalProperties: false }), { minItems: 1, maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }),
+    rationale,
+  }, { additionalProperties: false }),
+  Type.Object({
+    decision: Type.Literal("finalize"),
+    spec: wikiSpecSchema,
+    rationale,
+  }, { additionalProperties: false }),
+]);
 
 export const reviewSubmissionSchema = Type.Object({
   defects: Type.Array(Type.Object({
     id: defectId,
+    domainId,
     page: defectPage,
     kind: Type.Union([
       Type.Literal("evidence"),
@@ -40,6 +114,8 @@ export const reviewSubmissionSchema = Type.Object({
       Type.Literal("format"),
       Type.Literal("topology"),
       Type.Literal("coverage"),
+      Type.Literal("depth"),
+      Type.Literal("diagram"),
     ]),
     detail: defectDetail,
   }, { additionalProperties: false })),
@@ -51,42 +127,46 @@ export const reviewSubmissionSchema = Type.Object({
  * invocation time and before the engine expands the DAG, so mocks and future
  * executor implementations cannot bypass the workflow contract.
  */
-export function parsePlanSubmission(value: unknown): WikiPlanResult {
-  if (!isRecord(value) || !Array.isArray(value.pages) || !Array.isArray(value.researchScopes)) {
-    throw new Error("Planner submission must include pages, researchScopes, and rationale");
+export function parsePlanSubmission(value: unknown): WikiDraftPlanResult {
+  if (!isRecord(value) || !Array.isArray(value.candidateDomains) || !Array.isArray(value.researchScopes)) {
+    throw new Error("Planner submission must include candidateDomains, researchScopes, and rationale");
   }
-  const rationale = requiredText(value.rationale, "Planner rationale");
-  if (value.researchScopes.length > MAX_RESEARCH_SCOPES) {
-    throw new Error(`Planner may request at most ${MAX_RESEARCH_SCOPES} research scopes`);
+  const planRationale = requiredText(value.rationale, "Planner rationale");
+  if (value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
+    throw new Error(`Planner may request at most ${MAX_RESEARCH_SCOPES_PER_BATCH} research scopes per batch`);
   }
 
-  const pagePaths = new Set<string>();
-  const pages = value.pages.map((page) => {
-    if (!isRecord(page)) throw new Error("Planner returned an invalid page plan");
-    const path = requiredText(page.path, "Planner page path");
-    if (path !== String(page.path) || !isWikiPagePath(path)) throw new Error(`Planner returned an invalid page path: ${path}`);
-    if (pagePaths.has(path)) throw new Error(`Planner returned duplicate page path: ${path}`);
-    pagePaths.add(path);
-    if (!Array.isArray(page.sources) || page.sources.length === 0) throw new Error(`Planner page ${path} must include source evidence`);
-    const sources = page.sources.map((source) => requiredText(source, `Planner source for ${path}`));
+  const domainIds = new Set<string>();
+  const candidateDomains = value.candidateDomains.map((domain) => {
+    if (!isRecord(domain)) throw new Error("Planner returned an invalid candidate domain");
+    const id = parseDomainId(domain.id, "Candidate domain ID");
+    if (domainIds.has(id)) throw new Error(`Planner returned duplicate candidate domain: ${id}`);
+    domainIds.add(id);
     return {
-      path,
-      title: requiredText(page.title, `Planner title for ${path}`),
-      purpose: requiredText(page.purpose, `Planner purpose for ${path}`),
-      sources,
+      id,
+      title: requiredText(domain.title, `Candidate domain title for ${id}`),
+      purpose: requiredText(domain.purpose, `Candidate domain purpose for ${id}`),
     };
   });
-  if (pages.length === 0) throw new Error("Planner must submit at least one Wiki page");
+  if (candidateDomains.length === 0) throw new Error("Planner must submit at least one candidate domain");
 
-  const scopeIds = new Set<string>();
-  const researchScopes = value.researchScopes.map((scope) => {
-    if (!isRecord(scope)) throw new Error("Planner returned an invalid research scope");
-    const id = requiredText(scope.id, "Research scope ID");
-    if (scopeIds.has(id)) throw new Error(`Planner returned duplicate research scope: ${id}`);
-    scopeIds.add(id);
-    return { id, task: requiredText(scope.task, `Research task for ${id}`) };
-  });
-  return { pages, researchScopes, rationale };
+  return { candidateDomains, researchScopes: parseResearchScopes(value.researchScopes, "Planner"), rationale: planRationale };
+}
+
+/** Canonicalize the synthesis decision before it can expand or finalize the DAG. */
+export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
+  if (!isRecord(value) || (value.decision !== "expand" && value.decision !== "finalize")) {
+    throw new Error("Synthesis submission must choose expand or finalize");
+  }
+  const synthesisRationale = requiredText(value.rationale, "Synthesis rationale");
+  if (value.decision === "expand") {
+    if (!Array.isArray(value.researchScopes)) throw new Error("Synthesis expansion must include researchScopes");
+    if (value.researchScopes.length === 0 || value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
+      throw new Error(`Synthesis may request 1 to ${MAX_RESEARCH_SCOPES_PER_BATCH} supplemental research scopes`);
+    }
+    return { decision: "expand", researchScopes: parseResearchScopes(value.researchScopes, "Synthesis"), rationale: synthesisRationale };
+  }
+  return { decision: "finalize", spec: parseWikiSpec(value.spec), rationale: synthesisRationale };
 }
 
 /** Canonicalize the reviewer's typed control submission before it changes the DAG. */
@@ -102,6 +182,7 @@ export function parseReviewSubmission(value: unknown): WikiReviewResult {
     defectIds.add(id);
     return {
       id,
+      domainId: requiredText(defect.domainId, `Review domain for ${id}`),
       page: requiredText(defect.page, `Review page for ${id}`),
       kind: defect.kind,
       detail: requiredText(defect.detail, `Review detail for ${id}`),
@@ -115,14 +196,141 @@ function requiredText(value: unknown, label: string): string {
   return value.trim();
 }
 
+function parseWikiSpec(value: unknown): WikiSpec {
+  if (!isRecord(value) || !Array.isArray(value.domains) || !Array.isArray(value.crossLinks) || !Array.isArray(value.sharedTerms)) {
+    throw new Error("Final WikiSpec must include domains, crossLinks, and sharedTerms");
+  }
+  const domainIds = new Set<string>();
+  const pagePaths = new Set<string>();
+  const domains = value.domains.map((domain) => {
+    if (!isRecord(domain) || !Array.isArray(domain.pages) || !Array.isArray(domain.researchScopeIds)) throw new Error("WikiSpec contains an invalid domain");
+    const id = parseDomainId(domain.id, "WikiSpec domain ID");
+    if (domainIds.has(id)) throw new Error(`WikiSpec contains duplicate domain ID: ${id}`);
+    domainIds.add(id);
+    if (domain.pages.length === 0) throw new Error(`WikiSpec domain ${id} must include at least one page`);
+    const scopeIds = new Set<string>();
+    const researchScopeIds = domain.researchScopeIds.map((scopeId) => {
+      const parsed = requiredText(scopeId, `WikiSpec research scope for ${id}`);
+      if (scopeIds.has(parsed)) throw new Error(`WikiSpec domain ${id} repeats research scope: ${parsed}`);
+      scopeIds.add(parsed);
+      return parsed;
+    });
+    const pages = domain.pages.map((page) => parseSpecPage(page, id, pagePaths));
+    return {
+      id,
+      title: requiredText(domain.title, `WikiSpec domain title for ${id}`),
+      purpose: requiredText(domain.purpose, `WikiSpec domain purpose for ${id}`),
+      pages,
+      researchScopeIds,
+    };
+  });
+  if (domains.length === 0) throw new Error("WikiSpec must include at least one domain");
+  const overviewDomain = domains.find((domain) => domain.id === "overview");
+  const overviewPages = domains.flatMap((domain) => domain.pages.filter((page) => page.pageType === "overview"));
+  if (!overviewDomain || overviewDomain.pages.length !== 1 || overviewDomain.researchScopeIds.length !== 0 || overviewPages.length !== 1
+    || overviewDomain.pages[0] !== overviewPages[0] || overviewPages[0].path !== "overview/overview.md") {
+    throw new Error("WikiSpec must contain exactly one receipt-free overview page at overview/overview.md");
+  }
+
+  const linkKeys = new Set<string>();
+  const crossLinks = value.crossLinks.map((link) => {
+    if (!isRecord(link)) throw new Error("WikiSpec contains an invalid cross-link");
+    const fromPath = parseWikiPath(link.fromPath, "WikiSpec cross-link source");
+    const toPath = parseWikiPath(link.toPath, "WikiSpec cross-link target");
+    if (!pagePaths.has(fromPath) || !pagePaths.has(toPath)) throw new Error(`WikiSpec cross-link must target declared pages: ${fromPath} -> ${toPath}`);
+    const key = `${fromPath}\u0000${toPath}`;
+    if (linkKeys.has(key)) throw new Error(`WikiSpec repeats cross-link: ${fromPath} -> ${toPath}`);
+    linkKeys.add(key);
+    return { fromPath, toPath, purpose: requiredText(link.purpose, `WikiSpec cross-link purpose for ${fromPath}`) };
+  });
+  const termNames = new Set<string>();
+  const sharedTerms = value.sharedTerms.map((term) => {
+    if (!isRecord(term)) throw new Error("WikiSpec contains an invalid shared term");
+    const name = requiredText(term.term, "WikiSpec shared term");
+    if (termNames.has(name)) throw new Error(`WikiSpec repeats shared term: ${name}`);
+    termNames.add(name);
+    return { term: name, definition: requiredText(term.definition, `WikiSpec definition for ${name}`) };
+  });
+  return { domains, crossLinks, sharedTerms };
+}
+
+function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>) {
+  if (!isRecord(value) || !Array.isArray(value.sources) || !Array.isArray(value.requiredSections) || !Array.isArray(value.diagrams)) {
+    throw new Error(`WikiSpec domain ${domainId} contains an invalid page`);
+  }
+  const path = parseWikiPath(value.path, `WikiSpec page path for ${domainId}`);
+  if (!path.startsWith(`${domainId}/`)) {
+    throw new Error(`WikiSpec page ${path} must be contained by its domain directory ${domainId}/`);
+  }
+  if (pagePaths.has(path)) throw new Error(`WikiSpec repeats page path: ${path}`);
+  pagePaths.add(path);
+  if (value.sources.length === 0) throw new Error(`WikiSpec page ${path} must include source evidence`);
+  if (value.requiredSections.length === 0) throw new Error(`WikiSpec page ${path} must include required sections`);
+  if (value.diagrams.length === 0) throw new Error(`WikiSpec page ${path} must declare diagram applicability`);
+  const diagramKinds = new Set<WikiDiagramKind>();
+  const diagrams = value.diagrams.map((diagram) => {
+    if (!isRecord(diagram) || !isDiagramKind(diagram.kind) || (diagram.applicability !== "required" && diagram.applicability !== "not_applicable")) {
+      throw new Error(`WikiSpec page ${path} contains an invalid diagram requirement`);
+    }
+    if (diagramKinds.has(diagram.kind)) throw new Error(`WikiSpec page ${path} repeats diagram kind: ${diagram.kind}`);
+    diagramKinds.add(diagram.kind);
+    const reason = diagram.reason === undefined ? undefined : requiredText(diagram.reason, `WikiSpec diagram reason for ${path}`);
+    if (diagram.applicability === "not_applicable" && !reason) throw new Error(`WikiSpec page ${path} must explain a non-applicable ${diagram.kind} diagram`);
+    const applicability: "required" | "not_applicable" = diagram.applicability === "required" ? "required" : "not_applicable";
+    return { kind: diagram.kind, applicability, purpose: requiredText(diagram.purpose, `WikiSpec diagram purpose for ${path}`), reason };
+  });
+  return {
+    pageType: parsePageType(value.pageType, `WikiSpec page type for ${path}`),
+    path,
+    title: requiredText(value.title, `WikiSpec page title for ${path}`),
+    purpose: requiredText(value.purpose, `WikiSpec page purpose for ${path}`),
+    sources: value.sources.map((source) => requiredText(source, `WikiSpec source for ${path}`)),
+    requiredSections: value.requiredSections.map((section) => requiredText(section, `WikiSpec required section for ${path}`)),
+    diagrams,
+  };
+}
+
+function parsePageType(value: unknown, label: string): "overview" | "architecture" | "module" | "flow" | "concept" {
+  if (value === "overview" || value === "architecture" || value === "module" || value === "flow" || value === "concept") return value;
+  throw new Error(`${label} is invalid`);
+}
+
+function parseResearchScopes(value: unknown[], owner: string) {
+  const scopeIds = new Set<string>();
+  return value.map((scope) => {
+    if (!isRecord(scope)) throw new Error(`${owner} returned an invalid research scope`);
+    const id = requiredText(scope.id, "Research scope ID");
+    if (scopeIds.has(id)) throw new Error(`${owner} returned duplicate research scope: ${id}`);
+    scopeIds.add(id);
+    return { id, task: requiredText(scope.task, `Research task for ${id}`) };
+  });
+}
+
+function parseWikiPath(value: unknown, label: string): string {
+  const path = requiredText(value, label);
+  if (!isWikiPagePath(path)) throw new Error(`${label} is invalid: ${path}`);
+  return path;
+}
+
+function parseDomainId(value: unknown, label: string): string {
+  const id = requiredText(value, label);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error(`${label} is invalid: ${id}`);
+  return id;
+}
+
 function isWikiPagePath(value: string): boolean {
   if (!value.endsWith(".md")) return false;
   const normalized = value.replaceAll("\\", "/");
-  return !normalized.startsWith("/") && !normalized.startsWith("wiki/") && !normalized.split("/").some((part) => part === "" || part === "." || part === "..");
+  return !normalized.startsWith("/") && !normalized.startsWith("wiki/")
+    && !normalized.split("/").some((part) => part === "" || part === "." || part === ".." || part === "index.md");
 }
 
 function isReviewKind(value: unknown): value is WikiReviewDefect["kind"] {
-  return value === "evidence" || value === "link" || value === "format" || value === "topology" || value === "coverage";
+  return value === "evidence" || value === "link" || value === "format" || value === "topology" || value === "coverage" || value === "depth" || value === "diagram";
+}
+
+function isDiagramKind(value: unknown): value is WikiDiagramKind {
+  return value === "flowchart" || value === "sequence" || value === "state" || value === "er" || value === "class";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

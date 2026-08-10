@@ -17,7 +17,7 @@ function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
 
-function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write", "wiki_delete", "wiki_submit_plan", "wiki_submit_review"]) {
+function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write", "wiki_delete", "wiki_submit_plan", "wiki_submit_synthesis", "wiki_submit_review"]) {
   return {
     subscribe: () => () => {},
     setAutoCompactionEnabled() {},
@@ -41,10 +41,50 @@ function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = 
     cwd,
     prompt: "test",
     role,
+    writePaths: role === "writer" ? ["wiki/domain/page.md"] : undefined,
     language: "zh",
     signal: new AbortController().signal,
     onOutput,
     onHistory,
+  };
+}
+
+function finalizedSpec() {
+  return {
+    domains: [
+      {
+        id: "overview",
+        title: "Overview",
+        purpose: "Orient readers across the documented domains.",
+        researchScopeIds: [],
+        pages: [{
+          pageType: "overview",
+          path: "overview/overview.md",
+          title: "System overview",
+          purpose: "Provide a global reader orientation.",
+          sources: ["api/src/index.ts#L1-L2"],
+          requiredSections: ["Scope"],
+          diagrams: [{ kind: "flowchart", applicability: "not_applicable", purpose: "System boundaries", reason: "The available source evidence covers one bounded module." }],
+        }],
+      },
+      {
+        id: "domain",
+        title: "Domain",
+        purpose: "Explain the verified domain boundary.",
+        researchScopeIds: [],
+        pages: [{
+          pageType: "module",
+          path: "domain/page.md",
+          title: "Domain module",
+          purpose: "Explain the module responsibility.",
+          sources: ["api/src/index.ts#L1-L2"],
+          requiredSections: ["Responsibility"],
+          diagrams: [{ kind: "class", applicability: "not_applicable", purpose: "Class relationships", reason: "No meaningful class boundary is established." }],
+        }],
+      },
+    ],
+    crossLinks: [],
+    sharedTerms: [],
   };
 }
 
@@ -57,9 +97,9 @@ test("planner submits control data through a dedicated tool instead of final JSO
   session.prompt = async () => {
     const submit = tools.find((tool) => tool.name === "wiki_submit_plan");
     await submit.execute("submit-plan", {
-      pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["api/src/index.ts#L1-L2"] }],
+      candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain the system" }],
       researchScopes: [],
-      rationale: "One page covers the current scope.",
+      rationale: "One domain covers the current scope.",
     });
   };
   const executor = new PiAgentExecutor({
@@ -73,13 +113,42 @@ test("planner submits control data through a dedicated tool instead of final JSO
 
   const result = await executor.execute(executionRequest(workspace, "planner", undefined, undefined, "plan"));
   assert.deepEqual(result.result, {
-    pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain the system", sources: ["api/src/index.ts#L1-L2"] }],
+    candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain the system" }],
     researchScopes: [],
-    rationale: "One page covers the current scope.",
+    rationale: "One domain covers the current scope.",
   });
   assert.equal(result.output, "## Planning notes\nThe plan is ready.");
   assert.ok(enabledTools.includes("wiki_submit_plan"));
   assert.equal(tools.some((tool) => tool.name === "wiki_submit_review"), false);
+});
+
+test("synthesizer submits a typed finalized WikiSpec through its dedicated tool", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-");
+  let tools;
+  let enabledTools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+    await submit.execute("submit-synthesis", {
+      decision: "finalize",
+      spec: finalizedSpec(),
+      rationale: "The source research is sufficient to assign one bounded domain.",
+    });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      enabledTools = options.tools;
+      session.getActiveToolNames = () => enabledTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis"));
+  assert.equal(result.result.decision, "finalize");
+  assert.equal(result.result.spec.domains[1].pages[0].path, "domain/page.md");
+  assert.ok(enabledTools.includes("wiki_submit_synthesis"));
+  assert.equal(tools.some((tool) => tool.name === "wiki_submit_plan"), false);
 });
 
 test("reviewer submits control data through its dedicated tool", async () => {
@@ -130,22 +199,22 @@ test("planner submission rejects semantic contract violations before completing 
     const submit = tools.find((tool) => tool.name === "wiki_submit_plan");
     await assert.rejects(
       () => submit.execute("invalid-plan", {
-        pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: [] }],
+        candidateDomains: [],
         researchScopes: [],
         rationale: "test",
       }),
-      /source evidence/,
+      /candidate domain/,
     );
     await assert.rejects(
       () => submit.execute("too-many-scopes", {
-        pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: ["src/index.ts#L1-L2"] }],
+        candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain" }],
         researchScopes: ["a", "b", "c", "d", "e"].map((id) => ({ id, task: id })),
         rationale: "test",
       }),
       /at most 4 research scopes/,
     );
     await submit.execute("valid-plan", {
-      pages: [{ path: "architecture.md", title: "Architecture", purpose: "Explain", sources: ["src/index.ts#L1-L2"] }],
+      candidateDomains: [{ id: "architecture", title: "Architecture", purpose: "Explain" }],
       researchScopes: [],
       rationale: "test",
     });
@@ -159,7 +228,7 @@ test("planner submission rejects semantic contract violations before completing 
   });
 
   const result = await executor.execute(executionRequest(workspace, "planner", undefined, undefined, "plan"));
-  assert.equal(result.result.pages[0].path, "architecture.md");
+  assert.equal(result.result.candidateDomains[0].id, "architecture");
 });
 
 test("missing planner submission preserves final text and reports the required tool", async () => {
@@ -193,7 +262,7 @@ test("writer completion is Markdown text and has no JSON result contract", async
   assert.equal(result.output, "## Changed\n- `architecture.md`");
 });
 
-test("writer tools permit only real paths under wiki", async () => {
+test("writer tools permit only explicitly assigned paths in their domain", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-");
   const outside = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-outside-"));
   let tools;
@@ -209,18 +278,45 @@ test("writer tools permit only real paths under wiki", async () => {
     cwd: workspace,
     prompt: "test",
     role: "writer",
+    writePaths: ["wiki/domain/page.md", "wiki/domain/outside/escape.md"],
     language: "zh",
     signal: new AbortController().signal,
   });
 
   const write = tools.find((tool) => tool.name === "write");
-  await write.execute("call-1", { path: "wiki/page.md", content: "# page\n" });
-  assert.equal(await readFile(path.join(workspace, "wiki/page.md"), "utf8"), "# page\n");
+  const edit = tools.find((tool) => tool.name === "edit");
+  const remove = tools.find((tool) => tool.name === "wiki_delete");
+  await write.execute("call-1", { path: "wiki/domain/page.md", content: "# page\n" });
+  assert.equal(await readFile(path.join(workspace, "wiki/domain/page.md"), "utf8"), "# page\n");
+  await edit.execute("call-2", { path: "wiki/domain/page.md", edits: [{ oldText: "# page", newText: "# updated" }] });
+  assert.equal(await readFile(path.join(workspace, "wiki/domain/page.md"), "utf8"), "# updated\n");
+  await mkdir(path.join(workspace, "wiki", "other"), { recursive: true });
+  await writeFile(path.join(workspace, "wiki", "other", "page.md"), "# other\n");
 
-  await assert.rejects(() => write.execute("call-2", { path: "README.md", content: "no" }));
-  await assert.rejects(() => write.execute("call-3", { path: "../escape.md", content: "no" }));
-  await symlink(outside, path.join(workspace, "wiki", "outside"));
-  await assert.rejects(() => write.execute("call-4", { path: "wiki/outside/escape.md", content: "no" }));
+  await assert.rejects(() => write.execute("call-3", { path: "README.md", content: "no" }));
+  await assert.rejects(() => write.execute("call-4", { path: "wiki/other/page.md", content: "no" }), /not assigned/);
+  await assert.rejects(() => edit.execute("call-5", { path: "wiki/other/page.md", edits: [{ oldText: "x", newText: "y" }] }), /not assigned/);
+  await assert.rejects(() => remove.execute("call-6", { path: "wiki/other/page.md" }), /not assigned/);
+  await symlink(outside, path.join(workspace, "wiki", "domain", "outside"));
+  await assert.rejects(() => write.execute("call-7", { path: "wiki/domain/outside/escape.md", content: "no" }));
+  await remove.execute("call-8", { path: "wiki/domain/page.md" });
+  await assert.rejects(() => readFile(path.join(workspace, "wiki/domain/page.md"), "utf8"));
+});
+
+test("writer execution fails closed without an assigned page list", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-missing-writes-");
+  const executor = new PiAgentExecutor({ createSession: async () => ({ session: fakeSession() }) });
+  const request = executionRequest(workspace, "writer", undefined, undefined, "write");
+  request.writePaths = undefined;
+  await assert.rejects(() => executor.execute(request), /require at least one assigned Wiki page/);
+});
+
+test("writer execution rejects index pages owned by validator navigation", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-index-");
+  const executor = new PiAgentExecutor({ createSession: async () => ({ session: fakeSession() }) });
+  const request = executionRequest(workspace, "writer", undefined, undefined, "write");
+  request.writePaths = ["wiki/domain/index.md"];
+  await assert.rejects(() => executor.execute(request), /non-index Markdown page/);
 });
 
 test("resolves Pi model selection immediately before every child session", async () => {
