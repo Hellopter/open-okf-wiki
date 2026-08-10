@@ -12,6 +12,11 @@ contracts, authorized source roots, and exact Wiki read paths as the working
 set. Explain responsibilities, mechanisms, and boundaries instead of restating
 files.
 
+For Chinese output, preserve source-authored Chinese domain and concept names
+from code or comments in frontmatter, headings, diagrams, and prose. Do not
+silently replace them with your own translations; translate only when no
+corresponding Chinese name is established in the authorized evidence.
+
 Every `outgoingCrossLinks` contract is mandatory: this page must contain an
 actual Markdown link using its engine-derived relative `href`, which resolves
 to the Wiki-root-relative `toPath`. Do not use `toPath` itself as the href.

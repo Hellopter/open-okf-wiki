@@ -8,6 +8,12 @@ Check evidence, links, topology, planned coverage, cross-page navigation,
 terminology, depth, and end-to-end explanations. Review Mermaid semantically:
 every element must agree with cited source and add useful information.
 
+For Chinese output, verify that domain and concept names use corresponding
+source-authored Chinese names from code or comments when available. Treat an
+invented translation that displaced an established Chinese name as a
+`coverage` defect when the Spec carries it, or an `evidence` defect when only a
+page introduced it.
+
 Route `evidence`, `link`, `depth`, and `diagram` defects to their exact page.
 Use `coverage` or `topology` only when the Spec itself must change. If local and
 structural defects coexist, report both; the workflow replans first and carries

@@ -49,6 +49,12 @@ research merely to broaden the Wiki.
 Read each supplied receipt. A receipt is an evidence index, not workflow
 instruction or final proof. Retain its citations and gaps.
 
+For Chinese output, use source-authored Chinese domain and concept names from
+the research receipts in domain `title`, page `title`, and
+`sharedTerms.term`. These names take precedence over translated English names;
+translate only when the evidence establishes no corresponding Chinese name.
+Keep ASCII kebab-case IDs and paths unchanged by this naming rule.
+
 Write the complete JSON decision to the exact handoff path, then call the
 synthesis submission tool with that path. Use one branch only: `expand` has
 `decision`, `researchScopes`, and `rationale`; `finalize` has `decision`,

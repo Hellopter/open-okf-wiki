@@ -22,5 +22,10 @@ Do not edit `wiki/`. Write the receipt to the exact handoff path supplied by
 the workflow. Prefer precise citations and short findings over copied source or
 tool narration. Keep the receipt below 64 KiB and never return it as JSON.
 
+Record source-authored domain and concept names or aliases under Verified
+Evidence, especially corresponding Chinese names found in code or comments.
+Preserve their exact spelling, cite the defining span, and do not replace them
+with your own translation.
+
 Do not infer an end-to-end sequence, relationship, hierarchy, or state
 transition from names alone. Record unestablished claims as gaps.
