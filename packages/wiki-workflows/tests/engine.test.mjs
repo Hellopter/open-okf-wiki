@@ -50,7 +50,7 @@ function finalizedSpec(options = {}) {
           purpose: "Explain runtime boundaries",
           sources: ["src/core.ts#L1-L20"],
           requiredSections: ["Responsibilities", "Boundaries"],
-          diagrams: [{ kind: "flowchart", applicability: "required", purpose: "Show component boundaries" }],
+          diagrams: [{ kind: "flowchart", applicability: "required", purpose: "Show component boundaries", reason: null }],
         }],
       },
       {
@@ -65,7 +65,7 @@ function finalizedSpec(options = {}) {
           purpose: "Explain request lifecycle",
           sources: ["src/api.ts#L1-L20"],
           requiredSections: ["Entry Point", "Failure Handling"],
-          diagrams: [{ kind: "sequence", applicability: "required", purpose: "Show request interactions" }],
+          diagrams: [{ kind: "sequence", applicability: "required", purpose: "Show request interactions", reason: null }],
         }],
       },
     ],
@@ -75,7 +75,7 @@ function finalizedSpec(options = {}) {
 }
 
 function finalize(spec = finalizedSpec()) {
-  return { decision: "finalize", spec, rationale: "The receipts support a bounded final Wiki contract." };
+  return { decision: "finalize", researchScopes: null, spec, rationale: "The receipts support a bounded final Wiki contract." };
 }
 
 function receipt(scopeId) {
@@ -144,6 +144,89 @@ test("source surveys converge through synthesis before parallel domain writers a
   assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "workspace-map").readRoots, ["src-core", "src-api"]);
 });
 
+test("synthesis receives raw Markdown receipts inside system-generated delimiters", async () => {
+  const rawReceipt = `\r\n${[
+    "## Findings",
+    "- CJK evidence: 中文. Source: `src/core.ts#L1-L20`",
+    "",
+    "```mermaid",
+    "flowchart LR",
+    "  A[\\\"quoted\\\"] --> B[path\\name]",
+    "```",
+    "",
+    "## Gaps",
+    "- Preserve literal newlines and `\\` characters.",
+  ].join("\r\n")}\r\n`;
+  const executor = createExecutor({
+    research: () => rawReceipt,
+    synthesis: (request) => {
+      assert.ok(request.prompt.includes(rawReceipt));
+      assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-begin -->/);
+      assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-end -->/);
+      assert.doesNotMatch(request.prompt, /"markdown"\s*:/);
+      assert.doesNotMatch(request.prompt, /\\n## Findings/);
+      return finalize();
+    },
+  });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+});
+
+test("synthesis aggregate receipt budget counts raw UTF-8 Markdown instead of JSON escaping", async () => {
+  const newlineHeavyReceipt = `${"x\n".repeat(7_400)}x`;
+  const sourcePaths = ["src-core", "src-api", "src-extra"];
+  const executor = createExecutor({ research: () => newlineHeavyReceipt });
+  const engine = createEngine(executor, async () => ({ ...inspection, sourcePaths }));
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded");
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 1);
+});
+
+test("synthesis permits exactly 64KiB of raw receipts and rejects one byte over", async () => {
+  const receiptAtLimit = "x".repeat(16 * 1024);
+  const exactExecutor = createExecutor({ research: () => receiptAtLimit });
+  const exactEngine = createEngine(exactExecutor, async () => ({
+    ...inspection,
+    sourcePaths: ["src-core", "src-api", "src-extra"],
+  }));
+  exactEngine.start({ cwd: "/workspace", mode: "generate" });
+  const exactSnapshot = await exactEngine.waitForIdle();
+
+  assert.equal(exactSnapshot.status, "succeeded");
+  assert.equal(exactExecutor.calls.filter((kind) => kind === "synthesis").length, 1);
+
+  const overExecutor = createExecutor({
+    research: (request) => request.node.input.scope.id === "workspace-map" ? "x" : receiptAtLimit,
+  });
+  const overEngine = createEngine(overExecutor, async () => ({
+    ...inspection,
+    sourcePaths: ["src-core", "src-api", "src-extra", "src-more"],
+  }));
+  overEngine.start({ cwd: "/workspace", mode: "generate" });
+  const overSnapshot = await overEngine.waitForIdle();
+
+  assert.equal(overSnapshot.status, "failed");
+  assert.equal(overExecutor.calls.filter((kind) => kind === "synthesis").length, 0);
+  assert.match(overSnapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /65537/);
+});
+
+test("oversized UTF-8 research receipts fail before synthesis without truncation", async () => {
+  const oversizedCjkReceipt = "中".repeat(Math.ceil((16 * 1024) / 3) + 1);
+  const executor = createExecutor({ research: () => oversizedCjkReceipt });
+  const engine = createEngine(executor);
+  engine.start({ cwd: "/workspace", mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "failed");
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 0);
+  assert.match(snapshot.nodes.find((node) => node.kind === "research")?.error?.message ?? "", /Research receipt exceeds the 16384-byte budget/);
+});
+
 test("a domain writer receives only its DomainPacket, selected receipt, and exact write paths", async () => {
   const executor = createExecutor();
   const engine = createEngine(executor);
@@ -167,7 +250,7 @@ test("a domain writer receives only its DomainPacket, selected receipt, and exac
 test("synthesis may expand source research once before finalizing the WikiSpec", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => index === 0
-      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
+      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], spec: null, rationale: "Persistence evidence is missing." }
       : finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] })),
   });
   const engine = createEngine(executor);
@@ -183,7 +266,7 @@ test("synthesis may expand source research once before finalizing the WikiSpec",
 test("phase retry after supplemental research reruns only the latest synthesis iteration", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => index === 0
-      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
+      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], spec: null, rationale: "Persistence evidence is missing." }
       : finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] })),
   });
   const engine = createEngine(executor);
@@ -200,7 +283,7 @@ test("phase retry after supplemental research reruns only the latest synthesis i
 
 test("a second supplemental research request in the same run fails closed", async () => {
   const executor = createExecutor({
-    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", sourcePaths: ["src-core"], task: "Research another gap" }], rationale: "More research." }),
+    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", sourcePaths: ["src-core"], task: "Research another gap" }], spec: null, rationale: "More research." }),
   });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
@@ -335,6 +418,7 @@ test("structural synthesis retains the prior WikiSpec and review trigger after s
         return {
           decision: "expand",
           researchScopes: [{ id: "lifecycle", sourcePaths: ["src-core"], task: "Verify the lifecycle boundary." }],
+          spec: null,
           rationale: "The structural defect needs one source-backed lifecycle check.",
         };
       }
@@ -375,7 +459,7 @@ test("synthesis fails before dispatch when more than four oversized source recei
   assert.equal(snapshot.status, "failed");
   assert.equal(executor.calls.filter((kind) => kind === "research").length, sourcePaths.length + 1);
   assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 0);
-  assert.match(snapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /Synthesis receipt payload exceeds/);
+  assert.match(snapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /Synthesis research receipt payload exceeds/);
 });
 
 test("all dynamic branch nodes remain visible in the declared navigator stages", async () => {
@@ -385,6 +469,7 @@ test("all dynamic branch nodes remain visible in the declared navigator stages",
         return {
           decision: "expand",
           researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }],
+          spec: null,
           rationale: "Persistence evidence is needed before the Wiki contract can be finalized.",
         };
       }

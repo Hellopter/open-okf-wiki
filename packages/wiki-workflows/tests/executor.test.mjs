@@ -4,7 +4,13 @@ import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { PiAgentExecutor } from "../dist/executor.js";
+import {
+  MAX_CONTROL_SUBMISSION_BYTES,
+  WikiControlSubmissionSizeError,
+  parseReviewSubmission,
+  parseSynthesisSubmission,
+} from "../dist/control-submissions.js";
+import { PiAgentExecutor, WikiAgentProtocolError } from "../dist/executor.js";
 import { addWikiSource, initializeWikiWorkspace } from "../dist/workspace.js";
 
 async function initializedWorkspace(prefix) {
@@ -24,6 +30,7 @@ function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write
     setAutoRetryEnabled() {},
     async abort() {},
     async prompt() {},
+    async followUp() {},
     async waitForIdle() {},
     state: {},
     getLastAssistantText: () => "{}",
@@ -92,11 +99,15 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
   const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-");
   let tools;
   let enabledTools;
+  let submitResult;
+  let followUps = 0;
   const session = fakeSession();
+  session.followUp = async () => { followUps += 1; };
   session.prompt = async () => {
     const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
-    await submit.execute("submit-synthesis", {
+    submitResult = await submit.execute("submit-synthesis", {
       decision: "finalize",
+      researchScopes: null,
       spec: finalizedSpec(),
       rationale: "The source research is sufficient to assign one bounded domain.",
     });
@@ -115,17 +126,27 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
   assert.equal(result.result.spec.domains[1].pages[0].path, "domain/page.md");
   assert.ok(enabledTools.includes("wiki_submit_synthesis"));
   assert.equal(tools.some((tool) => tool.name === "wiki_submit_review"), false);
+  const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+  assert.equal(submit.parameters.type, "object");
+  assert.deepEqual(submit.parameters.required, ["decision", "researchScopes", "spec", "rationale"]);
+  assert.deepEqual(submit.parameters.properties.researchScopes.anyOf.map((item) => item.type), ["array", "null"]);
+  assert.deepEqual(submit.parameters.properties.spec.anyOf.map((item) => item.type), ["object", "null"]);
+  assert.deepEqual(submit.parameters.properties.spec.anyOf[0].properties.domains.items.properties.pages.items.properties.diagrams.items.required, ["kind", "applicability", "purpose", "reason"]);
+  assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
+  assert.equal(submitResult.terminate, true);
+  assert.equal(followUps, 0);
 });
 
 test("reviewer submits control data through its dedicated tool", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-review-");
   let tools;
   let enabledTools;
+  let submitResult;
   const session = fakeSession();
   session.getLastAssistantText = () => "## Review complete\nNo defects found.";
   session.prompt = async () => {
     const submit = tools.find((tool) => tool.name === "wiki_submit_review");
-    await submit.execute("submit-review", { defects: [], summary: "All checks passed." });
+    submitResult = await submit.execute("submit-review", { defects: [], summary: "All checks passed." });
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -141,6 +162,185 @@ test("reviewer submits control data through its dedicated tool", async () => {
   assert.equal(result.output, "## Review complete\nNo defects found.");
   assert.ok(enabledTools.includes("wiki_submit_review"));
   assert.equal(tools.some((tool) => tool.name === "wiki_submit_synthesis"), false);
+  const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+  assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
+  assert.equal(submitResult.terminate, true);
+});
+
+test("synthesis rejects branch fields that do not match its decision", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-branch-");
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+    await submit.execute("submit-synthesis", {
+      decision: "expand",
+      researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
+      spec: finalizedSpec(),
+      rationale: "One more bounded source survey is needed.",
+    });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  await assert.rejects(
+    () => executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis")),
+    /must set spec to null/,
+  );
+});
+
+test("synthesis requires explicit null for its inactive branch", () => {
+  assert.throws(
+    () => parseSynthesisSubmission({
+      decision: "expand",
+      researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
+      rationale: "One more bounded source survey is needed.",
+    }),
+    /must set spec to null/,
+  );
+  assert.throws(
+    () => parseSynthesisSubmission({
+      decision: "finalize",
+      spec: finalizedSpec(),
+      rationale: "The source research is sufficient to assign one bounded domain.",
+    }),
+    /must set researchScopes to null/,
+  );
+});
+
+test("synthesis accepts required nullable inactive branch fields", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-nullable-");
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+    await submit.execute("submit-synthesis", {
+      decision: "expand",
+      researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
+      spec: null,
+      rationale: "One more bounded source survey is needed.",
+    });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis"));
+  assert.deepEqual(result.result, {
+    decision: "expand",
+    researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
+    rationale: "One more bounded source survey is needed.",
+  });
+});
+
+test("required diagrams use a nullable reason without changing the finalized WikiSpec", () => {
+  const spec = finalizedSpec();
+  const diagram = spec.domains[0].pages[0].diagrams[0];
+  diagram.applicability = "required";
+  diagram.reason = null;
+
+  const result = parseSynthesisSubmission({
+    decision: "finalize",
+    researchScopes: null,
+    spec,
+    rationale: "The source research is sufficient to assign one bounded domain.",
+  });
+  assert.equal(result.decision, "finalize");
+  assert.equal(result.spec.domains[0].pages[0].diagrams[0].reason, undefined);
+});
+
+test("a later valid submission recovers from a rejected control call", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-submission-recovery-");
+  let tools;
+  let followUps = 0;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await assert.rejects(
+      () => submit.execute("invalid-review", { defects: [], summary: "x".repeat(MAX_CONTROL_SUBMISSION_BYTES) }),
+      WikiControlSubmissionSizeError,
+    );
+  };
+  session.followUp = async () => {
+    followUps += 1;
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await submit.execute("valid-review", { defects: [], summary: "All checks passed." });
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  const result = await executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review"));
+  assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
+  assert.equal(followUps, 1);
+});
+
+test("reports the final rejected control call with its classified error", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-submission-error-");
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await assert.rejects(
+      () => submit.execute("invalid-review", { defects: [], summary: "x".repeat(MAX_CONTROL_SUBMISSION_BYTES) }),
+      WikiControlSubmissionSizeError,
+    );
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  await assert.rejects(
+    () => executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review")),
+    (error) => error instanceof WikiAgentProtocolError
+      && error.code === "submission_too_large"
+      && /control payload limit/.test(error.message),
+  );
+});
+
+test("rejects oversized Unicode review control payloads before they enter the DAG", () => {
+  const oversizedDetail = "测".repeat(Math.ceil(MAX_CONTROL_SUBMISSION_BYTES / 2));
+  assert.throws(
+    () => parseReviewSubmission({
+      defects: [{
+        id: "too-large",
+        domainId: "domain",
+        page: "domain/page.md",
+        kind: "depth",
+        detail: oversizedDetail,
+      }],
+      summary: "Review found one issue.",
+    }),
+    (error) => error instanceof WikiControlSubmissionSizeError
+      && error.code === "submission_too_large"
+      && error.sizeBytes > MAX_CONTROL_SUBMISSION_BYTES,
+  );
+});
+
+test("accepts the exact UTF-8 control limit and rejects one byte over", () => {
+  const emptySubmission = { defects: [], summary: "" };
+  const summaryAtLimit = "x".repeat(MAX_CONTROL_SUBMISSION_BYTES - Buffer.byteLength(JSON.stringify(emptySubmission), "utf8"));
+  const atLimit = { defects: [], summary: summaryAtLimit };
+
+  assert.deepEqual(parseReviewSubmission(atLimit), atLimit);
+  assert.throws(
+    () => parseReviewSubmission({ defects: [], summary: `${summaryAtLimit}x` }),
+    (error) => error instanceof WikiControlSubmissionSizeError
+      && error.sizeBytes === MAX_CONTROL_SUBMISSION_BYTES + 1,
+  );
 });
 
 test("fails closed when Pi does not activate the required control tool", async () => {

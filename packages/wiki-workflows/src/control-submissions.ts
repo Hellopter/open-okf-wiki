@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { Type } from "typebox";
 import type {
   WikiDiagramKind,
@@ -9,6 +10,8 @@ import type {
 
 /** Maximum research agents the engine dispatches concurrently. */
 export const MAX_RESEARCH_SCOPES_PER_BATCH = 4;
+/** Maximum UTF-8 size of one model-authored control submission. */
+export const MAX_CONTROL_SUBMISSION_BYTES = 48 * 1024;
 
 const wikiPagePath = Type.String({ minLength: 1, description: "Wiki-relative Markdown page path" });
 const pageTitle = Type.String({ minLength: 1, description: "Reader-facing page title" });
@@ -42,7 +45,9 @@ const diagramRequirement = Type.Object({
   kind: diagramKind,
   applicability: Type.Union([Type.Literal("required"), Type.Literal("not_applicable")]),
   purpose: pagePurpose,
-  reason: Type.Optional(Type.String({ minLength: 1, description: "Why this diagram is not applicable" })),
+  // Strict JSON-schema providers require every object property. `null` means
+  // a reason is inapplicable because the diagram itself is required.
+  reason: Type.Union([Type.String({ minLength: 1, description: "Why this diagram is not applicable" }), Type.Null()]),
 }, { additionalProperties: false });
 
 const researchScopeSchema = Type.Object({
@@ -80,18 +85,14 @@ const wikiSpecSchema = Type.Object({
   }, { additionalProperties: false })),
 }, { additionalProperties: false });
 
-export const synthesisSubmissionSchema = Type.Union([
-  Type.Object({
-    decision: Type.Literal("expand"),
-    researchScopes: Type.Array(researchScopeSchema, { minItems: 1, maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }),
-    rationale,
-  }, { additionalProperties: false }),
-  Type.Object({
-    decision: Type.Literal("finalize"),
-    spec: wikiSpecSchema,
-    rationale,
-  }, { additionalProperties: false }),
-]);
+// Keep this top-level schema an object: strict tool providers reject a top-level anyOf.
+// All fields are required for strict providers; `null` marks the inactive branch.
+export const synthesisSubmissionSchema = Type.Object({
+  decision: Type.Union([Type.Literal("expand"), Type.Literal("finalize")]),
+  researchScopes: Type.Union([Type.Array(researchScopeSchema, { minItems: 1, maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }), Type.Null()]),
+  spec: Type.Union([wikiSpecSchema, Type.Null()]),
+  rationale,
+}, { additionalProperties: false });
 
 export const reviewSubmissionSchema = Type.Object({
   defects: Type.Array(Type.Object({
@@ -112,24 +113,41 @@ export const reviewSubmissionSchema = Type.Object({
   summary: reviewSummary,
 }, { additionalProperties: false });
 
+export class WikiControlSubmissionSizeError extends Error {
+  readonly code = "submission_too_large";
+
+  constructor(
+    readonly label: string,
+    readonly sizeBytes: number,
+    readonly limitBytes = MAX_CONTROL_SUBMISSION_BYTES,
+  ) {
+    super(`${label} exceeds the ${limitBytes}-byte control payload limit`);
+  }
+}
+
 /** Canonicalize the synthesis decision before it can expand or finalize the DAG. */
 export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
+  assertControlSubmissionSize(value, "Synthesis submission");
   if (!isRecord(value) || (value.decision !== "expand" && value.decision !== "finalize")) {
     throw new Error("Synthesis submission must choose expand or finalize");
   }
   const synthesisRationale = requiredText(value.rationale, "Synthesis rationale");
   if (value.decision === "expand") {
+    if (value.spec !== null) throw new Error("Synthesis expansion must set spec to null");
     if (!Array.isArray(value.researchScopes)) throw new Error("Synthesis expansion must include researchScopes");
     if (value.researchScopes.length === 0 || value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
       throw new Error(`Synthesis may request 1 to ${MAX_RESEARCH_SCOPES_PER_BATCH} supplemental research scopes`);
     }
     return { decision: "expand", researchScopes: parseResearchScopes(value.researchScopes, "Synthesis"), rationale: synthesisRationale };
   }
+  if (value.researchScopes !== null) throw new Error("Final synthesis must set researchScopes to null");
+  if (value.spec === null) throw new Error("Final synthesis must include spec");
   return { decision: "finalize", spec: parseWikiSpec(value.spec), rationale: synthesisRationale };
 }
 
 /** Canonicalize the reviewer's typed control submission before it changes the DAG. */
 export function parseReviewSubmission(value: unknown): WikiReviewResult {
+  assertControlSubmissionSize(value, "Reviewer submission");
   if (!isRecord(value) || !Array.isArray(value.defects)) {
     throw new Error("Reviewer submission must include defects and summary");
   }
@@ -233,7 +251,8 @@ function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>)
     }
     if (diagramKinds.has(diagram.kind)) throw new Error(`WikiSpec page ${path} repeats diagram kind: ${diagram.kind}`);
     diagramKinds.add(diagram.kind);
-    const reason = diagram.reason === undefined ? undefined : requiredText(diagram.reason, `WikiSpec diagram reason for ${path}`);
+    if (!hasOwn(diagram, "reason")) throw new Error(`WikiSpec diagram ${diagram.kind} for ${path} must include reason or null`);
+    const reason = diagram.reason === null ? undefined : requiredText(diagram.reason, `WikiSpec diagram reason for ${path}`);
     if (diagram.applicability === "not_applicable" && !reason) throw new Error(`WikiSpec page ${path} must explain a non-applicable ${diagram.kind} diagram`);
     const applicability: "required" | "not_applicable" = diagram.applicability === "required" ? "required" : "not_applicable";
     return { kind: diagram.kind, applicability, purpose: requiredText(diagram.purpose, `WikiSpec diagram purpose for ${path}`), reason };
@@ -299,6 +318,24 @@ function isReviewKind(value: unknown): value is WikiReviewDefect["kind"] {
 
 function isDiagramKind(value: unknown): value is WikiDiagramKind {
   return value === "flowchart" || value === "sequence" || value === "state" || value === "er" || value === "class";
+}
+
+function assertControlSubmissionSize(value: unknown, label: string): void {
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error(`${label} must be JSON-serializable`);
+  }
+  if (serialized === undefined) throw new Error(`${label} must be JSON-serializable`);
+  const sizeBytes = Buffer.byteLength(serialized, "utf8");
+  if (sizeBytes > MAX_CONTROL_SUBMISSION_BYTES) {
+    throw new WikiControlSubmissionSizeError(label, sizeBytes);
+  }
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

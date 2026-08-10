@@ -21,6 +21,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import {
+  WikiControlSubmissionSizeError,
   parseReviewSubmission,
   parseSynthesisSubmission,
   reviewSubmissionSchema,
@@ -51,18 +52,30 @@ type SubmissionToolName = "wiki_submit_synthesis" | "wiki_submit_review";
 interface SubmissionCollector {
   toolName: SubmissionToolName;
   value?: unknown;
+  failure?: SubmissionFailure;
+}
+
+type SubmissionFailureCode = "invalid_submission" | "submission_too_large";
+
+interface SubmissionFailure {
+  code: SubmissionFailureCode;
+  message: string;
 }
 
 /** A node ended without the tool submission required to advance the Wiki DAG. */
 export class WikiAgentProtocolError extends Error {
-  readonly code = "missing_submission";
+  readonly code: "missing_submission" | SubmissionFailureCode;
 
   constructor(
     readonly requiredSubmissionTool: SubmissionToolName,
     readonly output: string,
     readonly history: WikiNodeHistoryEntry[],
+    failure?: SubmissionFailure,
   ) {
-    super(`Agent did not call ${requiredSubmissionTool} before completing`);
+    super(failure
+      ? `Agent could not complete ${requiredSubmissionTool}: ${failure.message}`
+      : `Agent did not call ${requiredSubmissionTool} before completing`);
+    this.code = failure?.code ?? "missing_submission";
   }
 }
 
@@ -100,14 +113,15 @@ export class PiAgentExecutor implements WikiAgentExecutor {
 
       if (submission && submission.value === undefined) {
         request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` });
-        await session.followUp(`Before completing this node, call ${submission.toolName} exactly once with the final result. Do not reply with JSON text.`);
+        const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
+        await session.followUp(`Before completing this node, call ${submission.toolName} exactly once with the final result.${correction} Do not reply with JSON text.`);
         await session.waitForIdle();
         if (request.signal.aborted) throw new Error("Workflow node was cancelled");
         output = session.getLastAssistantText() ?? "";
         request.onOutput?.(output);
         if (session.state.errorMessage) throw new Error(session.state.errorMessage);
         if (submission.value === undefined) {
-          throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history));
+          throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history), submission.failure);
         }
       }
       const stats = session.getSessionStats();
@@ -474,9 +488,10 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
       promptSnippet: "Submit the Wiki synthesis decision",
       promptGuidelines: ["Call wiki_submit_synthesis exactly once with either expand or finalize."],
       parameters: synthesisSubmissionSchema,
+      constrainedSampling: { type: "json_schema", strict: "prefer" },
       async execute(_toolCallId, params) {
-        recordSubmission(submission, parseSynthesisSubmission(params));
-        return { content: [{ type: "text", text: "Wiki synthesis recorded." }], details: undefined };
+        recordSubmission(submission, () => parseSynthesisSubmission(params));
+        return { content: [{ type: "text", text: "Wiki synthesis recorded." }], details: undefined, terminate: true };
       },
     };
   }
@@ -487,16 +502,26 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
     promptSnippet: "Submit the final Wiki review",
     promptGuidelines: ["Call wiki_submit_review exactly once when the review is complete."],
     parameters: reviewSubmissionSchema,
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params) {
-      recordSubmission(submission, parseReviewSubmission(params));
-      return { content: [{ type: "text", text: "Wiki review recorded." }], details: undefined };
+      recordSubmission(submission, () => parseReviewSubmission(params));
+      return { content: [{ type: "text", text: "Wiki review recorded." }], details: undefined, terminate: true };
     },
   };
 }
 
-function recordSubmission(submission: SubmissionCollector, value: unknown): void {
-  if (submission.value !== undefined) throw new Error(`${submission.toolName} may only be called once per node attempt`);
-  submission.value = structuredClone(value);
+function recordSubmission(submission: SubmissionCollector, parse: () => unknown): void {
+  try {
+    if (submission.value !== undefined) throw new Error(`${submission.toolName} may only be called once per node attempt`);
+    submission.value = structuredClone(parse());
+    submission.failure = undefined;
+  } catch (error) {
+    submission.failure = {
+      code: error instanceof WikiControlSubmissionSizeError ? "submission_too_large" : "invalid_submission",
+      message: error instanceof Error ? error.message : String(error),
+    };
+    throw error;
+  }
 }
 
 function guardWorkspaceTool(
