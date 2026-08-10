@@ -382,7 +382,7 @@ export class NavigatorState {
       if (stageIndex >= 0) this.stageCursor = stageIndex;
     }
 
-    this.clampDashboard(phases.length, 0);
+    this.stageCursor = Math.max(0, Math.min(this.stageCursor, phases.length - 1));
     const stage = phases[this.stageCursor] ?? phases[0];
     this.top().stageId = stage?.id;
     const agents = model.agents(runId, stage?.id);

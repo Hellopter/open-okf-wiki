@@ -200,6 +200,20 @@ test("agent retry target requires an agent context, never the focused stage's fi
   assert.equal(state.selectedAgentId(model), "research-a");
 });
 
+test("agent selection survives dashboard synchronization after arrow navigation", () => {
+  const model = new WikiUiModel(controllerFor(run));
+  const state = openDashboard(model);
+  state.move(1, phaseRows(run).length); // source-survey
+  state.sync(model);
+  state.switchPane("agents");
+
+  state.move(1, model.agents(state.runId, state.stageId).length);
+  state.sync(model); // mirrors the render after a keypress
+
+  assert.equal(state.agentCursor, 1);
+  assert.equal(state.selectedAgentId(model), "research-b");
+});
+
 test("agent compact view and attempt cycling", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
