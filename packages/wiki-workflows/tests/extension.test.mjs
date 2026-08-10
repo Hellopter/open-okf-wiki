@@ -4,7 +4,7 @@ import { createWikiExtension } from "../dist/extension.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 3,
+    version: 4,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -123,6 +123,7 @@ function fixture({ entries = [], mode = "print", hasUI = false, workspace = { ro
     },
     async delete(id) { return history.delete(id); },
     getRunsDir: () => "/history",
+    getArtifactsRoot: () => "/workspace/.okf-wiki/runs",
   };
   createWikiExtension({ createEngine: () => engine, workspaceService, createHistoryStore: () => historyStore })(pi);
   return { appended, commands, ctx, engine, handlers, history, messages, notices, statuses, widgets, workspaceCalls };
@@ -191,6 +192,42 @@ test("history prints a concise project summary without requiring run IDs", async
   assert.doesNotMatch(subject.messages.at(-1).content, /run-1/);
 });
 
+test("artifacts lists persisted handoffs for a requested historical run", async () => {
+  const subject = fixture();
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  const command = subject.commands.get("wiki");
+  const historical = snapshot({ id: "run-history", status: "succeeded", nodes: [{
+    id: "inspect",
+    kind: "inspect",
+    label: "Inspect Git scope",
+    status: "succeeded",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "input",
+    input: {},
+    attemptHistory: [],
+    metrics: {},
+    activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+    handoff: {
+      version: 1,
+      runId: "run-history",
+      nodeId: "inspect",
+      attempt: 1,
+      kind: "inspection",
+      relativePath: ".okf-wiki/runs/run-history/inspect/attempt-1/inspection.json",
+      sha256: "a".repeat(64),
+      sizeBytes: 12,
+      mediaType: "application/json",
+    },
+  }] });
+  subject.history.set(historical.id, historical);
+
+  await command.handler("artifacts run-history", subject.ctx);
+  assert.match(subject.messages.at(-1).content, /Wiki Artifacts run-history/);
+  assert.match(subject.messages.at(-1).content, /Inspect Git scope \| attempt 1 \| inspection/);
+  assert.match(subject.messages.at(-1).content, /inspection\.json/);
+});
+
 test("TUI status uses native notification instead of a model-context message", async () => {
   const subject = fixture({ mode: "tui", hasUI: true });
   await subject.handlers.get("session_start")({}, subject.ctx);
@@ -240,7 +277,7 @@ test("Wiki subcommands are discoverable through Pi argument completion", () => {
   const complete = subject.commands.get("wiki").getArgumentCompletions;
 
   assert.deepEqual(complete("").map(({ value }) => value), [
-    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "pause", "resume", "cancel", "help",
+    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "artifacts ", "pause", "resume", "cancel", "help",
   ]);
   assert.deepEqual(complete("in").map(({ value }) => value), ["init "]);
   assert.deepEqual(complete("source ").map(({ value }) => value), ["source add "]);

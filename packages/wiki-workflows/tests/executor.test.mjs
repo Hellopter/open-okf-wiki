@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  MAX_CONTROL_SUBMISSION_BYTES,
+  MAX_CONTROL_ARTIFACT_BYTES,
   WikiControlSubmissionSizeError,
   parseReviewSubmission,
   parseSynthesisSubmission,
@@ -23,7 +23,7 @@ function git(root, ...args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 }
 
-function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write", "wiki_delete", "wiki_submit_synthesis", "wiki_submit_review"]) {
+function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write", "wiki_delete", "wiki_write_handoff", "wiki_submit_synthesis", "wiki_submit_review"]) {
   return {
     subscribe: () => () => {},
     setAutoCompactionEnabled() {},
@@ -42,12 +42,17 @@ function fakeSession(activeTools = ["read", "grep", "find", "ls", "edit", "write
 }
 
 function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = "research", validateControlSubmission) {
+  const artifactWritePath = role === "writer"
+    ? undefined
+    : path.posix.join(".okf-wiki", "runs", "run", "node", kind === "research" ? "handoff.md" : "handoff.json");
   return {
     runId: "run",
     node: { id: "node", kind, label: "Research", status: "running", dependsOn: [], attempt: 1, inputFingerprint: "", input: {}, attemptHistory: [], metrics: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, cost: 0, compactions: 0, autoRetries: 0 }, activity: { state: "running", updatedAt: new Date().toISOString() } },
     cwd,
     prompt: "test",
     role,
+    artifactPaths: role === "writer" ? undefined : [artifactWritePath],
+    artifactWritePath,
     writePaths: role === "writer" ? ["wiki/domain/page.md"] : undefined,
     language: "zh",
     signal: new AbortController().signal,
@@ -55,6 +60,19 @@ function executionRequest(cwd, role = "researcher", onOutput, onHistory, kind = 
     onHistory,
     validateControlSubmission,
   };
+}
+
+async function writeAndSubmit(tools, toolName, artifactPath, value, toolCallId) {
+  const writeHandoff = tools.find((tool) => tool.name === "wiki_write_handoff");
+  const submit = tools.find((tool) => tool.name === toolName);
+  await writeHandoff.execute(`${toolCallId}-write`, { content: JSON.stringify(value) });
+  return await submit.execute(toolCallId, { artifactPath });
+}
+
+async function writeArtifact(cwd, artifactPath, content) {
+  const absolutePath = path.resolve(cwd, artifactPath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, content, "utf8");
 }
 
 function finalizedSpec() {
@@ -98,6 +116,7 @@ function finalizedSpec() {
 
 test("synthesizer submits a typed finalized WikiSpec through its dedicated tool", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-");
+  const request = executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis");
   let tools;
   let enabledTools;
   let submitResult;
@@ -105,13 +124,11 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
   const session = fakeSession();
   session.followUp = async () => { followUps += 1; };
   session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
-    submitResult = await submit.execute("submit-synthesis", {
+    submitResult = await writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
       decision: "finalize",
-      researchScopes: null,
       spec: finalizedSpec(),
       rationale: "The source research is sufficient to assign one bounded domain.",
-    });
+    }, "submit-synthesis");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -122,19 +139,18 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
     },
   });
 
-  const result = await executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis"));
+  const result = await executor.execute(request);
   assert.equal(result.result.decision, "finalize");
   assert.equal(result.result.spec.domains[1].pages[0].path, "domain/page.md");
   assert.ok(enabledTools.includes("wiki_submit_synthesis"));
   assert.equal(tools.some((tool) => tool.name === "wiki_submit_review"), false);
   const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
   assert.equal(submit.parameters.type, "object");
-  assert.deepEqual(submit.parameters.required, ["decision", "researchScopes", "spec", "rationale"]);
-  assert.deepEqual(submit.parameters.properties.researchScopes.anyOf.map((item) => item.type), ["array", "null"]);
-  assert.deepEqual(submit.parameters.properties.spec.anyOf.map((item) => item.type), ["object", "null"]);
-  assert.deepEqual(submit.parameters.properties.spec.anyOf[0].properties.domains.items.properties.pages.items.properties.diagrams.items.required, ["kind", "applicability", "purpose", "reason"]);
+  assert.deepEqual(submit.parameters.required, ["artifactPath"]);
+  assert.equal(submit.parameters.additionalProperties, false);
+  assert.equal(submit.parameters.properties.artifactPath.const, request.artifactWritePath);
   assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
-  assert.match(submit.description, /spec: null/);
+  assert.match(submit.description, /exact JSON handoff artifact/);
   assert.match(submit.promptGuidelines[0], /Correct and resubmit if rejected/);
   assert.doesNotMatch(submit.promptGuidelines[0], /exactly once/);
   assert.equal(submitResult.terminate, true);
@@ -143,14 +159,14 @@ test("synthesizer submits a typed finalized WikiSpec through its dedicated tool"
 
 test("reviewer submits control data through its dedicated tool", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-review-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
   let tools;
   let enabledTools;
   let submitResult;
   const session = fakeSession();
   session.getLastAssistantText = () => "## Review complete\nNo defects found.";
   session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
-    submitResult = await submit.execute("submit-review", { defects: [], summary: "All checks passed." });
+    submitResult = await writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, { defects: [], summary: "All checks passed." }, "submit-review");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -161,14 +177,16 @@ test("reviewer submits control data through its dedicated tool", async () => {
     },
   });
 
-  const result = await executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review"));
+  const result = await executor.execute(request);
   assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
   assert.equal(result.output, "## Review complete\nNo defects found.");
   assert.ok(enabledTools.includes("wiki_submit_review"));
   assert.equal(tools.some((tool) => tool.name === "wiki_submit_synthesis"), false);
   const submit = tools.find((tool) => tool.name === "wiki_submit_review");
   assert.deepEqual(submit.constrainedSampling, { type: "json_schema", strict: "prefer" });
-  assert.match(submit.description, /defects: \[\]/);
+  assert.deepEqual(submit.parameters.required, ["artifactPath"]);
+  assert.equal(submit.parameters.properties.artifactPath.const, request.artifactWritePath);
+  assert.match(submit.description, /exact JSON handoff artifact/);
   assert.match(submit.promptGuidelines[0], /Correct and resubmit if rejected/);
   assert.doesNotMatch(submit.promptGuidelines[0], /exactly once/);
   assert.equal(submitResult.terminate, true);
@@ -176,16 +194,16 @@ test("reviewer submits control data through its dedicated tool", async () => {
 
 test("synthesis rejects branch fields that do not match its decision", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-branch-");
+  const request = executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis");
   let tools;
   const session = fakeSession();
   session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
-    await submit.execute("submit-synthesis", {
+    await writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
       decision: "expand",
       researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
       spec: finalizedSpec(),
       rationale: "One more bounded source survey is needed.",
-    });
+    }, "submit-synthesis");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -195,42 +213,43 @@ test("synthesis rejects branch fields that do not match its decision", async () 
   });
 
   await assert.rejects(
-    () => executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis")),
-    /must set spec to null/,
+    () => executor.execute(request),
+    /must not include spec/,
   );
 });
 
-test("synthesis requires explicit null for its inactive branch", () => {
+test("synthesis forbids inactive branch fields", () => {
   assert.throws(
     () => parseSynthesisSubmission({
-      decision: "expand",
-      researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
-      rationale: "One more bounded source survey is needed.",
-    }),
-    /must set spec to null/,
-  );
-  assert.throws(
-    () => parseSynthesisSubmission({
-      decision: "finalize",
-      spec: finalizedSpec(),
-      rationale: "The source research is sufficient to assign one bounded domain.",
-    }),
-    /must set researchScopes to null/,
-  );
-});
-
-test("synthesis accepts required nullable inactive branch fields", async () => {
-  const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-nullable-");
-  let tools;
-  const session = fakeSession();
-  session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
-    await submit.execute("submit-synthesis", {
       decision: "expand",
       researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
       spec: null,
       rationale: "One more bounded source survey is needed.",
-    });
+    }),
+    /must not include spec/,
+  );
+  assert.throws(
+    () => parseSynthesisSubmission({
+      decision: "finalize",
+      researchScopes: null,
+      spec: finalizedSpec(),
+      rationale: "The source research is sufficient to assign one bounded domain.",
+    }),
+    /must not include researchScopes/,
+  );
+});
+
+test("synthesis accepts only its active branch fields", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-synthesis-nullable-");
+  const request = executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis");
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    await writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
+      decision: "expand",
+      researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
+      rationale: "One more bounded source survey is needed.",
+    }, "submit-synthesis");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -239,7 +258,7 @@ test("synthesis accepts required nullable inactive branch fields", async () => {
     },
   });
 
-  const result = await executor.execute(executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis"));
+  const result = await executor.execute(request);
   assert.deepEqual(result.result, {
     decision: "expand",
     researchScopes: [{ id: "missing", sourcePaths: ["src"], task: "Inspect the missing boundary." }],
@@ -247,38 +266,39 @@ test("synthesis accepts required nullable inactive branch fields", async () => {
   });
 });
 
-test("required diagrams use a nullable reason without changing the finalized WikiSpec", () => {
+test("required diagrams omit a reason", () => {
   const spec = finalizedSpec();
   const diagram = spec.domains[0].pages[0].diagrams[0];
   diagram.applicability = "required";
   diagram.reason = null;
 
-  const result = parseSynthesisSubmission({
-    decision: "finalize",
-    researchScopes: null,
-    spec,
-    rationale: "The source research is sufficient to assign one bounded domain.",
-  });
-  assert.equal(result.decision, "finalize");
-  assert.equal(result.spec.domains[0].pages[0].diagrams[0].reason, undefined);
+  assert.throws(
+    () => parseSynthesisSubmission({
+      decision: "finalize",
+      spec,
+      rationale: "The source research is sufficient to assign one bounded domain.",
+    }),
+    /must not include reason/,
+  );
 });
 
 test("a later valid submission recovers from a rejected control call", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-submission-recovery-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
   let tools;
   let followUps = 0;
   const session = fakeSession();
   session.prompt = async () => {
     const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await writeArtifact(workspace, request.artifactWritePath, "x".repeat(MAX_CONTROL_ARTIFACT_BYTES + 1));
     await assert.rejects(
-      () => submit.execute("invalid-review", { defects: [], summary: "x".repeat(MAX_CONTROL_SUBMISSION_BYTES) }),
+      () => submit.execute("invalid-review", { artifactPath: request.artifactWritePath }),
       WikiControlSubmissionSizeError,
     );
   };
   session.followUp = async () => {
     followUps += 1;
-    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
-    await submit.execute("valid-review", { defects: [], summary: "All checks passed." });
+    await writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, { defects: [], summary: "All checks passed." }, "valid-review");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -287,39 +307,36 @@ test("a later valid submission recovers from a rejected control call", async () 
     },
   });
 
-  const result = await executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review"));
+  const result = await executor.execute(request);
   assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
   assert.equal(followUps, 1);
 });
 
 test("a contextual synthesis rejection can be corrected before the submission terminates", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-contextual-synthesis-");
+  const request = executionRequest(workspace, "synthesizer", undefined, undefined, "synthesis");
   let tools;
   let followUps = 0;
   const session = fakeSession();
   session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
     const unavailableReceipt = finalizedSpec();
     unavailableReceipt.domains[1].researchScopeIds = ["not-available-in-this-synthesis"];
     await assert.rejects(
-      () => submit.execute("invalid-synthesis", {
+      () => writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
         decision: "finalize",
-        researchScopes: null,
         spec: unavailableReceipt,
         rationale: "The contract is ready.",
-      }),
+      }, "invalid-synthesis"),
       /unknown research scope: not-available-in-this-synthesis/,
     );
   };
   session.followUp = async () => {
     followUps += 1;
-    const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
-    await submit.execute("valid-synthesis", {
+    await writeAndSubmit(tools, "wiki_submit_synthesis", request.artifactWritePath, {
       decision: "finalize",
-      researchScopes: null,
       spec: finalizedSpec(),
       rationale: "The contract is ready.",
-    });
+    }, "valid-synthesis");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -336,37 +353,30 @@ test("a contextual synthesis rejection can be corrected before the submission te
     }
   };
 
-  const result = await executor.execute(executionRequest(
-    workspace,
-    "synthesizer",
-    undefined,
-    undefined,
-    "synthesis",
-    validateControlSubmission,
-  ));
+  request.validateControlSubmission = validateControlSubmission;
+  const result = await executor.execute(request);
   assert.equal(result.result.decision, "finalize");
   assert.equal(followUps, 1);
 });
 
 test("a contextual review rejection can be corrected before the submission terminates", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-contextual-review-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
   let tools;
   let followUps = 0;
   const session = fakeSession();
   session.prompt = async () => {
-    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
     await assert.rejects(
-      () => submit.execute("invalid-review", {
+      () => writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, {
         defects: [{ id: "wrong-page", domainId: "domain", page: "domain/missing.md", kind: "coverage", detail: "Add a missing page." }],
         summary: "One invalid target.",
-      }),
+      }, "invalid-review"),
       /does not belong to domain domain/,
     );
   };
   session.followUp = async () => {
     followUps += 1;
-    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
-    await submit.execute("valid-review", { defects: [], summary: "All checks passed." });
+    await writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, { defects: [], summary: "All checks passed." }, "valid-review");
   };
   const executor = new PiAgentExecutor({
     createSession: async (options) => {
@@ -383,26 +393,22 @@ test("a contextual review rejection can be corrected before the submission termi
     }
   };
 
-  const result = await executor.execute(executionRequest(
-    workspace,
-    "reviewer",
-    undefined,
-    undefined,
-    "review",
-    validateControlSubmission,
-  ));
+  request.validateControlSubmission = validateControlSubmission;
+  const result = await executor.execute(request);
   assert.deepEqual(result.result, { defects: [], summary: "All checks passed." });
   assert.equal(followUps, 1);
 });
 
 test("reports the final rejected control call with its classified error", async () => {
   const workspace = await initializedWorkspace("okf-wiki-executor-submission-error-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
   let tools;
   const session = fakeSession();
   session.prompt = async () => {
     const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await writeArtifact(workspace, request.artifactWritePath, "x".repeat(MAX_CONTROL_ARTIFACT_BYTES + 1));
     await assert.rejects(
-      () => submit.execute("invalid-review", { defects: [], summary: "x".repeat(MAX_CONTROL_SUBMISSION_BYTES) }),
+      () => submit.execute("invalid-review", { artifactPath: request.artifactWritePath }),
       WikiControlSubmissionSizeError,
     );
   };
@@ -414,15 +420,73 @@ test("reports the final rejected control call with its classified error", async 
   });
 
   await assert.rejects(
-    () => executor.execute(executionRequest(workspace, "reviewer", undefined, undefined, "review")),
+    () => executor.execute(request),
     (error) => error instanceof WikiAgentProtocolError
       && error.code === "submission_too_large"
       && /control payload limit/.test(error.message),
   );
 });
 
+test("control submission rejects a symlinked handoff artifact", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-artifact-symlink-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
+  const artifactPath = path.resolve(workspace, request.artifactWritePath);
+  const targetPath = path.join(workspace, "target.json");
+  await writeFile(targetPath, JSON.stringify({ defects: [], summary: "linked content" }), "utf8");
+  await mkdir(path.dirname(artifactPath), { recursive: true });
+  await symlink(targetPath, artifactPath);
+
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await assert.rejects(
+      () => submit.execute("linked-review", { artifactPath: request.artifactWritePath }),
+      /must be a regular file/,
+    );
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  await assert.rejects(
+    () => executor.execute(request),
+    (error) => error instanceof WikiAgentProtocolError && error.code === "invalid_submission",
+  );
+});
+
+test("control submission rejects malformed UTF-8 before JSON parsing", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-artifact-utf8-");
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
+  await writeArtifact(workspace, request.artifactWritePath, Buffer.from([0x7b, 0xc3, 0x28, 0x7d]));
+
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    const submit = tools.find((tool) => tool.name === "wiki_submit_review");
+    await assert.rejects(
+      () => submit.execute("invalid-utf8-review", { artifactPath: request.artifactWritePath }),
+      /valid UTF-8/,
+    );
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  await assert.rejects(
+    () => executor.execute(request),
+    (error) => error instanceof WikiAgentProtocolError && error.code === "invalid_submission",
+  );
+});
+
 test("rejects oversized Unicode review control payloads before they enter the DAG", () => {
-  const oversizedDetail = "测".repeat(Math.ceil(MAX_CONTROL_SUBMISSION_BYTES / 2));
+  const oversizedDetail = "测".repeat(Math.ceil(MAX_CONTROL_ARTIFACT_BYTES / 2));
   assert.throws(
     () => parseReviewSubmission({
       defects: [{
@@ -436,20 +500,20 @@ test("rejects oversized Unicode review control payloads before they enter the DA
     }),
     (error) => error instanceof WikiControlSubmissionSizeError
       && error.code === "submission_too_large"
-      && error.sizeBytes > MAX_CONTROL_SUBMISSION_BYTES,
+      && error.sizeBytes > MAX_CONTROL_ARTIFACT_BYTES,
   );
 });
 
 test("accepts the exact UTF-8 control limit and rejects one byte over", () => {
   const emptySubmission = { defects: [], summary: "" };
-  const summaryAtLimit = "x".repeat(MAX_CONTROL_SUBMISSION_BYTES - Buffer.byteLength(JSON.stringify(emptySubmission), "utf8"));
+  const summaryAtLimit = "x".repeat(MAX_CONTROL_ARTIFACT_BYTES - Buffer.byteLength(JSON.stringify(emptySubmission), "utf8"));
   const atLimit = { defects: [], summary: summaryAtLimit };
 
   assert.deepEqual(parseReviewSubmission(atLimit), atLimit);
   assert.throws(
     () => parseReviewSubmission({ defects: [], summary: `${summaryAtLimit}x` }),
     (error) => error instanceof WikiControlSubmissionSizeError
-      && error.sizeBytes === MAX_CONTROL_SUBMISSION_BYTES + 1,
+      && error.sizeBytes === MAX_CONTROL_ARTIFACT_BYTES + 1,
   );
 });
 
@@ -651,6 +715,7 @@ test("research tools may read only sources declared by workspace.yaml", async ()
 
   const sourceSurvey = executionRequest(docs);
   sourceSurvey.readRoots = ["api"];
+  await writeArtifact(docs, sourceSurvey.artifactWritePath, "# API research\n");
   await executor.execute(sourceSurvey);
   const read = tools.find((tool) => tool.name === "read");
   const result = await read.execute("call-1", { path: "api/src/index.ts" });
@@ -661,8 +726,43 @@ test("research tools may read only sources declared by workspace.yaml", async ()
 
   const mapper = executionRequest(docs);
   mapper.readRoots = ["api", "web"];
+  await writeArtifact(docs, mapper.artifactWritePath, "# Mapper research\n");
   await executor.execute(mapper);
   const mapperRead = tools.find((tool) => tool.name === "read");
   const mapperResult = await mapperRead.execute("call-5", { path: "web/src/index.ts" });
   assert.match(mapperResult.content[0].text, /web = true/);
+});
+
+test("review tools read only assigned Wiki pages", async () => {
+  const workspace = await initializedWorkspace("okf-wiki-executor-review-paths-");
+  await mkdir(path.join(workspace, "wiki", "domain"), { recursive: true });
+  await mkdir(path.join(workspace, "wiki", "other"), { recursive: true });
+  await writeFile(path.join(workspace, "wiki", "domain", "page.md"), "# Assigned\n");
+  await writeFile(path.join(workspace, "wiki", "other", "page.md"), "# Unassigned\n");
+
+  const request = executionRequest(workspace, "reviewer", undefined, undefined, "review");
+  request.reviewPaths = ["wiki/domain/page.md"];
+  let tools;
+  const session = fakeSession();
+  session.prompt = async () => {
+    await writeAndSubmit(tools, "wiki_submit_review", request.artifactWritePath, { defects: [], summary: "Complete" }, "review-paths");
+  };
+  const executor = new PiAgentExecutor({
+    createSession: async (options) => {
+      tools = options.customTools;
+      return { session };
+    },
+  });
+
+  await executor.execute(request);
+  const read = tools.find((tool) => tool.name === "read");
+  const assigned = await read.execute("review-assigned", { path: "wiki/domain/page.md" });
+  assert.match(assigned.content[0].text, /Assigned/);
+  await assert.rejects(() => read.execute("review-unassigned", { path: "wiki/other/page.md" }), /permitted workspace scope/);
+
+  const outside = path.join(workspace, "outside.md");
+  await writeFile(outside, "# Outside\n");
+  await rm(path.join(workspace, "wiki", "domain", "page.md"));
+  await symlink(outside, path.join(workspace, "wiki", "domain", "page.md"));
+  await assert.rejects(() => read.execute("review-symlink", { path: "wiki/domain/page.md" }), /permitted workspace scope/);
 });

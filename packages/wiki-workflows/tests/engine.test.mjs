@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { WikiWorkflowEngine } from "../dist/engine.js";
 import { phaseRows } from "../dist/ui/stages.js";
+
+const artifactRoots = [];
+let artifactStoreId = 0;
+
+test.after(async () => {
+  await Promise.all(artifactRoots.map(async (root) => await rm(root, { recursive: true, force: true })));
+});
 
 const inspection = {
   root: "/workspace",
@@ -50,7 +61,7 @@ function finalizedSpec(options = {}) {
           purpose: "Explain runtime boundaries",
           sources: ["src/core.ts#L1-L20"],
           requiredSections: ["Responsibilities", "Boundaries"],
-          diagrams: [{ kind: "flowchart", applicability: "required", purpose: "Show component boundaries", reason: null }],
+          diagrams: [{ kind: "flowchart", applicability: "required", purpose: "Show component boundaries" }],
         }],
       },
       {
@@ -65,7 +76,7 @@ function finalizedSpec(options = {}) {
           purpose: "Explain request lifecycle",
           sources: ["src/api.ts#L1-L20"],
           requiredSections: ["Entry Point", "Failure Handling"],
-          diagrams: [{ kind: "sequence", applicability: "required", purpose: "Show request interactions", reason: null }],
+          diagrams: [{ kind: "sequence", applicability: "required", purpose: "Show request interactions" }],
         }],
       },
     ],
@@ -75,7 +86,7 @@ function finalizedSpec(options = {}) {
 }
 
 function finalize(spec = finalizedSpec()) {
-  return { decision: "finalize", researchScopes: null, spec, rationale: "The receipts support a bounded final Wiki contract." };
+  return { decision: "finalize", spec, rationale: "The receipts support a bounded final Wiki contract." };
 }
 
 function receipt(scopeId) {
@@ -110,12 +121,15 @@ function createExecutor(options = {}) {
   };
 }
 
-function createEngine(executor, inspect = async () => inspection, validate = async () => validation) {
+function createEngine(executor, inspect = async () => inspection, validate = async () => validation, artifactStore) {
   let id = 0;
+  const artifactRoot = path.join(os.tmpdir(), `okf-wiki-engine-artifacts-${process.pid}-${++artifactStoreId}`);
+  artifactRoots.push(artifactRoot);
   return new WikiWorkflowEngine({
     executor,
     inspect,
     validate,
+    artifactStore: artifactStore ?? createWikiArtifactStore({ workspace: "/workspace", rootDir: artifactRoot }),
     createId: () => `id-${++id}`,
     now: () => new Date("2026-08-10T00:00:00.000Z"),
   });
@@ -136,15 +150,20 @@ test("source surveys converge through synthesis before parallel domain writers a
   assert.equal(snapshot.nodes.filter((node) => node.kind === "write").length, 3);
   assert.ok(snapshot.nodes.find((node) => node.kind === "review").dependsOn.every((id) => snapshot.nodes.find((node) => node.id === id)?.kind === "validate"));
   const synthesis = executor.requests.find((request) => request.node.kind === "synthesis");
-  assert.match(synthesis.prompt, /source-survey:src-core is verified/);
-  assert.match(synthesis.prompt, /source-survey:src-api is verified/);
+  assert.equal(synthesis.artifactPaths.length, 3);
+  assert.ok(synthesis.artifactPaths.every((artifactPath) => artifactPath.startsWith(".okf-wiki/runs/")));
+  assert.doesNotMatch(synthesis.prompt, /source-survey:src-core is verified/);
+  assert.match(synthesis.prompt, /\.okf-wiki\/runs\//);
   const surveys = executor.requests.filter((request) => request.node.kind === "research");
   assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "source-survey:src-core").readRoots, ["src-core"]);
   assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "source-survey:src-api").readRoots, ["src-api"]);
   assert.deepEqual(surveys.find((request) => request.node.input.scope.id === "workspace-map").readRoots, ["src-core", "src-api"]);
+  const review = executor.requests.find((request) => request.node.kind === "review");
+  assert.deepEqual(review.readRoots, ["src-core", "src-api"]);
+  assert.deepEqual(review.reviewPaths, ["wiki/overview/overview.md", "wiki/core/architecture.md", "wiki/api/request-flow.md"]);
 });
 
-test("synthesis receives raw Markdown receipts inside system-generated delimiters", async () => {
+test("synthesis receives only exact artifact paths for Markdown receipts", async () => {
   const rawReceipt = `\r\n${[
     "## Findings",
     "- CJK evidence: 中文. Source: `src/core.ts#L1-L20`",
@@ -160,10 +179,10 @@ test("synthesis receives raw Markdown receipts inside system-generated delimiter
   const executor = createExecutor({
     research: () => rawReceipt,
     synthesis: (request) => {
-      assert.ok(request.prompt.includes(rawReceipt));
-      assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-begin -->/);
-      assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-end -->/);
-      assert.doesNotMatch(request.prompt, /"markdown"\s*:/);
+      assert.equal(request.artifactPaths.length, 3);
+      assert.ok(request.artifactPaths.every((artifactPath) => artifactPath.startsWith(".okf-wiki/runs/")));
+      assert.ok(request.artifactPaths.every((artifactPath) => request.prompt.includes(artifactPath)));
+      assert.doesNotMatch(request.prompt, /CJK evidence: 中文/);
       assert.doesNotMatch(request.prompt, /\\n## Findings/);
       return finalize();
     },
@@ -173,58 +192,61 @@ test("synthesis receives raw Markdown receipts inside system-generated delimiter
   const snapshot = await engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded");
+  assert.ok(snapshot.nodes.filter((node) => node.kind === "research").every((node) => node.handoff?.kind === "research" && node.result?.artifact));
 });
 
-test("synthesis aggregate receipt budget counts raw UTF-8 Markdown instead of JSON escaping", async () => {
-  const newlineHeavyReceipt = `${"x\n".repeat(7_400)}x`;
-  const sourcePaths = ["src-core", "src-api", "src-extra"];
-  const executor = createExecutor({ research: () => newlineHeavyReceipt });
-  const engine = createEngine(executor, async () => ({ ...inspection, sourcePaths }));
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  const snapshot = await engine.waitForIdle();
-
-  assert.equal(snapshot.status, "succeeded");
-  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 1);
-});
-
-test("synthesis permits exactly 64KiB of raw receipts and rejects one byte over", async () => {
-  const receiptAtLimit = "x".repeat(16 * 1024);
-  const exactExecutor = createExecutor({ research: () => receiptAtLimit });
-  const exactEngine = createEngine(exactExecutor, async () => ({
-    ...inspection,
-    sourcePaths: ["src-core", "src-api", "src-extra"],
-  }));
-  exactEngine.start({ cwd: "/workspace", mode: "generate" });
-  const exactSnapshot = await exactEngine.waitForIdle();
-
-  assert.equal(exactSnapshot.status, "succeeded");
-  assert.equal(exactExecutor.calls.filter((kind) => kind === "synthesis").length, 1);
-
-  const overExecutor = createExecutor({
-    research: (request) => request.node.input.scope.id === "workspace-map" ? "x" : receiptAtLimit,
-  });
-  const overEngine = createEngine(overExecutor, async () => ({
-    ...inspection,
-    sourcePaths: ["src-core", "src-api", "src-extra", "src-more"],
-  }));
-  overEngine.start({ cwd: "/workspace", mode: "generate" });
-  const overSnapshot = await overEngine.waitForIdle();
-
-  assert.equal(overSnapshot.status, "failed");
-  assert.equal(overExecutor.calls.filter((kind) => kind === "synthesis").length, 0);
-  assert.match(overSnapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /65537/);
-});
-
-test("oversized UTF-8 research receipts fail before synthesis without truncation", async () => {
-  const oversizedCjkReceipt = "中".repeat(Math.ceil((16 * 1024) / 3) + 1);
-  const executor = createExecutor({ research: () => oversizedCjkReceipt });
+test("research handoffs fail at the generic one MiB artifact limit", async () => {
+  const executor = createExecutor({ research: () => "中".repeat(Math.ceil((1024 * 1024 + 1) / 3)) });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
   const snapshot = await engine.waitForIdle();
 
   assert.equal(snapshot.status, "failed");
   assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 0);
-  assert.match(snapshot.nodes.find((node) => node.kind === "research")?.error?.message ?? "", /Research receipt exceeds the 16384-byte budget/);
+  assert.match(snapshot.nodes.find((node) => node.kind === "research")?.error?.message ?? "", /1048576-byte limit/);
+});
+
+test("tampered research artifacts fail integrity verification before synthesis dispatch", async (t) => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-tampered-artifact-"));
+  t.after(async () => await rm(workspace, { recursive: true, force: true }));
+  const store = createWikiArtifactStore({ workspace });
+  const tamperingStore = {
+    ...store,
+    async write(input) {
+      const ref = await store.write(input);
+      if (input.kind === "research") await writeFile(path.join(workspace, ref.relativePath), "tampered\n", "utf8");
+      return ref;
+    },
+  };
+  const executor = createExecutor();
+  const engine = createEngine(executor, async () => ({ ...inspection, root: workspace, wikiRoot: path.join(workspace, "wiki") }), async () => validation, tamperingStore);
+  engine.start({ cwd: workspace, mode: "generate" });
+  const snapshot = await engine.waitForIdle();
+
+  assert.equal(snapshot.status, "failed");
+  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 0);
+  assert.match(snapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /integrity check failed/);
+});
+
+test("a default artifact store is recreated when the engine starts a different workspace", async (t) => {
+  const firstWorkspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-engine-first-"));
+  const secondWorkspace = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-engine-second-"));
+  t.after(async () => await Promise.all([firstWorkspace, secondWorkspace].map(async (workspace) => await rm(workspace, { recursive: true, force: true }))));
+  let id = 0;
+  const executor = createExecutor();
+  const engine = new WikiWorkflowEngine({
+    executor,
+    inspect: async (cwd) => ({ ...inspection, root: cwd, wikiRoot: path.join(cwd, "wiki") }),
+    validate: async () => validation,
+    createId: () => `id-${++id}`,
+    now: () => new Date("2026-08-10T00:00:00.000Z"),
+  });
+
+  engine.start({ cwd: firstWorkspace, mode: "generate" });
+  assert.equal((await engine.waitForIdle())?.status, "succeeded");
+  engine.start({ cwd: secondWorkspace, mode: "generate" });
+  assert.equal((await engine.waitForIdle())?.status, "succeeded");
+  assert.equal(await readFile(path.join(secondWorkspace, ".gitignore"), "utf8"), ".okf-wiki/\n");
 });
 
 test("a domain writer receives only its DomainPacket, selected receipt, and exact write paths", async () => {
@@ -237,17 +259,18 @@ test("a domain writer receives only its DomainPacket, selected receipt, and exac
   const apiWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "api");
   assert.deepEqual(coreWriter.writePaths, ["wiki/core/architecture.md"]);
   assert.deepEqual(apiWriter.writePaths, ["wiki/api/request-flow.md"]);
-  assert.match(coreWriter.prompt, /source-survey:src-core is verified/);
+  assert.ok(coreWriter.artifactPaths.every((artifactPath) => artifactPath.startsWith(".okf-wiki/runs/")));
+  assert.equal(coreWriter.artifactPaths.filter((artifactPath) => artifactPath.endsWith("/research.md")).length, 1);
+  assert.doesNotMatch(coreWriter.prompt, /source-survey:src-core is verified/);
   assert.doesNotMatch(coreWriter.prompt, /source-survey:src-api is verified/);
   assert.match(coreWriter.prompt, /Domain Packet/);
   assert.doesNotMatch(coreWriter.prompt, /wiki\/index\.md/);
   const overviewWriter = executor.requests.find((request) => request.node.kind === "write" && request.node.input.domainId === "overview");
   assert.deepEqual(overviewWriter.writePaths, ["wiki/overview/overview.md"]);
-  assert.doesNotMatch(overviewWriter.prompt, /source-survey:src-core is verified/);
-  assert.doesNotMatch(overviewWriter.prompt, /source-survey:src-api is verified/);
+  assert.equal(overviewWriter.artifactPaths.filter((artifactPath) => artifactPath.endsWith("/research.md")).length, 0);
 });
 
-test("writers and repairs receive raw Markdown receipts inside system-generated delimiters", async () => {
+test("writers and repairs receive artifact paths instead of raw Markdown receipts", async () => {
   const rawReceipt = `\r\n${[
     "## Findings",
     "- CJK evidence: 中文. Source: `src/core.ts#L1-L20`",
@@ -276,46 +299,19 @@ test("writers and repairs receive raw Markdown receipts inside system-generated 
   assert.equal(snapshot.status, "succeeded");
   for (const kind of ["write", "repair"]) {
     const request = executor.requests.find((candidate) => candidate.node.kind === kind && candidate.node.input.domainId === "core");
-    assert.ok(request.prompt.includes(rawReceipt));
-    assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-begin -->/);
-    assert.match(request.prompt, /<!-- wiki-research-receipt-[A-Za-z0-9_-]+-1:content-end -->/);
-    assert.doesNotMatch(request.prompt, /"markdown"\s*:/);
+    assert.ok(request.artifactPaths.every((artifactPath) => artifactPath.startsWith(".okf-wiki/runs/")));
+    assert.equal(request.artifactPaths.filter((artifactPath) => artifactPath.endsWith("/research.md")).length, 1);
+    assert.ok(request.artifactPaths.every((artifactPath) => request.prompt.includes(artifactPath)));
+    assert.doesNotMatch(request.prompt, /CJK evidence: 中文/);
+    assert.doesNotMatch(request.prompt, /```mermaid/);
   }
-});
-
-test("writer receipt context accepts 32KiB and rejects one byte over", async () => {
-  const receiptAtLimit = "x".repeat(16 * 1024);
-  const coreScopes = ["source-survey:src-core", "source-survey:src-api"];
-  const exactExecutor = createExecutor({
-    research: () => receiptAtLimit,
-    synthesis: () => finalize(finalizedSpec({ coreScopes })),
-  });
-  const exactEngine = createEngine(exactExecutor);
-  exactEngine.start({ cwd: "/workspace", mode: "generate" });
-  const exactSnapshot = await exactEngine.waitForIdle();
-
-  assert.equal(exactSnapshot.status, "succeeded");
-  assert.equal(exactExecutor.calls.filter((kind) => kind === "write").length, 3);
-
-  const overExecutor = createExecutor({
-    research: () => receiptAtLimit,
-    synthesis: () => finalize(finalizedSpec({
-      coreScopes: [...coreScopes, "workspace-map"],
-    })),
-  });
-  const overEngine = createEngine(overExecutor);
-  overEngine.start({ cwd: "/workspace", mode: "generate" });
-  const overSnapshot = await overEngine.waitForIdle();
-
-  assert.equal(overSnapshot.status, "failed");
-  assert.equal(overExecutor.calls.filter((kind) => kind === "write").length, 2);
-  assert.match(overSnapshot.nodes.find((node) => node.kind === "write" && node.input.domainId === "core")?.error?.message ?? "", /Writer research receipt payload exceeds the 32768-byte budget \(49152\)/);
+  assert.ok(snapshot.nodes.filter((node) => node.kind === "write" || node.kind === "repair").every((node) => node.handoff?.kind === "write_report"));
 });
 
 test("synthesis may expand source research once before finalizing the WikiSpec", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => index === 0
-      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], spec: null, rationale: "Persistence evidence is missing." }
+      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
       : finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] })),
   });
   const engine = createEngine(executor);
@@ -331,7 +327,7 @@ test("synthesis may expand source research once before finalizing the WikiSpec",
 test("phase retry after supplemental research reruns only the latest synthesis iteration", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => index === 0
-      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], spec: null, rationale: "Persistence evidence is missing." }
+      ? { decision: "expand", researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }], rationale: "Persistence evidence is missing." }
       : finalize(finalizedSpec({ coreScopes: ["source-survey:src-core", "storage"] })),
   });
   const engine = createEngine(executor);
@@ -348,7 +344,7 @@ test("phase retry after supplemental research reruns only the latest synthesis i
 
 test("a second supplemental research request in the same run fails closed", async () => {
   const executor = createExecutor({
-    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", sourcePaths: ["src-core"], task: "Research another gap" }], spec: null, rationale: "More research." }),
+    synthesis: () => ({ decision: "expand", researchScopes: [{ id: "extra", sourcePaths: ["src-core"], task: "Research another gap" }], rationale: "More research." }),
   });
   const engine = createEngine(executor);
   engine.start({ cwd: "/workspace", mode: "generate" });
@@ -399,7 +395,6 @@ test("engine supplies run-scoped control validation before synthesis and review 
         () => request.validateControlSubmission({
           decision: "expand",
           researchScopes: [{ id: "source-survey:src-core", sourcePaths: ["src-core"], task: "Duplicate an existing survey." }],
-          spec: null,
           rationale: "This should be rejected before submission.",
         }),
         /Supplemental research scope repeats existing scope: source-survey:src-core/,
@@ -408,7 +403,6 @@ test("engine supplies run-scoped control validation before synthesis and review 
         () => request.validateControlSubmission({
           decision: "expand",
           researchScopes: [{ id: "undeclared", sourcePaths: ["not-a-source"], task: "Inspect an undeclared source." }],
-          spec: null,
           rationale: "This should be rejected before submission.",
         }),
         /Supplemental research scope undeclared targets undeclared source: not-a-source/,
@@ -541,7 +535,6 @@ test("structural synthesis retains the prior WikiSpec and review trigger after s
         return {
           decision: "expand",
           researchScopes: [{ id: "lifecycle", sourcePaths: ["src-core"], task: "Verify the lifecycle boundary." }],
-          spec: null,
           rationale: "The structural defect needs one source-backed lifecycle check.",
         };
       }
@@ -572,19 +565,6 @@ test("structural synthesis retains the prior WikiSpec and review trigger after s
   assert.deepEqual(attempts, [1, 2]);
 });
 
-test("synthesis fails before dispatch when more than four oversized source receipts exceed the aggregate budget", async () => {
-  const sourcePaths = ["source-1", "source-2", "source-3", "source-4", "source-5"];
-  const executor = createExecutor({ research: () => "x".repeat(16 * 1024) });
-  const engine = createEngine(executor, async () => ({ ...inspection, sourcePaths }));
-  engine.start({ cwd: "/workspace", mode: "generate" });
-  const snapshot = await engine.waitForIdle();
-
-  assert.equal(snapshot.status, "failed");
-  assert.equal(executor.calls.filter((kind) => kind === "research").length, sourcePaths.length + 1);
-  assert.equal(executor.calls.filter((kind) => kind === "synthesis").length, 0);
-  assert.match(snapshot.nodes.find((node) => node.kind === "synthesis")?.error?.message ?? "", /Synthesis research receipt payload exceeds/);
-});
-
 test("all dynamic branch nodes remain visible in the declared navigator stages", async () => {
   const executor = createExecutor({
     synthesis: (_request, index) => {
@@ -592,7 +572,6 @@ test("all dynamic branch nodes remain visible in the declared navigator stages",
         return {
           decision: "expand",
           researchScopes: [{ id: "storage", sourcePaths: ["src-core"], task: "Research persistence boundaries" }],
-          spec: null,
           rationale: "Persistence evidence is needed before the Wiki contract can be finalized.",
         };
       }

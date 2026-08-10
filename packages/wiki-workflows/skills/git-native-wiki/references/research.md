@@ -26,10 +26,12 @@ synthesis coordinator can assign safely to one DomainPacket. Use this shape:
 - What the assigned domain should explain, link to, or avoid claiming.
 ```
 
-Do not edit `wiki/`. The receipt is handed directly to the writer and
-synthesizer as Markdown evidence, so keep evidence and uncertainty explicit
-rather than narrating tool use. Keep the entire receipt within 16 KiB UTF-8:
-prefer precise citations and short findings over copied source or long prose.
+Do not edit `wiki/`. Write the completed Markdown receipt to the exact handoff
+artifact path supplied by the workflow before finishing. That artifact is read
+by the synthesizer and writers, so keep evidence and uncertainty explicit
+rather than narrating tool use. Prefer precise citations and short findings
+over copied source or long prose; never write another path or return the
+receipt as JSON.
 Do not infer an end-to-end sequence, ER relationship, class hierarchy, or
 state transition from names alone; record it as a gap when the source does not
 establish it.

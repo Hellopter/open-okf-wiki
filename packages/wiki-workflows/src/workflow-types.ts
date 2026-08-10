@@ -1,4 +1,5 @@
 import type { WikiInspection, WikiMode, WikiValidation } from "./types.js";
+import type { WikiArtifactRef, WikiArtifactStore } from "./artifact-store.js";
 
 export type { WikiMode } from "./types.js";
 
@@ -66,6 +67,7 @@ export interface WikiNodeAttempt {
   result?: unknown;
   output?: string;
   history?: WikiNodeHistoryEntry[];
+  handoff?: WikiArtifactRef;
   error?: WikiNodeError;
   metrics: WikiNodeMetrics;
 }
@@ -102,6 +104,8 @@ export interface WikiNode {
   result?: unknown;
   output?: string;
   history?: WikiNodeHistoryEntry[];
+  /** Immutable, content-addressed handoff produced by this node attempt. */
+  handoff?: WikiArtifactRef;
   error?: WikiNodeError;
   attemptHistory: WikiNodeAttempt[];
   metrics: WikiNodeMetrics;
@@ -146,7 +150,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 3;
+  version: 4;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -264,12 +268,12 @@ export interface WikiSynthesisFinalizeResult {
 
 export type WikiSynthesisResult = WikiSynthesisExpandResult | WikiSynthesisFinalizeResult;
 
-/** A bounded, human-readable handoff from a researcher to the Wiki writer. */
+/** Metadata-only pointer to a source-grounded research handoff. */
 export interface WikiResearchReceipt {
   scopeId: string;
   task: string;
   sourceFingerprint: string;
-  markdown: string;
+  artifact: WikiArtifactRef;
 }
 
 export type WikiReviewDefectKind = "evidence" | "link" | "format" | "topology" | "coverage" | "depth" | "diagram";
@@ -295,8 +299,14 @@ export interface WikiAgentExecutionRequest {
   cwd: string;
   prompt: string;
   role: "researcher" | "synthesizer" | "writer" | "reviewer";
-  /** Declared source roots this agent may inspect. Omitted agents retain workspace read policy. */
+  /** Declared source roots this agent may inspect. */
   readRoots?: string[];
+  /** Exact workspace-local handoff files this agent may read. */
+  artifactPaths?: string[];
+  /** Exact Wiki files a reviewer may inspect without write permission. */
+  reviewPaths?: string[];
+  /** Exact workspace-local handoff file a non-writer agent must produce. */
+  artifactWritePath?: string;
   /** Exact Wiki-relative files a domain writer may create or change. */
   writePaths?: string[];
   language: "zh" | "en";
@@ -330,6 +340,8 @@ export interface WikiWorkflowDependencies {
   inspect(cwd: string): Promise<WikiInspection>;
   validate(cwd: string): Promise<WikiValidation>;
   executor: WikiAgentExecutor;
+  /** Workspace-local durable handoffs. Tests can inject an isolated store. */
+  artifactStore?: WikiArtifactStore;
   now?: () => Date;
   createId?: () => string;
 }

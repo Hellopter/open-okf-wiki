@@ -1,4 +1,5 @@
-import type { WikiRunSnapshot, WikiRunSummary } from "../workflow-types.js";
+import type { WikiNode, WikiRunSnapshot, WikiRunSummary } from "../workflow-types.js";
+import type { WikiArtifactRef } from "../artifact-store.js";
 import { firstLine, formatTimestamp, STATUS_ICON } from "./format.js";
 
 /** Plain text for /wiki status and non-interactive command output. */
@@ -21,6 +22,32 @@ export function renderWikiRunHistoryText(runs: WikiRunSummary[]): string {
     const fork = run.parentRunId ? " | fork" : "";
     return `${formatTimestamp(run.updatedAt)} | ${run.effectiveMode ?? run.requestedMode} | ${run.status} | ${run.succeededNodes}/${run.totalNodes}${fork}${focus}`;
   })].join("\n");
+}
+
+/** Plain-text inventory of the durable handoffs attached to a run's attempts. */
+export function renderWikiArtifactText(run: WikiRunSnapshot | undefined): string {
+  if (!run) return "Wiki Artifacts: no run for this project.";
+  const artifacts = artifactEntries(run);
+  if (!artifacts.length) return `Wiki Artifacts ${run.id}: no persisted handoffs.`;
+  return [
+    `Wiki Artifacts ${run.id}`,
+    ...artifacts.map(({ node, attempt, ref }) => `${node.label} | attempt ${attempt} | ${ref.kind} | ${ref.sizeBytes} B | ${ref.relativePath}`),
+  ].join("\n");
+}
+
+function artifactEntries(run: WikiRunSnapshot): Array<{ node: WikiNode; attempt: number; ref: WikiArtifactRef }> {
+  const seen = new Set<string>();
+  const entries: Array<{ node: WikiNode; attempt: number; ref: WikiArtifactRef }> = [];
+  for (const node of run.nodes) {
+    const add = (attempt: number, ref: WikiArtifactRef | undefined) => {
+      if (!ref || seen.has(ref.relativePath)) return;
+      seen.add(ref.relativePath);
+      entries.push({ node, attempt, ref });
+    };
+    add(node.attempt, node.handoff);
+    for (const attempt of node.attemptHistory) add(attempt.attempt, attempt.handoff);
+  }
+  return entries;
 }
 
 /** Delivered conversation summary when a background Wiki run terminates. */

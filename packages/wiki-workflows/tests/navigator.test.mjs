@@ -13,6 +13,7 @@ import {
   PLAIN_THEME,
   renderDashboard,
   renderPanel,
+  renderWikiArtifactText,
   renderWikiNavigatorFrame,
   renderWikiRunHistoryText,
   renderWikiRunText,
@@ -43,7 +44,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 3,
+  version: 4,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -288,6 +289,32 @@ test("status and history text stay concise for non-TUI commands", () => {
   const history = renderWikiRunHistoryText([summary(run)]);
   assert.match(history, /Wiki History/);
   assert.doesNotMatch(history, /run-1/);
+});
+
+test("Navigator agent and artifact text surface persisted handoff refs", () => {
+  const withArtifact = structuredClone(run);
+  withArtifact.nodes[1].handoff = {
+    version: 1,
+    runId: "run-1",
+    nodeId: "research-a",
+    attempt: 2,
+    kind: "research",
+    relativePath: ".okf-wiki/runs/run-1/research-a/attempt-2/research.md",
+    sha256: "a".repeat(64),
+    sizeBytes: 321,
+    mediaType: "text/markdown",
+  };
+  const model = new WikiUiModel(controllerFor(withArtifact));
+  const state = openDashboard(model);
+  state.move(1, phaseRows(withArtifact).length);
+  state.sync(model);
+  state.pane = "agents";
+  state.agentCursor = 0;
+  state.sync(model);
+  assert.equal(state.drill(model), true);
+  const frame = plain(renderWikiNavigatorFrame(state, model, 100, PLAIN_THEME, 28, "en").join("\n"));
+  assert.match(frame, /Artifact: .*research\.md \(321 B\)/);
+  assert.match(renderWikiArtifactText(withArtifact), /Research workflow engine \| attempt 2 \| research/);
 });
 
 test("runs list frame and empty state", () => {

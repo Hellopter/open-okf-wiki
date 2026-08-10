@@ -9,7 +9,7 @@ import { createPiAgentExecutor } from "./executor.js";
 import { createWikiWorkflowEngine, type WikiWorkflowEngine } from "./engine.js";
 import { createWikiUiHost, notifyRunStarted, type WikiUiHost } from "./ui/host.js";
 import type { WikiNavigatorController, WikiNavigatorWorkspace } from "./ui/model.js";
-import { renderWikiRunHistoryText, renderWikiRunText } from "./ui/text.js";
+import { renderWikiArtifactText, renderWikiRunHistoryText, renderWikiRunText } from "./ui/text.js";
 import { createWikiRunHistoryStore, summarizeWikiRun, type WikiRunHistoryStore } from "./run-history.js";
 import { parseWikiRunSession, WIKI_RUN_CUSTOM_TYPE } from "./session.js";
 import type { WikiRunEvent, WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
@@ -31,7 +31,13 @@ interface ParsedRunCommand {
   language?: "zh" | "en";
 }
 
+interface ParsedArtifactsCommand {
+  action: "artifacts";
+  runId?: string;
+}
+
 type ParsedCommand = ParsedRunCommand
+  | ParsedArtifactsCommand
   | { action: "init"; workspace?: string; language?: "zh" | "en" }
   | { action: "source-add"; workspace?: string; source: { kind: "link"; path: string } | { kind: "clone"; url: string; ref?: string } };
 
@@ -175,6 +181,22 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
             const workspace = await workspaceForNavigator(context.cwd);
             const root = workspace?.root ?? context.cwd;
             output(pi, context, renderWikiRunHistoryText(await historyForWorkspace(root, currentEngine(context))));
+            return;
+          }
+          case "artifacts": {
+            const active = currentEngine(context);
+            const workspace = await workspaceForNavigator(context.cwd);
+            const root = workspace?.root ?? context.cwd;
+            const current = active.getSnapshot();
+            const currentMatchesWorkspace = current && path.resolve(current.cwd) === path.resolve(root);
+            const defaultRunId = currentMatchesWorkspace
+              ? current.id
+              : (await historyForWorkspace(root, active)).at(0)?.id;
+            const runId = command.runId ?? defaultRunId;
+            const snapshot = runId && current?.id === runId
+              ? current
+              : runId ? await historyStoreFor(root).load(runId) : undefined;
+            output(pi, context, renderWikiArtifactText(snapshot));
             return;
           }
           case "generate":
@@ -439,8 +461,14 @@ function parseWikiCommand(raw: string): ParsedCommand {
   const candidate = (values.shift() ?? "help").toLowerCase();
   if (candidate === "init") return parseInitCommand(values);
   if (candidate === "source") return parseSourceCommand(values);
+  if (candidate === "artifacts") {
+    if (values.length > 1) throw new Error("Usage: /wiki artifacts [runId]");
+    const runId = values[0];
+    if (runId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) throw new Error("Invalid Wiki run history identifier");
+    return { action: "artifacts", runId };
+  }
   if (!isWikiAction(candidate)) {
-    throw new Error("Usage: /wiki init | source add | generate | refresh | open | status | history");
+    throw new Error("Usage: /wiki init | source add | generate | refresh | open | status | history | artifacts");
   }
   const action = candidate;
   if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "resume" || action === "cancel" || action === "help") {
@@ -537,6 +565,7 @@ const WIKI_COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: "open", label: "open", description: "Open the Wiki run Navigator" },
   { value: "status", label: "status", description: "Show the current run without opening the Navigator" },
   { value: "history", label: "history", description: "Show project Wiki run history" },
+  { value: "artifacts ", label: "artifacts", description: "List persisted handoffs for a run" },
   { value: "pause", label: "pause", description: "Pause scheduling after active agents finish" },
   { value: "resume", label: "resume", description: "Resume a paused run after source re-inspection" },
   { value: "cancel", label: "cancel", description: "Cancel the active Wiki run" },
@@ -675,7 +704,7 @@ function helpText(): string {
     "  /wiki open",
     "  /wiki generate [lang=zh|en] [focus]",
     "  /wiki refresh [lang=zh|en] [focus]",
-    "  /wiki status | history | pause | resume | cancel",
+    "  /wiki status | history | artifacts [runId] | pause | resume | cancel",
     "  /wiki help",
     "  /wiki init [--workspace <directory>] [--lang zh|en]",
     "  /wiki source add link <local-repository> [--workspace <directory>]",

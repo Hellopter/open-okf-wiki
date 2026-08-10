@@ -28,7 +28,7 @@ export function isWikiRunSession(value: unknown): value is WikiRunSession {
 
 function isSnapshot(value: unknown): value is WikiRunSnapshot {
   if (!isRecord(value)) return false;
-  return value.version === 3
+  return value.version === 4
     && typeof value.id === "string"
     && typeof value.cwd === "string"
     && (value.requestedMode === "generate" || value.requestedMode === "refresh")

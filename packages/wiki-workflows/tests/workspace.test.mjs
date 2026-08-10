@@ -49,9 +49,11 @@ test("initializes a plain YAML workspace and persists its language", async () =>
     defaultSourceIgnores: true,
     sources: [],
   });
+  assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
 
   await initializeWikiWorkspace({ cwd: root, language: "zh" });
   assert.equal((await loadWikiWorkspace(root)).language, "zh");
+  assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
 });
 
 test("links a Git source by its project directory name without an alias", async () => {

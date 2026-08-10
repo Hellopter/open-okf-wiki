@@ -20,7 +20,7 @@ import type { NavigatorState } from "../state.js";
 import { uiStrings, type WikiUiLanguage } from "../strings.js";
 import { renderRunHeader } from "./chrome.js";
 
-type AttemptView = Pick<WikiNode, "attempt" | "startedAt" | "finishedAt" | "result" | "output" | "history" | "error" | "metrics">;
+type AttemptView = Pick<WikiNode, "attempt" | "startedAt" | "finishedAt" | "result" | "output" | "history" | "handoff" | "error" | "metrics">;
 
 export function renderAgentView(
   state: NavigatorState,
@@ -57,6 +57,7 @@ function renderCompact(
   if (node.activity.message || node.activity.state !== "idle") {
     lines.push(fitLine(theme.fg("accent", asText(activityText(node))), width));
   }
+  if (attempt.handoff) lines.push(artifactSummary(attempt.handoff.relativePath, attempt.handoff.sizeBytes, width, theme));
   lines.push("");
   lines.push(...renderExecutionFooter(node, attempt, width, theme, language));
   if (attempt.error) {
@@ -121,6 +122,7 @@ function renderAgentTranscript(
   if (node.activity.message || node.activity.state !== "idle") {
     lines.push(truncateToWidth(theme.fg("accent", asText(activityText(node))), width, "", true));
   }
+  if (attempt.handoff) lines.push(artifactSummary(attempt.handoff.relativePath, attempt.handoff.sizeBytes, width, theme));
   lines.push("");
   lines.push(theme.bold(s.messagesTitle));
   if (attempt.history?.length) {
@@ -185,6 +187,10 @@ function renderExecutionFooter(
     truncateToWidth(theme.bold(summary), width, "", true),
     truncateToWidth(theme.fg("muted", details || s.noExecutionMetrics), width, "", true),
   ];
+}
+
+function artifactSummary(relativePath: string, sizeBytes: number, width: number, theme: WikiUiTheme): string {
+  return truncateToWidth(theme.fg("muted", `Artifact: ${asText(relativePath)} (${sizeBytes} B)`), width, "", true);
 }
 
 function renderHistoryEntry(entry: WikiNodeHistoryEntry, width: number, theme: WikiUiTheme): string[] {

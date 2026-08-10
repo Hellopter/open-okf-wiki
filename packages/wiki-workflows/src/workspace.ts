@@ -4,6 +4,8 @@ import YAML from "yaml";
 import { git, repositoryRoot } from "./git.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
+const WORKSPACE_GITIGNORE_FILE = ".gitignore";
+const WIKI_INTERNAL_DIRECTORY_IGNORE = ".okf-wiki/";
 const SOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const RESERVED_WORKSPACE_DIRECTORIES = new Set(["wiki"]);
 
@@ -93,8 +95,9 @@ export async function initializeWikiWorkspace(request: InitializeWikiWorkspaceRe
       language: request.language ?? "zh",
       defaultSourceIgnores: true,
       sources: [],
-    };
+  };
   await writeWorkspaceConfig(configPath, workspace);
+  await ensureWikiWorkspaceInternalIgnore(root);
   return { action: "initialized", workspace: root, language: workspace.language };
 }
 
@@ -246,6 +249,20 @@ async function ensureDirectory(directory: string): Promise<void> {
     if (!isMissing(error)) throw error;
     await mkdir(directory, { recursive: true });
   }
+}
+
+/** Keep private workflow handoffs out of a workspace's generated Wiki commits. */
+export async function ensureWikiWorkspaceInternalIgnore(root: string): Promise<void> {
+  const location = path.join(root, WORKSPACE_GITIGNORE_FILE);
+  let current = "";
+  try {
+    current = await readFile(location, "utf8");
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+  if (current.split(/\r?\n/).some((line) => line.trim() === WIKI_INTERNAL_DIRECTORY_IGNORE)) return;
+  const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
+  await writeFile(location, `${current}${separator}${WIKI_INTERNAL_DIRECTORY_IGNORE}\n`, "utf8");
 }
 
 async function assertAvailableSourcePath(root: string, sourcePath: string): Promise<void> {

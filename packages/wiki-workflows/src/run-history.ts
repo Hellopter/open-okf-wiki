@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
 import type { WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
 
 export const DEFAULT_MAX_TERMINAL_WIKI_RUNS = 100;
@@ -15,6 +16,8 @@ export interface WikiRunHistoryStore {
   list(): Promise<WikiRunSummary[]>;
   delete(runId: string): Promise<boolean>;
   getRunsDir(): string;
+  /** Workspace-local artifact root paired with this history store. */
+  getArtifactsRoot(): string;
 }
 
 export interface WikiRunHistoryStoreOptions {
@@ -22,6 +25,8 @@ export interface WikiRunHistoryStoreOptions {
   /** Test seam and explicit override. Defaults below Pi's user agent directory. */
   rootDir?: string;
   maxTerminalRuns?: number;
+  /** Test seam for the workspace-local handoff artifact lifecycle. */
+  artifactStore?: WikiArtifactStore;
 }
 
 /**
@@ -32,6 +37,7 @@ export function createWikiRunHistoryStore(options: WikiRunHistoryStoreOptions): 
   const rootDir = options.rootDir ?? path.join(getAgentDir(), "okf-wiki", "projects", wikiHistoryProjectKey(options.workspace));
   const runsDir = path.join(rootDir, "runs");
   const maxTerminalRuns = positiveInt(options.maxTerminalRuns, DEFAULT_MAX_TERMINAL_WIKI_RUNS);
+  const artifactStore = options.artifactStore ?? createWikiArtifactStore({ workspace: options.workspace });
   let writeChain = Promise.resolve();
   let cached: WikiRunSummary[] | undefined;
   let cachedAt = 0;
@@ -68,7 +74,8 @@ export function createWikiRunHistoryStore(options: WikiRunHistoryStoreOptions): 
       await enqueue(async () => {
         await mkdir(runsDir, { recursive: true });
         await writeSnapshot(runFile(runsDir, value.id), value);
-        await enforceRetention(runsDir, maxTerminalRuns);
+        const evictedRunIds = await enforceRetention(runsDir, maxTerminalRuns);
+        await Promise.all(evictedRunIds.map(async (runId) => await artifactStore.removeRun(runId)));
         invalidateCache();
       });
     },
@@ -96,6 +103,7 @@ export function createWikiRunHistoryStore(options: WikiRunHistoryStoreOptions): 
         } catch (error) {
           if (!isMissing(error)) throw error;
         }
+        await artifactStore.removeRun(runId);
         invalidateCache();
       });
       return deleted;
@@ -103,6 +111,10 @@ export function createWikiRunHistoryStore(options: WikiRunHistoryStoreOptions): 
 
     getRunsDir(): string {
       return runsDir;
+    },
+
+    getArtifactsRoot(): string {
+      return artifactStore.getRunsRoot();
     },
   };
 }
@@ -150,12 +162,12 @@ async function writeSnapshot(location: string, snapshot: WikiRunSnapshot): Promi
   await rename(temporary, location);
 }
 
-async function enforceRetention(runsDir: string, maximum: number): Promise<void> {
+async function enforceRetention(runsDir: string, maximum: number): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(runsDir);
   } catch (error) {
-    if (isMissing(error)) return;
+    if (isMissing(error)) return [];
     throw error;
   }
   const candidates = await Promise.all(entries
@@ -167,14 +179,16 @@ async function enforceRetention(runsDir: string, maximum: number): Promise<void>
     .filter((item) => TERMINAL_STATUSES.has(item.snapshot.status))
     .sort((left, right) => left.snapshot.updatedAt.localeCompare(right.snapshot.updatedAt));
   const excess = terminal.length - maximum;
-  if (excess <= 0) return;
-  await Promise.all(terminal.slice(0, excess).map(async ({ entry }) => await rm(path.join(runsDir, entry), { force: true })));
+  if (excess <= 0) return [];
+  const evicted = terminal.slice(0, excess);
+  await Promise.all(evicted.map(async ({ entry }) => await rm(path.join(runsDir, entry), { force: true })));
+  return evicted.map(({ snapshot }) => snapshot.id);
 }
 
 function isSnapshot(value: unknown): value is WikiRunSnapshot {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Record<string, unknown>;
-  return candidate.version === 3
+  return candidate.version === 4
     && typeof candidate.id === "string"
     && typeof candidate.cwd === "string"
     && (candidate.requestedMode === "generate" || candidate.requestedMode === "refresh")

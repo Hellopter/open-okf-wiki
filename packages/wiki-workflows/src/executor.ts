@@ -1,4 +1,5 @@
-import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createEditToolDefinition,
@@ -21,11 +22,13 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import {
+  artifactSubmissionSchema,
+  MAX_CONTROL_ARTIFACT_BYTES,
+  parseArtifactSubmission,
+  parseMarkdownArtifact,
+  parseReviewArtifact,
+  parseSynthesisArtifact,
   WikiControlSubmissionSizeError,
-  parseReviewSubmission,
-  parseSynthesisSubmission,
-  reviewSubmissionSchema,
-  synthesisSubmissionSchema,
 } from "./control-submissions.js";
 import type {
   WikiAgentExecutionRequest,
@@ -52,6 +55,7 @@ type SubmissionToolName = "wiki_submit_synthesis" | "wiki_submit_review";
 
 interface SubmissionCollector {
   toolName: SubmissionToolName;
+  artifactPath: string;
   value?: unknown;
   failure?: SubmissionFailure;
   validate?: (submission: WikiControlSubmission) => void;
@@ -129,8 +133,11 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       const stats = session.getSessionStats();
       const context = session.getContextUsage();
       request.onActivity?.({ state: "completed", message: "Completed" }, metricsFromSession(session));
+      const researcherArtifact = !submission && request.artifactWritePath
+        ? parseMarkdownArtifact(await readArtifactText(await workspaceToolPolicy(request.cwd), request.artifactWritePath), "Research handoff artifact")
+        : undefined;
       return {
-        result: submission?.value ?? (request.node.kind === "research" ? output : undefined),
+        result: submission?.value ?? researcherArtifact ?? (request.node.kind === "research" ? output : undefined),
         output,
         history: retainedHistory(history),
         metrics: metricsFromStats(stats, context, session),
@@ -146,6 +153,9 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     if (request.role === "researcher" && !request.readRoots?.length) {
       throw new Error("Workflow configuration error: researcher requests require at least one source root");
     }
+    if (request.role !== "writer" && !request.artifactWritePath) {
+      throw new Error(`Workflow configuration error: ${request.role} requests require an artifact write path`);
+    }
     const toolPolicy = await workspaceToolPolicy(request.cwd);
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.create(toolPolicy.workspaceRoot, agentDir);
@@ -160,7 +170,16 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     });
     await resourceLoader.reload();
 
-    const customTools = workflowTools(toolPolicy, request.role, submission, request.writePaths, request.readRoots);
+    const customTools = workflowTools(
+      toolPolicy,
+      request.role,
+      submission,
+      request.writePaths,
+      request.readRoots,
+      request.artifactPaths,
+      request.reviewPaths,
+      request.artifactWritePath,
+    );
     const result = await (this.options.createSession ?? createAgentSession)({
       cwd: toolPolicy.workspaceRoot,
       model: this.options.getModel?.() ?? this.options.model,
@@ -396,9 +415,9 @@ export function createPiAgentExecutor(options: PiAgentExecutorOptions = {}): PiA
 
 interface WorkspaceToolPolicy {
   workspaceRoot: string;
-  readableRoots: PermittedToolRoot[];
   sourceRoots: Map<string, PermittedToolRoot>;
   wikiRoot: string;
+  artifactRoot: string;
 }
 
 interface PermittedToolRoot {
@@ -414,12 +433,9 @@ async function workspaceToolPolicy(cwd: string): Promise<WorkspaceToolPolicy> {
   ]));
   return {
     workspaceRoot: workspace.root,
-    readableRoots: [
-      { logicalRoot: workspace.root, physicalRoot: await realpath(workspace.root) },
-      ...sourceRoots.values(),
-    ],
     sourceRoots,
     wikiRoot: path.join(workspace.root, "wiki"),
+    artifactRoot: path.join(workspace.root, ".okf-wiki", "runs"),
   };
 }
 
@@ -429,17 +445,26 @@ function workflowTools(
   submission?: SubmissionCollector,
   writePaths?: readonly string[],
   readRoots?: readonly string[],
+  artifactPaths?: readonly string[],
+  reviewPaths?: readonly string[],
+  artifactWritePath?: string,
 ): ToolDefinition<any, any, any>[] {
-  const readableRoots = readRootsForPolicy(policy, readRoots);
+  const allowedPaths = role === "writer" ? exactWriterPaths(policy, writePaths) : undefined;
+  const readableRoots = readRootsForPolicy(policy, readRoots, artifactPaths, reviewPaths, allowedPaths);
   const readOnly = [
     guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
     guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
     guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
     guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
   ];
-  if (role !== "writer") return submission ? [...readOnly, submissionTool(submission)] : readOnly;
+  const artifactWriter = artifactWritePath ? createArtifactWriteToolDefinition(policy, artifactWritePath) : undefined;
+  if (role !== "writer") return [
+    ...readOnly,
+    ...(artifactWriter ? [artifactWriter] : []),
+    ...(submission ? [submissionTool(policy, submission)] : []),
+  ];
 
-  const allowedPaths = exactWriterPaths(policy, writePaths);
+  if (!allowedPaths) throw new Error("Workflow configuration error: writers require assigned Wiki pages");
   const allowedDirectories = writerDirectories(policy.wikiRoot, allowedPaths);
 
   const write = createWriteToolDefinition(policy.workspaceRoot, {
@@ -465,35 +490,54 @@ function workflowTools(
   ];
 }
 
-function readRootsForPolicy(policy: WorkspaceToolPolicy, requested: readonly string[] | undefined): PermittedToolRoot[] {
-  if (!requested) return policy.readableRoots;
-  if (requested.length === 0) throw new Error("Workflow configuration error: a restricted reader needs at least one source root");
-  return requested.map((sourcePath) => {
+function readRootsForPolicy(
+  policy: WorkspaceToolPolicy,
+  requested: readonly string[] | undefined,
+  artifactPaths: readonly string[] | undefined,
+  reviewPaths: readonly string[] | undefined,
+  writerPaths: ReadonlySet<string> | undefined,
+): PermittedToolRoot[] {
+  const roots: PermittedToolRoot[] = [];
+  for (const sourcePath of requested ?? []) {
     const root = policy.sourceRoots.get(sourcePath);
     if (!root) throw new Error(`Workflow configuration error: undeclared source root: ${sourcePath}`);
-    return root;
-  });
+    roots.push(root);
+  }
+  for (const artifactPath of artifactPaths ?? []) roots.push(exactArtifactReadRoot(policy, artifactPath));
+  for (const reviewPath of reviewPaths ?? []) roots.push(exactWikiReadRoot(policy, reviewPath));
+  for (const writerPath of writerPaths ?? []) roots.push(exactWorkspaceFileRoot(writerPath));
+  if (roots.length === 0) throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
+  return roots;
 }
 
 function submissionFor(request: WikiAgentExecutionRequest): SubmissionCollector | undefined {
-  if (request.node.kind === "synthesis") return { toolName: "wiki_submit_synthesis", validate: request.validateControlSubmission };
-  if (request.node.kind === "review") return { toolName: "wiki_submit_review", validate: request.validateControlSubmission };
+  if (request.node.kind !== "synthesis" && request.node.kind !== "review") return undefined;
+  if (!request.artifactWritePath) {
+    throw new Error(`Workflow configuration error: ${request.node.kind} requires an artifact write path`);
+  }
+  if (request.node.kind === "synthesis") {
+    return { toolName: "wiki_submit_synthesis", artifactPath: request.artifactWritePath, validate: request.validateControlSubmission };
+  }
+  if (request.node.kind === "review") {
+    return { toolName: "wiki_submit_review", artifactPath: request.artifactWritePath, validate: request.validateControlSubmission };
+  }
   return undefined;
 }
 
-function submissionTool(submission: SubmissionCollector): ToolDefinition<any, any, any> {
+function submissionTool(policy: WorkspaceToolPolicy, submission: SubmissionCollector): ToolDefinition<any, any, any> {
   if (submission.toolName === "wiki_submit_synthesis") {
     return {
       name: submission.toolName,
       label: submission.toolName,
-      description: "Submit a compact synthesis decision. Every call includes researchScopes and spec: expand uses spec: null, finalize uses researchScopes: null.",
+      description: "Submit the synthesis result by referencing the exact JSON handoff artifact written for this node.",
       promptSnippet: "Submit the Wiki synthesis decision",
-      promptGuidelines: ["Use wiki_submit_synthesis for the final decision. Correct and resubmit if rejected; after it is recorded, stop."],
-      parameters: synthesisSubmissionSchema,
+      promptGuidelines: ["Write the complete JSON handoff artifact, then submit its exact path. Correct and resubmit if rejected; after it is recorded, stop."],
+      parameters: artifactSubmissionSchema(submission.artifactPath),
       constrainedSampling: { type: "json_schema", strict: "prefer" },
       async execute(_toolCallId, params) {
-        recordSubmission(submission, () => {
-          const parsed = parseSynthesisSubmission(params);
+        await recordSubmission(submission, async () => {
+          const artifactPath = parseArtifactSubmission(params, submission.artifactPath);
+          const parsed = parseSynthesisArtifact(await readArtifactText(policy, artifactPath));
           submission.validate?.(parsed);
           return parsed;
         });
@@ -504,14 +548,15 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
   return {
     name: submission.toolName,
     label: submission.toolName,
-    description: "Submit the compact Wiki review after inspecting the Wiki and source evidence; use defects: [] when there are no actionable defects.",
+    description: "Submit the review result by referencing the exact JSON handoff artifact written for this node.",
     promptSnippet: "Submit the final Wiki review",
-    promptGuidelines: ["Use wiki_submit_review when the review is complete. Correct and resubmit if rejected; after it is recorded, stop."],
-    parameters: reviewSubmissionSchema,
+    promptGuidelines: ["Write the complete JSON handoff artifact, then submit its exact path. Correct and resubmit if rejected; after it is recorded, stop."],
+    parameters: artifactSubmissionSchema(submission.artifactPath),
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params) {
-      recordSubmission(submission, () => {
-        const parsed = parseReviewSubmission(params);
+      await recordSubmission(submission, async () => {
+        const artifactPath = parseArtifactSubmission(params, submission.artifactPath);
+        const parsed = parseReviewArtifact(await readArtifactText(policy, artifactPath));
         submission.validate?.(parsed);
         return parsed;
       });
@@ -520,10 +565,10 @@ function submissionTool(submission: SubmissionCollector): ToolDefinition<any, an
   };
 }
 
-function recordSubmission(submission: SubmissionCollector, parse: () => unknown): void {
+async function recordSubmission(submission: SubmissionCollector, parse: () => unknown | Promise<unknown>): Promise<void> {
   try {
     if (submission.value !== undefined) throw new Error(`${submission.toolName} may only be called once per node attempt`);
-    submission.value = structuredClone(parse());
+    submission.value = structuredClone(await parse());
     submission.failure = undefined;
   } catch (error) {
     submission.failure = {
@@ -532,6 +577,126 @@ function recordSubmission(submission: SubmissionCollector, parse: () => unknown)
     };
     throw error;
   }
+}
+
+const artifactWriteSchema = Type.Object({
+  content: Type.String({ description: "Complete Markdown or JSON handoff content for this node's assigned artifact" }),
+}, { additionalProperties: false });
+
+/** Write only the engine-assigned handoff file; the model never chooses its path. */
+function createArtifactWriteToolDefinition(policy: WorkspaceToolPolicy, artifactPath: string): ToolDefinition<typeof artifactWriteSchema> {
+  const expectedPath = resolveArtifactPath(policy, artifactPath);
+  return {
+    name: "wiki_write_handoff",
+    label: "wiki_write_handoff",
+    description: `Write the complete handoff artifact at ${expectedPath}. This is the only handoff path available to this node.`,
+    promptSnippet: "Write the node handoff artifact",
+    promptGuidelines: ["Write the complete artifact once it is ready. Do not write handoff data to any other path."],
+    parameters: artifactWriteSchema,
+    async execute(_toolCallId, params) {
+      if (typeof params.content !== "string") throw new Error("Handoff artifact content must be text");
+      await writeArtifactText(policy, expectedPath, params.content);
+      return { content: [{ type: "text", text: `Handoff artifact recorded at ${expectedPath}.` }], details: undefined };
+    },
+  };
+}
+
+function exactArtifactReadRoot(policy: WorkspaceToolPolicy, artifactPath: string): PermittedToolRoot {
+  return exactWorkspaceFileRoot(resolveArtifactPath(policy, artifactPath));
+}
+
+function exactWikiReadRoot(policy: WorkspaceToolPolicy, rawPath: string): PermittedToolRoot {
+  if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid review path");
+  const reviewPath = insideWorkspace(policy.workspaceRoot, rawPath);
+  if (!pathIsInside(path.resolve(policy.wikiRoot), reviewPath) || !reviewPath.endsWith(".md")) {
+    throw new Error(`Workflow configuration error: review path must be a Markdown file under wiki/: ${rawPath}`);
+  }
+  return exactWorkspaceFileRoot(reviewPath);
+}
+
+/** Exact workflow files must not acquire a different physical root via symlink. */
+function exactWorkspaceFileRoot(file: string): PermittedToolRoot {
+  const resolved = path.resolve(file);
+  return { logicalRoot: resolved, physicalRoot: resolved };
+}
+
+function resolveArtifactPath(policy: WorkspaceToolPolicy, rawPath: string): string {
+  if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid artifact path");
+  const artifactPath = insideWorkspace(policy.workspaceRoot, rawPath);
+  const artifactRoot = path.resolve(policy.artifactRoot);
+  if (artifactPath === artifactRoot || !pathIsInside(artifactRoot, artifactPath) || ![".json", ".md"].includes(path.extname(artifactPath))) {
+    throw new Error(`Workflow configuration error: artifact path must be a Markdown or JSON file under .okf-wiki/runs: ${rawPath}`);
+  }
+  return path.resolve(artifactPath);
+}
+
+async function readArtifactText(policy: WorkspaceToolPolicy, artifactPath: string): Promise<string> {
+  const expectedPath = resolveArtifactPath(policy, artifactPath);
+  const expectedEntry = await lstat(expectedPath);
+  if (expectedEntry.isSymbolicLink() || !expectedEntry.isFile()) {
+    throw new Error(`Handoff artifact must be a regular file: ${artifactPath}`);
+  }
+  const resolvedPath = await assertAllowedWorkspacePath(
+    policy.workspaceRoot,
+    [{ logicalRoot: policy.artifactRoot }],
+    expectedPath,
+    false,
+  );
+  const entry = await lstat(resolvedPath);
+  if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`Handoff artifact must be a regular file: ${artifactPath}`);
+  if (entry.size > MAX_CONTROL_ARTIFACT_BYTES) {
+    throw new WikiControlSubmissionSizeError("Handoff artifact", entry.size, MAX_CONTROL_ARTIFACT_BYTES);
+  }
+  const bytes = await readFile(resolvedPath);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("Handoff artifact must be valid UTF-8");
+  }
+}
+
+async function writeArtifactText(policy: WorkspaceToolPolicy, artifactPath: string, content: string): Promise<void> {
+  const sizeBytes = Buffer.byteLength(content, "utf8");
+  if (sizeBytes > MAX_CONTROL_ARTIFACT_BYTES) {
+    throw new WikiControlSubmissionSizeError("Handoff artifact", sizeBytes, MAX_CONTROL_ARTIFACT_BYTES);
+  }
+  await ensureArtifactRoot(policy);
+  const resolvedPath = await assertAllowedWorkspacePath(
+    policy.workspaceRoot,
+    [{ logicalRoot: policy.artifactRoot }],
+    artifactPath,
+    true,
+  );
+  const existingEntry = await lstat(resolvedPath).catch((error: unknown) => {
+    if (isMissingPath(error)) return undefined;
+    throw error;
+  });
+  if (existingEntry?.isSymbolicLink() || (existingEntry && !existingEntry.isFile())) {
+    throw new Error(`Handoff artifact must be a regular file: ${artifactPath}`);
+  }
+  await assertContainedAbsolutePath(policy.artifactRoot, resolvedPath, true, "artifact root");
+  await mkdir(path.dirname(resolvedPath), { recursive: true });
+  await assertContainedAbsolutePath(policy.artifactRoot, resolvedPath, true, "artifact root");
+  const temporaryPath = path.join(path.dirname(resolvedPath), `.${path.basename(resolvedPath)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryPath, content, "utf8");
+    await rename(temporaryPath, resolvedPath);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => {});
+  }
+}
+
+async function ensureArtifactRoot(policy: WorkspaceToolPolicy): Promise<void> {
+  await assertAllowedWorkspacePath(
+    policy.workspaceRoot,
+    [{ logicalRoot: policy.workspaceRoot }],
+    policy.artifactRoot,
+    true,
+  );
+  await mkdir(policy.artifactRoot, { recursive: true });
+  const entry = await lstat(policy.artifactRoot);
+  if (!entry.isDirectory()) throw new Error("Workflow artifact root must be a directory");
+  await assertContainedAbsolutePath(policy.workspaceRoot, policy.artifactRoot, false, "workspace root");
 }
 
 function guardWorkspaceTool(
@@ -696,10 +861,10 @@ function isMissingPath(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
 }
 
-async function assertContainedAbsolutePath(root: string, candidate: string, allowMissing: boolean): Promise<string> {
+async function assertContainedAbsolutePath(root: string, candidate: string, allowMissing: boolean, rootLabel = "Wiki root"): Promise<string> {
   const rootReal = await realpath(root).catch(() => path.resolve(root));
   const absolute = path.resolve(candidate);
-  assertPathPrefix(rootReal, absolute);
+  assertPathPrefix(rootReal, absolute, rootLabel);
 
   let existing = absolute;
   while (true) {
@@ -709,14 +874,14 @@ async function assertContainedAbsolutePath(root: string, candidate: string, allo
     } catch (error) {
       const parent = path.dirname(existing);
       if (parent === existing) {
-        throw new Error(`Path escapes the Wiki root: ${candidate}`);
+        throw new Error(`Path escapes the ${rootLabel}: ${candidate}`);
       }
       if (!allowMissing && existing === absolute) throw error;
       existing = parent;
       continue;
     }
     // Do not catch this containment failure as though the entry were missing.
-    assertPathPrefix(rootReal, real);
+    assertPathPrefix(rootReal, real, rootLabel);
     return absolute;
   }
 }
@@ -728,10 +893,10 @@ async function ensureWikiRoot(root: string): Promise<void> {
   assertPathPrefix(requested, physical);
 }
 
-function assertPathPrefix(root: string, target: string): void {
+function assertPathPrefix(root: string, target: string, rootLabel = "Wiki root"): void {
   const relative = path.relative(root, target);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return;
-  throw new Error(`Path escapes the Wiki root: ${target}`);
+  throw new Error(`Path escapes the ${rootLabel}: ${target}`);
 }
 
 function metricsFromSession(session: AgentSession): Partial<WikiNodeMetrics> {

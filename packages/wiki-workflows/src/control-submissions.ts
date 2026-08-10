@@ -10,108 +10,18 @@ import type {
 
 /** Maximum research agents the engine dispatches concurrently. */
 export const MAX_RESEARCH_SCOPES_PER_BATCH = 4;
-/** Maximum UTF-8 size of one model-authored control submission. */
-export const MAX_CONTROL_SUBMISSION_BYTES = 48 * 1024;
+/** Maximum UTF-8 size of a model-authored handoff artifact. */
+export const MAX_CONTROL_ARTIFACT_BYTES = 1024 * 1024;
 
-const wikiPagePath = Type.String({ minLength: 1, description: "Wiki-relative Markdown page path" });
-const pageTitle = Type.String({ minLength: 1, description: "Reader-facing page title" });
-const pagePurpose = Type.String({ minLength: 1, description: "Question the page answers" });
-const sourceReference = Type.String({ minLength: 1, description: "Workspace-relative path#Lx-Ly" });
-const researchScopeId = Type.String({ minLength: 1, description: "Distinct research scope ID" });
-const researchSourcePath = Type.String({ minLength: 1, description: "Declared workspace source root to inspect" });
-const researchTask = Type.String({ minLength: 1, description: "Bounded source research task" });
-const domainId = Type.String({ minLength: 1, pattern: "^[a-z0-9][a-z0-9-]*$", description: "Stable documentation domain ID and output directory" });
-const sectionTitle = Type.String({ minLength: 1, description: "Required page section" });
-const pageType = Type.Union([
-  Type.Literal("overview"),
-  Type.Literal("architecture"),
-  Type.Literal("module"),
-  Type.Literal("flow"),
-  Type.Literal("concept"),
-]);
-const rationale = Type.String({ minLength: 1, description: "Why this research or Wiki contract fits the current scope" });
-const defectId = Type.String({ minLength: 1, description: "Stable actionable defect ID" });
-const defectPage = Type.String({ minLength: 1, description: "Affected Wiki page" });
-const defectDetail = Type.String({ minLength: 1, description: "Specific correction needed" });
-const reviewSummary = Type.String({ minLength: 1, description: "Concise overall review result" });
-const diagramKind = Type.Union([
-  Type.Literal("flowchart"),
-  Type.Literal("sequence"),
-  Type.Literal("state"),
-  Type.Literal("er"),
-  Type.Literal("class"),
-]);
-const diagramRequirement = Type.Object({
-  kind: diagramKind,
-  applicability: Type.Union([Type.Literal("required"), Type.Literal("not_applicable")]),
-  purpose: pagePurpose,
-  // Strict JSON-schema providers require every object property. `null` means
-  // a reason is inapplicable because the diagram itself is required.
-  reason: Type.Union([Type.String({ minLength: 1, description: "Why this diagram is not applicable" }), Type.Null()]),
-}, { additionalProperties: false });
-
-const researchScopeSchema = Type.Object({
-  id: researchScopeId,
-  sourcePaths: Type.Array(researchSourcePath, { minItems: 1 }),
-  task: researchTask,
-}, { additionalProperties: false });
-
-const specPage = Type.Object({
-  pageType,
-  path: wikiPagePath,
-  title: pageTitle,
-  purpose: pagePurpose,
-  sources: Type.Array(sourceReference, { minItems: 1 }),
-  requiredSections: Type.Array(sectionTitle, { minItems: 1 }),
-  diagrams: Type.Array(diagramRequirement, { minItems: 1 }),
-}, { additionalProperties: false });
-
-const wikiSpecSchema = Type.Object({
-  domains: Type.Array(Type.Object({
-    id: domainId,
-    title: pageTitle,
-    purpose: pagePurpose,
-    pages: Type.Array(specPage, { minItems: 1 }),
-    researchScopeIds: Type.Array(researchScopeId),
-  }, { additionalProperties: false }), { minItems: 1 }),
-  crossLinks: Type.Array(Type.Object({
-    fromPath: wikiPagePath,
-    toPath: wikiPagePath,
-    purpose: pagePurpose,
-  }, { additionalProperties: false })),
-  sharedTerms: Type.Array(Type.Object({
-    term: Type.String({ minLength: 1 }),
-    definition: Type.String({ minLength: 1 }),
-  }, { additionalProperties: false })),
-}, { additionalProperties: false });
-
-// Keep this top-level schema an object: strict tool providers reject a top-level anyOf.
-// All fields are required for strict providers; `null` marks the inactive branch.
-export const synthesisSubmissionSchema = Type.Object({
-  decision: Type.Union([Type.Literal("expand"), Type.Literal("finalize")]),
-  researchScopes: Type.Union([Type.Array(researchScopeSchema, { minItems: 1, maxItems: MAX_RESEARCH_SCOPES_PER_BATCH }), Type.Null()]),
-  spec: Type.Union([wikiSpecSchema, Type.Null()]),
-  rationale,
-}, { additionalProperties: false });
-
-export const reviewSubmissionSchema = Type.Object({
-  defects: Type.Array(Type.Object({
-    id: defectId,
-    domainId,
-    page: defectPage,
-    kind: Type.Union([
-      Type.Literal("evidence"),
-      Type.Literal("link"),
-      Type.Literal("format"),
-      Type.Literal("topology"),
-      Type.Literal("coverage"),
-      Type.Literal("depth"),
-      Type.Literal("diagram"),
-    ]),
-    detail: defectDetail,
-  }, { additionalProperties: false })),
-  summary: reviewSummary,
-}, { additionalProperties: false });
+/**
+ * The tool protocol transports only a pointer. Its literal path keeps strict
+ * providers from accepting a stale or arbitrary workspace file.
+ */
+export function artifactSubmissionSchema(artifactPath: string) {
+  return Type.Object({
+    artifactPath: Type.Literal(artifactPath, { description: "Exact handoff artifact path supplied for this node" }),
+  }, { additionalProperties: false });
+}
 
 export class WikiControlSubmissionSizeError extends Error {
   readonly code = "submission_too_large";
@@ -119,10 +29,36 @@ export class WikiControlSubmissionSizeError extends Error {
   constructor(
     readonly label: string,
     readonly sizeBytes: number,
-    readonly limitBytes = MAX_CONTROL_SUBMISSION_BYTES,
+    readonly limitBytes = MAX_CONTROL_ARTIFACT_BYTES,
   ) {
     super(`${label} exceeds the ${limitBytes}-byte control payload limit`);
   }
+}
+
+/** Validate a pointer-only control call before reading its expected artifact. */
+export function parseArtifactSubmission(value: unknown, expectedArtifactPath: string): string {
+  assertControlSubmissionSize(value, "Control submission");
+  if (!isRecord(value) || value.artifactPath !== expectedArtifactPath || Object.keys(value).length !== 1) {
+    throw new Error(`Control submission must reference the exact artifact path: ${expectedArtifactPath}`);
+  }
+  return expectedArtifactPath;
+}
+
+/** Decode and validate the JSON artifact that carries a synthesis result. */
+export function parseSynthesisArtifact(content: string): WikiSynthesisResult {
+  return parseSynthesisSubmission(parseJsonArtifact(content, "Synthesis artifact"));
+}
+
+/** Decode and validate the JSON artifact that carries a review result. */
+export function parseReviewArtifact(content: string): WikiReviewResult {
+  return parseReviewSubmission(parseJsonArtifact(content, "Review artifact"));
+}
+
+/** Validate an opaque Markdown handoff without normalizing its bytes. */
+export function parseMarkdownArtifact(content: string, label = "Markdown artifact"): string {
+  assertTextArtifactSize(content, label);
+  if (!content.trim()) throw new Error(`${label} must contain Markdown`);
+  return content;
 }
 
 /** Canonicalize the synthesis decision before it can expand or finalize the DAG. */
@@ -133,15 +69,15 @@ export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
   }
   const synthesisRationale = requiredText(value.rationale, "Synthesis rationale");
   if (value.decision === "expand") {
-    if (value.spec !== null) throw new Error("Synthesis expansion must set spec to null");
+    if (hasOwn(value, "spec")) throw new Error("Synthesis expansion must not include spec");
     if (!Array.isArray(value.researchScopes)) throw new Error("Synthesis expansion must include researchScopes");
     if (value.researchScopes.length === 0 || value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
       throw new Error(`Synthesis may request 1 to ${MAX_RESEARCH_SCOPES_PER_BATCH} supplemental research scopes`);
     }
     return { decision: "expand", researchScopes: parseResearchScopes(value.researchScopes, "Synthesis"), rationale: synthesisRationale };
   }
-  if (value.researchScopes !== null) throw new Error("Final synthesis must set researchScopes to null");
-  if (value.spec === null) throw new Error("Final synthesis must include spec");
+  if (hasOwn(value, "researchScopes")) throw new Error("Final synthesis must not include researchScopes");
+  if (!hasOwn(value, "spec")) throw new Error("Final synthesis must include spec");
   return { decision: "finalize", spec: parseWikiSpec(value.spec), rationale: synthesisRationale };
 }
 
@@ -251,9 +187,12 @@ function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>)
     }
     if (diagramKinds.has(diagram.kind)) throw new Error(`WikiSpec page ${path} repeats diagram kind: ${diagram.kind}`);
     diagramKinds.add(diagram.kind);
-    if (!hasOwn(diagram, "reason")) throw new Error(`WikiSpec diagram ${diagram.kind} for ${path} must include reason or null`);
-    const reason = diagram.reason === null ? undefined : requiredText(diagram.reason, `WikiSpec diagram reason for ${path}`);
-    if (diagram.applicability === "not_applicable" && !reason) throw new Error(`WikiSpec page ${path} must explain a non-applicable ${diagram.kind} diagram`);
+    if (diagram.applicability === "required" && hasOwn(diagram, "reason")) {
+      throw new Error(`WikiSpec required ${diagram.kind} diagram for ${path} must not include reason`);
+    }
+    const reason = diagram.applicability === "not_applicable"
+      ? requiredText(diagram.reason, `WikiSpec diagram reason for ${path}`)
+      : undefined;
     const applicability: "required" | "not_applicable" = diagram.applicability === "required" ? "required" : "not_applicable";
     return { kind: diagram.kind, applicability, purpose: requiredText(diagram.purpose, `WikiSpec diagram purpose for ${path}`), reason };
   });
@@ -329,7 +268,24 @@ function assertControlSubmissionSize(value: unknown, label: string): void {
   }
   if (serialized === undefined) throw new Error(`${label} must be JSON-serializable`);
   const sizeBytes = Buffer.byteLength(serialized, "utf8");
-  if (sizeBytes > MAX_CONTROL_SUBMISSION_BYTES) {
+  if (sizeBytes > MAX_CONTROL_ARTIFACT_BYTES) {
+    throw new WikiControlSubmissionSizeError(label, sizeBytes);
+  }
+}
+
+function parseJsonArtifact(content: string, label: string): unknown {
+  assertTextArtifactSize(content, label);
+  try {
+    return JSON.parse(content);
+  } catch {
+    throw new Error(`${label} must contain valid JSON`);
+  }
+}
+
+function assertTextArtifactSize(content: string, label: string): void {
+  if (typeof content !== "string") throw new Error(`${label} must be text`);
+  const sizeBytes = Buffer.byteLength(content, "utf8");
+  if (sizeBytes > MAX_CONTROL_ARTIFACT_BYTES) {
     throw new WikiControlSubmissionSizeError(label, sizeBytes);
   }
 }

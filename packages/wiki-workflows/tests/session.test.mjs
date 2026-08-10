@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createWikiRunSession, isWikiRunSession, parseWikiRunSession } from "../dist/session.js";
 
-function snapshot(version = 3) {
+function snapshot(version = 4) {
   return {
     version,
     id: "run-1",
@@ -23,7 +23,7 @@ test("run-session serialization accepts only the current dynamic-workflow snapsh
   assert.equal(isWikiRunSession(current), true);
   assert.deepEqual(parseWikiRunSession(current), current);
 
-  const historical = { ...current, snapshot: snapshot(1) };
+  const historical = { ...current, snapshot: snapshot(3) };
   assert.equal(parseWikiRunSession(historical), undefined);
   assert.equal(isWikiRunSession(historical), false);
 });

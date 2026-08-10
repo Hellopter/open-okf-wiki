@@ -2,9 +2,20 @@ export * from "./types.js";
 export { inspectWiki } from "./inspect.js";
 export { validateWiki } from "./validate.js";
 export {
+  createWikiArtifactStore,
+  MAX_WIKI_ARTIFACT_BYTES,
+  type WikiArtifactKind,
+  type WikiArtifactLocation,
+  type WikiArtifactRef,
+  type WikiArtifactStore,
+  type WikiArtifactStoreOptions,
+  type WikiArtifactWrite,
+} from "./artifact-store.js";
+export {
   addWikiSource,
   DEFAULT_SOURCE_IGNORES,
   directoryLinkType,
+  ensureWikiWorkspaceInternalIgnore,
   initializeWikiWorkspace,
   loadWikiWorkspace,
   sourceIsIgnored,
@@ -75,6 +86,7 @@ export {
 export {
   renderWikiRunText,
   renderWikiRunHistoryText,
+  renderWikiArtifactText,
   renderWikiResultDelivery,
 } from "./ui/text.js";
 export {
