@@ -609,7 +609,7 @@ function createArtifactWriteToolDefinition(
 /** Keep every model-facing control surface explicit about its JSON contract. */
 function submissionContractGuidance(toolName: SubmissionToolName): string {
   if (toolName === "wiki_submit_synthesis") {
-    return "For a final decision, use {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...]},\"rationale\":\"...\"}. domains is required; crossLinks and sharedTerms may be omitted when empty. Each page contains pageType, path, title, purpose, and researchScopeIds. For expansion, omit spec and use decision, researchScopes, and rationale.";
+    return "For a final decision, use {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...]},\"rationale\":\"...\"}. domains is required; crossLinks and sharedTerms may be omitted when empty. Each page contains pageType, path, title, purpose, and researchScopeIds. For expansion, omit spec and use {\"decision\":\"expand\",\"researchScopes\":[{\"id\":\"new-scope-id\",\"sourcePaths\":[\"declared-source\"],\"task\":\"...\"}],\"rationale\":\"...\"}.";
   }
   return "Use {\"defects\":[...],\"summary\":\"...\"}. A local defect is exactly {\"kind\":\"evidence|link|depth|diagram\",\"page\":\"...\",\"detail\":\"...\"}; a structural defect is exactly {\"kind\":\"topology|coverage\",\"detail\":\"...\"}. defects and summary are required; use [] when there are no actionable defects.";
 }

@@ -1,14 +1,22 @@
 # Per-page Writing And Repair
 
-Edit only the single `wiki/` page named in the WikiPagePacket. Every concept
-page needs non-empty `type`, `title`, `description`, and `sources` frontmatter;
-`tags` is optional. Cite claims as `[label](repo:path#Lx-Ly)` and keep internal
-links valid.
+Edit only the single `wiki/` page named in the WikiPagePacket. Every target
+page, including Overview, needs non-empty `type`, `title`, `description`, and
+`sources` frontmatter; `tags` is optional and, when present, is a non-empty
+string array. Frontmatter source ranges use `source/path#Lx-Ly` without a
+`repo:` prefix. Cite body claims as `[label](repo:source/path#Lx-Ly)` and keep
+internal links valid.
 
 Use the page contract, selected receipt paths, shared terms, relevant cross-link
 contracts, authorized source roots, and exact Wiki read paths as the working
 set. Explain responsibilities, mechanisms, and boundaries instead of restating
 files.
+
+Every `outgoingCrossLinks` contract is mandatory: this page must contain an
+actual Markdown link using its engine-derived relative `href`, which resolves
+to the Wiki-root-relative `toPath`. Do not use `toPath` itself as the href.
+`incomingCrossLinks` are context for navigation and do not require adding a
+reverse link unless it helps the reader.
 
 Use receipts as locators, not proof. Re-open every load-bearing source span with
 `read`, `grep`, `find`, or `ls` before citing it. Do not seek unrelated roots or

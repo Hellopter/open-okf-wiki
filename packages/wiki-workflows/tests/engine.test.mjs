@@ -197,13 +197,23 @@ test("generate fans out fresh page writers four at a time and gates Overview", a
   assert.deepEqual(coreWriter.readRoots, ["src-core"]);
   assert.equal(coreWriter.artifactPaths.length, 1);
   assert.ok(coreWriter.artifactPaths[0].endsWith("/research.md"));
+  assert.match(coreWriter.prompt, /"scopeId": "source-survey:src-core"/);
+  assert.match(coreWriter.prompt, new RegExp(coreWriter.artifactPaths[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(coreWriter.prompt, /"outgoingCrossLinks"/);
+  assert.match(coreWriter.prompt, /"href": "\.\.\/d1\/page.md"/);
+  assert.match(coreWriter.prompt, /"incomingCrossLinks"/);
   assert.doesNotMatch(coreWriter.prompt, /JSON synthesis decision|Review summary/);
+  const researcher = f.requests.find((request) => request.node.kind === "research");
+  assert.match(researcher.prompt, /"id": "source-survey:src-core"/);
+  assert.doesNotMatch(researcher.prompt, /researchGroupId|priorResearchIds|priorSynthesisNodeId|structuralRoundId/);
   const overviewRequest = f.requests.find((request) => request.node.kind === "write" && request.node.input.intent === "overview");
   assert.deepEqual(overviewRequest.readRoots, ["src-core", "src-api"]);
   assert.equal(overviewRequest.artifactPaths, undefined);
   assert.equal(overviewRequest.wikiReadPaths.length, 6);
   const reviewer = f.requests.find((request) => request.node.kind === "review");
   assert.equal(reviewer.artifactPaths, undefined);
+  assert.match(reviewer.prompt, /"path": "d0\/page.md"/);
+  assert.doesNotMatch(reviewer.prompt, /verificationGroupId|synthesisNodeId/);
 });
 
 test("Verify phase retry reruns one stable pipeline without queued or duplicate terminal nodes", async (t) => {
@@ -270,6 +280,16 @@ test("mixed structural and local defects replan first, write the full topology, 
   assert.equal(feedback.domainId, "core");
   assert.match(feedback.id, /^defect-[a-f0-9]{12}$/);
   assert.equal(structuralWrites.every((node) => node.input.intent !== "repair"), true);
+  const structuralPlan = f.requests.filter((request) => request.node.kind === "synthesis")[1];
+  assert.match(structuralPlan.prompt, /Prior Final WikiSpec/);
+  assert.match(structuralPlan.prompt, /"sharedTerms"/);
+  assert.match(structuralPlan.prompt, /"kind": "topology"/);
+  assert.doesNotMatch(structuralPlan.prompt, /defect-[a-f0-9]{12}|domainId/);
+  const repairedPage = f.requests.find((request) => request.node.kind === "write"
+    && request.node.input.synthesisNodeId === structuralPlan.node.id
+    && request.node.input.page.path === "core/architecture.md");
+  assert.match(repairedPage.prompt, /"kind": "depth"/);
+  assert.doesNotMatch(repairedPage.prompt, /defect-[a-f0-9]{12}|domainId/);
 });
 
 test("targeted research is allowed once and carries all receipts into the next Plan", async (t) => {
@@ -287,7 +307,40 @@ test("targeted research is allowed once and carries all receipts into the next P
   const syntheses = f.requests.filter((request) => request.node.kind === "synthesis");
   assert.equal(syntheses.length, 2);
   assert.equal(syntheses[1].artifactPaths.length, 3);
+  for (const scopeId of ["source-survey:src-core", "source-survey:src-api", "cross-boundary"]) {
+    assert.match(syntheses[1].prompt, new RegExp(`"scopeId": "${scopeId}"`));
+  }
+  for (const artifactPath of syntheses[1].artifactPaths) {
+    assert.match(syntheses[1].prompt, new RegExp(artifactPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(syntheses[1].prompt, /Use only the exact `scopeId` values below/);
   assert.deepEqual(f.requests.find((request) => request.node.input?.scope?.id === "cross-boundary").readRoots, ["src-core", "src-api"]);
+});
+
+test("Plan receipt manifest exposes the exact scope allowlist enforced at submission", async (t) => {
+  const target = spec();
+  const f = await fixture(t, {
+    synthesis: (request) => {
+      const invalid = structuredClone(target);
+      invalid.domains[1].pages[0].researchScopeIds = ["src-core"];
+      assert.throws(
+        () => request.validateControlSubmission({ decision: "finalize", spec: invalid, rationale: "Guessed an ID." }),
+        /references unknown research scope: src-core/,
+      );
+      assert.doesNotThrow(() => request.validateControlSubmission({
+        decision: "finalize",
+        spec: target,
+        rationale: "Selected exact manifest IDs.",
+      }));
+      assert.match(request.prompt, /"scopeId": "source-survey:src-core"/);
+      assert.match(request.prompt, /"sourcePaths": \[\s*"src-core"/);
+      assert.match(request.prompt, /"task": "Survey src-core:/);
+      return { decision: "finalize", spec: target, rationale: "Selected exact manifest IDs." };
+    },
+  });
+
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  assert.equal((await f.engine.waitForIdle()).status, "succeeded");
 });
 
 test("source drift invalidation permits the restarted branch to request the same supplemental scope", async (t) => {

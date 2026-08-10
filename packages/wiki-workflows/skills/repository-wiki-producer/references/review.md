@@ -13,9 +13,12 @@ Use `coverage` or `topology` only when the Spec itself must change. If local and
 structural defects coexist, report both; the workflow replans first and carries
 still-addressable local feedback into replacement page writers.
 
+For a local defect, copy `page` exactly from a `path` in Final WikiSpec. Never
+prefix it with `wiki/` and never target an obsolete or undeclared page.
+
 Write the result to the exact handoff path and call `wiki_submit_review` with
 that path. Keep every defect concise and actionable. Use this discriminated
-union; do not create defect IDs or domain IDs:
+union; do not create defect IDs or domain IDs. Keep the JSON below 256 KiB:
 
 ```json
 {
