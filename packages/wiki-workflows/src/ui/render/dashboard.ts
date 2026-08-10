@@ -8,7 +8,6 @@ import {
   padToWidth,
   PHASE_STATUS_COLOR,
   PHASE_STATUS_ICON,
-  renderTimeline,
   scrollWindow,
   STATUS_COLOR,
   STATUS_ICON,
@@ -34,13 +33,11 @@ export function renderDashboard(
   language?: WikiUiLanguage,
 ): string[] {
   const header = renderRunHeader(run, width, theme);
-  const timeline = renderTimeline(run, width, theme, 3);
-  const top = [...header, "", ...timeline, ""];
-  const bodyRows = Math.max(4, rows - top.length);
+  const bodyRows = Math.max(1, rows - header.length);
   const body = layoutForWidth(width) === 2
     ? renderTwoPane(state, run, width, theme, bodyRows, language)
     : renderSinglePane(state, run, width, theme, bodyRows, language);
-  return [...top, ...body];
+  return [...header, ...body];
 }
 
 function renderTwoPane(

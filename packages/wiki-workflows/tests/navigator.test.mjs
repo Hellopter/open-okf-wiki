@@ -126,7 +126,7 @@ test("phaseRows exposes the complete Wiki workflow map", () => {
   ]);
 });
 
-test("dashboard shows all stages before dynamic agents are scheduled", () => {
+test("dashboard shows all stages before dynamic agents are scheduled without a timeline", () => {
   const initial = { ...run, nodes: [run.nodes[0]] };
   const model = new WikiUiModel(controllerFor(initial));
   const state = openDashboard(model, initial.id);
@@ -135,7 +135,15 @@ test("dashboard shows all stages before dynamic agents are scheduled", () => {
   assert.match(frame, /Source Survey/);
   assert.match(frame, /Targeted Research/);
   assert.match(frame, /Structural Re-synthesis/);
-  assert.match(frame, /Timeline/);
+  assert.doesNotMatch(frame, /Timeline/);
+});
+
+test("dashboard gives remaining rows directly to stages", () => {
+  const model = new WikiUiModel(controllerFor(run));
+  const state = openDashboard(model);
+  const lines = renderDashboard(state, run, 100, PLAIN_THEME, 5, "en").map(plain);
+  assert.equal(lines.length, 5);
+  assert.match(lines[2], /Stages/);
 });
 
 test("dashboard two-pane render includes stages and agents", () => {

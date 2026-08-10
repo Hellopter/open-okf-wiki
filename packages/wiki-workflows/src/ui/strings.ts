@@ -156,7 +156,7 @@ const EN: WikiUiStrings = {
   errorPrefix: (message) => `Error: ${message}`,
   compactHint: "Enter opens pager",
   helpRuns: "Runs: j/k select · Enter open dashboard · x delete completed history",
-  helpDashboard: "Dashboard: timeline · left stages · right agents · Tab/h/l switch pane",
+  helpDashboard: "Dashboard: left stages · right agents · Tab/h/l switch pane",
   helpAgent: "Agent: compact by default · Enter pager · f follow · [/] attempts",
   helpGlobal: "Esc back · q close · p pause/resume · c cancel · r retry agent · R retry stage · ? help",
 };
@@ -236,7 +236,7 @@ const ZH: WikiUiStrings = {
   errorPrefix: (message) => `错误：${message}`,
   compactHint: "Enter 打开分页",
   helpRuns: "运行列表：j/k 选择 · Enter 打开仪表盘 · x 删除已完成历史",
-  helpDashboard: "仪表盘：时间线 · 左阶段 · 右代理 · Tab/h/l 切换面板",
+  helpDashboard: "仪表盘：左阶段 · 右代理 · Tab/h/l 切换面板",
   helpAgent: "代理：默认摘要 · Enter 分页 · f 跟随 · [/] 尝试",
   helpGlobal: "Esc 返回 · q 关闭 · p 暂停/恢复 · c 取消 · r 重试代理 · R 重试阶段 · ? 帮助",
 };

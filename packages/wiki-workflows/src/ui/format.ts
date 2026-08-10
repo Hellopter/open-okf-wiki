@@ -203,22 +203,6 @@ export function fitRows(lines: string[], rows: number, width: number): string[] 
   ];
 }
 
-/** Compact timeline of recent run events for the dashboard header. */
-export function renderTimeline(run: WikiRunSnapshot, width: number, theme: WikiUiTheme, maxEvents = 4): string[] {
-  const events = run.events.slice(-maxEvents);
-  if (!events.length) {
-    return [theme.fg("muted", fitLine("Timeline: waiting for the first engine event", width))];
-  }
-  const lines = [theme.fg("muted", fitLine("Timeline", width))];
-  for (const event of events) {
-    const when = formatTimestamp(event.at).split(" ").at(-1) ?? event.at;
-    const node = event.nodeId ? run.nodes.find((item) => item.id === event.nodeId) : undefined;
-    const label = node?.label ?? event.message ?? event.kind;
-    lines.push(fitLine(theme.fg("dim", `${when} `) + theme.fg("muted", `${event.kind}`) + ` ${asText(label)}`, width));
-  }
-  return lines;
-}
-
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
