@@ -584,3 +584,55 @@ test("host retains terminal panel content across rebind", () => {
 
   host.unbind({ clearRetention: true });
 });
+
+test("host freezes lower status widgets while the navigator overlay is open", async () => {
+  const snapshot = structuredClone(run);
+  const listeners = new Set();
+  const engine = {
+    getSnapshot: () => structuredClone(snapshot),
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  const statuses = [];
+  const widgets = [];
+  let navigator;
+  const ui = {
+    setStatus(key, text) { statuses.push({ key, text }); },
+    setWidget(key, content) { widgets.push({ key, content }); },
+    notify() {},
+    custom(factory) {
+      return new Promise((resolve) => {
+        navigator = factory({ terminal: { rows: 24 }, requestRender() {} }, PLAIN_THEME, {}, resolve);
+      });
+    },
+  };
+  const host = new WikiUiHost();
+  host.bind({
+    engine,
+    ui,
+    pi: { sendMessage() {} },
+    language: "en",
+    getController: () => controllerFor(run),
+  });
+
+  const pending = host.openNavigator({ ui, hasUI: true, mode: "tui" });
+  assert.ok(navigator, "navigator overlay should open");
+  assert.equal(widgets.at(-1).content, undefined, "task panel is removed before opening the overlay");
+  const widgetCountWhileOpen = widgets.length;
+  const statusCountWhileOpen = statuses.length;
+
+  for (const listener of listeners) {
+    listener(snapshot, { kind: "node_activity", at: snapshot.updatedAt, id: "activity-1" });
+  }
+  assert.equal(widgets.length, widgetCountWhileOpen, "live engine updates must not redraw beneath the overlay");
+  assert.equal(statuses.length, statusCountWhileOpen, "status updates are held until the overlay closes");
+
+  navigator.handleInput("q");
+  await pending;
+  assert.ok(widgets.at(-1).content, "task panel is restored after the overlay closes");
+  assert.ok(statuses.length > statusCountWhileOpen, "latest status is restored after the overlay closes");
+
+  host.unbind({ clearRetention: true });
+});

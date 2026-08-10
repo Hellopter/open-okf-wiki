@@ -34,7 +34,7 @@ export interface WikiUiHostUnbindOptions {
 
 /**
  * Session-scoped dual-track UI host:
- * 1. Non-blocking task panel + status (always live while bound)
+ * 1. Non-blocking task panel + status (live while bound, except during navigator overlays)
  * 2. On-demand navigator overlay via openNavigator()
  */
 export class WikiUiHost {
@@ -47,6 +47,8 @@ export class WikiUiHost {
   private retainedRun: WikiRunSnapshot | undefined;
   private deliveredRunIds = new Set<string>();
   private progressMode: ProgressMode = "compact";
+  /** Active navigator overlays own the viewport, so freeze lower UI updates. */
+  private navigatorDepth = 0;
   private bound = false;
 
   bind(options: WikiUiHostBindOptions): void {
@@ -86,6 +88,7 @@ export class WikiUiHost {
     this.ui = undefined;
     this.pi = undefined;
     this.getController = undefined;
+    this.navigatorDepth = 0;
     this.bound = false;
     if (options.clearRetention) {
       this.retainedRun = undefined;
@@ -107,7 +110,7 @@ export class WikiUiHost {
   }
 
   refresh(snapshot?: WikiRunSnapshot): void {
-    if (!this.bound || !this.ui) return;
+    if (!this.bound || !this.ui || this.navigatorDepth > 0) return;
     const run = snapshot ?? this.engine?.getSnapshot() ?? this.retainedRun;
     const language = this.language ?? run?.language;
     this.ui.setStatus(STATUS_KEY, statusLine(run, language));
@@ -124,10 +127,19 @@ export class WikiUiHost {
     const language = this.language
       ?? controller.getWorkspace?.()?.language
       ?? controller.getRun()?.language;
-    await openWikiNavigator(ui, controller, {
-      initialRunId: activeId,
-      language,
-    });
+    const firstNavigator = this.navigatorDepth === 0;
+    this.navigatorDepth += 1;
+    if (firstNavigator && this.ui) clearTaskPanel(this.ui);
+    try {
+      await openWikiNavigator(ui, controller, {
+        initialRunId: activeId,
+        language,
+      });
+    } finally {
+      this.navigatorDepth = Math.max(0, this.navigatorDepth - 1);
+      // Restore once the final navigator closes, using the newest engine state.
+      if (this.navigatorDepth === 0) this.refresh();
+    }
     return true;
   }
 
