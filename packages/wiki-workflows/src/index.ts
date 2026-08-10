@@ -1,9 +1,11 @@
 export * from "./types.js";
 export { inspectWiki } from "./inspect.js";
-export { validateWiki } from "./validate.js";
+export { finalizeWiki, validateWiki } from "./validate.js";
 export {
   createWikiArtifactStore,
   MAX_WIKI_ARTIFACT_BYTES,
+  MAX_WIKI_JSON_ARTIFACT_BYTES,
+  MAX_WIKI_RESEARCH_ARTIFACT_BYTES,
   type WikiArtifactKind,
   type WikiArtifactLocation,
   type WikiArtifactRef,
@@ -155,9 +157,9 @@ export type {
   WikiAgentExecutionResult,
   WikiAgentExecutor,
   WikiCrossLink,
-  WikiDiagramKind,
-  WikiDiagramRequirement,
   WikiDomain,
+  WikiLocalReviewDefect,
+  WikiLocalReviewDefectKind,
   WikiNode,
   WikiNodeActivity,
   WikiNodeActivityState,
@@ -180,6 +182,8 @@ export type {
   WikiSharedTerm,
   WikiSpec,
   WikiSpecPage,
+  WikiStructuralReviewDefect,
+  WikiStructuralReviewDefectKind,
   WikiSynthesisExpandResult,
   WikiSynthesisFinalizeResult,
   WikiSynthesisResult,

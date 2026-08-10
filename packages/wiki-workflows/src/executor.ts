@@ -28,6 +28,7 @@ import {
   parseMarkdownArtifact,
   parseReviewArtifact,
   parseSynthesisArtifact,
+  MAX_RESEARCH_ARTIFACT_BYTES,
   WikiControlSubmissionSizeError,
 } from "./control-submissions.js";
 import type {
@@ -177,7 +178,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       request.writePaths,
       request.readRoots,
       request.artifactPaths,
-      request.reviewPaths,
+      request.wikiReadPaths,
       request.artifactWritePath,
     );
     const result = await (this.options.createSession ?? createAgentSession)({
@@ -446,11 +447,11 @@ function workflowTools(
   writePaths?: readonly string[],
   readRoots?: readonly string[],
   artifactPaths?: readonly string[],
-  reviewPaths?: readonly string[],
+  wikiReadPaths?: readonly string[],
   artifactWritePath?: string,
 ): ToolDefinition<any, any, any>[] {
   const allowedPaths = role === "writer" ? exactWriterPaths(policy, writePaths) : undefined;
-  const readableRoots = readRootsForPolicy(policy, readRoots, artifactPaths, reviewPaths, allowedPaths);
+  const readableRoots = readRootsForPolicy(policy, readRoots, artifactPaths, wikiReadPaths, allowedPaths);
   const readOnly = [
     guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
     guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"),
@@ -486,7 +487,6 @@ function workflowTools(
     // The guarded operations below receive those absolute paths and enforce wiki/.
     guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path"),
     guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path", true),
-    createDeleteToolDefinition(policy, allowedPaths),
   ];
 }
 
@@ -494,7 +494,7 @@ function readRootsForPolicy(
   policy: WorkspaceToolPolicy,
   requested: readonly string[] | undefined,
   artifactPaths: readonly string[] | undefined,
-  reviewPaths: readonly string[] | undefined,
+  wikiReadPaths: readonly string[] | undefined,
   writerPaths: ReadonlySet<string> | undefined,
 ): PermittedToolRoot[] {
   const roots: PermittedToolRoot[] = [];
@@ -504,7 +504,7 @@ function readRootsForPolicy(
     roots.push(root);
   }
   for (const artifactPath of artifactPaths ?? []) roots.push(exactArtifactReadRoot(policy, artifactPath));
-  for (const reviewPath of reviewPaths ?? []) roots.push(exactWikiReadRoot(policy, reviewPath));
+  for (const wikiReadPath of wikiReadPaths ?? []) roots.push(exactWikiReadRoot(policy, wikiReadPath));
   for (const writerPath of writerPaths ?? []) roots.push(exactWorkspaceFileRoot(writerPath));
   if (roots.length === 0) throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
   return roots;
@@ -609,9 +609,9 @@ function createArtifactWriteToolDefinition(
 /** Keep every model-facing control surface explicit about its JSON contract. */
 function submissionContractGuidance(toolName: SubmissionToolName): string {
   if (toolName === "wiki_submit_synthesis") {
-    return "For a final decision, use exactly {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...]},\"rationale\":\"...\"}. domains, crossLinks, and sharedTerms are required arrays with exact camelCase names; use [] when either optional list is empty. For expansion, omit spec and use decision, researchScopes, and rationale.";
+    return "For a final decision, use {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...]},\"rationale\":\"...\"}. domains is required; crossLinks and sharedTerms may be omitted when empty. Each page contains pageType, path, title, purpose, and researchScopeIds. For expansion, omit spec and use decision, researchScopes, and rationale.";
   }
-  return "Use exactly {\"defects\":[{\"id\":\"...\",\"domainId\":\"...\",\"page\":\"...\",\"kind\":\"evidence|link|format|topology|coverage|depth|diagram\",\"detail\":\"...\"}],\"summary\":\"...\"}. defects and summary are always required; use [] for defects when there are no actionable defects.";
+  return "Use {\"defects\":[...],\"summary\":\"...\"}. A local defect is exactly {\"kind\":\"evidence|link|depth|diagram\",\"page\":\"...\",\"detail\":\"...\"}; a structural defect is exactly {\"kind\":\"topology|coverage\",\"detail\":\"...\"}. defects and summary are required; use [] when there are no actionable defects.";
 }
 
 function exactArtifactReadRoot(policy: WorkspaceToolPolicy, artifactPath: string): PermittedToolRoot {
@@ -619,12 +619,12 @@ function exactArtifactReadRoot(policy: WorkspaceToolPolicy, artifactPath: string
 }
 
 function exactWikiReadRoot(policy: WorkspaceToolPolicy, rawPath: string): PermittedToolRoot {
-  if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid review path");
-  const reviewPath = insideWorkspace(policy.workspaceRoot, rawPath);
-  if (!pathIsInside(path.resolve(policy.wikiRoot), reviewPath) || !reviewPath.endsWith(".md")) {
-    throw new Error(`Workflow configuration error: review path must be a Markdown file under wiki/: ${rawPath}`);
+  if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid Wiki read path");
+  const wikiReadPath = insideWorkspace(policy.workspaceRoot, rawPath);
+  if (!pathIsInside(path.resolve(policy.wikiRoot), wikiReadPath) || !wikiReadPath.endsWith(".md")) {
+    throw new Error(`Workflow configuration error: Wiki read path must be a Markdown file under wiki/: ${rawPath}`);
   }
-  return exactWorkspaceFileRoot(reviewPath);
+  return exactWorkspaceFileRoot(wikiReadPath);
 }
 
 /** Exact workflow files must not acquire a different physical root via symlink. */
@@ -670,8 +670,9 @@ async function readArtifactText(policy: WorkspaceToolPolicy, artifactPath: strin
 
 async function writeArtifactText(policy: WorkspaceToolPolicy, artifactPath: string, content: string): Promise<void> {
   const sizeBytes = Buffer.byteLength(content, "utf8");
-  if (sizeBytes > MAX_CONTROL_ARTIFACT_BYTES) {
-    throw new WikiControlSubmissionSizeError("Handoff artifact", sizeBytes, MAX_CONTROL_ARTIFACT_BYTES);
+  const limitBytes = path.extname(artifactPath) === ".md" ? MAX_RESEARCH_ARTIFACT_BYTES : MAX_CONTROL_ARTIFACT_BYTES;
+  if (sizeBytes > limitBytes) {
+    throw new WikiControlSubmissionSizeError("Handoff artifact", sizeBytes, limitBytes);
   }
   await ensureArtifactRoot(policy);
   const resolvedPath = await assertAllowedWorkspacePath(
@@ -730,30 +731,6 @@ function guardWorkspaceTool(
   } as ToolDefinition<any, any, any>;
 }
 
-const deleteSchema = Type.Object({
-  path: Type.String({ description: "Workspace-relative Wiki page path to remove" }),
-});
-
-function createDeleteToolDefinition(policy: WorkspaceToolPolicy, allowedPaths: ReadonlySet<string>): ToolDefinition<typeof deleteSchema> {
-  return {
-    name: "wiki_delete",
-    label: "wiki_delete",
-    description: "Delete one obsolete regular file under wiki/. Directories and paths outside wiki/ are rejected.",
-    promptSnippet: "Delete obsolete generated Wiki pages",
-    promptGuidelines: ["Use wiki_delete only for obsolete files under wiki/"],
-    parameters: deleteSchema,
-    async execute(_toolCallId, { path: rawPath }) {
-      const workspacePath = await assertAllowedWorkspacePath(policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], rawPath, false);
-      assertExactWriterPath(allowedPaths, workspacePath);
-      if (path.resolve(workspacePath) === path.resolve(policy.wikiRoot)) throw new Error("Cannot delete the Wiki root");
-      const entry = await lstat(workspacePath);
-      if (!entry.isFile()) throw new Error("wiki_delete only accepts regular files");
-      await rm(workspacePath);
-      return { content: [{ type: "text", text: `Deleted ${rawPath}` }], details: undefined };
-    },
-  };
-}
-
 function valueAt(value: unknown, field: string): unknown {
   return value && typeof value === "object" ? (value as Record<string, unknown>)[field] : undefined;
 }
@@ -789,13 +766,13 @@ function writerDirectories(wikiRoot: string, allowedPaths: ReadonlySet<string>):
 
 function assertExactWriterPath(allowedPaths: ReadonlySet<string>, candidate: string): void {
   if (!allowedPaths.has(path.resolve(candidate))) {
-    throw new Error(`Path is not assigned to this Wiki domain: ${candidate}`);
+    throw new Error(`Path is not assigned to this Wiki page writer: ${candidate}`);
   }
 }
 
 async function guardedMkdir(root: string, directory: string, allowedDirectories: ReadonlySet<string>): Promise<void> {
   await ensureWikiRoot(root);
-  if (!allowedDirectories.has(path.resolve(directory))) throw new Error(`Directory is not assigned to this Wiki domain: ${directory}`);
+  if (!allowedDirectories.has(path.resolve(directory))) throw new Error(`Directory is not assigned to this Wiki page writer: ${directory}`);
   await assertContainedAbsolutePath(root, directory, true);
   await mkdir(directory, { recursive: true });
 }

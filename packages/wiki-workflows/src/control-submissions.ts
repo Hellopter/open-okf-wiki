@@ -1,17 +1,19 @@
 import { Buffer } from "node:buffer";
 import { Type } from "typebox";
 import type {
-  WikiDiagramKind,
   WikiReviewDefect,
   WikiReviewResult,
   WikiSpec,
   WikiSynthesisResult,
 } from "./workflow-types.js";
+import { isSafeWikiPagePath } from "./wiki-path.js";
 
 /** Maximum research agents the engine dispatches concurrently. */
 export const MAX_RESEARCH_SCOPES_PER_BATCH = 4;
-/** Maximum UTF-8 size of a model-authored handoff artifact. */
-export const MAX_CONTROL_ARTIFACT_BYTES = 1024 * 1024;
+/** Maximum UTF-8 size of a Markdown research receipt. */
+export const MAX_RESEARCH_ARTIFACT_BYTES = 64 * 1024;
+/** Maximum UTF-8 size of a synthesis or review JSON artifact. */
+export const MAX_CONTROL_ARTIFACT_BYTES = 256 * 1024;
 
 /**
  * The tool protocol transports only a pointer. Its literal path keeps strict
@@ -56,7 +58,7 @@ export function parseReviewArtifact(content: string): WikiReviewResult {
 
 /** Validate an opaque Markdown handoff without normalizing its bytes. */
 export function parseMarkdownArtifact(content: string, label = "Markdown artifact"): string {
-  assertTextArtifactSize(content, label);
+  assertTextArtifactSize(content, label, MAX_RESEARCH_ARTIFACT_BYTES);
   if (!content.trim()) throw new Error(`${label} must contain Markdown`);
   return content;
 }
@@ -69,6 +71,7 @@ export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
   }
   const synthesisRationale = requiredText(value.rationale, "Synthesis rationale");
   if (value.decision === "expand") {
+    assertExactKeys(value, ["decision", "researchScopes", "rationale"], "Synthesis expansion");
     if (hasOwn(value, "spec")) throw new Error("Synthesis expansion must not include spec");
     if (!Array.isArray(value.researchScopes)) throw new Error("Synthesis expansion must include researchScopes");
     if (value.researchScopes.length === 0 || value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
@@ -76,6 +79,7 @@ export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
     }
     return { decision: "expand", researchScopes: parseResearchScopes(value.researchScopes, "Synthesis"), rationale: synthesisRationale };
   }
+  assertExactKeys(value, ["decision", "spec", "rationale"], "Final synthesis");
   if (hasOwn(value, "researchScopes")) throw new Error("Final synthesis must not include researchScopes");
   if (!hasOwn(value, "spec")) throw new Error("Final synthesis must include spec");
   return { decision: "finalize", spec: parseWikiSpec(value.spec), rationale: synthesisRationale };
@@ -85,20 +89,23 @@ export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
 export function parseReviewSubmission(value: unknown): WikiReviewResult {
   assertControlSubmissionSize(value, "Reviewer submission");
   if (!isRecord(value)) throw new Error("Reviewer submission must be an object");
+  assertExactKeys(value, ["defects", "summary"], "Reviewer submission");
   if (!Array.isArray(value.defects)) throw new Error("Reviewer submission must include defects as an array");
   const summary = requiredText(value.summary, "Review summary");
-  const defectIds = new Set<string>();
   const defects = value.defects.map((defect) => {
     if (!isRecord(defect) || !isReviewKind(defect.kind)) throw new Error("Reviewer returned an invalid defect");
-    const id = requiredText(defect.id, "Review defect ID");
-    if (defectIds.has(id)) throw new Error(`Reviewer returned duplicate defect ID: ${id}`);
-    defectIds.add(id);
+    if (isLocalReviewKind(defect.kind)) {
+      assertExactKeys(defect, ["kind", "page", "detail"], "Local review defect");
+      return {
+        kind: defect.kind,
+        page: parseWikiPath(defect.page, "Review defect page"),
+        detail: requiredText(defect.detail, "Review defect detail"),
+      };
+    }
+    assertExactKeys(defect, ["kind", "detail"], "Structural review defect");
     return {
-      id,
-      domainId: requiredText(defect.domainId, `Review domain for ${id}`),
-      page: requiredText(defect.page, `Review page for ${id}`),
       kind: defect.kind,
-      detail: requiredText(defect.detail, `Review detail for ${id}`),
+      detail: requiredText(defect.detail, "Review defect detail"),
     };
   });
   return { defects, summary };
@@ -111,44 +118,45 @@ function requiredText(value: unknown, label: string): string {
 
 function parseWikiSpec(value: unknown): WikiSpec {
   if (!isRecord(value)) throw new Error("Final WikiSpec must be an object");
+  assertAllowedKeys(value, ["domains", "crossLinks", "sharedTerms"], "Final WikiSpec");
   if (!Array.isArray(value.domains)) throw new Error("Final WikiSpec must include domains as an array");
-  if (!Array.isArray(value.crossLinks)) throw new Error("Final WikiSpec must include crossLinks as an array");
-  if (!Array.isArray(value.sharedTerms)) throw new Error("Final WikiSpec must include sharedTerms as an array");
+  const crossLinkValues = value.crossLinks === undefined ? [] : value.crossLinks;
+  const sharedTermValues = value.sharedTerms === undefined ? [] : value.sharedTerms;
+  if (!Array.isArray(crossLinkValues)) throw new Error("Final WikiSpec crossLinks must be an array when provided");
+  if (!Array.isArray(sharedTermValues)) throw new Error("Final WikiSpec sharedTerms must be an array when provided");
   const domainIds = new Set<string>();
   const pagePaths = new Set<string>();
   const domains = value.domains.map((domain) => {
-    if (!isRecord(domain) || !Array.isArray(domain.pages) || !Array.isArray(domain.researchScopeIds)) throw new Error("WikiSpec contains an invalid domain");
+    if (!isRecord(domain) || !Array.isArray(domain.pages)) throw new Error("WikiSpec contains an invalid domain");
+    assertExactKeys(domain, ["id", "title", "purpose", "pages"], "WikiSpec domain");
     const id = parseDomainId(domain.id, "WikiSpec domain ID");
     if (domainIds.has(id)) throw new Error(`WikiSpec contains duplicate domain ID: ${id}`);
     domainIds.add(id);
     if (domain.pages.length === 0) throw new Error(`WikiSpec domain ${id} must include at least one page`);
-    const scopeIds = new Set<string>();
-    const researchScopeIds = domain.researchScopeIds.map((scopeId) => {
-      const parsed = requiredText(scopeId, `WikiSpec research scope for ${id}`);
-      if (scopeIds.has(parsed)) throw new Error(`WikiSpec domain ${id} repeats research scope: ${parsed}`);
-      scopeIds.add(parsed);
-      return parsed;
-    });
     const pages = domain.pages.map((page) => parseSpecPage(page, id, pagePaths));
     return {
       id,
       title: requiredText(domain.title, `WikiSpec domain title for ${id}`),
       purpose: requiredText(domain.purpose, `WikiSpec domain purpose for ${id}`),
       pages,
-      researchScopeIds,
     };
   });
   if (domains.length === 0) throw new Error("WikiSpec must include at least one domain");
   const overviewDomain = domains.find((domain) => domain.id === "overview");
   const overviewPages = domains.flatMap((domain) => domain.pages.filter((page) => page.pageType === "overview"));
-  if (!overviewDomain || overviewDomain.pages.length !== 1 || overviewDomain.researchScopeIds.length !== 0 || overviewPages.length !== 1
+  if (!overviewDomain || overviewDomain.pages.length !== 1 || overviewPages.length !== 1
     || overviewDomain.pages[0] !== overviewPages[0] || overviewPages[0].path !== "overview/overview.md") {
     throw new Error("WikiSpec must contain exactly one receipt-free overview page at overview/overview.md");
   }
+  if (overviewPages[0].researchScopeIds.length !== 0) {
+    throw new Error("WikiSpec overview page must not select research receipts");
+  }
+  if (pagePaths.size < 2) throw new Error("WikiSpec must contain at least one content page in addition to Overview");
 
   const linkKeys = new Set<string>();
-  const crossLinks = value.crossLinks.map((link) => {
+  const crossLinks = crossLinkValues.map((link) => {
     if (!isRecord(link)) throw new Error("WikiSpec contains an invalid cross-link");
+    assertExactKeys(link, ["fromPath", "toPath", "purpose"], "WikiSpec cross-link");
     const fromPath = parseWikiPath(link.fromPath, "WikiSpec cross-link source");
     const toPath = parseWikiPath(link.toPath, "WikiSpec cross-link target");
     if (!pagePaths.has(fromPath) || !pagePaths.has(toPath)) throw new Error(`WikiSpec cross-link must target declared pages: ${fromPath} -> ${toPath}`);
@@ -158,8 +166,9 @@ function parseWikiSpec(value: unknown): WikiSpec {
     return { fromPath, toPath, purpose: requiredText(link.purpose, `WikiSpec cross-link purpose for ${fromPath}`) };
   });
   const termNames = new Set<string>();
-  const sharedTerms = value.sharedTerms.map((term) => {
+  const sharedTerms = sharedTermValues.map((term) => {
     if (!isRecord(term)) throw new Error("WikiSpec contains an invalid shared term");
+    assertExactKeys(term, ["term", "definition"], "WikiSpec shared term");
     const name = requiredText(term.term, "WikiSpec shared term");
     if (termNames.has(name)) throw new Error(`WikiSpec repeats shared term: ${name}`);
     termNames.add(name);
@@ -169,42 +178,32 @@ function parseWikiSpec(value: unknown): WikiSpec {
 }
 
 function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>) {
-  if (!isRecord(value) || !Array.isArray(value.sources) || !Array.isArray(value.requiredSections) || !Array.isArray(value.diagrams)) {
+  if (!isRecord(value) || !Array.isArray(value.researchScopeIds)) {
     throw new Error(`WikiSpec domain ${domainId} contains an invalid page`);
   }
+  assertExactKeys(value, ["pageType", "path", "title", "purpose", "researchScopeIds"], `WikiSpec page in ${domainId}`);
   const path = parseWikiPath(value.path, `WikiSpec page path for ${domainId}`);
   if (!path.startsWith(`${domainId}/`)) {
     throw new Error(`WikiSpec page ${path} must be contained by its domain directory ${domainId}/`);
   }
   if (pagePaths.has(path)) throw new Error(`WikiSpec repeats page path: ${path}`);
   pagePaths.add(path);
-  if (value.sources.length === 0) throw new Error(`WikiSpec page ${path} must include source evidence`);
-  if (value.requiredSections.length === 0) throw new Error(`WikiSpec page ${path} must include required sections`);
-  if (value.diagrams.length === 0) throw new Error(`WikiSpec page ${path} must declare diagram applicability`);
-  const diagramKinds = new Set<WikiDiagramKind>();
-  const diagrams = value.diagrams.map((diagram) => {
-    if (!isRecord(diagram) || !isDiagramKind(diagram.kind) || (diagram.applicability !== "required" && diagram.applicability !== "not_applicable")) {
-      throw new Error(`WikiSpec page ${path} contains an invalid diagram requirement`);
-    }
-    if (diagramKinds.has(diagram.kind)) throw new Error(`WikiSpec page ${path} repeats diagram kind: ${diagram.kind}`);
-    diagramKinds.add(diagram.kind);
-    if (diagram.applicability === "required" && hasOwn(diagram, "reason")) {
-      throw new Error(`WikiSpec required ${diagram.kind} diagram for ${path} must not include reason`);
-    }
-    const reason = diagram.applicability === "not_applicable"
-      ? requiredText(diagram.reason, `WikiSpec diagram reason for ${path}`)
-      : undefined;
-    const applicability: "required" | "not_applicable" = diagram.applicability === "required" ? "required" : "not_applicable";
-    return { kind: diagram.kind, applicability, purpose: requiredText(diagram.purpose, `WikiSpec diagram purpose for ${path}`), reason };
+  const scopeIds = new Set<string>();
+  const researchScopeIds = value.researchScopeIds.map((scopeId) => {
+    const parsed = requiredText(scopeId, `WikiSpec research scope for ${path}`);
+    if (scopeIds.has(parsed)) throw new Error(`WikiSpec page ${path} repeats research scope: ${parsed}`);
+    scopeIds.add(parsed);
+    return parsed;
   });
+  const pageType = parsePageType(value.pageType, `WikiSpec page type for ${path}`);
+  if (pageType === "overview" && path !== "overview/overview.md") throw new Error("WikiSpec overview page must be overview/overview.md");
+  if (pageType !== "overview" && researchScopeIds.length === 0) throw new Error(`WikiSpec page ${path} must select research evidence`);
   return {
-    pageType: parsePageType(value.pageType, `WikiSpec page type for ${path}`),
+    pageType,
     path,
     title: requiredText(value.title, `WikiSpec page title for ${path}`),
     purpose: requiredText(value.purpose, `WikiSpec page purpose for ${path}`),
-    sources: value.sources.map((source) => requiredText(source, `WikiSpec source for ${path}`)),
-    requiredSections: value.requiredSections.map((section) => requiredText(section, `WikiSpec required section for ${path}`)),
-    diagrams,
+    researchScopeIds,
   };
 }
 
@@ -217,6 +216,7 @@ function parseResearchScopes(value: unknown[], owner: string) {
   const scopeIds = new Set<string>();
   return value.map((scope) => {
     if (!isRecord(scope)) throw new Error(`${owner} returned an invalid research scope`);
+    assertExactKeys(scope, ["id", "sourcePaths", "task"], `${owner} research scope`);
     const id = requiredText(scope.id, "Research scope ID");
     if (scopeIds.has(id)) throw new Error(`${owner} returned duplicate research scope: ${id}`);
     scopeIds.add(id);
@@ -235,7 +235,7 @@ function parseResearchScopes(value: unknown[], owner: string) {
 
 function parseWikiPath(value: unknown, label: string): string {
   const path = requiredText(value, label);
-  if (!isWikiPagePath(path)) throw new Error(`${label} is invalid: ${path}`);
+  if (!isSafeWikiPagePath(path)) throw new Error(`${label} is invalid: ${path}`);
   return path;
 }
 
@@ -245,19 +245,12 @@ function parseDomainId(value: unknown, label: string): string {
   return id;
 }
 
-function isWikiPagePath(value: string): boolean {
-  if (!value.endsWith(".md")) return false;
-  const normalized = value.replaceAll("\\", "/");
-  return !normalized.startsWith("/") && !normalized.startsWith("wiki/")
-    && !normalized.split("/").some((part) => part === "" || part === "." || part === ".." || part === "index.md");
-}
-
 function isReviewKind(value: unknown): value is WikiReviewDefect["kind"] {
-  return value === "evidence" || value === "link" || value === "format" || value === "topology" || value === "coverage" || value === "depth" || value === "diagram";
+  return isLocalReviewKind(value) || value === "topology" || value === "coverage";
 }
 
-function isDiagramKind(value: unknown): value is WikiDiagramKind {
-  return value === "flowchart" || value === "sequence" || value === "state" || value === "er" || value === "class";
+function isLocalReviewKind(value: unknown): value is "evidence" | "link" | "depth" | "diagram" {
+  return value === "evidence" || value === "link" || value === "depth" || value === "diagram";
 }
 
 function assertControlSubmissionSize(value: unknown, label: string): void {
@@ -275,7 +268,7 @@ function assertControlSubmissionSize(value: unknown, label: string): void {
 }
 
 function parseJsonArtifact(content: string, label: string): unknown {
-  assertTextArtifactSize(content, label);
+  assertTextArtifactSize(content, label, MAX_CONTROL_ARTIFACT_BYTES);
   try {
     return JSON.parse(content);
   } catch {
@@ -283,12 +276,27 @@ function parseJsonArtifact(content: string, label: string): unknown {
   }
 }
 
-function assertTextArtifactSize(content: string, label: string): void {
+function assertTextArtifactSize(content: string, label: string, limitBytes: number): void {
   if (typeof content !== "string") throw new Error(`${label} must be text`);
   const sizeBytes = Buffer.byteLength(content, "utf8");
-  if (sizeBytes > MAX_CONTROL_ARTIFACT_BYTES) {
-    throw new WikiControlSubmissionSizeError(label, sizeBytes);
+  if (sizeBytes > limitBytes) {
+    throw new WikiControlSubmissionSizeError(label, sizeBytes, limitBytes);
   }
+}
+
+function assertExactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const allowed = new Set(keys);
+  const actual = Object.keys(value);
+  const unexpected = actual.find((key) => !allowed.has(key));
+  if (unexpected) throw new Error(`${label} contains unsupported field: ${unexpected}`);
+  const missing = keys.find((key) => !hasOwn(value, key));
+  if (missing) throw new Error(`${label} must include ${missing}`);
+}
+
+function assertAllowedKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const allowed = new Set(keys);
+  const unexpected = Object.keys(value).find((key) => !allowed.has(key));
+  if (unexpected) throw new Error(`${label} contains unsupported field: ${unexpected}`);
 }
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {

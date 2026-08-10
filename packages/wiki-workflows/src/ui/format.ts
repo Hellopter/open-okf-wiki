@@ -146,11 +146,11 @@ export function stageLabel(kind: WikiNode["kind"]): string {
   switch (kind) {
     case "inspect": return "Inspect";
     case "research": return "Research";
-    case "synthesis": return "Synthesis";
+    case "synthesis": return "Plan";
     case "write": return "Write";
-    case "validate": return "Validate";
-    case "review": return "Review";
-    case "repair": return "Repair";
+    case "validate": return "Verify";
+    case "review": return "Verify";
+    case "finalize": return "Finalize";
   }
 }
 

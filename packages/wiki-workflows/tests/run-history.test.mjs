@@ -6,9 +6,22 @@ import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { createWikiRunHistoryStore, wikiHistoryProjectKey } from "../dist/run-history.js";
 
+function metrics() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+    compactions: 0,
+    autoRetries: 0,
+  };
+}
+
 function snapshot(id, status, updatedAt) {
   return {
-    version: 4,
+    version: 5,
     id,
     cwd: "/workspace",
     requestedMode: "generate",
@@ -16,6 +29,7 @@ function snapshot(id, status, updatedAt) {
     language: "zh",
     status,
     round: 0,
+    sourceRestartCount: 0,
     nodes: [{
       id: "inspect",
       kind: "inspect",
@@ -26,7 +40,7 @@ function snapshot(id, status, updatedAt) {
       inputFingerprint: "input",
       input: {},
       attemptHistory: [],
-      metrics: {},
+      metrics: metrics(),
       activity: { state: "completed", updatedAt },
     }],
     events: [],
@@ -97,7 +111,7 @@ test("history never treats a run ID as a filesystem path", async (t) => {
   await assert.rejects(() => store.save(snapshot("../outside", "succeeded", "2026-08-08T00:00:00.000Z")), /Invalid Wiki run history identifier/);
 });
 
-test("history accepts only v4 snapshots", async (t) => {
+test("history accepts only complete v5 snapshots and rejects v4", async (t) => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-history-version-"));
   t.after(async () => await rm(rootDir, { recursive: true, force: true }));
   const store = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
@@ -105,9 +119,22 @@ test("history accepts only v4 snapshots", async (t) => {
   await mkdir(runsDir, { recursive: true });
   await writeFile(
     path.join(runsDir, "legacy.json"),
-    `${JSON.stringify({ ...snapshot("legacy", "succeeded", "2026-08-08T00:00:00.000Z"), version: 3 })}\n`,
+    `${JSON.stringify({ ...snapshot("legacy", "succeeded", "2026-08-08T00:00:00.000Z"), version: 4 })}\n`,
     "utf8",
   );
+  const missingRestartCount = snapshot("incomplete", "succeeded", "2026-08-08T00:00:00.000Z");
+  delete missingRestartCount.sourceRestartCount;
+  await writeFile(path.join(runsDir, "incomplete.json"), `${JSON.stringify(missingRestartCount)}\n`, "utf8");
+  const invalidNode = { ...snapshot("invalid-node", "succeeded", "2026-08-08T00:00:00.000Z"), nodes: [null] };
+  await writeFile(path.join(runsDir, "invalid-node.json"), `${JSON.stringify(invalidNode)}\n`, "utf8");
+  const invalidRound = { ...snapshot("invalid-round", "succeeded", "2026-08-08T00:00:00.000Z"), round: -1 };
+  await writeFile(path.join(runsDir, "invalid-round.json"), `${JSON.stringify(invalidRound)}\n`, "utf8");
+  const invalidStatus = { ...snapshot("invalid-status", "succeeded", "2026-08-08T00:00:00.000Z"), status: "done" };
+  await writeFile(path.join(runsDir, "invalid-status.json"), `${JSON.stringify(invalidStatus)}\n`, "utf8");
   assert.equal(await store.load("legacy"), undefined);
+  assert.equal(await store.load("incomplete"), undefined);
+  assert.equal(await store.load("invalid-node"), undefined);
+  assert.equal(await store.load("invalid-round"), undefined);
+  assert.equal(await store.load("invalid-status"), undefined);
   assert.deepEqual(await store.list(), []);
 });

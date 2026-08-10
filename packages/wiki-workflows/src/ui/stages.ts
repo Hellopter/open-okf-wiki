@@ -14,14 +14,10 @@ export interface WikiWorkflowStage {
  */
 export const WIKI_WORKFLOW_STAGES: readonly WikiWorkflowStage[] = [
   { id: "inspect", title: "Inspect", conditional: false, waitingMessage: "Waiting for the run to inspect the repository." },
-  { id: "source-survey", title: "Source Survey", conditional: false, waitingMessage: "Waiting for repository inspection to complete." },
-  { id: "synthesis", title: "Synthesis", conditional: false, waitingMessage: "Waiting for source survey receipts." },
-  { id: "targeted-research", title: "Targeted Research", conditional: true, waitingMessage: "Runs only when synthesis identifies an evidence gap." },
-  { id: "domain-writing", title: "Domain Writing", conditional: false, waitingMessage: "Waiting for a finalized Wiki specification." },
-  { id: "validation", title: "Validation", conditional: false, waitingMessage: "Waiting for domain pages to be written." },
-  { id: "global-review", title: "Global Review", conditional: false, waitingMessage: "Waiting for validation to complete." },
-  { id: "domain-repair", title: "Domain Repair", conditional: true, waitingMessage: "Runs only when global review finds domain-specific defects." },
-  { id: "structural-resynthesis", title: "Structural Re-synthesis", conditional: true, waitingMessage: "Runs only when review finds structural or coverage defects." },
+  { id: "research", title: "Research", conditional: false, waitingMessage: "Waiting for repository inspection to complete." },
+  { id: "plan", title: "Plan", conditional: false, waitingMessage: "Waiting for source-grounded research receipts." },
+  { id: "write", title: "Write", conditional: false, waitingMessage: "Waiting for a finalized Wiki specification." },
+  { id: "verify", title: "Verify", conditional: false, waitingMessage: "Waiting for target pages to be written." },
 ];
 
 export interface WikiPhase {

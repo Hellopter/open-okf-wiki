@@ -39,7 +39,7 @@ function retryImpactFor(run: WikiRunView, targetIds: string[], targetId: string,
     invalidatedDownstream: [...downstream],
     writesWiki: affected.some((id) => {
       const kind = nodeById(run, id)?.kind;
-      return kind === "write" || kind === "repair";
+      return kind === "write";
     }),
     rechecksGit: true,
   };

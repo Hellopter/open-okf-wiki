@@ -56,6 +56,31 @@ It stores declared source locations, the default language, and whether common
 generated directories are ignored. It never stores source snapshots, copied
 inputs, or run history.
 
+## Workflow
+
+Every run uses five user-visible stages:
+
+```text
+Inspect -> Research -> Plan -> Write -> Verify
+```
+
+Research uses a fresh agent per source and may run one bounded targeted batch.
+Plan produces the complete target page topology. Write starts one fresh agent
+per content page with at most four active writers, then starts a fresh Overview
+writer after the content-page barrier. In refresh mode only impacted or new
+content pages plus Overview are rewritten unless a structural replan requires a
+full rewrite.
+
+Verify runs pure static validation and an independent semantic reviewer.
+Page-local defects return to fresh page writers; topology or coverage defects
+return to one bounded structural replan. Only after review succeeds does a
+deterministic finalizer remove obsolete Markdown, rebuild indexes, preserve
+non-Markdown assets, and assert that the final page set exactly matches the
+Spec. Agents never delete pages.
+
+The packaged producer skill is `repository-wiki-producer`; its role references
+keep research, planning, page writing, and review prompts separate.
+
 ## Commands
 
 ```text
@@ -98,8 +123,8 @@ Non-current completed history can be deleted from the console, while the newest
 
 - Each declared source Git repository is the only source history and rollback
   mechanism.
-- All generated pages live below `wiki/`; writer agents are host-restricted to
-  that directory.
+- All generated pages live below `wiki/`; each writer is restricted to one
+  assigned page and explicitly authorized source and Wiki reads.
 - Source references begin with the declared project directory, for example
   `api/src/server.ts#L12-L38`; body citations use
   `repo:api/src/server.ts#L12-L38`.

@@ -12,7 +12,7 @@ export type WikiPageTemplateType = "overview" | "architecture" | "module" | "flo
 
 /**
  * Guidance options supplied by the workflow after synthesis. Templates are opt-in
- * so a writer only receives structures that apply to its DomainPacket.
+ * so a writer receives only the structure for its assigned page.
  */
 export interface WikiPromptGuidanceOptions {
   pageTypes?: readonly WikiPageTemplateType[];
@@ -38,14 +38,14 @@ export async function loadWikiPromptGuidance(
 function guidanceFor(kind: WikiPromptGuidanceKind): GuidanceName {
   if (kind === "research") return "research";
   if (kind === "synthesis") return "synthesis";
-  if (kind === "write" || kind === "repair") return "write";
+  if (kind === "write") return "write";
   return "review";
 }
 
 function loadGuidance(name: GuidanceName): Promise<string> {
   const cached = guidanceCache.get(name);
   if (cached) return cached;
-  const location = fileURLToPath(new URL(`../skills/git-native-wiki/references/${name}.md`, import.meta.url));
+  const location = fileURLToPath(new URL(`../skills/repository-wiki-producer/references/${name}.md`, import.meta.url));
   const loaded = readFile(location, "utf8");
   guidanceCache.set(name, loaded);
   return loaded;
@@ -54,7 +54,7 @@ function loadGuidance(name: GuidanceName): Promise<string> {
 function loadTemplate(pageType: WikiPageTemplateType): Promise<string> {
   const cached = templateCache.get(pageType);
   if (cached) return cached;
-  const location = fileURLToPath(new URL(`../skills/git-native-wiki/references/templates/${pageType}.md`, import.meta.url));
+  const location = fileURLToPath(new URL(`../skills/repository-wiki-producer/references/templates/${pageType}.md`, import.meta.url));
   const loaded = readFile(location, "utf8");
   templateCache.set(pageType, loaded);
   return loaded;

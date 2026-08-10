@@ -79,6 +79,7 @@ test("uses declared source Git changes and propagates source impact through inbo
   assert.equal(inspection.mode, "refresh");
   assert.equal(inspection.lastWikiCommit, null);
   assert.equal(inspection.baseCommit, null);
+  assert.deepEqual(inspection.existingPages, ["concepts/consumer.md", "concepts/service.md"]);
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
   assert.deepEqual(inspection.changedPaths, [
     "api/src/local.ts",
@@ -97,6 +98,7 @@ test("uses full generation when there is no trustworthy incremental source range
   const inspection = await inspectWiki(workspace);
 
   assert.equal(inspection.mode, "generate");
+  assert.deepEqual(inspection.existingPages, ["concepts/consumer.md", "concepts/service.md"]);
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
 });
 

@@ -3,9 +3,13 @@ import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/
 import path from "node:path";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
 
+export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = 64 * 1024;
+/** Limit for model-authored synthesis and review JSON handoffs. */
+export const MAX_WIKI_JSON_ARTIFACT_BYTES = 256 * 1024;
+/** Limit for deterministic coordinator artifacts. */
 export const MAX_WIKI_ARTIFACT_BYTES = 1024 * 1024;
 
-export type WikiArtifactKind = "inspection" | "research" | "synthesis" | "write_report" | "validation" | "review";
+export type WikiArtifactKind = "inspection" | "research" | "synthesis" | "write_report" | "validation" | "review" | "finalization";
 
 export interface WikiArtifactRef {
   version: 1;
@@ -56,7 +60,7 @@ interface WikiArtifactManifest {
 }
 
 const SAFE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const ARTIFACT_KINDS = new Set<WikiArtifactKind>(["inspection", "research", "synthesis", "write_report", "validation", "review"]);
+const ARTIFACT_KINDS = new Set<WikiArtifactKind>(["inspection", "research", "synthesis", "write_report", "validation", "review", "finalization"]);
 const MANIFEST_FILE = "manifest.json";
 
 /**
@@ -67,7 +71,8 @@ const MANIFEST_FILE = "manifest.json";
 export function createWikiArtifactStore(options: WikiArtifactStoreOptions): WikiArtifactStore {
   const workspace = path.resolve(options.workspace);
   const runsRoot = path.resolve(options.rootDir ?? path.join(workspace, ".okf-wiki", "runs"));
-  const maxBytes = positiveInt(options.maxBytes, MAX_WIKI_ARTIFACT_BYTES);
+  const configuredMaxBytes = options.maxBytes === undefined ? undefined : positiveInt(options.maxBytes, MAX_WIKI_ARTIFACT_BYTES);
+  const limitFor = (kind: WikiArtifactKind): number => Math.min(configuredMaxBytes ?? Number.POSITIVE_INFINITY, artifactSizeLimit(kind));
   const shouldEnsureWorkspaceIgnore = runsRoot === path.join(workspace, ".okf-wiki", "runs");
   let writeChain = Promise.resolve();
   let ignoredReady: Promise<void> | undefined;
@@ -120,7 +125,7 @@ export function createWikiArtifactStore(options: WikiArtifactStoreOptions): Wiki
     await ensureIgnored();
     const file = absoluteFor(input);
     const bytes = Buffer.from(input.content, "utf8");
-    assertSize(bytes, maxBytes);
+    assertSize(bytes, limitFor(input.kind));
     await ensureSafeArtifactDirectory(runsRoot, path.dirname(file));
     await assertNoArtifactSymlinks(runsRoot, file);
     await writeAtomic(file, bytes);
@@ -131,7 +136,7 @@ export function createWikiArtifactStore(options: WikiArtifactStoreOptions): Wiki
 
   const read = async (ref: WikiArtifactRef): Promise<string> => {
     const location = locationFromRef(ref);
-    const bytes = await readUtf8Bytes(runsRoot, absoluteFor(location), maxBytes);
+    const bytes = await readUtf8Bytes(runsRoot, absoluteFor(location), limitFor(location.kind));
     if (bytes.byteLength !== ref.sizeBytes || sha256(bytes) !== ref.sha256) {
       throw new Error(`Wiki handoff artifact integrity check failed: ${ref.relativePath}`);
     }
@@ -152,7 +157,7 @@ export function createWikiArtifactStore(options: WikiArtifactStoreOptions): Wiki
       const file = absoluteFor(location);
       let bytes: Buffer;
       try {
-        bytes = await readUtf8Bytes(runsRoot, file, maxBytes);
+        bytes = await readUtf8Bytes(runsRoot, file, limitFor(location.kind));
       } catch (error) {
         if (isMissing(error)) throw new Error(`Required ${location.kind} handoff artifact is missing: ${file}`);
         throw error;
@@ -304,6 +309,12 @@ function relativePathFor(location: WikiArtifactLocation): string {
 
 function artifactMediaType(kind: WikiArtifactKind): WikiArtifactRef["mediaType"] {
   return kind === "research" ? "text/markdown" : "application/json";
+}
+
+function artifactSizeLimit(kind: WikiArtifactKind): number {
+  if (kind === "research") return MAX_WIKI_RESEARCH_ARTIFACT_BYTES;
+  if (kind === "synthesis" || kind === "review") return MAX_WIKI_JSON_ARTIFACT_BYTES;
+  return MAX_WIKI_ARTIFACT_BYTES;
 }
 
 function attemptDirectoryName(attempt: number): string {

@@ -1,9 +1,9 @@
-# OKF Wiki
+# Repository Wiki Producer
 
-`@okf-wiki/wiki-workflows` is a Pi extension for Git-native repository Wiki
-production. It does not expose a CLI or save generic workflows. A workspace is
-a plain directory configured by `workspace.yaml`; each source is an
-independent Git project linked or cloned directly into that directory.
+`@okf-wiki/wiki-workflows` is a Pi extension that produces source-grounded
+repository Wikis. It does not expose a CLI or persist generic workflows. A
+workspace is a plain directory configured by `workspace.yaml`; each source is
+an independent Git project linked or cloned into that directory.
 
 ```bash
 pnpm build
@@ -31,25 +31,35 @@ runtime events and permits a settled Agent retry or a phase retry without
 rerunning valid upstream work. Retrying historical terminal history forks a new
 run so the selected record stays immutable.
 
-The bounded workflow is `Inspect -> Source Survey -> Synthesis`. Source Survey
-starts one isolated agent for each declared source plus one workspace mapper for
-cross-source boundaries; at most four research agents run at once.
-Synthesis may request one supplemental research batch, then emits the final
-domain-scoped WikiSpec. One writer runs per domain in parallel, followed by
-validation and one global review. Evidence, link, format, depth, and diagram
-defects return only to their owning domain writer; topology or coverage defects
-can trigger one structural re-synthesis before the run blocks. Synthesizer and
-reviewer nodes submit control data through dedicated typed tools rather
-than asking the model to emit JSON in final text.
+The user-visible workflow is `Inspect -> Research -> Plan -> Write -> Verify`.
+Research starts one fresh agent per declared source and permits one targeted
+batch of at most four scopes when planning finds an evidence gap. Planning
+emits a complete target WikiSpec in both generate and refresh modes. Every
+content page is written by a fresh agent with a per-page evidence scope, with
+at most four writers active at once. A fresh Overview writer runs after all
+content pages in the round complete and reads the full target page set.
 
-Research nodes produce Markdown receipts. A writer receives only its
-DomainPacket: page contracts, selected receipts, shared terms, and approved
-cross-links. The executor permits that writer to create, edit, or delete only
-the explicit pages in its domain, while source and Wiki reads remain available
-for grounded links. Static behavior guidance, diagram rules, and optional
-Overview/Architecture/Module/Flow/Concept skeletons live in the packaged Wiki
-skill references, which the workflow injects into isolated child sessions
-without loading ambient skills.
+Verify combines pure static validation with one independent semantic reviewer.
+Page-local evidence, link, depth, and diagram defects return to a fresh writer;
+topology or coverage defects can trigger one full structural replan. Each Plan
+version permits at most three repair rounds. Repeated normalized issues,
+repeated defects, unchanged repaired pages, or exhausted budgets block the run.
+Source state is checked again before completion: the first drift restarts from
+Inspect and the second blocks with evidence.
+
+Research receipts are bounded Markdown evidence indexes. The engine derives a
+minimal WikiPagePacket for each writer from the Spec, selected receipts,
+authorized source roots, relevant cross-links, shared terms, exact Wiki read
+paths, and one write path. Writers re-open source before citing it and never
+receive the complete synthesis or review artifact. Agents cannot delete pages.
+After review succeeds, the deterministic finalizer revalidates the candidate,
+removes only obsolete Markdown, rebuilds `index.md`, preserves assets, and
+asserts that the final non-index page set exactly matches the Spec.
+
+The packaged skill is named `repository-wiki-producer`. Its references contain
+role-specific prompts and optional Overview/Architecture/Module/Flow/Concept
+skeletons. Writers choose sections, citations, and useful Mermaid diagrams only
+after reading verified source.
 
 Generated pages are always under `wiki/`. Source citations begin with the
 declared project directory and include source line ranges, for example

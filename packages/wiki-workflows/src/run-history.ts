@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
+import { isWikiRunSnapshot } from "./snapshot-validation.js";
 import type { WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
 
 export const DEFAULT_MAX_TERMINAL_WIKI_RUNS = 100;
@@ -149,7 +150,7 @@ export function wikiHistoryProjectKey(workspace: string): string {
 async function readSnapshot(location: string): Promise<WikiRunSnapshot | undefined> {
   try {
     const value = JSON.parse(await readFile(location, "utf8")) as unknown;
-    return isSnapshot(value) ? clone(value) : undefined;
+    return isWikiRunSnapshot(value) ? clone(value) : undefined;
   } catch (error) {
     if (isMissing(error) || error instanceof SyntaxError) return undefined;
     throw error;
@@ -183,21 +184,6 @@ async function enforceRetention(runsDir: string, maximum: number): Promise<strin
   const evicted = terminal.slice(0, excess);
   await Promise.all(evicted.map(async ({ entry }) => await rm(path.join(runsDir, entry), { force: true })));
   return evicted.map(({ snapshot }) => snapshot.id);
-}
-
-function isSnapshot(value: unknown): value is WikiRunSnapshot {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Record<string, unknown>;
-  return candidate.version === 4
-    && typeof candidate.id === "string"
-    && typeof candidate.cwd === "string"
-    && (candidate.requestedMode === "generate" || candidate.requestedMode === "refresh")
-    && (candidate.language === "zh" || candidate.language === "en")
-    && typeof candidate.status === "string"
-    && Array.isArray(candidate.nodes)
-    && Array.isArray(candidate.events)
-    && typeof candidate.createdAt === "string"
-    && typeof candidate.updatedAt === "string";
 }
 
 function positiveInt(value: number | undefined, fallback: number): number {

@@ -8,7 +8,7 @@ export interface SourceChange {
 export interface WikiInspection {
   root: string;
   wikiRoot: string;
-  /** Declared workspace source roots available to source-survey agents. */
+  /** Declared workspace source roots available to research agents. */
   sourcePaths: string[];
   mode: WikiMode;
   head: string;
@@ -18,12 +18,28 @@ export interface WikiInspection {
   changedPaths: string[];
   /** Hash of the current Git-derived source state, excluding wiki/. */
   sourceFingerprint: string;
+  /** Sorted non-index Markdown pages present before this run starts. */
+  existingPages: string[];
   impactedPages: string[];
   wikiDrift: boolean;
 }
 
+export interface WikiValidationIssue {
+  code: string;
+  page?: string;
+  message: string;
+}
+
 export interface WikiValidation {
   ok: boolean;
-  errors: string[];
+  issues: WikiValidationIssue[];
   pages: string[];
+  obsoletePages: string[];
+}
+
+export interface WikiFinalization {
+  pages: string[];
+  obsoletePages: string[];
+  removedPages: string[];
+  rebuiltIndexes: string[];
 }

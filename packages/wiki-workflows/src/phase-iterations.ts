@@ -9,23 +9,19 @@ export function latestPhaseIteration(nodes: readonly WikiNode[], phaseId: string
   if (!phaseNodes.length) return [];
   const latest = phaseNodes.at(-1)!;
   const key = iterationKey(latest, phaseId);
-  if (!key && (phaseId === "source-survey" || phaseId === "targeted-research")) return phaseNodes;
   if (!key) return [latest];
   return phaseNodes.filter((node) => iterationKey(node, phaseId) === key);
 }
 
 function iterationKey(node: WikiNode, phaseId: string): string | undefined {
-  if (phaseId === "source-survey" || phaseId === "targeted-research") {
-    const batch = numberField(node.input, "batch");
-    return batch === undefined ? undefined : `research:${batch}`;
+  if (phaseId === "research") {
+    return stringField(node.input, "researchGroupId");
   }
-  if (phaseId === "domain-writing") {
-    const synthesisNodeId = stringField(node.input, "synthesisNodeId");
-    return synthesisNodeId ? `synthesis:${synthesisNodeId}` : undefined;
+  if (phaseId === "write") {
+    return stringField(node.input, "writeGroupId");
   }
-  if (phaseId === "domain-repair") {
-    const repairGroupId = stringField(node.input, "repairGroupId");
-    return repairGroupId ? `repair:${repairGroupId}` : undefined;
+  if (phaseId === "verify") {
+    return stringField(node.input, "verificationGroupId");
   }
   return undefined;
 }
@@ -34,10 +30,4 @@ function stringField(value: unknown, key: string): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   const field = (value as Record<string, unknown>)[key];
   return typeof field === "string" && field ? field : undefined;
-}
-
-function numberField(value: unknown, key: string): number | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const field = (value as Record<string, unknown>)[key];
-  return typeof field === "number" && Number.isInteger(field) ? field : undefined;
 }

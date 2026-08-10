@@ -1,4 +1,4 @@
-import type { WikiInspection, WikiMode, WikiValidation } from "./types.js";
+import type { WikiFinalization, WikiInspection, WikiMode, WikiValidation } from "./types.js";
 import type { WikiArtifactRef, WikiArtifactStore } from "./artifact-store.js";
 
 export type { WikiMode } from "./types.js";
@@ -11,7 +11,7 @@ export type WikiNodeKind =
   | "write"
   | "validate"
   | "review"
-  | "repair";
+  | "finalize";
 
 export type WikiNodeStatus =
   | "queued"
@@ -93,7 +93,7 @@ export interface WikiNode {
   id: string;
   kind: WikiNodeKind;
   label: string;
-  /** Stable execution group. Legacy snapshots omit this and are grouped by kind. */
+  /** Stable user-visible execution stage. */
   phaseId?: string;
   phaseTitle?: string;
   status: WikiNodeStatus;
@@ -150,7 +150,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 4;
+  version: 5;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -159,6 +159,8 @@ export interface WikiRunSnapshot {
   focus?: string;
   status: WikiRunStatus;
   round: number;
+  /** Number of automatic restarts caused by source fingerprint drift. */
+  sourceRestartCount: number;
   inspection?: WikiInspection;
   inspectionFingerprint?: string;
   nodes: WikiNode[];
@@ -207,24 +209,13 @@ export interface WikiResearchScope {
   task: string;
 }
 
-export type WikiDiagramKind = "flowchart" | "sequence" | "state" | "er" | "class";
-
-export interface WikiDiagramRequirement {
-  kind: WikiDiagramKind;
-  applicability: "required" | "not_applicable";
-  purpose: string;
-  /** Required when a diagram is intentionally omitted. */
-  reason?: string;
-}
-
 export interface WikiSpecPage {
   pageType: "overview" | "architecture" | "module" | "flow" | "concept";
   path: string;
   title: string;
   purpose: string;
-  sources: string[];
-  requiredSections: string[];
-  diagrams: WikiDiagramRequirement[];
+  /** Receipts selected specifically for this page. Empty only for Overview. */
+  researchScopeIds: string[];
 }
 
 export interface WikiDomain {
@@ -232,8 +223,6 @@ export interface WikiDomain {
   title: string;
   purpose: string;
   pages: WikiSpecPage[];
-  /** Receipts selected by synthesis for this writer's bounded context. */
-  researchScopeIds: string[];
 }
 
 export interface WikiCrossLink {
@@ -276,15 +265,22 @@ export interface WikiResearchReceipt {
   artifact: WikiArtifactRef;
 }
 
-export type WikiReviewDefectKind = "evidence" | "link" | "format" | "topology" | "coverage" | "depth" | "diagram";
+export type WikiLocalReviewDefectKind = "evidence" | "link" | "depth" | "diagram";
+export type WikiStructuralReviewDefectKind = "topology" | "coverage";
+export type WikiReviewDefectKind = WikiLocalReviewDefectKind | WikiStructuralReviewDefectKind;
 
-export interface WikiReviewDefect {
-  id: string;
-  domainId: string;
+export interface WikiLocalReviewDefect {
+  kind: WikiLocalReviewDefectKind;
   page: string;
-  kind: WikiReviewDefectKind;
   detail: string;
 }
+
+export interface WikiStructuralReviewDefect {
+  kind: WikiStructuralReviewDefectKind;
+  detail: string;
+}
+
+export type WikiReviewDefect = WikiLocalReviewDefect | WikiStructuralReviewDefect;
 
 export interface WikiReviewResult {
   defects: WikiReviewDefect[];
@@ -303,11 +299,11 @@ export interface WikiAgentExecutionRequest {
   readRoots?: string[];
   /** Exact workspace-local handoff files this agent may read. */
   artifactPaths?: string[];
-  /** Exact Wiki files a reviewer may inspect without write permission. */
-  reviewPaths?: string[];
+  /** Exact Wiki files this agent may inspect without write permission. */
+  wikiReadPaths?: string[];
   /** Exact workspace-local handoff file a non-writer agent must produce. */
   artifactWritePath?: string;
-  /** Exact Wiki-relative files a domain writer may create or change. */
+  /** Exact Wiki-relative files a page writer may create or change. */
   writePaths?: string[];
   language: "zh" | "en";
   signal: AbortSignal;
@@ -338,7 +334,8 @@ export interface WikiAgentExecutor {
 
 export interface WikiWorkflowDependencies {
   inspect(cwd: string): Promise<WikiInspection>;
-  validate(cwd: string): Promise<WikiValidation>;
+  validate(cwd: string, spec: WikiSpec, wikiDirectory?: string): Promise<WikiValidation>;
+  finalize(cwd: string, spec: WikiSpec, wikiDirectory?: string): Promise<WikiFinalization>;
   executor: WikiAgentExecutor;
   /** Workspace-local durable handoffs. Tests can inject an isolated store. */
   artifactStore?: WikiArtifactStore;

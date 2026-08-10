@@ -5,7 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   createWikiArtifactStore,
-  MAX_WIKI_ARTIFACT_BYTES,
+  MAX_WIKI_JSON_ARTIFACT_BYTES,
+  MAX_WIKI_RESEARCH_ARTIFACT_BYTES,
 } from "../dist/artifact-store.js";
 
 async function fixture(t) {
@@ -47,8 +48,12 @@ test("rejects unsafe paths, symlinks, invalid UTF-8, and oversized artifacts", a
     /Invalid Wiki handoff run ID/,
   );
   await assert.rejects(
-    () => store.write({ runId: "run", nodeId: "node", attempt: 1, kind: "research", content: "x".repeat(MAX_WIKI_ARTIFACT_BYTES + 1) }),
-    /1048576-byte limit/,
+    () => store.write({ runId: "run", nodeId: "node", attempt: 1, kind: "research", content: "x".repeat(MAX_WIKI_RESEARCH_ARTIFACT_BYTES + 1) }),
+    /65536-byte limit/,
+  );
+  await assert.rejects(
+    () => store.write({ runId: "run", nodeId: "review", attempt: 1, kind: "review", content: "x".repeat(MAX_WIKI_JSON_ARTIFACT_BYTES + 1) }),
+    /262144-byte limit/,
   );
 
   const location = { runId: "run", nodeId: "node", attempt: 1, kind: "research" };

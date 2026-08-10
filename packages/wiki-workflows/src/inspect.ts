@@ -245,6 +245,7 @@ export async function inspectWiki(cwd: string): Promise<WikiInspection> {
     changed,
     changedPaths,
     sourceFingerprint,
+    existingPages: [...graph.pages].sort(),
     impactedPages: mode === "refresh" ? directlyImpactedPages : graph.pages,
     wikiDrift: false,
   };

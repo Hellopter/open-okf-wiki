@@ -44,13 +44,14 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 4,
+  version: 5,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
   language: "zh",
   status: "running",
   round: 2,
+  sourceRestartCount: 0,
   createdAt: "2026-08-08T00:00:00.000Z",
   updatedAt: "2026-08-08T00:00:00.000Z",
   events: [
@@ -64,12 +65,12 @@ const run = {
       id: "research-a",
       kind: "research",
       label: "Research workflow engine",
-      phaseId: "source-survey",
-      phaseTitle: "Source Survey",
+      phaseId: "research",
+      phaseTitle: "Research",
       status: "running",
       dependsOn: ["inspect"],
       attempt: 2,
-      input: {},
+      input: { researchGroupId: "research:initial" },
       history: [
         { at: "2026-08-08T00:00:01.000Z", kind: "message", text: "I will inspect the workflow engine." },
         { at: "2026-08-08T00:00:02.000Z", kind: "tool_call", toolName: "read", target: "src/engine.ts", text: "{\"path\":\"src/engine.ts\"}" },
@@ -81,8 +82,8 @@ const run = {
       output: "streamed evidence from the active agent",
       startedAt: "2026-08-08T00:00:00.000Z",
     },
-    { id: "research-b", kind: "research", label: "Research source citations", phaseId: "source-survey", phaseTitle: "Source Survey", status: "queued", dependsOn: ["inspect"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" }, attemptHistory: [] },
-    { id: "write", kind: "write", label: "Write Wiki pages", phaseId: "domain-writing", phaseTitle: "Domain Writing", status: "queued", dependsOn: ["research-a", "research-b"], attempt: 1, inputFingerprint: "", input: {}, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" }, attemptHistory: [] },
+    { id: "research-b", kind: "research", label: "Research source citations", phaseId: "research", phaseTitle: "Research", status: "queued", dependsOn: ["inspect"], attempt: 1, inputFingerprint: "", input: { researchGroupId: "research:initial" }, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" }, attemptHistory: [] },
+    { id: "write", kind: "write", label: "Write Wiki pages", phaseId: "write", phaseTitle: "Write", status: "queued", dependsOn: ["research-a", "research-b"], attempt: 1, inputFingerprint: "", input: { writeGroupId: "write:initial" }, metrics: {}, activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" }, attemptHistory: [] },
   ],
 };
 
@@ -122,8 +123,7 @@ test("phaseRows exposes the complete Wiki workflow map", () => {
   assert.equal(layoutForWidth(68), 2);
   assert.equal(layoutForWidth(67), 1);
   assert.deepEqual(phaseRows(run).map((phase) => [phase.title, phase.nodeIds.length]), [
-    ["Inspect", 1], ["Source Survey", 2], ["Synthesis", 0], ["Targeted Research", 0], ["Domain Writing", 1],
-    ["Validation", 0], ["Global Review", 0], ["Domain Repair", 0], ["Structural Re-synthesis", 0],
+    ["Inspect", 1], ["Research", 2], ["Plan", 0], ["Write", 1], ["Verify", 0],
   ]);
 });
 
@@ -133,9 +133,11 @@ test("dashboard shows all stages before dynamic agents are scheduled without a t
   const state = openDashboard(model, initial.id);
   const frame = plain(renderWikiNavigatorFrame(state, model, 100, PLAIN_THEME, 24, "en").join("\n"));
   assert.match(frame, /Inspect/);
-  assert.match(frame, /Source Survey/);
-  assert.match(frame, /Targeted Research/);
-  assert.match(frame, /Structural Re-synthesis/);
+  assert.match(frame, /Research/);
+  assert.match(frame, /Plan/);
+  assert.match(frame, /Write/);
+  assert.match(frame, /Verify/);
+  assert.doesNotMatch(frame, /Source Survey|Targeted Research|Domain Repair|Structural Re-synthesis/);
   assert.doesNotMatch(frame, /Timeline/);
 });
 
@@ -150,11 +152,11 @@ test("dashboard gives remaining rows directly to stages", () => {
 test("dashboard two-pane render includes stages and agents", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length); // source-survey
+  state.move(1, phaseRows(run).length); // research
   state.sync(model);
   state.pane = "agents";
   const body = plain(renderDashboard(state, run, 100, PLAIN_THEME, 16, "en").join("\n"));
-  assert.match(body, /Stages|Source Survey/);
+  assert.match(body, /Stages|Research/);
   assert.match(body, /Research workflow engine/);
   assert.match(body, /Research source citations/);
 });
@@ -187,7 +189,7 @@ test("navigator stack is runs → dashboard → agent only", () => {
 test("agent retry target requires an agent context, never the focused stage's first agent", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length); // source-survey, whose first agent is research-a
+  state.move(1, phaseRows(run).length); // research, whose first agent is research-a
   state.sync(model);
 
   assert.equal(state.pane, "stages");
@@ -204,7 +206,7 @@ test("agent retry target requires an agent context, never the focused stage's fi
 test("agent selection survives dashboard synchronization after arrow navigation", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length); // source-survey
+  state.move(1, phaseRows(run).length); // research
   state.sync(model);
   state.switchPane("agents");
 
@@ -246,7 +248,7 @@ test("retry impact preserves upstream and invalidates downstream", () => {
   const completed = structuredClone(run);
   completed.status = "succeeded";
   for (const node of completed.nodes) node.status = "succeeded";
-  const phase = phaseRetryImpact(completed, "source-survey");
+  const phase = phaseRetryImpact(completed, "research");
   assert.ok(phase);
   assert.deepEqual(phase.targetIds, ["research-a", "research-b"]);
 });
@@ -445,14 +447,14 @@ test("navigator confirmation stays inside the overlay and keeps its keyboard own
   assert.equal(doneCalls, 1);
 });
 
-test("synthesis remains an independent stage in phaseRows", () => {
+test("planning nodes are grouped into the Plan stage", () => {
   const synthesized = structuredClone(run);
   synthesized.nodes.splice(3, 0, {
     id: "synthesis",
     kind: "synthesis",
     label: "Synthesize Wiki specification",
-    phaseId: "synthesis",
-    phaseTitle: "Synthesis",
+    phaseId: "plan",
+    phaseTitle: "Plan",
     status: "succeeded",
     dependsOn: ["research-a", "research-b"],
     attempt: 1,
@@ -465,9 +467,62 @@ test("synthesis remains an independent stage in phaseRows", () => {
   });
   synthesized.nodes.find((node) => node.id === "write").dependsOn = ["synthesis"];
   assert.deepEqual(phaseRows(synthesized).map((phase) => [phase.title, phase.nodeIds.length]), [
-    ["Inspect", 1], ["Source Survey", 2], ["Synthesis", 1], ["Targeted Research", 0], ["Domain Writing", 1],
-    ["Validation", 0], ["Global Review", 0], ["Domain Repair", 0], ["Structural Re-synthesis", 0],
+    ["Inspect", 1], ["Research", 2], ["Plan", 1], ["Write", 1], ["Verify", 0],
   ]);
+});
+
+test("static validation, semantic review, and finalization share the Verify stage", () => {
+  const verified = structuredClone(run);
+  verified.nodes.push(
+    {
+      id: "validate",
+      kind: "validate",
+      label: "Validate Wiki",
+      phaseId: "verify",
+      phaseTitle: "Verify",
+      status: "succeeded",
+      dependsOn: ["write"],
+      attempt: 1,
+      inputFingerprint: "",
+      input: { verificationGroupId: "verify:initial" },
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+      attemptHistory: [],
+    },
+    {
+      id: "review",
+      kind: "review",
+      label: "Review Wiki",
+      phaseId: "verify",
+      phaseTitle: "Verify",
+      status: "succeeded",
+      dependsOn: ["validate"],
+      attempt: 1,
+      inputFingerprint: "",
+      input: { verificationGroupId: "verify:initial" },
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+      attemptHistory: [],
+    },
+    {
+      id: "finalize",
+      kind: "finalize",
+      label: "Finalize Wiki",
+      phaseId: "verify",
+      phaseTitle: "Verify",
+      status: "succeeded",
+      dependsOn: ["review"],
+      attempt: 1,
+      inputFingerprint: "",
+      input: { verificationGroupId: "verify:initial" },
+      metrics: {},
+      activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
+      attemptHistory: [],
+    },
+  );
+
+  assert.deepEqual(phaseRows(verified).find((phase) => phase.id === "verify").nodeIds, ["validate", "review", "finalize"]);
+  assert.deepEqual(phaseRetryImpact(verified, "verify").targetIds, ["validate", "review", "finalize"]);
 });
 
 test("agent pager G/end then k decreases scroll and leaves non-follow", () => {

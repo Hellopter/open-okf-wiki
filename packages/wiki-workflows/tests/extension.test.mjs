@@ -4,7 +4,7 @@ import { createWikiExtension } from "../dist/extension.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 4,
+    version: 5,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -12,6 +12,7 @@ function snapshot(overrides = {}) {
     language: "zh",
     status: "running",
     round: 0,
+    sourceRestartCount: 0,
     nodes: [],
     events: [],
     createdAt: "2026-08-08T00:00:00.000Z",
@@ -162,6 +163,36 @@ test("restores only the latest matching-workspace custom entry and persists inte
   await subject.handlers.get("session_shutdown")({}, subject.ctx);
   assert.equal(subject.engine.calls.at(-1)[0], "interrupt");
   assert.equal(subject.appended.at(-1).data.workspace, "/workspace");
+});
+
+test("does not restore legacy v4 session entries", async () => {
+  const legacy = {
+    customType: "okf-wiki-run",
+    workspace: "/workspace",
+    snapshot: snapshot({ version: 4, id: "legacy" }),
+  };
+  const subject = fixture({ entries: [
+    { type: "custom", customType: "okf-wiki-run", data: legacy },
+  ] });
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
+  assert.equal(subject.engine.getSnapshot(), undefined);
+});
+
+test("does not restore structurally corrupt v5 session entries", async () => {
+  const malformed = {
+    customType: "okf-wiki-run",
+    workspace: "/workspace",
+    snapshot: snapshot({ id: "malformed", nodes: [null] }),
+  };
+  const subject = fixture({ entries: [
+    { type: "custom", customType: "okf-wiki-run", data: malformed },
+  ] });
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
+  assert.equal(subject.engine.getSnapshot(), undefined);
 });
 
 test("status, pause, resume, and cancel use the same single-run controller", async () => {
