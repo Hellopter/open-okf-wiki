@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadWikiPromptGuidance } from "../dist/prompt-guidance.js";
 
@@ -17,6 +18,76 @@ test("Chinese guidance prefers source-authored domain and concept names", async 
 
   const review = normalizeWhitespace(await loadWikiPromptGuidance("review", "zh"));
   assert.match(review, /invented translation that displaced an established Chinese name/);
+});
+
+test("research guidance requires structured findings and explicit gaps", async () => {
+  const research = normalizeWhitespace(await loadWikiPromptGuidance("research", "en"));
+  assert.match(research, /domain\|concept\|flow\|boundary\|state-data/);
+  assert.match(research, /critical\|normal/);
+  assert.match(research, /"summary": "Concise account/);
+  assert.match(research, /engine derives a stable `findingId`/);
+  assert.match(research, /wiki_submit_research/);
+  assert.match(research, /entry points, modules, interfaces, domain concepts, state and persistence/);
+});
+
+test("synthesis guidance plans complete evidence-saturated coverage without page quotas", async () => {
+  const synthesis = normalizeWhitespace(await loadWikiPromptGuidance("synthesis", "en"));
+  assert.match(synthesis, /Every content page selects one or more exact `findingId` values/);
+  assert.match(synthesis, /`omissions` as `\{ "findingId": "\.\.\.", "rationale": "\.\.\." \}`/);
+  assert.match(synthesis, /A critical finding cannot be omitted/);
+  assert.match(synthesis, /two consecutive rounds with no newly discovered critical finding or gap/);
+  assert.match(synthesis, /There is no per-repository page limit/);
+  assert.match(synthesis, /concurrency is scheduling only/);
+  assert.match(synthesis, /scheduling limit must never reduce the number of scopes/);
+});
+
+test("common guidance reserves indexes and trust metadata for finalization", async () => {
+  const common = normalizeWhitespace(await loadWikiPromptGuidance("research", "en"));
+  assert.match(common, /every directory `index.md` and the root `okf_version: "0.2"` declaration/);
+  assert.match(common, /coordinator materializes indexes after each write or repair wave/);
+  assert.match(common, /Never invent verification, human review, generation, or staleness metadata/);
+});
+
+test("all writer templates are packaged and independently selectable", async () => {
+  const expected = new Map([
+    ["overview", "Overview Page Skeleton"],
+    ["architecture", "Architecture Page Skeleton"],
+    ["module", "Module Page Skeleton"],
+    ["flow", "Flow Page Skeleton"],
+    ["concept", "Concept Page Skeleton"],
+  ]);
+  for (const [pageType, heading] of expected) {
+    const prompt = await loadWikiPromptGuidance("write", "en", { pageTypes: [pageType] });
+    assert.match(prompt, new RegExp(heading));
+  }
+});
+
+test("writer guidance enforces OKF v0.2 citations and same-session submission", async () => {
+  const write = normalizeWhitespace(await loadWikiPromptGuidance("write", "en", { pageTypes: ["flow"] }));
+  assert.match(write, /source is an object with a page-unique, stable `id`/);
+  assert.match(write, /`resource` in the form `repo:<project>\/<path>#Lx-Ly`/);
+  assert.match(write, /OKF source ID as `\[\^source-id\]`/);
+  assert.match(write, /call `wiki_submit_page` for the assigned page/);
+  assert.match(write, /Fix the complete result in the same writer session/);
+  assert.match(write, /`flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, or `erDiagram`/);
+  assert.match(write, /validator-infrastructure/);
+});
+
+test("review guidance emits one complete defect set for a repair wave", async () => {
+  const review = normalizeWhitespace(await loadWikiPromptGuidance("review", "en"));
+  assert.match(review, /complete actionable defect set across all pages in one result/);
+  assert.match(review, /repairs affected pages together in one wave/);
+  assert.match(review, /rerunning the complete Verify stage/);
+  assert.match(review, /Do not report syntax or validator infrastructure failures as semantic defects/);
+});
+
+test("skill stays a concise workflow router to role references", async () => {
+  const skill = await readFile(new URL("../skills/repository-wiki-producer/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /Structured research.*references\/research\.md/s);
+  assert.match(skill, /Coverage planning and synthesis.*references\/synthesis\.md/s);
+  assert.match(skill, /Per-page writing and repair.*references\/write\.md/s);
+  assert.match(skill, /Global semantic review.*references\/review\.md/s);
+  assert.ok(skill.split("\n").length < 80, "SKILL.md should remain a concise router");
 });
 
 function normalizeWhitespace(value) {

@@ -25,7 +25,7 @@ import {
   artifactSubmissionSchema,
   MAX_CONTROL_ARTIFACT_BYTES,
   parseArtifactSubmission,
-  parseMarkdownArtifact,
+  parseResearchArtifact,
   parseReviewArtifact,
   parseSynthesisArtifact,
   MAX_RESEARCH_ARTIFACT_BYTES,
@@ -52,17 +52,19 @@ export interface PiAgentExecutorOptions {
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
 }
 
-type SubmissionToolName = "wiki_submit_synthesis" | "wiki_submit_review";
+type SubmissionToolName = "wiki_submit_research" | "wiki_submit_synthesis" | "wiki_submit_page" | "wiki_submit_review";
 
 interface SubmissionCollector {
   toolName: SubmissionToolName;
-  artifactPath: string;
+  artifactPath?: string;
+  pagePath?: string;
   value?: unknown;
   failure?: SubmissionFailure;
   validate?: (submission: WikiControlSubmission) => void;
+  validatePage?: WikiAgentExecutionRequest["validatePageSubmission"];
 }
 
-type SubmissionFailureCode = "invalid_submission" | "submission_too_large";
+type SubmissionFailureCode = "invalid_submission" | "submission_too_large" | "validator_infrastructure";
 
 interface SubmissionFailure {
   code: SubmissionFailureCode;
@@ -119,9 +121,15 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       if (session.state.errorMessage) throw new Error(session.state.errorMessage);
 
       if (submission && submission.value === undefined) {
+        if (submission.failure?.code === "validator_infrastructure") {
+          throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history), submission.failure);
+        }
         request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` });
         const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
-        await session.followUp(`Before completing this node, submit a valid final result with ${submission.toolName}.${correction} ${submissionContractGuidance(submission.toolName)} Rewrite the complete handoff artifact before resubmitting; do not reply with JSON text. After it is recorded, stop.`);
+        const correctionAction = submission.toolName === "wiki_submit_page"
+          ? "Fix every reported issue in the assigned page before resubmitting."
+          : "Rewrite the complete handoff artifact before resubmitting; do not reply with JSON text.";
+        await session.followUp(`Before completing this node, submit a valid final result with ${submission.toolName}.${correction} ${submissionContractGuidance(submission.toolName)} ${correctionAction} After it is recorded, stop.`);
         await session.waitForIdle();
         if (request.signal.aborted) throw new Error("Workflow node was cancelled");
         output = session.getLastAssistantText() ?? "";
@@ -134,11 +142,8 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       const stats = session.getSessionStats();
       const context = session.getContextUsage();
       request.onActivity?.({ state: "completed", message: "Completed" }, metricsFromSession(session));
-      const researcherArtifact = !submission && request.artifactWritePath
-        ? parseMarkdownArtifact(await readArtifactText(await workspaceToolPolicy(request.cwd), request.artifactWritePath), "Research handoff artifact")
-        : undefined;
       return {
-        result: submission?.value ?? researcherArtifact ?? (request.node.kind === "research" ? output : undefined),
+        result: submission?.value,
         output,
         history: retainedHistory(history),
         metrics: metricsFromStats(stats, context, session),
@@ -487,6 +492,7 @@ function workflowTools(
     // The guarded operations below receive those absolute paths and enforce wiki/.
     guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path"),
     guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: policy.wikiRoot }], "path", true),
+    ...(submission ? [submissionTool(policy, submission)] : []),
   ];
 }
 
@@ -511,9 +517,17 @@ function readRootsForPolicy(
 }
 
 function submissionFor(request: WikiAgentExecutionRequest): SubmissionCollector | undefined {
-  if (request.node.kind !== "synthesis" && request.node.kind !== "review") return undefined;
-  if (!request.artifactWritePath) {
-    throw new Error(`Workflow configuration error: ${request.node.kind} requires an artifact write path`);
+  if (request.node.kind === "write") {
+    if (!request.validatePageSubmission || request.writePaths?.length !== 1) {
+      throw new Error("Workflow configuration error: writers require one page submission validator");
+    }
+    const pagePath = request.writePaths[0].replace(/^wiki\//, "");
+    return { toolName: "wiki_submit_page", pagePath, validatePage: request.validatePageSubmission };
+  }
+  if (request.node.kind !== "research" && request.node.kind !== "synthesis" && request.node.kind !== "review") return undefined;
+  if (!request.artifactWritePath) throw new Error(`Workflow configuration error: ${request.node.kind} requires an artifact write path`);
+  if (request.node.kind === "research") {
+    return { toolName: "wiki_submit_research", artifactPath: request.artifactWritePath };
   }
   if (request.node.kind === "synthesis") {
     return { toolName: "wiki_submit_synthesis", artifactPath: request.artifactWritePath, validate: request.validateControlSubmission };
@@ -525,19 +539,65 @@ function submissionFor(request: WikiAgentExecutionRequest): SubmissionCollector 
 }
 
 function submissionTool(policy: WorkspaceToolPolicy, submission: SubmissionCollector): ToolDefinition<any, any, any> {
+  if (submission.toolName === "wiki_submit_page") {
+    const pagePath = submission.pagePath!;
+    return {
+      name: submission.toolName,
+      label: submission.toolName,
+      description: `Validate and submit the assigned Wiki page ${pagePath}. Fix every reported issue and resubmit until accepted.`,
+      promptSnippet: "Validate and submit the assigned Wiki page",
+      promptGuidelines: ["After writing the page, call this tool. If it reports issues, fix all of them and call it again. Stop only after the page is accepted."],
+      parameters: Type.Object({ page: Type.Literal(pagePath) }, { additionalProperties: false }),
+      constrainedSampling: { type: "json_schema", strict: "prefer" },
+      async execute(_toolCallId, params: { page: string }) {
+        await recordSubmission(submission, async () => {
+          if (params.page !== pagePath || !submission.validatePage) throw new Error("Page submission does not match the assigned page");
+          let result;
+          try {
+            result = await submission.validatePage(pagePath);
+          } catch (error) {
+            throw new WikiPageValidatorInfrastructureError(error);
+          }
+          if (!result.ok) throw new Error(result.issues.map((issue) => `[${issue.code}] ${issue.message}`).join("\n"));
+          return result.submission;
+        });
+        return { content: [{ type: "text", text: `Wiki page accepted: ${pagePath}` }], details: undefined, terminate: true };
+      },
+    };
+  }
+  if (submission.toolName === "wiki_submit_research") {
+    const artifactPath = submission.artifactPath!;
+    return {
+      name: submission.toolName,
+      label: submission.toolName,
+      description: `Submit the structured research result from ${artifactPath}. ${submissionContractGuidance(submission.toolName)}`,
+      promptSnippet: "Submit the structured Wiki research result",
+      promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
+      parameters: artifactSubmissionSchema(artifactPath),
+      constrainedSampling: { type: "json_schema", strict: "prefer" },
+      async execute(_toolCallId, params) {
+        await recordSubmission(submission, async () => {
+          const submittedPath = parseArtifactSubmission(params, artifactPath);
+          return parseResearchArtifact(await readArtifactText(policy, submittedPath));
+        });
+        return { content: [{ type: "text", text: "Wiki research recorded." }], details: undefined, terminate: true };
+      },
+    };
+  }
   if (submission.toolName === "wiki_submit_synthesis") {
+    const artifactPath = submission.artifactPath!;
     return {
       name: submission.toolName,
       label: submission.toolName,
       description: `Submit the synthesis result by referencing the exact JSON handoff artifact written for this node. ${submissionContractGuidance(submission.toolName)}`,
       promptSnippet: "Submit the Wiki synthesis decision",
       promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
-      parameters: artifactSubmissionSchema(submission.artifactPath),
+      parameters: artifactSubmissionSchema(artifactPath),
       constrainedSampling: { type: "json_schema", strict: "prefer" },
       async execute(_toolCallId, params) {
         await recordSubmission(submission, async () => {
-          const artifactPath = parseArtifactSubmission(params, submission.artifactPath);
-          const parsed = parseSynthesisArtifact(await readArtifactText(policy, artifactPath));
+          const submittedPath = parseArtifactSubmission(params, artifactPath);
+          const parsed = parseSynthesisArtifact(await readArtifactText(policy, submittedPath));
           submission.validate?.(parsed);
           return parsed;
         });
@@ -551,11 +611,11 @@ function submissionTool(policy: WorkspaceToolPolicy, submission: SubmissionColle
     description: `Submit the review result by referencing the exact JSON handoff artifact written for this node. ${submissionContractGuidance(submission.toolName)}`,
     promptSnippet: "Submit the final Wiki review",
     promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
-    parameters: artifactSubmissionSchema(submission.artifactPath),
+    parameters: artifactSubmissionSchema(submission.artifactPath!),
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params) {
       await recordSubmission(submission, async () => {
-        const artifactPath = parseArtifactSubmission(params, submission.artifactPath);
+        const artifactPath = parseArtifactSubmission(params, submission.artifactPath!);
         const parsed = parseReviewArtifact(await readArtifactText(policy, artifactPath));
         submission.validate?.(parsed);
         return parsed;
@@ -572,10 +632,18 @@ async function recordSubmission(submission: SubmissionCollector, parse: () => un
     submission.failure = undefined;
   } catch (error) {
     submission.failure = {
-      code: error instanceof WikiControlSubmissionSizeError ? "submission_too_large" : "invalid_submission",
+      code: error instanceof WikiControlSubmissionSizeError ? "submission_too_large"
+        : error instanceof WikiPageValidatorInfrastructureError ? "validator_infrastructure"
+          : "invalid_submission",
       message: error instanceof Error ? error.message : String(error),
     };
     throw error;
+  }
+}
+
+class WikiPageValidatorInfrastructureError extends Error {
+  constructor(cause: unknown) {
+    super(`Page validator infrastructure failed: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 }
 
@@ -608,8 +676,14 @@ function createArtifactWriteToolDefinition(
 
 /** Keep every model-facing control surface explicit about its JSON contract. */
 function submissionContractGuidance(toolName: SubmissionToolName): string {
+  if (toolName === "wiki_submit_research") {
+    return "Use {\"summary\":\"...\",\"findings\":[{\"kind\":\"domain|concept|flow|boundary|state-data\",\"title\":\"...\",\"readerQuestion\":\"...\",\"priority\":\"critical|normal\",\"evidence\":[\"project/path#L1-L2\"]}],\"gaps\":[{\"question\":\"...\",\"priority\":\"critical|normal\",\"sourcePaths\":[\"project\"]}]}";
+  }
+  if (toolName === "wiki_submit_page") {
+    return "Call the tool with the exact assigned page path after writing. Fix every returned issue and resubmit until accepted.";
+  }
   if (toolName === "wiki_submit_synthesis") {
-    return "For a final decision, use {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...]},\"rationale\":\"...\"}. domains is required; crossLinks and sharedTerms may be omitted when empty. Each page contains pageType, path, title, purpose, and researchScopeIds. For expansion, omit spec and use {\"decision\":\"expand\",\"researchScopes\":[{\"id\":\"new-scope-id\",\"sourcePaths\":[\"declared-source\"],\"task\":\"...\"}],\"rationale\":\"...\"}.";
+    return "For a final decision, use {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...],\"omissions\":[...]},\"rationale\":\"...\"}. Each page contains pageType, path, title, purpose, and findingIds. For expansion, omit spec and use {\"decision\":\"expand\",\"researchScopes\":[{\"id\":\"new-scope-id\",\"sourcePaths\":[\"declared-source\"],\"task\":\"...\"}],\"rationale\":\"...\"}.";
   }
   return "Use {\"defects\":[...],\"summary\":\"...\"}. A local defect is exactly {\"kind\":\"evidence|link|depth|diagram\",\"page\":\"...\",\"detail\":\"...\"}; a structural defect is exactly {\"kind\":\"topology|coverage\",\"detail\":\"...\"}. defects and summary are required; use [] when there are no actionable defects.";
 }

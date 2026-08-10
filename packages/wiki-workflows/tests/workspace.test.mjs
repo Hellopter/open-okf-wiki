@@ -47,13 +47,28 @@ test("initializes a plain YAML workspace and persists its language", async () =>
     version: 1,
     language: "en",
     defaultSourceIgnores: true,
+    quality: { maxResearchRounds: 6 },
     sources: [],
   });
   assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
 
   await initializeWikiWorkspace({ cwd: root, language: "zh" });
-  assert.equal((await loadWikiWorkspace(root)).language, "zh");
+  const loaded = await loadWikiWorkspace(root);
+  assert.equal(loaded.language, "zh");
+  assert.equal(loaded.quality.maxResearchRounds, 6);
   assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
+});
+
+test("rejects a research budget that cannot fit two dry coverage audits", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-workspace-quality-"));
+  temporaryDirectories.push(root);
+  await initializeWikiWorkspace({ cwd: root });
+  const configPath = path.join(root, "workspace.yaml");
+  const config = YAML.parse(await readFile(configPath, "utf8"));
+  config.quality.maxResearchRounds = 2;
+  await writeFile(configPath, YAML.stringify(config), "utf8");
+
+  await assert.rejects(loadWikiWorkspace(root), /integer from 3 to 20/);
 });
 
 test("links a Git source by its project directory name without an alias", async () => {

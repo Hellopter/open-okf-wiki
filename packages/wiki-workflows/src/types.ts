@@ -22,6 +22,8 @@ export interface WikiInspection {
   existingPages: string[];
   impactedPages: string[];
   wikiDrift: boolean;
+  /** Set when an existing pre-v0.2 Wiki cannot be incrementally refreshed. */
+  refreshRequiresGenerateReason?: string;
 }
 
 export interface WikiValidationIssue {

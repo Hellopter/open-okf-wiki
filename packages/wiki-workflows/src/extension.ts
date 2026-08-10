@@ -224,6 +224,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
                 mode: command.action,
                 language: command.language ?? workspace.language,
                 focus: command.focus,
+                maxResearchRounds: workspace.quality.maxResearchRounds,
               });
               await persistNow();
               await ensureHost(context);

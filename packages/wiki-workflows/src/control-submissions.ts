@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { Type } from "typebox";
 import type {
+  WikiResearchArtifact,
   WikiReviewDefect,
   WikiReviewResult,
   WikiSpec,
@@ -8,10 +9,8 @@ import type {
 } from "./workflow-types.js";
 import { isSafeWikiPagePath } from "./wiki-path.js";
 
-/** Maximum research agents the engine dispatches concurrently. */
-export const MAX_RESEARCH_SCOPES_PER_BATCH = 4;
-/** Maximum UTF-8 size of a Markdown research receipt. */
-export const MAX_RESEARCH_ARTIFACT_BYTES = 64 * 1024;
+/** Maximum UTF-8 size of a structured research artifact. */
+export const MAX_RESEARCH_ARTIFACT_BYTES = 256 * 1024;
 /** Maximum UTF-8 size of a synthesis or review JSON artifact. */
 export const MAX_CONTROL_ARTIFACT_BYTES = 256 * 1024;
 
@@ -51,6 +50,11 @@ export function parseSynthesisArtifact(content: string): WikiSynthesisResult {
   return parseSynthesisSubmission(parseJsonArtifact(content, "Synthesis artifact"));
 }
 
+/** Decode and validate the JSON artifact that carries one bounded research result. */
+export function parseResearchArtifact(content: string): WikiResearchArtifact {
+  return parseResearchSubmission(parseJsonArtifact(content, "Research artifact"));
+}
+
 /** Decode and validate the JSON artifact that carries a review result. */
 export function parseReviewArtifact(content: string): WikiReviewResult {
   return parseReviewSubmission(parseJsonArtifact(content, "Review artifact"));
@@ -61,6 +65,51 @@ export function parseMarkdownArtifact(content: string, label = "Markdown artifac
   assertTextArtifactSize(content, label, MAX_RESEARCH_ARTIFACT_BYTES);
   if (!content.trim()) throw new Error(`${label} must contain Markdown`);
   return content;
+}
+
+export function parseResearchSubmission(value: unknown): WikiResearchArtifact {
+  assertControlSubmissionSize(value, "Research submission");
+  if (!isRecord(value)) throw new Error("Research submission must be an object");
+  assertExactKeys(value, ["summary", "findings", "gaps"], "Research submission");
+  if (!Array.isArray(value.findings) || !Array.isArray(value.gaps)) {
+    throw new Error("Research submission must include findings and gaps arrays");
+  }
+  const findingKeys = new Set<string>();
+  const findings = value.findings.map((finding) => {
+    if (!isRecord(finding)) throw new Error("Research submission contains an invalid finding");
+    assertExactKeys(finding, ["kind", "title", "readerQuestion", "priority", "evidence"], "Research finding");
+    if (!isFindingKind(finding.kind)) throw new Error("Research finding kind is invalid");
+    if (!isPriority(finding.priority)) throw new Error("Research finding priority is invalid");
+    if (!Array.isArray(finding.evidence) || finding.evidence.length === 0) {
+      throw new Error("Research finding evidence must be a non-empty array");
+    }
+    const evidence = [...new Set(finding.evidence.map((item) => parseEvidenceReference(item, "Research finding evidence")))];
+    const parsed = {
+      kind: finding.kind,
+      title: requiredText(finding.title, "Research finding title"),
+      readerQuestion: requiredText(finding.readerQuestion, "Research finding reader question"),
+      priority: finding.priority,
+      evidence,
+    };
+    const key = `${parsed.kind}\u0000${[...evidence].sort().join("\u0000")}`;
+    if (findingKeys.has(key)) throw new Error("Research submission repeats a finding with the same kind and evidence");
+    findingKeys.add(key);
+    return parsed;
+  });
+  const gaps = value.gaps.map((gap) => {
+    if (!isRecord(gap)) throw new Error("Research submission contains an invalid gap");
+    assertExactKeys(gap, ["question", "priority", "sourcePaths"], "Research gap");
+    if (!isPriority(gap.priority)) throw new Error("Research gap priority is invalid");
+    if (!Array.isArray(gap.sourcePaths) || gap.sourcePaths.length === 0) {
+      throw new Error("Research gap sourcePaths must be a non-empty array");
+    }
+    return {
+      question: requiredText(gap.question, "Research gap question"),
+      priority: gap.priority,
+      sourcePaths: [...new Set(gap.sourcePaths.map((item) => requiredText(item, "Research gap source path")))],
+    };
+  });
+  return { summary: requiredText(value.summary, "Research summary"), findings, gaps };
 }
 
 /** Canonicalize the synthesis decision before it can expand or finalize the DAG. */
@@ -74,9 +123,7 @@ export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
     assertExactKeys(value, ["decision", "researchScopes", "rationale"], "Synthesis expansion");
     if (hasOwn(value, "spec")) throw new Error("Synthesis expansion must not include spec");
     if (!Array.isArray(value.researchScopes)) throw new Error("Synthesis expansion must include researchScopes");
-    if (value.researchScopes.length === 0 || value.researchScopes.length > MAX_RESEARCH_SCOPES_PER_BATCH) {
-      throw new Error(`Synthesis may request 1 to ${MAX_RESEARCH_SCOPES_PER_BATCH} supplemental research scopes`);
-    }
+    if (value.researchScopes.length === 0) throw new Error("Synthesis must request at least one supplemental research scope");
     return { decision: "expand", researchScopes: parseResearchScopes(value.researchScopes, "Synthesis"), rationale: synthesisRationale };
   }
   assertExactKeys(value, ["decision", "spec", "rationale"], "Final synthesis");
@@ -118,12 +165,14 @@ function requiredText(value: unknown, label: string): string {
 
 function parseWikiSpec(value: unknown): WikiSpec {
   if (!isRecord(value)) throw new Error("Final WikiSpec must be an object");
-  assertAllowedKeys(value, ["domains", "crossLinks", "sharedTerms"], "Final WikiSpec");
+  assertAllowedKeys(value, ["domains", "crossLinks", "sharedTerms", "omissions"], "Final WikiSpec");
   if (!Array.isArray(value.domains)) throw new Error("Final WikiSpec must include domains as an array");
   const crossLinkValues = value.crossLinks === undefined ? [] : value.crossLinks;
   const sharedTermValues = value.sharedTerms === undefined ? [] : value.sharedTerms;
+  const omissionValues = value.omissions === undefined ? [] : value.omissions;
   if (!Array.isArray(crossLinkValues)) throw new Error("Final WikiSpec crossLinks must be an array when provided");
   if (!Array.isArray(sharedTermValues)) throw new Error("Final WikiSpec sharedTerms must be an array when provided");
+  if (!Array.isArray(omissionValues)) throw new Error("Final WikiSpec omissions must be an array when provided");
   const domainIds = new Set<string>();
   const pagePaths = new Set<string>();
   const domains = value.domains.map((domain) => {
@@ -148,8 +197,8 @@ function parseWikiSpec(value: unknown): WikiSpec {
     || overviewDomain.pages[0] !== overviewPages[0] || overviewPages[0].path !== "overview/overview.md") {
     throw new Error("WikiSpec must contain exactly one receipt-free overview page at overview/overview.md");
   }
-  if (overviewPages[0].researchScopeIds.length !== 0) {
-    throw new Error("WikiSpec overview page must not select research receipts");
+  if (overviewPages[0].findingIds.length !== 0) {
+    throw new Error("WikiSpec overview page must not select research findings");
   }
   if (pagePaths.size < 2) throw new Error("WikiSpec must contain at least one content page in addition to Overview");
 
@@ -174,37 +223,65 @@ function parseWikiSpec(value: unknown): WikiSpec {
     termNames.add(name);
     return { term: name, definition: requiredText(term.definition, `WikiSpec definition for ${name}`) };
   });
-  return { domains, crossLinks, sharedTerms };
+  const omittedIds = new Set<string>();
+  const omissions = omissionValues.map((omission) => {
+    if (!isRecord(omission)) throw new Error("WikiSpec contains an invalid omission");
+    assertExactKeys(omission, ["findingId", "rationale"], "WikiSpec omission");
+    const findingId = requiredText(omission.findingId, "WikiSpec omission finding ID");
+    if (omittedIds.has(findingId)) throw new Error(`WikiSpec repeats omission: ${findingId}`);
+    omittedIds.add(findingId);
+    return { findingId, rationale: requiredText(omission.rationale, `WikiSpec omission rationale for ${findingId}`) };
+  });
+  return { domains, crossLinks, sharedTerms, omissions };
 }
 
 function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>) {
-  if (!isRecord(value) || !Array.isArray(value.researchScopeIds)) {
+  if (!isRecord(value) || !Array.isArray(value.findingIds)) {
     throw new Error(`WikiSpec domain ${domainId} contains an invalid page`);
   }
-  assertExactKeys(value, ["pageType", "path", "title", "purpose", "researchScopeIds"], `WikiSpec page in ${domainId}`);
+  assertExactKeys(value, ["pageType", "path", "title", "purpose", "findingIds"], `WikiSpec page in ${domainId}`);
   const path = parseWikiPath(value.path, `WikiSpec page path for ${domainId}`);
   if (!path.startsWith(`${domainId}/`)) {
     throw new Error(`WikiSpec page ${path} must be contained by its domain directory ${domainId}/`);
   }
   if (pagePaths.has(path)) throw new Error(`WikiSpec repeats page path: ${path}`);
   pagePaths.add(path);
-  const scopeIds = new Set<string>();
-  const researchScopeIds = value.researchScopeIds.map((scopeId) => {
-    const parsed = requiredText(scopeId, `WikiSpec research scope for ${path}`);
-    if (scopeIds.has(parsed)) throw new Error(`WikiSpec page ${path} repeats research scope: ${parsed}`);
-    scopeIds.add(parsed);
+  const findingIdSet = new Set<string>();
+  const findingIds = value.findingIds.map((findingId) => {
+    const parsed = requiredText(findingId, `WikiSpec finding for ${path}`);
+    if (findingIdSet.has(parsed)) throw new Error(`WikiSpec page ${path} repeats finding: ${parsed}`);
+    findingIdSet.add(parsed);
     return parsed;
   });
   const pageType = parsePageType(value.pageType, `WikiSpec page type for ${path}`);
   if (pageType === "overview" && path !== "overview/overview.md") throw new Error("WikiSpec overview page must be overview/overview.md");
-  if (pageType !== "overview" && researchScopeIds.length === 0) throw new Error(`WikiSpec page ${path} must select research evidence`);
+  if (pageType !== "overview" && findingIds.length === 0) throw new Error(`WikiSpec page ${path} must select research findings`);
   return {
     pageType,
     path,
     title: requiredText(value.title, `WikiSpec page title for ${path}`),
     purpose: requiredText(value.purpose, `WikiSpec page purpose for ${path}`),
-    researchScopeIds,
+    findingIds,
   };
+}
+
+function parseEvidenceReference(value: unknown, label: string): string {
+  const reference = requiredText(value, label);
+  const match = /^([^#\s]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$/.exec(reference);
+  if (!match || match[1].startsWith("/") || match[1].includes("\\")) throw new Error(`${label} is invalid: ${reference}`);
+  if (match[1].split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error(`${label} is invalid: ${reference}`);
+  }
+  if (Number(match[3] ?? match[2]) < Number(match[2])) throw new Error(`${label} has an invalid line range: ${reference}`);
+  return reference;
+}
+
+function isFindingKind(value: unknown): value is WikiResearchArtifact["findings"][number]["kind"] {
+  return value === "domain" || value === "concept" || value === "flow" || value === "boundary" || value === "state-data";
+}
+
+function isPriority(value: unknown): value is WikiResearchArtifact["gaps"][number]["priority"] {
+  return value === "critical" || value === "normal";
 }
 
 function parsePageType(value: unknown, label: string): "overview" | "architecture" | "module" | "flow" | "concept" {

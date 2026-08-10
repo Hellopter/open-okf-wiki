@@ -18,19 +18,21 @@ async function fixture(t) {
 test("writes UTF-8 artifacts atomically with a hashed attempt manifest", async (t) => {
   const { workspace, store } = await fixture(t);
   const location = { runId: "run-1", nodeId: "research-1", attempt: 1, kind: "research" };
-  assert.equal(await store.prepare(location), ".okf-wiki/runs/run-1/research-1/attempt-1/research.md");
+  assert.equal(await store.prepare(location), ".okf-wiki/runs/run-1/research-1/attempt-1/research.json");
 
-  const content = [
-    "# Evidence",
-    "中文 and \"quotes\" with `backticks`",
-    "```mermaid",
-    "flowchart LR",
-    "  A[\"quoted\"] --> B[path\\name]",
-    "```",
-    "",
-  ].join("\r\n");
+  const content = `${JSON.stringify({
+    summary: "中文 and quoted evidence",
+    findings: [{
+      kind: "concept",
+      title: "Core concept",
+      readerQuestion: "What does the core concept mean?",
+      priority: "critical",
+      evidence: ["api/src/core.ts#L1-L8"],
+    }],
+    gaps: [],
+  })}\n`;
   const ref = await store.write({ ...location, content });
-  assert.equal(ref.mediaType, "text/markdown");
+  assert.equal(ref.mediaType, "application/json");
   assert.equal(ref.sizeBytes, Buffer.byteLength(content, "utf8"));
   assert.match(ref.sha256, /^[a-f0-9]{64}$/);
   assert.equal(await store.read(ref), content);
@@ -49,7 +51,7 @@ test("rejects unsafe paths, symlinks, invalid UTF-8, and oversized artifacts", a
   );
   await assert.rejects(
     () => store.write({ runId: "run", nodeId: "node", attempt: 1, kind: "research", content: "x".repeat(MAX_WIKI_RESEARCH_ARTIFACT_BYTES + 1) }),
-    /65536-byte limit/,
+    /262144-byte limit/,
   );
   await assert.rejects(
     () => store.write({ runId: "run", nodeId: "review", attempt: 1, kind: "review", content: "x".repeat(MAX_WIKI_JSON_ARTIFACT_BYTES + 1) }),

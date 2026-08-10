@@ -44,7 +44,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 5,
+  version: 6,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -52,6 +52,7 @@ const run = {
   status: "running",
   round: 2,
   sourceRestartCount: 0,
+  maxResearchRounds: 6,
   createdAt: "2026-08-08T00:00:00.000Z",
   updatedAt: "2026-08-08T00:00:00.000Z",
   events: [

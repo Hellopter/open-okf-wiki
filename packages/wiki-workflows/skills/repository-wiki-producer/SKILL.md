@@ -21,21 +21,24 @@ The run has five user-visible stages:
 
 ```text
 Inspect -> Research -> Plan -> Write -> Verify
-              ^         |        ^        |
-              | research|        | repair |
-                        | replan  |
+             ^  |        |       ^  |      |
+             |  + audit -+       |  + fix-+
+             + research/replan ---+
 ```
 
-Targeted research, structural replanning, static validation, semantic review,
-repair, and deterministic finalization are bounded operations inside those
-stages. They are not additional top-level phases.
+Research repeats until its evidence and coverage audits reach saturation.
+Writing includes a per-page submission gate, and Verify aggregates global
+static and semantic defects into repair waves. Directory indexes, OKF v0.2
+trust metadata, deletion, and publication are deterministic coordinator or
+publisher work. These are bounded operations inside the five stages, not extra
+top-level phases.
 
 Read the reference for the assigned role in full:
 
-- [Research receipts](references/research.md)
-- [Research synthesis](references/synthesis.md)
+- [Structured research](references/research.md)
+- [Coverage planning and synthesis](references/synthesis.md)
 - [Per-page writing and repair](references/write.md)
-- [Review](references/review.md)
+- [Global semantic review](references/review.md)
 
 Writers receive one skeleton matching their page type: [Overview](references/templates/overview.md),
 [Architecture](references/templates/architecture.md), [Module](references/templates/module.md),

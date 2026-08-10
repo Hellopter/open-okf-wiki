@@ -1,8 +1,8 @@
 # Review
 
-Act as the single global reviewer after per-page writers and static validation.
-Read the current Spec, target pages, obsolete pages, and source independently.
-Do not read writer or review history.
+Act as the independent global semantic reviewer after page submission. Run in
+parallel with global static validation. Read the current Spec, target pages,
+obsolete pages, and source independently. Do not read writer or review history.
 
 Check evidence, links, topology, planned coverage, cross-page navigation,
 terminology, depth, and end-to-end explanations. Review Mermaid semantically:
@@ -14,10 +14,14 @@ invented translation that displaced an established Chinese name as a
 `coverage` defect when the Spec carries it, or an `evidence` defect when only a
 page introduced it.
 
-Route `evidence`, `link`, `depth`, and `diagram` defects to their exact page.
-Use `coverage` or `topology` only when the Spec itself must change. If local and
-structural defects coexist, report both; the workflow replans first and carries
-still-addressable local feedback into replacement page writers.
+Report the complete actionable defect set across all pages in one result; never
+stop after the first page or defect category. Route `evidence`, `link`, `depth`,
+and `diagram` defects to their exact page. Use `coverage` or `topology` only
+when the Spec itself must change. If local and structural defects coexist,
+report both; the workflow replans first and carries still-addressable local
+feedback into replacement page writers. The workflow merges this result with
+all static issues, groups defects by page, and repairs affected pages together
+in one wave before rerunning the complete Verify stage.
 
 For a local defect, copy `page` exactly from a `path` in Final WikiSpec. Never
 prefix it with `wiki/` and never target an obsolete or undeclared page.
@@ -43,4 +47,6 @@ union; do not create defect IDs or domain IDs. Keep the JSON below 256 KiB:
 }
 ```
 
-Use `[]` when there are no actionable defects.
+Use `[]` only after reviewing the entire target Wiki and finding no actionable
+defects. Do not report syntax or validator infrastructure failures as semantic
+defects.

@@ -14,7 +14,7 @@ const EVENT_KINDS = new Set([
 /** Reject corrupt persisted state before the workflow engine or UI can consume it. */
 export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
   if (!isRecord(value)
-    || value.version !== 5
+    || value.version !== 6
     || !isString(value.id)
     || !isString(value.cwd)
     || !isMode(value.requestedMode)
@@ -23,6 +23,7 @@ export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
     || !isEnum(value.status, RUN_STATUSES)
     || !isNonnegativeInteger(value.round)
     || !isNonnegativeInteger(value.sourceRestartCount)
+    || !isResearchRoundLimit(value.maxResearchRounds)
     || !Array.isArray(value.nodes)
     || !value.nodes.every(isNode)
     || !Array.isArray(value.events)
@@ -109,7 +110,8 @@ function isError(value: unknown): boolean {
     && isString(value.message)
     && optionalStringFields(value, ["code"])
     && optional(value.retryable, isBoolean)
-    && optional(value.requiredSubmissionTool, (item) => item === "wiki_submit_synthesis" || item === "wiki_submit_review");
+    && optional(value.requiredSubmissionTool, (item) => item === "wiki_submit_research" || item === "wiki_submit_synthesis"
+      || item === "wiki_submit_page" || item === "wiki_submit_review");
 }
 
 function isArtifactRef(value: unknown): boolean {
@@ -150,7 +152,8 @@ function isInspection(value: unknown): boolean {
     && isString(value.sourceFingerprint)
     && isStringArray(value.existingPages)
     && isStringArray(value.impactedPages)
-    && isBoolean(value.wikiDrift);
+    && isBoolean(value.wikiDrift)
+    && optional(value.refreshRequiresGenerateReason, isString);
 }
 
 function isAcyclic(nodes: WikiNode[]): boolean {
@@ -191,6 +194,10 @@ function isStringArray(value: unknown): value is string[] {
 
 function isNonnegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function isResearchRoundLimit(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 3 && Number(value) <= 20;
 }
 
 function isNonnegativeNumber(value: unknown): value is number {

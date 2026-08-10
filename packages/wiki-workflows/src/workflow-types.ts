@@ -57,7 +57,7 @@ export interface WikiNodeError {
   code?: string;
   retryable?: boolean;
   /** Present when the model ended without the required control-flow submission. */
-  requiredSubmissionTool?: "wiki_submit_synthesis" | "wiki_submit_review";
+  requiredSubmissionTool?: "wiki_submit_research" | "wiki_submit_synthesis" | "wiki_submit_page" | "wiki_submit_review";
 }
 
 export interface WikiNodeAttempt {
@@ -148,10 +148,11 @@ export interface WikiRunRequest {
   mode: WikiMode;
   language?: "zh" | "en";
   focus?: string;
+  maxResearchRounds?: number;
 }
 
 export interface WikiRunSnapshot {
-  version: 5;
+  version: 6;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -162,6 +163,7 @@ export interface WikiRunSnapshot {
   round: number;
   /** Number of automatic restarts caused by source fingerprint drift. */
   sourceRestartCount: number;
+  maxResearchRounds: number;
   inspection?: WikiInspection;
   inspectionFingerprint?: string;
   nodes: WikiNode[];
@@ -210,13 +212,42 @@ export interface WikiResearchScope {
   task: string;
 }
 
+export type WikiResearchFindingKind = "domain" | "concept" | "flow" | "boundary" | "state-data";
+export type WikiResearchPriority = "critical" | "normal";
+
+/** Model-authored finding before the engine assigns an evidence-derived ID. */
+export interface WikiResearchFindingDraft {
+  kind: WikiResearchFindingKind;
+  title: string;
+  readerQuestion: string;
+  priority: WikiResearchPriority;
+  evidence: string[];
+}
+
+export interface WikiResearchFinding extends WikiResearchFindingDraft {
+  id: string;
+  scopeId: string;
+}
+
+export interface WikiResearchGap {
+  question: string;
+  priority: WikiResearchPriority;
+  sourcePaths: string[];
+}
+
+export interface WikiResearchArtifact {
+  summary: string;
+  findings: WikiResearchFindingDraft[];
+  gaps: WikiResearchGap[];
+}
+
 export interface WikiSpecPage {
   pageType: "overview" | "architecture" | "module" | "flow" | "concept";
   path: string;
   title: string;
   purpose: string;
-  /** Receipts selected specifically for this page. Empty only for Overview. */
-  researchScopeIds: string[];
+  /** Evidence findings selected specifically for this page. Empty only for Overview. */
+  findingIds: string[];
 }
 
 export interface WikiDomain {
@@ -237,11 +268,17 @@ export interface WikiSharedTerm {
   definition: string;
 }
 
+export interface WikiOmission {
+  findingId: string;
+  rationale: string;
+}
+
 /** Immutable writing contract emitted only when source research is sufficient. */
 export interface WikiSpec {
   domains: WikiDomain[];
   crossLinks: WikiCrossLink[];
   sharedTerms: WikiSharedTerm[];
+  omissions: WikiOmission[];
 }
 
 export interface WikiSynthesisExpandResult {
@@ -264,6 +301,8 @@ export interface WikiResearchReceipt {
   task: string;
   sourceFingerprint: string;
   artifact: WikiArtifactRef;
+  findings: Array<{ id: string; priority: WikiResearchPriority }>;
+  criticalGapSignatures: string[];
 }
 
 export type WikiLocalReviewDefectKind = "evidence" | "link" | "depth" | "diagram";
@@ -288,7 +327,21 @@ export interface WikiReviewResult {
   summary: string;
 }
 
-export type WikiControlSubmission = WikiSynthesisResult | WikiReviewResult;
+export type WikiControlSubmission = WikiResearchArtifact | WikiSynthesisResult | WikiReviewResult;
+
+export interface WikiPageSubmission {
+  page: string;
+  sha256: string;
+}
+
+export interface WikiPageValidationFailure {
+  code: string;
+  message: string;
+}
+
+export type WikiPageSubmissionResult =
+  | { ok: true; submission: WikiPageSubmission }
+  | { ok: false; issues: WikiPageValidationFailure[] };
 
 export interface WikiAgentExecutionRequest {
   runId: string;
@@ -319,6 +372,8 @@ export interface WikiAgentExecutionRequest {
    * exposed in the model-facing JSON schema.
    */
   validateControlSubmission?: (submission: WikiControlSubmission) => void;
+  /** Validate and seal the writer's assigned page without ending its session on failure. */
+  validatePageSubmission?: (page: string) => Promise<WikiPageSubmissionResult>;
 }
 
 export interface WikiAgentExecutionResult {
@@ -336,7 +391,9 @@ export interface WikiAgentExecutor {
 export interface WikiWorkflowDependencies {
   inspect(cwd: string): Promise<WikiInspection>;
   validate(cwd: string, spec: WikiSpec, wikiDirectory?: string): Promise<WikiValidation>;
-  finalize(cwd: string, spec: WikiSpec, wikiDirectory?: string): Promise<WikiFinalization>;
+  validatePage(cwd: string, spec: WikiSpec, page: string): Promise<WikiPageValidationFailure[]>;
+  materializeIndexes(cwd: string, spec: WikiSpec): Promise<string[]>;
+  finalize(cwd: string, spec: WikiSpec, wikiDirectory?: string, publicationAt?: string): Promise<WikiFinalization>;
   executor: WikiAgentExecutor;
   /** Workspace-local durable handoffs. Tests can inject an isolated store. */
   artifactStore?: WikiArtifactStore;

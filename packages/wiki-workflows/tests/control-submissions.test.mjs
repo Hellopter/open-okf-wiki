@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   MAX_CONTROL_ARTIFACT_BYTES,
   MAX_RESEARCH_ARTIFACT_BYTES,
-  parseMarkdownArtifact,
+  parseResearchArtifact,
+  parseResearchSubmission,
   parseReviewArtifact,
   parseReviewSubmission,
   parseSynthesisSubmission,
@@ -23,7 +24,7 @@ function finalDecision(overrides = {}) {
             path: "overview/overview.md",
             title: "Overview",
             purpose: "Orient readers.",
-            researchScopeIds: [],
+            findingIds: [],
           }],
         },
         {
@@ -35,7 +36,7 @@ function finalDecision(overrides = {}) {
             path: "core/architecture.md",
             title: "Core architecture",
             purpose: "Explain boundaries.",
-            researchScopeIds: ["source-survey:api"],
+            findingIds: ["finding-core"],
           }],
         },
       ],
@@ -50,7 +51,8 @@ test("normalizes optional WikiSpec coordination arrays", () => {
   assert.equal(result.decision, "finalize");
   assert.deepEqual(result.spec.crossLinks, []);
   assert.deepEqual(result.spec.sharedTerms, []);
-  assert.deepEqual(result.spec.domains[1].pages[0].researchScopeIds, ["source-survey:api"]);
+  assert.deepEqual(result.spec.omissions, []);
+  assert.deepEqual(result.spec.domains[1].pages[0].findingIds, ["finding-core"]);
 });
 
 test("rejects legacy page and domain evidence contracts", () => {
@@ -61,6 +63,10 @@ test("rejects legacy page and domain evidence contracts", () => {
   const legacyDomain = finalDecision();
   legacyDomain.spec.domains[1].researchScopeIds = ["source-survey:api"];
   assert.throws(() => parseSynthesisSubmission(legacyDomain), /unsupported field: researchScopeIds/);
+
+  const legacyPageScope = finalDecision();
+  legacyPageScope.spec.domains[1].pages[0].researchScopeIds = ["source-survey:api"];
+  assert.throws(() => parseSynthesisSubmission(legacyPageScope), /unsupported field: researchScopeIds/);
 });
 
 test("requires one evidence-scoped content page in addition to Overview", () => {
@@ -69,8 +75,21 @@ test("requires one evidence-scoped content page in addition to Overview", () => 
   assert.throws(() => parseSynthesisSubmission(overviewOnly), /at least one content page/);
 
   const unscoped = finalDecision();
-  unscoped.spec.domains[1].pages[0].researchScopeIds = [];
-  assert.throws(() => parseSynthesisSubmission(unscoped), /must select research evidence/);
+  unscoped.spec.domains[1].pages[0].findingIds = [];
+  assert.throws(() => parseSynthesisSubmission(unscoped), /must select research findings/);
+});
+
+test("parses explicit omissions and rejects duplicate finding selections", () => {
+  const result = parseSynthesisSubmission(finalDecision({
+    omissions: [{ findingId: "finding-secondary", rationale: "Covered by an external guide." }],
+  }));
+  assert.deepEqual(result.spec.omissions, [
+    { findingId: "finding-secondary", rationale: "Covered by an external guide." },
+  ]);
+
+  const repeated = finalDecision();
+  repeated.spec.domains[1].pages[0].findingIds.push("finding-core");
+  assert.throws(() => parseSynthesisSubmission(repeated), /repeats finding/);
 });
 
 test("rejects page paths that can inject Markdown or control characters", () => {
@@ -111,9 +130,29 @@ test("parses local and structural review defects as a discriminated union", () =
   }), /invalid defect/);
 });
 
-test("enforces separate Markdown receipt and JSON control artifact limits", () => {
-  assert.equal(parseMarkdownArtifact("x".repeat(MAX_RESEARCH_ARTIFACT_BYTES)), "x".repeat(MAX_RESEARCH_ARTIFACT_BYTES));
-  assert.throws(() => parseMarkdownArtifact("x".repeat(MAX_RESEARCH_ARTIFACT_BYTES + 1)), /65536-byte/);
+test("parses structured research JSON and enforces the 256 KiB artifact limit", () => {
+  const artifact = {
+    summary: "Core behavior is source-grounded.",
+    findings: [{
+      kind: "flow",
+      title: "Request flow",
+      readerQuestion: "How does a request traverse the system?",
+      priority: "critical",
+      evidence: ["api/src/index.ts#L1-L8", "web/src/client.ts#L4-L12"],
+    }],
+    gaps: [{ question: "What happens on timeout?", priority: "normal", sourcePaths: ["api"] }],
+  };
+  assert.deepEqual(parseResearchArtifact(JSON.stringify(artifact)), artifact);
+  assert.deepEqual(parseResearchSubmission(artifact), artifact);
+  assert.throws(() => parseResearchArtifact("# Markdown receipt\n"), /valid JSON/);
+  assert.throws(
+    () => parseResearchArtifact(JSON.stringify({ ...artifact, summary: "x".repeat(MAX_RESEARCH_ARTIFACT_BYTES) })),
+    /262144-byte/,
+  );
+  assert.throws(
+    () => parseResearchSubmission({ ...artifact, findings: [{ ...artifact.findings[0], evidence: ["missing-range.ts"] }] }),
+    /Research finding evidence is invalid/,
+  );
   assert.throws(
     () => parseReviewArtifact(" ".repeat(MAX_CONTROL_ARTIFACT_BYTES + 1)),
     /262144-byte/,

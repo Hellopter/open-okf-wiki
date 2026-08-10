@@ -21,7 +21,7 @@ function metrics() {
 
 function snapshot(id, status, updatedAt) {
   return {
-    version: 5,
+    version: 6,
     id,
     cwd: "/workspace",
     requestedMode: "generate",
@@ -30,6 +30,7 @@ function snapshot(id, status, updatedAt) {
     status,
     round: 0,
     sourceRestartCount: 0,
+    maxResearchRounds: 6,
     nodes: [{
       id: "inspect",
       kind: "inspect",
@@ -113,7 +114,7 @@ test("history never treats a run ID as a filesystem path", async (t) => {
   await assert.rejects(() => store.save(snapshot("../outside", "succeeded", "2026-08-08T00:00:00.000Z")), /Invalid Wiki run history identifier/);
 });
 
-test("history accepts only complete v5 snapshots and rejects v4", async (t) => {
+test("history accepts only complete v6 snapshots and rejects v5", async (t) => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-history-version-"));
   t.after(async () => await rm(rootDir, { recursive: true, force: true }));
   const store = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
@@ -121,7 +122,7 @@ test("history accepts only complete v5 snapshots and rejects v4", async (t) => {
   await mkdir(runsDir, { recursive: true });
   await writeFile(
     path.join(runsDir, "legacy.json"),
-    `${JSON.stringify({ ...snapshot("legacy", "succeeded", "2026-08-08T00:00:00.000Z"), version: 4 })}\n`,
+    `${JSON.stringify({ ...snapshot("legacy", "succeeded", "2026-08-08T00:00:00.000Z"), version: 5 })}\n`,
     "utf8",
   );
   const missingRestartCount = snapshot("incomplete", "succeeded", "2026-08-08T00:00:00.000Z");

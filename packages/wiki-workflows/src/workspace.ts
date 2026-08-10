@@ -30,6 +30,7 @@ export interface WikiWorkspace {
   configPath?: string;
   language: "zh" | "en";
   defaultSourceIgnores: boolean;
+  quality: { maxResearchRounds: number };
   sources: WikiWorkspaceSource[];
 }
 
@@ -94,6 +95,7 @@ export async function initializeWikiWorkspace(request: InitializeWikiWorkspaceRe
       configPath,
       language: request.language ?? "zh",
       defaultSourceIgnores: true,
+      quality: { maxResearchRounds: 6 },
       sources: [],
   };
   await writeWorkspaceConfig(configPath, workspace);
@@ -136,6 +138,7 @@ export async function addWikiSource(request: AddWikiSourceRequest): Promise<Wiki
     configPath: workspace.configPath,
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
+    quality: workspace.quality,
     sources,
   });
   return {
@@ -206,10 +209,19 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
   if (!isRecord(document) || document.version !== 1) throw new Error("workspace.yaml must declare version: 1");
   if (document.language !== "zh" && document.language !== "en") throw new Error("workspace.yaml language must be zh or en");
   if (typeof document.defaultSourceIgnores !== "boolean") throw new Error("workspace.yaml defaultSourceIgnores must be true or false");
+  const quality = document.quality === undefined ? { maxResearchRounds: 6 } : parseQuality(document.quality);
   if (!Array.isArray(document.sources)) throw new Error("workspace.yaml sources must be an array");
   const seen = new Set<string>();
   const sources = document.sources.map((value) => parseSource(value, seen));
-  return { version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, sources };
+  return { version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, quality, sources };
+}
+
+function parseQuality(value: unknown): WikiWorkspace["quality"] {
+  if (!isRecord(value) || !Number.isInteger(value.maxResearchRounds)
+    || Number(value.maxResearchRounds) < 3 || Number(value.maxResearchRounds) > 20) {
+    throw new Error("workspace.yaml quality.maxResearchRounds must be an integer from 3 to 20");
+  }
+  return { maxResearchRounds: Number(value.maxResearchRounds) };
 }
 
 function parseSource(value: unknown, seen: Set<string>): WikiWorkspaceSource {
@@ -237,6 +249,7 @@ async function writeWorkspaceConfig(configPath: string, workspace: WikiWorkspace
     version: 1,
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
+    quality: workspace.quality,
     sources: workspace.sources.map((source) => ({ path: source.path, origin: source.origin })),
   };
   await writeFile(configPath, YAML.stringify(document, { lineWidth: 0 }), "utf8");

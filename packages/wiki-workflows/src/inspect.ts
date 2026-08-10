@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { exists, inside, markdownFiles, readText } from "./files.js";
-import { parsePage } from "./frontmatter.js";
+import { okfSources, parsePage } from "./frontmatter.js";
 import { git } from "./git.js";
 import type { SourceChange, WikiInspection, WikiMode } from "./types.js";
 import { loadWikiWorkspace, sourceIsIgnored, type ResolvedWikiSource, type ResolvedWikiWorkspace } from "./workspace.js";
@@ -15,6 +15,7 @@ interface PageGraph {
   sources: Map<string, Set<string>>;
   inbound: Map<string, Set<string>>;
   reliable: boolean;
+  legacySources: boolean;
 }
 
 function normalizePath(candidate: string): string {
@@ -54,7 +55,7 @@ function workspacePath(source: ResolvedWikiSource, relative: string): string {
 }
 
 async function sourcePath(workspace: ResolvedWikiWorkspace, resource: string): Promise<string | null> {
-  const match = SOURCE_REFERENCE.exec(resource);
+  const match = SOURCE_REFERENCE.exec(resource.replace(/^repo:/, ""));
   if (!match) return null;
   const source = match[1];
   const segments = source.split("/");
@@ -111,6 +112,7 @@ async function inspectPageGraph(workspace: ResolvedWikiWorkspace, wikiRoot: stri
   const sources = new Map<string, Set<string>>();
   const inbound = new Map<string, Set<string>>();
   let reliable = pages.length > 0;
+  let legacySources = false;
   for (const relative of pages) {
     let parsed;
     try {
@@ -119,8 +121,10 @@ async function inspectPageGraph(workspace: ResolvedWikiWorkspace, wikiRoot: stri
       reliable = false;
       continue;
     }
-    const resources = parsed.frontmatter.sources;
-    if (!Array.isArray(resources) || !resources.length || resources.some((resource) => typeof resource !== "string" || !resource.trim())) {
+    const rawSources = parsed.frontmatter.sources;
+    const resources = okfSources(rawSources)?.map((source) => source.resource);
+    if (!resources?.length) {
+      if (Array.isArray(rawSources) && rawSources.some((resource) => typeof resource === "string")) legacySources = true;
       reliable = false;
       continue;
     }
@@ -142,7 +146,7 @@ async function inspectPageGraph(workspace: ResolvedWikiWorkspace, wikiRoot: stri
       inbound.set(linkedPage, inboundPages);
     }
   }
-  return { pages, sources, inbound, reliable };
+  return { pages, sources, inbound, reliable, legacySources };
 }
 
 function lineCount(text: string): number {
@@ -224,7 +228,9 @@ export async function inspectWiki(cwd: string): Promise<WikiInspection> {
     paths: change.paths.map((relative) => workspacePath(source, relative)),
   }))));
   const changedPaths = [...new Set(changed.flatMap((change) => change.paths))].sort();
-  const graph = wikiExists ? await inspectPageGraph(workspace, wikiRoot) : { pages: [], sources: new Map(), inbound: new Map(), reliable: false };
+  const graph = wikiExists
+    ? await inspectPageGraph(workspace, wikiRoot)
+    : { pages: [], sources: new Map(), inbound: new Map(), reliable: false, legacySources: false };
   const directlyImpactedPages = impactedPages(graph, changedPaths);
   // A plain workspace has no trusted cross-repository generation baseline. A
   // current Git diff can safely drive refresh only when valid citations map it
@@ -248,5 +254,8 @@ export async function inspectWiki(cwd: string): Promise<WikiInspection> {
     existingPages: [...graph.pages].sort(),
     impactedPages: mode === "refresh" ? directlyImpactedPages : graph.pages,
     wikiDrift: false,
+    refreshRequiresGenerateReason: graph.legacySources
+      ? "Existing Wiki uses legacy source citations; run /wiki generate to rebuild it as OKF v0.2 before refreshing"
+      : undefined,
   };
 }

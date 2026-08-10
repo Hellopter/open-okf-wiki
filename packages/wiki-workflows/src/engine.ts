@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createWikiArtifactStore, type WikiArtifactKind, type WikiArtifactRef, type WikiArtifactStore } from "./artifact-store.js";
 import {
-  MAX_RESEARCH_SCOPES_PER_BATCH,
+  parseResearchArtifact,
+  parseResearchSubmission,
   parseReviewSubmission,
   parseSynthesisSubmission,
 } from "./control-submissions.js";
@@ -14,7 +16,7 @@ import { latestPhaseIteration } from "./phase-iterations.js";
 import { createWikiRunSession, parseWikiRunSession } from "./session.js";
 import { isWikiRunSnapshot } from "./snapshot-validation.js";
 import type { WikiInspection, WikiMode, WikiValidation, WikiValidationIssue } from "./types.js";
-import { finalizeWiki, validateWiki } from "./validate.js";
+import { finalizeWiki, materializeWikiIndexes, validateWiki, validateWikiPage } from "./validate.js";
 import {
   EMPTY_NODE_METRICS,
   type WikiAgentExecutionResult,
@@ -28,6 +30,8 @@ import {
   type WikiSpec,
   type WikiSynthesisResult,
   type WikiResearchReceipt,
+  type WikiResearchArtifact,
+  type WikiResearchFinding,
   type WikiResearchScope,
   type WikiReviewDefect,
   type WikiRunEvent,
@@ -40,10 +44,12 @@ import {
 } from "./workflow-types.js";
 
 const MAX_NODE_ATTEMPTS = 3;
+const MAX_CONCURRENT_RESEARCHERS = 4;
 const MAX_CONCURRENT_WRITERS = 4;
 const MAX_LOCAL_REPAIR_ROUNDS_PER_PLAN = 3;
 const MAX_STRUCTURAL_RESYNTHESES = 1;
-const MAX_SUPPLEMENTAL_RESEARCH_BATCHES = 1;
+const DEFAULT_MAX_RESEARCH_ROUNDS = 6;
+const REQUIRED_DRY_COVERAGE_AUDITS = 2;
 const MAX_NODE_OUTPUT_CHARS = 48 * 1024;
 const MAX_NODE_HISTORY_ENTRIES = 48;
 const MAX_NODE_HISTORY_CHARS = 24 * 1024;
@@ -80,6 +86,8 @@ export class WikiWorkflowEngine {
     this.dependencies = {
       inspect: options.inspect ?? inspectWiki,
       validate: options.validate ?? validateWiki,
+      validatePage: options.validatePage ?? validateWikiPage,
+      materializeIndexes: options.materializeIndexes ?? materializeWikiIndexes,
       finalize: options.finalize ?? finalizeWiki,
       executor: options.executor ?? createPiAgentExecutor(),
       artifactStore: options.artifactStore,
@@ -98,7 +106,7 @@ export class WikiWorkflowEngine {
     this.ensureArtifactStore(request.cwd);
     const inspectionNode = this.newNode("inspect", "Inspect Git scope", [], { requestedMode: request.mode }, { id: "inspect", title: "Inspect" });
     this.current = {
-      version: 5,
+      version: 6,
       id: this.newId(),
       cwd: path.resolve(request.cwd),
       requestedMode: request.mode,
@@ -107,6 +115,7 @@ export class WikiWorkflowEngine {
       status: "running",
       round: 0,
       sourceRestartCount: 0,
+      maxResearchRounds: validMaxResearchRounds(request.maxResearchRounds),
       nodes: [inspectionNode],
       events: [],
       createdAt,
@@ -351,9 +360,15 @@ export class WikiWorkflowEngine {
     while (this.current?.status === "running") {
       const runnable = this.runnableNodes();
       if (runnable.length === 0) return;
-      const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_RESEARCH_SCOPES_PER_BATCH);
+      const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_CONCURRENT_RESEARCHERS);
       if (research.length > 0) {
         await this.executeBatch(research);
+        this.emitPendingTerminalEvent();
+        continue;
+      }
+      const verification = runnable.filter((node) => node.kind === "validate" || node.kind === "review");
+      if (verification.length > 0) {
+        await this.executeBatch(verification);
         this.emitPendingTerminalEvent();
         continue;
       }
@@ -371,6 +386,27 @@ export class WikiWorkflowEngine {
     const results = await Promise.allSettled(nodes.map(async (node) => await this.executeNode(node)));
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (rejected) throw rejected.reason;
+    if (this.current?.status === "running") await this.reconcileCompletedBatch(nodes);
+  }
+
+  /** Re-run idempotent fan-in transitions after every concurrent node has published its terminal status. */
+  private async reconcileCompletedBatch(nodes: WikiNode[]): Promise<void> {
+    const groups = new Map<string, WikiNode>();
+    for (const node of nodes) {
+      if (node.status !== "succeeded") continue;
+      const groupKey = node.kind === "research"
+        ? recordValue(node.input, "researchGroupId")
+        : node.kind === "write"
+          ? recordValue(node.input, "writeGroupId")
+          : node.kind === "validate" || node.kind === "review"
+            ? recordValue(node.input, "verificationGroupId")
+            : undefined;
+      if (typeof groupKey === "string") groups.set(`${node.kind === "review" ? "validate" : node.kind}:${groupKey}`, node);
+    }
+    for (const node of groups.values()) {
+      if (this.current?.status !== "running") return;
+      await this.afterSuccess(node);
+    }
   }
 
   private runnableNodes(): WikiNode[] {
@@ -421,7 +457,9 @@ export class WikiWorkflowEngine {
     } catch (error) {
       if (node.status !== "running") return;
       const loopBudgetExceeded = isLoopBudgetError(error);
-      node.status = controller.signal.aborted ? "cancelled" : loopBudgetExceeded ? "blocked" : "failed";
+      const retryValidator = error instanceof WikiAgentProtocolError
+        && error.code === "validator_infrastructure" && node.attempt < MAX_NODE_ATTEMPTS;
+      node.status = controller.signal.aborted ? "cancelled" : retryValidator ? "queued" : loopBudgetExceeded ? "blocked" : "failed";
       if (error instanceof WikiAgentProtocolError) {
         node.output = retainedOutput(error.output || node.output);
         node.history = retainedHistory(error.history.length ? error.history : node.history);
@@ -436,12 +474,15 @@ export class WikiWorkflowEngine {
       const finishedAt = this.now();
       node.activity = { state: "completed", message: node.error.message, updatedAt: finishedAt };
       node.finishedAt = finishedAt;
-      if ((run.status === "running" || run.status === "paused") && loopBudgetExceeded) {
+      if (retryValidator) {
+        node.activity = { state: "retrying", message: node.error.message, updatedAt: finishedAt };
+        this.emit("node_retried", node.id, node.error.message);
+      } else if ((run.status === "running" || run.status === "paused") && loopBudgetExceeded) {
         this.markTerminalRun("blocked", node.error.message, node.id, finishedAt);
       } else if ((run.status === "running" || run.status === "paused") && node.status === "failed") {
         this.markTerminalRun("failed", `${node.label} failed`, node.id, finishedAt);
       }
-      this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
+      if (!retryValidator) this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
     } finally {
       this.controllers.delete(node.id);
     }
@@ -462,7 +503,7 @@ export class WikiWorkflowEngine {
       if (latestInspection.sourceFingerprint !== run.inspection?.sourceFingerprint) {
         return { result: { sourceDrift: true, inspection: latestInspection } };
       }
-      const finalization = await this.dependencies.finalize(run.cwd, specForSynthesis(run, synthesisNodeIdFor(node, run)));
+      const finalization = await this.dependencies.finalize(run.cwd, specForSynthesis(run, synthesisNodeIdFor(node, run)), "wiki", this.now());
       return { result: finalization };
     }
     const role = roleFor(node.kind);
@@ -484,6 +525,16 @@ export class WikiWorkflowEngine {
       signal,
       validateControlSubmission: node.kind === "synthesis" || node.kind === "review"
         ? (submission) => this.validateControlSubmission(node, submission)
+        : undefined,
+      validatePageSubmission: node.kind === "write"
+        ? async (page) => {
+          const spec = specForSynthesis(run, pagePacketInputFor(node).synthesisNodeId);
+          const issues = await this.dependencies.validatePage(run.cwd, spec, page);
+          if (issues.length) return { ok: false, issues };
+          const sha256 = await hashWikiPage(run.cwd, page);
+          if (!sha256) return { ok: false, issues: [{ code: "missing-page", message: `Target page is missing: ${page}` }] };
+          return { ok: true, submission: { page, sha256 } };
+        }
         : undefined,
       onActivity: (activity, metrics) => this.updateActivity(node.id, activity, metrics),
       onOutput: (output) => this.updateOutput(node.id, output),
@@ -519,9 +570,7 @@ export class WikiWorkflowEngine {
       // reads the required artifact before returning, so this fallback cannot
       // hide a missing model-authored handoff in normal operation.
       if (!isMissingArtifactError(error)) throw error;
-      const content = node.kind === "research"
-        ? typeof value === "string" ? value : undefined
-        : JSON.stringify(value);
+      const content = JSON.stringify(value);
       if (!content) throw error;
       return await store.write({ ...location, content });
     }
@@ -545,12 +594,14 @@ export class WikiWorkflowEngine {
     for (const researchId of researchIds) {
       const researchNode = run.nodes.find((candidate) => candidate.id === researchId && candidate.kind === "research");
       if (!researchNode || !isResearchReceipt(researchNode.result)) continue;
-      await store.read(researchNode.result.artifact);
+      const parsedArtifact = parseResearchArtifact(await store.read(researchNode.result.artifact));
       receipts.push({
         scopeId: researchNode.result.scopeId,
         sourcePaths: researchInputFor(researchNode).scope.sourcePaths,
         task: researchNode.result.task,
         artifactPath: store.resolve(researchNode.result.artifact),
+        findings: researchFindings(researchNode.result.scopeId, parsedArtifact),
+        gaps: parsedArtifact.gaps,
       });
     }
     return receipts.length ? receipts : undefined;
@@ -592,6 +643,9 @@ export class WikiWorkflowEngine {
     switch (node.kind) {
       case "inspect": {
         const inspection = parseInspection(node.result);
+        if (run.requestedMode === "refresh" && inspection.refreshRequiresGenerateReason) {
+          throw new Error(inspection.refreshRequiresGenerateReason);
+        }
         run.inspection = inspection;
         run.effectiveMode = run.requestedMode === "generate" ? "generate" : inspection.mode;
         run.inspectionFingerprint = inspectionFingerprint(inspection);
@@ -606,11 +660,26 @@ export class WikiWorkflowEngine {
             ...researchInput.priorResearchIds,
             ...siblings.filter((candidate) => candidate.status === "succeeded" || candidate.id === node.id).map((candidate) => candidate.id),
           ]);
+          const priorCriticalFindingIds = new Set(researchInput.priorResearchIds.flatMap((researchId) => {
+            const result = run.nodes.find((candidate) => candidate.id === researchId)?.result;
+            return isResearchReceipt(result)
+              ? result.findings.filter((finding) => finding.priority === "critical").map((finding) => finding.id)
+              : [];
+          }));
+          const currentReceipts = siblings
+            .map((candidate) => candidate.id === node.id ? node.result : candidate.result)
+            .filter((result): result is WikiResearchReceipt => isResearchReceipt(result));
+          const auditDry = researchInput.continuationMode === "audit"
+            && currentReceipts.every((receipt) => receipt.criticalGapSignatures.length === 0
+              && receipt.findings
+                .filter((finding) => finding.priority === "critical")
+                .every((finding) => priorCriticalFindingIds.has(finding.id)));
           this.queueSynthesis({
             dependsOn: siblings.map((candidate) => candidate.id),
             researchIds: receiptIds,
             supplementalBatch: researchInput.batch,
-            mode: researchInput.continuationMode,
+            mode: researchInput.structuralRoundId ? "structural" : researchInput.continuationMode,
+            dryAuditPasses: auditDry ? researchInput.dryAuditPasses + 1 : 0,
             priorSynthesisNodeId: researchInput.priorSynthesisNodeId,
             structuralRoundId: researchInput.structuralRoundId,
             trigger: researchInput.trigger,
@@ -628,11 +697,21 @@ export class WikiWorkflowEngine {
           return;
         }
         this.ensureSynthesisSubmissionFitsRun(synthesis, input);
+        if (input.dryAuditPasses < REQUIRED_DRY_COVERAGE_AUDITS) {
+          this.queueCoverageAudit([node.id], node.id, input);
+          return;
+        }
         this.queuePageWriters(node.id, synthesis.spec);
         return;
       }
       case "write": {
         const input = pagePacketInputFor(node);
+        const submitted = node.result;
+        if (!isRecord(submitted) || submitted.page !== input.page.path || typeof submitted.sha256 !== "string") {
+          throw new Error(`Writer did not submit the assigned page: ${input.page.path}`);
+        }
+        const currentSha256 = await hashWikiPage(run.cwd, input.page.path);
+        if (currentSha256 !== submitted.sha256) throw new Error(`Page changed after validation: ${input.page.path}`);
         if (input.intent === "repair" && input.checkNoProgress) {
           const afterSha256 = await hashWikiPage(run.cwd, input.page.path) ?? MISSING_PAGE_SHA256;
           if (afterSha256 === input.beforeSha256) {
@@ -642,71 +721,21 @@ export class WikiWorkflowEngine {
         }
         const siblings = run.nodes.filter((candidate) => candidate.kind === "write" && valueIs(candidate.input, "writeGroupId", input.writeGroupId));
         if (siblings.every((candidate) => candidate.id === node.id || candidate.status === "succeeded")) {
-          this.queueValidation(siblings.map((candidate) => candidate.id), input.synthesisNodeId);
+          await this.queueVerification(siblings.map((candidate) => candidate.id), input.synthesisNodeId);
         }
         return;
       }
       case "validate": {
         const validation = parseValidation(node.result);
         node.result = validation;
-        const synthesisNodeId = synthesisNodeIdFor(node, run);
-        if (validation.ok) {
-          this.queueNode("review", "Review Wiki", [node.id], {
-            validation,
-            synthesisNodeId,
-            verificationGroupId: recordValue(node.input, "verificationGroupId"),
-          }, { id: "verify", title: "Verify" });
-        } else {
-          const signature = validationIssuesFingerprint(validation.issues);
-          if (signature === this.previousValidationSignature(node.id)) {
-            this.markTerminalRun("blocked", "Validation produced the same unresolved error set twice", node.id);
-            return;
-          }
-          if (validation.issues.some((issue) => !issue.page)) {
-            this.markTerminalRun("blocked", "Validation found a global safety issue that cannot be routed to one page", node.id);
-            return;
-          }
-          await this.queuePageRepairs([node.id], synthesisNodeId, validation.issues.map((issue) => issue.page!), { validation });
-        }
+        await this.maybeCompleteVerification(node);
         return;
       }
       case "review": {
         const review = parseReviewSubmission(node.result);
         node.result = review;
         this.ensureReviewSubmissionFitsRun(node, review);
-        if (review.defects.length === 0) {
-          this.queueNode("finalize", "Finalize Wiki", [node.id], {
-            synthesisNodeId: synthesisNodeIdFor(node, run),
-            verificationGroupId: recordValue(node.input, "verificationGroupId"),
-          }, { id: "verify", title: "Verify" });
-          return;
-        }
-        const signature = defectsFingerprint(review.defects);
-        const previous = this.previousReviewSignature(node.id);
-        if (signature === previous) {
-          this.markTerminalRun("blocked", "Review produced the same unresolved defect set twice", node.id);
-          return;
-        }
-        const synthesisNodeId = synthesisNodeIdFor(node, run);
-        const routedReview = routeReviewDefects(review, specForSynthesis(run, synthesisNodeId));
-        const structural = review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
-        if (structural) {
-          const resyntheses = new Set(run.nodes
-            .filter((candidate) => candidate.kind === "synthesis" && candidate.status !== "invalidated" && candidate.status !== "cancelled")
-            .map((candidate) => synthesisInputFor(candidate))
-            .filter((input) => input.mode === "structural" && input.structuralRoundId)
-            .map((input) => input.structuralRoundId)).size;
-          if (resyntheses >= MAX_STRUCTURAL_RESYNTHESES) {
-            this.markTerminalRun("blocked", `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`, node.id);
-            return;
-          }
-          this.queueStructuralSynthesis(node.id, synthesisNodeId, routedReview);
-        } else await this.queuePageRepairs(
-          [node.id],
-          synthesisNodeId,
-          review.defects.flatMap((defect) => "page" in defect ? [defect.page] : []),
-          { review: routedReview },
-        );
+        await this.maybeCompleteVerification(node);
         return;
       }
       case "finalize": {
@@ -744,10 +773,12 @@ export class WikiWorkflowEngine {
   }
 
   private queueSupplementalResearch(synthesisNodeId: string, scopes: WikiResearchScope[], parent: SynthesisNodeInput): WikiNode[] {
+    const nextRound = parent.supplementalBatch + 1;
+    this.ensureResearchRoundAvailable(nextRound);
     return this.queueResearch(
       synthesisNodeId,
       scopes,
-      1,
+      nextRound,
       "research",
       "Research",
       parent.mode === "structural" ? "structural" : "supplemental",
@@ -755,11 +786,36 @@ export class WikiWorkflowEngine {
       parent.structuralRoundId,
       parent.trigger,
       parent.researchIds,
+      0,
+    );
+  }
+
+  private queueCoverageAudit(dependsOn: string[], synthesisNodeId: string, parent: SynthesisNodeInput): WikiNode[] {
+    const nextRound = parent.supplementalBatch + 1;
+    this.ensureResearchRoundAvailable(nextRound);
+    const sourcePaths = uniqueStrings(this.requireRun().inspection?.sourcePaths ?? []);
+    const scope: WikiResearchScope = {
+      id: `coverage-audit:${nextRound}:${this.newId()}`,
+      sourcePaths,
+      task: "Audit all declared sources against the accumulated findings. Report only missing critical domains, concepts, flows, boundaries, state/data behavior, and unresolved critical evidence gaps.",
+    };
+    return this.queueResearch(
+      dependsOn,
+      [scope],
+      nextRound,
+      "research",
+      "Research",
+      "audit",
+      parent.priorSynthesisNodeId ?? synthesisNodeId,
+      parent.structuralRoundId,
+      parent.trigger,
+      parent.researchIds,
+      parent.dryAuditPasses,
     );
   }
 
   private queueResearch(
-    dependsOn: string,
+    dependsOn: string | string[],
     scopes: WikiResearchScope[],
     batch: number,
     phaseId: "research",
@@ -769,13 +825,14 @@ export class WikiWorkflowEngine {
     structuralRoundId?: string,
     trigger?: unknown,
     priorResearchIds: string[] = [],
+    dryAuditPasses = 0,
   ): WikiNode[] {
     const researchGroupId = `${phaseId}:${this.newId()}`;
     return scopes.map((scope) => this.queueNode(
       "research",
       batch === 0 ? `Survey: ${scope.id}` : `Research: ${scope.id}`,
-      [dependsOn],
-      { batch, scope, continuationMode, priorSynthesisNodeId, structuralRoundId, trigger, researchGroupId, priorResearchIds },
+      Array.isArray(dependsOn) ? dependsOn : [dependsOn],
+      { batch, scope, continuationMode, dryAuditPasses, priorSynthesisNodeId, structuralRoundId, trigger, researchGroupId, priorResearchIds },
       { id: phaseId, title: phaseTitle },
     ));
   }
@@ -798,18 +855,17 @@ export class WikiWorkflowEngine {
     );
   }
 
-  private queueStructuralSynthesis(reviewNodeId: string, synthesisNodeId: string, review: unknown): WikiNode | undefined {
-    const researchIds = this.requireRun().nodes
-      .filter((node) => node.kind === "research" && node.status === "succeeded" && isResearchReceipt(node.result))
-      .map((node) => node.id);
-    return this.queueSynthesis({
-      dependsOn: [reviewNodeId],
-      researchIds,
-      supplementalBatch: this.hasSupplementalResearch() ? 1 : 0,
+  private queueStructuralResearch(dependsOn: string[], synthesisNodeId: string, trigger: unknown): WikiNode[] {
+    const synthesis = this.nodeById(synthesisNodeId);
+    if (!synthesis) throw new Error(`Unknown synthesis node: ${synthesisNodeId}`);
+    const input = synthesisInputFor(synthesis);
+    return this.queueCoverageAudit(dependsOn, synthesisNodeId, {
+      ...input,
       mode: "structural",
+      dryAuditPasses: 0,
       priorSynthesisNodeId: synthesisNodeId,
-      structuralRoundId: reviewNodeId,
-      trigger: { validation: recordValue(this.nodeById(reviewNodeId)?.input, "validation"), review },
+      structuralRoundId: dependsOn.join(":"),
+      trigger,
     });
   }
 
@@ -828,11 +884,7 @@ export class WikiWorkflowEngine {
     const writeGroupId = `write:${this.newId()}`;
     const phase = { id: "write", title: "Write" };
     const nodes = selected.map(({ domain, page }) => {
-      const researchIds = page.researchScopeIds.map((scopeId) => {
-        const research = researchNodes.find((candidate) => isResearchReceipt(candidate.result) && candidate.result.scopeId === scopeId);
-        if (!research) throw new Error(`No completed research receipt exists for page ${page.path} scope ${scopeId}`);
-        return research.id;
-      });
+      const researchIds = selectResearchIdsForFindings(researchNodes, page);
       return this.queueNode(
         "write",
         `Write page: ${page.path}`,
@@ -871,17 +923,81 @@ export class WikiWorkflowEngine {
     return [...nodes, overviewNode];
   }
 
-  private queueValidation(sourceNodeIds: string[], synthesisNodeId: string): WikiNode | undefined {
-    const verificationGroupId = sourceNodeIds
-      .map((id) => this.nodeById(id))
-      .filter((candidate): candidate is WikiNode => candidate?.kind === "write")
-      .map((candidate) => pagePacketInputFor(candidate).writeGroupId)[0] ?? `verify:${this.newId()}`;
-    const existing = this.requireRun().nodes.find((node) => node.kind === "validate"
+  private async queueVerification(sourceNodeIds: string[], synthesisNodeId: string): Promise<WikiNode[]> {
+    const run = this.requireRun();
+    const existing = run.nodes.filter((node) => (node.kind === "validate" || node.kind === "review")
       && valueIs(node.input, "synthesisNodeId", synthesisNodeId)
       && sameStringSet(recordStringArray(node.input, "sourceNodeIds"), sourceNodeIds)
       && !["invalidated", "cancelled", "failed", "blocked"].includes(node.status));
-    if (existing) return undefined;
-    return this.queueNode("validate", "Validate Wiki", sourceNodeIds, { sourceNodeIds, synthesisNodeId, verificationGroupId }, { id: "verify", title: "Verify" });
+    if (existing.length) return existing;
+    await this.dependencies.materializeIndexes(run.cwd, specForSynthesis(run, synthesisNodeId));
+    const verificationGroupId = `verify:${this.newId()}`;
+    const common = { sourceNodeIds, synthesisNodeId, verificationGroupId };
+    return [
+      this.queueNode("validate", "Validate Wiki", sourceNodeIds, common, { id: "verify", title: "Verify" }),
+      this.queueNode("review", "Review Wiki", sourceNodeIds, common, { id: "verify", title: "Verify" }),
+    ];
+  }
+
+  private async maybeCompleteVerification(node: WikiNode): Promise<void> {
+    const run = this.requireRun();
+    const verificationGroupId = recordValue(node.input, "verificationGroupId");
+    if (typeof verificationGroupId !== "string") throw new Error("Verification node has no group ID");
+    const pair = run.nodes.filter((candidate) => (candidate.kind === "validate" || candidate.kind === "review")
+      && valueIs(candidate.input, "verificationGroupId", verificationGroupId));
+    const validationNode = pair.find((candidate) => candidate.kind === "validate");
+    const reviewNode = pair.find((candidate) => candidate.kind === "review");
+    if (!validationNode || !reviewNode
+      || ![validationNode, reviewNode].every((candidate) => candidate.id === node.id || candidate.status === "succeeded")) return;
+    if (run.nodes.some((candidate) => !["invalidated", "cancelled", "failed", "blocked"].includes(candidate.status)
+      && candidate.dependsOn.includes(validationNode.id) && candidate.dependsOn.includes(reviewNode.id))) return;
+
+    const validation = parseValidation(validationNode.result);
+    const review = parseReviewSubmission(reviewNode.result);
+    if (!validation.ok && validationIssuesFingerprint(validation.issues) === this.previousValidationSignature(validationNode.id)) {
+      this.markTerminalRun("blocked", "Validation produced the same unresolved error set twice", validationNode.id);
+      return;
+    }
+    if (review.defects.length && defectsFingerprint(review.defects) === this.previousReviewSignature(reviewNode.id)) {
+      this.markTerminalRun("blocked", "Review produced the same unresolved defect set twice", reviewNode.id);
+      return;
+    }
+    const structuralValidation = validation.issues.filter(isStructuralValidationIssue);
+    const unroutableValidation = validation.issues.filter((issue) => !issue.page && !isStructuralValidationIssue(issue));
+    if (unroutableValidation.length) {
+      this.markTerminalRun("blocked", "Validation found a global safety issue that cannot be routed to one page", validationNode.id);
+      return;
+    }
+
+    const synthesisNodeId = synthesisNodeIdFor(node, run);
+    const spec = specForSynthesis(run, synthesisNodeId);
+    const routedReview = routeReviewDefects(review, spec);
+    const dependsOn = [validationNode.id, reviewNode.id];
+    const structural = structuralValidation.length > 0
+      || review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
+    if (structural) {
+      const resyntheses = new Set(run.nodes
+        .filter((candidate) => candidate.kind === "synthesis" && !["invalidated", "cancelled"].includes(candidate.status))
+        .map((candidate) => synthesisInputFor(candidate))
+        .filter((input) => input.mode === "structural" && input.structuralRoundId)
+        .map((input) => input.structuralRoundId)).size;
+      if (resyntheses >= MAX_STRUCTURAL_RESYNTHESES) {
+        this.markTerminalRun("blocked", `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`, reviewNode.id);
+        return;
+      }
+      this.queueStructuralResearch(dependsOn, synthesisNodeId, { validation, review: routedReview });
+      return;
+    }
+
+    const pagePaths = uniqueStrings([
+      ...validation.issues.flatMap((issue) => issue.page ? [issue.page] : []),
+      ...review.defects.flatMap((defect) => "page" in defect ? [defect.page] : []),
+    ]);
+    if (pagePaths.length) {
+      await this.queuePageRepairs(dependsOn, synthesisNodeId, pagePaths, { validation, review: routedReview });
+      return;
+    }
+    this.queueNode("finalize", "Finalize Wiki", dependsOn, { synthesisNodeId, verificationGroupId }, { id: "verify", title: "Verify" });
   }
 
   private async queuePageRepairs(
@@ -961,10 +1077,11 @@ export class WikiWorkflowEngine {
     return [...contentNodes, overviewNode];
   }
 
-  private hasSupplementalResearch(): boolean {
-    return this.requireRun().nodes.some((node) => node.kind === "research"
-      && !["invalidated", "cancelled"].includes(node.status)
-      && researchInputFor(node).batch > 0);
+  private ensureResearchRoundAvailable(nextRound: number): void {
+    const maxResearchRounds = this.requireRun().maxResearchRounds;
+    if (nextRound >= maxResearchRounds) {
+      throw new Error(`Research reached the ${maxResearchRounds}-round limit before coverage saturated`);
+    }
   }
 
   /** Validate control data against this run before a submit tool records it. */
@@ -978,9 +1095,7 @@ export class WikiWorkflowEngine {
 
   private ensureSynthesisSubmissionFitsRun(synthesis: WikiSynthesisResult, input: SynthesisNodeInput): void {
     if (synthesis.decision === "expand") {
-      if (this.hasSupplementalResearch()) {
-        throw new Error(`Synthesis may request at most ${MAX_SUPPLEMENTAL_RESEARCH_BATCHES} supplemental research batch per run`);
-      }
+      this.ensureResearchRoundAvailable(input.supplementalBatch + 1);
       this.ensureNewResearchScopes(synthesis.researchScopes);
       this.ensureResearchSourcePaths(synthesis.researchScopes);
       return;
@@ -1012,16 +1127,35 @@ export class WikiWorkflowEngine {
   }
 
   private ensureSynthesisSpecReceipts(spec: WikiSpec, input: SynthesisNodeInput): void {
-    const receiptIds = new Set(input.researchIds
+    const receipts = input.researchIds
       .map((nodeId) => this.requireRun().nodes.find((node) => node.id === nodeId)?.result)
-      .filter((result): result is WikiResearchReceipt => isResearchReceipt(result))
-      .map((receipt) => receipt.scopeId));
-    for (const domain of spec.domains) {
-      for (const page of domain.pages) {
-        for (const scopeId of page.researchScopeIds) {
-          if (!receiptIds.has(scopeId)) throw new Error(`WikiSpec page ${page.path} references unknown research scope: ${scopeId}`);
-        }
+      .filter((result): result is WikiResearchReceipt => isResearchReceipt(result));
+    const findings = new Map(receipts.flatMap((receipt) => receipt.findings).map((finding) => [finding.id, finding]));
+    const selected = new Set(specPages(spec).flatMap(({ page }) => page.findingIds));
+    const omitted = new Set(spec.omissions.map((omission) => omission.findingId));
+    for (const findingId of [...selected, ...omitted]) {
+      if (!findings.has(findingId)) throw new Error(`WikiSpec references unknown research finding: ${findingId}`);
+    }
+    for (const findingId of selected) {
+      if (omitted.has(findingId)) throw new Error(`WikiSpec both selects and omits research finding: ${findingId}`);
+    }
+    for (const finding of findings.values()) {
+      if (!selected.has(finding.id) && !omitted.has(finding.id)) {
+        throw new Error(`WikiSpec does not account for research finding: ${finding.id}`);
       }
+      if (finding.priority === "critical" && omitted.has(finding.id)) {
+        throw new Error(`WikiSpec may not omit critical research finding: ${finding.id}`);
+      }
+    }
+    const researchNodes = input.researchIds
+      .map((nodeId) => this.requireRun().nodes.find((node) => node.id === nodeId))
+      .filter((node): node is WikiNode => node?.kind === "research" && isResearchReceipt(node.result));
+    const latestBatch = Math.max(...researchNodes.map((node) => researchInputFor(node).batch));
+    const criticalGapCount = researchNodes
+      .filter((node) => researchInputFor(node).batch === latestBatch)
+      .reduce((total, node) => total + (node.result as WikiResearchReceipt).criticalGapSignatures.length, 0);
+    if (criticalGapCount > 0) {
+      throw new Error(`WikiSpec cannot finalize with ${criticalGapCount} unresolved critical research gap(s)`);
     }
   }
 
@@ -1347,7 +1481,7 @@ async function promptFor(
   );
   switch (node.kind) {
     case "research":
-      return `${guidance}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\`\n\n${artifactWriteContext(artifactWritePath, "Markdown research receipt")}`;
+      return `${guidance}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\`\n\n${artifactWriteContext(artifactWritePath, "JSON research artifact")}`;
     case "synthesis":
       return `${guidance}\n\n${synthesisContext(node, run, researchReceipts)}\n\n${artifactWriteContext(artifactWritePath, "JSON synthesis decision")}`;
     case "write": {
@@ -1426,13 +1560,19 @@ function synthesisContext(node: WikiNode, run: WikiRunSnapshot, researchReceipts
   }
   sections.push(
     "## Available Research Receipts",
-    "Use only the exact `scopeId` values below in page `researchScopeIds`. Read every selected `artifactPath` before planning that page.",
+    "Use only the exact finding `id` values below in page `findingIds`. Account for every finding by assigning it to at least one page or adding a justified non-critical entry to `omissions`. Read every selected `artifactPath` before planning.",
     "```json",
     prettyJson(researchReceipts ?? []),
     "```",
     "## Synthesis Round",
     "```json",
-    prettyJson({ mode: input.mode, supplementalBatch: input.supplementalBatch, maxSupplementalBatches: MAX_SUPPLEMENTAL_RESEARCH_BATCHES }),
+    prettyJson({
+      mode: input.mode,
+      researchRound: input.supplementalBatch + 1,
+      maxResearchRounds: run.maxResearchRounds,
+      dryCoverageAudits: input.dryAuditPasses,
+      requiredDryCoverageAudits: REQUIRED_DRY_COVERAGE_AUDITS,
+    }),
     "```",
   );
   return sections.join("\n");
@@ -1456,9 +1596,9 @@ function reviewContext(node: WikiNode, run: WikiRunSnapshot): string {
     "```json",
     prettyJson(specForSynthesis(run, synthesisNodeId)),
     "```",
-    "## Validation Context",
+    "## Candidate Wiki Files",
     "```json",
-    prettyJson(recordValue(node.input, "validation")),
+    prettyJson(wikiReadPathsFor(node, run) ?? []),
     "```",
   ].join("\n");
 }
@@ -1466,12 +1606,14 @@ function reviewContext(node: WikiNode, run: WikiRunSnapshot): string {
 function writerFeedbackForPrompt(value: unknown): unknown {
   if (!isRecord(value)) return value;
   if (Array.isArray(value.defects)) return { defects: value.defects.map(publicReviewDefect).filter(Boolean) };
+  const feedback: Record<string, unknown> = {};
   if (isRecord(value.review) && Array.isArray(value.review.defects)) {
-    return { review: { defects: value.review.defects.map(publicReviewDefect).filter(Boolean) } };
+    feedback.review = { defects: value.review.defects.map(publicReviewDefect).filter(Boolean) };
   }
   if (isRecord(value.validation) && Array.isArray(value.validation.issues)) {
-    return { validation: { issues: value.validation.issues.map(publicValidationIssue).filter(Boolean) } };
+    feedback.validation = { issues: value.validation.issues.map(publicValidationIssue).filter(Boolean) };
   }
+  if (Object.keys(feedback).length) return feedback;
   if (typeof value.reason === "string") return { reason: value.reason };
   return {};
 }
@@ -1534,6 +1676,9 @@ function parseInspection(value: unknown): WikiInspection {
     ...value,
     sourcePaths: uniqueStrings(value.sourcePaths),
     existingPages: isStringArray(value.existingPages) ? uniqueStrings(value.existingPages).sort() : [],
+    refreshRequiresGenerateReason: typeof value.refreshRequiresGenerateReason === "string"
+      ? value.refreshRequiresGenerateReason
+      : undefined,
   } as WikiInspection;
 }
 
@@ -1557,13 +1702,59 @@ function isValidationIssue(value: unknown): value is WikiValidationIssue {
 
 function createResearchReceipt(node: WikiNode, run: WikiRunSnapshot, value: unknown, artifact: WikiArtifactRef): WikiResearchReceipt {
   const scope = researchInputFor(node).scope;
-  if (typeof value !== "string" || !value.trim()) throw new Error("Researcher must return a Markdown receipt");
+  const parsed = parseResearchSubmission(value);
+  const allowedRoots = new Set(scope.sourcePaths);
+  for (const finding of parsed.findings) {
+    for (const evidence of finding.evidence) {
+      const parsedEvidence = parseResearchEvidence(evidence);
+      if (!parsedEvidence || !allowedRoots.has(parsedEvidence.path.split("/", 1)[0]!)) {
+        throw new Error(`Research evidence is outside the assigned scope: ${evidence}`);
+      }
+      validateResearchEvidenceRange(run.cwd, parsedEvidence.path, parsedEvidence.end, evidence);
+    }
+  }
+  for (const gap of parsed.gaps) {
+    if (gap.sourcePaths.some((sourcePath) => !allowedRoots.has(sourcePath))) {
+      throw new Error(`Research gap is outside the assigned scope: ${gap.question}`);
+    }
+  }
   return {
     scopeId: scope.id,
     task: scope.task,
     sourceFingerprint: run.inspection?.sourceFingerprint ?? "unknown",
     artifact,
+    findings: researchFindings(scope.id, parsed).map((finding) => ({ id: finding.id, priority: finding.priority })),
+    criticalGapSignatures: parsed.gaps.filter((gap) => gap.priority === "critical").map(criticalGapSignature),
   };
+}
+
+function parseResearchEvidence(value: string): { path: string; end: number } | undefined {
+  const match = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/.exec(value);
+  if (!match) return undefined;
+  const start = Number(match[2]);
+  const end = Number(match[3] ?? match[2]);
+  if (end < start) return undefined;
+  return { path: match[1]!, end };
+}
+
+function validateResearchEvidenceRange(cwd: string, sourcePath: string, endLine: number, evidence: string): void {
+  const sourceName = sourcePath.split("/", 1)[0]!;
+  try {
+    const sourceRoot = realpathSync(path.resolve(cwd, sourceName));
+    const sourceFile = realpathSync(path.resolve(cwd, ...sourcePath.split("/")));
+    if (!pathIsInside(sourceRoot, sourceFile) || !statSync(sourceFile).isFile()) throw new Error("outside source");
+    if (lineCount(readFileSync(sourceFile, "utf8")) < endLine) throw new Error("line range");
+  } catch {
+    throw new Error(`Research evidence does not resolve to an existing source range: ${evidence}`);
+  }
+}
+
+function criticalGapSignature(gap: WikiResearchArtifact["gaps"][number]): string {
+  return createHash("sha256").update(stableStringify({
+    priority: gap.priority,
+    question: normalizeIssueText(gap.question).toLowerCase(),
+    sourcePaths: [...gap.sourcePaths].sort(),
+  })).digest("hex").slice(0, 16);
 }
 
 interface ResearchNodeInput {
@@ -1571,7 +1762,8 @@ interface ResearchNodeInput {
   scope: WikiResearchScope;
   researchGroupId: string;
   priorResearchIds: string[];
-  continuationMode: "initial" | "supplemental" | "structural";
+  continuationMode: "initial" | "supplemental" | "structural" | "audit";
+  dryAuditPasses: number;
   priorSynthesisNodeId?: string;
   structuralRoundId?: string;
   trigger?: unknown;
@@ -1582,12 +1774,15 @@ interface PromptResearchReceipt {
   sourcePaths: string[];
   task: string;
   artifactPath: string;
+  findings: WikiResearchFinding[];
+  gaps: WikiResearchArtifact["gaps"];
 }
 
 interface SynthesisNodeInput {
   researchIds: string[];
   supplementalBatch: number;
-  mode: "initial" | "supplemental" | "structural";
+  mode: "initial" | "supplemental" | "structural" | "audit";
+  dryAuditPasses: number;
   round: number;
   inspection?: WikiInspection;
   focus?: string;
@@ -1601,6 +1796,7 @@ interface QueueSynthesisInput {
   researchIds: string[];
   supplementalBatch: number;
   mode: SynthesisNodeInput["mode"];
+  dryAuditPasses: number;
   priorSynthesisNodeId?: string;
   structuralRoundId?: string;
   trigger?: unknown;
@@ -1624,7 +1820,8 @@ interface PagePacketInput {
 function researchInputFor(node: WikiNode): ResearchNodeInput {
   const input = node.input;
   if (!isRecord(input) || !Number.isInteger(input.batch) || input.batch < 0
-    || (input.continuationMode !== "initial" && input.continuationMode !== "supplemental" && input.continuationMode !== "structural")
+    || (input.continuationMode !== "initial" && input.continuationMode !== "supplemental" && input.continuationMode !== "structural" && input.continuationMode !== "audit")
+    || !Number.isInteger(input.dryAuditPasses) || input.dryAuditPasses < 0
     || !isRecord(input.scope)
     || typeof input.scope.id !== "string" || !input.scope.id.trim() || typeof input.scope.task !== "string" || !input.scope.task.trim()
     || !Array.isArray(input.scope.sourcePaths) || input.scope.sourcePaths.length === 0 || !input.scope.sourcePaths.every((value) => typeof value === "string" && value.trim())
@@ -1638,6 +1835,7 @@ function researchInputFor(node: WikiNode): ResearchNodeInput {
     researchGroupId: input.researchGroupId,
     priorResearchIds: [...input.priorResearchIds],
     continuationMode: input.continuationMode,
+    dryAuditPasses: input.dryAuditPasses,
     priorSynthesisNodeId: typeof input.priorSynthesisNodeId === "string" ? input.priorSynthesisNodeId : undefined,
     structuralRoundId: typeof input.structuralRoundId === "string" ? input.structuralRoundId : undefined,
     trigger: input.trigger,
@@ -1656,7 +1854,8 @@ function sameResearchBatch(node: WikiNode, expected: ResearchNodeInput): boolean
 function synthesisInputFor(node: WikiNode): SynthesisNodeInput {
   const input = node.input;
   if (!isRecord(input) || !Number.isInteger(input.supplementalBatch) || input.supplementalBatch < 0 || !Number.isInteger(input.round)
-    || (input.mode !== "initial" && input.mode !== "supplemental" && input.mode !== "structural")
+    || (input.mode !== "initial" && input.mode !== "supplemental" && input.mode !== "structural" && input.mode !== "audit")
+    || !Number.isInteger(input.dryAuditPasses) || input.dryAuditPasses < 0
     || !Array.isArray(input.researchIds) || !input.researchIds.every((id) => typeof id === "string")) {
     throw new Error("Synthesis node has an invalid input");
   }
@@ -1664,6 +1863,7 @@ function synthesisInputFor(node: WikiNode): SynthesisNodeInput {
     researchIds: [...input.researchIds],
     supplementalBatch: input.supplementalBatch,
     mode: input.mode,
+    dryAuditPasses: input.dryAuditPasses,
     round: input.round,
     inspection: isRecord(input.inspection) ? input.inspection as WikiInspection : undefined,
     focus: typeof input.focus === "string" ? input.focus : undefined,
@@ -1735,12 +1935,25 @@ function wikiReadPathsFor(node: WikiNode, run: WikiRunSnapshot): string[] | unde
     return (run.inspection?.existingPages ?? []).map(workspaceWikiPath);
   }
   if (node.kind !== "review") return undefined;
-  const validation = parseValidation(recordValue(node.input, "validation"));
   const spec = specForSynthesis(run, synthesisNodeIdFor(node, run));
   return uniqueStrings([
+    "wiki/index.md",
     ...specPages(spec).map(({ page }) => workspaceWikiPath(page.path)),
-    ...validation.obsoletePages.map(workspaceWikiPath),
+    ...derivedIndexWikiPaths(spec),
+    ...(run.inspection?.existingPages ?? []).map(workspaceWikiPath),
   ]);
+}
+
+function derivedIndexWikiPaths(spec: WikiSpec): string[] {
+  const directories = new Set<string>();
+  for (const { page } of specPages(spec)) {
+    let directory = path.posix.dirname(page.path);
+    while (directory && directory !== ".") {
+      directories.add(directory);
+      directory = path.posix.dirname(directory);
+    }
+  }
+  return [...directories].sort().map((directory) => `wiki/${directory}/index.md`);
 }
 
 /** Coordinator-authored evidence of the exact pages a writer was assigned. */
@@ -1804,7 +2017,8 @@ function isSynthesisFinalizeResult(value: unknown): value is Extract<WikiSynthes
   return isRecord(value) && value.decision === "finalize" && isRecord(value.spec)
     && Array.isArray(value.spec.domains)
     && Array.isArray(value.spec.crossLinks)
-    && Array.isArray(value.spec.sharedTerms);
+    && Array.isArray(value.spec.sharedTerms)
+    && Array.isArray(value.spec.omissions);
 }
 
 function ensureReviewTargets(defects: WikiReviewDefect[], spec: WikiSpec): void {
@@ -1815,26 +2029,22 @@ function ensureReviewTargets(defects: WikiReviewDefect[], spec: WikiSpec): void 
 }
 
 function repairInputForPage(input: Record<string, unknown>, pagePath: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
   const review = input.review;
   if (isRecord(review) && Array.isArray(review.defects)) {
-    return {
-      review: {
-        defects: review.defects.filter((defect) => isRecord(defect) && defect.page === pagePath),
-      },
-    };
+    result.review = { defects: review.defects.filter((defect) => isRecord(defect) && defect.page === pagePath) };
   }
   const validation = input.validation;
   if (isRecord(validation) && Array.isArray(validation.issues)) {
-    return { validation: { issues: validation.issues.filter((issue) => isRecord(issue) && issue.page === pagePath) } };
+    result.validation = { issues: validation.issues.filter((issue) => isRecord(issue) && issue.page === pagePath) };
   }
-  return input;
+  return Object.keys(result).length ? result : input;
 }
 
 function structuralFeedbackForPage(trigger: unknown, pagePath: string): Record<string, unknown> | undefined {
-  const review = recordValue(trigger, "review");
-  if (!isRecord(review) || !Array.isArray(review.defects)) return undefined;
-  const defects = review.defects.filter((defect) => isRecord(defect) && defect.page === pagePath);
-  return defects.length ? { defects } : undefined;
+  if (!isRecord(trigger)) return undefined;
+  const result = repairInputForPage(trigger, pagePath);
+  return result === trigger ? undefined : result;
 }
 
 function specPages(spec: WikiSpec): Array<{ domain: WikiSpec["domains"][number]; page: WikiSpec["domains"][number]["pages"][number] }> {
@@ -1888,14 +2098,24 @@ function routeReviewDefects(review: { defects: WikiReviewDefect[]; summary: stri
 }
 
 function researchIdsForPage(run: WikiRunSnapshot, page: WikiSpec["domains"][number]["pages"][number]): string[] {
-  return page.researchScopeIds.map((scopeId) => {
-    const research = [...run.nodes].reverse().find((candidate) => candidate.kind === "research"
-      && candidate.status === "succeeded"
-      && isResearchReceipt(candidate.result)
-      && candidate.result.scopeId === scopeId);
-    if (!research) throw new Error(`No completed research receipt exists for page ${page.path} scope ${scopeId}`);
-    return research.id;
-  });
+  return selectResearchIdsForFindings([...run.nodes].reverse().filter((candidate) => candidate.kind === "research"
+    && candidate.status === "succeeded" && isResearchReceipt(candidate.result)), page);
+}
+
+function selectResearchIdsForFindings(
+  researchNodes: WikiNode[],
+  page: WikiSpec["domains"][number]["pages"][number],
+): string[] {
+  const selected: string[] = [];
+  for (const findingId of page.findingIds) {
+    const candidates = researchNodes.filter((candidate) => isResearchReceipt(candidate.result)
+      && candidate.result.findings.some((finding) => finding.id === findingId));
+    candidates.sort((left, right) => researchInputFor(left).scope.sourcePaths.length - researchInputFor(right).scope.sourcePaths.length);
+    const research = candidates[0];
+    if (!research) throw new Error(`No completed research receipt exists for page ${page.path} finding ${findingId}`);
+    selected.push(research.id);
+  }
+  return uniqueStrings(selected);
 }
 
 async function hashWikiPage(cwd: string, pagePath: string): Promise<string | undefined> {
@@ -1912,7 +2132,7 @@ function isSpecPage(value: unknown): value is WikiSpec["domains"][number]["pages
   return isRecord(value)
     && ["overview", "architecture", "module", "flow", "concept"].includes(value.pageType)
     && typeof value.path === "string" && typeof value.title === "string" && typeof value.purpose === "string"
-    && isStringArray(value.researchScopeIds);
+    && isStringArray(value.findingIds);
 }
 
 function isSourceDriftResult(value: unknown): value is { sourceDrift: true; inspection: WikiInspection } {
@@ -1940,7 +2160,21 @@ function isResearchReceipt(value: unknown): value is WikiResearchReceipt {
     && typeof value.scopeId === "string"
     && typeof value.task === "string"
     && typeof value.sourceFingerprint === "string"
+    && Array.isArray(value.findings) && value.findings.every((finding) => isRecord(finding)
+      && typeof finding.id === "string" && (finding.priority === "critical" || finding.priority === "normal"))
+    && isStringArray(value.criticalGapSignatures)
     && isArtifactRef(value.artifact);
+}
+
+function researchFindings(scopeId: string, artifact: WikiResearchArtifact): WikiResearchFinding[] {
+  return artifact.findings.map((finding) => ({
+    ...finding,
+    id: `finding-${createHash("sha256").update(stableStringify({
+      kind: finding.kind,
+      evidence: [...finding.evidence].sort(),
+    })).digest("hex").slice(0, 16)}`,
+    scopeId,
+  }));
 }
 
 function isArtifactRef(value: unknown): value is WikiArtifactRef {
@@ -2031,8 +2265,18 @@ function validationIssuesFingerprint(issues: WikiValidationIssue[]): string {
   })).sort((left, right) => stableStringify(left).localeCompare(stableStringify(right))));
 }
 
+function isStructuralValidationIssue(issue: WikiValidationIssue): boolean {
+  return issue.code === "spec-page" || issue.code === "wiki-index" || issue.code === "cross-link";
+}
+
 function normalizeIssueText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+function lineCount(text: string): number {
+  if (!text) return 0;
+  const lines = text.split(/\r?\n/).length;
+  return text.endsWith("\n") ? lines - 1 : lines;
 }
 
 function mergeMetrics(current: WikiNodeMetrics, update?: Partial<WikiNodeMetrics>, incremental = false): WikiNodeMetrics {
@@ -2075,7 +2319,13 @@ function errorMessage(error: unknown): string {
 
 function isLoopBudgetError(error: unknown): boolean {
   const message = errorMessage(error);
-  return message.includes(`at most ${MAX_SUPPLEMENTAL_RESEARCH_BATCHES} supplemental research batch`);
+  return /Research reached the \d+-round limit/.test(message);
+}
+
+function validMaxResearchRounds(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_RESEARCH_ROUNDS;
+  if (!Number.isInteger(value) || value < 3 || value > 20) throw new Error("maxResearchRounds must be an integer from 3 to 20");
+  return value;
 }
 
 function isMissingArtifactError(error: unknown): boolean {

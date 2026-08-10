@@ -3,7 +3,7 @@ import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/
 import path from "node:path";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
 
-export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = 64 * 1024;
+export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = 256 * 1024;
 /** Limit for model-authored synthesis and review JSON handoffs. */
 export const MAX_WIKI_JSON_ARTIFACT_BYTES = 256 * 1024;
 /** Limit for deterministic coordinator artifacts. */
@@ -300,7 +300,7 @@ function assertSize(bytes: Buffer, limit: number): void {
 }
 
 function artifactFileName(kind: WikiArtifactKind): string {
-  return kind === "research" ? `${kind}.md` : `${kind}.json`;
+  return `${kind}.json`;
 }
 
 function relativePathFor(location: WikiArtifactLocation): string {
@@ -308,7 +308,7 @@ function relativePathFor(location: WikiArtifactLocation): string {
 }
 
 function artifactMediaType(kind: WikiArtifactKind): WikiArtifactRef["mediaType"] {
-  return kind === "research" ? "text/markdown" : "application/json";
+  return "application/json";
 }
 
 function artifactSizeLimit(kind: WikiArtifactKind): number {

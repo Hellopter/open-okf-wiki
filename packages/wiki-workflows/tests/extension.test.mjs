@@ -4,7 +4,7 @@ import { createWikiExtension } from "../dist/extension.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 5,
+    version: 6,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -13,6 +13,7 @@ function snapshot(overrides = {}) {
     status: "running",
     round: 0,
     sourceRestartCount: 0,
+    maxResearchRounds: 6,
     nodes: [],
     events: [],
     createdAt: "2026-08-08T00:00:00.000Z",
@@ -139,7 +140,7 @@ function fixture(options = {}) {
     },
     async load(cwd) {
       workspaceCalls.push(["load", cwd]);
-      return { ...workspace, sources: [] };
+      return { ...workspace, quality: workspace.quality ?? { maxResearchRounds: 6 }, sources: [] };
     },
   };
   const historyStore = {
@@ -177,6 +178,7 @@ test("registers one command, starts in the background, and persists non-context 
     mode: "generate",
     language: "en",
     focus: "authentication",
+    maxResearchRounds: 6,
   }]);
   assert.equal(subject.appended.at(-1).customType, "okf-wiki-run");
   assert.equal(subject.appended.at(-1).data.snapshot.language, "en");
@@ -388,11 +390,11 @@ test("project history write failures are reported without losing Pi session stat
     && /history could not be saved: disk unavailable/.test(message)));
 });
 
-test("does not restore legacy v4 session entries", async () => {
+test("does not restore legacy v5 session entries", async () => {
   const legacy = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
-    snapshot: snapshot({ version: 4, id: "legacy" }),
+    snapshot: snapshot({ version: 5, id: "legacy" }),
   };
   const subject = fixture({ entries: [
     { type: "custom", customType: "okf-wiki-run", data: legacy },
@@ -403,7 +405,7 @@ test("does not restore legacy v4 session entries", async () => {
   assert.equal(subject.engine.getSnapshot(), undefined);
 });
 
-test("does not restore structurally corrupt v5 session entries", async () => {
+test("does not restore structurally corrupt v6 session entries", async () => {
   const malformed = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
@@ -569,6 +571,7 @@ test("generation uses the workspace language by default and starts from its root
     mode: "generate",
     language: "en",
     focus: "architecture",
+    maxResearchRounds: 6,
   }]);
 });
 

@@ -5,6 +5,11 @@ export interface ParsedPage {
   body: string;
 }
 
+export interface OkfSource {
+  id: string;
+  resource: string;
+}
+
 export function parsePage(text: string): ParsedPage {
   if (!text.startsWith("---\n")) throw new Error("missing YAML frontmatter");
   const end = text.indexOf("\n---", 4);
@@ -16,6 +21,23 @@ export function parsePage(text: string): ParsedPage {
   return { frontmatter: frontmatter as Record<string, unknown>, body: text.slice(end + 4).replace(/^\r?\n/, "") };
 }
 
+export function stringifyPage(page: ParsedPage): string {
+  return `---\n${YAML.stringify(page.frontmatter).trimEnd()}\n---\n${page.body}`;
+}
+
+export function okfSources(value: unknown): OkfSource[] | undefined {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const sources: OkfSource[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const source = entry as Record<string, unknown>;
+    if (typeof source.id !== "string" || !source.id.trim()) return undefined;
+    if (typeof source.resource !== "string" || !source.resource.trim()) return undefined;
+    sources.push({ id: source.id.trim(), resource: source.resource.trim() });
+  }
+  return sources;
+}
+
 export function sourceResources(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  return okfSources(value)?.map((source) => source.resource) ?? [];
 }

@@ -37,7 +37,8 @@ async function createRepository() {
     "title: Service",
     "description: Service implementation",
     "sources:",
-    "  - api/src/service.ts#L1-L1",
+    "  - id: service",
+    "    resource: repo:api/src/service.ts#L1-L1",
     "---",
     "",
     "# Service",
@@ -49,7 +50,8 @@ async function createRepository() {
     "title: Consumer",
     "description: Uses Service",
     "sources:",
-    "  - api/src/consumer.ts#L1-L1",
+    "  - id: consumer",
+    "    resource: repo:api/src/consumer.ts#L1-L1",
     "---",
     "",
     "# Consumer",
@@ -132,6 +134,7 @@ test("uses full generation for source provenance without a declared project pref
   const inspection = await inspectWiki(workspace);
 
   assert.equal(inspection.mode, "generate");
+  assert.match(inspection.refreshRequiresGenerateReason, /legacy source citations/);
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
 });
 
