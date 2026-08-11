@@ -3,4 +3,5 @@ refs/
 tmp/
 .agents/
 .claude/
+.pi/
 skills-lock.json
