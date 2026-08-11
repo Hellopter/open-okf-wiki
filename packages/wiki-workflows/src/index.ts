@@ -37,6 +37,15 @@ export {
   type PiAgentExecutorOptions,
 } from "./executor.js";
 export {
+  WikiAgentContextBudgetError,
+  WikiAgentProtocolError,
+  isContextBudgetMessage,
+  type SubmissionFailure,
+  type SubmissionFailureCode,
+  type SubmissionToolName,
+  type WikiAgentErrorCode,
+} from "./agent-errors.js";
+export {
   createWikiWorkflowEngine,
   WikiWorkflowEngine,
   type WikiWorkflowEngineOptions,
@@ -164,6 +173,7 @@ export type {
   WikiNodeActivity,
   WikiNodeActivityState,
   WikiNodeError,
+  WikiNodeErrorCode,
   WikiNodeKind,
   WikiNodeMetrics,
   WikiNodeStatus,

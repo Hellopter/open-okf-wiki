@@ -11,7 +11,7 @@ import {
   parseReviewSubmission,
   parseSynthesisSubmission,
 } from "../dist/control-submissions.js";
-import { PiAgentExecutor, WikiAgentProtocolError } from "../dist/executor.js";
+import { PiAgentExecutor, WikiAgentContextBudgetError, WikiAgentProtocolError } from "../dist/executor.js";
 import { addWikiSource, initializeWikiWorkspace } from "../dist/workspace.js";
 
 function git(root, ...args) {
@@ -307,6 +307,140 @@ test("missing the required submission fails with a classified protocol error", a
     () => executor.execute(execution),
     (error) => error instanceof WikiAgentProtocolError && error.code === "missing_submission",
   );
+});
+
+test("residual context errorMessage after a successful submit still succeeds without salvage", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "research", "researcher");
+  const artifact = {
+    summary: "API entry point.",
+    findings: [{
+      kind: "concept",
+      title: "API flag",
+      readerQuestion: "Where is the API exported?",
+      priority: "normal",
+      evidence: ["api/src/index.ts#L1"],
+    }],
+    gaps: [],
+  };
+  let tools;
+  let followUps = 0;
+  const session = fakeSession();
+  session.prompt = async () => {
+    await writeAndSubmit(tools, "wiki_submit_research", artifact);
+    // Late residual overflow after the submit was already recorded must not fail the node.
+    session.state.errorMessage = "context overflow recovery failed";
+  };
+  session.followUp = async () => {
+    followUps += 1;
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    tools = options.customTools;
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+
+  const result = await executor.execute(execution);
+  assert.deepEqual(result.result, artifact);
+  assert.equal(followUps, 0, "recorded submission must win over residual context pressure");
+});
+
+test("context salvage without a subsequent submission throws WikiAgentContextBudgetError", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "research", "researcher");
+  let followUps = 0;
+  const session = fakeSession();
+  session.prompt = async () => {
+    session.state.errorMessage = "context overflow recovery failed";
+  };
+  session.followUp = async (message) => {
+    followUps += 1;
+    assert.match(message, /Stop exploring|wiki_write_handoff|wiki_submit_research/);
+    // Salvage turn still fails to submit; residual pressure remains.
+    session.state.errorMessage = "context overflow recovery failed";
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+
+  await assert.rejects(
+    () => executor.execute(execution),
+    (error) => error instanceof WikiAgentContextBudgetError
+      && error.code === "context_budget_exceeded"
+      && /context overflow recovery failed/.test(error.message),
+  );
+  assert.equal(followUps, 1, "exactly one salvage follow-up is attempted");
+});
+
+test("wiki_submit_research rejects out-of-scope, missing, and overflowing evidence with actionable messages", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "research", "researcher");
+  let tools;
+  const session = fakeSession();
+  const valid = {
+    summary: "API entry point.",
+    findings: [{
+      kind: "concept",
+      title: "API flag",
+      readerQuestion: "Where is the API exported?",
+      priority: "normal",
+      evidence: ["api/src/index.ts#L1"],
+    }],
+    gaps: [],
+  };
+  session.prompt = async () => {
+    await assert.rejects(
+      () => writeAndSubmit(tools, "wiki_submit_research", {
+        summary: "out of scope",
+        findings: [{
+          kind: "concept",
+          title: "Web",
+          readerQuestion: "Where is web?",
+          priority: "normal",
+          evidence: ["web/src/index.ts#L1"],
+        }],
+        gaps: [],
+      }),
+      /outside the assigned scope/,
+    );
+    await assert.rejects(
+      () => writeAndSubmit(tools, "wiki_submit_research", {
+        summary: "missing file",
+        findings: [{
+          kind: "concept",
+          title: "Missing",
+          readerQuestion: "Where is missing?",
+          priority: "normal",
+          evidence: ["api/src/missing.ts#L1"],
+        }],
+        gaps: [],
+      }),
+      /file is missing/,
+    );
+    await assert.rejects(
+      () => writeAndSubmit(tools, "wiki_submit_research", {
+        summary: "line overflow",
+        findings: [{
+          kind: "concept",
+          title: "Overflow",
+          readerQuestion: "Where is overflow?",
+          priority: "normal",
+          evidence: ["api/src/index.ts#L99"],
+        }],
+        gaps: [],
+      }),
+      /line range exceeds file/,
+    );
+    await writeAndSubmit(tools, "wiki_submit_research", valid);
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    tools = options.customTools;
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+
+  assert.deepEqual((await executor.execute(execution)).result, valid);
 });
 
 test("every execution creates and disposes a fresh child session", async (t) => {

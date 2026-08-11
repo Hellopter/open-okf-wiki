@@ -46,6 +46,14 @@ sequence, or state transition from names alone.
 Do not edit `wiki/`. Keep `summary` concise and prefer precise evidence over
 copied source or tool narration. Keep the artifact below 256 KiB.
 
+## Context pressure and evidence discipline
+
+Survey tools return bounded excerpts. Prefer narrow paths and targeted greps
+over wide inventories. When context pressure rises, stop exploring: write the
+complete handoff, submit, and finish. Cite only evidence ranges from files you
+actually read in this session. Invented or unread ranges are hard-rejected;
+there is no clamp or silent repair of line numbers.
+
 Record source-authored domain and concept names or aliases as findings,
 especially corresponding Chinese names found in code or comments. Preserve
 their exact spelling, cite the defining span, and do not replace them with your

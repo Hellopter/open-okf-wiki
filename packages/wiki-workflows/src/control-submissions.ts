@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { Type } from "typebox";
+import { parseEvidenceReference as parseEvidenceReferenceShape } from "./research-evidence.js";
 import type {
   WikiResearchArtifact,
   WikiReviewDefect,
@@ -267,13 +268,7 @@ function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>)
 
 function parseEvidenceReference(value: unknown, label: string): string {
   const reference = requiredText(value, label);
-  const match = /^([^#\s]+)#L([1-9][0-9]*)(?:-L([1-9][0-9]*))?$/.exec(reference);
-  if (!match || match[1].startsWith("/") || match[1].includes("\\")) throw new Error(`${label} is invalid: ${reference}`);
-  if (match[1].split("/").some((segment) => !segment || segment === "." || segment === "..")) {
-    throw new Error(`${label} is invalid: ${reference}`);
-  }
-  if (Number(match[3] ?? match[2]) < Number(match[2])) throw new Error(`${label} has an invalid line range: ${reference}`);
-  return reference;
+  return parseEvidenceReferenceShape(reference, label).raw;
 }
 
 function isFindingKind(value: unknown): value is WikiResearchArtifact["findings"][number]["kind"] {

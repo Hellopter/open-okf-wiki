@@ -52,9 +52,19 @@ export interface WikiNodeMetrics {
   autoRetries: number;
 }
 
+/** Stable failure codes recorded on nodes and used by retry policy. */
+export type WikiNodeErrorCode =
+  | "missing_submission"
+  | "invalid_submission"
+  | "submission_too_large"
+  | "validator_infrastructure"
+  | "context_budget_exceeded"
+  | "execution_failed"
+  | "cancelled";
+
 export interface WikiNodeError {
   message: string;
-  code?: string;
+  code?: WikiNodeErrorCode | string;
   retryable?: boolean;
   /** Present when the model ended without the required control-flow submission. */
   requiredSubmissionTool?: "wiki_submit_research" | "wiki_submit_synthesis" | "wiki_submit_page" | "wiki_submit_review";

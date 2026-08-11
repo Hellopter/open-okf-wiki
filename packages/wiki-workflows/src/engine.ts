@@ -1,18 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createWikiArtifactStore, type WikiArtifactKind, type WikiArtifactRef, type WikiArtifactStore } from "./artifact-store.js";
+import {
+  WikiAgentContextBudgetError,
+  WikiAgentProtocolError,
+} from "./agent-errors.js";
 import {
   parseResearchArtifact,
   parseResearchSubmission,
   parseReviewSubmission,
   parseSynthesisSubmission,
 } from "./control-submissions.js";
-import { createPiAgentExecutor, WikiAgentProtocolError } from "./executor.js";
+import { createPiAgentExecutor } from "./executor.js";
 import { inspectWiki } from "./inspect.js";
+import { classifyNodeFailure } from "./node-retry.js";
 import { loadWikiPromptGuidance } from "./prompt-guidance.js";
 import { latestPhaseIteration } from "./phase-iterations.js";
+import { loadResearchSourceRoots, validateResearchArtifact } from "./research-evidence.js";
+import { projectResearchReceipt, researchFindings } from "./research-receipt.js";
 import { createWikiRunSession, parseWikiRunSession } from "./session.js";
 import { isWikiRunSnapshot } from "./snapshot-validation.js";
 import type { WikiInspection, WikiMode, WikiValidation, WikiValidationIssue } from "./types.js";
@@ -441,9 +447,28 @@ export class WikiWorkflowEngine {
     try {
       const result = await this.executeNodeWork(node, controller.signal);
       if (node.status !== "running") return;
-      const handoff = await this.persistNodeHandoff(node, result.result);
-      if (handoff) node.handoff = handoff;
-      node.result = this.normalizeNodeResult(node, result.result, handoff);
+      // Research: validate once with workspace source roots, then finalize the
+      // handoff, then project a receipt (no second FS pass after persist).
+      if (node.kind === "research") {
+        const scope = researchInputFor(node).scope;
+        const parsed = parseResearchSubmission(result.result);
+        const sourceRoots = await loadResearchSourceRoots(run.cwd, scope.sourcePaths);
+        validateResearchArtifact(parsed, {
+          cwd: run.cwd,
+          allowedSourceRoots: scope.sourcePaths,
+          sourceRoots,
+        });
+        const handoff = await this.persistNodeHandoff(node, parsed);
+        if (!handoff || handoff.kind !== "research") {
+          throw new Error("Researcher did not produce a research handoff artifact");
+        }
+        node.handoff = handoff;
+        node.result = projectResearchReceipt(run, parsed, handoff, scope);
+      } else {
+        const handoff = await this.persistNodeHandoff(node, result.result);
+        if (handoff) node.handoff = handoff;
+        node.result = normalizeNodeResult(node.kind, result.result);
+      }
       node.output = retainedOutput(result.output ?? node.output);
       node.history = retainedHistory(result.history ?? node.history);
       node.metrics = mergeMetrics(node.metrics, result.metrics);
@@ -456,33 +481,29 @@ export class WikiWorkflowEngine {
       this.emit("node_succeeded", node.id, node.label);
     } catch (error) {
       if (node.status !== "running") return;
-      const loopBudgetExceeded = isLoopBudgetError(error);
-      const retryValidator = error instanceof WikiAgentProtocolError
-        && error.code === "validator_infrastructure" && node.attempt < MAX_NODE_ATTEMPTS;
-      node.status = controller.signal.aborted ? "cancelled" : retryValidator ? "queued" : loopBudgetExceeded ? "blocked" : "failed";
-      if (error instanceof WikiAgentProtocolError) {
+      const classification = classifyNodeFailure(error, {
+        attempt: node.attempt,
+        maxAttempts: MAX_NODE_ATTEMPTS,
+        aborted: controller.signal.aborted,
+      });
+      node.status = classification.status;
+      if (error instanceof WikiAgentProtocolError || error instanceof WikiAgentContextBudgetError) {
         node.output = retainedOutput(error.output || node.output);
         node.history = retainedHistory(error.history.length ? error.history : node.history);
-        node.error = {
-          message: error.message,
-          code: error.code,
-          requiredSubmissionTool: error.requiredSubmissionTool,
-        };
-      } else {
-        node.error = { message: errorMessage(error), code: controller.signal.aborted ? "cancelled" : "execution_failed" };
       }
+      node.error = classification.error;
       const finishedAt = this.now();
       node.activity = { state: "completed", message: node.error.message, updatedAt: finishedAt };
       node.finishedAt = finishedAt;
-      if (retryValidator) {
+      if (classification.retryable && classification.status === "queued") {
         node.activity = { state: "retrying", message: node.error.message, updatedAt: finishedAt };
         this.emit("node_retried", node.id, node.error.message);
-      } else if ((run.status === "running" || run.status === "paused") && loopBudgetExceeded) {
-        this.markTerminalRun("blocked", node.error.message, node.id, finishedAt);
-      } else if ((run.status === "running" || run.status === "paused") && node.status === "failed") {
-        this.markTerminalRun("failed", `${node.label} failed`, node.id, finishedAt);
+      } else if ((run.status === "running" || run.status === "paused") && classification.terminalRun) {
+        this.markTerminalRun(classification.terminalRun, node.error.message, node.id, finishedAt);
       }
-      if (!retryValidator) this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
+      if (!(classification.retryable && classification.status === "queued")) {
+        this.emit(node.status === "cancelled" ? "node_cancelled" : "node_failed", node.id, node.error.message);
+      }
     } finally {
       this.controllers.delete(node.id);
     }
@@ -540,14 +561,6 @@ export class WikiWorkflowEngine {
       onOutput: (output) => this.updateOutput(node.id, output),
       onHistory: (history) => this.updateHistory(node.id, history),
     });
-  }
-
-  private normalizeNodeResult(node: WikiNode, value: unknown, handoff?: WikiArtifactRef): unknown {
-    if (node.kind === "research") {
-      if (!handoff || handoff.kind !== "research") throw new Error("Researcher did not produce a research handoff artifact");
-      return createResearchReceipt(node, this.requireRun(), value, handoff);
-    }
-    return normalizeNodeResult(node.kind, value);
   }
 
   private async persistNodeHandoff(node: WikiNode, value: unknown): Promise<WikiArtifactRef | undefined> {
@@ -688,15 +701,13 @@ export class WikiWorkflowEngine {
         return;
       }
       case "synthesis": {
-        // runNode already parsed the model submission before this transition.
+        // Submission contract already validated at wiki_submit_synthesis time.
         const synthesis = node.result as WikiSynthesisResult;
         const input = synthesisInputFor(node);
         if (synthesis.decision === "expand") {
-          this.ensureSynthesisSubmissionFitsRun(synthesis, input);
           this.queueSupplementalResearch(node.id, synthesis.researchScopes, input);
           return;
         }
-        this.ensureSynthesisSubmissionFitsRun(synthesis, input);
         if (input.dryAuditPasses < REQUIRED_DRY_COVERAGE_AUDITS) {
           this.queueCoverageAudit([node.id], node.id, input);
           return;
@@ -1659,10 +1670,10 @@ function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown {
     case "review":
       return parseReviewSubmission(value);
     case "finalize":
-      return value;
-    case "research":
     case "write":
       return value;
+    case "research":
+      throw new Error("Research results must be projected after pre-persist validation");
   }
 }
 
@@ -1698,63 +1709,6 @@ function parseValidation(value: unknown): WikiValidation {
 function isValidationIssue(value: unknown): value is WikiValidationIssue {
   return isRecord(value) && typeof value.code === "string" && typeof value.message === "string"
     && (value.page === undefined || typeof value.page === "string");
-}
-
-function createResearchReceipt(node: WikiNode, run: WikiRunSnapshot, value: unknown, artifact: WikiArtifactRef): WikiResearchReceipt {
-  const scope = researchInputFor(node).scope;
-  const parsed = parseResearchSubmission(value);
-  const allowedRoots = new Set(scope.sourcePaths);
-  for (const finding of parsed.findings) {
-    for (const evidence of finding.evidence) {
-      const parsedEvidence = parseResearchEvidence(evidence);
-      if (!parsedEvidence || !allowedRoots.has(parsedEvidence.path.split("/", 1)[0]!)) {
-        throw new Error(`Research evidence is outside the assigned scope: ${evidence}`);
-      }
-      validateResearchEvidenceRange(run.cwd, parsedEvidence.path, parsedEvidence.end, evidence);
-    }
-  }
-  for (const gap of parsed.gaps) {
-    if (gap.sourcePaths.some((sourcePath) => !allowedRoots.has(sourcePath))) {
-      throw new Error(`Research gap is outside the assigned scope: ${gap.question}`);
-    }
-  }
-  return {
-    scopeId: scope.id,
-    task: scope.task,
-    sourceFingerprint: run.inspection?.sourceFingerprint ?? "unknown",
-    artifact,
-    findings: researchFindings(scope.id, parsed).map((finding) => ({ id: finding.id, priority: finding.priority })),
-    criticalGapSignatures: parsed.gaps.filter((gap) => gap.priority === "critical").map(criticalGapSignature),
-  };
-}
-
-function parseResearchEvidence(value: string): { path: string; end: number } | undefined {
-  const match = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/.exec(value);
-  if (!match) return undefined;
-  const start = Number(match[2]);
-  const end = Number(match[3] ?? match[2]);
-  if (end < start) return undefined;
-  return { path: match[1]!, end };
-}
-
-function validateResearchEvidenceRange(cwd: string, sourcePath: string, endLine: number, evidence: string): void {
-  const sourceName = sourcePath.split("/", 1)[0]!;
-  try {
-    const sourceRoot = realpathSync(path.resolve(cwd, sourceName));
-    const sourceFile = realpathSync(path.resolve(cwd, ...sourcePath.split("/")));
-    if (!pathIsInside(sourceRoot, sourceFile) || !statSync(sourceFile).isFile()) throw new Error("outside source");
-    if (lineCount(readFileSync(sourceFile, "utf8")) < endLine) throw new Error("line range");
-  } catch {
-    throw new Error(`Research evidence does not resolve to an existing source range: ${evidence}`);
-  }
-}
-
-function criticalGapSignature(gap: WikiResearchArtifact["gaps"][number]): string {
-  return createHash("sha256").update(stableStringify({
-    priority: gap.priority,
-    question: normalizeIssueText(gap.question).toLowerCase(),
-    sourcePaths: [...gap.sourcePaths].sort(),
-  })).digest("hex").slice(0, 16);
 }
 
 interface ResearchNodeInput {
@@ -2166,17 +2120,6 @@ function isResearchReceipt(value: unknown): value is WikiResearchReceipt {
     && isArtifactRef(value.artifact);
 }
 
-function researchFindings(scopeId: string, artifact: WikiResearchArtifact): WikiResearchFinding[] {
-  return artifact.findings.map((finding) => ({
-    ...finding,
-    id: `finding-${createHash("sha256").update(stableStringify({
-      kind: finding.kind,
-      evidence: [...finding.evidence].sort(),
-    })).digest("hex").slice(0, 16)}`,
-    scopeId,
-  }));
-}
-
 function isArtifactRef(value: unknown): value is WikiArtifactRef {
   if (!isRecord(value)) return false;
   return value.version === 1
@@ -2273,12 +2216,6 @@ function normalizeIssueText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-function lineCount(text: string): number {
-  if (!text) return 0;
-  const lines = text.split(/\r?\n/).length;
-  return text.endsWith("\n") ? lines - 1 : lines;
-}
-
 function mergeMetrics(current: WikiNodeMetrics, update?: Partial<WikiNodeMetrics>, incremental = false): WikiNodeMetrics {
   if (!update) return current;
   const next = { ...current, ...update };
@@ -2315,11 +2252,6 @@ function normalizeText(value: string | undefined): string | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isLoopBudgetError(error: unknown): boolean {
-  const message = errorMessage(error);
-  return /Research reached the \d+-round limit/.test(message);
 }
 
 function validMaxResearchRounds(value: number | undefined): number {

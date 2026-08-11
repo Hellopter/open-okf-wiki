@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { WikiWorkflowEngine } from "../dist/engine.js";
-import { WikiAgentProtocolError } from "../dist/executor.js";
+import { WikiAgentContextBudgetError, WikiAgentProtocolError } from "../dist/agent-errors.js";
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -353,7 +353,10 @@ test("research evidence must resolve to an existing file and line range", async 
   const snapshot = await f.engine.waitForIdle();
 
   assert.equal(snapshot.status, "failed");
-  assert.match(snapshot.nodes.find((node) => node.kind === "research").error.message, /existing source range/);
+  assert.match(
+    snapshot.nodes.find((node) => node.kind === "research").error.message,
+    /line range exceeds file|missing|does not name a file|outside the assigned scope/,
+  );
 });
 
 test("concurrent research completion reconciles the batch after all statuses settle", async (t) => {
@@ -577,6 +580,70 @@ test("writer validator infrastructure failures retry the node automatically", as
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
   assert.equal(snapshot.nodes.filter((node) => node.kind === "write").some((node) => node.attempt === 2), true);
+});
+
+test("context budget exceeded requeues the research node and keeps the run running until success", async (t) => {
+  let researchCalls = 0;
+  const f = await fixture(t, {
+    inspection: { sourcePaths: ["src-core"] },
+    spec: spec([page("core", "architecture", "source-survey:src-core", "architecture")]),
+    onResearch: async (request) => {
+      researchCalls += 1;
+      if (researchCalls === 1) {
+        throw new WikiAgentContextBudgetError("partial output", [], "context overflow recovery failed");
+      }
+      return {
+        result: {
+          summary: `Covered ${request.node.input.scope.sourcePaths.join(", ")}`,
+          findings: request.node.input.scope.sourcePaths.map((source) => ({
+            kind: "domain",
+            title: `${source} responsibilities`,
+            readerQuestion: `What does ${source} own?`,
+            priority: "critical",
+            evidence: [`${source}/index.ts#L1`],
+          })),
+          gaps: [],
+        },
+      };
+    },
+  });
+  const eventKinds = [];
+  f.engine.subscribe((_value, event) => eventKinds.push(event.kind));
+
+  f.engine.start({ cwd: f.workspace, mode: "generate", maxResearchRounds: 3 });
+  const snapshot = await f.engine.waitForIdle();
+
+  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
+  assert.ok(eventKinds.includes("node_retried"), "first context-budget failure must requeue via node_retried");
+  const research = snapshot.nodes.find((node) => node.kind === "research" && node.input.batch === 0);
+  assert.equal(research.status, "succeeded");
+  assert.equal(research.attempt, 2);
+  assert.ok(researchCalls >= 2, "executor must be invoked again after requeue");
+});
+
+test("context budget exceeded blocks the node and run after max attempts (not failed)", async (t) => {
+  let researchCalls = 0;
+  const f = await fixture(t, {
+    inspection: { sourcePaths: ["src-core"] },
+    onResearch: async () => {
+      researchCalls += 1;
+      throw new WikiAgentContextBudgetError("partial output", [], "context window exhausted");
+    },
+  });
+
+  f.engine.start({ cwd: f.workspace, mode: "generate", maxResearchRounds: 3 });
+  const snapshot = await f.engine.waitForIdle();
+
+  assert.equal(snapshot.status, "blocked");
+  assert.notEqual(snapshot.status, "failed");
+  const research = snapshot.nodes.find((node) => node.kind === "research");
+  assert.equal(research.status, "blocked");
+  assert.equal(research.attempt, 3);
+  assert.equal(research.error.code, "context_budget_exceeded");
+  assert.equal(research.error.retryable, false);
+  assert.match(research.error.message, /context window exhausted/);
+  assert.equal(researchCalls, 3);
+  assert.match(snapshot.blockedReason, /context window exhausted|reached 3 attempts/);
 });
 
 test("Verify phase retry reruns one stable pipeline without queued or duplicate terminal nodes", async (t) => {
