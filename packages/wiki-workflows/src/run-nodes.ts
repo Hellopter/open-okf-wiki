@@ -559,6 +559,7 @@ export function isResearchReceipt(value: unknown): value is WikiResearchReceipt 
       && (finding.priority === "critical" || finding.priority === "normal")
       && typeof finding.contentFingerprint === "string")
     && isStringArray(value.criticalGapSignatures)
+    && isStringArray(value.criticalGapQuestions)
     && isArtifactRef(value.artifact);
 }
 

@@ -1,4 +1,5 @@
 import type { WikiRunSession, WikiRunSnapshot } from "./workflow-types.js";
+import { createWikiRunSession } from "./session.js";
 import { clone, errorMessage } from "./util.js";
 
 export interface CheckpointSinks {
@@ -14,6 +15,8 @@ export interface CheckpointOptions {
 /**
  * Serializes session + history checkpoints so concurrent engine events never
  * interleave durable writes. Each enqueue bumps a monotonic revision.
+ *
+ * Session entries are pointer-only; full snapshots go to the history store.
  */
 export class WikiCheckpointCoordinator {
   private chain = Promise.resolve();
@@ -40,21 +43,25 @@ export class WikiCheckpointCoordinator {
   }
 
   /**
-   * Clone snapshot, set `revision = ++this.revision`, update `session.snapshot`,
-   * then serialize `appendSession` + `saveHistory` on a single promise chain.
+   * Clone snapshot, set `revision = ++this.revision`, build a pointer session,
+   * then serialize `appendSession` (pointer) + `saveHistory` (full snapshot)
+   * on a single promise chain.
    */
   enqueue(snapshot: WikiRunSnapshot, session: WikiRunSession, options?: CheckpointOptions): Promise<void> {
     const nextSnapshot = clone(snapshot);
     nextSnapshot.revision = ++this.revision;
-    session.snapshot = nextSnapshot;
-    const nextSession: WikiRunSession = {
-      customType: session.customType,
-      workspace: session.workspace,
-      snapshot: nextSnapshot,
-    };
+    const nextSession = createWikiRunSession(nextSnapshot);
+    // Keep the caller's session object in sync with the latest pointer.
+    session.customType = nextSession.customType;
+    session.workspace = nextSession.workspace;
+    session.pointerVersion = nextSession.pointerVersion;
+    session.runId = nextSession.runId;
+    session.revision = nextSession.revision;
+    session.status = nextSession.status;
+    session.updatedAt = nextSession.updatedAt;
 
     const operation = this.chain.then(async () => {
-      await this.sinks.appendSession(nextSession);
+      await this.sinks.appendSession({ ...nextSession });
       await this.sinks.saveHistory(nextSnapshot);
       this.lastError = undefined;
     });

@@ -39,6 +39,10 @@ export function evaluateJoin(
 /**
  * Find sibling nodes that share a group key field on input.
  * groupField examples: researchGroupId, writeGroupId, verificationGroupId
+ *
+ * Invalidated nodes are graph-dead (source-drift restart, fork-and-retry) and
+ * must not participate in join. Deterministic group ids are reused across
+ * restart waves, so including invalidated siblings would stall the join forever.
  */
 export function siblingsByGroupKey(
   nodes: readonly { id: string; kind: string; status: string; input: unknown }[],
@@ -48,7 +52,10 @@ export function siblingsByGroupKey(
 ): JoinMember[] {
   const kinds = new Set(Array.isArray(kind) ? kind : [kind]);
   return nodes
-    .filter((node) => kinds.has(node.kind) && inputFieldEquals(node.input, groupField, groupId))
+    .filter((node) =>
+      kinds.has(node.kind)
+      && node.status !== "invalidated"
+      && inputFieldEquals(node.input, groupField, groupId))
     .map((node) => ({ id: node.id, status: node.status }));
 }
 

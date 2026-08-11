@@ -121,3 +121,39 @@ test("siblingsByGroupKey filters by kind and group field", () => {
     [],
   );
 });
+
+test("siblingsByGroupKey excludes invalidated members so restart waves can rejoin", () => {
+  const nodes = [
+    {
+      id: "research-old-a",
+      kind: "research",
+      status: "invalidated",
+      input: { researchGroupId: "research:0:same" },
+    },
+    {
+      id: "research-old-b",
+      kind: "research",
+      status: "invalidated",
+      input: { researchGroupId: "research:0:same" },
+    },
+    {
+      id: "research-new-a",
+      kind: "research",
+      status: "succeeded",
+      input: { researchGroupId: "research:0:same" },
+    },
+    {
+      id: "research-new-b",
+      kind: "research",
+      status: "succeeded",
+      input: { researchGroupId: "research:0:same" },
+    },
+  ];
+
+  const siblings = siblingsByGroupKey(nodes, "research", "researchGroupId", "research:0:same");
+  assert.deepEqual(siblings, [
+    { id: "research-new-a", status: "succeeded" },
+    { id: "research-new-b", status: "succeeded" },
+  ]);
+  assert.deepEqual(evaluateJoin(siblings), { ready: true, reason: "all_succeeded" });
+});

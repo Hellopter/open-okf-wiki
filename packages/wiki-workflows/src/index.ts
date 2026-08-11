@@ -58,6 +58,7 @@ export {
   isWikiRunSession,
   parseWikiRunSession,
   WIKI_RUN_CUSTOM_TYPE,
+  WIKI_RUN_POINTER_VERSION,
 } from "./session.js";
 export {
   explainWikiRunSnapshot,

@@ -130,6 +130,31 @@ test("parses local and structural review defects as a discriminated union", () =
   }), /invalid defect/);
 });
 
+test("rejects expand with empty or duplicate research scope ids", () => {
+  assert.throws(() => parseSynthesisSubmission({
+    decision: "expand",
+    researchScopes: [],
+    rationale: "Need more evidence.",
+  }), /at least one supplemental research scope/);
+
+  assert.throws(() => parseSynthesisSubmission({
+    decision: "expand",
+    researchScopes: [
+      { id: "   ", sourcePaths: ["api"], task: "Look again." },
+    ],
+    rationale: "Need more evidence.",
+  }), /Research scope ID must be non-empty/);
+
+  assert.throws(() => parseSynthesisSubmission({
+    decision: "expand",
+    researchScopes: [
+      { id: "same-scope", sourcePaths: ["api"], task: "First." },
+      { id: "same-scope", sourcePaths: ["web"], task: "Duplicate." },
+    ],
+    rationale: "Need more evidence.",
+  }), /duplicate research scope/);
+});
+
 test("parses structured research JSON and enforces the 256 KiB artifact limit", () => {
   const artifact = {
     summary: "Core behavior is source-grounded.",

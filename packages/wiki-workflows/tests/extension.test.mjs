@@ -4,7 +4,7 @@ import { createWikiExtension } from "../dist/extension.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 7,
+    version: 8,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -19,6 +19,18 @@ function snapshot(overrides = {}) {
     createdAt: "2026-08-08T00:00:00.000Z",
     updatedAt: "2026-08-08T00:00:00.000Z",
     ...overrides,
+  };
+}
+
+function pointerFrom(snap) {
+  return {
+    customType: "okf-wiki-run",
+    workspace: snap.cwd,
+    pointerVersion: 1,
+    runId: snap.id,
+    revision: snap.revision ?? 0,
+    status: snap.status,
+    updatedAt: snap.updatedAt,
   };
 }
 
@@ -39,10 +51,16 @@ function fakeEngine(initial, hooks = {}) {
       return structuredClone(current);
     },
     getSnapshot: () => current && structuredClone(current),
-    serialize: () => current && { customType: "okf-wiki-run", workspace: current.cwd, snapshot: structuredClone(current) },
+    serialize: () => current && pointerFrom(current),
     restore(value) {
       calls.push(["restore", value]);
-      current = structuredClone(value.snapshot ?? value);
+      // Engine accepts full snapshots only (history store); pointer sessions are rejected.
+      if (!value || typeof value !== "object" || value.version !== 8 || !value.id) return undefined;
+      current = structuredClone(value);
+      // Mirror engine recovery: running → paused.
+      if (current.status === "running") {
+        current = { ...current, status: "paused" };
+      }
       return structuredClone(current);
     },
     async applyRestoredArtifactHealth() {
@@ -64,7 +82,10 @@ function fakeEngine(initial, hooks = {}) {
       publish(kind);
       return structuredClone(current);
     },
-    pause() { calls.push(["pause"]); },
+    pause() {
+      calls.push(["pause"]);
+      if (current?.status === "running") current = { ...current, status: "paused" };
+    },
     async resume() { calls.push(["resume"]); },
     async cancel() { calls.push(["cancel"]); },
     async interrupt() { calls.push(["interrupt"]); },
@@ -170,7 +191,7 @@ function fixture(options = {}) {
   return { appended, commands, ctx, engine, handlers, history, messages, notices, statuses, widgets, workspaceCalls };
 }
 
-test("registers one command, starts in the background, and persists non-context run state", async () => {
+test("registers one command, starts in the background, and persists pointer-only session state", async () => {
   const subject = fixture();
   await subject.handlers.get("session_start")({}, subject.ctx);
 
@@ -185,33 +206,60 @@ test("registers one command, starts in the background, and persists non-context 
     maxResearchRounds: 6,
   }]);
   assert.equal(subject.appended.at(-1).customType, "okf-wiki-run");
-  assert.equal(subject.appended.at(-1).data.snapshot.language, "en");
+  const entry = subject.appended.at(-1).data;
+  assert.equal(entry.pointerVersion, 1);
+  assert.equal(entry.runId, "run-1");
+  assert.equal(entry.status, "running");
+  assert.equal(entry.workspace, "/workspace");
+  assert.equal("snapshot" in entry, false, "session entry must be pointer-only");
+  assert.equal(subject.history.get("run-1")?.language, "en", "full snapshot is in history store");
   assert.equal(subject.messages.length, 0, "starting a run must not add a model-context message");
 });
 
-test("restores only the latest matching-workspace custom entry and persists interruption", async () => {
-  const other = { customType: "okf-wiki-run", workspace: "/other", snapshot: snapshot({ cwd: "/other" }) };
-  const restored = { customType: "okf-wiki-run", workspace: "/workspace", snapshot: snapshot({ id: "restored" }) };
-  const staleFork = { customType: "okf-wiki-run", workspace: "/workspace", snapshot: snapshot({ id: "stale-fork" }) };
+test("restores from pointer via history store and persists interruption", async () => {
+  const restoredSnap = snapshot({ id: "restored", status: "running" });
+  const other = pointerFrom(snapshot({ id: "other", cwd: "/other" }));
+  const restored = pointerFrom(restoredSnap);
   const subject = fixture({
     entries: [
       { type: "custom", customType: "okf-wiki-run", data: other },
       { type: "custom", customType: "okf-wiki-run", data: restored },
-      { type: "custom", customType: "okf-wiki-run", data: staleFork },
     ],
     branchEntries: [
-    { type: "custom", customType: "okf-wiki-run", data: other },
-    { type: "custom", customType: "okf-wiki-run", data: restored },
+      { type: "custom", customType: "okf-wiki-run", data: other },
+      { type: "custom", customType: "okf-wiki-run", data: restored },
     ],
   });
+  // History store holds the full snapshot the pointer references.
+  subject.history.set("restored", restoredSnap);
 
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls[0][0], "restore");
-  assert.equal(subject.engine.calls[0][1].snapshot.id, "restored");
+  assert.equal(subject.engine.calls[0][1].id, "restored");
+  assert.equal(subject.engine.calls[0][1].version, 8, "restore receives full snapshot, not pointer");
+  // Recovery converts running → paused and rewrites history.
+  assert.equal(subject.history.get("restored")?.status, "paused");
+  assert.equal(subject.appended.at(-1)?.data?.status, "paused");
 
   await subject.handlers.get("session_shutdown")({}, subject.ctx);
   assert.deepEqual(subject.engine.calls.slice(-2).map(([name]) => name), ["interrupt", "waitForIdle"]);
   assert.equal(subject.appended.at(-1).data.workspace, "/workspace");
+  assert.equal("snapshot" in subject.appended.at(-1).data, false);
+});
+
+test("missing history for a valid pointer does not half-restore", async () => {
+  const restored = pointerFrom(snapshot({ id: "missing-history" }));
+  const subject = fixture({
+    entries: [{ type: "custom", customType: "okf-wiki-run", data: restored }],
+    branchEntries: [{ type: "custom", customType: "okf-wiki-run", data: restored }],
+  });
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
+  assert.equal(subject.engine.getSnapshot(), undefined);
+  assert.ok(subject.notices.some(({ message, level }) => level === "warning"
+    && /no durable history/.test(message)
+    && /\/wiki generate/.test(message)));
 });
 
 test("session shutdown is idempotent when no Wiki run exists", async () => {
@@ -273,7 +321,8 @@ test("fresh sessions resume the latest recoverable project run", async () => {
 
   assert.deepEqual(subject.engine.calls.slice(-2).map((call) => call[0]), ["restore", "resume"]);
   assert.equal(subject.engine.calls.at(-2)[1].id, "run-zeta");
-  assert.equal(subject.appended.at(-1).data.snapshot.id, "run-zeta");
+  assert.equal(subject.appended.at(-1).data.runId, "run-zeta");
+  assert.equal("snapshot" in subject.appended.at(-1).data, false);
 });
 
 test("resume accepts an exact historical run id and rejects terminal runs", async () => {
@@ -297,6 +346,23 @@ test("resume accepts an exact historical run id and rejects terminal runs", asyn
 
   assert.equal(failed.engine.calls.some(([name]) => name === "restore"), false);
   assert.match(failed.notices.at(-1).message, /targeted node or phase retry/);
+});
+
+test("pause binds the latest recoverable history when the engine has no current run", async () => {
+  const subject = fixture();
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  subject.history.set("run-paused", snapshot({
+    id: "run-paused",
+    status: "running",
+    updatedAt: "2026-08-08T00:03:00.000Z",
+  }));
+
+  await subject.commands.get("wiki").handler("pause", subject.ctx);
+
+  assert.equal(subject.engine.calls.some(([name]) => name === "restore"), true);
+  assert.equal(subject.engine.calls.at(-1)[0], "pause");
+  assert.equal(subject.history.get("run-paused")?.status, "paused");
+  assert.ok(subject.notices.some(({ message }) => /paused/i.test(message)));
 });
 
 test("navigator r forks a failed historical run for targeted retry", async () => {
@@ -379,7 +445,7 @@ test("session shutdown waits for pending terminal history writes", async () => {
   assert.equal(subject.history.get("run-1").status, "succeeded");
 });
 
-test("project history write failures are reported without losing Pi session state", async () => {
+test("project history write failures are reported without losing Pi session pointer", async () => {
   const subject = fixture({
     mode: "tui",
     hasUI: true,
@@ -389,12 +455,13 @@ test("project history write failures are reported without losing Pi session stat
 
   await subject.commands.get("wiki").handler("generate", subject.ctx);
 
-  assert.equal(subject.appended.at(-1).data.snapshot.id, "run-1");
+  assert.equal(subject.appended.at(-1).data.runId, "run-1");
+  assert.equal("snapshot" in subject.appended.at(-1).data, false);
   assert.ok(subject.notices.some(({ message, level }) => level === "error"
     && /history could not be saved: disk unavailable/.test(message)));
 });
 
-test("does not restore legacy v5 session entries and notifies incompatibility", async () => {
+test("does not restore legacy full-snapshot session entries and notifies regenerate", async () => {
   const legacy = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
@@ -411,10 +478,11 @@ test("does not restore legacy v5 session entries and notifies incompatibility", 
   assert.equal(subject.engine.getSnapshot(), undefined);
   assert.ok(subject.notices.some(({ message, level }) => level === "warning"
     && /incompatible/.test(message)
-    && /version: expected 7, got 5/.test(message)));
+    && /\/wiki generate/.test(message)
+    && /legacy full-snapshot/.test(message)));
 });
 
-test("does not restore legacy v6 session entries", async () => {
+test("does not restore legacy v6 full-snapshot session entries", async () => {
   const legacy = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
@@ -431,14 +499,15 @@ test("does not restore legacy v6 session entries", async () => {
   assert.equal(subject.engine.getSnapshot(), undefined);
   assert.ok(subject.notices.some(({ message, level }) => level === "warning"
     && /incompatible/.test(message)
-    && /version: expected 7, got 6/.test(message)));
+    && /\/wiki generate/.test(message)));
 });
 
-test("does not restore structurally corrupt v7 session entries", async () => {
+test("does not restore malformed pointer session entries", async () => {
   const malformed = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
-    snapshot: snapshot({ id: "malformed", nodes: [null] }),
+    pointerVersion: 1,
+    // missing runId/revision/status/updatedAt
   };
   const subject = fixture({ entries: [
     { type: "custom", customType: "okf-wiki-run", data: malformed },
@@ -449,7 +518,42 @@ test("does not restore structurally corrupt v7 session entries", async () => {
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
   assert.equal(subject.engine.getSnapshot(), undefined);
-  assert.ok(subject.notices.some(({ message, level }) => level === "warning" && /incompatible/.test(message)));
+  assert.ok(subject.notices.some(({ message, level }) => level === "warning"
+    && /incompatible/.test(message)
+    && /\/wiki generate/.test(message)));
+});
+
+test("rejects incompatible history snapshots pointed to by a valid pointer", async () => {
+  const pointer = {
+    customType: "okf-wiki-run",
+    workspace: "/workspace",
+    pointerVersion: 1,
+    runId: "bad-history",
+    revision: 0,
+    status: "paused",
+    updatedAt: "2026-08-08T00:00:00.000Z",
+  };
+  const subject = fixture({
+    entries: [{ type: "custom", customType: "okf-wiki-run", data: pointer }],
+    branchEntries: [{ type: "custom", customType: "okf-wiki-run", data: pointer }],
+  });
+  // Corrupt v7 body in history — fake restore rejects non-v7 / missing id; use nodes:null to fail real path.
+  // fakeEngine.restore requires version 7 + id; return undefined for nodes null by overriding after load.
+  subject.history.set("bad-history", snapshot({ id: "bad-history", version: 5 }));
+
+  // Override restore to reject like the real engine for incompatible snapshots.
+  const originalRestore = subject.engine.restore;
+  subject.engine.restore = (value) => {
+    subject.engine.calls.push(["restore", value]);
+    if (value?.version !== 7) return undefined;
+    return originalRestore(value);
+  };
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.equal(subject.engine.getSnapshot(), undefined);
+  assert.ok(subject.notices.some(({ message, level }) => level === "warning"
+    && /incompatible/.test(message)
+    && /\/wiki generate/.test(message)));
 });
 
 test("status, pause, resume, and cancel use the same single-run controller", async () => {

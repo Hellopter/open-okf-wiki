@@ -32,6 +32,9 @@ export function projectResearchReceipt(
     criticalGapSignatures: artifact.gaps
       .filter((gap) => gap.priority === "critical")
       .map(criticalGapSignature),
+    criticalGapQuestions: artifact.gaps
+      .filter((gap) => gap.priority === "critical")
+      .map((gap) => gap.question),
   };
 }
 
@@ -52,14 +55,24 @@ export function researchFindings(scopeId: string, artifact: WikiResearchArtifact
   }));
 }
 
-/** Content-only fingerprint (kind + sorted evidence) for cross-scope dry-audit matching. */
+/**
+ * Content fingerprint for dry-audit matching.
+ * Normalizes evidence to paths only (strip #L ranges) and includes kind + title
+ * so line-number jitter does not keep audits "wet" forever.
+ */
 export function findingContentFingerprint(
-  finding: Pick<WikiResearchFindingDraft | WikiResearchFinding, "kind" | "evidence">,
+  finding: Pick<WikiResearchFindingDraft | WikiResearchFinding, "kind" | "evidence" | "title">,
 ): string {
   return createHash("sha256").update(stableStringify({
     kind: finding.kind,
-    evidence: [...finding.evidence].sort(),
+    title: normalizeIssueText(finding.title ?? "").toLowerCase(),
+    paths: [...finding.evidence].map(normalizeEvidencePath).filter(Boolean).sort(),
   })).digest("hex").slice(0, 16);
+}
+
+/** Strip line anchors (`path#L10-L20` → `path`) for stable matching. */
+export function normalizeEvidencePath(evidence: string): string {
+  return evidence.trim().replace(/#L\d+(?:-L\d+)?$/i, "");
 }
 
 function criticalGapSignature(gap: WikiResearchArtifact["gaps"][number]): string {

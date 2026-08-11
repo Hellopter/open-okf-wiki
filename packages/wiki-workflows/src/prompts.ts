@@ -25,7 +25,11 @@ import type {
   WikiRunSnapshot,
 } from "./workflow-types.js";
 
-const REQUIRED_DRY_COVERAGE_AUDITS = DEFAULT_WIKI_WORKFLOW_POLICY.research.requiredDryCoverageAudits;
+const POLICY = DEFAULT_WIKI_WORKFLOW_POLICY;
+const REQUIRED_DRY_COVERAGE_AUDITS = POLICY.research.requiredDryCoverageAudits;
+const MAX_EXPAND_ROUNDS = POLICY.research.maxExpandRounds;
+const MAX_AUDIT_ROUNDS = POLICY.research.maxAuditRounds;
+const MAX_EXPAND_SCOPES_PER_BATCH = POLICY.maxExpandScopesPerBatch;
 
 export interface PromptResearchReceipt {
   scopeId: string;
@@ -126,6 +130,8 @@ export function synthesisContext(node: WikiNode, run: WikiRunSnapshot, researchR
       "```",
     );
   }
+  const usedExpandRounds = countResearchGroups(run, "expand");
+  const usedAuditRounds = countResearchGroups(run, "audit");
   sections.push(
     "## Available Research Receipts",
     "Use only the exact finding `id` values below in page `findingIds`. Account for every finding by assigning it to at least one page or adding a justified non-critical entry to `omissions`. Read every selected `artifactPath` before planning.",
@@ -140,10 +146,41 @@ export function synthesisContext(node: WikiNode, run: WikiRunSnapshot, researchR
       maxResearchRounds: run.maxResearchRounds,
       dryCoverageAudits: input.dryAuditPasses,
       requiredDryCoverageAudits: REQUIRED_DRY_COVERAGE_AUDITS,
+      maxExpandRounds: MAX_EXPAND_ROUNDS,
+      maxAuditRounds: MAX_AUDIT_ROUNDS,
+      maxExpandScopesPerBatch: MAX_EXPAND_SCOPES_PER_BATCH,
+      remainingExpandRounds: Math.max(0, MAX_EXPAND_ROUNDS - usedExpandRounds),
+      remainingAuditRounds: Math.max(0, MAX_AUDIT_ROUNDS - usedAuditRounds),
+      preferFinalizeWhenNoCriticalGaps: true,
     }),
     "```",
   );
   return sections.join("\n");
+}
+
+/** Count expand or pure-audit research groups already queued on the run. */
+export function countResearchGroups(run: WikiRunSnapshot, kind: "expand" | "audit"): number {
+  const groups = new Set<string>();
+  for (const node of run.nodes) {
+    if (node.kind !== "research") continue;
+    if (node.status === "invalidated" || node.status === "cancelled") continue;
+    try {
+      const input = researchInputFor(node);
+      if (kind === "audit") {
+        if (input.continuationMode === "audit" && !input.structuralRoundId) {
+          groups.add(input.researchGroupId);
+        }
+        continue;
+      }
+      const isExpand = input.continuationMode === "supplemental"
+        || input.continuationMode === "structural"
+        || Boolean(input.structuralRoundId);
+      if (isExpand) groups.add(input.researchGroupId);
+    } catch {
+      // Ignore malformed nodes when counting budgets for prompts.
+    }
+  }
+  return groups.size;
 }
 
 export function artifactWriteContext(path: string | undefined, description: string): string {

@@ -39,7 +39,8 @@ export async function workspaceToolPolicy(cwd: string): Promise<WorkspaceToolPol
     workspaceRoot: workspace.root,
     sourceRoots,
     wikiRoot: path.join(workspace.root, "wiki"),
-    artifactRoot: path.join(workspace.root, ".okf-wiki", "runs"),
+    // Parent of runs/ (staging + per-run manifests) and blobs/ (content-addressed handoffs).
+    artifactRoot: path.join(workspace.root, ".okf-wiki"),
   };
 }
 
@@ -48,7 +49,7 @@ export function resolveArtifactPath(policy: WorkspaceToolPolicy, rawPath: string
   const artifactPath = insideWorkspace(policy.workspaceRoot, rawPath);
   const artifactRoot = path.resolve(policy.artifactRoot);
   if (artifactPath === artifactRoot || !pathIsInside(artifactRoot, artifactPath) || ![".json", ".md"].includes(path.extname(artifactPath))) {
-    throw new Error(`Workflow configuration error: artifact path must be a Markdown or JSON file under .okf-wiki/runs: ${rawPath}`);
+    throw new Error(`Workflow configuration error: artifact path must be a Markdown or JSON file under .okf-wiki: ${rawPath}`);
   }
   return path.resolve(artifactPath);
 }

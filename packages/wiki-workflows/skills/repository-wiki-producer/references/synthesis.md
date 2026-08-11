@@ -36,14 +36,21 @@ independent question. A repository is not automatically a domain. There is no
 per-repository page limit: never compress coverage to fit writer concurrency or
 a target page count; concurrency is scheduling only.
 
-Request another research batch whenever a critical reader question,
-cross-source boundary, or coverage audit lacks evidence. Continue until the
-audit history shows two consecutive rounds with no newly discovered critical
-finding or gap. `researchScopes` contains one or more objects with exactly
-`id`, `sourcePaths`, and `task`. Use only source paths from Workspace Context,
-choose an unused ID, and do not repeat an ID or source path within the batch.
-The workflow may execute four scopes concurrently, but that scheduling limit
-must never reduce the number of scopes needed for evidence saturation.
+**Prefer finalize when research receipts report no unresolved critical gaps.**
+Expand only to close critical gaps that still lack evidence. The engine hard-
+rejects expand when every prior research receipt has empty critical gap
+signatures. Each expand scope `id` or `task` must reference a critical gap
+question (include the gap wording). Dry-coverage audits are not a reason to
+keep expanding: when there are no critical gaps the engine skips forced audits
+and goes straight to writers. When gaps remain, follow
+`requiredDryCoverageAudits` from the Synthesis Round prompt (default one
+consecutive dry pass).
+
+When expand is warranted, `researchScopes` contains one or more objects with
+exactly `id`, `sourcePaths`, and `task`. Use only source paths from Workspace
+Context, choose an unused ID, and do not repeat an ID or source path within the
+batch. The workflow may execute four scopes concurrently, but that scheduling
+limit must never reduce the number of scopes needed for evidence saturation.
 
 ```json
 {

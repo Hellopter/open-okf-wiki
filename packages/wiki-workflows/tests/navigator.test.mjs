@@ -44,7 +44,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 7,
+  version: 8,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",

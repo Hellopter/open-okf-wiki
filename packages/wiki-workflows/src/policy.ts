@@ -17,20 +17,25 @@ export interface WikiArtifactLimits {
 
 /**
  * Split research-round accounting: expand (coverage growth) is separate from
- * audit (dry coverage confirmation). Happy path can exhaust expand early while
- * still spending audit rounds for required dry-coverage passes.
+ * audit (dry coverage confirmation when critical gaps remain). Happy path with
+ * no unresolved critical gaps skips dry-coverage audits entirely and goes
+ * straight to writers (see afterSuccess synthesis + researchIdsHaveUnresolvedCriticalGaps).
  */
 export interface WikiResearchBudgetPolicy {
   /** Max expand/coverage-growth research rounds (tighter happy path). */
   maxExpandRounds: number;
-  /** Max audit/dry-coverage research rounds. */
+  /** Max audit/dry-coverage research rounds (only when critical gaps remain). */
   maxAuditRounds: number;
   /**
    * Legacy combined ceiling still used by the current engine pump.
    * Prefer maxExpandRounds + maxAuditRounds for new accounting.
    */
   maxResearchRounds: number;
-  /** Consecutive dry (no new critical findings) audits required before write. */
+  /**
+   * Consecutive dry (no new critical findings) audits required before write
+   * when research still reports unresolved critical gaps. Zero-gap happy path
+   * skips this gate and does not spend audit rounds.
+   */
   requiredDryCoverageAudits: number;
 }
 
@@ -62,12 +67,12 @@ export const DEFAULT_WIKI_WORKFLOW_POLICY: WikiWorkflowPolicy = {
   maxExpandScopesPerBatch: 4,
   maxSourceRestarts: 1,
   research: {
-    // Split accounting: expand budget is independent of audit budget so a
-    // short happy path (coverage saturates quickly) still pays for dry audits.
+    // Split accounting: expand budget is independent of audit budget.
+    // Zero-gap happy path skips audits; gap-closing paths still pay dry audits.
     maxExpandRounds: 4,
     maxAuditRounds: 3,
     maxResearchRounds: 6,
-    // Happy-path tighten: one consecutive dry coverage audit is enough before write.
+    // When critical gaps remain, one consecutive dry coverage audit is enough before write.
     requiredDryCoverageAudits: 1,
   },
   maxNodeOutputChars: 48 * 1024,

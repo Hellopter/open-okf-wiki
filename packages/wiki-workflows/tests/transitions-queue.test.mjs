@@ -6,10 +6,22 @@ import {
   researchFindings,
 } from "../dist/research-receipt.js";
 import {
+  afterSuccess,
+  deterministicGroupId,
+  ensureSynthesisSubmissionFitsRun,
+  maybeCompleteVerification,
   previousReviewSignature,
   previousValidationSignature,
+  queueInitialSourceSurveys,
+  queuePageWriters,
+  queueResearch,
+  queueVerification,
+  researchGroupIdFor,
+  researchIdsHaveUnresolvedCriticalGaps,
 } from "../dist/transitions-queue.js";
 import { defectsFingerprint, validationIssuesFingerprint } from "../dist/run-nodes.js";
+import { DEFAULT_WIKI_WORKFLOW_POLICY } from "../dist/policy.js";
+import { EMPTY_NODE_METRICS } from "../dist/workflow-types.js";
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -28,9 +40,158 @@ function draftFinding(overrides = {}) {
   };
 }
 
-function hostWithNodes(nodes) {
+function hostWithNodes(nodes, overrides = {}) {
+  const run = {
+    version: 8,
+    id: "run-test",
+    cwd: "/tmp/wiki-test",
+    requestedMode: "generate",
+    effectiveMode: "generate",
+    language: "en",
+    status: "running",
+    round: 0,
+    sourceRestartCount: 0,
+    maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds,
+    nodes,
+    events: [],
+    createdAt: "2026-08-08T00:00:00.000Z",
+    updatedAt: "2026-08-08T00:00:00.000Z",
+    inspection: {
+      root: "/tmp/wiki-test",
+      mode: "generate",
+      sourceFingerprint: "fp",
+      sourcePaths: ["src-core", "src-api"],
+      existingPages: [],
+      impactedPages: [],
+      changedPaths: [],
+      changed: false,
+    },
+    ...overrides,
+  };
+  let idSeq = 0;
   return {
-    requireRun: () => ({ nodes }),
+    requireRun: () => run,
+    nodeById: (id) => run.nodes.find((node) => node.id === id),
+    now: () => "2026-08-08T00:00:00.000Z",
+    newId: () => `rand-${++idSeq}`,
+    emit() {},
+    markTerminalRun() {},
+    async materializeIndexes() {},
+    run,
+  };
+}
+
+function receipt(overrides = {}) {
+  return {
+    scopeId: "source-survey:src-core",
+    task: "survey",
+    sourceFingerprint: "fp",
+    artifact: {
+      version: 1,
+      runId: "run-test",
+      nodeId: "research-1",
+      attempt: 1,
+      kind: "research",
+      relativePath: "artifacts/research.json",
+      sha256: "abc",
+      sizeBytes: 12,
+      mediaType: "application/json",
+    },
+    findings: [{
+      id: "finding-1",
+      priority: "critical",
+      contentFingerprint: "deadbeef",
+    }],
+    criticalGapSignatures: [],
+    criticalGapQuestions: [],
+    ...overrides,
+  };
+}
+
+function researchNode(id, result, inputOverrides = {}) {
+  return {
+    id,
+    kind: "research",
+    label: `Research ${id}`,
+    phaseId: "research",
+    phaseTitle: "Research",
+    status: "succeeded",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "",
+    input: {
+      batch: 0,
+      scope: { id: "source-survey:src-core", sourcePaths: ["src-core"], task: "survey" },
+      researchGroupId: "research:0:group",
+      priorResearchIds: [],
+      continuationMode: "initial",
+      dryAuditPasses: 0,
+      ...inputOverrides,
+    },
+    result,
+    metrics: { ...EMPTY_NODE_METRICS },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    attemptHistory: [],
+  };
+}
+
+function synthesisNode(id, researchIds, result, inputOverrides = {}) {
+  return {
+    id,
+    kind: "synthesis",
+    label: "Synthesize",
+    phaseId: "plan",
+    phaseTitle: "Plan",
+    status: "succeeded",
+    dependsOn: researchIds,
+    attempt: 1,
+    inputFingerprint: "",
+    input: {
+      researchIds,
+      supplementalBatch: 0,
+      mode: "initial",
+      dryAuditPasses: 0,
+      round: 1,
+      ...inputOverrides,
+    },
+    result,
+    metrics: { ...EMPTY_NODE_METRICS },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    attemptHistory: [],
+  };
+}
+
+function finalSpec(findingId = "finding-1") {
+  return {
+    domains: [
+      {
+        id: "overview",
+        title: "Overview",
+        purpose: "Orient readers.",
+        pages: [{
+          pageType: "overview",
+          path: "overview/overview.md",
+          title: "Overview",
+          purpose: "Orient readers.",
+          findingIds: [],
+        }],
+      },
+      {
+        id: "core",
+        title: "Core",
+        purpose: "Explain the core.",
+        pages: [{
+          pageType: "architecture",
+          path: "core/architecture.md",
+          title: "Core architecture",
+          purpose: "Explain boundaries.",
+          findingIds: [findingId],
+        }],
+      },
+    ],
+    crossLinks: [],
+    sharedTerms: [],
+    omissions: [],
   };
 }
 
@@ -66,12 +227,19 @@ test("researchFindings ids include scopeId so cross-scope kind+evidence do not c
     findingContentFingerprint(left[0]),
     findingContentFingerprint(right[0]),
   );
+  // Path-normalized fingerprint: strip #L anchors; include kind + title.
   assert.equal(
     findingContentFingerprint(left[0]),
     createHash("sha256").update(stableStringify({
       kind: "domain",
-      evidence: ["src-core/index.ts#L1"],
+      title: (left[0].title ?? "").trim().replace(/\s+/g, " ").toLowerCase(),
+      paths: ["src-core/index.ts"],
     })).digest("hex").slice(0, 16),
+  );
+  // Line-number jitter must not change the fingerprint.
+  assert.equal(
+    findingContentFingerprint(left[0]),
+    findingContentFingerprint({ ...left[0], evidence: ["src-core/index.ts#L99-L120"] }),
   );
 });
 
@@ -106,8 +274,6 @@ test("previousReviewSignature only matches prior reviews for the same synthesisN
   );
 
   // Same synthesis lineage: surface prior fingerprint.
-  nodes.push(verifyNode("review", "review-prior-same", "synthesis-new", { defects, summary: "prior" }));
-  // Insert prior before current in list order by rebuilding with prior earlier.
   const sameLineage = hostWithNodes([
     verifyNode("review", "review-prior-same", "synthesis-new", { defects, summary: "prior" }),
     verifyNode("review", "review-current", "synthesis-new", { defects, summary: "new" }),
@@ -144,4 +310,341 @@ test("previousValidationSignature only matches prior validates for the same synt
     previousValidationSignature(hostSamePlan, "validate-current", "synthesis-new"),
     fingerprint,
   );
+});
+
+test("expand is rejected when research receipts have no unresolved critical gaps", () => {
+  const research = researchNode("research-1", receipt({ criticalGapSignatures: [] }));
+  const host = hostWithNodes([research]);
+  const input = {
+    researchIds: ["research-1"],
+    supplementalBatch: 0,
+    mode: "initial",
+    dryAuditPasses: 0,
+    round: 1,
+  };
+  assert.equal(researchIdsHaveUnresolvedCriticalGaps(host, ["research-1"]), false);
+  assert.throws(
+    () => ensureSynthesisSubmissionFitsRun(host, {
+      decision: "expand",
+      researchScopes: [{
+        id: "follow-up-flow",
+        sourcePaths: ["src-core"],
+        task: "Check flow",
+      }],
+      rationale: "Want more research",
+    }, input),
+    /Expand is rejected when research receipts report no unresolved critical gaps/,
+  );
+});
+
+test("expand is allowed when a research receipt still has critical gap signatures", () => {
+  const research = researchNode("research-1", receipt({
+    criticalGapSignatures: ["gap-sig-1"],
+    criticalGapQuestions: ["How do services hand off requests?"],
+  }));
+  const host = hostWithNodes([research], {
+    inspection: {
+      root: "/tmp/wiki-test",
+      mode: "generate",
+      sourceFingerprint: "fp",
+      sourcePaths: ["src-core"],
+      existingPages: [],
+      impactedPages: [],
+      changedPaths: [],
+      changed: false,
+    },
+  });
+  const input = {
+    researchIds: ["research-1"],
+    supplementalBatch: 0,
+    mode: "initial",
+    dryAuditPasses: 0,
+    round: 1,
+  };
+  assert.equal(researchIdsHaveUnresolvedCriticalGaps(host, ["research-1"]), true);
+  assert.doesNotThrow(() => ensureSynthesisSubmissionFitsRun(host, {
+    decision: "expand",
+    researchScopes: [{
+      id: "follow-up-flow",
+      sourcePaths: ["src-core"],
+      task: "How do services hand off requests?",
+    }],
+    rationale: "Critical gap remains",
+  }, input));
+});
+
+test("expand is rejected when scopes do not reference critical gap questions", () => {
+  const research = researchNode("research-1", receipt({
+    criticalGapSignatures: ["gap-sig-1"],
+    criticalGapQuestions: ["How do services hand off requests?"],
+  }));
+  const host = hostWithNodes([research], {
+    inspection: {
+      root: "/tmp/wiki-test",
+      mode: "generate",
+      sourceFingerprint: "fp",
+      sourcePaths: ["src-core"],
+      existingPages: [],
+      impactedPages: [],
+      changedPaths: [],
+      changed: false,
+    },
+  });
+  const input = {
+    researchIds: ["research-1"],
+    supplementalBatch: 0,
+    mode: "initial",
+    dryAuditPasses: 0,
+    round: 1,
+  };
+  assert.throws(
+    () => ensureSynthesisSubmissionFitsRun(host, {
+      decision: "expand",
+      researchScopes: [{
+        id: "unrelated-scope",
+        sourcePaths: ["src-core"],
+        task: "Survey unrelated modules only",
+      }],
+      rationale: "Unrelated expand",
+    }, input),
+    /must reference an unresolved critical gap/,
+  );
+});
+
+test("finalize without critical gaps skips coverage audit and queues writers", async () => {
+  const research = researchNode("research-1", receipt({ criticalGapSignatures: [] }));
+  const synthesis = synthesisNode(
+    "synthesis-1",
+    ["research-1"],
+    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+    { dryAuditPasses: 0 },
+  );
+  const host = hostWithNodes([research, synthesis]);
+  await afterSuccess(host, synthesis);
+  const kinds = host.run.nodes.map((node) => node.kind);
+  assert.ok(kinds.includes("write"), "should queue page writers");
+  assert.equal(
+    host.run.nodes.filter((node) => node.kind === "research" && node.input?.continuationMode === "audit").length,
+    0,
+    "must not queue coverage audit when there are no critical gaps",
+  );
+});
+
+test("finalize with critical gaps and insufficient dry audits queues coverage audit", async () => {
+  const research = researchNode("research-1", receipt({
+    criticalGapSignatures: ["gap-a"],
+    criticalGapQuestions: ["What remains unverified?"],
+  }));
+  // Finalize result is already on the node (submit-time would normally block),
+  // but afterSuccess still gates the audit path on unresolved critical gaps.
+  const synthesis = synthesisNode(
+    "synthesis-1",
+    ["research-1"],
+    { decision: "finalize", spec: finalSpec(), rationale: "force path" },
+    { dryAuditPasses: 0 },
+  );
+  const host = hostWithNodes([research, synthesis]);
+  await afterSuccess(host, synthesis);
+  const audits = host.run.nodes.filter((node) => node.kind === "research" && node.input?.continuationMode === "audit");
+  assert.equal(audits.length, 1);
+  assert.match(audits[0].input.scope.task, /critical-gap audit|missing critical gaps/i);
+  assert.equal(host.run.nodes.filter((node) => node.kind === "write").length, 0);
+});
+
+test("researchGroupId is deterministic for the same batch, scopes, and mode", () => {
+  const scopes = [
+    { id: "source-survey:src-b", sourcePaths: ["src-b"], task: "b" },
+    { id: "source-survey:src-a", sourcePaths: ["src-a"], task: "a" },
+  ];
+  const once = researchGroupIdFor(0, scopes, "initial");
+  const twice = researchGroupIdFor(0, [...scopes].reverse(), "initial");
+  assert.equal(once, twice);
+  assert.match(once, /^research:0:[0-9a-f]{16}$/);
+
+  const otherBatch = researchGroupIdFor(1, scopes, "initial");
+  assert.notEqual(once, otherBatch);
+  assert.match(otherBatch, /^research:1:[0-9a-f]{16}$/);
+
+  const otherMode = researchGroupIdFor(0, scopes, "audit");
+  assert.notEqual(once, otherMode);
+});
+
+test("queueResearch assigns the same deterministic researchGroupId to all scopes in a batch", () => {
+  const host = hostWithNodes([]);
+  const scopes = [
+    { id: "source-survey:src-core", sourcePaths: ["src-core"], task: "survey core" },
+    { id: "source-survey:src-api", sourcePaths: ["src-api"], task: "survey api" },
+  ];
+  const expected = researchGroupIdFor(0, scopes, "initial");
+  const nodes = queueResearch(host, "inspect-1", scopes, 0, "research", "Research");
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes[0].input.researchGroupId, expected);
+  assert.equal(nodes[1].input.researchGroupId, expected);
+  // Random host.newId must not appear in the group id.
+  assert.doesNotMatch(nodes[0].input.researchGroupId, /rand-/);
+});
+
+test("queueInitialSourceSurveys uses a bounded one-pass survey task", () => {
+  const host = hostWithNodes([]);
+  const nodes = queueInitialSourceSurveys(host, "inspect-1", host.run.inspection);
+  assert.equal(nodes.length, 2);
+  for (const node of nodes) {
+    assert.match(node.input.scope.task, /Bounded survey/i);
+    assert.match(node.input.scope.task, /one complete research handoff|single pass/i);
+    assert.match(node.input.scope.task, /exhaustive encyclopedia/i);
+  }
+});
+
+test("write group ids are deterministic for a synthesis lineage", () => {
+  const research = researchNode("research-1", receipt({
+    findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
+  }));
+  const synthesis = synthesisNode(
+    "synthesis-1",
+    ["research-1"],
+    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+  );
+  const host = hostWithNodes([research, synthesis]);
+  const first = queuePageWriters(host, "synthesis-1", finalSpec());
+  const firstGroup = first[0].input.writeGroupId;
+  assert.match(firstGroup, /^write:[0-9a-f]{16}$/);
+  assert.doesNotMatch(firstGroup, /rand-/);
+
+  // Same generation inputs → same id shape; second wave increments generation.
+  const secondHost = hostWithNodes([...host.run.nodes]);
+  const second = queuePageWriters(secondHost, "synthesis-1", finalSpec());
+  assert.notEqual(second[0].input.writeGroupId, firstGroup);
+  assert.equal(
+    second[0].input.writeGroupId,
+    deterministicGroupId("write", {
+      synthesisNodeId: "synthesis-1",
+      intent: "draft",
+      generation: 1,
+    }),
+  );
+});
+
+test("queueVerification concurrent callers enqueue only one validate and one review", async () => {
+  const research = researchNode("research-1", receipt({
+    findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
+  }));
+  const synthesis = synthesisNode(
+    "synthesis-1",
+    ["research-1"],
+    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+  );
+  const sourceNodeIds = ["write-a", "write-b"];
+  let releaseMaterialize;
+  const materializeGate = new Promise((resolve) => {
+    releaseMaterialize = resolve;
+  });
+  let materializeCalls = 0;
+  const host = hostWithNodes([research, synthesis]);
+  host.materializeIndexes = async () => {
+    materializeCalls += 1;
+    // Hold both overlapping callers in the await so a TOCTOU race would
+    // double-queue if reservation happened after materializeIndexes.
+    await materializeGate;
+  };
+
+  const first = queueVerification(host, sourceNodeIds, "synthesis-1");
+  // Yield so the first call can pass the sync check and queue nodes before
+  // the second call starts (and so both can park on materializeIndexes).
+  await Promise.resolve();
+  const second = queueVerification(host, sourceNodeIds, "synthesis-1");
+  // Both should now be awaiting materialize; release them together.
+  releaseMaterialize();
+  const [left, right] = await Promise.all([first, second]);
+
+  assert.equal(materializeCalls, 2, "both callers still materialize indexes");
+  const validates = host.run.nodes.filter((node) => node.kind === "validate");
+  const reviews = host.run.nodes.filter((node) => node.kind === "review");
+  assert.equal(validates.length, 1, "must not double-queue validate under concurrent join");
+  assert.equal(reviews.length, 1, "must not double-queue review under concurrent join");
+  assert.equal(left.length, 2);
+  assert.equal(right.length, 2);
+  assert.deepEqual(
+    left.map((node) => node.id).sort(),
+    right.map((node) => node.id).sort(),
+  );
+  assert.equal(left[0].input.verificationGroupId, right[0].input.verificationGroupId);
+});
+
+test("maybeCompleteVerification ignores invalidated peers and completes live pair", async () => {
+  const research = researchNode("research-1", receipt({
+    findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
+  }));
+  const synthesis = synthesisNode(
+    "synthesis-1",
+    ["research-1"],
+    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+  );
+  const groupId = "verify:shared-group";
+  const okValidation = { ok: true, issues: [], pages: ["overview/overview.md"], obsoletePages: [] };
+  const cleanReview = { defects: [], summary: "Looks good" };
+
+  // Dead generation first in the array so a naive find() would pin to them.
+  const deadValidate = {
+    ...verifyNode("validate", "validate-old", "synthesis-1", { ok: false, issues: [{ code: "x", message: "stale" }], pages: [], obsoletePages: [] }, "invalidated"),
+    label: "Validate Wiki",
+    phaseId: "validate",
+    phaseTitle: "Validate",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "",
+    metrics: { ...EMPTY_NODE_METRICS },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    attemptHistory: [],
+  };
+  deadValidate.input.verificationGroupId = groupId;
+
+  const deadReview = {
+    ...verifyNode("review", "review-old", "synthesis-1", { defects: [{ kind: "depth", page: "core/architecture.md", detail: "stale" }], summary: "old" }, "invalidated"),
+    label: "Review Wiki",
+    phaseId: "validate",
+    phaseTitle: "Validate",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "",
+    metrics: { ...EMPTY_NODE_METRICS },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    attemptHistory: [],
+  };
+  deadReview.input.verificationGroupId = groupId;
+
+  const liveValidate = {
+    ...verifyNode("validate", "validate-live", "synthesis-1", okValidation, "succeeded"),
+    label: "Validate Wiki",
+    phaseId: "validate",
+    phaseTitle: "Validate",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "",
+    metrics: { ...EMPTY_NODE_METRICS },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    attemptHistory: [],
+  };
+  liveValidate.input.verificationGroupId = groupId;
+
+  const liveReview = {
+    ...verifyNode("review", "review-live", "synthesis-1", cleanReview, "succeeded"),
+    label: "Review Wiki",
+    phaseId: "validate",
+    phaseTitle: "Validate",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "",
+    metrics: { ...EMPTY_NODE_METRICS },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    attemptHistory: [],
+  };
+  liveReview.input.verificationGroupId = groupId;
+
+  const host = hostWithNodes([research, synthesis, deadValidate, deadReview, liveValidate, liveReview]);
+  await maybeCompleteVerification(host, liveReview);
+
+  const finalizeNodes = host.run.nodes.filter((node) => node.kind === "finalize");
+  assert.equal(finalizeNodes.length, 1, "live pair should advance to finalize despite invalidated peers");
+  assert.deepEqual(finalizeNodes[0].dependsOn.slice().sort(), ["review-live", "validate-live"]);
+  assert.equal(finalizeNodes[0].input.verificationGroupId, groupId);
 });

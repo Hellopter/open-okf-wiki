@@ -26,6 +26,7 @@ import { loadResearchSourceRoots, validateResearchArtifact } from "./research-ev
 import { projectResearchReceipt, researchFindings } from "./research-receipt.js";
 import {
   affectedNodeIds,
+  isForkableRun,
   isTerminalRun,
   nodesInPhase,
   phaseRetryRoots,
@@ -55,7 +56,7 @@ import {
   writePathsFor,
   writeReport,
 } from "./run-nodes.js";
-import { createWikiRunSession, parseWikiRunSession } from "./session.js";
+import { createWikiRunSession } from "./session.js";
 import { isWikiRunSnapshot } from "./snapshot-validation.js";
 import {
   afterSuccess,
@@ -139,7 +140,7 @@ export class WikiWorkflowEngine {
     this.ensureArtifactStore(request.cwd);
     const inspectionNode = newNode(this.transitionHost(), "inspect", "Inspect Git scope", [], { requestedMode: request.mode }, phaseRefForKind("inspect"));
     this.current = {
-      version: 7,
+      version: 8,
       id: this.newId(),
       cwd: path.resolve(request.cwd),
       requestedMode: request.mode,
@@ -177,18 +178,22 @@ export class WikiWorkflowEngine {
   }
 
   serialize(): WikiRunSession | undefined {
+    // Pointer-only session entry; full state is persisted via the history store.
     return this.current ? createWikiRunSession(this.current) : undefined;
   }
 
-  restore(serialized: WikiRunSession | WikiRunSnapshot | unknown): WikiRunSnapshot | undefined {
-    const session = isWikiRunSnapshot(serialized)
-      ? createWikiRunSession(serialized)
-      : parseWikiRunSession(serialized);
-    if (!session) return undefined;
+  /**
+   * Restore from a full WikiRunSnapshot (loaded from the history store).
+   * Pointer-only session entries cannot be restored here — the extension must
+   * resolve `runId` → history snapshot first. Legacy full-snapshot session
+   * payloads are rejected (fail closed).
+   */
+  restore(serialized: WikiRunSnapshot | unknown): WikiRunSnapshot | undefined {
+    if (!isWikiRunSnapshot(serialized)) return undefined;
 
-    this.ensureArtifactStore(session.snapshot.cwd);
+    this.ensureArtifactStore(serialized.cwd);
     this.abortControllers();
-    this.current = clone(session.snapshot);
+    this.current = clone(serialized);
     this.pendingTerminalEvent = undefined;
     let recovered = false;
     for (const node of this.current.nodes) {
@@ -261,6 +266,11 @@ export class WikiWorkflowEngine {
     return await this.forkAndRetry(snapshot, phaseRetryRoots(nodes).map((node) => node.id), { phaseId });
   }
 
+  /** True when a node currently has a live AbortController (executor in flight). */
+  isNodeLive(nodeId: string): boolean {
+    return this.controllers.has(nodeId);
+  }
+
   private async forkAndRetry(
     snapshot: WikiRunSnapshot,
     rootIds: string[],
@@ -269,10 +279,19 @@ export class WikiWorkflowEngine {
     if (this.current && (this.current.status === "running" || this.current.status === "paused")) {
       throw new Error("A Wiki workflow is already active for this Pi session");
     }
-    if (!isTerminalRun(snapshot)) throw new Error("Only completed Wiki history can be forked for retry");
+    if (!isForkableRun(snapshot)) {
+      throw new Error("Only completed or interrupted Wiki history can be forked for retry");
+    }
     const branch = clone(snapshot);
     const now = this.now();
     branch.id = this.newId();
+    branch.version = 8;
+    // Recover interrupted nodes so fork targets are settled (queued, not running).
+    for (const node of branch.nodes) {
+      if (node.status !== "running") continue;
+      node.status = "queued";
+      node.activity = { state: "waiting", message: "Interrupted; forked for retry", updatedAt: now };
+    }
     branch.status = "paused";
     branch.createdAt = now;
     branch.updatedAt = now;
@@ -577,6 +596,9 @@ export class WikiWorkflowEngine {
     node.status = "succeeded";
     node.activity = { state: "completed", message: "Completed", updatedAt: this.now() };
     node.finishedAt = this.now();
+    // Drop live transcript once handoff/result are final — keeps snapshots slim.
+    node.history = undefined;
+    node.output = undefined;
     this.emit("node_succeeded", node.id, node.label);
   }
 
@@ -787,13 +809,12 @@ export class WikiWorkflowEngine {
   }
 
   private archiveAttempt(node: WikiNode): void {
+    // Slim archive: metrics + error metadata only — omit heavy result/history/output clones.
+    // Handoff refs stay (content-addressed pointers; cheap and useful for UI/recovery).
     node.attemptHistory.push({
       attempt: node.attempt,
       startedAt: node.startedAt,
       finishedAt: node.finishedAt,
-      result: clone(node.result),
-      output: node.output,
-      history: node.history ? clone(node.history) : undefined,
       handoff: node.handoff ? clone(node.handoff) : undefined,
       error: node.error ? clone(node.error) : undefined,
       metrics: clone(node.metrics),
@@ -856,6 +877,7 @@ export class WikiWorkflowEngine {
     run.events.push(event);
     if (run.events.length > MAX_EVENTS) run.events.splice(0, run.events.length - MAX_EVENTS);
     run.updatedAt = event.at;
+    // Clone once per emit; all listeners share the same snapshot (do not re-clone per listener).
     const snapshot = clone(run);
     for (const listener of this.listeners) listener(snapshot, event);
   }

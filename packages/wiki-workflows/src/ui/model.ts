@@ -7,6 +7,8 @@ export interface WikiNavigatorController {
   getRun(runId?: string): WikiRunSnapshot | undefined;
   loadRun(runId: string): Promise<WikiRunSnapshot | undefined>;
   getActiveRunId(): string | undefined;
+  /** True when the active engine still has a live executor for this node. */
+  isNodeLive?(nodeId: string): boolean;
   getWorkspace?(): WikiNavigatorWorkspace | undefined;
   subscribe(listener: () => void): () => void;
   retryNode(runId: string, nodeId: string): Promise<WikiRunSnapshot | undefined> | WikiRunSnapshot | undefined;
@@ -66,6 +68,12 @@ export class WikiUiModel {
 
   getActiveRunId(): string | undefined {
     return this.controller.getActiveRunId();
+  }
+
+  /** Live executor only — historical queued/running without a controller is not "in flight". */
+  isNodeLive(nodeId: string | undefined): boolean {
+    if (!nodeId) return false;
+    return this.controller.isNodeLive?.(nodeId) === true;
   }
 
   getWorkspace(): WikiNavigatorWorkspace | undefined {

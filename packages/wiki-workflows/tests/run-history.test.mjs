@@ -21,7 +21,7 @@ function metrics() {
 
 function snapshot(id, status, updatedAt) {
   return {
-    version: 7,
+    version: 8,
     id,
     cwd: "/workspace",
     requestedMode: "generate",

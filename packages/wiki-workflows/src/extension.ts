@@ -12,14 +12,12 @@ import { createWikiUiHost, notifyRunStarted, type WikiUiHost } from "./ui/host.j
 import type { WikiNavigatorController, WikiNavigatorWorkspace } from "./ui/model.js";
 import { renderWikiArtifactText, renderWikiRunHistoryText, renderWikiRunText } from "./ui/text.js";
 import { createWikiRunHistoryStore, summarizeWikiRun, type WikiRunHistoryStore } from "./run-history.js";
-import { parseWikiRunSession, WIKI_RUN_CUSTOM_TYPE } from "./session.js";
+import { createWikiRunSession, parseWikiRunSession, WIKI_RUN_CUSTOM_TYPE } from "./session.js";
 import { explainWikiRunSnapshot } from "./snapshot-validation.js";
 import type { WikiRunEvent, WikiRunSession, WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
 import { isRecord } from "./util.js";
 import { wikiWorkspaceService, type WikiWorkspaceResult, type WikiWorkspaceService } from "./workspace.js";
 import { isExecutingRunStatus, isTerminalRunStatus } from "./ui/format.js";
-
-const STATE_FLUSH_MS = 500;
 
 export interface WikiExtensionOptions {
   createEngine?: (context: ExtensionContext) => WikiWorkflowEngine;
@@ -54,7 +52,6 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     let engine: WikiWorkflowEngine | undefined;
     let unsubscribeEngine: (() => void) | undefined;
     let host: WikiUiHost | undefined;
-    let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let historyWriteFailure: unknown;
     let persistenceErrorReporter: ((message: string) => void) | undefined;
     const workspaceService = options.workspaceService ?? wikiWorkspaceService;
@@ -65,10 +62,11 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
     const checkpoint = new WikiCheckpointCoordinator({
       appendSession: (session) => {
+        // Pointer-only session entry — full state is in the history store.
         pi.appendEntry(WIKI_RUN_CUSTOM_TYPE, session);
-        rememberSnapshot(session.snapshot);
       },
       saveHistory: async (snapshot) => {
+        rememberSnapshot(snapshot);
         const workspace = path.resolve(snapshot.cwd);
         await historyStoreFor(workspace).save(snapshot);
         await refreshHistory(workspace);
@@ -92,28 +90,18 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     };
 
     const persistNow = async (): Promise<void> => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = undefined;
-      }
-      const session = engine?.serialize();
-      if (!session) return;
-      // Always await the full session+history write so failures are reported even when
+      // Prefer the live snapshot body; convert to pointer for host session.
+      const snapshot = engine?.getSnapshot();
+      if (!snapshot) return;
+      const session = createWikiRunSession(snapshot);
+      // Always await the pointer session + full history write so failures are reported even when
       // callers fire-and-forget (critical events). Writes still serialize via the chain.
       try {
-        await checkpoint.enqueue(session.snapshot, session, { awaitHistory: true });
+        await checkpoint.enqueue(snapshot, session, { awaitHistory: true });
         historyWriteFailure = undefined;
       } catch (error) {
         reportHistoryFailure(error);
       }
-    };
-
-    const schedulePersist = (): void => {
-      if (flushTimer) return;
-      flushTimer = setTimeout(() => {
-        flushTimer = undefined;
-        void persistNow();
-      }, STATE_FLUSH_MS);
     };
 
     const bindEngine = (context: ExtensionContext): WikiWorkflowEngine => {
@@ -121,8 +109,9 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       engine = createEngine(context);
       unsubscribeEngine = engine.subscribe((snapshot, event) => {
         rememberSnapshot(snapshot);
+        // Host session + history: only lifecycle / node-terminal / recovered / retry.
+        // node_activity / node_started never appendEntry (OOM: host fileEntries).
         if (isCriticalEvent(event)) void persistNow();
-        else schedulePersist();
       });
       return engine;
     };
@@ -131,26 +120,37 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
     const restoreForWorkspace = async (context: ExtensionContext): Promise<void> => {
       const workspace = await workspaceForNavigator(context.cwd);
-      const candidate = latestSessionCandidate(context, workspace?.root ?? context.cwd);
+      const workspaceRoot = workspace?.root ?? context.cwd;
+      const candidate = latestSessionCandidate(context, workspaceRoot);
       if (!candidate) return;
       if (!candidate.session) {
-        const reasons = explainWikiRunSnapshot(candidate.rawSnapshot);
-        const detail = reasons.length > 0 ? reasons.join("; ") : "unknown validation failure";
+        context.ui.notify(incompatibleRunMessage(candidate.detail), "warning");
+        return;
+      }
+      const active = currentEngine(context);
+      // Pointer → history store → engine.restore(snapshot). Never half-restore.
+      let historySnapshot: WikiRunSnapshot | undefined;
+      try {
+        historySnapshot = await historyStoreFor(workspaceRoot).load(candidate.session.runId);
+      } catch (error) {
         context.ui.notify(
-          `Wiki run snapshot is incompatible and was not restored (${detail}). Start a new run; older snapshots are not migrated.`,
+          `Wiki run history could not be loaded for ${candidate.session.runId}: ${errorMessage(error)}. Start a new run with /wiki generate.`,
           "warning",
         );
         return;
       }
-      const active = currentEngine(context);
-      const snapshot = active.restore(candidate.session);
-      if (!snapshot) {
-        const reasons = explainWikiRunSnapshot(candidate.session.snapshot);
-        const detail = reasons.length > 0 ? reasons.join("; ") : "restore rejected snapshot";
+      if (!historySnapshot) {
         context.ui.notify(
-          `Wiki run snapshot is incompatible and was not restored (${detail}).`,
+          `Wiki run ${candidate.session.runId} has no durable history and was not restored. Start a new run with /wiki generate.`,
           "warning",
         );
+        return;
+      }
+      const snapshot = active.restore(historySnapshot);
+      if (!snapshot) {
+        const reasons = explainWikiRunSnapshot(historySnapshot);
+        const detail = reasons.length > 0 ? reasons.join("; ") : "restore rejected snapshot";
+        context.ui.notify(incompatibleRunMessage(detail), "warning");
         return;
       }
       // Optional durable integrity: missing research/synthesis/review handoffs block resume.
@@ -160,7 +160,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         if (problems.length > 0) {
           restored = active.getSnapshot() ?? snapshot;
           context.ui.notify(
-            `Wiki run restored but is blocked: missing or unreadable handoff artifacts (${problems.length}). Retry the affected node or start a new run.`,
+            `Wiki run restored but is blocked: missing or unreadable handoff artifacts (${problems.length}). Retry the affected node or start a new run with /wiki generate.`,
             "warning",
           );
         }
@@ -169,12 +169,14 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       }
       rememberSnapshot(restored);
       checkpoint.seedRevision(restored.revision ?? 0);
-      // Session entry already exists; only refresh durable project history.
+      // Persist recovered state (running→paused) so history matches the restored engine.
       try {
         await checkpoint.flush();
-        const workspace = path.resolve(restored.cwd);
-        await historyStoreFor(workspace).save(structuredClone(restored));
-        await refreshHistory(workspace);
+        const historyRoot = path.resolve(restored.cwd);
+        await historyStoreFor(historyRoot).save(structuredClone(restored));
+        // Refresh the Pi session pointer after recovery (status may have changed).
+        pi.appendEntry(WIKI_RUN_CUSTOM_TYPE, createWikiRunSession(restored));
+        await refreshHistory(historyRoot);
         historyWriteFailure = undefined;
       } catch (error) {
         reportHistoryFailure(error);
@@ -182,10 +184,6 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     };
 
     pi.on("session_start", async (_event, context) => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = undefined;
-      }
       persistenceErrorReporter = (message) => context.ui.notify(message, "error");
       bindEngine(context);
       await restoreForWorkspace(context);
@@ -306,7 +304,12 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           }
           case "pause":
             try {
-              currentEngine(context).pause();
+              const active = currentEngine(context);
+              if (!active.getSnapshot()) {
+                const workspace = await workspaceService.load(context.cwd);
+                await bindLatestRecoverable(active, workspace.root);
+              }
+              active.pause();
               await persistNow();
               host?.refresh();
               context.ui.notify("Wiki scheduling paused.", "info");
@@ -317,7 +320,11 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           case "resume":
             try {
               const workspace = await workspaceService.load(context.cwd);
-              await resumeRun(currentEngine(context), workspace.root, command.runId);
+              const active = currentEngine(context);
+              if (!active.getSnapshot() && !command.runId) {
+                await bindLatestRecoverable(active, workspace.root);
+              }
+              await resumeRun(active, workspace.root, command.runId);
               await persistNow();
               host?.refresh();
               context.ui.notify("Wiki scheduling resumed after Git re-inspection.", "info");
@@ -390,6 +397,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           if (!snapshot || !isExecutingRunStatus(snapshot.status)) return undefined;
           return snapshot.id;
         },
+        isNodeLive: (nodeId) => active.isNodeLive(nodeId),
         getWorkspace: () => workspace,
         subscribe(listener) {
           historyListeners.add(listener);
@@ -433,10 +441,16 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           await refreshHistory(historyRoot);
         },
         pause: async () => {
+          if (!active.getSnapshot()) {
+            await bindLatestRecoverable(active, historyRoot);
+          }
           active.pause();
           await persistNow();
         },
         resume: async (runId) => {
+          if (!active.getSnapshot() && !runId) {
+            await bindLatestRecoverable(active, historyRoot);
+          }
           await resumeRun(active, historyRoot, runId);
           await persistNow();
         },
@@ -463,6 +477,45 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       const next = summarizeWikiRun(snapshot);
       const previous = historySummaries.get(workspace) ?? [];
       historySummaries.set(workspace, mergeRunSummary(previous, next));
+    }
+
+    /**
+     * When the engine has no current run, bind the latest recoverable history
+     * snapshot so pause/resume can act without a prior session restore.
+     */
+    async function bindLatestRecoverable(
+      active: WikiWorkflowEngine,
+      workspace: string,
+    ): Promise<WikiRunSnapshot> {
+      const root = path.resolve(workspace);
+      await checkpoint.flush();
+      const candidates = (await historyForWorkspace(root, active))
+        .filter((summary) => isRecoverableRunStatus(summary.status))
+        .sort(compareRunRecency);
+      let snapshot: WikiRunSnapshot | undefined;
+      for (const candidate of candidates) {
+        snapshot = await historyStoreFor(root).load(candidate.id);
+        if (snapshot) break;
+      }
+      if (!snapshot) throw new Error("No paused or interrupted Wiki run is available in this workspace");
+      if (path.resolve(snapshot.cwd) !== root) {
+        throw new Error(`Wiki run ${snapshot.id} belongs to a different workspace`);
+      }
+      const restored = active.restore(snapshot);
+      if (!restored) {
+        const reasons = explainWikiRunSnapshot(snapshot);
+        const detail = reasons.length > 0 ? reasons.join("; ") : "restore rejected snapshot";
+        throw new Error(incompatibleRunMessage(detail));
+      }
+      checkpoint.seedRevision(restored.revision ?? 0);
+      // Persist recovered state (running→paused) so history matches the engine.
+      try {
+        await historyStoreFor(root).save(structuredClone(restored));
+        await refreshHistory(root);
+      } catch (error) {
+        reportHistoryFailure(error);
+      }
+      return restored;
     }
 
     async function resumeRun(
@@ -505,9 +558,16 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       if (!restored) {
         const reasons = explainWikiRunSnapshot(snapshot);
         const detail = reasons.length > 0 ? reasons.join("; ") : "restore rejected snapshot";
-        throw new Error(`Wiki run ${snapshot.id} could not be restored (${detail})`);
+        throw new Error(incompatibleRunMessage(detail));
       }
       checkpoint.seedRevision(restored.revision ?? 0);
+      // Persist recovered state after restore before resuming.
+      try {
+        await historyStoreFor(root).save(structuredClone(restored));
+        await refreshHistory(root);
+      } catch (error) {
+        reportHistoryFailure(error);
+      }
       return await active.resume();
     }
 
@@ -542,13 +602,14 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     }
 
     /**
-     * Latest branch custom entry for this workspace. Returns a parseable session,
-     * or the raw snapshot payload when the entry is present but incompatible.
+     * Latest branch custom entry for this workspace. Returns a parseable pointer
+     * session, or a detail string when the entry is present but incompatible
+     * (legacy full-snapshot or malformed pointer — fail closed, no dual-read).
      */
     function latestSessionCandidate(
       context: ExtensionContext,
       workspaceRoot: string,
-    ): { session: WikiRunSession; rawSnapshot?: undefined } | { session?: undefined; rawSnapshot: unknown } | undefined {
+    ): { session: WikiRunSession; detail?: undefined } | { session?: undefined; detail: string } | undefined {
       const workspace = path.resolve(workspaceRoot);
       const entries = context.sessionManager.getBranch();
       for (let index = entries.length - 1; index >= 0; index--) {
@@ -560,7 +621,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         if (!sameWorkspaceOrChild(path.resolve(entry.data.workspace), workspace)) continue;
         const session = parseWikiRunSession(entry.data);
         if (session) return { session };
-        return { rawSnapshot: entry.data.snapshot };
+        return { detail: describeIncompatibleSession(entry.data) };
       }
       return undefined;
     }
@@ -843,8 +904,48 @@ function filterCompletions(completions: readonly AutocompleteItem[], query: stri
   return completions.filter((item) => item.label.toLowerCase().startsWith(normalized));
 }
 
+/**
+ * Critical events force an immediate awaitable checkpoint. Only lifecycle,
+ * node-terminal, recovered, and retry events qualify — not node_activity or
+ * node_started (those stay debounced).
+ */
 function isCriticalEvent(event: WikiRunEvent): boolean {
-  return event.kind !== "node_activity";
+  switch (event.kind) {
+    case "run_started":
+    case "run_paused":
+    case "run_resumed":
+    case "run_cancelled":
+    case "run_completed":
+    case "run_failed":
+    case "run_blocked":
+    case "run_forked":
+    case "node_succeeded":
+    case "node_failed":
+    case "node_cancelled":
+    case "node_retried":
+    case "phase_retried":
+    case "recovered":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function incompatibleRunMessage(detail?: string): string {
+  const suffix = detail ? ` (${detail})` : "";
+  return `Wiki run is incompatible and was not restored${suffix}. Start a new run with /wiki generate; older session entries are not migrated.`;
+}
+
+function describeIncompatibleSession(data: Record<string, unknown>): string {
+  if ("snapshot" in data) {
+    const reasons = explainWikiRunSnapshot(data.snapshot);
+    if (reasons.length > 0) return `legacy full-snapshot session; ${reasons.join("; ")}`;
+    return "legacy full-snapshot session entry (pointer-only required)";
+  }
+  if (data.pointerVersion !== 1) {
+    return `pointerVersion: expected 1, got ${String(data.pointerVersion)}`;
+  }
+  return "malformed session pointer";
 }
 
 function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: string): void {

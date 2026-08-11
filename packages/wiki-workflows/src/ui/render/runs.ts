@@ -28,13 +28,20 @@ export function buildRunSelectItems(
     const icon = runStatusIcon(run.status);
     const active = run.id === activeRunId ? ` · ${s.active}` : "";
     const fork = run.parentRunId ? ` · ${s.fork}` : "";
+    const shortId = shortRunId(run.id);
     const title = asText(run.focus) || `${asText(run.effectiveMode ?? run.requestedMode)} Wiki`;
     return {
       value: asText(run.id),
       label: `${icon} ${title}`,
-      description: `${asText(run.effectiveMode ?? run.requestedMode)}${fork}${active} · ${run.succeededNodes}/${run.totalNodes} · ${formatRunMeta(run.updatedAt)}`,
+      description: `${shortId} · ${asText(run.effectiveMode ?? run.requestedMode)}${fork}${active} · ${run.succeededNodes}/${run.totalNodes} · ${formatRunMeta(run.updatedAt)}`,
     };
   });
+}
+
+/** First 8 chars of run id for compact UI (full id remains the value). */
+export function shortRunId(runId: string): string {
+  const id = asText(runId);
+  return id.length <= 8 ? id : id.slice(0, 8);
 }
 
 export function renderRunsEmpty(width: number, theme: WikiUiTheme, language?: WikiUiLanguage): string[] {
@@ -71,7 +78,7 @@ export function renderRunsList(
     const parent = run.parentRunId ? ` ${s.fork}` : "";
     const marker = index === selected ? "›" : " ";
     const icon = runStatusIcon(run.status);
-    const metadata = `${asText(run.effectiveMode ?? run.requestedMode)}${parent}${active} | ${run.succeededNodes}/${run.totalNodes} | ${formatRunMeta(run.updatedAt)}`;
+    const metadata = `${shortRunId(run.id)} | ${asText(run.effectiveMode ?? run.requestedMode)}${parent}${active} | ${run.succeededNodes}/${run.totalNodes} | ${formatRunMeta(run.updatedAt)}`;
     const title = truncateToWidth(asText(run.focus) || "Wiki generation", Math.max(12, width - visibleWidth(metadata) - 7), "…", false);
     const selectedLine = index === selected
       ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(runStatusColor(run.status), theme.bold(icon))}${theme.fg("accent", theme.bold(` ${title}  ${metadata}`))}`

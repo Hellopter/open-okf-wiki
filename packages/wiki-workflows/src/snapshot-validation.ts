@@ -1,7 +1,7 @@
 import type { WikiNode, WikiNodeActivity, WikiNodeAttempt, WikiNodeHistoryEntry, WikiNodeMetrics, WikiRunEvent, WikiRunSnapshot } from "./workflow-types.js";
 import { clone, isRecord } from "./util.js";
 
-const SNAPSHOT_VERSION = 7 as const;
+const SNAPSHOT_VERSION = 8 as const;
 
 const NODE_KINDS = new Set(["inspect", "research", "synthesis", "write", "validate", "review", "finalize"]);
 const NODE_STATUSES = new Set(["queued", "running", "succeeded", "failed", "invalidated", "cancelled", "blocked"]);

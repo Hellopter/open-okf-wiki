@@ -160,7 +160,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 7;
+  version: 8;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -218,11 +218,19 @@ export interface WikiRunSummary {
   failedNodes: number;
 }
 
-/** Serializable payload stored by the extension as a Pi custom entry. */
+/**
+ * Pointer-only payload stored by the extension as a Pi custom entry.
+ * Full run state lives in the project history store keyed by `runId`.
+ * Legacy full-snapshot session entries are rejected (fail closed).
+ */
 export interface WikiRunSession {
   customType: "okf-wiki-run";
   workspace: string;
-  snapshot: WikiRunSnapshot;
+  pointerVersion: 1;
+  runId: string;
+  revision: number;
+  status: WikiRunStatus;
+  updatedAt: string;
 }
 
 export interface WikiResearchScope {
@@ -324,10 +332,12 @@ export interface WikiResearchReceipt {
   findings: Array<{
     id: string;
     priority: WikiResearchPriority;
-    /** kind+evidence fingerprint; used for dry-audit sameness across scopes. */
+    /** kind+title+paths fingerprint; used for dry-audit sameness across scopes. */
     contentFingerprint: string;
   }>;
   criticalGapSignatures: string[];
+  /** Critical gap questions (for expand-scope binding); parallel to signatures. */
+  criticalGapQuestions: string[];
 }
 
 export type WikiLocalReviewDefectKind = "evidence" | "link" | "depth" | "diagram";

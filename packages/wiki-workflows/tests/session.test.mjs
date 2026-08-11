@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWikiRunSession, isWikiRunSession, parseWikiRunSession } from "../dist/session.js";
+import { createWikiRunSession, isWikiRunSession, parseWikiRunSession, WIKI_RUN_POINTER_VERSION } from "../dist/session.js";
 
-function snapshot(version = 7) {
+function snapshot(version = 8, overrides = {}) {
   return {
     version,
     id: "run-1",
@@ -17,41 +17,94 @@ function snapshot(version = 7) {
     events: [],
     createdAt: "2026-08-08T00:00:00.000Z",
     updatedAt: "2026-08-08T00:00:00.000Z",
+    revision: 3,
+    ...overrides,
   };
 }
 
-test("run-session serialization accepts only the current dynamic-workflow snapshot version", async () => {
-  const { explainWikiRunSnapshot, isWikiRunSnapshot, parseWikiRunSnapshot } = await import("../dist/snapshot-validation.js");
-  const current = createWikiRunSession(snapshot());
-  assert.equal(isWikiRunSession(current), true);
-  assert.deepEqual(parseWikiRunSession(current), current);
-  assert.equal(isWikiRunSnapshot(snapshot()), true);
+function pointer(overrides = {}) {
+  return {
+    customType: "okf-wiki-run",
+    workspace: "/workspace",
+    pointerVersion: WIKI_RUN_POINTER_VERSION,
+    runId: "run-1",
+    revision: 3,
+    status: "succeeded",
+    updatedAt: "2026-08-08T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
-  const historical = { ...current, snapshot: snapshot(5) };
-  assert.equal(parseWikiRunSession(historical), undefined);
-  assert.equal(isWikiRunSession(historical), false);
+test("createWikiRunSession builds a pointer-only session from a snapshot", () => {
+  const session = createWikiRunSession(snapshot());
+  assert.deepEqual(session, pointer());
+  assert.equal("snapshot" in session, false);
+  assert.equal(isWikiRunSession(session), true);
+  assert.deepEqual(parseWikiRunSession(session), session);
+});
+
+test("createWikiRunSession defaults revision to 0 when snapshot has none", () => {
+  const body = snapshot();
+  delete body.revision;
+  const session = createWikiRunSession(body);
+  assert.equal(session.revision, 0);
+});
+
+test("parseWikiRunSession accepts only pointer-only sessions", () => {
+  assert.deepEqual(parseWikiRunSession(pointer()), pointer());
+  assert.equal(isWikiRunSession(pointer({ status: "running" })), true);
+  assert.equal(isWikiRunSession(pointer({ status: "paused" })), true);
+  assert.equal(isWikiRunSession(pointer({ status: "blocked" })), true);
+  assert.equal(isWikiRunSession(pointer({ status: "failed" })), true);
+  assert.equal(isWikiRunSession(pointer({ status: "cancelled" })), true);
+});
+
+test("parseWikiRunSession rejects legacy full-snapshot session entries (fail closed)", () => {
+  const legacy = {
+    customType: "okf-wiki-run",
+    workspace: "/workspace",
+    snapshot: snapshot(),
+  };
+  assert.equal(parseWikiRunSession(legacy), undefined);
+  assert.equal(isWikiRunSession(legacy), false);
+
+  // Pointer fields plus a snapshot body still fail closed.
+  const hybrid = { ...pointer(), snapshot: snapshot() };
+  assert.equal(parseWikiRunSession(hybrid), undefined);
+});
+
+test("parseWikiRunSession rejects malformed pointers", () => {
+  for (const bad of [
+    null,
+    undefined,
+    {},
+    { customType: "other", workspace: "/workspace", pointerVersion: 1, runId: "r", revision: 0, status: "running", updatedAt: "t" },
+    { ...pointer(), pointerVersion: 2 },
+    { ...pointer(), pointerVersion: "1" },
+    { ...pointer(), runId: "" },
+    { ...pointer(), runId: 12 },
+    { ...pointer(), revision: -1 },
+    { ...pointer(), revision: 1.5 },
+    { ...pointer(), status: "done" },
+    { ...pointer(), updatedAt: "" },
+    { ...pointer(), workspace: "" },
+  ]) {
+    assert.equal(parseWikiRunSession(bad), undefined, `expected reject for ${JSON.stringify(bad)}`);
+  }
+});
+
+test("snapshot validation remains independent of session pointer parsing", async () => {
+  const { explainWikiRunSnapshot, isWikiRunSnapshot, parseWikiRunSnapshot } = await import("../dist/snapshot-validation.js");
+  assert.equal(isWikiRunSnapshot(snapshot()), true);
 
   const legacyV6 = snapshot(6);
   assert.equal(isWikiRunSnapshot(legacyV6), false);
   const versionReasons = explainWikiRunSnapshot(legacyV6);
-  assert.ok(versionReasons.some((reason) => /version: expected 7, got 6/.test(reason)));
+  assert.ok(versionReasons.some((reason) => /version: expected 8, got 6/.test(reason)));
   assert.throws(
     () => parseWikiRunSnapshot(legacyV6),
-    (error) => error?.code === "snapshot_incompatible" && /version: expected 7, got 6/.test(error.message),
+    (error) => error?.code === "snapshot_incompatible" && /version: expected 8, got 6/.test(error.message),
   );
-
-  const missingRestartCount = snapshot();
-  delete missingRestartCount.sourceRestartCount;
-  assert.equal(parseWikiRunSession({ ...current, snapshot: missingRestartCount }), undefined);
-
-  for (const malformed of [
-    { ...snapshot(), nodes: [null] },
-    { ...snapshot(), status: "done" },
-    { ...snapshot(), round: -1 },
-    { ...snapshot(), events: [null] },
-  ]) {
-    assert.equal(parseWikiRunSession({ ...current, snapshot: malformed }), undefined);
-  }
 
   const withBlockedDetails = {
     ...snapshot(),
@@ -72,10 +125,4 @@ test("run-session serialization accepts only the current dynamic-workflow snapsh
     blockedDetails: { issues: "not-an-array" },
   };
   assert.equal(isWikiRunSnapshot(badBlockedDetails), false);
-
-  const badRemainingBudget = {
-    ...snapshot(),
-    blockedDetails: { remainingBudget: { used: "three" } },
-  };
-  assert.equal(isWikiRunSnapshot(badRemainingBudget), false);
 });

@@ -53,6 +53,8 @@ function node(kind) {
 
 function fakeSession(activeTools) {
   let disposed = false;
+  let reset = false;
+  const lifecycle = [];
   return {
     subscribe: () => () => {},
     setAutoCompactionEnabled() {},
@@ -60,14 +62,25 @@ function fakeSession(activeTools) {
     async abort() {},
     async prompt() {},
     async followUp() {},
-    async waitForIdle() {},
+    async waitForIdle() { lifecycle.push("waitForIdle"); },
     state: {},
+    agent: {
+      reset() {
+        reset = true;
+        lifecycle.push("reset");
+      },
+    },
     getLastAssistantText: () => "complete",
     getActiveToolNames: () => activeTools ?? ["read", "grep", "find", "ls", "edit", "write", "wiki_write_handoff", "wiki_submit_research", "wiki_submit_synthesis", "wiki_submit_page", "wiki_submit_review"],
     getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
     getContextUsage: () => undefined,
-    dispose() { disposed = true; },
+    dispose() {
+      disposed = true;
+      lifecycle.push("dispose");
+    },
     get disposed() { return disposed; },
+    get resetCalled() { return reset; },
+    get lifecycle() { return lifecycle; },
   };
 }
 
@@ -526,6 +539,48 @@ test("every execution creates and disposes a fresh child session", async (t) => 
   assert.equal(sessions.length, 2);
   assert.notEqual(sessions[0], sessions[1]);
   assert.ok(sessions.every((session) => session.disposed));
+  assert.ok(sessions.every((session) => session.resetCalled), "agent.reset runs before dispose");
+  for (const session of sessions) {
+    // Final drain: waitForIdle (may also run mid-prompt) then reset then dispose.
+    const tail = session.lifecycle.slice(-3);
+    assert.deepEqual(tail, ["waitForIdle", "reset", "dispose"]);
+  }
+});
+
+test("dispose still runs when waitForIdle or reset throws", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const session = fakeSession();
+  let idleCalls = 0;
+  // Mid-run waitForIdle (after prompt) succeeds; only the finally drain fails.
+  session.waitForIdle = async () => {
+    idleCalls += 1;
+    session.lifecycle.push("waitForIdle");
+    if (idleCalls > 1) throw new Error("idle failed");
+  };
+  session.agent = {
+    reset() {
+      session.lifecycle.push("reset");
+      throw new Error("reset failed");
+    },
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    session.getActiveToolNames = () => options.tools;
+    session.prompt = async () => {
+      await options.customTools.find((tool) => tool.name === "write").execute("write", {
+        path: "wiki/domain/page.md",
+        content: "# Page\n",
+      });
+      await options.customTools.find((tool) => tool.name === "wiki_submit_page").execute("submit", {
+        page: "domain/page.md",
+      });
+    };
+    return { session };
+  } });
+  await executor.execute(request(cwd, "write", "writer"));
+  assert.equal(session.disposed, true);
+  assert.ok(idleCalls >= 2, "finally drain invokes waitForIdle after the mid-run idle");
+  assert.ok(session.lifecycle.includes("reset"));
+  assert.equal(session.lifecycle.at(-1), "dispose");
 });
 
 test("synthesis parser rejects removed page-contract fields", () => {

@@ -315,7 +315,8 @@ export function openWikiNavigator(
           if (confirmation.kind === "retry") {
             const node = confirmation.nodeId && confirmedRun.nodes.find((item) => item.id === confirmation.nodeId);
             if (!node) return { type: "notify", message: s.selectAgentRetry, level: "warning" };
-            if (node.status === "running" || node.status === "queued") {
+            // Block only when this run is active and the engine still has a live executor.
+            if (confirmation.runId === model.getActiveRunId() && model.isNodeLive(node.id)) {
               return { type: "notify", message: s.waitAgentSettle, level: "warning" };
             }
             return { type: "retry", runId: confirmation.runId, nodeId: node.id };
@@ -326,7 +327,10 @@ export function openWikiNavigator(
           if (!phase?.nodeIds.length) {
             return { type: "notify", message: s.stageNotScheduled(phase?.title ?? "This stage"), level: "info" };
           }
-          if (latestPhaseIteration(confirmedRun.nodes, phase.id).some((node) => node.status === "running")) {
+          if (
+            confirmation.runId === model.getActiveRunId()
+            && latestPhaseIteration(confirmedRun.nodes, phase.id).some((node) => model.isNodeLive(node.id))
+          ) {
             return { type: "notify", message: s.waitPhaseSettle, level: "warning" };
           }
           return { type: "retryPhase", runId: confirmation.runId, phaseId: phase.id };
@@ -419,7 +423,7 @@ export function openWikiNavigator(
           if (!node || !run || !state.runId) {
             return { type: "notify", message: s.selectAgentRetry, level: "warning" };
           }
-          if (node.status === "running" || node.status === "queued") {
+          if (state.runId === activeRunId && model.isNodeLive(node.id)) {
             return { type: "notify", message: s.waitAgentSettle, level: "warning" };
           }
           const prompt = retryAgentConfirm(run, node.id, language);
@@ -436,7 +440,7 @@ export function openWikiNavigator(
             return { type: "notify", message: s.stageNotScheduled(phase?.title ?? "This stage"), level: "info" };
           }
           const nodes = latestPhaseIteration(run.nodes, state.stageId);
-          if (nodes.some((node) => node.status === "running")) {
+          if (state.runId === activeRunId && nodes.some((node) => model.isNodeLive(node.id))) {
             return { type: "notify", message: s.waitPhaseSettle, level: "warning" };
           }
           const prompt = retryPhaseConfirm(run, state.stageId, language);

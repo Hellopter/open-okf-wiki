@@ -163,6 +163,17 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     } finally {
       request.signal.removeEventListener("abort", abort);
       unsubscribe();
+      try {
+        await session.waitForIdle();
+      } catch {
+        // Best-effort: drain in-flight work before reset/dispose.
+      }
+      try {
+        // Agent has reset() when idle — clear transcript before dispose.
+        (session as { agent?: { reset?: () => void } }).agent?.reset?.();
+      } catch {
+        // Best-effort: never block dispose on reset failures.
+      }
       session.dispose();
     }
   }

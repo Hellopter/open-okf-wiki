@@ -13,9 +13,10 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/workflow-types.ts` | Durable snapshot / node / event types (`WikiRunSnapshot` **version 7**, optional `blockedDetails`). |
 | `src/node-retry.ts` | Pure classification of execution errors → node status / terminal run. |
 | `src/join-barrier.ts` | Sibling join helpers: `evaluateJoin`, `groupAllSucceeded`, `siblingsByGroupKey`. Success path only (see below). |
-| `src/checkpoint.ts` | Debounced, serialized session + history checkpoint coordinator (`WikiCheckpointCoordinator`). |
+| `src/session.ts` | Pointer-only Pi custom-entry codec (`WikiRunSession` / `createWikiRunSession` / `parseWikiRunSession`). Fail-closed; **no legacy full-snapshot dual-read**. |
+| `src/checkpoint.ts` | Debounced, serialized session (pointer) + history (full snapshot) checkpoint coordinator (`WikiCheckpointCoordinator`). |
 | `src/engine.ts` | Wiki DAG **facade + pump**: owns run state, scheduling, retries, terminalization; delegates transitions to `transitions-queue` via `TransitionHost`. |
-| `src/transitions-queue.ts` | Per-kind success transitions, graph expansion (`queue*`, `ensure*`, join fan-in via `tryJoinAfterSuccess`), terminal block policy with `blockedDetails`. Host-injected; no executor/Pi. |
+| `src/transitions-queue.ts` | Per-kind success transitions, graph expansion (`queue*`, `ensure*`, join fan-in via `tryJoinAfterSuccess`), terminal block policy with `blockedDetails`. Host-injected; no executor/Pi. Research stop: expand hard-rejected without critical gaps; dry audits skipped on happy path when receipts report no unresolved critical gaps. |
 | `src/run-nodes.ts` | Node input/result parsers (`ResearchNodeInput`, `SynthesisNodeInput`, `PagePacketInput`, `WikiNodeInputByKind`, `parseNodeInput`), fingerprints, repair/write packet helpers, validation issue routing. |
 | `src/run-graph.ts` | Phase membership, fork/invalidate closure, terminal checks; `phaseTitleFor` delegates to `workflow-phases`. |
 | `src/prompts.ts` | Agent prompt builders for research / synthesis / write / review. |
@@ -25,7 +26,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/wiki-indexes.ts` | Index page materialization helpers. |
 | `src/wiki-finalize.ts` | Finalization (indexes, obsolete pages) after verify passes. |
 | `src/validate.ts` | Facade re-exporting inspect/validate/finalize entry points used by the engine. |
-| `src/artifact-store.ts` | Durable handoff blobs; size limits mirrored in `policy.artifacts`. |
+| `src/artifact-store.ts` | Content-addressed handoff store: blobs at `.okf-wiki/blobs/{sha256}.json`, staging under `.okf-wiki/runs/{runId}/staging/...`, per-run `manifest.json`. Size limits mirrored in `policy.artifacts`. |
 | `src/snapshot-validation.ts` | Fail-closed snapshot schema checks (version 7, optional `blockedDetails`). |
 | `src/executor.ts` | Pi agent executor (runs a single node against the coding agent). |
 | `src/extension.ts` | Pi extension wiring: commands, run lifecycle, UI host, session restore. |
@@ -64,9 +65,10 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 ## Snapshots
 
 - **No old-snapshot migration path.**
-- Snapshot `version` is **7**. Incompatible older versions are **rejected** (fail closed) by `snapshot-validation.ts`.
-- New failure codes are additive on nodes; unknown codes remain representable as strings where needed.
-- Optional `blockedDetails` on terminal blocked runs carries structured diagnostics (`code`, `issues`, `defects`, `page`, …) without a version bump.
+- Snapshot `version` is **8**. Incompatible older versions are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
+- Session restore is **pointer-only**; full snapshots live in the project history store.
+- Artifacts are **content-addressed** under `.okf-wiki/blobs/{sha256}.*` with per-run manifests (no dual-read of older layouts).
+- Optional `blockedDetails` on terminal blocked runs carries structured diagnostics (`code`, `issues`, `defects`, `page`, …).
 
 ## Research budgets
 
@@ -76,8 +78,10 @@ Policy splits expand vs audit accounting (`policy.research`):
 |-------|---------|---------|
 | `maxExpandRounds` | 4 | Coverage-growth rounds (tighter happy path) |
 | `maxAuditRounds` | 3 | Dry-coverage audit rounds |
-| `requiredDryCoverageAudits` | 1 | Consecutive dry audits required before write (happy-path tighten) |
+| `requiredDryCoverageAudits` | 1 | Consecutive dry audits required before write **when unresolved critical gaps remain** |
 | `maxResearchRounds` | 6 | Legacy combined ceiling still used by the current engine pump until split accounting is fully wired |
+
+**Research stop (happy path):** when every research receipt in the Plan’s `researchIds` has `criticalGapSignatures.length === 0`, synthesis **must finalize** (expand is hard-rejected) and the engine **skips** the dry-coverage audit wave, queueing page writers immediately. Dry audits still run only when critical gaps remain. Expand scopes must **bind** to unresolved critical gap questions in `id`/`task`. Dry-audit finding fingerprints use kind + title + evidence **paths** (line anchors stripped) so line-number jitter does not keep audits wet.
 
 Classification of round exhaustion uses **codes** via `WikiBudgetExhaustedError` — never message regex:
 
@@ -94,7 +98,7 @@ Research and write groups fan in **only after** a node is marked `status=succeed
 1. Engine completes node work and persists handoff/result.
 2. For `research` / `write`: `markNodeSucceeded(node)` first so concurrent siblings observe success.
 3. Then **once** call `tryJoinAfterSuccess(host, node)`.
-4. `tryJoinAfterSuccess` loads siblings via `siblingsByGroupKey`, then `evaluateJoin(members)`:
+4. `tryJoinAfterSuccess` loads siblings via `siblingsByGroupKey` (**excludes `invalidated`** so deterministic group ids reused after source-drift restart do not stall), then `evaluateJoin(members)`:
    - `terminal_failure` → do not expand
    - `not_ready` → wait for remaining siblings
    - `all_succeeded` → queue synthesis (research) or verification (write)

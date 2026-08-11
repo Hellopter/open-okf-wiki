@@ -24,7 +24,7 @@ function activity() {
 
 function baseSnapshot(overrides = {}) {
   return {
-    version: 7,
+    version: 8,
     id: "run-health",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -77,7 +77,8 @@ test("checkRunArtifactHealth reports missing succeeded research handoffs", async
   const missing = {
     ...present,
     nodeId: "research-missing",
-    relativePath: ".okf-wiki/runs/run-health/research-missing/attempt-1/research.json",
+    // Content-addressed path for a digest that was never written.
+    relativePath: `.okf-wiki/blobs/${"0".repeat(64)}.json`,
     sha256: "0".repeat(64),
   };
 
@@ -118,7 +119,7 @@ test("applyRestoredArtifactHealth blocks a paused run with missing handoffs", as
     nodeId: "synthesis-1",
     attempt: 1,
     kind: "synthesis",
-    relativePath: ".okf-wiki/runs/run-health/synthesis-1/attempt-1/synthesis.json",
+    relativePath: `.okf-wiki/blobs/${"a".repeat(64)}.json`,
     sha256: "a".repeat(64),
     sizeBytes: 2,
     mediaType: "application/json",

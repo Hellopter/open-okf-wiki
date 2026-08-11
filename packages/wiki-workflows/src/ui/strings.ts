@@ -65,6 +65,8 @@ export interface WikiUiStrings {
   noCompletedOutput: string;
   messagesTitle: string;
   noMessagesYet: string;
+  /** Succeeded nodes drop live transcript after handoff; distinguish from still-running. */
+  transcriptClearedAfterSuccess: string;
   latestAssistantOutput: string;
   execution: string;
   noExecutionMetrics: string;
@@ -147,6 +149,7 @@ const EN: WikiUiStrings = {
   noCompletedOutput: "No completed output yet.",
   messagesTitle: "Messages & tool calls",
   noMessagesYet: "No completed message or tool call recorded yet.",
+  transcriptClearedAfterSuccess: "Transcript cleared after success; handoff/result below.",
   latestAssistantOutput: "Latest assistant output",
   execution: "Execution",
   noExecutionMetrics: "No execution metrics reported.",
@@ -228,6 +231,7 @@ const ZH: WikiUiStrings = {
   noCompletedOutput: "尚无完成输出。",
   messagesTitle: "消息与工具调用",
   noMessagesYet: "尚无已完成的消息或工具调用记录。",
+  transcriptClearedAfterSuccess: "成功后已清除运行时对话；交接/结果见下方。",
   latestAssistantOutput: "最新助手输出",
   execution: "执行",
   noExecutionMetrics: "暂无执行指标。",

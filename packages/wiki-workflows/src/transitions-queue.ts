@@ -5,6 +5,7 @@
  * No @earendil-works/* or executor.ts imports.
  */
 
+import { createHash } from "node:crypto";
 import { parseReviewSubmission } from "./control-submissions.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
 import { evaluateJoin, siblingsByGroupKey } from "./join-barrier.js";
@@ -33,7 +34,6 @@ import {
   researchInputFor,
   routeReviewDefects,
   safePagePacketInput,
-  sameResearchBatch,
   sameStringSet,
   selectResearchIdsForFindings,
   shouldWriteContentPage,
@@ -118,14 +118,16 @@ export async function tryJoinAfterSuccess(host: TransitionHost, node: WikiNode):
 
   if (node.kind === "research") {
     const researchInput = researchInputFor(node);
+    // siblingsByGroupKey excludes invalidated nodes so deterministic group ids
+    // reused after source-drift restart do not stall or pin dependsOn to dead work.
     const members = siblingsByGroupKey(run.nodes, "research", "researchGroupId", researchInput.researchGroupId);
     const join = evaluateJoin(members);
     if (join.reason !== "all_succeeded") return;
 
-    const siblings = run.nodes.filter((candidate) => candidate.kind === "research" && sameResearchBatch(candidate, researchInput));
+    const liveSiblingIds = members.map((member) => member.id);
     const receiptIds = uniqueStrings([
       ...researchInput.priorResearchIds,
-      ...siblings.filter((candidate) => candidate.status === "succeeded").map((candidate) => candidate.id),
+      ...liveSiblingIds,
     ]);
     // Match critical findings by content fingerprint (kind+evidence), not finding id.
     // Finding ids include scopeId, so re-reported audit findings get new ids but the
@@ -138,8 +140,8 @@ export async function tryJoinAfterSuccess(host: TransitionHost, node: WikiNode):
           .map((finding) => finding.contentFingerprint)
         : [];
     }));
-    const currentReceipts = siblings
-      .map((candidate) => candidate.result)
+    const currentReceipts = liveSiblingIds
+      .map((id) => run.nodes.find((candidate) => candidate.id === id)?.result)
       .filter((result): result is WikiResearchReceipt => isResearchReceipt(result));
     const auditDry = researchInput.continuationMode === "audit"
       && currentReceipts.every((receipt) => receipt.criticalGapSignatures.length === 0
@@ -147,7 +149,7 @@ export async function tryJoinAfterSuccess(host: TransitionHost, node: WikiNode):
           .filter((finding) => finding.priority === "critical")
           .every((finding) => priorCriticalContent.has(finding.contentFingerprint)));
     queueSynthesis(host, {
-      dependsOn: siblings.map((candidate) => candidate.id),
+      dependsOn: liveSiblingIds,
       researchIds: receiptIds,
       supplementalBatch: researchInput.batch,
       mode: researchInput.structuralRoundId ? "structural" : researchInput.continuationMode,
@@ -165,8 +167,7 @@ export async function tryJoinAfterSuccess(host: TransitionHost, node: WikiNode):
     const join = evaluateJoin(members);
     if (join.reason !== "all_succeeded") return;
 
-    const siblings = run.nodes.filter((candidate) => candidate.kind === "write" && valueIs(candidate.input, "writeGroupId", input.writeGroupId));
-    await queueVerification(host, siblings.map((candidate) => candidate.id), input.synthesisNodeId);
+    await queueVerification(host, members.map((member) => member.id), input.synthesisNodeId);
   }
 }
 
@@ -196,7 +197,12 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
         queueSupplementalResearch(host, node.id, synthesis.researchScopes, input);
         return;
       }
-      if (input.dryAuditPasses < REQUIRED_DRY_COVERAGE_AUDITS) {
+      // Happy path: when research reports no unresolved critical gaps, skip the
+      // dry-coverage audit wave and go straight to writers.
+      if (
+        input.dryAuditPasses < REQUIRED_DRY_COVERAGE_AUDITS
+        && researchIdsHaveUnresolvedCriticalGaps(host, input.researchIds)
+      ) {
         queueCoverageAudit(host, [node.id], node.id, input);
         return;
       }
@@ -245,10 +251,13 @@ export function queueInitialSourceSurveys(host: TransitionHost, inspectNodeId: s
   const sourcePaths = uniqueStrings(inspection.sourcePaths);
   if (sourcePaths.length === 0) throw new Error("Inspect returned no declared source paths");
   const scopes: WikiResearchScope[] = sourcePaths.map((sourcePath) => ({
-      id: `source-survey:${sourcePath}`,
-      sourcePaths: [sourcePath],
-      task: `Survey ${sourcePath}: identify responsibilities, entry points, verified flows, relationships, and state/data evidence within this source only.`,
-    }));
+    id: `source-survey:${sourcePath}`,
+    sourcePaths: [sourcePath],
+    task: [
+      `Bounded survey of ${sourcePath}: cover entry points, main flows, boundaries, and state/data within this source only.`,
+      "Submit one complete research handoff in a single pass; do not aim for an exhaustive encyclopedia.",
+    ].join(" "),
+  }));
   return queueResearch(host, inspectNodeId, scopes, 0, "research", "Research");
 }
 
@@ -277,10 +286,22 @@ export function queueCoverageAudit(host: TransitionHost, dependsOn: string[], sy
   const budgetKind = parent.mode === "structural" || parent.structuralRoundId ? "expand" : "audit";
   ensureResearchRoundAvailable(host, nextRound, budgetKind);
   const sourcePaths = uniqueStrings(host.requireRun().inspection?.sourcePaths ?? []);
+  const scopeId = deterministicGroupId("coverage-audit", {
+    batch: nextRound,
+    synthesisNodeId: parent.priorSynthesisNodeId ?? synthesisNodeId,
+    researchIds: [...parent.researchIds].sort(),
+    mode: parent.mode,
+    structuralRoundId: parent.structuralRoundId ?? null,
+  });
   const scope: WikiResearchScope = {
-    id: `coverage-audit:${nextRound}:${host.newId()}`,
+    id: scopeId,
     sourcePaths,
-    task: "Audit all declared sources against the accumulated findings. Report only missing critical domains, concepts, flows, boundaries, state/data behavior, and unresolved critical evidence gaps.",
+    task: [
+      "Bounded critical-gap audit against prior research findings only.",
+      "Report missing critical gaps versus already-recorded findings;",
+      "do not re-survey sources for encyclopedia coverage.",
+      "Prefer empty findings when prior critical coverage already holds.",
+    ].join(" "),
   };
   return queueResearch(host, 
     dependsOn,
@@ -310,7 +331,7 @@ export function queueResearch(host: TransitionHost,
   priorResearchIds: string[] = [],
   dryAuditPasses = 0,
 ): WikiNode[] {
-  const researchGroupId = `${phaseId}:${host.newId()}`;
+  const researchGroupId = researchGroupIdFor(batch, scopes, continuationMode);
   return scopes.map((scope) => queueNode(host, 
     "research",
     batch === 0 ? `Survey: ${scope.id}` : `Research: ${scope.id}`,
@@ -364,7 +385,12 @@ export function queuePageWriters(host: TransitionHost, synthesisNodeId: string, 
   const selected = contentPages.filter(({ page }) => shouldWriteContentPage(run, page.path, synthesisMode));
   const selectedPaths = new Set(selected.map(({ page }) => page.path));
   const retainedPaths = new Set((run.inspection?.existingPages ?? []).map(normalizePagePath).filter((pagePath) => !selectedPaths.has(pagePath)));
-  const writeGroupId = `write:${host.newId()}`;
+  const writeGeneration = countNonRepairWriteGroupsForSynthesis(run, synthesisNodeId);
+  const writeGroupId = deterministicGroupId("write", {
+    synthesisNodeId,
+    intent: "draft",
+    generation: writeGeneration,
+  });
   const phase = phaseRefForKind("write");
   const nodes = selected.map(({ domain, page }) => {
     const researchIds = selectResearchIdsForFindings(researchNodes, page);
@@ -408,27 +434,43 @@ export function queuePageWriters(host: TransitionHost, synthesisNodeId: string, 
 
 export async function queueVerification(host: TransitionHost, sourceNodeIds: string[], synthesisNodeId: string): Promise<WikiNode[]> {
   const run = host.requireRun();
+  // Sync reservation: concurrent write joins can both pass an empty check and
+  // then race past await materializeIndexes. Queue validate+review before any
+  // await so the second caller always observes the first reservation.
   const existing = run.nodes.filter((node) => (node.kind === "validate" || node.kind === "review")
     && valueIs(node.input, "synthesisNodeId", synthesisNodeId)
     && sameStringSet(recordStringArray(node.input, "sourceNodeIds"), sourceNodeIds)
     && !["invalidated", "cancelled", "failed", "blocked"].includes(node.status));
-  if (existing.length) return existing;
+  let nodes = existing;
+  if (!nodes.length) {
+    const verifyGeneration = countVerificationGroupsForSynthesis(run, synthesisNodeId);
+    const verificationGroupId = deterministicGroupId("verify", {
+      synthesisNodeId,
+      intent: "verify",
+      generation: verifyGeneration,
+      sourceNodeIds: [...sourceNodeIds].sort(),
+    });
+    const common = { sourceNodeIds, synthesisNodeId, verificationGroupId };
+    const verify = phaseRefForKind("validate");
+    nodes = [
+      queueNode(host, "validate", "Validate Wiki", sourceNodeIds, common, verify),
+      queueNode(host, "review", "Review Wiki", sourceNodeIds, common, verify),
+    ];
+  }
+  // Indexes are only required before validate/review execute, not before enqueue.
   await host.materializeIndexes(run.cwd, specForSynthesis(run, synthesisNodeId));
-  const verificationGroupId = `verify:${host.newId()}`;
-  const common = { sourceNodeIds, synthesisNodeId, verificationGroupId };
-  const verify = phaseRefForKind("validate");
-  return [
-    queueNode(host, "validate", "Validate Wiki", sourceNodeIds, common, verify),
-    queueNode(host, "review", "Review Wiki", sourceNodeIds, common, verify),
-  ];
+  return nodes;
 }
 
 export async function maybeCompleteVerification(host: TransitionHost, node: WikiNode): Promise<void> {
   const run = host.requireRun();
   const verificationGroupId = recordValue(node.input, "verificationGroupId");
   if (typeof verificationGroupId !== "string") throw new Error("Verification node has no group ID");
+  // Prefer live peers only. After invalidation, generation counters can collapse
+  // and reuse verificationGroupId; dead nodes must not pin or block completion.
   const pair = run.nodes.filter((candidate) => (candidate.kind === "validate" || candidate.kind === "review")
-    && valueIs(candidate.input, "verificationGroupId", verificationGroupId));
+    && valueIs(candidate.input, "verificationGroupId", verificationGroupId)
+    && !["invalidated", "cancelled"].includes(candidate.status));
   const validationNode = pair.find((candidate) => candidate.kind === "validate");
   const reviewNode = pair.find((candidate) => candidate.kind === "review");
   if (!validationNode || !reviewNode
@@ -534,7 +576,11 @@ export async function queuePageRepairs(host: TransitionHost,
   const targets = specPages(spec).filter(({ page }) => requested.has(page.path));
   if (targets.length !== requested.size) throw new Error("Repair targets a page outside the current WikiSpec");
   const overview = overviewPage(spec);
-  const writeGroupId = `repair:${host.newId()}`;
+  const writeGroupId = deterministicGroupId("repair", {
+    synthesisNodeId,
+    intent: "repair",
+    generation: previousRounds + 1,
+  });
   const phase = phaseRefForKind("write");
   const contentNodes: WikiNode[] = [];
   for (const { domain, page } of targets.filter(({ page }) => page.pageType !== "overview")) {
@@ -666,6 +712,12 @@ export function validateControlSubmission(host: TransitionHost, node: WikiNode, 
 
 export function ensureSynthesisSubmissionFitsRun(host: TransitionHost, synthesis: WikiSynthesisResult, input: SynthesisNodeInput): void {
   if (synthesis.decision === "expand") {
+    if (!researchIdsHaveUnresolvedCriticalGaps(host, input.researchIds)) {
+      throw new Error(
+        "Expand is rejected when research receipts report no unresolved critical gaps; finalize the WikiSpec instead",
+      );
+    }
+    ensureExpandScopesBindCriticalGaps(host, synthesis.researchScopes, input.researchIds);
     ensureResearchRoundAvailable(host, input.supplementalBatch + 1, "expand");
     if (synthesis.researchScopes.length > MAX_EXPAND_SCOPES_PER_BATCH) {
       throw new Error(
@@ -677,6 +729,135 @@ export function ensureSynthesisSubmissionFitsRun(host: TransitionHost, synthesis
     return;
   }
   ensureSynthesisSpecReceipts(host, synthesis.spec, input);
+}
+
+/**
+ * Each expand scope must reference at least one unresolved critical gap
+ * (question text or signature substring in scope id/task).
+ */
+export function ensureExpandScopesBindCriticalGaps(
+  host: TransitionHost,
+  scopes: readonly WikiResearchScope[],
+  researchIds: readonly string[],
+): void {
+  const gaps = criticalGapBindings(host, researchIds);
+  if (gaps.length === 0) {
+    throw new Error("Expand requires unresolved critical gap questions from research receipts");
+  }
+  for (const scope of scopes) {
+    const haystack = `${scope.id}\n${scope.task}`.toLowerCase();
+    const bound = gaps.some((gap) => {
+      const question = gap.question.toLowerCase();
+      const signature = gap.signature.toLowerCase();
+      return (question.length > 0 && haystack.includes(question))
+        || (signature.length >= 8 && haystack.includes(signature.slice(0, 8)))
+        || gap.tokens.some((token) => token.length >= 4 && haystack.includes(token));
+    });
+    if (!bound) {
+      throw new Error(
+        `Expand scope "${scope.id}" must reference an unresolved critical gap in its id or task (gap questions: ${gaps.map((g) => g.question).slice(0, 3).join("; ")})`,
+      );
+    }
+  }
+}
+
+function criticalGapBindings(
+  host: TransitionHost,
+  researchIds: readonly string[],
+): Array<{ signature: string; question: string; tokens: string[] }> {
+  const run = host.requireRun();
+  const gaps: Array<{ signature: string; question: string; tokens: string[] }> = [];
+  for (const researchId of researchIds) {
+    const result = run.nodes.find((candidate) => candidate.id === researchId)?.result;
+    if (!isResearchReceipt(result)) continue;
+    const questions = result.criticalGapQuestions ?? [];
+    const signatures = result.criticalGapSignatures ?? [];
+    const count = Math.max(questions.length, signatures.length);
+    for (let index = 0; index < count; index++) {
+      const question = questions[index] ?? "";
+      const signature = signatures[index] ?? "";
+      if (!question && !signature) continue;
+      const tokens = question
+        .toLowerCase()
+        .split(/[^a-z0-9\u4e00-\u9fff]+/i)
+        .filter((token) => token.length >= 4)
+        .slice(0, 8);
+      gaps.push({ signature, question, tokens });
+    }
+  }
+  return gaps;
+}
+
+/**
+ * True when any research receipt for the given node ids still has critical gap
+ * signatures. Used to hard-reject expand-without-gaps and to skip dry audits
+ * on the happy path.
+ *
+ * Per policy: if every receipt in `researchIds` has
+ * `criticalGapSignatures.length === 0`, there are no unresolved critical gaps.
+ * Missing/non-receipt results are ignored; an empty receipt set is "no gaps".
+ */
+export function researchIdsHaveUnresolvedCriticalGaps(host: TransitionHost, researchIds: readonly string[]): boolean {
+  const run = host.requireRun();
+  for (const researchId of researchIds) {
+    const result = run.nodes.find((candidate) => candidate.id === researchId)?.result;
+    if (!isResearchReceipt(result)) continue;
+    if (result.criticalGapSignatures.length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Deterministic research group id shared by all scopes in one batch.
+ * Format: `research:${batch}:${hash(sorted scope ids + continuationMode)}`.
+ */
+export function researchGroupIdFor(
+  batch: number,
+  scopes: readonly WikiResearchScope[],
+  continuationMode: ResearchNodeInput["continuationMode"],
+): string {
+  const scopeIds = scopes.map((scope) => scope.id).sort();
+  const digest = createHash("sha256")
+    .update(stableStringify({ scopeIds, continuationMode }))
+    .digest("hex")
+    .slice(0, 16);
+  return `research:${batch}:${digest}`;
+}
+
+/** Stable short group key: `prefix:hex` without random UUIDs. */
+export function deterministicGroupId(prefix: string, parts: unknown): string {
+  const digest = createHash("sha256").update(stableStringify(parts)).digest("hex").slice(0, 16);
+  return `${prefix}:${digest}`;
+}
+
+/** Unique non-repair write group count for a synthesis lineage (generation counter). */
+function countNonRepairWriteGroupsForSynthesis(run: WikiRunSnapshot, synthesisNodeId: string): number {
+  const groups = new Set<string>();
+  for (const node of run.nodes) {
+    if (node.kind !== "write") continue;
+    if (node.status === "invalidated" || node.status === "cancelled") continue;
+    try {
+      const packet = pagePacketInputFor(node);
+      if (packet.synthesisNodeId === synthesisNodeId && packet.intent !== "repair") {
+        groups.add(packet.writeGroupId);
+      }
+    } catch {
+      // Ignore malformed write nodes when counting generations.
+    }
+  }
+  return groups.size;
+}
+
+function countVerificationGroupsForSynthesis(run: WikiRunSnapshot, synthesisNodeId: string): number {
+  const groups = new Set<string>();
+  for (const node of run.nodes) {
+    if (node.kind !== "validate" && node.kind !== "review") continue;
+    if (node.status === "invalidated" || node.status === "cancelled") continue;
+    if (!valueIs(node.input, "synthesisNodeId", synthesisNodeId)) continue;
+    const groupId = recordValue(node.input, "verificationGroupId");
+    if (typeof groupId === "string" && groupId) groups.add(groupId);
+  }
+  return groups.size;
 }
 
 export function ensureReviewSubmissionFitsRun(host: TransitionHost, node: WikiNode, review: ReturnType<typeof parseReviewSubmission>): void {

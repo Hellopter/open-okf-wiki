@@ -128,7 +128,10 @@ function renderAgentTranscript(
   if (attempt.history?.length) {
     for (const entry of attempt.history) lines.push(...renderHistoryEntry(entry, width, theme));
   } else {
-    lines.push(theme.fg("muted", s.noMessagesYet));
+    const emptyTranscript = node.status === "succeeded" && !attempt.history
+      ? s.transcriptClearedAfterSuccess
+      : s.noMessagesYet;
+    lines.push(theme.fg("muted", emptyTranscript));
   }
   if (attempt.output) {
     lines.push("");

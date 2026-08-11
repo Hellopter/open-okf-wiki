@@ -44,12 +44,22 @@ rerunning valid upstream work. Retrying historical terminal history forks a new
 run so the selected record stays immutable.
 
 The user-visible workflow is `Inspect -> Research -> Plan -> Write -> Verify`.
-Research starts one fresh agent per declared source and permits one targeted
-batch of at most four scopes when planning finds an evidence gap. Planning
-emits a complete target WikiSpec in both generate and refresh modes. Every
-content page is written by a fresh agent with a per-page evidence scope, with
-at most four writers active at once. A fresh Overview writer runs after all
+Research starts one fresh agent per declared source. When receipts report no
+unresolved critical gaps, Plan must finalize and the engine skips forced dry
+audits, going straight to writers. Expand is hard-rejected without critical
+gaps; with gaps, Plan may request a targeted batch of at most four scopes.
+Planning emits a complete target WikiSpec in both generate and refresh modes.
+Every content page is written by a fresh agent with a per-page evidence scope,
+with at most four writers active at once. A fresh Overview writer runs after all
 content pages in the round complete and reads the full target page set.
+
+Session restore is pointer-only (no legacy full-snapshot dual-read). Agent
+handoffs are content-addressed under `.okf-wiki/blobs/{sha256}.json` with
+per-run staging and manifests under `.okf-wiki/runs/`. Durable snapshots use
+`version: 8`. Older session entries, history files, and artifact layouts are
+**not migrated** — after upgrading, delete stale `.okf-wiki/` under the
+workspace and old project history under Pi's agent dir, then run
+`/wiki generate` again.
 
 Verify combines pure static validation with one independent semantic reviewer.
 Page-local evidence, link, depth, and diagram defects return to a fresh writer;

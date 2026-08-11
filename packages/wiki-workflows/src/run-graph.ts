@@ -77,3 +77,8 @@ export function phaseTitleFor(kind: WikiNodeKind): string {
 export function isTerminalRun(snapshot: WikiRunSnapshot): boolean {
   return snapshot.status === "succeeded" || snapshot.status === "failed" || snapshot.status === "blocked" || snapshot.status === "cancelled";
 }
+
+/** History that may be forked: terminal runs, or interrupted (paused/running on disk). */
+export function isForkableRun(snapshot: WikiRunSnapshot): boolean {
+  return isTerminalRun(snapshot) || snapshot.status === "paused" || snapshot.status === "running";
+}

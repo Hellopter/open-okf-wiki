@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadWikiPromptGuidance } from "../dist/prompt-guidance.js";
+import { synthesisContext } from "../dist/prompts.js";
+import { DEFAULT_WIKI_WORKFLOW_POLICY } from "../dist/policy.js";
 
 test("Chinese guidance prefers source-authored domain and concept names", async () => {
   const research = normalizeWhitespace(await loadWikiPromptGuidance("research", "zh"));
@@ -27,7 +29,10 @@ test("research guidance requires structured findings and explicit gaps", async (
   assert.match(research, /"summary": "Concise account/);
   assert.match(research, /engine derives a stable `findingId`/);
   assert.match(research, /wiki_submit_research/);
-  assert.match(research, /entry points, modules, interfaces, domain concepts, state and persistence/);
+  assert.match(research, /bounded survey/i);
+  assert.match(research, /complete handoff in one pass/i);
+  assert.match(research, /stop exploring/i);
+  assert.match(research, /entry points/);
 });
 
 test("synthesis guidance plans complete evidence-saturated coverage without page quotas", async () => {
@@ -35,7 +40,8 @@ test("synthesis guidance plans complete evidence-saturated coverage without page
   assert.match(synthesis, /Every content page selects one or more exact `findingId` values/);
   assert.match(synthesis, /`omissions` as `\{ "findingId": "\.\.\.", "rationale": "\.\.\." \}`/);
   assert.match(synthesis, /A critical finding cannot be omitted/);
-  assert.match(synthesis, /two consecutive rounds with no newly discovered critical finding or gap/);
+  assert.match(synthesis, /Prefer finalize when research receipts report no unresolved critical gaps/);
+  assert.match(synthesis, /requiredDryCoverageAudits/);
   assert.match(synthesis, /There is no per-repository page limit/);
   assert.match(synthesis, /concurrency is scheduling only/);
   assert.match(synthesis, /scheduling limit must never reduce the number of scopes/);
@@ -88,6 +94,34 @@ test("skill stays a concise workflow router to role references", async () => {
   assert.match(skill, /Per-page writing and repair.*references\/write\.md/s);
   assert.match(skill, /Global semantic review.*references\/review\.md/s);
   assert.ok(skill.split("\n").length < 80, "SKILL.md should remain a concise router");
+});
+
+test("synthesis round JSON injects remaining budgets and prefer-finalize policy", () => {
+  const node = {
+    id: "synthesis-1",
+    kind: "synthesis",
+    input: {
+      researchIds: [],
+      supplementalBatch: 0,
+      mode: "initial",
+      dryAuditPasses: 0,
+      round: 1,
+    },
+  };
+  const run = {
+    effectiveMode: "generate",
+    requestedMode: "generate",
+    focus: undefined,
+    maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds,
+    inspection: { sourcePaths: ["src-core"] },
+    nodes: [],
+  };
+  const context = synthesisContext(node, run, []);
+  assert.match(context, /"requiredDryCoverageAudits": 1/);
+  assert.match(context, /"preferFinalizeWhenNoCriticalGaps": true/);
+  assert.match(context, /"remainingExpandRounds":/);
+  assert.match(context, /"remainingAuditRounds":/);
+  assert.match(context, /"maxExpandScopesPerBatch": 4/);
 });
 
 function normalizeWhitespace(value) {
