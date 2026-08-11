@@ -1,4 +1,7 @@
 import type { WikiNode, WikiNodeActivity, WikiNodeAttempt, WikiNodeHistoryEntry, WikiNodeMetrics, WikiRunEvent, WikiRunSnapshot } from "./workflow-types.js";
+import { clone, isRecord } from "./util.js";
+
+const SNAPSHOT_VERSION = 7 as const;
 
 const NODE_KINDS = new Set(["inspect", "research", "synthesis", "write", "validate", "review", "finalize"]);
 const NODE_STATUSES = new Set(["queued", "running", "succeeded", "failed", "invalidated", "cancelled", "blocked"]);
@@ -14,7 +17,7 @@ const EVENT_KINDS = new Set([
 /** Reject corrupt persisted state before the workflow engine or UI can consume it. */
 export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
   if (!isRecord(value)
-    || value.version !== 6
+    || value.version !== SNAPSHOT_VERSION
     || !isString(value.id)
     || !isString(value.cwd)
     || !isMode(value.requestedMode)
@@ -34,6 +37,8 @@ export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
       "focus", "inspectionFingerprint", "completedAt", "blockedReason", "parentRunId", "forkedFromNodeId",
       "forkedFromPhaseId", "forkedAt",
     ])
+    || !optional(value.blockedDetails, isBlockedDetails)
+    || !optional(value.revision, isNonnegativeInteger)
     || !optional(value.inspection, isInspection)) return false;
 
   const nodeIds = new Set<string>();
@@ -43,6 +48,83 @@ export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
   }
   if (value.nodes.some((node) => node.dependsOn.some((dependency) => !nodeIds.has(dependency)))) return false;
   return isAcyclic(value.nodes);
+}
+
+/**
+ * Human-readable validation failures for a candidate snapshot.
+ * Empty array means the value is a valid WikiRunSnapshot.
+ */
+export function explainWikiRunSnapshot(value: unknown): string[] {
+  if (!isRecord(value)) return ["expected an object"];
+
+  const reasons: string[] = [];
+  if (value.version !== SNAPSHOT_VERSION) {
+    reasons.push(`version: expected ${SNAPSHOT_VERSION}, got ${formatGot(value.version)}`);
+  }
+  if (!isString(value.id)) reasons.push(`id: expected string, got ${formatGot(value.id)}`);
+  if (!isString(value.cwd)) reasons.push(`cwd: expected string, got ${formatGot(value.cwd)}`);
+  if (!isMode(value.requestedMode)) {
+    reasons.push(`requestedMode: expected "generate" | "refresh", got ${formatGot(value.requestedMode)}`);
+  }
+  if (value.effectiveMode !== undefined && !isMode(value.effectiveMode)) {
+    reasons.push(`effectiveMode: expected "generate" | "refresh", got ${formatGot(value.effectiveMode)}`);
+  }
+  if (value.language !== "zh" && value.language !== "en") {
+    reasons.push(`language: expected "zh" | "en", got ${formatGot(value.language)}`);
+  }
+  if (!isEnum(value.status, RUN_STATUSES)) {
+    reasons.push(`status: expected one of ${[...RUN_STATUSES].join("|")}, got ${formatGot(value.status)}`);
+  }
+  if (!isNonnegativeInteger(value.round)) {
+    reasons.push(`round: expected nonnegative integer, got ${formatGot(value.round)}`);
+  }
+  if (!isNonnegativeInteger(value.sourceRestartCount)) {
+    reasons.push(`sourceRestartCount: expected nonnegative integer, got ${formatGot(value.sourceRestartCount)}`);
+  }
+  if (!isResearchRoundLimit(value.maxResearchRounds)) {
+    reasons.push(`maxResearchRounds: expected integer 3..20, got ${formatGot(value.maxResearchRounds)}`);
+  }
+  if (!Array.isArray(value.nodes)) reasons.push(`nodes: expected array, got ${formatGot(value.nodes)}`);
+  else if (!value.nodes.every(isNode)) reasons.push("nodes: contains invalid node entries");
+  if (!Array.isArray(value.events)) reasons.push(`events: expected array, got ${formatGot(value.events)}`);
+  else if (!value.events.every(isEvent)) reasons.push("events: contains invalid event entries");
+  if (!isString(value.createdAt)) reasons.push(`createdAt: expected string, got ${formatGot(value.createdAt)}`);
+  if (!isString(value.updatedAt)) reasons.push(`updatedAt: expected string, got ${formatGot(value.updatedAt)}`);
+  if (value.revision !== undefined && !isNonnegativeInteger(value.revision)) {
+    reasons.push(`revision: expected nonnegative integer, got ${formatGot(value.revision)}`);
+  }
+  if (value.inspection !== undefined && !isInspection(value.inspection)) {
+    reasons.push("inspection: invalid inspection payload");
+  }
+
+  if (reasons.length > 0) return reasons;
+  if (!isWikiRunSnapshot(value)) {
+    return ["snapshot failed structural validation (duplicate node ids, missing dependencies, or graph cycle)"];
+  }
+  return [];
+}
+
+/**
+ * Parse and clone a snapshot, or throw an Error with `code: "snapshot_incompatible"`.
+ */
+export function parseWikiRunSnapshot(value: unknown): WikiRunSnapshot {
+  if (isWikiRunSnapshot(value)) return clone(value);
+  const reasons = explainWikiRunSnapshot(value);
+  const detail = reasons.length > 0 ? reasons.join("; ") : "unknown validation failure";
+  const error = new Error(`Wiki run snapshot is incompatible: ${detail}`) as Error & { code: "snapshot_incompatible" };
+  error.name = "WikiSnapshotIncompatibleError";
+  error.code = "snapshot_incompatible";
+  throw error;
+}
+
+function formatGot(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "object") return "object";
+  return typeof value;
 }
 
 function isNode(value: unknown): value is WikiNode {
@@ -79,7 +161,7 @@ function isAttempt(value: unknown): value is WikiNodeAttempt {
 function isMetrics(value: unknown): value is WikiNodeMetrics {
   if (!isRecord(value)) return false;
   const required = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens", "cost", "compactions", "autoRetries"];
-  const optionalNumbers = ["contextTokens", "contextWindow", "contextPercent"];
+  const optionalNumbers = ["contextTokens", "contextWindow", "contextPercent", "salvageAttempts", "correctionAttempts"];
   return required.every((key) => isNonnegativeNumber(value[key]))
     && optionalNumbers.every((key) => optional(value[key], isNonnegativeNumber))
     && optional(value.model, isString)
@@ -137,6 +219,32 @@ function isEvent(value: unknown): value is WikiRunEvent {
     && optional(value.data, isRecord);
 }
 
+function isBlockedDetails(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.code !== undefined && typeof value.code !== "string") return false;
+  if (value.page !== undefined && typeof value.page !== "string") return false;
+  if (value.comparedNodeId !== undefined && typeof value.comparedNodeId !== "string") return false;
+  if (value.issues !== undefined) {
+    if (!Array.isArray(value.issues)) return false;
+    if (!value.issues.every((issue) => isRecord(issue)
+      && isString(issue.code)
+      && isString(issue.message)
+      && optional(issue.page, isString))) return false;
+  }
+  if (value.defects !== undefined) {
+    if (!Array.isArray(value.defects)) return false;
+    if (!value.defects.every((defect) => isRecord(defect)
+      && Object.values(defect).every((entry) => typeof entry === "string"))) return false;
+  }
+  if (value.remainingBudget !== undefined) {
+    if (!isRecord(value.remainingBudget)) return false;
+    if (!Object.values(value.remainingBudget).every((entry) => typeof entry === "number" && Number.isFinite(entry))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isInspection(value: unknown): boolean {
   return isRecord(value)
     && isString(value.root)
@@ -170,10 +278,6 @@ function isAcyclic(nodes: WikiNode[]): boolean {
     return true;
   };
   return nodes.every((node) => visit(node.id));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isMode(value: unknown): boolean {

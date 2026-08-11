@@ -3,6 +3,7 @@ import type { WikiArtifactRef } from "./artifact-store.js";
 import type {
   WikiResearchArtifact,
   WikiResearchFinding,
+  WikiResearchFindingDraft,
   WikiResearchReceipt,
   WikiResearchScope,
   WikiRunSnapshot,
@@ -26,6 +27,7 @@ export function projectResearchReceipt(
     findings: researchFindings(scope.id, artifact).map((finding) => ({
       id: finding.id,
       priority: finding.priority,
+      contentFingerprint: findingContentFingerprint(finding),
     })),
     criticalGapSignatures: artifact.gaps
       .filter((gap) => gap.priority === "critical")
@@ -33,15 +35,31 @@ export function projectResearchReceipt(
   };
 }
 
+/**
+ * Stable identity for a finding within a research scope.
+ * Includes scopeId so identical kind+evidence from different scopes never collide
+ * when receipts are merged by id.
+ */
 export function researchFindings(scopeId: string, artifact: WikiResearchArtifact): WikiResearchFinding[] {
   return artifact.findings.map((finding) => ({
     ...finding,
     id: `finding-${createHash("sha256").update(stableStringify({
+      scopeId,
       kind: finding.kind,
       evidence: [...finding.evidence].sort(),
     })).digest("hex").slice(0, 16)}`,
     scopeId,
   }));
+}
+
+/** Content-only fingerprint (kind + sorted evidence) for cross-scope dry-audit matching. */
+export function findingContentFingerprint(
+  finding: Pick<WikiResearchFindingDraft | WikiResearchFinding, "kind" | "evidence">,
+): string {
+  return createHash("sha256").update(stableStringify({
+    kind: finding.kind,
+    evidence: [...finding.evidence].sort(),
+  })).digest("hex").slice(0, 16);
 }
 
 function criticalGapSignature(gap: WikiResearchArtifact["gaps"][number]): string {

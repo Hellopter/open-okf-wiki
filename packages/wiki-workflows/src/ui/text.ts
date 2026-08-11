@@ -10,7 +10,10 @@ export function renderWikiRunText(run: WikiRunSnapshot | undefined): string {
     const error = node.error ? ` | ${firstLine(node.error.message)}` : "";
     return `${STATUS_ICON[node.status]} ${node.label} [${node.status}] attempt ${node.attempt}${error}`;
   });
-  const reason = run.blockedReason ? [`Blocked: ${run.blockedReason}`] : [];
+  const reason = [
+    ...(run.blockedReason ? [`Blocked: ${run.blockedReason}`] : []),
+    ...blockedDetailsLines(run.blockedDetails),
+  ];
   return [header, ...reason, ...nodes].join("\n");
 }
 
@@ -64,6 +67,7 @@ export function renderWikiResultDelivery(run: WikiRunSnapshot): string {
   ];
   if (run.focus) lines.push(`Focus: ${run.focus}`);
   if (run.blockedReason) lines.push(`Blocked: ${run.blockedReason}`);
+  lines.push(...blockedDetailsLines(run.blockedDetails));
   if (failed.length) {
     lines.push("", "Failed agents:");
     for (const node of failed.slice(0, 8)) {
@@ -73,4 +77,38 @@ export function renderWikiResultDelivery(run: WikiRunSnapshot): string {
   }
   lines.push("", "Use /wiki open to inspect the full run.");
   return lines.join("\n");
+}
+
+function blockedDetailsLines(details: WikiRunSnapshot["blockedDetails"] | undefined): string[] {
+  if (!details) return [];
+  const lines: string[] = [];
+  if (details.code) lines.push(`Code: ${details.code}`);
+  if (details.page) lines.push(`Page: ${details.page}`);
+  if (details.comparedNodeId) lines.push(`Compared node: ${details.comparedNodeId}`);
+  if (details.remainingBudget && Object.keys(details.remainingBudget).length > 0) {
+    const parts = Object.entries(details.remainingBudget).map(([key, value]) => `${key}=${value}`);
+    lines.push(`Remaining budget: ${parts.join(", ")}`);
+  }
+  if (details.issues?.length) {
+    lines.push("Issues:");
+    for (const issue of details.issues.slice(0, 5)) {
+      const page = issue.page ? `${issue.page}: ` : "";
+      lines.push(`- [${issue.code}] ${page}${issue.message}`);
+    }
+    if (details.issues.length > 5) lines.push(`- … ${details.issues.length - 5} more issues`);
+  }
+  if (details.defects?.length) {
+    lines.push("Defects:");
+    for (const defect of details.defects.slice(0, 5)) {
+      const page = defect.page ? `${defect.page}: ` : "";
+      const kind = defect.kind ? `[${defect.kind}] ` : "";
+      const detail = defect.detail ?? Object.entries(defect)
+        .filter(([key]) => key !== "kind" && key !== "page")
+        .map(([, value]) => value)
+        .join(" ");
+      lines.push(`- ${kind}${page}${detail}`.trimEnd());
+    }
+    if (details.defects.length > 5) lines.push(`- … ${details.defects.length - 5} more defects`);
+  }
+  return lines;
 }

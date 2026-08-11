@@ -2,7 +2,13 @@ import {
   WikiAgentContextBudgetError,
   WikiAgentProtocolError,
 } from "./agent-errors.js";
-import type { WikiNodeError, WikiNodeErrorCode, WikiNodeStatus, WikiRunStatus } from "./workflow-types.js";
+import {
+  budgetExhaustedCode,
+  errorMessage,
+  isWikiBudgetExhaustedError,
+  type WikiNodeErrorCode,
+} from "./failures.js";
+import type { WikiNodeError, WikiNodeStatus, WikiRunStatus } from "./workflow-types.js";
 
 export interface NodeFailureClassification {
   status: Extract<WikiNodeStatus, "queued" | "failed" | "blocked" | "cancelled">;
@@ -31,10 +37,11 @@ export function classifyNodeFailure(error: unknown, options: ClassifyNodeFailure
     };
   }
 
-  if (isLoopBudgetError(error)) {
+  if (isWikiBudgetExhaustedError(error)) {
+    const code = budgetExhaustedCode(error);
     return {
       status: "blocked",
-      error: { message: errorMessage(error), code: "execution_failed" satisfies WikiNodeErrorCode, retryable: false },
+      error: { message: errorMessage(error), code, retryable: false },
       terminalRun: "blocked",
       retryable: false,
     };
@@ -108,12 +115,4 @@ export function classifyNodeFailure(error: unknown, options: ClassifyNodeFailure
 function isContextBudgetError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   return (error as { code?: unknown }).code === "context_budget_exceeded";
-}
-
-function isLoopBudgetError(error: unknown): boolean {
-  return /Research reached the \d+-round limit/.test(errorMessage(error));
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

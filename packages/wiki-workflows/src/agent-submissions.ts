@@ -10,7 +10,7 @@ import {
   resolveArtifactPath,
   writeArtifactText,
   type WorkspaceToolPolicy,
-} from "./agent-tools.js";
+} from "./path-policy.js";
 import {
   artifactSubmissionSchema,
   parseArtifactSubmission,
@@ -20,12 +20,14 @@ import {
   WikiControlSubmissionSizeError,
 } from "./control-submissions.js";
 import { loadResearchSourceRoots, validateResearchArtifact } from "./research-evidence.js";
+import { submissionContractGuidance } from "./submissions/contracts.js";
 import type {
   WikiAgentExecutionRequest,
   WikiControlSubmission,
 } from "./workflow-types.js";
 
 export type { SubmissionToolName, SubmissionFailure, SubmissionFailureCode };
+export { submissionContractGuidance };
 
 export interface SubmissionCollector {
   toolName: SubmissionToolName;
@@ -212,18 +214,4 @@ export function createArtifactWriteToolDefinition(
       return { content: [{ type: "text", text: `Handoff artifact recorded at ${expectedPath}.` }], details: undefined };
     },
   };
-}
-
-/** Keep every model-facing control surface explicit about its JSON contract. */
-export function submissionContractGuidance(toolName: SubmissionToolName): string {
-  if (toolName === "wiki_submit_research") {
-    return "Use {\"summary\":\"...\",\"findings\":[{\"kind\":\"domain|concept|flow|boundary|state-data\",\"title\":\"...\",\"readerQuestion\":\"...\",\"priority\":\"critical|normal\",\"evidence\":[\"project/path#L1-L2\"]}],\"gaps\":[{\"question\":\"...\",\"priority\":\"critical|normal\",\"sourcePaths\":[\"project\"]}]}";
-  }
-  if (toolName === "wiki_submit_page") {
-    return "Call the tool with the exact assigned page path after writing. Fix every returned issue and resubmit until accepted.";
-  }
-  if (toolName === "wiki_submit_synthesis") {
-    return "For a final decision, use {\"decision\":\"finalize\",\"spec\":{\"domains\":[...],\"crossLinks\":[...],\"sharedTerms\":[...],\"omissions\":[...]},\"rationale\":\"...\"}. Each page contains pageType, path, title, purpose, and findingIds. For expansion, omit spec and use {\"decision\":\"expand\",\"researchScopes\":[{\"id\":\"new-scope-id\",\"sourcePaths\":[\"declared-source\"],\"task\":\"...\"}],\"rationale\":\"...\"}.";
-  }
-  return "Use {\"defects\":[...],\"summary\":\"...\"}. A local defect is exactly {\"kind\":\"evidence|link|depth|diagram\",\"page\":\"...\",\"detail\":\"...\"}; a structural defect is exactly {\"kind\":\"topology|coverage\",\"detail\":\"...\"}. defects and summary are required; use [] when there are no actionable defects.";
 }

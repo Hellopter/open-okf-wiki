@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { Type } from "typebox";
+import { DEFAULT_WIKI_WORKFLOW_POLICY } from "./policy.js";
 import { parseEvidenceReference as parseEvidenceReferenceShape } from "./research-evidence.js";
 import type {
   WikiResearchArtifact,
@@ -11,9 +12,9 @@ import type {
 import { isSafeWikiPagePath } from "./wiki-path.js";
 
 /** Maximum UTF-8 size of a structured research artifact. */
-export const MAX_RESEARCH_ARTIFACT_BYTES = 256 * 1024;
+export const MAX_RESEARCH_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifacts.researchBytes;
 /** Maximum UTF-8 size of a synthesis or review JSON artifact. */
-export const MAX_CONTROL_ARTIFACT_BYTES = 256 * 1024;
+export const MAX_CONTROL_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifacts.controlBytes;
 
 /**
  * The tool protocol transports only a pointer. Its literal path keeps strict

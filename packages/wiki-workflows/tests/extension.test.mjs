@@ -4,7 +4,7 @@ import { createWikiExtension } from "../dist/extension.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 6,
+    version: 7,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -44,6 +44,10 @@ function fakeEngine(initial, hooks = {}) {
       calls.push(["restore", value]);
       current = structuredClone(value.snapshot ?? value);
       return structuredClone(current);
+    },
+    async applyRestoredArtifactHealth() {
+      calls.push(["applyRestoredArtifactHealth"]);
+      return [];
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -390,7 +394,7 @@ test("project history write failures are reported without losing Pi session stat
     && /history could not be saved: disk unavailable/.test(message)));
 });
 
-test("does not restore legacy v5 session entries", async () => {
+test("does not restore legacy v5 session entries and notifies incompatibility", async () => {
   const legacy = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
@@ -398,14 +402,39 @@ test("does not restore legacy v5 session entries", async () => {
   };
   const subject = fixture({ entries: [
     { type: "custom", customType: "okf-wiki-run", data: legacy },
+  ], branchEntries: [
+    { type: "custom", customType: "okf-wiki-run", data: legacy },
   ] });
 
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
   assert.equal(subject.engine.getSnapshot(), undefined);
+  assert.ok(subject.notices.some(({ message, level }) => level === "warning"
+    && /incompatible/.test(message)
+    && /version: expected 7, got 5/.test(message)));
 });
 
-test("does not restore structurally corrupt v6 session entries", async () => {
+test("does not restore legacy v6 session entries", async () => {
+  const legacy = {
+    customType: "okf-wiki-run",
+    workspace: "/workspace",
+    snapshot: snapshot({ version: 6, id: "legacy-v6" }),
+  };
+  const subject = fixture({ entries: [
+    { type: "custom", customType: "okf-wiki-run", data: legacy },
+  ], branchEntries: [
+    { type: "custom", customType: "okf-wiki-run", data: legacy },
+  ] });
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
+  assert.equal(subject.engine.getSnapshot(), undefined);
+  assert.ok(subject.notices.some(({ message, level }) => level === "warning"
+    && /incompatible/.test(message)
+    && /version: expected 7, got 6/.test(message)));
+});
+
+test("does not restore structurally corrupt v7 session entries", async () => {
   const malformed = {
     customType: "okf-wiki-run",
     workspace: "/workspace",
@@ -413,11 +442,14 @@ test("does not restore structurally corrupt v6 session entries", async () => {
   };
   const subject = fixture({ entries: [
     { type: "custom", customType: "okf-wiki-run", data: malformed },
+  ], branchEntries: [
+    { type: "custom", customType: "okf-wiki-run", data: malformed },
   ] });
 
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
   assert.equal(subject.engine.getSnapshot(), undefined);
+  assert.ok(subject.notices.some(({ message, level }) => level === "warning" && /incompatible/.test(message)));
 });
 
 test("status, pause, resume, and cancel use the same single-run controller", async () => {

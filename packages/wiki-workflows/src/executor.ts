@@ -31,6 +31,13 @@ import type {
 
 export { WikiAgentProtocolError, WikiAgentContextBudgetError } from "./agent-errors.js";
 
+/**
+ * Bounded follow-up budgets inside a single node attempt (executor layers only).
+ * Engine node requeue is a separate outer layer — see execute() retry-layer comment.
+ */
+export const SALVAGE_MAX = 1;
+export const CORRECTION_MAX = 1;
+
 export interface PiAgentExecutorOptions {
   /** The selected Pi model supplied by the extension context, when available. */
   model?: Model<any>;
@@ -54,13 +61,36 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     this.options = options;
   }
 
+  /**
+   * Retry layers (innermost → outermost), each bounded:
+   *
+   * 1. **Pi auto-retry** — `session.setAutoRetryEnabled(true)`. Handles transient
+   *    provider/stream failures inside the session. The Pi SDK only exposes an
+   *    on/off toggle (maxRetries comes from settings); we leave it enabled and
+   *    count attempts via `auto_retry_*` / `summarization_retry_*` events →
+   *    `metrics.autoRetries`.
+   * 2. **Salvage follow-up** — at most {@link SALVAGE_MAX} turn when context
+   *    pressure is detected after the main prompt and no submission was recorded.
+   *    Forces write-handoff + submit without more exploration → `metrics.salvageAttempts`.
+   * 3. **Correction follow-up** — at most {@link CORRECTION_MAX} turn when a
+   *    required submission is missing or was rejected (except validator_infrastructure)
+   *    → `metrics.correctionAttempts`.
+   * 4. **Node requeue (engine)** — outside this executor; `classifyNodeFailure` /
+   *    engine may re-run the whole node up to policy max attempts. Do not join
+   *    that path from here.
+   */
   async execute(request: WikiAgentExecutionRequest): Promise<WikiAgentExecutionResult> {
     const submission = submissionFor(request);
     const session = await this.createIsolatedSession(request, submission);
     session.setAutoCompactionEnabled(true);
+    // Layer 1: Pi auto-retry. No public maxAttempts setter on AgentSession — enable only.
     session.setAutoRetryEnabled(true);
     const history: WikiNodeHistoryEntry[] = [];
     const toolTargets = new Map<string, { target?: string; summary?: string }>();
+    // Layer 2/3 counters: each follow-up path runs at most once per execute().
+    let salvageAttempts = 0;
+    let correctionAttempts = 0;
+    const retryLayers = () => ({ salvageAttempts, correctionAttempts });
     const unsubscribe = session.subscribe((event) => this.handleEvent(session, event, request, history, toolTargets));
     const abort = () => { void session.abort(); };
     request.signal.addEventListener("abort", abort, { once: true });
@@ -76,19 +106,20 @@ export class PiAgentExecutor implements WikiAgentExecutor {
 
       // A recorded submission wins over residual session errors (e.g. late overflow).
       if (submission?.value !== undefined) {
-        return finishSuccess(session, request, submission.value, output, history);
+        return finishSuccess(session, request, submission.value, output, history, retryLayers());
       }
 
-      // Context pressure: one salvage turn to write handoff + submit without more exploration.
-      if (isContextBudgetMessage(session.state.errorMessage)) {
-        request.onActivity?.({ state: "waiting", message: "Recovering from context pressure" });
+      // Layer 2: context salvage — one turn to write handoff + submit without more exploration.
+      if (isContextBudgetMessage(session.state.errorMessage) && salvageAttempts < SALVAGE_MAX) {
+        salvageAttempts += 1;
+        request.onActivity?.({ state: "waiting", message: "Recovering from context pressure" }, { salvageAttempts });
         await session.followUp(contextSalvagePrompt(submission?.toolName));
         await session.waitForIdle();
         if (request.signal.aborted) throw new Error("Workflow node was cancelled");
         output = session.getLastAssistantText() ?? "";
         request.onOutput?.(output);
         if (submission?.value !== undefined) {
-          return finishSuccess(session, request, submission.value, output, history);
+          return finishSuccess(session, request, submission.value, output, history, retryLayers());
         }
         throw new WikiAgentContextBudgetError(
           output,
@@ -97,11 +128,13 @@ export class PiAgentExecutor implements WikiAgentExecutor {
         );
       }
 
-      if (submission && submission.value === undefined) {
+      // Layer 3: correction — one turn for missing/invalid required submission.
+      if (submission && submission.value === undefined && correctionAttempts < CORRECTION_MAX) {
         if (submission.failure?.code === "validator_infrastructure") {
           throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history), submission.failure);
         }
-        request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` });
+        correctionAttempts += 1;
+        request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` }, { correctionAttempts });
         const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
         const correctionAction = submission.toolName === "wiki_submit_page"
           ? "Fix every reported issue in the assigned page before resubmitting."
@@ -113,7 +146,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
         request.onOutput?.(output);
 
         if (submission.value !== undefined) {
-          return finishSuccess(session, request, submission.value, output, history);
+          return finishSuccess(session, request, submission.value, output, history, retryLayers());
         }
         if (isContextBudgetMessage(session.state.errorMessage)) {
           throw new WikiAgentContextBudgetError(
@@ -126,7 +159,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       }
 
       if (session.state.errorMessage) throw new Error(session.state.errorMessage);
-      return finishSuccess(session, request, submission?.value, output, history);
+      return finishSuccess(session, request, submission?.value, output, history, retryLayers());
     } finally {
       request.signal.removeEventListener("abort", abort);
       unsubscribe();
@@ -203,6 +236,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
           message: event.errorMessage ?? (event.aborted ? "Compaction interrupted" : "Compaction completed"),
         });
         return;
+      // Layer 1 metrics: each scheduled auto-retry increments metrics.autoRetries (engine merges incrementally).
       case "auto_retry_start":
         request.onActivity?.({
           state: "retrying",
@@ -294,15 +328,21 @@ function finishSuccess(
   result: unknown,
   output: string,
   history: WikiNodeHistoryEntry[],
+  retryLayers: { salvageAttempts: number; correctionAttempts: number },
 ): WikiAgentExecutionResult {
   const stats = session.getSessionStats();
   const context = session.getContextUsage();
-  request.onActivity?.({ state: "completed", message: "Completed" }, metricsFromSession(session));
+  const metrics: Partial<WikiNodeMetrics> = {
+    ...metricsFromStats(stats, context, session),
+    salvageAttempts: retryLayers.salvageAttempts,
+    correctionAttempts: retryLayers.correctionAttempts,
+  };
+  request.onActivity?.({ state: "completed", message: "Completed" }, metrics);
   return {
     result,
     output,
     history: retainedHistory(history),
-    metrics: metricsFromStats(stats, context, session),
+    metrics,
   };
 }
 

@@ -1,0 +1,73 @@
+#!/usr/bin/env node
+/**
+ * Fail if pure modules import @earendil-works/* (Pi packages).
+ * See ARCHITECTURE.md → Import rules.
+ */
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SRC = path.join(ROOT, "src");
+
+/** Pure modules that must not depend on @earendil-works/* */
+const PURE_MODULES = [
+  "policy.ts",
+  "failures.ts",
+  "util.ts",
+  "join-barrier.ts",
+  "workflow-phases.ts",
+  "transitions-queue.ts",
+  "run-graph.ts",
+  "run-nodes.ts",
+  "path-policy.ts",
+  "checkpoint.ts",
+  "submissions/contracts.ts",
+  "research-receipt.ts",
+  "run-health.ts",
+];
+
+const FORBIDDEN = /from\s+["']@earendil-works\//;
+const FORBIDDEN_REQUIRE = /require\s*\(\s*["']@earendil-works\//;
+
+function listTsFiles(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...listTsFiles(full));
+    else if (name.endsWith(".ts")) out.push(full);
+  }
+  return out;
+}
+
+const violations = [];
+
+for (const rel of PURE_MODULES) {
+  const file = path.join(SRC, rel);
+  let source;
+  try {
+    source = readFileSync(file, "utf8");
+  } catch (error) {
+    violations.push(`${rel}: missing (${error instanceof Error ? error.message : String(error)})`);
+    continue;
+  }
+  const lines = source.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Skip block/line comments that merely mention the package name.
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    if (FORBIDDEN.test(line) || FORBIDDEN_REQUIRE.test(line)) {
+      violations.push(`${rel}:${i + 1}: ${trimmed}`);
+    }
+  }
+}
+
+if (violations.length) {
+  console.error("Import boundary check failed — pure modules must not import @earendil-works/*:\n");
+  for (const v of violations) console.error(`  ${v}`);
+  process.exit(1);
+}
+
+console.log(`Import boundary check passed (${PURE_MODULES.length} pure modules).`);

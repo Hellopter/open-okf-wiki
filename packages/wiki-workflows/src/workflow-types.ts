@@ -1,7 +1,9 @@
-import type { WikiFinalization, WikiInspection, WikiMode, WikiValidation } from "./types.js";
+import type { WikiNodeErrorCode } from "./failures.js";
+import type { WikiFinalization, WikiInspection, WikiMode, WikiValidation, WikiValidationIssue } from "./types.js";
 import type { WikiArtifactRef, WikiArtifactStore } from "./artifact-store.js";
 
 export type { WikiMode } from "./types.js";
+export type { WikiNodeErrorCode } from "./failures.js";
 
 /** A durable, Wiki-domain node type. It deliberately does not model generic workflows. */
 export type WikiNodeKind =
@@ -49,19 +51,15 @@ export interface WikiNodeMetrics {
   contextPercent?: number;
   contextEstimated?: boolean;
   compactions: number;
+  /** Pi session auto-retry events (provider/transient); counted via activity deltas. */
   autoRetries: number;
+  /** Executor salvage follow-ups for context pressure (0 or 1 per node attempt). */
+  salvageAttempts?: number;
+  /** Executor correction follow-ups for missing/invalid submission (0 or 1 per node attempt). */
+  correctionAttempts?: number;
 }
 
-/** Stable failure codes recorded on nodes and used by retry policy. */
-export type WikiNodeErrorCode =
-  | "missing_submission"
-  | "invalid_submission"
-  | "submission_too_large"
-  | "validator_infrastructure"
-  | "context_budget_exceeded"
-  | "execution_failed"
-  | "cancelled";
-
+/** Stable failure codes — single source in failures.ts. */
 export interface WikiNodeError {
   message: string;
   code?: WikiNodeErrorCode | string;
@@ -162,7 +160,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 6;
+  version: 7;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -182,11 +180,23 @@ export interface WikiRunSnapshot {
   updatedAt: string;
   completedAt?: string;
   blockedReason?: string;
+  /** Structured diagnostics when the run terminalized as blocked/failed. */
+  blockedDetails?: {
+    code?: WikiNodeErrorCode | string;
+    issues?: WikiValidationIssue[];
+    defects?: Array<Record<string, string>>;
+    page?: string;
+    comparedNodeId?: string;
+    /** Budget counters remaining (or exhausted-at) when a budget policy blocked the run. */
+    remainingBudget?: Record<string, number>;
+  };
   /** The immutable terminal run from which this retry branch was created. */
   parentRunId?: string;
   forkedFromNodeId?: string;
   forkedFromPhaseId?: string;
   forkedAt?: string;
+  /** Monotonic checkpoint counter written by persistence (session/history). */
+  revision?: number;
 }
 
 /** Lightweight record used by the Navigator's historical run list. */
@@ -311,7 +321,12 @@ export interface WikiResearchReceipt {
   task: string;
   sourceFingerprint: string;
   artifact: WikiArtifactRef;
-  findings: Array<{ id: string; priority: WikiResearchPriority }>;
+  findings: Array<{
+    id: string;
+    priority: WikiResearchPriority;
+    /** kind+evidence fingerprint; used for dry-audit sameness across scopes. */
+    contentFingerprint: string;
+  }>;
   criticalGapSignatures: string[];
 }
 

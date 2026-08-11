@@ -1,24 +1,13 @@
 import type { WikiNode, WikiNodeStatus, WikiRunSnapshot } from "../workflow-types.js";
+import {
+  WIKI_WORKFLOW_PHASES,
+  WIKI_WORKFLOW_STAGES,
+  type WikiWorkflowStage,
+} from "../workflow-phases.js";
 import type { PhaseDisplayStatus } from "./format.js";
 
-export interface WikiWorkflowStage {
-  id: string;
-  title: string;
-  conditional: boolean;
-  waitingMessage: string;
-}
-
-/**
- * Wiki-specific execution map. The dashboard shows the complete pipeline even
- * before the engine has dynamically queued every subagent.
- */
-export const WIKI_WORKFLOW_STAGES: readonly WikiWorkflowStage[] = [
-  { id: "inspect", title: "Inspect", conditional: false, waitingMessage: "Waiting for the run to inspect the repository." },
-  { id: "research", title: "Research", conditional: false, waitingMessage: "Waiting for repository inspection to complete." },
-  { id: "plan", title: "Plan", conditional: false, waitingMessage: "Waiting for source-grounded research receipts." },
-  { id: "write", title: "Write", conditional: false, waitingMessage: "Waiting for a finalized Wiki specification." },
-  { id: "verify", title: "Verify", conditional: false, waitingMessage: "Waiting for target pages to be written." },
-];
+export type { WikiWorkflowStage };
+export { WIKI_WORKFLOW_PHASES, WIKI_WORKFLOW_STAGES };
 
 export interface WikiPhase {
   id: string;

@@ -21,7 +21,7 @@ function metrics() {
 
 function snapshot(id, status, updatedAt) {
   return {
-    version: 6,
+    version: 7,
     id,
     cwd: "/workspace",
     requestedMode: "generate",
@@ -114,7 +114,7 @@ test("history never treats a run ID as a filesystem path", async (t) => {
   await assert.rejects(() => store.save(snapshot("../outside", "succeeded", "2026-08-08T00:00:00.000Z")), /Invalid Wiki run history identifier/);
 });
 
-test("history accepts only complete v6 snapshots and rejects v5", async (t) => {
+test("history accepts only complete v7 snapshots and rejects older versions", async (t) => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-history-version-"));
   t.after(async () => await rm(rootDir, { recursive: true, force: true }));
   const store = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
@@ -123,6 +123,11 @@ test("history accepts only complete v6 snapshots and rejects v5", async (t) => {
   await writeFile(
     path.join(runsDir, "legacy.json"),
     `${JSON.stringify({ ...snapshot("legacy", "succeeded", "2026-08-08T00:00:00.000Z"), version: 5 })}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(runsDir, "legacy-v6.json"),
+    `${JSON.stringify({ ...snapshot("legacy-v6", "succeeded", "2026-08-08T00:00:00.000Z"), version: 6 })}\n`,
     "utf8",
   );
   const missingRestartCount = snapshot("incomplete", "succeeded", "2026-08-08T00:00:00.000Z");
@@ -135,6 +140,7 @@ test("history accepts only complete v6 snapshots and rejects v5", async (t) => {
   const invalidStatus = { ...snapshot("invalid-status", "succeeded", "2026-08-08T00:00:00.000Z"), status: "done" };
   await writeFile(path.join(runsDir, "invalid-status.json"), `${JSON.stringify(invalidStatus)}\n`, "utf8");
   assert.equal(await store.load("legacy"), undefined);
+  assert.equal(await store.load("legacy-v6"), undefined);
   assert.equal(await store.load("incomplete"), undefined);
   assert.equal(await store.load("invalid-node"), undefined);
   assert.equal(await store.load("invalid-round"), undefined);

@@ -1,4 +1,5 @@
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export async function exists(location: string): Promise<boolean> {
@@ -44,6 +45,14 @@ export async function readText(location: string): Promise<string> {
   return await readFile(location, "utf8");
 }
 
+/** Write UTF-8 text via temp file in the same directory, then rename (atomic on same filesystem). */
 export async function writeText(location: string, text: string): Promise<void> {
-  await writeFile(location, text, "utf8");
+  const directory = path.dirname(location);
+  const temporary = path.join(directory, `.${path.basename(location)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, text, "utf8");
+    await rename(temporary, location);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
 }

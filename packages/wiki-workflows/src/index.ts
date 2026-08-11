@@ -32,8 +32,10 @@ export {
   type WikiWorkspaceSource,
 } from "./workspace.js";
 export {
+  CORRECTION_MAX,
   createPiAgentExecutor,
   PiAgentExecutor,
+  SALVAGE_MAX,
   type PiAgentExecutorOptions,
 } from "./executor.js";
 export {
@@ -50,12 +52,23 @@ export {
   WikiWorkflowEngine,
   type WikiWorkflowEngineOptions,
 } from "./engine.js";
+export { checkRunArtifactHealth } from "./run-health.js";
 export {
   createWikiRunSession,
   isWikiRunSession,
   parseWikiRunSession,
   WIKI_RUN_CUSTOM_TYPE,
 } from "./session.js";
+export {
+  explainWikiRunSnapshot,
+  isWikiRunSnapshot,
+  parseWikiRunSnapshot,
+} from "./snapshot-validation.js";
+export {
+  WikiCheckpointCoordinator,
+  type CheckpointOptions,
+  type CheckpointSinks,
+} from "./checkpoint.js";
 export {
   createWikiRunHistoryStore,
   DEFAULT_MAX_TERMINAL_WIKI_RUNS,
@@ -102,11 +115,20 @@ export {
 } from "./ui/text.js";
 export {
   phaseRows,
+  WIKI_WORKFLOW_PHASES,
   WIKI_WORKFLOW_STAGES,
   type WikiPhase,
   type WikiRunView,
   type WikiWorkflowStage,
 } from "./ui/stages.js";
+export {
+  phaseIdForKind,
+  phaseMetaForKind,
+  phaseRefForKind,
+  phaseTitleForKind,
+  type WikiWorkflowPhase,
+  type WikiWorkflowPhaseId,
+} from "./workflow-phases.js";
 export {
   retryImpact,
   phaseRetryImpact,

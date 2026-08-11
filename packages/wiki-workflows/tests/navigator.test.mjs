@@ -44,7 +44,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 6,
+  version: 7,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -292,6 +292,26 @@ test("status and history text stay concise for non-TUI commands", () => {
   const history = renderWikiRunHistoryText([summary(run)]);
   assert.match(history, /Wiki History/);
   assert.doesNotMatch(history, /run-1/);
+});
+
+test("blocked run text surfaces code, issues, and remaining budget", () => {
+  const blocked = structuredClone(run);
+  blocked.status = "blocked";
+  blocked.blockedReason = "Validation produced the same unresolved error set twice";
+  blocked.blockedDetails = {
+    code: "same_validation_twice",
+    issues: [
+      { code: "link", page: "core/architecture.md", message: "broken link" },
+      { code: "depth", page: "api/request-flow.md", message: "too shallow" },
+    ],
+    remainingBudget: { localRepairRounds: 0, used: 3 },
+  };
+  const text = renderWikiRunText(blocked);
+  assert.match(text, /Blocked: Validation produced the same unresolved error set twice/);
+  assert.match(text, /Code: same_validation_twice/);
+  assert.match(text, /Remaining budget: localRepairRounds=0, used=3/);
+  assert.match(text, /\[link\] core\/architecture\.md: broken link/);
+  assert.match(text, /\[depth\] api\/request-flow\.md: too shallow/);
 });
 
 test("Navigator agent and artifact text surface persisted handoff refs", () => {

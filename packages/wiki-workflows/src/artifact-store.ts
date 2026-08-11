@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { DEFAULT_WIKI_WORKFLOW_POLICY } from "./policy.js";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
 
-export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = 256 * 1024;
+export const MAX_WIKI_RESEARCH_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifacts.researchBytes;
 /** Limit for model-authored synthesis and review JSON handoffs. */
-export const MAX_WIKI_JSON_ARTIFACT_BYTES = 256 * 1024;
+export const MAX_WIKI_JSON_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifacts.controlBytes;
 /** Limit for deterministic coordinator artifacts. */
-export const MAX_WIKI_ARTIFACT_BYTES = 1024 * 1024;
+export const MAX_WIKI_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifacts.maxBytes;
 
 export type WikiArtifactKind = "inspection" | "research" | "synthesis" | "write_report" | "validation" | "review" | "finalization";
 

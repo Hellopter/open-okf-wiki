@@ -19,7 +19,9 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node --test tests/*.test.mjs"
+    "check:contracts": "node scripts/check-submission-contracts.mjs",
+    "check:boundaries": "node scripts/check-import-boundaries.mjs",
+    "test": "pnpm check:boundaries && pnpm build && node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=22.19.0"

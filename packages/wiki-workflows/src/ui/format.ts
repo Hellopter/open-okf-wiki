@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { phaseTitleForKind } from "../workflow-phases.js";
 import type { WikiNode, WikiNodeStatus, WikiRunSnapshot, WikiRunStatus, WikiRunSummary } from "../workflow-types.js";
 
 export type ThemeColor = "accent" | "borderMuted" | "success" | "error" | "warning" | "muted" | "dim" | "text";
@@ -143,15 +144,7 @@ export function activityText(node: WikiNode): string {
 }
 
 export function stageLabel(kind: WikiNode["kind"]): string {
-  switch (kind) {
-    case "inspect": return "Inspect";
-    case "research": return "Research";
-    case "synthesis": return "Plan";
-    case "write": return "Write";
-    case "validate": return "Verify";
-    case "review": return "Verify";
-    case "finalize": return "Finalize";
-  }
+  return phaseTitleForKind(kind);
 }
 
 export function isTerminalRunStatus(status: WikiRunStatus): boolean {

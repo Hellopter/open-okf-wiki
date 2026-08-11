@@ -4,6 +4,7 @@ import {
   WikiAgentContextBudgetError,
   WikiAgentProtocolError,
 } from "../dist/agent-errors.js";
+import { WikiBudgetExhaustedError } from "../dist/failures.js";
 import { classifyNodeFailure } from "../dist/node-retry.js";
 
 test("context_budget with attempt < max is queued and retryable", () => {
@@ -62,12 +63,26 @@ test("validator_infrastructure fails after max attempts", () => {
 });
 
 test("loop budget error is blocked with terminalRun blocked", () => {
-  const error = new Error("Research reached the 6-round limit without closing critical gaps");
+  // Production message style from engine.ensureResearchRoundAvailable — classify by code, not text.
+  const error = new WikiBudgetExhaustedError(
+    "Research reached the 6-round limit before coverage saturated",
+    "research_rounds_exhausted",
+  );
   const result = classifyNodeFailure(error, { attempt: 1, maxAttempts: 3, aborted: false });
   assert.equal(result.status, "blocked");
   assert.equal(result.retryable, false);
   assert.equal(result.terminalRun, "blocked");
-  assert.equal(result.error.code, "execution_failed");
+  assert.equal(result.error.code, "research_rounds_exhausted");
+});
+
+test("duck-typed research_rounds_exhausted code is blocked", () => {
+  const error = Object.assign(new Error("Research reached the 6-round limit before coverage saturated"), {
+    code: "research_rounds_exhausted",
+  });
+  const result = classifyNodeFailure(error, { attempt: 1, maxAttempts: 3, aborted: false });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.terminalRun, "blocked");
+  assert.equal(result.error.code, "research_rounds_exhausted");
 });
 
 test("aborted execution is cancelled regardless of error type", () => {

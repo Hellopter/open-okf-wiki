@@ -36,7 +36,7 @@ Each finding must answer one independently useful reader question and contain a
 non-empty evidence array of precise repo-local ranges. Use `critical` only when
 omitting the finding would leave a public boundary, defining concept, important
 state invariant, or end-to-end behavior unexplained. The engine derives a
-stable `findingId` from `kind` and sorted evidence; never add an ID yourself.
+stable `findingId` from `scopeId`, `kind`, and sorted evidence; never add an ID yourself.
 
 Record every unresolved claim in `gaps`; use `[]` only after actively checking
 the assigned question. Gap `sourcePaths` are investigation suggestions and

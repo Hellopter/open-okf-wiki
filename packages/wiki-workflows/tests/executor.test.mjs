@@ -11,7 +11,13 @@ import {
   parseReviewSubmission,
   parseSynthesisSubmission,
 } from "../dist/control-submissions.js";
-import { PiAgentExecutor, WikiAgentContextBudgetError, WikiAgentProtocolError } from "../dist/executor.js";
+import {
+  CORRECTION_MAX,
+  PiAgentExecutor,
+  SALVAGE_MAX,
+  WikiAgentContextBudgetError,
+  WikiAgentProtocolError,
+} from "../dist/executor.js";
 import { addWikiSource, initializeWikiWorkspace } from "../dist/workspace.js";
 
 function git(root, ...args) {
@@ -288,8 +294,12 @@ test("a rejected control submission gets one correction turn", async (t) => {
     session.getActiveToolNames = () => options.tools;
     return { session };
   } });
-  assert.deepEqual((await executor.execute(execution)).result, { defects: [], summary: "Corrected." });
+  const result = await executor.execute(execution);
+  assert.deepEqual(result.result, { defects: [], summary: "Corrected." });
   assert.equal(followUps, 1);
+  assert.equal(followUps, CORRECTION_MAX, "correction is bounded to CORRECTION_MAX");
+  assert.equal(result.metrics?.correctionAttempts, 1);
+  assert.equal(result.metrics?.salvageAttempts, 0);
 });
 
 test("missing the required submission fails with a classified protocol error", async (t) => {
@@ -343,6 +353,8 @@ test("residual context errorMessage after a successful submit still succeeds wit
   const result = await executor.execute(execution);
   assert.deepEqual(result.result, artifact);
   assert.equal(followUps, 0, "recorded submission must win over residual context pressure");
+  assert.equal(result.metrics?.salvageAttempts, 0);
+  assert.equal(result.metrics?.correctionAttempts, 0);
 });
 
 test("context salvage without a subsequent submission throws WikiAgentContextBudgetError", async (t) => {
@@ -371,6 +383,7 @@ test("context salvage without a subsequent submission throws WikiAgentContextBud
       && /context overflow recovery failed/.test(error.message),
   );
   assert.equal(followUps, 1, "exactly one salvage follow-up is attempted");
+  assert.equal(followUps, SALVAGE_MAX, "salvage is bounded to SALVAGE_MAX");
 });
 
 test("wiki_submit_research rejects out-of-scope, missing, and overflowing evidence with actionable messages", async (t) => {
@@ -441,6 +454,54 @@ test("wiki_submit_research rejects out-of-scope, missing, and overflowing eviden
   } });
 
   assert.deepEqual((await executor.execute(execution)).result, valid);
+});
+
+test("auto_retry_start events increment metrics.autoRetries via onActivity", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "research", "researcher");
+  const artifact = {
+    summary: "API entry point.",
+    findings: [{
+      kind: "concept",
+      title: "API flag",
+      readerQuestion: "Where is the API exported?",
+      priority: "normal",
+      evidence: ["api/src/index.ts#L1"],
+    }],
+    gaps: [],
+  };
+  let tools;
+  let autoRetries = 0;
+  execution.onActivity = (_activity, metrics) => {
+    if (metrics?.autoRetries) autoRetries += metrics.autoRetries;
+  };
+  const session = fakeSession();
+  let listener;
+  session.subscribe = (fn) => {
+    listener = fn;
+    return () => {};
+  };
+  session.prompt = async () => {
+    listener?.({
+      type: "auto_retry_start",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 100,
+      errorMessage: "transient",
+    });
+    listener?.({ type: "auto_retry_end", success: true, attempt: 1 });
+    await writeAndSubmit(tools, "wiki_submit_research", artifact);
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    tools = options.customTools;
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+  const result = await executor.execute(execution);
+  assert.deepEqual(result.result, artifact);
+  assert.equal(autoRetries, 1, "layer-1 auto-retry must surface on metrics.autoRetries");
+  assert.equal(result.metrics?.salvageAttempts, 0);
+  assert.equal(result.metrics?.correctionAttempts, 0);
 });
 
 test("every execution creates and disposes a fresh child session", async (t) => {

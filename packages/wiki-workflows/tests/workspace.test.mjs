@@ -59,7 +59,7 @@ test("initializes a plain YAML workspace and persists its language", async () =>
   assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
 });
 
-test("rejects a research budget that cannot fit two dry coverage audits", async () => {
+test("rejects a research budget below the saturation minimum", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-workspace-quality-"));
   temporaryDirectories.push(root);
   await initializeWikiWorkspace({ cwd: root });
