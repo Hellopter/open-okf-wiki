@@ -27,7 +27,7 @@ export interface WikiExtensionOptions {
 }
 
 interface ParsedRunCommand {
-  action: "open" | "generate" | "refresh" | "status" | "history" | "pause" | "resume" | "cancel" | "help";
+  action: "open" | "generate" | "refresh" | "status" | "history" | "pause" | "resume" | "stop" | "cancel" | "help";
   focus?: string;
   language?: "zh" | "en";
   runId?: string;
@@ -312,7 +312,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
               active.pause();
               await persistNow();
               host?.refresh();
-              context.ui.notify("Wiki scheduling paused.", "info");
+              context.ui.notify("Wiki scheduling paused; active agents may finish.", "info");
             } catch (error) {
               context.ui.notify(errorMessage(error), "warning");
             }
@@ -330,6 +330,21 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
               context.ui.notify("Wiki scheduling resumed after Git re-inspection.", "info");
             } catch (error) {
               context.ui.notify(errorMessage(error), "error");
+            }
+            return;
+          case "stop":
+            try {
+              const active = currentEngine(context);
+              if (!active.getSnapshot()) {
+                const workspace = await workspaceService.load(context.cwd);
+                await bindLatestRecoverable(active, workspace.root);
+              }
+              await active.stop();
+              await persistNow();
+              host?.refresh();
+              context.ui.notify("Wiki agents aborted; run paused. Use /wiki resume to continue.", "info");
+            } catch (error) {
+              context.ui.notify(errorMessage(error), "warning");
             }
             return;
           case "cancel":
@@ -452,6 +467,13 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
             await bindLatestRecoverable(active, historyRoot);
           }
           await resumeRun(active, historyRoot, runId);
+          await persistNow();
+        },
+        stop: async () => {
+          if (!active.getSnapshot()) {
+            await bindLatestRecoverable(active, historyRoot);
+          }
+          await active.stop();
           await persistNow();
         },
         cancel: async () => {
@@ -688,7 +710,7 @@ function parseWikiCommand(raw: string): ParsedCommand {
     if (runId && !isSafeRunId(runId)) throw new Error("Invalid Wiki run history identifier");
     return { action, runId };
   }
-  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "cancel" || action === "help") {
+  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "stop" || action === "cancel" || action === "help") {
     if (values.length) throw new Error(`/wiki ${action} does not accept arguments`);
     return { action };
   }
@@ -712,7 +734,7 @@ function parseWikiCommand(raw: string): ParsedCommand {
 
 function isWikiAction(value: string): value is ParsedRunCommand["action"] {
   return value === "open" || value === "generate" || value === "refresh" || value === "status" || value === "history"
-    || value === "pause" || value === "resume" || value === "cancel" || value === "help";
+    || value === "pause" || value === "resume" || value === "stop" || value === "cancel" || value === "help";
 }
 
 function parseInitCommand(values: string[]): Extract<ParsedCommand, { action: "init" }> {
@@ -787,9 +809,10 @@ const WIKI_COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: "status", label: "status", description: "Show the current run without opening the Navigator" },
   { value: "history", label: "history", description: "Show project Wiki run history" },
   { value: "artifacts ", label: "artifacts", description: "List persisted handoffs for a run" },
-  { value: "pause", label: "pause", description: "Pause scheduling after active agents finish" },
+  { value: "pause", label: "pause", description: "Pause scheduling; active agents may finish" },
   { value: "resume ", label: "resume", description: "Resume the current, latest, or selected paused run" },
-  { value: "cancel", label: "cancel", description: "Cancel the active Wiki run" },
+  { value: "stop", label: "stop", description: "Abort agents and pause (resumable)" },
+  { value: "cancel", label: "cancel", description: "Cancel the active Wiki run (not resumable)" },
   { value: "help", label: "help", description: "Show all Wiki workspace commands" },
 ];
 
@@ -965,7 +988,7 @@ function helpText(): string {
     "  /wiki open",
     "  /wiki generate [lang=zh|en] [focus]",
     "  /wiki refresh [lang=zh|en] [focus]",
-    "  /wiki status | history | artifacts [runId] | pause | resume [runId] | cancel",
+    "  /wiki status | history | artifacts [runId] | pause | resume [runId] | stop | cancel",
     "  /wiki help",
     "  /wiki init [--workspace <directory>] [--lang zh|en]",
     "  /wiki source add link <local-repository> [--workspace <directory>]",

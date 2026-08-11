@@ -19,10 +19,14 @@ export interface WikiUiStrings {
   notStarted: string;
   helpTitle: string;
   statusLine: (status: string, running: number, failed: number) => string;
+  /** Soft-pause while agents are still finishing (no new scheduling). */
+  statusLinePausedDraining: (finishing: number, failed: number) => string;
   startedNotify: (mode: string) => string;
   openHint: string;
   cancelTitle: string;
   cancelMessage: string;
+  stopTitle: string;
+  stopMessage: string;
   deleteTitle: string;
   deleteMessage: string;
   retryAgentTitle: (label: string) => string;
@@ -41,6 +45,7 @@ export interface WikiUiStrings {
   anotherRunActive: string;
   onlyRunningPause: string;
   noActiveCancel: string;
+  noActiveStop: string;
   onlyCompletedDelete: string;
   currentRunCannotDelete: string;
   returnToRunsDelete: string;
@@ -104,10 +109,14 @@ const EN: WikiUiStrings = {
   helpTitle: "Wiki Run Controls",
   statusLine: (status, running, failed) =>
     `Wiki ${status} | ${running} running${failed ? ` | ${failed} failed` : ""}`,
+  statusLinePausedDraining: (finishing, failed) =>
+    `Wiki paused (draining) | ${finishing} finishing${failed ? ` | ${failed} failed` : ""}`,
   startedNotify: (mode) => `Started ${mode} Wiki run. Use /wiki open to watch progress.`,
   openHint: "/wiki open",
   cancelTitle: "Cancel Wiki Run?",
-  cancelMessage: "Running agents will be aborted; completed output remains readable.",
+  cancelMessage: "Running agents will be aborted; the run ends and cannot resume.",
+  stopTitle: "Stop Wiki Agents?",
+  stopMessage: "Running agents will be aborted and requeued. The run pauses and can resume.",
   deleteTitle: "Delete Wiki History?",
   deleteMessage: "The saved run record will be removed. Git files and generated Wiki pages are unchanged.",
   retryAgentTitle: (label) => `Retry ${label}?`,
@@ -126,6 +135,7 @@ const EN: WikiUiStrings = {
   anotherRunActive: "Another Wiki run is active; open it before using pause or resume",
   onlyRunningPause: "Only a running or paused run can be paused",
   noActiveCancel: "No active Wiki run to cancel",
+  noActiveStop: "No active Wiki run to stop",
   onlyCompletedDelete: "Only inactive completed history can be deleted",
   currentRunCannotDelete: "The current Wiki run remains in this session; start another run before deleting its history.",
   returnToRunsDelete: "Return to the Wiki run list to delete history",
@@ -163,7 +173,7 @@ const EN: WikiUiStrings = {
   helpRuns: "Runs: j/k select · Enter open dashboard · x delete completed history",
   helpDashboard: "Dashboard: left stages · right agents · Tab/h/l switch pane",
   helpAgent: "Agent: compact by default · Enter pager · f follow · [/] attempts",
-  helpGlobal: "Esc back · q close · p pause/resume · c cancel · r retry agent · R retry stage · ? help",
+  helpGlobal: "Esc back · q close · p pause/resume · s stop · c cancel · r retry agent · R retry stage · ? help",
 };
 
 const ZH: WikiUiStrings = {
@@ -186,10 +196,14 @@ const ZH: WikiUiStrings = {
   helpTitle: "Wiki 运行控制",
   statusLine: (status, running, failed) =>
     `Wiki ${status} | ${running} 运行中${failed ? ` | ${failed} 失败` : ""}`,
+  statusLinePausedDraining: (finishing, failed) =>
+    `Wiki 已暂停调度 · ${finishing} 个代理收尾中${failed ? ` | ${failed} 失败` : ""}`,
   startedNotify: (mode) => `已启动 ${mode} Wiki 运行。使用 /wiki open 查看进度。`,
   openHint: "/wiki open",
   cancelTitle: "取消 Wiki 运行？",
-  cancelMessage: "正在运行的代理将被中止；已完成输出仍可读。",
+  cancelMessage: "正在运行的代理将被中止；运行结束且不可恢复。",
+  stopTitle: "停止 Wiki 代理？",
+  stopMessage: "正在运行的代理将被中止并重新入队。运行暂停后可恢复。",
   deleteTitle: "删除 Wiki 历史？",
   deleteMessage: "将删除已保存的运行记录。Git 文件与生成的 Wiki 页面不受影响。",
   retryAgentTitle: (label) => `重试 ${label}？`,
@@ -208,6 +222,7 @@ const ZH: WikiUiStrings = {
   anotherRunActive: "另一个 Wiki 运行处于活动状态；请先打开该运行再暂停或恢复",
   onlyRunningPause: "仅运行中或已暂停的运行可暂停",
   noActiveCancel: "没有可取消的活动 Wiki 运行",
+  noActiveStop: "没有可停止的活动 Wiki 运行",
   onlyCompletedDelete: "仅可删除非活动的已完成历史",
   currentRunCannotDelete: "当前 Wiki 运行仍保留在此会话中；请先启动下一次运行再删除其历史。",
   returnToRunsDelete: "请返回运行列表删除历史",
@@ -245,7 +260,7 @@ const ZH: WikiUiStrings = {
   helpRuns: "运行列表：j/k 选择 · Enter 打开仪表盘 · x 删除已完成历史",
   helpDashboard: "仪表盘：左阶段 · 右代理 · Tab/h/l 切换面板",
   helpAgent: "代理：默认摘要 · Enter 分页 · f 跟随 · [/] 尝试",
-  helpGlobal: "Esc 返回 · q 关闭 · p 暂停/恢复 · c 取消 · r 重试代理 · R 重试阶段 · ? 帮助",
+  helpGlobal: "Esc 返回 · q 关闭 · p 暂停/恢复 · s 停止 · c 取消 · r 重试代理 · R 重试阶段 · ? 帮助",
 };
 
 export function uiStrings(language: WikiUiLanguage | undefined): WikiUiStrings {

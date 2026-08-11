@@ -8,9 +8,38 @@ and, when present, is a non-empty string array. Cite each load-bearing body
 claim with its OKF source ID as `[^source-id]`. Map the assigned page type
 exactly to frontmatter `type`: `Overview`, `Architecture`, `Module`, `Flow`, or
 `Concept`. Define every source footnote with a Markdown link to the exact
-matching `repo:` resource. Do not add
+matching `repo:` resource. Research evidence uses `project/path#Lx-Ly`;
+wiki citations use `repo:project/path#Lx-Ly`. Do not add
 `okf_version`, `generated`, `verified`, `human`, or `stale_after`; indexes and
 trust metadata are deterministic publisher output.
+
+### Source citation format (golden triple)
+
+Every load-bearing claim needs all three of: frontmatter `sources` entry,
+in-body `[^id]` reference, and a matching footnote definition.
+
+```markdown
+---
+type: Module
+title: Example module
+description: Short description of the page.
+sources:
+  - id: api-index
+    resource: repo:api/src/index.ts#L1-L2
+---
+
+The module exports the answer.[^api-index]
+
+[^api-index]: [Source](repo:api/src/index.ts#L1-L2)
+```
+
+Anti-patterns (will fail validation):
+
+- **No definition** — body has `[^api-index]` but no `[^api-index]: ...` footnote.
+- **Frontmatter not cited** — `sources` lists `api-index` but the body never uses `[^api-index]`.
+- **Direct repo in body** — prose links `[file](repo:api/src/index.ts#L1-L2)` instead of a source footnote.
+- **Resource mismatch** — footnote `repo:` path/range differs from the frontmatter `resource` for that `id`.
+- **Orphan / undeclared id** — footnote or `[^id]` uses an id missing from frontmatter `sources`.
 
 Use the page contract, selected research artifacts, shared terms, relevant
 cross-link contracts, authorized source roots, and exact Wiki read paths as the

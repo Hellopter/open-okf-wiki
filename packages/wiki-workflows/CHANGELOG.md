@@ -4,6 +4,12 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented in this file.
 
 ## [Unreleased]
 
+### Behavior
+
+- **Source citation guidance + fix hints.** Writer prompts include a full frontmatter/`[^id]`/footnote golden example and anti-patterns. High-frequency `source-reference` validation messages append short remediation after ` — ` so submit/repair feedback tells agents how to fix pairing errors.
+- **Run control triad: pause / stop / cancel.** Soft `pause` still only stops scheduling (active agents may finish; status shows draining). New hard-stop-resume via `engine.stop()`, `/wiki stop`, and navigator `s` (confirm): abort live agents, requeue them, leave the run `paused` and resumable. `cancel` remains terminal. Session `interrupt` shares the same hard-stop-resume helper.
+- **Richer research/planning prompts (no new pipeline stage).** Survey tasks and research guidance use survey-then-deepen with finer findings; synthesis prefers entity-cluster multi-page Spec paths (`modules/` / `flows/` / `concepts/`); templates and review notes push depth and topology without enrich rounds or nested subagents.
+
 ### Architecture
 
 - **Session pointer-only.** Pi custom entries (`WikiRunSession`) are pointer-only (`pointerVersion: 1`, `runId`, `revision`, `status`, `updatedAt`, `workspace`). Full `WikiRunSnapshot` bodies live in the project history store. Legacy full-snapshot session entries are rejected fail-closed (no dual-read). Restore path: parse pointer → `historyStore.load(runId)` → `engine.restore(snapshot)`. Host session appends only on critical events (not `node_activity` / `node_started`).

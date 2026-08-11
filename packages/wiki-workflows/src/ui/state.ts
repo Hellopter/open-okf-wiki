@@ -3,7 +3,7 @@ import { phaseRows } from "./stages.js";
 
 export type NavigatorView = "runs" | "dashboard" | "agent";
 export type DashboardPane = "stages" | "agents";
-export type NavigatorConfirmationKind = "cancel" | "delete" | "retry" | "retryPhase";
+export type NavigatorConfirmationKind = "cancel" | "stop" | "delete" | "retry" | "retryPhase";
 
 export interface NavigatorConfirmation {
   kind: NavigatorConfirmationKind;
@@ -437,6 +437,7 @@ export type WikiNavigatorAction =
   | { type: "close" }
   | { type: "pause" }
   | { type: "resume"; runId?: string }
+  | { type: "stop" }
   | { type: "cancel" }
   | { type: "loadRun"; runId: string }
   | { type: "retry"; runId: string; nodeId: string }
@@ -449,7 +450,7 @@ export function keyToNavigatorIntent(
   key: string | undefined,
   state: NavigatorState,
 ): "moveUp" | "moveDown" | "pageUp" | "pageDown" | "jumpStart" | "jumpEnd"
-  | "drill" | "back" | "close" | "help" | "pause" | "cancel" | "retry" | "retryPhase"
+  | "drill" | "back" | "close" | "help" | "pause" | "stop" | "cancel" | "retry" | "retryPhase"
   | "delete" | "follow" | "attemptPrev" | "attemptNext" | "paneLeft" | "paneRight" | "paneToggle" | "confirm"
   | "none" {
   if (!key) return "none";
@@ -482,6 +483,7 @@ export function keyToNavigatorIntent(
     return "drill";
   }
   if (key === "p") return "pause";
+  if (key === "s") return "stop";
   if (key === "c") return "cancel";
   if (key === "r") return "retry";
   if (key === "R" || key === "shift+r") return "retryPhase";

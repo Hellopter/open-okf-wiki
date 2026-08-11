@@ -1,15 +1,19 @@
 # Structured Research
 
 Read only the `sourcePaths` in the assigned scope. A scope may span multiple
-declared source roots. Perform a **bounded survey**: inventory entry points,
-main modules and interfaces, primary end-to-end flows, cross-repository
-boundaries, and state or persistence relevant to the assigned reader question.
-Do not aim for an exhaustive encyclopedia of every file or symbol.
+declared source roots. Perform a **bounded survey, then deepen**: first inventory
+entry points, main modules and interfaces, primary end-to-end flows,
+cross-repository boundaries, and state or persistence relevant to the assigned
+reader question; then deepen with targeted reads and greps on the important
+surfaces you found. Multi-step tool exploration within the assignment is
+expected. Do not aim for an exhaustive encyclopedia of every file or symbol.
 
 Write one JSON research artifact to the exact handoff path and call
-`wiki_submit_research` with that path. Submit a **complete handoff in one pass**
-even when no finding is established. Do not plan multi-turn exploration across
-submissions for the same assignment. Use exactly this shape:
+`wiki_submit_research` with that path **once**. You may survey and deepen across
+many tool calls before that single submission. Do not call
+`wiki_submit_research` more than once for the same assignment, and do not plan
+multi-submission exploration. Submit a complete handoff even when no finding is
+established. Use exactly this shape:
 
 ```json
 {
@@ -39,6 +43,12 @@ findings for public boundaries, defining concepts, important state invariants,
 and end-to-end behavior that a reader must understand; use `normal` for useful
 but secondary detail. The engine derives a stable `findingId` from `scopeId`,
 `kind`, and sorted evidence; never add an ID yourself.
+
+**Finding granularity:** aim for one public interface, module, end-to-end flow,
+or cross-boundary ≈ one finding. Do not collapse an entire package, package
+tree, or multi-module subsystem into a single finding when distinct reader
+questions exist. Split when the evidence supports independent public surfaces;
+merge only when the same reader question, boundary, and evidence truly align.
 
 Record every unresolved claim in `gaps`; use `[]` only after actively checking
 the assigned question. Gap `sourcePaths` are investigation suggestions and

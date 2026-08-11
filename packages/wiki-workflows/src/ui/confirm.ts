@@ -13,6 +13,11 @@ export function cancelConfirm(language?: WikiUiLanguage): ConfirmPrompt {
   return { title: s.cancelTitle, message: s.cancelMessage };
 }
 
+export function stopConfirm(language?: WikiUiLanguage): ConfirmPrompt {
+  const s = uiStrings(language);
+  return { title: s.stopTitle, message: s.stopMessage };
+}
+
 export function deleteConfirm(language?: WikiUiLanguage): ConfirmPrompt {
   const s = uiStrings(language);
   return { title: s.deleteTitle, message: s.deleteMessage };

@@ -178,6 +178,7 @@ export {
 } from "./ui/strings.js";
 export {
   cancelConfirm,
+  stopConfirm,
   deleteConfirm,
   retryAgentConfirm,
   retryPhaseConfirm,

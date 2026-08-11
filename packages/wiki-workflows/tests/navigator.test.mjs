@@ -18,6 +18,8 @@ import {
   renderWikiRunHistoryText,
   renderWikiRunText,
   retryImpact,
+  statusLine,
+  stopConfirm,
   WikiUiHost,
   WikiUiModel,
 } from "../dist/index.js";
@@ -109,6 +111,7 @@ function controllerFor(value = run, runs = [summary(value)]) {
     deleteRun: async () => {},
     pause: () => {},
     resume: async () => {},
+    stop: async () => {},
     cancel: async () => {},
   };
 }
@@ -265,6 +268,7 @@ test("key map covers dual-track navigator intents", () => {
   assert.equal(keyToNavigatorIntent("h", state), "paneLeft");
   assert.equal(keyToNavigatorIntent("R", state), "retryPhase");
   assert.equal(keyToNavigatorIntent("r", state), "retry");
+  assert.equal(keyToNavigatorIntent("s", state), "stop");
   assert.equal(keyToNavigatorIntent("c", state), "cancel");
   assert.equal(keyToNavigatorIntent("x", state), "delete");
   state.openConfirmation({ kind: "cancel", runId: "run-1", title: "Cancel?", message: "Keep output" });
@@ -352,6 +356,7 @@ test("runs list frame and empty state", () => {
     deleteRun: async () => {},
     pause: () => {},
     resume: async () => {},
+    stop: async () => {},
     cancel: async () => {},
   });
   const state = new NavigatorState();
@@ -460,6 +465,7 @@ test("navigator confirmation stays inside the overlay and keeps its keyboard own
   const controller = {
     ...controllerFor(run),
     cancel: async () => { calls.push("cancel"); },
+    stop: async () => { calls.push("stop"); },
   };
   const tui = { terminal: { rows: 24 }, requestRender() {} };
   let component;
@@ -491,6 +497,13 @@ test("navigator confirmation stays inside the overlay and keeps its keyboard own
   await Promise.resolve();
   assert.deepEqual(calls, ["cancel"]);
   assert.equal(doneCalls, 0);
+
+  component.handleInput("s");
+  assert.match(component.render(80).map(plain).join("\n"), /Stop Wiki Agents\?/);
+  component.handleInput("\r");
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["cancel", "stop"]);
 
   component.handleInput("q");
   await pending;
@@ -629,10 +642,29 @@ test("open landing uses dashboard only for an active run id", () => {
   assert.equal(idleState.view, "runs");
 });
 
-test("confirm prompts localize cancel/delete titles", () => {
+test("confirm prompts localize cancel/stop/delete titles", () => {
   assert.match(cancelConfirm("en").title, /Cancel/);
   assert.match(cancelConfirm("zh").title, /取消/);
+  assert.match(cancelConfirm("en").message, /cannot resume/i);
+  assert.match(stopConfirm("en").title, /Stop/);
+  assert.match(stopConfirm("zh").title, /停止/);
+  assert.match(stopConfirm("en").message, /can resume/i);
   assert.match(deleteConfirm("en").message, /saved run record/i);
+});
+
+test("statusLine shows draining while soft-paused with finishing agents", () => {
+  const pausedDraining = structuredClone(run);
+  pausedDraining.status = "paused";
+  assert.match(statusLine(pausedDraining, "en"), /paused \(draining\) \| 1 finishing/);
+  assert.match(statusLine(pausedDraining, "zh"), /已暂停调度 · 1 个代理收尾中/);
+
+  const pausedIdle = structuredClone(run);
+  pausedIdle.status = "paused";
+  for (const node of pausedIdle.nodes) {
+    if (node.status === "running") node.status = "queued";
+  }
+  assert.match(statusLine(pausedIdle, "en"), /Wiki paused \| 0 running/);
+  assert.doesNotMatch(statusLine(pausedIdle, "en"), /draining/);
 });
 
 test("host retains terminal panel content across rebind", () => {

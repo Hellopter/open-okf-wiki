@@ -408,7 +408,12 @@ async function validateBody(
   for (const target of markdownTargets(footnotes.bodyWithoutDefinitions)) {
     if (target.startsWith("repo:")) {
       await validateSourceReference(page, target, roots, "repo citation", issues);
-      issue(issues, "source-reference", `Direct repo citation must use a declared source footnote: ${target}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Direct repo citation must use a declared source footnote: ${target} — cite with [^id] in body and define [^id]: [Source](repo:...) instead of linking repo: in prose`,
+        page,
+      );
       continue;
     }
     validateInternalMarkdownLink(page, target, plannedTargets, issues);
@@ -428,39 +433,74 @@ async function validateSourceFootnotes(
   const definitions = new Map<string, SourceFootnoteDefinition>();
   for (const definition of scan.definitions) {
     if (definitions.has(definition.id)) {
-      issue(issues, "source-reference", `Source footnote is defined more than once: ${definition.id}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Source footnote is defined more than once: ${definition.id} — keep a single [^${definition.id}]: definition`,
+        page,
+      );
     } else {
       definitions.set(definition.id, definition);
     }
     if (!declarations.sources.has(definition.id) && !referenced.has(definition.id)) {
-      issue(issues, "source-reference", `Source footnote definition is not declared in frontmatter sources: ${definition.id}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Source footnote definition is not declared in frontmatter sources: ${definition.id} — add { id: "${definition.id}", resource: "repo:..." } to frontmatter sources or remove the orphan definition`,
+        page,
+      );
     }
   }
 
   for (const id of referenced) {
     if (!declarations.sources.has(id)) {
-      issue(issues, "source-reference", `Source footnote reference is not declared in frontmatter sources: ${id}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Source footnote reference is not declared in frontmatter sources: ${id} — add { id: "${id}", resource: "repo:..." } to frontmatter sources`,
+        page,
+      );
     }
     if (!definitions.has(id)) {
-      issue(issues, "source-reference", `Source footnote reference has no definition: ${id}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Source footnote reference has no definition: ${id} — add [^${id}]: [Source](repo:...) matching the frontmatter resource`,
+        page,
+      );
     }
   }
 
   for (const [id, resource] of declarations.sources) {
     if (!referenced.has(id)) {
-      issue(issues, "source-reference", `Frontmatter source is not cited by a footnote: ${id}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Frontmatter source is not cited by a footnote: ${id} — cite the claim with [^${id}] in the body`,
+        page,
+      );
       continue;
     }
     const definition = definitions.get(id);
     if (!definition) continue;
     const resources = markdownTargetOccurrences(definition.content).filter((target) => target.startsWith("repo:"));
     if (resources.length !== 1) {
-      issue(issues, "source-reference", `Source footnote definition must contain exactly one repo resource: ${id}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Source footnote definition must contain exactly one repo resource: ${id} — use exactly one [Source](repo:...) link in [^${id}]`,
+        page,
+      );
       continue;
     }
     if (resources[0] !== resource) {
       await validateSourceReference(page, resources[0], roots, `source footnote ${id}`, issues);
-      issue(issues, "source-reference", `Source footnote resource does not match frontmatter source ${id}: ${resources[0]}`, page);
+      issue(
+        issues,
+        "source-reference",
+        `Source footnote resource does not match frontmatter source ${id}: ${resources[0]} — set the footnote link equal to frontmatter resource ${resource}`,
+        page,
+      );
     }
   }
 }

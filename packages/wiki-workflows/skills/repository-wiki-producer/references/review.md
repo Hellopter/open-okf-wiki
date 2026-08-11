@@ -7,6 +7,9 @@ obsolete pages, and source independently. Do not read writer or review history.
 Check evidence, links, topology, planned coverage, cross-page navigation,
 terminology, depth, and end-to-end explanations. Review Mermaid semantically:
 every element must agree with cited source and add useful information.
+When one page tries to answer multiple independent reader questions, prefer
+`coverage` or `topology` (split or replan). When a page is thin for a single
+question that the Spec already isolates, prefer `depth`.
 
 For Chinese output, verify that domain and concept names use corresponding
 source-authored Chinese names from code or comments when available. Treat an

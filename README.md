@@ -91,12 +91,20 @@ keep research, planning, page writing, and review prompts separate.
 /wiki status
 /wiki history
 /wiki pause
+/wiki stop
 /wiki resume [runId]
 /wiki cancel
 /wiki init [--workspace <directory>] [--lang zh|en]
 /wiki source add link <local-repository> [--workspace <directory>]
 /wiki source add clone <git-url> [--ref <branch>] [--workspace <directory>]
 ```
+
+| Action | Behavior |
+|--------|----------|
+| `pause` | Soft: no new scheduling; active agents may finish |
+| `stop` | Hard: abort agents, requeue, pause (resumable) |
+| `resume` | Continue a paused run after Git re-inspection |
+| `cancel` | Abort; terminal cancelled (not resumable) |
 
 `generate` rebuilds the managed Wiki in the language saved by `/wiki init`.
 `lang=zh|en` remains an explicit one-run override. `refresh` uses current

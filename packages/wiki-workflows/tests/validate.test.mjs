@@ -273,7 +273,7 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
   assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Frontmatter source is not cited by a footnote: api-index",
+    message: "Frontmatter source is not cited by a footnote: api-index — cite the claim with [^api-index] in the body",
   }]);
 
   const duplicateLink = page().replace(
@@ -284,18 +284,18 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
   assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Source footnote definition must contain exactly one repo resource: api-index",
+    message: "Source footnote definition must contain exactly one repo resource: api-index — use exactly one [Source](repo:...) link in [^api-index]",
   }]);
 
   await writePage(root, "architecture/design.md", page({ body: "Unknown source.[^unknown]\n" }));
   assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Source footnote reference is not declared in frontmatter sources: unknown",
+    message: "Source footnote reference is not declared in frontmatter sources: unknown — add { id: \"unknown\", resource: \"repo:...\" } to frontmatter sources",
   }, {
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Source footnote reference has no definition: unknown",
+    message: "Source footnote reference has no definition: unknown — add [^unknown]: [Source](repo:...) matching the frontmatter resource",
   }]);
 
   const mismatch = page().replace(
@@ -306,7 +306,7 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
   assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Source footnote resource does not match frontmatter source api-index: repo:api/src/index.ts#L1-L1",
+    message: "Source footnote resource does not match frontmatter source api-index: repo:api/src/index.ts#L1-L1 — set the footnote link equal to frontmatter resource repo:api/src/index.ts#L1-L2",
   }]);
 
   const unused = page().replace("Evidence.[^api-index]\n\n", "");
@@ -314,14 +314,14 @@ test("requires OKF source objects and complete source-id footnotes", async () =>
   assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Frontmatter source is not cited by a footnote: api-index",
+    message: "Frontmatter source is not cited by a footnote: api-index — cite the claim with [^api-index] in the body",
   }]);
 
   await writePage(root, "architecture/design.md", page({ body: "[Direct](repo:api/src/index.ts#L1-L2)\n" }));
   assert.deepEqual(await validateWikiPage(root, target, "architecture/design.md"), [{
     code: "source-reference",
     page: "architecture/design.md",
-    message: "Direct repo citation must use a declared source footnote: repo:api/src/index.ts#L1-L2",
+    message: "Direct repo citation must use a declared source footnote: repo:api/src/index.ts#L1-L2 — cite with [^id] in body and define [^id]: [Source](repo:...) instead of linking repo: in prose",
   }]);
 
   const legacy = page().replace(

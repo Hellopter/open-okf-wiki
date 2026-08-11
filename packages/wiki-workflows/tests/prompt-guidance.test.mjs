@@ -29,8 +29,13 @@ test("research guidance requires structured findings and explicit gaps", async (
   assert.match(research, /"summary": "Concise account/);
   assert.match(research, /engine derives a stable `findingId`/);
   assert.match(research, /wiki_submit_research/);
-  assert.match(research, /bounded survey/i);
-  assert.match(research, /complete handoff in one pass/i);
+  assert.match(research, /bounded survey, then deepen/i);
+  assert.match(research, /deepen before submit|deepen with targeted|survey and deepen/i);
+  assert.match(research, /submit a complete handoff|call `wiki_submit_research` with that path \*\*once\*\*/i);
+  assert.match(research, /Do not call `wiki_submit_research` more than once/i);
+  assert.match(research, /Finding granularity/i);
+  assert.match(research, /one public interface, module, end-to-end flow/i);
+  assert.match(research, /Do not collapse an entire package/i);
   assert.match(research, /stop exploring/i);
   assert.match(research, /entry points/);
 });
@@ -45,6 +50,11 @@ test("synthesis guidance plans complete evidence-saturated coverage without page
   assert.match(synthesis, /There is no per-repository page limit/);
   assert.match(synthesis, /concurrency is scheduling only/);
   assert.match(synthesis, /scheduling limit must never reduce the number of scopes/);
+  assert.match(synthesis, /Entity cluster heuristic/i);
+  assert.match(synthesis, /modules\/|`modules\//);
+  assert.match(synthesis, /flows\/|concepts\//);
+  assert.match(synthesis, /flows\/auth\/login-handoff\.md/);
+  assert.match(synthesis, /"crossLinks"/);
 });
 
 test("common guidance reserves indexes and trust metadata for finalization", async () => {
@@ -77,6 +87,14 @@ test("writer guidance enforces OKF v0.2 citations and same-session submission", 
   assert.match(write, /Fix the complete result in the same writer session/);
   assert.match(write, /`flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, or `erDiagram`/);
   assert.match(write, /validator-infrastructure/);
+  // Golden citation triple + anti-pattern anchors for writer remediation
+  assert.match(write, /resource: repo:api\/src\/index\.ts#L1-L2/);
+  assert.match(write, /\[\^api-index\]: \[Source\]\(repo:api\/src\/index\.ts#L1-L2\)/);
+  assert.match(write, /Research evidence uses `project\/path#Lx-Ly`/);
+  assert.match(write, /wiki citations use `repo:project\/path#Lx-Ly`/);
+  assert.match(write, /Anti-patterns/);
+  assert.match(write, /Direct repo in body/);
+  assert.match(write, /Resource mismatch/);
 });
 
 test("review guidance emits one complete defect set for a repair wave", async () => {
@@ -85,6 +103,9 @@ test("review guidance emits one complete defect set for a repair wave", async ()
   assert.match(review, /repairs affected pages together in one wave/);
   assert.match(review, /rerunning the complete Verify stage/);
   assert.match(review, /Do not report syntax or validator infrastructure failures as semantic defects/);
+  assert.match(review, /multiple independent reader questions/i);
+  assert.match(review, /prefer `coverage` or `topology`/i);
+  assert.match(review, /prefer `depth`/i);
 });
 
 test("skill stays a concise workflow router to role references", async () => {

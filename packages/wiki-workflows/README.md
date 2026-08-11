@@ -18,10 +18,17 @@ from a parent directory. The project directory name is the source identity,
 with no `id` alias. `/wiki generate` uses the saved language; `lang=zh|en` is
 only a one-run override. `/wiki` shows command help without blocking. Use
 `/wiki open` to explicitly open the dedicated run console; `/wiki status`
-prints the current run, `/wiki history` prints a concise project history,
-`/wiki pause` and `/wiki resume [runId]` control scheduling, and `/wiki cancel`
-stops it. Run Pi from the workspace directory when starting or recovering a
-Wiki run.
+prints the current run, `/wiki history` prints a concise project history.
+Scheduling controls:
+
+| Action | Behavior |
+|--------|----------|
+| `/wiki pause` | Soft pause: no new scheduling; active agents may finish |
+| `/wiki stop` | Hard stop: abort agents, requeue them, pause (resumable) |
+| `/wiki resume [runId]` | Resume a paused run after Git re-inspection |
+| `/wiki cancel` | Abort agents; terminal cancelled (not resumable) |
+
+Run Pi from the workspace directory when starting or recovering a Wiki run.
 
 On Pi session shutdown, active Agents are interrupted back to queued state and
 the run is persisted as paused to both the current Pi session branch and the

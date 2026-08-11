@@ -484,13 +484,14 @@ test("queueResearch assigns the same deterministic researchGroupId to all scopes
   assert.doesNotMatch(nodes[0].input.researchGroupId, /rand-/);
 });
 
-test("queueInitialSourceSurveys uses a bounded one-pass survey task", () => {
+test("queueInitialSourceSurveys uses a bounded survey-then-deepen task", () => {
   const host = hostWithNodes([]);
   const nodes = queueInitialSourceSurveys(host, "inspect-1", host.run.inspection);
   assert.equal(nodes.length, 2);
   for (const node of nodes) {
-    assert.match(node.input.scope.task, /Bounded survey/i);
-    assert.match(node.input.scope.task, /one complete research handoff|single pass/i);
+    assert.match(node.input.scope.task, /Bounded survey-then-deepen/i);
+    assert.match(node.input.scope.task, /submit one complete research handoff once/i);
+    assert.match(node.input.scope.task, /multiple tool calls/i);
     assert.match(node.input.scope.task, /exhaustive encyclopedia/i);
   }
 });

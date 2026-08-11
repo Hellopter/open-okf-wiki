@@ -254,8 +254,9 @@ export function queueInitialSourceSurveys(host: TransitionHost, inspectNodeId: s
     id: `source-survey:${sourcePath}`,
     sourcePaths: [sourcePath],
     task: [
-      `Bounded survey of ${sourcePath}: cover entry points, main flows, boundaries, and state/data within this source only.`,
-      "Submit one complete research handoff in a single pass; do not aim for an exhaustive encyclopedia.",
+      `Bounded survey-then-deepen of ${sourcePath}: inventory entry points, main flows, boundaries, and state/data, then deepen on important surfaces within this source only.`,
+      "You may use multiple tool calls to survey and deepen; submit one complete research handoff once (not multiple wiki_submit_research calls).",
+      "Do not aim for an exhaustive encyclopedia.",
     ].join(" "),
   }));
   return queueResearch(host, inspectNodeId, scopes, 0, "research", "Research");

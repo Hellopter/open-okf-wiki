@@ -405,8 +405,33 @@ export class WikiWorkflowEngine {
     return this.getSnapshot();
   }
 
-  /** Called during extension shutdown: preserve the next attempt as queued. */
+  /**
+   * Hard-stop-resume: abort live agents, requeue running nodes, pause the run.
+   * Unlike pause (soft: agents may finish), stop aborts immediately but remains resumable.
+   * Unlike cancel, nodes return to queued rather than cancelled, and the run is not terminal.
+   */
+  async stop(): Promise<WikiRunSnapshot | undefined> {
+    return this.hardStopResume({
+      nodeActivity: "Stopped; will resume after Git re-inspection",
+      nodeEvent: "Agent stopped",
+      runMessage: "Agents stopped; run paused and can resume",
+    });
+  }
+
+  /** Called during extension shutdown: same hard-stop-resume path as stop(). */
   async interrupt(): Promise<WikiRunSnapshot | undefined> {
+    return this.hardStopResume({
+      nodeActivity: "Interrupted; will resume after Git re-inspection",
+      nodeEvent: "Interrupted for session shutdown",
+      runMessage: "Run interrupted for session shutdown",
+    });
+  }
+
+  private async hardStopResume(messages: {
+    nodeActivity: string;
+    nodeEvent: string;
+    runMessage: string;
+  }): Promise<WikiRunSnapshot | undefined> {
     const run = this.current;
     if (!run) return undefined;
     if (run.status !== "running" && run.status !== "paused") {
@@ -416,12 +441,12 @@ export class WikiWorkflowEngine {
     for (const node of run.nodes) {
       if (node.status !== "running") continue;
       node.status = "queued";
-      node.activity = { state: "waiting", message: "Interrupted; will resume after Git re-inspection", updatedAt: this.now() };
-      this.emit("node_cancelled", node.id, "Interrupted for session shutdown");
+      node.activity = { state: "waiting", message: messages.nodeActivity, updatedAt: this.now() };
+      this.emit("node_cancelled", node.id, messages.nodeEvent);
     }
     this.abortControllers();
     run.status = "paused";
-    this.emit("run_paused", undefined, "Run interrupted for session shutdown");
+    this.emit("run_paused", undefined, messages.runMessage);
     return this.getSnapshot();
   }
 

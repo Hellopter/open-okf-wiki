@@ -16,6 +16,8 @@ export interface WikiNavigatorController {
   deleteRun(runId: string): Promise<void> | void;
   pause(): Promise<void> | void;
   resume(runId?: string): Promise<void> | void;
+  /** Hard-stop-resume: abort agents and requeue; run stays paused/resumable. */
+  stop(): Promise<void> | void;
   cancel(): Promise<void> | void;
 }
 

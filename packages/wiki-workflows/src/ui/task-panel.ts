@@ -96,6 +96,10 @@ export function statusLine(run: WikiRunSnapshot | undefined, language?: WikiUiLa
   if (!run) return s.noRun;
   const active = run.nodes.filter((node) => node.status === "running").length;
   const failed = run.nodes.filter((node) => node.status === "failed" || node.status === "blocked").length;
+  // Soft-pause keeps agents alive; surface draining until they finish.
+  if (run.status === "paused" && active > 0) {
+    return s.statusLinePausedDraining(active, failed);
+  }
   return s.statusLine(run.status, active, failed);
 }
 

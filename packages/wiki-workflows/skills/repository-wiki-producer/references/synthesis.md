@@ -36,6 +36,14 @@ independent question. A repository is not automatically a domain. There is no
 per-repository page limit: never compress coverage to fit writer concurrency or
 a target page count; concurrency is scheduling only.
 
+**Entity cluster heuristic:** for an important module or subsystem with enough
+evidence, prefer at least two pages when the evidence supports it—typically a
+`module` page under `modules/<name>` plus a related `flow` or `concept` page
+under `flows/<name>` or `concepts/<name>` (or domain-local subdirectories). One
+page is acceptable when a single reader question truly covers the entity; state
+that rationale briefly in the Spec `rationale` or the page `purpose`. Do not
+force a second page without supporting findings.
+
 **Prefer finalize when research receipts report no unresolved critical gaps.**
 Expand only to close critical gaps that still lack evidence. The engine hard-
 rejects expand when every prior research receipt has empty critical gap
@@ -83,24 +91,65 @@ synthesis submission tool with that path. Use one branch only: `expand` has
   "spec": {
     "domains": [
       {
-        "id": "lowercase-domain-id",
-        "title": "...",
-        "purpose": "...",
+        "id": "overview",
+        "title": "Overview",
+        "purpose": "Orient readers to the verified system map.",
         "pages": [
-          { "pageType": "overview|architecture|module|flow|concept",
-            "path": "domain-id/page.md", "title": "...", "purpose": "...",
-            "findingIds": ["finding-id"] }
+          { "pageType": "overview", "path": "overview/overview.md",
+            "title": "Overview", "purpose": "System orientation",
+            "findingIds": [] }
+        ]
+      },
+      {
+        "id": "modules",
+        "title": "Modules",
+        "purpose": "Public module boundaries and ownership.",
+        "pages": [
+          { "pageType": "module", "path": "modules/auth-gateway.md",
+            "title": "Auth gateway", "purpose": "Public auth boundary",
+            "findingIds": ["finding-auth-module"] },
+          { "pageType": "architecture", "path": "modules/worker-pipeline.md",
+            "title": "Worker pipeline", "purpose": "Job ownership boundaries",
+            "findingIds": ["finding-worker-boundary"] }
+        ]
+      },
+      {
+        "id": "flows",
+        "title": "Flows",
+        "purpose": "End-to-end verified journeys.",
+        "pages": [
+          { "pageType": "flow", "path": "flows/auth/login-handoff.md",
+            "title": "Login handoff", "purpose": "Auth request to session",
+            "findingIds": ["finding-login-flow"] }
+        ]
+      },
+      {
+        "id": "concepts",
+        "title": "Concepts",
+        "purpose": "Defining domain concepts.",
+        "pages": [
+          { "pageType": "concept", "path": "concepts/session-token.md",
+            "title": "Session token", "purpose": "Token lifecycle rules",
+            "findingIds": ["finding-session-concept"] }
         ]
       }
     ],
     "crossLinks": [
-      { "fromPath": "domain-id/page.md", "toPath": "other/page.md", "purpose": "..." }
+      { "fromPath": "modules/auth-gateway.md",
+        "toPath": "flows/auth/login-handoff.md",
+        "purpose": "Module implements this handoff flow" },
+      { "fromPath": "flows/auth/login-handoff.md",
+        "toPath": "concepts/session-token.md",
+        "purpose": "Flow produces the session token concept" },
+      { "fromPath": "concepts/session-token.md",
+        "toPath": "modules/auth-gateway.md",
+        "purpose": "Concept enforced at the auth boundary" }
     ],
-    "sharedTerms": [{ "term": "...", "definition": "..." }],
+    "sharedTerms": [{ "term": "session token", "definition": "..." }],
     "omissions": [{ "findingId": "normal-finding-id",
       "rationale": "Why omission preserves reader coverage" }]
   },
-  "rationale": "..."
+  "rationale": "Entity cluster for auth: module + flow + concept with crossLinks."
 }
 ```
 

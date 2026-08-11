@@ -407,6 +407,79 @@ test("an active agent failure while scheduling is paused makes the run failed", 
   assert.equal(eventKinds.at(-1), "run_failed");
 });
 
+test("pause leaves running agents; stop aborts and requeues; cancel is terminal", async (t) => {
+  let researchStarted;
+  const started = new Promise((resolve) => { researchStarted = resolve; });
+  let aborted = false;
+  const f = await fixture(t, {
+    inspection: { sourcePaths: ["src-core"] },
+    onResearch: async (request) => await new Promise((resolve, reject) => {
+      researchStarted();
+      const onAbort = () => {
+        aborted = true;
+        reject(new Error("research aborted"));
+      };
+      if (request.signal.aborted) onAbort();
+      else request.signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  });
+  const events = [];
+  f.engine.subscribe((_value, event) => events.push(event));
+
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  await started;
+
+  // Soft pause: status paused, running node stays running, no abort.
+  const paused = f.engine.pause();
+  assert.equal(paused.status, "paused");
+  const researchWhilePaused = paused.nodes.find((node) => node.kind === "research");
+  assert.equal(researchWhilePaused.status, "running");
+  assert.equal(aborted, false);
+  assert.ok(events.some((event) => event.kind === "run_paused" && /active agents may finish/i.test(event.message ?? "")));
+
+  // Hard stop: abort + requeue running as queued; still paused/resumable.
+  const stopped = await f.engine.stop();
+  assert.equal(stopped.status, "paused");
+  const researchAfterStop = stopped.nodes.find((node) => node.kind === "research");
+  assert.equal(researchAfterStop.status, "queued");
+  assert.match(researchAfterStop.activity.message, /Stopped|resume/i);
+  assert.equal(aborted, true);
+  assert.ok(events.some((event) => event.kind === "run_paused" && /stopped.*resume/i.test(event.message ?? "")));
+  assert.equal(stopped.completedAt, undefined);
+  assert.equal(f.engine.isNodeLive(researchAfterStop.id), false);
+
+  // Cancel from paused is terminal and not resumable.
+  const cancelled = await f.engine.cancel();
+  assert.equal(cancelled.status, "cancelled");
+  assert.ok(cancelled.completedAt);
+  assert.ok(cancelled.nodes.every((node) => node.status !== "running" && node.status !== "queued"));
+  assert.ok(events.some((event) => event.kind === "run_cancelled"));
+});
+
+test("interrupt reuses hard-stop-resume semantics", async (t) => {
+  let researchStarted;
+  const started = new Promise((resolve) => { researchStarted = resolve; });
+  const f = await fixture(t, {
+    inspection: { sourcePaths: ["src-core"] },
+    onResearch: async (request) => await new Promise((resolve, reject) => {
+      researchStarted();
+      const onAbort = () => reject(new Error("aborted"));
+      if (request.signal.aborted) onAbort();
+      else request.signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  });
+  const events = [];
+  f.engine.subscribe((_value, event) => events.push(event));
+
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  await started;
+  const interrupted = await f.engine.interrupt();
+
+  assert.equal(interrupted.status, "paused");
+  assert.equal(interrupted.nodes.find((node) => node.kind === "research").status, "queued");
+  assert.ok(events.some((event) => event.kind === "run_paused" && /session shutdown/i.test(event.message ?? "")));
+});
+
 test("generate fans out fresh page writers four at a time and gates Overview", async (t) => {
   const pages = Array.from({ length: 6 }, (_, index) => page(`d${index}`, "page", index % 2 ? "source-survey:src-api" : "source-survey:src-core"));
   const f = await fixture(t, { spec: spec(pages), writeDelay: 8 });
@@ -870,7 +943,7 @@ test("Plan receipt manifest exposes the exact scope allowlist enforced at submis
       }));
       assert.match(request.prompt, /"scopeId": "source-survey:src-core"/);
       assert.match(request.prompt, /"sourcePaths": \[\s*"src-core"/);
-      assert.match(request.prompt, /"task": "Bounded survey of src-core:/);
+      assert.match(request.prompt, /"task": "Bounded survey-then-deepen of src-core:/);
       return { decision: "finalize", spec: target, rationale: "Selected exact manifest IDs." };
     },
   });

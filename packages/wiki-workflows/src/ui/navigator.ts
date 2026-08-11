@@ -18,6 +18,7 @@ import {
   deleteConfirm,
   retryAgentConfirm,
   retryPhaseConfirm,
+  stopConfirm,
 } from "./confirm.js";
 import { errorMessage, fitRows, isActiveRunStatus, isTerminalRunStatus, PLAIN_THEME } from "./format.js";
 import { WikiUiModel, type WikiNavigatorController } from "./model.js";
@@ -253,6 +254,9 @@ export function openWikiNavigator(
           case "resume":
             await Promise.resolve(controller.resume(action.runId));
             return;
+          case "stop":
+            await Promise.resolve(controller.stop());
+            return;
           case "cancel":
             await Promise.resolve(controller.cancel());
             return;
@@ -297,6 +301,12 @@ export function openWikiNavigator(
               return { type: "notify", message: s.noActiveCancel, level: "info" };
             }
             return { type: "cancel" };
+          }
+          if (confirmation.kind === "stop") {
+            if (!confirmedRun || model.getActiveRunId() !== confirmation.runId || !isActiveRunStatus(confirmedRun.status)) {
+              return { type: "notify", message: s.noActiveStop, level: "info" };
+            }
+            return { type: "stop" };
           }
           if (confirmation.kind === "delete") {
             const selected = model.listRuns().find((item) => item.id === confirmation.runId);
@@ -408,6 +418,14 @@ export function openWikiNavigator(
             return { type: "notify", message: s.anotherRunActive, level: "warning" };
           }
           return { type: "notify", message: s.onlyRunningPause, level: "warning" };
+        }
+        case "stop": {
+          if (!run || state.runId !== activeRunId || !isActiveRunStatus(run.status)) {
+            return { type: "notify", message: s.noActiveStop, level: "info" };
+          }
+          const prompt = stopConfirm(language);
+          state.openConfirmation({ kind: "stop", runId: run.id, title: prompt.title, message: prompt.message });
+          return { type: "none" };
         }
         case "cancel": {
           if (!run || state.runId !== activeRunId || !isActiveRunStatus(run.status)) {
@@ -553,6 +571,7 @@ export function openWikiNavigator(
           || action.type === "deleteRun"
           || action.type === "pause"
           || action.type === "resume"
+          || action.type === "stop"
           || action.type === "cancel"
         ) {
           busy = true;

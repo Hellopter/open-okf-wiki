@@ -87,6 +87,12 @@ function fakeEngine(initial, hooks = {}) {
       if (current?.status === "running") current = { ...current, status: "paused" };
     },
     async resume() { calls.push(["resume"]); },
+    async stop() {
+      calls.push(["stop"]);
+      if (current && (current.status === "running" || current.status === "paused")) {
+        current = { ...current, status: "paused" };
+      }
+    },
     async cancel() { calls.push(["cancel"]); },
     async interrupt() { calls.push(["interrupt"]); },
     async waitForIdle() {
@@ -556,7 +562,7 @@ test("rejects incompatible history snapshots pointed to by a valid pointer", asy
     && /\/wiki generate/.test(message)));
 });
 
-test("status, pause, resume, and cancel use the same single-run controller", async () => {
+test("status, pause, resume, stop, and cancel use the same single-run controller", async () => {
   const subject = fixture();
   await subject.handlers.get("session_start")({}, subject.ctx);
   const command = subject.commands.get("wiki");
@@ -565,10 +571,12 @@ test("status, pause, resume, and cancel use the same single-run controller", asy
   await command.handler("status", subject.ctx);
   await command.handler("pause", subject.ctx);
   await command.handler("resume", subject.ctx);
+  await command.handler("stop", subject.ctx);
   await command.handler("cancel", subject.ctx);
 
   assert.match(subject.messages[0].content, /Wiki Run run-1/);
-  assert.deepEqual(subject.engine.calls.slice(-3).map(([name]) => name), ["pause", "resume", "cancel"]);
+  assert.deepEqual(subject.engine.calls.slice(-4).map(([name]) => name), ["pause", "resume", "stop", "cancel"]);
+  assert.ok(subject.notices.some(({ message }) => /aborted|resume to continue/i.test(message)));
 });
 
 test("history prints a concise project summary without requiring run IDs", async () => {
@@ -669,7 +677,7 @@ test("Wiki subcommands are discoverable through Pi argument completion", () => {
   const complete = subject.commands.get("wiki").getArgumentCompletions;
 
   assert.deepEqual(complete("").map(({ value }) => value), [
-    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "artifacts ", "pause", "resume ", "cancel", "help",
+    "init ", "source ", "generate ", "refresh ", "open", "status", "history", "artifacts ", "pause", "resume ", "stop", "cancel", "help",
   ]);
   assert.deepEqual(complete("in").map(({ value }) => value), ["init "]);
   assert.deepEqual(complete("source ").map(({ value }) => value), ["source add "]);
