@@ -10,7 +10,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  submissionTool,
+  submissionTools,
   type SubmissionCollector,
 } from "./agent-submissions.js";
 import {
@@ -54,7 +54,7 @@ export function workflowTools(
   if (role !== "writer") {
     return [
       ...readOnly,
-      ...(submission ? [submissionTool(policy, submission, { allowedSourceRoots: readRoots ?? [] })] : []),
+      ...(submission ? submissionTools(policy, submission, { allowedSourceRoots: readRoots ?? [] }) : []),
     ];
   }
 
@@ -80,7 +80,7 @@ export function workflowTools(
     // Guarded operations still receive absolute paths and enforce the exact page.
     remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path"), policy, activeWikiRoot),
     remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true), policy, activeWikiRoot),
-    ...(submission ? [submissionTool(policy, submission, { allowedSourceRoots: readRoots ?? [] })] : []),
+    ...(submission ? submissionTools(policy, submission, { allowedSourceRoots: readRoots ?? [] }) : []),
   ];
 }
 

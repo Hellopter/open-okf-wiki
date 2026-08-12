@@ -13,7 +13,8 @@ import {
   parseSynthesisSubmission,
   researchSubmissionSchema,
   reviewSubmissionSchema,
-  synthesisSubmissionSchema,
+  synthesisExpandSubmissionSchema,
+  synthesisFinalizeSubmissionSchema,
   WikiControlSubmissionSizeError,
 } from "./control-submissions.js";
 import { loadResearchSourceRoots, validateResearchArtifact } from "./research-evidence.js";
@@ -26,17 +27,19 @@ import type {
 export type { SubmissionToolName, SubmissionFailure, SubmissionFailureCode, SubmissionIssue };
 export { submissionContractGuidance };
 
-/** An agent gets three in-context opportunities before its node attempt fails. */
+/** Upper bound for configurable in-context submission opportunities. */
 export const MAX_SUBMISSIONS_PER_ATTEMPT = 3;
 
 export interface SubmissionCollector {
-  toolName: SubmissionToolName;
+  toolNames: readonly SubmissionToolName[];
+  acceptedToolName?: SubmissionToolName;
   pagePath?: string;
   value?: unknown;
   failure?: SubmissionFailure;
   submissionAttempts: number;
   maxSubmissions: number;
   exhausted?: boolean;
+  pendingAttempt?: Promise<void>;
   validate?: (submission: WikiControlSubmission) => void;
   validatePage?: WikiAgentExecutionRequest["validatePageSubmission"];
 }
@@ -52,14 +55,14 @@ export function submissionFor(request: WikiAgentExecutionRequest): SubmissionCol
       throw new Error("Workflow configuration error: writers require one page submission validator");
     }
     const pagePath = request.writePaths[0]!.replace(/^wiki\//, "");
-    return { ...base, toolName: "wiki_submit_page", pagePath, validatePage: request.validatePageSubmission };
+    return { ...base, toolNames: ["wiki_submit_page"], pagePath, validatePage: request.validatePageSubmission };
   }
-  if (request.node.kind === "research") return { ...base, toolName: "wiki_submit_research" };
+  if (request.node.kind === "research") return { ...base, toolNames: ["wiki_submit_research"] };
   if (request.node.kind === "synthesis") {
-    return { ...base, toolName: "wiki_submit_synthesis", validate: request.validateControlSubmission };
+    return { ...base, toolNames: ["wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize"], validate: request.validateControlSubmission };
   }
   if (request.node.kind === "review") {
-    return { ...base, toolName: "wiki_submit_review", validate: request.validateControlSubmission };
+    return { ...base, toolNames: ["wiki_submit_review"], validate: request.validateControlSubmission };
   }
   return undefined;
 }
@@ -69,22 +72,33 @@ export interface SubmissionToolOptions {
   allowedSourceRoots?: readonly string[];
 }
 
-export function submissionTool(
+export function submissionTools(
   policy: WorkspaceToolPolicy,
   submission: SubmissionCollector,
   options: SubmissionToolOptions = {},
-): ToolDefinition<any, any, any> {
-  if (submission.toolName === "wiki_submit_page") return pageSubmissionTool(submission);
+): ToolDefinition<any, any, any>[] {
+  return submission.toolNames.map((toolName) => submissionTool(policy, submission, toolName, options));
+}
 
-  const toolName = submission.toolName;
+function submissionTool(
+  policy: WorkspaceToolPolicy,
+  submission: SubmissionCollector,
+  toolName: SubmissionToolName,
+  options: SubmissionToolOptions,
+): ToolDefinition<any, any, any> {
+  if (toolName === "wiki_submit_page") return pageSubmissionTool(submission);
+
   const parser = toolName === "wiki_submit_research" ? parseResearchSubmission
-    : toolName === "wiki_submit_synthesis" ? parseSynthesisSubmission
+    : toolName === "wiki_submit_synthesis_expand" ? (value: unknown) => parseSynthesisSubmission({ ...(value as object), decision: "expand" })
+      : toolName === "wiki_submit_synthesis_finalize" ? (value: unknown) => parseSynthesisSubmission({ ...(value as object), decision: "finalize" })
       : parseReviewSubmission;
   const parameters = toolName === "wiki_submit_research" ? researchSubmissionSchema
-    : toolName === "wiki_submit_synthesis" ? synthesisSubmissionSchema
+    : toolName === "wiki_submit_synthesis_expand" ? synthesisExpandSubmissionSchema
+      : toolName === "wiki_submit_synthesis_finalize" ? synthesisFinalizeSubmissionSchema
       : reviewSubmissionSchema;
   const role = toolName === "wiki_submit_research" ? "research result"
-    : toolName === "wiki_submit_synthesis" ? "planning decision"
+    : toolName === "wiki_submit_synthesis_expand" ? "targeted research expansion"
+      : toolName === "wiki_submit_synthesis_finalize" ? "final Wiki plan"
       : "semantic review";
 
   return {
@@ -93,12 +107,12 @@ export function submissionTool(
     description: `Submit the complete typed ${role} directly. ${submissionContractGuidance(toolName)}`,
     promptSnippet: `Submit the typed Wiki ${role}`,
     promptGuidelines: [
-      `Pass the complete result object directly. If rejected, fix every returned issue and resubmit in this session; stop only after acceptance.`,
+      "Pass the complete result object directly. If rejected and attempts remain, fix every returned issue and resubmit in this session. Stop after acceptance or when the tool reports that the budget is exhausted.",
     ],
     parameters,
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params) {
-      const result = await attemptSubmission(submission, async () => {
+      const result = await attemptSubmission(submission, toolName, async () => {
         const parsed = parser(params) as WikiControlSubmission;
         if (toolName === "wiki_submit_research") {
           const allowedSourceRoots = options.allowedSourceRoots ?? [];
@@ -119,15 +133,15 @@ export function submissionTool(
 function pageSubmissionTool(submission: SubmissionCollector): ToolDefinition<any, any, any> {
   const pagePath = submission.pagePath!;
   return {
-    name: submission.toolName,
-    label: submission.toolName,
-    description: `Validate and submit the assigned Wiki page ${pagePath}. Fix every reported issue and resubmit until accepted.`,
+    name: "wiki_submit_page",
+    label: "wiki_submit_page",
+    description: `Validate and submit the assigned Wiki page ${pagePath}. Fix every reported issue and resubmit while attempts remain.`,
     promptSnippet: "Validate and submit the assigned Wiki page",
-    promptGuidelines: ["After writing the page, call this tool. Fix every returned issue in this session and resubmit; stop only after acceptance."],
+    promptGuidelines: ["After writing the page, call this tool. Fix every returned issue and resubmit while attempts remain. Stop after acceptance or budget exhaustion."],
     parameters: Type.Object({ page: Type.Literal(pagePath) }, { additionalProperties: false }),
     constrainedSampling: { type: "json_schema", strict: "prefer" },
     async execute(_toolCallId, params: { page: string }) {
-      const result = await attemptSubmission(submission, async () => {
+      const result = await attemptSubmission(submission, "wiki_submit_page", async () => {
         if (params.page !== pagePath || !submission.validatePage) throw new Error("Page submission does not match the assigned page");
         let validation;
         try {
@@ -149,17 +163,37 @@ export type SubmissionAttemptResult =
 
 export async function attemptSubmission(
   submission: SubmissionCollector,
+  toolName: SubmissionToolName,
+  parse: () => unknown | Promise<unknown>,
+): Promise<SubmissionAttemptResult> {
+  const previousAttempt = submission.pendingAttempt ?? Promise.resolve();
+  let releaseAttempt!: () => void;
+  submission.pendingAttempt = new Promise<void>((resolve) => {
+    releaseAttempt = resolve;
+  });
+  await previousAttempt;
+  try {
+    return await attemptSubmissionLocked(submission, toolName, parse);
+  } finally {
+    releaseAttempt();
+  }
+}
+
+async function attemptSubmissionLocked(
+  submission: SubmissionCollector,
+  toolName: SubmissionToolName,
   parse: () => unknown | Promise<unknown>,
 ): Promise<SubmissionAttemptResult> {
   if (submission.value !== undefined) {
-    return rejection(submission, [{ path: "$", code: "already_accepted", message: `${submission.toolName} was already accepted` }], true);
+    return terminalRejection(submission, [{ path: "$", code: "already_accepted", message: `${submission.acceptedToolName ?? "A submission tool"} was already accepted` }]);
   }
   if (submission.submissionAttempts >= submission.maxSubmissions) {
-    return rejection(submission, [{ path: "$", code: "submission_budget_exhausted", message: `No submission attempts remain for ${submission.toolName}` }], true);
+    return rejection(submission, [{ path: "$", code: "submission_budget_exhausted", message: `No submission attempts remain for ${submission.toolNames.join(" or ")}` }], true);
   }
   submission.submissionAttempts += 1;
   try {
     submission.value = structuredClone(await parse());
+    submission.acceptedToolName = toolName;
     submission.failure = undefined;
     submission.exhausted = false;
     return { accepted: true };
@@ -172,6 +206,15 @@ export async function attemptSubmission(
     const exhausted = submission.submissionAttempts >= submission.maxSubmissions;
     return rejection(submission, issues, exhausted);
   }
+}
+
+function terminalRejection(submission: SubmissionCollector, issues: SubmissionIssue[]): SubmissionAttemptResult {
+  return {
+    accepted: false,
+    issues,
+    remainingAttempts: Math.max(0, submission.maxSubmissions - submission.submissionAttempts),
+    exhausted: true,
+  };
 }
 
 function rejection(submission: SubmissionCollector, issues: SubmissionIssue[], exhausted: boolean): SubmissionAttemptResult {

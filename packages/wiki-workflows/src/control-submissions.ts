@@ -76,21 +76,25 @@ const wikiSpecSchema = Type.Object({
 }, { additionalProperties: false });
 
 /** Strict discriminated payload for either research expansion or a final WikiSpec. */
-export const synthesisSubmissionSchema = Type.Union([
-  Type.Object({
-    decision: Type.Literal("expand"),
-    researchScopes: Type.Array(Type.Object({
+const researchScopesSchema = Type.Array(Type.Object({
       id: nonEmptyTextSchema,
       sourcePaths: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
       task: nonEmptyTextSchema,
-    }, { additionalProperties: false }), { minItems: 1 }),
+    }, { additionalProperties: false }), { minItems: 1 });
+
+export const synthesisExpandSubmissionSchema = Type.Object({
+    researchScopes: researchScopesSchema,
     rationale: nonEmptyTextSchema,
-  }, { additionalProperties: false }),
-  Type.Object({
-    decision: Type.Literal("finalize"),
+  }, { additionalProperties: false });
+
+export const synthesisFinalizeSubmissionSchema = Type.Object({
     spec: wikiSpecSchema,
     rationale: nonEmptyTextSchema,
-  }, { additionalProperties: false }),
+  }, { additionalProperties: false });
+
+export const synthesisSubmissionSchema = Type.Union([
+  Type.Object({ decision: Type.Literal("expand"), ...synthesisExpandSubmissionSchema.properties }, { additionalProperties: false }),
+  Type.Object({ decision: Type.Literal("finalize"), ...synthesisFinalizeSubmissionSchema.properties }, { additionalProperties: false }),
 ]);
 
 const localReviewDefectSchema = Type.Object({

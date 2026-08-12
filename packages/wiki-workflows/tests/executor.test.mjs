@@ -71,7 +71,7 @@ function fakeSession(activeTools) {
       },
     },
     getLastAssistantText: () => "complete",
-    getActiveToolNames: () => activeTools ?? ["read", "grep", "find", "ls", "edit", "write", "wiki_write_handoff", "wiki_submit_research", "wiki_submit_synthesis", "wiki_submit_page", "wiki_submit_review"],
+    getActiveToolNames: () => activeTools ?? ["read", "grep", "find", "ls", "edit", "write", "wiki_submit_research", "wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize", "wiki_submit_page", "wiki_submit_review"],
     getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
     getContextUsage: () => undefined,
     dispose() {
@@ -129,7 +129,7 @@ test("synthesis submission accepts the page-level contract and optional coordina
   let tools;
   const session = fakeSession();
   session.prompt = async () => {
-    await writeAndSubmit(tools, "wiki_submit_synthesis", { decision: "finalize", spec: finalizedSpec(), rationale: "Complete." });
+    await writeAndSubmit(tools, "wiki_submit_synthesis_finalize", { spec: finalizedSpec(), rationale: "Complete." });
   };
   const executor = new PiAgentExecutor({ createSession: async (options) => {
     tools = options.customTools;
@@ -140,7 +140,7 @@ test("synthesis submission accepts the page-level contract and optional coordina
   const result = await executor.execute(execution);
   assert.deepEqual(result.result.spec.crossLinks, []);
   assert.deepEqual(result.result.spec.sharedTerms, []);
-  const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
+  const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis_finalize");
   const guidance = [submit.description, ...submit.promptGuidelines].join("\n");
   assert.match(guidance, /findingIds/);
   assert.doesNotMatch(guidance, /requiredSections|diagrams|sources/);

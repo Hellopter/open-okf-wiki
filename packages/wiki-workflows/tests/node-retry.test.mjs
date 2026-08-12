@@ -90,7 +90,7 @@ test("permanent provider failures are not retried", () => {
 });
 
 test("validator_infrastructure requeues while attempts remain", () => {
-  const error = new WikiAgentProtocolError("wiki_submit_page", "", [], {
+  const error = new WikiAgentProtocolError(["wiki_submit_page"], "", [], {
     code: "validator_infrastructure",
     message: "validator unavailable",
   });
@@ -99,12 +99,12 @@ test("validator_infrastructure requeues while attempts remain", () => {
   assert.equal(result.retryable, true);
   assert.equal(result.terminalRun, undefined);
   assert.equal(result.error.code, "validator_infrastructure");
-  assert.equal(result.error.requiredSubmissionTool, "wiki_submit_page");
+  assert.deepEqual(result.error.requiredSubmissionTools, ["wiki_submit_page"]);
   assert.equal(result.error.retryable, true);
 });
 
 test("validator_infrastructure fails after max attempts", () => {
-  const error = new WikiAgentProtocolError("wiki_submit_page", "", [], {
+  const error = new WikiAgentProtocolError(["wiki_submit_page"], "", [], {
     code: "validator_infrastructure",
     message: "validator unavailable",
   });
@@ -160,12 +160,49 @@ test("generic error fails the node and the run", () => {
   assert.equal(result.error.message, "disk full");
 });
 
-test("non-infrastructure protocol errors fail without retry", () => {
-  const error = new WikiAgentProtocolError("wiki_submit_research", "no call", []);
+test("missing submission receives one fresh-session retry", () => {
+  const error = new WikiAgentProtocolError(["wiki_submit_research"], "no call", []);
   const result = classifyNodeFailure(error, { attempt: 1, maxAttempts: 3, aborted: false });
+  assert.equal(result.status, "queued");
+  assert.equal(result.retryable, true);
+  assert.equal(result.terminalRun, undefined);
+  assert.equal(result.error.code, "missing_submission");
+  assert.deepEqual(result.error.requiredSubmissionTools, ["wiki_submit_research"]);
+});
+
+test("missing-submission recovery is independent of transient provider session policy", () => {
+  const error = new WikiAgentProtocolError(["wiki_submit_review"], "no call", []);
+  const result = classifyNodeFailure(error, {
+    attempt: 1,
+    maxAttempts: 3,
+    maxTransientSessionAttempts: 1,
+    aborted: false,
+  });
+  assert.equal(result.status, "queued");
+  assert.equal(result.retryable, true);
+});
+
+test("missing submission fails after the fresh-session retry", () => {
+  const error = new WikiAgentProtocolError(["wiki_submit_research"], "no call", []);
+  const result = classifyNodeFailure(error, {
+    attempt: 2,
+    maxAttempts: 3,
+    missingSubmissionRetryUsed: true,
+    aborted: false,
+  });
   assert.equal(result.status, "failed");
   assert.equal(result.retryable, false);
   assert.equal(result.terminalRun, "failed");
-  assert.equal(result.error.code, "missing_submission");
-  assert.equal(result.error.requiredSubmissionTool, "wiki_submit_research");
+});
+
+test("an earlier transient attempt does not consume missing-submission recovery", () => {
+  const error = new WikiAgentProtocolError(["wiki_submit_synthesis_finalize"], "no call", []);
+  const result = classifyNodeFailure(error, {
+    attempt: 2,
+    maxAttempts: 3,
+    missingSubmissionRetryUsed: false,
+    aborted: false,
+  });
+  assert.equal(result.status, "queued");
+  assert.equal(result.retryable, true);
 });

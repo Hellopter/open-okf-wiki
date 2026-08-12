@@ -63,9 +63,12 @@ export function submissionContractGuidance(toolName: SubmissionToolName): string
   if (toolName === "wiki_submit_page") {
     return "Call the tool with the exact assigned page path after writing. Fix every returned issue and resubmit until accepted.";
   }
-  if (toolName === "wiki_submit_synthesis") {
+  if (toolName === "wiki_submit_synthesis_finalize") {
     const [pageType, pagePath, title, purpose, readerQuestions, requiredFacets, findingIds] = SYNTHESIS_PAGE_FIELDS;
-    return `For a final decision, use {"decision":"finalize","spec":{"domains":[...],"crossLinks":[...],"sharedTerms":[...],"omissions":[...]},"rationale":"..."}. Each page contains ${pageType}, ${pagePath}, ${title}, ${purpose}, ${readerQuestions}, ${requiredFacets}, and ${findingIds}. Every non-overview domain has exactly one domain page at <domain-id>/domain.md. For expansion, omit spec and use {"decision":"expand","researchScopes":[{"id":"new-scope-id","sourcePaths":["declared-source"],"task":"..."}],"rationale":"..."}.`;
+    return `Use {"spec":{"domains":[...],"crossLinks":[...],"sharedTerms":[...],"omissions":[...]},"rationale":"..."}. Each page contains ${pageType}, ${pagePath}, ${title}, ${purpose}, ${readerQuestions}, ${requiredFacets}, and ${findingIds}. Every non-overview domain has exactly one domain page at <domain-id>/domain.md.`;
+  }
+  if (toolName === "wiki_submit_synthesis_expand") {
+    return `Use {"researchScopes":[{"id":"new-scope-id","sourcePaths":["declared-source"],"task":"..."}],"rationale":"..."}. Use only when a critical evidence gap requires more research.`;
   }
   const localKinds = REVIEW_LOCAL_DEFECT_KINDS.join("|");
   const structuralKinds = REVIEW_STRUCTURAL_DEFECT_KINDS.join("|");

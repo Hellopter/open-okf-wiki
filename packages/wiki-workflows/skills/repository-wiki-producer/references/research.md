@@ -11,7 +11,7 @@ expected. Do not aim for an exhaustive encyclopedia of every file or symbol.
 After surveying and deepening, call `wiki_submit_research` with the complete
 result object directly. Do not write a handoff file or reply with JSON text.
 If the tool rejects the object, correct every structured issue and resubmit in
-this session; at most three submissions are available. Submit a complete result
+this session within the budget stated at the end of the prompt. Submit a complete result
 even when no finding is established. Use exactly this shape:
 
 ```json

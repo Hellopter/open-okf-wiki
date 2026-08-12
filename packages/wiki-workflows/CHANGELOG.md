@@ -14,8 +14,10 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented in this file.
   link, and Mermaid failures in-session. Semantic review starts only after the
   candidate passes static validation.
 - **Typed direct handoff.** Research, synthesis, and review submit typed objects
-  directly with structured rejection and at most three same-session attempts;
-  agent-authored JSON/Markdown handoff files are removed.
+  directly with structured rejection and a configurable one-to-three-attempt
+  budget. Plan uses separate expand and finalize tools with a shared budget;
+  every agent prompt ends with its exact required completion protocol.
+  Agent-authored JSON/Markdown handoff files are removed.
 - **Bounded Pi runtime.** Isolated sessions use fixed native compaction and a
   configurable `1..16` agent-level retry budget,
   a bounded configurable fresh-session count for overflow/transient exhaustion,

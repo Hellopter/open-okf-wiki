@@ -640,6 +640,7 @@ export class WikiWorkflowEngine {
         maxAttempts: MAX_NODE_ATTEMPTS,
         aborted: controller.signal.aborted,
         maxTransientSessionAttempts: run.policy.runtime.maxTransientSessionAttempts,
+        missingSubmissionRetryUsed: node.attemptHistory.some((attempt) => attempt.error?.code === "missing_submission"),
       });
       node.status = classification.status;
       if (error instanceof WikiAgentProtocolError || error instanceof WikiAgentContextBudgetError) {

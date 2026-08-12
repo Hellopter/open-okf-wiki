@@ -54,7 +54,11 @@ Research starts one fresh agent per declared source. When receipts report no
 unresolved critical gaps, Plan must finalize and the engine skips forced dry
 audits, going straight to writers. Expand is hard-rejected without critical
 gaps; with gaps, Plan may request a targeted batch of at most four scopes.
-Planning emits a complete target WikiSpec in both generate and refresh modes.
+Planning uses separate typed completion tools: `wiki_submit_synthesis_expand`
+for unresolved critical evidence gaps and `wiki_submit_synthesis_finalize` for
+the complete target WikiSpec. This keeps each model-facing schema single-purpose;
+both tools share the same submission-attempt budget. Planning emits a complete
+target WikiSpec in both generate and refresh modes.
 Every non-overview domain has one required `<domain-id>/domain.md` aggregation
 page plus evidence-driven architecture, flow, concept, state, data, or module
 pages. Each page declares reader questions and required facets. The default
@@ -176,9 +180,11 @@ provider setting `maxRetryDelayMs: 60000` does not cap this loop because
 provider retries are disabled; it only bounds provider/SDK retry delays.
 
 Authentication, billing, quota, forbidden, and invalid-request errors are not
-retried as transient. A missing submission may add one same-session correction
-turn, tool continuations are additional model requests, and every such request
-has its own retry allowance. Structured submission tools allow the configured
+retried as transient. A missing submission adds one same-session correction
+turn. If it is still missing, one fixed fresh protocol-recovery session is
+allowed independently of `maxTransientSessionAttempts`; another miss is
+terminal. Tool continuations are additional model requests, and every such request has its own
+retry allowance. Structured submission tools allow the configured
 `1..3` calls per node attempt (default `3`); those calls do not increment
 `node.attempt`. The Pi retry count, fresh-session count,
 deadline, cooldown, and submission count are the bounded settings above.

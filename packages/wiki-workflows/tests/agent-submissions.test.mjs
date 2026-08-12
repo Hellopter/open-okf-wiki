@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   MAX_SUBMISSIONS_PER_ATTEMPT,
   submissionFor,
-  submissionTool,
+  submissionTools,
 } from "../dist/agent-submissions.js";
 import { workflowTools } from "../dist/agent-tools.js";
 
@@ -29,7 +29,7 @@ function policy(root = process.cwd()) {
 test("control roles submit typed objects directly and repair semantic issues in-session", async () => {
   const collector = submissionFor(request());
   assert.ok(collector);
-  const tool = submissionTool(policy(), collector);
+  const [tool] = submissionTools(policy(), collector);
   assert.equal(tool.name, "wiki_submit_review");
   assert.doesNotMatch(JSON.stringify(tool.parameters), /artifactPath/);
 
@@ -57,7 +57,7 @@ test("control roles submit typed objects directly and repair semantic issues in-
 
 test("the third invalid direct submission exhausts the node attempt", async () => {
   const collector = submissionFor(request());
-  const tool = submissionTool(policy(), collector);
+  const [tool] = submissionTools(policy(), collector);
   let result;
   for (let attempt = 1; attempt <= MAX_SUBMISSIONS_PER_ATTEMPT; attempt += 1) {
     result = await tool.execute(`bad-${attempt}`, { defects: [], summary: " " });
@@ -74,12 +74,57 @@ test("the third invalid direct submission exhausts the node attempt", async () =
 
 test("the request pins a smaller direct submission budget per collector", async () => {
   const collector = submissionFor({ ...request(), maxSubmissionAttempts: 1 });
-  const tool = submissionTool(policy(), collector);
+  const [tool] = submissionTools(policy(), collector);
   const result = await tool.execute("bad", { defects: [], summary: " " });
   assert.equal(result.details.remainingAttempts, 0);
   assert.equal(result.details.exhausted, true);
   assert.equal(result.terminate, true);
   assert.equal(collector.maxSubmissions, 1);
+});
+
+test("synthesis exposes separate expand and finalize tools with one shared budget", async () => {
+  const collector = submissionFor(request("synthesis"));
+  const tools = submissionTools(policy(), collector);
+  assert.deepEqual(tools.map((tool) => tool.name), ["wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize"]);
+  assert.doesNotMatch(JSON.stringify(tools[0].parameters), /"spec"|"decision"/);
+  assert.doesNotMatch(JSON.stringify(tools[1].parameters), /"researchScopes"|"decision"/);
+
+  const rejected = await tools[0].execute("bad-expand", { researchScopes: [], rationale: "Missing evidence." });
+  assert.equal(rejected.details.remainingAttempts, 2);
+  const accepted = await tools[1].execute("finalize", {
+    decision: "expand",
+    spec: {
+      domains: [
+        { id: "overview", title: "Overview", purpose: "Orient", pages: [{ pageType: "overview", path: "overview/overview.md", title: "Overview", purpose: "Orient", readerQuestions: ["What exists?"], requiredFacets: ["domain map"], findingIds: [] }] },
+        { id: "core", title: "Core", purpose: "Core domain", pages: [{ pageType: "domain", path: "core/domain.md", title: "Core", purpose: "Explain core", readerQuestions: ["How does core fit together?"], requiredFacets: ["models", "flows", "state", "invariants", "boundaries"], findingIds: ["finding-core"] }] },
+      ], crossLinks: [], sharedTerms: [], omissions: [],
+    },
+    rationale: "Complete.",
+  });
+  assert.equal(accepted.details.accepted, true);
+  assert.equal(collector.value.decision, "finalize");
+  assert.equal(collector.submissionAttempts, 2);
+});
+
+test("concurrent synthesis tools accept exactly one decision", async () => {
+  const collector = submissionFor(request("synthesis"));
+  const [expand, finalize] = submissionTools(policy(), collector);
+  const spec = {
+    domains: [
+      { id: "overview", title: "Overview", purpose: "Orient", pages: [{ pageType: "overview", path: "overview/overview.md", title: "Overview", purpose: "Orient", readerQuestions: ["What exists?"], requiredFacets: ["domain map"], findingIds: [] }] },
+      { id: "core", title: "Core", purpose: "Core domain", pages: [{ pageType: "domain", path: "core/domain.md", title: "Core", purpose: "Explain core", readerQuestions: ["How does core fit together?"], requiredFacets: ["models", "flows", "state", "invariants", "boundaries"], findingIds: ["finding-core"] }] },
+    ],
+  };
+  const results = await Promise.all([
+    expand.execute("expand", { researchScopes: [{ id: "gap", sourcePaths: ["src"], task: "Resolve gap" }], rationale: "Need evidence." }),
+    finalize.execute("finalize", { spec, rationale: "Complete." }),
+  ]);
+  assert.equal(results.filter((result) => result.details.accepted).length, 1);
+  assert.equal(results.filter((result) => !result.details.accepted && result.details.issues[0].code === "already_accepted").length, 1);
+  assert.equal(collector.submissionAttempts, 1);
+  assert.equal(collector.failure, undefined);
+  assert.equal(collector.exhausted, false);
+  assert.equal(collector.value.decision, collector.acceptedToolName === "wiki_submit_synthesis_expand" ? "expand" : "finalize");
 });
 
 test("writer tools use the candidate Wiki root and cannot write the published Wiki", async (t) => {

@@ -228,11 +228,18 @@ function isHistory(value: unknown): value is WikiNodeHistoryEntry[] {
 
 function isError(value: unknown): boolean {
   return isRecord(value)
+    && hasOnlyKeys(value, ["message", "code", "retryable", "requiredSubmissionTools"])
     && isString(value.message)
     && optionalStringFields(value, ["code"])
     && optional(value.retryable, isBoolean)
-    && optional(value.requiredSubmissionTool, (item) => item === "wiki_submit_research" || item === "wiki_submit_synthesis"
-      || item === "wiki_submit_page" || item === "wiki_submit_review");
+    && optional(value.requiredSubmissionTools, (items) => Array.isArray(items) && items.length > 0 && items.every((item) => item === "wiki_submit_research"
+      || item === "wiki_submit_synthesis_expand" || item === "wiki_submit_synthesis_finalize"
+      || item === "wiki_submit_page" || item === "wiki_submit_review"));
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
 }
 
 function isArtifactRef(value: unknown): boolean {

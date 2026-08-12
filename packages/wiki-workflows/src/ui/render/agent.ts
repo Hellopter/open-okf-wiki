@@ -145,8 +145,8 @@ function renderAgentTranscript(
       ...theme,
       fg: (_color, text) => theme.fg("error", text),
     }));
-    if (attempt.error.requiredSubmissionTool) {
-      lines.push(...renderObject(s.requiredSubmission(asText(attempt.error.requiredSubmissionTool)), width, {
+    if (attempt.error.requiredSubmissionTools) {
+      lines.push(...renderObject(s.requiredSubmission(asText(attempt.error.requiredSubmissionTools.join(" or "))), width, {
         ...theme,
         fg: (_color, text) => theme.fg("warning", text),
       }));

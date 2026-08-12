@@ -177,9 +177,16 @@ queues review, and only clean review queues finalization.
   deadline includes these waits and can stop the loop before its retry budget.
 - That product is not a total request/cost bound. One missing-submission
   correction turn and tool continuations are additional requests with their own
-  Pi retry allowance. Typed submission tools permit the configured `1..3`
+  Pi retry allowance. If correction still produces no submission, one fixed
+  protocol-recovery session is allowed independently of the provider/context
+  fresh-session bound. Typed submission
+  tools permit the configured `1..3`
   submission calls per node attempt (default `3`); they do not create fresh
   sessions.
+- Plan exposes separate `wiki_submit_synthesis_expand` and
+  `wiki_submit_synthesis_finalize` tools with one shared submission budget. The
+  internal result remains a discriminated synthesis decision; the model does
+  not have to satisfy a multi-branch union schema in one tool.
 - The resolved concurrency limit is shared by the engine and executor. 429
   pressure temporarily reduces admission to one. Active memory pressure pauses
   and requeues running nodes before the V8 hard threshold.

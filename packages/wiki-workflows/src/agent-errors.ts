@@ -2,7 +2,8 @@ import type { WikiNodeErrorCode, WikiNodeHistoryEntry } from "./workflow-types.j
 
 export type SubmissionToolName =
   | "wiki_submit_research"
-  | "wiki_submit_synthesis"
+  | "wiki_submit_synthesis_expand"
+  | "wiki_submit_synthesis_finalize"
   | "wiki_submit_page"
   | "wiki_submit_review";
 
@@ -31,14 +32,14 @@ export class WikiAgentProtocolError extends Error {
   readonly code: "missing_submission" | SubmissionFailureCode;
 
   constructor(
-    readonly requiredSubmissionTool: SubmissionToolName,
+    readonly requiredSubmissionTools: readonly SubmissionToolName[],
     readonly output: string,
     readonly history: WikiNodeHistoryEntry[],
     failure?: SubmissionFailure,
   ) {
     super(failure
-      ? `Agent could not complete ${requiredSubmissionTool}: ${failure.message}`
-      : `Agent did not call ${requiredSubmissionTool} before completing`);
+      ? `Agent could not complete ${requiredSubmissionTools.join(" or ")}: ${failure.message}`
+      : `Agent did not call ${requiredSubmissionTools.join(" or ")} before completing`);
     this.name = "WikiAgentProtocolError";
     this.code = failure?.code ?? "missing_submission";
   }

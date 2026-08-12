@@ -191,7 +191,7 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
       // Fan-in is handled exclusively by tryJoinAfterSuccess after markNodeSucceeded.
       return;
     case "synthesis": {
-      // Submission contract already validated at wiki_submit_synthesis time.
+      // Submission contract already validated by the selected synthesis submit tool.
       const synthesis = node.result as WikiSynthesisResult;
       const input = synthesisInputFor(node);
       if (synthesis.decision === "expand") {

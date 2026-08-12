@@ -24,6 +24,8 @@ export interface ClassifyNodeFailureOptions {
   aborted: boolean;
   /** Total node sessions allowed for transient/context failures, including the first. */
   maxTransientSessionAttempts?: number;
+  /** Whether this node already consumed its one fresh protocol-recovery session. */
+  missingSubmissionRetryUsed?: boolean;
 }
 
 /**
@@ -56,7 +58,7 @@ export function classifyNodeFailure(error: unknown, options: ClassifyNodeFailure
         error: {
           message: error.message,
           code: error.code,
-          requiredSubmissionTool: error.requiredSubmissionTool,
+          requiredSubmissionTools: [...error.requiredSubmissionTools],
           retryable: true,
         },
         retryable: true,
@@ -67,7 +69,7 @@ export function classifyNodeFailure(error: unknown, options: ClassifyNodeFailure
       error: {
         message: error.message,
         code: error.code,
-        requiredSubmissionTool: error.requiredSubmissionTool,
+        requiredSubmissionTools: [...error.requiredSubmissionTools],
         retryable: false,
       },
       terminalRun: "failed",
@@ -93,12 +95,24 @@ export function classifyNodeFailure(error: unknown, options: ClassifyNodeFailure
   }
 
   if (error instanceof WikiAgentProtocolError) {
+    if (error.code === "missing_submission" && protocolSessionRetryAvailable(options)) {
+      return {
+        status: "queued",
+        error: {
+          message: error.message,
+          code: error.code,
+          requiredSubmissionTools: [...error.requiredSubmissionTools],
+          retryable: true,
+        },
+        retryable: true,
+      };
+    }
     return {
       status: "failed",
       error: {
         message: error.message,
         code: error.code satisfies WikiNodeErrorCode,
-        requiredSubmissionTool: error.requiredSubmissionTool,
+        requiredSubmissionTools: [...error.requiredSubmissionTools],
         retryable: false,
       },
       terminalRun: "failed",
@@ -134,6 +148,11 @@ export function classifyNodeFailure(error: unknown, options: ClassifyNodeFailure
 function isContextBudgetError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   return (error as { code?: unknown }).code === "context_budget_exceeded";
+}
+
+/** A model protocol miss gets exactly one fresh session, independent of provider retry policy. */
+function protocolSessionRetryAvailable(options: ClassifyNodeFailureOptions): boolean {
+  return options.missingSubmissionRetryUsed !== true && options.attempt < options.maxAttempts;
 }
 
 /** Pi owns the in-session retries; the workflow may create only one fresh session. */

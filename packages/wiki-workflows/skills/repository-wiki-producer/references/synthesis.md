@@ -4,10 +4,11 @@ Act as the source-grounded coverage planner between research and writing. Read
 the inspection, every supplied research artifact, audit history, and authorized
 existing Wiki pages. Do not edit `wiki/`.
 
-Call `wiki_submit_synthesis` with the complete decision object directly. Do not
-write a handoff file or reply with JSON text. If rejected, correct every
-structured issue and resubmit in this session; at most three submissions are
-available. Use exactly one decision branch.
+Choose exactly one completion tool. Call `wiki_submit_synthesis_expand` only
+when critical evidence is missing. Call `wiki_submit_synthesis_finalize` when
+the WikiSpec is ready. Do not write a handoff file or reply with JSON text. If
+rejected, correct every structured issue and resubmit within the budget stated
+at the end of the prompt.
 
 ## Domain-first topology
 
@@ -58,7 +59,6 @@ audit is not a reason to expand after critical gaps are closed.
 
 ```json
 {
-  "decision": "expand",
   "researchScopes": [
     { "id": "ordering-timeout-gap", "sourcePaths": ["api", "worker"],
       "task": "Verify the unresolved ordering timeout and recovery path." }
@@ -69,7 +69,6 @@ audit is not a reason to expand after critical gaps are closed.
 
 ```json
 {
-  "decision": "finalize",
   "spec": {
     "domains": [
       {

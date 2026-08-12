@@ -66,7 +66,7 @@ export interface WikiNodeError {
   code?: WikiNodeErrorCode | string;
   retryable?: boolean;
   /** Present when the model ended without the required control-flow submission. */
-  requiredSubmissionTool?: "wiki_submit_research" | "wiki_submit_synthesis" | "wiki_submit_page" | "wiki_submit_review";
+  requiredSubmissionTools?: Array<"wiki_submit_research" | "wiki_submit_synthesis_expand" | "wiki_submit_synthesis_finalize" | "wiki_submit_page" | "wiki_submit_review">;
 }
 
 export interface WikiNodeAttempt {

@@ -115,8 +115,11 @@ Inspect -> Research -> Plan -> Write -> Review & Publish
 ```
 
 Research uses a fresh agent per source and may run one bounded targeted batch.
-Plan produces the complete target page topology. Write starts one fresh agent
-per content page with at most four active writers, then starts a fresh Overview
+Plan completes through one of two explicit typed tools: it calls
+`wiki_submit_synthesis_expand` to request evidence for unresolved critical gaps,
+or `wiki_submit_synthesis_finalize` to submit the complete target page topology.
+The two tools share the configured per-attempt submission budget. Write starts
+one fresh agent per content page with at most four active writers, then starts a fresh Overview
 writer after the content-page barrier. In refresh mode only impacted or new
 content pages plus Overview are rewritten unless a structural replan requires a
 full rewrite.
@@ -211,9 +214,11 @@ resumable.
 - Pi's own auto-compaction and provider retry capabilities are enabled for
   subagents; the console reports their activity without reimplementing them.
 
-One missing required submission can add one correction turn in the same
-session. Direct structured validation accepts
-`quality.maxSubmissionAttempts` (`1..3`, default `3`) tool submissions per node
+One missing required submission adds one explicit correction turn in the same
+session. If the agent still finishes without calling an accepted submission
+tool, the node receives one fresh protocol-recovery session independent of the
+provider/context retry setting; a second miss is terminal. Direct structured
+validation accepts `quality.maxSubmissionAttempts` (`1..3`, default `3`) tool submissions per node
 attempt. Correction turns and tool continuations are separate model requests,
 and each can receive its own `maxAutoRetries` budget. Treat these settings as
 availability ceilings, not as a billing-call count.

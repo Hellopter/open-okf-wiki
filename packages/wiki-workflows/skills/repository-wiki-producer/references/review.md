@@ -36,7 +36,7 @@ prefix it with `wiki/` and never target an obsolete or undeclared page.
 
 Call `wiki_submit_review` with the complete result object directly. Do not write
 a handoff file or reply with JSON text. If rejected, correct every structured
-issue and resubmit in this session; at most three submissions are available.
+issue and resubmit within the budget stated at the end of the prompt.
 Keep every defect concise and actionable. Use this discriminated union; do not
 create defect IDs or domain IDs. Keep the object below 256 KiB:
 

@@ -50,23 +50,44 @@ export async function promptFor(
     run.language,
     node.kind === "write" ? { pageTypes: pageTypesFor(node, run) } : undefined,
   );
+  let context: string;
   switch (node.kind) {
     case "research":
-      return `${guidance}\n\n${pinnedPolicyContext(run)}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\``;
+      context = `${pinnedPolicyContext(run)}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\``;
+      break;
     case "synthesis":
-      return `${guidance}\n\n${synthesisContext(node, run, researchReceipts)}`;
+      context = synthesisContext(node, run, researchReceipts);
+      break;
     case "write": {
       const packet = pagePacketInputFor(node);
       const repair = packet.feedback !== undefined
         ? `\n\n## Writing Feedback\n\`\`\`json\n${prettyJson(writerFeedbackForPrompt(packet.feedback))}\n\`\`\``
         : "";
-      return `${guidance}\n\n${pageWriterContext(node, run, researchReceipts)}${repair}`;
+      context = `${pageWriterContext(node, run, researchReceipts)}${repair}`;
+      break;
     }
     case "review":
-      return `${guidance}\n\n${reviewContext(node, run)}`;
+      context = reviewContext(node, run);
+      break;
     default:
       throw new Error(`No prompt available for ${node.kind}`);
   }
+  return `${guidance}\n\n${context}\n\n${completionProtocol(node, run)}`;
+}
+
+function completionProtocol(node: WikiNode, run: WikiRunSnapshot): string {
+  const attempts = run.policy.quality.maxSubmissionAttempts;
+  const tools = node.kind === "synthesis"
+    ? "Call exactly one: `wiki_submit_synthesis_expand` when critical evidence is missing, or `wiki_submit_synthesis_finalize` when the WikiSpec is ready."
+    : node.kind === "research" ? "Call `wiki_submit_research`."
+      : node.kind === "write" ? "Call `wiki_submit_page` with the exact assigned page."
+        : "Call `wiki_submit_review`.";
+  return [
+    "## Required Completion Protocol",
+    tools,
+    `The node succeeds only after one submission tool accepts the complete object. Up to ${attempts} submission attempt${attempts === 1 ? " is" : "s are"} available across the allowed tool(s).`,
+    "Do not finish with prose, a JSON code block, or a handoff file. After acceptance, stop.",
+  ].join("\n");
 }
 
 export function pageWriterContext(node: WikiNode, run: WikiRunSnapshot, researchReceipts: PromptResearchReceipt[] | undefined): string {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadWikiPromptGuidance } from "../dist/prompt-guidance.js";
-import { synthesisContext } from "../dist/prompts.js";
+import { promptFor, synthesisContext } from "../dist/prompts.js";
 import { DEFAULT_WIKI_WORKFLOW_POLICY, resolveWikiPolicy } from "../dist/policy.js";
 
 test("Chinese guidance prefers source-authored domain and concept names", async () => {
@@ -32,13 +32,37 @@ test("research guidance requires structured findings and explicit gaps", async (
   assert.match(research, /bounded survey, then deepen/i);
   assert.match(research, /deepen before submit|deepen with targeted|survey and deepen/i);
   assert.match(research, /call `wiki_submit_research` with the complete result object directly/i);
-  assert.match(research, /at most three submissions are available/i);
+  assert.match(research, /within the budget stated at the end of the prompt/i);
   assert.doesNotMatch(research, /exact handoff path|with that path|wiki_write_handoff/i);
   assert.match(research, /Finding granularity/i);
   assert.match(research, /one public interface, module, end-to-end flow/i);
   assert.match(research, /Do not collapse an entire package/i);
   assert.match(research, /stop exploring/i);
   assert.match(research, /entry points/);
+});
+
+test("assembled prompts end with the configured submission protocol", async () => {
+  const policy = resolveWikiPolicy({ quality: { maxSubmissionAttempts: 2 } });
+  const prompt = await promptFor({
+    id: "research-1",
+    kind: "research",
+    input: {
+      batch: 0,
+      scope: { id: "core", sourcePaths: ["src"], task: "Explain core behavior" },
+      researchGroupId: "initial",
+      priorResearchIds: [],
+      continuationMode: "initial",
+      dryAuditPasses: 0,
+    },
+  }, {
+    language: "en",
+    policy,
+  }, undefined);
+  assert.match(prompt, /## Required Completion Protocol/);
+  assert.match(prompt, /Call `wiki_submit_research`/);
+  assert.match(prompt, /Up to 2 submission attempts are available/);
+  assert.match(prompt, /Do not finish with prose, a JSON code block, or a handoff file/);
+  assert.match(prompt, /After acceptance, stop\.\s*$/);
 });
 
 test("synthesis guidance plans complete evidence-saturated coverage without page quotas", async () => {
@@ -56,7 +80,8 @@ test("synthesis guidance plans complete evidence-saturated coverage without page
   assert.match(synthesis, /`concept`, `flow`, `state`, `data`, `module`, or `architecture`/);
   assert.match(synthesis, /ordering\/domain\.md/);
   assert.match(synthesis, /ordering\/states\/order-lifecycle\.md/);
-  assert.match(synthesis, /call `wiki_submit_synthesis` with the complete decision object directly/i);
+  assert.match(synthesis, /wiki_submit_synthesis_expand/);
+  assert.match(synthesis, /wiki_submit_synthesis_finalize/);
   assert.doesNotMatch(synthesis, /exact handoff path|wiki_write_handoff/i);
 });
 

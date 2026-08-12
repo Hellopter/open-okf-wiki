@@ -801,7 +801,7 @@ test("writer validator infrastructure failures retry the node automatically", as
     onWrite: async () => {
       if (failedOnce) return false;
       failedOnce = true;
-      throw new WikiAgentProtocolError("wiki_submit_page", "", [], {
+      throw new WikiAgentProtocolError(["wiki_submit_page"], "", [], {
         code: "validator_infrastructure",
         message: "validator unavailable",
       });

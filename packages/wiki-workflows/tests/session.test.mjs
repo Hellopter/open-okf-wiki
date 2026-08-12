@@ -39,6 +39,32 @@ function pointer(overrides = {}) {
   };
 }
 
+function failedResearchNode(error) {
+  return {
+    id: "research-1",
+    kind: "research",
+    label: "Research",
+    status: "failed",
+    dependsOn: [],
+    attempt: 1,
+    inputFingerprint: "input",
+    input: {},
+    attemptHistory: [],
+    metrics: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+      cost: 0,
+      compactions: 0,
+      autoRetries: 0,
+    },
+    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
+    error,
+  };
+}
+
 test("createWikiRunSession builds a pointer-only session from a snapshot", () => {
   const session = createWikiRunSession(snapshot());
   assert.deepEqual(session, pointer());
@@ -129,6 +155,29 @@ test("snapshot validation remains independent of session pointer parsing", async
     blockedDetails: { issues: "not-an-array" },
   };
   assert.equal(isWikiRunSnapshot(badBlockedDetails), false);
+
+  const currentSubmissionError = snapshot(undefined, {
+    status: "failed",
+    nodes: [failedResearchNode({
+      message: "Missing submission",
+      code: "missing_submission",
+      retryable: false,
+      requiredSubmissionTools: ["wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize"],
+    })],
+  });
+  assert.equal(isWikiRunSnapshot(currentSubmissionError), true);
+
+  const legacySubmissionError = structuredClone(currentSubmissionError);
+  legacySubmissionError.nodes[0].error = {
+    message: "Missing submission",
+    code: "missing_submission",
+    requiredSubmissionTool: "wiki_submit_synthesis",
+  };
+  assert.equal(isWikiRunSnapshot(legacySubmissionError), false);
+
+  const unknownErrorField = structuredClone(currentSubmissionError);
+  unknownErrorField.nodes[0].error.internal = "must not persist";
+  assert.equal(isWikiRunSnapshot(unknownErrorField), false);
 
   const tamperedPolicy = snapshot(undefined, {
     policy: { ...snapshot().policy, terminology: { Ledger: "changed without rehashing" } },

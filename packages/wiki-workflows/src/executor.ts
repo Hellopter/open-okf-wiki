@@ -175,17 +175,19 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       // Layer 3: correction — one turn for missing/invalid required submission.
       if (submission && submission.value === undefined && correctionAttempts < CORRECTION_MAX) {
         if (submission.exhausted || submission.failure?.code === "validator_infrastructure") {
-          throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history), submission.failure);
+          throw new WikiAgentProtocolError(submission.toolNames, output, retainedHistory(history), submission.failure);
         }
         correctionAttempts += 1;
-        request.onActivity?.({ state: "waiting", message: `Waiting for ${submission.toolName}` }, { correctionAttempts });
+        const requiredTools = submission.toolNames.join(" or ");
+        request.onActivity?.({ state: "waiting", message: `Waiting for ${requiredTools}` }, { correctionAttempts });
         const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
-        const correctionAction = submission.toolName === "wiki_submit_page"
+        const correctionAction = submission.toolNames[0] === "wiki_submit_page"
           ? "Fix every reported issue in the assigned page before resubmitting."
           : "Correct every returned issue and resubmit the complete object directly; do not write a handoff file or reply with JSON text.";
+        const contracts = submission.toolNames.map((toolName) => `${toolName}: ${submissionContractGuidance(toolName)}`).join(" ");
         sessionSettled = false;
         await Promise.race([
-          session.followUp(`Before completing this node, submit a valid final result with ${submission.toolName}.${correction} ${submissionContractGuidance(submission.toolName)} ${correctionAction} After it is recorded, stop.`),
+          session.followUp(`Do not explain or return JSON as text. Call exactly one of these tools now: ${requiredTools}.${correction} ${contracts} ${correctionAction} After acceptance, stop.`),
           deadline,
         ]);
         await Promise.race([session.waitForIdle(), deadline]);
@@ -204,7 +206,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
             session.state.errorMessage ?? "Context budget exceeded",
           );
         }
-        throw new WikiAgentProtocolError(submission.toolName, output, retainedHistory(history), submission.failure);
+        throw new WikiAgentProtocolError(submission.toolNames, output, retainedHistory(history), submission.failure);
       }
 
       if (session.state.errorMessage) throw new Error(session.state.errorMessage);
@@ -283,13 +285,13 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       release();
       throw error;
     }
-    if (submission && !result.session.getActiveToolNames().includes(submission.toolName)) {
+    if (submission && submission.toolNames.some((toolName) => !result.session.getActiveToolNames().includes(toolName))) {
       try {
         result.session.dispose();
       } finally {
         release();
       }
-      throw new Error(`Workflow configuration error: ${submission.toolName} is not active for ${request.node.kind}`);
+      throw new Error(`Workflow configuration error: ${submission.toolNames.join(" and ")} must be active for ${request.node.kind}`);
     }
     this.sessionReleases.set(result.session, release);
     return result.session;
