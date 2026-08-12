@@ -54,7 +54,7 @@ function fakeEngine(initial, hooks = {}) {
     get listenerCount() { return listeners.size; },
     start(request) {
       calls.push(["start", request]);
-      current = snapshot({ requestedMode: request.mode, effectiveMode: request.mode, language: request.language ?? "zh", focus: request.focus });
+      current = snapshot({ cwd: request.cwd, requestedMode: request.mode, effectiveMode: request.mode, language: request.language ?? "zh", focus: request.focus });
       publish("run_started");
       return structuredClone(current);
     },
@@ -141,6 +141,7 @@ function fixture(options = {}) {
     onWaitForIdle,
     onRecoverPending,
     coordinatorBusyOwner,
+    workspaceForCwd,
   } = options;
   const workspace = { wiki: TEST_WIKI_CONFIG, ...workspaceInput };
   const commands = new Map();
@@ -153,6 +154,7 @@ function fixture(options = {}) {
   const workspaceCalls = [];
   const recoveryCalls = [];
   const coordinatorCalls = [];
+  const coordinatorRoots = [];
   let coordinatorOwner = coordinatorBusyOwner;
   const history = new Map();
   const engine = fakeEngine(undefined, { onWaitForIdle });
@@ -192,7 +194,8 @@ function fixture(options = {}) {
     },
     async load(cwd) {
       workspaceCalls.push(["load", cwd]);
-      return { ...workspace, quality: workspace.quality ?? { maxResearchRounds: 6, maxSubmissionAttempts: 3 }, sources: [] };
+      const selected = workspaceForCwd?.(cwd) ?? workspace;
+      return { ...selected, quality: selected.quality ?? { maxResearchRounds: 6, maxSubmissionAttempts: 3 }, sources: [] };
     },
   };
   const historyStore = {
@@ -244,9 +247,12 @@ function fixture(options = {}) {
     workspaceService,
     createHistoryStore: () => historyStore,
     createPublicationStore: () => publicationStore,
-    createWorkspaceCoordinator: () => workspaceCoordinator,
+    createWorkspaceCoordinator: (root) => {
+      coordinatorRoots.push(root);
+      return workspaceCoordinator;
+    },
   })(pi);
-  return { appended, commands, coordinatorCalls, ctx, engine, handlers, history, messages, notices, recoveryCalls, statuses, widgets, workspaceCalls };
+  return { appended, commands, coordinatorCalls, coordinatorRoots, ctx, engine, handlers, history, messages, notices, recoveryCalls, statuses, widgets, workspaceCalls };
 }
 
 async function eventually(predicate, message = "condition was not reached") {
@@ -437,6 +443,21 @@ test("session start discovers and pauses a single interrupted run without a Pi p
   assert.ok(subject.coordinatorCalls.some(([name]) => name === "release"));
 });
 
+test("session restore keeps workspace ownership when its recovered checkpoint fails", async () => {
+  const subject = fixture({
+    onHistorySave: async (value) => {
+      if (value.status === "paused") throw new Error("restore checkpoint unavailable");
+    },
+  });
+  subject.history.set("run-interrupted", snapshot({ id: "run-interrupted", status: "running" }));
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+
+  assert.ok(subject.notices.some(({ message }) => /restore checkpoint unavailable/.test(message)));
+  assert.notEqual(subject.coordinatorCalls.at(-1)?.[0], "release");
+  assert.equal(subject.coordinatorCalls.at(-1)?.[1], "run-interrupted");
+});
+
 test("generate rejects recoverable project history and releases ownership", async () => {
   const subject = fixture();
   await subject.handlers.get("session_start")({}, subject.ctx);
@@ -474,6 +495,28 @@ test("failed project history does not block a new generation", async () => {
   assert.equal(subject.history.get("run-1").status, "running");
 });
 
+test("commands create workspace-scoped applications instead of reusing the first root", async () => {
+  const subject = fixture({
+    workspaceForCwd: (cwd) => ({
+      root: cwd === "/workspace-2" ? "/workspace-2" : "/workspace",
+      language: "zh",
+      wiki: TEST_WIKI_CONFIG,
+    }),
+  });
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  await subject.commands.get("wiki").handler("generate", subject.ctx);
+  subject.engine.complete("succeeded");
+  await eventually(() => subject.coordinatorCalls.at(-1)?.[0] === "release");
+
+  const secondContext = { ...subject.ctx, cwd: "/workspace-2" };
+  await subject.commands.get("wiki").handler("generate", secondContext);
+
+  assert.ok(subject.coordinatorRoots.includes("/workspace"));
+  assert.ok(subject.coordinatorRoots.includes("/workspace-2"));
+  assert.equal(subject.appended.find((entry) => entry.data.workspace === "/workspace")?.data.revision, 1);
+  assert.equal(subject.appended.find((entry) => entry.data.workspace === "/workspace-2")?.data.revision, 1);
+});
+
 test("cancel accepts an interrupted run id from project history", async () => {
   const subject = fixture();
   await subject.handlers.get("session_start")({}, subject.ctx);
@@ -506,7 +549,7 @@ test("resume accepts an exact historical run id and rejects terminal runs", asyn
   await failed.commands.get("wiki").handler("resume run-failed", failed.ctx);
 
   assert.equal(failed.engine.calls.some(([name]) => name === "restore"), false);
-  assert.match(failed.notices.at(-1).message, /targeted node or phase retry/);
+  assert.match(failed.notices.at(-1).message, /cannot be resumed|does not allow resume/);
 });
 
 test("pause binds the latest recoverable history when the engine has no current run", async () => {
@@ -521,7 +564,7 @@ test("pause binds the latest recoverable history when the engine has no current 
   await subject.commands.get("wiki").handler("pause", subject.ctx);
 
   assert.equal(subject.engine.calls.some(([name]) => name === "restore"), true);
-  assert.deepEqual(subject.engine.calls.slice(-2).map(([name]) => name), ["pause", "waitForIdle"]);
+  assert.deepEqual(subject.engine.calls.slice(-2).map(([name]) => name), ["restore", "waitForIdle"]);
   assert.equal(subject.history.get("run-paused")?.status, "paused");
   assert.ok(subject.notices.some(({ message }) => /paused/i.test(message)));
 });
@@ -581,7 +624,7 @@ test("terminal completion keeps ownership when terminal history persistence fail
   assert.equal(subject.coordinatorCalls.at(-1)?.[1], "run-1");
 });
 
-test("stop and cancel retain ownership when their final checkpoint fails", async () => {
+test("stop and cancel retain existing run ownership when their final checkpoint fails", async () => {
   for (const action of ["stop", "cancel"]) {
     const subject = fixture({
       onHistorySave: async (value) => {
@@ -594,8 +637,7 @@ test("stop and cancel retain ownership when their final checkpoint fails", async
     await subject.commands.get("wiki").handler(action, subject.ctx);
 
     await eventually(() => subject.notices.some(({ message }) => message.includes(`${action} checkpoint unavailable`)));
-    assert.notEqual(subject.coordinatorCalls.at(-1)?.[0], "release", `${action} must retain ownership`);
-    assert.equal(subject.coordinatorCalls.at(-1)?.[1], "run-1");
+    assert.notEqual(subject.coordinatorCalls.at(-1)?.[0], "release", `${action} must retain existing ownership`);
   }
 });
 
@@ -718,7 +760,7 @@ test("session shutdown waits for pending terminal history writes", async () => {
   assert.equal(subject.history.get("run-1").status, "succeeded");
 });
 
-test("project history write failures are reported without losing Pi session pointer", async () => {
+test("project history write failures are reported without publishing a dangling Pi pointer", async () => {
   const subject = fixture({
     mode: "tui",
     hasUI: true,
@@ -728,8 +770,7 @@ test("project history write failures are reported without losing Pi session poin
 
   await subject.commands.get("wiki").handler("generate", subject.ctx);
 
-  assert.equal(subject.appended.at(-1).data.runId, "run-1");
-  assert.equal("snapshot" in subject.appended.at(-1).data, false);
+  assert.equal(subject.appended.some((entry) => entry.data.runId === "run-1"), false);
   assert.ok(subject.notices.some(({ message, level }) => level === "error"
     && /history could not be saved: disk unavailable/.test(message)));
 });

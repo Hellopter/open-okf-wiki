@@ -3,7 +3,7 @@
  * Fail if pure modules import @earendil-works/* (Pi packages).
  * See ARCHITECTURE.md → Import rules.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,17 +29,6 @@ const PURE_MODULES = [
 
 const FORBIDDEN = /from\s+["']@earendil-works\//;
 const FORBIDDEN_REQUIRE = /require\s*\(\s*["']@earendil-works\//;
-
-function listTsFiles(dir) {
-  const out = [];
-  for (const name of readdirSync(dir)) {
-    const full = path.join(dir, name);
-    const st = statSync(full);
-    if (st.isDirectory()) out.push(...listTsFiles(full));
-    else if (name.endsWith(".ts")) out.push(full);
-  }
-  return out;
-}
 
 const violations = [];
 

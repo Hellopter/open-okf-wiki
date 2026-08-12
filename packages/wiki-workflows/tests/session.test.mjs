@@ -126,6 +126,16 @@ test("parseWikiRunSession rejects malformed pointers", () => {
 test("snapshot validation remains independent of session pointer parsing", async () => {
   const { explainWikiRunSnapshot, isWikiRunSnapshot, parseWikiRunSnapshot } = await import("../dist/snapshot-validation.js");
   assert.equal(isWikiRunSnapshot(snapshot()), true);
+  assert.equal(
+    isWikiRunSnapshot({ ...snapshot(), inspection: undefined }),
+    true,
+    "durable projection may retain the stripped runtime field as an undefined own property",
+  );
+  assert.equal(
+    isWikiRunSnapshot({ ...snapshot(), inspection: { sourcePaths: ["private-runtime-payload"] } }),
+    false,
+    "the durable contract still rejects a populated runtime inspection",
+  );
 
   const legacyV6 = snapshot(6);
   assert.equal(isWikiRunSnapshot(legacyV6), false);
@@ -178,6 +188,20 @@ test("snapshot validation remains independent of session pointer parsing", async
   const unknownErrorField = structuredClone(currentSubmissionError);
   unknownErrorField.nodes[0].error.internal = "must not persist";
   assert.equal(isWikiRunSnapshot(unknownErrorField), false);
+
+  const unknownRootField = { ...snapshot(), runtimeCache: { hydrated: true } };
+  assert.equal(isWikiRunSnapshot(unknownRootField), false, "durable v1 rejects runtime-only root fields");
+
+  const archivedRawResult = snapshot(undefined, {
+    status: "failed",
+    nodes: [failedResearchNode({ message: "failed" })],
+  });
+  archivedRawResult.nodes[0].attemptHistory.push({
+    attempt: 1,
+    result: { fullModelPayload: true },
+    metrics: archivedRawResult.nodes[0].metrics,
+  });
+  assert.equal(isWikiRunSnapshot(archivedRawResult), false, "durable v1 rejects old full attempt payloads");
 
   const tamperedPolicy = snapshot(undefined, {
     policy: { ...snapshot().policy, terminology: { Ledger: "changed without rehashing" } },

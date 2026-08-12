@@ -1,5 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { WikiNode, WikiRunSnapshot } from "../../workflow-types.js";
+import type { WikiRunAgentView, WikiRunView } from "../../workflow-types.js";
 import {
   activityText,
   asText,
@@ -13,7 +13,7 @@ import {
   STATUS_ICON,
   type WikiUiTheme,
 } from "../format.js";
-import { nodesForPhase, phaseRows, phaseStatus, type WikiPhase } from "../stages.js";
+import { nodesForPhase, phaseRows, type WikiPhase } from "../stages.js";
 import type { NavigatorState } from "../state.js";
 import { uiStrings, type WikiUiLanguage } from "../strings.js";
 import { renderRunHeader } from "./chrome.js";
@@ -26,7 +26,7 @@ export function layoutForWidth(width: number): 1 | 2 {
 
 export function renderDashboard(
   state: NavigatorState,
-  run: WikiRunSnapshot,
+  run: WikiRunView,
   width: number,
   theme: WikiUiTheme,
   rows: number,
@@ -42,7 +42,7 @@ export function renderDashboard(
 
 function renderTwoPane(
   state: NavigatorState,
-  run: WikiRunSnapshot,
+  run: WikiRunView,
   width: number,
   theme: WikiUiTheme,
   rows: number,
@@ -60,7 +60,7 @@ function renderTwoPane(
 
 function renderSinglePane(
   state: NavigatorState,
-  run: WikiRunSnapshot,
+  run: WikiRunView,
   width: number,
   theme: WikiUiTheme,
   rows: number,
@@ -78,7 +78,7 @@ function renderSinglePane(
 function renderStagesColumn(
   state: NavigatorState,
   stages: WikiPhase[],
-  run: WikiRunSnapshot,
+  run: WikiRunView,
   width: number,
   theme: WikiUiTheme,
   rows: number,
@@ -91,7 +91,7 @@ function renderStagesColumn(
   for (let index = window.start; index < window.end; index++) {
     const phase = stages[index]!;
     const nodes = nodesForPhase(run, phase);
-    const status = phaseStatus(phase, nodes);
+    const status = nodes.length ? phase.status : phase.conditional ? "conditional" : "not_started";
     const marker = index === selected && state.pane === "stages" ? "›" : " ";
     const count = nodes.length
       ? `${nodes.filter((node) => node.status === "succeeded").length}/${nodes.length}`
@@ -111,7 +111,7 @@ function renderStagesColumn(
 function renderAgentsColumn(
   state: NavigatorState,
   stage: WikiPhase | undefined,
-  agents: WikiNode[],
+  agents: readonly WikiRunAgentView[],
   width: number,
   theme: WikiUiTheme,
   rows: number,
@@ -140,7 +140,7 @@ function renderAgentsColumn(
   return fitRows(lines, rows, width);
 }
 
-export function renderNodeRow(node: WikiNode, selected: boolean, width: number, theme: WikiUiTheme): string {
+export function renderNodeRow(node: WikiRunAgentView, selected: boolean, width: number, theme: WikiUiTheme): string {
   const marker = selected ? "›" : " ";
   const attempt = node.attempt > 1 ? ` #${node.attempt}` : "";
   const activity = node.status === "running" ? ` | ${asText(activityText(node))}` : "";

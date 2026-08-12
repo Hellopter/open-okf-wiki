@@ -7,6 +7,7 @@ import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { checkRunArtifactHealth } from "../dist/run-health.js";
 import { WikiWorkflowEngine } from "../dist/engine.js";
 import { resolveWikiPolicy, wikiPolicyHash } from "../dist/policy.js";
+import { explainWikiRunSnapshot } from "../dist/snapshot-validation.js";
 
 const EMPTY_METRICS = {
   inputTokens: 0,
@@ -54,10 +55,8 @@ function node(overrides) {
     dependsOn: [],
     attempt: 1,
     attemptHistory: [],
-    createdAt: "2026-08-10T00:00:00.000Z",
     phaseId: "research",
     phaseTitle: "Research",
-    role: "researcher",
     input: {},
     inputFingerprint: "fp",
     metrics: { ...EMPTY_METRICS },
@@ -97,7 +96,6 @@ test("checkRunArtifactHealth reports missing succeeded research handoffs", async
         label: "write",
         phaseId: "write",
         phaseTitle: "Write",
-        role: "writer",
         // Writers are ignored even without a handoff check path.
       }),
     ],
@@ -140,7 +138,6 @@ test("applyRestoredArtifactHealth blocks a paused run with missing handoffs", as
         label: "Synthesize",
         phaseId: "plan",
         phaseTitle: "Plan",
-        role: "synthesizer",
         input: {
           dependsOn: [],
           researchIds: [],
@@ -161,7 +158,7 @@ test("applyRestoredArtifactHealth blocks a paused run with missing handoffs", as
     ],
   });
 
-  assert.ok(engine.restore(snapshot));
+  assert.ok(engine.restore(snapshot), explainWikiRunSnapshot(snapshot).join("; "));
   const problems = await engine.applyRestoredArtifactHealth();
   assert.equal(problems.length, 1);
   const blocked = engine.getSnapshot();

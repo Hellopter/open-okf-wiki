@@ -9,6 +9,7 @@ import type {
   WikiResearchScope,
   WikiRunSnapshot,
 } from "./workflow-types.js";
+import { stableStringify } from "./util.js";
 
 /** Receipts are routing state, not a second copy of the full research artifact. */
 export const MAX_RESEARCH_RECEIPT_BYTES = 64 * 1024;
@@ -110,11 +111,4 @@ function criticalGapSignature(gap: WikiResearchArtifact["gaps"][number]): string
 
 function normalizeIssueText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
 }

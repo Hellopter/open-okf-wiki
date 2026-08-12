@@ -1,13 +1,11 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { WikiRunSnapshot } from "../../workflow-types.js";
+import type { WikiRunView } from "../../workflow-types.js";
 import {
   fitRows,
-  formatTimestamp,
   padToWidth,
   runStatusColor,
   runStatusIcon,
   runTitle,
-  shortHash,
   type WikiUiTheme,
 } from "../format.js";
 import type { NavigatorState } from "../state.js";
@@ -15,14 +13,11 @@ import { uiStrings, type WikiUiLanguage } from "../strings.js";
 
 export const NAVIGATOR_FOOTER_ROWS = 2;
 
-export function renderRunHeader(run: WikiRunSnapshot, width: number, theme: WikiUiTheme): string[] {
-  const changed = run.inspectionSummary?.changedPathCount ?? run.inspection?.changedPaths.length ?? 0;
-  const progress = `${run.nodes.filter((node) => node.status === "succeeded").length}/${run.nodes.length}`;
-  const inspectionHead = run.inspectionSummary?.head ?? run.inspection?.head;
-  const head = inspectionHead ? ` | ${shortHash(inspectionHead)}` : "";
+export function renderRunHeader(run: WikiRunView, width: number, theme: WikiUiTheme): string[] {
+  const progress = `${run.progress.succeeded}/${run.progress.total}`;
   const title = truncateToWidth(runTitle(run), width, "", true);
   const status = theme.fg(runStatusColor(run.status), `${runStatusIcon(run.status)} ${run.status}`);
-  const detail = `${status}${theme.fg("dim", `  ${progress} agents | ${changed} changed${head}`)}`;
+  const detail = `${status}${theme.fg("dim", `  ${progress} agents`)}`;
   return [
     theme.fg("accent", theme.bold(title)),
     truncateToWidth(detail, width, "", true),
@@ -79,8 +74,4 @@ export function wrapBorderedBody(lines: string[], innerWidth: number, theme: Wik
   const border = (value: string) => theme.fg(focused ? "accent" : "borderMuted", value);
   const safeInnerWidth = Math.max(0, Math.floor(innerWidth));
   return lines.map((line) => border("│ ") + (safeInnerWidth ? padToWidth(line, safeInnerWidth) : "") + border(" │"));
-}
-
-export function formatRunMeta(updatedAt: string): string {
-  return formatTimestamp(updatedAt);
 }

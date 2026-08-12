@@ -1,5 +1,4 @@
-import type { WikiRunSnapshot } from "../workflow-types.js";
-import { describeNodes, phaseRetryImpact, retryImpact } from "./impact.js";
+import type { WikiRunAgentView, WikiRunView } from "../workflow-types.js";
 import { phaseRows } from "./stages.js";
 import { uiStrings, type WikiUiLanguage } from "./strings.js";
 
@@ -23,39 +22,34 @@ export function deleteConfirm(language?: WikiUiLanguage): ConfirmPrompt {
   return { title: s.deleteTitle, message: s.deleteMessage };
 }
 
-export function retryAgentConfirm(run: WikiRunSnapshot, nodeId: string, language?: WikiUiLanguage): ConfirmPrompt | undefined {
+export function retryAgentConfirm(run: WikiRunView, nodeId: string, language?: WikiUiLanguage): ConfirmPrompt | undefined {
   const s = uiStrings(language);
-  const impact = retryImpact(run, nodeId);
-  const target = run.nodes.find((node) => node.id === nodeId);
-  if (!impact || !target) return undefined;
-  const preserved = describeNodes(run, impact.preservedUpstream) || "none";
-  const rerun = describeNodes(run, [...impact.targetIds, ...impact.invalidatedDownstream]) || target.label;
+  const target = agentById(run, nodeId);
+  if (!target || !run.allowedActions.retry) return undefined;
   return {
     title: s.retryAgentTitle(target.label),
     message: [
-      s.retryKeepUpstream(preserved),
-      s.retryRerun(rerun),
+      s.retryRerun(target.label),
       s.retryGit,
-      impact.writesWiki ? s.retryWritesWiki : s.retryNoWikiWrite,
+      target.kind === "write" ? s.retryWritesWiki : s.retryNoWikiWrite,
     ].join("\n"),
   };
 }
 
-export function retryPhaseConfirm(run: WikiRunSnapshot, phaseId: string, language?: WikiUiLanguage): ConfirmPrompt | undefined {
+export function retryPhaseConfirm(run: WikiRunView, phaseId: string, language?: WikiUiLanguage): ConfirmPrompt | undefined {
   const s = uiStrings(language);
-  const impact = phaseRetryImpact(run, phaseId);
-  const target = impact ? run.nodes.find((node) => node.id === impact.targetId) : undefined;
-  if (!impact || !target) return undefined;
   const phase = phaseRows(run).find((item) => item.id === phaseId);
-  const preserved = describeNodes(run, impact.preservedUpstream) || "none";
-  const rerun = describeNodes(run, [...impact.targetIds, ...impact.invalidatedDownstream]) || target.label;
+  if (!phase?.agents.length || !run.allowedActions.retry) return undefined;
   return {
-    title: s.retryPhaseTitle(phase?.title ?? target.label),
+    title: s.retryPhaseTitle(phase.title),
     message: [
-      s.retryKeepUpstream(preserved),
-      s.retryRerun(rerun),
+      s.retryRerun(phase.agents.map((agent) => agent.label).join(", ")),
       s.retryGit,
-      impact.writesWiki ? s.retryWritesWiki : s.retryNoWikiWrite,
+      phase.agents.some((agent) => agent.kind === "write") ? s.retryWritesWiki : s.retryNoWikiWrite,
     ].join("\n"),
   };
+}
+
+function agentById(run: WikiRunView, nodeId: string): WikiRunAgentView | undefined {
+  return run.phases.flatMap((phase) => phase.agents).find((agent) => agent.id === nodeId);
 }

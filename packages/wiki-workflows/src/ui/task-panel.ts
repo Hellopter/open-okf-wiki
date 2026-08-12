@@ -4,20 +4,19 @@ import type { WikiRunSnapshot } from "../workflow-types.js";
 import {
   activityText,
   fitLine,
-  isExecutingRunStatus,
+  isActiveRunStatus,
   isTerminalRunStatus,
+  PLAIN_THEME,
   runStatusIcon,
   runTitle,
   STATUS_ICON,
   type WikiUiTheme,
 } from "./format.js";
-import { phaseRows } from "./stages.js";
+import { WIKI_WORKFLOW_STAGES } from "../workflow-phases.js";
 import { uiStrings, type WikiUiLanguage } from "./strings.js";
 
 export const TASK_PANEL_KEY = "okf-wiki-tasks";
 export const STATUS_KEY = "okf-wiki";
-
-export type ProgressMode = "compact" | "detailed";
 
 export interface TaskPanelSnapshot {
   run?: WikiRunSnapshot;
@@ -31,11 +30,10 @@ export function renderPanel(
   snapshot: TaskPanelSnapshot,
   theme: WikiUiTheme,
   width?: number,
-  mode: ProgressMode = "compact",
 ): string[] {
   const run = snapshot.run;
   if (!run) return [];
-  const active = isExecutingRunStatus(run.status);
+  const active = isActiveRunStatus(run.status);
   const terminal = isTerminalRunStatus(run.status);
   if (!active && !(terminal && snapshot.retainTerminal)) return [];
 
@@ -48,12 +46,6 @@ export function renderPanel(
   const header = theme.bold(s.panelTitle(active ? 1 : 0));
   const row = `  ${icon} ${runTitle(run)}  ${done}/${run.nodes.length} agents${phaseLabel}`;
 
-  if (mode === "detailed") {
-    const body = renderDetailedBody(run, theme);
-    const hint = theme.fg("dim", terminal ? s.panelTerminalHint : s.panelHint);
-    return [header, fitLine(row, width), ...body.map((line) => fitLine(line, width)), fitLine(hint, width)];
-  }
-
   const activeLine = running[0]
     ? theme.fg("dim", `    ${STATUS_ICON.running} ${running[0].label}${running[0].activity.message ? ` · ${activityText(running[0])}` : ""}`)
     : undefined;
@@ -61,31 +53,11 @@ export function renderPanel(
   return [header, fitLine(row, width), ...(activeLine ? [fitLine(activeLine, width)] : []), fitLine(hint, width)];
 }
 
-function renderDetailedBody(run: WikiRunSnapshot, theme: WikiUiTheme): string[] {
-  const lines: string[] = [];
-  for (const phase of phaseRows(run)) {
-    if (!phase.nodeIds.length) continue;
-    const nodes = phase.nodeIds
-      .map((id) => run.nodes.find((node) => node.id === id))
-      .filter((node): node is NonNullable<typeof node> => Boolean(node));
-    const done = nodes.filter((node) => node.status === "succeeded").length;
-    const running = nodes.some((node) => node.status === "running");
-    const marker = running ? "▶" : done === nodes.length ? "✓" : " ";
-    lines.push(theme.fg("accent", `  ${marker} ${phase.title}`) + theme.fg("dim", `  ${done}/${nodes.length}`));
-    for (const node of nodes.slice(-6)) {
-      const activity = node.status === "running" && node.activity.message ? ` · ${activityText(node)}` : "";
-      lines.push(`    ${STATUS_ICON[node.status]} ${node.label}${activity}`);
-    }
-  }
-  return lines;
-}
-
 function currentPhaseTitle(run: WikiRunSnapshot): string | undefined {
   const running = run.nodes.find((node) => node.status === "running");
   if (running?.phaseTitle) return running.phaseTitle;
   if (running?.phaseId) {
-    const phase = phaseRows(run).find((item) => item.id === running.phaseId);
-    return phase?.title;
+    return WIKI_WORKFLOW_STAGES.find((item) => item.id === running.phaseId)?.title;
   }
   const queued = run.nodes.find((node) => node.status === "queued");
   return queued?.phaseTitle;
@@ -109,10 +81,9 @@ export function statusLine(run: WikiRunSnapshot | undefined, language?: WikiUiLa
  */
 export function createTaskPanelWidget(
   getSnapshot: () => TaskPanelSnapshot,
-  mode: ProgressMode = "compact",
 ): (tui: TUI, theme: Theme) => Component {
   return (_tui, theme) => ({
-    render: (width: number) => renderPanel(getSnapshot(), theme, width, mode),
+    render: (width: number) => renderPanel(getSnapshot(), theme, width),
     invalidate: () => {},
   });
 }
@@ -120,9 +91,16 @@ export function createTaskPanelWidget(
 export function installTaskPanel(
   ui: ExtensionUIContext,
   getSnapshot: () => TaskPanelSnapshot,
-  mode: ProgressMode = "compact",
 ): void {
-  ui.setWidget(TASK_PANEL_KEY, createTaskPanelWidget(getSnapshot, mode), { placement: "belowEditor" });
+  ui.setWidget(TASK_PANEL_KEY, createTaskPanelWidget(getSnapshot), { placement: "belowEditor" });
+}
+
+/** RPC transports can only serialize static widget lines, not component factories. */
+export function installTaskPanelLines(
+  ui: ExtensionUIContext,
+  snapshot: TaskPanelSnapshot,
+): void {
+  ui.setWidget(TASK_PANEL_KEY, renderPanel(snapshot, PLAIN_THEME), { placement: "belowEditor" });
 }
 
 export function clearTaskPanel(ui: ExtensionUIContext): void {

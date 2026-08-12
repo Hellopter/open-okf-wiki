@@ -18,6 +18,12 @@ const EVENT_KINDS = new Set([
 /** Reject corrupt persisted state before the workflow engine or UI can consume it. */
 export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "version", "id", "cwd", "requestedMode", "effectiveMode", "language", "focus", "status", "round",
+      "sourceRestartCount", "maxResearchRounds", "policy", "policyHash", "inspection", "inspectionSummary", "inspectionFingerprint",
+      "nodes", "events", "createdAt", "updatedAt", "completedAt", "blockedReason", "blockedDetails", "parentRunId",
+      "forkedFromNodeId", "forkedFromPhaseId", "forkedAt", "revision",
+    ])
     || value.version !== SNAPSHOT_VERSION
     || !isString(value.id)
     || !isString(value.cwd)
@@ -172,6 +178,10 @@ function formatGot(value: unknown): string {
 
 function isNode(value: unknown, runId: string): value is WikiNode {
   if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "id", "kind", "label", "phaseId", "phaseTitle", "status", "dependsOn", "attempt", "inputFingerprint", "input",
+      "result", "output", "history", "handoff", "error", "attemptHistory", "metrics", "activity", "startedAt", "finishedAt",
+    ])
     || !isString(value.id)
     || !isEnum(value.kind, NODE_KINDS)
     || !isString(value.label)
@@ -246,6 +256,7 @@ function receiptCounts(value: Record<string, unknown>, keys: string[], optional 
 
 function isAttempt(value: unknown): value is WikiNodeAttempt {
   return isRecord(value)
+    && hasOnlyKeys(value, ["attempt", "startedAt", "finishedAt", "output", "history", "handoff", "error", "metrics"])
     && isNonnegativeInteger(value.attempt)
     && optionalStringFields(value, ["startedAt", "finishedAt", "output"])
     && optional(value.history, isHistory)

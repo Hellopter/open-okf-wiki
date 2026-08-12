@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  attemptNumbers,
   cancelConfirm,
   deleteConfirm,
   keyToNavigatorIntent,
   layoutForWidth,
   NavigatorState,
   openWikiNavigator,
-  phaseRetryImpact,
   phaseRows,
   PLAIN_THEME,
   renderDashboard,
@@ -17,12 +15,14 @@ import {
   renderWikiNavigatorFrame,
   renderWikiRunHistoryText,
   renderWikiRunText,
-  retryImpact,
   statusLine,
   stopConfirm,
   WikiUiHost,
   WikiUiModel,
 } from "../dist/index.js";
+import { projectWikiRunView } from "../dist/run-view.js";
+import { wrapLines } from "../dist/ui/format.js";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 const plain = (value) => value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 const overlayRows = (rows) => Math.max(1, Math.min(Math.floor(rows * 0.92), Math.max(1, rows - 2)));
@@ -93,26 +93,24 @@ const run = {
 function controllerFor(value = run, runs = [summary(value)]) {
   const listeners = new Set();
   let current = structuredClone(value);
+  const view = () => projectWikiRunView(current, {
+    activeRunId: current.status === "running" || current.status === "paused" ? current.id : undefined,
+    liveNodeIds: current.nodes.filter((node) => node.status === "running").map((node) => node.id),
+  });
   return {
     listRuns: () => runs.slice(),
-    getRun: (runId) => {
-      if (!runId || runId === current.id) return structuredClone(current);
+    observe: (runId) => {
+      if (!runId || runId === current.id) return structuredClone(view());
       return undefined;
     },
-    loadRun: async (runId) => (runId === current.id ? structuredClone(current) : undefined),
-    getActiveRunId: () => current.id,
+    load: async (runId) => (runId === current.id ? structuredClone(view()) : undefined),
+    activeRunId: () => current.status === "running" || current.status === "paused" ? current.id : undefined,
     getWorkspace: () => ({ root: "/workspace", language: "zh", sources: [{ path: "src" }] }),
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    retryNode: async () => current,
-    retryPhase: async () => current,
-    deleteRun: async () => {},
-    pause: () => {},
-    resume: async () => {},
-    stop: async () => {},
-    cancel: async () => {},
+    dispatch: async () => view(),
   };
 }
 
@@ -126,7 +124,7 @@ function openDashboard(model, runId = run.id) {
 test("phaseRows exposes the complete Wiki workflow map", () => {
   assert.equal(layoutForWidth(68), 2);
   assert.equal(layoutForWidth(67), 1);
-  assert.deepEqual(phaseRows(run).map((phase) => [phase.title, phase.nodeIds.length]), [
+  assert.deepEqual(phaseRows(projectWikiRunView(run)).map((phase) => [phase.title, phase.nodeIds.length]), [
     ["Inspect", 1], ["Research", 2], ["Plan", 0], ["Write", 1], ["Review & Publish", 0],
   ]);
 });
@@ -148,7 +146,7 @@ test("dashboard shows all stages before dynamic agents are scheduled without a t
 test("dashboard gives remaining rows directly to stages", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  const lines = renderDashboard(state, run, 100, PLAIN_THEME, 5, "en").map(plain);
+  const lines = renderDashboard(state, projectWikiRunView(run), 100, PLAIN_THEME, 5, "en").map(plain);
   assert.equal(lines.length, 5);
   assert.match(lines[2], /Stages/);
 });
@@ -156,10 +154,10 @@ test("dashboard gives remaining rows directly to stages", () => {
 test("dashboard two-pane render includes stages and agents", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length); // research
+  state.move(1, model.phases(run.id).length); // research
   state.sync(model);
   state.pane = "agents";
-  const body = plain(renderDashboard(state, run, 100, PLAIN_THEME, 16, "en").join("\n"));
+  const body = plain(renderDashboard(state, projectWikiRunView(run), 100, PLAIN_THEME, 16, "en").join("\n"));
   assert.match(body, /Stages|Research/);
   assert.match(body, /Research workflow engine/);
   assert.match(body, /Research source citations/);
@@ -172,7 +170,7 @@ test("navigator stack is runs → dashboard → agent only", () => {
   state.openDashboard(run.id);
   assert.equal(state.view, "dashboard");
   state.sync(model);
-  state.move(1, phaseRows(run).length);
+  state.move(1, model.phases(run.id).length);
   state.sync(model);
   state.pane = "agents";
   state.sync(model);
@@ -193,7 +191,7 @@ test("navigator stack is runs → dashboard → agent only", () => {
 test("agent retry target requires an agent context, never the focused stage's first agent", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length); // research, whose first agent is research-a
+  state.move(1, model.phases(run.id).length); // research, whose first agent is research-a
   state.sync(model);
 
   assert.equal(state.pane, "stages");
@@ -210,7 +208,7 @@ test("agent retry target requires an agent context, never the focused stage's fi
 test("agent selection survives dashboard synchronization after arrow navigation", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length); // research
+  state.move(1, model.phases(run.id).length); // research
   state.sync(model);
   state.switchPane("agents");
 
@@ -224,7 +222,7 @@ test("agent selection survives dashboard synchronization after arrow navigation"
 test("agent compact view and attempt cycling", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length);
+  state.move(1, model.phases(run.id).length);
   state.sync(model);
   state.pane = "agents";
   state.agentCursor = 0;
@@ -233,28 +231,9 @@ test("agent compact view and attempt cycling", () => {
   const compact = plain(renderWikiNavigatorFrame(state, model, 100, PLAIN_THEME, 30, "en").join("\n"));
   assert.match(compact, /Agent: Research workflow engine/);
   assert.match(compact, /compact|Enter/);
-  assert.deepEqual(attemptNumbers(run.nodes[1]), [1, 2]);
-  state.cycleAttempt(-1, attemptNumbers(run.nodes[1]));
-  assert.equal(state.selectedAttempt, 1);
   state.openPager();
   const pager = plain(renderWikiNavigatorFrame(state, model, 100, PLAIN_THEME, 40, "en").join("\n"));
-  assert.match(pager, /Messages & tool calls|old output|archived/);
-});
-
-test("retry impact preserves upstream and invalidates downstream", () => {
-  const impact = retryImpact(run, "research-a");
-  assert.ok(impact);
-  assert.deepEqual(impact.preservedUpstream, ["inspect"]);
-  assert.ok(impact.invalidatedDownstream.includes("write"));
-  assert.equal(impact.writesWiki, true);
-  assert.equal(impact.rechecksGit, true);
-
-  const completed = structuredClone(run);
-  completed.status = "succeeded";
-  for (const node of completed.nodes) node.status = "succeeded";
-  const phase = phaseRetryImpact(completed, "research");
-  assert.ok(phase);
-  assert.deepEqual(phase.targetIds, ["research-a", "research-b"]);
+  assert.match(pager, /Messages & tool calls|workflow engine/);
 });
 
 test("key map covers dual-track navigator intents", () => {
@@ -278,16 +257,32 @@ test("key map covers dual-track navigator intents", () => {
 });
 
 test("task panel renders compact progress and retains terminal runs", () => {
-  const active = renderPanel({ run, language: "en", retainTerminal: false }, PLAIN_THEME, 80, "compact");
+  const active = renderPanel({ run, language: "en", retainTerminal: false }, PLAIN_THEME, 80);
   assert.match(plain(active.join("\n")), /Wiki running/);
   assert.match(plain(active.join("\n")), /\/wiki open/);
 
   const finished = structuredClone(run);
   finished.status = "succeeded";
-  const kept = renderPanel({ run: finished, language: "en", retainTerminal: true }, PLAIN_THEME, 80, "compact");
+  const kept = renderPanel({ run: finished, language: "en", retainTerminal: true }, PLAIN_THEME, 80);
   assert.match(plain(kept.join("\n")), /finished run kept|\/wiki open/);
-  const dropped = renderPanel({ run: finished, language: "en", retainTerminal: false }, PLAIN_THEME, 80, "compact");
+  const dropped = renderPanel({ run: finished, language: "en", retainTerminal: false }, PLAIN_THEME, 80);
   assert.deepEqual(dropped, []);
+});
+
+test("line wrapping respects terminal columns for ANSI, CJK, emoji, and narrow widths", () => {
+  const samples = [
+    "\u001b[31mcolored terminal output continues\u001b[0m",
+    "中文内容需要按终端列宽换行",
+    "status 👩🏽‍💻 ready ✅ next",
+  ];
+  // Two columns is the smallest width that can preserve a full-width glyph.
+  for (const width of [2, 4, 8, 12]) {
+    for (const sample of samples) {
+      const lines = wrapLines(sample, width);
+      assert.ok(lines.length > 0);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width), `${JSON.stringify(sample)} exceeds width ${width}`);
+    }
+  }
 });
 
 test("status and history text stay concise for non-TUI commands", () => {
@@ -333,7 +328,7 @@ test("Navigator agent and artifact text surface persisted handoff refs", () => {
   };
   const model = new WikiUiModel(controllerFor(withArtifact));
   const state = openDashboard(model);
-  state.move(1, phaseRows(withArtifact).length);
+  state.move(1, model.phases(withArtifact.id).length);
   state.sync(model);
   state.pane = "agents";
   state.agentCursor = 0;
@@ -347,17 +342,11 @@ test("Navigator agent and artifact text surface persisted handoff refs", () => {
 test("runs list frame and empty state", () => {
   const emptyModel = new WikiUiModel({
     listRuns: () => [],
-    getRun: () => undefined,
-    loadRun: async () => undefined,
-    getActiveRunId: () => undefined,
+    observe: () => undefined,
+    load: async () => undefined,
+    activeRunId: () => undefined,
     subscribe: () => () => {},
-    retryNode: async () => undefined,
-    retryPhase: async () => undefined,
-    deleteRun: async () => {},
-    pause: () => {},
-    resume: async () => {},
-    stop: async () => {},
-    cancel: async () => {},
+    dispatch: async () => undefined,
   });
   const state = new NavigatorState();
   const empty = plain(renderWikiNavigatorFrame(state, emptyModel, 80, PLAIN_THEME, 12, "en").join("\n"));
@@ -377,7 +366,7 @@ test("live navigator keeps a complete frame and refreshes SelectList entries on 
   const listeners = new Set();
   const controller = {
     ...controllerFor(run, summaries),
-    getActiveRunId: () => undefined,
+    activeRunId: () => undefined,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -436,8 +425,8 @@ test("navigator resumes the selected recoverable history by run id", async () =>
   const resumed = [];
   const controller = {
     ...controllerFor(historical),
-    getActiveRunId: () => undefined,
-    resume: async (runId) => { resumed.push(runId); },
+    activeRunId: () => undefined,
+    dispatch: async (intent) => { if (intent.type === "resume") resumed.push(intent.runId); return projectWikiRunView(historical); },
   };
   const tui = { terminal: { rows: 24 }, requestRender() {} };
   let component;
@@ -464,8 +453,7 @@ test("navigator confirmation stays inside the overlay and keeps its keyboard own
   const calls = [];
   const controller = {
     ...controllerFor(run),
-    cancel: async () => { calls.push("cancel"); },
-    stop: async () => { calls.push("stop"); },
+    dispatch: async (intent) => { calls.push(intent.type); return projectWikiRunView(run, { activeRunId: run.id }); },
   };
   const tui = { terminal: { rows: 24 }, requestRender() {} };
   let component;
@@ -529,7 +517,7 @@ test("planning nodes are grouped into the Plan stage", () => {
     attemptHistory: [],
   });
   synthesized.nodes.find((node) => node.id === "write").dependsOn = ["synthesis"];
-  assert.deepEqual(phaseRows(synthesized).map((phase) => [phase.title, phase.nodeIds.length]), [
+  assert.deepEqual(phaseRows(projectWikiRunView(synthesized)).map((phase) => [phase.title, phase.nodeIds.length]), [
     ["Inspect", 1], ["Research", 2], ["Plan", 1], ["Write", 1], ["Review & Publish", 0],
   ]);
 });
@@ -584,15 +572,15 @@ test("static validation stays in Write while review and finalization share Revie
     },
   );
 
-  assert.deepEqual(phaseRows(verified).find((phase) => phase.id === "write").nodeIds, ["write", "validate"]);
-  assert.deepEqual(phaseRows(verified).find((phase) => phase.id === "review").nodeIds, ["review", "finalize"]);
-  assert.deepEqual(phaseRetryImpact(verified, "review").targetIds, ["review", "finalize"]);
+  const view = projectWikiRunView(verified);
+  assert.deepEqual(phaseRows(view).find((phase) => phase.id === "write").nodeIds, ["write", "validate"]);
+  assert.deepEqual(phaseRows(view).find((phase) => phase.id === "review").nodeIds, ["review", "finalize"]);
 });
 
 test("agent pager G/end then k decreases scroll and leaves non-follow", () => {
   const model = new WikiUiModel(controllerFor(run));
   const state = openDashboard(model);
-  state.move(1, phaseRows(run).length);
+  state.move(1, model.phases(run.id).length);
   state.sync(model);
   state.pane = "agents";
   state.agentCursor = 0;
@@ -773,4 +761,43 @@ test("host freezes lower status widgets while the navigator overlay is open", as
   assert.ok(statuses.length > statusCountWhileOpen, "latest status is restored after the overlay closes");
 
   host.unbind({ clearRetention: true });
+});
+
+test("host uses serializable widget lines outside TUI and keeps navigator TUI-only", async () => {
+  const snapshot = structuredClone(run);
+  const engine = {
+    getSnapshot: () => structuredClone(snapshot),
+    subscribe: () => () => {},
+  };
+  const bindForMode = (mode) => {
+    const widgets = [];
+    const ui = {
+      setStatus() {},
+      setWidget(key, content) { widgets.push({ key, content }); },
+      notify() {},
+    };
+    const host = new WikiUiHost();
+    host.bind({
+      engine,
+      ui,
+      pi: { sendMessage() {} },
+      language: "en",
+      getController: () => controllerFor(run),
+      mode,
+    });
+    return { host, ui, widgets };
+  };
+
+  const rpc = bindForMode("rpc");
+  const rpcWidget = rpc.widgets.find((item) => item.content !== undefined);
+  assert.ok(Array.isArray(rpcWidget?.content), "RPC widget must be serialized lines");
+  assert.equal(await rpc.host.openNavigator(), false);
+  assert.equal(await rpc.host.openNavigator({ ui: rpc.ui, hasUI: true, mode: "rpc" }), false);
+  rpc.host.unbind({ clearRetention: true });
+
+  for (const mode of ["json", "print"]) {
+    const output = bindForMode(mode);
+    assert.equal(output.widgets.some((item) => item.content !== undefined), false, `${mode} must not install a widget`);
+    output.host.unbind({ clearRetention: true });
+  }
 });

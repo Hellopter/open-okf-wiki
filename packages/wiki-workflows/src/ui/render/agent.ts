@@ -1,5 +1,5 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { WikiNode, WikiNodeHistoryEntry, WikiNodeMetrics, WikiRunSnapshot } from "../../workflow-types.js";
+import type { WikiNodeHistoryEntry, WikiNodeMetrics, WikiRunAgentView, WikiRunView } from "../../workflow-types.js";
 import {
   activityText,
   asText,
@@ -20,12 +20,12 @@ import type { NavigatorState } from "../state.js";
 import { uiStrings, type WikiUiLanguage } from "../strings.js";
 import { renderRunHeader } from "./chrome.js";
 
-type AttemptView = Pick<WikiNode, "attempt" | "startedAt" | "finishedAt" | "result" | "output" | "history" | "handoff" | "error" | "metrics">;
+type AttemptView = WikiRunAgentView;
 
 export function renderAgentView(
   state: NavigatorState,
-  run: WikiRunSnapshot,
-  node: WikiNode,
+  run: WikiRunView,
+  node: WikiRunAgentView,
   width: number,
   theme: WikiUiTheme,
   rows: number,
@@ -41,7 +41,7 @@ export function renderAgentView(
 }
 
 function renderCompact(
-  node: WikiNode,
+  node: WikiRunAgentView,
   attempt: AttemptView,
   width: number,
   theme: WikiUiTheme,
@@ -49,10 +49,9 @@ function renderCompact(
   language?: WikiUiLanguage,
 ): string[] {
   const s = uiStrings(language);
-  const attemptSuffix = attempt.attempt !== node.attempt ? s.agentArchived : "";
   const lines = [
     theme.bold(s.agentTitle(asText(node.label))),
-    fitLine(theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${asText(node.status)} | ${s.agentAttempt(attempt.attempt, attemptSuffix)} | ${stageLabel(node.kind)}`), width),
+    fitLine(theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${asText(node.status)} | ${s.agentAttempt(attempt.attempt, "")} | ${stageLabel(node.kind)}`), width),
   ];
   if (node.activity.message || node.activity.state !== "idle") {
     lines.push(fitLine(theme.fg("accent", asText(activityText(node))), width));
@@ -63,12 +62,9 @@ function renderCompact(
   if (attempt.error) {
     lines.push(theme.bold(s.failure));
     lines.push(fitLine(theme.fg("error", asText(attempt.error.message)), width));
-  } else if (attempt.output) {
+  } else if (attempt.retainedOutput) {
     lines.push(theme.bold(s.latestOutput));
-    lines.push(...wrapLines(asText(attempt.output), width).slice(0, 4).map((line) => theme.fg("muted", line)));
-  } else if (attempt.result !== undefined) {
-    lines.push(theme.bold(resultLabel(node.kind, language)));
-    lines.push(...wrapLines(typeof attempt.result === "string" ? asText(attempt.result) : safeJson(attempt.result), width).slice(0, 4).map((line) => theme.fg("muted", line)));
+    lines.push(...wrapLines(asText(attempt.retainedOutput), width).slice(0, 4).map((line) => theme.fg("muted", line)));
   } else {
     lines.push(theme.fg("muted", s.noCompletedOutput));
   }
@@ -79,7 +75,7 @@ function renderCompact(
 
 function renderPager(
   state: NavigatorState,
-  node: WikiNode,
+  node: WikiRunAgentView,
   attempt: AttemptView,
   width: number,
   theme: WikiUiTheme,
@@ -104,17 +100,16 @@ function renderPager(
 }
 
 function renderAgentTranscript(
-  node: WikiNode,
+  node: WikiRunAgentView,
   attempt: AttemptView,
   width: number,
   theme: WikiUiTheme,
   language?: WikiUiLanguage,
 ): string[] {
   const s = uiStrings(language);
-  const attemptSuffix = attempt.attempt !== node.attempt ? s.agentArchived : "";
   const lines = [theme.bold(s.agentTitle(asText(node.label)))];
   lines.push(truncateToWidth(
-    theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${asText(node.status)} | ${s.agentAttempt(attempt.attempt, attemptSuffix)} | ${stageLabel(node.kind)}`),
+    theme.fg(STATUS_COLOR[node.status], `${STATUS_ICON[node.status]} ${asText(node.status)} | ${s.agentAttempt(attempt.attempt, "")} | ${stageLabel(node.kind)}`),
     width,
     "",
     true,
@@ -125,18 +120,18 @@ function renderAgentTranscript(
   if (attempt.handoff) lines.push(artifactSummary(attempt.handoff.relativePath, attempt.handoff.sizeBytes, width, theme));
   lines.push("");
   lines.push(theme.bold(s.messagesTitle));
-  if (attempt.history?.length) {
-    for (const entry of attempt.history) lines.push(...renderHistoryEntry(entry, width, theme));
+  if (attempt.retainedHistory?.length) {
+    for (const entry of attempt.retainedHistory) lines.push(...renderHistoryEntry(entry, width, theme));
   } else {
-    const emptyTranscript = node.status === "succeeded" && !attempt.history
+    const emptyTranscript = node.status === "succeeded" && !attempt.retainedHistory
       ? s.transcriptClearedAfterSuccess
       : s.noMessagesYet;
     lines.push(theme.fg("muted", emptyTranscript));
   }
-  if (attempt.output) {
+  if (attempt.retainedOutput) {
     lines.push("");
     lines.push(theme.bold(s.latestAssistantOutput));
-    lines.push(...renderObject(attempt.output, width, theme));
+    lines.push(...renderObject(attempt.retainedOutput, width, theme));
   }
   lines.push("");
   if (attempt.error) {
@@ -151,15 +146,12 @@ function renderAgentTranscript(
         fg: (_color, text) => theme.fg("warning", text),
       }));
     }
-  } else {
-    lines.push(theme.bold(resultLabel(node.kind, language)));
-    lines.push(...renderObject(attempt.result ?? s.noNodeResult, width, theme));
-  }
+  } else lines.push(theme.fg("muted", s.noNodeResult));
   return lines;
 }
 
 function renderExecutionFooter(
-  node: WikiNode,
+  node: WikiRunAgentView,
   attempt: AttemptView,
   width: number,
   theme: WikiUiTheme,
@@ -227,19 +219,8 @@ function historyNeedsTimestamp(entry: WikiNodeHistoryEntry): boolean {
   return entry.kind === "message" || (entry.kind === "error" && !entry.toolName);
 }
 
-function attemptView(node: WikiNode, selectedAttempt: number | undefined): AttemptView {
-  if (selectedAttempt !== undefined && selectedAttempt !== node.attempt) {
-    const archived = (node.attemptHistory ?? []).find((item) => item.attempt === selectedAttempt);
-    if (archived) return archived;
-  }
+function attemptView(node: WikiRunAgentView, _selectedAttempt: number | undefined): AttemptView {
   return node;
-}
-
-function resultLabel(kind: WikiNode["kind"], language?: WikiUiLanguage): string {
-  const s = uiStrings(language);
-  if (kind === "research") return s.markdownHandoff;
-  if (kind === "synthesis" || kind === "review") return s.controlSubmission;
-  return s.nodeResult;
 }
 
 function renderObject(value: unknown, width: number, theme: WikiUiTheme): string[] {
@@ -260,8 +241,6 @@ function emptyMetrics(): WikiNodeMetrics {
   };
 }
 
-export function attemptNumbers(node: WikiNode): number[] {
-  return [...new Set([...(node.attemptHistory ?? []).map((item) => item.attempt), node.attempt ?? 0])]
-    .filter((attempt) => attempt > 0)
-    .sort((left, right) => left - right);
+export function attemptNumbers(node: WikiRunAgentView): number[] {
+  return node.attempt > 0 ? [node.attempt] : [];
 }

@@ -67,12 +67,9 @@ import {
 import { createWikiRunSession } from "./session.js";
 import { isWikiRunSnapshot } from "./snapshot-validation.js";
 import {
-  afterSuccess,
+  commitNodeSuccess,
   newNode,
-  tryJoinAfterSuccess,
   validateControlSubmission,
-  validateWriteNodeResult,
-  type TransitionHost,
 } from "./transitions-queue.js";
 import { clone } from "./util.js";
 import { phaseRefForKind } from "./workflow-phases.js";
@@ -566,7 +563,7 @@ export class WikiWorkflowEngine {
     const results = await Promise.allSettled(nodes.map(async (node) => await this.executeNode(node)));
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (rejected) throw rejected.reason;
-    // Fan-in is handled once per node via tryJoinAfterSuccess / afterSuccess after status=succeeded.
+    // Fan-in is committed once per node by commitNodeSuccess.
   }
 
   private runnableNodes(): WikiNode[] {
@@ -599,10 +596,6 @@ export class WikiWorkflowEngine {
     this.controllers.set(node.id, controller);
     this.emit("node_started", node.id, node.label);
 
-    // True after this node has published status=succeeded. Fan-in failures after
-    // that point must rethrow so the batch/pump fails the run rather than being
-    // swallowed by the "status !== running" early return.
-    let completedSuccessfully = false;
     try {
       const result = await this.executeNodeWork(node, controller.signal);
       if (node.status !== "running") return;
@@ -635,29 +628,9 @@ export class WikiWorkflowEngine {
       node.history = retainedHistory(result.history ?? node.history);
       node.metrics = mergeMetrics(node.metrics, result.metrics);
 
-      // Research/write: mark succeeded first so concurrent siblings see us, then
-      // join-barrier fan-in once. Other kinds keep afterSuccess transitions.
-      if (node.kind === "research" || node.kind === "write") {
-        if (node.kind === "write") await validateWriteNodeResult(this.transitionHost(), node);
-        this.markNodeSucceeded(node);
-        completedSuccessfully = true;
-        await tryJoinAfterSuccess(this.transitionHost(), node);
-      } else if (node.kind === "validate" || node.kind === "review") {
-        // Peer fan-in in maybeCompleteVerification needs self as succeeded.
-        this.markNodeSucceeded(node);
-        completedSuccessfully = true;
-        await afterSuccess(this.transitionHost(), node);
-      } else {
-        await afterSuccess(this.transitionHost(), node);
-        // afterSuccess may markTerminalRun (finalize drift/success) without
-        // changing node status; only publish succeeded while still running.
-        if (node.status === "running") {
-          this.markNodeSucceeded(node);
-          completedSuccessfully = true;
-        }
-      }
+      await commitNodeSuccess(this.transitionHost(), node);
     } catch (error) {
-      if (completedSuccessfully) throw error;
+      if ((node.status as WikiNode["status"]) === "succeeded") throw error;
       if (node.status !== "running") return;
       // A persisted payload is not an accepted handoff until all transitions
       // complete. Leave its blob unreferenced for normal artifact GC.
@@ -697,16 +670,6 @@ export class WikiWorkflowEngine {
     } finally {
       this.controllers.delete(node.id);
     }
-  }
-
-  private markNodeSucceeded(node: WikiNode): void {
-    node.status = "succeeded";
-    node.activity = { state: "completed", message: "Completed", updatedAt: this.now() };
-    node.finishedAt = this.now();
-    // Drop live transcript once handoff/result are final — keeps snapshots slim.
-    node.history = undefined;
-    node.output = undefined;
-    this.emit("node_succeeded", node.id, node.label);
   }
 
   private async executeNodeWork(node: WikiNode, signal: AbortSignal): Promise<WikiAgentExecutionResult> {
@@ -1170,8 +1133,8 @@ export class WikiWorkflowEngine {
     return this.dependencies.createId?.() ?? randomUUID();
   }
 
-  /** Shared host surface for transition/queue free functions. */
-  private transitionHost(): TransitionHost {
+  /** Internal state-machine adapter for transition/queue implementation. */
+  private transitionHost(): Parameters<typeof commitNodeSuccess>[0] {
     return {
       requireRun: () => this.requireRun(),
       nodeById: (id) => this.nodeById(id),

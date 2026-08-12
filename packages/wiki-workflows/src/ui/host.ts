@@ -7,9 +7,9 @@ import { openWikiNavigator } from "./navigator.js";
 import {
   clearTaskPanel,
   installTaskPanel,
+  installTaskPanelLines,
   STATUS_KEY,
   statusLine,
-  type ProgressMode,
   type TaskPanelSnapshot,
 } from "./task-panel.js";
 import { uiStrings, type WikiUiLanguage } from "./strings.js";
@@ -24,7 +24,7 @@ export interface WikiUiHostBindOptions {
   pi: ExtensionAPI;
   language?: WikiUiLanguage;
   getController: () => WikiNavigatorController;
-  progressMode?: ProgressMode;
+  mode?: ExtensionCommandContext["mode"];
 }
 
 export interface WikiUiHostUnbindOptions {
@@ -46,7 +46,7 @@ export class WikiUiHost {
   private unsubscribe: (() => void) | undefined;
   private retainedRun: WikiRunSnapshot | undefined;
   private deliveredRunIds = new Set<string>();
-  private progressMode: ProgressMode = "compact";
+  private mode: ExtensionCommandContext["mode"] = "tui";
   /** Active navigator overlays own the viewport, so freeze lower UI updates. */
   private navigatorDepth = 0;
   private bound = false;
@@ -60,7 +60,7 @@ export class WikiUiHost {
     this.pi = options.pi;
     this.language = options.language;
     this.getController = options.getController;
-    this.progressMode = options.progressMode ?? "compact";
+    this.mode = options.mode ?? "tui";
     this.bound = true;
 
     // If the engine already holds a terminal snapshot and we have no retention yet, keep it.
@@ -73,7 +73,7 @@ export class WikiUiHost {
       this.onEngineEvent(snapshot, event);
     });
 
-    installTaskPanel(options.ui, () => this.panelSnapshot(), this.progressMode);
+    this.installPanel();
     this.refresh();
   }
 
@@ -114,19 +114,19 @@ export class WikiUiHost {
     const run = snapshot ?? this.engine?.getSnapshot() ?? this.retainedRun;
     const language = this.language ?? run?.language;
     this.ui.setStatus(STATUS_KEY, statusLine(run, language));
-    installTaskPanel(this.ui, () => this.panelSnapshot(run), this.progressMode);
+    this.installPanel(run);
   }
 
   async openNavigator(context?: Pick<ExtensionCommandContext, "ui" | "hasUI" | "mode">): Promise<boolean> {
     const ui = context?.ui ?? this.ui;
     if (!ui) return false;
-    if (context && (!context.hasUI || context.mode !== "tui")) return false;
+    if (context ? (!context.hasUI || context.mode !== "tui") : this.mode !== "tui") return false;
     const controller = this.getController?.();
     if (!controller) return false;
-    const activeId = controller.getActiveRunId();
+    const activeId = controller.activeRunId();
     const language = this.language
       ?? controller.getWorkspace?.()?.language
-      ?? controller.getRun()?.language;
+      ?? controller.observe()?.language;
     const firstNavigator = this.navigatorDepth === 0;
     this.navigatorDepth += 1;
     if (firstNavigator && this.ui) clearTaskPanel(this.ui);
@@ -175,6 +175,15 @@ export class WikiUiHost {
       language: this.language ?? current?.language,
       retainTerminal: Boolean(this.retainedRun && current?.id === this.retainedRun.id),
     };
+  }
+
+  private installPanel(run?: WikiRunSnapshot): void {
+    if (!this.ui) return;
+    if (this.mode === "tui") {
+      installTaskPanel(this.ui, () => this.panelSnapshot(run));
+    } else if (this.mode === "rpc") {
+      installTaskPanelLines(this.ui, this.panelSnapshot(run));
+    }
   }
 }
 

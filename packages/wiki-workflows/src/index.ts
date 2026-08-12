@@ -35,7 +35,6 @@ export {
   CORRECTION_MAX,
   createPiAgentExecutor,
   PiAgentExecutor,
-  SALVAGE_MAX,
   type PiAgentExecutorOptions,
 } from "./executor.js";
 export {
@@ -98,7 +97,6 @@ export {
 // Dual-track UI public API
 export {
   openWikiNavigator,
-  openWikiRunNavigator,
   renderWikiNavigatorFrame,
   type OpenWikiNavigatorOptions,
 } from "./ui/navigator.js";
@@ -112,12 +110,12 @@ export {
   renderPanel,
   statusLine,
   installTaskPanel,
+  installTaskPanelLines,
   clearTaskPanel,
   createTaskPanelWidget,
   TASK_PANEL_KEY,
   STATUS_KEY,
   type TaskPanelSnapshot,
-  type ProgressMode,
 } from "./ui/task-panel.js";
 export {
   renderWikiRunText,
@@ -130,7 +128,6 @@ export {
   WIKI_WORKFLOW_PHASES,
   WIKI_WORKFLOW_STAGES,
   type WikiPhase,
-  type WikiRunView,
   type WikiWorkflowStage,
 } from "./ui/stages.js";
 export {
@@ -141,12 +138,6 @@ export {
   type WikiWorkflowPhase,
   type WikiWorkflowPhaseId,
 } from "./workflow-phases.js";
-export {
-  retryImpact,
-  phaseRetryImpact,
-  describeNodes,
-  type WikiRetryImpact,
-} from "./ui/impact.js";
 export {
   WikiUiModel,
   type WikiNavigatorController,
@@ -167,12 +158,10 @@ export {
 } from "./ui/render/dashboard.js";
 export {
   renderRunsList,
-  renderRunsEmpty,
   buildRunSelectItems,
 } from "./ui/render/runs.js";
 export {
   renderAgentView,
-  attemptNumbers,
 } from "./ui/render/agent.js";
 export {
   PLAIN_THEME,

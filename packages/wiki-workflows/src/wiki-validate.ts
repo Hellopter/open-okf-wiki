@@ -889,11 +889,7 @@ export function isMissing(error: unknown): boolean {
 
 function matchesPathGlob(value: string, pattern: string): boolean {
   const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
-  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("**", "\u0000")
-    .replaceAll("*", "[^/]*")
-    .replaceAll("\u0000", ".*");
-  return new RegExp(`^${escaped}$`).test(value);
+  return path.matchesGlob(value, normalized);
 }
 
 function lineCount(text: string): number {

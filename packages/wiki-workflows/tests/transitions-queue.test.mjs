@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   findingContentFingerprint,
   researchFindings,
 } from "../dist/research-receipt.js";
 import {
-  afterSuccess,
+  commitNodeSuccess,
   deterministicGroupId,
   ensureSynthesisSubmissionFitsRun,
   maybeCompleteVerification,
@@ -70,14 +73,17 @@ function hostWithNodes(nodes, overrides = {}) {
     ...overrides,
   };
   let idSeq = 0;
+  const emitted = [];
   return {
     requireRun: () => run,
     nodeById: (id) => run.nodes.find((node) => node.id === id),
     now: () => "2026-08-08T00:00:00.000Z",
     newId: () => `rand-${++idSeq}`,
-    emit() {},
+    emit(kind, nodeId, message, data) { emitted.push({ kind, nodeId, message, data }); },
     markTerminalRun() {},
     async materializeIndexes() {},
+    wikiRoot: () => "/tmp/wiki-test/wiki",
+    emitted,
     run,
   };
 }
@@ -450,8 +456,10 @@ test("finalize without critical gaps skips coverage audit and queues writers", a
     { decision: "finalize", spec: finalSpec(), rationale: "ready" },
     { dryAuditPasses: 0 },
   );
+  synthesis.status = "running";
   const host = hostWithNodes([research, synthesis]);
-  await afterSuccess(host, synthesis);
+  await commitNodeSuccess(host, synthesis);
+  assert.equal(synthesis.status, "succeeded");
   const kinds = host.run.nodes.map((node) => node.kind);
   assert.ok(kinds.includes("write"), "should queue page writers");
   assert.equal(
@@ -467,15 +475,17 @@ test("finalize with critical gaps and insufficient dry audits queues coverage au
     criticalGapQuestions: ["What remains unverified?"],
   }));
   // Finalize result is already on the node (submit-time would normally block),
-  // but afterSuccess still gates the audit path on unresolved critical gaps.
+  // but the atomic success commit still gates the audit path on unresolved gaps.
   const synthesis = synthesisNode(
     "synthesis-1",
     ["research-1"],
     { decision: "finalize", spec: finalSpec(), rationale: "force path" },
     { dryAuditPasses: 0 },
   );
+  synthesis.status = "running";
   const host = hostWithNodes([research, synthesis]);
-  await afterSuccess(host, synthesis);
+  await commitNodeSuccess(host, synthesis);
+  assert.equal(synthesis.status, "succeeded");
   const audits = host.run.nodes.filter((node) => node.kind === "research" && node.input?.continuationMode === "audit");
   assert.equal(audits.length, 1);
   assert.match(audits[0].input.scope.task, /critical-gap audit|missing critical gaps/i);
@@ -513,6 +523,126 @@ test("queueResearch assigns the same deterministic researchGroupId to all scopes
   assert.equal(nodes[1].input.researchGroupId, expected);
   // Random host.newId must not appear in the group id.
   assert.doesNotMatch(nodes[0].input.researchGroupId, /rand-/);
+});
+
+test("commitNodeSuccess publishes a research peer before evaluating fan-in", async () => {
+  const first = researchNode("research-1", receipt({ scopeId: "source-survey:src-core" }));
+  const second = researchNode(
+    "research-2",
+    receipt({ scopeId: "source-survey:src-api", artifact: { ...receipt().artifact, nodeId: "research-2" } }),
+    { scope: { id: "source-survey:src-api", sourcePaths: ["src-api"], task: "survey" } },
+  );
+  second.status = "running";
+  second.output = "live transcript";
+  second.history = [{ type: "assistant", content: "live" }];
+  const host = hostWithNodes([first, second]);
+
+  await commitNodeSuccess(host, second);
+
+  assert.equal(second.status, "succeeded");
+  assert.equal(second.output, undefined);
+  assert.equal(second.history, undefined);
+  assert.equal(host.run.nodes.filter((node) => node.kind === "synthesis").length, 1);
+  assert.deepEqual(host.emitted.filter((event) => event.kind === "node_succeeded").map((event) => event.nodeId), ["research-2"]);
+});
+
+test("commitNodeSuccess rolls back write success and successors when async preparation fails", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-transition-"));
+  const wikiRoot = path.join(workspace, "wiki");
+  await mkdir(path.join(wikiRoot, "core"), { recursive: true });
+  const pageBytes = "# Core\n";
+  await writeFile(path.join(wikiRoot, "core/domain.md"), pageBytes);
+  const spec = finalSpec();
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec, rationale: "ready" });
+  const page = spec.domains[1].pages[0];
+  const write = {
+    id: "write-1", kind: "write", label: "Write core", phaseId: "write", phaseTitle: "Write",
+    status: "running", dependsOn: [synthesis.id], attempt: 1, inputFingerprint: "", attemptHistory: [],
+    metrics: { ...EMPTY_NODE_METRICS }, activity: { state: "running", updatedAt: "2026-08-08T00:00:00.000Z" },
+    input: {
+      intent: "draft", synthesisNodeId: synthesis.id, domainId: "core", page,
+      researchIds: ["research-1"], writePaths: ["wiki/core/domain.md"], wikiReadPaths: [],
+      writeGroupId: "write:one",
+    },
+    result: { page: page.path, sha256: createHash("sha256").update(pageBytes).digest("hex") },
+  };
+  const host = hostWithNodes([synthesis, write], { cwd: workspace });
+  host.wikiRoot = () => wikiRoot;
+  host.materializeIndexes = async () => { throw new Error("index preparation failed"); };
+
+  await assert.rejects(commitNodeSuccess(host, write), /index preparation failed/);
+
+  assert.equal(write.status, "running");
+  assert.equal(host.run.nodes.filter((node) => node.kind === "validate").length, 0);
+  assert.deepEqual(host.emitted, []);
+  await rm(workspace, { recursive: true, force: true });
+});
+
+test("async commit preserves sibling executor writes and later fan-in sees both peers", async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-transition-merge-"));
+  const wikiRoot = path.join(workspace, "wiki");
+  await mkdir(path.join(wikiRoot, "core"), { recursive: true });
+  const firstBytes = "# First\n";
+  const secondBytes = "# Second\n";
+  await writeFile(path.join(wikiRoot, "core/first.md"), firstBytes);
+  await writeFile(path.join(wikiRoot, "core/second.md"), secondBytes);
+  const spec = finalSpec();
+  spec.domains[1].pages = [
+    { ...spec.domains[1].pages[0], path: "core/first.md", findingIds: [] },
+    { ...spec.domains[1].pages[0], path: "core/second.md", title: "Second", findingIds: [] },
+  ];
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec, rationale: "ready" });
+  const makeWrite = (id, page, bytes) => ({
+    id, kind: "write", label: id, phaseId: "write", phaseTitle: "Write", status: "running",
+    dependsOn: [synthesis.id], attempt: 1, inputFingerprint: "", attemptHistory: [],
+    metrics: { ...EMPTY_NODE_METRICS }, activity: { state: "running", updatedAt: "2026-08-08T00:00:00.000Z" },
+    input: {
+      intent: "draft", synthesisNodeId: synthesis.id, domainId: "core", page,
+      researchIds: [], writePaths: [`wiki/${page.path}`], wikiReadPaths: [], writeGroupId: "write:pair",
+    },
+    result: { page: page.path, sha256: createHash("sha256").update(bytes).digest("hex") },
+  });
+  const first = makeWrite("write-a", spec.domains[1].pages[0], firstBytes);
+  const second = makeWrite("write-b", spec.domains[1].pages[1], secondBytes);
+  const host = hostWithNodes([synthesis, first, second], { cwd: workspace });
+  host.wikiRoot = () => wikiRoot;
+  let releaseMaterialize;
+  let materializeStarted;
+  const materializeGate = new Promise((resolve) => { releaseMaterialize = resolve; });
+  const materializeSignal = new Promise((resolve) => { materializeStarted = resolve; });
+  host.materializeIndexes = async () => {
+    materializeStarted();
+    await materializeGate;
+  };
+
+  // Make A the apparent last peer in its shadow so it enters async materialize.
+  second.status = "succeeded";
+  const firstCommit = commitNodeSuccess(host, first);
+  await materializeSignal;
+  // Simulate B executor completion writes while A is awaiting preparation.
+  second.status = "running";
+  second.result = { page: second.input.page.path, sha256: createHash("sha256").update(secondBytes).digest("hex"), live: true };
+  second.handoff = { kind: "write", relativePath: "live.json" };
+  second.history = [{ type: "assistant", content: "live history" }];
+  second.metrics = { ...second.metrics, inputTokens: 77 };
+  second.activity = { state: "running", message: "live activity", updatedAt: "2026-08-08T00:00:02.000Z" };
+  host.run.updatedAt = "2026-08-08T00:00:03.000Z";
+  releaseMaterialize();
+  await firstCommit;
+
+  assert.equal(second.result.live, true);
+  assert.equal(second.handoff.relativePath, "live.json");
+  assert.equal(second.history[0].content, "live history");
+  assert.equal(second.metrics.inputTokens, 77);
+  assert.equal(second.activity.message, "live activity");
+  assert.equal(host.run.updatedAt, "2026-08-08T00:00:03.000Z");
+
+  // Remove A's speculative gate, then commit B against the latest live state.
+  host.run.nodes.splice(host.run.nodes.findIndex((node) => node.kind === "validate"), 1);
+  await commitNodeSuccess(host, second);
+  assert.equal(second.status, "succeeded");
+  assert.equal(host.run.nodes.filter((node) => node.kind === "validate").length, 1);
+  await rm(workspace, { recursive: true, force: true });
 });
 
 test("queueInitialSourceSurveys uses a broad survey that emits targeted depth gaps", () => {

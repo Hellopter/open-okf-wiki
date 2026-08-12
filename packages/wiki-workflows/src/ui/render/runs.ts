@@ -3,6 +3,7 @@ import type { WikiRunSummary } from "../../workflow-types.js";
 import {
   asText,
   fitLine,
+  formatTimestamp,
   runStatusColor,
   runStatusIcon,
   scrollWindow,
@@ -10,7 +11,6 @@ import {
 } from "../format.js";
 import type { NavigatorState } from "../state.js";
 import { uiStrings, type WikiUiLanguage } from "../strings.js";
-import { formatRunMeta } from "./chrome.js";
 
 export interface RunSelectItem {
   value: string;
@@ -33,7 +33,7 @@ export function buildRunSelectItems(
     return {
       value: asText(run.id),
       label: `${icon} ${title}`,
-      description: `${shortId} · ${asText(run.effectiveMode ?? run.requestedMode)}${fork}${active} · ${run.succeededNodes}/${run.totalNodes} · ${formatRunMeta(run.updatedAt)}`,
+      description: `${shortId} · ${asText(run.effectiveMode ?? run.requestedMode)}${fork}${active} · ${run.succeededNodes}/${run.totalNodes} · ${formatTimestamp(run.updatedAt)}`,
     };
   });
 }
@@ -42,15 +42,6 @@ export function buildRunSelectItems(
 export function shortRunId(runId: string): string {
   const id = asText(runId);
   return id.length <= 8 ? id : id.slice(0, 8);
-}
-
-export function renderRunsEmpty(width: number, theme: WikiUiTheme, language?: WikiUiLanguage): string[] {
-  const s = uiStrings(language);
-  return [
-    theme.fg("accent", theme.bold(s.runsTitle)),
-    theme.fg("muted", s.runsEmpty),
-    theme.fg("dim", s.runsEmptyDetail),
-  ].map((line) => fitLine(line, width));
 }
 
 export function renderRunsList(
@@ -78,7 +69,7 @@ export function renderRunsList(
     const parent = run.parentRunId ? ` ${s.fork}` : "";
     const marker = index === selected ? "›" : " ";
     const icon = runStatusIcon(run.status);
-    const metadata = `${shortRunId(run.id)} | ${asText(run.effectiveMode ?? run.requestedMode)}${parent}${active} | ${run.succeededNodes}/${run.totalNodes} | ${formatRunMeta(run.updatedAt)}`;
+    const metadata = `${shortRunId(run.id)} | ${asText(run.effectiveMode ?? run.requestedMode)}${parent}${active} | ${run.succeededNodes}/${run.totalNodes} | ${formatTimestamp(run.updatedAt)}`;
     const title = truncateToWidth(asText(run.focus) || "Wiki generation", Math.max(12, width - visibleWidth(metadata) - 7), "…", false);
     const selectedLine = index === selected
       ? `${theme.fg("accent", theme.bold(`${marker} `))}${theme.fg(runStatusColor(run.status), theme.bold(icon))}${theme.fg("accent", theme.bold(` ${title}  ${metadata}`))}`

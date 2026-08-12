@@ -33,7 +33,6 @@ export { WikiAgentProtocolError, WikiAgentContextBudgetError } from "./agent-err
  * Engine node requeue is a separate outer layer — see execute() retry-layer comment.
  */
 /** Context overflow is never salvaged inside an already-expanded session. */
-export const SALVAGE_MAX = 0;
 export const CORRECTION_MAX = 1;
 const CLEANUP_IDLE_TIMEOUT_MS = 250;
 

@@ -1,6 +1,6 @@
 # wiki-workflows architecture
 
-Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure modules own policy, phase labels, graph helpers, and join fan-in. UI and extension layers are adapters.
+Git-native repository Wiki DAG workflow for Pi. The engine owns run state; the application Module owns workspace-run intents and ownership; UI and Pi are adapters over those Interfaces.
 
 ## Module map
 
@@ -10,13 +10,15 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/failures.ts` | Failure codes, `WikiFailure` / `WikiFailureClass`, `WikiBudgetExhaustedError`, `errorMessage`. Single source for `WikiNodeErrorCode`. |
 | `src/util.ts` | Pure helpers: `isRecord`, `clone`, `pathIsInside`, `uniqueStrings`, `stableStringify`; re-exports `errorMessage`. |
 | `src/workflow-phases.ts` | User-visible phases. Static validation remains in Write; semantic review and finalization map to Review & Publish. |
-| `src/workflow-types.ts` | Runtime and durable snapshot / node / event types (`WikiRunSnapshot` **version 1**, pinned policy and `blockedDetails`). |
+| `src/workflow-types.ts` | Durable snapshot / node / event types plus the narrow public `WikiRunView` (`WikiRunSnapshot` **version 1**, pinned policy and `blockedDetails`). |
 | `src/node-retry.ts` | Pure classification of execution errors → node status / terminal run. |
 | `src/join-barrier.ts` | Sibling join helpers: `evaluateJoin`, `groupAllSucceeded`, `siblingsByGroupKey`. Success path only (see below). |
 | `src/session.ts` | Pointer-only Pi custom-entry codec (`WikiRunSession` / `createWikiRunSession` / `parseWikiRunSession`). Fail-closed; **no legacy full-snapshot dual-read**. |
-| `src/checkpoint.ts` | Debounced, serialized session (pointer) + history (full snapshot) checkpoint coordinator (`WikiCheckpointCoordinator`). |
-| `src/engine.ts` | Wiki DAG **facade + pump**: owns run state, scheduling, retries, terminalization; delegates transitions to `transitions-queue` via `TransitionHost`. |
-| `src/transitions-queue.ts` | Per-kind success transitions, graph expansion (`queue*`, `ensure*`, join fan-in via `tryJoinAfterSuccess`), terminal block policy with `blockedDetails`. Host-injected; no executor/Pi. Research stop: expand hard-rejected without critical gaps; dry audits skipped on happy path when receipts report no unresolved critical gaps. |
+| `src/checkpoint.ts` | Per-workspace serialized history + pointer coordinator. History is written first; the Pi pointer is the commit marker. |
+| `src/application.ts` | Serialized workspace-run intent Interface (`dispatch` / `shutdown`), authoritative action policy, ownership and pause-settle lifecycle. |
+| `src/engine.ts` | Wiki DAG **facade + pump**: owns run state, scheduling, retries and terminalization; delegates atomic success commits to `transitions-queue`. |
+| `src/transitions-queue.ts` | Atomic per-node success commit and graph expansion. Async preparation uses isolated state; a three-way merge preserves concurrent executor writes before buffered events are published. |
+| `src/run-view.ts` | Projects internal durable/runtime graph state into `WikiRunView`, including phases, progress, liveness and allowed actions without DAG/input/result leakage. |
 | `src/run-nodes.ts` | Node input/result parsers (`ResearchNodeInput`, `SynthesisNodeInput`, `PagePacketInput`, `WikiNodeInputByKind`, `parseNodeInput`), fingerprints, repair/write packet helpers, validation issue routing. |
 | `src/run-graph.ts` | Phase membership, fork/invalidate closure, terminal checks; `phaseTitleFor` delegates to `workflow-phases`. |
 | `src/prompts.ts` | Agent prompt builders for research / synthesis / write / review. |
@@ -32,8 +34,8 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/workspace-coordinator.ts` | Local PID/token ownership, atomic acquisition, and dead-process reclamation for workspace mutations. |
 | `src/snapshot-validation.ts` | Fail-closed version 1 checks, including policy/hash and artifact-reference consistency. |
 | `src/executor.ts` | Isolated Pi sessions, compaction/retry policy, runtime admission, bounded streams/history, and node deadline. |
-| `src/extension.ts` | Pi extension wiring: commands, run lifecycle, UI host, session restore. |
-| `src/ui/*` | Dashboard / navigator / stages / format / task panel — pure-ish presentation over snapshots. Stages re-export `WIKI_WORKFLOW_PHASES` as `WIKI_WORKFLOW_STAGES`. |
+| `src/extension.ts` | Pi adapter: command parsing, per-workspace application/checkpoint construction, session restore and UI host wiring. |
+| `src/ui/*` | Dashboard / navigator / stages / format / task panel presentation over `WikiRunView`; mutations dispatch application intents. |
 
 ## Import rules
 
@@ -132,16 +134,16 @@ Terminal block codes for verify loops include `same_validation_twice`, `same_def
 
 ## JoinBarrier success path
 
-Research and write groups fan in **only after** a node is marked `status=succeeded`:
+Research and write groups fan in inside one serialized success commit:
 
 1. Engine completes node work and persists handoff/result.
-2. For `research` / `write`: `markNodeSucceeded(node)` first so concurrent siblings observe success.
-3. Then **once** call `tryJoinAfterSuccess(host, node)`.
-4. `tryJoinAfterSuccess` loads siblings via `siblingsByGroupKey` (**excludes `invalidated`** so deterministic group ids reused after source-drift restart do not stall), then `evaluateJoin(members)`:
+2. `commitNodeSuccess` serializes commits for that run and prepares validation/transitions against isolated state.
+3. The commit publishes node success, graph successors and terminal state together; listener events are emitted only afterward.
+4. Fan-in loads siblings via `siblingsByGroupKey` (**excludes `invalidated`** so deterministic group ids reused after source-drift restart do not stall), then `evaluateJoin(members)`:
    - `terminal_failure` → do not expand
    - `not_ready` → wait for remaining siblings
    - `all_succeeded` → queue synthesis (research) or verification (write)
-5. `afterSuccess` intentionally no-ops fan-in for research/write so join is not double-fired.
+5. A base/shadow/live merge preserves sibling executor writes made during asynchronous preparation.
 
 `evaluateJoin` is pure (`join-barrier.ts`). Validation and semantic review are
 sequential gates: validation repairs route immediately, then a clean candidate
@@ -154,7 +156,7 @@ generation.
 
 - **Facade**: public API on `WikiWorkflowEngine` — start/resume/cancel, retry node/phase, fork-and-retry, listeners, checkpoint hooks.
 - **Pump**: private loop that picks runnable nodes (deps all succeeded), batches researchers/writers/verification, executes, then advances via transitions.
-- **TransitionHost**: thin adapter so `transitions-queue` mutates graph without owning the engine class.
+- **Commit Interface**: `commitNodeSuccess` hides per-kind ordering, fan-in, successor creation, terminalization and event publication from the pump.
 
 ## Candidate and publication ownership
 

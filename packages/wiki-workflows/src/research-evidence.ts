@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import { errorMessage } from "./failures.js";
 import type { WikiResearchArtifact } from "./workflow-types.js";
 import { loadWikiWorkspace } from "./workspace.js";
 
@@ -120,11 +121,7 @@ export function validateResearchArtifact(
 
 function matchesPathGlob(value: string, pattern: string): boolean {
   const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
-  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("**", "\u0000")
-    .replaceAll("*", "[^/]*")
-    .replaceAll("\u0000", ".*");
-  return new RegExp(`^${escaped}$`).test(value);
+  return path.matchesGlob(value, normalized);
 }
 
 function validateEvidenceRange(
@@ -222,8 +219,4 @@ function pathIsInside(root: string, target: string): boolean {
 
 function uniqueSorted(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

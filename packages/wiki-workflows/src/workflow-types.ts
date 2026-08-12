@@ -208,6 +208,60 @@ export interface WikiRunSnapshot {
   revision?: number;
 }
 
+export type WikiRunAction = "pause" | "resume" | "stop" | "cancel" | "retry" | "delete";
+
+export type WikiRunAllowedActions = Readonly<Record<WikiRunAction, boolean>>;
+
+export interface WikiRunAgentView {
+  id: string;
+  kind: WikiNodeKind;
+  label: string;
+  status: WikiNodeStatus;
+  attempt: number;
+  activity: Readonly<WikiNodeActivity>;
+  metrics: Readonly<WikiNodeMetrics>;
+  error?: Readonly<WikiNodeError>;
+  handoff?: Readonly<WikiArtifactRef>;
+  retainedOutput?: string;
+  retainedHistory?: readonly Readonly<WikiNodeHistoryEntry>[];
+  startedAt?: string;
+  finishedAt?: string;
+  live: boolean;
+}
+
+export interface WikiRunPhaseView {
+  id: string;
+  title: string;
+  status: WikiNodeStatus | "not_started";
+  agents: readonly WikiRunAgentView[];
+}
+
+/** Read-only application/UI projection. It deliberately excludes DAG and policy internals. */
+export interface WikiRunView {
+  id: string;
+  cwd: string;
+  requestedMode: WikiMode;
+  effectiveMode?: WikiMode;
+  language: "zh" | "en";
+  focus?: string;
+  status: WikiRunStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  blockedReason?: string;
+  blockedDetails?: Readonly<NonNullable<WikiRunSnapshot["blockedDetails"]>>;
+  parentRunId?: string;
+  phases: readonly WikiRunPhaseView[];
+  progress: Readonly<{
+    total: number;
+    queued: number;
+    running: number;
+    succeeded: number;
+    failed: number;
+  }>;
+  allowedActions: WikiRunAllowedActions;
+}
+
 /** Lightweight record used by the Navigator's historical run list. */
 export interface WikiRunSummary {
   id: string;

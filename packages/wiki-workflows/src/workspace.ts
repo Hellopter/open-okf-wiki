@@ -2,6 +2,7 @@ import { lstat, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/pr
 import path from "node:path";
 import YAML from "yaml";
 import { git, repositoryRoot } from "./git.js";
+import { errorMessage } from "./failures.js";
 
 const WORKSPACE_FILE = "workspace.yaml";
 const WORKSPACE_GITIGNORE_FILE = ".gitignore";
@@ -217,11 +218,7 @@ export function sourceIsIgnored(source: ResolvedWikiSource, relativePath: string
 
 function matchesPathGlob(value: string, pattern: string): boolean {
   const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
-  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("**", "\u0000")
-    .replaceAll("*", "[^/]*")
-    .replaceAll("\u0000", ".*");
-  return new RegExp(`^${escaped}$`).test(value);
+  return path.matchesGlob(value, normalized);
 }
 
 async function findWorkspaceConfig(cwd: string): Promise<string | undefined> {
@@ -445,14 +442,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function matchesSimpleGlob(value: string, pattern: string): boolean {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*");
-  return new RegExp(`^${escaped}$`, "i").test(value);
+  return path.matchesGlob(value.toLowerCase(), pattern.toLowerCase());
 }
 
 function isMissing(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

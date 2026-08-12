@@ -12,7 +12,6 @@ import {
   type SelectListTheme,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { latestPhaseIteration } from "../phase-iterations.js";
 import {
   cancelConfirm,
   deleteConfirm,
@@ -20,7 +19,7 @@ import {
   retryPhaseConfirm,
   stopConfirm,
 } from "./confirm.js";
-import { errorMessage, fitRows, isActiveRunStatus, isTerminalRunStatus, PLAIN_THEME } from "./format.js";
+import { errorMessage, fitRows, PLAIN_THEME } from "./format.js";
 import { WikiUiModel, type WikiNavigatorController } from "./model.js";
 import { attemptNumbers } from "./render/agent.js";
 import {
@@ -135,13 +134,13 @@ export function openWikiNavigator(
   const state = new NavigatorState();
   const language = options.language
     ?? controller.getWorkspace?.()?.language
-    ?? controller.getRun()?.language;
+    ?? controller.observe()?.language;
 
   if (options.initialRunId) {
     // Caller supplies an active run id (host already filtered via getActiveRunId).
     state.openDashboard(options.initialRunId);
   } else {
-    const active = controller.getActiveRunId();
+    const active = controller.activeRunId();
     if (active) state.openDashboard(active);
     else state.openRuns();
   }
@@ -239,7 +238,7 @@ export function openWikiNavigator(
             notify(action.message, action.level);
             return;
           case "loadRun": {
-            const loaded = await controller.loadRun(action.runId);
+            const loaded = await model.load(action.runId);
             if (!loaded) {
               notify("Wiki run history is unavailable", "warning");
               return;
@@ -249,31 +248,31 @@ export function openWikiNavigator(
             return;
           }
           case "pause":
-            await Promise.resolve(controller.pause());
+            await Promise.resolve(model.dispatch({ type: "pause" }));
             return;
           case "resume":
-            await Promise.resolve(controller.resume(action.runId));
+            await Promise.resolve(model.dispatch({ type: "resume", runId: action.runId }));
             return;
           case "stop":
-            await Promise.resolve(controller.stop());
+            await Promise.resolve(model.dispatch({ type: "stop" }));
             return;
           case "cancel":
-            await Promise.resolve(controller.cancel());
+            await Promise.resolve(model.dispatch({ type: "cancel" }));
             return;
           case "retry": {
-            const snapshot = await Promise.resolve(controller.retryNode(action.runId, action.nodeId));
+            const snapshot = await Promise.resolve(model.dispatch({ type: "retryNode", runId: action.runId, nodeId: action.nodeId }));
             if (snapshot) state.openDashboard(snapshot.id);
             rerender();
             return;
           }
           case "retryPhase": {
-            const snapshot = await Promise.resolve(controller.retryPhase(action.runId, action.phaseId));
+            const snapshot = await Promise.resolve(model.dispatch({ type: "retryPhase", runId: action.runId, phaseId: action.phaseId }));
             if (snapshot) state.openDashboard(snapshot.id);
             rerender();
             return;
           }
           case "deleteRun":
-            await Promise.resolve(controller.deleteRun(action.runId));
+            await Promise.resolve(model.dispatch({ type: "delete", runId: action.runId }));
             state.openRuns();
             rerender();
             return;
@@ -297,25 +296,21 @@ export function openWikiNavigator(
           if (!confirmation) return { type: "none" };
           const confirmedRun = model.getRun(confirmation.runId);
           if (confirmation.kind === "cancel") {
-            if (!confirmedRun || model.getActiveRunId() !== confirmation.runId || !isActiveRunStatus(confirmedRun.status)) {
+            if (!confirmedRun?.allowedActions.cancel) {
               return { type: "notify", message: s.noActiveCancel, level: "info" };
             }
             return { type: "cancel" };
           }
           if (confirmation.kind === "stop") {
-            if (!confirmedRun || model.getActiveRunId() !== confirmation.runId || !isActiveRunStatus(confirmedRun.status)) {
+            if (!confirmedRun?.allowedActions.stop) {
               return { type: "notify", message: s.noActiveStop, level: "info" };
             }
             return { type: "stop" };
           }
           if (confirmation.kind === "delete") {
             const selected = model.listRuns().find((item) => item.id === confirmation.runId);
-            const current = model.getRun();
-            if (!selected || selected.id === current?.id) {
+            if (!selected || !confirmedRun?.allowedActions.delete) {
               return { type: "notify", message: s.currentRunCannotDelete, level: "info" };
-            }
-            if (!isTerminalRunStatus(selected.status)) {
-              return { type: "notify", message: s.onlyCompletedDelete, level: "warning" };
             }
             return { type: "deleteRun", runId: confirmation.runId };
           }
@@ -323,10 +318,10 @@ export function openWikiNavigator(
             return { type: "notify", message: "Wiki run history is unavailable", level: "warning" };
           }
           if (confirmation.kind === "retry") {
-            const node = confirmation.nodeId && confirmedRun.nodes.find((item) => item.id === confirmation.nodeId);
+            const node = model.node(confirmation.runId, confirmation.nodeId);
             if (!node) return { type: "notify", message: s.selectAgentRetry, level: "warning" };
             // Block only when this run is active and the engine still has a live executor.
-            if (confirmation.runId === model.getActiveRunId() && model.isNodeLive(node.id)) {
+            if (!confirmedRun.allowedActions.retry || node.live) {
               return { type: "notify", message: s.waitAgentSettle, level: "warning" };
             }
             return { type: "retry", runId: confirmation.runId, nodeId: node.id };
@@ -338,8 +333,7 @@ export function openWikiNavigator(
             return { type: "notify", message: s.stageNotScheduled(phase?.title ?? "This stage"), level: "info" };
           }
           if (
-            confirmation.runId === model.getActiveRunId()
-            && latestPhaseIteration(confirmedRun.nodes, phase.id).some((node) => model.isNodeLive(node.id))
+            !confirmedRun.allowedActions.retry || phase.agents.some((node) => node.live)
           ) {
             return { type: "notify", message: s.waitPhaseSettle, level: "warning" };
           }
@@ -407,11 +401,9 @@ export function openWikiNavigator(
           if (!run || !state.runId) {
             return { type: "notify", message: s.selectActivePause, level: "info" };
           }
-          if (state.runId === activeRunId) {
-            if (run.status === "paused") return { type: "resume", runId: run.id };
-            if (run.status === "running") return { type: "pause" };
-          }
-          if (!activeRunId && (run.status === "running" || run.status === "paused")) {
+          if (run.allowedActions.pause) return { type: "pause" };
+          if (run.allowedActions.resume) return { type: "resume", runId: run.id };
+          if (!activeRunId && run.status === "paused") {
             return { type: "resume", runId: run.id };
           }
           if (activeRunId !== undefined) {
@@ -420,7 +412,7 @@ export function openWikiNavigator(
           return { type: "notify", message: s.onlyRunningPause, level: "warning" };
         }
         case "stop": {
-          if (!run || state.runId !== activeRunId || !isActiveRunStatus(run.status)) {
+          if (!run?.allowedActions.stop) {
             return { type: "notify", message: s.noActiveStop, level: "info" };
           }
           const prompt = stopConfirm(language);
@@ -428,7 +420,7 @@ export function openWikiNavigator(
           return { type: "none" };
         }
         case "cancel": {
-          if (!run || state.runId !== activeRunId || !isActiveRunStatus(run.status)) {
+          if (!run?.allowedActions.cancel) {
             return { type: "notify", message: s.noActiveCancel, level: "info" };
           }
           const prompt = cancelConfirm(language);
@@ -441,7 +433,7 @@ export function openWikiNavigator(
           if (!node || !run || !state.runId) {
             return { type: "notify", message: s.selectAgentRetry, level: "warning" };
           }
-          if (state.runId === activeRunId && model.isNodeLive(node.id)) {
+          if (node.live) {
             return { type: "notify", message: s.waitAgentSettle, level: "warning" };
           }
           const prompt = retryAgentConfirm(run, node.id, language);
@@ -457,8 +449,7 @@ export function openWikiNavigator(
           if (!phase?.nodeIds.length) {
             return { type: "notify", message: s.stageNotScheduled(phase?.title ?? "This stage"), level: "info" };
           }
-          const nodes = latestPhaseIteration(run.nodes, state.stageId);
-          if (state.runId === activeRunId && nodes.some((node) => model.isNodeLive(node.id))) {
+          if (!run.allowedActions.retry || phase.agents.some((node) => node.live)) {
             return { type: "notify", message: s.waitPhaseSettle, level: "warning" };
           }
           const prompt = retryPhaseConfirm(run, state.stageId, language);
@@ -471,11 +462,11 @@ export function openWikiNavigator(
             return { type: "notify", message: s.returnToRunsDelete, level: "info" };
           }
           const selected = model.listRuns()[state.runCursor];
-          const current = model.getRun();
-          if (selected?.id === current?.id) {
+          const selectedRun = selected ? model.getRun(selected.id) : undefined;
+          if (selected && !selectedRun?.allowedActions.delete && selected.id === activeRunId) {
             return { type: "notify", message: s.currentRunCannotDelete, level: "info" };
           }
-          if (!selected || selected.id === activeRunId || !isTerminalRunStatus(selected.status)) {
+          if (!selected || !selectedRun?.allowedActions.delete) {
             return { type: "notify", message: s.onlyCompletedDelete, level: "warning" };
           }
           const prompt = deleteConfirm(language);
@@ -601,7 +592,6 @@ export function openWikiNavigator(
 }
 
 /** Alias matching the previous public name. */
-export const openWikiRunNavigator = openWikiNavigator;
 
 function syncDashboardSelection(state: NavigatorState, model: WikiUiModel): void {
   if (state.view !== "dashboard" || !state.runId) return;

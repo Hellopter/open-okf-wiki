@@ -1,5 +1,6 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { phaseTitleForKind } from "../workflow-phases.js";
+import { errorMessage } from "../failures.js";
 import type { WikiNode, WikiNodeStatus, WikiRunSnapshot, WikiRunStatus, WikiRunSummary } from "../workflow-types.js";
 
 export type ThemeColor = "accent" | "borderMuted" | "success" | "error" | "warning" | "muted" | "dim" | "text";
@@ -7,13 +8,14 @@ export type ThemeColor = "accent" | "borderMuted" | "success" | "error" | "warni
 export interface WikiUiTheme {
   fg(color: ThemeColor, text: string): string;
   bold(text: string): string;
-  bg?(color: string, text: string): string;
 }
 
 export const PLAIN_THEME: WikiUiTheme = {
   fg: (_color, text) => text,
   bold: (text) => text,
 };
+
+export { errorMessage };
 
 export const STATUS_ICON: Record<WikiNodeStatus, string> = {
   queued: "○",
@@ -132,7 +134,7 @@ export function runTitle(run: Pick<WikiRunSnapshot | WikiRunSummary, "effectiveM
   return `${mode} Wiki run${focus}${fork}`;
 }
 
-export function activityText(node: WikiNode): string {
+export function activityText(node: Pick<WikiNode, "activity">): string {
   const activity = node.activity;
   const label = activity.message || activity.state;
   if (activity.state !== "retrying") return label;
@@ -155,10 +157,6 @@ export function isActiveRunStatus(status: WikiRunStatus): boolean {
   return status === "running" || status === "paused";
 }
 
-export function isExecutingRunStatus(status: WikiRunStatus): boolean {
-  return status === "running" || status === "paused";
-}
-
 export function safeJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2) ?? String(value);
@@ -168,19 +166,7 @@ export function safeJson(value: unknown): string {
 }
 
 export function wrapLines(value: string, width: number): string[] {
-  const limit = Math.max(12, width);
-  const lines: string[] = [];
-  for (const original of value.split("\n")) {
-    let rest = original || " ";
-    while (visibleWidth(rest) > limit) {
-      let split = rest.lastIndexOf(" ", limit);
-      if (split < Math.floor(limit / 2)) split = limit;
-      lines.push(rest.slice(0, split));
-      rest = rest.slice(split).trimStart() || " ";
-    }
-    lines.push(rest);
-  }
-  return lines;
+  return wrapTextWithAnsi(value, Math.max(1, Math.floor(width)));
 }
 
 export function scrollWindow(total: number, active: number, cap: number): { start: number; end: number; total: number; more: boolean } {
@@ -194,8 +180,4 @@ export function fitRows(lines: string[], rows: number, width: number): string[] 
     ...lines.slice(0, rows).map((line) => truncateToWidth(line, width, "", true)),
     ...Array.from({ length: Math.max(0, rows - lines.length) }, () => ""),
   ];
-}
-
-export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

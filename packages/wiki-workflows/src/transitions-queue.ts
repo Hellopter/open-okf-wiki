@@ -1,7 +1,7 @@
 /**
- * Graph expansion transitions: afterSuccess, queue*, ensure*, join fan-in.
+ * Graph expansion transitions: atomic success commit, queue*, ensure*, join fan-in.
  *
- * Functions take a TransitionHost so WikiWorkflowEngine stays a thin owner of state.
+ * Functions take an internal host so WikiWorkflowEngine stays a thin owner of state.
  * No @earendil-works/* or executor.ts imports.
  */
 
@@ -74,8 +74,8 @@ const MAX_AUDIT_ROUNDS = DEFAULT_WIKI_WORKFLOW_POLICY.research.maxAuditRounds;
 const MAX_EXPAND_SCOPES_PER_BATCH = DEFAULT_WIKI_WORKFLOW_POLICY.maxExpandScopesPerBatch;
 const MISSING_PAGE_SHA256 = "missing";
 
-/** Minimal surface the engine exposes to transition/queue helpers. */
-export interface TransitionHost {
+/** Internal adapter for state-machine I/O owned by WikiWorkflowEngine. */
+interface WorkflowTransitionContext {
   requireRun(): WikiRunSnapshot;
   nodeById(id: string): WikiNode | undefined;
   now(): string;
@@ -92,7 +92,134 @@ export interface TransitionHost {
   wikiRoot(): string;
 }
 
-export async function validateWriteNodeResult(host: TransitionHost, node: WikiNode): Promise<void> {
+type TransitionHost = WorkflowTransitionContext;
+const commitQueues = new WeakMap<WikiRunSnapshot, Promise<void>>();
+
+/**
+ * Accept a completed node result and advance the graph as one state-machine
+ * operation. Callers do not need to know whether a node must become visible to
+ * a fan-in barrier before its successor transition runs.
+ */
+export async function commitNodeSuccess(host: WorkflowTransitionContext, node: WikiNode): Promise<void> {
+  if (node.status !== "running") throw new Error(`Cannot commit ${node.id} from ${node.status}`);
+
+  const run = host.requireRun();
+  const previous = commitQueues.get(run) ?? Promise.resolve();
+  const operation = previous.then(async () => await commitNodeSuccessNow(host, node));
+  commitQueues.set(run, operation.catch(() => {}));
+  return await operation;
+}
+
+async function commitNodeSuccessNow(host: WorkflowTransitionContext, node: WikiNode): Promise<void> {
+  if (node.status !== "running") return;
+
+  const run = host.requireRun();
+  const base = clone(run);
+  const shadow = clone(base);
+  const shadowNode = shadow.nodes.find((candidate) => candidate.id === node.id);
+  if (!shadowNode) throw new Error(`Cannot commit missing node ${node.id}`);
+  const emissions: Array<Parameters<WorkflowTransitionContext["emit"]>> = [];
+  let terminal: Parameters<WorkflowTransitionContext["markTerminalRun"]> | undefined;
+  const transactionHost: WorkflowTransitionContext = {
+    ...host,
+    requireRun: () => shadow,
+    nodeById: (id) => shadow.nodes.find((candidate) => candidate.id === id),
+    emit: (...args) => { emissions.push(args); },
+    markTerminalRun: (...args) => {
+      if (isTransitionTerminal(shadow.status)) return;
+      const [status, message, , at = host.now(), details] = args;
+      shadow.status = status;
+      shadow.blockedReason = status === "succeeded" ? undefined : message;
+      shadow.blockedDetails = status === "succeeded" ? undefined : details;
+      shadow.completedAt = at;
+      terminal = args;
+    },
+  };
+
+  if (shadowNode.kind === "write") await validateWriteNodeResult(transactionHost, shadowNode);
+
+  if (shadowNode.kind === "research" || shadowNode.kind === "write") {
+    publishNodeSucceeded(transactionHost, shadowNode);
+    await tryJoinAfterSuccess(transactionHost, shadowNode);
+  } else if (shadowNode.kind === "validate" || shadowNode.kind === "review") {
+    // Verification fan-in observes the committing peer through run.nodes.
+    publishNodeSucceeded(transactionHost, shadowNode);
+    await afterSuccess(transactionHost, shadowNode);
+  } else {
+    await afterSuccess(transactionHost, shadowNode);
+    // Finalization may terminalize the run before its own success event is emitted.
+    if (shadowNode.status === "running") publishNodeSucceeded(transactionHost, shadowNode);
+  }
+
+  // Commit is synchronous: no listener can observe the prepared shadow state.
+  const terminalState = terminal && {
+    status: run.status,
+    blockedReason: run.blockedReason,
+    blockedDetails: run.blockedDetails,
+    completedAt: run.completedAt,
+  };
+  mergeRun(run, base, shadow);
+  if (terminal && terminalState) {
+    run.status = terminalState.status;
+    run.blockedReason = terminalState.blockedReason;
+    run.blockedDetails = terminalState.blockedDetails;
+    run.completedAt = terminalState.completedAt;
+    host.markTerminalRun(...terminal);
+  }
+  for (const emission of emissions) host.emit(...emission);
+}
+
+function mergeRun(live: WikiRunSnapshot, base: WikiRunSnapshot, shadow: WikiRunSnapshot): void {
+  const liveNodes = new Map(live.nodes.map((node) => [node.id, node]));
+  const baseNodes = new Map(base.nodes.map((node) => [node.id, node]));
+  for (const shadowNode of shadow.nodes) {
+    const liveNode = liveNodes.get(shadowNode.id);
+    const baseNode = baseNodes.get(shadowNode.id);
+    if (!liveNode || !baseNode) {
+      if (!liveNode) live.nodes.push(shadowNode);
+      continue;
+    }
+    mergeChangedFields(liveNode, baseNode, shadowNode, new Set());
+  }
+  mergeChangedFields(live, base, shadow, new Set(["nodes", "events"]));
+}
+
+function mergeChangedFields<T extends object>(
+  live: T,
+  base: T,
+  shadow: T,
+  ignored: ReadonlySet<string>,
+): void {
+  const keys = new Set([...Object.keys(base), ...Object.keys(shadow)]);
+  for (const key of keys) {
+    if (ignored.has(key)) continue;
+    const field = key as keyof T;
+    if (sameValue(base[field], shadow[field])) continue;
+    if (!(key in shadow)) delete live[field];
+    else live[field] = shadow[field];
+  }
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return stableStringify(left) === stableStringify(right);
+}
+
+function isTransitionTerminal(status: WikiRunSnapshot["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "blocked" || status === "cancelled";
+}
+
+function publishNodeSucceeded(host: WorkflowTransitionContext, node: WikiNode): void {
+  const finishedAt = host.now();
+  node.status = "succeeded";
+  node.activity = { state: "completed", message: "Completed", updatedAt: finishedAt };
+  node.finishedAt = finishedAt;
+  // Drop the live transcript once the durable handoff/result is accepted.
+  node.history = undefined;
+  node.output = undefined;
+  host.emit("node_succeeded", node.id, node.label);
+}
+
+async function validateWriteNodeResult(host: WorkflowTransitionContext, node: WikiNode): Promise<void> {
   const run = host.requireRun();
   const input = pagePacketInputFor(node);
   const submitted = node.result;
@@ -112,7 +239,7 @@ export async function validateWriteNodeResult(host: TransitionHost, node: WikiNo
   }
 }
 
-export async function tryJoinAfterSuccess(host: TransitionHost, node: WikiNode): Promise<void> {
+async function tryJoinAfterSuccess(host: WorkflowTransitionContext, node: WikiNode): Promise<void> {
   const run = host.requireRun();
   // Skip fan-in when a local post-check already terminalized the run
   // (e.g. repair no-progress), matching the former early-return path.
@@ -173,7 +300,7 @@ export async function tryJoinAfterSuccess(host: TransitionHost, node: WikiNode):
   }
 }
 
-export async function afterSuccess(host: TransitionHost, node: WikiNode): Promise<void> {
+async function afterSuccess(host: WorkflowTransitionContext, node: WikiNode): Promise<void> {
   const run = host.requireRun();
   switch (node.kind) {
     case "inspect": {
@@ -189,7 +316,7 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
     }
     case "research":
     case "write":
-      // Fan-in is handled exclusively by tryJoinAfterSuccess after markNodeSucceeded.
+      // Fan-in is handled exclusively by commitNodeSuccess after publishing success.
       return;
     case "synthesis": {
       // Submission contract already validated by the selected synthesis submit tool.
