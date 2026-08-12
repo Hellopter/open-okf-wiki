@@ -6,8 +6,8 @@ page, including Overview, needs non-empty `type`, `title`, `description`, and
 and a `resource` in the form `repo:<project>/<path>#Lx-Ly`. `tags` is optional
 and, when present, is a non-empty string array. Cite each load-bearing body
 claim with its OKF source ID as `[^source-id]`. Map the assigned page type
-exactly to frontmatter `type`: `Overview`, `Architecture`, `Module`, `Flow`, or
-`Concept`. Define every source footnote with a Markdown link to the exact
+exactly to frontmatter `type`: `Overview`, `Domain`, `Architecture`, `Module`,
+`Flow`, `Concept`, `State`, or `Data`. Define every source footnote with a Markdown link to the exact
 matching `repo:` resource. Research evidence uses `project/path#Lx-Ly`;
 wiki citations use `repo:project/path#Lx-Ly`. Do not add
 `okf_version`, `generated`, `verified`, `human`, or `stale_after`; indexes and
@@ -43,8 +43,9 @@ Anti-patterns (will fail validation):
 
 Use the page contract, selected research artifacts, shared terms, relevant
 cross-link contracts, authorized source roots, and exact Wiki read paths as the
-working set. Explain responsibilities, mechanisms, and boundaries instead of
-restating files.
+working set. Answer every `readerQuestion` and substantively cover every
+`requiredFacet`; these are acceptance criteria, not headings to copy blindly.
+Explain responsibilities, mechanisms, and boundaries instead of restating files.
 
 For Chinese output, preserve source-authored Chinese domain and concept names
 from code or comments in frontmatter, headings, diagrams, and prose. Do not

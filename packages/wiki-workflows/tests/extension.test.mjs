@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createWikiExtension } from "../dist/extension.js";
 
+const TEST_WIKI_CONFIG = {
+  exclude: [], terminology: {}, domains: [],
+  runtime: { maxConcurrentAgents: 2, nodeTimeoutSeconds: 1200, maxTransientSessionAttempts: 2, rateLimitCooldownSeconds: 15 },
+};
+const TEST_POLICY_INPUT = { ...TEST_WIKI_CONFIG, quality: { maxSubmissionAttempts: 3 } };
+
 function snapshot(overrides = {}) {
   return {
-    version: 8,
+    version: 10,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -14,6 +20,8 @@ function snapshot(overrides = {}) {
     round: 0,
     sourceRestartCount: 0,
     maxResearchRounds: 6,
+    policy: { version: 3, ...TEST_WIKI_CONFIG, quality: { maxSubmissionAttempts: 3 }, promptBundleHash: "prompt-bundle" },
+    policyHash: "policy-hash",
     nodes: [],
     events: [],
     createdAt: "2026-08-08T00:00:00.000Z",
@@ -55,7 +63,7 @@ function fakeEngine(initial, hooks = {}) {
     restore(value) {
       calls.push(["restore", value]);
       // Engine accepts full snapshots only (history store); pointer sessions are rejected.
-      if (!value || typeof value !== "object" || value.version !== 8 || !value.id) return undefined;
+      if (!value || typeof value !== "object" || value.version !== 10 || !value.id) return undefined;
       current = structuredClone(value);
       // Mirror engine recovery: running → paused.
       if (current.status === "running") {
@@ -66,6 +74,10 @@ function fakeEngine(initial, hooks = {}) {
     async applyRestoredArtifactHealth() {
       calls.push(["applyRestoredArtifactHealth"]);
       return [];
+    },
+    reconcilePolicy(policy) {
+      calls.push(["reconcilePolicy", policy]);
+      return current && structuredClone(current);
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -121,10 +133,12 @@ function fixture(options = {}) {
     branchEntries = entries,
     mode = "print",
     hasUI = false,
-    workspace = { root: "/workspace", language: "zh" },
+    workspace: workspaceInput = { root: "/workspace", language: "zh", wiki: TEST_WIKI_CONFIG },
     onHistorySave,
     onWaitForIdle,
+    onRecoverPending,
   } = options;
+  const workspace = { wiki: TEST_WIKI_CONFIG, ...workspaceInput };
   const commands = new Map();
   const handlers = new Map();
   const appended = [];
@@ -133,6 +147,7 @@ function fixture(options = {}) {
   const statuses = [];
   const widgets = [];
   const workspaceCalls = [];
+  const recoveryCalls = [];
   const history = new Map();
   const engine = fakeEngine(undefined, { onWaitForIdle });
   const pi = {
@@ -171,7 +186,7 @@ function fixture(options = {}) {
     },
     async load(cwd) {
       workspaceCalls.push(["load", cwd]);
-      return { ...workspace, quality: workspace.quality ?? { maxResearchRounds: 6 }, sources: [] };
+      return { ...workspace, quality: workspace.quality ?? { maxResearchRounds: 6, maxSubmissionAttempts: 3 }, sources: [] };
     },
   };
   const historyStore = {
@@ -193,13 +208,25 @@ function fixture(options = {}) {
     getRunsDir: () => "/history",
     getArtifactsRoot: () => "/workspace/.okf-wiki/runs",
   };
-  createWikiExtension({ createEngine: () => engine, workspaceService, createHistoryStore: () => historyStore })(pi);
-  return { appended, commands, ctx, engine, handlers, history, messages, notices, statuses, widgets, workspaceCalls };
+  const publicationStore = {
+    async recoverPending() {
+      recoveryCalls.push(workspace.root);
+      return onRecoverPending ? await onRecoverPending() : [];
+    },
+  };
+  createWikiExtension({
+    createEngine: () => engine,
+    workspaceService,
+    createHistoryStore: () => historyStore,
+    createPublicationStore: () => publicationStore,
+  })(pi);
+  return { appended, commands, ctx, engine, handlers, history, messages, notices, recoveryCalls, statuses, widgets, workspaceCalls };
 }
 
 test("registers one command, starts in the background, and persists pointer-only session state", async () => {
   const subject = fixture();
   await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.deepEqual(subject.recoveryCalls, ["/workspace"], "pending publication is recovered before session commands run");
 
   assert.deepEqual([...subject.commands.keys()], ["wiki"]);
   await subject.commands.get("wiki").handler("generate lang=en authentication", subject.ctx);
@@ -210,6 +237,7 @@ test("registers one command, starts in the background, and persists pointer-only
     language: "en",
     focus: "authentication",
     maxResearchRounds: 6,
+    wikiPolicy: TEST_POLICY_INPUT,
   }]);
   assert.equal(subject.appended.at(-1).customType, "okf-wiki-run");
   const entry = subject.appended.at(-1).data;
@@ -242,7 +270,7 @@ test("restores from pointer via history store and persists interruption", async 
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls[0][0], "restore");
   assert.equal(subject.engine.calls[0][1].id, "restored");
-  assert.equal(subject.engine.calls[0][1].version, 8, "restore receives full snapshot, not pointer");
+  assert.equal(subject.engine.calls[0][1].version, 10, "restore receives full snapshot, not pointer");
   // Recovery converts running → paused and rewrites history.
   assert.equal(subject.history.get("restored")?.status, "paused");
   assert.equal(subject.appended.at(-1)?.data?.status, "paused");
@@ -251,6 +279,23 @@ test("restores from pointer via history store and persists interruption", async 
   assert.deepEqual(subject.engine.calls.slice(-2).map(([name]) => name), ["interrupt", "waitForIdle"]);
   assert.equal(subject.appended.at(-1).data.workspace, "/workspace");
   assert.equal("snapshot" in subject.appended.at(-1).data, false);
+});
+
+test("publication recovery failure blocks snapshot restore with an actionable error", async () => {
+  const restoredSnap = snapshot({ id: "recovery-blocked", status: "running" });
+  const restored = pointerFrom(restoredSnap);
+  const subject = fixture({
+    entries: [{ type: "custom", customType: "okf-wiki-run", data: restored }],
+    branchEntries: [{ type: "custom", customType: "okf-wiki-run", data: restored }],
+    onRecoverPending: async () => { throw new Error("inconsistent publish paths"); },
+  });
+  subject.history.set(restoredSnap.id, restoredSnap);
+
+  await subject.handlers.get("session_start")({}, subject.ctx);
+  assert.equal(subject.engine.calls.some(([name]) => name === "restore"), false);
+  assert.ok(subject.notices.some(({ message, level }) => level === "error"
+    && /publication recovery failed/i.test(message)
+    && /publish journal/i.test(message)));
 });
 
 test("missing history for a valid pointer does not half-restore", async () => {
@@ -325,8 +370,9 @@ test("fresh sessions resume the latest recoverable project run", async () => {
 
   await subject.commands.get("wiki").handler("resume", subject.ctx);
 
-  assert.deepEqual(subject.engine.calls.slice(-2).map((call) => call[0]), ["restore", "resume"]);
-  assert.equal(subject.engine.calls.at(-2)[1].id, "run-zeta");
+  assert.deepEqual(subject.engine.calls.slice(-3).map((call) => call[0]), ["restore", "reconcilePolicy", "resume"]);
+  assert.equal(subject.engine.calls.at(-3)[1].id, "run-zeta");
+  assert.deepEqual(subject.engine.calls.at(-2)[1], TEST_POLICY_INPUT, "resume reconciles against the latest workspace policy");
   assert.equal(subject.appended.at(-1).data.runId, "run-zeta");
   assert.equal("snapshot" in subject.appended.at(-1).data, false);
 });
@@ -342,8 +388,8 @@ test("resume accepts an exact historical run id and rejects terminal runs", asyn
   }));
 
   await selected.commands.get("wiki").handler("resume run-selected", selected.ctx);
-  assert.equal(selected.engine.calls.at(-2)[0], "restore");
-  assert.equal(selected.engine.calls.at(-2)[1].id, "run-selected");
+  assert.equal(selected.engine.calls.at(-3)[0], "restore");
+  assert.equal(selected.engine.calls.at(-3)[1].id, "run-selected");
 
   const failed = fixture();
   await failed.handlers.get("session_start")({}, failed.ctx);
@@ -551,7 +597,7 @@ test("rejects incompatible history snapshots pointed to by a valid pointer", asy
   const originalRestore = subject.engine.restore;
   subject.engine.restore = (value) => {
     subject.engine.calls.push(["restore", value]);
-    if (value?.version !== 7) return undefined;
+    if (value?.version !== 10) return undefined;
     return originalRestore(value);
   };
 
@@ -575,7 +621,7 @@ test("status, pause, resume, stop, and cancel use the same single-run controller
   await command.handler("cancel", subject.ctx);
 
   assert.match(subject.messages[0].content, /Wiki Run run-1/);
-  assert.deepEqual(subject.engine.calls.slice(-4).map(([name]) => name), ["pause", "resume", "stop", "cancel"]);
+  assert.deepEqual(subject.engine.calls.slice(-5).map(([name]) => name), ["pause", "reconcilePolicy", "resume", "stop", "cancel"]);
   assert.ok(subject.notices.some(({ message }) => /aborted|resume to continue/i.test(message)));
 });
 
@@ -716,6 +762,7 @@ test("generation uses the workspace language by default and starts from its root
     language: "en",
     focus: "architecture",
     maxResearchRounds: 6,
+    wikiPolicy: TEST_POLICY_INPUT,
   }]);
 });
 

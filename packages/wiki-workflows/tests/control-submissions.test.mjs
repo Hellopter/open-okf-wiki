@@ -24,6 +24,8 @@ function finalDecision(overrides = {}) {
             path: "overview/overview.md",
             title: "Overview",
             purpose: "Orient readers.",
+            readerQuestions: ["What does the system contain?"],
+            requiredFacets: ["domain map"],
             findingIds: [],
           }],
         },
@@ -32,10 +34,12 @@ function finalDecision(overrides = {}) {
           title: "Core",
           purpose: "Explain the core.",
           pages: [{
-            pageType: "architecture",
-            path: "core/architecture.md",
-            title: "Core architecture",
-            purpose: "Explain boundaries.",
+            pageType: "domain",
+            path: "core/domain.md",
+            title: "Core domain",
+            purpose: "Explain the core as a coherent domain.",
+            readerQuestions: ["How do the core models and flows fit together?"],
+            requiredFacets: ["models", "flows", "state", "invariants", "boundaries"],
             findingIds: ["finding-core"],
           }],
         },
@@ -79,6 +83,48 @@ test("requires one evidence-scoped content page in addition to Overview", () => 
   assert.throws(() => parseSynthesisSubmission(unscoped), /must select research findings/);
 });
 
+test("requires a domain landing page and page-level depth contracts", () => {
+  const missingDomainPage = finalDecision();
+  missingDomainPage.spec.domains[1].pages[0] = {
+    ...missingDomainPage.spec.domains[1].pages[0],
+    pageType: "module",
+    path: "core/modules/runtime.md",
+  };
+  assert.throws(() => parseSynthesisSubmission(missingDomainPage), /exactly one domain page at core\/domain\.md/);
+
+  for (const field of ["readerQuestions", "requiredFacets"]) {
+    const missingDepthContract = finalDecision();
+    delete missingDepthContract.spec.domains[1].pages[0][field];
+    assert.throws(() => parseSynthesisSubmission(missingDepthContract), new RegExp(`must include ${field}`));
+  }
+
+  const deeperPages = finalDecision();
+  deeperPages.spec.domains[1].pages.push(
+    {
+      pageType: "state",
+      path: "core/states/lifecycle.md",
+      title: "Lifecycle",
+      purpose: "Explain transitions.",
+      readerQuestions: ["Which transitions are valid?"],
+      requiredFacets: ["states", "guards"],
+      findingIds: ["finding-state"],
+    },
+    {
+      pageType: "data",
+      path: "core/data/model.md",
+      title: "Core model",
+      purpose: "Explain persistent data.",
+      readerQuestions: ["How is core data represented?"],
+      requiredFacets: ["identity", "constraints"],
+      findingIds: ["finding-data"],
+    },
+  );
+  assert.deepEqual(
+    parseSynthesisSubmission(deeperPages).spec.domains[1].pages.map((page) => page.pageType),
+    ["domain", "state", "data"],
+  );
+});
+
 test("parses explicit omissions and rejects duplicate finding selections", () => {
   const result = parseSynthesisSubmission(finalDecision({
     omissions: [{ findingId: "finding-secondary", rationale: "Covered by an external guide." }],
@@ -106,26 +152,26 @@ test("rejects page paths that can inject Markdown or control characters", () => 
 test("parses local and structural review defects as a discriminated union", () => {
   const result = parseReviewSubmission({
     defects: [
-      { kind: "depth", page: "core/architecture.md", detail: "Explain retry behavior." },
+      { kind: "depth", page: "core/domain.md", detail: "Explain retry behavior." },
       { kind: "coverage", detail: "Add the missing lifecycle topic." },
     ],
     summary: "Changes required.",
   });
   assert.deepEqual(result.defects, [
-    { kind: "depth", page: "core/architecture.md", detail: "Explain retry behavior." },
+    { kind: "depth", page: "core/domain.md", detail: "Explain retry behavior." },
     { kind: "coverage", detail: "Add the missing lifecycle topic." },
   ]);
 
   assert.throws(() => parseReviewSubmission({
-    defects: [{ id: "old", domainId: "core", kind: "depth", page: "core/architecture.md", detail: "Old shape." }],
+    defects: [{ id: "old", domainId: "core", kind: "depth", page: "core/domain.md", detail: "Old shape." }],
     summary: "Invalid.",
   }), /unsupported field/);
   assert.throws(() => parseReviewSubmission({
-    defects: [{ kind: "coverage", page: "core/architecture.md", detail: "Wrong routing." }],
+    defects: [{ kind: "coverage", page: "core/domain.md", detail: "Wrong routing." }],
     summary: "Invalid.",
   }), /unsupported field: page/);
   assert.throws(() => parseReviewSubmission({
-    defects: [{ kind: "format", page: "core/architecture.md", detail: "Removed kind." }],
+    defects: [{ kind: "format", page: "core/domain.md", detail: "Removed kind." }],
     summary: "Invalid.",
   }), /invalid defect/);
 });

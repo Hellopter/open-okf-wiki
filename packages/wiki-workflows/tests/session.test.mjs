@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createWikiRunSession, isWikiRunSession, parseWikiRunSession, WIKI_RUN_POINTER_VERSION } from "../dist/session.js";
+import { resolveWikiPolicy, wikiPolicyHash } from "../dist/policy.js";
 
-function snapshot(version = 8, overrides = {}) {
+function snapshot(version = 10, overrides = {}) {
+  const policy = resolveWikiPolicy();
   return {
     version,
     id: "run-1",
@@ -13,6 +15,8 @@ function snapshot(version = 8, overrides = {}) {
     round: 0,
     sourceRestartCount: 0,
     maxResearchRounds: 6,
+    policy,
+    policyHash: wikiPolicyHash(policy),
     nodes: [],
     events: [],
     createdAt: "2026-08-08T00:00:00.000Z",
@@ -100,10 +104,10 @@ test("snapshot validation remains independent of session pointer parsing", async
   const legacyV6 = snapshot(6);
   assert.equal(isWikiRunSnapshot(legacyV6), false);
   const versionReasons = explainWikiRunSnapshot(legacyV6);
-  assert.ok(versionReasons.some((reason) => /version: expected 8, got 6/.test(reason)));
+  assert.ok(versionReasons.some((reason) => /version: expected 10, got 6/.test(reason)));
   assert.throws(
     () => parseWikiRunSnapshot(legacyV6),
-    (error) => error?.code === "snapshot_incompatible" && /version: expected 8, got 6/.test(error.message),
+    (error) => error?.code === "snapshot_incompatible" && /version: expected 10, got 6/.test(error.message),
   );
 
   const withBlockedDetails = {
@@ -125,4 +129,28 @@ test("snapshot validation remains independent of session pointer parsing", async
     blockedDetails: { issues: "not-an-array" },
   };
   assert.equal(isWikiRunSnapshot(badBlockedDetails), false);
+
+  const tamperedPolicy = snapshot(undefined, {
+    policy: { ...snapshot().policy, terminology: { Ledger: "changed without rehashing" } },
+  });
+  assert.equal(isWikiRunSnapshot(tamperedPolicy), false);
+  assert.ok(explainWikiRunSnapshot(tamperedPolicy).some((reason) => /policyHash/.test(reason)));
+
+  for (const mutate of [
+    (policy) => { policy.quality.maxSubmissionAttempts = 4; },
+    (policy) => { policy.runtime.nodeTimeoutSeconds = 59; },
+    (policy) => { policy.runtime.maxTransientSessionAttempts = 3; },
+    (policy) => { policy.runtime.rateLimitCooldownSeconds = 14; },
+    (policy) => { policy.terminology.Ledger = ""; },
+    (policy) => { policy.domains = [
+      { id: "core", title: "Core", include: ["src/**"], exclude: [] },
+      { id: "core", title: "Duplicate", include: ["lib/**"], exclude: [] },
+    ]; },
+  ]) {
+    const invalid = snapshot();
+    mutate(invalid.policy);
+    invalid.policyHash = wikiPolicyHash(invalid.policy);
+    assert.equal(isWikiRunSnapshot(invalid), false, "policy schema must be validated independently of its hash");
+    assert.ok(explainWikiRunSnapshot(invalid).some((reason) => /invalid pinned Wiki policy/.test(reason)));
+  }
 });

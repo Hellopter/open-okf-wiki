@@ -20,7 +20,7 @@ function iterationKey(node: WikiNode, phaseId: string): string | undefined {
   if (phaseId === "write") {
     return stringField(node.input, "writeGroupId");
   }
-  if (phaseId === "verify") {
+  if (phaseId === "review") {
     return stringField(node.input, "verificationGroupId");
   }
   return undefined;

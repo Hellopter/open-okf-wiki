@@ -12,6 +12,7 @@ import { createWikiUiHost, notifyRunStarted, type WikiUiHost } from "./ui/host.j
 import type { WikiNavigatorController, WikiNavigatorWorkspace } from "./ui/model.js";
 import { renderWikiArtifactText, renderWikiRunHistoryText, renderWikiRunText } from "./ui/text.js";
 import { createWikiRunHistoryStore, summarizeWikiRun, type WikiRunHistoryStore } from "./run-history.js";
+import { createWikiPublicationStore, type WikiPublicationStore } from "./publication-store.js";
 import { createWikiRunSession, parseWikiRunSession, WIKI_RUN_CUSTOM_TYPE } from "./session.js";
 import { explainWikiRunSnapshot } from "./snapshot-validation.js";
 import type { WikiRunEvent, WikiRunSession, WikiRunSnapshot, WikiRunSummary } from "./workflow-types.js";
@@ -24,6 +25,8 @@ export interface WikiExtensionOptions {
   workspaceService?: WikiWorkspaceService;
   /** Test seam for project-scoped durable Wiki run history. */
   createHistoryStore?: (workspace: string) => WikiRunHistoryStore;
+  /** Test seam for workspace-local candidate publication and crash recovery. */
+  createPublicationStore?: (workspace: string) => WikiPublicationStore;
 }
 
 interface ParsedRunCommand {
@@ -56,6 +59,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     let persistenceErrorReporter: ((message: string) => void) | undefined;
     const workspaceService = options.workspaceService ?? wikiWorkspaceService;
     const historyStores = new Map<string, WikiRunHistoryStore>();
+    const publicationStores = new Map<string, WikiPublicationStore>();
     const historySummaries = new Map<string, WikiRunSummary[]>();
     const cachedSnapshots = new Map<string, WikiRunSnapshot>();
     const historyListeners = new Set<() => void>();
@@ -121,6 +125,15 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     const restoreForWorkspace = async (context: ExtensionContext): Promise<void> => {
       const workspace = await workspaceForNavigator(context.cwd);
       const workspaceRoot = workspace?.root ?? context.cwd;
+      try {
+        await publicationStoreFor(workspaceRoot).recoverPending();
+      } catch (error) {
+        context.ui.notify(
+          `Wiki publication recovery failed: ${errorMessage(error)}. Resolve the publish journal before resuming this run.`,
+          "error",
+        );
+        return;
+      }
       const candidate = latestSessionCandidate(context, workspaceRoot);
       if (!candidate) return;
       if (!candidate.session) {
@@ -292,6 +305,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
                 language: command.language ?? workspace.language,
                 focus: command.focus,
                 maxResearchRounds: workspace.quality.maxResearchRounds,
+                wikiPolicy: { ...workspace.wiki, quality: { maxSubmissionAttempts: workspace.quality.maxSubmissionAttempts } },
               });
               await persistNow();
               await ensureHost(context);
@@ -493,6 +507,16 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       return store;
     }
 
+    function publicationStoreFor(workspace: string): WikiPublicationStore {
+      const root = path.resolve(workspace);
+      let store = publicationStores.get(root);
+      if (!store) {
+        store = options.createPublicationStore?.(root) ?? createWikiPublicationStore({ workspace: root });
+        publicationStores.set(root, store);
+      }
+      return store;
+    }
+
     function rememberSnapshot(snapshot: WikiRunSnapshot): void {
       cachedSnapshots.set(snapshot.id, structuredClone(snapshot));
       const workspace = path.resolve(snapshot.cwd);
@@ -550,6 +574,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
       if (current && (!runId || current.id === runId)) {
         assertResumable(current);
+        {
+          const workspace = await workspaceService.load(root);
+          active.reconcilePolicy({ ...workspace.wiki, quality: { maxSubmissionAttempts: workspace.quality.maxSubmissionAttempts } });
+        }
         return await active.resume();
       }
       if (current && isExecutingRunStatus(current.status)) {
@@ -583,6 +611,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         throw new Error(incompatibleRunMessage(detail));
       }
       checkpoint.seedRevision(restored.revision ?? 0);
+      {
+        const workspace = await workspaceService.load(root);
+        active.reconcilePolicy({ ...workspace.wiki, quality: { maxSubmissionAttempts: workspace.quality.maxSubmissionAttempts } });
+      }
       // Persist recovered state after restore before resuming.
       try {
         await historyStoreFor(root).save(structuredClone(restored));

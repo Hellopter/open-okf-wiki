@@ -21,6 +21,8 @@ export interface WorkspaceToolPolicy {
   workspaceRoot: string;
   sourceRoots: Map<string, PermittedToolRoot>;
   wikiRoot: string;
+  /** Optional unpublished Wiki root used by writer/reviewer tools for this run. */
+  candidateWikiRoot?: string;
   artifactRoot: string;
 }
 
@@ -29,16 +31,23 @@ export interface PermittedToolRoot {
   physicalRoot?: string;
 }
 
-export async function workspaceToolPolicy(cwd: string): Promise<WorkspaceToolPolicy> {
+export async function workspaceToolPolicy(cwd: string, candidateWikiRoot?: string): Promise<WorkspaceToolPolicy> {
   const workspace = await loadWikiWorkspace(cwd);
   const sourceRoots = new Map(workspace.sources.map((source) => [
     source.path,
     { logicalRoot: source.absolutePath, physicalRoot: source.realPath } satisfies PermittedToolRoot,
   ]));
+  const resolvedCandidateRoot = candidateWikiRoot === undefined
+    ? undefined
+    : insideWorkspace(workspace.root, candidateWikiRoot);
+  if (resolvedCandidateRoot === path.resolve(workspace.root)) {
+    throw new Error("Workflow configuration error: candidate Wiki root must be a workspace subdirectory");
+  }
   return {
     workspaceRoot: workspace.root,
     sourceRoots,
     wikiRoot: path.join(workspace.root, "wiki"),
+    candidateWikiRoot: resolvedCandidateRoot,
     // Parent of runs/ (staging + per-run manifests) and blobs/ (content-addressed handoffs).
     artifactRoot: path.join(workspace.root, ".okf-wiki"),
   };

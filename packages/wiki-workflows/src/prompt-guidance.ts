@@ -8,7 +8,7 @@ const guidanceCache = new Map<GuidanceName, Promise<string>>();
 const templateCache = new Map<WikiPageTemplateType, Promise<string>>();
 
 /** A skeletal page structure that is selected by the finalized WikiSpec. */
-export type WikiPageTemplateType = "overview" | "architecture" | "module" | "flow" | "concept";
+export type WikiPageTemplateType = "overview" | "domain" | "architecture" | "module" | "flow" | "concept" | "state" | "data";
 
 /**
  * Guidance options supplied by the workflow after synthesis. Templates are opt-in

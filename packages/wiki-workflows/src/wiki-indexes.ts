@@ -18,12 +18,12 @@ import {
 } from "./wiki-validate.js";
 
 /** Replace the deterministic index projection without modifying concept pages. */
-export async function materializeWikiIndexes(root: string, spec: WikiSpec): Promise<string[]> {
+export async function materializeWikiIndexes(root: string, spec: WikiSpec, wikiDirectory = "wiki"): Promise<string[]> {
   const specIssues: WikiValidationIssue[] = [];
   const targetPages = specPagePaths(spec, specIssues);
   if (specIssues.length) throw new Error(`Cannot materialize Wiki indexes: ${specIssues.map(formatIssue).join("; ")}`);
 
-  const roots = await resolveWikiRoots(root);
+  const roots = await resolveWikiRoots(root, wikiDirectory);
   const tree = await scanWikiTree(roots.wiki);
   if (tree.issues.length) throw new Error(`Unsafe Wiki tree: ${tree.issues.map(formatIssue).join("; ")}`);
 

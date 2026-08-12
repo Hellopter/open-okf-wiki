@@ -16,15 +16,98 @@ export const MAX_RESEARCH_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifact
 /** Maximum UTF-8 size of a synthesis or review JSON artifact. */
 export const MAX_CONTROL_ARTIFACT_BYTES = DEFAULT_WIKI_WORKFLOW_POLICY.artifacts.controlBytes;
 
-/**
- * The tool protocol transports only a pointer. Its literal path keeps strict
- * providers from accepting a stale or arbitrary workspace file.
- */
-export function artifactSubmissionSchema(artifactPath: string) {
-  return Type.Object({
-    artifactPath: Type.Literal(artifactPath, { description: "Exact handoff artifact path supplied for this node" }),
-  }, { additionalProperties: false });
-}
+const nonEmptyTextSchema = Type.String({ minLength: 1 });
+const prioritySchema = Type.Union([Type.Literal("critical"), Type.Literal("normal")]);
+const findingKindSchema = Type.Union([
+  Type.Literal("domain"), Type.Literal("concept"), Type.Literal("flow"), Type.Literal("boundary"), Type.Literal("state-data"),
+]);
+const pageTypeSchema = Type.Union([
+  Type.Literal("overview"), Type.Literal("domain"), Type.Literal("architecture"), Type.Literal("module"),
+  Type.Literal("flow"), Type.Literal("concept"), Type.Literal("state"), Type.Literal("data"),
+]);
+
+/** Strict model-facing payload for one bounded research result. */
+export const researchSubmissionSchema = Type.Object({
+  summary: nonEmptyTextSchema,
+  findings: Type.Array(Type.Object({
+    kind: findingKindSchema,
+    title: nonEmptyTextSchema,
+    readerQuestion: nonEmptyTextSchema,
+    priority: prioritySchema,
+    evidence: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
+  }, { additionalProperties: false })),
+  gaps: Type.Array(Type.Object({
+    question: nonEmptyTextSchema,
+    priority: prioritySchema,
+    sourcePaths: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+const specPageSchema = Type.Object({
+  pageType: pageTypeSchema,
+  path: nonEmptyTextSchema,
+  title: nonEmptyTextSchema,
+  purpose: nonEmptyTextSchema,
+  readerQuestions: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
+  requiredFacets: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
+  findingIds: Type.Array(nonEmptyTextSchema),
+}, { additionalProperties: false });
+
+const wikiSpecSchema = Type.Object({
+  domains: Type.Array(Type.Object({
+    id: nonEmptyTextSchema,
+    title: nonEmptyTextSchema,
+    purpose: nonEmptyTextSchema,
+    pages: Type.Array(specPageSchema, { minItems: 1 }),
+  }, { additionalProperties: false }), { minItems: 1 }),
+  crossLinks: Type.Optional(Type.Array(Type.Object({
+    fromPath: nonEmptyTextSchema,
+    toPath: nonEmptyTextSchema,
+    purpose: nonEmptyTextSchema,
+  }, { additionalProperties: false }))),
+  sharedTerms: Type.Optional(Type.Array(Type.Object({
+    term: nonEmptyTextSchema,
+    definition: nonEmptyTextSchema,
+  }, { additionalProperties: false }))),
+  omissions: Type.Optional(Type.Array(Type.Object({
+    findingId: nonEmptyTextSchema,
+    rationale: nonEmptyTextSchema,
+  }, { additionalProperties: false }))),
+}, { additionalProperties: false });
+
+/** Strict discriminated payload for either research expansion or a final WikiSpec. */
+export const synthesisSubmissionSchema = Type.Union([
+  Type.Object({
+    decision: Type.Literal("expand"),
+    researchScopes: Type.Array(Type.Object({
+      id: nonEmptyTextSchema,
+      sourcePaths: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
+      task: nonEmptyTextSchema,
+    }, { additionalProperties: false }), { minItems: 1 }),
+    rationale: nonEmptyTextSchema,
+  }, { additionalProperties: false }),
+  Type.Object({
+    decision: Type.Literal("finalize"),
+    spec: wikiSpecSchema,
+    rationale: nonEmptyTextSchema,
+  }, { additionalProperties: false }),
+]);
+
+const localReviewDefectSchema = Type.Object({
+  kind: Type.Union([Type.Literal("evidence"), Type.Literal("link"), Type.Literal("depth"), Type.Literal("diagram")]),
+  page: nonEmptyTextSchema,
+  detail: nonEmptyTextSchema,
+}, { additionalProperties: false });
+const structuralReviewDefectSchema = Type.Object({
+  kind: Type.Union([Type.Literal("topology"), Type.Literal("coverage")]),
+  detail: nonEmptyTextSchema,
+}, { additionalProperties: false });
+
+/** Strict model-facing semantic review payload. */
+export const reviewSubmissionSchema = Type.Object({
+  defects: Type.Array(Type.Union([localReviewDefectSchema, structuralReviewDefectSchema])),
+  summary: nonEmptyTextSchema,
+}, { additionalProperties: false });
 
 export class WikiControlSubmissionSizeError extends Error {
   readonly code = "submission_too_large";
@@ -36,15 +119,6 @@ export class WikiControlSubmissionSizeError extends Error {
   ) {
     super(`${label} exceeds the ${limitBytes}-byte control payload limit`);
   }
-}
-
-/** Validate a pointer-only control call before reading its expected artifact. */
-export function parseArtifactSubmission(value: unknown, expectedArtifactPath: string): string {
-  assertControlSubmissionSize(value, "Control submission");
-  if (!isRecord(value) || value.artifactPath !== expectedArtifactPath || Object.keys(value).length !== 1) {
-    throw new Error(`Control submission must reference the exact artifact path: ${expectedArtifactPath}`);
-  }
-  return expectedArtifactPath;
 }
 
 /** Decode and validate the JSON artifact that carries a synthesis result. */
@@ -185,6 +259,12 @@ function parseWikiSpec(value: unknown): WikiSpec {
     domainIds.add(id);
     if (domain.pages.length === 0) throw new Error(`WikiSpec domain ${id} must include at least one page`);
     const pages = domain.pages.map((page) => parseSpecPage(page, id, pagePaths));
+    if (id !== "overview") {
+      const domainPages = pages.filter((page) => page.pageType === "domain");
+      if (domainPages.length !== 1 || domainPages[0]?.path !== `${id}/domain.md`) {
+        throw new Error(`WikiSpec domain ${id} must contain exactly one domain page at ${id}/domain.md`);
+      }
+    }
     return {
       id,
       title: requiredText(domain.title, `WikiSpec domain title for ${id}`),
@@ -241,7 +321,11 @@ function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>)
   if (!isRecord(value) || !Array.isArray(value.findingIds)) {
     throw new Error(`WikiSpec domain ${domainId} contains an invalid page`);
   }
-  assertExactKeys(value, ["pageType", "path", "title", "purpose", "findingIds"], `WikiSpec page in ${domainId}`);
+  assertExactKeys(
+    value,
+    ["pageType", "path", "title", "purpose", "readerQuestions", "requiredFacets", "findingIds"],
+    `WikiSpec page in ${domainId}`,
+  );
   const path = parseWikiPath(value.path, `WikiSpec page path for ${domainId}`);
   if (!path.startsWith(`${domainId}/`)) {
     throw new Error(`WikiSpec page ${path} must be contained by its domain directory ${domainId}/`);
@@ -257,14 +341,32 @@ function parseSpecPage(value: unknown, domainId: string, pagePaths: Set<string>)
   });
   const pageType = parsePageType(value.pageType, `WikiSpec page type for ${path}`);
   if (pageType === "overview" && path !== "overview/overview.md") throw new Error("WikiSpec overview page must be overview/overview.md");
+  if (pageType === "domain" && path !== `${domainId}/domain.md`) {
+    throw new Error(`WikiSpec domain page for ${domainId} must be ${domainId}/domain.md`);
+  }
   if (pageType !== "overview" && findingIds.length === 0) throw new Error(`WikiSpec page ${path} must select research findings`);
+  const requiredFacets = parseUniqueTextArray(value.requiredFacets, `WikiSpec required facets for ${path}`);
+  if (pageType === "domain") {
+    const normalized = new Set(requiredFacets.map((facet) => facet.toLowerCase()));
+    const missing = ["models", "flows", "state", "invariants", "boundaries"].filter((facet) => !normalized.has(facet));
+    if (missing.length) throw new Error(`WikiSpec domain page ${path} is missing required facets: ${missing.join(", ")}`);
+  }
   return {
     pageType,
     path,
     title: requiredText(value.title, `WikiSpec page title for ${path}`),
     purpose: requiredText(value.purpose, `WikiSpec page purpose for ${path}`),
+    readerQuestions: parseUniqueTextArray(value.readerQuestions, `WikiSpec reader questions for ${path}`),
+    requiredFacets,
     findingIds,
   };
+}
+
+function parseUniqueTextArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${label} must be a non-empty array`);
+  const parsed = value.map((item) => requiredText(item, label));
+  if (new Set(parsed).size !== parsed.length) throw new Error(`${label} must not contain duplicates`);
+  return parsed;
 }
 
 function parseEvidenceReference(value: unknown, label: string): string {
@@ -280,8 +382,9 @@ function isPriority(value: unknown): value is WikiResearchArtifact["gaps"][numbe
   return value === "critical" || value === "normal";
 }
 
-function parsePageType(value: unknown, label: string): "overview" | "architecture" | "module" | "flow" | "concept" {
-  if (value === "overview" || value === "architecture" || value === "module" || value === "flow" || value === "concept") return value;
+function parsePageType(value: unknown, label: string): WikiSpec["domains"][number]["pages"][number]["pageType"] {
+  if (value === "overview" || value === "domain" || value === "architecture" || value === "module"
+    || value === "flow" || value === "concept" || value === "state" || value === "data") return value;
   throw new Error(`${label} is invalid`);
 }
 

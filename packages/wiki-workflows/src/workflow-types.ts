@@ -1,6 +1,7 @@
 import type { WikiNodeErrorCode } from "./failures.js";
 import type { WikiFinalization, WikiInspection, WikiMode, WikiValidation, WikiValidationIssue } from "./types.js";
 import type { WikiArtifactRef, WikiArtifactStore } from "./artifact-store.js";
+import type { ResolvedWikiPolicy } from "./policy.js";
 
 export type { WikiMode } from "./types.js";
 export type { WikiNodeErrorCode } from "./failures.js";
@@ -157,10 +158,11 @@ export interface WikiRunRequest {
   language?: "zh" | "en";
   focus?: string;
   maxResearchRounds?: number;
+  wikiPolicy?: Partial<Omit<ResolvedWikiPolicy, "version" | "promptBundleHash">>;
 }
 
 export interface WikiRunSnapshot {
-  version: 8;
+  version: 10;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -172,6 +174,9 @@ export interface WikiRunSnapshot {
   /** Number of automatic restarts caused by source fingerprint drift. */
   sourceRestartCount: number;
   maxResearchRounds: number;
+  /** Product defaults and workspace overrides pinned for this complete run. */
+  policy: ResolvedWikiPolicy;
+  policyHash: string;
   inspection?: WikiInspection;
   inspectionFingerprint?: string;
   nodes: WikiNode[];
@@ -270,10 +275,14 @@ export interface WikiResearchArtifact {
 }
 
 export interface WikiSpecPage {
-  pageType: "overview" | "architecture" | "module" | "flow" | "concept";
+  pageType: "overview" | "domain" | "architecture" | "module" | "flow" | "concept" | "state" | "data";
   path: string;
   title: string;
   purpose: string;
+  /** Questions this page must answer independently for its intended reader. */
+  readerQuestions: string[];
+  /** Source-grounded aspects that writing and semantic review must cover. */
+  requiredFacets: string[];
   /** Evidence findings selected specifically for this page. Empty only for Overview. */
   findingIds: string[];
 }
@@ -390,12 +399,15 @@ export interface WikiAgentExecutionRequest {
   artifactPaths?: string[];
   /** Exact Wiki files this agent may inspect without write permission. */
   wikiReadPaths?: string[];
-  /** Exact workspace-local handoff file a non-writer agent must produce. */
-  artifactWritePath?: string;
+  /** Internal persistence target for accepted control output; never model-authored. */
+  /** Unpublished Wiki root used for exact writer and reviewer paths in this run. */
+  candidateWikiRoot?: string;
   /** Exact Wiki-relative files a page writer may create or change. */
   writePaths?: string[];
   language: "zh" | "en";
   signal: AbortSignal;
+  /** Pinned per-node direct structured submission budget. */
+  maxSubmissionAttempts?: number;
   onActivity?: (activity: Partial<WikiNodeActivity>, metrics?: Partial<WikiNodeMetrics>) => void;
   /** A bounded live assistant-text snapshot for the Navigator detail pane. */
   onOutput?: (output: string) => void;
@@ -421,13 +433,17 @@ export interface WikiAgentExecutionResult {
 /** Narrow execution boundary. Tests inject this instead of starting model sessions. */
 export interface WikiAgentExecutor {
   execute(request: WikiAgentExecutionRequest): Promise<WikiAgentExecutionResult>;
+  /** Align the executor admission gate with the policy pinned for the active run. */
+  setMaxConcurrentAgents?(value: number): void;
+  /** Apply runtime values pinned into the active run snapshot. */
+  setRuntimePolicy?(policy: Pick<ResolvedWikiPolicy, "quality" | "runtime">): void;
 }
 
 export interface WikiWorkflowDependencies {
-  inspect(cwd: string): Promise<WikiInspection>;
-  validate(cwd: string, spec: WikiSpec, wikiDirectory?: string): Promise<WikiValidation>;
-  validatePage(cwd: string, spec: WikiSpec, page: string): Promise<WikiPageValidationFailure[]>;
-  materializeIndexes(cwd: string, spec: WikiSpec): Promise<string[]>;
+  inspect(cwd: string, policy?: ResolvedWikiPolicy): Promise<WikiInspection>;
+  validate(cwd: string, spec: WikiSpec, wikiDirectory?: string, excludedPaths?: readonly string[]): Promise<WikiValidation>;
+  validatePage(cwd: string, spec: WikiSpec, page: string, wikiDirectory?: string, excludedPaths?: readonly string[]): Promise<WikiPageValidationFailure[]>;
+  materializeIndexes(cwd: string, spec: WikiSpec, wikiDirectory?: string): Promise<string[]>;
   finalize(cwd: string, spec: WikiSpec, wikiDirectory?: string, publicationAt?: string): Promise<WikiFinalization>;
   executor: WikiAgentExecutor;
   /** Workspace-local durable handoffs. Tests can inject an isolated store. */

@@ -73,11 +73,22 @@ export {
 export {
   createWikiRunHistoryStore,
   DEFAULT_MAX_TERMINAL_WIKI_RUNS,
+  DEFAULT_WIKI_RUN_HISTORY_PAGE_SIZE,
+  MAX_WIKI_RUN_HISTORY_PAGE_SIZE,
   summarizeWikiRun,
   wikiHistoryProjectKey,
   type WikiRunHistoryStore,
   type WikiRunHistoryStoreOptions,
+  type WikiRunHistoryPage,
 } from "./run-history.js";
+export {
+  createWikiPublicationStore,
+  type WikiPublicationStore,
+  type WikiPublicationStoreOptions,
+  type WikiPublishJournal,
+  type WikiPublishRecovery,
+  type WikiPublishStep,
+} from "./publication-store.js";
 export {
   createWikiExtension,
   default as wikiExtension,

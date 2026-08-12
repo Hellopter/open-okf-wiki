@@ -45,6 +45,7 @@ export interface WikiArtifactStore {
   list(runId: string, nodeId: string, attempt: number): Promise<WikiArtifactRef[]>;
   copyRun(sourceRunId: string, targetRunId: string): Promise<WikiArtifactRef[]>;
   removeRun(runId: string): Promise<boolean>;
+  garbageCollect(): Promise<{ skipped: boolean; scanned: number; removed: number }>;
   getRunsRoot(): string;
 }
 
@@ -267,16 +268,54 @@ export function createWikiArtifactStore(options: WikiArtifactStoreOptions): Wiki
       assertComponent(runId, "run ID");
       let removed = false;
       await enqueue(async () => {
-        try {
-          await assertNoArtifactSymlinks(okfRoot, runDirectory(runId));
-          // Leave content-addressed blobs in place (no refcount GC).
-          await rm(runDirectory(runId), { recursive: true, force: false });
-          removed = true;
-        } catch (error) {
-          if (!isMissing(error)) throw error;
+        const directory = runDirectory(runId);
+        await assertNoArtifactSymlinks(okfRoot, directory);
+        // The run directory is shared with history and publication state. Artifact
+        // cleanup owns only its manifest and staging tree; publish journals,
+        // backups, candidates, and run.json must remain recoverable.
+        for (const owned of [path.join(directory, MANIFEST_FILE), path.join(directory, STAGING_DIR)]) {
+          try {
+            await assertNoArtifactSymlinks(okfRoot, owned);
+            await rm(owned, { recursive: true, force: false });
+            removed = true;
+          } catch (error) {
+            if (!isMissing(error)) throw error;
+          }
         }
       });
       return removed;
+    },
+
+    async garbageCollect(): Promise<{ skipped: boolean; scanned: number; removed: number }> {
+      return await enqueue(async () => {
+        await ensureIgnored();
+        const runEntries = await directoryNames(runsRoot);
+        for (const runId of runEntries) {
+          try {
+            const value = JSON.parse(await readFile(path.join(runsRoot, runId, "run.json"), "utf8")) as { status?: unknown };
+            if (value.status === "running" || value.status === "paused") return { skipped: true, scanned: 0, removed: 0 };
+          } catch (error) {
+            if (!isMissing(error) && !(error instanceof SyntaxError)) throw error;
+          }
+        }
+
+        const referenced = new Set<string>();
+        for (const runId of runEntries) {
+          for (const ref of await readRunManifest(okfRoot, runManifestPath(runId))) referenced.add(blobFileName(ref.sha256, ref.mediaType));
+        }
+        let scanned = 0;
+        let removed = 0;
+        for (const entry of await fileNames(blobsRoot)) {
+          if (!/^[a-f0-9]{64}\.(?:json|md)$/.test(entry)) continue;
+          scanned += 1;
+          if (referenced.has(entry)) continue;
+          const absolute = path.join(blobsRoot, entry);
+          await assertNoArtifactSymlinks(okfRoot, absolute);
+          await rm(absolute, { force: true });
+          removed += 1;
+        }
+        return { skipped: false, scanned, removed };
+      });
     },
 
     getRunsRoot(): string {
@@ -291,6 +330,34 @@ export function createWikiArtifactStore(options: WikiArtifactStoreOptions): Wiki
     await ensureSafeArtifactDirectory(okfRoot, directory);
     await assertNoArtifactSymlinks(okfRoot, path.join(directory, MANIFEST_FILE));
     await writeAtomic(path.join(directory, MANIFEST_FILE), Buffer.from(`${JSON.stringify({ version: 1, artifacts })}\n`, "utf8"));
+  }
+}
+
+async function directoryNames(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const unsafe = entries.find((entry) => entry.isSymbolicLink());
+    if (unsafe) throw new Error(`Wiki artifact store must not contain symbolic links: ${path.join(root, unsafe.name)}`);
+    return entries
+      .filter((entry) => entry.isDirectory() && SAFE_COMPONENT.test(entry.name))
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw error;
+  }
+}
+
+async function fileNames(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true });
+    const unsafe = entries.find((entry) => entry.isSymbolicLink());
+    if (unsafe) throw new Error(`Wiki artifact store must not contain symbolic links: ${path.join(root, unsafe.name)}`);
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw error;
   }
 }
 

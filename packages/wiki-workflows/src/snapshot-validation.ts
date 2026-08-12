@@ -1,7 +1,8 @@
 import type { WikiNode, WikiNodeActivity, WikiNodeAttempt, WikiNodeHistoryEntry, WikiNodeMetrics, WikiRunEvent, WikiRunSnapshot } from "./workflow-types.js";
+import { wikiPolicyHash } from "./policy.js";
 import { clone, isRecord } from "./util.js";
 
-const SNAPSHOT_VERSION = 8 as const;
+const SNAPSHOT_VERSION = 10 as const;
 
 const NODE_KINDS = new Set(["inspect", "research", "synthesis", "write", "validate", "review", "finalize"]);
 const NODE_STATUSES = new Set(["queued", "running", "succeeded", "failed", "invalidated", "cancelled", "blocked"]);
@@ -27,6 +28,9 @@ export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
     || !isNonnegativeInteger(value.round)
     || !isNonnegativeInteger(value.sourceRestartCount)
     || !isResearchRoundLimit(value.maxResearchRounds)
+    || !isPolicy(value.policy)
+    || !isString(value.policyHash)
+    || value.policyHash !== wikiPolicyHash(value.policy as WikiRunSnapshot["policy"])
     || !Array.isArray(value.nodes)
     || !value.nodes.every(isNode)
     || !Array.isArray(value.events)
@@ -84,6 +88,11 @@ export function explainWikiRunSnapshot(value: unknown): string[] {
   if (!isResearchRoundLimit(value.maxResearchRounds)) {
     reasons.push(`maxResearchRounds: expected integer 3..20, got ${formatGot(value.maxResearchRounds)}`);
   }
+  if (!isPolicy(value.policy)) reasons.push("policy: invalid pinned Wiki policy");
+  if (!isString(value.policyHash)) reasons.push(`policyHash: expected string, got ${formatGot(value.policyHash)}`);
+  else if (isPolicy(value.policy) && value.policyHash !== wikiPolicyHash(value.policy as WikiRunSnapshot["policy"])) {
+    reasons.push("policyHash: does not match pinned Wiki policy");
+  }
   if (!Array.isArray(value.nodes)) reasons.push(`nodes: expected array, got ${formatGot(value.nodes)}`);
   else if (!value.nodes.every(isNode)) reasons.push("nodes: contains invalid node entries");
   if (!Array.isArray(value.events)) reasons.push(`events: expected array, got ${formatGot(value.events)}`);
@@ -102,6 +111,35 @@ export function explainWikiRunSnapshot(value: unknown): string[] {
     return ["snapshot failed structural validation (duplicate node ids, missing dependencies, or graph cycle)"];
   }
   return [];
+}
+
+function isPolicy(value: unknown): boolean {
+  if (!isRecord(value)
+    || value.version !== 3
+    || !isStringArray(value.exclude)
+    || !value.exclude.every((item) => item.length > 0 && item.trim() === item)
+    || !isRecord(value.terminology)
+    || !Object.entries(value.terminology).every(([term, definition]) => term.length > 0 && term.trim() === term
+      && isString(definition) && definition.length > 0 && definition.trim() === definition)
+    || !Array.isArray(value.domains)
+    || !value.domains.every((domain) => isRecord(domain)
+      && isString(domain.id) && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(domain.id)
+      && isString(domain.title) && domain.title.length > 0 && domain.title.trim() === domain.title
+      && isStringArray(domain.include) && domain.include.length > 0 && domain.include.every((item) => item.length > 0 && item.trim() === item)
+      && isStringArray(domain.exclude) && domain.exclude.every((item) => item.length > 0 && item.trim() === item))
+    || !isRecord(value.quality)
+    || !boundedInteger(value.quality.maxSubmissionAttempts, 1, 3)
+    || !isRecord(value.runtime)
+    || !boundedInteger(value.runtime.maxConcurrentAgents, 1, 4)
+    || !boundedInteger(value.runtime.nodeTimeoutSeconds, 60, 1_800)
+    || !boundedInteger(value.runtime.maxTransientSessionAttempts, 1, 2)
+    || !boundedInteger(value.runtime.rateLimitCooldownSeconds, 15, 120)
+    || !isString(value.promptBundleHash) || !/^[a-f0-9]{64}$/.test(value.promptBundleHash)) return false;
+  return new Set(value.domains.map((domain) => (domain as { id: string }).id)).size === value.domains.length;
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum: number): boolean {
+  return Number.isInteger(value) && Number(value) >= minimum && Number(value) <= maximum;
 }
 
 /**

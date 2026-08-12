@@ -45,6 +45,18 @@ and report an actionable error when Developer Mode or elevation is required.
 version: 1
 language: zh
 defaultSourceIgnores: true
+quality:
+  maxResearchRounds: 6
+  maxSubmissionAttempts: 3
+wiki:
+  exclude: []
+  terminology: {}
+  domains: []
+  runtime:
+    maxConcurrentAgents: 2
+    nodeTimeoutSeconds: 1200
+    maxTransientSessionAttempts: 2
+    rateLimitCooldownSeconds: 15
 sources:
   - path: api
     origin:
@@ -52,16 +64,34 @@ sources:
       localPath: /absolute/path/to/api
 ```
 
-It stores declared source locations, the default language, and whether common
-generated directories are ignored. It never stores source snapshots, copied
-inputs, or run history.
+It stores declared source locations, the default language, research budget,
+and Wiki policy. `wiki.exclude` contains source-relative or project-prefixed
+glob patterns that inspection and accepted evidence must exclude.
+`wiki.terminology` defines canonical term-to-definition pairs for planning and
+review. Optional configured domains require a unique safe `id`, non-empty
+`title`, and at least one `include` pattern; `exclude` refines that domain's
+research boundary. Include patterns must start at a declared source root.
+`wiki.runtime.maxConcurrentAgents` defaults to `2` and accepts integers `1..4`.
+`quality.maxResearchRounds` defaults to `6` and accepts integers `3..20`.
+`quality.maxSubmissionAttempts` defaults to `3` and accepts `1..3` direct
+typed submissions per node attempt. Runtime defaults are a `1200`-second node
+deadline (`60..1800`), `2` transient session attempts (`1..2`), and a
+`15`-second rate-limit cooldown (`15..120`).
+
+New runs resolve the current configuration into a normalized policy and pin its
+hash in the run snapshot. Editing `workspace.yaml` never hot-patches agents
+that are already running. Resuming a paused run compares the policy hash; when
+it changed, the run pins the new policy, invalidates downstream work, and
+restarts from Inspect. `quality.maxResearchRounds` is fixed when a run starts.
+The file never stores source snapshots or copied inputs; durable run state lives
+under `.okf-wiki/`.
 
 ## Workflow
 
 Every run uses five user-visible stages:
 
 ```text
-Inspect -> Research -> Plan -> Write -> Verify
+Inspect -> Research -> Plan -> Write -> Review & Publish
 ```
 
 Research uses a fresh agent per source and may run one bounded targeted batch.
@@ -71,7 +101,9 @@ writer after the content-page barrier. In refresh mode only impacted or new
 content pages plus Overview are rewritten unless a structural replan requires a
 full rewrite.
 
-Verify runs pure static validation and an independent semantic reviewer.
+Write performs deterministic format, citation, link, and Mermaid validation as
+soon as a page is submitted, so the same writer can repair it immediately. A
+clean candidate then advances to an independent semantic reviewer.
 Page-local defects return to fresh page writers; topology or coverage defects
 return to one bounded structural replan. Only after review succeeds does a
 deterministic finalizer remove obsolete Markdown, rebuild indexes, preserve
@@ -150,11 +182,36 @@ resumable.
 - Source references begin with the declared project directory, for example
   `api/src/server.ts#L12-L38`; body citations use
   `repo:api/src/server.ts#L12-L38`.
-- Pi session custom entries retain the active-session recovery state. Project
-  history is stored under Pi's agent directory as bounded run snapshots (Agent
-  outputs, attempt history, and tool summaries), never copied source files or
-  Wiki snapshots. Git remains the rollback path.
+- Pi session custom entries contain only run pointers. Authoritative run
+  snapshots, candidate Wiki trees, journals, and handoff manifests are stored
+  below `.okf-wiki/`; accepted handoffs use content-addressed blobs. Published
+  `wiki/` remains unchanged until recoverable directory publication succeeds.
 - Project-history writes are serialized and shutdown waits for the final write;
   persistence failures are reported in Pi instead of being silently ignored.
 - Pi's own auto-compaction and provider retry capabilities are enabled for
   subagents; the console reports their activity without reimplementing them.
+
+## Attempts and Retries
+
+A node `attempt` means one fresh isolated Pi session. Context overflow,
+deadline, and exhausted transient-provider failures use
+`wiki.runtime.maxTransientSessionAttempts` (`1..2`, default `2`), so the
+default path receives at most one fresh-session retry. Local validator
+infrastructure may use the internal three-attempt node ceiling.
+
+Inside each session, Pi auto-retry is separately fixed at `maxRetries: 3` with
+a 2-second base delay and provider-library retries disabled. This is at most
+four provider attempts for one Pi model request: the initial request plus three
+retries. A missing required submission can add one correction turn in the same
+session, and structured submission validation uses
+`quality.maxSubmissionAttempts` (`1..3`, default `3`). Those turns and tool
+continuations are not fresh node attempts, but each model request can incur its
+own Pi retry allowance.
+
+Consequently, do not treat the node attempt count as a provider-call or cost
+count. Two fresh sessions can multiply the primary-request retry allowance to
+as many as eight attempts; the three-session validator-infrastructure path can
+reach twelve primary-request attempts, before any distinct correction or tool
+continuation requests. Pi's inner retry and compaction limits are fixed;
+fresh-session count, node deadline, rate-limit cooldown, and submission count
+use the bounded workspace settings above.

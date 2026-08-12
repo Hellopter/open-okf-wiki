@@ -6,11 +6,11 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 
 | Module | Role |
 |--------|------|
-| `src/policy.ts` | Tunable budgets/limits (`WikiWorkflowPolicy`, `DEFAULT_WIKI_WORKFLOW_POLICY`, `mergeWikiWorkflowPolicy`, `validMaxResearchRounds`). Research expand vs audit split lives here. |
+| `src/policy.ts` | Product budgets plus resolved, hashable per-run workspace policy (exclude, terminology, configured domains, concurrency, prompt bundle). |
 | `src/failures.ts` | Failure codes, `WikiFailure` / `WikiFailureClass`, `WikiBudgetExhaustedError`, `errorMessage`. Single source for `WikiNodeErrorCode`. |
 | `src/util.ts` | Pure helpers: `isRecord`, `clone`, `pathIsInside`, `uniqueStrings`, `stableStringify`; re-exports `errorMessage`. |
-| `src/workflow-phases.ts` | Single source of truth for user-visible phases (`WIKI_WORKFLOW_PHASES`, `phaseIdForKind`, `phaseTitleForKind`, `phaseMetaForKind`). Maps node kinds → dashboard stages (synthesis → plan, validate\|review\|finalize → verify). Compat aliases: `WIKI_WORKFLOW_STAGES`, `phaseRefForKind`. |
-| `src/workflow-types.ts` | Durable snapshot / node / event types (`WikiRunSnapshot` **version 7**, optional `blockedDetails`). |
+| `src/workflow-phases.ts` | User-visible phases. Static validation remains in Write; semantic review and finalization map to Review & Publish. |
+| `src/workflow-types.ts` | Durable snapshot / node / event types (`WikiRunSnapshot` **version 10**, pinned policy and `blockedDetails`). |
 | `src/node-retry.ts` | Pure classification of execution errors → node status / terminal run. |
 | `src/join-barrier.ts` | Sibling join helpers: `evaluateJoin`, `groupAllSucceeded`, `siblingsByGroupKey`. Success path only (see below). |
 | `src/session.ts` | Pointer-only Pi custom-entry codec (`WikiRunSession` / `createWikiRunSession` / `parseWikiRunSession`). Fail-closed; **no legacy full-snapshot dual-read**. |
@@ -21,14 +21,16 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/run-graph.ts` | Phase membership, fork/invalidate closure, terminal checks; `phaseTitleFor` delegates to `workflow-phases`. |
 | `src/prompts.ts` | Agent prompt builders for research / synthesis / write / review. |
 | `src/path-policy.ts` | Safe path resolution for wiki and source trees. |
-| `src/submissions/contracts.ts` | Model-facing JSON field-name contracts for control submission tools (shared by agents + prompts). |
-| `src/wiki-validate.ts` | Content/spec validation issues used by the verify phase. |
+| `src/submissions/contracts.ts` | Model-facing typed-object contracts shared by submission tools and prompts. |
+| `src/wiki-validate.ts` | Deterministic page/tree validation performed during Write and again before publication. |
 | `src/wiki-indexes.ts` | Index page materialization helpers. |
-| `src/wiki-finalize.ts` | Finalization (indexes, obsolete pages) after verify passes. |
+| `src/wiki-finalize.ts` | Finalization (indexes, obsolete pages) after static validation and semantic review pass. |
 | `src/validate.ts` | Facade re-exporting inspect/validate/finalize entry points used by the engine. |
-| `src/artifact-store.ts` | Content-addressed handoff store: blobs at `.okf-wiki/blobs/{sha256}.json`, staging under `.okf-wiki/runs/{runId}/staging/...`, per-run `manifest.json`. Size limits mirrored in `policy.artifacts`. |
-| `src/snapshot-validation.ts` | Fail-closed snapshot schema checks (version 7, optional `blockedDetails`). |
-| `src/executor.ts` | Pi agent executor (runs a single node against the coding agent). |
+| `src/artifact-store.ts` | Content-addressed accepted-object and coordinator-report blobs with per-run manifests. |
+| `src/publication-store.ts` | Per-run candidate trees, fork copy, atomic publish journal, rollback and startup recovery. |
+| `src/run-history.ts` | Workspace-local authoritative `run.json`, derived index, pagination and retention. |
+| `src/snapshot-validation.ts` | Fail-closed version 10 checks, including policy/hash consistency. |
+| `src/executor.ts` | Isolated Pi sessions, compaction/retry policy, runtime admission, bounded streams/history, and node deadline. |
 | `src/extension.ts` | Pi extension wiring: commands, run lifecycle, UI host, session restore. |
 | `src/ui/*` | Dashboard / navigator / stages / format / task panel — pure-ish presentation over snapshots. Stages re-export `WIKI_WORKFLOW_PHASES` as `WIKI_WORKFLOW_STAGES`. |
 
@@ -65,10 +67,42 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 ## Snapshots
 
 - **No old-snapshot migration path.**
-- Snapshot `version` is **8**. Incompatible older versions are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
+- Snapshot `version` is **10**. Incompatible older versions are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
 - Session restore is **pointer-only**; full snapshots live in the project history store.
 - Artifacts are **content-addressed** under `.okf-wiki/blobs/{sha256}.*` with per-run manifests (no dual-read of older layouts).
 - Optional `blockedDetails` on terminal blocked runs carries structured diagnostics (`code`, `issues`, `defects`, `page`, …).
+
+## Workspace policy lifecycle
+
+`workspace.yaml` has two run-control groups:
+
+| Field | Default | Validation / ownership |
+|-------|---------|------------------------|
+| `quality.maxResearchRounds` | `6` | Integer `3..20`; copied into the run only at start |
+| `quality.maxSubmissionAttempts` | `3` | Integer `1..3`; direct typed submission calls per node attempt; pinned policy |
+| `wiki.exclude` | `[]` | Non-empty string globs; global inspection and accepted-evidence exclusion |
+| `wiki.terminology` | `{}` | Non-empty string keys and definitions; prompt-visible canonical vocabulary |
+| `wiki.domains` | `[]` | Unique safe ids, non-empty titles, required non-empty include arrays, optional exclude arrays |
+| `wiki.runtime.maxConcurrentAgents` | `2` | Integer `1..4`; shared engine/executor admission limit |
+| `wiki.runtime.nodeTimeoutSeconds` | `1200` | Integer `60..1800`; isolated session wall-clock deadline |
+| `wiki.runtime.maxTransientSessionAttempts` | `2` | Integer `1..2`; total sessions for transient/context/deadline classes |
+| `wiki.runtime.rateLimitCooldownSeconds` | `15` | Integer `15..120`; admission cooldown after provider pressure |
+
+At `engine.start`, `resolveWikiPolicy` normalizes ordering and duplicates, adds
+the policy and prompt-bundle versions, hashes the result, and stores both value
+and hash in the version 10 snapshot. Nodes read `run.policy`; they do not reload
+configuration, so an edit cannot change an executing agent or half of a batch.
+On resume, the extension loads the current workspace policy and calls
+`reconcilePolicy`. A changed hash replaces the pinned policy as one atomic run
+transition, invalidates from Inspect, and requeues Inspect before dispatch.
+`quality.maxResearchRounds` remains the value originally stored on that run;
+`quality.maxSubmissionAttempts` participates in the pinned policy hash.
+
+Configured domain include patterns select declared source roots and fail closed
+when no root matches. They do not create a finer filesystem sandbox within that
+source root. Domain excludes are task-specific research guidance; global
+`wiki.exclude` is the deterministic exclusion enforced when research evidence
+and Wiki citations are accepted.
 
 ## Research budgets
 
@@ -104,7 +138,9 @@ Research and write groups fan in **only after** a node is marked `status=succeed
    - `all_succeeded` → queue synthesis (research) or verification (write)
 5. `afterSuccess` intentionally no-ops fan-in for research/write so join is not double-fired.
 
-`evaluateJoin` is pure (`join-barrier.ts`). Verify peer completion uses a separate path in `afterSuccess` / `maybeCompleteVerification` after self is marked succeeded.
+`evaluateJoin` is pure (`join-barrier.ts`). Validation and semantic review are
+sequential gates: validation repairs route immediately, then a clean candidate
+queues review, and only clean review queues finalization.
 
 ## Engine shape (facade + pump)
 
@@ -112,10 +148,45 @@ Research and write groups fan in **only after** a node is marked `status=succeed
 - **Pump**: private loop that picks runnable nodes (deps all succeeded), batches researchers/writers/verification, executes, then advances via transitions.
 - **TransitionHost**: thin adapter so `transitions-queue` mutates graph without owning the engine class.
 
+## Candidate and publication ownership
+
+- Agents never mutate published `wiki/`. Logical `wiki/*` tool paths map to
+  `.okf-wiki/runs/<runId>/candidate/wiki`.
+- Generate seeds only assets; refresh seeds the complete published tree so
+  retained Markdown survives partial rewriting.
+- Forked validation/review retries copy the accepted candidate before retaining
+  succeeded writer nodes.
+- Finalization rechecks source state before and after candidate stamping, then
+  the publication store swaps directories with a recoverable journal.
+- History deletion owns `run.json`; artifact cleanup owns its manifest/staging.
+  Neither may remove publication journals, candidates, or backups.
+
+## Runtime bounds
+
+- Each node gets a fresh in-memory Pi session with native compaction enabled,
+  bounded provider retry, the configured deadline (default 20 minutes), and
+  bounded stream/history tails.
+- Durable `node.attempt` counts fresh Pi sessions. Context overflow, deadline,
+  and exhausted transient provider errors use `maxTransientSessionAttempts`
+  (default two, range one to two). Validator-infrastructure failures may reach
+  the internal three-session node ceiling.
+- Pi auto-retry is a separate inner layer: `maxRetries: 3`, 2-second base delay,
+  provider-library retries disabled. One model request therefore has at most
+  four provider attempts. The primary-request retry product is up to eight for
+  a two-session transient path or twelve for a three-session validator path.
+- That product is not a total request/cost bound. One missing-submission
+  correction turn and tool continuations are additional requests with their own
+  Pi retry allowance. Typed submission tools permit the configured `1..3`
+  submission calls per node attempt (default `3`); they do not create fresh
+  sessions.
+- The resolved concurrency limit is shared by the engine and executor. 429
+  pressure temporarily reduces admission to one. Active memory pressure pauses
+  and requeues running nodes before the V8 hard threshold.
+
 ## User-visible phases
 
 ```
-inspect → research → plan → write → verify
+inspect → research → plan → write → review
 ```
 
 Node kind → phase mapping (`workflow-phases.ts`):
@@ -126,6 +197,7 @@ Node kind → phase mapping (`workflow-phases.ts`):
 | `research` | `research` | Research |
 | `synthesis` | `plan` | Plan |
 | `write` | `write` | Write |
-| `validate` \| `review` \| `finalize` | `verify` | Verify |
+| `validate` | `write` | Write |
+| `review` \| `finalize` | `review` | Review & Publish |
 
 UI stage rows (`ui/stages.ts`) always show the full `WIKI_WORKFLOW_PHASES` map, even before the engine has queued every subagent.

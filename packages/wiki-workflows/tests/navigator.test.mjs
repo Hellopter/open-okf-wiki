@@ -46,7 +46,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 8,
+  version: 10,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -127,7 +127,7 @@ test("phaseRows exposes the complete Wiki workflow map", () => {
   assert.equal(layoutForWidth(68), 2);
   assert.equal(layoutForWidth(67), 1);
   assert.deepEqual(phaseRows(run).map((phase) => [phase.title, phase.nodeIds.length]), [
-    ["Inspect", 1], ["Research", 2], ["Plan", 0], ["Write", 1], ["Verify", 0],
+    ["Inspect", 1], ["Research", 2], ["Plan", 0], ["Write", 1], ["Review & Publish", 0],
   ]);
 });
 
@@ -140,7 +140,7 @@ test("dashboard shows all stages before dynamic agents are scheduled without a t
   assert.match(frame, /Research/);
   assert.match(frame, /Plan/);
   assert.match(frame, /Write/);
-  assert.match(frame, /Verify/);
+  assert.match(frame, /Review & Publish/);
   assert.doesNotMatch(frame, /Source Survey|Targeted Research|Domain Repair|Structural Re-synthesis/);
   assert.doesNotMatch(frame, /Timeline/);
 });
@@ -530,19 +530,19 @@ test("planning nodes are grouped into the Plan stage", () => {
   });
   synthesized.nodes.find((node) => node.id === "write").dependsOn = ["synthesis"];
   assert.deepEqual(phaseRows(synthesized).map((phase) => [phase.title, phase.nodeIds.length]), [
-    ["Inspect", 1], ["Research", 2], ["Plan", 1], ["Write", 1], ["Verify", 0],
+    ["Inspect", 1], ["Research", 2], ["Plan", 1], ["Write", 1], ["Review & Publish", 0],
   ]);
 });
 
-test("static validation, semantic review, and finalization share the Verify stage", () => {
+test("static validation stays in Write while review and finalization share Review & Publish", () => {
   const verified = structuredClone(run);
   verified.nodes.push(
     {
       id: "validate",
       kind: "validate",
       label: "Validate Wiki",
-      phaseId: "verify",
-      phaseTitle: "Verify",
+      phaseId: "write",
+      phaseTitle: "Write",
       status: "succeeded",
       dependsOn: ["write"],
       attempt: 1,
@@ -556,8 +556,8 @@ test("static validation, semantic review, and finalization share the Verify stag
       id: "review",
       kind: "review",
       label: "Review Wiki",
-      phaseId: "verify",
-      phaseTitle: "Verify",
+      phaseId: "review",
+      phaseTitle: "Review & Publish",
       status: "succeeded",
       dependsOn: ["validate"],
       attempt: 1,
@@ -571,8 +571,8 @@ test("static validation, semantic review, and finalization share the Verify stag
       id: "finalize",
       kind: "finalize",
       label: "Finalize Wiki",
-      phaseId: "verify",
-      phaseTitle: "Verify",
+      phaseId: "review",
+      phaseTitle: "Review & Publish",
       status: "succeeded",
       dependsOn: ["review"],
       attempt: 1,
@@ -584,8 +584,9 @@ test("static validation, semantic review, and finalization share the Verify stag
     },
   );
 
-  assert.deepEqual(phaseRows(verified).find((phase) => phase.id === "verify").nodeIds, ["validate", "review", "finalize"]);
-  assert.deepEqual(phaseRetryImpact(verified, "verify").targetIds, ["validate", "review", "finalize"]);
+  assert.deepEqual(phaseRows(verified).find((phase) => phase.id === "write").nodeIds, ["write", "validate"]);
+  assert.deepEqual(phaseRows(verified).find((phase) => phase.id === "review").nodeIds, ["review", "finalize"]);
+  assert.deepEqual(phaseRetryImpact(verified, "review").targetIds, ["review", "finalize"]);
 });
 
 test("agent pager G/end then k decreases scroll and leaves non-follow", () => {

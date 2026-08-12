@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadWikiPromptGuidance } from "../dist/prompt-guidance.js";
 import { synthesisContext } from "../dist/prompts.js";
-import { DEFAULT_WIKI_WORKFLOW_POLICY } from "../dist/policy.js";
+import { DEFAULT_WIKI_WORKFLOW_POLICY, resolveWikiPolicy } from "../dist/policy.js";
 
 test("Chinese guidance prefers source-authored domain and concept names", async () => {
   const research = normalizeWhitespace(await loadWikiPromptGuidance("research", "zh"));
@@ -12,7 +12,7 @@ test("Chinese guidance prefers source-authored domain and concept names", async 
 
   const synthesis = normalizeWhitespace(await loadWikiPromptGuidance("synthesis", "zh"));
   assert.match(synthesis, /source-authored Chinese domain and concept names/);
-  assert.match(synthesis, /take precedence over translated English names/);
+  assert.match(synthesis, /Preserve source-authored Chinese domain and concept names/);
 
   const write = normalizeWhitespace(await loadWikiPromptGuidance("write", "zh", { pageTypes: ["concept"] }));
   assert.match(write, /preserve source-authored Chinese domain and concept names/);
@@ -31,8 +31,9 @@ test("research guidance requires structured findings and explicit gaps", async (
   assert.match(research, /wiki_submit_research/);
   assert.match(research, /bounded survey, then deepen/i);
   assert.match(research, /deepen before submit|deepen with targeted|survey and deepen/i);
-  assert.match(research, /submit a complete handoff|call `wiki_submit_research` with that path \*\*once\*\*/i);
-  assert.match(research, /Do not call `wiki_submit_research` more than once/i);
+  assert.match(research, /call `wiki_submit_research` with the complete result object directly/i);
+  assert.match(research, /at most three submissions are available/i);
+  assert.doesNotMatch(research, /exact handoff path|with that path|wiki_write_handoff/i);
   assert.match(research, /Finding granularity/i);
   assert.match(research, /one public interface, module, end-to-end flow/i);
   assert.match(research, /Do not collapse an entire package/i);
@@ -42,19 +43,21 @@ test("research guidance requires structured findings and explicit gaps", async (
 
 test("synthesis guidance plans complete evidence-saturated coverage without page quotas", async () => {
   const synthesis = normalizeWhitespace(await loadWikiPromptGuidance("synthesis", "en"));
-  assert.match(synthesis, /Every content page selects one or more exact `findingId` values/);
-  assert.match(synthesis, /`omissions` as `\{ "findingId": "\.\.\.", "rationale": "\.\.\." \}`/);
-  assert.match(synthesis, /A critical finding cannot be omitted/);
-  assert.match(synthesis, /Prefer finalize when research receipts report no unresolved critical gaps/);
+  assert.match(synthesis, /Every non-Overview domain must contain exactly one `domain` page/);
+  assert.match(synthesis, /`<domain-id>\/domain\.md`/);
+  assert.match(synthesis, /`readerQuestions`/);
+  assert.match(synthesis, /`requiredFacets`/);
+  assert.match(synthesis, /Critical findings cannot be omitted/);
+  assert.match(synthesis, /Prefer `finalize` when no unresolved critical gaps remain/);
   assert.match(synthesis, /requiredDryCoverageAudits/);
-  assert.match(synthesis, /There is no per-repository page limit/);
+  assert.match(synthesis, /There is no page quota/);
   assert.match(synthesis, /concurrency is scheduling only/);
-  assert.match(synthesis, /scheduling limit must never reduce the number of scopes/);
-  assert.match(synthesis, /Entity cluster heuristic/i);
-  assert.match(synthesis, /modules\/|`modules\//);
-  assert.match(synthesis, /flows\/|concepts\//);
-  assert.match(synthesis, /flows\/auth\/login-handoff\.md/);
-  assert.match(synthesis, /"crossLinks"/);
+  assert.match(synthesis, /Use only declared source paths and unused scope IDs/);
+  assert.match(synthesis, /`concept`, `flow`, `state`, `data`, `module`, or `architecture`/);
+  assert.match(synthesis, /ordering\/domain\.md/);
+  assert.match(synthesis, /ordering\/states\/order-lifecycle\.md/);
+  assert.match(synthesis, /call `wiki_submit_synthesis` with the complete decision object directly/i);
+  assert.doesNotMatch(synthesis, /exact handoff path|wiki_write_handoff/i);
 });
 
 test("common guidance reserves indexes and trust metadata for finalization", async () => {
@@ -67,10 +70,13 @@ test("common guidance reserves indexes and trust metadata for finalization", asy
 test("all writer templates are packaged and independently selectable", async () => {
   const expected = new Map([
     ["overview", "Overview Page Skeleton"],
+    ["domain", "Domain Page Skeleton"],
     ["architecture", "Architecture Page Skeleton"],
     ["module", "Module Page Skeleton"],
     ["flow", "Flow Page Skeleton"],
     ["concept", "Concept Page Skeleton"],
+    ["state", "State Page Skeleton"],
+    ["data", "Data Page Skeleton"],
   ]);
   for (const [pageType, heading] of expected) {
     const prompt = await loadWikiPromptGuidance("write", "en", { pageTypes: [pageType] });
@@ -101,11 +107,14 @@ test("review guidance emits one complete defect set for a repair wave", async ()
   const review = normalizeWhitespace(await loadWikiPromptGuidance("review", "en"));
   assert.match(review, /complete actionable defect set across all pages in one result/);
   assert.match(review, /repairs affected pages together in one wave/);
-  assert.match(review, /rerunning the complete Verify stage/);
+  assert.match(review, /Do not repeat per-page format, citation, link, or Mermaid syntax validation/);
+  assert.match(review, /passes its Write gate again/);
   assert.match(review, /Do not report syntax or validator infrastructure failures as semantic defects/);
   assert.match(review, /multiple independent reader questions/i);
   assert.match(review, /prefer `coverage` or `topology`/i);
   assert.match(review, /prefer `depth`/i);
+  assert.match(review, /call `wiki_submit_review` with the complete result object directly/i);
+  assert.doesNotMatch(review, /exact handoff path|wiki_write_handoff/i);
 });
 
 test("skill stays a concise workflow router to role references", async () => {
@@ -134,6 +143,7 @@ test("synthesis round JSON injects remaining budgets and prefer-finalize policy"
     requestedMode: "generate",
     focus: undefined,
     maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds,
+    policy: resolveWikiPolicy(),
     inspection: { sourcePaths: ["src-core"] },
     nodes: [],
   };

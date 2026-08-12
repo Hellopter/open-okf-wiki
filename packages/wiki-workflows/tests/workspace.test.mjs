@@ -47,7 +47,11 @@ test("initializes a plain YAML workspace and persists its language", async () =>
     version: 1,
     language: "en",
     defaultSourceIgnores: true,
-    quality: { maxResearchRounds: 6 },
+    quality: { maxResearchRounds: 6, maxSubmissionAttempts: 3 },
+    wiki: {
+      exclude: [], terminology: {}, domains: [],
+      runtime: { maxConcurrentAgents: 2, nodeTimeoutSeconds: 1200, maxTransientSessionAttempts: 2, rateLimitCooldownSeconds: 15 },
+    },
     sources: [],
   });
   assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
@@ -56,6 +60,7 @@ test("initializes a plain YAML workspace and persists its language", async () =>
   const loaded = await loadWikiWorkspace(root);
   assert.equal(loaded.language, "zh");
   assert.equal(loaded.quality.maxResearchRounds, 6);
+  assert.equal(loaded.quality.maxSubmissionAttempts, 3);
   assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ".okf-wiki/\n");
 });
 
@@ -69,6 +74,29 @@ test("rejects a research budget below the saturation minimum", async () => {
   await writeFile(configPath, YAML.stringify(config), "utf8");
 
   await assert.rejects(loadWikiWorkspace(root), /integer from 3 to 20/);
+});
+
+test("validates bounded submission and runtime policy settings", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-workspace-runtime-"));
+  temporaryDirectories.push(root);
+  await initializeWikiWorkspace({ cwd: root });
+  const configPath = path.join(root, "workspace.yaml");
+  const config = YAML.parse(await readFile(configPath, "utf8"));
+  config.quality.maxSubmissionAttempts = 1;
+  config.wiki.runtime = {
+    maxConcurrentAgents: 4,
+    nodeTimeoutSeconds: 60,
+    maxTransientSessionAttempts: 1,
+    rateLimitCooldownSeconds: 120,
+  };
+  await writeFile(configPath, YAML.stringify(config), "utf8");
+  const loaded = await loadWikiWorkspace(root);
+  assert.equal(loaded.quality.maxSubmissionAttempts, 1);
+  assert.deepEqual(loaded.wiki.runtime, config.wiki.runtime);
+
+  config.wiki.runtime.nodeTimeoutSeconds = 59;
+  await writeFile(configPath, YAML.stringify(config), "utf8");
+  await assert.rejects(loadWikiWorkspace(root), /nodeTimeoutSeconds.*60 to 1800/);
 });
 
 test("links a Git source by its project directory name without an alias", async () => {

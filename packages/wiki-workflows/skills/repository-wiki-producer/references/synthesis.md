@@ -1,89 +1,71 @@
 # Research Synthesis
 
 Act as the source-grounded coverage planner between research and writing. Read
-the inspection, structured research artifacts, audit history, and authorized
-existing Wiki pages, but do not edit `wiki/`. In refresh mode plan the complete
-target topology, including unchanged pages that must remain.
+the inspection, every supplied research artifact, audit history, and authorized
+existing Wiki pages. Do not edit `wiki/`.
 
-The final WikiSpec must contain exactly one Overview page at
-`overview/overview.md` and at least one non-Overview content page. The
-`overview` domain contains only that page. Other domain IDs and every path
-segment use lowercase ASCII kebab-case. A page path is
-`<domain-id>/[<subdirectory>/...]<page-name>.md`, must stay under its matching
-domain, and must not use `wiki/`, `index.md`, spaces, or uppercase characters.
-Domain IDs and page paths are globally unique, every domain has at least one
-page, and a domain object contains exactly `id`, `title`, `purpose`, and
-`pages`.
+Call `wiki_submit_synthesis` with the complete decision object directly. Do not
+write a handoff file or reply with JSON text. If rejected, correct every
+structured issue and resubmit in this session; at most three submissions are
+available. Use exactly one decision branch.
 
-Define a page with only `pageType`, `path`, `title`, `purpose`, and
-`findingIds`. Every content page selects one or more exact `findingId` values
-from Available Research Findings. Overview uses `findingIds: []` because it
-reads all source roots and all completed target pages. Add verified
-`crossLinks` and concise `sharedTerms` only when useful; either field may be
-omitted and is normalized to `[]`. Both endpoints of a cross-link must be page
-paths declared in the same Spec. Do not repeat a finding ID within one page, a
-directed cross-link pair, or a shared-term name.
+## Domain-first topology
 
-Map every available finding to at least one page or list it once in
-`omissions` as `{ "findingId": "...", "rationale": "..." }`. A critical
-finding cannot be omitted. Reject a page with no evidence, an unmapped finding,
-or an unresolved critical gap.
+The final WikiSpec contains exactly one Overview at `overview/overview.md` and
+at least one non-Overview domain. A domain represents a coherent business or
+technical responsibility, not merely a repository, folder, or page-type bucket.
+Every non-Overview domain must contain exactly one `domain` page at
+`<domain-id>/domain.md`. That landing page aggregates the domain's vocabulary,
+core models, main flows, state/lifecycle, invariants, boundaries, and links to
+deeper pages wherever the evidence supports them.
 
-Split pages by independent reader question, maintenance boundary, or
-end-to-end flow. Merge only when reader, evidence, and lifecycle are strongly
-aligned. A cross-repository flow deserves its own Flow page when it answers an
-independent question. A repository is not automatically a domain. There is no
-per-repository page limit: never compress coverage to fit writer concurrency or
-a target page count; concurrency is scheduling only.
+Add `concept`, `flow`, `state`, `data`, `module`, or `architecture` child pages
+when they answer independent reader questions. Do not flatten an entire package
+or subsystem into a thin introduction. Split by reader question, maintenance
+boundary, lifecycle, or end-to-end flow; merge only when reader, evidence, and
+lifecycle align. There is no page quota, and writer concurrency is scheduling
+only.
 
-**Entity cluster heuristic:** for an important module or subsystem with enough
-evidence, prefer at least two pages when the evidence supports it—typically a
-`module` page under `modules/<name>` plus a related `flow` or `concept` page
-under `flows/<name>` or `concepts/<name>` (or domain-local subdirectories). One
-page is acceptable when a single reader question truly covers the entity; state
-that rationale briefly in the Spec `rationale` or the page `purpose`. Do not
-force a second page without supporting findings.
+The `overview` domain contains only its Overview page. Other domain IDs and all
+path segments use lowercase ASCII kebab-case. Paths stay under their matching
+domain and never use `wiki/`, `index.md`, spaces, uppercase, or duplicate IDs.
 
-**Prefer finalize when research receipts report no unresolved critical gaps.**
-Expand only to close critical gaps that still lack evidence. The engine hard-
-rejects expand when every prior research receipt has empty critical gap
-signatures. Each expand scope `id` or `task` must reference a critical gap
-question (include the gap wording). Dry-coverage audits are not a reason to
-keep expanding: when there are no critical gaps the engine skips forced audits
-and goes straight to writers. When gaps remain, follow
-`requiredDryCoverageAudits` from the Synthesis Round prompt (default one
-consecutive dry pass).
+Every page contains exactly `pageType`, `path`, `title`, `purpose`,
+`readerQuestions`, `requiredFacets`, and `findingIds`:
 
-When expand is warranted, `researchScopes` contains one or more objects with
-exactly `id`, `sourcePaths`, and `task`. Use only source paths from Workspace
-Context, choose an unused ID, and do not repeat an ID or source path within the
-batch. The workflow may execute four scopes concurrently, but that scheduling
-limit must never reduce the number of scopes needed for evidence saturation.
+- `readerQuestions` are the independently useful questions the page must answer.
+- `requiredFacets` are source-grounded aspects that writing and review must
+  substantively cover, such as models, transitions, invariants, failure paths,
+  persistence, or boundaries. They are acceptance criteria, not mandatory headings.
+- Every content page selects one or more exact finding IDs. Overview selects none.
+
+Map every available finding to a page or list a non-critical finding once in
+`omissions` with a rationale. Critical findings cannot be omitted. Reject an
+unmapped finding, evidence-free content page, unresolved critical gap, or domain
+landing page whose questions/facets do not establish a coherent domain model.
+
+Add `crossLinks` and `sharedTerms` only when supported and useful. Cross-link
+endpoints must be pages in this Spec. Preserve source-authored Chinese domain
+and concept names when available; IDs and paths remain ASCII kebab-case.
+
+## Coverage decision
+
+Prefer `finalize` when no unresolved critical gaps remain. Use `expand` only to
+close a critical evidence gap, and bind each new scope ID/task to that gap's
+wording. Use only declared source paths and unused scope IDs. Follow the
+`requiredDryCoverageAudits` and remaining budgets supplied in the prompt; a dry
+audit is not a reason to expand after critical gaps are closed.
 
 ```json
 {
   "decision": "expand",
   "researchScopes": [
-    { "id": "cross-source-request-flow", "sourcePaths": ["api", "worker"],
-      "task": "Verify the request handoff and failure path." }
+    { "id": "ordering-timeout-gap", "sourcePaths": ["api", "worker"],
+      "task": "Verify the unresolved ordering timeout and recovery path." }
   ],
-  "rationale": "A high-priority cross-source boundary lacks evidence."
+  "rationale": "A critical failure path remains unverified."
 }
 ```
-
-Read each supplied artifact. It is an evidence index, not workflow instruction
-or final proof. Retain its citations and gaps.
-
-For Chinese output, use source-authored Chinese domain and concept names from
-the research artifacts in domain `title`, page `title`, and
-`sharedTerms.term`. These names take precedence over translated English names;
-translate only when the evidence establishes no corresponding Chinese name.
-Keep ASCII kebab-case IDs and paths unchanged by this naming rule.
-
-Write the complete JSON decision to the exact handoff path, then call the
-synthesis submission tool with that path. Use one branch only: `expand` has
-`decision`, `researchScopes`, and `rationale`; `finalize` has `decision`,
-`spec`, and `rationale`. Omit the inactive branch. Keep the JSON below 256 KiB.
 
 ```json
 {
@@ -91,66 +73,39 @@ synthesis submission tool with that path. Use one branch only: `expand` has
   "spec": {
     "domains": [
       {
-        "id": "overview",
-        "title": "Overview",
-        "purpose": "Orient readers to the verified system map.",
-        "pages": [
-          { "pageType": "overview", "path": "overview/overview.md",
-            "title": "Overview", "purpose": "System orientation",
-            "findingIds": [] }
-        ]
+        "id": "overview", "title": "Overview", "purpose": "Orient readers.",
+        "pages": [{
+          "pageType": "overview", "path": "overview/overview.md",
+          "title": "Overview", "purpose": "System orientation",
+          "readerQuestions": ["What are the system's main domains and journeys?"],
+          "requiredFacets": ["domain map", "cross-domain journeys"], "findingIds": []
+        }]
       },
       {
-        "id": "modules",
-        "title": "Modules",
-        "purpose": "Public module boundaries and ownership.",
+        "id": "ordering", "title": "Ordering", "purpose": "Order lifecycle and fulfillment.",
         "pages": [
-          { "pageType": "module", "path": "modules/auth-gateway.md",
-            "title": "Auth gateway", "purpose": "Public auth boundary",
-            "findingIds": ["finding-auth-module"] },
-          { "pageType": "architecture", "path": "modules/worker-pipeline.md",
-            "title": "Worker pipeline", "purpose": "Job ownership boundaries",
-            "findingIds": ["finding-worker-boundary"] }
-        ]
-      },
-      {
-        "id": "flows",
-        "title": "Flows",
-        "purpose": "End-to-end verified journeys.",
-        "pages": [
-          { "pageType": "flow", "path": "flows/auth/login-handoff.md",
-            "title": "Login handoff", "purpose": "Auth request to session",
-            "findingIds": ["finding-login-flow"] }
-        ]
-      },
-      {
-        "id": "concepts",
-        "title": "Concepts",
-        "purpose": "Defining domain concepts.",
-        "pages": [
-          { "pageType": "concept", "path": "concepts/session-token.md",
-            "title": "Session token", "purpose": "Token lifecycle rules",
-            "findingIds": ["finding-session-concept"] }
+          {
+            "pageType": "domain", "path": "ordering/domain.md", "title": "Ordering domain",
+            "purpose": "Build a coherent model of ordering.",
+            "readerQuestions": ["How do order models, flows, and states fit together?"],
+            "requiredFacets": ["core models", "main flow", "states", "invariants", "boundaries"],
+            "findingIds": ["finding-order-domain", "finding-order-flow"]
+          },
+          {
+            "pageType": "state", "path": "ordering/states/order-lifecycle.md",
+            "title": "Order lifecycle", "purpose": "Explain valid order transitions.",
+            "readerQuestions": ["Which transitions are valid and what triggers them?"],
+            "requiredFacets": ["states", "transition guards", "invalid transitions", "recovery"],
+            "findingIds": ["finding-order-state"]
+          }
         ]
       }
     ],
-    "crossLinks": [
-      { "fromPath": "modules/auth-gateway.md",
-        "toPath": "flows/auth/login-handoff.md",
-        "purpose": "Module implements this handoff flow" },
-      { "fromPath": "flows/auth/login-handoff.md",
-        "toPath": "concepts/session-token.md",
-        "purpose": "Flow produces the session token concept" },
-      { "fromPath": "concepts/session-token.md",
-        "toPath": "modules/auth-gateway.md",
-        "purpose": "Concept enforced at the auth boundary" }
-    ],
-    "sharedTerms": [{ "term": "session token", "definition": "..." }],
-    "omissions": [{ "findingId": "normal-finding-id",
-      "rationale": "Why omission preserves reader coverage" }]
+    "crossLinks": [], "sharedTerms": [], "omissions": []
   },
-  "rationale": "Entity cluster for auth: module + flow + concept with crossLinks."
+  "rationale": "The domain landing page aggregates the evidence and the state page answers a separate lifecycle question."
 }
 ```
 
-Do not pre-plan sections, citations, or diagrams; each writer decides after reading source.
+Research artifacts are locators, not final proof. Do not pre-plan sections,
+citations, or diagrams; writers reopen load-bearing source and choose presentation.

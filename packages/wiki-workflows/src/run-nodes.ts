@@ -353,6 +353,7 @@ export function derivedIndexWikiPaths(spec: WikiSpec): string[] {
 export async function writeReport(
   cwd: string,
   paths: string[],
+  wikiRoot = path.resolve(cwd, "wiki"),
 ): Promise<{ pages: Array<{ path: string; state: "present"; sha256: string; sizeBytes: number } | { path: string; state: "missing" }> }> {
   const workspace = path.resolve(cwd);
   const pages = await Promise.all(paths.map(async (relativePath) => {
@@ -360,8 +361,10 @@ export async function writeReport(
     if (segments[0] !== "wiki" || segments.some((segment) => !segment || segment === "." || segment === "..")) {
       throw new Error(`Writer report path escapes workspace: ${relativePath}`);
     }
-    const absolutePath = path.resolve(workspace, ...segments);
-    if (!pathIsInside(workspace, absolutePath)) throw new Error(`Writer report path escapes workspace: ${relativePath}`);
+    const absolutePath = path.resolve(wikiRoot, ...segments.slice(1));
+    if (!pathIsInside(workspace, absolutePath) || !pathIsInside(path.resolve(wikiRoot), absolutePath)) {
+      throw new Error(`Writer report path escapes workspace: ${relativePath}`);
+    }
     try {
       const bytes = await readFile(absolutePath);
       return {
@@ -511,9 +514,9 @@ export function selectResearchIdsForFindings(
   return uniqueStrings(selected);
 }
 
-export async function hashWikiPage(cwd: string, pagePath: string): Promise<string | undefined> {
+export async function hashWikiPage(cwd: string, pagePath: string, wikiRoot = path.resolve(cwd, "wiki")): Promise<string | undefined> {
   try {
-    const bytes = await readFile(path.resolve(cwd, workspaceWikiPath(pagePath)));
+    const bytes = await readFile(path.resolve(wikiRoot, pagePath));
     return createHash("sha256").update(bytes).digest("hex");
   } catch (error) {
     if (isMissingFileError(error)) return undefined;
@@ -524,8 +527,12 @@ export async function hashWikiPage(cwd: string, pagePath: string): Promise<strin
 export function isSpecPage(value: unknown): value is WikiSpec["domains"][number]["pages"][number] {
   return isRecord(value)
     && typeof value.pageType === "string"
-    && ["overview", "architecture", "module", "flow", "concept"].includes(value.pageType)
+    && ["overview", "domain", "architecture", "module", "flow", "concept", "state", "data"].includes(value.pageType)
     && typeof value.path === "string" && typeof value.title === "string" && typeof value.purpose === "string"
+    && isStringArray(value.readerQuestions)
+    && value.readerQuestions.length > 0
+    && isStringArray(value.requiredFacets)
+    && value.requiredFacets.length > 0
     && isStringArray(value.findingIds);
 }
 
@@ -680,10 +687,6 @@ export function prettyJson(value: unknown): string {
 export function normalizeText(value: string | undefined): string | undefined {
   const text = value?.trim();
   return text || undefined;
-}
-
-export function isMissingArtifactError(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith("Required ") && error.message.includes(" handoff artifact is missing:");
 }
 
 export function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {

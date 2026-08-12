@@ -41,7 +41,7 @@ export async function finalizeWiki(
     throw new Error("Wiki finalization requires every target page to exist");
   }
 
-  const roots = await resolveWikiRoots(root);
+  const roots = await resolveWikiRoots(root, wikiDirectory);
   const before = await scanWikiTree(roots.wiki);
   if (before.issues.length) throw new Error(`Unsafe Wiki tree: ${before.issues.map(formatIssue).join("; ")}`);
   const obsoletePages = [...validation.obsoletePages];
@@ -53,7 +53,7 @@ export async function finalizeWiki(
   }
 
   await stampWikiPages(roots.wiki, targetPages, publicationAt);
-  const rebuiltIndexes = await materializeWikiIndexes(root, spec);
+  const rebuiltIndexes = await materializeWikiIndexes(root, spec, wikiDirectory);
   await removeEmptyWikiDirectories(roots.wiki);
 
   const after = await scanWikiTree(roots.wiki);

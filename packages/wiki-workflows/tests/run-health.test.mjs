@@ -6,6 +6,7 @@ import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { checkRunArtifactHealth } from "../dist/run-health.js";
 import { WikiWorkflowEngine } from "../dist/engine.js";
+import { resolveWikiPolicy, wikiPolicyHash } from "../dist/policy.js";
 
 const EMPTY_METRICS = {
   inputTokens: 0,
@@ -23,8 +24,9 @@ function activity() {
 }
 
 function baseSnapshot(overrides = {}) {
+  const policy = resolveWikiPolicy();
   return {
-    version: 8,
+    version: 10,
     id: "run-health",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -33,6 +35,8 @@ function baseSnapshot(overrides = {}) {
     round: 1,
     sourceRestartCount: 0,
     maxResearchRounds: 6,
+    policy,
+    policyHash: wikiPolicyHash(policy),
     nodes: [],
     events: [],
     createdAt: "2026-08-10T00:00:00.000Z",

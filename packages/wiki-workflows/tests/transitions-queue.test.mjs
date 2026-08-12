@@ -20,7 +20,7 @@ import {
   researchIdsHaveUnresolvedCriticalGaps,
 } from "../dist/transitions-queue.js";
 import { defectsFingerprint, validationIssuesFingerprint } from "../dist/run-nodes.js";
-import { DEFAULT_WIKI_WORKFLOW_POLICY } from "../dist/policy.js";
+import { DEFAULT_WIKI_WORKFLOW_POLICY, resolveWikiPolicy } from "../dist/policy.js";
 import { EMPTY_NODE_METRICS } from "../dist/workflow-types.js";
 
 function stableStringify(value) {
@@ -42,7 +42,7 @@ function draftFinding(overrides = {}) {
 
 function hostWithNodes(nodes, overrides = {}) {
   const run = {
-    version: 8,
+    version: 10,
     id: "run-test",
     cwd: "/tmp/wiki-test",
     requestedMode: "generate",
@@ -52,6 +52,7 @@ function hostWithNodes(nodes, overrides = {}) {
     round: 0,
     sourceRestartCount: 0,
     maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds,
+    policy: resolveWikiPolicy(),
     nodes,
     events: [],
     createdAt: "2026-08-08T00:00:00.000Z",
@@ -173,6 +174,8 @@ function finalSpec(findingId = "finding-1") {
           path: "overview/overview.md",
           title: "Overview",
           purpose: "Orient readers.",
+          readerQuestions: ["What are the system's main domains?"],
+          requiredFacets: ["domain map"],
           findingIds: [],
         }],
       },
@@ -181,10 +184,12 @@ function finalSpec(findingId = "finding-1") {
         title: "Core",
         purpose: "Explain the core.",
         pages: [{
-          pageType: "architecture",
-          path: "core/architecture.md",
-          title: "Core architecture",
-          purpose: "Explain boundaries.",
+          pageType: "domain",
+          path: "core/domain.md",
+          title: "Core domain",
+          purpose: "Explain the core domain.",
+          readerQuestions: ["How do the core models and flows fit together?"],
+          requiredFacets: ["models", "flows", "state", "invariants", "boundaries"],
           findingIds: [findingId],
         }],
       },
@@ -484,16 +489,49 @@ test("queueResearch assigns the same deterministic researchGroupId to all scopes
   assert.doesNotMatch(nodes[0].input.researchGroupId, /rand-/);
 });
 
-test("queueInitialSourceSurveys uses a bounded survey-then-deepen task", () => {
+test("queueInitialSourceSurveys uses a broad survey that emits targeted depth gaps", () => {
   const host = hostWithNodes([]);
   const nodes = queueInitialSourceSurveys(host, "inspect-1", host.run.inspection);
   assert.equal(nodes.length, 2);
   for (const node of nodes) {
-    assert.match(node.input.scope.task, /Bounded survey-then-deepen/i);
-    assert.match(node.input.scope.task, /submit one complete research handoff once/i);
-    assert.match(node.input.scope.task, /multiple tool calls/i);
-    assert.match(node.input.scope.task, /exhaustive encyclopedia/i);
+    assert.match(node.input.scope.task, /Keep this pass broad/i);
+    assert.match(node.input.scope.task, /models?[, ].*flows?[, ].*state/i);
+    assert.match(node.input.scope.task, /critical gaps/i);
+    assert.match(node.input.scope.task, /submit the complete typed research result directly/i);
+    assert.match(node.input.scope.task, /correct.*resubmit/i);
   }
+});
+
+test("configured domains fail closed on source typos and constrain the final WikiSpec", () => {
+  const policy = resolveWikiPolicy({
+    domains: [{ id: "billing", title: "Billing", include: ["src-core/**"], exclude: [] }],
+  });
+  const host = hostWithNodes([], { policy });
+  const scopes = queueInitialSourceSurveys(host, "inspect-1", host.run.inspection);
+  assert.ok(scopes.some((node) => node.input.scope.id === "domain:billing"));
+
+  const typoHost = hostWithNodes([], {
+    policy: resolveWikiPolicy({
+      domains: [{ id: "billing", title: "Billing", include: ["missing/**"], exclude: [] }],
+    }),
+  });
+  assert.throws(
+    () => queueInitialSourceSurveys(typoHost, "inspect-1", typoHost.run.inspection),
+    /do not match any declared source root/,
+  );
+
+  const research = researchNode("research-1", receipt({
+    findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
+  }));
+  const synthesisHost = hostWithNodes([research], { policy });
+  assert.throws(
+    () => ensureSynthesisSubmissionFitsRun(
+      synthesisHost,
+      { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+      { mode: "initial", researchIds: ["research-1"], supplementalBatch: 0, dryAuditPasses: 0 },
+    ),
+    /must include configured domain: billing/,
+  );
 });
 
 test("write group ids are deterministic for a synthesis lineage", () => {
@@ -525,7 +563,7 @@ test("write group ids are deterministic for a synthesis lineage", () => {
   );
 });
 
-test("queueVerification concurrent callers enqueue only one validate and one review", async () => {
+test("queueVerification concurrent callers enqueue one validation gate and defer review", async () => {
   const research = researchNode("research-1", receipt({
     findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
   }));
@@ -561,9 +599,9 @@ test("queueVerification concurrent callers enqueue only one validate and one rev
   const validates = host.run.nodes.filter((node) => node.kind === "validate");
   const reviews = host.run.nodes.filter((node) => node.kind === "review");
   assert.equal(validates.length, 1, "must not double-queue validate under concurrent join");
-  assert.equal(reviews.length, 1, "must not double-queue review under concurrent join");
-  assert.equal(left.length, 2);
-  assert.equal(right.length, 2);
+  assert.equal(reviews.length, 0, "review starts only after validation succeeds");
+  assert.equal(left.length, 1);
+  assert.equal(right.length, 1);
   assert.deepEqual(
     left.map((node) => node.id).sort(),
     right.map((node) => node.id).sort(),
@@ -646,6 +684,6 @@ test("maybeCompleteVerification ignores invalidated peers and completes live pai
 
   const finalizeNodes = host.run.nodes.filter((node) => node.kind === "finalize");
   assert.equal(finalizeNodes.length, 1, "live pair should advance to finalize despite invalidated peers");
-  assert.deepEqual(finalizeNodes[0].dependsOn.slice().sort(), ["review-live", "validate-live"]);
+  assert.deepEqual(finalizeNodes[0].dependsOn, ["review-live"]);
   assert.equal(finalizeNodes[0].input.verificationGroupId, groupId);
 });

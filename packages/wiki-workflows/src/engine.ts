@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { getHeapStatistics } from "node:v8";
 import { createWikiArtifactStore, type WikiArtifactRef, type WikiArtifactStore } from "./artifact-store.js";
 import {
   WikiAgentContextBudgetError,
@@ -10,6 +11,7 @@ import {
   parseResearchSubmission,
 } from "./control-submissions.js";
 import { createPiAgentExecutor } from "./executor.js";
+import { createWikiPublicationStore, type WikiPublicationStore } from "./publication-store.js";
 import {
   errorMessage,
   isWikiBudgetExhaustedError,
@@ -19,7 +21,9 @@ import { inspectWiki } from "./inspect.js";
 import { classifyNodeFailure } from "./node-retry.js";
 import {
   DEFAULT_WIKI_WORKFLOW_POLICY,
+  resolveWikiPolicy,
   validMaxResearchRounds,
+  wikiPolicyHash,
 } from "./policy.js";
 import { promptFor, type PromptResearchReceipt } from "./prompts.js";
 import { loadResearchSourceRoots, validateResearchArtifact } from "./research-evidence.js";
@@ -38,7 +42,6 @@ import {
   artifactKindForNode,
   hashWikiPage,
   inspectionFingerprint,
-  isMissingArtifactError,
   isResearchReceipt,
   mergeMetrics,
   normalizeNodeResult,
@@ -86,13 +89,12 @@ import {
 } from "./workflow-types.js";
 
 const MAX_NODE_ATTEMPTS = DEFAULT_WIKI_WORKFLOW_POLICY.maxNodeAttempts;
-const MAX_CONCURRENT_RESEARCHERS = DEFAULT_WIKI_WORKFLOW_POLICY.maxConcurrentResearchers;
-const MAX_CONCURRENT_WRITERS = DEFAULT_WIKI_WORKFLOW_POLICY.maxConcurrentWriters;
 const MAX_EVENTS = DEFAULT_WIKI_WORKFLOW_POLICY.maxEvents;
 const ACTIVITY_EVENT_INTERVAL_MS = DEFAULT_WIKI_WORKFLOW_POLICY.activityEventIntervalMs;
 
 export interface WikiWorkflowEngineOptions extends Partial<Omit<WikiWorkflowDependencies, "executor">> {
   executor?: WikiWorkflowDependencies["executor"];
+  publicationStore?: WikiPublicationStore;
 }
 
 /**
@@ -106,8 +108,12 @@ export class WikiWorkflowEngine {
   private readonly controllers = new Map<string, AbortController>();
   private readonly lastActivityEventAt = new Map<string, number>();
   private readonly hasInjectedArtifactStore: boolean;
+  private readonly hasInjectedPublicationStore: boolean;
   private artifactStore?: WikiArtifactStore;
   private artifactStoreWorkspace?: string;
+  private publicationStore?: WikiPublicationStore;
+  private publicationStoreWorkspace?: string;
+  private candidateReady?: { runId: string; promise: Promise<string> };
   private pumping?: Promise<void>;
   private pendingTerminalEvent?: {
     runId: string;
@@ -115,6 +121,7 @@ export class WikiWorkflowEngine {
     nodeId?: string;
     message: string;
   };
+  private rateLimitedUntil = 0;
 
   constructor(options: WikiWorkflowEngineOptions = {}) {
     this.dependencies = {
@@ -129,7 +136,9 @@ export class WikiWorkflowEngine {
       createId: options.createId,
     };
     this.artifactStore = options.artifactStore;
+    this.publicationStore = options.publicationStore;
     this.hasInjectedArtifactStore = options.artifactStore !== undefined;
+    this.hasInjectedPublicationStore = options.publicationStore !== undefined;
   }
 
   start(request: WikiRunRequest): WikiRunSnapshot {
@@ -138,9 +147,14 @@ export class WikiWorkflowEngine {
     }
     const createdAt = this.now();
     this.ensureArtifactStore(request.cwd);
-    const inspectionNode = newNode(this.transitionHost(), "inspect", "Inspect Git scope", [], { requestedMode: request.mode }, phaseRefForKind("inspect"));
+    this.ensurePublicationStore(request.cwd);
+    this.candidateReady = undefined;
+    const policy = resolveWikiPolicy(request.wikiPolicy);
+    const policyHash = wikiPolicyHash(policy);
+    this.applyRuntimePolicy(policy);
+    const inspectionNode = newNode(this.transitionHost(), "inspect", "Inspect Git scope", [], { requestedMode: request.mode, policyHash }, phaseRefForKind("inspect"));
     this.current = {
-      version: 8,
+      version: 10,
       id: this.newId(),
       cwd: path.resolve(request.cwd),
       requestedMode: request.mode,
@@ -150,6 +164,8 @@ export class WikiWorkflowEngine {
       round: 0,
       sourceRestartCount: 0,
       maxResearchRounds: validMaxResearchRounds(request.maxResearchRounds),
+      policy,
+      policyHash,
       nodes: [inspectionNode],
       events: [],
       createdAt,
@@ -157,6 +173,7 @@ export class WikiWorkflowEngine {
       revision: 0,
     };
     this.pendingTerminalEvent = undefined;
+    this.rateLimitedUntil = 0;
     this.emit("run_started", undefined, `Started ${request.mode} Wiki run`);
     this.emit("node_queued", inspectionNode.id, inspectionNode.label);
     this.schedule();
@@ -192,8 +209,11 @@ export class WikiWorkflowEngine {
     if (!isWikiRunSnapshot(serialized)) return undefined;
 
     this.ensureArtifactStore(serialized.cwd);
+    this.ensurePublicationStore(serialized.cwd);
     this.abortControllers();
     this.current = clone(serialized);
+    this.applyRuntimePolicy(this.current.policy);
+    this.candidateReady = undefined;
     this.pendingTerminalEvent = undefined;
     let recovered = false;
     for (const node of this.current.nodes) {
@@ -285,7 +305,7 @@ export class WikiWorkflowEngine {
     const branch = clone(snapshot);
     const now = this.now();
     branch.id = this.newId();
-    branch.version = 8;
+    branch.version = 10;
     // Recover interrupted nodes so fork targets are settled (queued, not running).
     for (const node of branch.nodes) {
       if (node.status !== "running") continue;
@@ -313,6 +333,7 @@ export class WikiWorkflowEngine {
     this.abortControllers();
     await this.copyArtifactsForFork(snapshot, branch);
     this.current = branch;
+    this.applyRuntimePolicy(branch.policy);
     this.pendingTerminalEvent = undefined;
     const affected = affectedNodeIds(branch, rootIds);
     for (const node of branch.nodes) {
@@ -384,6 +405,33 @@ export class WikiWorkflowEngine {
     this.emit("run_resumed", undefined, "Scheduling resumed");
     this.schedule();
     return this.getSnapshot();
+  }
+
+  /** Pin the latest workspace policy before resume; drift restarts from Inspect. */
+  reconcilePolicy(policyInput: WikiRunRequest["wikiPolicy"]): boolean {
+    const run = this.requireRun();
+    const policy = resolveWikiPolicy(policyInput);
+    const nextHash = wikiPolicyHash(policy);
+    if (nextHash === run.policyHash) {
+      this.applyRuntimePolicy(run.policy);
+      return false;
+    }
+    if (run.status !== "paused" && run.status !== "blocked") {
+      throw new Error("Wiki policy can only be reconciled while the run is paused or blocked");
+    }
+    run.policy = policy;
+    run.policyHash = nextHash;
+    this.applyRuntimePolicy(policy);
+    const inspect = run.nodes.find((node) => node.kind === "inspect");
+    if (!inspect) throw new Error("Wiki run has no Inspect node");
+    this.invalidateFrom(inspect.id, "Workspace Wiki policy changed; restarting from Inspect", true);
+    inspect.input = { requestedMode: run.requestedMode, policyHash: nextHash };
+    inspect.inputFingerprint = JSON.stringify({ policyHash: nextHash, input: inspect.input });
+    run.inspection = undefined;
+    run.inspectionFingerprint = undefined;
+    run.effectiveMode = undefined;
+    this.emit("recovered", inspect.id, "Workspace Wiki policy changed; restarting from Inspect");
+    return true;
   }
 
   async cancel(): Promise<WikiRunSnapshot | undefined> {
@@ -466,9 +514,11 @@ export class WikiWorkflowEngine {
 
   private async pump(): Promise<void> {
     while (this.current?.status === "running") {
+      const concurrency = this.dispatchConcurrency();
+      if (concurrency === 0) return;
       const runnable = this.runnableNodes();
       if (runnable.length === 0) return;
-      const research = runnable.filter((node) => node.kind === "research").slice(0, MAX_CONCURRENT_RESEARCHERS);
+      const research = runnable.filter((node) => node.kind === "research").slice(0, concurrency);
       if (research.length > 0) {
         await this.executeBatch(research);
         this.emitPendingTerminalEvent();
@@ -480,7 +530,7 @@ export class WikiWorkflowEngine {
         this.emitPendingTerminalEvent();
         continue;
       }
-      const pageWrites = runnable.filter((node) => node.kind === "write").slice(0, MAX_CONCURRENT_WRITERS);
+      const pageWrites = runnable.filter((node) => node.kind === "write").slice(0, concurrency);
       if (pageWrites.length > 0) {
         await this.executeBatch(pageWrites);
       } else {
@@ -543,6 +593,7 @@ export class WikiWorkflowEngine {
           cwd: run.cwd,
           allowedSourceRoots: scope.sourcePaths,
           sourceRoots,
+          excludedPaths: run.policy.exclude,
         });
         const handoff = await this.persistNodeHandoff(node, parsed);
         if (!handoff || handoff.kind !== "research") {
@@ -551,9 +602,10 @@ export class WikiWorkflowEngine {
         node.handoff = handoff;
         node.result = projectResearchReceipt(run, parsed, handoff, scope);
       } else {
-        const handoff = await this.persistNodeHandoff(node, result.result);
+        const normalized = normalizeNodeResult(node.kind, result.result);
+        const handoff = await this.persistNodeHandoff(node, normalized);
         if (handoff) node.handoff = handoff;
-        node.result = normalizeNodeResult(node.kind, result.result);
+        node.result = normalized;
       }
       node.output = retainedOutput(result.output ?? node.output);
       node.history = retainedHistory(result.history ?? node.history);
@@ -587,6 +639,7 @@ export class WikiWorkflowEngine {
         attempt: node.attempt,
         maxAttempts: MAX_NODE_ATTEMPTS,
         aborted: controller.signal.aborted,
+        maxTransientSessionAttempts: run.policy.runtime.maxTransientSessionAttempts,
       });
       node.status = classification.status;
       if (error instanceof WikiAgentProtocolError || error instanceof WikiAgentContextBudgetError) {
@@ -630,47 +683,84 @@ export class WikiWorkflowEngine {
   private async executeNodeWork(node: WikiNode, signal: AbortSignal): Promise<WikiAgentExecutionResult> {
     const run = this.requireRun();
     if (node.kind === "inspect") {
-      const inspection = await this.dependencies.inspect(run.cwd);
+      const inspection = await this.dependencies.inspect(run.cwd, run.policy);
       return { result: inspection };
     }
     if (node.kind === "validate") {
-      const validation = await this.dependencies.validate(run.cwd, specForSynthesis(run, synthesisNodeIdFor(node, run)));
+      await this.ensureCandidate(run);
+      const validation = await this.dependencies.validate(
+        run.cwd,
+        specForSynthesis(run, synthesisNodeIdFor(node, run)),
+        this.candidateWikiDirectory(run, true),
+        run.policy.exclude,
+      );
       return { result: validation };
     }
     if (node.kind === "finalize") {
-      const latestInspection = await this.dependencies.inspect(run.cwd);
+      const latestInspection = await this.dependencies.inspect(run.cwd, run.policy);
       if (latestInspection.sourceFingerprint !== run.inspection?.sourceFingerprint) {
+        const promise = this.ensurePublicationStore(run.cwd).prepareCandidate(run.id, run.effectiveMode ?? run.requestedMode);
+        this.candidateReady = { runId: run.id, promise };
+        await promise;
         return { result: { sourceDrift: true, inspection: latestInspection } };
       }
-      const finalization = await this.dependencies.finalize(run.cwd, specForSynthesis(run, synthesisNodeIdFor(node, run)), "wiki", this.now());
+      const publication = this.ensurePublicationStore(run.cwd);
+      const existingJournal = await publication.readJournal(run.id);
+      if (existingJournal) {
+        const recovery = await publication.recover(run.id);
+        const recoveredJournal = await publication.readJournal(run.id);
+        const recovered = recoveredJournal?.publishedMetadata?.finalization;
+        if (recovery.outcome === "committed" && recovered && typeof recovered === "object") return { result: recovered };
+      }
+      await this.ensureCandidate(run);
+      const wikiDirectory = this.candidateWikiDirectory(run, true);
+      const finalization = await this.dependencies.finalize(
+        run.cwd,
+        specForSynthesis(run, synthesisNodeIdFor(node, run)),
+        wikiDirectory,
+        this.now(),
+      );
+      const publishInspection = await this.dependencies.inspect(run.cwd, run.policy);
+      if (publishInspection.sourceFingerprint !== run.inspection?.sourceFingerprint) {
+        const promise = publication.prepareCandidate(run.id, run.effectiveMode ?? run.requestedMode);
+        this.candidateReady = { runId: run.id, promise };
+        await promise;
+        return { result: { sourceDrift: true, inspection: publishInspection } };
+      }
+      await publication.publish(run.id, {
+        finalization,
+        policyHash: run.policyHash,
+        sourceFingerprint: run.inspection?.sourceFingerprint,
+      });
       return { result: finalization };
     }
     const role = roleFor(node.kind);
     const researchReceipts = await this.researchReceiptsForNode(node);
     const artifactPaths = researchReceipts?.map((receipt) => receipt.artifactPath);
-    const artifactWritePath = await this.artifactWritePathForNode(node);
+    if (node.kind === "write" || node.kind === "review") await this.ensureCandidate(run);
     return await this.dependencies.executor.execute({
       runId: run.id,
       node: clone(node),
       cwd: run.cwd,
-      prompt: await promptFor(node, run, researchReceipts, artifactWritePath),
+      prompt: await promptFor(node, run, researchReceipts),
       role,
       readRoots: readRootsFor(node, run),
       artifactPaths,
       wikiReadPaths: wikiReadPathsFor(node, run),
-      artifactWritePath,
+      candidateWikiRoot: node.kind === "write" || node.kind === "review" ? this.candidateWikiRoot(run) : undefined,
       writePaths: writePathsFor(node),
       language: run.language,
       signal,
+      maxSubmissionAttempts: run.policy.quality.maxSubmissionAttempts,
       validateControlSubmission: node.kind === "synthesis" || node.kind === "review"
         ? (submission) => validateControlSubmission(this.transitionHost(), node, submission)
         : undefined,
       validatePageSubmission: node.kind === "write"
         ? async (page) => {
           const spec = specForSynthesis(run, pagePacketInputFor(node).synthesisNodeId);
-          const issues = await this.dependencies.validatePage(run.cwd, spec, page);
+          const issues = await this.dependencies.validatePage(run.cwd, spec, page, this.candidateWikiDirectory(run, true), run.policy.exclude);
           if (issues.length) return { ok: false, issues };
-          const sha256 = await hashWikiPage(run.cwd, page);
+          const sha256 = await hashWikiPage(run.cwd, page, this.candidateWikiRoot(run));
           if (!sha256) return { ok: false, issues: [{ code: "missing-page", message: `Target page is missing: ${page}` }] };
           return { ok: true, submission: { page, sha256 } };
         }
@@ -687,31 +777,11 @@ export class WikiWorkflowEngine {
     const kind = artifactKindForNode(node.kind);
     if (!kind) return undefined;
     const location = { runId: run.id, nodeId: node.id, attempt: node.attempt, kind };
-    if (node.kind === "inspect" || node.kind === "validate" || node.kind === "finalize") {
-      return await store.write({ ...location, content: `${JSON.stringify(value)}\n` });
-    }
     if (node.kind === "write") {
-      const content = `${JSON.stringify(await writeReport(run.cwd, writePathsFor(node) ?? []))}\n`;
+      const content = `${JSON.stringify(await writeReport(run.cwd, writePathsFor(node) ?? [], this.candidateWikiRoot(run)))}\n`;
       return await store.write({ ...location, content });
     }
-    try {
-      return await store.finalize(location);
-    } catch (error) {
-      // Test executors return parsed results directly. The production executor
-      // reads the required artifact before returning, so this fallback cannot
-      // hide a missing model-authored handoff in normal operation.
-      if (!isMissingArtifactError(error)) throw error;
-      const content = JSON.stringify(value);
-      if (!content) throw error;
-      return await store.write({ ...location, content });
-    }
-  }
-
-  private async artifactWritePathForNode(node: WikiNode): Promise<string | undefined> {
-    const kind = artifactKindForNode(node.kind);
-    if (!kind || node.kind === "inspect" || node.kind === "validate" || node.kind === "finalize" || node.kind === "write") return undefined;
-    const run = this.requireRun();
-    return await this.requireArtifactStore().prepare({ runId: run.id, nodeId: node.id, attempt: node.attempt, kind });
+    return await store.write({ ...location, content: `${JSON.stringify(value)}\n` });
   }
 
   private async researchReceiptsForNode(node: WikiNode): Promise<PromptResearchReceipt[] | undefined> {
@@ -747,6 +817,42 @@ export class WikiWorkflowEngine {
     return this.artifactStore;
   }
 
+  private ensurePublicationStore(cwd: string): WikiPublicationStore {
+    const workspace = path.resolve(cwd);
+    if (!this.publicationStore || (!this.hasInjectedPublicationStore && this.publicationStoreWorkspace !== workspace)) {
+      this.publicationStore = createWikiPublicationStore({ workspace });
+      this.publicationStoreWorkspace = workspace;
+      this.candidateReady = undefined;
+    }
+    return this.publicationStore;
+  }
+
+  private candidateWikiRoot(run = this.requireRun()): string {
+    return this.ensurePublicationStore(run.cwd).candidateWikiDirectory(run.id);
+  }
+
+  private candidateWikiDirectory(run = this.requireRun(), workspaceRelative = false): string {
+    const candidate = this.candidateWikiRoot(run);
+    if (!workspaceRelative) return candidate;
+    return path.relative(run.cwd, candidate).split(path.sep).join("/");
+  }
+
+  private async ensureCandidate(run = this.requireRun()): Promise<string> {
+    if (this.candidateReady?.runId !== run.id) {
+      this.candidateReady = {
+        runId: run.id,
+        promise: this.ensurePublicationStore(run.cwd).ensureCandidate(run.id, run.effectiveMode ?? run.requestedMode),
+      };
+    }
+    const pending = this.candidateReady;
+    try {
+      return await pending.promise;
+    } catch (error) {
+      if (this.candidateReady === pending) this.candidateReady = undefined;
+      throw error;
+    }
+  }
+
   private requireArtifactStore(): WikiArtifactStore {
     if (!this.artifactStore) throw new Error("Wiki handoff artifact store is unavailable");
     return this.artifactStore;
@@ -754,6 +860,15 @@ export class WikiWorkflowEngine {
 
   private async copyArtifactsForFork(source: WikiRunSnapshot, branch: WikiRunSnapshot): Promise<void> {
     const store = this.requireArtifactStore();
+    const publication = this.ensurePublicationStore(source.cwd);
+    const copiedCandidate = await publication.copyCandidate(source.id, branch.id);
+    if (!copiedCandidate && branch.nodes.some((node) => node.kind === "write" && node.status === "succeeded")) {
+      throw new Error(`Cannot fork Wiki run ${source.id}: its candidate Wiki is no longer available`);
+    }
+    if (copiedCandidate) {
+      const candidate = publication.candidateWikiDirectory(branch.id);
+      this.candidateReady = { runId: branch.id, promise: Promise.resolve(candidate) };
+    }
     const copied = await store.copyRun(source.id, branch.id);
     if (copied.length === 0) return;
     const bySource = new Map(copied.map((ref) => [`${ref.nodeId}\u0000${ref.attempt}\u0000${ref.kind}`, ref]));
@@ -772,7 +887,7 @@ export class WikiWorkflowEngine {
   private async reconcileGitInputs(): Promise<boolean> {
     const run = this.requireRun();
     if (!run.inspectionFingerprint) return false;
-    const latest = await this.dependencies.inspect(run.cwd);
+    const latest = await this.dependencies.inspect(run.cwd, run.policy);
     if (inspectionFingerprint(latest) === run.inspectionFingerprint) return false;
 
     const inspectNode = [...run.nodes].reverse().find((node) => node.kind === "inspect"
@@ -808,7 +923,58 @@ export class WikiWorkflowEngine {
     if (!node || node.status !== "running") return;
     node.activity = { ...node.activity, ...activity, updatedAt: this.now() };
     node.metrics = mergeMetrics(node.metrics, metrics, true);
+    if (activity.state === "retrying" && /(?:\b429\b|rate[ -]?limit)/i.test(activity.message ?? "")) {
+      this.rateLimitedUntil = Math.max(this.rateLimitedUntil, Date.now() + this.requireRun().policy.runtime.rateLimitCooldownSeconds * 1_000);
+    }
+    this.pauseForMemoryPressure();
     this.emitActivity(node);
+  }
+
+  /** Apply one run-wide admission policy across every LLM-backed node kind. */
+  private dispatchConcurrency(): number {
+    const run = this.requireRun();
+    const { heap, ratio, rss } = memoryPressure();
+    if (ratio >= 0.85) {
+      run.status = "paused";
+      run.blockedReason = "Paused before dispatch because the Node.js heap reached the hard memory-pressure threshold";
+      this.emit("run_paused", undefined, run.blockedReason, {
+        reason: "memory_pressure",
+        heapUsed: heap.used_heap_size,
+        heapLimit: heap.heap_size_limit,
+        rss,
+      });
+      return 0;
+    }
+    if (Date.now() < this.rateLimitedUntil || ratio >= 0.70) return 1;
+    return run.policy.runtime.maxConcurrentAgents;
+  }
+
+  private pauseForMemoryPressure(): void {
+    const run = this.current;
+    const pressure = memoryPressure();
+    if (!run || run.status !== "running" || pressure.ratio < 0.85) return;
+    run.status = "paused";
+    run.blockedReason = "Paused before Node memory exhaustion; resume after memory pressure falls";
+    for (const node of run.nodes) {
+      if (node.status !== "running") continue;
+      node.status = "queued";
+      node.activity = { state: "waiting", message: "Requeued after memory-pressure pause", updatedAt: this.now() };
+      this.controllers.get(node.id)?.abort();
+    }
+    this.emit("run_paused", undefined, run.blockedReason, {
+      reason: "memory_pressure",
+      heapUsed: pressure.heap.used_heap_size,
+      heapLimit: pressure.heap.heap_size_limit,
+      rss: pressure.rss,
+    });
+  }
+
+  private applyRuntimePolicy(policy: WikiRunSnapshot["policy"]): void {
+    if (this.dependencies.executor.setRuntimePolicy) {
+      this.dependencies.executor.setRuntimePolicy(policy);
+    } else {
+      this.dependencies.executor.setMaxConcurrentAgents?.(policy.runtime.maxConcurrentAgents);
+    }
   }
 
   private updateOutput(nodeId: string, output: string): void {
@@ -939,9 +1105,21 @@ export class WikiWorkflowEngine {
       newId: () => this.newId(),
       emit: (kind, nodeId, message, data) => this.emit(kind, nodeId, message, data),
       markTerminalRun: (status, message, nodeId, at, details) => this.markTerminalRun(status, message, nodeId, at, details),
-      materializeIndexes: (cwd, spec) => this.dependencies.materializeIndexes(cwd, spec),
+      materializeIndexes: (cwd, spec) => this.dependencies.materializeIndexes(cwd, spec, this.candidateWikiDirectory()),
+      wikiRoot: () => this.candidateWikiRoot(),
     };
   }
+}
+
+function memoryPressure(): { heap: ReturnType<typeof getHeapStatistics>; ratio: number; rss: number } {
+  const heap = getHeapStatistics();
+  const memory = process.memoryUsage();
+  const pressureBytes = Math.max(heap.used_heap_size, memory.heapUsed + memory.external);
+  return {
+    heap,
+    ratio: heap.heap_size_limit > 0 ? pressureBytes / heap.heap_size_limit : 0,
+    rss: memory.rss,
+  };
 }
 
 /** Structured terminal diagnostics from a classified node failure (budget exhaustion, etc.). */

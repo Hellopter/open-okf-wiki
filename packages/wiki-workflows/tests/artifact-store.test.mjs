@@ -145,8 +145,14 @@ test("copyRun rewrites the manifest and shares content-addressed blobs", async (
   const forkManifest = JSON.parse(await readFile(path.join(workspace, ".okf-wiki", "runs", "fork-run", "manifest.json"), "utf8"));
   assert.equal(forkManifest.artifacts[0].runId, "fork-run");
 
+  const sourceRunRoot = path.join(workspace, ".okf-wiki", "runs", "source-run");
+  await mkdir(path.join(sourceRunRoot, "publish-backup"), { recursive: true });
+  await writeFile(path.join(sourceRunRoot, "publish.json"), '{"state":"backed_up"}\n', "utf8");
+  await writeFile(path.join(sourceRunRoot, "publish-backup", "overview.md"), "recoverable\n", "utf8");
   assert.equal(await store.removeRun("source-run"), true);
   assert.equal(await store.removeRun("source-run"), false);
+  assert.equal(await readFile(path.join(sourceRunRoot, "publish.json"), "utf8"), '{"state":"backed_up"}\n');
+  assert.equal(await readFile(path.join(sourceRunRoot, "publish-backup", "overview.md"), "utf8"), "recoverable\n");
   // Blobs are retained after removeRun; fork can still read shared content.
   assert.equal(await store.read(copied[0]), content);
   assert.equal(await readFile(path.join(workspace, ".okf-wiki", "blobs", `${sha}.json`), "utf8"), content);
@@ -175,4 +181,20 @@ test("identical content reuses the same blob file", async (t) => {
   assert.equal(a.sha256, b.sha256);
   assert.equal(a.relativePath, b.relativePath);
   assert.equal(await readFile(path.join(workspace, a.relativePath), "utf8"), content);
+});
+
+test("blob GC skips active runs and removes only unreferenced blobs after they finish", async (t) => {
+  const { workspace, store } = await fixture(t);
+  const kept = await store.write({ runId: "kept", nodeId: "n", attempt: 1, kind: "inspection", content: '{"kept":true}\n' });
+  const orphan = await store.write({ runId: "orphan", nodeId: "n", attempt: 1, kind: "inspection", content: '{"orphan":true}\n' });
+  await writeFile(path.join(workspace, ".okf-wiki", "runs", "kept", "run.json"), '{"status":"running"}\n', "utf8");
+  await store.removeRun("orphan");
+
+  assert.deepEqual(await store.garbageCollect(), { skipped: true, scanned: 0, removed: 0 });
+  assert.equal(await readFile(path.join(workspace, orphan.relativePath), "utf8"), '{"orphan":true}\n');
+
+  await writeFile(path.join(workspace, ".okf-wiki", "runs", "kept", "run.json"), '{"status":"succeeded"}\n', "utf8");
+  assert.deepEqual(await store.garbageCollect(), { skipped: false, scanned: 2, removed: 1 });
+  assert.equal(await readFile(path.join(workspace, kept.relativePath), "utf8"), '{"kept":true}\n');
+  await assert.rejects(readFile(path.join(workspace, orphan.relativePath), "utf8"), { code: "ENOENT" });
 });

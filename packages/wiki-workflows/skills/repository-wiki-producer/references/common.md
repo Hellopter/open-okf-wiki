@@ -26,3 +26,7 @@ edits its assigned Wiki page. The deterministic coordinator materializes
 indexes after each write or repair wave, and the publisher rebuilds them before
 publication. Page deletion and trust metadata belong to the publisher, never an
 agent.
+
+For coordination roles, the accepted typed submission object is the canonical
+handoff. Never create a parallel JSON or Markdown handoff file; human-readable
+views are rendered by the extension from the accepted object.

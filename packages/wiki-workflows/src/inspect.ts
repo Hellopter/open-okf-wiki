@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import type { ResolvedWikiPolicy } from "./policy.js";
 import { exists, inside, markdownFiles, readText } from "./files.js";
 import { okfSources, parsePage } from "./frontmatter.js";
 import { git } from "./git.js";
@@ -155,28 +156,28 @@ function lineCount(text: string): number {
   return text.endsWith("\n") ? lines - 1 : lines;
 }
 
-async function gitChanges(root: string, args: string[], source: ResolvedWikiSource, defaultsEnabled: boolean): Promise<SourceChange[]> {
+async function gitChanges(root: string, args: string[], source: ResolvedWikiSource, defaultsEnabled: boolean, excludes: readonly string[]): Promise<SourceChange[]> {
   const result = await git(root, args);
   if (result.code !== 0) throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
   return parseNameStatus(result.stdout)
-    .map((change) => ({ ...change, paths: change.paths.filter((candidate) => !sourceIsIgnored(source, candidate, defaultsEnabled)) }))
+    .map((change) => ({ ...change, paths: change.paths.filter((candidate) => !sourceIsIgnored(source, candidate, defaultsEnabled, excludes)) }))
     .filter((change) => change.paths.length > 0);
 }
 
-async function untrackedChanges(root: string, source: ResolvedWikiSource, defaultsEnabled: boolean): Promise<SourceChange[]> {
+async function untrackedChanges(root: string, source: ResolvedWikiSource, defaultsEnabled: boolean, excludes: readonly string[]): Promise<SourceChange[]> {
   const result = await git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
   if (result.code !== 0) throw new Error(result.stderr.trim() || "git ls-files failed");
   return parsePaths(result.stdout)
-    .filter((candidate) => !sourceIsIgnored(source, candidate, defaultsEnabled))
+    .filter((candidate) => !sourceIsIgnored(source, candidate, defaultsEnabled, excludes))
     .map((candidate) => ({ status: "??", paths: [candidate] }));
 }
 
-async function sourceState(source: ResolvedWikiSource, defaultsEnabled: boolean): Promise<{ head: string; changes: SourceChange[]; fingerprint: string }> {
+async function sourceState(source: ResolvedWikiSource, defaultsEnabled: boolean, excludes: readonly string[]): Promise<{ head: string; changes: SourceChange[]; fingerprint: string }> {
   const headResult = await git(source.repositoryRoot, ["rev-parse", "HEAD"]);
   const head = headResult.code === 0 ? headResult.stdout.trim() : "";
-  const staged = await gitChanges(source.repositoryRoot, ["diff", "--cached", "--name-status", "-z"], source, defaultsEnabled);
-  const unstaged = await gitChanges(source.repositoryRoot, ["diff", "--name-status", "-z"], source, defaultsEnabled);
-  const untracked = await untrackedChanges(source.repositoryRoot, source, defaultsEnabled);
+  const staged = await gitChanges(source.repositoryRoot, ["diff", "--cached", "--name-status", "-z"], source, defaultsEnabled, excludes);
+  const unstaged = await gitChanges(source.repositoryRoot, ["diff", "--name-status", "-z"], source, defaultsEnabled, excludes);
+  const untracked = await untrackedChanges(source.repositoryRoot, source, defaultsEnabled, excludes);
   const changes = uniqueChanges([...staged, ...unstaged, ...untracked]);
   const hash = createHash("sha256");
   hash.update(source.path);
@@ -217,12 +218,15 @@ function impactedPages(graph: PageGraph, changedPaths: string[]): string[] {
 }
 
 /** Inspect declared Git sources without copying them into workspace state. */
-export async function inspectWiki(cwd: string): Promise<WikiInspection> {
+export async function inspectWiki(cwd: string, policy?: ResolvedWikiPolicy): Promise<WikiInspection> {
   const workspace = await loadWikiWorkspace(cwd);
   if (workspace.sources.length === 0) throw new Error("workspace.yaml has no sources. Run /wiki source add first.");
   const wikiRoot = path.join(workspace.root, WIKI_DIRECTORY);
   const wikiExists = await exists(wikiRoot);
-  const states = await Promise.all(workspace.sources.map(async (source) => ({ source, ...await sourceState(source, workspace.defaultSourceIgnores) })));
+  const states = await Promise.all(workspace.sources.map(async (source) => ({
+    source,
+    ...await sourceState(source, workspace.defaultSourceIgnores, policy?.exclude ?? workspace.wiki.exclude),
+  })));
   const changed = uniqueChanges(states.flatMap(({ source, changes }) => changes.map((change) => ({
     ...change,
     paths: change.paths.map((relative) => workspacePath(source, relative)),

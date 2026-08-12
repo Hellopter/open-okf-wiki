@@ -28,7 +28,9 @@ export const SYNTHESIS_FINALIZE_FIELDS = ["decision", "spec", "rationale"] as co
 export const SYNTHESIS_EXPAND_FIELDS = ["decision", "researchScopes", "rationale"] as const;
 
 /** Spec page descriptor fields under synthesis finalize. */
-export const SYNTHESIS_PAGE_FIELDS = ["pageType", "path", "title", "purpose", "findingIds"] as const;
+export const SYNTHESIS_PAGE_FIELDS = [
+  "pageType", "path", "title", "purpose", "readerQuestions", "requiredFacets", "findingIds",
+] as const;
 
 /** Spec top-level fields. */
 export const SYNTHESIS_SPEC_FIELDS = ["domains", "crossLinks", "sharedTerms", "omissions"] as const;
@@ -62,8 +64,8 @@ export function submissionContractGuidance(toolName: SubmissionToolName): string
     return "Call the tool with the exact assigned page path after writing. Fix every returned issue and resubmit until accepted.";
   }
   if (toolName === "wiki_submit_synthesis") {
-    const [pageType, pagePath, title, purpose, findingIds] = SYNTHESIS_PAGE_FIELDS;
-    return `For a final decision, use {"decision":"finalize","spec":{"domains":[...],"crossLinks":[...],"sharedTerms":[...],"omissions":[...]},"rationale":"..."}. Each page contains ${pageType}, ${pagePath}, ${title}, ${purpose}, and ${findingIds}. For expansion, omit spec and use {"decision":"expand","researchScopes":[{"id":"new-scope-id","sourcePaths":["declared-source"],"task":"..."}],"rationale":"..."}.`;
+    const [pageType, pagePath, title, purpose, readerQuestions, requiredFacets, findingIds] = SYNTHESIS_PAGE_FIELDS;
+    return `For a final decision, use {"decision":"finalize","spec":{"domains":[...],"crossLinks":[...],"sharedTerms":[...],"omissions":[...]},"rationale":"..."}. Each page contains ${pageType}, ${pagePath}, ${title}, ${purpose}, ${readerQuestions}, ${requiredFacets}, and ${findingIds}. Every non-overview domain has exactly one domain page at <domain-id>/domain.md. For expansion, omit spec and use {"decision":"expand","researchScopes":[{"id":"new-scope-id","sourcePaths":["declared-source"],"task":"..."}],"rationale":"..."}.`;
   }
   const localKinds = REVIEW_LOCAL_DEFECT_KINDS.join("|");
   const structuralKinds = REVIEW_STRUCTURAL_DEFECT_KINDS.join("|");

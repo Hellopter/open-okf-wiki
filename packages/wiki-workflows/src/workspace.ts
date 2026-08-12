@@ -24,13 +24,45 @@ export interface WikiWorkspaceSource {
   origin: { type: "link"; localPath: string } | { type: "clone"; remoteUrl: string; ref?: string };
 }
 
+export interface WikiDomainOverride {
+  id: string;
+  title: string;
+  include: string[];
+  exclude: string[];
+}
+
+export interface WikiWorkspaceWikiConfig {
+  exclude: string[];
+  terminology: Record<string, string>;
+  domains: WikiDomainOverride[];
+  runtime: {
+    maxConcurrentAgents: number;
+    nodeTimeoutSeconds: number;
+    maxTransientSessionAttempts: number;
+    rateLimitCooldownSeconds: number;
+  };
+}
+
+export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
+  exclude: [],
+  terminology: {},
+  domains: [],
+  runtime: {
+    maxConcurrentAgents: 2,
+    nodeTimeoutSeconds: 1_200,
+    maxTransientSessionAttempts: 2,
+    rateLimitCooldownSeconds: 15,
+  },
+};
+
 export interface WikiWorkspace {
   version: 1;
   root: string;
   configPath?: string;
   language: "zh" | "en";
   defaultSourceIgnores: boolean;
-  quality: { maxResearchRounds: number };
+  quality: { maxResearchRounds: number; maxSubmissionAttempts: number };
+  wiki: WikiWorkspaceWikiConfig;
   sources: WikiWorkspaceSource[];
 }
 
@@ -95,7 +127,8 @@ export async function initializeWikiWorkspace(request: InitializeWikiWorkspaceRe
       configPath,
       language: request.language ?? "zh",
       defaultSourceIgnores: true,
-      quality: { maxResearchRounds: 6 },
+      quality: { maxResearchRounds: 6, maxSubmissionAttempts: 3 },
+      wiki: structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG),
       sources: [],
   };
   await writeWorkspaceConfig(configPath, workspace);
@@ -139,6 +172,7 @@ export async function addWikiSource(request: AddWikiSourceRequest): Promise<Wiki
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
     quality: workspace.quality,
+    wiki: workspace.wiki,
     sources,
   });
   return {
@@ -168,13 +202,24 @@ export async function loadWikiWorkspace(cwd: string): Promise<ResolvedWikiWorksp
   return { ...workspace, root, configPath, sources };
 }
 
-export function sourceIsIgnored(_source: ResolvedWikiSource, relativePath: string, defaultsEnabled: boolean): boolean {
-  if (!defaultsEnabled) return false;
+export function sourceIsIgnored(source: ResolvedWikiSource, relativePath: string, defaultsEnabled: boolean, workspaceExcludes: readonly string[] = []): boolean {
   const normalized = relativePath.replaceAll("\\", "/").replace(/^\.\//, "");
   const parts = normalized.split("/");
   const basename = parts.at(-1) ?? "";
+  const declaredPath = `${source.path}/${normalized}`;
+  if (workspaceExcludes.some((pattern) => matchesPathGlob(normalized, pattern) || matchesPathGlob(declaredPath, pattern))) return true;
+  if (!defaultsEnabled) return false;
   return DEFAULT_SOURCE_IGNORES.some((ignored) => parts.includes(ignored))
     || DEFAULT_SOURCE_IGNORE_FILES.some((pattern) => matchesSimpleGlob(basename, pattern));
+}
+
+function matchesPathGlob(value: string, pattern: string): boolean {
+  const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
+  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replaceAll("**", "\u0000")
+    .replaceAll("*", "[^/]*")
+    .replaceAll("\u0000", ".*");
+  return new RegExp(`^${escaped}$`).test(value);
 }
 
 async function findWorkspaceConfig(cwd: string): Promise<string | undefined> {
@@ -209,11 +254,68 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
   if (!isRecord(document) || document.version !== 1) throw new Error("workspace.yaml must declare version: 1");
   if (document.language !== "zh" && document.language !== "en") throw new Error("workspace.yaml language must be zh or en");
   if (typeof document.defaultSourceIgnores !== "boolean") throw new Error("workspace.yaml defaultSourceIgnores must be true or false");
-  const quality = document.quality === undefined ? { maxResearchRounds: 6 } : parseQuality(document.quality);
+  const quality = document.quality === undefined ? { maxResearchRounds: 6, maxSubmissionAttempts: 3 } : parseQuality(document.quality);
+  const wiki = document.wiki === undefined ? structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG) : parseWikiConfig(document.wiki);
   if (!Array.isArray(document.sources)) throw new Error("workspace.yaml sources must be an array");
   const seen = new Set<string>();
   const sources = document.sources.map((value) => parseSource(value, seen));
-  return { version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, quality, sources };
+  return { version: 1, root, configPath, language: document.language, defaultSourceIgnores: document.defaultSourceIgnores, quality, wiki, sources };
+}
+
+function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
+  if (!isRecord(value)) throw new Error("workspace.yaml wiki must be an object");
+  const exclude = parseStringArray(value.exclude, "wiki.exclude");
+  const terminology: Record<string, string> = {};
+  if (value.terminology !== undefined) {
+    if (!isRecord(value.terminology)) throw new Error("workspace.yaml wiki.terminology must be an object");
+    for (const [term, definition] of Object.entries(value.terminology)) {
+      if (!term.trim() || typeof definition !== "string" || !definition.trim()) {
+        throw new Error("workspace.yaml wiki.terminology keys and values must be non-empty strings");
+      }
+      terminology[term.trim()] = definition.trim();
+    }
+  }
+  const domainsValue = value.domains ?? [];
+  if (!Array.isArray(domainsValue)) throw new Error("workspace.yaml wiki.domains must be an array");
+  const domainIds = new Set<string>();
+  const domains = domainsValue.map((domain): WikiDomainOverride => {
+    if (!isRecord(domain) || typeof domain.id !== "string" || !SOURCE_NAME.test(domain.id) || domainIds.has(domain.id)) {
+      throw new Error("workspace.yaml wiki.domains ids must be unique safe identifiers");
+    }
+    if (typeof domain.title !== "string" || !domain.title.trim()) throw new Error(`workspace.yaml domain ${domain.id} requires title`);
+    domainIds.add(domain.id);
+    return {
+      id: domain.id,
+      title: domain.title.trim(),
+      include: parseStringArray(domain.include, `wiki.domains.${domain.id}.include`, true),
+      exclude: parseStringArray(domain.exclude, `wiki.domains.${domain.id}.exclude`),
+    };
+  });
+  const runtimeValue = value.runtime ?? {};
+  if (!isRecord(runtimeValue)) throw new Error("workspace.yaml wiki.runtime must be an object");
+  const maxConcurrentAgents = runtimeValue.maxConcurrentAgents ?? DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.maxConcurrentAgents;
+  if (!Number.isInteger(maxConcurrentAgents) || Number(maxConcurrentAgents) < 1 || Number(maxConcurrentAgents) > 4) {
+    throw new Error("workspace.yaml wiki.runtime.maxConcurrentAgents must be an integer from 1 to 4");
+  }
+  const nodeTimeoutSeconds = boundedWorkspaceInteger(runtimeValue.nodeTimeoutSeconds, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.nodeTimeoutSeconds, 60, 1_800, "wiki.runtime.nodeTimeoutSeconds");
+  const maxTransientSessionAttempts = boundedWorkspaceInteger(runtimeValue.maxTransientSessionAttempts, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.maxTransientSessionAttempts, 1, 2, "wiki.runtime.maxTransientSessionAttempts");
+  const rateLimitCooldownSeconds = boundedWorkspaceInteger(runtimeValue.rateLimitCooldownSeconds, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.rateLimitCooldownSeconds, 15, 120, "wiki.runtime.rateLimitCooldownSeconds");
+  return {
+    exclude,
+    terminology,
+    domains,
+    runtime: { maxConcurrentAgents: Number(maxConcurrentAgents), nodeTimeoutSeconds, maxTransientSessionAttempts, rateLimitCooldownSeconds },
+  };
+}
+
+function parseStringArray(value: unknown, field: string, required = false): string[] {
+  if (value === undefined && !required) return [];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+    throw new Error(`workspace.yaml ${field} must be an array of non-empty strings`);
+  }
+  const result = [...new Set(value.map((entry) => String(entry).trim()))];
+  if (required && result.length === 0) throw new Error(`workspace.yaml ${field} must not be empty`);
+  return result;
 }
 
 function parseQuality(value: unknown): WikiWorkspace["quality"] {
@@ -221,7 +323,16 @@ function parseQuality(value: unknown): WikiWorkspace["quality"] {
     || Number(value.maxResearchRounds) < 3 || Number(value.maxResearchRounds) > 20) {
     throw new Error("workspace.yaml quality.maxResearchRounds must be an integer from 3 to 20");
   }
-  return { maxResearchRounds: Number(value.maxResearchRounds) };
+  const maxSubmissionAttempts = boundedWorkspaceInteger(value.maxSubmissionAttempts, 3, 1, 3, "quality.maxSubmissionAttempts");
+  return { maxResearchRounds: Number(value.maxResearchRounds), maxSubmissionAttempts };
+}
+
+function boundedWorkspaceInteger(value: unknown, fallback: number, minimum: number, maximum: number, field: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isInteger(resolved) || Number(resolved) < minimum || Number(resolved) > maximum) {
+    throw new Error(`workspace.yaml ${field} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return Number(resolved);
 }
 
 function parseSource(value: unknown, seen: Set<string>): WikiWorkspaceSource {
@@ -250,6 +361,7 @@ async function writeWorkspaceConfig(configPath: string, workspace: WikiWorkspace
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
     quality: workspace.quality,
+    wiki: workspace.wiki,
     sources: workspace.sources.map((source) => ({ path: source.path, origin: source.origin })),
   };
   await writeFile(configPath, YAML.stringify(document, { lineWidth: 0 }), "utf8");

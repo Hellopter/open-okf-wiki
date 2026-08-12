@@ -16,6 +16,7 @@ export interface ValidateResearchArtifactOptions {
   allowedSourceRoots: readonly string[];
   /** Optional pre-resolved roots; when omitted, resolved under cwd / workspace. */
   sourceRoots?: readonly ResearchSourceRoot[];
+  excludedPaths?: readonly string[];
 }
 
 /**
@@ -97,6 +98,10 @@ export function validateResearchArtifact(
   for (const [index, finding] of artifact.findings.entries()) {
     for (const evidence of finding.evidence) {
       try {
+        const parsed = parseEvidenceReference(evidence);
+        if (options.excludedPaths?.some((pattern) => matchesPathGlob(parsed.path, pattern))) {
+          throw new Error(`Research evidence targets a path excluded by workspace policy: ${evidence}`);
+        }
         validateEvidenceRange(evidence, allowed, roots, options.cwd);
       } catch (error) {
         issues.push(`findings[${index}]: ${errorMessage(error)}`);
@@ -111,6 +116,15 @@ export function validateResearchArtifact(
     }
   }
   if (issues.length) throw new Error(issues.join("\n"));
+}
+
+function matchesPathGlob(value: string, pattern: string): boolean {
+  const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//, "");
+  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replaceAll("**", "\u0000")
+    .replaceAll("*", "[^/]*")
+    .replaceAll("\u0000", ".*");
+  return new RegExp(`^${escaped}$`).test(value);
 }
 
 function validateEvidenceRange(

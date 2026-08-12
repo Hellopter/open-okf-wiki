@@ -15,7 +15,7 @@ test("phaseTitleForKind / phaseIdForKind / phaseMetaForKind map node kinds onto 
 
   assert.deepEqual(
     WIKI_WORKFLOW_PHASES.map((phase) => phase.id),
-    ["inspect", "research", "plan", "write", "verify"],
+    ["inspect", "research", "plan", "write", "review"],
   );
   assert.equal(WIKI_WORKFLOW_STAGES, WIKI_WORKFLOW_PHASES);
 
@@ -24,9 +24,9 @@ test("phaseTitleForKind / phaseIdForKind / phaseMetaForKind map node kinds onto 
     ["research", "research", "Research"],
     ["synthesis", "plan", "Plan"],
     ["write", "write", "Write"],
-    ["validate", "verify", "Verify"],
-    ["review", "verify", "Verify"],
-    ["finalize", "verify", "Verify"],
+    ["validate", "write", "Write"],
+    ["review", "review", "Review & Publish"],
+    ["finalize", "review", "Review & Publish"],
   ];
 
   for (const [kind, id, title] of cases) {

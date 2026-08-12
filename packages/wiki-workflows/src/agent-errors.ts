@@ -8,12 +8,22 @@ export type SubmissionToolName =
 
 export type SubmissionFailureCode = "invalid_submission" | "submission_too_large" | "validator_infrastructure";
 
+export interface SubmissionIssue {
+  path: string;
+  code: string;
+  message: string;
+  expected?: string;
+}
+
 /** Agent-facing error codes; same vocabulary as durable node errors. */
 export type WikiAgentErrorCode = WikiNodeErrorCode;
 
 export interface SubmissionFailure {
   code: SubmissionFailureCode;
   message: string;
+  issues?: SubmissionIssue[];
+  attempts?: number;
+  remainingAttempts?: number;
 }
 
 /** A node ended without the tool submission required to advance the Wiki DAG. */

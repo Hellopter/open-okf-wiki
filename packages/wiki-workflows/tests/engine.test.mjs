@@ -30,6 +30,8 @@ function page(domain, name, source, pageType = "module") {
     path: `${domain}/${name}.md`,
     title: `${domain} ${name}`,
     purpose: `Explain ${domain} ${name}`,
+    readerQuestions: [`How does ${domain} ${name} work?`],
+    requiredFacets: ["responsibilities", "boundaries", "evidence"],
     findingIds: [findingId(scopeId)],
   };
 }
@@ -45,6 +47,18 @@ function spec(contentPages = [
     domain.pages.push(item);
     byDomain.set(id, domain);
   }
+  for (const domain of byDomain.values()) {
+    const findingIds = [...new Set(domain.pages.flatMap((item) => item.findingIds))];
+    domain.pages.unshift({
+      pageType: "domain",
+      path: `${domain.id}/domain.md`,
+      title: `${domain.title} domain`,
+      purpose: `Aggregate the ${domain.title} models, flows, state, invariants, and boundaries`,
+      readerQuestions: [`How do the ${domain.title} domain's models and flows fit together?`],
+      requiredFacets: ["models", "flows", "state", "invariants", "boundaries"],
+      findingIds,
+    });
+  }
   return {
     domains: [
       {
@@ -56,6 +70,8 @@ function spec(contentPages = [
           path: "overview/overview.md",
           title: "System Overview",
           purpose: "Orient readers across all pages",
+          readerQuestions: ["What are the system's main domains?"],
+          requiredFacets: ["domain map", "entry points", "cross-domain flow"],
           findingIds: [],
         }],
       },
@@ -150,7 +166,11 @@ async function fixture(t, options = {}) {
   let writerCalls = 0;
   let activeWriters = 0;
   let maxActiveWriters = 0;
+  const runtimePolicies = [];
   const executor = {
+    setRuntimePolicy(policy) {
+      runtimePolicies.push(structuredClone(policy));
+    },
     async execute(request) {
       requests.push(request);
       if (request.node.kind === "research") {
@@ -191,7 +211,7 @@ async function fixture(t, options = {}) {
           const handled = await options.onWrite?.(request, index, workspace);
           if (!handled) {
             for (const output of request.writePaths ?? []) {
-              const absolute = path.join(workspace, output);
+              const absolute = path.join(request.candidateWikiRoot, output.replace(/^wiki\//, ""));
               await mkdir(path.dirname(absolute), { recursive: true });
               await writeFile(absolute, `---\ntype: ${request.node.input.page.pageType}\ntitle: page\ndescription: page\ntags: [test]\nsources: [{ id: source, resource: "repo:src-core/index.ts#L1" }]\n---\n\nwrite-${index}[^source]\n\n[^source]: [source](repo:src-core/index.ts#L1)\n`, "utf8");
             }
@@ -237,13 +257,13 @@ async function fixture(t, options = {}) {
     createId: () => `id-${++id}`,
     now: () => new Date("2026-08-10T00:00:00.000Z"),
   });
-  return { engine, executor, requests, writes, workspace, get maxActiveWriters() { return maxActiveWriters; }, get finalizationCalls() { return finalizationCalls; } };
+  return { engine, executor, requests, writes, runtimePolicies, workspace, get maxActiveWriters() { return maxActiveWriters; }, get finalizationCalls() { return finalizationCalls; } };
 }
 
-test("restore rejects a structurally corrupt bare v7 snapshot", () => {
+test("restore rejects a structurally corrupt current snapshot", () => {
   const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
   const malformed = {
-    version: 8,
+    version: 10,
     id: "malformed",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -261,10 +281,10 @@ test("restore rejects a structurally corrupt bare v7 snapshot", () => {
   assert.equal(engine.restore(malformed), undefined);
 });
 
-test("restore rejects a v7 snapshot below the research saturation minimum", () => {
+test("restore rejects a current snapshot below the research saturation minimum", () => {
   const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
   const snapshot = {
-    version: 8,
+    version: 10,
     id: "undersized-budget",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -480,29 +500,29 @@ test("interrupt reuses hard-stop-resume semantics", async (t) => {
   assert.ok(events.some((event) => event.kind === "run_paused" && /session shutdown/i.test(event.message ?? "")));
 });
 
-test("generate fans out fresh page writers four at a time and gates Overview", async (t) => {
+test("generate fans out domain and detail writers within the configured concurrency and gates Overview", async (t) => {
   const pages = Array.from({ length: 6 }, (_, index) => page(`d${index}`, "page", index % 2 ? "source-survey:src-api" : "source-survey:src-core"));
   const f = await fixture(t, { spec: spec(pages), writeDelay: 8 });
   f.engine.start({ cwd: f.workspace, mode: "generate" });
   const snapshot = await f.engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  assert.equal(snapshot.version, 8);
+  assert.equal(snapshot.version, 10);
   assert.equal(snapshot.revision, 0);
   assert.equal(snapshot.maxResearchRounds, 6);
   assert.equal(snapshot.sourceRestartCount, 0);
   assert.equal(f.requests.filter((request) => request.node.kind === "research").length, 2, "source surveys only; no forced dry audit without critical gaps");
-  assert.equal(f.requests.filter((request) => request.node.kind === "write").length, 7);
-  assert.equal(f.maxActiveWriters, 4);
+  assert.equal(f.requests.filter((request) => request.node.kind === "write").length, 13);
+  assert.equal(f.maxActiveWriters, 2);
   const overview = snapshot.nodes.find((node) => node.kind === "write" && node.input.intent === "overview");
   const content = snapshot.nodes.filter((node) => node.kind === "write" && node.input.intent === "draft");
   assert.deepEqual(new Set(overview.dependsOn), new Set(content.map((node) => node.id)));
   assert.ok(content.every((node) => node.input.writePaths.length === 1));
-  assert.ok(snapshot.nodes.every((node) => ["inspect", "research", "plan", "write", "verify"].includes(node.phaseId)));
+  assert.ok(snapshot.nodes.every((node) => ["inspect", "research", "plan", "write", "review"].includes(node.phaseId)));
   assert.equal(snapshot.nodes.at(-1).kind, "finalize");
   assert.equal(f.finalizationCalls, 1);
 
-  const coreWriter = f.requests.find((request) => request.node.kind === "write" && request.node.input.page.findingIds.includes(findingId("source-survey:src-core")));
+  const coreWriter = f.requests.find((request) => request.node.kind === "write" && request.node.input.page.path === "d0/page.md");
   assert.deepEqual(coreWriter.readRoots, ["src-core"]);
   assert.equal(coreWriter.artifactPaths.length, 1);
   assert.match(coreWriter.artifactPaths[0], /^\.okf-wiki\/blobs\/[a-f0-9]{64}\.json$/);
@@ -519,7 +539,7 @@ test("generate fans out fresh page writers four at a time and gates Overview", a
   const overviewRequest = f.requests.find((request) => request.node.kind === "write" && request.node.input.intent === "overview");
   assert.deepEqual(overviewRequest.readRoots, ["src-core", "src-api"]);
   assert.equal(overviewRequest.artifactPaths, undefined);
-  assert.equal(overviewRequest.wikiReadPaths.length, 6);
+  assert.equal(overviewRequest.wikiReadPaths.length, 12);
   const reviewer = f.requests.find((request) => request.node.kind === "review");
   assert.equal(reviewer.artifactPaths, undefined);
   assert.match(reviewer.prompt, /"path": "d0\/page.md"/);
@@ -548,6 +568,115 @@ test("the minimum research budget completes the initial survey without a forced 
   );
 });
 
+test("pinned workspace policy reaches research, planning, writing, review, and concurrency", async (t) => {
+  const pages = Array.from({ length: 4 }, (_, index) => page("core", `page-${index}`, "source-survey:src-core"));
+  const f = await fixture(t, {
+    inspection: { sourcePaths: ["src-core"] },
+    spec: spec(pages),
+    writeDelay: 8,
+  });
+  f.engine.start({
+    cwd: f.workspace,
+    mode: "generate",
+    wikiPolicy: {
+      exclude: ["src-core/generated/**"],
+      terminology: { Ledger: "Canonical accounting record" },
+      domains: [],
+      quality: { maxSubmissionAttempts: 1 },
+      runtime: { maxConcurrentAgents: 3, nodeTimeoutSeconds: 60, maxTransientSessionAttempts: 1, rateLimitCooldownSeconds: 120 },
+    },
+  });
+  const snapshot = await f.engine.waitForIdle();
+  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
+  assert.equal(f.maxActiveWriters, 3);
+  assert.deepEqual(f.runtimePolicies[0], snapshot.policy);
+  for (const kind of ["research", "synthesis", "write", "review"]) {
+    const request = f.requests.find((candidate) => candidate.node.kind === kind);
+    assert.equal(request.maxSubmissionAttempts, 1);
+    assert.match(request.prompt, /Canonical accounting record/);
+    assert.match(request.prompt, /src-core\/generated\/\*\*/);
+  }
+});
+
+test("policy stays pinned until resume reconciliation and new runs use the latest workspace values", async () => {
+  const appliedPolicies = [];
+  let id = 0;
+  const engine = new WikiWorkflowEngine({
+    executor: {
+      async execute() { return { result: undefined }; },
+      setRuntimePolicy(policy) { appliedPolicies.push(structuredClone(policy)); },
+    },
+    inspect: async () => await new Promise(() => {}),
+    createId: () => `policy-${++id}`,
+    now: () => new Date("2026-08-10T00:00:00.000Z"),
+  });
+  const initialWorkspacePolicy = {
+    exclude: ["generated/**"],
+    terminology: { Ledger: "Original definition" },
+    domains: [],
+    quality: { maxSubmissionAttempts: 2 },
+    runtime: {
+      maxConcurrentAgents: 1,
+      nodeTimeoutSeconds: 600,
+      maxTransientSessionAttempts: 1,
+      rateLimitCooldownSeconds: 30,
+    },
+  };
+  engine.start({ cwd: "/workspace", mode: "generate", wikiPolicy: initialWorkspacePolicy });
+
+  const runningPolicy = {
+    ...initialWorkspacePolicy,
+    runtime: { ...initialWorkspacePolicy.runtime, maxConcurrentAgents: 4 },
+  };
+  assert.throws(
+    () => engine.reconcilePolicy(runningPolicy),
+    /only be reconciled while the run is paused or blocked/,
+  );
+  assert.equal(engine.getSnapshot().policy.runtime.maxConcurrentAgents, 1);
+  assert.equal(appliedPolicies.at(-1).runtime.maxConcurrentAgents, 1);
+  engine.pause();
+
+  initialWorkspacePolicy.terminology.Ledger = "Mutated after start";
+  initialWorkspacePolicy.runtime.maxConcurrentAgents = 4;
+  const pinned = engine.getSnapshot();
+  assert.equal(pinned.policy.terminology.Ledger, "Original definition");
+  assert.equal(pinned.policy.runtime.maxConcurrentAgents, 1);
+
+  const latestWorkspacePolicy = {
+    ...initialWorkspacePolicy,
+    terminology: { Ledger: "Latest definition" },
+    runtime: { ...initialWorkspacePolicy.runtime, nodeTimeoutSeconds: 900 },
+  };
+  assert.equal(engine.reconcilePolicy(latestWorkspacePolicy), true);
+  const reconciled = engine.getSnapshot();
+  assert.equal(reconciled.policy.terminology.Ledger, "Latest definition");
+  assert.equal(reconciled.policy.runtime.maxConcurrentAgents, 4);
+  assert.equal(reconciled.inspection, undefined);
+  assert.equal(reconciled.effectiveMode, undefined);
+  assert.equal(reconciled.nodes[0].kind, "inspect");
+  assert.equal(reconciled.nodes[0].input.policyHash, reconciled.policyHash);
+  assert.ok(reconciled.events.some((event) => event.kind === "recovered" && /policy changed/.test(event.message)));
+  assert.equal(engine.reconcilePolicy(latestWorkspacePolicy), false);
+
+  const restorable = await engine.cancel();
+  const restoredPolicies = [];
+  const restoredEngine = new WikiWorkflowEngine({
+    executor: {
+      async execute() { return { result: undefined }; },
+      setRuntimePolicy(policy) { restoredPolicies.push(structuredClone(policy)); },
+    },
+  });
+  assert.equal(restoredEngine.restore(restorable).policyHash, restorable.policyHash);
+  assert.deepEqual(restoredPolicies, [restorable.policy]);
+
+  const next = engine.start({ cwd: "/workspace", mode: "generate", wikiPolicy: latestWorkspacePolicy });
+  engine.pause();
+  assert.equal(next.policy.terminology.Ledger, "Latest definition");
+  assert.equal(next.policy.runtime.nodeTimeoutSeconds, 900);
+  assert.equal(appliedPolicies.at(-1).runtime.maxConcurrentAgents, 4);
+  await engine.cancel();
+});
+
 test("research budgets below the saturation minimum are rejected", async (t) => {
   const f = await fixture(t);
   assert.throws(
@@ -567,46 +696,34 @@ test("more than four repositories and fifteen pages are all scheduled without a 
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
   assert.equal(snapshot.nodes.filter((node) => node.kind === "research" && node.input.batch === 0).length, 6);
-  assert.equal(snapshot.nodes.filter((node) => node.kind === "write" && node.input.intent === "draft").length, 18);
-  assert.equal(f.maxActiveWriters, 4);
+  assert.equal(snapshot.nodes.filter((node) => node.kind === "write" && node.input.intent === "draft").length, 24);
+  assert.equal(f.maxActiveWriters, 2);
 });
 
-test("Validate and Review start in parallel and aggregate into one repair wave", async (t) => {
-  let validationStarted;
-  let reviewStarted;
-  let releaseValidation;
-  let releaseReview;
-  const validationReady = new Promise((resolve) => { validationStarted = resolve; });
-  const reviewReady = new Promise((resolve) => { reviewStarted = resolve; });
-  const validationRelease = new Promise((resolve) => { releaseValidation = resolve; });
-  const reviewRelease = new Promise((resolve) => { releaseReview = resolve; });
+test("Write validation repairs before semantic review and keeps feedback attributable", async (t) => {
   const f = await fixture(t, {
-    concurrentArtifactKinds: ["validation", "review"],
     validate: async (_spec, index) => {
       if (index > 0) return validation();
-      validationStarted();
-      await validationRelease;
       return validation({ ok: false, issues: [{ code: "frontmatter", page: "core/architecture.md", message: "Fix metadata" }] });
     },
     review: async (_request, index) => {
       if (index > 0) return { defects: [], summary: "complete" };
-      reviewStarted();
-      await reviewRelease;
       return { defects: [{ kind: "depth", page: "core/architecture.md", detail: "Explain failure behavior" }], summary: "repair" };
     },
   });
 
   f.engine.start({ cwd: f.workspace, mode: "generate" });
-  await Promise.all([validationReady, reviewReady]);
-  releaseValidation();
-  releaseReview();
   const snapshot = await f.engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  const repair = snapshot.nodes.find((node) => node.kind === "write"
+  const repairs = snapshot.nodes.filter((node) => node.kind === "write"
     && node.input.intent === "repair" && node.input.page.path === "core/architecture.md");
-  assert.equal(repair.input.feedback.validation.issues.length, 1);
-  assert.equal(repair.input.feedback.review.defects.length, 1);
+  assert.equal(repairs.length, 2);
+  assert.equal(repairs[0].input.feedback.validation.issues.length, 1);
+  assert.equal(repairs[1].input.feedback.review.defects.length, 1);
+  const firstReview = snapshot.nodes.find((node) => node.kind === "review");
+  const cleanValidation = snapshot.nodes.filter((node) => node.kind === "validate").at(1);
+  assert.deepEqual(firstReview.dependsOn, [cleanValidation.id]);
 });
 
 test("a new critical audit finding resets the dry coverage saturation counter", async (t) => {
@@ -756,21 +873,21 @@ test("context budget exceeded blocks the node and run after max attempts (not fa
   assert.notEqual(snapshot.status, "failed");
   const research = snapshot.nodes.find((node) => node.kind === "research");
   assert.equal(research.status, "blocked");
-  assert.equal(research.attempt, 3);
+  assert.equal(research.attempt, 2);
   assert.equal(research.error.code, "context_budget_exceeded");
   assert.equal(research.error.retryable, false);
   assert.match(research.error.message, /context window exhausted/);
-  assert.equal(researchCalls, 3);
-  assert.match(snapshot.blockedReason, /context window exhausted|reached 3 attempts/);
+  assert.equal(researchCalls, 2);
+  assert.match(snapshot.blockedReason, /context window exhausted|reached 2 attempts/);
 });
 
-test("Verify phase retry reruns one stable pipeline without queued or duplicate terminal nodes", async (t) => {
+test("Review phase retry reruns semantic review and publication without duplicating validation", async (t) => {
   const f = await fixture(t, { spec: spec() });
   f.engine.start({ cwd: f.workspace, mode: "generate" });
   const initial = await f.engine.waitForIdle();
   assert.equal(initial.status, "succeeded");
 
-  await f.engine.retryPhase("verify");
+  await f.engine.retryPhase("review");
   const retried = await f.engine.waitForIdle();
 
   assert.equal(retried.status, "succeeded");
@@ -778,7 +895,9 @@ test("Verify phase retry reruns one stable pipeline without queued or duplicate 
   assert.equal(retried.nodes.filter((node) => node.kind === "validate" && node.status === "succeeded").length, 1);
   assert.equal(retried.nodes.filter((node) => node.kind === "review" && node.status === "succeeded").length, 1);
   assert.equal(retried.nodes.filter((node) => node.kind === "finalize" && node.status === "succeeded").length, 1);
-  assert.equal(retried.nodes.find((node) => node.kind === "validate").attempt, 2);
+  assert.equal(retried.nodes.find((node) => node.kind === "validate").attempt, 1);
+  assert.equal(retried.nodes.filter((node) => node.kind === "review").length, 1);
+  assert.equal(retried.nodes.find((node) => node.kind === "review" && node.status === "succeeded").attempt, 2);
 });
 
 test("refresh writes only impacted/new content and always rewrites Overview", async (t) => {
@@ -786,7 +905,7 @@ test("refresh writes only impacted/new content and always rewrites Overview", as
   const f = await fixture(t, {
     spec: target,
     inspection: {
-      existingPages: ["overview/overview.md", "core/architecture.md", "api/request-flow.md"],
+      existingPages: ["overview/overview.md", "core/domain.md", "core/architecture.md", "api/domain.md", "api/request-flow.md"],
       impactedPages: ["wiki/api/request-flow.md"],
     },
   });
@@ -797,7 +916,7 @@ test("refresh writes only impacted/new content and always rewrites Overview", as
   const impactedWriter = f.requests.find((request) => request.node.kind === "write" && request.node.input.page.path === "api/request-flow.md");
   assert.deepEqual(impactedWriter.wikiReadPaths, ["wiki/api/request-flow.md", "wiki/core/architecture.md"], "only its own page and a retained cross-link neighbor are readable");
   const synthesis = f.requests.find((request) => request.node.kind === "synthesis");
-  assert.deepEqual(synthesis.wikiReadPaths, ["wiki/api/request-flow.md", "wiki/core/architecture.md", "wiki/overview/overview.md"]);
+  assert.deepEqual(synthesis.wikiReadPaths, ["wiki/api/domain.md", "wiki/api/request-flow.md", "wiki/core/architecture.md", "wiki/core/domain.md", "wiki/overview/overview.md"]);
 });
 
 test("refresh explicitly requires generate for a legacy Wiki contract", async (t) => {
@@ -818,7 +937,7 @@ test("mixed structural and local defects replan first, write the full topology, 
   const f = await fixture(t, {
     spec: target,
     inspection: {
-      existingPages: ["overview/overview.md", "core/architecture.md", "api/request-flow.md"],
+      existingPages: ["overview/overview.md", "core/domain.md", "core/architecture.md", "api/domain.md", "api/request-flow.md"],
       impactedPages: ["core/architecture.md"],
     },
     synthesis: (_request, index) => ({ decision: "finalize", spec: target, rationale: `plan-${index}` }),
@@ -837,7 +956,7 @@ test("mixed structural and local defects replan first, write the full topology, 
   assert.equal(snapshot.nodes.filter((node) => node.kind === "synthesis").length, 2);
   const structuralPlanNode = snapshot.nodes.filter((node) => node.kind === "synthesis" && node.input.mode === "structural").at(-1);
   const structuralWrites = snapshot.nodes.filter((node) => node.kind === "write" && node.input.synthesisNodeId === structuralPlanNode.id);
-  assert.equal(structuralWrites.length, 3, "structural Plan rewrites every target page");
+  assert.equal(structuralWrites.length, 5, "structural Plan rewrites every target page");
   const feedback = structuralWrites.find((node) => node.input.page.path === "core/architecture.md").input.feedback.review.defects[0];
   assert.equal(feedback.kind, "depth");
   assert.equal(feedback.domainId, "core");
@@ -943,7 +1062,7 @@ test("Plan receipt manifest exposes the exact scope allowlist enforced at submis
       }));
       assert.match(request.prompt, /"scopeId": "source-survey:src-core"/);
       assert.match(request.prompt, /"sourcePaths": \[\s*"src-core"/);
-      assert.match(request.prompt, /"task": "Bounded survey-then-deepen of src-core:/);
+      assert.match(request.prompt, /"task": "Survey src-core to identify cohesive domains/);
       return { decision: "finalize", spec: target, rationale: "Selected exact manifest IDs." };
     },
   });
@@ -1064,9 +1183,9 @@ test("an unchanged defect-target repair blocks immediately", async (t) => {
     validate: (_spec, index) => index === 0
       ? validation({ ok: false, issues: [{ code: "depth", page: "core/architecture.md", message: "Too shallow" }] })
       : validation(),
-    onWrite: async (request, index, workspace) => {
+    onWrite: async (request, index) => {
       const output = request.writePaths[0];
-      const absolute = path.join(workspace, output);
+      const absolute = path.join(request.candidateWikiRoot, output.replace(/^wiki\//, ""));
       await mkdir(path.dirname(absolute), { recursive: true });
       if (request.node.input.page.path === "core/architecture.md" && request.node.input.intent === "draft") {
         original = "unchanged\n";
@@ -1247,6 +1366,8 @@ test("Git reconciliation after a source-drift restart retries the latest valid I
       { sourceFingerprint: "two", head: "head-2" },
       { sourceFingerprint: "two", head: "head-2" },
       { sourceFingerprint: "two", head: "head-2" },
+      { sourceFingerprint: "two", head: "head-2" },
+      { sourceFingerprint: "three", head: "head-3" },
       { sourceFingerprint: "three", head: "head-3" },
       { sourceFingerprint: "three", head: "head-3" },
       { sourceFingerprint: "three", head: "head-3" },
@@ -1257,7 +1378,7 @@ test("Git reconciliation after a source-drift restart retries the latest valid I
   assert.equal(restarted.status, "succeeded");
   assert.equal(restarted.nodes.filter((node) => node.kind === "inspect").length, 2);
 
-  await f.engine.retryPhase("verify");
+  await f.engine.retryPhase("review");
   const reconciled = await f.engine.waitForIdle();
   const inspectNodes = reconciled.nodes.filter((node) => node.kind === "inspect");
 
@@ -1334,4 +1455,47 @@ test("succeeded nodes drop live history/output; archiveAttempt stays slim", asyn
   assert.equal(session?.status, snapshot.status);
   assert.equal(session?.pointerVersion, 1);
   assert.equal("snapshot" in (session ?? {}), false);
+});
+
+test("writers and reviewers use an unpublished candidate until atomic publication", async (t) => {
+  let observedPublished = false;
+  const f = await fixture(t, {
+    onWrite: async (request) => {
+      assert.match(request.candidateWikiRoot, /\.okf-wiki\/runs\/[^/]+\/candidate\/wiki$/);
+      observedPublished ||= await readFile(path.join(request.cwd, "wiki", "old.md"), "utf8") === "old\n";
+      return false;
+    },
+    review: async (request) => {
+      assert.match(request.candidateWikiRoot, /\.okf-wiki\/runs\/[^/]+\/candidate\/wiki$/);
+      assert.equal(await readFile(path.join(request.cwd, "wiki", "old.md"), "utf8"), "old\n");
+      return { defects: [], summary: "complete" };
+    },
+  });
+  await mkdir(path.join(f.workspace, "wiki"), { recursive: true });
+  await writeFile(path.join(f.workspace, "wiki", "old.md"), "old\n", "utf8");
+
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  const snapshot = await f.engine.waitForIdle();
+  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
+  assert.equal(observedPublished, true);
+  await assert.rejects(readFile(path.join(f.workspace, "wiki", "old.md"), "utf8"), { code: "ENOENT" });
+  assert.match(await readFile(path.join(f.workspace, "wiki", "overview", "overview.md"), "utf8"), /write-/);
+});
+
+test("forked validation retry copies the source run Wiki before preserving succeeded writers", async (t) => {
+  const f = await fixture(t);
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  const source = await f.engine.waitForIdle();
+  assert.equal(source.status, "succeeded", source.blockedReason);
+  const validateNode = source.nodes.find((node) => node.kind === "validate");
+  assert.ok(validateNode);
+
+  await f.engine.forkAndRetryNode(source, validateNode.id);
+  const fork = await f.engine.waitForIdle();
+  assert.equal(fork.status, "succeeded", fork.blockedReason);
+  assert.equal(fork.parentRunId, source.id);
+  assert.deepEqual(fork.policy, source.policy);
+  assert.equal(fork.policyHash, source.policyHash);
+  assert.ok(fork.nodes.some((node) => node.kind === "write" && node.status === "succeeded" && node.attempt === 1));
+  assert.match(await readFile(path.join(f.workspace, "wiki", "overview", "overview.md"), "utf8"), /write-/);
 });

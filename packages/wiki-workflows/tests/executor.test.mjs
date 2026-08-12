@@ -13,8 +13,8 @@ import {
 } from "../dist/control-submissions.js";
 import {
   CORRECTION_MAX,
+  PI_SESSION_POLICY,
   PiAgentExecutor,
-  SALVAGE_MAX,
   WikiAgentContextBudgetError,
   WikiAgentProtocolError,
 } from "../dist/executor.js";
@@ -104,21 +104,17 @@ function request(cwd, kind, role) {
 }
 
 async function writeAndSubmit(tools, name, content) {
-  await tools.find((tool) => tool.name === "wiki_write_handoff").execute("write-handoff", { content: JSON.stringify(content) });
-  return await tools.find((tool) => tool.name === name).execute("submit", {
-    artifactPath: name === "wiki_submit_research"
-      ? ".okf-wiki/runs/run/research-node/attempt-1/research.json"
-      : name === "wiki_submit_synthesis"
-        ? ".okf-wiki/runs/run/synthesis-node/attempt-1/synthesis.json"
-        : ".okf-wiki/runs/run/review-node/attempt-1/review.json",
-  });
+  return await tools.find((tool) => tool.name === name).execute("submit", content);
 }
 
 function finalizedSpec() {
   return {
     domains: [
-      { id: "overview", title: "Overview", purpose: "Orient readers", pages: [{ pageType: "overview", path: "overview/overview.md", title: "Overview", purpose: "Orient readers", findingIds: [] }] },
-      { id: "domain", title: "Domain", purpose: "Explain the domain", pages: [{ pageType: "module", path: "domain/page.md", title: "Page", purpose: "Explain the page", findingIds: ["finding-api"] }] },
+      { id: "overview", title: "Overview", purpose: "Orient readers", pages: [{ pageType: "overview", path: "overview/overview.md", title: "Overview", purpose: "Orient readers", readerQuestions: ["What does the system contain?"], requiredFacets: ["domain map"], findingIds: [] }] },
+      { id: "domain", title: "Domain", purpose: "Explain the domain", pages: [
+        { pageType: "domain", path: "domain/domain.md", title: "Domain", purpose: "Connect domain knowledge", readerQuestions: ["How does this domain fit together?"], requiredFacets: ["models", "flows", "state", "invariants", "boundaries"], findingIds: ["finding-api"] },
+        { pageType: "module", path: "domain/page.md", title: "Page", purpose: "Explain the page", readerQuestions: ["How is the API exposed?"], requiredFacets: ["interface"], findingIds: ["finding-api"] },
+      ] },
     ],
     omissions: [],
   };
@@ -145,8 +141,9 @@ test("synthesis submission accepts the page-level contract and optional coordina
   assert.deepEqual(result.result.spec.crossLinks, []);
   assert.deepEqual(result.result.spec.sharedTerms, []);
   const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis");
-  assert.match(submit.promptGuidelines[0], /findingIds/);
-  assert.doesNotMatch(submit.promptGuidelines[0], /requiredSections|diagrams|sources/);
+  const guidance = [submit.description, ...submit.promptGuidelines].join("\n");
+  assert.match(guidance, /findingIds/);
+  assert.doesNotMatch(guidance, /requiredSections|diagrams|sources/);
 });
 
 test("review submission is a discriminated local/structural union without model IDs", async (t) => {
@@ -205,11 +202,13 @@ test("writer validates the exact page, reports all issues, and accepts a same-se
     assert.match((await read.execute("read-retained", { path: "wiki/domain/retained.md" })).content[0].text, /Retained/);
     await assert.rejects(() => write.execute("wrong", { path: "wiki/domain/other.md", content: "no" }), /not assigned/);
     await assert.rejects(() => read.execute("other-source", { path: "web/src/index.ts" }), /permitted workspace scope/);
-    await assert.rejects(
-      () => submit.execute("invalid", { page: "domain/page.md" }),
-      (error) => /citation-footnote/.test(error.message) && /mermaid-syntax/.test(error.message),
-    );
-    await assert.rejects(() => submit.execute("wrong-page", { page: "domain/other.md" }), /does not match the assigned page/);
+    const invalid = await submit.execute("invalid", { page: "domain/page.md" });
+    assert.equal(invalid.details.accepted, false);
+    assert.equal(invalid.details.remainingAttempts, 2);
+    assert.deepEqual(invalid.details.issues.map((issue) => issue.code), ["citation-footnote", "mermaid-syntax"]);
+    const wrongPage = await submit.execute("wrong-page", { page: "domain/other.md" });
+    assert.equal(wrongPage.details.accepted, false);
+    assert.match(wrongPage.details.issues[0].message, /does not match the assigned page/);
     await write.execute("repair", { path: "wiki/domain/page.md", content: "# Page\n\nRepaired.\n" });
     await submit.execute("valid", { page: "domain/page.md" });
   };
@@ -267,10 +266,12 @@ test("research uses a submitted structured JSON artifact limited to 256 KiB", as
     gaps: [],
   };
   session.prompt = async () => {
-    await assert.rejects(
-      () => tools.find((tool) => tool.name === "wiki_write_handoff").execute("large", { content: "中".repeat(Math.ceil((MAX_RESEARCH_ARTIFACT_BYTES + 1) / 3)) }),
-      new RegExp(`${MAX_RESEARCH_ARTIFACT_BYTES}-byte`),
-    );
+    const tooLarge = await writeAndSubmit(tools, "wiki_submit_research", {
+      ...artifact,
+      summary: "中".repeat(Math.ceil((MAX_RESEARCH_ARTIFACT_BYTES + 1) / 3)),
+    });
+    assert.equal(tooLarge.details.accepted, false);
+    assert.match(tooLarge.details.issues[0].message, new RegExp(`${MAX_RESEARCH_ARTIFACT_BYTES}-byte`));
     await writeAndSubmit(tools, "wiki_submit_research", artifact);
   };
   const executor = new PiAgentExecutor({ createSession: async (options) => {
@@ -284,6 +285,26 @@ test("research uses a submitted structured JSON artifact limited to 256 KiB", as
   assert.throws(() => parseReviewSubmission({ defects: [], summary: "x".repeat(MAX_CONTROL_ARTIFACT_BYTES + 1) }), /262144-byte/);
 });
 
+test("direct-object research submissions do not require an artifact write path", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "research", "researcher");
+  execution.artifactWritePath = undefined;
+  let tools;
+  const session = fakeSession();
+  const artifact = { summary: "Direct result.", findings: [], gaps: [] };
+  session.prompt = async () => {
+    assert.equal(tools.some((tool) => tool.name === "wiki_write_handoff"), false);
+    await writeAndSubmit(tools, "wiki_submit_research", artifact);
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    tools = options.customTools;
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+
+  assert.deepEqual((await executor.execute(execution)).result, artifact);
+});
+
 test("a rejected control submission gets one correction turn", async (t) => {
   const cwd = await workspaceWithSources(t);
   const execution = request(cwd, "review", "reviewer");
@@ -294,9 +315,12 @@ test("a rejected control submission gets one correction turn", async (t) => {
   let followUps = 0;
   const session = fakeSession();
   session.prompt = async () => {
-    await assert.rejects(() => writeAndSubmit(tools, "wiki_submit_review", {
+    const rejected = await writeAndSubmit(tools, "wiki_submit_review", {
       defects: [{ kind: "topology", page: "domain/page.md", detail: "bad branch" }], summary: "bad",
-    }), /unsupported field: page/);
+    });
+    assert.equal(rejected.details.accepted, false);
+    assert.equal(rejected.details.remainingAttempts, 2);
+    assert.match(rejected.details.issues[0].message, /unsupported field: page/);
   };
   session.followUp = async () => {
     followUps += 1;
@@ -330,6 +354,39 @@ test("missing the required submission fails with a classified protocol error", a
     () => executor.execute(execution),
     (error) => error instanceof WikiAgentProtocolError && error.code === "missing_submission",
   );
+});
+
+test("an exhausted structured submission budget does not add a fourth correction turn", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "review", "reviewer");
+  execution.wikiReadPaths = ["wiki/domain/page.md"];
+  await mkdir(path.join(cwd, "wiki/domain"), { recursive: true });
+  await writeFile(path.join(cwd, "wiki/domain/page.md"), "# Page\n");
+  let tools;
+  let followUps = 0;
+  const session = fakeSession();
+  session.prompt = async () => {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const result = await writeAndSubmit(tools, "wiki_submit_review", {
+        defects: [{ kind: "topology", page: "domain/page.md", detail: "bad branch" }], summary: "bad",
+      });
+      assert.equal(result.details.accepted, false);
+      assert.equal(result.details.remainingAttempts, 3 - attempt);
+      assert.equal(result.terminate, attempt === 3);
+    }
+  };
+  session.followUp = async () => { followUps += 1; };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    tools = options.customTools;
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+
+  await assert.rejects(
+    () => executor.execute(execution),
+    (error) => error instanceof WikiAgentProtocolError && error.code === "invalid_submission",
+  );
+  assert.equal(followUps, 0);
 });
 
 test("residual context errorMessage after a successful submit still succeeds without salvage", async (t) => {
@@ -370,7 +427,7 @@ test("residual context errorMessage after a successful submit still succeeds wit
   assert.equal(result.metrics?.correctionAttempts, 0);
 });
 
-test("context salvage without a subsequent submission throws WikiAgentContextBudgetError", async (t) => {
+test("context overflow terminates the expanded session without a salvage follow-up", async (t) => {
   const cwd = await workspaceWithSources(t);
   const execution = request(cwd, "research", "researcher");
   let followUps = 0;
@@ -378,11 +435,8 @@ test("context salvage without a subsequent submission throws WikiAgentContextBud
   session.prompt = async () => {
     session.state.errorMessage = "context overflow recovery failed";
   };
-  session.followUp = async (message) => {
+  session.followUp = async () => {
     followUps += 1;
-    assert.match(message, /Stop exploring|wiki_write_handoff|wiki_submit_research/);
-    // Salvage turn still fails to submit; residual pressure remains.
-    session.state.errorMessage = "context overflow recovery failed";
   };
   const executor = new PiAgentExecutor({ createSession: async (options) => {
     session.getActiveToolNames = () => options.tools;
@@ -395,11 +449,202 @@ test("context salvage without a subsequent submission throws WikiAgentContextBud
       && error.code === "context_budget_exceeded"
       && /context overflow recovery failed/.test(error.message),
   );
-  assert.equal(followUps, 1, "exactly one salvage follow-up is attempted");
-  assert.equal(followUps, SALVAGE_MAX, "salvage is bounded to SALVAGE_MAX");
+  assert.equal(followUps, 0, "overflow must be retried only in a fresh outer node session");
 });
 
-test("wiki_submit_research rejects out-of-scope, missing, and overflowing evidence with actionable messages", async (t) => {
+test("child sessions use an isolated fixed compaction and retry policy", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  let settings;
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    settings = options.settingsManager;
+    const session = fakeSession(options.tools);
+    session.prompt = async () => {
+      await options.customTools.find((tool) => tool.name === "write").execute("write", {
+        path: "wiki/domain/page.md",
+        content: "# Page\n",
+      });
+      await options.customTools.find((tool) => tool.name === "wiki_submit_page").execute("submit", {
+        page: "domain/page.md",
+      });
+    };
+    return { session };
+  } });
+
+  await executor.execute(request(cwd, "write", "writer"));
+  assert.deepEqual(settings.getCompactionSettings(), PI_SESSION_POLICY.compaction);
+  assert.deepEqual(settings.getRetrySettings(), {
+    enabled: true,
+    maxRetries: PI_SESSION_POLICY.retry.maxRetries,
+    baseDelayMs: PI_SESSION_POLICY.retry.baseDelayMs,
+  });
+  assert.deepEqual(settings.getProviderRetrySettings(), {
+    timeoutMs: undefined,
+    maxRetries: 0,
+    maxRetryDelayMs: 60_000,
+  });
+});
+
+test("streaming output consumes text deltas and retains only an 8 KiB tail", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const execution = request(cwd, "research", "researcher");
+  let tools;
+  let listener;
+  const outputs = [];
+  execution.onOutput = (output) => { outputs.push(output); };
+  const session = fakeSession();
+  session.subscribe = (fn) => {
+    listener = fn;
+    return () => {};
+  };
+  session.prompt = async () => {
+    for (let index = 0; index < 20; index += 1) {
+      const delta = String(index % 10).repeat(1024);
+      listener({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "x".repeat((index + 1) * 1024) }] },
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: {} },
+      });
+    }
+    await writeAndSubmit(tools, "wiki_submit_research", {
+      summary: "API entry point.",
+      findings: [],
+      gaps: [],
+    });
+  };
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    tools = options.customTools;
+    session.getActiveToolNames = () => options.tools;
+    return { session };
+  } });
+
+  await executor.execute(execution);
+  const streamed = outputs.slice(0, 20);
+  assert.ok(streamed.every((output) => output.length <= 8 * 1024));
+  assert.match(streamed.at(-1), /^\[\.\.\./, "the stream should be a bounded tail after 8 KiB");
+  assert.doesNotMatch(streamed.at(-1), /^x+$/, "stream updates must use deltas rather than cloning the full message");
+});
+
+test("runtime gate caps child sessions at two and falls back to one after 429", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const releases = [];
+  const sessions = [];
+  const listeners = [];
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    const session = fakeSession(options.tools);
+    session.subscribe = (fn) => {
+      listeners[index] = fn;
+      return () => {};
+    };
+    const index = sessions.length;
+    session.prompt = async () => {
+      await new Promise((resolve) => { releases[index] = resolve; });
+      await options.customTools.find((tool) => tool.name === "write").execute(`write-${index}`, {
+        path: "wiki/domain/page.md",
+        content: `# Page ${index}\n`,
+      });
+      await options.customTools.find((tool) => tool.name === "wiki_submit_page").execute(`submit-${index}`, {
+        page: "domain/page.md",
+      });
+    };
+    sessions.push(session);
+    return { session };
+  } });
+
+  const executions = Array.from({ length: 4 }, () => executor.execute(request(cwd, "write", "writer")));
+  await waitUntil(() => sessions.length === 2 && typeof releases[1] === "function");
+  assert.equal(sessions.length, 2, "default concurrency is two");
+  listeners[0]({
+    type: "auto_retry_start",
+    attempt: 1,
+    maxAttempts: 3,
+    delayMs: 100,
+    errorMessage: "429 Too Many Requests",
+  });
+  releases[0]();
+  releases[1]();
+  await waitUntil(() => sessions.length === 3 && typeof releases[2] === "function");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sessions.length, 3, "429 cooldown admits only one replacement session");
+  releases[2]();
+  await waitUntil(() => sessions.length === 4 && typeof releases[3] === "function");
+  releases[3]();
+  await Promise.all(executions);
+});
+
+test("node deadline aborts, disposes, and releases a session that never settles", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const sessions = [];
+  const executor = new PiAgentExecutor({
+    nodeTimeoutMs: 1_000,
+    maxConcurrentAgents: 1,
+    createSession: async (options) => {
+      const index = sessions.length;
+      const session = fakeSession(options.tools);
+      let aborts = 0;
+      if (index === 0) {
+        session.prompt = async () => await new Promise(() => {});
+        session.waitForIdle = async () => await new Promise(() => {});
+      } else {
+        session.prompt = async () => {
+          await options.customTools.find((tool) => tool.name === "write").execute("write-after-timeout", {
+            path: "wiki/domain/page.md",
+            content: "# After timeout\n",
+          });
+          await options.customTools.find((tool) => tool.name === "wiki_submit_page").execute("submit-after-timeout", {
+            page: "domain/page.md",
+          });
+        };
+      }
+      session.abort = async () => { aborts += 1; };
+      Object.defineProperty(session, "abortCalls", { get: () => aborts });
+      sessions.push(session);
+      return { session };
+    },
+  });
+
+  await assert.rejects(
+    () => executor.execute(request(cwd, "write", "writer")),
+    /timed out after 1000ms/,
+  );
+  assert.ok(sessions[0].abortCalls >= 1);
+  assert.equal(sessions[0].disposed, true);
+
+  await executor.execute(request(cwd, "write", "writer"));
+  assert.equal(sessions.length, 2, "the released slot allows a subsequent execution to start");
+  assert.equal(sessions[1].disposed, true);
+});
+
+test("setMaxConcurrentAgents expands queued work from two sessions to four", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  const releases = [];
+  const sessions = [];
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    const index = sessions.length;
+    const session = fakeSession(options.tools);
+    session.prompt = async () => {
+      await new Promise((resolve) => { releases[index] = resolve; });
+      await options.customTools.find((tool) => tool.name === "write").execute(`write-expand-${index}`, {
+        path: "wiki/domain/page.md",
+        content: `# Expanded ${index}\n`,
+      });
+      await options.customTools.find((tool) => tool.name === "wiki_submit_page").execute(`submit-expand-${index}`, {
+        page: "domain/page.md",
+      });
+    };
+    sessions.push(session);
+    return { session };
+  } });
+
+  const executions = Array.from({ length: 4 }, () => executor.execute(request(cwd, "write", "writer")));
+  await waitUntil(() => sessions.length === 2 && typeof releases[1] === "function");
+  executor.setMaxConcurrentAgents(4);
+  await waitUntil(() => sessions.length === 4 && typeof releases[3] === "function");
+  releases.forEach((release) => release());
+  await Promise.all(executions);
+  assert.equal(sessions.length, 4);
+});
+
+test("wiki_submit_research returns actionable issues and accepts a same-session repair", async (t) => {
   const cwd = await workspaceWithSources(t);
   const execution = request(cwd, "research", "researcher");
   let tools;
@@ -416,8 +661,7 @@ test("wiki_submit_research rejects out-of-scope, missing, and overflowing eviden
     gaps: [],
   };
   session.prompt = async () => {
-    await assert.rejects(
-      () => writeAndSubmit(tools, "wiki_submit_research", {
+    const outOfScope = await writeAndSubmit(tools, "wiki_submit_research", {
         summary: "out of scope",
         findings: [{
           kind: "concept",
@@ -427,11 +671,10 @@ test("wiki_submit_research rejects out-of-scope, missing, and overflowing eviden
           evidence: ["web/src/index.ts#L1"],
         }],
         gaps: [],
-      }),
-      /outside the assigned scope/,
-    );
-    await assert.rejects(
-      () => writeAndSubmit(tools, "wiki_submit_research", {
+      });
+    assert.equal(outOfScope.details.accepted, false);
+    assert.match(outOfScope.details.issues[0].message, /outside the assigned scope/);
+    const missing = await writeAndSubmit(tools, "wiki_submit_research", {
         summary: "missing file",
         findings: [{
           kind: "concept",
@@ -441,23 +684,9 @@ test("wiki_submit_research rejects out-of-scope, missing, and overflowing eviden
           evidence: ["api/src/missing.ts#L1"],
         }],
         gaps: [],
-      }),
-      /file is missing/,
-    );
-    await assert.rejects(
-      () => writeAndSubmit(tools, "wiki_submit_research", {
-        summary: "line overflow",
-        findings: [{
-          kind: "concept",
-          title: "Overflow",
-          readerQuestion: "Where is overflow?",
-          priority: "normal",
-          evidence: ["api/src/index.ts#L99"],
-        }],
-        gaps: [],
-      }),
-      /line range exceeds file/,
-    );
+      });
+    assert.equal(missing.details.accepted, false);
+    assert.match(missing.details.issues[0].message, /file is missing/);
     await writeAndSubmit(tools, "wiki_submit_research", valid);
   };
   const executor = new PiAgentExecutor({ createSession: async (options) => {
@@ -588,3 +817,11 @@ test("synthesis parser rejects removed page-contract fields", () => {
   invalid.domains[1].pages[0].sources = ["api/src/index.ts#L1"];
   assert.throws(() => parseSynthesisSubmission({ decision: "finalize", spec: invalid, rationale: "bad" }), /unsupported field: sources/);
 });
+
+async function waitUntil(predicate) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Timed out waiting for executor state");
+}

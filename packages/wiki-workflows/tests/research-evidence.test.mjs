@@ -80,6 +80,19 @@ test("valid evidence under assigned scope is accepted", async (t) => {
   ));
 });
 
+test("pinned workspace excludes reject otherwise valid research evidence", async (t) => {
+  const cwd = await workspace(t, {
+    "api/generated/client.ts": "export const generated = true;\n",
+  });
+  assert.throws(
+    () => validateResearchArtifact(
+      artifact([finding("api/generated/client.ts#L1")]),
+      { cwd, allowedSourceRoots: ["api"], excludedPaths: ["api/generated/**"] },
+    ),
+    /excluded by workspace policy/,
+  );
+});
+
 test("invalid evidence format is reported on the finding index", async (t) => {
   const cwd = await workspace(t, {
     "api/src/index.ts": "export const api = true;\n",

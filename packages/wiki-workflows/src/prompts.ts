@@ -44,7 +44,6 @@ export async function promptFor(
   node: WikiNode,
   run: WikiRunSnapshot,
   researchReceipts: PromptResearchReceipt[] | undefined,
-  artifactWritePath: string | undefined,
 ): Promise<string> {
   const guidance = await loadWikiPromptGuidance(
     node.kind,
@@ -53,9 +52,9 @@ export async function promptFor(
   );
   switch (node.kind) {
     case "research":
-      return `${guidance}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\`\n\n${artifactWriteContext(artifactWritePath, "JSON research artifact")}`;
+      return `${guidance}\n\n${pinnedPolicyContext(run)}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\``;
     case "synthesis":
-      return `${guidance}\n\n${synthesisContext(node, run, researchReceipts)}\n\n${artifactWriteContext(artifactWritePath, "JSON synthesis decision")}`;
+      return `${guidance}\n\n${synthesisContext(node, run, researchReceipts)}`;
     case "write": {
       const packet = pagePacketInputFor(node);
       const repair = packet.feedback !== undefined
@@ -64,7 +63,7 @@ export async function promptFor(
       return `${guidance}\n\n${pageWriterContext(node, run, researchReceipts)}${repair}`;
     }
     case "review":
-      return `${guidance}\n\n${reviewContext(node, run)}\n\n${artifactWriteContext(artifactWritePath, "JSON review result")}`;
+      return `${guidance}\n\n${reviewContext(node, run)}`;
     default:
       throw new Error(`No prompt available for ${node.kind}`);
   }
@@ -76,6 +75,7 @@ export function pageWriterContext(node: WikiNode, run: WikiRunSnapshot, research
   const spec = isSynthesisFinalizeResult(synthesis) ? synthesis.spec : undefined;
   const domain = spec?.domains.find((candidate) => candidate.id === input.domainId);
   const sections = [
+    pinnedPolicyContext(run),
     "## Page Packet",
     "```json",
     prettyJson({
@@ -89,6 +89,7 @@ export function pageWriterContext(node: WikiNode, run: WikiRunSnapshot, research
       incomingCrossLinks: spec?.crossLinks.filter((link) => link.toPath === input.page.path) ?? [],
       researchReceipts: researchReceipts ?? [],
       sourceRoots: readRootsFor(node, run) ?? [],
+      terminology: run.policy.terminology,
       wikiReadPaths: input.wikiReadPaths,
       writePaths: input.writePaths,
     }),
@@ -97,7 +98,10 @@ export function pageWriterContext(node: WikiNode, run: WikiRunSnapshot, research
   return sections.join("\n");
 }
 
-export function pageTypesFor(node: WikiNode, _run: WikiRunSnapshot): Array<"overview" | "architecture" | "module" | "flow" | "concept"> {
+export function pageTypesFor(
+  node: WikiNode,
+  _run: WikiRunSnapshot,
+): Array<"overview" | "domain" | "architecture" | "module" | "flow" | "concept" | "state" | "data"> {
   return [pagePacketInputFor(node).page.pageType];
 }
 
@@ -105,6 +109,7 @@ export function synthesisContext(node: WikiNode, run: WikiRunSnapshot, researchR
   const input = synthesisInputFor(node);
   const inspection = input.inspection ?? run.inspection;
   const sections = [
+    pinnedPolicyContext(run),
     "## Workspace Context",
     "```json",
     prettyJson({
@@ -183,18 +188,10 @@ export function countResearchGroups(run: WikiRunSnapshot, kind: "expand" | "audi
   return groups.size;
 }
 
-export function artifactWriteContext(path: string | undefined, description: string): string {
-  if (!path) throw new Error(`No handoff artifact path is configured for ${description}`);
-  return [
-    "## Required Handoff Artifact",
-    `Write the completed ${description} to this exact workspace-local path before finishing: \`${path}\``,
-    "Do not use another path. The workflow records only this artifact.",
-  ].join("\n");
-}
-
 export function reviewContext(node: WikiNode, run: WikiRunSnapshot): string {
   const synthesisNodeId = synthesisNodeIdFor(node, run);
   return [
+    pinnedPolicyContext(run),
     "## Review Scope",
     `Focus: ${run.focus ?? "none"}`,
     "## Final WikiSpec",
@@ -204,6 +201,20 @@ export function reviewContext(node: WikiNode, run: WikiRunSnapshot): string {
     "## Candidate Wiki Files",
     "```json",
     prettyJson(wikiReadPathsFor(node, run) ?? []),
+    "```",
+  ].join("\n");
+}
+
+function pinnedPolicyContext(run: WikiRunSnapshot): string {
+  return [
+    "## Pinned Workspace Policy",
+    "Treat configured terminology as canonical. The final WikiSpec must contain every configured domain with the exact configured id and title. Do not inspect or cite excluded paths.",
+    "```json",
+    prettyJson({
+      terminology: run.policy.terminology,
+      configuredDomains: run.policy.domains,
+      excludedPaths: run.policy.exclude,
+    }),
     "```",
   ].join("\n");
 }

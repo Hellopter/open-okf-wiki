@@ -1,22 +1,19 @@
-import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import type {
   SubmissionFailure,
   SubmissionFailureCode,
+  SubmissionIssue,
   SubmissionToolName,
 } from "./agent-errors.js";
+import type { WorkspaceToolPolicy } from "./path-policy.js";
 import {
-  readArtifactText,
-  resolveArtifactPath,
-  writeArtifactText,
-  type WorkspaceToolPolicy,
-} from "./path-policy.js";
-import {
-  artifactSubmissionSchema,
-  parseArtifactSubmission,
-  parseResearchArtifact,
-  parseReviewArtifact,
-  parseSynthesisArtifact,
+  parseResearchSubmission,
+  parseReviewSubmission,
+  parseSynthesisSubmission,
+  researchSubmissionSchema,
+  reviewSubmissionSchema,
+  synthesisSubmissionSchema,
   WikiControlSubmissionSizeError,
 } from "./control-submissions.js";
 import { loadResearchSourceRoots, validateResearchArtifact } from "./research-evidence.js";
@@ -26,37 +23,43 @@ import type {
   WikiControlSubmission,
 } from "./workflow-types.js";
 
-export type { SubmissionToolName, SubmissionFailure, SubmissionFailureCode };
+export type { SubmissionToolName, SubmissionFailure, SubmissionFailureCode, SubmissionIssue };
 export { submissionContractGuidance };
+
+/** An agent gets three in-context opportunities before its node attempt fails. */
+export const MAX_SUBMISSIONS_PER_ATTEMPT = 3;
 
 export interface SubmissionCollector {
   toolName: SubmissionToolName;
-  artifactPath?: string;
   pagePath?: string;
   value?: unknown;
   failure?: SubmissionFailure;
+  submissionAttempts: number;
+  maxSubmissions: number;
+  exhausted?: boolean;
   validate?: (submission: WikiControlSubmission) => void;
   validatePage?: WikiAgentExecutionRequest["validatePageSubmission"];
 }
 
 export function submissionFor(request: WikiAgentExecutionRequest): SubmissionCollector | undefined {
+  const maxSubmissions = request.maxSubmissionAttempts ?? MAX_SUBMISSIONS_PER_ATTEMPT;
+  if (!Number.isInteger(maxSubmissions) || maxSubmissions < 1 || maxSubmissions > MAX_SUBMISSIONS_PER_ATTEMPT) {
+    throw new Error(`Workflow configuration error: maxSubmissionAttempts must be an integer from 1 to ${MAX_SUBMISSIONS_PER_ATTEMPT}`);
+  }
+  const base = { submissionAttempts: 0, maxSubmissions };
   if (request.node.kind === "write") {
     if (!request.validatePageSubmission || request.writePaths?.length !== 1) {
       throw new Error("Workflow configuration error: writers require one page submission validator");
     }
     const pagePath = request.writePaths[0]!.replace(/^wiki\//, "");
-    return { toolName: "wiki_submit_page", pagePath, validatePage: request.validatePageSubmission };
+    return { ...base, toolName: "wiki_submit_page", pagePath, validatePage: request.validatePageSubmission };
   }
-  if (request.node.kind !== "research" && request.node.kind !== "synthesis" && request.node.kind !== "review") return undefined;
-  if (!request.artifactWritePath) throw new Error(`Workflow configuration error: ${request.node.kind} requires an artifact write path`);
-  if (request.node.kind === "research") {
-    return { toolName: "wiki_submit_research", artifactPath: request.artifactWritePath };
-  }
+  if (request.node.kind === "research") return { ...base, toolName: "wiki_submit_research" };
   if (request.node.kind === "synthesis") {
-    return { toolName: "wiki_submit_synthesis", artifactPath: request.artifactWritePath, validate: request.validateControlSubmission };
+    return { ...base, toolName: "wiki_submit_synthesis", validate: request.validateControlSubmission };
   }
   if (request.node.kind === "review") {
-    return { toolName: "wiki_submit_review", artifactPath: request.artifactWritePath, validate: request.validateControlSubmission };
+    return { ...base, toolName: "wiki_submit_review", validate: request.validateControlSubmission };
   }
   return undefined;
 }
@@ -71,115 +74,155 @@ export function submissionTool(
   submission: SubmissionCollector,
   options: SubmissionToolOptions = {},
 ): ToolDefinition<any, any, any> {
-  if (submission.toolName === "wiki_submit_page") {
-    const pagePath = submission.pagePath!;
-    return {
-      name: submission.toolName,
-      label: submission.toolName,
-      description: `Validate and submit the assigned Wiki page ${pagePath}. Fix every reported issue and resubmit until accepted.`,
-      promptSnippet: "Validate and submit the assigned Wiki page",
-      promptGuidelines: ["After writing the page, call this tool. If it reports issues, fix all of them and call it again. Stop only after the page is accepted."],
-      parameters: Type.Object({ page: Type.Literal(pagePath) }, { additionalProperties: false }),
-      constrainedSampling: { type: "json_schema", strict: "prefer" },
-      async execute(_toolCallId, params: { page: string }) {
-        await recordSubmission(submission, async () => {
-          if (params.page !== pagePath || !submission.validatePage) throw new Error("Page submission does not match the assigned page");
-          let result;
-          try {
-            result = await submission.validatePage(pagePath);
-          } catch (error) {
-            throw new WikiPageValidatorInfrastructureError(error);
-          }
-          if (!result.ok) throw new Error(result.issues.map((issue) => `[${issue.code}] ${issue.message}`).join("\n"));
-          return result.submission;
-        });
-        return { content: [{ type: "text", text: `Wiki page accepted: ${pagePath}` }], details: undefined, terminate: true };
-      },
-    };
-  }
-  if (submission.toolName === "wiki_submit_research") {
-    const artifactPath = submission.artifactPath!;
-    return {
-      name: submission.toolName,
-      label: submission.toolName,
-      description: `Submit the structured research result from ${artifactPath}. ${submissionContractGuidance(submission.toolName)}`,
-      promptSnippet: "Submit the structured Wiki research result",
-      promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
-      parameters: artifactSubmissionSchema(artifactPath),
-      constrainedSampling: { type: "json_schema", strict: "prefer" },
-      async execute(_toolCallId, params) {
-        await recordSubmission(submission, async () => {
-          const submittedPath = parseArtifactSubmission(params, artifactPath);
-          const parsed = parseResearchArtifact(await readArtifactText(policy, submittedPath));
+  if (submission.toolName === "wiki_submit_page") return pageSubmissionTool(submission);
+
+  const toolName = submission.toolName;
+  const parser = toolName === "wiki_submit_research" ? parseResearchSubmission
+    : toolName === "wiki_submit_synthesis" ? parseSynthesisSubmission
+      : parseReviewSubmission;
+  const parameters = toolName === "wiki_submit_research" ? researchSubmissionSchema
+    : toolName === "wiki_submit_synthesis" ? synthesisSubmissionSchema
+      : reviewSubmissionSchema;
+  const role = toolName === "wiki_submit_research" ? "research result"
+    : toolName === "wiki_submit_synthesis" ? "planning decision"
+      : "semantic review";
+
+  return {
+    name: toolName,
+    label: toolName,
+    description: `Submit the complete typed ${role} directly. ${submissionContractGuidance(toolName)}`,
+    promptSnippet: `Submit the typed Wiki ${role}`,
+    promptGuidelines: [
+      `Pass the complete result object directly. If rejected, fix every returned issue and resubmit in this session; stop only after acceptance.`,
+    ],
+    parameters,
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
+    async execute(_toolCallId, params) {
+      const result = await attemptSubmission(submission, async () => {
+        const parsed = parser(params) as WikiControlSubmission;
+        if (toolName === "wiki_submit_research") {
           const allowedSourceRoots = options.allowedSourceRoots ?? [];
-          validateResearchArtifact(parsed, {
+          validateResearchArtifact(parsed as ReturnType<typeof parseResearchSubmission>, {
             cwd: policy.workspaceRoot,
             allowedSourceRoots,
             sourceRoots: await loadResearchSourceRoots(policy.workspaceRoot, allowedSourceRoots),
           });
-          return parsed;
-        });
-        return { content: [{ type: "text", text: "Wiki research recorded." }], details: undefined, terminate: true };
-      },
-    };
-  }
-  if (submission.toolName === "wiki_submit_synthesis") {
-    const artifactPath = submission.artifactPath!;
-    return {
-      name: submission.toolName,
-      label: submission.toolName,
-      description: `Submit the synthesis result by referencing the exact JSON handoff artifact written for this node. ${submissionContractGuidance(submission.toolName)}`,
-      promptSnippet: "Submit the Wiki synthesis decision",
-      promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
-      parameters: artifactSubmissionSchema(artifactPath),
-      constrainedSampling: { type: "json_schema", strict: "prefer" },
-      async execute(_toolCallId, params) {
-        await recordSubmission(submission, async () => {
-          const submittedPath = parseArtifactSubmission(params, artifactPath);
-          const parsed = parseSynthesisArtifact(await readArtifactText(policy, submittedPath));
-          submission.validate?.(parsed);
-          return parsed;
-        });
-        return { content: [{ type: "text", text: "Wiki synthesis recorded." }], details: undefined, terminate: true };
-      },
-    };
-  }
-  return {
-    name: submission.toolName,
-    label: submission.toolName,
-    description: `Submit the review result by referencing the exact JSON handoff artifact written for this node. ${submissionContractGuidance(submission.toolName)}`,
-    promptSnippet: "Submit the final Wiki review",
-    promptGuidelines: [`Write the complete JSON handoff artifact, then submit its exact path. ${submissionContractGuidance(submission.toolName)} Correct and resubmit if rejected; after it is recorded, stop.`],
-    parameters: artifactSubmissionSchema(submission.artifactPath!),
-    constrainedSampling: { type: "json_schema", strict: "prefer" },
-    async execute(_toolCallId, params) {
-      await recordSubmission(submission, async () => {
-        const artifactPath = parseArtifactSubmission(params, submission.artifactPath!);
-        const parsed = parseReviewArtifact(await readArtifactText(policy, artifactPath));
+        }
         submission.validate?.(parsed);
         return parsed;
       });
-      return { content: [{ type: "text", text: "Wiki review recorded." }], details: undefined, terminate: true };
+      return submissionToolResult(result, `Wiki ${role} accepted.`);
     },
   };
 }
 
-export async function recordSubmission(
+function pageSubmissionTool(submission: SubmissionCollector): ToolDefinition<any, any, any> {
+  const pagePath = submission.pagePath!;
+  return {
+    name: submission.toolName,
+    label: submission.toolName,
+    description: `Validate and submit the assigned Wiki page ${pagePath}. Fix every reported issue and resubmit until accepted.`,
+    promptSnippet: "Validate and submit the assigned Wiki page",
+    promptGuidelines: ["After writing the page, call this tool. Fix every returned issue in this session and resubmit; stop only after acceptance."],
+    parameters: Type.Object({ page: Type.Literal(pagePath) }, { additionalProperties: false }),
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
+    async execute(_toolCallId, params: { page: string }) {
+      const result = await attemptSubmission(submission, async () => {
+        if (params.page !== pagePath || !submission.validatePage) throw new Error("Page submission does not match the assigned page");
+        let validation;
+        try {
+          validation = await submission.validatePage(pagePath);
+        } catch (error) {
+          throw new WikiPageValidatorInfrastructureError(error);
+        }
+        if (!validation.ok) throw new WikiPageValidationError(validation.issues);
+        return validation.submission;
+      });
+      return submissionToolResult(result, `Wiki page accepted: ${pagePath}`);
+    },
+  };
+}
+
+export type SubmissionAttemptResult =
+  | { accepted: true }
+  | { accepted: false; issues: SubmissionIssue[]; remainingAttempts: number; exhausted: boolean };
+
+export async function attemptSubmission(
   submission: SubmissionCollector,
   parse: () => unknown | Promise<unknown>,
-): Promise<void> {
+): Promise<SubmissionAttemptResult> {
+  if (submission.value !== undefined) {
+    return rejection(submission, [{ path: "$", code: "already_accepted", message: `${submission.toolName} was already accepted` }], true);
+  }
+  if (submission.submissionAttempts >= submission.maxSubmissions) {
+    return rejection(submission, [{ path: "$", code: "submission_budget_exhausted", message: `No submission attempts remain for ${submission.toolName}` }], true);
+  }
+  submission.submissionAttempts += 1;
   try {
-    if (submission.value !== undefined) throw new Error(`${submission.toolName} may only be called once per node attempt`);
     submission.value = structuredClone(await parse());
     submission.failure = undefined;
+    submission.exhausted = false;
+    return { accepted: true };
   } catch (error) {
-    submission.failure = {
-      code: error instanceof WikiControlSubmissionSizeError ? "submission_too_large"
-        : error instanceof WikiPageValidatorInfrastructureError ? "validator_infrastructure"
-          : "invalid_submission",
-      message: error instanceof Error ? error.message : String(error),
-    };
-    throw error;
+    if (error instanceof WikiPageValidatorInfrastructureError) {
+      submission.failure = { code: "validator_infrastructure", message: error.message };
+      throw error;
+    }
+    const issues = issuesFor(error);
+    const exhausted = submission.submissionAttempts >= submission.maxSubmissions;
+    return rejection(submission, issues, exhausted);
+  }
+}
+
+function rejection(submission: SubmissionCollector, issues: SubmissionIssue[], exhausted: boolean): SubmissionAttemptResult {
+  const code: SubmissionFailureCode = issues.some((issue) => issue.code === "submission_too_large")
+    ? "submission_too_large"
+    : "invalid_submission";
+  const remainingAttempts = Math.max(0, submission.maxSubmissions - submission.submissionAttempts);
+  submission.exhausted = exhausted;
+  submission.failure = {
+    code,
+    message: issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
+    issues,
+    attempts: submission.submissionAttempts,
+    remainingAttempts,
+  };
+  return {
+    accepted: false,
+    issues,
+    remainingAttempts,
+    exhausted,
+  };
+}
+
+function issuesFor(error: unknown): SubmissionIssue[] {
+  if (error instanceof WikiPageValidationError) {
+    return error.issues.map((issue) => ({ path: "$.page", code: issue.code, message: issue.message }));
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return [{
+    path: issuePathFor(message),
+    code: error instanceof WikiControlSubmissionSizeError ? "submission_too_large" : "invalid_value",
+    message,
+  }];
+}
+
+function issuePathFor(message: string): string {
+  if (/finding/i.test(message)) return "$.findings";
+  if (/gap/i.test(message)) return "$.gaps";
+  if (/defect|review/i.test(message)) return "$.defects";
+  if (/WikiSpec|synthesis|domain|page/i.test(message)) return "$.spec";
+  return "$";
+}
+
+function submissionToolResult(result: SubmissionAttemptResult, acceptedMessage: string) {
+  const text = result.accepted ? acceptedMessage : JSON.stringify(result);
+  return { content: [{ type: "text" as const, text }], details: result, terminate: result.accepted || result.exhausted };
+}
+
+class WikiPageValidationError extends Error {
+  constructor(readonly issues: Array<{ code: string; message: string }>) {
+    super(issues.map((issue) => `[${issue.code}] ${issue.message}`).join("\n"));
   }
 }
 
@@ -187,31 +230,4 @@ class WikiPageValidatorInfrastructureError extends Error {
   constructor(cause: unknown) {
     super(`Page validator infrastructure failed: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
-}
-
-const artifactWriteSchema = Type.Object({
-  content: Type.String({ description: "Complete Markdown or JSON handoff content for this node's assigned artifact" }),
-}, { additionalProperties: false });
-
-/** Write only the engine-assigned handoff file; the model never chooses its path. */
-export function createArtifactWriteToolDefinition(
-  policy: WorkspaceToolPolicy,
-  artifactPath: string,
-  submissionToolName?: SubmissionToolName,
-): ToolDefinition<typeof artifactWriteSchema> {
-  const expectedPath = resolveArtifactPath(policy, artifactPath);
-  const contract = submissionToolName ? submissionContractGuidance(submissionToolName) : undefined;
-  return {
-    name: "wiki_write_handoff",
-    label: "wiki_write_handoff",
-    description: `Write the complete handoff artifact at ${expectedPath}. This is the only handoff path available to this node.${contract ? ` ${contract}` : ""}`,
-    promptSnippet: "Write the node handoff artifact",
-    promptGuidelines: [`Write the complete artifact once it is ready. Do not write handoff data to any other path.${contract ? ` ${contract}` : ""}`],
-    parameters: artifactWriteSchema,
-    async execute(_toolCallId, params) {
-      if (typeof params.content !== "string") throw new Error("Handoff artifact content must be text");
-      await writeArtifactText(policy, expectedPath, params.content);
-      return { content: [{ type: "text", text: `Handoff artifact recorded at ${expectedPath}.` }], details: undefined };
-    },
-  };
 }

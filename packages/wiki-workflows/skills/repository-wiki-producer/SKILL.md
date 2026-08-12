@@ -20,15 +20,17 @@ extension owns bounded run history and writes generated pages only under
 The run has five user-visible stages:
 
 ```text
-Inspect -> Research -> Plan -> Write -> Verify
-             ^  |        |       ^  |      |
-             |  + audit -+       |  + fix-+
-             + research/replan ---+
+Inspect -> Research -> Plan -> Write -> Review & Publish
+             ^  |        |       ^         |
+             |  + audit -+       +-- fix --+
+             + research/replan -----------+
 ```
 
 Research repeats until its evidence and coverage audits reach saturation.
-Writing includes a per-page submission gate, and Verify aggregates global
-static and semantic defects into repair waves. Directory indexes, OKF v0.2
+Writing validates each page immediately and repairs it in the same writer
+session. Only a deterministically clean candidate advances to semantic review;
+Review & Publish routes semantic defects into repair waves, then publishes.
+Directory indexes, OKF v0.2
 trust metadata, deletion, and publication are deterministic coordinator or
 publisher work. These are bounded operations inside the five stages, not extra
 top-level phases.
@@ -41,7 +43,9 @@ Read the reference for the assigned role in full:
 - [Global semantic review](references/review.md)
 
 Writers receive one skeleton matching their page type: [Overview](references/templates/overview.md),
-[Architecture](references/templates/architecture.md), [Module](references/templates/module.md),
-[Flow](references/templates/flow.md), or [Concept](references/templates/concept.md).
+[Domain](references/templates/domain.md), [Architecture](references/templates/architecture.md),
+[Module](references/templates/module.md), [Flow](references/templates/flow.md),
+[Concept](references/templates/concept.md), [State](references/templates/state.md), or
+[Data](references/templates/data.md).
 Use it as structural guidance, never as a fill-in template. Decide actual
 sections only after reading authorized source.

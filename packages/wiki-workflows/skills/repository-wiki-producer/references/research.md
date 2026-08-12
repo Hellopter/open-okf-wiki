@@ -8,12 +8,11 @@ reader question; then deepen with targeted reads and greps on the important
 surfaces you found. Multi-step tool exploration within the assignment is
 expected. Do not aim for an exhaustive encyclopedia of every file or symbol.
 
-Write one JSON research artifact to the exact handoff path and call
-`wiki_submit_research` with that path **once**. You may survey and deepen across
-many tool calls before that single submission. Do not call
-`wiki_submit_research` more than once for the same assignment, and do not plan
-multi-submission exploration. Submit a complete handoff even when no finding is
-established. Use exactly this shape:
+After surveying and deepening, call `wiki_submit_research` with the complete
+result object directly. Do not write a handoff file or reply with JSON text.
+If the tool rejects the object, correct every structured issue and resubmit in
+this session; at most three submissions are available. Submit a complete result
+even when no finding is established. Use exactly this shape:
 
 ```json
 {
@@ -61,9 +60,9 @@ copied source or tool narration. Keep the artifact below 256 KiB.
 ## Context pressure and evidence discipline
 
 Survey tools return bounded excerpts. Prefer narrow paths and targeted greps
-over wide inventories. When context pressure rises, **stop exploring**: write
-the complete handoff with the best critical findings and explicit gaps you have,
-submit once, and finish. Cite only evidence ranges from files you actually read
+over wide inventories. When context pressure rises, **stop exploring**: submit
+the complete result with the best critical findings and explicit gaps you have,
+then finish after acceptance. Cite only evidence ranges from files you actually read
 in this session. Invented or unread ranges are hard-rejected; there is no clamp
 or silent repair of line numbers.
 

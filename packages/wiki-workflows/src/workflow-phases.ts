@@ -1,8 +1,9 @@
 /**
  * Single source of truth for user-visible Wiki workflow phases.
  *
- * Node kinds map onto coarser dashboard stages (e.g. synthesis → plan,
- * validate|review|finalize → verify). Pure module: no Pi imports.
+ * Node kinds map onto coarser dashboard stages. Deterministic validation is a
+ * Write completion gate; only semantic review and publication are shown after
+ * writing. Pure module: no Pi imports.
  */
 
 import type { WikiNodeKind } from "./workflow-types.js";
@@ -44,8 +45,8 @@ export const WIKI_WORKFLOW_PHASES = [
     waitingMessage: "Waiting for a finalized Wiki specification.",
   },
   {
-    id: "verify",
-    title: "Verify",
+    id: "review",
+    title: "Review & Publish",
     conditional: false,
     waitingMessage: "Waiting for target pages to be written.",
   },
@@ -68,11 +69,11 @@ export function phaseIdForKind(kind: WikiNodeKind): WikiWorkflowPhaseId {
     case "synthesis":
       return "plan";
     case "write":
-      return "write";
     case "validate":
+      return "write";
     case "review":
     case "finalize":
-      return "verify";
+      return "review";
   }
 }
 

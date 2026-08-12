@@ -88,6 +88,7 @@ export interface TransitionHost {
     details?: WikiRunSnapshot["blockedDetails"],
   ): void;
   materializeIndexes(cwd: string, spec: WikiSpec): Promise<unknown>;
+  wikiRoot(): string;
 }
 
 export async function validateWriteNodeResult(host: TransitionHost, node: WikiNode): Promise<void> {
@@ -97,10 +98,10 @@ export async function validateWriteNodeResult(host: TransitionHost, node: WikiNo
   if (!isRecord(submitted) || submitted.page !== input.page.path || typeof submitted.sha256 !== "string") {
     throw new Error(`Writer did not submit the assigned page: ${input.page.path}`);
   }
-  const currentSha256 = await hashWikiPage(run.cwd, input.page.path);
+  const currentSha256 = await hashWikiPage(run.cwd, input.page.path, host.wikiRoot());
   if (currentSha256 !== submitted.sha256) throw new Error(`Page changed after validation: ${input.page.path}`);
   if (input.intent === "repair" && input.checkNoProgress) {
-    const afterSha256 = await hashWikiPage(run.cwd, input.page.path) ?? MISSING_PAGE_SHA256;
+    const afterSha256 = await hashWikiPage(run.cwd, input.page.path, host.wikiRoot()) ?? MISSING_PAGE_SHA256;
     if (afterSha256 === input.beforeSha256) {
       host.markTerminalRun("blocked", `Repair made no change to ${input.page.path}`, node.id, undefined, {
         code: "repair_no_progress",
@@ -212,14 +213,14 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
     case "validate": {
       const validation = parseValidation(node.result);
       node.result = validation;
-      await maybeCompleteVerification(host, node);
+      await completeWriteValidation(host, node, validation);
       return;
     }
     case "review": {
       const review = parseReviewSubmission(node.result);
       node.result = review;
       ensureReviewSubmissionFitsRun(host, node, review);
-      await maybeCompleteVerification(host, node);
+      await completeSemanticReview(host, node, review);
       return;
     }
     case "finalize": {
@@ -250,16 +251,33 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
 export function queueInitialSourceSurveys(host: TransitionHost, inspectNodeId: string, inspection: WikiInspection): WikiNode[] {
   const sourcePaths = uniqueStrings(inspection.sourcePaths);
   if (sourcePaths.length === 0) throw new Error("Inspect returned no declared source paths");
-  const scopes: WikiResearchScope[] = sourcePaths.map((sourcePath) => ({
+  const surveyScopes: WikiResearchScope[] = sourcePaths.map((sourcePath) => ({
     id: `source-survey:${sourcePath}`,
     sourcePaths: [sourcePath],
     task: [
-      `Bounded survey-then-deepen of ${sourcePath}: inventory entry points, main flows, boundaries, and state/data, then deepen on important surfaces within this source only.`,
-      "You may use multiple tool calls to survey and deepen; submit one complete research handoff once (not multiple wiki_submit_research calls).",
-      "Do not aim for an exhaustive encyclopedia.",
+      `Survey ${sourcePath} to identify cohesive domains, their boundaries, entry points, and cross-domain questions.`,
+      "Keep this pass broad. Mark unanswered domain model, core flow, state, invariant, interface, and failure-path questions as explicit critical gaps for targeted domain research.",
+      "Submit the complete typed research result directly. If rejected, correct every issue and resubmit in this session.",
     ].join(" "),
   }));
-  return queueResearch(host, inspectNodeId, scopes, 0, "research", "Research");
+  const domainScopes: WikiResearchScope[] = host.requireRun().policy.domains.map((domain) => {
+    const roots = uniqueStrings(domain.include
+      .map((pattern) => pattern.replaceAll("\\", "/").split("/", 1)[0]!)
+      .filter((root) => sourcePaths.includes(root)));
+    if (roots.length === 0) {
+      throw new Error(`Configured domain ${domain.id} include patterns do not match any declared source root`);
+    }
+    return {
+      id: `domain:${domain.id}`,
+      sourcePaths: roots,
+      task: [
+        `Deeply research the configured domain ${domain.title} (${domain.id}).`,
+        `Include patterns: ${domain.include.join(", ")}. Exclude patterns: ${domain.exclude.join(", ") || "none"}.`,
+        "Cover its domain model, core flows, states and transitions, invariants, data ownership, interfaces, failure paths, and cross-domain dependencies with claim-level evidence.",
+      ].join(" "),
+    };
+  });
+  return queueResearch(host, inspectNodeId, [...surveyScopes, ...domainScopes], 0, "research", "Research");
 }
 
 export function queueSupplementalResearch(host: TransitionHost, synthesisNodeId: string, scopes: WikiResearchScope[], parent: SynthesisNodeInput): WikiNode[] {
@@ -435,10 +453,9 @@ export function queuePageWriters(host: TransitionHost, synthesisNodeId: string, 
 
 export async function queueVerification(host: TransitionHost, sourceNodeIds: string[], synthesisNodeId: string): Promise<WikiNode[]> {
   const run = host.requireRun();
-  // Sync reservation: concurrent write joins can both pass an empty check and
-  // then race past await materializeIndexes. Queue validate+review before any
-  // await so the second caller always observes the first reservation.
-  const existing = run.nodes.filter((node) => (node.kind === "validate" || node.kind === "review")
+  // Reserve the deterministic Write completion gate synchronously. Semantic
+  // review is queued only after this validation succeeds.
+  const existing = run.nodes.filter((node) => node.kind === "validate"
     && valueIs(node.input, "synthesisNodeId", synthesisNodeId)
     && sameStringSet(recordStringArray(node.input, "sourceNodeIds"), sourceNodeIds)
     && !["invalidated", "cancelled", "failed", "blocked"].includes(node.status));
@@ -453,10 +470,7 @@ export async function queueVerification(host: TransitionHost, sourceNodeIds: str
     });
     const common = { sourceNodeIds, synthesisNodeId, verificationGroupId };
     const verify = phaseRefForKind("validate");
-    nodes = [
-      queueNode(host, "validate", "Validate Wiki", sourceNodeIds, common, verify),
-      queueNode(host, "review", "Review Wiki", sourceNodeIds, common, verify),
-    ];
+    nodes = [queueNode(host, "validate", "Validate completed pages", sourceNodeIds, common, verify)];
   }
   // Indexes are only required before validate/review execute, not before enqueue.
   await host.materializeIndexes(run.cwd, specForSynthesis(run, synthesisNodeId));
@@ -464,37 +478,17 @@ export async function queueVerification(host: TransitionHost, sourceNodeIds: str
 }
 
 export async function maybeCompleteVerification(host: TransitionHost, node: WikiNode): Promise<void> {
-  const run = host.requireRun();
-  const verificationGroupId = recordValue(node.input, "verificationGroupId");
-  if (typeof verificationGroupId !== "string") throw new Error("Verification node has no group ID");
-  // Prefer live peers only. After invalidation, generation counters can collapse
-  // and reuse verificationGroupId; dead nodes must not pin or block completion.
-  const pair = run.nodes.filter((candidate) => (candidate.kind === "validate" || candidate.kind === "review")
-    && valueIs(candidate.input, "verificationGroupId", verificationGroupId)
-    && !["invalidated", "cancelled"].includes(candidate.status));
-  const validationNode = pair.find((candidate) => candidate.kind === "validate");
-  const reviewNode = pair.find((candidate) => candidate.kind === "review");
-  if (!validationNode || !reviewNode
-    || ![validationNode, reviewNode].every((candidate) => candidate.id === node.id || candidate.status === "succeeded")) return;
-  if (run.nodes.some((candidate) => !["invalidated", "cancelled", "failed", "blocked"].includes(candidate.status)
-    && candidate.dependsOn.includes(validationNode.id) && candidate.dependsOn.includes(reviewNode.id))) return;
+  if (node.kind === "validate") return await completeWriteValidation(host, node, parseValidation(node.result));
+  if (node.kind === "review") return await completeSemanticReview(host, node, parseReviewSubmission(node.result));
+}
 
-  const validation = parseValidation(validationNode.result);
-  const review = parseReviewSubmission(reviewNode.result);
-  // Scope no-progress fingerprints to this plan/synthesis lineage so a structural
-  // replan's first verification is not false-blocked by an older plan's defect set.
-  const synthesisNodeId = synthesisNodeIdFor(node, run);
+async function completeWriteValidation(host: TransitionHost, validationNode: WikiNode, validation: ReturnType<typeof parseValidation>): Promise<void> {
+  const run = host.requireRun();
+  const synthesisNodeId = synthesisNodeIdFor(validationNode, run);
   if (!validation.ok && validationIssuesFingerprint(validation.issues) === previousValidationSignature(host, validationNode.id, synthesisNodeId)) {
     host.markTerminalRun("blocked", "Validation produced the same unresolved error set twice", validationNode.id, undefined, {
       code: "same_validation_twice",
       issues: validation.issues,
-    });
-    return;
-  }
-  if (review.defects.length && defectsFingerprint(review.defects) === previousReviewSignature(host, reviewNode.id, synthesisNodeId)) {
-    host.markTerminalRun("blocked", "Review produced the same unresolved defect set twice", reviewNode.id, undefined, {
-      code: "same_defects_twice",
-      defects: review.defects.map(defectAsRecord),
     });
     return;
   }
@@ -508,11 +502,40 @@ export async function maybeCompleteVerification(host: TransitionHost, node: Wiki
     return;
   }
 
+  if (structuralValidation.length) {
+    queueStructuralResearch(host, [validationNode.id], synthesisNodeId, { validation });
+    return;
+  }
+  const pagePaths = uniqueStrings(validation.issues.flatMap((issue) => issue.page ? [issue.page] : []));
+  if (pagePaths.length) {
+    await queuePageRepairs(host, [validationNode.id], synthesisNodeId, pagePaths, { validation });
+    return;
+  }
+  const verificationGroupId = recordValue(validationNode.input, "verificationGroupId");
+  if (typeof verificationGroupId !== "string") throw new Error("Validation node has no group ID");
+  const existing = run.nodes.find((candidate) => candidate.kind === "review"
+    && valueIs(candidate.input, "verificationGroupId", verificationGroupId)
+    && !["invalidated", "cancelled", "failed", "blocked"].includes(candidate.status));
+  if (!existing) {
+    queueNode(host, "review", "Review domain coverage and semantics", [validationNode.id], {
+      sourceNodeIds: [validationNode.id], synthesisNodeId, verificationGroupId,
+    }, phaseRefForKind("review"));
+  }
+}
+
+async function completeSemanticReview(host: TransitionHost, reviewNode: WikiNode, review: ReturnType<typeof parseReviewSubmission>): Promise<void> {
+  const run = host.requireRun();
+  const synthesisNodeId = synthesisNodeIdFor(reviewNode, run);
+  if (review.defects.length && defectsFingerprint(review.defects) === previousReviewSignature(host, reviewNode.id, synthesisNodeId)) {
+    host.markTerminalRun("blocked", "Review produced the same unresolved defect set twice", reviewNode.id, undefined, {
+      code: "same_defects_twice",
+      defects: review.defects.map(defectAsRecord),
+    });
+    return;
+  }
   const spec = specForSynthesis(run, synthesisNodeId);
   const routedReview = routeReviewDefects(review, spec);
-  const dependsOn = [validationNode.id, reviewNode.id];
-  const structural = structuralValidation.length > 0
-    || review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
+  const structural = review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
   if (structural) {
     const resyntheses = new Set(run.nodes
       .filter((candidate) => candidate.kind === "synthesis" && !["invalidated", "cancelled"].includes(candidate.status))
@@ -523,28 +546,20 @@ export async function maybeCompleteVerification(host: TransitionHost, node: Wiki
       host.markTerminalRun("blocked", `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`, reviewNode.id, undefined, {
         code: "structural_resynthesis_budget",
         defects: review.defects.map(defectAsRecord),
-        issues: structuralValidation,
-        remainingBudget: {
-          structuralResyntheses: 0,
-          maxStructuralResyntheses: MAX_STRUCTURAL_RESYNTHESES,
-          used: resyntheses,
-        },
+        remainingBudget: { structuralResyntheses: 0, maxStructuralResyntheses: MAX_STRUCTURAL_RESYNTHESES, used: resyntheses },
       });
       return;
     }
-    queueStructuralResearch(host, dependsOn, synthesisNodeId, { validation, review: routedReview });
+    queueStructuralResearch(host, [reviewNode.id], synthesisNodeId, { review: routedReview });
     return;
   }
-
-  const pagePaths = uniqueStrings([
-    ...validation.issues.flatMap((issue) => issue.page ? [issue.page] : []),
-    ...review.defects.flatMap((defect) => "page" in defect ? [defect.page] : []),
-  ]);
+  const pagePaths = uniqueStrings(review.defects.flatMap((defect) => "page" in defect ? [defect.page] : []));
   if (pagePaths.length) {
-    await queuePageRepairs(host, dependsOn, synthesisNodeId, pagePaths, { validation, review: routedReview });
+    await queuePageRepairs(host, [reviewNode.id], synthesisNodeId, pagePaths, { review: routedReview });
     return;
   }
-  queueNode(host, "finalize", "Finalize Wiki", dependsOn, { synthesisNodeId, verificationGroupId }, phaseRefForKind("finalize"));
+  const verificationGroupId = recordValue(reviewNode.input, "verificationGroupId");
+  queueNode(host, "finalize", "Publish Wiki", [reviewNode.id], { synthesisNodeId, verificationGroupId }, phaseRefForKind("finalize"));
 }
 
 export async function queuePageRepairs(host: TransitionHost, 
@@ -586,7 +601,7 @@ export async function queuePageRepairs(host: TransitionHost,
   const contentNodes: WikiNode[] = [];
   for (const { domain, page } of targets.filter(({ page }) => page.pageType !== "overview")) {
     const researchIds = researchIdsForPage(run, page);
-    const beforeSha256 = await hashWikiPage(run.cwd, page.path) ?? MISSING_PAGE_SHA256;
+    const beforeSha256 = await hashWikiPage(run.cwd, page.path, host.wikiRoot()) ?? MISSING_PAGE_SHA256;
     contentNodes.push(queueNode(host, 
       "write",
       `Repair page: ${page.path}`,
@@ -610,7 +625,7 @@ export async function queuePageRepairs(host: TransitionHost,
   }
   const overviewIsTarget = requested.has(overview.page.path);
   const overviewBeforeSha256 = overviewIsTarget
-    ? await hashWikiPage(run.cwd, overview.page.path) ?? MISSING_PAGE_SHA256
+    ? await hashWikiPage(run.cwd, overview.page.path, host.wikiRoot()) ?? MISSING_PAGE_SHA256
     : undefined;
   const overviewNode = queueNode(host, 
     "write",
@@ -728,6 +743,13 @@ export function ensureSynthesisSubmissionFitsRun(host: TransitionHost, synthesis
     ensureNewResearchScopes(host, synthesis.researchScopes);
     ensureResearchSourcePaths(host, synthesis.researchScopes);
     return;
+  }
+  for (const configured of host.requireRun().policy.domains) {
+    const actual = synthesis.spec.domains.find((domain) => domain.id === configured.id);
+    if (!actual) throw new Error(`WikiSpec must include configured domain: ${configured.id}`);
+    if (actual.title !== configured.title) {
+      throw new Error(`WikiSpec configured domain ${configured.id} must use title: ${configured.title}`);
+    }
   }
   ensureSynthesisSpecReceipts(host, synthesis.spec, input);
 }
@@ -952,7 +974,12 @@ export function newNode(
     status: "queued",
     dependsOn,
     attempt: 0,
-    inputFingerprint: stableStringify(parsed),
+    inputFingerprint: stableStringify({
+      policyHash: kind === "inspect" && isRecord(parsed) && typeof parsed.policyHash === "string"
+        ? parsed.policyHash
+        : host.requireRun().policyHash,
+      input: parsed,
+    }),
     input: clone(parsed),
     attemptHistory: [],
     metrics: clone(EMPTY_NODE_METRICS),
