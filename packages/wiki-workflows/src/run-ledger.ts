@@ -1,12 +1,17 @@
 import { appendFile, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
+import type { WikiDelegateReceipt } from "./delegate-contracts.js";
 import type {
+  WikiHistoryEntry,
   WikiProducerOperation,
   WikiProducerResult,
-  WikiRunPause,
   WikiRunEvent,
+  WikiRunPause,
+  WikiRunProgress,
+  WikiRunStage,
   WikiRunStatus,
   WikiRunView,
+  WikiTaskSnapshot,
 } from "./producer-types.js";
 
 export const WIKI_RUN_LEDGER_VERSION = 1 as const;
@@ -28,6 +33,12 @@ export interface CreateWikiRunState {
   at: string;
 }
 
+export interface WikiTaskRecord {
+  receipt?: WikiDelegateReceipt;
+  history?: WikiHistoryEntry[];
+  updatedAt: string;
+}
+
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TERMINAL = new Set<WikiRunStatus>(["succeeded", "failed", "cancelled"]);
 
@@ -39,16 +50,26 @@ export function createWikiRunLedger(rootDirectory: string) {
 
   const serialize = async <T>(operation: () => Promise<T>): Promise<T> => {
     let value!: T;
-    const next = chain.catch(() => undefined).then(async () => { value = await operation(); });
+    const next = chain.catch(() => undefined).then(async () => {
+      value = await operation();
+    });
     chain = next.then(() => undefined, () => undefined);
     await next;
     return value;
   };
 
   const paths = (runId: string) => {
-    assertRunId(runId);
+    assertSafeId(runId, "Wiki run ID");
     const directory = path.join(runsRoot, runId);
-    return { directory, state: path.join(directory, "run-state.json"), events: path.join(directory, "events.jsonl") };
+    return {
+      directory,
+      state: path.join(directory, "run-state.json"),
+      events: path.join(directory, "events.jsonl"),
+      task: (taskId: string) => {
+        assertSafeId(taskId, "Wiki task ID");
+        return path.join(directory, "tasks", `${taskId}.json`);
+      },
+    };
   };
 
   const readState = async (runId: string): Promise<WikiRunState | undefined> => {
@@ -70,7 +91,7 @@ export function createWikiRunLedger(rootDirectory: string) {
   return {
     async create(input: CreateWikiRunState) {
       return await serialize(async () => {
-        assertRunId(input.id);
+        assertSafeId(input.id, "Wiki run ID");
         await mkdir(root, { recursive: true });
         const existing = await activeRunId(activeFile);
         if (existing) {
@@ -157,9 +178,14 @@ export function createWikiRunLedger(rootDirectory: string) {
         const file = paths(runId).events;
         await mkdir(path.dirname(file), { recursive: true });
         await appendFile(file, `${JSON.stringify(event)}\n`, "utf8");
-        state.lastEventSequence = event.sequence;
-        state.updatedAt = event.at;
-        await writeState(state);
+        const latest = (await readState(runId)) ?? state;
+        latest.lastEventSequence = event.sequence;
+        latest.updatedAt = event.at;
+        if (event.type === "progress" || hasProgressFields(event.data)) {
+          const progress = mergeProgress(latest.progress, event.data ?? {}, event.message);
+          if (progress) latest.progress = progress;
+        }
+        await writeState(latest);
         return event;
       });
     },
@@ -182,6 +208,29 @@ export function createWikiRunLedger(rootDirectory: string) {
     async releaseActive(runId: string) {
       await serialize(async () => {
         if (await activeRunId(activeFile) === runId) await rm(activeFile, { force: true });
+      });
+    },
+
+    async readTask(runId: string, taskId: string) {
+      return await serialize(async () => {
+        const file = paths(runId).task(taskId);
+        try {
+          return parseTaskRecord(JSON.parse(await readFile(file, "utf8")));
+        } catch (error) {
+          if (isMissing(error)) return undefined;
+          throw error;
+        }
+      });
+    },
+
+    async writeTask(runId: string, taskId: string, record: WikiTaskRecord) {
+      return await serialize(async () => {
+        if (!(await readState(runId))) throw new Error(`Unknown Wiki run: ${runId}`);
+        const target = paths(runId).task(taskId);
+        const parsed = parseTaskRecord(record);
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeAtomic(target, `${JSON.stringify(parsed, null, 2)}\n`);
+        return parsed;
       });
     },
   };
@@ -220,7 +269,201 @@ function parseState(value: unknown, expectedId: string): WikiRunState {
     || !isPause(state.pause)) {
     throw new Error(`Invalid Wiki run state: ${expectedId}`);
   }
-  return state as WikiRunState;
+  const parsed = state as WikiRunState;
+  const progress = parseProgress(state.progress);
+  if (progress) parsed.progress = progress;
+  else delete parsed.progress;
+  return parsed;
+}
+
+const STAGES = new Set<WikiRunStage>(["prepare", "lead", "delegate", "validate", "publish"]);
+const TASK_ROLES = new Set<WikiTaskSnapshot["role"]>(["research", "write", "review"]);
+const TASK_STATUSES = new Set<WikiTaskSnapshot["status"]>(["queued", "running", "complete", "incomplete", "failed"]);
+const HISTORY_ROLES = new Set<WikiHistoryEntry["role"]>(["user", "assistant", "tool"]);
+const HISTORY_KINDS = new Set<WikiHistoryEntry["kind"]>(["text", "toolCall", "toolResult", "error"]);
+
+function hasProgressFields(data?: Record<string, unknown>): boolean {
+  if (!data) return false;
+  return typeof data.stage === "string"
+    || typeof data.batch === "number"
+    || typeof data.completed === "number"
+    || typeof data.total === "number"
+    || Array.isArray(data.tasks)
+    || eventTaskId(data) !== undefined;
+}
+
+function eventTaskId(data?: Record<string, unknown>): string | undefined {
+  if (!data) return undefined;
+  if (typeof data.taskId === "string" && data.taskId) return data.taskId;
+  if (data.task && typeof data.task === "object") {
+    const id = (data.task as { id?: unknown }).id;
+    if (typeof id === "string" && id) return id;
+  }
+  return undefined;
+}
+
+function mergeProgress(
+  current: WikiRunProgress | undefined,
+  data: Record<string, unknown>,
+  message: string,
+): WikiRunProgress | undefined {
+  const stage = isStage(data.stage) ? data.stage : current?.stage;
+  if (!stage) return current;
+  const next: WikiRunProgress = {
+    stage,
+    ...(current?.batch !== undefined ? { batch: current.batch } : {}),
+    ...(current?.completed !== undefined ? { completed: current.completed } : {}),
+    ...(current?.total !== undefined ? { total: current.total } : {}),
+    ...(current?.tasks ? { tasks: current.tasks } : {}),
+    lastMessage: message,
+  };
+  if (isProgressCount(data.batch)) next.batch = data.batch;
+  if (isProgressCount(data.completed)) next.completed = data.completed;
+  if (isProgressCount(data.total)) next.total = data.total;
+  if (Array.isArray(data.tasks)) {
+    const tasks = data.tasks.map(parseTaskSnapshot).filter((task): task is WikiTaskSnapshot => task !== undefined);
+    next.tasks = tasks;
+  }
+  const patchId = eventTaskId(data);
+  const existing = patchId ? next.tasks?.find((task) => task.id === patchId) : undefined;
+  const patch = patchTaskSnapshot(data, existing);
+  if (patch) {
+    const tasks = [...(next.tasks ?? [])];
+    const index = tasks.findIndex((task) => task.id === patch.id);
+    if (index >= 0) tasks[index] = { ...tasks[index], ...patch };
+    else tasks.push(patch);
+    next.tasks = tasks;
+  }
+  return parseProgress(next);
+}
+
+function patchTaskSnapshot(data: Record<string, unknown>, existing?: WikiTaskSnapshot): WikiTaskSnapshot | undefined {
+  const fromTask = parseTaskSnapshot(data.task);
+  if (fromTask) return { ...existing, ...fromTask };
+  const id = typeof data.taskId === "string" && data.taskId ? data.taskId : existing?.id;
+  if (!id) return undefined;
+  return parseTaskSnapshot({
+    ...(existing ?? {}),
+    id,
+    ...(typeof data.role === "string" ? { role: data.role } : {}),
+    ...(typeof data.status === "string" ? { status: data.status } : {}),
+    ...(typeof data.summary === "string" ? { summary: data.summary } : {}),
+    ...(typeof data.attempts === "number" ? { attempts: data.attempts } : {}),
+    ...(typeof data.startedAt === "string" ? { startedAt: data.startedAt } : {}),
+    ...(typeof data.updatedAt === "string" ? { updatedAt: data.updatedAt } : {}),
+  });
+}
+
+function parseProgress(value: unknown): WikiRunProgress | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<WikiRunProgress>;
+  if (!isStage(raw.stage)) return undefined;
+  if (raw.batch !== undefined && !isProgressCount(raw.batch)) return undefined;
+  if (raw.completed !== undefined && !isProgressCount(raw.completed)) return undefined;
+  if (raw.total !== undefined && !isProgressCount(raw.total)) return undefined;
+  if (raw.lastMessage !== undefined && typeof raw.lastMessage !== "string") return undefined;
+  let tasks: WikiTaskSnapshot[] | undefined;
+  if (raw.tasks !== undefined) {
+    if (!Array.isArray(raw.tasks)) return undefined;
+    tasks = [];
+    for (const entry of raw.tasks) {
+      const task = parseTaskSnapshot(entry);
+      if (!task) return undefined;
+      tasks.push(task);
+    }
+  }
+  return {
+    stage: raw.stage,
+    ...(raw.batch !== undefined ? { batch: raw.batch } : {}),
+    ...(raw.completed !== undefined ? { completed: raw.completed } : {}),
+    ...(raw.total !== undefined ? { total: raw.total } : {}),
+    ...(tasks ? { tasks } : {}),
+    ...(raw.lastMessage !== undefined ? { lastMessage: raw.lastMessage } : {}),
+  };
+}
+
+function parseTaskSnapshot(value: unknown): WikiTaskSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<WikiTaskSnapshot>;
+  if (typeof raw.id !== "string" || !isTaskRole(raw.role) || !isTaskStatus(raw.status)) return undefined;
+  if (raw.summary !== undefined && typeof raw.summary !== "string") return undefined;
+  if (raw.attempts !== undefined && !isProgressCount(raw.attempts)) return undefined;
+  if (raw.startedAt !== undefined && typeof raw.startedAt !== "string") return undefined;
+  if (raw.updatedAt !== undefined && typeof raw.updatedAt !== "string") return undefined;
+  return {
+    id: raw.id,
+    role: raw.role,
+    status: raw.status,
+    ...(raw.summary !== undefined ? { summary: raw.summary } : {}),
+    ...(raw.attempts !== undefined ? { attempts: raw.attempts } : {}),
+    ...(raw.startedAt !== undefined ? { startedAt: raw.startedAt } : {}),
+    ...(raw.updatedAt !== undefined ? { updatedAt: raw.updatedAt } : {}),
+  };
+}
+
+function parseTaskRecord(value: unknown): WikiTaskRecord {
+  if (!value || typeof value !== "object") throw new Error("Invalid Wiki task record");
+  const raw = value as Partial<WikiTaskRecord>;
+  if (typeof raw.updatedAt !== "string") throw new Error("Invalid Wiki task record");
+  if (raw.receipt !== undefined && (!raw.receipt || typeof raw.receipt !== "object")) {
+    throw new Error("Invalid Wiki task record");
+  }
+  let history: WikiHistoryEntry[] | undefined;
+  if (raw.history !== undefined) {
+    if (!Array.isArray(raw.history)) throw new Error("Invalid Wiki task record");
+    history = raw.history.map(parseHistoryEntry);
+  }
+  return {
+    ...(raw.receipt ? { receipt: raw.receipt } : {}),
+    ...(history ? { history } : {}),
+    updatedAt: raw.updatedAt,
+  };
+}
+
+function parseHistoryEntry(value: unknown): WikiHistoryEntry {
+  if (!value || typeof value !== "object") throw new Error("Invalid Wiki task record");
+  const raw = value as Partial<WikiHistoryEntry>;
+  if (!isHistoryRole(raw.role) || !isHistoryKind(raw.kind) || typeof raw.text !== "string") {
+    throw new Error("Invalid Wiki task record");
+  }
+  if (raw.toolName !== undefined && typeof raw.toolName !== "string") throw new Error("Invalid Wiki task record");
+  if (raw.path !== undefined && typeof raw.path !== "string") throw new Error("Invalid Wiki task record");
+  if (raw.isError !== undefined && typeof raw.isError !== "boolean") throw new Error("Invalid Wiki task record");
+  if (raw.timestamp !== undefined && typeof raw.timestamp !== "number") throw new Error("Invalid Wiki task record");
+  return {
+    role: raw.role,
+    kind: raw.kind,
+    text: raw.text,
+    ...(raw.toolName !== undefined ? { toolName: raw.toolName } : {}),
+    ...(raw.path !== undefined ? { path: raw.path } : {}),
+    ...(raw.isError !== undefined ? { isError: raw.isError } : {}),
+    ...(raw.timestamp !== undefined ? { timestamp: raw.timestamp } : {}),
+  };
+}
+
+function isStage(value: unknown): value is WikiRunStage {
+  return typeof value === "string" && STAGES.has(value as WikiRunStage);
+}
+
+function isTaskRole(value: unknown): value is WikiTaskSnapshot["role"] {
+  return typeof value === "string" && TASK_ROLES.has(value as WikiTaskSnapshot["role"]);
+}
+
+function isTaskStatus(value: unknown): value is WikiTaskSnapshot["status"] {
+  return typeof value === "string" && TASK_STATUSES.has(value as WikiTaskSnapshot["status"]);
+}
+
+function isHistoryRole(value: unknown): value is WikiHistoryEntry["role"] {
+  return typeof value === "string" && HISTORY_ROLES.has(value as WikiHistoryEntry["role"]);
+}
+
+function isHistoryKind(value: unknown): value is WikiHistoryEntry["kind"] {
+  return typeof value === "string" && HISTORY_KINDS.has(value as WikiHistoryEntry["kind"]);
+}
+
+function isProgressCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function isPause(value: unknown): value is WikiRunPause | undefined {
@@ -244,7 +487,7 @@ function parseEvent(value: unknown, expectedId: string): WikiRunEvent {
 async function activeRunId(file: string): Promise<string | undefined> {
   try {
     const value = (await readFile(file, "utf8")).trim();
-    assertRunId(value);
+    assertSafeId(value, "Wiki run ID");
     return value;
   } catch (error) {
     if (isMissing(error)) return undefined;
@@ -269,8 +512,8 @@ async function writeAtomic(target: string, content: string): Promise<void> {
   }
 }
 
-function assertRunId(value: string): void {
-  if (!SAFE_ID.test(value)) throw new Error(`Invalid Wiki run ID: ${value}`);
+function assertSafeId(value: string, label: string): void {
+  if (!SAFE_ID.test(value)) throw new Error(`Invalid ${label}: ${value}`);
 }
 
 function isMissing(error: unknown): boolean {

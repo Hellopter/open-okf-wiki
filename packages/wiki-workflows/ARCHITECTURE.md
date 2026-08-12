@@ -70,17 +70,43 @@ artifacts. Run state retains receipts and references, never large research prose
 Missing/failed branches are recorded as missing coverage rather than negative
 findings.
 
+## Observability
+
+Progress is a projection of run events, not a control plane. It does not
+admit work, retry tasks, or publish the Wiki.
+
+Delegated receipts and compact process history live in a sidecar at
+`.okf-wiki/runs/<id>/tasks/<taskId>.json`. `inspect()` reads that sidecar and
+the content-addressed Markdown blob. The `/wiki status` card, TUI
+footer/widget, and status overlay subscribe to `view()` and `inspect()`.
+
+Do not restore the former DAG, TUI renderer, or public node retry. The overlay
+is a Wiki-specific subscriber of `WikiProducer`.
+
+## Context policy
+
+Every Lead and delegated Agent runs in a fresh in-memory Pi session with
+auto-compaction enabled. Pi triggers compaction as the session approaches its
+context limit, summarizes older messages, and keeps recent work. The Wiki
+runtime currently uses Pi's defaults of `reserveTokens: 16384` and
+`keepRecentTokens: 20000`. Pi itself makes the enable flag and both thresholds
+configurable, but the Wiki runtime neither exposes them in `workspace.yaml` nor
+inherits project or user Pi settings.
+
+Compaction is an intra-session context mechanism. It does not replace the
+content-addressed artifact handoff between independent Agent sessions.
+
 ## Failure policy
 
 Retry has one owner. Pi turn auto-retry and provider retry are explicitly
-disabled. The Wiki task runtime may start at most one fresh session for a
-recoverable Agent failure.
+disabled. The Wiki task runtime owns the configured fresh-session retry budget
+for recoverable Agent failures.
 
 500-class transient failures and timeouts use exponential backoff with full
 jitter. 429 reduces shared admission, honors reset metadata, and receives at
-most one fresh-session retry. Exhaustion remains an explicit failed task
-receipt. 401/403, billing, invalid request, and hard quota errors are
-non-retryable; quota and usage-limit outcomes durably pause the run.
+most `wiki.transientRetries` fresh-session retries. Exhaustion remains an
+explicit failed task receipt. 401/403, billing, invalid request, and hard quota
+errors are non-retryable; quota and usage-limit outcomes durably pause the run.
 
 Pause aborts in-flight Agent sessions after persisting accepted artifacts.
 Resume preserves the candidate and accepted content-addressed artifacts, then

@@ -14,14 +14,16 @@ import { Type } from "typebox";
 import { workflowTools, workspaceToolPolicy } from "./agent-tools.js";
 import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
 import { boundedDelegateSummary, WikiTaskExecutionError, WikiTaskPauseError, type WikiDelegateBatchReceipt, type WikiDelegateTask } from "./delegate-contracts.js";
-import type { WikiLeadRuntime } from "./producer-types.js";
-import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext } from "./task-runtime.js";
+import type { WikiLeadRuntime, WikiTaskSnapshot, WikiHistoryEntry } from "./producer-types.js";
+import { compactWikiHistory } from "./agent-history.js";
+import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
 
 export interface PiWikiLeadAgentOptions {
   model?: Model<any>;
   thinkingLevel?: ThinkingLevel;
+  language?: "zh" | "en";
   createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
   /** Hard deadline for each Lead or delegated Pi session. Default 20 minutes. */
   sessionTimeoutMs?: number;
@@ -29,6 +31,7 @@ export interface PiWikiLeadAgentOptions {
 
 export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
   concurrency?: number;
+  transientRetries?: number;
   baseRetryDelayMs?: number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   random?: () => number;
@@ -37,16 +40,72 @@ export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
 
 /** Complete reusable production Adapter for WikiProducer's model-facing seam. */
 export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): WikiLeadRuntime {
+  const transientRetries = options.transientRetries ?? 1;
+  const baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
+  if (!Number.isInteger(transientRetries) || transientRetries < 0) throw new Error("transientRetries must be a non-negative integer");
+  if (!Number.isFinite(baseRetryDelayMs) || baseRetryDelayMs < 0) throw new Error("baseRetryDelayMs must be non-negative");
   const sessionOptions = {
     model: options.model,
     thinkingLevel: options.thinkingLevel,
     createSession: options.createSession,
     sessionTimeoutMs: options.sessionTimeoutMs,
+    language: options.language,
   };
   return {
     async run(request) {
       const artifactStore = createWikiArtifactStore({ workspace: request.cwd });
       const sourceScopes = Object.fromEntries(request.sourceScopeIds.map((id) => [id, id]));
+      let batch = 0;
+      let batchTotal = 0;
+      const batchTasks = new Map<string, WikiTaskSnapshot>();
+      const snapshotNow = () => new Date((options.now ?? Date.now)()).toISOString();
+      const onTask = async (event: WikiTaskProgressEvent): Promise<void> => {
+        const taskId = event.task.id;
+        if (event.phase === "queued") {
+          batchTasks.set(taskId, { id: taskId, role: event.task.role, status: "queued" });
+          const tasks = [...batchTasks.values()];
+          await request.report(`Delegated ${tasks.map((task) => task.id).join(", ")}`, {
+            stage: "delegate",
+            batch,
+            total: batchTotal,
+            completed: 0,
+            tasks,
+          });
+          return;
+        }
+        const current = batchTasks.get(taskId) ?? { id: taskId, role: event.task.role, status: "queued" as const };
+        if (event.phase === "start") {
+          current.status = "running";
+          current.startedAt = snapshotNow();
+          current.updatedAt = current.startedAt;
+          batchTasks.set(taskId, current);
+          await request.report(`${event.task.role} ${taskId} started`, {
+            stage: "delegate",
+            batch,
+            total: batchTotal,
+            completed: countCompleted(batchTasks),
+            tasks: [...batchTasks.values()],
+            taskId,
+          });
+          return;
+        }
+        current.status = event.receipt?.status ?? "failed";
+        current.summary = event.receipt?.summary;
+        current.attempts = event.receipt?.attempts;
+        current.updatedAt = snapshotNow();
+        batchTasks.set(taskId, current);
+        const completed = countCompleted(batchTasks);
+        await request.report(`${event.task.role} ${taskId} ${current.status}`, {
+          stage: "delegate",
+          batch,
+          total: batchTotal,
+          completed,
+          tasks: [...batchTasks.values()],
+          taskId,
+          receipt: event.receipt,
+          history: event.history,
+        });
+      };
       const tasks = new WikiTaskRuntime({
         runId: request.runId,
         cwd: request.cwd,
@@ -55,10 +114,12 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         artifactStore,
         agent: new PiWikiLeafAgent(artifactStore, sessionOptions),
         concurrency: options.concurrency,
-        baseRetryDelayMs: options.baseRetryDelayMs,
+        transientRetries,
+        baseRetryDelayMs,
         sleep: options.sleep,
         random: options.random,
         now: options.now,
+        onTask,
       });
       const policy = await workspaceToolPolicy(request.cwd, request.candidateWikiRoot);
       const controller = new AbortController();
@@ -72,6 +133,9 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         ...workflowTools(policy, "lead", undefined, request.sourceScopeIds),
         delegateTool(async (delegated) => {
           try {
+            batch += 1;
+            batchTotal = delegated.length;
+            batchTasks.clear();
             const receipt = await tasks.delegate(delegated, controller.signal);
             delegateBatches += 1;
             return receipt;
@@ -89,16 +153,26 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           finishSummary = boundedDelegateSummary(summary);
         }),
       ];
-      await request.report("Wiki Lead is deciding adaptive research and writing tasks", { sourceScopeCount: Object.keys(sourceScopes).length });
+      await request.report("Wiki Lead is deciding adaptive research and writing tasks", { stage: "lead", sourceScopeCount: Object.keys(sourceScopes).length });
       try {
-        await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, sessionOptions);
-      } catch (error) {
-        if (!pause) {
-          const failure = classifyTaskFailure(error, request.signal.aborted);
-          if (failure.code === "quota" || failure.code === "usage_limit") {
-            pause = new WikiTaskPauseError(failure.code, failure.message, failure.retryAfterMs);
-          } else {
-            throw error;
+        const maxAttempts = transientRetries + 1;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          if (attempt > 1) finishSummary = undefined;
+          try {
+            await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, sessionOptions);
+            break;
+          } catch (error) {
+            if (pause) break;
+            const failure = classifyTaskFailure(error, request.signal.aborted);
+            if (failure.code === "quota" || failure.code === "usage_limit") {
+              pause = new WikiTaskPauseError(failure.code, failure.message, failure.retryAfterMs);
+              break;
+            }
+            if (!failure.retryable || attempt >= maxAttempts) throw error;
+            const delay = failure.code === "rate_limit" && failure.retryAfterMs !== undefined
+              ? failure.retryAfterMs
+              : retryDelay(baseRetryDelayMs, attempt, options.random ?? Math.random);
+            await (options.sleep ?? retrySleep)(delay, controller.signal);
           }
         }
       } finally {
@@ -135,15 +209,40 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       artifact: ref.relativePath,
       content: await this.artifacts.read(ref),
     })));
-    const markdown = (await runPiSession(policy.workspaceRoot, tools, [
+    const sessionResult = await runPiSession(policy.workspaceRoot, tools, [
         task.instruction,
+        this.options.language === "zh"
+          ? "\nUse Simplified Chinese for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged."
+          : "\nUse English for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged.",
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
         handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
         "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
-      ].join(""), context.signal, this.options)).trim();
+      ].join(""), context.signal, this.options, true);
+    const markdown = sessionResult.text.trim();
     if (!markdown) throw new Error("Delegated agent produced empty output");
-    return { summary: firstLine(markdown), markdown };
+    return { summary: firstLine(markdown), markdown, history: sessionResult.history };
   }
+}
+
+async function retrySleep(ms: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const done = () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(done, Math.max(0, ms));
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      reject(new WikiTaskExecutionError("Wiki retry cancelled", "cancelled"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
+function retryDelay(baseRetryDelayMs: number, attempt: number, random: () => number): number {
+  return Math.floor(random() * baseRetryDelayMs * (2 ** Math.max(0, attempt - 1)));
 }
 
 const taskSchema = Type.Object({
@@ -191,6 +290,10 @@ function firstLine(value: string): string {
   return value.split(/\r?\n/, 1)[0].replace(/^#+\s*/, "").trim() || "Delegated task completed";
 }
 
+function countCompleted(snapshots: Map<string, WikiTaskSnapshot>): number {
+  return [...snapshots.values()].filter((task) => task.status === "complete" || task.status === "incomplete" || task.status === "failed").length;
+}
+
 async function runSessionWithDeadline(
   session: AgentSession,
   prompt: string,
@@ -220,8 +323,24 @@ async function runPiSession(
   prompt: string,
   signal: AbortSignal,
   options: PiWikiLeadAgentOptions,
-): Promise<string> {
-  // TaskRuntime owns transient retries by creating at most one fresh session.
+): Promise<string>;
+async function runPiSession(
+  cwd: string,
+  tools: ToolDefinition<any, any, any>[],
+  prompt: string,
+  signal: AbortSignal,
+  options: PiWikiLeadAgentOptions,
+  collectHistory: true,
+): Promise<{ text: string; history: WikiHistoryEntry[] }>;
+async function runPiSession(
+  cwd: string,
+  tools: ToolDefinition<any, any, any>[],
+  prompt: string,
+  signal: AbortSignal,
+  options: PiWikiLeadAgentOptions,
+  collectHistory = false,
+): Promise<string | { text: string; history: WikiHistoryEntry[] }> {
+  // TaskRuntime owns configurable transient retries by creating fresh sessions.
   // Disable both Pi turn retry and provider request retry so budgets cannot multiply.
   const settings = SettingsManager.inMemory({
     compaction: { enabled: true },
@@ -257,7 +376,9 @@ async function runPiSession(
     if (signal.aborted) throw new WikiTaskExecutionError("Wiki agent session cancelled", "cancelled");
     const stateError = typeof session.state.errorMessage === "string" ? session.state.errorMessage : undefined;
     if (stateError) throw new Error(stateError);
-    return session.getLastAssistantText() ?? "";
+    const text = session.getLastAssistantText() ?? "";
+    if (!collectHistory) return text;
+    return { text, history: compactWikiHistory(session.messages) };
   } finally {
     signal.removeEventListener("abort", abort);
     session.dispose();

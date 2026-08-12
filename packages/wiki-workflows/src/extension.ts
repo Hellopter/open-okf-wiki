@@ -4,12 +4,16 @@ import {
   renderWikiEvent,
   renderWikiRun,
   renderWikiRuns,
+  renderWikiTask,
+  renderWikiTaskProcess,
   wikiCliHelp,
   type WikiCliCommand,
 } from "./cli.js";
 import { createConfiguredWikiProducer } from "./production.js";
 import type { WikiProducer } from "./producer.js";
-import type { WikiRunHandle, WikiRunView } from "./producer-types.js";
+import type { WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
+import { wikiFooterStatus, wikiSurfaceCleared, wikiWidgetLines } from "./ui/live-surface.js";
+import { openWikiStatusOverlay } from "./ui/status-overlay.js";
 import { errorMessage } from "./util.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
 
@@ -37,6 +41,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     });
 
     pi.on("session_shutdown", async () => {
+      if (context?.hasUI) {
+        context.ui.setStatus("wiki", undefined);
+        context.ui.setWidget("wiki", undefined);
+      }
       if (producer && context) {
         try {
           const cwd = await workspaceRoot(context.cwd);
@@ -92,7 +100,9 @@ async function dispatch(
       operation: command.regenerate ? "regenerate" : "update",
       focus: command.focus,
     });
-    output(pi, context, renderWikiRun(await handle.view()));
+    const view = await handle.view();
+    output(pi, context, renderWikiRun(view));
+    refreshLiveSurface(context, view);
     void streamRun(pi, context, handle);
     return;
   }
@@ -102,15 +112,62 @@ async function dispatch(
   }
   const handle = await selectedRun(producer, cwd, "runId" in command ? command.runId : undefined);
   if (command.action === "status") {
-    output(pi, context, renderWikiRun(handle ? await handle.view() : undefined));
+    await dispatchStatus(pi, context, handle, command);
     return;
   }
   if (!handle) throw new Error("No Wiki run is available");
   const view = await handle.control(command.action);
   output(pi, context, renderWikiRun(view));
+  refreshLiveSurface(context, view);
   if (command.action === "resume") {
     void streamRun(pi, context, handle, view.lastEventSequence);
   }
+}
+
+async function dispatchStatus(
+  pi: ExtensionAPI,
+  context: ExtensionCommandContext,
+  handle: WikiRunHandle | undefined,
+  command: Extract<WikiCliCommand, { action: "status" }>,
+): Promise<void> {
+  if (!handle) {
+    output(pi, context, renderWikiRun(undefined));
+    return;
+  }
+  const view = await handle.view();
+  if (!command.taskId) {
+    output(pi, context, renderWikiRun(view));
+    refreshLiveSurface(context, view);
+    if (view.status === "running") void streamRun(pi, context, handle, view.lastEventSequence);
+    await openStatusOverlay(context, handle, command);
+    return;
+  }
+  const inspection = await handle.inspect(command.taskId);
+  if (!inspection) {
+    const ids = view.progress?.tasks?.map((task) => task.id).join(", ") || "none";
+    output(pi, context, `Wiki ${view.id} has no task "${command.taskId}".\nKnown: ${ids}`);
+    return;
+  }
+  output(pi, context, command.process ? renderWikiTaskProcess(inspection) : renderWikiTask(inspection));
+  await openStatusOverlay(context, handle, command);
+}
+
+async function openStatusOverlay(
+  context: ExtensionCommandContext,
+  handle: WikiRunHandle,
+  command: Extract<WikiCliCommand, { action: "status" }>,
+): Promise<void> {
+  if (!context.hasUI || command.process) return;
+  await openWikiStatusOverlay({
+    ui: context.ui,
+    handle,
+    initialTaskId: command.taskId,
+    process: command.process,
+    onControl: async (action: WikiRunControl) => {
+      const next = await handle.control(action);
+      refreshLiveSurface(context, next);
+    },
+  });
 }
 
 async function dispatchWorkspace(
@@ -165,11 +222,63 @@ async function streamRun(
   handle: WikiRunHandle,
   after = 0,
 ): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const queueRefresh = (): void => {
+    if (!context.hasUI || timer) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      void handle.view().then((view) => refreshLiveSurface(context, view));
+    }, 100);
+  };
+  const flushRefresh = async (): Promise<void> => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    refreshLiveSurface(context, await handle.view());
+  };
   try {
-    for await (const event of handle.events(after)) output(pi, context, renderWikiEvent(event));
+    for await (const event of handle.events(after)) {
+      output(pi, context, renderWikiEvent(event));
+      queueRefresh();
+    }
+    await flushRefresh();
   } catch (error) {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
     context.ui.notify(`Wiki progress stream stopped: ${errorMessage(error)}`, "warning");
+    try {
+      refreshLiveSurface(context, await handle.view());
+    } catch {
+      // Keep the last successful surface if the handle can no longer be read.
+    }
   }
+}
+
+function refreshLiveSurface(context: ExtensionCommandContext, view: WikiRunView): void {
+  if (!context.hasUI) return;
+  if (view.status !== "running") {
+    const cleared = wikiSurfaceCleared(view);
+    context.ui.setStatus("wiki", themeWikiFooter(context, cleared.footer));
+    context.ui.setWidget("wiki", undefined);
+    return;
+  }
+  context.ui.setStatus("wiki", themeWikiFooter(context, wikiFooterStatus(view)));
+  context.ui.setWidget("wiki", wikiWidgetLines(view) ?? undefined);
+}
+
+function themeWikiFooter(context: ExtensionCommandContext, text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const theme = context.ui.theme;
+  if (!theme || typeof theme.fg !== "function") return text;
+  const color = text.includes("✓") ? "success"
+    : text.includes("✗") ? "error"
+    : text.includes("⏸") ? "warning"
+    : text.includes("◆") ? "accent"
+    : "dim";
+  return theme.fg(color, text);
 }
 
 async function workspaceRoot(cwd: string): Promise<string> {
@@ -203,6 +312,10 @@ export function wikiArgumentCompletions(argumentPrefix: string) {
       { value: "source add link ", label: "link", description: "Link a local Git repository root" },
       { value: "source add clone ", label: "clone", description: "Clone a Git URL" },
     ];
+  }
+  if (/^status\s+\S+\s+\S+\s*$/.test(value)) {
+    const prefix = value.endsWith(" ") ? value : `${value} `;
+    return [{ value: `${prefix}--process`, label: "--process", description: "Show compact process history" }];
   }
   if (/\s/.test(value)) return null;
   return COMPLETIONS.filter((item) => item.label.startsWith(value));

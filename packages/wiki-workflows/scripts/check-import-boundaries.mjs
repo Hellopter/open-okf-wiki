@@ -20,6 +20,7 @@ const PURE_MODULES = [
   "failures.ts",
   "util.ts",
   "path-policy.ts",
+  "agent-history.ts",
 ];
 
 const FORBIDDEN = /from\s+["']@earendil-works\//;

@@ -567,6 +567,23 @@ test("rejects unsafe Spec paths without touching the Wiki tree", async () => {
   await assert.rejects(finalizeWiki(root, target), /unsafe or reserved page path/);
 });
 
+test("accepts root-level concept page paths", async () => {
+  const root = await fixture();
+  const pages = ["architecture.md", "configuration.md", "domain-model.md", "features.md", "testing.md"];
+  const target = spec({
+    pages: pages.map((pagePath) => ({ path: pagePath, pageType: "concept", findingIds: ["finding-api"] })),
+  });
+  for (const pagePath of pages) await writePage(root, pagePath);
+  await materializeWikiIndexes(root, target);
+
+  assert.deepEqual(await validateWiki(root, target), {
+    ok: true,
+    issues: [],
+    pages,
+    obsoletePages: [],
+  });
+});
+
 test("rejects index-injection Spec paths before finalization writes an index", async () => {
   for (const unsafePath of [
     "core/a](javascript:alert(1)).md",

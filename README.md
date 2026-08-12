@@ -17,7 +17,7 @@ Run Pi in the repository or Wiki workspace:
 /wiki source add link <local-path> [--name <name>] [--workspace <dir>]
 /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
 /wiki regenerate [focus]
-/wiki status [run-id]
+/wiki status [run-id] [task-id] [--process]
 /wiki runs
 /wiki pause
 /wiki resume [run-id]
@@ -33,6 +33,29 @@ Linux/macOS and a directory junction on Windows. Use `source add clone` when a
 link is unsuitable or the source is remote; `--ref` checks out a branch, tag, or
 commit. `init` defaults to the current directory, Chinese output, and standard
 source ignores. Repeat `--exclude` for workspace-specific source globs.
+
+Explicit workspaces can tune Wiki Agent execution in `workspace.yaml`:
+
+```yaml
+wiki:
+  exclude: []
+  maxConcurrentAgents: 3  # One Lead plus delegated Agents
+  transientRetries: 1     # Fresh-session retries per transient failure
+  baseRetryDelayMs: 1000  # Full-jitter backoff base without Retry-After
+```
+
+`language: zh` or `language: en` controls generated titles, descriptions, body
+text, delegated handoffs, and deterministic index text. Code identifiers and
+source citations remain unchanged.
+
+Every Lead and delegated Agent session enables Pi auto-compaction. When a
+session approaches its context limit, Pi summarizes older context while
+keeping recent work. Pi itself supports `compaction.enabled`,
+`compaction.reserveTokens`, and `compaction.keepRecentTokens` settings. The Wiki
+runtime currently uses Pi's in-memory defaults (`reserveTokens: 16384`,
+`keepRecentTokens: 20000`); these values are not configurable in
+`workspace.yaml`, and project or user Pi settings are not inherited by Wiki
+sessions.
 
 Progress is emitted as plain text. Runs are durable and can be inspected,
 paused, resumed, or cancelled without a TUI.
@@ -79,12 +102,13 @@ JSON is used only where the runtime needs validation and control signals.
 Pi supplies Agent sessions, model/tool execution, and context compaction. Pi
 and provider auto-retry are disabled; the Wiki task runtime is the only owner
 of transient retry. It also supplies repository/path authorization,
-concurrency admission, one bounded fresh-session retry, durable artifact
-acceptance, deterministic validation, and atomic publication.
+configurable concurrency admission and bounded fresh-session retries, durable
+artifact acceptance, deterministic validation, and atomic publication.
 
-Transient 500-class failures and timeouts receive at most one fresh-session
-retry. 429 reduces shared admission, honors `Retry-After`, and retries once;
-exhaustion remains an explicit failed task receipt. Authentication, billing,
+Transient 500-class failures and timeouts use the configured fresh-session
+retry count. 429 reduces delegated admission, honors `Retry-After`, and uses
+the same retry limit; exhaustion remains an explicit failed task receipt.
+Authentication, billing,
 invalid requests, and hard quota failures do not retry, and quota failures
 durably pause the run. Partial candidate work may remain available to resume,
 but it cannot be published without deterministic validation.

@@ -20,6 +20,47 @@ export interface WikiRunEvent {
   data?: Record<string, unknown>;
 }
 
+export type WikiRunStage = "prepare" | "lead" | "delegate" | "validate" | "publish";
+
+export interface WikiTaskSnapshot {
+  id: string;
+  role: "research" | "write" | "review";
+  status: "queued" | "running" | "complete" | "incomplete" | "failed";
+  summary?: string;
+  attempts?: number;
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+export interface WikiRunProgress {
+  stage: WikiRunStage;
+  batch?: number;
+  completed?: number;
+  total?: number;
+  tasks?: WikiTaskSnapshot[];
+  lastMessage?: string;
+}
+
+export interface WikiHistoryEntry {
+  role: "user" | "assistant" | "tool";
+  kind: "text" | "toolCall" | "toolResult" | "error";
+  text: string;
+  toolName?: string;
+  path?: string;
+  isError?: boolean;
+  timestamp?: number;
+}
+
+export interface WikiTaskInspection {
+  runId: string;
+  task: WikiTaskSnapshot;
+  receipt?: import("./delegate-contracts.js").WikiDelegateReceipt;
+  handoff?: string;
+  handoffPath?: string;
+  history?: WikiHistoryEntry[];
+  processAvailable: boolean;
+}
+
 export interface WikiRunView {
   id: string;
   cwd: string;
@@ -32,6 +73,7 @@ export interface WikiRunView {
   lastEventSequence: number;
   error?: string;
   pause?: WikiRunPause;
+  progress?: WikiRunProgress;
 }
 
 export interface WikiProducerResult {
@@ -54,6 +96,7 @@ export interface WikiRunHandle {
   events(after?: number): AsyncIterable<WikiRunEvent>;
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
+  inspect(taskId: string): Promise<WikiTaskInspection | undefined>;
 }
 
 export interface WikiRunAdapterContext {
@@ -72,6 +115,10 @@ export interface WikiPreparedRun {
   sourceFingerprint: string;
   candidateWikiRoot: string;
   sourceScopeIds: string[];
+  language: "zh" | "en";
+  maxConcurrentAgents: number;
+  transientRetries: number;
+  baseRetryDelayMs: number;
   prompt: string;
 }
 

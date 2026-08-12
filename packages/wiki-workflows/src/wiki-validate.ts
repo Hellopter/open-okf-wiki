@@ -5,7 +5,7 @@ import { inside, readText } from "./files.js";
 import { okfSources, parsePage } from "./frontmatter.js";
 import type { WikiValidation, WikiValidationIssue } from "./types.js";
 import { isRecord } from "./util.js";
-import { isSafeWikiPagePath } from "./wiki-path.js";
+import { isReservedWikiPagePath, isSafeWikiPagePath } from "./wiki-path.js";
 import type { WikiSpec, WikiSpecPage } from "./wiki-spec.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
 import { validateWikiIndexes } from "./wiki-indexes.js";
@@ -77,7 +77,7 @@ export async function deriveWikiCandidate(root: string, wikiDirectory: string): 
   const tree = await scanWikiTree(roots.wiki);
   const issues = [...tree.issues];
   const pages: WikiSpecPage[] = [];
-  for (const page of tree.markdown.filter((value) => path.posix.basename(value) !== "index.md")) {
+  for (const page of tree.markdown.filter((value) => !isReservedWikiPagePath(value))) {
     if (!isSafeWikiPagePath(page)) {
       issue(issues, "wiki-safety", `Candidate contains an unsafe or reserved page path: ${page}`, page);
       continue;
@@ -142,10 +142,10 @@ export async function validateWikiCandidate(
   const specPages = new Map(spec.domains.flatMap((domain) => domain.pages).map((page) => [page.path, page]));
   const plannedTargets = new Set([...targetPages, ...derivedIndexPaths(targetPages)]);
   const actualPages = tree.markdown
-    .filter((page) => path.posix.basename(page) !== "index.md" && targetSet.has(page))
+    .filter((page) => !isReservedWikiPagePath(page) && targetSet.has(page))
     .sort();
   const obsoletePages = tree.markdown
-    .filter((page) => path.posix.basename(page) !== "index.md" && !targetSet.has(page))
+    .filter((page) => !isReservedWikiPagePath(page) && !targetSet.has(page))
     .sort();
   const bodies = new Map<string, string>();
   const indexablePages = new Set<string>();

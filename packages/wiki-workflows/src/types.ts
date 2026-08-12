@@ -18,7 +18,7 @@ export interface WikiInspection {
   changedPaths: string[];
   /** Hash of the current Git-derived source state, excluding wiki/. */
   sourceFingerprint: string;
-  /** Sorted non-index Markdown pages present before this run starts. */
+  /** Sorted concept pages present before this run starts. */
   existingPages: string[];
   impactedPages: string[];
   wikiDrift: boolean;

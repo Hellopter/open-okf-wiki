@@ -15,11 +15,36 @@ import {
   type WikiRunEvent,
   type WikiRunHandle,
   type WikiRunView,
+  type WikiTaskInspection,
+  type WikiTaskSnapshot,
+  type WikiHistoryEntry,
 } from "./producer-types.js";
+import { createWikiArtifactStore } from "./artifact-store.js";
+import type { WikiDelegateReceipt } from "./delegate-contracts.js";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const EVENT_POLL_MS = 50;
 const CONTROL_SETTLE_MS = 1_000;
+
+function taskIdFrom(data?: Record<string, unknown>): string | undefined {
+  if (!data) return undefined;
+  if (typeof data.taskId === "string" && data.taskId) return data.taskId;
+  if (data.task && typeof data.task === "object") {
+    const task = data.task as { id?: unknown };
+    if (typeof task.id === "string" && task.id) return task.id;
+  }
+  return undefined;
+}
+
+function snapshotFromReceipt(receipt: WikiDelegateReceipt): WikiTaskSnapshot {
+  return {
+    id: receipt.id,
+    role: receipt.role,
+    status: receipt.status,
+    summary: receipt.summary,
+    attempts: receipt.attempts,
+  };
+}
 
 /**
  * Deep Wiki production Module. Callers see one run interface; model execution,
@@ -82,6 +107,7 @@ export class WikiProducer {
       events: (after = 0) => this.eventStream(ledger, runId, after),
       result: async () => await this.waitForResult(ledger, runId),
       control: async (action) => await this.control(ledger, runId, action),
+      inspect: async (taskId) => await inspectTask(ledger, runId, taskId),
     };
   }
 
@@ -110,7 +136,7 @@ export class WikiProducer {
         signal: controller.signal,
         preparation: state.attempt === 1 ? "fresh" as const : "resume" as const,
       };
-      await this.emit(ledger, runId, "progress", "Preparing candidate Wiki");
+      await this.emit(ledger, runId, "progress", "Preparing candidate Wiki", { stage: "prepare" });
       const prepared = await this.options.adapters.prepare(base);
       throwIfAborted(controller.signal);
       if (base.preparation === "fresh") {
@@ -118,7 +144,7 @@ export class WikiProducer {
       } else if (!state.sourceFingerprint || state.sourceFingerprint !== prepared.sourceFingerprint) {
         throw new Error("Repository sources changed while the Wiki run was paused; start a new update run");
       }
-      await this.emit(ledger, runId, "progress", "Running Wiki lead");
+      await this.emit(ledger, runId, "progress", "Running Wiki lead", { stage: "lead" });
       const lead = await this.options.adapters.createLead({ ...base, ...prepared });
       const leadContext: WikiLeadExecutionRequest = {
         ...base,
@@ -141,10 +167,10 @@ export class WikiProducer {
         });
         return;
       }
-      await this.emit(ledger, runId, "progress", "Validating candidate Wiki");
+      await this.emit(ledger, runId, "progress", "Validating candidate Wiki", { stage: "validate" });
       const validation = await this.options.adapters.validate({ ...base, ...prepared, leadOutcome });
       throwIfAborted(controller.signal);
-      await this.emit(ledger, runId, "progress", "Publishing candidate Wiki");
+      await this.emit(ledger, runId, "progress", "Publishing candidate Wiki", { stage: "publish" });
       const publication = await this.options.adapters.publish({ ...base, ...prepared, leadOutcome, validation });
       throwIfAborted(controller.signal);
       const completedAt = this.timestamp();
@@ -225,6 +251,16 @@ export class WikiProducer {
     data?: Record<string, unknown>,
   ): Promise<void> {
     await ledger.append(runId, { at: this.timestamp(), type, message, ...(data ? { data } : {}) });
+    const taskId = taskIdFrom(data);
+    if (taskId && (data?.receipt !== undefined || data?.history !== undefined)) {
+      const existing = await ledger.readTask(runId, taskId);
+      await ledger.writeTask(runId, taskId, {
+        ...(existing ?? {}),
+        ...(data?.receipt && typeof data.receipt === "object" ? { receipt: data.receipt as WikiDelegateReceipt } : {}),
+        ...(Array.isArray(data?.history) ? { history: data.history as WikiHistoryEntry[] } : {}),
+        updatedAt: this.timestamp(),
+      });
+    }
   }
 
   private ledger(cwd: string): WikiRunLedger {
@@ -255,6 +291,36 @@ function toView(state: WikiRunState): WikiRunView {
     lastEventSequence: state.lastEventSequence,
     ...(state.error ? { error: state.error } : {}),
     ...(state.pause ? { pause: state.pause } : {}),
+    ...(state.progress ? { progress: state.progress } : {}),
+  };
+}
+
+async function inspectTask(ledger: WikiRunLedger, runId: string, taskId: string): Promise<WikiTaskInspection | undefined> {
+  const state = await requiredState(ledger, runId);
+  const sidecar = await ledger.readTask(runId, taskId);
+  const fromProgress = state.progress?.tasks?.find((task) => task.id === taskId);
+  const task = fromProgress ?? (sidecar?.receipt ? snapshotFromReceipt(sidecar.receipt) : undefined);
+  if (!task) return undefined;
+  const receipt = sidecar?.receipt;
+  const history = sidecar?.history;
+  const ref = receipt?.outputs?.at(-1);
+  let handoff: string | undefined;
+  const handoffPath = ref?.relativePath;
+  if (ref) {
+    try {
+      handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref);
+    } catch {
+      handoff = undefined;
+    }
+  }
+  return {
+    runId,
+    task,
+    ...(receipt ? { receipt } : {}),
+    ...(handoff !== undefined ? { handoff } : {}),
+    ...(handoffPath ? { handoffPath } : {}),
+    ...(history ? { history } : {}),
+    processAvailable: Array.isArray(history) && history.length > 0,
   };
 }
 

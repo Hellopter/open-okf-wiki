@@ -35,6 +35,8 @@ function sessionFactory(prompt) {
     let aborted = false;
     const session = {
       state: {},
+      messages: [],
+      subscribe() { return () => {}; },
       setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
       async prompt(value) { await prompt(options.customTools, value, () => aborted); },
       async waitForIdle() {}, async abort() { aborted = true; }, dispose() {},
@@ -60,6 +62,22 @@ test("Lead can write the candidate and finish without delegating", async (t) => 
   assert.deepEqual(outcome, { kind: "complete", summary: "Candidate complete" });
   assert.equal(await readFile(path.join(candidateWikiRoot, "overview.md"), "utf8"), "# Overview\n");
   await assert.rejects(readFile(path.join(root, "wiki", "overview.md")), /ENOENT/);
+});
+
+test("Lead rejects Markdown paths that publication would reject", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  for (const invalidPath of ["wiki/Architecture.md", "wiki/feature map.md", "wiki/wiki/architecture.md", "wiki/index.md"]) {
+    const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
+      await call(tools, "write", { path: invalidPath, content: "# Invalid\n" });
+    }) });
+    await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /safe concept pages or log\.md/, invalidPath);
+  }
+
+  const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
+    await call(tools, "write", { path: "wiki/log.md", content: "# Changes\n" });
+    await call(tools, "wiki_finish", { summary: "Log written" });
+  }) });
+  assert.deepEqual(await runtime.run(request(root, candidateWikiRoot)), { kind: "complete", summary: "Log written" });
 });
 
 test("Lead completion without wiki_finish is rejected", async (t) => {
@@ -105,6 +123,33 @@ test("Lead provider quota returns a pause outcome", async (t) => {
   });
 });
 
+test("Lead uses configured transient retry count", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let sessions = 0;
+  const sleeps = [];
+  const runtime = createPiLeadRuntime({
+    language: "zh",
+    transientRetries: 2,
+    baseRetryDelayMs: 100,
+    random: () => 0.5,
+    sleep: async (ms) => { sleeps.push(ms); },
+    createSession: sessionFactory(async (tools) => {
+      sessions += 1;
+      if (sessions < 3) throw Object.assign(new Error("429 too many requests"), { status: 429 });
+      await call(tools, "wiki_finish", { summary: "完成" });
+    }),
+  });
+
+  assert.deepEqual(await runtime.run(request(root, candidateWikiRoot)), { kind: "complete", summary: "完成" });
+  assert.equal(sessions, 3);
+  assert.deepEqual(sleeps, [50, 100]);
+});
+
+test("Lead rejects invalid retry configuration", () => {
+  assert.throws(() => createPiLeadRuntime({ transientRetries: -1 }), /non-negative integer/);
+  assert.throws(() => createPiLeadRuntime({ baseRetryDelayMs: -1 }), /non-negative/);
+});
+
 test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let sessions = 0;
@@ -139,6 +184,27 @@ test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", 
   assert.deepEqual(autoRetryValues, [false, false]);
   assert.ok(turnRetrySettings.every((value) => value.enabled === false && value.maxRetries === 0));
   assert.ok(providerRetrySettings.every((value) => value.maxRetries === 0));
+});
+
+test("Pi leaf receives the configured Wiki language", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let prompt;
+  const createSession = async () => ({ session: {
+    state: {},
+    setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+    async prompt(value) { prompt = value; },
+    async waitForIdle() {}, async abort() {}, dispose() {},
+    getLastAssistantText() { return "# 完成"; },
+  } });
+  const artifacts = artifactStore();
+  const runtime = new WikiTaskRuntime({
+    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    agent: new PiWikiLeafAgent(artifacts, { createSession, language: "zh" }),
+  });
+
+  const result = await runtime.delegate([writeTask("localized")], new AbortController().signal);
+  assert.equal(result.status, "complete");
+  assert.match(prompt, /Simplified Chinese/);
 });
 
 test("Pi leaf 429 honors Retry-After through the shared runtime gate with three total requests", async (t) => {

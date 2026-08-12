@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createWikiExtension, wikiArgumentCompletions } from "../dist/extension.js";
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "wiki-extension-"));
   t.after(async () => await rm(cwd, { recursive: true, force: true }));
   await writeFile(path.join(cwd, "workspace.yaml"), [
@@ -19,6 +19,9 @@ async function fixture(t) {
 
   const views = new Map();
   const calls = [];
+  const statuses = [];
+  const widgets = [];
+  const customs = [];
   let next = 0;
   const handles = new Map();
   const handleFor = (id) => handles.get(id);
@@ -37,6 +40,17 @@ async function fixture(t) {
         const status = action === "pause" ? "paused" : action === "resume" ? "running" : "cancelled";
         views.set(view.id, { ...views.get(view.id), status });
         return views.get(view.id);
+      },
+      async inspect(taskId) {
+        calls.push(["inspect", view.id, taskId]);
+        const current = views.get(view.id);
+        const task = current?.progress?.tasks?.find((item) => item.id === taskId);
+        if (!task) return undefined;
+        return {
+          runId: view.id,
+          task,
+          processAvailable: false,
+        };
       },
     };
     handles.set(view.id, handle);
@@ -64,6 +78,7 @@ async function fixture(t) {
   const commands = new Map();
   const messages = [];
   const notices = [];
+  const hasUI = options.hasUI === true;
   const pi = {
     on(name, handler) { handlers.set(name, handler); },
     registerCommand(name, command) { commands.set(name, command); },
@@ -71,22 +86,35 @@ async function fixture(t) {
   };
   const context = {
     cwd,
-    mode: "print",
-    hasUI: false,
+    mode: hasUI ? "tui" : "print",
+    hasUI,
     model: undefined,
     thinkingLevel: undefined,
-    ui: { notify(message, level) { notices.push({ message, level }); } },
+    ui: {
+      notify(message, level) {
+        notices.push({ message, level });
+        if (hasUI) messages.push(message);
+      },
+      setStatus(key, text) { statuses.push([key, text]); },
+      setWidget(key, content) { widgets.push([key, content]); },
+      custom(factory) { customs.push(factory); return Promise.resolve(); },
+      theme: { fg: (_color, text) => text },
+    },
   };
   createWikiExtension({ createProducer: () => producer })(pi);
   await handlers.get("session_start")({}, context);
   const run = async (args) => await commands.get("wiki").handler(args, context);
-  return { cwd, calls, messages, notices, run };
+  return { cwd, calls, messages, notices, statuses, widgets, customs, views, handlers, context, run };
+}
+
+function flush() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 test("maps run controls onto WikiProducer", async (t) => {
   const subject = await fixture(t);
   await subject.run("auth flows");
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   assert.equal(subject.calls[0][0], "start");
   assert.equal(subject.calls[0][1].operation, "update");
   assert.equal(subject.calls[0][1].focus, "auth flows");
@@ -95,7 +123,7 @@ test("maps run controls onto WikiProducer", async (t) => {
   await subject.run("regenerate public API");
   assert.equal(subject.calls.findLast((call) => call[0] === "start")[1].operation, "regenerate");
   await subject.run("status run-1");
-  assert.match(subject.messages.at(-1), /Wiki run-1/);
+  assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message)));
   await subject.run("runs");
   assert.match(subject.messages.at(-1), /Wiki runs/);
   await subject.run("pause");
@@ -136,7 +164,83 @@ test("completion exposes management and run commands", () => {
     "init", "source", "regenerate", "status", "runs", "pause", "resume", "cancel",
   ]);
   assert.equal(wikiArgumentCompletions("status "), null);
+  assert.deepEqual(wikiArgumentCompletions("status run-1 task-9 "), [{
+    value: "status run-1 task-9 --process",
+    label: "--process",
+    description: "Show compact process history",
+  }]);
   assert.deepEqual(wikiArgumentCompletions("re").map((item) => item.label), ["regenerate", "resume"]);
   assert.deepEqual(wikiArgumentCompletions("source ").map((item) => item.label), ["add"]);
   assert.deepEqual(wikiArgumentCompletions("source add ").map((item) => item.label), ["link", "clone"]);
+});
+
+test("status without progress still prints Wiki run-1", async (t) => {
+  const subject = await fixture(t);
+  await subject.run("auth flows");
+  const before = subject.messages.length;
+  await subject.run("status run-1");
+  assert.ok(subject.messages.slice(before).some((message) => /Wiki run-1/.test(message)));
+});
+
+test("status with taskId calls inspect", async (t) => {
+  const subject = await fixture(t);
+  await subject.run("auth flows");
+  const current = subject.views.get("run-1");
+  subject.views.set("run-1", {
+    ...current,
+    progress: {
+      stage: "delegate",
+      tasks: [{ id: "write-1", role: "write", status: "complete" }],
+    },
+  });
+  await subject.run("status run-1 write-1");
+  assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "write-1"));
+  assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message) && /write-1/.test(message)));
+  assert.ok(!subject.messages.some((message) => / ·  process/.test(message)));
+
+  await subject.run("status run-1 write-1 --process");
+  assert.match(subject.messages.at(-1), /Wiki run-1  ·  write-1  ·  process/);
+
+  await subject.run("status run-1 missing");
+  assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "missing"));
+  assert.match(subject.messages.at(-1), /Wiki run-1 has no task "missing"/);
+  assert.match(subject.messages.at(-1), /Known: write-1/);
+});
+
+test("print mode never touches TUI status APIs or the overlay", async (t) => {
+  const subject = await fixture(t);
+  await subject.run("auth flows");
+  await flush();
+  await subject.run("status run-1");
+  await subject.run("status run-1 write-1");
+  assert.equal(subject.statuses.length, 0);
+  assert.equal(subject.widgets.length, 0);
+  assert.equal(subject.customs.length, 0);
+  assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message)));
+  assert.ok(subject.messages.some((message) => /Researching/.test(message)));
+});
+
+test("hasUI refreshes footer and widget after a run", async (t) => {
+  const subject = await fixture(t, { hasUI: true });
+  await subject.run("auth flows");
+  assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && Boolean(text)));
+  assert.ok(subject.widgets.some(([key]) => key === "wiki"));
+
+  const current = subject.views.get("run-1");
+  subject.views.set("run-1", {
+    ...current,
+    progress: {
+      stage: "delegate",
+      batch: 1,
+      completed: 1,
+      total: 3,
+      tasks: [{ id: "pages/auth.md", role: "write", status: "running" }],
+    },
+  });
+  await subject.run("status run-1");
+  assert.ok(subject.widgets.some(([, lines]) => Array.isArray(lines) && lines.some((line) => /pages\/auth\.md/.test(line))));
+
+  await subject.handlers.get("session_shutdown")();
+  assert.ok(subject.statuses.some(([key, text]) => key === "wiki" && text === undefined));
+  assert.ok(subject.widgets.some(([key, content]) => key === "wiki" && content === undefined));
 });

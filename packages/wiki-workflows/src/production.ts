@@ -13,7 +13,7 @@ interface ProductionWikiProducerOptions {
   getModel?: () => Model<any> | undefined;
   getThinkingLevel?: () => ThinkingLevel | undefined;
   /** @internal Deterministic production-seam injection for integration tests. */
-  createLead?: () => WikiLeadRuntime;
+  createLead?: (prepared: WikiPreparedRun) => WikiLeadRuntime;
 }
 
 /** Stable public factory. Host/model injection stays package-internal. */
@@ -49,13 +49,21 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         sourceFingerprint: inspection.sourceFingerprint,
         candidateWikiRoot,
         sourceScopeIds: inspection.sourcePaths,
-        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot),
+        language: workspace.language,
+        maxConcurrentAgents: workspace.wiki.maxConcurrentAgents,
+        transientRetries: workspace.wiki.transientRetries,
+        baseRetryDelayMs: workspace.wiki.baseRetryDelayMs,
+        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, workspace.language),
       };
     },
     createLead(prepared) {
-      return options.createLead?.() ?? createPiLeadRuntime({
+      return options.createLead?.(prepared) ?? createPiLeadRuntime({
         model: options.getModel?.(),
         thinkingLevel: options.getThinkingLevel?.(),
+        language: prepared.language,
+        concurrency: prepared.maxConcurrentAgents - 1,
+        transientRetries: prepared.transientRetries,
+        baseRetryDelayMs: prepared.baseRetryDelayMs,
       });
     },
     async validate(input) {
@@ -111,6 +119,7 @@ function leadPrompt(
   focus: string | undefined,
   inspection: WikiPreparedRun["inspection"],
   candidateWikiRoot: string,
+  language: "zh" | "en",
 ): string {
   const sourcePaths = inspection && typeof inspection === "object" && Array.isArray((inspection as { sourcePaths?: unknown }).sourcePaths)
     ? (inspection as { sourcePaths: unknown[] }).sourcePaths.filter((value): value is string => typeof value === "string")
@@ -120,6 +129,9 @@ function leadPrompt(
     focus ? `Prioritize this focus without omitting essential context: ${focus}` : "",
     `Declared source scopes: ${JSON.stringify(sourcePaths)}.`,
     `Candidate Wiki directory: ${candidateWikiRoot}.`,
+    language === "zh"
+      ? "Write all reader-facing Wiki content, including titles and descriptions, in Simplified Chinese. Keep code identifiers and source citations unchanged."
+      : "Write all reader-facing Wiki content, including titles and descriptions, in English. Keep code identifiers and source citations unchanged.",
     "Dynamically inspect coverage, delegate bounded research/write/review tasks, and continue only where evidence is missing.",
     "Use artifact handles for delegated results. Treat failed branches as missing coverage, never as evidence of absence.",
     "Finish only after the candidate contains useful Markdown pages and review has resolved critical evidence or structure defects.",

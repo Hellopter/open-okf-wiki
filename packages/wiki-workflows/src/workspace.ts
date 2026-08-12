@@ -30,10 +30,19 @@ export interface WikiWorkspaceSource {
 
 export interface WikiWorkspaceWikiConfig {
   exclude: string[];
+  /** Total concurrent model sessions, including the Lead. */
+  maxConcurrentAgents: number;
+  /** Fresh-session retries after a transient Lead or delegated Agent failure. */
+  transientRetries: number;
+  /** Full-jitter retry window when the provider supplies no Retry-After value. */
+  baseRetryDelayMs: number;
 }
 
 export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   exclude: [],
+  maxConcurrentAgents: 3,
+  transientRetries: 1,
+  baseRetryDelayMs: 1_000,
 };
 
 export interface WikiWorkspace {
@@ -119,7 +128,7 @@ export function createWikiWorkspaceManagement(
           configPath,
           language: request.language ?? "zh",
           defaultSourceIgnores: request.defaultSourceIgnores ?? true,
-          wiki: { exclude },
+          wiki: { ...structuredClone(DEFAULT_WORKSPACE_WIKI_CONFIG), exclude },
           sources: [],
         }, true);
       } catch (error) {
@@ -293,7 +302,20 @@ async function readWorkspaceConfig(configPath: string, root: string, required: b
 function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
   if (!isRecord(value)) throw new Error("workspace.yaml wiki must be an object");
   const exclude = parseStringArray(value.exclude, "wiki.exclude");
-  return { exclude };
+  return {
+    exclude,
+    maxConcurrentAgents: parseInteger(value.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
+    transientRetries: parseInteger(value.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
+    baseRetryDelayMs: parseInteger(value.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
+  };
+}
+
+function parseInteger(value: unknown, field: string, fallback: number, minimum: number, maximum: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new Error(`workspace.yaml ${field} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value as number;
 }
 
 function parseStringArray(value: unknown, field: string, required = false): string[] {
@@ -396,7 +418,7 @@ async function writeWorkspaceConfig(configPath: string, workspace: WikiWorkspace
     version: 1,
     language: workspace.language,
     defaultSourceIgnores: workspace.defaultSourceIgnores,
-    wiki: { exclude: workspace.wiki.exclude },
+    wiki: workspace.wiki,
     sources: workspace.sources,
   });
   await writeAtomic(configPath, content, exclusive);

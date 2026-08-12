@@ -1,9 +1,18 @@
+import type {
+  WikiHistoryEntry,
+  WikiRunEvent,
+  WikiRunProgress,
+  WikiRunView,
+  WikiTaskInspection,
+  WikiTaskSnapshot,
+} from "./producer-types.js";
+
 export type WikiCliCommand =
   | { action: "run"; focus?: string; regenerate: boolean }
   | { action: "init"; workspace?: string; language: "zh" | "en"; exclude: string[]; defaultSourceIgnores: boolean }
   | { action: "source-add"; kind: "link"; localPath: string; name?: string; workspace?: string }
   | { action: "source-add"; kind: "clone"; url: string; ref?: string; name?: string; workspace?: string }
-  | { action: "status"; runId?: string }
+  | { action: "status"; runId?: string; taskId?: string; process?: boolean }
   | { action: "runs" }
   | { action: "pause" }
   | { action: "resume"; runId?: string }
@@ -23,7 +32,7 @@ export function parseWikiCliCommand(raw: string): WikiCliCommand {
     case "regenerate":
       return { action: "run", regenerate: true, focus: joinedFocus(rest) };
     case "status":
-      return withOptionalRunId(action, optionalRunId(rest, "status"));
+      return parseStatus(rest);
     case "runs":
       requireNoArguments(rest, "runs");
       return { action };
@@ -39,18 +48,132 @@ export function parseWikiCliCommand(raw: string): WikiCliCommand {
   }
 }
 
-function withOptionalRunId<T extends "status" | "resume" | "cancel">(
+function withOptionalRunId<T extends "resume" | "cancel">(
   action: T,
   runId: string | undefined,
 ): Extract<WikiCliCommand, { action: T }> {
   return (runId ? { action, runId } : { action }) as Extract<WikiCliCommand, { action: T }>;
 }
 
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function parseStatus(values: string[]): Extract<WikiCliCommand, { action: "status" }> {
+  let runId: string | undefined;
+  let taskId: string | undefined;
+  let process = false;
+  let extra = false;
+  for (const value of values) {
+    if (value === "--process") {
+      process = true;
+      continue;
+    }
+    if (runId === undefined) {
+      if (!SAFE_ID.test(value)) throw new Error("Invalid Wiki run id");
+      runId = value;
+      continue;
+    }
+    if (taskId === undefined) {
+      if (!SAFE_ID.test(value)) throw new Error("Invalid Wiki task id");
+      taskId = value;
+      continue;
+    }
+    extra = true;
+  }
+  if (extra || (process && !taskId) || (taskId && !runId)) {
+    throw new Error("Usage: /wiki status [run-id] [task-id] [--process]");
+  }
+  return {
+    action: "status",
+    ...(runId ? { runId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(process ? { process } : {}),
+  };
+}
+
 export function renderWikiRun(run: WikiRunView | undefined): string {
   if (!run) return "Wiki: no run.";
-  const focus = run.focus ? ` | ${run.focus}` : "";
-  const error = run.error ? `\n${run.error}` : "";
-  return `Wiki ${run.id} | ${run.operation} | ${run.status}${focus}${error}`;
+  if (!run.progress) {
+    const focus = run.focus ? ` | ${run.focus}` : "";
+    const error = run.error ? `\n${run.error}` : "";
+    return `Wiki ${run.id} | ${run.operation} | ${run.status}${focus}${error}`;
+  }
+  return renderWikiRunCard(run, run.progress);
+}
+
+function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string {
+  const elapsed = formatElapsed(run.createdAt, run.completedAt ?? run.updatedAt);
+  const elapsedPart = elapsed ? `  [${elapsed}]` : "";
+  const lines: string[] = [`Wiki ${run.id}  ${run.operation}  ${run.status}${elapsedPart}`];
+
+  const stageSegments = [`stage  ${progress.stage}`];
+  const batch = numberValue(progress.batch);
+  const completed = numberValue(progress.completed);
+  const total = numberValue(progress.total);
+  if (batch !== undefined) stageSegments.push(`batch ${batch}`);
+  if (completed !== undefined && total !== undefined) {
+    const running = progress.tasks?.filter((task) => task.status === "running").length ?? 0;
+    stageSegments.push(`${completed}/${total} done${running > 0 ? `, ${running} running` : ""}`);
+  }
+  lines.push(joinStageSegments(stageSegments));
+
+  if (run.focus) lines.push(`focus  ${run.focus}`);
+
+  if (run.pause) {
+    const retry = run.pause.retryAt ? ` · retry at ${run.pause.retryAt}` : "";
+    lines.push(`pause  ${run.pause.reason}${retry}`);
+    if (run.pause.summary) lines.push(`       ${run.pause.summary}`);
+  }
+
+  if (run.error) lines.push(`error  ${run.error}`);
+
+  const tasks = progress.tasks ?? [];
+  if (tasks.length > 0) {
+    lines.push("");
+    for (const task of tasks) lines.push(renderTaskLine(task));
+  }
+
+  const last = textValue(progress.lastMessage);
+  if (last) lines.push(`last  ${last}`);
+
+  return lines.join("\n");
+}
+
+function joinStageSegments(segments: string[]): string {
+  if (segments.length === 1) return segments[0]!;
+  if (segments.length === 2) {
+    const separator = segments[1]!.startsWith("batch ") ? " · " : "  ·  ";
+    return `${segments[0]}${separator}${segments[1]}`;
+  }
+  return `${segments[0]} · ${segments.slice(1).join("  ·  ")}`;
+}
+
+function renderTaskLine(task: WikiTaskSnapshot): string {
+  const attempt = task.attempts !== undefined ? `  [attempt ${task.attempts}]` : "";
+  return `  ${taskIcon(task.status)} ${task.role}  ${task.id}${attempt}`;
+}
+
+function taskIcon(status: string | undefined): string {
+  switch (status) {
+    case "queued": return "·";
+    case "running": return "◆";
+    case "complete": return "✓";
+    case "incomplete": return "◐";
+    case "failed": return "✗";
+    default: return "·";
+  }
+}
+
+function formatElapsed(start: string, end: string): string | undefined {
+  const created = Date.parse(start);
+  const finished = Date.parse(end);
+  if (!Number.isFinite(created) || !Number.isFinite(finished) || finished < created) return undefined;
+  const totalSeconds = Math.floor((finished - created) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h${minutes}m${seconds}s`;
+  if (minutes > 0) return seconds > 0 ? `${minutes}m${seconds}s` : `${minutes}m`;
+  return `${seconds}s`;
 }
 
 export function renderWikiRuns(runs: readonly WikiRunView[]): string {
@@ -69,7 +192,90 @@ export function renderWikiEvent(event: WikiRunEvent): string {
   const progress = completed !== undefined && total !== undefined ? ` ${completed}/${total}` : "";
   const prefix = stage ? `[${stage}${progress}] ` : "";
   const message = event.message.trim() || humanize(event.type);
-  return `${prefix}${message}`;
+  const taskId = textValue(event.data?.taskId);
+  const taskPart = taskId ? ` ${taskId}` : "";
+  return `${prefix}${message}${taskPart}`;
+}
+
+export function renderWikiTask(inspection: WikiTaskInspection): string {
+  const task = inspection.task;
+  const receipt = inspection.receipt;
+  const attempts = receipt?.attempts ?? task.attempts ?? 0;
+  const attemptLabel = attempts === 1 ? "1 attempt" : `${attempts} attempts`;
+  const startedAt = task.startedAt;
+  const updatedAt = task.updatedAt;
+  const elapsed = startedAt && updatedAt ? formatElapsed(startedAt, updatedAt) : undefined;
+  const elapsedPart = elapsed ? `  ·  ${elapsed}` : "";
+  const lines: string[] = [
+    `Wiki ${inspection.runId}  ·  ${task.id}`,
+    `${task.role}  ${task.status}  ·  ${attemptLabel}${elapsedPart}`,
+  ];
+
+  const summary = textValue(receipt?.summary) ?? textValue(task.summary);
+  if (summary) {
+    lines.push("summary");
+    lines.push(`  ${summary}`);
+  }
+
+  const coverage = receipt?.coverage;
+  if (coverage && coverage.length > 0) {
+    lines.push("coverage");
+    for (const path of coverage) lines.push(`  ${path}`);
+  }
+
+  const gaps = receipt?.gaps;
+  if (gaps && gaps.length > 0) {
+    lines.push("gaps");
+    for (const gap of gaps) {
+      const question = textValue(gap.question);
+      if (question) lines.push(`  ${question}`);
+    }
+  }
+
+  const errorMessage = textValue(receipt?.error?.message);
+  if (errorMessage) lines.push(`error  ${errorMessage}`);
+
+  const handoffPath = textValue(inspection.handoffPath);
+  const handoff = inspection.handoff;
+  if (handoffPath) lines.push(`handoff  ${handoffPath}`);
+  if (handoff) {
+    lines.push("────────────────────────────────");
+    const bodyLines = handoff.split(/\r?\n/);
+    lines.push(...bodyLines.slice(0, 80));
+    if (bodyLines.length > 80) {
+      const size = Buffer.byteLength(handoff, "utf8");
+      lines.push(`… (handoff continues; ${size} at ${handoffPath ?? "unknown"})`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export function renderWikiTaskProcess(inspection: WikiTaskInspection): string {
+  const header = `Wiki ${inspection.runId}  ·  ${inspection.task.id}  ·  process`;
+  const history = inspection.history;
+  if (!inspection.processAvailable || !history || history.length === 0) {
+    const lines = [header, "process  unavailable for this task"];
+    const handoffPath = textValue(inspection.handoffPath);
+    if (handoffPath) lines.push(`handoff  ${handoffPath}`);
+    return lines.join("\n");
+  }
+  const lines = [header];
+  for (const entry of history) lines.push(renderHistoryLine(entry));
+  return lines.join("\n");
+}
+
+function renderHistoryLine(entry: WikiHistoryEntry): string {
+  const text = entry.text.trim();
+  return `${historyPrefix(entry)}  ${text}`.trimEnd();
+}
+
+function historyPrefix(entry: WikiHistoryEntry): string {
+  if (entry.kind === "toolCall") return `→ ${entry.toolName ?? "tool"}`;
+  if (entry.kind === "toolResult") return "tool";
+  if (entry.kind === "error") return "error";
+  if (entry.role === "user") return "user";
+  return "text";
 }
 
 export function wikiCliHelp(): string {
@@ -80,7 +286,7 @@ export function wikiCliHelp(): string {
     "  /wiki source add link <local-path> [--name <name>] [--workspace <dir>]",
     "  /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]",
     "  /wiki regenerate [focus]",
-    "  /wiki status [run-id]",
+    "  /wiki status [run-id] [task-id] [--process]",
     "  /wiki runs",
     "  /wiki pause",
     "  /wiki resume [run-id]",
@@ -169,7 +375,7 @@ function joinedFocus(values: string[]): string | undefined {
 function optionalRunId(values: string[], action: string): string | undefined {
   if (values.length > 1) throw new Error(`Usage: /wiki ${action} [run-id]`);
   const value = values[0];
-  if (value && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+  if (value && !SAFE_ID.test(value)) {
     throw new Error("Invalid Wiki run id");
   }
   return value;
@@ -191,4 +397,3 @@ function textValue(value: unknown): string | undefined {
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
-import type { WikiRunEvent, WikiRunView } from "./producer-types.js";

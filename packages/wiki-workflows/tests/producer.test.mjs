@@ -115,8 +115,14 @@ test("resume preserves the candidate and cancel preserves terminal immutability"
 test("fresh producer lists and opens disk runs, recovering interruption as paused", async (t) => {
   const cwd = await temporaryWorkspace(t);
   const gate = deferred();
-  const first = fixture({ createLead: () => ({ async run() { await gate.promise; return { kind: "complete", summary: "done" }; } }) });
+  let entered = false;
+  const first = fixture({ createLead: () => ({ async run() {
+    entered = true;
+    await gate.promise;
+    return { kind: "complete", summary: "done" };
+  } }) });
   const original = await first.producer.start({ cwd });
+  while (!entered) await new Promise((resolve) => setImmediate(resolve));
   const fresh = fixture();
   const runs = await fresh.producer.list(cwd);
   assert.equal(runs[0].id, original.id);
@@ -156,4 +162,66 @@ test("quota outcome durably pauses the run with retry metadata", async (t) => {
     retryAt,
   });
   await recovered.control("cancel");
+});
+
+test("stage is present on prepare/lead/validate/publish and inspect reads sidecar receipts", async (t) => {
+  const cwd = await temporaryWorkspace(t);
+  const receipt = {
+    id: "research-1",
+    role: "research",
+    status: "complete",
+    summary: "notes",
+    outputs: [],
+    coverage: ["source"],
+    gaps: [],
+    attempts: 1,
+  };
+  const tasks = [
+    { id: "research-1", role: "research", status: "running" },
+    { id: "write-1", role: "write", status: "queued" },
+  ];
+  const history = [{ role: "assistant", kind: "text", text: "found sources" }];
+  const subject = fixture({
+    createLead: () => ({
+      async run(input) {
+        await input.report("Delegating research", { tasks });
+        await input.report("Research complete", { taskId: "research-1", receipt, history });
+        return { kind: "complete", summary: "done" };
+      },
+    }),
+  });
+  const handle = await subject.producer.start({ cwd });
+  await handle.result();
+  const events = [];
+  for await (const event of handle.events()) events.push(event);
+  const staged = Object.fromEntries(
+    events.filter((event) => event.data?.stage).map((event) => [event.message, event.data.stage]),
+  );
+  assert.equal(staged["Preparing candidate Wiki"], "prepare");
+  assert.equal(staged["Running Wiki lead"], "lead");
+  assert.equal(staged["Validating candidate Wiki"], "validate");
+  assert.equal(staged["Publishing candidate Wiki"], "publish");
+
+  const view = await handle.view();
+  assert.equal(view.progress.stage, "publish");
+  assert.deepEqual(view.progress.tasks, [
+    { id: "research-1", role: "research", status: "running" },
+    { id: "write-1", role: "write", status: "queued" },
+  ]);
+
+  const inspected = await handle.inspect("research-1");
+  assert.ok(inspected);
+  assert.equal(inspected.runId, handle.id);
+  assert.equal(inspected.task.id, "research-1");
+  assert.deepEqual(inspected.receipt, receipt);
+  assert.deepEqual(inspected.history, history);
+  assert.equal(inspected.processAvailable, true);
+
+  const snapshotOnly = await handle.inspect("write-1");
+  assert.ok(snapshotOnly);
+  assert.equal(snapshotOnly.task.status, "queued");
+  assert.equal(snapshotOnly.receipt, undefined);
+  assert.equal(snapshotOnly.processAvailable, false);
+
+  assert.equal(await handle.inspect("missing-task"), undefined);
 });

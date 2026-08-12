@@ -5,6 +5,7 @@ import { readText } from "./files.js";
 import type { WikiFinalization, WikiValidation } from "./types.js";
 import type { WikiSpec } from "./wiki-spec.js";
 import { materializeWikiIndexes } from "./wiki-indexes.js";
+import { isReservedWikiPagePath } from "./wiki-path.js";
 import {
   GENERATED_BY,
   VERIFIED_BY,
@@ -72,7 +73,7 @@ export async function finalizeWiki(
 
   const after = await scanWikiTree(roots.wiki);
   if (after.issues.length) throw new Error(`Unsafe Wiki tree after finalization: ${after.issues.map(formatIssue).join("; ")}`);
-  const finalPages = after.markdown.filter((page) => path.posix.basename(page) !== "index.md").sort();
+  const finalPages = after.markdown.filter((page) => !isReservedWikiPagePath(page)).sort();
   const finalIndexes = after.markdown.filter((page) => path.posix.basename(page) === "index.md").sort();
   if (!sameStrings(finalPages, targetPages)) throw new Error("Final Wiki page set does not exactly match the WikiSpec");
   if (!sameStrings(finalIndexes, rebuiltIndexes)) throw new Error("Final Wiki index set does not match the target page tree");

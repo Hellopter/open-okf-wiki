@@ -11,6 +11,17 @@ import {
   type WikiDelegateTask,
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
+import type { WikiHistoryEntry } from "./producer-types.js";
+import { isSafeWikiPagePath } from "./wiki-path.js";
+
+export type WikiTaskProgressPhase = "queued" | "start" | "end";
+
+export interface WikiTaskProgressEvent {
+  phase: WikiTaskProgressPhase;
+  task: WikiDelegateTask;
+  receipt?: WikiDelegateReceipt; // required on end
+  history?: WikiHistoryEntry[];
+}
 
 export interface WikiLeafTaskContext {
   runId: string;
@@ -28,6 +39,7 @@ export interface WikiLeafResult {
   coverage?: string[];
   gaps?: WikiDelegateGap[];
   status?: "complete" | "incomplete";
+  history?: WikiHistoryEntry[];
 }
 
 export interface WikiLeafAgent {
@@ -43,10 +55,12 @@ export interface WikiTaskRuntimeOptions {
   artifactStore: WikiArtifactStore;
   agent: WikiLeafAgent;
   concurrency?: number;
+  transientRetries?: number;
   baseRetryDelayMs?: number;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   random?: () => number;
   now?: () => number;
+  onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
 }
 
 export class WikiTaskRuntime {
@@ -55,13 +69,19 @@ export class WikiTaskRuntime {
   private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   private readonly random: () => number;
   private readonly baseRetryDelayMs: number;
+  private readonly transientRetries: number;
+  private readonly onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
 
   constructor(private readonly options: WikiTaskRuntimeOptions) {
     this.gate = new SharedAdmissionGate(options.concurrency ?? 2, options.now);
     this.sleep = options.sleep ?? abortableSleep;
     this.random = options.random ?? Math.random;
     this.baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
+    this.transientRetries = options.transientRetries ?? 1;
+    if (!Number.isInteger(this.transientRetries) || this.transientRetries < 0) throw new Error("transientRetries must be a non-negative integer");
+    if (!Number.isFinite(this.baseRetryDelayMs) || this.baseRetryDelayMs < 0) throw new Error("baseRetryDelayMs must be non-negative");
     this.contextArtifacts = { ...options.contextArtifacts };
+    this.onTask = options.onTask;
   }
 
   async delegate(tasks: readonly WikiDelegateTask[], signal: AbortSignal): Promise<WikiDelegateBatchReceipt> {
@@ -70,6 +90,9 @@ export class WikiTaskRuntime {
       for (const ref of task.contextRefs) {
         if (!Object.hasOwn(this.contextArtifacts, ref)) throw new Error(`Delegate task ${task.id} requests undeclared context artifact: ${ref}`);
       }
+    }
+    for (const task of tasks) {
+      await this.fireProgress({ phase: "queued", task });
     }
     const receipts = await Promise.all(tasks.map(async (task) => await this.execute(task, signal)));
     for (const value of receipts) {
@@ -92,13 +115,17 @@ export class WikiTaskRuntime {
     const acceptedOutputs: WikiArtifactRef[] = [];
     const acceptedCoverage = new Set<string>();
     const acceptedGaps: WikiDelegateGap[] = [];
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const maxAttempts = this.transientRetries + 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let release: (() => void) | undefined;
       try {
         release = await this.gate.acquire(signal);
+        await this.fireProgress({ phase: "start", task });
         const result = await this.options.agent.run(task, this.contextFor(task, attempt, signal));
         const output = await this.persist(task, attempt, result.markdown);
-        return receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt);
+        const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt);
+        await this.fireProgress({ phase: "end", task, receipt: successReceipt, history: result.history });
+        return successReceipt;
       } catch (error) {
         let failure = classifyTaskFailure(error, signal.aborted);
         lastFailure = failure;
@@ -114,27 +141,33 @@ export class WikiTaskRuntime {
           }
         }
         if (failure.code === "quota" || failure.code === "usage_limit") {
-          return receipt(task, "failed", failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
+          const pauseReceipt = receipt(task, "failed", failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
+          await this.fireProgress({ phase: "end", task, receipt: pauseReceipt });
+          return pauseReceipt;
         }
-        const mayRetry = failure.retryable && attempt === 1;
+        const mayRetry = failure.retryable && attempt < maxAttempts;
         if (!mayRetry) {
           const status = acceptedOutputs.length > 0 || failure.code === "timeout" || failure.code === "context_exhausted"
             ? "incomplete"
             : "failed";
-          return receipt(task, status, failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
+          const terminalReceipt = receipt(task, status, failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
+          await this.fireProgress({ phase: "end", task, receipt: terminalReceipt });
+          return terminalReceipt;
         }
         if (failure.code === "rate_limit") this.gate.reportPressure(failure.retryAfterMs ?? this.baseRetryDelayMs);
         release?.();
         release = undefined;
         const delay = failure.code === "rate_limit" && failure.retryAfterMs !== undefined
           ? failure.retryAfterMs
-          : Math.floor(this.random() * this.baseRetryDelayMs);
+          : Math.floor(this.random() * this.baseRetryDelayMs * (2 ** Math.max(0, attempt - 1)));
         await this.sleep(delay, signal);
       } finally {
         release?.();
       }
     }
-    return receipt(task, acceptedOutputs.length ? "incomplete" : "failed", lastFailure?.message ?? "Task failed", acceptedOutputs, [...acceptedCoverage], acceptedGaps, lastFailure, 2);
+    const fallbackReceipt = receipt(task, acceptedOutputs.length ? "incomplete" : "failed", lastFailure?.message ?? "Task failed", acceptedOutputs, [...acceptedCoverage], acceptedGaps, lastFailure, maxAttempts);
+    await this.fireProgress({ phase: "end", task, receipt: fallbackReceipt });
+    return fallbackReceipt;
   }
 
   private contextFor(task: WikiDelegateTask, attempt: number, signal: AbortSignal): WikiLeafTaskContext {
@@ -164,6 +197,14 @@ export class WikiTaskRuntime {
       throw new WikiTaskExecutionError("Could not persist task artifact", "artifact_io", { cause: error });
     }
   }
+
+  private async fireProgress(event: WikiTaskProgressEvent): Promise<void> {
+    try {
+      await this.onTask?.(event);
+    } catch {
+      /* observability must not fail the task */
+    }
+  }
 }
 
 function validateBatch(tasks: readonly WikiDelegateTask[], options: WikiTaskRuntimeOptions): void {
@@ -180,7 +221,8 @@ function validateBatch(tasks: readonly WikiDelegateTask[], options: WikiTaskRunt
     if (task.role === "write" && !task.writePaths?.length) throw new Error(`Write task ${task.id} requires writePaths`);
     if (task.role !== "write" && task.writePaths?.length) throw new Error(`Only write tasks may declare writePaths: ${task.id}`);
     for (const value of task.writePaths ?? []) {
-      if (!/^wiki\/(?!.*(?:^|\/)\.\.?\/)[^\\]+\.md$/.test(value)) throw new Error(`Unsafe Wiki write path: ${value}`);
+      const relative = typeof value === "string" && value.startsWith("wiki/") ? value.slice("wiki/".length) : undefined;
+      if (!isSafeWikiPagePath(relative)) throw new Error(`Unsafe Wiki write path: ${value}`);
       if (writes.has(value)) throw new Error(`Delegate writePaths overlap within batch: ${value}`);
       writes.add(value);
     }

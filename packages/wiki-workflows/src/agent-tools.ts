@@ -20,6 +20,7 @@ import {
   workspaceToolPolicy,
 } from "./path-policy.js";
 import { boundToolExecutionResult } from "./tool-budget.js";
+import { isSafeWikiPagePath } from "./wiki-path.js";
 
 export type WikiToolRole = "lead" | "researcher" | "writer" | "reviewer";
 
@@ -160,13 +161,11 @@ function exactWriterPaths(
   const allowed = new Set<string>();
   for (const rawPath of writePaths) {
     if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid writer page path");
-    const absolute = resolveActiveWikiPath(policy, activeWikiRoot, rawPath);
-    const relative = path.relative(activeWikiRoot, absolute);
-    if (!pathIsInside(path.resolve(activeWikiRoot), absolute) || !relative || path.basename(relative) === "index.md" || !relative.endsWith(".md")
-      || relative.split(path.sep).some((part) => part === "." || part === ".." || !part)) {
+    const relative = rawPath.startsWith("wiki/") ? rawPath.slice("wiki/".length) : undefined;
+    if (!isSafeWikiPagePath(relative)) {
       throw new Error(`Workflow configuration error: writer path must be a non-index Markdown page under the active Wiki root: ${rawPath}`);
     }
-    allowed.add(path.resolve(absolute));
+    allowed.add(path.resolve(activeWikiRoot, ...relative.split("/")));
   }
   return allowed;
 }
@@ -265,6 +264,10 @@ async function guardedLeadMkdir(root: string, directory: string): Promise<void> 
 async function guardedLeadWrite(root: string, file: string, content: string): Promise<void> {
   await ensureWikiRoot(root);
   assertLeadMarkdownPath(root, file);
+  const relative = path.relative(path.resolve(root), path.resolve(file)).split(path.sep).join("/");
+  if (!isSafeWikiPagePath(relative) && path.posix.basename(relative) !== "log.md") {
+    throw new Error(`Lead may write only safe concept pages or log.md: ${file}`);
+  }
   await assertContainedAbsolutePath(root, file, true);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, content, "utf8");

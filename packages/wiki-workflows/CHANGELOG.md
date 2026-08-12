@@ -31,12 +31,18 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
   schema, artifact I/O, and publication I/O failures do not retry.
 - Publication continues to use a recoverable rename journal and atomic swap.
 
+### Observability
+
+- Added a `/wiki status` progress card, `inspect()` for task receipts and
+  handoffs, `--process` compact history, TUI footer/widget, and a status overlay.
+
 ### Commands
 
 - Added `/wiki init` with language, repeatable source excludes, and default
   ignore controls for explicit multi-source workspaces.
 - Added `/wiki source add link` for local Git roots and `/wiki source add clone`
   for local or remote URLs, with optional source names, workspace paths and refs.
-- Existing run commands remain `/wiki [focus]`, `regenerate`, `status`, `runs`,
-  `pause`, `resume`, and `cancel`. A Git repository without `workspace.yaml`
-  remains an implicit single source and needs no initialization.
+- Existing run commands remain `/wiki [focus]`, `regenerate`,
+  `status [run-id] [task-id] [--process]`, `runs`, `pause`, `resume`, and
+  `cancel`. A Git repository without `workspace.yaml` remains an implicit
+  single source and needs no initialization.

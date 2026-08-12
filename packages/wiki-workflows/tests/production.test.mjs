@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parsePage } from "../dist/frontmatter.js";
 import { createConfiguredWikiProducer } from "../dist/production.js";
 
 async function fixture(t) {
@@ -52,6 +53,71 @@ test("production rejects an invalid candidate before publication", async (t) => 
   const run = await producer.start({ cwd: root });
   await assert.rejects(run.result(), /Wiki candidate is invalid/);
   await assert.rejects(readFile(path.join(root, "wiki", "runtime", "runtime.md"), "utf8"), { code: "ENOENT" });
+});
+
+test("production passes workspace language and Agent policy to the Lead", async (t) => {
+  const root = await fixture(t);
+  const source = path.join(root, "api");
+  await mkdir(source);
+  await writeFile(path.join(source, "index.ts"), "export const api = true;\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1",
+    "language: zh",
+    "defaultSourceIgnores: true",
+    "wiki:",
+    "  exclude: []",
+    "  maxConcurrentAgents: 5",
+    "  transientRetries: 3",
+    "  baseRetryDelayMs: 2500",
+    "sources:",
+    "  - path: api",
+    "    origin:",
+    "      type: link",
+    `      localPath: ${JSON.stringify(source)}`,
+    "",
+  ].join("\n"));
+  let prepared;
+  const producer = createConfiguredWikiProducer({
+    createLead(input) {
+      prepared = input;
+      return { async run() { throw new Error("stop after prepare"); } };
+    },
+  });
+
+  await assert.rejects((await producer.start({ cwd: root })).result(), /stop after prepare/);
+  assert.equal(prepared.language, "zh");
+  assert.equal(prepared.maxConcurrentAgents, 5);
+  assert.equal(prepared.transientRetries, 3);
+  assert.equal(prepared.baseRetryDelayMs, 2500);
+  assert.match(prepared.prompt, /Simplified Chinese/);
+});
+
+test("production publishes a root-level concept page and preserves reserved log", async (t) => {
+  const root = await fixture(t);
+  const log = "# Change history\n\n- Added architecture documentation.\n";
+  const producer = createConfiguredWikiProducer({
+    createLead: () => ({
+      async run(request) {
+        await request.report("Writing architecture page", { stage: "lead" });
+        await writeFile(path.join(request.candidateWikiRoot, "architecture.md"), validPage(), "utf8");
+        await writeFile(path.join(request.candidateWikiRoot, "log.md"), log, "utf8");
+        return { kind: "complete", summary: "root page" };
+      },
+    }),
+  });
+
+  const run = await producer.start({ cwd: root });
+  const result = await run.result();
+  const view = await run.view();
+  assert.ok(view.progress);
+  assert.equal(typeof view.progress.stage, "string");
+  assert.deepEqual(result.pages, ["architecture.md"]);
+  const published = parsePage(await readFile(path.join(root, "wiki", "architecture.md"), "utf8"));
+  assert.equal(published.frontmatter.generated.by, "open-okf-wiki/1.0.0");
+  assert.equal(published.frontmatter.verified.by, "process:open-okf-wiki");
+  assert.equal(await readFile(path.join(root, "wiki", "log.md"), "utf8"), log);
+  assert.match(await readFile(path.join(root, "wiki", "index.md"), "utf8"), /\[Runtime\]\(\.\/architecture\.md\)/);
 });
 
 test("resume preserves the existing candidate instead of preparing it again", async (t) => {

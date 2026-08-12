@@ -61,9 +61,49 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.language, "zh");
   assert.equal(workspace.defaultSourceIgnores, true);
   assert.deepEqual(workspace.wiki.exclude, ["generated/**", "private/**"]);
+  assert.equal(workspace.wiki.maxConcurrentAgents, 3);
+  assert.equal(workspace.wiki.transientRetries, 1);
+  assert.equal(workspace.wiki.baseRetryDelayMs, 1000);
   assert.deepEqual(workspace.sources, []);
   assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
+});
+
+test("loads configurable Wiki concurrency and transient retry policy", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-runtime-config-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  const configPath = path.join(root, "workspace.yaml");
+  const validConfig = [
+    "version: 1",
+    "language: zh",
+    "defaultSourceIgnores: true",
+    "wiki:",
+    "  exclude: []",
+    "  maxConcurrentAgents: 6",
+    "  transientRetries: 3",
+    "  baseRetryDelayMs: 2500",
+    "sources: []",
+    "",
+  ].join("\n");
+  await writeFile(configPath, validConfig);
+
+  const loaded = await loadWikiWorkspace(root);
+  assert.deepEqual(loaded.wiki, {
+    exclude: [],
+    maxConcurrentAgents: 6,
+    transientRetries: 3,
+    baseRetryDelayMs: 2500,
+  });
+
+  for (const [valid, invalid] of [
+    ["  maxConcurrentAgents: 6", "  maxConcurrentAgents: 1"],
+    ["  transientRetries: 3", "  transientRetries: -1"],
+    ["  baseRetryDelayMs: 2500", "  baseRetryDelayMs: 300001"],
+  ]) {
+    await writeFile(configPath, validConfig.replace(valid, invalid));
+    await assert.rejects(loadWikiWorkspace(root), /must be an integer/);
+  }
 });
 
 test("concurrent init never deletes the winning workspace", async () => {

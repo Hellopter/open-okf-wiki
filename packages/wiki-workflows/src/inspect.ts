@@ -6,6 +6,7 @@ import { okfSources, parsePage } from "./frontmatter.js";
 import { git } from "./git.js";
 import type { SourceChange, WikiInspection, WikiMode } from "./types.js";
 import { loadWikiWorkspace, sourceIsIgnored, type ResolvedWikiSource, type ResolvedWikiWorkspace } from "./workspace.js";
+import { isReservedWikiPagePath } from "./wiki-path.js";
 
 const WIKI_DIRECTORY = "wiki";
 const SOURCE_REFERENCE = /^([^\\/#][^#\\]*?)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
@@ -108,7 +109,7 @@ function resolveWikiLink(from: string, target: string, pages: Set<string>): stri
 
 async function inspectPageGraph(workspace: ResolvedWikiWorkspace, wikiRoot: string): Promise<PageGraph> {
   const allMarkdown = await markdownFiles(wikiRoot);
-  const pages = allMarkdown.filter((relative) => path.posix.basename(relative) !== "index.md");
+  const pages = allMarkdown.filter((relative) => !isReservedWikiPagePath(relative));
   const pageSet = new Set(pages);
   const sources = new Map<string, Set<string>>();
   const inbound = new Map<string, Set<string>>();
