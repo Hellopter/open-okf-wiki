@@ -22,6 +22,21 @@ export interface WikiRunEvent {
 
 export type WikiRunStage = "prepare" | "lead" | "delegate" | "validate" | "publish";
 
+export interface WikiContextStats {
+  turns?: number;
+  toolCalls?: number;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  total?: number;
+  cost?: number;
+  contextTokens?: number;
+  contextWindow?: number;
+  contextPercent?: number;
+  model?: string;
+}
+
 export interface WikiTaskSnapshot {
   id: string;
   role: "research" | "write" | "review";
@@ -30,6 +45,7 @@ export interface WikiTaskSnapshot {
   attempts?: number;
   startedAt?: string;
   updatedAt?: string;
+  usage?: WikiContextStats;
 }
 
 export interface WikiRunProgress {
@@ -58,6 +74,7 @@ export interface WikiTaskInspection {
   handoff?: string;
   handoffPath?: string;
   history?: WikiHistoryEntry[];
+  usage?: WikiContextStats;
   processAvailable: boolean;
 }
 

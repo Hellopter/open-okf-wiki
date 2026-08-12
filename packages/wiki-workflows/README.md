@@ -46,7 +46,9 @@ Agents as the required reader-facing Wiki language.
 While a run is active, the TUI footer and widget show stage and task progress.
 `/wiki status` prints a run card. `/wiki status <run> <task>` shows the task
 result (receipt and handoff). `--process` prints compact process history.
-Enter opens the status overlay; Esc leaves it. The overlay is not teammate chat.
+Enter opens a bordered status overlay; highlighting a task shows its context
+stats (turns, tokens, context window). Esc leaves it. The overlay is not
+teammate chat.
 
 ## Execution model
 

@@ -15,6 +15,7 @@ import {
   type WikiRunEvent,
   type WikiRunHandle,
   type WikiRunView,
+  type WikiContextStats,
   type WikiTaskInspection,
   type WikiTaskSnapshot,
   type WikiHistoryEntry,
@@ -252,12 +253,13 @@ export class WikiProducer {
   ): Promise<void> {
     await ledger.append(runId, { at: this.timestamp(), type, message, ...(data ? { data } : {}) });
     const taskId = taskIdFrom(data);
-    if (taskId && (data?.receipt !== undefined || data?.history !== undefined)) {
+    if (taskId && (data?.receipt !== undefined || data?.history !== undefined || data?.usage !== undefined)) {
       const existing = await ledger.readTask(runId, taskId);
       await ledger.writeTask(runId, taskId, {
         ...(existing ?? {}),
         ...(data?.receipt && typeof data.receipt === "object" ? { receipt: data.receipt as WikiDelegateReceipt } : {}),
         ...(Array.isArray(data?.history) ? { history: data.history as WikiHistoryEntry[] } : {}),
+        ...(data?.usage !== undefined ? { usage: data.usage as WikiContextStats } : {}),
         updatedAt: this.timestamp(),
       });
     }
@@ -303,6 +305,7 @@ async function inspectTask(ledger: WikiRunLedger, runId: string, taskId: string)
   if (!task) return undefined;
   const receipt = sidecar?.receipt;
   const history = sidecar?.history;
+  const usage = sidecar?.usage ?? task.usage;
   const ref = receipt?.outputs?.at(-1);
   let handoff: string | undefined;
   const handoffPath = ref?.relativePath;
@@ -320,6 +323,7 @@ async function inspectTask(ledger: WikiRunLedger, runId: string, taskId: string)
     ...(handoff !== undefined ? { handoff } : {}),
     ...(handoffPath ? { handoffPath } : {}),
     ...(history ? { history } : {}),
+    ...(usage ? { usage } : {}),
     processAvailable: Array.isArray(history) && history.length > 0,
   };
 }

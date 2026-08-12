@@ -1,4 +1,5 @@
 import type {
+  WikiContextStats,
   WikiHistoryEntry,
   WikiRunEvent,
   WikiRunProgress,
@@ -210,6 +211,8 @@ export function renderWikiTask(inspection: WikiTaskInspection): string {
     `Wiki ${inspection.runId}  ·  ${task.id}`,
     `${task.role}  ${task.status}  ·  ${attemptLabel}${elapsedPart}`,
   ];
+  const context = renderWikiContextStats(inspection.usage ?? task.usage);
+  if (context) lines.push(`context  ${context}`);
 
   const summary = textValue(receipt?.summary) ?? textValue(task.summary);
   if (summary) {
@@ -263,6 +266,43 @@ export function renderWikiTaskProcess(inspection: WikiTaskInspection): string {
   const lines = [header];
   for (const entry of history) lines.push(renderHistoryLine(entry));
   return lines.join("\n");
+}
+
+export function renderWikiContextStats(usage: WikiContextStats | undefined): string | undefined {
+  if (!usage) return undefined;
+  const parts: string[] = [];
+  if (usage.turns !== undefined) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
+  if (usage.toolCalls !== undefined) parts.push(`${usage.toolCalls} tools`);
+  if (usage.input !== undefined) parts.push(`↑${formatTokenCount(usage.input)}`);
+  if (usage.output !== undefined) parts.push(`↓${formatTokenCount(usage.output)}`);
+  if (usage.cacheRead) parts.push(`R${formatTokenCount(usage.cacheRead)}`);
+  const context = formatContextWindow(usage);
+  if (context) parts.push(context);
+  if (usage.cost !== undefined && usage.cost > 0) parts.push(formatCost(usage.cost));
+  if (usage.model) parts.push(usage.model);
+  return parts.length > 0 ? parts.join("  ") : undefined;
+}
+
+function formatContextWindow(usage: WikiContextStats): string | undefined {
+  if (usage.contextTokens === undefined && usage.contextWindow === undefined && usage.contextPercent === undefined) {
+    return undefined;
+  }
+  const used = usage.contextTokens !== undefined ? formatTokenCount(usage.contextTokens) : "?";
+  const window = usage.contextWindow !== undefined ? formatTokenCount(usage.contextWindow) : undefined;
+  const percent = usage.contextPercent !== undefined ? ` ${Math.round(usage.contextPercent)}%` : "";
+  return window ? `ctx ${used}/${window}${percent}` : `ctx ${used}${percent}`;
+}
+
+function formatTokenCount(value: number): string {
+  if (value < 1000) return String(Math.round(value));
+  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
+  return `${(value / 1_000_000).toFixed(1)}M`;
+}
+
+function formatCost(cost: number): string {
+  if (cost > 0 && cost < 0.0001) return "<$0.0001";
+  return `$${cost.toFixed(cost >= 0.01 ? 2 : 4)}`;
 }
 
 function renderHistoryLine(entry: WikiHistoryEntry): string {

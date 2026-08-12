@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  frameWikiOverlay,
   initialWikiOverlayState,
   openWikiStatusOverlay,
   reduceWikiOverlay,
+  selectedContextStats,
+  selectedTaskId,
 } from "../dist/ui/status-overlay.js";
 
 const ctx = { taskCount: 3, taskIds: ["t1", "t2", "t3"] };
@@ -83,6 +86,50 @@ test("toggleTail sets tailing on the process pager", () => {
   });
   state = reduceWikiOverlay(state, { type: "toggleTail" }, ctx);
   assert.equal(state.tailing, true);
+});
+
+test("run-card cursor selects a task id for context stats", () => {
+  let state = initialWikiOverlayState({ runId: "run-1", taskCount: 3 });
+  assert.equal(selectedTaskId(state, ctx.taskIds), "t1");
+  state = reduceWikiOverlay(state, { type: "down" }, ctx);
+  assert.equal(selectedTaskId(state, ctx.taskIds), "t2");
+});
+
+test("selected context stats come from the highlighted task", () => {
+  const view = {
+    id: "run-1",
+    cwd: "/repo",
+    operation: "update",
+    status: "running",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    updatedAt: "2026-08-12T00:00:00.000Z",
+    lastEventSequence: 1,
+    progress: {
+      stage: "delegate",
+      tasks: [
+        { id: "t1", role: "research", status: "complete", usage: { turns: 2, input: 100, output: 20 } },
+        { id: "t2", role: "write", status: "running" },
+      ],
+    },
+  };
+  const state = initialWikiOverlayState({ runId: "run-1", taskCount: 2 });
+  assert.match(selectedContextStats(state, view, undefined) ?? "", /2 turns  ↑100  ↓20/);
+});
+
+test("overlay frame draws a box and a context strip", () => {
+  const framed = frameWikiOverlay({
+    width: 40,
+    title: "wiki run-1  running",
+    body: ["  ◆ write  pages/auth.md"],
+    stats: "3 turns  ↑1.2k  ↓620  ctx 8.1k/200k 4%",
+    footer: "esc close",
+    viewport: 8,
+  });
+  assert.match(framed.lines[0], /^┌.*┐$/);
+  assert.match(framed.lines.at(-1) ?? "", /^└.*┘$/);
+  assert.ok(framed.lines.some((line) => line.includes("context")));
+  assert.ok(framed.lines.some((line) => line.includes("3 turns")));
+  assert.ok(framed.lines.every((line) => line.startsWith("┌") || line.startsWith("│") || line.startsWith("├") || line.startsWith("└")));
 });
 
 test("openWikiStatusOverlay resolves when ui.custom is missing", async () => {

@@ -11,7 +11,7 @@ import {
   type WikiDelegateTask,
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
-import type { WikiHistoryEntry } from "./producer-types.js";
+import type { WikiContextStats, WikiHistoryEntry } from "./producer-types.js";
 import { isSafeWikiPagePath } from "./wiki-path.js";
 
 export type WikiTaskProgressPhase = "queued" | "start" | "end";
@@ -21,6 +21,7 @@ export interface WikiTaskProgressEvent {
   task: WikiDelegateTask;
   receipt?: WikiDelegateReceipt; // required on end
   history?: WikiHistoryEntry[];
+  usage?: WikiContextStats;
 }
 
 export interface WikiLeafTaskContext {
@@ -40,6 +41,7 @@ export interface WikiLeafResult {
   gaps?: WikiDelegateGap[];
   status?: "complete" | "incomplete";
   history?: WikiHistoryEntry[];
+  usage?: WikiContextStats;
 }
 
 export interface WikiLeafAgent {
@@ -124,7 +126,7 @@ export class WikiTaskRuntime {
         const result = await this.options.agent.run(task, this.contextFor(task, attempt, signal));
         const output = await this.persist(task, attempt, result.markdown);
         const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt);
-        await this.fireProgress({ phase: "end", task, receipt: successReceipt, history: result.history });
+        await this.fireProgress({ phase: "end", task, receipt: successReceipt, history: result.history, usage: result.usage });
         return successReceipt;
       } catch (error) {
         let failure = classifyTaskFailure(error, signal.aborted);

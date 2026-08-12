@@ -1,6 +1,6 @@
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { renderWikiRun, renderWikiTask, renderWikiTaskProcess } from "../cli.js";
-import type { WikiRunEvent, WikiRunView, WikiTaskInspection } from "../producer-types.js";
+import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { renderWikiContextStats, renderWikiRun, renderWikiTask, renderWikiTaskProcess } from "../cli.js";
+import type { WikiContextStats, WikiRunEvent, WikiRunView, WikiTaskInspection } from "../producer-types.js";
 
 export type WikiOverlayKind = "run" | "task" | "process";
 
@@ -202,8 +202,10 @@ function createStatusOverlay(args: {
   const apply = (action: WikiOverlayAction): void => {
     const previous = state;
     state = reduceWikiOverlay(state, action, context());
-    if (state.taskId && (state.kind !== previous.kind || state.taskId !== previous.taskId)) {
-      void loadInspection(state.taskId);
+    const selected = selectedTaskId(state, context().taskIds);
+    const previousSelected = selectedTaskId(previous, context().taskIds);
+    if (selected && (state.kind !== previous.kind || selected !== previousSelected)) {
+      void loadInspection(selected);
     }
     invalidate();
     args.tui.requestRender();
@@ -234,7 +236,8 @@ function createStatusOverlay(args: {
     })();
   };
 
-  if (state.taskId) void loadInspection(state.taskId);
+  const initialSelected = selectedTaskId(state, taskIds);
+  if (initialSelected) void loadInspection(initialSelected);
   const stopEvents = subscribeEvents(args.handle, view.lastEventSequence, async () => {
     if (closed) return;
     view = await args.handle.view();
@@ -300,14 +303,20 @@ function createStatusOverlay(args: {
     },
     render(width: number): string[] {
       if (cachedLines && cachedWidth === width) return cachedLines;
-      const viewport = viewportRows(args.tui);
-      const body = bodyLines(state, view, inspection, args.theme);
-      maxScroll = Math.max(0, body.length - viewport);
-      const scroll = state.tailing ? maxScroll : Math.min(Math.max(0, state.scroll), maxScroll);
-      const visible = body.slice(scroll, scroll + viewport).map((line) => truncateToWidth(line, width));
-      const footer = truncateToWidth(paint(args.theme, "dim", "↑↓/jk  enter  esc  o process  t tail  p pause  x cancel"), width);
+      const framed = frameWikiOverlay({
+        width,
+        title: overlayTitle(view),
+        body: bodyLines(state, view, inspection, args.theme),
+        stats: selectedContextStats(state, view, inspection),
+        footer: "↑↓/jk  enter  esc  o process  t tail  p pause  x cancel",
+        theme: args.theme,
+        viewport: viewportRows(args.tui),
+        scroll: state.scroll,
+        tailing: state.tailing,
+      });
+      maxScroll = framed.maxScroll;
       cachedWidth = width;
-      cachedLines = [...visible, footer];
+      cachedLines = framed.lines;
       return cachedLines;
     },
   };
@@ -350,9 +359,80 @@ function taskIdsOf(view: WikiRunView): string[] {
   return view.progress?.tasks?.map((task) => task.id) ?? [];
 }
 
+export function selectedTaskId(state: WikiOverlayState, taskIds: string[]): string | undefined {
+  if (state.taskId && state.kind !== "run") return state.taskId;
+  return taskIds[state.cursor];
+}
+
+function overlayTitle(view: WikiRunView): string {
+  return `wiki ${view.id}  ${view.status}`;
+}
+
+export function selectedContextStats(
+  state: WikiOverlayState,
+  view: WikiRunView,
+  inspection: WikiTaskInspection | undefined,
+): string | undefined {
+  const taskId = selectedTaskId(state, taskIdsOf(view));
+  const usage = usageForTask(taskId, view, inspection);
+  const stats = renderWikiContextStats(usage);
+  if (stats) return stats;
+  return taskId ? "unavailable" : undefined;
+}
+
+function usageForTask(
+  taskId: string | undefined,
+  view: WikiRunView,
+  inspection: WikiTaskInspection | undefined,
+): WikiContextStats | undefined {
+  if (!taskId) return undefined;
+  if (inspection && inspection.task.id === taskId) return inspection.usage ?? inspection.task.usage;
+  return view.progress?.tasks?.find((task) => task.id === taskId)?.usage;
+}
+
+export function frameWikiOverlay(input: {
+  width: number;
+  title: string;
+  body: string[];
+  stats?: string;
+  footer: string;
+  theme?: unknown;
+  viewport?: number;
+  scroll?: number;
+  tailing?: boolean;
+}): { lines: string[]; maxScroll: number } {
+  const width = Math.max(8, Math.floor(input.width));
+  const inner = Math.max(1, width - 2);
+  const hasStats = Boolean(input.stats);
+  const chrome = 2 + (hasStats ? 2 : 0);
+  const viewport = Math.max(1, (input.viewport ?? DEFAULT_VIEWPORT) - chrome);
+  const maxScroll = Math.max(0, input.body.length - viewport);
+  const scroll = input.tailing ? maxScroll : Math.min(Math.max(0, input.scroll ?? 0), maxScroll);
+  const visible = input.body.slice(scroll, scroll + viewport);
+  while (visible.length < viewport) visible.push("");
+
+  const border = (text: string) => paint(input.theme, "border", text);
+  const lines = [
+    border(`┌${padRule(input.title, inner)}┐`),
+    ...visible.map((line) => `${border("│")}${truncateToWidth(` ${line}`, inner, "...", true)}${border("│")}`),
+  ];
+  if (hasStats) {
+    lines.push(border(`├${padRule("context", inner)}┤`));
+    lines.push(`${border("│")}${truncateToWidth(` ${input.stats}`, inner, "...", true)}${border("│")}`);
+  }
+  lines.push(border(`└${padRule(input.footer, inner)}┘`));
+  return { lines, maxScroll };
+}
+
+function padRule(label: string, inner: number): string {
+  const text = label.trim() ? ` ${label.trim()} ` : "";
+  const clipped = truncateToWidth(text, inner);
+  return `${clipped}${"─".repeat(Math.max(0, inner - visibleWidth(clipped)))}`;
+}
+
 function viewportRows(tui: OverlayTui): number {
   const rows = tui.terminal?.rows;
-  if (typeof rows === "number" && Number.isFinite(rows) && rows > 2) return rows - 1;
+  if (typeof rows === "number" && Number.isFinite(rows) && rows > 6) return rows;
   return DEFAULT_VIEWPORT;
 }
 

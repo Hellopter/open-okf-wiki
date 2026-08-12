@@ -186,6 +186,49 @@ test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", 
   assert.ok(providerRetrySettings.every((value) => value.maxRetries === 0));
 });
 
+test("Pi leaf reports session context stats on task end", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const events = [];
+  const createSession = async () => ({ session: {
+    state: {},
+    messages: [],
+    setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+    async prompt() {},
+    async waitForIdle() {}, async abort() {}, dispose() {},
+    getLastAssistantText() { return "# complete"; },
+    getSessionStats() {
+      return {
+        assistantMessages: 2,
+        toolCalls: 3,
+        tokens: { input: 1200, output: 80, cacheRead: 0, cacheWrite: 0, total: 1280 },
+        cost: 0.01,
+        contextUsage: { tokens: 4000, contextWindow: 200000, percent: 2 },
+      };
+    },
+  } });
+  const artifacts = artifactStore();
+  const runtime = new WikiTaskRuntime({
+    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    agent: new PiWikiLeafAgent(artifacts, { createSession }),
+    onTask: (event) => { events.push(event); },
+  });
+  await runtime.delegate([writeTask("stats")], new AbortController().signal);
+  const end = events.find((event) => event.phase === "end");
+  assert.deepEqual(end?.usage, {
+    turns: 2,
+    toolCalls: 3,
+    input: 1200,
+    output: 80,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 1280,
+    cost: 0.01,
+    contextTokens: 4000,
+    contextWindow: 200000,
+    contextPercent: 2,
+  });
+});
+
 test("Pi leaf receives the configured Wiki language", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let prompt;

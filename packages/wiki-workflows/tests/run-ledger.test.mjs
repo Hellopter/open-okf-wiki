@@ -48,6 +48,7 @@ test("progress persists through update/read and task sidecars round-trip", async
       attempts: 1,
     },
     history: [{ role: "assistant", kind: "text", text: "drafted" }],
+    usage: { turns: 2, input: 100, output: 40, contextTokens: 900, contextWindow: 200000, contextPercent: 0.5 },
     updatedAt: "2026-01-01T00:00:03.000Z",
   };
   await ledger.writeTask("run-1", "write-1", record);

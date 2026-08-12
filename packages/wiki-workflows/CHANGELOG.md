@@ -34,7 +34,8 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 ### Observability
 
 - Added a `/wiki status` progress card, `inspect()` for task receipts and
-  handoffs, `--process` compact history, TUI footer/widget, and a status overlay.
+  handoffs, `--process` compact history, TUI footer/widget, and a bordered
+  status overlay that shows context stats for the selected task.
 
 ### Commands
 

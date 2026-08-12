@@ -14,7 +14,7 @@ import { Type } from "typebox";
 import { workflowTools, workspaceToolPolicy } from "./agent-tools.js";
 import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
 import { boundedDelegateSummary, WikiTaskExecutionError, WikiTaskPauseError, type WikiDelegateBatchReceipt, type WikiDelegateTask } from "./delegate-contracts.js";
-import type { WikiLeadRuntime, WikiTaskSnapshot, WikiHistoryEntry } from "./producer-types.js";
+import type { WikiContextStats, WikiHistoryEntry, WikiLeadRuntime, WikiTaskSnapshot } from "./producer-types.js";
 import { compactWikiHistory } from "./agent-history.js";
 import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 
@@ -93,6 +93,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         current.summary = event.receipt?.summary;
         current.attempts = event.receipt?.attempts;
         current.updatedAt = snapshotNow();
+        if (event.usage) current.usage = event.usage;
         batchTasks.set(taskId, current);
         const completed = countCompleted(batchTasks);
         await request.report(`${event.task.role} ${taskId} ${current.status}`, {
@@ -104,6 +105,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           taskId,
           receipt: event.receipt,
           history: event.history,
+          usage: event.usage,
         });
       };
       const tasks = new WikiTaskRuntime({
@@ -220,7 +222,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       ].join(""), context.signal, this.options, true);
     const markdown = sessionResult.text.trim();
     if (!markdown) throw new Error("Delegated agent produced empty output");
-    return { summary: firstLine(markdown), markdown, history: sessionResult.history };
+    return { summary: firstLine(markdown), markdown, history: sessionResult.history, usage: sessionResult.usage };
   }
 }
 
@@ -331,7 +333,7 @@ async function runPiSession(
   signal: AbortSignal,
   options: PiWikiLeadAgentOptions,
   collectHistory: true,
-): Promise<{ text: string; history: WikiHistoryEntry[] }>;
+): Promise<{ text: string; history: WikiHistoryEntry[]; usage?: WikiContextStats }>;
 async function runPiSession(
   cwd: string,
   tools: ToolDefinition<any, any, any>[],
@@ -339,7 +341,7 @@ async function runPiSession(
   signal: AbortSignal,
   options: PiWikiLeadAgentOptions,
   collectHistory = false,
-): Promise<string | { text: string; history: WikiHistoryEntry[] }> {
+): Promise<string | { text: string; history: WikiHistoryEntry[]; usage?: WikiContextStats }> {
   // TaskRuntime owns configurable transient retries by creating fresh sessions.
   // Disable both Pi turn retry and provider request retry so budgets cannot multiply.
   const settings = SettingsManager.inMemory({
@@ -378,9 +380,37 @@ async function runPiSession(
     if (stateError) throw new Error(stateError);
     const text = session.getLastAssistantText() ?? "";
     if (!collectHistory) return text;
-    return { text, history: compactWikiHistory(session.messages) };
+    return { text, history: compactWikiHistory(session.messages), usage: readSessionUsage(session) };
   } finally {
     signal.removeEventListener("abort", abort);
     session.dispose();
   }
+}
+
+function readSessionUsage(session: AgentSession): WikiContextStats | undefined {
+  let stats;
+  try {
+    stats = session.getSessionStats();
+  } catch {
+    return undefined;
+  }
+  const context = stats.contextUsage ?? session.getContextUsage();
+  const usage: WikiContextStats = {
+    turns: stats.assistantMessages,
+    toolCalls: stats.toolCalls,
+    input: stats.tokens.input,
+    output: stats.tokens.output,
+    cacheRead: stats.tokens.cacheRead,
+    cacheWrite: stats.tokens.cacheWrite,
+    total: stats.tokens.total,
+    cost: stats.cost,
+    ...(finite(context?.tokens) !== undefined ? { contextTokens: finite(context?.tokens) } : {}),
+    ...(finite(context?.contextWindow) !== undefined ? { contextWindow: finite(context?.contextWindow) } : {}),
+    ...(finite(context?.percent) !== undefined ? { contextPercent: finite(context?.percent) } : {}),
+  };
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+function finite(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

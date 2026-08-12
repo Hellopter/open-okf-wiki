@@ -5,6 +5,7 @@ import {
   renderWikiEvent,
   renderWikiRun,
   renderWikiRuns,
+  renderWikiContextStats,
   renderWikiTask,
   renderWikiTaskProcess,
   wikiCliHelp,
@@ -197,6 +198,29 @@ test("renders a task result dossier with summary and truncated handoff", () => {
   assert.match(rendered, /line 80/);
   assert.doesNotMatch(rendered, /line 81/);
   assert.match(rendered, /handoff continues; \d+ at artifacts\/task-9\.md/);
+});
+
+test("renders context stats for a selected task", () => {
+  assert.equal(
+    renderWikiContextStats({
+      turns: 3,
+      toolCalls: 4,
+      input: 1200,
+      output: 620,
+      contextTokens: 8100,
+      contextWindow: 200_000,
+      contextPercent: 4.1,
+      cost: 0.012,
+    }),
+    "3 turns  4 tools  ↑1.2k  ↓620  ctx 8.1k/200k 4%  $0.01",
+  );
+  const rendered = renderWikiTask({
+    runId: "run-1",
+    task: { id: "task-9", role: "write", status: "complete" },
+    usage: { turns: 1, input: 80, output: 20, contextTokens: 400, contextWindow: 200_000, contextPercent: 0.2 },
+    processAvailable: false,
+  });
+  assert.match(rendered, /context  1 turn  ↑80  ↓20  ctx 400\/200k 0%/);
 });
 
 test("renders process dossier as unavailable or history", () => {

@@ -2,6 +2,7 @@ import { appendFile, mkdir, open, readFile, readdir, rename, rm } from "node:fs/
 import path from "node:path";
 import type { WikiDelegateReceipt } from "./delegate-contracts.js";
 import type {
+  WikiContextStats,
   WikiHistoryEntry,
   WikiProducerOperation,
   WikiProducerResult,
@@ -36,6 +37,7 @@ export interface CreateWikiRunState {
 export interface WikiTaskRecord {
   receipt?: WikiDelegateReceipt;
   history?: WikiHistoryEntry[];
+  usage?: WikiContextStats;
   updatedAt: string;
 }
 
@@ -342,6 +344,7 @@ function patchTaskSnapshot(data: Record<string, unknown>, existing?: WikiTaskSna
   if (fromTask) return { ...existing, ...fromTask };
   const id = typeof data.taskId === "string" && data.taskId ? data.taskId : existing?.id;
   if (!id) return undefined;
+  const usage = parseContextStats(data.usage);
   return parseTaskSnapshot({
     ...(existing ?? {}),
     id,
@@ -351,6 +354,7 @@ function patchTaskSnapshot(data: Record<string, unknown>, existing?: WikiTaskSna
     ...(typeof data.attempts === "number" ? { attempts: data.attempts } : {}),
     ...(typeof data.startedAt === "string" ? { startedAt: data.startedAt } : {}),
     ...(typeof data.updatedAt === "string" ? { updatedAt: data.updatedAt } : {}),
+    ...(usage ? { usage } : {}),
   });
 }
 
@@ -391,6 +395,7 @@ function parseTaskSnapshot(value: unknown): WikiTaskSnapshot | undefined {
   if (raw.attempts !== undefined && !isProgressCount(raw.attempts)) return undefined;
   if (raw.startedAt !== undefined && typeof raw.startedAt !== "string") return undefined;
   if (raw.updatedAt !== undefined && typeof raw.updatedAt !== "string") return undefined;
+  const usage = parseContextStats(raw.usage);
   return {
     id: raw.id,
     role: raw.role,
@@ -399,6 +404,7 @@ function parseTaskSnapshot(value: unknown): WikiTaskSnapshot | undefined {
     ...(raw.attempts !== undefined ? { attempts: raw.attempts } : {}),
     ...(raw.startedAt !== undefined ? { startedAt: raw.startedAt } : {}),
     ...(raw.updatedAt !== undefined ? { updatedAt: raw.updatedAt } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -414,11 +420,36 @@ function parseTaskRecord(value: unknown): WikiTaskRecord {
     if (!Array.isArray(raw.history)) throw new Error("Invalid Wiki task record");
     history = raw.history.map(parseHistoryEntry);
   }
+  const usage = parseContextStats(raw.usage);
   return {
     ...(raw.receipt ? { receipt: raw.receipt } : {}),
     ...(history ? { history } : {}),
+    ...(usage ? { usage } : {}),
     updatedAt: raw.updatedAt,
   };
+}
+
+function parseContextStats(value: unknown): WikiContextStats | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const stats: WikiContextStats = {};
+  const assign = (key: keyof WikiContextStats) => {
+    const next = raw[key];
+    if (typeof next === "number" && Number.isFinite(next)) (stats as Record<string, number>)[key] = next;
+  };
+  assign("turns");
+  assign("toolCalls");
+  assign("input");
+  assign("output");
+  assign("cacheRead");
+  assign("cacheWrite");
+  assign("total");
+  assign("cost");
+  assign("contextTokens");
+  assign("contextWindow");
+  assign("contextPercent");
+  if (typeof raw.model === "string" && raw.model.trim()) stats.model = raw.model.trim();
+  return Object.keys(stats).length > 0 ? stats : undefined;
 }
 
 function parseHistoryEntry(value: unknown): WikiHistoryEntry {
