@@ -1,0 +1,193 @@
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { WikiTaskExecutionError } from "../dist/delegate-contracts.js";
+import { createPiLeadRuntime, PiWikiLeafAgent } from "../dist/lead-runtime.js";
+import { WikiTaskRuntime } from "../dist/task-runtime.js";
+
+async function workspace(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wiki-lead-"));
+  t.after(async () => await import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+  await mkdir(path.join(root, "wiki"), { recursive: true });
+  await writeFile(path.join(root, "workspace.yaml"), [
+    "version: 1", "language: en", "defaultSourceIgnores: true",
+    "quality:", "  maxResearchRounds: 6", "  maxSubmissionAttempts: 3",
+    "wiki:", "  exclude: []", "  terminology: {}", "  domains: []",
+    "sources: []", "",
+  ].join("\n"));
+  const candidateWikiRoot = path.join(root, ".okf-wiki", "runs", "run-1", "candidate", "wiki");
+  await mkdir(candidateWikiRoot, { recursive: true });
+  return { root, candidateWikiRoot };
+}
+
+function request(root, candidateWikiRoot) {
+  return {
+    runId: "run-1", cwd: root, operation: "regenerate", preparation: "fresh", focus: undefined,
+    inspection: {}, sourceFingerprint: "source-1", candidateWikiRoot, sourceScopeIds: [], prompt: "Build the Wiki", attempt: 1,
+    signal: new AbortController().signal, report: async () => {},
+  };
+}
+
+function sessionFactory(prompt) {
+  return async (options) => {
+    let aborted = false;
+    const session = {
+      state: {},
+      setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+      async prompt(value) { await prompt(options.customTools, value, () => aborted); },
+      async waitForIdle() {}, async abort() { aborted = true; }, dispose() {},
+      getLastAssistantText() { return "done"; },
+    };
+    return { session };
+  };
+}
+
+async function call(tools, name, params) {
+  const tool = tools.find((value) => value.name === name);
+  assert.ok(tool, `missing ${name}`);
+  return await tool.execute("call-1", params, new AbortController().signal);
+}
+
+test("Lead can write the candidate and finish without delegating", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
+    await call(tools, "write", { path: "wiki/overview.md", content: "# Overview\n" });
+    await call(tools, "wiki_finish", { summary: "Candidate complete" });
+  }) });
+  const outcome = await runtime.run(request(root, candidateWikiRoot));
+  assert.deepEqual(outcome, { kind: "complete", summary: "Candidate complete" });
+  assert.equal(await readFile(path.join(candidateWikiRoot, "overview.md"), "utf8"), "# Overview\n");
+  await assert.rejects(readFile(path.join(root, "wiki", "overview.md")), /ENOENT/);
+});
+
+test("Lead completion without wiki_finish is rejected", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const runtime = createPiLeadRuntime({ createSession: sessionFactory(async () => {}) });
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /without wiki_finish/);
+});
+
+test("delegated usage limit aborts Lead and bubbles as producer pause", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let sessions = 0;
+  const runtime = createPiLeadRuntime({
+    now: () => 1_000,
+    createSession: async (options) => {
+      sessions += 1;
+      const lead = sessions === 1;
+      let aborted = false;
+      return { session: {
+        state: lead ? {} : { errorMessage: "usage limit reached" },
+        setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+        async prompt() {
+          if (lead) await call(options.customTools, "wiki_delegate", { tasks: [{
+            id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/page.md"],
+            }] });
+        },
+        async waitForIdle() {}, async abort() { aborted = true; }, dispose() {},
+        getLastAssistantText() { return aborted ? "" : "leaf"; },
+      } };
+    },
+  });
+  const outcome = await runtime.run(request(root, candidateWikiRoot));
+  assert.deepEqual(outcome, { kind: "pause", reason: "usage_limit", summary: "usage limit reached", retryAt: undefined });
+  assert.equal(sessions, 2);
+});
+
+test("Lead provider quota returns a pause outcome", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const runtime = createPiLeadRuntime({ createSession: sessionFactory(async () => {
+    throw Object.assign(new Error("quota exceeded"), { retryAfterMs: 2_000 });
+  }), now: () => 1_000 });
+  assert.deepEqual(await runtime.run(request(root, candidateWikiRoot)), {
+    kind: "pause", reason: "quota", summary: "quota exceeded", retryAt: new Date(3_000).toISOString(),
+  });
+});
+
+test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let sessions = 0;
+  let requests = 0;
+  let disposals = 0;
+  const turnRetrySettings = [];
+  const providerRetrySettings = [];
+  const autoRetryValues = [];
+  const createSession = async (options) => {
+    sessions += 1;
+    turnRetrySettings.push(options.settingsManager.getRetrySettings());
+    providerRetrySettings.push(options.settingsManager.getProviderRetrySettings());
+    return { session: {
+      state: {},
+      setAutoCompactionEnabled() {}, setAutoRetryEnabled(value) { autoRetryValues.push(value); },
+      async prompt() { requests += 1; throw Object.assign(new Error("service unavailable"), { status: 503 }); },
+      async waitForIdle() {}, async abort() {}, dispose() { disposals += 1; },
+      getLastAssistantText() { return ""; },
+    } };
+  };
+  const artifacts = artifactStore();
+  const runtime = new WikiTaskRuntime({
+    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    agent: new PiWikiLeafAgent(artifacts, { createSession }), sleep: async () => {}, random: () => 0,
+  });
+  const result = await runtime.delegate([writeTask("server")], new AbortController().signal);
+  assert.equal(result.status, "failed");
+  assert.equal(result.receipts[0].attempts, 2);
+  assert.equal(sessions, 2);
+  assert.equal(requests, 2);
+  assert.equal(disposals, 2);
+  assert.deepEqual(autoRetryValues, [false, false]);
+  assert.ok(turnRetrySettings.every((value) => value.enabled === false && value.maxRetries === 0));
+  assert.ok(providerRetrySettings.every((value) => value.maxRetries === 0));
+});
+
+test("Pi leaf 429 honors Retry-After through the shared runtime gate with three total requests", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let sessions = 0;
+  let requests = 0;
+  const attempts = new Map();
+  const sleeps = [];
+  const createSession = async (options) => ({ session: {
+    state: {},
+    setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+    async prompt(prompt) {
+      sessions += 1;
+      requests += 1;
+      const id = prompt.includes("limited") ? "limited" : "next";
+      const attempt = (attempts.get(id) ?? 0) + 1;
+      attempts.set(id, attempt);
+      const retry = options.settingsManager.getRetrySettings();
+      const providerRetry = options.settingsManager.getProviderRetrySettings();
+      assert.equal(retry.maxRetries, 0);
+      assert.equal(providerRetry.maxRetries, 0);
+      if (id === "limited" && attempt === 1) throw new WikiTaskExecutionError("429", "rate_limit", { retryAfterMs: 250 });
+    },
+    async waitForIdle() {}, async abort() {}, dispose() {},
+    getLastAssistantText() { return "# complete"; },
+  } });
+  const artifacts = artifactStore();
+  const runtime = new WikiTaskRuntime({
+    runId: "run-1", cwd: root, sourceScopes: {}, candidateWikiRoot, artifactStore: artifacts,
+    agent: new PiWikiLeafAgent(artifacts, { createSession }), concurrency: 2,
+    sleep: async (ms) => { sleeps.push(ms); }, random: () => 0, now: () => 0,
+  });
+  const result = await runtime.delegate([writeTask("limited"), writeTask("next")], new AbortController().signal);
+  assert.equal(result.status, "complete");
+  assert.deepEqual(sleeps, [250]);
+  assert.deepEqual(Object.fromEntries(attempts), { limited: 2, next: 1 });
+  assert.equal(sessions, 3);
+  assert.equal(requests, 3);
+});
+
+function writeTask(id) {
+  return { id, role: "write", instruction: `write ${id}`, sourceScopeIds: [], contextRefs: [], writePaths: [`wiki/${id}.md`] };
+}
+
+function artifactStore() {
+  return {
+    async read() { throw new Error("unexpected artifact read"); },
+    async write(input) {
+      return { version: 1, ...input, relativePath: `.okf-wiki/blobs/${input.nodeId}-${input.attempt}.md`, sha256: "a".repeat(64), sizeBytes: input.content.length, mediaType: "text/markdown" };
+    },
+  };
+}

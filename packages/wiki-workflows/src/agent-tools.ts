@@ -10,11 +10,6 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  submissionTools,
-  researchCatalogTools,
-  type SubmissionCollector,
-} from "./agent-submissions.js";
-import {
   assertAllowedWorkspacePath,
   assertContainedAbsolutePath,
   ensureWikiRoot,
@@ -23,72 +18,75 @@ import {
   type PermittedToolRoot,
   type WorkspaceToolPolicy,
   workspaceToolPolicy,
-  resolveArtifactPath,
-  readArtifactText,
-  writeArtifactText,
 } from "./path-policy.js";
 import { boundToolExecutionResult } from "./tool-budget.js";
-import type { WikiAgentExecutionRequest } from "./workflow-types.js";
+
+export type WikiToolRole = "lead" | "researcher" | "writer" | "reviewer";
 
 export type { WorkspaceToolPolicy, PermittedToolRoot };
-export { workspaceToolPolicy, resolveArtifactPath, readArtifactText, writeArtifactText };
+export { workspaceToolPolicy };
 
 export function workflowTools(
   policy: WorkspaceToolPolicy,
-  role: WikiAgentExecutionRequest["role"],
-  submission?: SubmissionCollector,
+  role: WikiToolRole,
   writePaths?: readonly string[],
   readRoots?: readonly string[],
-  wikiReadPaths?: readonly string[],
-  researchCatalog?: WikiAgentExecutionRequest["researchCatalog"],
-  writerStagingWikiRoot?: string,
 ): ToolDefinition<any, any, any>[] {
   const activeWikiRoot = policy.candidateWikiRoot ?? policy.wikiRoot;
-  const activeWriterRoot = role === "writer" && writerStagingWikiRoot ? path.resolve(writerStagingWikiRoot) : activeWikiRoot;
-  const remapWikiReads = role === "writer" || Boolean(wikiReadPaths?.length);
-  const allowedPaths = role === "writer" ? exactWriterPaths(policy, activeWriterRoot, writePaths) : undefined;
-  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, wikiReadPaths, allowedPaths);
+  const allowedPaths = role === "writer" ? exactWriterPaths(policy, activeWikiRoot, writePaths) : undefined;
+  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, allowedPaths, role === "lead");
   const readOnly = [
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "read"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "grep"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "find"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "ls"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "read"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "grep"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "find"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "ls"),
   ];
-  const catalog = researchCatalog?.length && (role === "synthesizer" || role === "writer")
-    ? researchCatalogTools(researchCatalog)
-    : [];
-  if (role !== "writer") {
+  if (role === "lead") {
+    if (!policy.candidateWikiRoot) throw new Error("Workflow configuration error: Lead requires a candidate Wiki root");
+    const candidateRoot = path.resolve(policy.candidateWikiRoot);
+    const write = createWriteToolDefinition(policy.workspaceRoot, {
+      operations: {
+        mkdir: async (directory) => await guardedLeadMkdir(candidateRoot, directory),
+        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content),
+      },
+    });
+    const edit = createEditToolDefinition(policy.workspaceRoot, {
+      operations: {
+        access: async (file) => await guardedLeadAccess(candidateRoot, file),
+        readFile: async (file) => await guardedLeadRead(candidateRoot, file),
+        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content),
+      },
+    });
     return [
       ...readOnly,
-      ...catalog,
-      ...(submission ? submissionTools(policy, submission, { allowedSourceRoots: readRoots ?? [] }) : []),
+      remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path"), policy, candidateRoot),
+      remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: candidateRoot }], "path", true), policy, candidateRoot),
     ];
   }
+  if (role !== "writer") return readOnly;
 
   if (!allowedPaths) throw new Error("Workflow configuration error: writers require assigned Wiki pages");
-  const allowedDirectories = writerDirectories(activeWriterRoot, allowedPaths);
+  const allowedDirectories = writerDirectories(activeWikiRoot, allowedPaths);
 
   const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
-      mkdir: async (directory) => await guardedMkdir(activeWriterRoot, directory, allowedDirectories),
-      writeFile: async (file, content) => await guardedWrite(activeWriterRoot, file, content, allowedPaths),
+      mkdir: async (directory) => await guardedMkdir(activeWikiRoot, directory, allowedDirectories),
+      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths),
     },
   });
   const edit = createEditToolDefinition(policy.workspaceRoot, {
     operations: {
-      access: async (file) => await guardedAccess(activeWriterRoot, file, allowedPaths),
-      readFile: async (file) => await guardedRead(activeWriterRoot, file, allowedPaths),
-      writeFile: async (file, content) => await guardedWrite(activeWriterRoot, file, content, allowedPaths),
+      access: async (file) => await guardedAccess(activeWikiRoot, file, allowedPaths),
+      readFile: async (file) => await guardedRead(activeWikiRoot, file, allowedPaths),
+      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths),
     },
   });
   return [
     ...readOnly,
-    ...catalog,
     // Logical wiki/* inputs are transparently redirected to the run candidate.
     // Guarded operations still receive absolute paths and enforce the exact page.
-    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWriterRoot }], "path"), policy, activeWriterRoot),
-    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWriterRoot }], "path", true), policy, activeWriterRoot),
-    ...(submission ? submissionTools(policy, submission, { allowedSourceRoots: readRoots ?? [] }) : []),
+    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path"), policy, activeWikiRoot),
+    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true), policy, activeWikiRoot),
   ];
 }
 
@@ -110,8 +108,8 @@ function readRootsForPolicy(
   policy: WorkspaceToolPolicy,
   activeWikiRoot: string,
   requested: readonly string[] | undefined,
-  wikiReadPaths: readonly string[] | undefined,
   writerPaths: ReadonlySet<string> | undefined,
+  candidateWide = false,
 ): PermittedToolRoot[] {
   const roots: PermittedToolRoot[] = [];
   for (const sourcePath of requested ?? []) {
@@ -119,19 +117,10 @@ function readRootsForPolicy(
     if (!root) throw new Error(`Workflow configuration error: undeclared source root: ${sourcePath}`);
     roots.push(root);
   }
-  for (const wikiReadPath of wikiReadPaths ?? []) roots.push(exactWikiReadRoot(policy, activeWikiRoot, wikiReadPath));
   for (const writerPath of writerPaths ?? []) roots.push(exactWorkspaceFileRoot(writerPath));
+  if (candidateWide) roots.push({ logicalRoot: path.resolve(activeWikiRoot) });
   if (roots.length === 0) throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
   return roots;
-}
-
-function exactWikiReadRoot(policy: WorkspaceToolPolicy, activeWikiRoot: string, rawPath: string): PermittedToolRoot {
-  if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid Wiki read path");
-  const wikiReadPath = resolveActiveWikiPath(policy, activeWikiRoot, rawPath);
-  if (!pathIsInside(path.resolve(activeWikiRoot), wikiReadPath) || !wikiReadPath.endsWith(".md")) {
-    throw new Error(`Workflow configuration error: Wiki read path must be a Markdown file under the active Wiki root: ${rawPath}`);
-  }
-  return exactWorkspaceFileRoot(wikiReadPath);
 }
 
 /** Exact workflow files must not acquire a different physical root via symlink. */
@@ -195,8 +184,6 @@ function remapCandidateWikiPath(
   policy: WorkspaceToolPolicy,
   activeWikiRoot: string,
   enabled = true,
-  writerStagingWikiRoot?: string,
-  writerPaths?: ReadonlySet<string>,
 ): ToolDefinition<any, any, any> {
   if (!policy.candidateWikiRoot || !enabled) return definition;
   const execute = definition.execute;
@@ -207,12 +194,8 @@ function remapCandidateWikiPath(
       const candidatePath = typeof rawPath === "string" && (rawPath === "wiki" || rawPath.startsWith("wiki/"))
         ? resolveActiveWikiPath(policy, activeWikiRoot, rawPath)
         : undefined;
-      const writerPath = writerStagingWikiRoot && typeof rawPath === "string" && rawPath.startsWith("wiki/")
-        ? path.resolve(writerStagingWikiRoot, rawPath.slice("wiki/".length))
-        : undefined;
-      const mappedPath = writerPath && writerPaths?.has(writerPath) ? writerPath : candidatePath;
-      const mappedParams = mappedPath
-        ? { ...(params as Record<string, unknown>), path: mappedPath }
+      const mappedParams = candidatePath
+        ? { ...(params as Record<string, unknown>), path: candidatePath }
         : params;
       return await execute(toolCallId, mappedParams, signal, onUpdate, context);
     },
@@ -260,6 +243,41 @@ async function guardedRead(root: string, file: string, allowedPaths: ReadonlySet
 
 async function guardedAccess(root: string, file: string, allowedPaths: ReadonlySet<string>): Promise<void> {
   assertExactWriterPath(allowedPaths, file);
+  await assertContainedAbsolutePath(root, file, false);
+  await access(file);
+}
+
+function assertLeadMarkdownPath(root: string, candidate: string): void {
+  const absolute = path.resolve(candidate);
+  const relative = path.relative(path.resolve(root), absolute);
+  if (!relative || !pathIsInside(path.resolve(root), absolute) || !relative.endsWith(".md")
+    || relative.split(path.sep).some((part) => part === "." || part === ".." || !part)) {
+    throw new Error(`Lead may write only Markdown files under the candidate Wiki: ${candidate}`);
+  }
+}
+
+async function guardedLeadMkdir(root: string, directory: string): Promise<void> {
+  await ensureWikiRoot(root);
+  await assertContainedAbsolutePath(root, directory, true);
+  await mkdir(directory, { recursive: true });
+}
+
+async function guardedLeadWrite(root: string, file: string, content: string): Promise<void> {
+  await ensureWikiRoot(root);
+  assertLeadMarkdownPath(root, file);
+  await assertContainedAbsolutePath(root, file, true);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, content, "utf8");
+}
+
+async function guardedLeadRead(root: string, file: string): Promise<Buffer> {
+  assertLeadMarkdownPath(root, file);
+  await assertContainedAbsolutePath(root, file, false);
+  return await readFile(file);
+}
+
+async function guardedLeadAccess(root: string, file: string): Promise<void> {
+  assertLeadMarkdownPath(root, file);
   await assertContainedAbsolutePath(root, file, false);
   await access(file);
 }

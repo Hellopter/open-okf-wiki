@@ -6,7 +6,7 @@ import { okfSources, parsePage } from "./frontmatter.js";
 import type { WikiValidation, WikiValidationIssue } from "./types.js";
 import { isRecord } from "./util.js";
 import { isSafeWikiPagePath } from "./wiki-path.js";
-import type { WikiSpec, WikiSpecPage } from "./workflow-types.js";
+import type { WikiSpec, WikiSpecPage } from "./wiki-spec.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
 import { validateWikiIndexes } from "./wiki-indexes.js";
 
@@ -64,6 +64,52 @@ export interface ResolvedWikiRoots {
 export interface WikiTreeScan {
   markdown: string[];
   issues: WikiValidationIssue[];
+}
+
+export interface DerivedWikiCandidate {
+  spec: WikiSpec;
+  issues: WikiValidationIssue[];
+}
+
+/** Derive the validation manifest from candidate files; no model-authored plan is trusted. */
+export async function deriveWikiCandidate(root: string, wikiDirectory: string): Promise<DerivedWikiCandidate> {
+  const roots = await resolveWikiRoots(root, wikiDirectory);
+  const tree = await scanWikiTree(roots.wiki);
+  const issues = [...tree.issues];
+  const pages: WikiSpecPage[] = [];
+  for (const page of tree.markdown.filter((value) => path.posix.basename(value) !== "index.md")) {
+    if (!isSafeWikiPagePath(page)) {
+      issue(issues, "wiki-safety", `Candidate contains an unsafe or reserved page path: ${page}`, page);
+      continue;
+    }
+    let frontmatter: Record<string, unknown> = {};
+    try {
+      frontmatter = parsePage(await readText(safeWikiPath(roots.wiki, page))).frontmatter;
+    } catch (error) {
+      issue(issues, "frontmatter", errorMessage(error), page);
+    }
+    pages.push({
+      pageType: pageTypeFromFrontmatter(frontmatter.type),
+      path: page,
+      title: typeof frontmatter.title === "string" ? frontmatter.title : page,
+      purpose: typeof frontmatter.description === "string" ? frontmatter.description : "Candidate page",
+      readerQuestions: [],
+      requiredFacets: [],
+      findingIds: [],
+    });
+  }
+  if (pages.length === 0) issue(issues, "missing-page", "Candidate Wiki contains no content pages");
+  return {
+    spec: { domains: [{ id: "candidate", title: "Candidate", purpose: "Derived candidate", pages }], crossLinks: [], sharedTerms: [], omissions: [] },
+    issues,
+  };
+}
+
+/** Complete candidate-derived gate: paths, frontmatter, evidence, links and Mermaid. */
+export async function validateWikiTree(root: string, wikiDirectory: string): Promise<WikiValidation> {
+  const derived = await deriveWikiCandidate(root, wikiDirectory);
+  const validation = await validateWikiCandidate(root, derived.spec, wikiDirectory, false);
+  return validationResult([...derived.issues, ...validation.issues], validation.pages, validation.obsoletePages);
 }
 
 /**
@@ -526,8 +572,9 @@ async function validateSourceReference(
     return;
   }
 
-  const [sourceName] = parsed.path.split("/", 1);
-  const source = roots.sources.get(sourceName);
+  const source = roots.sources.get(".") ?? [...roots.sources.values()]
+    .filter((candidate) => parsed.path === candidate.path || parsed.path.startsWith(`${candidate.path}/`))
+    .sort((left, right) => right.path.length - left.path.length)[0];
   if (!source) {
     issue(issues, "source-reference", `${label} must start with a declared source directory: ${reference}`, page);
     return;
@@ -865,6 +912,14 @@ function firstInvalidControl(body: string): { line: number } | undefined {
 
 function canonicalPageType(pageType: WikiSpecPage["pageType"]): string {
   return pageType[0].toUpperCase() + pageType.slice(1);
+}
+
+function pageTypeFromFrontmatter(value: unknown): WikiSpecPage["pageType"] {
+  if (typeof value !== "string") return "concept";
+  const normalized = value.toLowerCase();
+  return ["overview", "domain", "architecture", "module", "flow", "concept", "state", "data"].includes(normalized)
+    ? normalized as WikiSpecPage["pageType"]
+    : "concept";
 }
 
 export function validationResult(issues: WikiValidationIssue[], pages: string[], obsoletePages: string[]): WikiValidation {

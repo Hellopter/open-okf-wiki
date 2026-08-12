@@ -1,0 +1,265 @@
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  SessionManager,
+  SettingsManager,
+  type AgentSession,
+  type CreateAgentSessionOptions,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai/compat";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { Type } from "typebox";
+import { workflowTools, workspaceToolPolicy } from "./agent-tools.js";
+import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
+import { boundedDelegateSummary, WikiTaskExecutionError, WikiTaskPauseError, type WikiDelegateBatchReceipt, type WikiDelegateTask } from "./delegate-contracts.js";
+import type { WikiLeadRuntime } from "./producer-types.js";
+import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext } from "./task-runtime.js";
+
+const PI_SESSION_REQUEST_RETRIES = 0;
+
+export interface PiWikiLeadAgentOptions {
+  model?: Model<any>;
+  thinkingLevel?: ThinkingLevel;
+  createSession?: (options: CreateAgentSessionOptions) => ReturnType<typeof createAgentSession>;
+  /** Hard deadline for each Lead or delegated Pi session. Default 20 minutes. */
+  sessionTimeoutMs?: number;
+}
+
+export interface CreatePiLeadRuntimeOptions extends PiWikiLeadAgentOptions {
+  concurrency?: number;
+  baseRetryDelayMs?: number;
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  random?: () => number;
+  now?: () => number;
+}
+
+/** Complete reusable production Adapter for WikiProducer's model-facing seam. */
+export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): WikiLeadRuntime {
+  const sessionOptions = {
+    model: options.model,
+    thinkingLevel: options.thinkingLevel,
+    createSession: options.createSession,
+    sessionTimeoutMs: options.sessionTimeoutMs,
+  };
+  return {
+    async run(request) {
+      const artifactStore = createWikiArtifactStore({ workspace: request.cwd });
+      const sourceScopes = Object.fromEntries(request.sourceScopeIds.map((id) => [id, id]));
+      const tasks = new WikiTaskRuntime({
+        runId: request.runId,
+        cwd: request.cwd,
+        sourceScopes,
+        candidateWikiRoot: request.candidateWikiRoot,
+        artifactStore,
+        agent: new PiWikiLeafAgent(artifactStore, sessionOptions),
+        concurrency: options.concurrency,
+        baseRetryDelayMs: options.baseRetryDelayMs,
+        sleep: options.sleep,
+        random: options.random,
+        now: options.now,
+      });
+      const policy = await workspaceToolPolicy(request.cwd, request.candidateWikiRoot);
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      request.signal.addEventListener("abort", abort, { once: true });
+      if (request.signal.aborted) controller.abort();
+      let finishSummary: string | undefined;
+      let pause: WikiTaskPauseError | undefined;
+      let delegateBatches = 0;
+      const leadTools = [
+        ...workflowTools(policy, "lead", undefined, request.sourceScopeIds),
+        delegateTool(async (delegated) => {
+          try {
+            const receipt = await tasks.delegate(delegated, controller.signal);
+            delegateBatches += 1;
+            return receipt;
+          } catch (error) {
+            if (error instanceof WikiTaskPauseError) {
+              pause = error;
+              controller.abort();
+            }
+            throw error;
+          }
+        }),
+        finishTool((summary) => {
+          if (finishSummary) throw new Error("wiki_finish may be accepted only once");
+          if (!summary.trim()) throw new Error("wiki_finish requires a summary");
+          finishSummary = boundedDelegateSummary(summary);
+        }),
+      ];
+      await request.report("Wiki Lead is deciding adaptive research and writing tasks", { sourceScopeCount: Object.keys(sourceScopes).length });
+      try {
+        await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, sessionOptions);
+      } catch (error) {
+        if (!pause) {
+          const failure = classifyTaskFailure(error, request.signal.aborted);
+          if (failure.code === "quota" || failure.code === "usage_limit") {
+            pause = new WikiTaskPauseError(failure.code, failure.message, failure.retryAfterMs);
+          } else {
+            throw error;
+          }
+        }
+      } finally {
+        request.signal.removeEventListener("abort", abort);
+      }
+      if (pause) {
+        const retryAt = pause.retryAfterMs === undefined
+          ? undefined
+          : new Date((options.now ?? Date.now)() + pause.retryAfterMs).toISOString();
+        await request.report("Wiki Lead paused by provider", { reason: pause.reason, retryAt });
+        return { kind: "pause", reason: pause.reason, summary: pause.message, retryAt };
+      }
+      if (!finishSummary) throw new Error("Lead agent completed without wiki_finish");
+      await request.report("Wiki Lead finished", { delegateBatches });
+      return { kind: "complete", summary: finishSummary };
+    },
+  };
+}
+
+/** Pi Adapter for one delegated leaf; TaskRuntime owns retries and artifact acceptance. */
+export class PiWikiLeafAgent implements WikiLeafAgent {
+  constructor(
+    private readonly artifacts: WikiArtifactStore,
+    private readonly options: PiWikiLeadAgentOptions = {},
+  ) {}
+
+  async run(task: WikiDelegateTask, context: WikiLeafTaskContext): Promise<WikiLeafResult> {
+    const policy = await workspaceToolPolicy(context.cwd, context.candidateWikiRoot);
+    const declaredSources = Object.values(context.sourceRoots);
+    const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
+    const tools = workflowTools(policy, role, task.writePaths, declaredSources);
+    const handoffs = await Promise.all(Object.entries(context.contextArtifacts).map(async ([id, ref]) => ({
+      id,
+      artifact: ref.relativePath,
+      content: await this.artifacts.read(ref),
+    })));
+    const markdown = (await runPiSession(policy.workspaceRoot, tools, [
+        task.instruction,
+        task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
+        handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
+        "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
+      ].join(""), context.signal, this.options)).trim();
+    if (!markdown) throw new Error("Delegated agent produced empty output");
+    return { summary: firstLine(markdown), markdown };
+  }
+}
+
+const taskSchema = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 128 }),
+  role: Type.Union([Type.Literal("research"), Type.Literal("write"), Type.Literal("review")]),
+  instruction: Type.String({ minLength: 1 }),
+  sourceScopeIds: Type.Array(Type.String()),
+  contextRefs: Type.Array(Type.String()),
+  writePaths: Type.Optional(Type.Array(Type.String())),
+}, { additionalProperties: false });
+
+function delegateTool(delegate: (tasks: WikiDelegateTask[]) => Promise<WikiDelegateBatchReceipt>): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_delegate",
+    label: "Delegate Wiki tasks",
+    description: "Run one bounded batch of Wiki research, writing, or review tasks. Returns small receipts and artifact handles; failed branches do not discard successful branches.",
+    parameters: Type.Object({ tasks: Type.Array(taskSchema, { minItems: 1 }) }, { additionalProperties: false }),
+    async execute(_id, params) {
+      const result = await delegate((params as { tasks: WikiDelegateTask[] }).tasks);
+      return toolResult(result);
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function finishTool(finish: (summary: string) => void): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_finish",
+    label: "Finish Wiki workflow",
+    description: "Finish after the candidate Wiki is complete and sufficiently grounded.",
+    parameters: Type.Object({
+      summary: Type.String({ minLength: 1, maxLength: 1024 }),
+    }, { additionalProperties: false }),
+    async execute(_id, params) {
+      finish((params as { summary: string }).summary);
+      return toolResult({ accepted: true });
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
+function toolResult(value: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
+}
+
+function firstLine(value: string): string {
+  return value.split(/\r?\n/, 1)[0].replace(/^#+\s*/, "").trim() || "Delegated task completed";
+}
+
+async function runSessionWithDeadline(
+  session: AgentSession,
+  prompt: string,
+  signal: AbortSignal,
+  timeoutMs = 20 * 60_000,
+): Promise<void> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000) throw new Error("sessionTimeoutMs must be at least 1000");
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void session.abort();
+      reject(new WikiTaskExecutionError(`Wiki agent session timed out after ${timeoutMs}ms`, "timeout"));
+    }, timeoutMs);
+  });
+  try {
+    if (signal.aborted) throw new WikiTaskExecutionError("Wiki agent session cancelled", "cancelled");
+    await Promise.race([session.prompt(prompt), deadline]);
+    await Promise.race([session.waitForIdle(), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runPiSession(
+  cwd: string,
+  tools: ToolDefinition<any, any, any>[],
+  prompt: string,
+  signal: AbortSignal,
+  options: PiWikiLeadAgentOptions,
+): Promise<string> {
+  // TaskRuntime owns transient retries by creating at most one fresh session.
+  // Disable both Pi turn retry and provider request retry so budgets cannot multiply.
+  const settings = SettingsManager.inMemory({
+    compaction: { enabled: true },
+    retry: { enabled: false, maxRetries: PI_SESSION_REQUEST_RETRIES, provider: { maxRetries: PI_SESSION_REQUEST_RETRIES } },
+  });
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir: getAgentDir(),
+    settingsManager: settings,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+  });
+  await loader.reload();
+  const created = await (options.createSession ?? createAgentSession)({
+    cwd,
+    model: options.model,
+    thinkingLevel: options.thinkingLevel,
+    sessionManager: SessionManager.inMemory(cwd),
+    settingsManager: settings,
+    resourceLoader: loader,
+    noTools: "builtin",
+    tools: tools.map((tool) => tool.name),
+    customTools: tools,
+  });
+  const session: AgentSession = created.session;
+  const abort = () => { void session.abort(); };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    session.setAutoCompactionEnabled(true);
+    session.setAutoRetryEnabled(false);
+    await runSessionWithDeadline(session, prompt, signal, options.sessionTimeoutMs);
+    if (signal.aborted) throw new WikiTaskExecutionError("Wiki agent session cancelled", "cancelled");
+    const stateError = typeof session.state.errorMessage === "string" ? session.state.errorMessage : undefined;
+    if (stateError) throw new Error(stateError);
+    return session.getLastAssistantText() ?? "";
+  } finally {
+    signal.removeEventListener("abort", abort);
+    session.dispose();
+  }
+}

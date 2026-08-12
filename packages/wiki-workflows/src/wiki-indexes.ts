@@ -3,7 +3,7 @@ import path from "node:path";
 import { inside, readText, writeText } from "./files.js";
 import { parsePage } from "./frontmatter.js";
 import type { WikiValidationIssue } from "./types.js";
-import type { WikiSpec } from "./workflow-types.js";
+import type { WikiSpec } from "./wiki-spec.js";
 import {
   derivedIndexPaths,
   formatIssue,

@@ -12,19 +12,14 @@ const SRC = path.join(ROOT, "src");
 
 /** Pure modules that must not depend on @earendil-works/* */
 const PURE_MODULES = [
-  "policy.ts",
+  "producer-types.ts",
+  "delegate-contracts.ts",
+  "run-ledger.ts",
+  "producer.ts",
+  "cli.ts",
   "failures.ts",
   "util.ts",
-  "join-barrier.ts",
-  "workflow-phases.ts",
-  "transitions-queue.ts",
-  "run-graph.ts",
-  "run-nodes.ts",
   "path-policy.ts",
-  "checkpoint.ts",
-  "submissions/contracts.ts",
-  "research-receipt.ts",
-  "run-health.ts",
 ];
 
 const FORBIDDEN = /from\s+["']@earendil-works\//;

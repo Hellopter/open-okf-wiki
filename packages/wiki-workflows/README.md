@@ -1,217 +1,79 @@
 # Repository Wiki Producer
 
-`@okf-wiki/wiki-workflows` is a Pi extension that produces source-grounded
-repository Wikis. It does not expose a CLI or persist generic workflows. A
-workspace is a plain directory configured by `workspace.yaml`; each source is
-an independent Git project linked or cloned into that directory.
+`@okf-wiki/wiki-workflows` is a Pi extension that builds and refreshes a
+source-grounded repository Wiki. It uses plain streaming command output; there
+is no TUI and no generic workflow platform.
 
 ```bash
 pnpm build
 pi install ./packages/wiki-workflows
 ```
 
-Initialize once with `/wiki init --lang zh` (or `en`), then add sources with
-`/wiki source add link <local-repository>` or
-`/wiki source add clone <git-url> [--ref <branch>]`. Add
-`--workspace <directory>` to either command when initialization was performed
-from a parent directory. The project directory name is the source identity,
-with no `id` alias. `/wiki generate` uses the saved language; `lang=zh|en` is
-only a one-run override. `/wiki` shows command help without blocking. Use
-`/wiki open` to explicitly open the dedicated run console; `/wiki status`
-prints the current run, `/wiki history` prints a concise project history.
-Scheduling controls:
+Run Pi in the repository and use:
 
-| Action | Behavior |
-|--------|----------|
-| `/wiki pause` | Soft pause: no new scheduling; active agents may finish |
-| `/wiki stop` | Hard stop: abort agents, requeue them, pause (resumable) |
-| `/wiki resume [runId]` | Resume a paused run after Git re-inspection |
-| `/wiki cancel [runId]` | Abort agents; terminal cancelled (not resumable) |
-
-Run Pi from the workspace directory when starting or recovering a Wiki run.
-
-On Pi session shutdown, active Agents are interrupted back to queued state and
-the run is persisted as paused to both the current Pi session branch and the
-project-scoped history. Pi's `/resume` restores the snapshot from that exact
-branch; `/wiki resume` then re-inspects Git before dispatch. A fresh Pi session
-can explicitly run `/wiki resume` to recover the most recently updated
-`running` or `paused` project run, or `/wiki resume <runId>` to select one.
-Another active run is never overwritten. `failed` and `blocked` records require
-an Agent (`r`) or phase (`R`) retry, while `succeeded` and `cancelled` records
-cannot be resumed.
-
-Workspace mutation is coordinated by a local PID lock under `.okf-wiki/`.
-Another live Pi process is read-only for that workspace. If Pi exits
-unexpectedly, the next process reclaims the dead owner's lock, restores a
-single `running` run as `paused`, and requires `/wiki resume` before scheduling.
-If more than one recoverable run exists, select one explicitly with
-`/wiki resume <runId>` or `/wiki cancel <runId>`; generation never chooses or
-overwrites one implicitly. A malformed lock fails closed rather than risking
-two writers. In the rare case that Pi exits during dead-lock reclamation, first
-confirm that no Pi process owns the workspace, then remove the orphaned
-`.okf-wiki/active.reclaim` file and retry.
-
-The extension owns the Wiki-specific dynamic DAG and active Pi-session state.
-Durable runs live under `.okf-wiki/runs/<runId>/`, with `run.json` as the
-authoritative snapshot and a rebuildable summary index. History is bounded to
-the newest 100 terminal runs. Pi supplies isolated subagent sessions, automatic
-context compaction, provider retry, model selection, and tool execution.
-Retrying terminal history forks a new run so the selected record stays
-immutable.
-
-The user-visible workflow is
-`Inspect -> Research -> Plan -> Write -> Review & Publish`.
-Research starts one fresh agent per declared source. After every research
-batch, the engine merges that batch's critical gaps into a stable frontier. A
-non-empty frontier queues one targeted research scope per gap; an empty
-frontier queues Plan. Targeted research must establish critical evidence or
-return a refined critical gap for the next round. Plan does not schedule work
-and completes only through `wiki_submit_synthesis_finalize`. Research stages
-findings in batches of at most 20; Plan
-stages one domain at a time plus cross-domain coordination; Review stages
-defects in batches of at most 20. Bounded query tools page over accumulated
-state. Terminal tools submit only the remaining summary, gaps, or rationale,
-and the extension assembles the canonical artifact.
-This keeps observations bounded while preserving a complete WikiSpec in both
-generate and refresh modes.
-Every non-overview domain has one required `<domain-id>/domain.md` aggregation
-page plus evidence-driven architecture, flow, concept, state, data, or module
-pages. Each page declares reader questions and required facets. The default
-run-wide agent limit is two and can be configured from one to four. A fresh
-Overview writer runs after all content pages complete.
-
-Session restore is pointer-only (no legacy full-snapshot dual-read). Accepted
-research, planning, validation, review, and finalization objects are
-content-addressed under `.okf-wiki/blobs/{sha256}.json`; durable snapshots keep
-only bounded routing receipts and immutable artifact references. Snapshots use
-`version: 2` and pin the resolved policy and hash. Older session entries,
-history files, and artifact layouts are
-**not migrated** — after upgrading, delete stale `.okf-wiki/` under the
-workspace, then run `/wiki generate` again.
-
-Write performs deterministic format, citation, link, and Mermaid validation and
-repairs immediately. Only a clean candidate advances to semantic review.
-Page-local evidence, link, depth, and diagram defects return to a fresh writer;
-topology or coverage defects can trigger one full structural replan. Each Plan
-version permits at most three repair rounds. Repeated normalized issues,
-repeated defects, unchanged repaired pages, or exhausted budgets block the run.
-Source state is checked again before completion: the first drift restarts from
-Inspect and the second blocks with evidence.
-
-The engine derives a minimal WikiPagePacket for each writer from the Spec,
-selected finding IDs, authorized source roots, relevant cross-links, shared
-terms, exact Wiki read paths, and one write path. Writers query only their
-relevant catalog findings, re-open source before citing it, and never receive
-the complete synthesis or review artifact. Each writer edits an attempt-local
-working page; submission seals and validates those bytes before atomically
-promoting the accepted page into the run candidate. Failed or timed-out
-attempts cannot contaminate accepted output. Agents cannot delete pages.
-Writers edit attempt-local staging pages and reviewers read
-`.okf-wiki/runs/<runId>/candidate/wiki`; published `wiki/` is unchanged during
-the run. Refresh retains unchanged Markdown, while generate starts a clean
-Markdown projection and preserves assets. After review, the publisher rechecks
-source drift, finalizes the candidate, and atomically swaps it into `wiki/`
-using a recoverable journal. Startup recovers interrupted publication before
-restoring a run.
-
-The packaged skill is named `repository-wiki-producer`. Its references contain
-role-specific prompts and optional Overview/Domain/Architecture/Module/Flow/
-Concept/State/Data skeletons. Writers choose sections, citations, and useful
-Mermaid diagrams only after reading verified source.
-
-Generated pages are always under `wiki/`. Source citations begin with the
-declared project directory and include source line ranges, for example
-`api/src/index.ts#L12-L38`. Current Git changes are used for a trusted affected
-subset; otherwise refresh safely rebuilds the Wiki. Defaults are written by
-`/wiki init` and can be overridden explicitly:
-
-```yaml
-quality:
-  maxResearchRounds: 6
-  maxSubmissionAttempts: 3
-wiki:
-  exclude: [api/generated/**]
-  terminology:
-    Ledger: Canonical accounting record
-  domains:
-    - id: billing
-      title: Billing
-      include: [api/src/billing/**]
-      exclude: [api/generated/**]
-  runtime:
-    maxConcurrentAgents: 2
-    nodeTimeoutSeconds: 1200
-    maxAutoRetries: 3
-    maxTransientSessionAttempts: 2
-    rateLimitCooldownSeconds: 15
+```text
+/wiki [focus]
+/wiki regenerate [focus]
+/wiki status [run-id]
+/wiki runs
+/wiki pause
+/wiki resume [run-id]
+/wiki cancel [run-id]
 ```
 
-Configuration fields and defaults:
+`/wiki` updates the Wiki and may focus research on the supplied text.
+`regenerate` discards the prior page topology and rebuilds it. If the current
+directory has no `workspace.yaml`, it is initialized as a single-source
+workspace. Existing multi-source workspaces continue to use their declared
+sources.
 
-| Field | Default / range | Semantics |
-|-------|-----------------|-----------|
-| `quality.maxResearchRounds` | `6`; integer `3..20` | Combined per-run research-round ceiling; fixed at run start |
-| `quality.maxSubmissionAttempts` | `3`; integer `1..3` | Terminal acceptance calls allowed in one node attempt |
-| `wiki.exclude` | `[]` | Source-relative or project-prefixed globs removed from inspection and rejected as accepted evidence |
-| `wiki.terminology` | `{}` | Non-empty canonical term-to-definition strings injected into Plan, writers, and review |
-| `wiki.domains` | `[]` | Required domain identities and research boundaries; ids are unique safe identifiers |
-| `wiki.domains[].id` | required | Exact final WikiSpec domain id and `<id>/domain.md` directory |
-| `wiki.domains[].title` | required | Exact final WikiSpec domain title |
-| `wiki.domains[].include` | required, non-empty | Research scope patterns whose first path component must be a declared source |
-| `wiki.domains[].exclude` | `[]` | Domain-specific research boundary supplied to that domain's research task; use `wiki.exclude` for global deterministic evidence rejection |
-| `wiki.runtime.maxConcurrentAgents` | `2`; integer `1..4` | Shared engine and Pi-session admission limit; may be reduced temporarily by 429 or memory pressure |
-| `wiki.runtime.nodeTimeoutSeconds` | `1200`; integer `60..1800` | Wall-clock deadline for one isolated node session |
-| `wiki.runtime.maxAutoRetries` | `3`; integer `1..16` | Agent-level retries after a retryable model-request failure; excludes the initial attempt |
-| `wiki.runtime.maxTransientSessionAttempts` | `2`; integer `1..2` | Total fresh sessions for context, deadline, or exhausted transient-provider failure classes |
-| `wiki.runtime.rateLimitCooldownSeconds` | `15`; integer `15..120` | Minimum serial-admission cooldown after 429/rate-limit pressure; not a retry sleep |
+## Execution model
 
-`/wiki init` writes these defaults. When `wiki` is omitted from an otherwise
-valid workspace, loading resolves the same defaults. A new run normalizes the
-current values, adds the prompt-bundle identity, and pins both policy and hash
-in snapshot version 2. Editing `workspace.yaml` does not hot-update executing
-agents. On `/wiki resume`, a paused run compares the current policy hash; if it
-changed, the run pins the new policy, invalidates downstream nodes, and starts
-again at Inspect. `quality.maxResearchRounds` is not reconciled into an
-existing run; `quality.maxSubmissionAttempts` is part of the pinned policy.
+The public module is intentionally small: `createProductionWikiProducer()`
+returns a producer whose `start()` method returns a `WikiRunHandle`; the handle
+exposes `view()`, `events()`, `result()`, and `control()`. Pi commands are a thin
+adapter over this interface.
 
-Configured domains fail closed when include patterns do not match a declared
-source. Global excluded paths cannot become accepted citation evidence.
+The internal lifecycle is fixed only where determinism matters:
 
-`quality.maxSubmissionAttempts` counts only terminal acceptance calls such as
-`wiki_submit_research`, `wiki_submit_synthesis_finalize`, and
-`wiki_submit_review`; it does not count staging or read-only queries. Research,
-Plan, and Review may perform at most 128 successful staging mutations per node
-attempt. Batch tools accept at most 20 findings or defects, canonical structured
-artifacts are capped at 256 KiB, and each paginated query response is capped at
-24 KiB. These are fixed safety invariants rather than workspace tuning knobs.
+```text
+Inspect -> Lead loop -> Validate -> Publish
+```
 
-## Attempts, Retry, and Cost Bounds
+The Lead loop dynamically chooses research scope, fan-out, follow-up questions,
+page groups, and verification. It is a Wiki-specific runtime, not a reusable
+workflow DSL. Shared admission bounds concurrent Agents, and every session has
+a wall-clock deadline.
 
-The durable `node.attempt` counter is a fresh Pi session count, not a provider
-request count. Context overflow, the configured node deadline, and exhausted
-transient-provider failures use `maxTransientSessionAttempts`: the default `2`
-means one automatic fresh-session retry, while `1` disables it.
-Validator-infrastructure failures may use the internal maximum of three node
-sessions.
+Research content is stored outside conversation context as content-addressed
+Markdown blobs referenced by compact task receipts:
 
-Each session enables Pi auto-retry with configurable `maxAutoRetries` (default
-`3`, maximum `16`), a fixed 2-second base delay, and provider-library retries
-set to zero. The value counts retries after the initial provider attempt.
+```text
+.okf-wiki/blobs/<sha256>.md
+.okf-wiki/runs/<run-id>/manifest.json
+```
 
-Pi 0.82.1 applies pure exponential backoff without jitter or an agent-level
-delay cap: `delay(n) = 2s * 2^(n-1)`. The sequence starts 2s, 4s, 8s, 16s;
-retry 16 waits 65,536s and all 16 waits total 131,070s (about 36.4 hours).
-`nodeTimeoutSeconds` includes retry sleeps, so the default 1,200-second deadline
-will terminate a continuously failing session before it reaches retry 16. The
-provider setting `maxRetryDelayMs: 60000` does not cap this loop because
-provider retries are disabled; it only bounds provider/SDK retry delays.
+The blob contains model-readable analysis. The durable receipt contains only
+status, gaps, failure metadata, and the artifact reference. Downstream Agents
+receive accepted references and retrieve only the context they need.
 
-Authentication, billing, quota, forbidden, and invalid-request errors are not
-retried as transient. A missing submission adds one same-session correction
-turn. If it is still missing, one fixed fresh protocol-recovery session is
-allowed independently of `maxTransientSessionAttempts`; another miss is
-terminal. Tool continuations are additional model requests, and every such request has its own
-retry allowance. Structured submission tools allow the configured
-`1..3` calls per node attempt (default `3`); those calls do not increment
-`node.attempt`. The Pi retry count, fresh-session count,
-deadline, cooldown, and submission count are the bounded settings above.
+## Reliability
+
+- Pi owns one Agent's model loop, compaction, and tools. Its automatic turn and
+  provider retries are disabled.
+- The Wiki task runtime is the single retry owner. It owns one bounded fresh
+  session retry, concurrency admission, artifact acceptance, and pause/resume.
+- Transient 500/502/503/504 and network timeouts receive at most one fresh
+  session retry.
+- 429 pressure reduces shared admission, honors `Retry-After`, and permits one
+  fresh-session retry. Exhaustion becomes an explicit failed task receipt.
+- Authentication, billing, invalid request, and exhausted quota failures block
+  immediately instead of consuming retry budget.
+- A timeout or cancellation aborts and disposes the Agent. Finalized Markdown
+  artifacts remain eligible for later context handoff.
+- Candidate pages are deterministically validated before the recoverable,
+  atomic publication swap.
+
+No compatibility path is retained for the previous DAG snapshots or submission
+artifacts. Remove stale `.okf-wiki/` run state before using this version; the
+published `wiki/` directory is independent of that run state.

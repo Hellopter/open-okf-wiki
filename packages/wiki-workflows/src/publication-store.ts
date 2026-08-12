@@ -1,16 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
 
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-interface WriterPageBaseline {
-  version: 1;
-  page: string;
-  exists: boolean;
-  sha256?: string;
-}
 
 export type WikiPublishStep = "prepared" | "backed_up" | "installed" | "committed" | "rolled_back";
 
@@ -30,22 +23,10 @@ export interface WikiPublishRecovery {
 }
 
 export interface WikiPublicationStore {
-  /** Absolute directory exposed to writer/finalizer path policy. */
-  candidateWikiDirectory(runId: string): string;
   /** Discard a prior attempt and seed a clean candidate with published non-Markdown assets. */
   prepareCandidate(runId: string, mode?: "generate" | "refresh"): Promise<string>;
   /** Resume an existing candidate, or prepare it when this run has not written yet. */
   ensureCandidate(runId: string, mode?: "generate" | "refresh"): Promise<string>;
-  /** Copy a resumable source candidate into a fork; returns false when no trustworthy source exists. */
-  copyCandidate(sourceRunId: string, targetRunId: string): Promise<boolean>;
-  /** Create an isolated single-page working tree for one writer attempt. */
-  prepareWriterAttempt(runId: string, nodeId: string, attempt: number, page: string): Promise<string>;
-  /** Seal validated bytes so later model tool calls cannot change the accepted page. */
-  sealWriterPage(runId: string, nodeId: string, attempt: number, page: string): Promise<{ wikiRoot: string; sha256: string }>;
-  /** Atomically install the sealed page into the run candidate. */
-  promoteWriterPage(runId: string, nodeId: string, attempt: number, page: string): Promise<void>;
-  /** Remove all ephemeral files owned by one writer attempt. */
-  discardWriterAttempt(runId: string, nodeId: string, attempt: number): Promise<void>;
   /** Atomically replace published `wiki/` using a recoverable rename journal. */
   publish(runId: string, metadata?: Record<string, unknown>): Promise<WikiPublishJournal>;
   recover(runId: string): Promise<WikiPublishRecovery>;
@@ -90,23 +71,6 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
       candidate: path.join(runRoot, "candidate", "wiki"),
       backup: path.join(runRoot, "publish-backup"),
       journal: path.join(runRoot, "publish.json"),
-    };
-  };
-
-  const writerPathsFor = (runId: string, nodeId: string, attempt: number, page?: string) => {
-    const run = pathsFor(runId);
-    assertRunId(nodeId);
-    if (!Number.isInteger(attempt) || attempt < 1) throw new Error("Invalid Wiki writer attempt");
-    const relative = page === undefined ? undefined : safeWriterPage(page);
-    const root = path.join(run.runRoot, "writer-attempts", nodeId, String(attempt));
-    return {
-      root,
-      workingWiki: path.join(root, "working", "wiki"),
-      sealedWiki: path.join(root, "sealed", "wiki"),
-      baseline: path.join(root, "baseline.json"),
-      workingPage: relative ? path.join(root, "working", "wiki", ...relative.split("/")) : undefined,
-      sealedPage: relative ? path.join(root, "sealed", "wiki", ...relative.split("/")) : undefined,
-      candidatePage: relative ? path.join(run.candidate, ...relative.split("/")) : undefined,
     };
   };
 
@@ -203,10 +167,6 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
   };
 
   return {
-    candidateWikiDirectory(runId): string {
-      return pathsFor(runId).candidate;
-    },
-
     async prepareCandidate(runId, mode = "generate"): Promise<string> {
       return await enqueue(async () => await prepareCandidate(runId, mode));
     },
@@ -222,84 +182,6 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
         // just published, regardless of the run's original generate/refresh mode.
         const prior = await readJournal(runId);
         return await prepareCandidate(runId, prior?.state === "committed" ? "refresh" : mode);
-      });
-    },
-
-    async copyCandidate(sourceRunId, targetRunId): Promise<boolean> {
-      return await enqueue(async () => {
-        if (sourceRunId === targetRunId) throw new Error("Wiki candidate copy source and target run IDs must differ");
-        await ensureWikiWorkspaceInternalIgnore(workspace);
-        await ensureInternalRoot(okfRoot);
-        const sourcePaths = pathsFor(sourceRunId);
-        const targetPaths = pathsFor(targetRunId);
-        if (await readJournal(targetRunId)) throw new Error(`Target run ${targetRunId} already has a publish journal`);
-
-        let source = sourcePaths.candidate;
-        if (!(await exists(source))) {
-          const published = await readPublishedMetadata(publishedMetadataFile);
-          if (published?.runId !== sourceRunId || !(await exists(publishedWiki))) return false;
-          source = publishedWiki;
-        }
-        await assertRegularDirectory(source, "source Wiki candidate");
-        await rm(path.dirname(targetPaths.candidate), { recursive: true, force: true });
-        await mkdir(targetPaths.candidate, { recursive: true });
-        await copyPublishedWiki(source, targetPaths.candidate, true);
-        return true;
-      });
-    },
-
-    async prepareWriterAttempt(runId, nodeId, attempt, page): Promise<string> {
-      return await enqueue(async () => {
-        const paths = writerPathsFor(runId, nodeId, attempt, page);
-        await assertRegularDirectory(pathsFor(runId).candidate, "candidate Wiki");
-        await rm(paths.root, { recursive: true, force: true });
-        await mkdir(path.dirname(paths.workingPage!), { recursive: true });
-        const candidateBytes = await readRegularFileOrMissing(paths.candidatePage!, "candidate Wiki page");
-        const baseline: WriterPageBaseline = candidateBytes === undefined
-          ? { version: 1, page: safeWriterPage(page), exists: false }
-          : { version: 1, page: safeWriterPage(page), exists: true, sha256: sha256(candidateBytes) };
-        await writeAtomic(paths.baseline, `${JSON.stringify(baseline)}\n`);
-        if (candidateBytes) await writeFile(paths.workingPage!, candidateBytes);
-        return paths.workingWiki;
-      });
-    },
-
-    async sealWriterPage(runId, nodeId, attempt, page): Promise<{ wikiRoot: string; sha256: string }> {
-      return await enqueue(async () => {
-        const paths = writerPathsFor(runId, nodeId, attempt, page);
-        await assertRegularFile(paths.workingPage!, "writer attempt page");
-        await rm(path.dirname(paths.sealedWiki), { recursive: true, force: true });
-        await mkdir(path.dirname(paths.sealedPage!), { recursive: true });
-        const bytes = await readFile(paths.workingPage!);
-        await writeFile(paths.sealedPage!, bytes);
-        return { wikiRoot: paths.sealedWiki, sha256: sha256(bytes) };
-      });
-    },
-
-    async promoteWriterPage(runId, nodeId, attempt, page): Promise<void> {
-      await enqueue(async () => {
-        const paths = writerPathsFor(runId, nodeId, attempt, page);
-        await assertRegularFile(paths.sealedPage!, "sealed writer page");
-        const baseline = await readWriterBaseline(paths.baseline, safeWriterPage(page));
-        const currentBytes = await readRegularFileOrMissing(paths.candidatePage!, "candidate Wiki page");
-        const currentMatches = baseline.exists
-          ? currentBytes !== undefined && sha256(currentBytes) === baseline.sha256
-          : currentBytes === undefined;
-        if (!currentMatches) {
-          throw new Error(`Writer candidate page changed after attempt preparation: ${page}`);
-        }
-        await mkdir(path.dirname(paths.candidatePage!), { recursive: true });
-        await rename(paths.sealedPage!, paths.candidatePage!);
-        // Promotion is the commit point; best-effort ephemeral cleanup must not
-        // turn an installed, accepted page into a failed node.
-        await rm(paths.root, { recursive: true, force: true }).catch(() => {});
-      });
-    },
-
-    async discardWriterAttempt(runId, nodeId, attempt): Promise<void> {
-      await enqueue(async () => {
-        const paths = writerPathsFor(runId, nodeId, attempt);
-        await rm(paths.root, { recursive: true, force: true });
       });
     },
 
@@ -433,55 +315,6 @@ async function assertRegularDirectory(location: string, label: string): Promise<
   if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error(`${label} must be a regular directory: ${location}`);
 }
 
-async function assertRegularFile(location: string, label: string): Promise<void> {
-  let entry;
-  try {
-    entry = await lstat(location);
-  } catch (error) {
-    if (isMissing(error)) throw new Error(`Missing ${label}: ${location}`);
-    throw error;
-  }
-  if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`${label} must be a regular file: ${location}`);
-}
-
-async function readRegularFileOrMissing(location: string, label: string): Promise<Buffer | undefined> {
-  let entry;
-  try {
-    entry = await lstat(location);
-  } catch (error) {
-    if (isMissing(error)) return undefined;
-    throw error;
-  }
-  if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`${label} must be a regular file: ${location}`);
-  return await readFile(location);
-}
-
-async function readWriterBaseline(location: string, page: string): Promise<WriterPageBaseline> {
-  await assertRegularFile(location, "writer page baseline");
-  const value = JSON.parse(await readFile(location, "utf8")) as unknown;
-  if (!value || typeof value !== "object") throw new Error("Invalid writer page baseline");
-  const baseline = value as Partial<WriterPageBaseline>;
-  const keys = Object.keys(value).sort().join(",");
-  const expectedKeys = baseline.exists ? "exists,page,sha256,version" : "exists,page,version";
-  if (keys !== expectedKeys || baseline.version !== 1 || baseline.page !== page || typeof baseline.exists !== "boolean"
-    || (baseline.exists && (typeof baseline.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(baseline.sha256)))) {
-    throw new Error("Invalid writer page baseline");
-  }
-  return baseline as WriterPageBaseline;
-}
-
-function sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-function safeWriterPage(page: string): string {
-  const normalized = page.replaceAll("\\", "/");
-  if (!normalized.endsWith(".md") || normalized.startsWith("/") || normalized.split("/").some((part) => !part || part === "." || part === "..")) {
-    throw new Error("Invalid Wiki writer page");
-  }
-  return normalized;
-}
-
 async function assertDirectoryOrMissing(location: string, label: string): Promise<void> {
   try {
     await assertRegularDirectory(location, label);
@@ -522,17 +355,6 @@ async function exists(location: string): Promise<boolean> {
 async function writeJournal(location: string, journal: WikiPublishJournal): Promise<void> {
   await mkdir(path.dirname(location), { recursive: true });
   await writeAtomic(location, `${JSON.stringify(journal)}\n`);
-}
-
-async function readPublishedMetadata(location: string): Promise<{ runId?: unknown } | undefined> {
-  try {
-    await assertRegularFileOrMissing(location, "Wiki published metadata");
-    const value = JSON.parse(await readFile(location, "utf8")) as unknown;
-    return value && typeof value === "object" ? value as { runId?: unknown } : undefined;
-  } catch (error) {
-    if (isMissing(error)) return undefined;
-    throw error;
-  }
 }
 
 async function writeAtomic(location: string, content: string): Promise<void> {

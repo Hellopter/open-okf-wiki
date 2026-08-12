@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import type { ResolvedWikiPolicy } from "./policy.js";
 import { exists, inside, markdownFiles, readText } from "./files.js";
 import { okfSources, parsePage } from "./frontmatter.js";
 import { git } from "./git.js";
@@ -52,6 +51,7 @@ function uniqueChanges(changes: SourceChange[]): SourceChange[] {
 }
 
 function workspacePath(source: ResolvedWikiSource, relative: string): string {
+  if (source.path === ".") return relative;
   return relative ? `${source.path}/${relative}` : source.path;
 }
 
@@ -218,14 +218,14 @@ function impactedPages(graph: PageGraph, changedPaths: string[]): string[] {
 }
 
 /** Inspect declared Git sources without copying them into workspace state. */
-export async function inspectWiki(cwd: string, policy?: ResolvedWikiPolicy): Promise<WikiInspection> {
+export async function inspectWiki(cwd: string): Promise<WikiInspection> {
   const workspace = await loadWikiWorkspace(cwd);
   if (workspace.sources.length === 0) throw new Error("workspace.yaml has no sources. Run /wiki source add first.");
   const wikiRoot = path.join(workspace.root, WIKI_DIRECTORY);
   const wikiExists = await exists(wikiRoot);
   const states = await Promise.all(workspace.sources.map(async (source) => ({
     source,
-    ...await sourceState(source, workspace.defaultSourceIgnores, policy?.exclude ?? workspace.wiki.exclude),
+    ...await sourceState(source, workspace.defaultSourceIgnores, workspace.wiki.exclude),
   })));
   const changed = uniqueChanges(states.flatMap(({ source, changes }) => changes.map((change) => ({
     ...change,

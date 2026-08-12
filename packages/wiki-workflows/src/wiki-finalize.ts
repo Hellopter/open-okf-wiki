@@ -2,8 +2,8 @@ import { lstat, readdir, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parsePage, stringifyPage } from "./frontmatter.js";
 import { readText } from "./files.js";
-import type { WikiFinalization } from "./types.js";
-import type { WikiSpec } from "./workflow-types.js";
+import type { WikiFinalization, WikiValidation } from "./types.js";
+import type { WikiSpec } from "./wiki-spec.js";
 import { materializeWikiIndexes } from "./wiki-indexes.js";
 import {
   GENERATED_BY,
@@ -18,7 +18,21 @@ import {
   scanWikiTree,
   specPagePaths,
   validateWikiCandidate,
+  validateWiki,
+  validateWikiTree,
+  deriveWikiCandidate,
 } from "./wiki-validate.js";
+
+/** Validate, finalize and revalidate a candidate whose manifest is derived from its files. */
+export async function finalizeWikiTree(root: string, wikiDirectory: string): Promise<WikiValidation> {
+  const before = await validateWikiTree(root, wikiDirectory);
+  if (!before.ok) throw new Error(`Wiki candidate is invalid: ${before.issues.map(formatIssue).join("; ")}`);
+  const { spec } = await deriveWikiCandidate(root, wikiDirectory);
+  await finalizeWiki(root, spec, wikiDirectory);
+  const after = await validateWiki(root, spec, wikiDirectory);
+  if (!after.ok) throw new Error(`Wiki candidate is invalid after finalization: ${after.issues.map(formatIssue).join("; ")}`);
+  return after;
+}
 
 /**
  * Apply the deterministic Wiki lifecycle after semantic review has passed.

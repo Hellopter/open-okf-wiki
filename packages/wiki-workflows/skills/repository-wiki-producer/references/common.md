@@ -1,32 +1,18 @@
-# Wiki Run Contract
+# Common Rules
 
-Work only in the current Wiki workspace. Declared source projects are the only
-source of truth. Never create source copies, snapshots, manifests, or workflow
-state files.
+Declared source roots are the only source of truth. Read only authorized source
+paths and write only authorized candidate paths. Never write the published
+`wiki/`, `.okf-wiki` control files, source trees, or files reached through a
+symlink escape.
 
-Research evidence uses repo-local `project/path#Lx-Ly` ranges. User-facing Wiki
-sources use OKF v0.2 resources in the form
-`repo:<project>/<path>#Lx-Ly`. Write user-facing Wiki content in {{language}}.
-Generated pages belong only under `wiki/`; the extension generates every
-directory `index.md` and the root `okf_version: "0.2"` declaration.
+Research evidence uses `path#Lx-Ly`. Published page sources use
+`repo:<source>/<path>#Lx-Ly`. Every load-bearing claim needs a frontmatter
+source entry, an in-body `[^id]` reference, and a matching footnote definition.
 
-Keep claims tied to inspected source evidence. Do not cite absolute paths,
-temporary paths, `sources/`, or `inputs/`. Never invent verification, human
-review, generation, or staleness metadata; the deterministic publisher owns
-machine trust metadata.
+Every page needs non-empty `type`, `title`, `description`, and `sources`
+frontmatter. Do not add publisher-owned trust fields or write `index.md`; the
+deterministic finalizer owns indexes and publication metadata.
 
-Treat domain and concept names as source-grounded facts. When the requested
-output language is Chinese, prefer the corresponding Chinese name found in
-source code or comments and preserve it exactly instead of translating the
-name yourself. Translate only when no source-authored Chinese name can be
-established, and never present an inferred translation as an official name.
-
-Research, planning, and review are read-only coordination roles. Only a writer
-edits its assigned Wiki page. The deterministic coordinator materializes
-indexes after each write or repair wave, and the publisher rebuilds them before
-publication. Page deletion and trust metadata belong to the publisher, never an
-agent.
-
-For coordination roles, the accepted typed submission object is the canonical
-handoff. Never create a parallel JSON or Markdown handoff file; human-readable
-views are rendered by the extension from the accepted object.
+Keep large prose in the assigned Markdown artifact or candidate page. Return
+only a concise summary, coverage, gaps, and artifact references through the
+task receipt.

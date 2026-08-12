@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { inspectWiki } from "../dist/inspect.js";
-import { addWikiSource, initializeWikiWorkspace } from "../dist/workspace.js";
 
 const temporaryDirectories = [];
 
@@ -28,8 +27,12 @@ async function createRepository() {
   git(source, "add", ".");
   git(source, "commit", "--quiet", "-m", "Initial source");
 
-  await initializeWikiWorkspace({ cwd: workspace });
-  await addWikiSource({ cwd: workspace, source: { kind: "link", path: source } });
+  await mkdir(workspace, { recursive: true });
+  await symlink(source, path.join(workspace, "api"), "dir");
+  await writeFile(path.join(workspace, "workspace.yaml"), [
+    "version: 1", "language: zh", "defaultSourceIgnores: true", "wiki:", "  exclude: []", "sources:",
+    `  - path: api`, "    origin:", "      type: link", `      localPath: ${JSON.stringify(source)}`, "",
+  ].join("\n"));
   await mkdir(path.join(workspace, "wiki", "concepts"), { recursive: true });
   await writeFile(path.join(workspace, "wiki", "concepts", "service.md"), [
     "---",
@@ -160,4 +163,29 @@ test("uses full generation when a declared source link escapes its Git root", as
 
   assert.equal(inspection.mode, "generate");
   assert.deepEqual(inspection.impactedPages, ["concepts/consumer.md", "concepts/service.md"]);
+});
+
+test("inspects an implicit self repository with stable unprefixed paths and ignores Wiki state", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-inspect-self-"));
+  temporaryDirectories.push(parent);
+  const root = path.join(parent, "self");
+  await mkdir(path.join(root, "src"), { recursive: true });
+  await writeFile(path.join(root, "src", "index.ts"), "export const value = 1;\n");
+  git(root, "init", "--quiet");
+  git(root, "config", "user.email", "wiki@example.test");
+  git(root, "config", "user.name", "Wiki Test");
+  git(root, "add", "src/index.ts");
+  git(root, "commit", "--quiet", "-m", "Initial source");
+  await writeFile(path.join(root, "src", "index.ts"), "export const value = 2;\n");
+  await mkdir(path.join(root, ".okf-wiki", "runs"), { recursive: true });
+  await writeFile(path.join(root, ".okf-wiki", "runs", "state.json"), "{}\n");
+  await mkdir(path.join(root, "wiki"), { recursive: true });
+  await writeFile(path.join(root, "wiki", "overview.md"), "# Existing\n");
+
+  const inspection = await inspectWiki(path.join(root, "src"));
+
+  assert.equal(inspection.root, root);
+  assert.deepEqual(inspection.sourcePaths, ["."]);
+  assert.deepEqual(inspection.changedPaths, ["src/index.ts"]);
+  assert.ok(!inspection.changedPaths.some((entry) => entry.startsWith(".okf-wiki/") || entry.startsWith("wiki/")));
 });

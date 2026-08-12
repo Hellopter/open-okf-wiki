@@ -1,20 +1,6 @@
-/**
- * Workspace path policy and handoff-artifact I/O.
- *
- * Shared by agent-tools (tool wiring) and agent-submissions (submit/write tools)
- * so those modules stay free of a circular import.
- *
- * Pure of agent tool definitions; depends only on workspace + control size limits.
- */
-
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+/** Workspace path policy for guarded model filesystem tools. */
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import {
-  MAX_CONTROL_ARTIFACT_BYTES,
-  MAX_RESEARCH_ARTIFACT_BYTES,
-  WikiControlSubmissionSizeError,
-} from "./control-submissions.js";
 import { loadWikiWorkspace } from "./workspace.js";
 
 export interface WorkspaceToolPolicy {
@@ -23,7 +9,6 @@ export interface WorkspaceToolPolicy {
   wikiRoot: string;
   /** Optional unpublished Wiki root used by writer/reviewer tools for this run. */
   candidateWikiRoot?: string;
-  artifactRoot: string;
 }
 
 export interface PermittedToolRoot {
@@ -48,89 +33,7 @@ export async function workspaceToolPolicy(cwd: string, candidateWikiRoot?: strin
     sourceRoots,
     wikiRoot: path.join(workspace.root, "wiki"),
     candidateWikiRoot: resolvedCandidateRoot,
-    // Parent of runs/ (staging + per-run manifests) and blobs/ (content-addressed handoffs).
-    artifactRoot: path.join(workspace.root, ".okf-wiki"),
   };
-}
-
-export function resolveArtifactPath(policy: WorkspaceToolPolicy, rawPath: string): string {
-  if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid artifact path");
-  const artifactPath = insideWorkspace(policy.workspaceRoot, rawPath);
-  const artifactRoot = path.resolve(policy.artifactRoot);
-  if (artifactPath === artifactRoot || !pathIsInside(artifactRoot, artifactPath) || ![".json", ".md"].includes(path.extname(artifactPath))) {
-    throw new Error(`Workflow configuration error: artifact path must be a Markdown or JSON file under .okf-wiki: ${rawPath}`);
-  }
-  return path.resolve(artifactPath);
-}
-
-export async function readArtifactText(policy: WorkspaceToolPolicy, artifactPath: string): Promise<string> {
-  const expectedPath = resolveArtifactPath(policy, artifactPath);
-  const expectedEntry = await lstat(expectedPath);
-  if (expectedEntry.isSymbolicLink() || !expectedEntry.isFile()) {
-    throw new Error(`Handoff artifact must be a regular file: ${artifactPath}`);
-  }
-  const resolvedPath = await assertAllowedWorkspacePath(
-    policy.workspaceRoot,
-    [{ logicalRoot: policy.artifactRoot }],
-    expectedPath,
-    false,
-  );
-  const entry = await lstat(resolvedPath);
-  if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`Handoff artifact must be a regular file: ${artifactPath}`);
-  if (entry.size > MAX_CONTROL_ARTIFACT_BYTES) {
-    throw new WikiControlSubmissionSizeError("Handoff artifact", entry.size, MAX_CONTROL_ARTIFACT_BYTES);
-  }
-  const bytes = await readFile(resolvedPath);
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new Error("Handoff artifact must be valid UTF-8");
-  }
-}
-
-export async function writeArtifactText(policy: WorkspaceToolPolicy, artifactPath: string, content: string): Promise<void> {
-  const sizeBytes = Buffer.byteLength(content, "utf8");
-  const limitBytes = path.extname(artifactPath) === ".md" ? MAX_RESEARCH_ARTIFACT_BYTES : MAX_CONTROL_ARTIFACT_BYTES;
-  if (sizeBytes > limitBytes) {
-    throw new WikiControlSubmissionSizeError("Handoff artifact", sizeBytes, limitBytes);
-  }
-  await ensureArtifactRoot(policy);
-  const resolvedPath = await assertAllowedWorkspacePath(
-    policy.workspaceRoot,
-    [{ logicalRoot: policy.artifactRoot }],
-    artifactPath,
-    true,
-  );
-  const existingEntry = await lstat(resolvedPath).catch((error: unknown) => {
-    if (isMissingPath(error)) return undefined;
-    throw error;
-  });
-  if (existingEntry?.isSymbolicLink() || (existingEntry && !existingEntry.isFile())) {
-    throw new Error(`Handoff artifact must be a regular file: ${artifactPath}`);
-  }
-  await assertContainedAbsolutePath(policy.artifactRoot, resolvedPath, true, "artifact root");
-  await mkdir(path.dirname(resolvedPath), { recursive: true });
-  await assertContainedAbsolutePath(policy.artifactRoot, resolvedPath, true, "artifact root");
-  const temporaryPath = path.join(path.dirname(resolvedPath), `.${path.basename(resolvedPath)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporaryPath, content, "utf8");
-    await rename(temporaryPath, resolvedPath);
-  } finally {
-    await rm(temporaryPath, { force: true }).catch(() => {});
-  }
-}
-
-async function ensureArtifactRoot(policy: WorkspaceToolPolicy): Promise<void> {
-  await assertAllowedWorkspacePath(
-    policy.workspaceRoot,
-    [{ logicalRoot: policy.workspaceRoot }],
-    policy.artifactRoot,
-    true,
-  );
-  await mkdir(policy.artifactRoot, { recursive: true });
-  const entry = await lstat(policy.artifactRoot);
-  if (!entry.isDirectory()) throw new Error("Workflow artifact root must be a directory");
-  await assertContainedAbsolutePath(policy.workspaceRoot, policy.artifactRoot, false, "workspace root");
 }
 
 /** Resolve candidate under workspace root; throw if it escapes. */
