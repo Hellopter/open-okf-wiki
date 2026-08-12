@@ -536,6 +536,8 @@ test("generate fans out domain and detail writers within the configured concurre
     && request.node.input.scope.id === "source-survey:src-core");
   assert.match(researcher.prompt, /"id": "source-survey:src-core"/);
   assert.doesNotMatch(researcher.prompt, /researchGroupId|priorResearchIds|priorSynthesisNodeId|structuralRoundId/);
+  const planner = f.requests.find((request) => request.node.kind === "synthesis");
+  assert.deepEqual(planner.readRoots, ["src-core", "src-api"]);
   const overviewRequest = f.requests.find((request) => request.node.kind === "write" && request.node.input.intent === "overview");
   assert.deepEqual(overviewRequest.readRoots, ["src-core", "src-api"]);
   assert.equal(overviewRequest.wikiReadPaths.length, 12);
@@ -543,11 +545,15 @@ test("generate fans out domain and detail writers within the configured concurre
   assert.match(reviewer.prompt, /"path": "d0\/page.md"/);
   assert.doesNotMatch(reviewer.prompt, /verificationGroupId|synthesisNodeId/);
   const domainReviewer = f.requests.find((request) => request.node.kind === "review" && request.node.input.reviewScope.kind === "domain");
+  assert.ok(domainReviewer.readRoots.length > 0);
+  assert.ok(domainReviewer.wikiReadPaths.length > 0);
   assert.equal(domainReviewer.researchFragments, undefined);
   assert.equal(domainReviewer.reviewFragments, undefined);
   assert.match(domainReviewer.prompt, /Review only these pagePaths/);
   assert.match(domainReviewer.prompt, /"kind": "domain"/);
   const globalReviewer = f.requests.find((request) => request.node.kind === "review" && request.node.input.reviewScope.kind === "global");
+  assert.deepEqual(globalReviewer.readRoots, ["src-core", "src-api"]);
+  assert.ok(globalReviewer.wikiReadPaths.length > 0);
   assert.ok(globalReviewer.reviewFragments.fragments.length > 0);
   assert.equal(globalReviewer.reviewFragments.omittedFragmentCount, 0);
   assert.match(globalReviewer.prompt, /Domain Review Fragments/);
@@ -973,6 +979,7 @@ test("mixed structural and local defects replan first, write the full topology, 
   assert.match(feedback.id, /^defect-[a-f0-9]{12}$/);
   assert.equal(structuralWrites.every((node) => node.input.intent !== "repair"), true);
   const structuralPlan = f.requests.filter((request) => request.node.kind === "synthesis" && request.node.input.mode === "structural").at(-1);
+  assert.deepEqual(structuralPlan.readRoots, ["src-core", "src-api"]);
   assert.match(structuralPlan.prompt, /Preseeded Prior WikiSpec/);
   assert.match(structuralPlan.prompt, /wiki_spec_get_domain/);
   assert.match(structuralPlan.prompt, /"kind": "topology"/);
@@ -1043,6 +1050,7 @@ test("targeted research is allowed once and carries all receipts into the next P
   // Expand plan + post-expand finalize (queues coverage audit while survey gaps remain)
   // + post-audit finalize once requiredDryCoverageAudits is satisfied.
   assert.equal(syntheses.length, 3);
+  assert.ok(syntheses.every((request) => JSON.stringify(request.readRoots) === JSON.stringify(["src-core", "src-api"])));
   for (const scopeId of ["source-survey:src-core", "source-survey:src-api", "cross-boundary"]) {
     assert.match(syntheses[1].prompt, new RegExp(`"scopeId": "${scopeId}"`));
   }

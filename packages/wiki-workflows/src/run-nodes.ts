@@ -408,6 +408,7 @@ export function writePathsFor(node: WikiNode): string[] | undefined {
 export function readRootsFor(node: WikiNode, run: WikiRunSnapshot, synthesisSpec?: WikiSpec): string[] | undefined {
   const inspection = run.inspection;
   if (node.kind === "research") return researchInputFor(node).scope.sourcePaths;
+  if (node.kind === "synthesis") return synthesisInputFor(node).inspection?.sourcePaths ?? inspection?.sourcePaths;
   if (node.kind === "write") {
     const input = pagePacketInputFor(node);
     if (input.page.pageType === "overview") return inspection?.sourcePaths;
