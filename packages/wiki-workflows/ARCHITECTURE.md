@@ -29,6 +29,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/artifact-store.ts` | Content-addressed accepted-object and coordinator-report blobs with per-run manifests. |
 | `src/publication-store.ts` | Per-run candidate trees, fork copy, atomic publish journal, rollback and startup recovery. |
 | `src/run-history.ts` | Workspace-local authoritative `run.json`, derived index, pagination and retention. |
+| `src/workspace-coordinator.ts` | Local PID/token ownership, atomic acquisition, and dead-process reclamation for workspace mutations. |
 | `src/snapshot-validation.ts` | Fail-closed version 1 checks, including policy/hash and artifact-reference consistency. |
 | `src/executor.ts` | Isolated Pi sessions, compaction/retry policy, runtime admission, bounded streams/history, and node deadline. |
 | `src/extension.ts` | Pi extension wiring: commands, run lifecycle, UI host, session restore. |
@@ -156,6 +157,16 @@ generation.
 - **TransitionHost**: thin adapter so `transitions-queue` mutates graph without owning the engine class.
 
 ## Candidate and publication ownership
+
+- One local Pi process owns workspace mutations at a time through
+  `.okf-wiki/active.lock`; terminal, paused, stopped, and cancelled transitions
+  release ownership only after their authoritative snapshot is durable.
+- Startup scans fresh project history independently of Pi's session pointer.
+  A unique interrupted run is restored as paused; ambiguity is surfaced for
+  explicit selection. Live PIDs and malformed ownership records fail closed.
+- The coordinator intentionally has no network lease, heartbeat, TTL, or force
+  takeover. It is a local single-user guard and never steals a long-running
+  process merely because a lock is old.
 
 - Agents never mutate published `wiki/`. Logical `wiki/*` tool paths map to
   `.okf-wiki/runs/<runId>/candidate/wiki`.

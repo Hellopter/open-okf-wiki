@@ -112,6 +112,17 @@ test("history repairs a stale summary index from the authoritative run snapshot"
   assert.equal((await reopened.list())[0].updatedAt, "2026-08-09T00:00:00.000Z");
 });
 
+test("listFresh bypasses another store instance's short history cache", async (t) => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-history-fresh-"));
+  t.after(async () => await rm(rootDir, { recursive: true, force: true }));
+  const first = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
+  const second = createWikiRunHistoryStore({ workspace: "/workspace", rootDir });
+  await first.save(snapshot("terminal", "succeeded", "2026-08-09T00:00:00.000Z"));
+  assert.deepEqual((await first.list()).map((item) => item.id), ["terminal"]);
+  await second.save(snapshot("interrupted", "running", "2026-08-09T00:01:00.000Z"));
+  assert.deepEqual((await first.listFresh()).map((item) => item.id), ["interrupted", "terminal"]);
+});
+
 test("retention evicts only the oldest terminal history and its artifacts", async (t) => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-history-retention-"));
   t.after(async () => await rm(rootDir, { recursive: true, force: true }));

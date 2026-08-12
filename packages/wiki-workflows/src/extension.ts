@@ -19,6 +19,12 @@ import type { WikiRunEvent, WikiRunSession, WikiRunSnapshot, WikiRunSummary } fr
 import { isRecord } from "./util.js";
 import { wikiWorkspaceService, type WikiWorkspaceResult, type WikiWorkspaceService } from "./workspace.js";
 import { isExecutingRunStatus, isTerminalRunStatus } from "./ui/format.js";
+import {
+  createWikiWorkspaceCoordinator,
+  type WikiWorkspaceCoordinator,
+  type WikiWorkspaceLock,
+  type WikiWorkspaceOwner,
+} from "./workspace-coordinator.js";
 
 export interface WikiExtensionOptions {
   createEngine?: (context: ExtensionContext) => WikiWorkflowEngine;
@@ -27,6 +33,8 @@ export interface WikiExtensionOptions {
   createHistoryStore?: (workspace: string) => WikiRunHistoryStore;
   /** Test seam for workspace-local candidate publication and crash recovery. */
   createPublicationStore?: (workspace: string) => WikiPublicationStore;
+  /** Test seam for workspace-local process ownership. */
+  createWorkspaceCoordinator?: (workspace: string) => WikiWorkspaceCoordinator;
 }
 
 interface ParsedRunCommand {
@@ -63,6 +71,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     const historySummaries = new Map<string, WikiRunSummary[]>();
     const cachedSnapshots = new Map<string, WikiRunSnapshot>();
     const historyListeners = new Set<() => void>();
+    const workspaceCoordinators = new Map<string, WikiWorkspaceCoordinator>();
+    const workspaceLocks = new Map<string, WikiWorkspaceLock>();
 
     const checkpoint = new WikiCheckpointCoordinator({
       appendSession: (session) => {
@@ -93,31 +103,48 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       historyWriteFailure = message;
     };
 
-    const persistNow = async (): Promise<void> => {
-      // Prefer the live snapshot body; convert to pointer for host session.
-      const snapshot = engine?.getSnapshot();
-      if (!snapshot) return;
+    const persistSnapshot = async (snapshot: WikiRunSnapshot): Promise<boolean> => {
       const session = createWikiRunSession(snapshot);
       // Always await the pointer session + full history write so failures are reported even when
       // callers fire-and-forget (critical events). Writes still serialize via the chain.
       try {
         await checkpoint.enqueue(snapshot, session, { awaitHistory: true });
         historyWriteFailure = undefined;
+        return true;
       } catch (error) {
         reportHistoryFailure(error);
+        return false;
       }
+    };
+
+    const persistNow = async (): Promise<boolean> => {
+      // Prefer the live snapshot body; convert to pointer for host session.
+      const snapshot = engine?.getSnapshot();
+      return snapshot ? await persistSnapshot(snapshot) : true;
     };
 
     const bindEngine = (context: ExtensionContext): WikiWorkflowEngine => {
       unsubscribeEngine?.();
-      engine = createEngine(context);
-      unsubscribeEngine = engine.subscribe((snapshot, event) => {
+      const boundEngine = createEngine(context);
+      engine = boundEngine;
+      unsubscribeEngine = boundEngine.subscribe((snapshot, event) => {
         rememberSnapshot(snapshot);
         // Host session + history: only lifecycle / node-terminal / recovered / retry.
         // node_activity / node_started never appendEntry (OOM: host fileEntries).
-        if (isCriticalEvent(event)) void persistNow();
+        if (isCriticalEvent(event)) {
+          void (async () => {
+            if (isTerminalRunStatus(snapshot.status)) {
+              await boundEngine.waitForIdle();
+              const settled = boundEngine.getSnapshot();
+              if (!settled || settled.id !== snapshot.id || !isTerminalRunStatus(settled.status)) return;
+              if (await persistSnapshot(settled)) await releaseWorkspace(settled.cwd, settled.id);
+              return;
+            }
+            await persistSnapshot(snapshot);
+          })();
+        }
       });
-      return engine;
+      return boundEngine;
     };
 
     const currentEngine = (context: ExtensionContext): WikiWorkflowEngine => engine ?? bindEngine(context);
@@ -125,6 +152,13 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     const restoreForWorkspace = async (context: ExtensionContext): Promise<void> => {
       const workspace = await workspaceForNavigator(context.cwd);
       const workspaceRoot = workspace?.root ?? context.cwd;
+      const lock = await acquireWorkspace(workspaceRoot);
+      if (!lock) {
+        const owner = await coordinatorFor(workspaceRoot).currentOwner();
+        context.ui.notify(workspaceBusyMessage(owner), "warning");
+        return;
+      }
+      let recoveredStatePersisted = false;
       try {
         await publicationStoreFor(workspaceRoot).recoverPending();
       } catch (error) {
@@ -132,12 +166,29 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           `Wiki publication recovery failed: ${errorMessage(error)}. Resolve the publish journal before resuming this run.`,
           "error",
         );
+        await releaseWorkspace(workspaceRoot);
         return;
       }
-      const candidate = latestSessionCandidate(context, workspaceRoot);
-      if (!candidate) return;
+      const recoverable = (await freshHistoryForWorkspace(workspaceRoot, currentEngine(context)))
+        .filter((summary) => isRecoverableRunStatus(summary.status))
+        .sort(compareRunRecency);
+      if (recoverable.length > 1) {
+        context.ui.notify(multipleRecoverableMessage(recoverable), "warning");
+        await releaseWorkspace(workspaceRoot);
+        return;
+      }
+      let candidate = latestSessionCandidate(context, workspaceRoot);
+      if (recoverable[0] && candidate?.session?.runId !== recoverable[0].id) {
+        const snapshot = await historyStoreFor(workspaceRoot).load(recoverable[0].id);
+        if (snapshot) candidate = { session: createWikiRunSession(snapshot) };
+      }
+      if (!candidate) {
+        await releaseWorkspace(workspaceRoot);
+        return;
+      }
       if (!candidate.session) {
         context.ui.notify(incompatibleRunMessage(candidate.detail), "warning");
+        await releaseWorkspace(workspaceRoot);
         return;
       }
       const active = currentEngine(context);
@@ -150,6 +201,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           `Wiki run history could not be loaded for ${candidate.session.runId}: ${errorMessage(error)}. Start a new run with /wiki generate.`,
           "warning",
         );
+        await releaseWorkspace(workspaceRoot);
         return;
       }
       if (!historySnapshot) {
@@ -157,13 +209,16 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           `Wiki run ${candidate.session.runId} has no durable history and was not restored. Start a new run with /wiki generate.`,
           "warning",
         );
+        await releaseWorkspace(workspaceRoot);
         return;
       }
+      await coordinatorFor(workspaceRoot).updateRun(lock, historySnapshot.id);
       const snapshot = active.restore(historySnapshot);
       if (!snapshot) {
         const reasons = explainWikiRunSnapshot(historySnapshot);
         const detail = reasons.length > 0 ? reasons.join("; ") : "restore rejected snapshot";
         context.ui.notify(incompatibleRunMessage(detail), "warning");
+        await releaseWorkspace(workspaceRoot);
         return;
       }
       // Optional durable integrity: missing research/synthesis/review handoffs block resume.
@@ -191,8 +246,14 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         pi.appendEntry(WIKI_RUN_CUSTOM_TYPE, createWikiRunSession(restored));
         await refreshHistory(historyRoot);
         historyWriteFailure = undefined;
+        recoveredStatePersisted = true;
       } catch (error) {
         reportHistoryFailure(error);
+      } finally {
+        // Session start never schedules agents; restored state is paused or terminal.
+        if (recoveredStatePersisted && active.getSnapshot()?.status !== "running") {
+          await releaseWorkspace(workspaceRoot);
+        }
       }
     };
 
@@ -209,12 +270,16 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     pi.on("session_shutdown", async () => {
       host?.unbind({ clearRetention: true });
       host = undefined;
-      if (engine) {
-        await engine.interrupt();
-        await engine.waitForIdle();
-        await persistNow();
-      } else {
-        await checkpoint.flush();
+      try {
+        if (engine) {
+          await engine.interrupt();
+          await engine.waitForIdle();
+          await persistNow();
+        } else {
+          await checkpoint.flush();
+        }
+      } finally {
+        await releaseAllWorkspaces();
       }
       unsubscribeEngine?.();
       unsubscribeEngine = undefined;
@@ -297,8 +362,16 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           }
           case "generate":
           case "refresh": {
+            let workspaceRoot: string | undefined;
+            let acquiredHere = false;
             try {
               const workspace = await workspaceService.load(context.cwd);
+              workspaceRoot = workspace.root;
+              acquiredHere = !workspaceLocks.has(path.resolve(workspace.root));
+              const lock = await requireWorkspace(workspace.root);
+              const recoverable = (await freshHistoryForWorkspace(workspace.root, currentEngine(context)))
+                .filter((summary) => isRecoverableRunStatus(summary.status));
+              if (recoverable.length > 0) throw new Error(activeRunConflictMessage(recoverable));
               const snapshot = currentEngine(context).start({
                 cwd: workspace.root,
                 mode: command.action,
@@ -307,34 +380,57 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
                 maxResearchRounds: workspace.quality.maxResearchRounds,
                 wikiPolicy: { ...workspace.wiki, quality: { maxSubmissionAttempts: workspace.quality.maxSubmissionAttempts } },
               });
+              await coordinatorFor(workspace.root).updateRun(lock, snapshot.id);
               await persistNow();
               await ensureHost(context);
               host?.onRunStarted(snapshot);
               notifyRunStarted(context.ui, snapshot, command.language ?? workspace.language);
             } catch (error) {
+              if (acquiredHere && workspaceRoot && currentEngine(context).getSnapshot()?.status !== "running") {
+                await releaseWorkspace(workspaceRoot);
+              }
               context.ui.notify(errorMessage(error), "error");
             }
             return;
           }
           case "pause":
+            let pauseWorkspaceRoot: string | undefined;
+            let pauseApplied = false;
+            let pauseAcquiredHere = false;
             try {
               const active = currentEngine(context);
+              const workspace = await workspaceService.load(context.cwd);
+              pauseWorkspaceRoot = workspace.root;
+              pauseAcquiredHere = !workspaceLocks.has(path.resolve(workspace.root));
+              await requireWorkspace(workspace.root, active.getSnapshot()?.id);
               if (!active.getSnapshot()) {
-                const workspace = await workspaceService.load(context.cwd);
                 await bindLatestRecoverable(active, workspace.root);
               }
+              await updateWorkspaceRun(workspace.root, active.getSnapshot()!.id);
               active.pause();
+              pauseApplied = true;
               await persistNow();
+              const pausedRunId = active.getSnapshot()?.id;
+              void settlePausedRun(active, pausedRunId).catch(reportHistoryFailure);
               host?.refresh();
               context.ui.notify("Wiki scheduling paused; active agents may finish.", "info");
             } catch (error) {
+              const active = currentEngine(context);
+              const current = active.getSnapshot();
+              if (pauseApplied && current?.id) void settlePausedRun(active, current.id).catch(reportHistoryFailure);
+              else if (pauseAcquiredHere && pauseWorkspaceRoot) await releaseWorkspace(pauseWorkspaceRoot);
               context.ui.notify(errorMessage(error), "warning");
             }
             return;
           case "resume":
+            let resumeWorkspaceRoot: string | undefined;
+            let resumeAcquiredHere = false;
             try {
               const workspace = await workspaceService.load(context.cwd);
+              resumeWorkspaceRoot = workspace.root;
               const active = currentEngine(context);
+              resumeAcquiredHere = !workspaceLocks.has(path.resolve(workspace.root));
+              await requireWorkspace(workspace.root, command.runId ?? active.getSnapshot()?.id);
               if (!active.getSnapshot() && !command.runId) {
                 await bindLatestRecoverable(active, workspace.root);
               }
@@ -343,31 +439,65 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
               host?.refresh();
               context.ui.notify("Wiki scheduling resumed after Git re-inspection.", "info");
             } catch (error) {
+              if (resumeAcquiredHere && resumeWorkspaceRoot && currentEngine(context).getSnapshot()?.status !== "running") {
+                await releaseWorkspace(resumeWorkspaceRoot);
+              }
               context.ui.notify(errorMessage(error), "error");
             }
             return;
           case "stop":
+            let stopWorkspaceRoot: string | undefined;
+            let stopAcquiredHere = false;
             try {
               const active = currentEngine(context);
+              const workspace = await workspaceService.load(context.cwd);
+              stopWorkspaceRoot = workspace.root;
+              stopAcquiredHere = !workspaceLocks.has(path.resolve(workspace.root));
+              await requireWorkspace(workspace.root, active.getSnapshot()?.id);
               if (!active.getSnapshot()) {
-                const workspace = await workspaceService.load(context.cwd);
                 await bindLatestRecoverable(active, workspace.root);
               }
+              await updateWorkspaceRun(workspace.root, active.getSnapshot()!.id);
               await active.stop();
-              await persistNow();
+              await active.waitForIdle();
+              const persisted = await persistNow();
+              if (persisted) await releaseWorkspace(workspace.root, active.getSnapshot()?.id);
               host?.refresh();
               context.ui.notify("Wiki agents aborted; run paused. Use /wiki resume to continue.", "info");
             } catch (error) {
+              if (stopAcquiredHere && stopWorkspaceRoot && currentEngine(context).getSnapshot()?.status !== "running") {
+                if (await persistNow()) await releaseWorkspace(stopWorkspaceRoot);
+              }
               context.ui.notify(errorMessage(error), "warning");
             }
             return;
           case "cancel":
+            let workspaceRoot: string | undefined;
+            let cancelAcquiredHere = false;
             try {
-              await currentEngine(context).cancel();
-              await persistNow();
+              const workspace = await workspaceService.load(context.cwd);
+              workspaceRoot = workspace.root;
+              cancelAcquiredHere = !workspaceLocks.has(path.resolve(workspace.root));
+              const active = currentEngine(context);
+              const current = active.getSnapshot();
+              await requireWorkspace(workspace.root, command.runId ?? current?.id);
+              if (current && command.runId && current.id !== command.runId && isRecoverableRunStatus(current.status)) {
+                throw new Error(`Wiki run ${current.id} is already active; cancel it before selecting another run`);
+              }
+              if (!active.getSnapshot() || (command.runId && active.getSnapshot()?.id !== command.runId)) {
+                await bindRecoverableById(active, workspace.root, command.runId);
+              }
+              await active.cancel();
+              await active.waitForIdle();
+              const persisted = await persistNow();
+              if (persisted) await releaseWorkspace(workspace.root, active.getSnapshot()?.id);
               host?.refresh();
               context.ui.notify("Wiki run cancelled.", "info");
             } catch (error) {
+              if (cancelAcquiredHere && workspaceRoot && currentEngine(context).getSnapshot()?.status !== "running") {
+                const currentRunId = currentEngine(context).getSnapshot()?.id;
+                if (await persistNow()) await releaseWorkspace(workspaceRoot, currentRunId);
+              }
               context.ui.notify(errorMessage(error), "warning");
             }
         }
@@ -437,46 +567,81 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           };
         },
         retryNode: async (runId, nodeId) => {
-          const current = active.getSnapshot();
-          const retryCurrent = current?.id === runId && current && isExecutingRunStatus(current.status);
-          await checkpoint.flush();
-          const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
-          if (!snapshot) throw new Error("Wiki run history is unavailable");
-          const retried = retryCurrent
-            ? await active.retryNode(nodeId)
-            : await active.forkAndRetryNode(snapshot, nodeId);
-          await persistNow();
-          return retried;
+          const acquiredHere = !workspaceLocks.has(path.resolve(historyRoot));
+          try {
+            const current = active.getSnapshot();
+            if (current && current.id !== runId && isRecoverableRunStatus(current.status)) {
+              throw new Error(`Wiki run ${current.id} is already active; cancel it before retrying ${runId}`);
+            }
+            await requireWorkspace(historyRoot, runId);
+            const retryCurrent = current?.id === runId && current && isExecutingRunStatus(current.status);
+            await checkpoint.flush();
+            const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
+            if (!snapshot) throw new Error("Wiki run history is unavailable");
+            await assertNoOtherRecoverable(historyRoot, runId);
+            const retried = retryCurrent
+              ? await active.retryNode(nodeId)
+              : await active.forkAndRetryNode(snapshot, nodeId);
+            if (retried) await updateWorkspaceRun(historyRoot, retried.id);
+            await persistNow();
+            return retried;
+          } catch (error) {
+            if (acquiredHere && active.getSnapshot()?.status !== "running") await releaseWorkspace(historyRoot, runId);
+            throw error;
+          }
         },
         retryPhase: async (runId, phaseId) => {
-          const current = active.getSnapshot();
-          const retryCurrent = current?.id === runId && current && isExecutingRunStatus(current.status);
-          await checkpoint.flush();
-          const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
-          if (!snapshot) throw new Error("Wiki run history is unavailable");
-          const retried = retryCurrent
-            ? await active.retryPhase(phaseId)
-            : await active.forkAndRetryPhase(snapshot, phaseId);
-          await persistNow();
-          return retried;
+          const acquiredHere = !workspaceLocks.has(path.resolve(historyRoot));
+          try {
+            const current = active.getSnapshot();
+            if (current && current.id !== runId && isRecoverableRunStatus(current.status)) {
+              throw new Error(`Wiki run ${current.id} is already active; cancel it before retrying ${runId}`);
+            }
+            await requireWorkspace(historyRoot, runId);
+            const retryCurrent = current?.id === runId && current && isExecutingRunStatus(current.status);
+            await checkpoint.flush();
+            const snapshot = current?.id === runId ? current : await historyStoreFor(historyRoot).load(runId);
+            if (!snapshot) throw new Error("Wiki run history is unavailable");
+            await assertNoOtherRecoverable(historyRoot, runId);
+            const retried = retryCurrent
+              ? await active.retryPhase(phaseId)
+              : await active.forkAndRetryPhase(snapshot, phaseId);
+            if (retried) await updateWorkspaceRun(historyRoot, retried.id);
+            await persistNow();
+            return retried;
+          } catch (error) {
+            if (acquiredHere && active.getSnapshot()?.status !== "running") await releaseWorkspace(historyRoot, runId);
+            throw error;
+          }
         },
         deleteRun: async (runId) => {
           if (runId === active.getSnapshot()?.id) throw new Error("The active Wiki run cannot be deleted");
-          await checkpoint.flush();
-          const snapshot = cachedSnapshots.get(runId) ?? await historyStoreFor(historyRoot).load(runId);
-          if (!snapshot || !isTerminalRunStatus(snapshot.status)) throw new Error("Only completed Wiki history can be deleted");
-          await historyStoreFor(historyRoot).delete(runId);
-          cachedSnapshots.delete(runId);
-          await refreshHistory(historyRoot);
+          if (workspaceLocks.has(path.resolve(historyRoot))) {
+            throw new Error("Wiki history cannot be deleted while this workspace has an active operation");
+          }
+          await requireWorkspace(historyRoot);
+          try {
+            await checkpoint.flush();
+            const snapshot = await historyStoreFor(historyRoot).load(runId);
+            if (!snapshot || !isTerminalRunStatus(snapshot.status)) throw new Error("Only completed Wiki history can be deleted");
+            await historyStoreFor(historyRoot).delete(runId);
+            cachedSnapshots.delete(runId);
+            await refreshHistory(historyRoot);
+          } finally {
+            await releaseWorkspace(historyRoot);
+          }
         },
         pause: async () => {
+          await requireWorkspace(historyRoot, active.getSnapshot()?.id);
           if (!active.getSnapshot()) {
             await bindLatestRecoverable(active, historyRoot);
           }
           active.pause();
           await persistNow();
+          await settlePausedRun(active, active.getSnapshot()?.id);
         },
         resume: async (runId) => {
+          await requireWorkspace(historyRoot, runId ?? active.getSnapshot()?.id);
           if (!active.getSnapshot() && !runId) {
             await bindLatestRecoverable(active, historyRoot);
           }
@@ -484,15 +649,22 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           await persistNow();
         },
         stop: async () => {
+          await requireWorkspace(historyRoot, active.getSnapshot()?.id);
           if (!active.getSnapshot()) {
             await bindLatestRecoverable(active, historyRoot);
           }
+          await updateWorkspaceRun(historyRoot, active.getSnapshot()!.id);
           await active.stop();
-          await persistNow();
+          await active.waitForIdle();
+          const persisted = await persistNow();
+          if (persisted) await releaseWorkspace(historyRoot, active.getSnapshot()?.id);
         },
         cancel: async () => {
+          await requireWorkspace(historyRoot, active.getSnapshot()?.id);
           await active.cancel();
-          await persistNow();
+          await active.waitForIdle();
+          const persisted = await persistNow();
+          if (persisted) await releaseWorkspace(historyRoot, active.getSnapshot()?.id);
         },
       };
     }
@@ -517,6 +689,72 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       return store;
     }
 
+    function coordinatorFor(workspace: string): WikiWorkspaceCoordinator {
+      const root = path.resolve(workspace);
+      let coordinator = workspaceCoordinators.get(root);
+      if (!coordinator) {
+        coordinator = options.createWorkspaceCoordinator?.(root) ?? createWikiWorkspaceCoordinator(root);
+        workspaceCoordinators.set(root, coordinator);
+      }
+      return coordinator;
+    }
+
+    async function acquireWorkspace(workspace: string, runId?: string): Promise<WikiWorkspaceLock | undefined> {
+      const root = path.resolve(workspace);
+      const existing = workspaceLocks.get(root);
+      if (existing) {
+        if (!runId || !existing.owner.runId || existing.owner.runId !== runId) {
+          const detail = existing.owner.runId ? ` for run ${existing.owner.runId}` : "";
+          throw new Error(`Wiki workspace already has an active operation${detail}`);
+        }
+        return existing;
+      }
+      const lock = await coordinatorFor(root).acquire(runId);
+      if (lock) workspaceLocks.set(root, lock);
+      return lock;
+    }
+
+    async function requireWorkspace(workspace: string, runId?: string): Promise<WikiWorkspaceLock> {
+      const lock = await acquireWorkspace(workspace, runId);
+      if (lock) return lock;
+      throw new Error(workspaceBusyMessage(await coordinatorFor(workspace).currentOwner()));
+    }
+
+    async function updateWorkspaceRun(workspace: string, runId: string): Promise<void> {
+      const root = path.resolve(workspace);
+      const lock = workspaceLocks.get(root);
+      if (!lock) throw new Error("Wiki workspace ownership is required");
+      await coordinatorFor(root).updateRun(lock, runId);
+    }
+
+    async function releaseWorkspace(workspace: string, runId?: string): Promise<void> {
+      const root = path.resolve(workspace);
+      const lock = workspaceLocks.get(root);
+      if (!lock) return;
+      if (runId && lock.owner.runId !== runId) return;
+      await coordinatorFor(root).release(lock);
+      workspaceLocks.delete(root);
+    }
+
+    async function releaseAllWorkspaces(): Promise<void> {
+      for (const workspace of [...workspaceLocks.keys()]) await releaseWorkspace(workspace);
+    }
+
+    async function settlePausedRun(active: WikiWorkflowEngine, runId?: string): Promise<void> {
+      if (!runId) return;
+      await active.waitForIdle();
+      const settled = active.getSnapshot();
+      if (!settled || settled.id !== runId || settled.status !== "paused") return;
+      const persisted = await persistNow();
+      if (persisted) await releaseWorkspace(settled.cwd, runId);
+    }
+
+    async function assertNoOtherRecoverable(workspace: string, selectedRunId: string): Promise<void> {
+      const recoverable = (await historyStoreFor(workspace).listFresh())
+        .filter((summary) => isRecoverableRunStatus(summary.status) && summary.id !== selectedRunId);
+      if (recoverable.length > 0) throw new Error(activeRunConflictMessage(recoverable));
+    }
+
     function rememberSnapshot(snapshot: WikiRunSnapshot): void {
       cachedSnapshots.set(snapshot.id, structuredClone(snapshot));
       const workspace = path.resolve(snapshot.cwd);
@@ -535,9 +773,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     ): Promise<WikiRunSnapshot> {
       const root = path.resolve(workspace);
       await checkpoint.flush();
-      const candidates = (await historyForWorkspace(root, active))
+      const candidates = (await freshHistoryForWorkspace(root, active))
         .filter((summary) => isRecoverableRunStatus(summary.status))
         .sort(compareRunRecency);
+      if (candidates.length > 1) throw new Error(multipleRecoverableMessage(candidates));
       let snapshot: WikiRunSnapshot | undefined;
       for (const candidate of candidates) {
         snapshot = await historyStoreFor(root).load(candidate.id);
@@ -561,6 +800,30 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       } catch (error) {
         reportHistoryFailure(error);
       }
+      await updateWorkspaceRun(root, restored.id);
+      return restored;
+    }
+
+    async function bindRecoverableById(
+      active: WikiWorkflowEngine,
+      workspace: string,
+      runId?: string,
+    ): Promise<WikiRunSnapshot> {
+      if (!runId) return await bindLatestRecoverable(active, workspace);
+      const root = path.resolve(workspace);
+      await checkpoint.flush();
+      const snapshot = await historyStoreFor(root).load(runId);
+      if (!snapshot) throw new Error(`Wiki run ${runId} was not found in this workspace`);
+      if (path.resolve(snapshot.cwd) !== root) throw new Error(`Wiki run ${runId} belongs to a different workspace`);
+      if (!isRecoverableRunStatus(snapshot.status)) {
+        throw new Error(`Wiki run ${runId} is ${snapshot.status} and cannot be cancelled as an active run`);
+      }
+      const restored = active.restore(snapshot);
+      if (!restored) throw new Error(incompatibleRunMessage(explainWikiRunSnapshot(snapshot).join("; ")));
+      checkpoint.seedRevision(restored.revision ?? 0);
+      await historyStoreFor(root).save(structuredClone(restored));
+      await refreshHistory(root);
+      await updateWorkspaceRun(root, restored.id);
       return restored;
     }
 
@@ -574,6 +837,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
 
       if (current && (!runId || current.id === runId)) {
         assertResumable(current);
+        await updateWorkspaceRun(root, current.id);
         {
           const workspace = await workspaceService.load(root);
           active.reconcilePolicy({ ...workspace.wiki, quality: { maxSubmissionAttempts: workspace.quality.maxSubmissionAttempts } });
@@ -590,7 +854,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         snapshot = await historyStoreFor(root).load(runId);
         if (!snapshot) throw new Error(`Wiki run ${runId} was not found in this workspace`);
       } else {
-        const candidates = (await historyForWorkspace(root, active))
+        const candidates = (await freshHistoryForWorkspace(root, active))
           .filter((summary) => isRecoverableRunStatus(summary.status))
           .sort(compareRunRecency);
         for (const candidate of candidates) {
@@ -611,6 +875,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
         throw new Error(incompatibleRunMessage(detail));
       }
       checkpoint.seedRevision(restored.revision ?? 0);
+      await updateWorkspaceRun(root, restored.id);
       {
         const workspace = await workspaceService.load(root);
         active.reconcilePolicy({ ...workspace.wiki, quality: { maxSubmissionAttempts: workspace.quality.maxSubmissionAttempts } });
@@ -645,6 +910,13 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
       await checkpoint.flush();
       await refreshHistory(workspace);
       return runsForWorkspace(workspace, active);
+    }
+
+    async function freshHistoryForWorkspace(workspace: string, active: WikiWorkflowEngine): Promise<WikiRunSummary[]> {
+      const root = path.resolve(workspace);
+      const summaries = await historyStoreFor(root).listFresh();
+      historySummaries.set(root, summaries);
+      return runsForWorkspace(root, active);
     }
 
     function runsForWorkspace(workspace: string, active: WikiWorkflowEngine): WikiRunSummary[] {
@@ -736,13 +1008,13 @@ function parseWikiCommand(raw: string): ParsedCommand {
     throw new Error("Usage: /wiki init | source add | generate | refresh | open | status | history | artifacts");
   }
   const action = candidate;
-  if (action === "resume") {
-    if (values.length > 1) throw new Error("Usage: /wiki resume [runId]");
+  if (action === "resume" || action === "cancel") {
+    if (values.length > 1) throw new Error(`Usage: /wiki ${action} [runId]`);
     const runId = values[0];
     if (runId && !isSafeRunId(runId)) throw new Error("Invalid Wiki run history identifier");
     return { action, runId };
   }
-  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "stop" || action === "cancel" || action === "help") {
+  if (action === "open" || action === "status" || action === "history" || action === "pause" || action === "stop" || action === "help") {
     if (values.length) throw new Error(`/wiki ${action} does not accept arguments`);
     return { action };
   }
@@ -1047,4 +1319,20 @@ function sameWorkspaceOrChild(workspace: string, cwd: string): boolean {
 
 function isRecoverableRunStatus(status: WikiRunSnapshot["status"]): boolean {
   return status === "running" || status === "paused";
+}
+
+function workspaceBusyMessage(owner: WikiWorkspaceOwner | undefined): string {
+  if (!owner) return "Wiki workspace is locked by another Pi process";
+  const run = owner.runId ? ` for run ${owner.runId}` : "";
+  return `Wiki workspace is active in Pi process ${owner.pid}${run}; close that process before modifying this workspace. If that PID no longer exists and retries remain blocked, confirm no Pi process owns the workspace, then remove an orphaned .okf-wiki/active.reclaim file`;
+}
+
+function activeRunConflictMessage(runs: WikiRunSummary[]): string {
+  const ids = runs.map((run) => run.id).join(", ");
+  const selected = runs.length === 1 ? runs[0].id : "<runId>";
+  return `Wiki workspace has recoverable run${runs.length === 1 ? "" : "s"} ${ids}; use /wiki resume ${selected} or /wiki cancel ${selected} before starting a new run`;
+}
+
+function multipleRecoverableMessage(runs: WikiRunSummary[]): string {
+  return `Multiple recoverable Wiki runs require explicit selection: ${runs.map((run) => run.id).join(", ")}. Use /wiki resume <runId> or /wiki cancel <runId>.`;
 }

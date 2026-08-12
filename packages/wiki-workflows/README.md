@@ -26,7 +26,7 @@ Scheduling controls:
 | `/wiki pause` | Soft pause: no new scheduling; active agents may finish |
 | `/wiki stop` | Hard stop: abort agents, requeue them, pause (resumable) |
 | `/wiki resume [runId]` | Resume a paused run after Git re-inspection |
-| `/wiki cancel` | Abort agents; terminal cancelled (not resumable) |
+| `/wiki cancel [runId]` | Abort agents; terminal cancelled (not resumable) |
 
 Run Pi from the workspace directory when starting or recovering a Wiki run.
 
@@ -39,6 +39,17 @@ can explicitly run `/wiki resume` to recover the most recently updated
 Another active run is never overwritten. `failed` and `blocked` records require
 an Agent (`r`) or phase (`R`) retry, while `succeeded` and `cancelled` records
 cannot be resumed.
+
+Workspace mutation is coordinated by a local PID lock under `.okf-wiki/`.
+Another live Pi process is read-only for that workspace. If Pi exits
+unexpectedly, the next process reclaims the dead owner's lock, restores a
+single `running` run as `paused`, and requires `/wiki resume` before scheduling.
+If more than one recoverable run exists, select one explicitly with
+`/wiki resume <runId>` or `/wiki cancel <runId>`; generation never chooses or
+overwrites one implicitly. A malformed lock fails closed rather than risking
+two writers. In the rare case that Pi exits during dead-lock reclamation, first
+confirm that no Pi process owns the workspace, then remove the orphaned
+`.okf-wiki/active.reclaim` file and retry.
 
 The extension owns the Wiki-specific dynamic DAG and active Pi-session state.
 Durable runs live under `.okf-wiki/runs/<runId>/`, with `run.json` as the

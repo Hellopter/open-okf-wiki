@@ -31,6 +31,8 @@ export interface WikiRunHistoryStore {
   save(snapshot: WikiRunSnapshot): Promise<void>;
   load(runId: string): Promise<WikiRunSnapshot | undefined>;
   list(): Promise<WikiRunSummary[]>;
+  /** Bypass the short UI cache for active-run arbitration under workspace ownership. */
+  listFresh(): Promise<WikiRunSummary[]>;
   listPage(options?: { offset?: number; limit?: number }): Promise<WikiRunHistoryPage>;
   delete(runId: string): Promise<boolean>;
   getRunsDir(): string;
@@ -114,6 +116,12 @@ export function createWikiRunHistoryStore(options: WikiRunHistoryStoreOptions): 
     },
 
     async list(): Promise<WikiRunSummary[]> {
+      return await summaries();
+    },
+
+    async listFresh(): Promise<WikiRunSummary[]> {
+      await writeChain.catch(() => {});
+      invalidateCache();
       return await summaries();
     },
 
