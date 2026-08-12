@@ -46,7 +46,7 @@ function summary(value) {
 
 const run = {
   id: "run-1",
-  version: 1,
+  version: 2,
   cwd: "/workspace",
   requestedMode: "refresh",
   effectiveMode: "refresh",
@@ -316,7 +316,7 @@ test("blocked run text surfaces code, issues, and remaining budget", () => {
 test("Navigator agent and artifact text surface persisted handoff refs", () => {
   const withArtifact = structuredClone(run);
   withArtifact.nodes[1].handoff = {
-    version: 1,
+    version: 2,
     runId: "run-1",
     nodeId: "research-a",
     attempt: 2,
@@ -511,7 +511,7 @@ test("planning nodes are grouped into the Plan stage", () => {
     attempt: 1,
     inputFingerprint: "",
     input: {},
-    result: { decision: "finalize", spec: { domains: [] }, rationale: "Research is sufficient." },
+    result: { spec: { domains: [] }, rationale: "Research is sufficient." },
     metrics: {},
     activity: { state: "completed", updatedAt: "2026-08-08T00:00:00.000Z" },
     attemptHistory: [],

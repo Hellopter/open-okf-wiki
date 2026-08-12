@@ -21,12 +21,13 @@ The run has five user-visible stages:
 
 ```text
 Inspect -> Research -> Plan -> Write -> Review & Publish
-             ^  |        |       ^         |
-             |  + audit -+       +-- fix --+
-             + research/replan -----------+
+             ^  |                ^         |
+             |  + targeted ------+-- fix --+
+             + structural research -------+
 ```
 
-Research repeats until its evidence and coverage audits reach saturation.
+After every research batch, the extension follows unresolved critical gaps with
+targeted research and invokes Plan only when that frontier is empty.
 Writing validates each page immediately and repairs it in the same writer
 session. Only a deterministically clean candidate advances to semantic review;
 Review & Publish routes semantic defects into repair waves, then publishes.

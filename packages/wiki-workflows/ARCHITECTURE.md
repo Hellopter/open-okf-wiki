@@ -10,7 +10,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; the a
 | `src/failures.ts` | Failure codes, `WikiFailure` / `WikiFailureClass`, `WikiBudgetExhaustedError`, `errorMessage`. Single source for `WikiNodeErrorCode`. |
 | `src/util.ts` | Pure helpers: `isRecord`, `clone`, `pathIsInside`, `uniqueStrings`, `stableStringify`; re-exports `errorMessage`. |
 | `src/workflow-phases.ts` | User-visible phases. Static validation remains in Write; semantic review and finalization map to Review & Publish. |
-| `src/workflow-types.ts` | Durable snapshot / node / event types plus the narrow public `WikiRunView` (`WikiRunSnapshot` **version 1**, pinned policy and `blockedDetails`). |
+| `src/workflow-types.ts` | Durable snapshot / node / event types plus the narrow public `WikiRunView` (`WikiRunSnapshot` **version 2**, pinned policy and `blockedDetails`). |
 | `src/node-retry.ts` | Pure classification of execution errors → node status / terminal run. |
 | `src/join-barrier.ts` | Sibling join helpers: `evaluateJoin`, `groupAllSucceeded`, `siblingsByGroupKey`. Success path only (see below). |
 | `src/session.ts` | Pointer-only Pi custom-entry codec (`WikiRunSession` / `createWikiRunSession` / `parseWikiRunSession`). Fail-closed; **no legacy full-snapshot dual-read**. |
@@ -32,7 +32,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; the a
 | `src/publication-store.ts` | Per-run candidate trees, fork copy, atomic publish journal, rollback and startup recovery. |
 | `src/run-history.ts` | Workspace-local authoritative `run.json`, derived index, pagination and retention. |
 | `src/workspace-coordinator.ts` | Local PID/token ownership, atomic acquisition, and dead-process reclamation for workspace mutations. |
-| `src/snapshot-validation.ts` | Fail-closed version 1 checks, including policy/hash and artifact-reference consistency. |
+| `src/snapshot-validation.ts` | Fail-closed version 2 checks, including policy/hash and artifact-reference consistency. |
 | `src/executor.ts` | Isolated Pi sessions, compaction/retry policy, runtime admission, bounded streams/history, and node deadline. |
 | `src/extension.ts` | Pi adapter: command parsing, per-workspace application/checkpoint construction, session restore and UI host wiring. |
 | `src/ui/*` | Dashboard / navigator / stages / format / task panel presentation over `WikiRunView`; mutations dispatch application intents. |
@@ -70,7 +70,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; the a
 ## Snapshots
 
 - **No old-snapshot migration path.**
-- Snapshot `version` is **1**. Incompatible shapes are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
+- Snapshot `version` is **2**. Incompatible shapes, including version 1, are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
 - Session restore is **pointer-only**; full snapshots live in the project history store.
 - Artifacts are **content-addressed** under `.okf-wiki/blobs/{sha256}.*` with per-run manifests (no dual-read of older layouts).
 - Full node payloads stay in artifacts. Durable nodes carry bounded receipts and
@@ -97,7 +97,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; the a
 
 At `engine.start`, `resolveWikiPolicy` normalizes ordering and duplicates, adds
 the policy and prompt-bundle versions, hashes the result, and stores both value
-and hash in the version 1 snapshot. Nodes read `run.policy`; they do not reload
+and hash in the version 2 snapshot. Nodes read `run.policy`; they do not reload
 configuration, so an edit cannot change an executing agent or half of a batch.
 On resume, the extension loads the current workspace policy and calls
 `reconcilePolicy`. A changed hash replaces the pinned policy as one atomic run
@@ -111,24 +111,19 @@ source root. Domain excludes are task-specific research guidance; global
 `wiki.exclude` is the deterministic exclusion enforced when research evidence
 and Wiki citations are accepted.
 
-## Research budgets
+## Critical-gap frontier
 
-Policy splits expand vs audit accounting (`policy.research`):
+`maxResearchRounds` is the single research budget. The seam lives at research
+batch completion: `transitions-queue` reads only the just-completed batch,
+normalizes each critical gap to `{ id, question, sourcePaths }`, deduplicates by
+stable ID, and either queues the next targeted batch or queues synthesis.
 
-| Field | Default | Meaning |
-|-------|---------|---------|
-| `maxExpandRounds` | 4 | Coverage-growth rounds (tighter happy path) |
-| `maxAuditRounds` | 3 | Dry-coverage audit rounds |
-| `requiredDryCoverageAudits` | 1 | Consecutive dry audits required before write **when unresolved critical gaps remain** |
-| `maxResearchRounds` | 6 | Legacy combined ceiling still used by the current engine pump until split accounting is fully wired |
-
-**Research stop (happy path):** when every research receipt in the Plan’s `researchIds` has `criticalGapSignatures.length === 0`, synthesis **must finalize** (expand is hard-rejected) and the engine **skips** the dry-coverage audit wave, queueing page writers immediately. Dry audits still run only when critical gaps remain. Expand scopes must **bind** to unresolved critical gap questions in `id`/`task`. Dry-audit finding fingerprints use kind + title + evidence **paths** (line anchors stripped) so line-number jitter does not keep audits wet.
-
-Classification of round exhaustion uses **codes** via `WikiBudgetExhaustedError` — never message regex:
-
-- `research_rounds_exhausted`
-- `expand_rounds_exhausted`
-- `audit_rounds_exhausted`
+Each targeted scope carries exactly one `targetGap`. Its receipt must contain a
+critical finding or at least one critical gap. Findings accumulate across
+batches for synthesis; unresolved-gap state does not. Historical gaps therefore
+cannot keep a cleared frontier open, and no language-dependent substring
+matching is needed. Exhaustion uses the single `research_rounds_exhausted` code
+and records the complete current frontier in `blockedDetails.criticalGaps`.
 
 Terminal block codes for verify loops include `same_validation_twice`, `same_defects_twice`, `unroutable_validation`, `repair_no_progress`, `source_drift_blocked`, `structural_resynthesis_budget`, `local_repair_budget`, and `missing_handoff_artifacts` (post-restore handoff integrity).
 
@@ -142,7 +137,7 @@ Research and write groups fan in inside one serialized success commit:
 4. Fan-in loads siblings via `siblingsByGroupKey` (**excludes `invalidated`** so deterministic group ids reused after source-drift restart do not stall), then `evaluateJoin(members)`:
    - `terminal_failure` → do not expand
    - `not_ready` → wait for remaining siblings
-   - `all_succeeded` → queue synthesis (research) or verification (write)
+   - `all_succeeded` → advance the critical-gap frontier (research) or queue verification (write)
 5. A base/shadow/live merge preserves sibling executor writes made during asynchronous preparation.
 
 `evaluateJoin` is pure (`join-barrier.ts`). Validation and semantic review are
@@ -202,10 +197,8 @@ generation.
   tools permit the configured `1..3`
   submission calls per node attempt (default `3`); they do not create fresh
   sessions.
-- Plan exposes separate `wiki_submit_synthesis_expand` and
-  `wiki_submit_synthesis_finalize` tools with one shared submission budget. The
-  internal result remains a discriminated synthesis decision; the model does
-  not have to satisfy a multi-branch union schema in one tool.
+- Plan exposes only `wiki_submit_synthesis_finalize`. Research continuation is
+  owned by the workflow and is never encoded as a model decision.
 - Research, Plan, and Review use a staged accumulator rather than one monolithic
   model response: at most 128 successful mutations, batches of at most 20
   findings or defects, 24 KiB paginated query responses, and 256 KiB canonical

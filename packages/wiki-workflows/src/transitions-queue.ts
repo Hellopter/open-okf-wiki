@@ -56,6 +56,8 @@ import { clone, isRecord, stableStringify, uniqueStrings } from "./util.js";
 import {
   EMPTY_NODE_METRICS,
   type WikiControlSubmission,
+  type WikiCriticalGap,
+  type WikiResearchArtifact,
   type WikiNode,
   type WikiNodeKind,
   type WikiResearchReceipt,
@@ -68,10 +70,6 @@ import {
 
 const MAX_LOCAL_REPAIR_ROUNDS_PER_PLAN = DEFAULT_WIKI_WORKFLOW_POLICY.maxLocalRepairRoundsPerPlan;
 const MAX_STRUCTURAL_RESYNTHESES = DEFAULT_WIKI_WORKFLOW_POLICY.maxStructuralResyntheses;
-const REQUIRED_DRY_COVERAGE_AUDITS = DEFAULT_WIKI_WORKFLOW_POLICY.research.requiredDryCoverageAudits;
-const MAX_EXPAND_ROUNDS = DEFAULT_WIKI_WORKFLOW_POLICY.research.maxExpandRounds;
-const MAX_AUDIT_ROUNDS = DEFAULT_WIKI_WORKFLOW_POLICY.research.maxAuditRounds;
-const MAX_EXPAND_SCOPES_PER_BATCH = DEFAULT_WIKI_WORKFLOW_POLICY.maxExpandScopesPerBatch;
 const MISSING_PAGE_SHA256 = "missing";
 
 /** Internal adapter for state-machine I/O owned by WikiWorkflowEngine. */
@@ -258,33 +256,19 @@ async function tryJoinAfterSuccess(host: WorkflowTransitionContext, node: WikiNo
       ...researchInput.priorResearchIds,
       ...liveSiblingIds,
     ]);
-    // Match critical findings by content fingerprint (kind+evidence), not finding id.
-    // Finding ids include scopeId, so re-reported audit findings get new ids but the
-    // same content fingerprint when they restate prior knowledge.
-    const priorCriticalContent = new Set(researchInput.priorResearchIds.flatMap((researchId) => {
-      const result = run.nodes.find((candidate) => candidate.id === researchId)?.result;
-      return isResearchReceipt(result)
-        ? result.findings
-          .filter((finding) => finding.priority === "critical")
-          .map((finding) => finding.contentFingerprint)
-        : [];
-    }));
     const currentReceipts = liveSiblingIds
       .map((id) => run.nodes.find((candidate) => candidate.id === id)?.result)
       .filter((result): result is WikiResearchReceipt => isResearchReceipt(result));
-    const auditDry = researchInput.continuationMode === "audit"
-      && currentReceipts.every((receipt) => receipt.criticalGapSignatures.length === 0
-        && receipt.findings
-          .filter((finding) => finding.priority === "critical")
-          .every((finding) => priorCriticalContent.has(finding.contentFingerprint)));
+    const frontier = criticalGapFrontier(currentReceipts);
+    if (frontier.length > 0) {
+      queueTargetedResearch(host, liveSiblingIds, frontier, researchInput, receiptIds);
+      return;
+    }
     queueSynthesis(host, {
       dependsOn: liveSiblingIds,
       researchIds: receiptIds,
-      supplementalBatch: researchInput.batch,
-      mode: researchInput.structuralRoundId ? "structural" : researchInput.continuationMode,
-      dryAuditPasses: auditDry ? researchInput.dryAuditPasses + 1 : 0,
+      mode: researchInput.priorSynthesisNodeId ? "structural" : "initial",
       priorSynthesisNodeId: researchInput.priorSynthesisNodeId,
-      structuralRoundId: researchInput.structuralRoundId,
       trigger: researchInput.trigger,
     });
     return;
@@ -322,19 +306,6 @@ async function afterSuccess(host: WorkflowTransitionContext, node: WikiNode): Pr
       // Submission contract already validated by the selected synthesis submit tool.
       const synthesis = parseSynthesisSubmission(node.result);
       const input = synthesisInputFor(node);
-      if (synthesis.decision === "expand") {
-        queueSupplementalResearch(host, node.id, synthesis.researchScopes, input);
-        return;
-      }
-      // Happy path: when research reports no unresolved critical gaps, skip the
-      // dry-coverage audit wave and go straight to writers.
-      if (
-        input.dryAuditPasses < REQUIRED_DRY_COVERAGE_AUDITS
-        && researchIdsHaveUnresolvedCriticalGaps(host, input.researchIds)
-      ) {
-        queueCoverageAudit(host, [node.id], node.id, input);
-        return;
-      }
       queuePageWriters(host, node.id, synthesis.spec);
       return;
     }
@@ -406,61 +377,33 @@ export function queueInitialSourceSurveys(host: TransitionHost, inspectNodeId: s
   return queueResearch(host, inspectNodeId, [...surveyScopes, ...domainScopes], 0, "research", "Research");
 }
 
-export function queueSupplementalResearch(host: TransitionHost, synthesisNodeId: string, scopes: WikiResearchScope[], parent: SynthesisNodeInput): WikiNode[] {
-  const nextRound = parent.supplementalBatch + 1;
-  ensureResearchRoundAvailable(host, nextRound, "expand");
-  return queueResearch(host, 
-    synthesisNodeId,
-    scopes,
-    nextRound,
-    "research",
-    "Research",
-    parent.mode === "structural" ? "structural" : "supplemental",
-    parent.priorSynthesisNodeId,
-    parent.structuralRoundId,
-    parent.trigger,
-    parent.researchIds,
-    0,
-  );
+function criticalGapFrontier(receipts: readonly WikiResearchReceipt[]): WikiCriticalGap[] {
+  return [...new Map(receipts.flatMap((receipt) => receipt.criticalGaps).map((gap) => [gap.id, gap])).values()]
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export function queueCoverageAudit(host: TransitionHost, dependsOn: string[], synthesisNodeId: string, parent: SynthesisNodeInput): WikiNode[] {
-  const nextRound = parent.supplementalBatch + 1;
-  // Structural re-audits grow/replan coverage (expand budget). Pure dry-coverage
-  // confirmation rounds use the audit budget.
-  const budgetKind = parent.mode === "structural" || parent.structuralRoundId ? "expand" : "audit";
-  ensureResearchRoundAvailable(host, nextRound, budgetKind);
-  const sourcePaths = uniqueStrings(host.requireRun().inspection?.sourcePaths ?? []);
-  const scopeId = deterministicGroupId("coverage-audit", {
-    batch: nextRound,
-    synthesisNodeId: parent.priorSynthesisNodeId ?? synthesisNodeId,
-    researchIds: [...parent.researchIds].sort(),
-    mode: parent.mode,
-    structuralRoundId: parent.structuralRoundId ?? null,
-  });
-  const scope: WikiResearchScope = {
-    id: scopeId,
-    sourcePaths,
-    task: [
-      "Bounded critical-gap audit against prior research findings only.",
-      "Report missing critical gaps versus already-recorded findings;",
-      "do not re-survey sources for encyclopedia coverage.",
-      "Prefer empty findings when prior critical coverage already holds.",
-    ].join(" "),
-  };
-  return queueResearch(host, 
-    dependsOn,
-    [scope],
-    nextRound,
-    "research",
-    "Research",
-    "audit",
-    parent.priorSynthesisNodeId ?? synthesisNodeId,
-    parent.structuralRoundId,
-    parent.trigger,
-    parent.researchIds,
-    parent.dryAuditPasses,
-  );
+function queueTargetedResearch(
+  host: TransitionHost,
+  dependsOn: string[],
+  frontier: WikiCriticalGap[],
+  parent: ResearchNodeInput,
+  priorResearchIds: string[],
+): WikiNode[] {
+  const nextRound = parent.batch + 1;
+  ensureResearchRoundAvailable(host, nextRound, frontier);
+  const scopes: WikiResearchScope[] = [];
+  const targetGapsByScopeId = new Map<string, WikiCriticalGap>();
+  for (const gap of frontier) {
+    const scope = {
+      id: `critical-gap:${gap.id}:round-${nextRound}`,
+      sourcePaths: gap.sourcePaths,
+      task: gap.question,
+    };
+    scopes.push(scope);
+    targetGapsByScopeId.set(scope.id, gap);
+  }
+  return queueResearch(host, dependsOn, scopes, nextRound, "research", "Research", "targeted",
+    parent.priorSynthesisNodeId, parent.trigger, priorResearchIds, targetGapsByScopeId);
 }
 
 export function queueResearch(host: TransitionHost, 
@@ -471,17 +414,16 @@ export function queueResearch(host: TransitionHost,
   phaseTitle: "Research",
   continuationMode: ResearchNodeInput["continuationMode"] = "initial",
   priorSynthesisNodeId?: string,
-  structuralRoundId?: string,
   trigger?: unknown,
   priorResearchIds: string[] = [],
-  dryAuditPasses = 0,
+  targetGapsByScopeId: ReadonlyMap<string, WikiCriticalGap> = new Map(),
 ): WikiNode[] {
   const researchGroupId = researchGroupIdFor(batch, scopes, continuationMode);
-  return scopes.map((scope) => queueNode(host, 
+  return scopes.map((scope) => queueNode(host,
     "research",
     batch === 0 ? `Survey: ${scope.id}` : `Research: ${scope.id}`,
     Array.isArray(dependsOn) ? dependsOn : [dependsOn],
-    { batch, scope, continuationMode, dryAuditPasses, priorSynthesisNodeId, structuralRoundId, trigger, researchGroupId, priorResearchIds },
+    { batch, scope, continuationMode, targetGap: targetGapsByScopeId.get(scope.id), priorSynthesisNodeId, trigger, researchGroupId, priorResearchIds },
     { id: phaseId, title: phaseTitle },
   ));
 }
@@ -497,7 +439,7 @@ export function queueSynthesis(host: TransitionHost, input: QueueSynthesisInput)
   const structural = input.mode === "structural";
   return queueNode(host, 
     "synthesis",
-    structural ? "Re-synthesize Wiki Structure" : input.supplementalBatch === 0 ? "Synthesize Wiki Spec" : "Re-synthesize Wiki Spec",
+    structural ? "Re-synthesize Wiki Structure" : "Synthesize Wiki Spec",
     input.dependsOn,
     { ...input, round: run.round, inspection: run.inspection, focus: run.focus },
     phaseRefForKind("synthesis"),
@@ -508,14 +450,19 @@ export function queueStructuralResearch(host: TransitionHost, dependsOn: string[
   const synthesis = host.nodeById(synthesisNodeId);
   if (!synthesis) throw new Error(`Unknown synthesis node: ${synthesisNodeId}`);
   const input = synthesisInputFor(synthesis);
-  return queueCoverageAudit(host, dependsOn, synthesisNodeId, {
-    ...input,
-    mode: "structural",
-    dryAuditPasses: 0,
-    priorSynthesisNodeId: synthesisNodeId,
-    structuralRoundId: dependsOn.join(":"),
-    trigger,
-  });
+  const batch = Math.max(0, ...input.researchIds.map((id) => {
+    const candidate = host.nodeById(id);
+    return candidate?.kind === "research" ? researchInputFor(candidate).batch : 0;
+  })) + 1;
+  ensureResearchRoundAvailable(host, batch, []);
+  const sourcePaths = uniqueStrings(host.requireRun().inspection?.sourcePaths ?? []);
+  const scope: WikiResearchScope = {
+    id: deterministicGroupId("structural-research", { synthesisNodeId, dependsOn, trigger }),
+    sourcePaths,
+    task: `Research the structural validation/review defects and gather any missing evidence: ${stableStringify(trigger)}`,
+  };
+  return queueResearch(host, dependsOn, [scope], batch, "research", "Research", "structural",
+    synthesisNodeId, trigger, input.researchIds);
 }
 
 export function queuePageWriters(host: TransitionHost, synthesisNodeId: string, spec: WikiSpec): WikiNode[] {
@@ -687,11 +634,10 @@ async function completeSemanticReview(host: TransitionHost, reviewNode: WikiNode
   const routedReview = routeReviewDefects(aggregate, spec);
   const structural = aggregate.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
   if (structural) {
-    const resyntheses = new Set(run.nodes
+    const resyntheses = run.nodes
       .filter((candidate) => candidate.kind === "synthesis" && !["invalidated", "cancelled"].includes(candidate.status))
       .map((candidate) => synthesisInputFor(candidate))
-      .filter((input) => input.mode === "structural" && input.structuralRoundId)
-      .map((input) => input.structuralRoundId)).size;
+      .filter((input) => input.mode === "structural").length;
     if (resyntheses >= MAX_STRUCTURAL_RESYNTHESES) {
       host.markTerminalRun("blocked", `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`, reviewNode.id, undefined, {
         code: "structural_resynthesis_budget",
@@ -800,75 +746,29 @@ export async function queuePageRepairs(host: TransitionHost,
   return [...contentNodes, overviewNode];
 }
 
-export function ensureResearchRoundAvailable(host: TransitionHost, nextRound: number, kind: "expand" | "audit"): void {
+export function ensureResearchRoundAvailable(host: TransitionHost, nextRound: number, criticalGaps: WikiCriticalGap[]): void {
   const run = host.requireRun();
   const maxResearchRounds = run.maxResearchRounds;
   if (nextRound >= maxResearchRounds) {
     throw new WikiBudgetExhaustedError(
       `Research reached the ${maxResearchRounds}-round limit before coverage saturated`,
       "research_rounds_exhausted",
-      { nextRound, maxResearchRounds, kind },
+      { nextRound, maxResearchRounds, criticalGaps },
     );
   }
-
-  if (kind === "audit") {
-    const used = countAuditResearchGroups(host);
-    if (used >= MAX_AUDIT_ROUNDS) {
-      throw new WikiBudgetExhaustedError(
-        `Research reached the ${MAX_AUDIT_ROUNDS}-audit-round limit before coverage saturated`,
-        "audit_rounds_exhausted",
-        { nextRound, used, maxAuditRounds: MAX_AUDIT_ROUNDS },
-      );
-    }
-    return;
-  }
-
-  const used = countExpandResearchGroups(host);
-  if (used >= MAX_EXPAND_ROUNDS) {
-    throw new WikiBudgetExhaustedError(
-      `Research reached the ${MAX_EXPAND_ROUNDS}-expand-round limit before coverage saturated`,
-      "expand_rounds_exhausted",
-      { nextRound, used, maxExpandRounds: MAX_EXPAND_ROUNDS },
-    );
-  }
-}
-
-export function countAuditResearchGroups(host: TransitionHost): number {
-  const groups = new Set<string>();
-  for (const node of host.requireRun().nodes) {
-    if (node.kind !== "research") continue;
-    if (node.status === "invalidated" || node.status === "cancelled") continue;
-    try {
-      const input = researchInputFor(node);
-      if (input.continuationMode === "audit" && !input.structuralRoundId) {
-        groups.add(input.researchGroupId);
-      }
-    } catch {
-      // Ignore malformed nodes when counting budgets.
-    }
-  }
-  return groups.size;
-}
-
-export function countExpandResearchGroups(host: TransitionHost): number {
-  const groups = new Set<string>();
-  for (const node of host.requireRun().nodes) {
-    if (node.kind !== "research") continue;
-    if (node.status === "invalidated" || node.status === "cancelled") continue;
-    try {
-      const input = researchInputFor(node);
-      const isExpand = input.continuationMode === "supplemental"
-        || input.continuationMode === "structural"
-        || Boolean(input.structuralRoundId);
-      if (isExpand) groups.add(input.researchGroupId);
-    } catch {
-      // Ignore malformed nodes when counting budgets.
-    }
-  }
-  return groups.size;
 }
 
 export function validateControlSubmission(host: TransitionHost, node: WikiNode, submission: WikiControlSubmission): void {
+  if (node.kind === "research") {
+    const input = researchInputFor(node);
+    const result = submission as WikiResearchArtifact;
+    if (input.continuationMode === "targeted"
+      && !result.findings.some((finding) => finding.priority === "critical")
+      && !result.gaps.some((gap) => gap.priority === "critical")) {
+      throw new Error(`Targeted research for critical gap ${input.targetGap?.id} (${input.targetGap?.question}) must produce a critical finding or retain/refine a critical gap`);
+    }
+    return;
+  }
   if (node.kind === "synthesis") {
     ensureSynthesisSubmissionFitsRun(host, submission as WikiSynthesisResult, synthesisInputFor(node));
     return;
@@ -877,23 +777,6 @@ export function validateControlSubmission(host: TransitionHost, node: WikiNode, 
 }
 
 export function ensureSynthesisSubmissionFitsRun(host: TransitionHost, synthesis: WikiSynthesisResult, input: SynthesisNodeInput): void {
-  if (synthesis.decision === "expand") {
-    if (!researchIdsHaveUnresolvedCriticalGaps(host, input.researchIds)) {
-      throw new Error(
-        "Expand is rejected when research receipts report no unresolved critical gaps; finalize the WikiSpec instead",
-      );
-    }
-    ensureExpandScopesBindCriticalGaps(host, synthesis.researchScopes, input.researchIds);
-    ensureResearchRoundAvailable(host, input.supplementalBatch + 1, "expand");
-    if (synthesis.researchScopes.length > MAX_EXPAND_SCOPES_PER_BATCH) {
-      throw new Error(
-        `Expand may request at most ${MAX_EXPAND_SCOPES_PER_BATCH} research scopes per batch (got ${synthesis.researchScopes.length})`,
-      );
-    }
-    ensureNewResearchScopes(host, synthesis.researchScopes);
-    ensureResearchSourcePaths(host, synthesis.researchScopes);
-    return;
-  }
   for (const configured of host.requireRun().policy.domains) {
     const actual = synthesis.spec.domains.find((domain) => domain.id === configured.id);
     if (!actual) throw new Error(`WikiSpec must include configured domain: ${configured.id}`);
@@ -902,82 +785,6 @@ export function ensureSynthesisSubmissionFitsRun(host: TransitionHost, synthesis
     }
   }
   ensureSynthesisSpecReceipts(host, synthesis.spec, input);
-}
-
-/**
- * Each expand scope must reference at least one unresolved critical gap
- * (question text or signature substring in scope id/task).
- */
-export function ensureExpandScopesBindCriticalGaps(
-  host: TransitionHost,
-  scopes: readonly WikiResearchScope[],
-  researchIds: readonly string[],
-): void {
-  const gaps = criticalGapBindings(host, researchIds);
-  if (gaps.length === 0) {
-    throw new Error("Expand requires unresolved critical gap questions from research receipts");
-  }
-  for (const scope of scopes) {
-    const haystack = `${scope.id}\n${scope.task}`.toLowerCase();
-    const bound = gaps.some((gap) => {
-      const question = gap.question.toLowerCase();
-      const signature = gap.signature.toLowerCase();
-      return (question.length > 0 && haystack.includes(question))
-        || (signature.length >= 8 && haystack.includes(signature.slice(0, 8)))
-        || gap.tokens.some((token) => token.length >= 4 && haystack.includes(token));
-    });
-    if (!bound) {
-      throw new Error(
-        `Expand scope "${scope.id}" must reference an unresolved critical gap in its id or task (gap questions: ${gaps.map((g) => g.question).slice(0, 3).join("; ")})`,
-      );
-    }
-  }
-}
-
-function criticalGapBindings(
-  host: TransitionHost,
-  researchIds: readonly string[],
-): Array<{ signature: string; question: string; tokens: string[] }> {
-  const run = host.requireRun();
-  const gaps: Array<{ signature: string; question: string; tokens: string[] }> = [];
-  for (const researchId of researchIds) {
-    const result = run.nodes.find((candidate) => candidate.id === researchId)?.result;
-    if (!isResearchReceipt(result)) continue;
-    const questions = result.criticalGapQuestions ?? [];
-    const signatures = result.criticalGapSignatures ?? [];
-    const count = Math.max(questions.length, signatures.length);
-    for (let index = 0; index < count; index++) {
-      const question = questions[index] ?? "";
-      const signature = signatures[index] ?? "";
-      if (!question && !signature) continue;
-      const tokens = question
-        .toLowerCase()
-        .split(/[^a-z0-9\u4e00-\u9fff]+/i)
-        .filter((token) => token.length >= 4)
-        .slice(0, 8);
-      gaps.push({ signature, question, tokens });
-    }
-  }
-  return gaps;
-}
-
-/**
- * True when any research receipt for the given node ids still has critical gap
- * signatures. Used to hard-reject expand-without-gaps and to skip dry audits
- * on the happy path.
- *
- * Per policy: if every receipt in `researchIds` has
- * `criticalGapSignatures.length === 0`, there are no unresolved critical gaps.
- * Missing/non-receipt results are ignored; an empty receipt set is "no gaps".
- */
-export function researchIdsHaveUnresolvedCriticalGaps(host: TransitionHost, researchIds: readonly string[]): boolean {
-  const run = host.requireRun();
-  for (const researchId of researchIds) {
-    const result = run.nodes.find((candidate) => candidate.id === researchId)?.result;
-    if (!isResearchReceipt(result)) continue;
-    if (result.criticalGapSignatures.length > 0) return true;
-  }
-  return false;
 }
 
 /**
@@ -1086,16 +893,6 @@ export function ensureSynthesisSpecReceipts(host: TransitionHost, spec: WikiSpec
     if (finding.priority === "critical" && omitted.has(finding.id)) {
       throw new Error(`WikiSpec may not omit critical research finding: ${finding.id}`);
     }
-  }
-  const researchNodes = input.researchIds
-    .map((nodeId) => host.requireRun().nodes.find((node) => node.id === nodeId))
-    .filter((node): node is WikiNode => node?.kind === "research" && isResearchReceipt(node.result));
-  const latestBatch = Math.max(...researchNodes.map((node) => researchInputFor(node).batch));
-  const criticalGapCount = researchNodes
-    .filter((node) => researchInputFor(node).batch === latestBatch)
-    .reduce((total, node) => total + (node.result as WikiResearchReceipt).criticalGapSignatures.length, 0);
-  if (criticalGapCount > 0) {
-    throw new Error(`WikiSpec cannot finalize with ${criticalGapCount} unresolved critical research gap(s)`);
   }
 }
 

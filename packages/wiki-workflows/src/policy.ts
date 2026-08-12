@@ -73,41 +73,16 @@ export interface WikiArtifactLimits {
   maxBytes: number;
 }
 
-/**
- * Split research-round accounting: expand (coverage growth) is separate from
- * audit (dry coverage confirmation when critical gaps remain). Happy path with
- * no unresolved critical gaps skips dry-coverage audits entirely and goes
- * straight to writers (see afterSuccess synthesis + researchIdsHaveUnresolvedCriticalGaps).
- */
-export interface WikiResearchBudgetPolicy {
-  /** Max expand/coverage-growth research rounds (tighter happy path). */
-  maxExpandRounds: number;
-  /** Max audit/dry-coverage research rounds (only when critical gaps remain). */
-  maxAuditRounds: number;
-  /**
-   * Legacy combined ceiling still used by the current engine pump.
-   * Prefer maxExpandRounds + maxAuditRounds for new accounting.
-   */
-  maxResearchRounds: number;
-  /**
-   * Consecutive dry (no new critical findings) audits required before write
-   * when research still reports unresolved critical gaps. Zero-gap happy path
-   * skips this gate and does not spend audit rounds.
-   */
-  requiredDryCoverageAudits: number;
-}
-
+/** Deterministic workflow limits; research uses one frontier-loop budget. */
 export interface WikiWorkflowPolicy {
   maxNodeAttempts: number;
   maxConcurrentResearchers: number;
   maxConcurrentWriters: number;
   maxLocalRepairRoundsPerPlan: number;
   maxStructuralResyntheses: number;
-  /** Max expand scopes accepted from one synthesis expand decision. */
-  maxExpandScopesPerBatch: number;
+  maxResearchRounds: number;
   /** Allowed source-fingerprint restart loops per run. */
   maxSourceRestarts: number;
-  research: WikiResearchBudgetPolicy;
   maxNodeOutputChars: number;
   maxNodeHistoryEntries: number;
   maxNodeHistoryChars: number;
@@ -122,17 +97,8 @@ export const DEFAULT_WIKI_WORKFLOW_POLICY: WikiWorkflowPolicy = {
   maxConcurrentWriters: 4,
   maxLocalRepairRoundsPerPlan: 3,
   maxStructuralResyntheses: 1,
-  maxExpandScopesPerBatch: 4,
+  maxResearchRounds: 6,
   maxSourceRestarts: 1,
-  research: {
-    // Split accounting: expand budget is independent of audit budget.
-    // Zero-gap happy path skips audits; gap-closing paths still pay dry audits.
-    maxExpandRounds: 4,
-    maxAuditRounds: 3,
-    maxResearchRounds: 6,
-    // When critical gaps remain, one consecutive dry coverage audit is enough before write.
-    requiredDryCoverageAudits: 1,
-  },
   maxNodeOutputChars: 48 * 1024,
   maxNodeHistoryEntries: 48,
   maxNodeHistoryChars: 24 * 1024,
@@ -147,7 +113,7 @@ export const DEFAULT_WIKI_WORKFLOW_POLICY: WikiWorkflowPolicy = {
 
 /** Integer research-round limit accepted on run start / workspace quality. */
 export function validMaxResearchRounds(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds;
+  if (value === undefined) return DEFAULT_WIKI_WORKFLOW_POLICY.maxResearchRounds;
   if (!Number.isInteger(value) || value < 3 || value > 20) {
     throw new Error("maxResearchRounds must be an integer from 3 to 20");
   }
@@ -155,21 +121,17 @@ export function validMaxResearchRounds(value: number | undefined): number {
 }
 
 export type PartialWikiWorkflowPolicy = {
-  [K in keyof WikiWorkflowPolicy]?: K extends "research" | "artifacts"
+  [K in keyof WikiWorkflowPolicy]?: K extends "artifacts"
     ? Partial<WikiWorkflowPolicy[K]>
     : WikiWorkflowPolicy[K];
 };
 
-/** Shallow-merge top-level fields; deep-merge research and artifacts. */
+/** Shallow-merge top-level fields; deep-merge artifacts. */
 export function mergeWikiWorkflowPolicy(partial?: PartialWikiWorkflowPolicy): WikiWorkflowPolicy {
-  if (!partial) return { ...DEFAULT_WIKI_WORKFLOW_POLICY, research: { ...DEFAULT_WIKI_WORKFLOW_POLICY.research }, artifacts: { ...DEFAULT_WIKI_WORKFLOW_POLICY.artifacts } };
+  if (!partial) return { ...DEFAULT_WIKI_WORKFLOW_POLICY, artifacts: { ...DEFAULT_WIKI_WORKFLOW_POLICY.artifacts } };
   return {
     ...DEFAULT_WIKI_WORKFLOW_POLICY,
     ...partial,
-    research: {
-      ...DEFAULT_WIKI_WORKFLOW_POLICY.research,
-      ...partial.research,
-    },
     artifacts: {
       ...DEFAULT_WIKI_WORKFLOW_POLICY.artifacts,
       ...partial.artifacts,

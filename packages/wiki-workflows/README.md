@@ -61,20 +61,19 @@ immutable.
 
 The user-visible workflow is
 `Inspect -> Research -> Plan -> Write -> Review & Publish`.
-Research starts one fresh agent per declared source. When receipts report no
-unresolved critical gaps, Plan must finalize and the engine skips forced dry
-audits, going straight to writers. Expand is hard-rejected without critical
-gaps; with gaps, Plan may request a targeted batch of at most four scopes.
-Planning uses separate typed completion tools: `wiki_submit_synthesis_expand`
-for unresolved critical evidence gaps and `wiki_submit_synthesis_finalize` for
-final acceptance. Research stages findings in batches of at most 20; Plan
+Research starts one fresh agent per declared source. After every research
+batch, the engine merges that batch's critical gaps into a stable frontier. A
+non-empty frontier queues one targeted research scope per gap; an empty
+frontier queues Plan. Targeted research must establish critical evidence or
+return a refined critical gap for the next round. Plan does not schedule work
+and completes only through `wiki_submit_synthesis_finalize`. Research stages
+findings in batches of at most 20; Plan
 stages one domain at a time plus cross-domain coordination; Review stages
 defects in batches of at most 20. Bounded query tools page over accumulated
-state. Terminal tools submit only the remaining summary, gaps, expansion
-decision, or rationale, and the extension assembles the canonical artifact.
+state. Terminal tools submit only the remaining summary, gaps, or rationale,
+and the extension assembles the canonical artifact.
 This keeps observations bounded while preserving a complete WikiSpec in both
-generate and refresh modes. The two Plan terminal tools share one submission
-attempt budget.
+generate and refresh modes.
 Every non-overview domain has one required `<domain-id>/domain.md` aggregation
 page plus evidence-driven architecture, flow, concept, state, data, or module
 pages. Each page declares reader questions and required facets. The default
@@ -85,7 +84,7 @@ Session restore is pointer-only (no legacy full-snapshot dual-read). Accepted
 research, planning, validation, review, and finalization objects are
 content-addressed under `.okf-wiki/blobs/{sha256}.json`; durable snapshots keep
 only bounded routing receipts and immutable artifact references. Snapshots use
-`version: 1` and pin the resolved policy and hash. Older session entries,
+`version: 2` and pin the resolved policy and hash. Older session entries,
 history files, and artifact layouts are
 **not migrated** — after upgrading, delete stale `.okf-wiki/` under the
 workspace, then run `/wiki generate` again.
@@ -169,7 +168,7 @@ Configuration fields and defaults:
 `/wiki init` writes these defaults. When `wiki` is omitted from an otherwise
 valid workspace, loading resolves the same defaults. A new run normalizes the
 current values, adds the prompt-bundle identity, and pins both policy and hash
-in snapshot version 1. Editing `workspace.yaml` does not hot-update executing
+in snapshot version 2. Editing `workspace.yaml` does not hot-update executing
 agents. On `/wiki resume`, a paused run compares the current policy hash; if it
 changed, the run pins the new policy, invalidates downstream nodes, and starts
 again at Inspect. `quality.maxResearchRounds` is not reconciled into an

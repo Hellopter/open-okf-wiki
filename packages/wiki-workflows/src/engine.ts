@@ -167,7 +167,7 @@ export class WikiWorkflowEngine {
     this.applyRuntimePolicy(policy);
     const inspectionNode = newNode(this.transitionHost(), "inspect", "Inspect Git scope", [], { requestedMode: request.mode, policyHash }, phaseRefForKind("inspect"));
     this.current = {
-      version: 1,
+      version: 2,
       id: this.newId(),
       cwd: path.resolve(request.cwd),
       requestedMode: request.mode,
@@ -321,7 +321,7 @@ export class WikiWorkflowEngine {
     const branch = clone(snapshot);
     const now = this.now();
     branch.id = this.newId();
-    branch.version = 1;
+    branch.version = 2;
     // Recover interrupted nodes so fork targets are settled (queued, not running).
     for (const node of branch.nodes) {
       if (node.status !== "running") continue;
@@ -611,6 +611,7 @@ export class WikiWorkflowEngine {
           sourceRoots,
           excludedPaths: run.policy.exclude,
         });
+        validateControlSubmission(this.transitionHost(), node, parsed);
         const handoff = await this.persistNodeHandoff(node, parsed);
         if (!handoff || handoff.kind !== "research") {
           throw new Error("Researcher did not produce a research handoff artifact");
@@ -760,7 +761,11 @@ export class WikiWorkflowEngine {
       researchCatalog: catalogForNode(node, researchReceipts),
       reviewFragments,
       validateControlSubmission: node.kind === "research"
-        ? (submission) => validateResearchReceiptRouting(parseResearchSubmission(submission), researchInputFor(node).scope)
+        ? (submission) => {
+            const parsed = parseResearchSubmission(submission);
+            validateResearchReceiptRouting(parsed, researchInputFor(node).scope);
+            validateControlSubmission(this.transitionHost(), node, parsed);
+          }
         : node.kind === "synthesis" || node.kind === "review"
           ? (submission) => validateControlSubmission(this.transitionHost(), node, submission)
           : undefined,
@@ -1267,6 +1272,9 @@ function terminalDetailsFromFailure(
         if (typeof value === "number" && Number.isFinite(value)) remainingBudget[key] = value;
       }
       if (Object.keys(remainingBudget).length > 0) details.remainingBudget = remainingBudget;
+      if (Array.isArray(raw.criticalGaps)) {
+        details.criticalGaps = raw.criticalGaps as NonNullable<WikiRunSnapshot["blockedDetails"]>["criticalGaps"];
+      }
     }
   }
   return Object.keys(details).length > 0 ? details : undefined;

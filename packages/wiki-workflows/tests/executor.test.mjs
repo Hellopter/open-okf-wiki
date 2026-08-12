@@ -71,7 +71,7 @@ function fakeSession(activeTools) {
       },
     },
     getLastAssistantText: () => "complete",
-    getActiveToolNames: () => activeTools ?? ["read", "grep", "find", "ls", "edit", "write", "wiki_submit_research", "wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize", "wiki_submit_page", "wiki_submit_review"],
+    getActiveToolNames: () => activeTools ?? ["read", "grep", "find", "ls", "edit", "write", "wiki_submit_research", "wiki_submit_synthesis_finalize", "wiki_submit_page", "wiki_submit_review"],
     getSessionStats: () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
     getContextUsage: () => undefined,
     dispose() {
@@ -867,7 +867,7 @@ test("dispose still runs when waitForIdle or reset throws", async (t) => {
 test("synthesis parser rejects removed page-contract fields", () => {
   const invalid = finalizedSpec();
   invalid.domains[1].pages[0].sources = ["api/src/index.ts#L1"];
-  assert.throws(() => parseSynthesisSubmission({ decision: "finalize", spec: invalid, rationale: "bad" }), /unsupported field: sources/);
+  assert.throws(() => parseSynthesisSubmission({ spec: invalid, rationale: "bad" }), /unsupported field: sources/);
 });
 
 async function waitUntil(predicate) {

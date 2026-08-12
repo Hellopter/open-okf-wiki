@@ -22,10 +22,7 @@ export const RESEARCH_FINDING_KINDS = ["domain", "concept", "flow", "boundary", 
 export const RESEARCH_PRIORITIES = ["critical", "normal"] as const;
 
 /** Synthesis finalize decision fields. */
-export const SYNTHESIS_FINALIZE_FIELDS = ["decision", "spec", "rationale"] as const;
-
-/** Synthesis expand decision fields. */
-export const SYNTHESIS_EXPAND_FIELDS = ["decision", "researchScopes", "rationale"] as const;
+export const SYNTHESIS_FINALIZE_FIELDS = ["spec", "rationale"] as const;
 
 /** Spec page descriptor fields under synthesis finalize. */
 export const SYNTHESIS_PAGE_FIELDS = [
@@ -35,8 +32,6 @@ export const SYNTHESIS_PAGE_FIELDS = [
 /** Spec top-level fields. */
 export const SYNTHESIS_SPEC_FIELDS = ["domains", "crossLinks", "sharedTerms", "omissions"] as const;
 
-/** Expand scope fields. */
-export const SYNTHESIS_SCOPE_FIELDS = ["id", "sourcePaths", "task"] as const;
 
 /** Review result top-level fields. */
 export const REVIEW_RESULT_FIELDS = ["defects", "summary"] as const;
@@ -64,9 +59,6 @@ export function submissionContractGuidance(toolName: SubmissionToolName): string
   }
   if (toolName === "wiki_submit_synthesis_finalize") {
     return "Stage the WikiSpec with wiki_plan_put_domain, wiki_plan_remove_domain, and wiki_plan_set_coordination; inspect it with wiki_spec_get_domain and wiki_submission_status. Then submit only {\"rationale\":\"...\"}.";
-  }
-  if (toolName === "wiki_submit_synthesis_expand") {
-    return `Use {"researchScopes":[{"id":"new-scope-id","sourcePaths":["declared-source"],"task":"..."}],"rationale":"..."}. Use only when a critical evidence gap requires more research.`;
   }
   const localKinds = REVIEW_LOCAL_DEFECT_KINDS.join("|");
   const structuralKinds = REVIEW_STRUCTURAL_DEFECT_KINDS.join("|");

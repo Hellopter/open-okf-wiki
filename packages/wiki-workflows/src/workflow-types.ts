@@ -66,7 +66,7 @@ export interface WikiNodeError {
   code?: WikiNodeErrorCode | string;
   retryable?: boolean;
   /** Present when the model ended without the required control-flow submission. */
-  requiredSubmissionTools?: Array<"wiki_submit_research" | "wiki_submit_synthesis_expand" | "wiki_submit_synthesis_finalize" | "wiki_submit_page" | "wiki_submit_review">;
+  requiredSubmissionTools?: Array<"wiki_submit_research" | "wiki_submit_synthesis_finalize" | "wiki_submit_page" | "wiki_submit_review">;
 }
 
 export interface WikiNodeAttempt {
@@ -163,7 +163,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 1;
+  version: 2;
   id: string;
   cwd: string;
   requestedMode: WikiMode;
@@ -198,6 +198,7 @@ export interface WikiRunSnapshot {
     comparedNodeId?: string;
     /** Budget counters remaining (or exhausted-at) when a budget policy blocked the run. */
     remainingBudget?: Record<string, number>;
+    criticalGaps?: WikiCriticalGap[];
   };
   /** The immutable terminal run from which this retry branch was created. */
   parentRunId?: string;
@@ -376,19 +377,16 @@ export interface WikiSpec {
   omissions: WikiOmission[];
 }
 
-export interface WikiSynthesisExpandResult {
-  decision: "expand";
-  researchScopes: WikiResearchScope[];
-  rationale: string;
-}
-
-export interface WikiSynthesisFinalizeResult {
-  decision: "finalize";
+export interface WikiSynthesisResult {
   spec: WikiSpec;
   rationale: string;
 }
 
-export type WikiSynthesisResult = WikiSynthesisExpandResult | WikiSynthesisFinalizeResult;
+export interface WikiCriticalGap {
+  id: string;
+  question: string;
+  sourcePaths: string[];
+}
 
 /** Metadata-only pointer to a source-grounded research handoff. */
 export interface WikiResearchReceipt {
@@ -399,12 +397,8 @@ export interface WikiResearchReceipt {
   findings: Array<{
     id: string;
     priority: WikiResearchPriority;
-    /** kind+title+paths fingerprint; used for dry-audit sameness across scopes. */
-    contentFingerprint: string;
   }>;
-  criticalGapSignatures: string[];
-  /** Critical gap questions (for expand-scope binding); parallel to signatures. */
-  criticalGapQuestions: string[];
+  criticalGaps: WikiCriticalGap[];
 }
 
 export interface WikiInspectionReceipt {
@@ -434,10 +428,8 @@ export interface WikiInspectionSummary {
 export interface WikiSynthesisReceipt {
   kind: "synthesis";
   artifact: WikiArtifactRef;
-  decision: "expand" | "finalize";
-  scopeCount?: number;
-  domainCount?: number;
-  pageCount?: number;
+  domainCount: number;
+  pageCount: number;
 }
 
 export interface WikiWriteReceipt {

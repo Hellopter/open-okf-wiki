@@ -12,7 +12,6 @@ import {
 
 function finalDecision(overrides = {}) {
   return {
-    decision: "finalize",
     spec: {
       domains: [
         {
@@ -52,7 +51,6 @@ function finalDecision(overrides = {}) {
 
 test("normalizes optional WikiSpec coordination arrays", () => {
   const result = parseSynthesisSubmission(finalDecision());
-  assert.equal(result.decision, "finalize");
   assert.deepEqual(result.spec.crossLinks, []);
   assert.deepEqual(result.spec.sharedTerms, []);
   assert.deepEqual(result.spec.omissions, []);
@@ -176,29 +174,15 @@ test("parses local and structural review defects as a discriminated union", () =
   }), /invalid defect/);
 });
 
-test("rejects expand with empty or duplicate research scope ids", () => {
+test("rejects removed synthesis scheduling fields", () => {
   assert.throws(() => parseSynthesisSubmission({
-    decision: "expand",
-    researchScopes: [],
-    rationale: "Need more evidence.",
-  }), /at least one supplemental research scope/);
-
+    ...finalDecision(),
+    decision: "finalize",
+  }), /unsupported field: decision/);
   assert.throws(() => parseSynthesisSubmission({
-    decision: "expand",
-    researchScopes: [
-      { id: "   ", sourcePaths: ["api"], task: "Look again." },
-    ],
-    rationale: "Need more evidence.",
-  }), /Research scope ID must be non-empty/);
-
-  assert.throws(() => parseSynthesisSubmission({
-    decision: "expand",
-    researchScopes: [
-      { id: "same-scope", sourcePaths: ["api"], task: "First." },
-      { id: "same-scope", sourcePaths: ["web"], task: "Duplicate." },
-    ],
-    rationale: "Need more evidence.",
-  }), /duplicate research scope/);
+    ...finalDecision(),
+    researchScopes: [{ id: "gap", sourcePaths: ["api"], task: "Research it." }],
+  }), /unsupported field: researchScopes/);
 });
 
 test("parses structured research JSON and enforces the 256 KiB artifact limit", () => {

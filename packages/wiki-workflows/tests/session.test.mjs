@@ -3,7 +3,7 @@ import test from "node:test";
 import { createWikiRunSession, isWikiRunSession, parseWikiRunSession, WIKI_RUN_POINTER_VERSION } from "../dist/session.js";
 import { resolveWikiPolicy, wikiPolicyHash } from "../dist/policy.js";
 
-function snapshot(version = 1, overrides = {}) {
+function snapshot(version = 2, overrides = {}) {
   const policy = resolveWikiPolicy();
   return {
     version,
@@ -137,13 +137,13 @@ test("snapshot validation remains independent of session pointer parsing", async
     "the durable contract still rejects a populated runtime inspection",
   );
 
-  const legacyV6 = snapshot(6);
-  assert.equal(isWikiRunSnapshot(legacyV6), false);
-  const versionReasons = explainWikiRunSnapshot(legacyV6);
-  assert.ok(versionReasons.some((reason) => /version: expected 1, got 6/.test(reason)));
+  const legacyV1 = snapshot(1);
+  assert.equal(isWikiRunSnapshot(legacyV1), false);
+  const versionReasons = explainWikiRunSnapshot(legacyV1);
+  assert.ok(versionReasons.some((reason) => /version: expected 2, got 1/.test(reason)));
   assert.throws(
-    () => parseWikiRunSnapshot(legacyV6),
-    (error) => error?.code === "snapshot_incompatible" && /version: expected 1, got 6/.test(error.message),
+    () => parseWikiRunSnapshot(legacyV1),
+    (error) => error?.code === "snapshot_incompatible" && /version: expected 2, got 1/.test(error.message),
   );
 
   const withBlockedDetails = {
@@ -172,7 +172,7 @@ test("snapshot validation remains independent of session pointer parsing", async
       message: "Missing submission",
       code: "missing_submission",
       retryable: false,
-      requiredSubmissionTools: ["wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize"],
+      requiredSubmissionTools: ["wiki_submit_synthesis_finalize"],
     })],
   });
   assert.equal(isWikiRunSnapshot(currentSubmissionError), true);
@@ -190,7 +190,7 @@ test("snapshot validation remains independent of session pointer parsing", async
   assert.equal(isWikiRunSnapshot(unknownErrorField), false);
 
   const unknownRootField = { ...snapshot(), runtimeCache: { hydrated: true } };
-  assert.equal(isWikiRunSnapshot(unknownRootField), false, "durable v1 rejects runtime-only root fields");
+  assert.equal(isWikiRunSnapshot(unknownRootField), false, "durable v2 rejects runtime-only root fields");
 
   const archivedRawResult = snapshot(undefined, {
     status: "failed",
@@ -201,7 +201,7 @@ test("snapshot validation remains independent of session pointer parsing", async
     result: { fullModelPayload: true },
     metrics: archivedRawResult.nodes[0].metrics,
   });
-  assert.equal(isWikiRunSnapshot(archivedRawResult), false, "durable v1 rejects old full attempt payloads");
+  assert.equal(isWikiRunSnapshot(archivedRawResult), false, "durable v2 rejects old full attempt payloads");
 
   const tamperedPolicy = snapshot(undefined, {
     policy: { ...snapshot().policy, terminology: { Ledger: "changed without rehashing" } },

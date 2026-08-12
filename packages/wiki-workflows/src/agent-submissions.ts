@@ -18,7 +18,6 @@ import {
   researchFindingSchema,
   reviewDefectSchema,
   reviewFinalizeSubmissionSchema,
-  synthesisExpandSubmissionSchema,
   wikiSpecCoordinationSchema,
   wikiSpecDomainSchema,
   WikiControlSubmissionSizeError,
@@ -88,7 +87,7 @@ export function submissionFor(request: WikiAgentExecutionRequest): SubmissionCol
   if (request.node.kind === "synthesis") {
     const collector: SubmissionCollector = {
       ...base,
-      toolNames: ["wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize"],
+      toolNames: ["wiki_submit_synthesis_finalize"],
       plan: { domains: new Map(), coordination: { crossLinks: [], sharedTerms: [], omissions: [] } },
       validate: request.validateControlSubmission,
     };
@@ -104,8 +103,7 @@ export function submissionFor(request: WikiAgentExecutionRequest): SubmissionCol
 /** Seed a structural replanning collector from the prior finalized WikiSpec. */
 export function seedSynthesisPlan(submission: SubmissionCollector, spec: WikiSpec): void {
   if (!submission.plan) throw new Error("Only synthesis collectors accept a WikiSpec seed");
-  const parsed = parseSynthesisSubmission({ decision: "finalize", spec, rationale: "Seed validation" });
-  if (parsed.decision !== "finalize") throw new Error("WikiSpec seed did not finalize");
+  const parsed = parseSynthesisSubmission({ spec, rationale: "Seed validation" });
   submission.plan.domains = new Map(parsed.spec.domains.map((domain) => [domain.id, structuredClone(domain)]));
   submission.plan.coordination = {
     crossLinks: structuredClone(parsed.spec.crossLinks),
@@ -141,7 +139,6 @@ export function researchCatalogTools(catalog: readonly WikiResearchCatalogScope[
         task: scope.task,
         sourcePaths: scope.sourcePaths,
         findingCount: scope.findings.length,
-        gapCount: scope.gaps.length,
       })),
     })),
     queryTool("wiki_research_findings", Type.Object({
@@ -166,24 +163,19 @@ function submissionTool(
   if (toolName === "wiki_submit_page") return pageSubmissionTool(submission);
 
   const parser = toolName === "wiki_submit_research" ? (value: unknown) => parseResearchSubmission({ ...(value as object), findings: [...(submission.research?.findings.values() ?? [])] })
-    : toolName === "wiki_submit_synthesis_expand" ? (value: unknown) => parseSynthesisSubmission({ ...(value as object), decision: "expand" })
-      : toolName === "wiki_submit_synthesis_finalize" ? (value: unknown) => parseSynthesisSubmission({ ...(value as object), decision: "finalize", spec: stagedSpec(submission) })
+    : toolName === "wiki_submit_synthesis_finalize" ? (value: unknown) => parseSynthesisSubmission({ ...(value as object), spec: stagedSpec(submission) })
       : (value: unknown) => parseReviewSubmission({ ...(value as object), defects: [...(submission.review?.defects.values() ?? [])] });
   const parameters = toolName === "wiki_submit_research" ? researchFinalizeSubmissionSchema
-    : toolName === "wiki_submit_synthesis_expand" ? synthesisExpandSubmissionSchema
-      : toolName === "wiki_submit_synthesis_finalize" ? Type.Object({ rationale: Type.String({ minLength: 1 }) }, { additionalProperties: false })
+    : toolName === "wiki_submit_synthesis_finalize" ? Type.Object({ rationale: Type.String({ minLength: 1 }) }, { additionalProperties: false })
       : reviewFinalizeSubmissionSchema;
   const role = toolName === "wiki_submit_research" ? "research result"
-    : toolName === "wiki_submit_synthesis_expand" ? "targeted research expansion"
-      : toolName === "wiki_submit_synthesis_finalize" ? "final Wiki plan"
+    : toolName === "wiki_submit_synthesis_finalize" ? "final Wiki plan"
       : "semantic review";
   const terminalInstructions = toolName === "wiki_submit_research"
     ? "Submit only the final summary and gaps; staged findings are assembled automatically."
     : toolName === "wiki_submit_synthesis_finalize"
       ? "Submit only the rationale; the staged WikiSpec is assembled automatically."
-      : toolName === "wiki_submit_synthesis_expand"
-        ? "Submit the complete researchScopes and rationale expansion decision."
-        : toolName === "wiki_submit_review"
+      : toolName === "wiki_submit_review"
           ? "Submit only the summary; staged defects are assembled automatically."
           : "Submit the complete typed result object directly.";
 

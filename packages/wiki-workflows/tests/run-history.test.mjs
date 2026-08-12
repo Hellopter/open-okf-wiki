@@ -23,7 +23,7 @@ function metrics() {
 function snapshot(id, status, updatedAt) {
   const policy = resolveWikiPolicy();
   return {
-    version: 1,
+    version: 2,
     id,
     cwd: "/workspace",
     requestedMode: "generate",

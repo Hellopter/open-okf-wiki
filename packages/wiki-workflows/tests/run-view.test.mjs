@@ -19,7 +19,7 @@ function node(id, kind, status, extra = {}) {
 
 function snapshot(status = "running") {
   return {
-    version: 1, id: "run-1", cwd: "/workspace", requestedMode: "generate", language: "zh", focus: "core",
+    version: 2, id: "run-1", cwd: "/workspace", requestedMode: "generate", language: "zh", focus: "core",
     status, round: 0, sourceRestartCount: 0, maxResearchRounds: 6,
     policy: { secret: "must not leak" }, policyHash: "private-policy-hash",
     nodes: [

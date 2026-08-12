@@ -89,9 +89,7 @@ export function nodeReceipt(node: WikiNode, fullResult: unknown): WikiNodeReceip
   }
   if (node.kind === "synthesis") {
     const value = parseSynthesisSubmission(fullResult);
-    return value.decision === "expand"
-      ? { kind: "synthesis", artifact, decision: "expand", scopeCount: value.researchScopes.length }
-      : { kind: "synthesis", artifact, decision: "finalize", domainCount: value.spec.domains.length, pageCount: specPages(value.spec).length };
+    return { kind: "synthesis", artifact, domainCount: value.spec.domains.length, pageCount: specPages(value.spec).length };
   }
   if (node.kind === "write") {
     if (!isRecord(fullResult) || typeof fullResult.page !== "string" || typeof fullResult.sha256 !== "string") return undefined;
@@ -163,34 +161,27 @@ export interface ResearchNodeInput {
   scope: WikiResearchScope;
   researchGroupId: string;
   priorResearchIds: string[];
-  continuationMode: "initial" | "supplemental" | "structural" | "audit";
-  dryAuditPasses: number;
+  continuationMode: "initial" | "targeted" | "structural";
+  targetGap?: import("./workflow-types.js").WikiCriticalGap;
   priorSynthesisNodeId?: string;
-  structuralRoundId?: string;
   trigger?: unknown;
 }
 
 export interface SynthesisNodeInput {
   researchIds: string[];
-  supplementalBatch: number;
-  mode: "initial" | "supplemental" | "structural" | "audit";
-  dryAuditPasses: number;
+  mode: "initial" | "structural";
   round: number;
   inspection?: WikiInspection;
   focus?: string;
   priorSynthesisNodeId?: string;
-  structuralRoundId?: string;
   trigger?: unknown;
 }
 
 export interface QueueSynthesisInput {
   dependsOn: string[];
   researchIds: string[];
-  supplementalBatch: number;
   mode: SynthesisNodeInput["mode"];
-  dryAuditPasses: number;
   priorSynthesisNodeId?: string;
-  structuralRoundId?: string;
   trigger?: unknown;
 }
 
@@ -292,8 +283,7 @@ export function reviewInputFor(node: WikiNode): ReviewNodeInput {
 
 export function parseResearchNodeInput(value: unknown): ResearchNodeInput {
   if (!isRecord(value) || !Number.isInteger(value.batch) || (value.batch as number) < 0
-    || (value.continuationMode !== "initial" && value.continuationMode !== "supplemental" && value.continuationMode !== "structural" && value.continuationMode !== "audit")
-    || !Number.isInteger(value.dryAuditPasses) || (value.dryAuditPasses as number) < 0
+    || (value.continuationMode !== "initial" && value.continuationMode !== "targeted" && value.continuationMode !== "structural")
     || !isRecord(value.scope)
     || typeof value.scope.id !== "string" || !value.scope.id.trim() || typeof value.scope.task !== "string" || !value.scope.task.trim()
     || !Array.isArray(value.scope.sourcePaths) || value.scope.sourcePaths.length === 0 || !value.scope.sourcePaths.every((entry) => typeof entry === "string" && entry.trim())
@@ -302,6 +292,9 @@ export function parseResearchNodeInput(value: unknown): ResearchNodeInput {
     throw new Error("Research node has an invalid input");
   }
   const continuationMode = value.continuationMode as ResearchNodeInput["continuationMode"];
+  const targetGap = isCriticalGap(value.targetGap) ? value.targetGap : undefined;
+  if (continuationMode === "targeted" && !targetGap) throw new Error("Targeted research node requires targetGap");
+  if (continuationMode !== "targeted" && value.targetGap !== undefined) throw new Error("Only targeted research may declare targetGap");
   return {
     batch: value.batch as number,
     scope: {
@@ -312,9 +305,8 @@ export function parseResearchNodeInput(value: unknown): ResearchNodeInput {
     researchGroupId: value.researchGroupId,
     priorResearchIds: [...(value.priorResearchIds as string[])],
     continuationMode,
-    dryAuditPasses: value.dryAuditPasses as number,
+    targetGap,
     priorSynthesisNodeId: typeof value.priorSynthesisNodeId === "string" ? value.priorSynthesisNodeId : undefined,
-    structuralRoundId: typeof value.structuralRoundId === "string" ? value.structuralRoundId : undefined,
     trigger: value.trigger,
   };
 }
@@ -333,22 +325,18 @@ export function sameResearchBatch(node: WikiNode, expected: ResearchNodeInput): 
 }
 
 export function parseSynthesisNodeInput(value: unknown): SynthesisNodeInput {
-  if (!isRecord(value) || !Number.isInteger(value.supplementalBatch) || (value.supplementalBatch as number) < 0 || !Number.isInteger(value.round)
-    || (value.mode !== "initial" && value.mode !== "supplemental" && value.mode !== "structural" && value.mode !== "audit")
-    || !Number.isInteger(value.dryAuditPasses) || (value.dryAuditPasses as number) < 0
+  if (!isRecord(value) || !Number.isInteger(value.round)
+    || (value.mode !== "initial" && value.mode !== "structural")
     || !Array.isArray(value.researchIds) || !value.researchIds.every((id) => typeof id === "string")) {
     throw new Error("Synthesis node has an invalid input");
   }
   return {
     researchIds: [...(value.researchIds as string[])],
-    supplementalBatch: value.supplementalBatch as number,
     mode: value.mode as SynthesisNodeInput["mode"],
-    dryAuditPasses: value.dryAuditPasses as number,
     round: value.round as number,
     inspection: isRecord(value.inspection) ? value.inspection as unknown as WikiInspection : undefined,
     focus: typeof value.focus === "string" ? value.focus : undefined,
     priorSynthesisNodeId: typeof value.priorSynthesisNodeId === "string" ? value.priorSynthesisNodeId : undefined,
-    structuralRoundId: typeof value.structuralRoundId === "string" ? value.structuralRoundId : undefined,
     trigger: value.trigger,
   };
 }
@@ -539,8 +527,8 @@ export function specFromSynthesisResult(value: unknown, synthesisNodeId: string)
   return value.spec;
 }
 
-export function isSynthesisFinalizeResult(value: unknown): value is Extract<WikiSynthesisResult, { decision: "finalize" }> {
-  return isRecord(value) && value.decision === "finalize" && isRecord(value.spec)
+export function isSynthesisFinalizeResult(value: unknown): value is WikiSynthesisResult {
+  return isRecord(value) && isRecord(value.spec)
     && Array.isArray(value.spec.domains)
     && Array.isArray(value.spec.crossLinks)
     && Array.isArray(value.spec.sharedTerms)
@@ -695,11 +683,15 @@ export function isResearchReceipt(value: unknown): value is WikiResearchReceipt 
     && typeof value.sourceFingerprint === "string"
     && Array.isArray(value.findings) && value.findings.every((finding) => isRecord(finding)
       && typeof finding.id === "string"
-      && (finding.priority === "critical" || finding.priority === "normal")
-      && typeof finding.contentFingerprint === "string")
-    && isStringArray(value.criticalGapSignatures)
-    && isStringArray(value.criticalGapQuestions)
+      && (finding.priority === "critical" || finding.priority === "normal"))
+    && Array.isArray(value.criticalGaps) && value.criticalGaps.every(isCriticalGap)
     && isArtifactRef(value.artifact);
+}
+
+export function isCriticalGap(value: unknown): value is import("./workflow-types.js").WikiCriticalGap {
+  return isRecord(value) && typeof value.id === "string" && value.id.length > 0
+    && typeof value.question === "string" && value.question.length > 0
+    && isStringArray(value.sourcePaths) && value.sourcePaths.length > 0;
 }
 
 export function isArtifactRef(value: unknown): value is WikiArtifactRef {

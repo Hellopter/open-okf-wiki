@@ -2,7 +2,6 @@ import type { WikiNodeErrorCode, WikiNodeHistoryEntry } from "./workflow-types.j
 
 export type SubmissionToolName =
   | "wiki_submit_research"
-  | "wiki_submit_synthesis_expand"
   | "wiki_submit_synthesis_finalize"
   | "wiki_submit_page"
   | "wiki_submit_review";

@@ -177,8 +177,8 @@ async function fixture(t, options = {}) {
       requests.push(request);
       if (request.node.kind === "research") {
         if (options.onResearch) return await options.onResearch(request);
-        // Initial surveys mint scope-bound findings. Audits/supplemental default to
-        // no new findings so re-statements do not invent fresh finding ids.
+        // Initial surveys mint scope-bound findings. Follow-up behavior is
+        // supplied explicitly by tests that open a critical-gap frontier.
         const findings = request.node.input.batch === 0
           ? request.node.input.scope.sourcePaths.map((source) => ({
             kind: "domain",
@@ -198,7 +198,6 @@ async function fixture(t, options = {}) {
       }
       if (request.node.kind === "synthesis") {
         const result = options.synthesis?.(request, synthesisCalls++) ?? {
-          decision: "finalize",
           spec: options.spec ?? spec(),
           rationale: "Evidence is sufficient.",
         };
@@ -265,7 +264,7 @@ async function fixture(t, options = {}) {
 test("restore rejects a structurally corrupt current snapshot", () => {
   const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
   const malformed = {
-    version: 1,
+    version: 2,
     id: "malformed",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -286,7 +285,7 @@ test("restore rejects a structurally corrupt current snapshot", () => {
 test("restore rejects a current snapshot below the research saturation minimum", () => {
   const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
   const snapshot = {
-    version: 1,
+    version: 2,
     id: "undersized-budget",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -509,7 +508,7 @@ test("generate fans out domain and detail writers within the configured concurre
   const snapshot = await f.engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  assert.equal(snapshot.version, 1);
+  assert.equal(snapshot.version, 2);
   assert.equal(snapshot.revision, 0);
   assert.equal(snapshot.maxResearchRounds, 6);
   assert.equal(snapshot.sourceRestartCount, 0);
@@ -561,7 +560,7 @@ test("generate fans out domain and detail writers within the configured concurre
   assert.match(globalReviewer.prompt, /do not repeat equivalent fragment defects/);
 });
 
-test("the minimum research budget completes the initial survey without a forced dry audit", async (t) => {
+test("the minimum research budget completes an initial survey with an empty frontier", async (t) => {
   const f = await fixture(t, {
     inspection: { sourcePaths: ["src-core"] },
     spec: spec([page("core", "architecture", "source-survey:src-core", "architecture")]),
@@ -572,14 +571,9 @@ test("the minimum research budget completes the initial survey without a forced 
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
   assert.equal(snapshot.maxResearchRounds, 3);
-  // Happy path: no critical gaps → surveys only, no dry-coverage audit batch.
   assert.deepEqual(
     snapshot.nodes.filter((node) => node.kind === "research").map((node) => node.input.batch),
     [0],
-  );
-  assert.equal(
-    snapshot.nodes.filter((node) => node.kind === "research" && node.input.continuationMode === "audit").length,
-    0,
   );
 });
 
@@ -742,74 +736,6 @@ test("Write validation repairs before semantic review and keeps feedback attribu
   assert.deepEqual(firstReview.dependsOn, [cleanValidation.id]);
 });
 
-test("a new critical audit finding resets the dry coverage saturation counter", async (t) => {
-  let flowFindingId;
-  let emittedNewCritical = false;
-  // Force the coverage-audit path: surveys keep unresolved critical gaps so
-  // finalize→afterSuccess queues audits (submit-time would normally expand instead).
-  const f = await fixture(t, {
-    onResearch: async (request) => {
-      const batch = request.node.input.batch;
-      if (batch === 0) {
-        return {
-          result: {
-            summary: "coverage with open gaps",
-            findings: request.node.input.scope.sourcePaths.map((source) => ({
-              kind: "domain",
-              title: `${source} responsibilities`,
-              readerQuestion: `What does ${source} own?`,
-              priority: "critical",
-              evidence: [`${source}/index.ts#L1`],
-            })),
-            gaps: [{
-              priority: "critical",
-              question: "What is the request failure path?",
-              sourcePaths: request.node.input.scope.sourcePaths,
-            }],
-          },
-        };
-      }
-      // First audit only: one novel critical finding (scope-bound id). Later audits are dry.
-      if (!emittedNewCritical) {
-        emittedNewCritical = true;
-        const scopeId = request.node.input.scope.id;
-        flowFindingId = findingId(scopeId, "flow", ["src-core/extra.ts#L1"]);
-        return {
-          result: {
-            summary: "new critical flow",
-            findings: [{
-              kind: "flow",
-              title: "Critical request flow",
-              readerQuestion: "How does the request flow?",
-              priority: "critical",
-              evidence: ["src-core/extra.ts#L1"],
-            }],
-            gaps: [],
-          },
-        };
-      }
-      return { result: { summary: "dry audit", findings: [], gaps: [] } };
-    },
-    synthesis: () => {
-      const target = spec();
-      if (flowFindingId) {
-        target.domains[1].pages[0].findingIds.push(flowFindingId);
-      }
-      return { decision: "finalize", spec: target, rationale: "covered" };
-    },
-  });
-  await writeFile(path.join(f.workspace, "src-core", "extra.ts"), "export const flow = true;\n", "utf8");
-
-  f.engine.start({ cwd: f.workspace, mode: "generate" });
-  const snapshot = await f.engine.waitForIdle();
-
-  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  // One non-dry audit (new critical) then one dry audit satisfies requiredDryCoverageAudits=1.
-  assert.equal(snapshot.nodes.filter((node) => node.kind === "research" && node.input.continuationMode === "audit").length, 2);
-  const auditSyntheses = snapshot.nodes.filter((node) => node.kind === "synthesis" && node.input.mode === "audit");
-  assert.deepEqual(auditSyntheses.map((node) => node.input.dryAuditPasses), [0, 1]);
-});
-
 test("writer validator infrastructure failures retry the node automatically", async (t) => {
   let failedOnce = false;
   const f = await fixture(t, {
@@ -956,7 +882,7 @@ test("mixed structural and local defects replan first, write the full topology, 
       existingPages: ["overview/overview.md", "core/domain.md", "core/architecture.md", "api/domain.md", "api/request-flow.md"],
       impactedPages: ["core/architecture.md"],
     },
-    synthesis: (_request, index) => ({ decision: "finalize", spec: target, rationale: `plan-${index}` }),
+    synthesis: (_request, index) => ({ spec: target, rationale: `plan-${index}` }),
     review: (_request, index) => index === 0 ? {
       defects: [
         { kind: "topology", detail: "The page topology is incomplete." },
@@ -983,80 +909,12 @@ test("mixed structural and local defects replan first, write the full topology, 
   assert.match(structuralPlan.prompt, /Preseeded Prior WikiSpec/);
   assert.match(structuralPlan.prompt, /wiki_spec_get_domain/);
   assert.match(structuralPlan.prompt, /"kind": "topology"/);
-  assert.doesNotMatch(structuralPlan.prompt, /defect-[a-f0-9]{12}|domainId/);
+  assert.match(structuralPlan.prompt, /structural-research:/);
   const repairedPage = f.requests.find((request) => request.node.kind === "write"
     && request.node.input.synthesisNodeId === structuralPlan.node.id
     && request.node.input.page.path === "core/architecture.md");
   assert.match(repairedPage.prompt, /"kind": "depth"/);
-  assert.doesNotMatch(repairedPage.prompt, /defect-[a-f0-9]{12}|domainId/);
-});
-
-test("targeted research is allowed once and carries all receipts into the next Plan", async (t) => {
-  const target = spec();
-  // Expand requires unresolved critical gaps on research receipts (hard-reject otherwise).
-  const f = await fixture(t, {
-    onResearch: async (request) => {
-      const batch = request.node.input.batch;
-      if (batch === 0) {
-        return {
-          result: {
-            summary: `Covered ${request.node.input.scope.sourcePaths.join(", ")}`,
-            findings: request.node.input.scope.sourcePaths.map((source) => ({
-              kind: "domain",
-              title: `${source} responsibilities`,
-              readerQuestion: `What does ${source} own?`,
-              priority: "critical",
-              evidence: [`${source}/index.ts#L1`],
-            })),
-            gaps: [{
-              priority: "critical",
-              question: "How do src-core and src-api hand off requests?",
-              sourcePaths: request.node.input.scope.sourcePaths,
-            }],
-          },
-        };
-      }
-      return { result: { summary: "Supplemental closed the gap", findings: [], gaps: [] } };
-    },
-    synthesis: (request, index) => {
-      if (index === 0) {
-        // Submit-time expand is only legal while critical gaps remain.
-        request.validateControlSubmission({
-          decision: "expand",
-          researchScopes: [{
-            id: "cross-boundary",
-            sourcePaths: ["src-core", "src-api"],
-            task: "How do src-core and src-api hand off requests?",
-          }],
-          rationale: "One bounded gap remains.",
-        });
-        return {
-          decision: "expand",
-          researchScopes: [{
-            id: "cross-boundary",
-            sourcePaths: ["src-core", "src-api"],
-            task: "How do src-core and src-api hand off requests?",
-          }],
-          rationale: "One bounded gap remains.",
-        };
-      }
-      return { decision: "finalize", spec: target, rationale: "Complete." };
-    },
-  });
-  f.engine.start({ cwd: f.workspace, mode: "generate" });
-  const snapshot = await f.engine.waitForIdle();
-  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  const syntheses = f.requests.filter((request) => request.node.kind === "synthesis");
-  // Expand plan + post-expand finalize (queues coverage audit while survey gaps remain)
-  // + post-audit finalize once requiredDryCoverageAudits is satisfied.
-  assert.equal(syntheses.length, 3);
-  assert.ok(syntheses.every((request) => JSON.stringify(request.readRoots) === JSON.stringify(["src-core", "src-api"])));
-  for (const scopeId of ["source-survey:src-core", "source-survey:src-api", "cross-boundary"]) {
-    assert.match(syntheses[1].prompt, new RegExp(`"scopeId": "${scopeId}"`));
-  }
-  assert.match(syntheses[1].prompt, /wiki_research_scopes/);
-  assert.match(syntheses[1].prompt, /wiki_research_findings/);
-  assert.deepEqual(f.requests.find((request) => request.node.input?.scope?.id === "cross-boundary").readRoots, ["src-core", "src-api"]);
+  assert.match(repairedPage.prompt, /"kind": "depth"/);
 });
 
 test("Plan receipt manifest exposes the exact scope allowlist enforced at submission", async (t) => {
@@ -1066,75 +924,22 @@ test("Plan receipt manifest exposes the exact scope allowlist enforced at submis
       const invalid = structuredClone(target);
       invalid.domains[1].pages[0].findingIds = ["src-core"];
       assert.throws(
-        () => request.validateControlSubmission({ decision: "finalize", spec: invalid, rationale: "Guessed an ID." }),
+        () => request.validateControlSubmission({ spec: invalid, rationale: "Guessed an ID." }),
         /references unknown research finding: src-core/,
       );
       assert.doesNotThrow(() => request.validateControlSubmission({
-        decision: "finalize",
         spec: target,
         rationale: "Selected exact manifest IDs.",
       }));
       assert.match(request.prompt, /"scopeId": "source-survey:src-core"/);
       assert.match(request.prompt, /"sourcePaths": \[\s*"src-core"/);
       assert.match(request.prompt, /"task": "Survey src-core to identify cohesive domains/);
-      return { decision: "finalize", spec: target, rationale: "Selected exact manifest IDs." };
+      return { spec: target, rationale: "Selected exact manifest IDs." };
     },
   });
 
   f.engine.start({ cwd: f.workspace, mode: "generate" });
   assert.equal((await f.engine.waitForIdle()).status, "succeeded");
-});
-
-test("source drift invalidation permits the restarted branch to request the same supplemental scope", async (t) => {
-  const target = spec();
-  const f = await fixture(t, {
-    inspectionSequence: [
-      { sourceFingerprint: "source-1" },
-      { sourceFingerprint: "source-2", head: "head-2" },
-      { sourceFingerprint: "source-2", head: "head-2" },
-      { sourceFingerprint: "source-2", head: "head-2" },
-    ],
-    onResearch: async (request) => {
-      const batch = request.node.input.batch;
-      if (batch === 0) {
-        return {
-          result: {
-            summary: `Covered ${request.node.input.scope.sourcePaths.join(", ")}`,
-            findings: request.node.input.scope.sourcePaths.map((source) => ({
-              kind: "domain",
-              title: `${source} responsibilities`,
-              readerQuestion: `What does ${source} own?`,
-              priority: "critical",
-              evidence: [`${source}/index.ts#L1`],
-            })),
-            gaps: [{
-              priority: "critical",
-              question: "What is the current implementation gap?",
-              sourcePaths: request.node.input.scope.sourcePaths,
-            }],
-          },
-        };
-      }
-      return { result: { summary: "Supplemental closed the gap", findings: [], gaps: [] } };
-    },
-    synthesis: (request) => request.node.input.supplementalBatch === 0 ? {
-      decision: "expand",
-      researchScopes: [{
-        id: "same-gap",
-        sourcePaths: ["src-core"],
-        task: "What is the current implementation gap?",
-      }],
-      rationale: "One bounded gap remains.",
-    } : { decision: "finalize", spec: target, rationale: "Complete." },
-  });
-
-  f.engine.start({ cwd: f.workspace, mode: "generate" });
-  const snapshot = await f.engine.waitForIdle();
-
-  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  const repeatedScopes = snapshot.nodes.filter((node) => node.kind === "research" && node.input.scope.id === "same-gap");
-  assert.equal(repeatedScopes.length, 2);
-  assert.deepEqual(repeatedScopes.map((node) => node.status), ["invalidated", "succeeded"]);
 });
 
 test("static page issues route to one fresh repair writer and regenerate Overview", async (t) => {
@@ -1276,63 +1081,6 @@ test("a Plan permits at most three local repair rounds", async (t) => {
   assert.equal(snapshot.blockedDetails?.remainingBudget?.maxLocalRepairRounds, 3);
   assert.equal(snapshot.blockedDetails?.remainingBudget?.used, 3);
   assert.equal(new Set(snapshot.nodes.filter((node) => node.kind === "write" && node.input.intent === "repair").map((node) => node.input.writeGroupId)).size, 3);
-});
-
-test("research expansion is bounded by expand-round budget", async (t) => {
-  const f = await fixture(t, {
-    research: async (request) => {
-      if (request.node.input.continuationMode === "initial" || request.node.input.batch === 0) {
-        return {
-          result: {
-            summary: "survey with open gap",
-            findings: [{
-              kind: "domain",
-              title: "core domain",
-              readerQuestion: "What does core own?",
-              priority: "critical",
-              evidence: ["src-core/index.ts#L1"],
-            }],
-            gaps: [{
-              priority: "critical",
-              question: "What remains for coverage expansion budget?",
-              sourcePaths: ["src-core"],
-            }],
-          },
-        };
-      }
-      return {
-        result: {
-          summary: "supplemental still open",
-          findings: [],
-          gaps: [{
-            priority: "critical",
-            question: "What remains for coverage expansion budget?",
-            sourcePaths: ["src-core"],
-          }],
-        },
-      };
-    },
-    synthesis: (_request, index) => ({
-      decision: "expand",
-      researchScopes: [{
-        id: `gap-${index}`,
-        sourcePaths: ["src-core"],
-        task: "What remains for coverage expansion budget?",
-      }],
-      rationale: "More research requested.",
-    }),
-  });
-  f.engine.start({ cwd: f.workspace, mode: "generate" });
-  const snapshot = await f.engine.waitForIdle();
-  assert.equal(snapshot.status, "blocked");
-  // Default policy: maxExpandRounds=4 (initial survey is free; supplemental/structural count).
-  assert.match(snapshot.blockedReason, /4-expand-round limit/);
-  assert.equal(snapshot.nodes.filter((node) => node.kind === "research" && node.input.batch > 0).length, 4);
-  const blocked = snapshot.nodes.find((node) => node.status === "blocked");
-  assert.equal(blocked?.error?.code, "expand_rounds_exhausted");
-  assert.equal(snapshot.blockedDetails?.code, "expand_rounds_exhausted");
-  assert.equal(typeof snapshot.blockedDetails?.remainingBudget?.used, "number");
-  assert.equal(snapshot.blockedDetails?.remainingBudget?.maxExpandRounds, 4);
 });
 
 test("finalization is skipped until review passes", async (t) => {
@@ -1503,7 +1251,7 @@ test("durable snapshots keep compact receipts while artifacts retain full workfl
     assert.ok(JSON.stringify(node.result).length < node.handoff.sizeBytes + 1024);
   }
 
-  const synthesis = snapshot.nodes.find((node) => node.kind === "synthesis" && node.result.decision === "finalize");
+  const synthesis = snapshot.nodes.find((node) => node.kind === "synthesis");
   assert.equal("spec" in synthesis.result, false);
   const fullSynthesis = JSON.parse(await f.artifactStore.read(synthesis.handoff));
   assert.ok(fullSynthesis.spec.domains.length > 0);

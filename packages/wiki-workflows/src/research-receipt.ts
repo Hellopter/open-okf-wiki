@@ -4,7 +4,7 @@ import type { WikiArtifactRef } from "./artifact-store.js";
 import type {
   WikiResearchArtifact,
   WikiResearchFinding,
-  WikiResearchFindingDraft,
+  WikiCriticalGap,
   WikiResearchReceipt,
   WikiResearchScope,
   WikiRunSnapshot,
@@ -48,19 +48,15 @@ export function projectResearchReceipt(
   return receipt;
 }
 
-function routingFields(artifact: WikiResearchArtifact, scope: WikiResearchScope): Pick<WikiResearchReceipt, "findings" | "criticalGapSignatures" | "criticalGapQuestions"> {
+function routingFields(artifact: WikiResearchArtifact, scope: WikiResearchScope): Pick<WikiResearchReceipt, "findings" | "criticalGaps"> {
   return {
     findings: researchFindings(scope.id, artifact).map((finding) => ({
       id: finding.id,
       priority: finding.priority,
-      contentFingerprint: findingContentFingerprint(finding),
     })),
-    criticalGapSignatures: artifact.gaps
+    criticalGaps: artifact.gaps
       .filter((gap) => gap.priority === "critical")
-      .map(criticalGapSignature),
-    criticalGapQuestions: artifact.gaps
-      .filter((gap) => gap.priority === "critical")
-      .map((gap) => gap.question),
+      .map(projectCriticalGap),
   };
 }
 
@@ -81,32 +77,14 @@ export function researchFindings(scopeId: string, artifact: WikiResearchArtifact
   }));
 }
 
-/**
- * Content fingerprint for dry-audit matching.
- * Normalizes evidence to paths only (strip #L ranges) and includes kind + title
- * so line-number jitter does not keep audits "wet" forever.
- */
-export function findingContentFingerprint(
-  finding: Pick<WikiResearchFindingDraft | WikiResearchFinding, "kind" | "evidence" | "title">,
-): string {
-  return createHash("sha256").update(stableStringify({
-    kind: finding.kind,
-    title: normalizeIssueText(finding.title ?? "").toLowerCase(),
-    paths: [...finding.evidence].map(normalizeEvidencePath).filter(Boolean).sort(),
+function projectCriticalGap(gap: WikiResearchArtifact["gaps"][number]): WikiCriticalGap {
+  const question = normalizeIssueText(gap.question);
+  const sourcePaths = [...new Set(gap.sourcePaths)].sort();
+  const id = createHash("sha256").update(stableStringify({
+    question: question.toLowerCase(),
+    sourcePaths,
   })).digest("hex").slice(0, 16);
-}
-
-/** Strip line anchors (`path#L10-L20` → `path`) for stable matching. */
-export function normalizeEvidencePath(evidence: string): string {
-  return evidence.trim().replace(/#L\d+(?:-L\d+)?$/i, "");
-}
-
-function criticalGapSignature(gap: WikiResearchArtifact["gaps"][number]): string {
-  return createHash("sha256").update(stableStringify({
-    priority: gap.priority,
-    question: normalizeIssueText(gap.question).toLowerCase(),
-    sourcePaths: [...gap.sourcePaths].sort(),
-  })).digest("hex").slice(0, 16);
+  return { id, question, sourcePaths };
 }
 
 function normalizeIssueText(value: string): string {

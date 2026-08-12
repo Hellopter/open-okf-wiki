@@ -62,6 +62,12 @@ the assigned question. Gap `sourcePaths` are investigation suggestions and
 must come from the authorized scope. Do not infer a relationship, hierarchy,
 sequence, or state transition from names alone.
 
+When the prompt includes a target critical gap, the terminal result must either
+stage at least one critical finding or return at least one critical gap.
+Returning neither, or returning only normal findings and gaps, does not close a
+targeted research assignment. Refine the question when the original gap remains
+too broad; the extension owns its stable identity and schedules the next round.
+
 Do not edit `wiki/`. Keep `summary` concise and prefer precise evidence over
 copied source or tool narration. Keep the artifact below 256 KiB.
 

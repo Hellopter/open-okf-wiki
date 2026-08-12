@@ -218,9 +218,8 @@ export type {
   WikiSpecPage,
   WikiStructuralReviewDefect,
   WikiStructuralReviewDefectKind,
-  WikiSynthesisExpandResult,
-  WikiSynthesisFinalizeResult,
   WikiSynthesisResult,
+  WikiCriticalGap,
   WikiWorkflowDependencies,
   WikiWorkflowListener,
 } from "./workflow-types.js";

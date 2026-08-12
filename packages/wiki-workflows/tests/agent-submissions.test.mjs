@@ -89,44 +89,41 @@ test("the request pins a smaller direct submission budget per collector", async 
   assert.equal(collector.maxSubmissions, 1);
 });
 
-test("synthesis exposes separate expand and finalize tools with one shared budget", async () => {
+test("synthesis exposes one finalize tool and no research scheduling tool", async () => {
   const collector = submissionFor(request("synthesis"));
   const tools = submissionTools(policy(), collector);
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  assert.deepEqual([...byName.keys()], ["wiki_plan_put_domain", "wiki_plan_remove_domain", "wiki_plan_set_coordination", "wiki_spec_get_domain", "wiki_submission_status", "wiki_submit_synthesis_expand", "wiki_submit_synthesis_finalize"]);
-  const expand = byName.get("wiki_submit_synthesis_expand");
+  assert.deepEqual([...byName.keys()], ["wiki_plan_put_domain", "wiki_plan_remove_domain", "wiki_plan_set_coordination", "wiki_spec_get_domain", "wiki_submission_status", "wiki_submit_synthesis_finalize"]);
   const finalize = byName.get("wiki_submit_synthesis_finalize");
-  assert.doesNotMatch(JSON.stringify(expand.parameters), /"spec"|"decision"/);
   assert.doesNotMatch(JSON.stringify(finalize.parameters), /"researchScopes"|"decision"|"spec"/);
   assert.match(finalize.description, /Submit only the rationale/);
   assert.doesNotMatch(finalize.promptGuidelines.join("\n"), /complete result object/i);
 
-  const rejected = await expand.execute("bad-expand", { researchScopes: [], rationale: "Missing evidence." });
-  assert.equal(rejected.details.remainingAttempts, 2);
   for (const domain of planDomains()) await byName.get("wiki_plan_put_domain").execute(`put-${domain.id}`, { domain });
   const status = await byName.get("wiki_submission_status").execute("status", {});
   assert.deepEqual(status.details.domains, ["overview", "core"]);
-  assert.equal(collector.submissionAttempts, 1, "staging and query do not spend terminal attempts");
+  assert.equal(collector.submissionAttempts, 0, "staging and query do not spend terminal attempts");
   const accepted = await finalize.execute("finalize", { rationale: "Complete." });
   assert.equal(accepted.details.accepted, true);
-  assert.equal(collector.value.decision, "finalize");
-  assert.equal(collector.submissionAttempts, 2);
+  assert.deepEqual(collector.value, { spec: { domains: planDomains(), crossLinks: [], sharedTerms: [], omissions: [] }, rationale: "Complete." });
+  assert.equal(collector.submissionAttempts, 1);
 });
 
-test("concurrent synthesis tools accept exactly one decision", async () => {
+test("concurrent synthesis finalization accepts exactly once", async () => {
   const collector = submissionFor(request("synthesis"));
   const tools = new Map(submissionTools(policy(), collector).map((tool) => [tool.name, tool]));
   for (const domain of planDomains()) await tools.get("wiki_plan_put_domain").execute(`put-${domain.id}`, { domain });
   const results = await Promise.all([
-    tools.get("wiki_submit_synthesis_expand").execute("expand", { researchScopes: [{ id: "gap", sourcePaths: ["src"], task: "Resolve gap" }], rationale: "Need evidence." }),
-    tools.get("wiki_submit_synthesis_finalize").execute("finalize", { rationale: "Complete." }),
+    tools.get("wiki_submit_synthesis_finalize").execute("finalize-a", { rationale: "Complete." }),
+    tools.get("wiki_submit_synthesis_finalize").execute("finalize-b", { rationale: "Complete again." }),
   ]);
   assert.equal(results.filter((result) => result.details.accepted).length, 1);
   assert.equal(results.filter((result) => !result.details.accepted && result.details.issues[0].code === "already_accepted").length, 1);
   assert.equal(collector.submissionAttempts, 1);
   assert.equal(collector.failure, undefined);
   assert.equal(collector.exhausted, false);
-  assert.equal(collector.value.decision, collector.acceptedToolName === "wiki_submit_synthesis_expand" ? "expand" : "finalize");
+  assert.equal(collector.acceptedToolName, "wiki_submit_synthesis_finalize");
+  assert.ok(["Complete.", "Complete again."].includes(collector.value.rationale));
 });
 
 function planDomains() {
@@ -246,6 +243,7 @@ test("query pagination omits one oversized page while advancing and bounds domai
 
 test("staging mutation budget is separate from terminal attempts", async () => {
   const collector = submissionFor(request("synthesis"));
+  seedSynthesisPlan(collector, { domains: planDomains(), crossLinks: [], sharedTerms: [], omissions: [] });
   const tools = new Map(submissionTools(policy(), collector).map((tool) => [tool.name, tool]));
   for (let index = 0; index < MAX_STAGING_MUTATIONS; index += 1) {
     const result = await tools.get("wiki_plan_remove_domain").execute(`remove-${index}`, { domainId: `unused-${index}` });
@@ -255,9 +253,7 @@ test("staging mutation budget is separate from terminal attempts", async () => {
   assert.equal(exhausted.details.code, "mutation_budget_exhausted");
   assert.equal(exhausted.terminate, false);
   assert.equal(collector.submissionAttempts, 0);
-  const terminal = await tools.get("wiki_submit_synthesis_expand").execute("expand", {
-    researchScopes: [{ id: "gap", sourcePaths: ["src"], task: "Resolve gap" }], rationale: "Need evidence.",
-  });
+  const terminal = await tools.get("wiki_submit_synthesis_finalize").execute("finalize", { rationale: "Complete." });
   assert.equal(terminal.details.accepted, true);
 });
 
@@ -288,7 +284,7 @@ test("read-only research catalog tools paginate and byte-bound findings", async 
   }];
   const tools = new Map(researchCatalogTools(catalog).map((tool) => [tool.name, tool]));
   const scopes = await tools.get("wiki_research_scopes").execute("scopes", {});
-  assert.deepEqual(scopes.details.scopes[0], { scopeId: "core", task: "Explain core", sourcePaths: ["src"], findingCount: 20, gapCount: 0 });
+  assert.deepEqual(scopes.details.scopes[0], { scopeId: "core", task: "Explain core", sourcePaths: ["src"], findingCount: 20 });
   const findings = await tools.get("wiki_research_findings").execute("findings", { limit: 20 });
   assert.ok(Buffer.byteLength(findings.content[0].text, "utf8") <= MAX_QUERY_RESULT_BYTES);
   assert.equal(findings.details.truncated, true);

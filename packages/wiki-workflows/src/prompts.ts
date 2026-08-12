@@ -6,7 +6,6 @@
 
 import { Buffer } from "node:buffer";
 import path from "node:path";
-import { DEFAULT_WIKI_WORKFLOW_POLICY } from "./policy.js";
 import { loadWikiPromptGuidance } from "./prompt-guidance.js";
 import { isRecord } from "./util.js";
 import {
@@ -27,12 +26,6 @@ import type {
   WikiReviewFragmentContext,
   WikiRunSnapshot,
 } from "./workflow-types.js";
-
-const POLICY = DEFAULT_WIKI_WORKFLOW_POLICY;
-const REQUIRED_DRY_COVERAGE_AUDITS = POLICY.research.requiredDryCoverageAudits;
-const MAX_EXPAND_ROUNDS = POLICY.research.maxExpandRounds;
-const MAX_AUDIT_ROUNDS = POLICY.research.maxAuditRounds;
-const MAX_EXPAND_SCOPES_PER_BATCH = POLICY.maxExpandScopesPerBatch;
 
 export interface PromptResearchReceipt {
   scopeId: string;
@@ -56,9 +49,14 @@ export async function promptFor(
   );
   let context: string;
   switch (node.kind) {
-    case "research":
-      context = `${pinnedPolicyContext(run)}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson(researchInputFor(node).scope)}\n\`\`\``;
+    case "research": {
+      const input = researchInputFor(node);
+      context = `${pinnedPolicyContext(run)}\n\n## Assigned Scope\n\`\`\`json\n${prettyJson({
+        ...input.scope,
+        targetGap: input.targetGap,
+      })}\n\`\`\``;
       break;
+    }
     case "synthesis":
       context = synthesisContext(node, run, researchReceipts);
       break;
@@ -82,7 +80,7 @@ export async function promptFor(
 function completionProtocol(node: WikiNode, run: WikiRunSnapshot): string {
   const attempts = run.policy.quality.maxSubmissionAttempts;
   const tools = node.kind === "synthesis"
-    ? "Build the plan with `wiki_plan_put_domain`, `wiki_plan_remove_domain`, and `wiki_plan_set_coordination`; query `wiki_spec_get_domain` and `wiki_submission_status`. Then call exactly one terminal tool: `wiki_submit_synthesis_expand` when critical evidence is missing, or `wiki_submit_synthesis_finalize` with only the rationale when the staged WikiSpec is ready."
+    ? "Build the plan with `wiki_plan_put_domain`, `wiki_plan_remove_domain`, and `wiki_plan_set_coordination`; query `wiki_spec_get_domain` and `wiki_submission_status`. Then call `wiki_submit_synthesis_finalize` with only the rationale when the staged WikiSpec is ready."
     : node.kind === "research" ? "Upsert findings as stable {slot,finding} entries in batches of at most 20 with `wiki_research_put_findings`; retract invalid slots with `wiki_research_remove_finding`; query `wiki_research_findings`, `wiki_research_scopes`, or `wiki_submission_status`; then call `wiki_submit_research` with only summary and gaps."
       : node.kind === "write" ? "Call `wiki_submit_page` with the exact assigned page."
         : "Upsert defects as stable {slot,defect} entries in batches of at most 20 with `wiki_review_put_defects`; retract resolved slots with `wiki_review_remove_defect`; query `wiki_review_defects` or `wiki_submission_status`; then call `wiki_submit_review` with only the summary.";
@@ -178,8 +176,6 @@ export function synthesisContext(node: WikiNode, run: WikiRunSnapshot, researchR
       "```",
     );
   }
-  const usedExpandRounds = countResearchGroups(run, "expand");
-  const usedAuditRounds = countResearchGroups(run, "audit");
   sections.push(
     "## Available Research Catalog",
     "Use `wiki_research_scopes` and paged `wiki_research_findings` to retrieve findings. Account for every exact finding `id` by assigning it to at least one page or adding a justified non-critical entry to `omissions`.",
@@ -189,52 +185,10 @@ export function synthesisContext(node: WikiNode, run: WikiRunSnapshot, researchR
       sourcePaths: receipt.sourcePaths,
       task: receipt.task,
       findingCount: receipt.findings.length,
-      gapCount: receipt.gaps.length,
     }))),
-    "```",
-    "## Synthesis Round",
-    "```json",
-    prettyJson({
-      mode: input.mode,
-      researchRound: input.supplementalBatch + 1,
-      maxResearchRounds: run.maxResearchRounds,
-      dryCoverageAudits: input.dryAuditPasses,
-      requiredDryCoverageAudits: REQUIRED_DRY_COVERAGE_AUDITS,
-      maxExpandRounds: MAX_EXPAND_ROUNDS,
-      maxAuditRounds: MAX_AUDIT_ROUNDS,
-      maxExpandScopesPerBatch: MAX_EXPAND_SCOPES_PER_BATCH,
-      remainingExpandRounds: Math.max(0, MAX_EXPAND_ROUNDS - usedExpandRounds),
-      remainingAuditRounds: Math.max(0, MAX_AUDIT_ROUNDS - usedAuditRounds),
-      preferFinalizeWhenNoCriticalGaps: true,
-    }),
     "```",
   );
   return sections.join("\n");
-}
-
-/** Count expand or pure-audit research groups already queued on the run. */
-export function countResearchGroups(run: WikiRunSnapshot, kind: "expand" | "audit"): number {
-  const groups = new Set<string>();
-  for (const node of run.nodes) {
-    if (node.kind !== "research") continue;
-    if (node.status === "invalidated" || node.status === "cancelled") continue;
-    try {
-      const input = researchInputFor(node);
-      if (kind === "audit") {
-        if (input.continuationMode === "audit" && !input.structuralRoundId) {
-          groups.add(input.researchGroupId);
-        }
-        continue;
-      }
-      const isExpand = input.continuationMode === "supplemental"
-        || input.continuationMode === "structural"
-        || Boolean(input.structuralRoundId);
-      if (isExpand) groups.add(input.researchGroupId);
-    } catch {
-      // Ignore malformed nodes when counting budgets for prompts.
-    }
-  }
-  return groups.size;
 }
 
 export function reviewContext(node: WikiNode, run: WikiRunSnapshot, fragments?: WikiReviewFragmentContext): string {

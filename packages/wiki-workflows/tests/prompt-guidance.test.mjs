@@ -55,7 +55,6 @@ test("assembled prompts end with the configured submission protocol", async () =
       researchGroupId: "initial",
       priorResearchIds: [],
       continuationMode: "initial",
-      dryAuditPasses: 0,
     },
   }, {
     language: "en",
@@ -76,16 +75,15 @@ test("synthesis guidance plans complete evidence-saturated coverage without page
   assert.match(synthesis, /`readerQuestions`/);
   assert.match(synthesis, /`requiredFacets`/);
   assert.match(synthesis, /Critical findings cannot be omitted/);
-  assert.match(synthesis, /Prefer `finalize` when no unresolved critical gaps remain/);
-  assert.match(synthesis, /requiredDryCoverageAudits/);
+  assert.match(synthesis, /workflow resolves all critical research gaps before invoking synthesis/i);
   assert.match(synthesis, /There is no page quota/);
   assert.match(synthesis, /concurrency is scheduling only/);
-  assert.match(synthesis, /Use only declared source paths and unused scope IDs/);
   assert.match(synthesis, /`concept`, `flow`, `state`, `data`, `module`, or `architecture`/);
   assert.match(synthesis, /ordering\/domain\.md/);
   assert.match(synthesis, /ordering\/states\/order-lifecycle\.md/);
-  assert.match(synthesis, /wiki_submit_synthesis_expand/);
   assert.match(synthesis, /wiki_submit_synthesis_finalize/);
+  assert.equal(synthesis.includes(["wiki_submit_synthesis", "expand"].join("_")), false);
+  assert.equal(synthesis.includes(["required", "DryCoverageAudits"].join("")), false);
   assert.doesNotMatch(synthesis, /exact handoff path|wiki_write_handoff/i);
 });
 
@@ -162,7 +160,7 @@ test("review context separates domain responsibility from global fragment fan-in
   };
   const run = {
     policy: resolveWikiPolicy(), focus: undefined,
-    nodes: [{ id: "plan", kind: "synthesis", result: { decision: "finalize", spec, rationale: "ready" } }],
+    nodes: [{ id: "plan", kind: "synthesis", result: { spec, rationale: "ready" } }],
   };
   const domain = { kind: "review", input: {
     sourceNodeIds: [], synthesisNodeId: "plan", verificationGroupId: "v",
@@ -197,15 +195,13 @@ test("skill stays a concise workflow router to role references", async () => {
   assert.ok(skill.split("\n").length < 80, "SKILL.md should remain a concise router");
 });
 
-test("synthesis round JSON injects remaining budgets and prefer-finalize policy", () => {
+test("synthesis context contains no research scheduling policy", () => {
   const node = {
     id: "synthesis-1",
     kind: "synthesis",
     input: {
       researchIds: [],
-      supplementalBatch: 0,
       mode: "initial",
-      dryAuditPasses: 0,
       round: 1,
     },
   };
@@ -213,17 +209,18 @@ test("synthesis round JSON injects remaining budgets and prefer-finalize policy"
     effectiveMode: "generate",
     requestedMode: "generate",
     focus: undefined,
-    maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds,
+    maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.maxResearchRounds,
     policy: resolveWikiPolicy(),
     inspection: { sourcePaths: ["src-core"] },
     nodes: [],
   };
   const context = synthesisContext(node, run, []);
-  assert.match(context, /"requiredDryCoverageAudits": 1/);
-  assert.match(context, /"preferFinalizeWhenNoCriticalGaps": true/);
-  assert.match(context, /"remainingExpandRounds":/);
-  assert.match(context, /"remainingAuditRounds":/);
-  assert.match(context, /"maxExpandScopesPerBatch": 4/);
+  for (const removed of [
+    ["required", "DryCoverageAudits"].join(""),
+    ["remaining", "ExpandRounds"].join(""),
+    ["remaining", "AuditRounds"].join(""),
+    ["max", "ExpandScopesPerBatch"].join(""),
+  ]) assert.equal(context.includes(removed), false);
 });
 
 test("structural replanning uses the preseeded plan without embedding the full prior spec", () => {
@@ -234,11 +231,11 @@ test("structural replanning uses the preseeded plan without embedding the full p
     }],
     crossLinks: [], sharedTerms: [], omissions: [],
   };
-  const node = { id: "structural", kind: "synthesis", input: { researchIds: [], supplementalBatch: 0, mode: "structural", dryAuditPasses: 1, round: 2, priorSynthesisNodeId: "prior", trigger: { issues: [] } } };
+  const node = { id: "structural", kind: "synthesis", input: { researchIds: [], mode: "structural", round: 2, priorSynthesisNodeId: "prior", trigger: { issues: [] } } };
   const run = {
     effectiveMode: "generate", requestedMode: "generate", maxResearchRounds: 3,
     policy: resolveWikiPolicy(), inspection: { sourcePaths: ["src"] },
-    nodes: [{ id: "prior", kind: "synthesis", result: { decision: "finalize", spec } }],
+    nodes: [{ id: "prior", kind: "synthesis", result: { spec, rationale: "ready" } }],
   };
   const context = synthesisContext(node, run, []);
   assert.match(context, /Preseeded Prior WikiSpec/);

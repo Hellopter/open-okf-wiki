@@ -27,7 +27,7 @@ function activity() {
 function baseSnapshot(overrides = {}) {
   const policy = resolveWikiPolicy();
   return {
-  version: 1,
+  version: 2,
     id: "run-health",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -139,18 +139,14 @@ test("applyRestoredArtifactHealth blocks a paused run with missing handoffs", as
         phaseId: "plan",
         phaseTitle: "Plan",
         input: {
-          dependsOn: [],
           researchIds: [],
-          supplementalBatch: 0,
           mode: "initial",
-          dryAuditPasses: 0,
           round: 1,
         },
         handoff: missingRef,
         result: {
           kind: "synthesis",
           artifact: missingRef,
-          decision: "finalize",
           domainCount: 1,
           pageCount: 1,
         },

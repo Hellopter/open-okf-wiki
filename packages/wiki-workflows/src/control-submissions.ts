@@ -87,27 +87,12 @@ const wikiSpecSchema = Type.Object({
   ...wikiSpecCoordinationSchema.properties,
 }, { additionalProperties: false });
 
-/** Strict discriminated payload for either research expansion or a final WikiSpec. */
-const researchScopesSchema = Type.Array(Type.Object({
-      id: nonEmptyTextSchema,
-      sourcePaths: Type.Array(nonEmptyTextSchema, { minItems: 1 }),
-      task: nonEmptyTextSchema,
-    }, { additionalProperties: false }), { minItems: 1 });
-
-export const synthesisExpandSubmissionSchema = Type.Object({
-    researchScopes: researchScopesSchema,
-    rationale: nonEmptyTextSchema,
-  }, { additionalProperties: false });
-
 export const synthesisFinalizeSubmissionSchema = Type.Object({
     spec: wikiSpecSchema,
     rationale: nonEmptyTextSchema,
   }, { additionalProperties: false });
 
-export const synthesisSubmissionSchema = Type.Union([
-  Type.Object({ decision: Type.Literal("expand"), ...synthesisExpandSubmissionSchema.properties }, { additionalProperties: false }),
-  Type.Object({ decision: Type.Literal("finalize"), ...synthesisFinalizeSubmissionSchema.properties }, { additionalProperties: false }),
-]);
+export const synthesisSubmissionSchema = synthesisFinalizeSubmissionSchema;
 
 const localReviewDefectSchema = Type.Object({
   kind: Type.Union([Type.Literal("evidence"), Type.Literal("link"), Type.Literal("depth"), Type.Literal("diagram")]),
@@ -208,24 +193,14 @@ export function parseResearchSubmission(value: unknown): WikiResearchArtifact {
   return { summary: requiredText(value.summary, "Research summary"), findings, gaps };
 }
 
-/** Canonicalize the synthesis decision before it can expand or finalize the DAG. */
+/** Canonicalize the final WikiSpec before it can advance the DAG. */
 export function parseSynthesisSubmission(value: unknown): WikiSynthesisResult {
   assertControlSubmissionSize(value, "Synthesis submission");
-  if (!isRecord(value) || (value.decision !== "expand" && value.decision !== "finalize")) {
-    throw new Error("Synthesis submission must choose expand or finalize");
-  }
+  if (!isRecord(value)) throw new Error("Synthesis submission must be an object");
   const synthesisRationale = requiredText(value.rationale, "Synthesis rationale");
-  if (value.decision === "expand") {
-    assertExactKeys(value, ["decision", "researchScopes", "rationale"], "Synthesis expansion");
-    if (hasOwn(value, "spec")) throw new Error("Synthesis expansion must not include spec");
-    if (!Array.isArray(value.researchScopes)) throw new Error("Synthesis expansion must include researchScopes");
-    if (value.researchScopes.length === 0) throw new Error("Synthesis must request at least one supplemental research scope");
-    return { decision: "expand", researchScopes: parseResearchScopes(value.researchScopes, "Synthesis"), rationale: synthesisRationale };
-  }
-  assertExactKeys(value, ["decision", "spec", "rationale"], "Final synthesis");
-  if (hasOwn(value, "researchScopes")) throw new Error("Final synthesis must not include researchScopes");
+  assertExactKeys(value, ["spec", "rationale"], "Final synthesis");
   if (!hasOwn(value, "spec")) throw new Error("Final synthesis must include spec");
-  return { decision: "finalize", spec: parseWikiSpec(value.spec), rationale: synthesisRationale };
+  return { spec: parseWikiSpec(value.spec), rationale: synthesisRationale };
 }
 
 /** Canonicalize the reviewer's typed control submission before it changes the DAG. */

@@ -4,13 +4,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
-  findingContentFingerprint,
-  researchFindings,
-} from "../dist/research-receipt.js";
+import { researchFindings } from "../dist/research-receipt.js";
 import {
   commitNodeSuccess,
   deterministicGroupId,
+  ensureResearchRoundAvailable,
   ensureSynthesisSubmissionFitsRun,
   maybeCompleteVerification,
   previousReviewSignature,
@@ -20,7 +18,7 @@ import {
   queueResearch,
   queueVerification,
   researchGroupIdFor,
-  researchIdsHaveUnresolvedCriticalGaps,
+  validateControlSubmission,
 } from "../dist/transitions-queue.js";
 import { defectsFingerprint, validationIssuesFingerprint } from "../dist/run-nodes.js";
 import { DEFAULT_WIKI_WORKFLOW_POLICY, resolveWikiPolicy } from "../dist/policy.js";
@@ -45,7 +43,7 @@ function draftFinding(overrides = {}) {
 
 function hostWithNodes(nodes, overrides = {}) {
   const run = {
-  version: 1,
+  version: 2,
     id: "run-test",
     cwd: "/tmp/wiki-test",
     requestedMode: "generate",
@@ -54,7 +52,7 @@ function hostWithNodes(nodes, overrides = {}) {
     status: "running",
     round: 0,
     sourceRestartCount: 0,
-    maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.research.maxResearchRounds,
+    maxResearchRounds: DEFAULT_WIKI_WORKFLOW_POLICY.maxResearchRounds,
     policy: resolveWikiPolicy(),
     nodes,
     events: [],
@@ -109,8 +107,7 @@ function receipt(overrides = {}) {
       priority: "critical",
       contentFingerprint: "deadbeef",
     }],
-    criticalGapSignatures: [],
-    criticalGapQuestions: [],
+    criticalGaps: [],
     ...overrides,
   };
 }
@@ -132,7 +129,6 @@ function researchNode(id, result, inputOverrides = {}) {
       researchGroupId: "research:0:group",
       priorResearchIds: [],
       continuationMode: "initial",
-      dryAuditPasses: 0,
       ...inputOverrides,
     },
     result,
@@ -155,9 +151,7 @@ function synthesisNode(id, researchIds, result, inputOverrides = {}) {
     inputFingerprint: "",
     input: {
       researchIds,
-      supplementalBatch: 0,
       mode: "initial",
-      dryAuditPasses: 0,
       round: 1,
       ...inputOverrides,
     },
@@ -259,25 +253,6 @@ test("researchFindings ids include scopeId so cross-scope kind+evidence do not c
   })).digest("hex").slice(0, 16)}`;
   assert.equal(left[0].id, expectedLeft);
 
-  // Content fingerprint stays scope-agnostic for dry-audit matching.
-  assert.equal(
-    findingContentFingerprint(left[0]),
-    findingContentFingerprint(right[0]),
-  );
-  // Path-normalized fingerprint: strip #L anchors; include kind + title.
-  assert.equal(
-    findingContentFingerprint(left[0]),
-    createHash("sha256").update(stableStringify({
-      kind: "domain",
-      title: (left[0].title ?? "").trim().replace(/\s+/g, " ").toLowerCase(),
-      paths: ["src-core/index.ts"],
-    })).digest("hex").slice(0, 16),
-  );
-  // Line-number jitter must not change the fingerprint.
-  assert.equal(
-    findingContentFingerprint(left[0]),
-    findingContentFingerprint({ ...left[0], evidence: ["src-core/index.ts#L99-L120"] }),
-  );
 });
 
 test("researchFindings is stable for the same scopeId + kind + sorted evidence", () => {
@@ -349,112 +324,27 @@ test("previousValidationSignature only matches prior validates for the same synt
   );
 });
 
-test("expand is rejected when research receipts have no unresolved critical gaps", () => {
-  const research = researchNode("research-1", receipt({ criticalGapSignatures: [] }));
+test("targeted research must produce critical evidence or retain a critical gap", () => {
+  const gap = { id: "gap-a", question: "How do services hand off requests?", sourcePaths: ["src-core"] };
+  const research = researchNode("research-1", undefined, { continuationMode: "targeted", targetGap: gap });
   const host = hostWithNodes([research]);
-  const input = {
-    researchIds: ["research-1"],
-    supplementalBatch: 0,
-    mode: "initial",
-    dryAuditPasses: 0,
-    round: 1,
-  };
-  assert.equal(researchIdsHaveUnresolvedCriticalGaps(host, ["research-1"]), false);
   assert.throws(
-    () => ensureSynthesisSubmissionFitsRun(host, {
-      decision: "expand",
-      researchScopes: [{
-        id: "follow-up-flow",
-        sourcePaths: ["src-core"],
-        task: "Check flow",
-      }],
-      rationale: "Want more research",
-    }, input),
-    /Expand is rejected when research receipts report no unresolved critical gaps/,
+    () => validateControlSubmission(host, research, { summary: "empty", findings: [], gaps: [] }),
+    /must produce a critical finding or retain\/refine a critical gap/,
   );
-});
-
-test("expand is allowed when a research receipt still has critical gap signatures", () => {
-  const research = researchNode("research-1", receipt({
-    criticalGapSignatures: ["gap-sig-1"],
-    criticalGapQuestions: ["How do services hand off requests?"],
+  assert.doesNotThrow(() => validateControlSubmission(host, research, {
+    summary: "refined",
+    findings: [],
+    gaps: [{ question: "Which retry owns the handoff?", priority: "critical", sourcePaths: ["src-core"] }],
   }));
-  const host = hostWithNodes([research], {
-    inspection: {
-      root: "/tmp/wiki-test",
-      mode: "generate",
-      sourceFingerprint: "fp",
-      sourcePaths: ["src-core"],
-      existingPages: [],
-      impactedPages: [],
-      changedPaths: [],
-      changed: false,
-    },
-  });
-  const input = {
-    researchIds: ["research-1"],
-    supplementalBatch: 0,
-    mode: "initial",
-    dryAuditPasses: 0,
-    round: 1,
-  };
-  assert.equal(researchIdsHaveUnresolvedCriticalGaps(host, ["research-1"]), true);
-  assert.doesNotThrow(() => ensureSynthesisSubmissionFitsRun(host, {
-    decision: "expand",
-    researchScopes: [{
-      id: "follow-up-flow",
-      sourcePaths: ["src-core"],
-      task: "How do services hand off requests?",
-    }],
-    rationale: "Critical gap remains",
-  }, input));
 });
 
-test("expand is rejected when scopes do not reference critical gap questions", () => {
-  const research = researchNode("research-1", receipt({
-    criticalGapSignatures: ["gap-sig-1"],
-    criticalGapQuestions: ["How do services hand off requests?"],
-  }));
-  const host = hostWithNodes([research], {
-    inspection: {
-      root: "/tmp/wiki-test",
-      mode: "generate",
-      sourceFingerprint: "fp",
-      sourcePaths: ["src-core"],
-      existingPages: [],
-      impactedPages: [],
-      changedPaths: [],
-      changed: false,
-    },
-  });
-  const input = {
-    researchIds: ["research-1"],
-    supplementalBatch: 0,
-    mode: "initial",
-    dryAuditPasses: 0,
-    round: 1,
-  };
-  assert.throws(
-    () => ensureSynthesisSubmissionFitsRun(host, {
-      decision: "expand",
-      researchScopes: [{
-        id: "unrelated-scope",
-        sourcePaths: ["src-core"],
-        task: "Survey unrelated modules only",
-      }],
-      rationale: "Unrelated expand",
-    }, input),
-    /must reference an unresolved critical gap/,
-  );
-});
-
-test("finalize without critical gaps skips coverage audit and queues writers", async () => {
-  const research = researchNode("research-1", receipt({ criticalGapSignatures: [] }));
+test("synthesis success queues writers without a coverage audit", async () => {
+  const research = researchNode("research-1", receipt({ criticalGaps: [] }));
   const synthesis = synthesisNode(
     "synthesis-1",
     ["research-1"],
-    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
-    { dryAuditPasses: 0 },
+    { spec: finalSpec(), rationale: "ready" },
   );
   synthesis.status = "running";
   const host = hostWithNodes([research, synthesis]);
@@ -462,34 +352,7 @@ test("finalize without critical gaps skips coverage audit and queues writers", a
   assert.equal(synthesis.status, "succeeded");
   const kinds = host.run.nodes.map((node) => node.kind);
   assert.ok(kinds.includes("write"), "should queue page writers");
-  assert.equal(
-    host.run.nodes.filter((node) => node.kind === "research" && node.input?.continuationMode === "audit").length,
-    0,
-    "must not queue coverage audit when there are no critical gaps",
-  );
-});
-
-test("finalize with critical gaps and insufficient dry audits queues coverage audit", async () => {
-  const research = researchNode("research-1", receipt({
-    criticalGapSignatures: ["gap-a"],
-    criticalGapQuestions: ["What remains unverified?"],
-  }));
-  // Finalize result is already on the node (submit-time would normally block),
-  // but the atomic success commit still gates the audit path on unresolved gaps.
-  const synthesis = synthesisNode(
-    "synthesis-1",
-    ["research-1"],
-    { decision: "finalize", spec: finalSpec(), rationale: "force path" },
-    { dryAuditPasses: 0 },
-  );
-  synthesis.status = "running";
-  const host = hostWithNodes([research, synthesis]);
-  await commitNodeSuccess(host, synthesis);
-  assert.equal(synthesis.status, "succeeded");
-  const audits = host.run.nodes.filter((node) => node.kind === "research" && node.input?.continuationMode === "audit");
-  assert.equal(audits.length, 1);
-  assert.match(audits[0].input.scope.task, /critical-gap audit|missing critical gaps/i);
-  assert.equal(host.run.nodes.filter((node) => node.kind === "write").length, 0);
+  assert.equal(host.run.nodes.filter((node) => node.kind === "research").length, 1);
 });
 
 test("researchGroupId is deterministic for the same batch, scopes, and mode", () => {
@@ -506,7 +369,7 @@ test("researchGroupId is deterministic for the same batch, scopes, and mode", ()
   assert.notEqual(once, otherBatch);
   assert.match(otherBatch, /^research:1:[0-9a-f]{16}$/);
 
-  const otherMode = researchGroupIdFor(0, scopes, "audit");
+  const otherMode = researchGroupIdFor(0, scopes, "targeted");
   assert.notEqual(once, otherMode);
 });
 
@@ -546,6 +409,134 @@ test("commitNodeSuccess publishes a research peer before evaluating fan-in", asy
   assert.deepEqual(host.emitted.filter((event) => event.kind === "node_succeeded").map((event) => event.nodeId), ["research-2"]);
 });
 
+test("an empty critical-gap frontier queues synthesis", async () => {
+  const research = researchNode("research-1", receipt({ criticalGaps: [] }));
+  research.status = "running";
+  const host = hostWithNodes([research]);
+  await commitNodeSuccess(host, research);
+  assert.equal(host.run.nodes.filter((node) => node.kind === "synthesis").length, 1);
+  assert.equal(host.run.nodes.filter((node) => node.kind === "research" && node.input.continuationMode === "targeted").length, 0);
+});
+
+test("thirteen critical gaps queue thirteen exact targeted scopes", async () => {
+  const criticalGaps = Array.from({ length: 13 }, (_, index) => ({
+    id: `gap-${String(index).padStart(2, "0")}`,
+    question: `Question ${index}?`,
+    sourcePaths: index % 2 === 0 ? ["src-core"] : ["src-api"],
+  }));
+  const research = researchNode("research-1", receipt({ criticalGaps }));
+  research.status = "running";
+  const host = hostWithNodes([research]);
+  await commitNodeSuccess(host, research);
+  const targeted = host.run.nodes.filter((node) => node.kind === "research" && node.input.continuationMode === "targeted");
+  assert.equal(targeted.length, 13);
+  assert.deepEqual(targeted.map((node) => node.input.targetGap), criticalGaps);
+  for (const node of targeted) {
+    assert.equal(node.input.scope.id, `critical-gap:${node.input.targetGap.id}:round-1`);
+    assert.equal(node.input.scope.task, node.input.targetGap.question);
+    assert.deepEqual(node.input.scope.sourcePaths, node.input.targetGap.sourcePaths);
+  }
+});
+
+test("sibling receipts deduplicate critical gaps by stable id", async () => {
+  const gap = { id: "gap-shared", question: "What remains?", sourcePaths: ["src-core"] };
+  const first = researchNode("research-1", receipt({ criticalGaps: [gap] }));
+  const second = researchNode("research-2", receipt({ criticalGaps: [{ ...gap, question: "Duplicate wording is ignored by identity" }] }), {
+    scope: { id: "source-survey:src-api", sourcePaths: ["src-api"], task: "survey" },
+  });
+  second.status = "running";
+  const host = hostWithNodes([first, second]);
+  await commitNodeSuccess(host, second);
+  const targeted = host.run.nodes.filter((node) => node.kind === "research" && node.input.continuationMode === "targeted");
+  assert.equal(targeted.length, 1);
+  assert.equal(targeted[0].input.targetGap.id, gap.id);
+});
+
+test("only the current targeted batch defines the next frontier", async () => {
+  const historicalGap = { id: "old-gap", question: "Old question?", sourcePaths: ["src-core"] };
+  const old = researchNode("research-old", receipt({ criticalGaps: [historicalGap] }));
+  const current = researchNode("research-current", receipt({ findings: [{ id: "finding-current", priority: "critical" }], criticalGaps: [] }), {
+    batch: 1,
+    scope: { id: "critical-gap:old-gap:round-1", sourcePaths: ["src-core"], task: historicalGap.question },
+    researchGroupId: "research:1:targeted",
+    priorResearchIds: [old.id],
+    continuationMode: "targeted",
+    targetGap: historicalGap,
+  });
+  current.status = "running";
+  const host = hostWithNodes([old, current]);
+  await commitNodeSuccess(host, current);
+  const synthesis = host.run.nodes.find((node) => node.kind === "synthesis");
+  assert.ok(synthesis);
+  assert.deepEqual(new Set(synthesis.input.researchIds), new Set([old.id, current.id]));
+  assert.equal(host.run.nodes.filter((node) => node.kind === "research" && node.input.batch === 2).length, 0);
+});
+
+test("a refined critical gap becomes the next targeted frontier", async () => {
+  const targetGap = { id: "gap-old", question: "How does recovery work?", sourcePaths: ["src-core"] };
+  const refined = { id: "gap-refined", question: "Who owns retry state?", sourcePaths: ["src-core"] };
+  const current = researchNode("research-current", receipt({ criticalGaps: [refined] }), {
+    batch: 1,
+    researchGroupId: "research:1:targeted",
+    continuationMode: "targeted",
+    targetGap,
+  });
+  current.status = "running";
+  const host = hostWithNodes([current]);
+  await commitNodeSuccess(host, current);
+  const next = host.run.nodes.find((node) => node.kind === "research" && node.input.batch === 2);
+  assert.deepEqual(next.input.targetGap, refined);
+  assert.equal(next.input.scope.task, refined.question);
+});
+
+test("research exhaustion reports the complete current frontier", () => {
+  const frontier = [
+    { id: "gap-a", question: "A?", sourcePaths: ["src-core"] },
+    { id: "gap-b", question: "B?", sourcePaths: ["src-api"] },
+  ];
+  const host = hostWithNodes([], { maxResearchRounds: 2 });
+  assert.throws(
+    () => ensureResearchRoundAvailable(host, 2, frontier),
+    (error) => error?.code === "research_rounds_exhausted"
+      && error?.details?.criticalGaps?.length === 2
+      && error.details.criticalGaps[1].id === "gap-b",
+  );
+});
+
+test("structural research with no gaps queues structural synthesis", async () => {
+  const prior = synthesisNode("synthesis-prior", [], { spec: finalSpec(), rationale: "prior" });
+  const structural = researchNode("research-structural", receipt({ criticalGaps: [] }), {
+    batch: 1,
+    researchGroupId: "research:1:structural",
+    continuationMode: "structural",
+    priorSynthesisNodeId: prior.id,
+    trigger: { defects: [{ kind: "coverage", detail: "Missing lifecycle" }] },
+  });
+  structural.status = "running";
+  const host = hostWithNodes([prior, structural]);
+  await commitNodeSuccess(host, structural);
+  const next = host.run.nodes.find((node) => node.kind === "synthesis" && node.id !== prior.id);
+  assert.equal(next.input.mode, "structural");
+  assert.equal(next.input.priorSynthesisNodeId, prior.id);
+});
+
+test("structural research gaps enter the same targeted frontier", async () => {
+  const gap = { id: "structural-gap", question: "Which state is missing?", sourcePaths: ["src-core"] };
+  const prior = synthesisNode("synthesis-prior", [], { spec: finalSpec(), rationale: "prior" });
+  const structural = researchNode("research-structural", receipt({ criticalGaps: [gap] }), {
+    batch: 1,
+    researchGroupId: "research:1:structural",
+    continuationMode: "structural",
+    priorSynthesisNodeId: prior.id,
+  });
+  structural.status = "running";
+  const host = hostWithNodes([prior, structural]);
+  await commitNodeSuccess(host, structural);
+  const targeted = host.run.nodes.find((node) => node.kind === "research" && node.input.continuationMode === "targeted");
+  assert.deepEqual(targeted.input.targetGap, gap);
+  assert.equal(targeted.input.priorSynthesisNodeId, prior.id);
+});
+
 test("commitNodeSuccess rolls back write success and successors when async preparation fails", async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "okf-transition-"));
   const wikiRoot = path.join(workspace, "wiki");
@@ -553,7 +544,7 @@ test("commitNodeSuccess rolls back write success and successors when async prepa
   const pageBytes = "# Core\n";
   await writeFile(path.join(wikiRoot, "core/domain.md"), pageBytes);
   const spec = finalSpec();
-  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec, rationale: "ready" });
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { spec, rationale: "ready" });
   const page = spec.domains[1].pages[0];
   const write = {
     id: "write-1", kind: "write", label: "Write core", phaseId: "write", phaseTitle: "Write",
@@ -591,7 +582,7 @@ test("async commit preserves sibling executor writes and later fan-in sees both 
     { ...spec.domains[1].pages[0], path: "core/first.md", findingIds: [] },
     { ...spec.domains[1].pages[0], path: "core/second.md", title: "Second", findingIds: [] },
   ];
-  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec, rationale: "ready" });
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { spec, rationale: "ready" });
   const makeWrite = (id, page, bytes) => ({
     id, kind: "write", label: id, phaseId: "write", phaseTitle: "Write", status: "running",
     dependsOn: [synthesis.id], attempt: 1, inputFingerprint: "", attemptHistory: [],
@@ -684,8 +675,8 @@ test("configured domains fail closed on source typos and constrain the final Wik
   assert.throws(
     () => ensureSynthesisSubmissionFitsRun(
       synthesisHost,
-      { decision: "finalize", spec: finalSpec(), rationale: "ready" },
-      { mode: "initial", researchIds: ["research-1"], supplementalBatch: 0, dryAuditPasses: 0 },
+      { spec: finalSpec(), rationale: "ready" },
+      { mode: "initial", researchIds: ["research-1"], round: 1 },
     ),
     /must include configured domain: billing/,
   );
@@ -698,7 +689,7 @@ test("write group ids are deterministic for a synthesis lineage", () => {
   const synthesis = synthesisNode(
     "synthesis-1",
     ["research-1"],
-    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+    { spec: finalSpec(), rationale: "ready" },
   );
   const host = hostWithNodes([research, synthesis]);
   const first = queuePageWriters(host, "synthesis-1", finalSpec());
@@ -727,7 +718,7 @@ test("queueVerification concurrent callers enqueue one validation gate and defer
   const synthesis = synthesisNode(
     "synthesis-1",
     ["research-1"],
-    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+    { spec: finalSpec(), rationale: "ready" },
   );
   const sourceNodeIds = ["write-a", "write-b"];
   let releaseMaterialize;
@@ -773,7 +764,7 @@ test("validation fans review out by domain and global review aggregates fragment
   const synthesis = synthesisNode(
     "synthesis-1",
     ["research-1"],
-    { decision: "finalize", spec: finalSpec(), rationale: "ready" },
+    { spec: finalSpec(), rationale: "ready" },
   );
   const groupId = "verify:shared-group";
   const okValidation = { ok: true, issues: [], pages: ["overview/overview.md"], obsoletePages: [] };
@@ -850,7 +841,7 @@ test("validation queues every domain reviewer in parallel and one global fan-in"
   const research = researchNode("research-1", receipt({
     findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
   }));
-  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec: multiDomainSpec(), rationale: "ready" });
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { spec: multiDomainSpec(), rationale: "ready" });
   const validation = {
     ...verifyNode("validate", "validate-live", "synthesis-1", { ok: true, issues: [], pages: [], obsoletePages: [] }),
     input: { synthesisNodeId: "synthesis-1", sourceNodeIds: [], verificationGroupId: "verify:multi" },
@@ -869,7 +860,7 @@ test("global review routes domain fragment defects into a fresh repair and full 
   const research = researchNode("research-1", receipt({
     findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
   }));
-  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec: finalSpec(), rationale: "ready" });
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { spec: finalSpec(), rationale: "ready" });
   const domainReview = {
     ...verifyNode("review", "review-domain", "synthesis-1", {
       defects: [{ kind: "depth", page: "core/domain.md", detail: "Explain invariants" }],

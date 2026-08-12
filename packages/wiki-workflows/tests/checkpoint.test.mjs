@@ -4,7 +4,7 @@ import { WikiCheckpointCoordinator } from "../dist/checkpoint.js";
 
 function snapshot(overrides = {}) {
   return {
-    version: 1,
+    version: 2,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",

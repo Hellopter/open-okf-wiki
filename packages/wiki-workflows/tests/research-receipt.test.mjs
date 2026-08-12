@@ -26,3 +26,31 @@ test("research receipts enforce a total UTF-8 byte boundary without truncating r
     gaps: [{ question: "x".repeat(MAX_RESEARCH_RECEIPT_BYTES), priority: "critical", sourcePaths: ["src"] }],
   }, ref, scope), /Research receipt exceeds 65536 UTF-8 bytes/);
 });
+
+test("research receipts project normalized critical gaps with stable identity", () => {
+  const artifact = {
+    summary: "still open",
+    findings: [],
+    gaps: [{
+      question: "  How does the Ledger recover?  ",
+      priority: "critical",
+      sourcePaths: ["worker", "api", "worker"],
+    }],
+  };
+  const first = projectResearchReceipt(run, artifact, ref, scope);
+  const second = projectResearchReceipt(run, {
+    ...artifact,
+    gaps: [{
+      question: "how does the ledger recover?",
+      priority: "critical",
+      sourcePaths: ["api", "worker"],
+    }],
+  }, ref, scope);
+
+  assert.deepEqual(first.criticalGaps, [{
+    id: first.criticalGaps[0].id,
+    question: "How does the Ledger recover?",
+    sourcePaths: ["api", "worker"],
+  }]);
+  assert.equal(first.criticalGaps[0].id, second.criticalGaps[0].id);
+});

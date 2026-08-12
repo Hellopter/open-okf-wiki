@@ -154,7 +154,6 @@ function main() {
   const researchFinding = parseStringArrayConst(contractsSrc, "RESEARCH_FINDING_FIELDS");
   const researchGap = parseStringArrayConst(contractsSrc, "RESEARCH_GAP_FIELDS");
   const synthesisFinalize = parseStringArrayConst(contractsSrc, "SYNTHESIS_FINALIZE_FIELDS");
-  const synthesisExpand = parseStringArrayConst(contractsSrc, "SYNTHESIS_EXPAND_FIELDS");
   const reviewResult = parseStringArrayConst(contractsSrc, "REVIEW_RESULT_FIELDS");
   const reviewLocal = parseStringArrayConst(contractsSrc, "REVIEW_LOCAL_DEFECT_FIELDS");
   const reviewStructural = parseStringArrayConst(contractsSrc, "REVIEW_STRUCTURAL_DEFECT_FIELDS");
@@ -185,10 +184,7 @@ function main() {
   const gapKeys = keysForLabel(researchCalls, "Research gap");
   checkAlignment("RESEARCH_GAP_FIELDS ↔ Research gap", researchGap, gapKeys, "equal", errors);
 
-  // Synthesis top-level decisions
-  const expandKeys = keysForLabel(synthesisCalls, "Synthesis expansion");
-  checkAlignment("SYNTHESIS_EXPAND_FIELDS ↔ Synthesis expansion", synthesisExpand, expandKeys, "equal", errors);
-
+  // Synthesis top-level result
   const finalizeKeys = keysForLabel(synthesisCalls, "Final synthesis");
   checkAlignment("SYNTHESIS_FINALIZE_FIELDS ↔ Final synthesis", synthesisFinalize, finalizeKeys, "equal", errors);
 
@@ -222,7 +218,7 @@ function main() {
   console.log("Submission contract alignment check passed.");
   console.log(`  RESEARCH_ARTIFACT_FIELDS = ${formatList(researchArtifact)}`);
   console.log(`  parseResearchSubmission  = ${formatList(researchTop)}`);
-  console.log(`  SYNTHESIS expand/finalize and REVIEW fields also match.`);
+  console.log(`  SYNTHESIS finalize and REVIEW fields also match.`);
 }
 
 try {

@@ -1,8 +1,9 @@
 import type { WikiNode, WikiNodeActivity, WikiNodeAttempt, WikiNodeHistoryEntry, WikiNodeMetrics, WikiRunEvent, WikiRunSnapshot } from "./workflow-types.js";
 import { wikiPolicyHash } from "./policy.js";
 import { clone, isRecord } from "./util.js";
+import { isCriticalGap } from "./run-nodes.js";
 
-const SNAPSHOT_VERSION = 1 as const;
+const SNAPSHOT_VERSION = 2 as const;
 
 const NODE_KINDS = new Set(["inspect", "research", "synthesis", "write", "validate", "review", "finalize"]);
 const NODE_STATUSES = new Set(["queued", "running", "succeeded", "failed", "invalidated", "cancelled", "blocked"]);
@@ -211,21 +212,19 @@ function isNodeReceipt(runId: string, nodeId: string, attempt: number, kind: Wik
     || JSON.stringify(artifact) !== JSON.stringify(handoff)
     || artifact.runId !== runId || artifact.nodeId !== nodeId || artifact.attempt !== attempt || artifact.kind !== expectedKind) return false;
   if (kind === "research") {
-    return exactKeys(value, ["scopeId", "task", "sourceFingerprint", "artifact", "findings", "criticalGapSignatures", "criticalGapQuestions"])
+    return exactKeys(value, ["scopeId", "task", "sourceFingerprint", "artifact", "findings", "criticalGaps"])
       && isString(value.scopeId) && isString(value.task) && isString(value.sourceFingerprint)
       && Array.isArray(value.findings) && value.findings.every((item) => isRecord(item) && isString(item.id)
-        && (item.priority === "critical" || item.priority === "normal") && isString(item.contentFingerprint))
-      && isStringArray(value.criticalGapSignatures) && isStringArray(value.criticalGapQuestions);
+        && (item.priority === "critical" || item.priority === "normal"))
+      && Array.isArray(value.criticalGaps) && value.criticalGaps.every(isCriticalGap);
   }
   if (kind === "inspect") return exactKeys(value, ["kind", "artifact", "mode", "head", "sourceFingerprint", "sourceCount", "changedPathCount", "existingPageCount", "impactedPageCount"])
     && value.kind === "inspection" && value.mode !== undefined
     && (value.mode === "generate" || value.mode === "refresh") && isString(value.head) && isString(value.sourceFingerprint)
     && receiptCounts(value, ["sourceCount", "changedPathCount", "existingPageCount", "impactedPageCount"]);
-  if (kind === "synthesis") return exactKeys(value, value.decision === "expand"
-    ? ["kind", "artifact", "decision", "scopeCount"] : ["kind", "artifact", "decision", "domainCount", "pageCount"])
+  if (kind === "synthesis") return exactKeys(value, ["kind", "artifact", "domainCount", "pageCount"])
     && value.kind === "synthesis"
-    && (value.decision === "expand" || value.decision === "finalize")
-    && receiptCounts(value, ["scopeCount", "domainCount", "pageCount"], true);
+    && receiptCounts(value, ["domainCount", "pageCount"]);
   if (kind === "write") return exactKeys(value, ["kind", "artifact", "page", "sha256"]) && value.kind === "write" && isString(value.page) && isString(value.sha256);
   if (kind === "validate") return exactKeys(value, ["kind", "artifact", "ok", "issueCount", "pageCount", "obsoletePageCount"])
     && value.kind === "validation" && isBoolean(value.ok)
@@ -301,7 +300,7 @@ function isError(value: unknown): boolean {
     && optionalStringFields(value, ["code"])
     && optional(value.retryable, isBoolean)
     && optional(value.requiredSubmissionTools, (items) => Array.isArray(items) && items.length > 0 && items.every((item) => item === "wiki_submit_research"
-      || item === "wiki_submit_synthesis_expand" || item === "wiki_submit_synthesis_finalize"
+      || item === "wiki_submit_synthesis_finalize"
       || item === "wiki_submit_page" || item === "wiki_submit_review"));
 }
 
@@ -356,6 +355,8 @@ function isBlockedDetails(value: unknown): boolean {
       return false;
     }
   }
+  if (value.criticalGaps !== undefined
+    && (!Array.isArray(value.criticalGaps) || !value.criticalGaps.every(isCriticalGap))) return false;
   return true;
 }
 

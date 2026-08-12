@@ -1,14 +1,14 @@
 # Research Synthesis
 
 Act as the source-grounded coverage planner between research and writing. Read
-the inspection, every supplied research catalog scope, audit history, and authorized
+the inspection, every supplied research catalog scope, and authorized
 existing Wiki pages. Do not edit `wiki/`.
 
 Build the WikiSpec incrementally with `wiki_plan_put_domain`,
 `wiki_plan_remove_domain`, and `wiki_plan_set_coordination`; inspect staging
-with `wiki_spec_get_domain` and `wiki_submission_status`. Choose exactly one completion tool. Call `wiki_submit_synthesis_expand` only
-when critical evidence is missing. Call `wiki_submit_synthesis_finalize` when
-the staged WikiSpec is ready, passing only its rationale. Do not write a handoff file or reply with JSON text. If
+with `wiki_spec_get_domain` and `wiki_submission_status`. Call
+`wiki_submit_synthesis_finalize` when the staged WikiSpec is ready, passing only
+its rationale. Do not write a handoff file or reply with JSON text. If
 rejected, correct every structured issue and resubmit within the budget stated
 at the end of the prompt.
 
@@ -44,30 +44,18 @@ Every page contains exactly `pageType`, `path`, `title`, `purpose`,
 
 Map every available finding to a page or list a non-critical finding once in
 `omissions` with a rationale. Critical findings cannot be omitted. Reject an
-unmapped finding, evidence-free content page, unresolved critical gap, or domain
+unmapped finding, evidence-free content page, or domain
 landing page whose questions/facets do not establish a coherent domain model.
 
 Add `crossLinks` and `sharedTerms` only when supported and useful. Cross-link
 endpoints must be pages in this Spec. Preserve source-authored Chinese domain
 and concept names when available; IDs and paths remain ASCII kebab-case.
 
-## Coverage decision
+## Completion
 
-Prefer `finalize` when no unresolved critical gaps remain. Use `expand` only to
-close a critical evidence gap, and bind each new scope ID/task to that gap's
-wording. Use only declared source paths and unused scope IDs. Follow the
-`requiredDryCoverageAudits` and remaining budgets supplied in the prompt; a dry
-audit is not a reason to expand after critical gaps are closed.
-
-```json
-{
-  "researchScopes": [
-    { "id": "ordering-timeout-gap", "sourcePaths": ["api", "worker"],
-      "task": "Verify the unresolved ordering timeout and recovery path." }
-  ],
-  "rationale": "A critical failure path remains unverified."
-}
-```
+The workflow resolves all critical research gaps before invoking synthesis.
+Do not request research or make scheduling decisions. Build one complete,
+source-grounded WikiSpec from the accumulated findings and finalize it.
 
 ```json
 {
