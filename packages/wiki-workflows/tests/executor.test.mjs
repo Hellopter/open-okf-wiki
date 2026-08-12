@@ -484,6 +484,39 @@ test("child sessions use an isolated fixed compaction and retry policy", async (
   });
 });
 
+test("runtime policy configures up to sixteen in-session auto retries", async (t) => {
+  const cwd = await workspaceWithSources(t);
+  let settings;
+  const executor = new PiAgentExecutor({ createSession: async (options) => {
+    settings = options.settingsManager;
+    const session = fakeSession(options.tools);
+    session.prompt = async () => {
+      await options.customTools.find((tool) => tool.name === "write").execute("write", {
+        path: "wiki/domain/page.md",
+        content: "# Page\n",
+      });
+      await options.customTools.find((tool) => tool.name === "wiki_submit_page").execute("submit", {
+        page: "domain/page.md",
+      });
+    };
+    return { session };
+  } });
+  executor.setRuntimePolicy({
+    quality: { maxSubmissionAttempts: 3 },
+    runtime: {
+      maxConcurrentAgents: 2,
+      nodeTimeoutSeconds: 1_200,
+      maxAutoRetries: 16,
+      maxTransientSessionAttempts: 2,
+      rateLimitCooldownSeconds: 15,
+    },
+  });
+
+  await executor.execute(request(cwd, "write", "writer"));
+  assert.equal(settings.getRetrySettings().maxRetries, 16);
+  assert.equal(PI_SESSION_POLICY.retry.maxRetries, 3, "the shared default must remain immutable");
+});
+
 test("streaming output consumes text deltas and retains only an 8 KiB tail", async (t) => {
   const cwd = await workspaceWithSources(t);
   const execution = request(cwd, "research", "researcher");

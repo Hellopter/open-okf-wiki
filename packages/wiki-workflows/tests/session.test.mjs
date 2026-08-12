@@ -3,7 +3,7 @@ import test from "node:test";
 import { createWikiRunSession, isWikiRunSession, parseWikiRunSession, WIKI_RUN_POINTER_VERSION } from "../dist/session.js";
 import { resolveWikiPolicy, wikiPolicyHash } from "../dist/policy.js";
 
-function snapshot(version = 10, overrides = {}) {
+function snapshot(version = 1, overrides = {}) {
   const policy = resolveWikiPolicy();
   return {
     version,
@@ -104,10 +104,10 @@ test("snapshot validation remains independent of session pointer parsing", async
   const legacyV6 = snapshot(6);
   assert.equal(isWikiRunSnapshot(legacyV6), false);
   const versionReasons = explainWikiRunSnapshot(legacyV6);
-  assert.ok(versionReasons.some((reason) => /version: expected 10, got 6/.test(reason)));
+  assert.ok(versionReasons.some((reason) => /version: expected 1, got 6/.test(reason)));
   assert.throws(
     () => parseWikiRunSnapshot(legacyV6),
-    (error) => error?.code === "snapshot_incompatible" && /version: expected 10, got 6/.test(error.message),
+    (error) => error?.code === "snapshot_incompatible" && /version: expected 1, got 6/.test(error.message),
   );
 
   const withBlockedDetails = {
@@ -139,6 +139,7 @@ test("snapshot validation remains independent of session pointer parsing", async
   for (const mutate of [
     (policy) => { policy.quality.maxSubmissionAttempts = 4; },
     (policy) => { policy.runtime.nodeTimeoutSeconds = 59; },
+    (policy) => { policy.runtime.maxAutoRetries = 17; },
     (policy) => { policy.runtime.maxTransientSessionAttempts = 3; },
     (policy) => { policy.runtime.rateLimitCooldownSeconds = 14; },
     (policy) => { policy.terminology.Ledger = ""; },

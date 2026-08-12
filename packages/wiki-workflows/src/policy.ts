@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 
-export const WIKI_POLICY_VERSION = 3 as const;
+export const WIKI_POLICY_VERSION = 1 as const;
 export const WIKI_PROMPT_BUNDLE_VERSION = "domain-wiki-v2" as const;
 
 export interface ResolvedWikiPolicy {
@@ -19,6 +19,7 @@ export interface ResolvedWikiPolicy {
   runtime: {
     maxConcurrentAgents: number;
     nodeTimeoutSeconds: number;
+    maxAutoRetries: number;
     maxTransientSessionAttempts: number;
     rateLimitCooldownSeconds: number;
   };
@@ -42,6 +43,7 @@ export function resolveWikiPolicy(value?: Partial<Omit<ResolvedWikiPolicy, "vers
     runtime: {
       maxConcurrentAgents: boundedInteger(value?.runtime?.maxConcurrentAgents, 2, 1, 4, "wiki.runtime.maxConcurrentAgents"),
       nodeTimeoutSeconds: boundedInteger(value?.runtime?.nodeTimeoutSeconds, 1_200, 60, 1_800, "wiki.runtime.nodeTimeoutSeconds"),
+      maxAutoRetries: boundedInteger(value?.runtime?.maxAutoRetries, 3, 1, 16, "wiki.runtime.maxAutoRetries"),
       maxTransientSessionAttempts: boundedInteger(value?.runtime?.maxTransientSessionAttempts, 2, 1, 2, "wiki.runtime.maxTransientSessionAttempts"),
       rateLimitCooldownSeconds: boundedInteger(value?.runtime?.rateLimitCooldownSeconds, 15, 15, 120, "wiki.runtime.rateLimitCooldownSeconds"),
     },

@@ -64,7 +64,7 @@ Overview writer runs after all content pages complete.
 Session restore is pointer-only (no legacy full-snapshot dual-read). Research,
 planning, and review submit typed objects directly; accepted objects are
 content-addressed under `.okf-wiki/blobs/{sha256}.json`. Durable snapshots use
-`version: 10` and pin the resolved policy and hash. Older session entries,
+`version: 1` and pin the resolved policy and hash. Older session entries,
 history files, and artifact layouts are
 **not migrated** — after upgrading, delete stale `.okf-wiki/` under the
 workspace, then run `/wiki generate` again.
@@ -118,6 +118,7 @@ wiki:
   runtime:
     maxConcurrentAgents: 2
     nodeTimeoutSeconds: 1200
+    maxAutoRetries: 3
     maxTransientSessionAttempts: 2
     rateLimitCooldownSeconds: 15
 ```
@@ -137,13 +138,14 @@ Configuration fields and defaults:
 | `wiki.domains[].exclude` | `[]` | Domain-specific research boundary supplied to that domain's research task; use `wiki.exclude` for global deterministic evidence rejection |
 | `wiki.runtime.maxConcurrentAgents` | `2`; integer `1..4` | Shared engine and Pi-session admission limit; may be reduced temporarily by 429 or memory pressure |
 | `wiki.runtime.nodeTimeoutSeconds` | `1200`; integer `60..1800` | Wall-clock deadline for one isolated node session |
+| `wiki.runtime.maxAutoRetries` | `3`; integer `1..16` | Agent-level retries after a retryable model-request failure; excludes the initial attempt |
 | `wiki.runtime.maxTransientSessionAttempts` | `2`; integer `1..2` | Total fresh sessions for context, deadline, or exhausted transient-provider failure classes |
-| `wiki.runtime.rateLimitCooldownSeconds` | `15`; integer `15..120` | Admission cooldown after 429/rate-limit pressure |
+| `wiki.runtime.rateLimitCooldownSeconds` | `15`; integer `15..120` | Minimum serial-admission cooldown after 429/rate-limit pressure; not a retry sleep |
 
 `/wiki init` writes these defaults. When `wiki` is omitted from an otherwise
 valid workspace, loading resolves the same defaults. A new run normalizes the
 current values, adds the prompt-bundle identity, and pins both policy and hash
-in snapshot version 10. Editing `workspace.yaml` does not hot-update executing
+in snapshot version 1. Editing `workspace.yaml` does not hot-update executing
 agents. On `/wiki resume`, a paused run compares the current policy hash; if it
 changed, the run pins the new policy, invalidates downstream nodes, and starts
 again at Inspect. `quality.maxResearchRounds` is not reconciled into an
@@ -161,16 +163,22 @@ means one automatic fresh-session retry, while `1` disables it.
 Validator-infrastructure failures may use the internal maximum of three node
 sessions.
 
-Each session enables Pi auto-retry with a hard `maxRetries: 3`, a 2-second base
-delay, and provider-library retries set to zero. Thus one Pi model request has
-at most four provider attempts: one initial attempt plus three retries. For a
-primary node request, two fresh sessions can therefore expose up to eight
-attempts, while the three-session validator-infrastructure path can expose up
-to twelve. This is a retry-multiplication ceiling for the primary request, not
-a complete billing bound: a missing submission may add one same-session
-correction turn, tool continuations are additional model requests, and every
-such request has its own Pi retry allowance. Structured submission tools allow
-the configured `1..3` submission calls per node attempt (default `3`); those
-calls do not increment
-`node.attempt`. The Pi inner retry ceiling is fixed; fresh-session count,
+Each session enables Pi auto-retry with configurable `maxAutoRetries` (default
+`3`, maximum `16`), a fixed 2-second base delay, and provider-library retries
+set to zero. The value counts retries after the initial provider attempt.
+
+Pi 0.82.1 applies pure exponential backoff without jitter or an agent-level
+delay cap: `delay(n) = 2s * 2^(n-1)`. The sequence starts 2s, 4s, 8s, 16s;
+retry 16 waits 65,536s and all 16 waits total 131,070s (about 36.4 hours).
+`nodeTimeoutSeconds` includes retry sleeps, so the default 1,200-second deadline
+will terminate a continuously failing session before it reaches retry 16. The
+provider setting `maxRetryDelayMs: 60000` does not cap this loop because
+provider retries are disabled; it only bounds provider/SDK retry delays.
+
+Authentication, billing, quota, forbidden, and invalid-request errors are not
+retried as transient. A missing submission may add one same-session correction
+turn, tool continuations are additional model requests, and every such request
+has its own retry allowance. Structured submission tools allow the configured
+`1..3` calls per node attempt (default `3`); those calls do not increment
+`node.attempt`. The Pi retry count, fresh-session count,
 deadline, cooldown, and submission count are the bounded settings above.

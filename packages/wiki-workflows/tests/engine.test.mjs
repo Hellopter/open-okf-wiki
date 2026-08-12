@@ -263,7 +263,7 @@ async function fixture(t, options = {}) {
 test("restore rejects a structurally corrupt current snapshot", () => {
   const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
   const malformed = {
-    version: 10,
+    version: 1,
     id: "malformed",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -284,7 +284,7 @@ test("restore rejects a structurally corrupt current snapshot", () => {
 test("restore rejects a current snapshot below the research saturation minimum", () => {
   const engine = new WikiWorkflowEngine({ executor: { execute: async () => ({ result: undefined }) } });
   const snapshot = {
-    version: 10,
+    version: 1,
     id: "undersized-budget",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -507,7 +507,7 @@ test("generate fans out domain and detail writers within the configured concurre
   const snapshot = await f.engine.waitForIdle();
 
   assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
-  assert.equal(snapshot.version, 10);
+  assert.equal(snapshot.version, 1);
   assert.equal(snapshot.revision, 0);
   assert.equal(snapshot.maxResearchRounds, 6);
   assert.equal(snapshot.sourceRestartCount, 0);
@@ -583,7 +583,7 @@ test("pinned workspace policy reaches research, planning, writing, review, and c
       terminology: { Ledger: "Canonical accounting record" },
       domains: [],
       quality: { maxSubmissionAttempts: 1 },
-      runtime: { maxConcurrentAgents: 3, nodeTimeoutSeconds: 60, maxTransientSessionAttempts: 1, rateLimitCooldownSeconds: 120 },
+      runtime: { maxConcurrentAgents: 3, nodeTimeoutSeconds: 60, maxAutoRetries: 16, maxTransientSessionAttempts: 1, rateLimitCooldownSeconds: 120 },
     },
   });
   const snapshot = await f.engine.waitForIdle();
@@ -618,6 +618,7 @@ test("policy stays pinned until resume reconciliation and new runs use the lates
     runtime: {
       maxConcurrentAgents: 1,
       nodeTimeoutSeconds: 600,
+      maxAutoRetries: 3,
       maxTransientSessionAttempts: 1,
       rateLimitCooldownSeconds: 30,
     },

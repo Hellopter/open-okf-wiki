@@ -4,13 +4,13 @@ import { createWikiExtension } from "../dist/extension.js";
 
 const TEST_WIKI_CONFIG = {
   exclude: [], terminology: {}, domains: [],
-  runtime: { maxConcurrentAgents: 2, nodeTimeoutSeconds: 1200, maxTransientSessionAttempts: 2, rateLimitCooldownSeconds: 15 },
+  runtime: { maxConcurrentAgents: 2, nodeTimeoutSeconds: 1200, maxAutoRetries: 3, maxTransientSessionAttempts: 2, rateLimitCooldownSeconds: 15 },
 };
 const TEST_POLICY_INPUT = { ...TEST_WIKI_CONFIG, quality: { maxSubmissionAttempts: 3 } };
 
 function snapshot(overrides = {}) {
   return {
-    version: 10,
+    version: 1,
     id: "run-1",
     cwd: "/workspace",
     requestedMode: "generate",
@@ -63,7 +63,7 @@ function fakeEngine(initial, hooks = {}) {
     restore(value) {
       calls.push(["restore", value]);
       // Engine accepts full snapshots only (history store); pointer sessions are rejected.
-      if (!value || typeof value !== "object" || value.version !== 10 || !value.id) return undefined;
+      if (!value || typeof value !== "object" || value.version !== 1 || !value.id) return undefined;
       current = structuredClone(value);
       // Mirror engine recovery: running → paused.
       if (current.status === "running") {
@@ -270,7 +270,7 @@ test("restores from pointer via history store and persists interruption", async 
   await subject.handlers.get("session_start")({}, subject.ctx);
   assert.equal(subject.engine.calls[0][0], "restore");
   assert.equal(subject.engine.calls[0][1].id, "restored");
-  assert.equal(subject.engine.calls[0][1].version, 10, "restore receives full snapshot, not pointer");
+  assert.equal(subject.engine.calls[0][1].version, 1, "restore receives full snapshot, not pointer");
   // Recovery converts running → paused and rewrites history.
   assert.equal(subject.history.get("restored")?.status, "paused");
   assert.equal(subject.appended.at(-1)?.data?.status, "paused");
@@ -597,7 +597,7 @@ test("rejects incompatible history snapshots pointed to by a valid pointer", asy
   const originalRestore = subject.engine.restore;
   subject.engine.restore = (value) => {
     subject.engine.calls.push(["restore", value]);
-    if (value?.version !== 10) return undefined;
+    if (value?.version !== 1) return undefined;
     return originalRestore(value);
   };
 

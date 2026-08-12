@@ -42,7 +42,7 @@ function draftFinding(overrides = {}) {
 
 function hostWithNodes(nodes, overrides = {}) {
   const run = {
-    version: 10,
+  version: 1,
     id: "run-test",
     cwd: "/tmp/wiki-test",
     requestedMode: "generate",

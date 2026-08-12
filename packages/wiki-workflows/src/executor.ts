@@ -47,6 +47,13 @@ export const PI_SESSION_POLICY = Object.freeze({
   }),
 });
 
+function piSessionPolicy(maxAutoRetries: number) {
+  return {
+    ...PI_SESSION_POLICY,
+    retry: { ...PI_SESSION_POLICY.retry, maxRetries: maxAutoRetries },
+  };
+}
+
 export interface PiAgentExecutorOptions {
   /** The selected Pi model supplied by the extension context, when available. */
   model?: Model<any>;
@@ -72,6 +79,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
   private readonly gate: PiRuntimeGate;
   private readonly sessionReleases = new WeakMap<AgentSession, () => void>();
   private nodeTimeoutMs: number;
+  private maxAutoRetries: number = PI_SESSION_POLICY.retry.maxRetries;
   private rateLimitCooldownMs = 15_000;
 
   constructor(options: PiAgentExecutorOptions = {}) {
@@ -90,6 +98,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
   setRuntimePolicy(policy: Pick<WikiRunSnapshot["policy"], "quality" | "runtime">): void {
     this.setMaxConcurrentAgents(policy.runtime.maxConcurrentAgents);
     this.nodeTimeoutMs = policy.runtime.nodeTimeoutSeconds * 1_000;
+    this.maxAutoRetries = policy.runtime.maxAutoRetries;
     this.rateLimitCooldownMs = policy.runtime.rateLimitCooldownSeconds * 1_000;
     this.gate.clearProviderPressure();
   }
@@ -232,7 +241,7 @@ export class PiAgentExecutor implements WikiAgentExecutor {
     const toolPolicy = await workspaceToolPolicy(request.cwd, request.candidateWikiRoot);
     const agentDir = getAgentDir();
     // Pin workflow child behavior without reading or mutating the user's Pi settings.
-    const settingsManager = SettingsManager.inMemory(PI_SESSION_POLICY);
+    const settingsManager = SettingsManager.inMemory(piSessionPolicy(this.maxAutoRetries));
     const resourceLoader = new DefaultResourceLoader({
       cwd: toolPolicy.workspaceRoot,
       agentDir,

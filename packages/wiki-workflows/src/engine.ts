@@ -154,7 +154,7 @@ export class WikiWorkflowEngine {
     this.applyRuntimePolicy(policy);
     const inspectionNode = newNode(this.transitionHost(), "inspect", "Inspect Git scope", [], { requestedMode: request.mode, policyHash }, phaseRefForKind("inspect"));
     this.current = {
-      version: 10,
+      version: 1,
       id: this.newId(),
       cwd: path.resolve(request.cwd),
       requestedMode: request.mode,
@@ -305,7 +305,7 @@ export class WikiWorkflowEngine {
     const branch = clone(snapshot);
     const now = this.now();
     branch.id = this.newId();
-    branch.version = 10;
+    branch.version = 1;
     // Recover interrupted nodes so fork targets are settled (queued, not running).
     for (const node of branch.nodes) {
       if (node.status !== "running") continue;

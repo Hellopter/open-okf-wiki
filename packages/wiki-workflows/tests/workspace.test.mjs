@@ -50,7 +50,7 @@ test("initializes a plain YAML workspace and persists its language", async () =>
     quality: { maxResearchRounds: 6, maxSubmissionAttempts: 3 },
     wiki: {
       exclude: [], terminology: {}, domains: [],
-      runtime: { maxConcurrentAgents: 2, nodeTimeoutSeconds: 1200, maxTransientSessionAttempts: 2, rateLimitCooldownSeconds: 15 },
+      runtime: { maxConcurrentAgents: 2, nodeTimeoutSeconds: 1200, maxAutoRetries: 3, maxTransientSessionAttempts: 2, rateLimitCooldownSeconds: 15 },
     },
     sources: [],
   });
@@ -86,6 +86,7 @@ test("validates bounded submission and runtime policy settings", async () => {
   config.wiki.runtime = {
     maxConcurrentAgents: 4,
     nodeTimeoutSeconds: 60,
+    maxAutoRetries: 16,
     maxTransientSessionAttempts: 1,
     rateLimitCooldownSeconds: 120,
   };
@@ -97,6 +98,11 @@ test("validates bounded submission and runtime policy settings", async () => {
   config.wiki.runtime.nodeTimeoutSeconds = 59;
   await writeFile(configPath, YAML.stringify(config), "utf8");
   await assert.rejects(loadWikiWorkspace(root), /nodeTimeoutSeconds.*60 to 1800/);
+
+  config.wiki.runtime.nodeTimeoutSeconds = 60;
+  config.wiki.runtime.maxAutoRetries = 17;
+  await writeFile(configPath, YAML.stringify(config), "utf8");
+  await assert.rejects(loadWikiWorkspace(root), /maxAutoRetries.*1 to 16/);
 });
 
 test("links a Git source by its project directory name without an alias", async () => {

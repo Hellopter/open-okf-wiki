@@ -55,6 +55,7 @@ wiki:
   runtime:
     maxConcurrentAgents: 2
     nodeTimeoutSeconds: 1200
+    maxAutoRetries: 3
     maxTransientSessionAttempts: 2
     rateLimitCooldownSeconds: 15
 sources:
@@ -74,9 +75,28 @@ research boundary. Include patterns must start at a declared source root.
 `wiki.runtime.maxConcurrentAgents` defaults to `2` and accepts integers `1..4`.
 `quality.maxResearchRounds` defaults to `6` and accepts integers `3..20`.
 `quality.maxSubmissionAttempts` defaults to `3` and accepts `1..3` direct
-typed submissions per node attempt. Runtime defaults are a `1200`-second node
-deadline (`60..1800`), `2` transient session attempts (`1..2`), and a
-`15`-second rate-limit cooldown (`15..120`).
+typed submissions per node attempt. Runtime settings are:
+
+| Field | Default / range | What it controls |
+|-------|-----------------|------------------|
+| `wiki.runtime.maxConcurrentAgents` | `2`; `1..4` | Concurrent child sessions; temporarily reduced to one under 429 or memory pressure |
+| `wiki.runtime.nodeTimeoutSeconds` | `1200`; `60..1800` | Hard deadline for one child session, including retry waits |
+| `wiki.runtime.maxAutoRetries` | `3`; `1..16` | Pi agent-level retries after a retryable model-request failure; excludes the initial attempt |
+| `wiki.runtime.maxTransientSessionAttempts` | `2`; `1..2` | Total fresh sessions for context overflow, deadline, or exhausted transient failures; `2` means one replacement session |
+| `wiki.runtime.rateLimitCooldownSeconds` | `15`; `15..120` | Minimum period during which new work is admitted serially after 429 pressure; not the retry sleep |
+
+Pi 0.82.1 uses pure exponential backoff for `maxAutoRetries`:
+`delay(n) = 2s * 2^(n-1)`, without jitter or an agent-level delay cap. The
+first waits are 2s, 4s, 8s, and 16s. Retry 16 waits 65,536s; all 16 waits total
+131,070s (about 36.4 hours). The node deadline includes those waits, so the
+default 1,200-second deadline normally stops a continuously failing session
+before it reaches retry 16.
+
+Provider-library retries stay disabled (`provider.maxRetries: 0`). Their
+60-second `maxRetryDelayMs` does not cap Pi's agent-level backoff. Authentication,
+billing, quota, forbidden, and invalid-request failures are not transient.
+After Pi exhausts its retry budget, the workflow can start a replacement
+session according to `maxTransientSessionAttempts`.
 
 New runs resolve the current configuration into a normalized policy and pin its
 hash in the run snapshot. Editing `workspace.yaml` never hot-patches agents
@@ -191,27 +211,9 @@ resumable.
 - Pi's own auto-compaction and provider retry capabilities are enabled for
   subagents; the console reports their activity without reimplementing them.
 
-## Attempts and Retries
-
-A node `attempt` means one fresh isolated Pi session. Context overflow,
-deadline, and exhausted transient-provider failures use
-`wiki.runtime.maxTransientSessionAttempts` (`1..2`, default `2`), so the
-default path receives at most one fresh-session retry. Local validator
-infrastructure may use the internal three-attempt node ceiling.
-
-Inside each session, Pi auto-retry is separately fixed at `maxRetries: 3` with
-a 2-second base delay and provider-library retries disabled. This is at most
-four provider attempts for one Pi model request: the initial request plus three
-retries. A missing required submission can add one correction turn in the same
-session, and structured submission validation uses
-`quality.maxSubmissionAttempts` (`1..3`, default `3`). Those turns and tool
-continuations are not fresh node attempts, but each model request can incur its
-own Pi retry allowance.
-
-Consequently, do not treat the node attempt count as a provider-call or cost
-count. Two fresh sessions can multiply the primary-request retry allowance to
-as many as eight attempts; the three-session validator-infrastructure path can
-reach twelve primary-request attempts, before any distinct correction or tool
-continuation requests. Pi's inner retry and compaction limits are fixed;
-fresh-session count, node deadline, rate-limit cooldown, and submission count
-use the bounded workspace settings above.
+One missing required submission can add one correction turn in the same
+session. Direct structured validation accepts
+`quality.maxSubmissionAttempts` (`1..3`, default `3`) tool submissions per node
+attempt. Correction turns and tool continuations are separate model requests,
+and each can receive its own `maxAutoRetries` budget. Treat these settings as
+availability ceilings, not as a billing-call count.

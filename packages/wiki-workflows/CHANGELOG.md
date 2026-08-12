@@ -16,17 +16,16 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented in this file.
 - **Typed direct handoff.** Research, synthesis, and review submit typed objects
   directly with structured rejection and at most three same-session attempts;
   agent-authored JSON/Markdown handoff files are removed.
-- **Bounded Pi runtime.** Isolated sessions use fixed native compaction/retry,
+- **Bounded Pi runtime.** Isolated sessions use fixed native compaction and a
+  configurable `1..16` agent-level retry budget,
   a bounded configurable fresh-session count for overflow/transient exhaustion,
   a bounded node deadline and 429 cooldown, dynamic concurrency, and active
   memory protection.
 - **Explicit attempt accounting.** A durable node attempt is one fresh Pi
-  session. Pi's inner `maxRetries: 3` permits four provider attempts per model
-  request; the automatic two-session transient path can therefore multiply the
-  primary request to eight attempts. Validator infrastructure can use three
-  sessions (twelve primary-request attempts). Correction turns and tool
-  continuations are additional requests, so node attempts are not billing-call
-  counts.
+  session. `maxAutoRetries` counts retries after an initial model request and
+  uses Pi's uncapped 2-second exponential backoff. Node deadlines include retry
+  waits; correction turns and tool continuations are additional requests, so
+  node attempts are not billing-call counts.
 - **Pinned configuration lifecycle.** New runs pin normalized terminology,
   exclusions, configured domains, submission count, concurrency, deadline,
   transient-session count, cooldown, and prompt identity. Config edits never
@@ -48,7 +47,7 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented in this file.
   index is derived, and history/artifact cleanup cannot remove candidate,
   journal, or backup data. Symlink traversal fails closed.
 - **Session pointer-only.** Pi custom entries (`WikiRunSession`) are pointer-only (`pointerVersion: 1`, `runId`, `revision`, `status`, `updatedAt`, `workspace`). Full `WikiRunSnapshot` bodies live in the project history store. Legacy full-snapshot session entries are rejected fail-closed (no dual-read). Restore path: parse pointer → `historyStore.load(runId)` → `engine.restore(snapshot)`. Host session appends only on critical events (not `node_activity` / `node_started`).
-- **Snapshot v10 — no migrate.** Durable run snapshots use `version: 10` and require a matching pinned policy hash. Older history is **rejected** fail-closed. After upgrade, clear stale `.okf-wiki/` then `/wiki generate`.
+- **Snapshot v1 baseline — no migration.** Durable run snapshots and their pinned policy start at `version: 1`. Pre-release history with another shape is **rejected** fail-closed; clear stale `.okf-wiki/` and run `/wiki generate`.
 - **Recovery / retry.** Interrupted (`running`/`paused`) history can be forked for retry; UI `waitAgentSettle` only when the active engine still has a live node controller.
 - **Research stop.** Expand hard-rejected without critical gaps; expand scopes must reference gap questions; dry audit skipped when no critical gaps; dry fingerprints normalize evidence paths.
 - **JoinBarrier success path.** Research and write fan-in no longer races on concurrent batch completion. After a node is marked `status=succeeded`, the engine calls `tryJoinAfterSuccess` once; pure `evaluateJoin` / `siblingsByGroupKey` (`join-barrier.ts`) decide `not_ready` vs `all_succeeded` before queueing synthesis or verification. The historical `reconcileCompletedBatch` re-entry path is gone.

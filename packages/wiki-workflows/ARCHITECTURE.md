@@ -85,12 +85,13 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `wiki.domains` | `[]` | Unique safe ids, non-empty titles, required non-empty include arrays, optional exclude arrays |
 | `wiki.runtime.maxConcurrentAgents` | `2` | Integer `1..4`; shared engine/executor admission limit |
 | `wiki.runtime.nodeTimeoutSeconds` | `1200` | Integer `60..1800`; isolated session wall-clock deadline |
+| `wiki.runtime.maxAutoRetries` | `3` | Integer `1..16`; agent-level retries after the initial request |
 | `wiki.runtime.maxTransientSessionAttempts` | `2` | Integer `1..2`; total sessions for transient/context/deadline classes |
 | `wiki.runtime.rateLimitCooldownSeconds` | `15` | Integer `15..120`; admission cooldown after provider pressure |
 
 At `engine.start`, `resolveWikiPolicy` normalizes ordering and duplicates, adds
 the policy and prompt-bundle versions, hashes the result, and stores both value
-and hash in the version 10 snapshot. Nodes read `run.policy`; they do not reload
+and hash in the version 1 snapshot. Nodes read `run.policy`; they do not reload
 configuration, so an edit cannot change an executing agent or half of a batch.
 On resume, the extension loads the current workspace policy and calls
 `reconcilePolicy`. A changed hash replaces the pinned policy as one atomic run
@@ -170,10 +171,10 @@ queues review, and only clean review queues finalization.
   and exhausted transient provider errors use `maxTransientSessionAttempts`
   (default two, range one to two). Validator-infrastructure failures may reach
   the internal three-session node ceiling.
-- Pi auto-retry is a separate inner layer: `maxRetries: 3`, 2-second base delay,
-  provider-library retries disabled. One model request therefore has at most
-  four provider attempts. The primary-request retry product is up to eight for
-  a two-session transient path or twelve for a three-session validator path.
+- Pi auto-retry is a separate inner layer: `maxAutoRetries` defaults to `3` and
+  accepts `1..16`; provider-library retries are disabled. Pi 0.82.1 uses
+  uncapped, jitter-free exponential backoff `2s * 2^(attempt-1)`. The node
+  deadline includes these waits and can stop the loop before its retry budget.
 - That product is not a total request/cost bound. One missing-submission
   correction turn and tool continuations are additional requests with their own
   Pi retry allowance. Typed submission tools permit the configured `1..3`

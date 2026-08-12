@@ -2,7 +2,7 @@ import type { WikiNode, WikiNodeActivity, WikiNodeAttempt, WikiNodeHistoryEntry,
 import { wikiPolicyHash } from "./policy.js";
 import { clone, isRecord } from "./util.js";
 
-const SNAPSHOT_VERSION = 10 as const;
+const SNAPSHOT_VERSION = 1 as const;
 
 const NODE_KINDS = new Set(["inspect", "research", "synthesis", "write", "validate", "review", "finalize"]);
 const NODE_STATUSES = new Set(["queued", "running", "succeeded", "failed", "invalidated", "cancelled", "blocked"]);
@@ -115,7 +115,7 @@ export function explainWikiRunSnapshot(value: unknown): string[] {
 
 function isPolicy(value: unknown): boolean {
   if (!isRecord(value)
-    || value.version !== 3
+    || value.version !== 1
     || !isStringArray(value.exclude)
     || !value.exclude.every((item) => item.length > 0 && item.trim() === item)
     || !isRecord(value.terminology)
@@ -132,6 +132,7 @@ function isPolicy(value: unknown): boolean {
     || !isRecord(value.runtime)
     || !boundedInteger(value.runtime.maxConcurrentAgents, 1, 4)
     || !boundedInteger(value.runtime.nodeTimeoutSeconds, 60, 1_800)
+    || !boundedInteger(value.runtime.maxAutoRetries, 1, 16)
     || !boundedInteger(value.runtime.maxTransientSessionAttempts, 1, 2)
     || !boundedInteger(value.runtime.rateLimitCooldownSeconds, 15, 120)
     || !isString(value.promptBundleHash) || !/^[a-f0-9]{64}$/.test(value.promptBundleHash)) return false;

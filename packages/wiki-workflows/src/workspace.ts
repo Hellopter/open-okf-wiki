@@ -38,6 +38,7 @@ export interface WikiWorkspaceWikiConfig {
   runtime: {
     maxConcurrentAgents: number;
     nodeTimeoutSeconds: number;
+    maxAutoRetries: number;
     maxTransientSessionAttempts: number;
     rateLimitCooldownSeconds: number;
   };
@@ -50,6 +51,7 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   runtime: {
     maxConcurrentAgents: 2,
     nodeTimeoutSeconds: 1_200,
+    maxAutoRetries: 3,
     maxTransientSessionAttempts: 2,
     rateLimitCooldownSeconds: 15,
   },
@@ -298,13 +300,14 @@ function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
     throw new Error("workspace.yaml wiki.runtime.maxConcurrentAgents must be an integer from 1 to 4");
   }
   const nodeTimeoutSeconds = boundedWorkspaceInteger(runtimeValue.nodeTimeoutSeconds, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.nodeTimeoutSeconds, 60, 1_800, "wiki.runtime.nodeTimeoutSeconds");
+  const maxAutoRetries = boundedWorkspaceInteger(runtimeValue.maxAutoRetries, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.maxAutoRetries, 1, 16, "wiki.runtime.maxAutoRetries");
   const maxTransientSessionAttempts = boundedWorkspaceInteger(runtimeValue.maxTransientSessionAttempts, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.maxTransientSessionAttempts, 1, 2, "wiki.runtime.maxTransientSessionAttempts");
   const rateLimitCooldownSeconds = boundedWorkspaceInteger(runtimeValue.rateLimitCooldownSeconds, DEFAULT_WORKSPACE_WIKI_CONFIG.runtime.rateLimitCooldownSeconds, 15, 120, "wiki.runtime.rateLimitCooldownSeconds");
   return {
     exclude,
     terminology,
     domains,
-    runtime: { maxConcurrentAgents: Number(maxConcurrentAgents), nodeTimeoutSeconds, maxTransientSessionAttempts, rateLimitCooldownSeconds },
+    runtime: { maxConcurrentAgents: Number(maxConcurrentAgents), nodeTimeoutSeconds, maxAutoRetries, maxTransientSessionAttempts, rateLimitCooldownSeconds },
   };
 }
 

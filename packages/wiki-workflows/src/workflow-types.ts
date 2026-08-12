@@ -162,7 +162,7 @@ export interface WikiRunRequest {
 }
 
 export interface WikiRunSnapshot {
-  version: 10;
+  version: 1;
   id: string;
   cwd: string;
   requestedMode: WikiMode;

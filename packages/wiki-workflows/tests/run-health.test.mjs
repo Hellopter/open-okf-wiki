@@ -26,7 +26,7 @@ function activity() {
 function baseSnapshot(overrides = {}) {
   const policy = resolveWikiPolicy();
   return {
-    version: 10,
+  version: 1,
     id: "run-health",
     cwd: "/workspace",
     requestedMode: "generate",
