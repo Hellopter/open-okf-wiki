@@ -13,6 +13,9 @@ Run Pi in the repository and use:
 
 ```text
 /wiki [focus]
+/wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]
+/wiki source add link <local-path> [--name <name>] [--workspace <dir>]
+/wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
 /wiki regenerate [focus]
 /wiki status [run-id]
 /wiki runs
@@ -22,10 +25,16 @@ Run Pi in the repository and use:
 ```
 
 `/wiki` updates the Wiki and may focus research on the supplied text.
-`regenerate` discards the prior page topology and rebuilds it. If the current
-directory has no `workspace.yaml`, it is initialized as a single-source
-workspace. Existing multi-source workspaces continue to use their declared
-sources.
+`regenerate` discards the prior page topology and rebuilds it. A Git repository
+without `workspace.yaml` is used directly as an implicit single source.
+
+For multiple repositories, run `init` to create an explicit workspace. It
+defaults to the current directory, `--lang zh`, standard source ignores, and no
+extra excludes. `--exclude` is repeatable. `source add link` accepts only a
+local Git repository root and creates a symlink on Linux/macOS or a directory
+junction on Windows. `source add clone` clones a local or remote Git URL and can
+checkout `--ref`; use it when filesystem links are undesirable or unavailable.
+`--name` overrides the derived workspace directory name.
 
 ## Execution model
 

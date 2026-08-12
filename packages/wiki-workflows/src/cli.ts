@@ -1,5 +1,8 @@
 export type WikiCliCommand =
   | { action: "run"; focus?: string; regenerate: boolean }
+  | { action: "init"; workspace?: string; language: "zh" | "en"; exclude: string[]; defaultSourceIgnores: boolean }
+  | { action: "source-add"; kind: "link"; localPath: string; name?: string; workspace?: string }
+  | { action: "source-add"; kind: "clone"; url: string; ref?: string; name?: string; workspace?: string }
   | { action: "status"; runId?: string }
   | { action: "runs" }
   | { action: "pause" }
@@ -13,6 +16,10 @@ export function parseWikiCliCommand(raw: string): WikiCliCommand {
   const action = values[0]!.toLowerCase();
   const rest = values.slice(1);
   switch (action) {
+    case "init":
+      return parseInit(rest);
+    case "source":
+      return parseSource(rest);
     case "regenerate":
       return { action: "run", regenerate: true, focus: joinedFocus(rest) };
     case "status":
@@ -69,6 +76,9 @@ export function wikiCliHelp(): string {
   return [
     "Usage:",
     "  /wiki [focus]",
+    "  /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]",
+    "  /wiki source add link <local-path> [--name <name>] [--workspace <dir>]",
+    "  /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]",
     "  /wiki regenerate [focus]",
     "  /wiki status [run-id]",
     "  /wiki runs",
@@ -76,6 +86,72 @@ export function wikiCliHelp(): string {
     "  /wiki resume [run-id]",
     "  /wiki cancel [run-id]",
   ].join("\n");
+}
+
+function parseInit(values: string[]): Extract<WikiCliCommand, { action: "init" }> {
+  let workspace: string | undefined;
+  let language: "zh" | "en" = "zh";
+  let languageSet = false;
+  let defaultSourceIgnores = true;
+  let ignoresSet = false;
+  const exclude: string[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index]!;
+    if (value === "--lang") {
+      if (languageSet) throw new Error("--lang may be specified only once");
+      const selected = optionValue(values, ++index, "--lang");
+      if (selected !== "zh" && selected !== "en") throw new Error("--lang must be zh or en");
+      language = selected;
+      languageSet = true;
+    } else if (value === "--exclude") {
+      exclude.push(optionValue(values, ++index, "--exclude"));
+    } else if (value === "--no-default-ignores") {
+      if (ignoresSet) throw new Error("--no-default-ignores may be specified only once");
+      defaultSourceIgnores = false;
+      ignoresSet = true;
+    } else if (value.startsWith("--")) {
+      throw new Error(`Unknown /wiki init option: ${value}`);
+    } else if (workspace === undefined) {
+      workspace = value;
+    } else {
+      throw new Error("Usage: /wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]");
+    }
+  }
+  return { action: "init", ...(workspace ? { workspace } : {}), language, exclude, defaultSourceIgnores };
+}
+
+function parseSource(values: string[]): Extract<WikiCliCommand, { action: "source-add" }> {
+  if (values[0] !== "add" || (values[1] !== "link" && values[1] !== "clone") || !values[2]) {
+    throw new Error("Usage: /wiki source add link <local-path> | clone <url>");
+  }
+  const kind = values[1];
+  const target = values[2];
+  let name: string | undefined;
+  let workspace: string | undefined;
+  let ref: string | undefined;
+  for (let index = 3; index < values.length; index += 1) {
+    const option = values[index]!;
+    if (option === "--name") {
+      if (name !== undefined) throw new Error("--name may be specified only once");
+      name = optionValue(values, ++index, "--name");
+    } else if (option === "--workspace") {
+      if (workspace !== undefined) throw new Error("--workspace may be specified only once");
+      workspace = optionValue(values, ++index, "--workspace");
+    } else if (option === "--ref" && kind === "clone") {
+      if (ref !== undefined) throw new Error("--ref may be specified only once");
+      ref = optionValue(values, ++index, "--ref");
+    } else {
+      throw new Error(`Unknown /wiki source add ${kind} option: ${option}`);
+    }
+  }
+  const common = { action: "source-add" as const, kind, ...(name ? { name } : {}), ...(workspace ? { workspace } : {}) };
+  return kind === "link" ? { ...common, kind, localPath: target } : { ...common, kind, url: target, ...(ref ? { ref } : {}) };
+}
+
+function optionValue(values: string[], index: number, option: string): string {
+  const value = values[index];
+  if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`);
+  return value;
 }
 
 function tokenize(input: string): string[] {

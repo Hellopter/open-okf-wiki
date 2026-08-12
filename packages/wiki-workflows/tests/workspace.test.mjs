@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  createWikiWorkspaceManagement,
   loadWikiWorkspace,
   sourceIsIgnored,
+  wikiWorkspaceManagement,
 } from "../dist/workspace.js";
 
 const temporaryDirectories = [];
@@ -45,4 +47,207 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(sourceIsIgnored(loaded.sources[0], "wiki/overview.md", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "src/index.ts", true), false);
   await assert.rejects(lstat(path.join(root, "workspace.yaml")), { code: "ENOENT" });
+});
+
+test("initializes explicit workspace defaults and normalized Wiki excludes", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-init-"));
+  temporaryDirectories.push(parent);
+  const workspace = await wikiWorkspaceManagement.init({
+    cwd: parent,
+    workspace: "docs",
+    wikiExclude: ["generated/**", " generated/** ", "private/**"],
+  });
+  assert.equal(workspace.root, path.join(parent, "docs"));
+  assert.equal(workspace.language, "zh");
+  assert.equal(workspace.defaultSourceIgnores, true);
+  assert.deepEqual(workspace.wiki.exclude, ["generated/**", "private/**"]);
+  assert.deepEqual(workspace.sources, []);
+  assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
+  await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
+});
+
+test("concurrent init never deletes the winning workspace", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-init-race-"));
+  temporaryDirectories.push(parent);
+  const results = await Promise.allSettled([
+    wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace", language: "zh" }),
+    wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace", language: "en" }),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  const loaded = await loadWikiWorkspace(path.join(parent, "workspace"));
+  assert.ok(loaded.language === "zh" || loaded.language === "en");
+  assert.equal((await lstat(loaded.configPath)).isFile(), true);
+});
+
+test("adds a POSIX directory link with canonical origin and rejects Git subdirectories", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-link-"));
+  temporaryDirectories.push(parent);
+  const source = await repository(parent, "source-repo");
+  await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace", language: "en", defaultSourceIgnores: false });
+  const workspace = await wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: source });
+  assert.equal(workspace.language, "en");
+  assert.equal(workspace.defaultSourceIgnores, false);
+  assert.equal(workspace.sources[0].path, "source-repo");
+  assert.deepEqual(workspace.sources[0].origin, { type: "link", localPath: await import("node:fs/promises").then(({ realpath }) => realpath(source)) });
+  assert.equal(await readlink(path.join(workspace.root, "source-repo")), source);
+  await assert.rejects(
+    wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: path.join(source, "src"), name: "nested" }),
+    /repository root/,
+  );
+  await assert.rejects(
+    wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: source }),
+    /already exists/,
+  );
+});
+
+test("uses a junction on Windows through the filesystem seam", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-junction-"));
+  temporaryDirectories.push(parent);
+  const source = await repository(parent, "source");
+  const links = [];
+  const management = createWikiWorkspaceManagement({
+    platform: "win32",
+    async createDirectoryLink(target, location, type) {
+      links.push({ target, location, type });
+      await symlink(target, location, "dir");
+    },
+  });
+  await management.init({ cwd: parent, workspace: "workspace" });
+  await management.addLink({ cwd: parent, workspace: "workspace", localPath: source, name: "windows-source" });
+  assert.equal(links[0].type, "junction");
+});
+
+test("clones a source at an optional ref and persists clone origin", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-clone-"));
+  temporaryDirectories.push(parent);
+  const remote = await repository(parent, "remote.git");
+  git(remote, "checkout", "-q", "-b", "docs-ref");
+  await writeFile(path.join(remote, "src", "ref.ts"), "export const ref = true;\n");
+  git(remote, "add", ".");
+  git(remote, "commit", "--quiet", "-m", "Ref commit");
+  const expected = git(remote, "rev-parse", "HEAD");
+  await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  const workspace = await wikiWorkspaceManagement.addClone({
+    cwd: parent,
+    workspace: "workspace",
+    remoteUrl: remote,
+    ref: "docs-ref",
+    name: "cloned",
+  });
+  assert.deepEqual(workspace.sources[0].origin, { type: "clone", remoteUrl: remote, ref: "docs-ref" });
+  assert.equal(git(path.join(workspace.root, "cloned"), "rev-parse", "HEAD"), expected);
+});
+
+test("rejects unsafe and conflicting source names without leaving workspace entries", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-invalid-"));
+  temporaryDirectories.push(parent);
+  const source = await repository(parent, "source");
+  await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  await mkdir(path.join(parent, "workspace", "occupied"));
+  for (const name of ["wiki", "../escape", "bad/name"]) {
+    await assert.rejects(
+      wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: source, name }),
+      /reserved|Invalid/,
+    );
+  }
+  await assert.rejects(
+    wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: source, name: "occupied" }),
+    /path already exists/,
+  );
+  assert.deepEqual((await loadWikiWorkspace(path.join(parent, "workspace"))).sources, []);
+});
+
+test("rolls back a created link and clone when config replacement fails", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-rollback-"));
+  temporaryDirectories.push(parent);
+  const source = await repository(parent, "source");
+  await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  let linkCreated = false;
+  const failedConfig = createWikiWorkspaceManagement({
+    async createDirectoryLink(target, location, type) {
+      linkCreated = true;
+      await symlink(target, location, type);
+    },
+    async writeConfig() { throw new Error("config commit failed"); },
+  });
+  await assert.rejects(
+    failedConfig.addLink({ cwd: parent, workspace: "workspace", localPath: source, name: "linked" }),
+    /config commit failed/,
+  );
+  assert.equal(linkCreated, true);
+  await assert.rejects(lstat(path.join(parent, "workspace", "linked")), { code: "ENOENT" });
+
+  const management = createWikiWorkspaceManagement({
+    async runGit(cwd, args) {
+      if (args[0] === "clone") return { code: 1, stdout: "", stderr: "clone failed" };
+      throw new Error(`unexpected git call in ${cwd}`);
+    },
+  });
+  await assert.rejects(
+    management.addClone({ cwd: parent, workspace: "workspace", remoteUrl: source, name: "cloned" }),
+    /clone failed/,
+  );
+  assert.equal((await lstat(path.join(parent, "workspace"))).isDirectory(), true);
+  await assert.rejects(lstat(path.join(parent, "workspace", "cloned")), { code: "ENOENT" });
+  await assert.rejects(lstat(path.join(parent, "workspace", ".okf-wiki-workspace.lock")), { code: "ENOENT" });
+});
+
+test("serializes concurrent source commits without losing config or leaving orphan directories", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-concurrent-"));
+  temporaryDirectories.push(parent);
+  const first = await repository(parent, "first");
+  const second = await repository(parent, "second");
+  await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  await Promise.all([
+    wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: first }),
+    wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: second }),
+  ]);
+  const workspace = await loadWikiWorkspace(path.join(parent, "workspace"));
+  assert.deepEqual(workspace.sources.map((source) => source.path).sort(), ["first", "second"]);
+  assert.equal((await lstat(path.join(workspace.root, "first"))).isSymbolicLink(), true);
+  assert.equal((await lstat(path.join(workspace.root, "second"))).isSymbolicLink(), true);
+  await assert.rejects(lstat(path.join(workspace.root, ".okf-wiki-workspace.lock")), { code: "ENOENT" });
+});
+
+test("rejects linking a repository that contains the workspace", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-ancestor-"));
+  temporaryDirectories.push(parent);
+  const repositoryRoot = await repository(parent, "monorepo");
+  const workspacePath = path.join(repositoryRoot, "docs");
+  await wikiWorkspaceManagement.init({ cwd: repositoryRoot, workspace: "docs" });
+  await assert.rejects(
+    wikiWorkspaceManagement.addLink({ cwd: workspacePath, localPath: repositoryRoot, name: "root" }),
+    /itself or its ancestor/,
+  );
+  assert.deepEqual((await loadWikiWorkspace(workspacePath)).sources, []);
+  await assert.rejects(lstat(path.join(workspacePath, "root")), { code: "ENOENT" });
+});
+
+test("Windows source names reserve Wiki directories case-insensitively", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-reserved-"));
+  temporaryDirectories.push(parent);
+  const source = await repository(parent, "source");
+  const management = createWikiWorkspaceManagement({ platform: "win32" });
+  await management.init({ cwd: parent, workspace: "workspace" });
+  for (const name of ["Wiki", "WIKI", ".OKF-WIKI", "CON", "prn.txt", "AUX", "NUL", "COM1", "com9.log", "LPT1", "lpt9.txt", "trailing.", "trailing "]) {
+    await assert.rejects(
+      management.addLink({ cwd: parent, workspace: "workspace", localPath: source, name }),
+      /reserved/,
+    );
+  }
+});
+
+test("rejects adding the same physical Git repository under another name", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-duplicate-"));
+  temporaryDirectories.push(parent);
+  const source = await repository(parent, "source");
+  await wikiWorkspaceManagement.init({ cwd: parent, workspace: "workspace" });
+  await wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: source, name: "first" });
+  await assert.rejects(
+    wikiWorkspaceManagement.addLink({ cwd: parent, workspace: "workspace", localPath: source, name: "second" }),
+    /already added/,
+  );
+  assert.deepEqual((await loadWikiWorkspace(path.join(parent, "workspace"))).sources.map((value) => value.path), ["first"]);
+  await assert.rejects(lstat(path.join(parent, "workspace", "second")), { code: "ENOENT" });
 });

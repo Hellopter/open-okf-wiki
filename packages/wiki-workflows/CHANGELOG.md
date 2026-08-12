@@ -33,6 +33,10 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Commands
 
-The supported surface is `/wiki [focus]`, `regenerate`, `status`, `runs`,
-`pause`, `resume`, and `cancel`. A Git repository without `workspace.yaml` is
-treated as an implicit single source.
+- Added `/wiki init` with language, repeatable source excludes, and default
+  ignore controls for explicit multi-source workspaces.
+- Added `/wiki source add link` for local Git roots and `/wiki source add clone`
+  for local or remote URLs, with optional source names, workspace paths and refs.
+- Existing run commands remain `/wiki [focus]`, `regenerate`, `status`, `runs`,
+  `pause`, `resume`, and `cancel`. A Git repository without `workspace.yaml`
+  remains an implicit single source and needs no initialization.

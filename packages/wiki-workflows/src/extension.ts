@@ -11,7 +11,7 @@ import { createConfiguredWikiProducer } from "./production.js";
 import type { WikiProducer } from "./producer.js";
 import type { WikiRunHandle, WikiRunView } from "./producer-types.js";
 import { errorMessage } from "./util.js";
-import { loadWikiWorkspace } from "./workspace.js";
+import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
 
 export interface WikiExtensionOptions {
   createProducer?: (context: ExtensionContext) => WikiProducer;
@@ -62,6 +62,10 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           return;
         }
         try {
+          if (command.action === "init" || command.action === "source-add") {
+            await dispatchWorkspace(pi, active, command);
+            return;
+          }
           const cwd = await workspaceRoot(active.cwd);
           const engine = currentProducer(active);
           await dispatch(pi, active, engine, cwd, command);
@@ -80,7 +84,7 @@ async function dispatch(
   context: ExtensionCommandContext,
   producer: WikiProducer,
   cwd: string,
-  command: WikiCliCommand,
+  command: Exclude<WikiCliCommand, { action: "init" | "source-add" }>,
 ): Promise<void> {
   if (command.action === "run") {
     const handle = await producer.start({
@@ -107,6 +111,46 @@ async function dispatch(
   if (command.action === "resume") {
     void streamRun(pi, context, handle, view.lastEventSequence);
   }
+}
+
+async function dispatchWorkspace(
+  pi: ExtensionAPI,
+  context: ExtensionCommandContext,
+  command: Extract<WikiCliCommand, { action: "init" | "source-add" }>,
+): Promise<void> {
+  if (command.action === "init") {
+    const workspace = await wikiWorkspaceManagement.init({
+      cwd: context.cwd,
+      workspace: command.workspace,
+      language: command.language,
+      defaultSourceIgnores: command.defaultSourceIgnores,
+      wikiExclude: command.exclude,
+    });
+    output(pi, context, `Wiki workspace initialized: ${workspace.root}\nLanguage: ${workspace.language}`);
+    return;
+  }
+  const workspace = command.kind === "link"
+    ? await wikiWorkspaceManagement.addLink({
+      cwd: context.cwd,
+      workspace: command.workspace,
+      localPath: command.localPath,
+      name: command.name,
+    })
+    : await wikiWorkspaceManagement.addClone({
+      cwd: context.cwd,
+      workspace: command.workspace,
+      remoteUrl: command.url,
+      ref: command.ref,
+      name: command.name,
+    });
+  output(pi, context, renderAddedSource(workspace));
+}
+
+function renderAddedSource(workspace: ResolvedWikiWorkspace): string {
+  const source = workspace.sources.at(-1);
+  return source
+    ? `Wiki source added: ${source.path}\nWorkspace: ${workspace.root}\nMode: ${source.origin.type}`
+    : `Wiki workspace updated: ${workspace.root}`;
 }
 
 async function selectedRun(producer: WikiProducer, cwd: string, runId?: string): Promise<WikiRunHandle | undefined> {
@@ -138,6 +182,8 @@ function output(pi: ExtensionAPI, context: ExtensionCommandContext, content: str
 }
 
 const COMPLETIONS = [
+  { value: "init ", label: "init", description: "Initialize a Wiki workspace" },
+  { value: "source add ", label: "source", description: "Link or clone a Git source" },
   { value: "regenerate ", label: "regenerate", description: "Rebuild the Wiki topology" },
   { value: "status ", label: "status", description: "Show a run" },
   { value: "runs", label: "runs", description: "List repository Wiki runs" },
@@ -149,6 +195,15 @@ const COMPLETIONS = [
 export function wikiArgumentCompletions(argumentPrefix: string) {
   const value = argumentPrefix.trimStart();
   if (!value) return COMPLETIONS.slice();
+  if (/^source\s*$/.test(value)) {
+    return [{ value: "source add ", label: "add", description: "Add a Git source" }];
+  }
+  if (/^source\s+add\s*$/.test(value)) {
+    return [
+      { value: "source add link ", label: "link", description: "Link a local Git repository root" },
+      { value: "source add clone ", label: "clone", description: "Clone a Git URL" },
+    ];
+  }
   if (/\s/.test(value)) return null;
   return COMPLETIONS.filter((item) => item.label.startsWith(value));
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -79,10 +80,10 @@ async function fixture(t) {
   createWikiExtension({ createProducer: () => producer })(pi);
   await handlers.get("session_start")({}, context);
   const run = async (args) => await commands.get("wiki").handler(args, context);
-  return { calls, messages, notices, run };
+  return { cwd, calls, messages, notices, run };
 }
 
-test("maps the seven command forms onto WikiProducer", async (t) => {
+test("maps run controls onto WikiProducer", async (t) => {
   const subject = await fixture(t);
   await subject.run("auth flows");
   await new Promise((resolve) => setImmediate(resolve));
@@ -113,10 +114,29 @@ test("reports parser and producer failures without a TUI", async (t) => {
   assert.match(subject.notices.at(-1).message, /No Wiki run/);
 });
 
-test("completion exposes only the compact command surface", () => {
+test("workspace management commands produce plain output", async (t) => {
+  const subject = await fixture(t);
+  const parent = path.dirname(subject.cwd);
+  const source = path.join(parent, `source-${Date.now()}`);
+  await mkdir(source, { recursive: true });
+  execFileSync("git", ["init", "--quiet"], { cwd: source });
+  t.after(async () => await rm(source, { recursive: true, force: true }));
+
+  const workspace = path.join(parent, `managed-${Date.now()}`);
+  await subject.run(`init ${JSON.stringify(workspace)} --lang zh --exclude "vendor/**"`);
+  assert.match(subject.messages.at(-1), /Wiki workspace initialized/);
+  assert.match(await readFile(path.join(workspace, "workspace.yaml"), "utf8"), /vendor\/\*\*/);
+  await subject.run(`source add link ${JSON.stringify(source)} --name api --workspace ${JSON.stringify(workspace)}`);
+  assert.match(subject.messages.at(-1), /Wiki source added: api/);
+  t.after(async () => await rm(workspace, { recursive: true, force: true }));
+});
+
+test("completion exposes management and run commands", () => {
   assert.deepEqual(wikiArgumentCompletions("").map((item) => item.label), [
-    "regenerate", "status", "runs", "pause", "resume", "cancel",
+    "init", "source", "regenerate", "status", "runs", "pause", "resume", "cancel",
   ]);
   assert.equal(wikiArgumentCompletions("status "), null);
   assert.deepEqual(wikiArgumentCompletions("re").map((item) => item.label), ["regenerate", "resume"]);
+  assert.deepEqual(wikiArgumentCompletions("source ").map((item) => item.label), ["add"]);
+  assert.deepEqual(wikiArgumentCompletions("source add ").map((item) => item.label), ["link", "clone"]);
 });

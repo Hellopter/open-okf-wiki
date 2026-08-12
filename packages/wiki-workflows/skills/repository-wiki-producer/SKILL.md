@@ -9,6 +9,11 @@ Use `/wiki [focus]` to update the Wiki and `/wiki regenerate [focus]` to rebuild
 its page topology. A Git repository without `workspace.yaml` is an implicit
 single source. Existing multi-source workspaces use their declared sources.
 
+For an explicit multi-source workspace, use `/wiki init [workspace]` followed
+by `/wiki source add link <local-git-root>` or `/wiki source add clone <url>`.
+Links are symlinks on Linux/macOS and directory junctions on Windows. The link
+target must be a Git repository root; use clone when linking is unsuitable.
+
 The host owns run state, source fingerprints, path authorization, validation,
 and publication. Do not create workflow manifests, source copies, or alternate
 plans. Work only through the tools and paths supplied for the current run.

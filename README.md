@@ -13,6 +13,9 @@ Run Pi in the repository or Wiki workspace:
 
 ```text
 /wiki [focus]
+/wiki init [workspace] [--lang zh|en] [--exclude <glob>]... [--no-default-ignores]
+/wiki source add link <local-path> [--name <name>] [--workspace <dir>]
+/wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
 /wiki regenerate [focus]
 /wiki status [run-id]
 /wiki runs
@@ -22,8 +25,14 @@ Run Pi in the repository or Wiki workspace:
 ```
 
 The default command updates the Wiki. `regenerate` rebuilds its page topology.
-When no `workspace.yaml` exists, the current repository is initialized as a
-single source; an existing multi-source workspace is preserved.
+A Git repository without `workspace.yaml` works directly as one implicit source.
+Use `init` only to create an explicit workspace, then add one or more sources.
+
+`source add link` requires a local Git repository root. It creates a symlink on
+Linux/macOS and a directory junction on Windows. Use `source add clone` when a
+link is unsuitable or the source is remote; `--ref` checks out a branch, tag, or
+commit. `init` defaults to the current directory, Chinese output, and standard
+source ignores. Repeat `--exclude` for workspace-specific source globs.
 
 Progress is emitted as plain text. Runs are durable and can be inspected,
 paused, resumed, or cancelled without a TUI.

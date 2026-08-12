@@ -17,6 +17,10 @@ Callers do not know node kinds, graph dependencies, research rounds, page
 writers, retry attempts, candidate paths, or publication journals. Pi extension
 commands and tests use the same interface.
 
+Workspace mutation is a separate small module used only by `/wiki init` and
+`/wiki source add`. It validates Git roots, source names and destinations, then
+atomically updates `workspace.yaml`; it is not part of the production run seam.
+
 ## Implementation
 
 The producer hides four deterministic gates around one dynamic Lead loop:

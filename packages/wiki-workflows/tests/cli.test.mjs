@@ -25,12 +25,29 @@ test("parses the compact Wiki command surface", () => {
   assert.deepEqual(parseWikiCliCommand("pause"), { action: "pause" });
   assert.deepEqual(parseWikiCliCommand("resume"), { action: "resume" });
   assert.deepEqual(parseWikiCliCommand("cancel run.2"), { action: "cancel", runId: "run.2" });
+  assert.deepEqual(parseWikiCliCommand("init"), {
+    action: "init", language: "zh", exclude: [], defaultSourceIgnores: true,
+  });
+  assert.deepEqual(parseWikiCliCommand('init docs --lang en --exclude "vendor/**" --exclude generated/** --no-default-ignores'), {
+    action: "init", workspace: "docs", language: "en", exclude: ["vendor/**", "generated/**"], defaultSourceIgnores: false,
+  });
+  assert.deepEqual(parseWikiCliCommand("source add link ../api --name backend --workspace docs"), {
+    action: "source-add", kind: "link", localPath: "../api", name: "backend", workspace: "docs",
+  });
+  assert.deepEqual(parseWikiCliCommand("source add clone https://example.test/web.git --ref main --name web"), {
+    action: "source-add", kind: "clone", url: "https://example.test/web.git", ref: "main", name: "web",
+  });
 });
 
 test("rejects ambiguous control commands", () => {
   assert.throws(() => parseWikiCliCommand("runs extra"), /does not accept arguments/);
   assert.throws(() => parseWikiCliCommand("resume one two"), /Usage/);
   assert.throws(() => parseWikiCliCommand("status ../run"), /Invalid Wiki run id/);
+  assert.throws(() => parseWikiCliCommand("init a b"), /Usage/);
+  assert.throws(() => parseWikiCliCommand("init --lang fr"), /zh or en/);
+  assert.throws(() => parseWikiCliCommand("init --exclude"), /requires a value/);
+  assert.throws(() => parseWikiCliCommand("source add link ../api --ref main"), /Unknown/);
+  assert.throws(() => parseWikiCliCommand("source add clone"), /Usage/);
 });
 
 test("renders plain run, list, and progress output", () => {
@@ -66,9 +83,12 @@ test("renders plain run, list, and progress output", () => {
   }), "Wiki run paused");
 });
 
-test("help lists only the supported commands", () => {
+test("help lists management and run commands", () => {
   const help = wikiCliHelp();
   assert.match(help, /\/wiki \[focus\]/);
   assert.match(help, /\/wiki regenerate/);
-  assert.doesNotMatch(help, /init|source add|open|history|artifacts|stop/);
+  assert.match(help, /\/wiki init/);
+  assert.match(help, /\/wiki source add link/);
+  assert.match(help, /\/wiki source add clone/);
+  assert.doesNotMatch(help, /open|history|artifacts|stop/);
 });
