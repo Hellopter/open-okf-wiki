@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadWikiPromptGuidance } from "../dist/prompt-guidance.js";
-import { promptFor, synthesisContext } from "../dist/prompts.js";
+import { promptFor, reviewContext, synthesisContext } from "../dist/prompts.js";
 import { DEFAULT_WIKI_WORKFLOW_POLICY, resolveWikiPolicy } from "../dist/policy.js";
 
 test("Chinese guidance prefers source-authored domain and concept names", async () => {
@@ -31,7 +31,10 @@ test("research guidance requires structured findings and explicit gaps", async (
   assert.match(research, /wiki_submit_research/);
   assert.match(research, /bounded survey, then deepen/i);
   assert.match(research, /deepen before submit|deepen with targeted|survey and deepen/i);
-  assert.match(research, /call `wiki_submit_research` with the complete result object directly/i);
+  assert.match(research, /call `wiki_submit_research` with only the final summary and gaps/i);
+  assert.match(research, /wiki_research_put_findings/);
+  assert.match(research, /wiki_research_remove_finding/);
+  assert.match(research, /wiki_research_findings/);
   assert.match(research, /within the budget stated at the end of the prompt/i);
   assert.doesNotMatch(research, /exact handoff path|with that path|wiki_write_handoff/i);
   assert.match(research, /Finding granularity/i);
@@ -59,7 +62,8 @@ test("assembled prompts end with the configured submission protocol", async () =
     policy,
   }, undefined);
   assert.match(prompt, /## Required Completion Protocol/);
-  assert.match(prompt, /Call `wiki_submit_research`/);
+  assert.match(prompt, /call `wiki_submit_research` with only summary and gaps/i);
+  assert.match(prompt, /one terminal submission tool accepts its required payload/i);
   assert.match(prompt, /Up to 2 submission attempts are available/);
   assert.match(prompt, /Do not finish with prose, a JSON code block, or a handoff file/);
   assert.match(prompt, /After acceptance, stop\.\s*$/);
@@ -138,8 +142,50 @@ test("review guidance emits one complete defect set for a repair wave", async ()
   assert.match(review, /multiple independent reader questions/i);
   assert.match(review, /prefer `coverage` or `topology`/i);
   assert.match(review, /prefer `depth`/i);
-  assert.match(review, /call `wiki_submit_review` with the complete result object directly/i);
+  assert.match(review, /call `wiki_submit_review`\s+with only the summary/i);
+  assert.match(review, /wiki_review_put_defects/);
+  assert.match(review, /wiki_review_remove_defect/);
+  assert.match(review, /terminal payload is exactly `\{"summary"/i);
+  assert.doesNotMatch(review, /"defects"\s*:\s*\[/);
   assert.doesNotMatch(review, /exact handoff path|wiki_write_handoff/i);
+});
+
+test("review context separates domain responsibility from global fragment fan-in", () => {
+  const spec = {
+    domains: [{
+      id: "core", title: "Core", purpose: "Core", pages: [{
+        pageType: "domain", path: "core/domain.md", title: "Core", purpose: "Core",
+        readerQuestions: ["How?"], requiredFacets: ["models"], findingIds: [],
+      }],
+    }],
+    crossLinks: [], sharedTerms: [], omissions: [],
+  };
+  const run = {
+    policy: resolveWikiPolicy(), focus: undefined,
+    nodes: [{ id: "plan", kind: "synthesis", result: { decision: "finalize", spec, rationale: "ready" } }],
+  };
+  const domain = { kind: "review", input: {
+    sourceNodeIds: [], synthesisNodeId: "plan", verificationGroupId: "v",
+    reviewScope: { kind: "domain", domainId: "core", pagePaths: ["core/domain.md"] },
+  } };
+  const domainPrompt = reviewContext(domain, run);
+  assert.match(domainPrompt, /Review only these pagePaths/);
+  assert.match(domainPrompt, /"pagePaths": \[/);
+  assert.doesNotMatch(domainPrompt, /Domain Review Fragments/);
+
+  const global = { kind: "review", input: {
+    sourceNodeIds: ["domain-review"], synthesisNodeId: "plan", verificationGroupId: "v",
+    reviewScope: { kind: "global", domainReviewNodeIds: ["domain-review"] },
+  } };
+  const globalPrompt = reviewContext(global, run, { fragments: [{
+    domainId: "core", pagePaths: ["core/domain.md"], summary: "Domain checked",
+    defects: [{ kind: "depth", page: "core/domain.md", detail: "Missing invariant" }],
+  }], omittedFragmentCount: 0 });
+  assert.match(globalPrompt, /Domain Review Fragments/);
+  assert.match(globalPrompt, /Domain checked/);
+  assert.match(globalPrompt, /Missing invariant/);
+  assert.match(globalPrompt, /cross-domain consistency, overview accuracy, coverage, and topology/);
+  assert.match(globalPrompt, /do not repeat equivalent fragment defects/);
 });
 
 test("skill stays a concise workflow router to role references", async () => {
@@ -178,6 +224,27 @@ test("synthesis round JSON injects remaining budgets and prefer-finalize policy"
   assert.match(context, /"remainingExpandRounds":/);
   assert.match(context, /"remainingAuditRounds":/);
   assert.match(context, /"maxExpandScopesPerBatch": 4/);
+});
+
+test("structural replanning uses the preseeded plan without embedding the full prior spec", () => {
+  const spec = {
+    domains: [{
+      id: "overview", title: "Overview", purpose: "secret-purpose-that-must-not-be-inlined",
+      pages: [{ pageType: "overview", path: "overview/overview.md", title: "Overview", purpose: "secret-page-purpose", readerQuestions: ["Secret question?"], requiredFacets: ["domain map"], findingIds: [] }],
+    }],
+    crossLinks: [], sharedTerms: [], omissions: [],
+  };
+  const node = { id: "structural", kind: "synthesis", input: { researchIds: [], supplementalBatch: 0, mode: "structural", dryAuditPasses: 1, round: 2, priorSynthesisNodeId: "prior", trigger: { issues: [] } } };
+  const run = {
+    effectiveMode: "generate", requestedMode: "generate", maxResearchRounds: 3,
+    policy: resolveWikiPolicy(), inspection: { sourcePaths: ["src"] },
+    nodes: [{ id: "prior", kind: "synthesis", result: { decision: "finalize", spec } }],
+  };
+  const context = synthesisContext(node, run, []);
+  assert.match(context, /Preseeded Prior WikiSpec/);
+  assert.match(context, /wiki_spec_get_domain/);
+  assert.match(context, /"pageCount": 1/);
+  assert.doesNotMatch(context, /secret-purpose|secret-page-purpose|Secret question/);
 });
 
 function normalizeWhitespace(value) {

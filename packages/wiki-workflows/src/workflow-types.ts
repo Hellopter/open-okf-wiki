@@ -110,6 +110,7 @@ export interface WikiNode {
   attempt: number;
   inputFingerprint: string;
   input: unknown;
+  /** Compact routing receipt in persisted snapshots; runtime nodes use the generic full payload. */
   result?: unknown;
   output?: string;
   history?: WikiNodeHistoryEntry[];
@@ -177,7 +178,10 @@ export interface WikiRunSnapshot {
   /** Product defaults and workspace overrides pinned for this complete run. */
   policy: ResolvedWikiPolicy;
   policyHash: string;
+  /** Full runtime inspection. Cleared when the run is projected for persistence. */
   inspection?: WikiInspection;
+  /** Bounded inspection metadata present on durable snapshots and UI/history views. */
+  inspectionSummary?: WikiInspectionSummary;
   inspectionFingerprint?: string;
   nodes: WikiNode[];
   events: WikiRunEvent[];
@@ -349,6 +353,78 @@ export interface WikiResearchReceipt {
   criticalGapQuestions: string[];
 }
 
+export interface WikiInspectionReceipt {
+  kind: "inspection";
+  artifact: WikiArtifactRef;
+  mode: WikiMode;
+  head: string;
+  sourceFingerprint: string;
+  sourceCount: number;
+  changedPathCount: number;
+  existingPageCount: number;
+  impactedPageCount: number;
+}
+
+/** Bounded run-level inspection status persisted for history and UI only. */
+export interface WikiInspectionSummary {
+  kind: "inspection_summary";
+  mode: WikiMode;
+  head: string;
+  sourceFingerprint: string;
+  sourceCount: number;
+  changedPathCount: number;
+  existingPageCount: number;
+  impactedPageCount: number;
+}
+
+export interface WikiSynthesisReceipt {
+  kind: "synthesis";
+  artifact: WikiArtifactRef;
+  decision: "expand" | "finalize";
+  scopeCount?: number;
+  domainCount?: number;
+  pageCount?: number;
+}
+
+export interface WikiWriteReceipt {
+  kind: "write";
+  artifact: WikiArtifactRef;
+  page: string;
+  sha256: string;
+}
+
+export interface WikiValidationReceipt {
+  kind: "validation";
+  artifact: WikiArtifactRef;
+  ok: boolean;
+  issueCount: number;
+  pageCount: number;
+  obsoletePageCount: number;
+}
+
+export interface WikiReviewReceipt {
+  kind: "review";
+  artifact: WikiArtifactRef;
+  defectCount: number;
+  summary: string;
+}
+
+export interface WikiFinalizationReceipt {
+  kind: "finalization";
+  artifact: WikiArtifactRef;
+  sourceDrift: boolean;
+  pageCount?: number;
+  obsoletePageCount?: number;
+  removedPageCount?: number;
+  rebuiltIndexCount?: number;
+}
+
+export type WikiNodeReceipt = WikiInspectionReceipt | WikiResearchReceipt | WikiSynthesisReceipt
+  | WikiWriteReceipt | WikiValidationReceipt | WikiReviewReceipt | WikiFinalizationReceipt;
+
+/** Engine-only full-payload shape. Durable APIs must expose `WikiRunSnapshot`. */
+
+
 export type WikiLocalReviewDefectKind = "evidence" | "link" | "depth" | "diagram";
 export type WikiStructuralReviewDefectKind = "topology" | "coverage";
 export type WikiReviewDefectKind = WikiLocalReviewDefectKind | WikiStructuralReviewDefectKind;
@@ -395,19 +471,24 @@ export interface WikiAgentExecutionRequest {
   role: "researcher" | "synthesizer" | "writer" | "reviewer";
   /** Declared source roots this agent may inspect. */
   readRoots?: string[];
-  /** Exact workspace-local handoff files this agent may read. */
-  artifactPaths?: string[];
   /** Exact Wiki files this agent may inspect without write permission. */
   wikiReadPaths?: string[];
-  /** Internal persistence target for accepted control output; never model-authored. */
   /** Unpublished Wiki root used for exact writer and reviewer paths in this run. */
   candidateWikiRoot?: string;
+  /** Ephemeral single-page root owned by this writer node attempt. */
+  writerStagingWikiRoot?: string;
   /** Exact Wiki-relative files a page writer may create or change. */
   writePaths?: string[];
   language: "zh" | "en";
   signal: AbortSignal;
   /** Pinned per-node direct structured submission budget. */
   maxSubmissionAttempts?: number;
+  /** Runtime-only seed for structural replanning; never persisted in the node input. */
+  initialSynthesisSpec?: WikiSpec;
+  /** Runtime-only source-grounded catalog exposed through read-only query tools. */
+  researchCatalog?: WikiResearchCatalogScope[];
+  /** Runtime-only bounded domain review results supplied to the global reviewer. */
+  reviewFragments?: WikiReviewFragmentContext;
   onActivity?: (activity: Partial<WikiNodeActivity>, metrics?: Partial<WikiNodeMetrics>) => void;
   /** A bounded live assistant-text snapshot for the Navigator detail pane. */
   onOutput?: (output: string) => void;
@@ -421,6 +502,24 @@ export interface WikiAgentExecutionRequest {
   validateControlSubmission?: (submission: WikiControlSubmission) => void;
   /** Validate and seal the writer's assigned page without ending its session on failure. */
   validatePageSubmission?: (page: string) => Promise<WikiPageSubmissionResult>;
+}
+
+export interface WikiReviewFragmentContext {
+  fragments: Array<{
+    domainId: string;
+    pagePaths: string[];
+    summary: string;
+    defects: WikiReviewDefect[];
+  }>;
+  omittedFragmentCount: number;
+}
+
+export interface WikiResearchCatalogScope {
+  scopeId: string;
+  task: string;
+  sourcePaths: string[];
+  findings: WikiResearchFinding[];
+  gaps: WikiResearchGap[];
 }
 
 export interface WikiAgentExecutionResult {

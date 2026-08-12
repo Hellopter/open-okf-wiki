@@ -10,7 +10,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/failures.ts` | Failure codes, `WikiFailure` / `WikiFailureClass`, `WikiBudgetExhaustedError`, `errorMessage`. Single source for `WikiNodeErrorCode`. |
 | `src/util.ts` | Pure helpers: `isRecord`, `clone`, `pathIsInside`, `uniqueStrings`, `stableStringify`; re-exports `errorMessage`. |
 | `src/workflow-phases.ts` | User-visible phases. Static validation remains in Write; semantic review and finalization map to Review & Publish. |
-| `src/workflow-types.ts` | Durable snapshot / node / event types (`WikiRunSnapshot` **version 10**, pinned policy and `blockedDetails`). |
+| `src/workflow-types.ts` | Runtime and durable snapshot / node / event types (`WikiRunSnapshot` **version 1**, pinned policy and `blockedDetails`). |
 | `src/node-retry.ts` | Pure classification of execution errors → node status / terminal run. |
 | `src/join-barrier.ts` | Sibling join helpers: `evaluateJoin`, `groupAllSucceeded`, `siblingsByGroupKey`. Success path only (see below). |
 | `src/session.ts` | Pointer-only Pi custom-entry codec (`WikiRunSession` / `createWikiRunSession` / `parseWikiRunSession`). Fail-closed; **no legacy full-snapshot dual-read**. |
@@ -29,7 +29,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | `src/artifact-store.ts` | Content-addressed accepted-object and coordinator-report blobs with per-run manifests. |
 | `src/publication-store.ts` | Per-run candidate trees, fork copy, atomic publish journal, rollback and startup recovery. |
 | `src/run-history.ts` | Workspace-local authoritative `run.json`, derived index, pagination and retention. |
-| `src/snapshot-validation.ts` | Fail-closed version 10 checks, including policy/hash consistency. |
+| `src/snapshot-validation.ts` | Fail-closed version 1 checks, including policy/hash and artifact-reference consistency. |
 | `src/executor.ts` | Isolated Pi sessions, compaction/retry policy, runtime admission, bounded streams/history, and node deadline. |
 | `src/extension.ts` | Pi extension wiring: commands, run lifecycle, UI host, session restore. |
 | `src/ui/*` | Dashboard / navigator / stages / format / task panel — pure-ish presentation over snapshots. Stages re-export `WIKI_WORKFLOW_PHASES` as `WIKI_WORKFLOW_STAGES`. |
@@ -67,9 +67,12 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 ## Snapshots
 
 - **No old-snapshot migration path.**
-- Snapshot `version` is **10**. Incompatible older versions are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
+- Snapshot `version` is **1**. Incompatible shapes are **rejected** (fail closed) by `snapshot-validation.ts` (no migration).
 - Session restore is **pointer-only**; full snapshots live in the project history store.
 - Artifacts are **content-addressed** under `.okf-wiki/blobs/{sha256}.*` with per-run manifests (no dual-read of older layouts).
+- Full node payloads stay in artifacts. Durable nodes carry bounded receipts and
+  exact artifact references; restore validates ownership and hydrates full
+  results before resumed scheduling.
 - Optional `blockedDetails` on terminal blocked runs carries structured diagnostics (`code`, `issues`, `defects`, `page`, …).
 
 ## Workspace policy lifecycle
@@ -79,7 +82,7 @@ Git-native repository Wiki DAG workflow for Pi. The engine owns run state; pure 
 | Field | Default | Validation / ownership |
 |-------|---------|------------------------|
 | `quality.maxResearchRounds` | `6` | Integer `3..20`; copied into the run only at start |
-| `quality.maxSubmissionAttempts` | `3` | Integer `1..3`; direct typed submission calls per node attempt; pinned policy |
+| `quality.maxSubmissionAttempts` | `3` | Integer `1..3`; terminal acceptance calls per node attempt; pinned policy |
 | `wiki.exclude` | `[]` | Non-empty string globs; global inspection and accepted-evidence exclusion |
 | `wiki.terminology` | `{}` | Non-empty string keys and definitions; prompt-visible canonical vocabulary |
 | `wiki.domains` | `[]` | Unique safe ids, non-empty titles, required non-empty include arrays, optional exclude arrays |
@@ -141,7 +144,10 @@ Research and write groups fan in **only after** a node is marked `status=succeed
 
 `evaluateJoin` is pure (`join-barrier.ts`). Validation and semantic review are
 sequential gates: validation repairs route immediately, then a clean candidate
-queues review, and only clean review queues finalization.
+fans out one reviewer per non-Overview domain. A global reviewer depends on all
+domain fragments and owns cross-domain, Overview, and topology findings. Only
+the clean aggregate queues finalization; any repair creates a fresh full review
+generation.
 
 ## Engine shape (facade + pump)
 
@@ -187,6 +193,13 @@ queues review, and only clean review queues finalization.
   `wiki_submit_synthesis_finalize` tools with one shared submission budget. The
   internal result remains a discriminated synthesis decision; the model does
   not have to satisfy a multi-branch union schema in one tool.
+- Research, Plan, and Review use a staged accumulator rather than one monolithic
+  model response: at most 128 successful mutations, batches of at most 20
+  findings or defects, 24 KiB paginated query responses, and 256 KiB canonical
+  artifacts. Terminal submission attempts are accounted separately.
+- Writers edit one attempt-local page. Acceptance seals the bytes, validates the
+  sealed page, and atomically promotes it into the candidate, so cancellation,
+  timeout, and concurrent late writes cannot alter accepted content.
 - The resolved concurrency limit is shared by the engine and executor. 429
   pressure temporarily reduces admission to one. Active memory pressure pauses
   and requeues running nodes before the V8 hard threshold.

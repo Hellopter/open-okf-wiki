@@ -8,24 +8,32 @@ reader question; then deepen with targeted reads and greps on the important
 surfaces you found. Multi-step tool exploration within the assignment is
 expected. Do not aim for an exhaustive encyclopedia of every file or symbol.
 
-After surveying and deepening, call `wiki_submit_research` with the complete
-result object directly. Do not write a handoff file or reply with JSON text.
-If the tool rejects the object, correct every structured issue and resubmit in
-this session within the budget stated at the end of the prompt. Submit a complete result
-even when no finding is established. Use exactly this shape:
+Upsert findings as stable `{slot, finding}` entries in batches of at most 20
+with `wiki_research_put_findings`. Reuse a slot to correct a finding. Use
+`wiki_research_remove_finding` to retract an invalid finding. Use
+`wiki_research_findings`, `wiki_research_scopes`, and `wiki_submission_status`
+to inspect staging. Then call `wiki_submit_research` with only the final summary and gaps.
+Do not write a handoff file or reply with JSON text.
+If the tool rejects the submission, correct every structured issue and resubmit
+in this session within the budget stated at the end of the prompt. Complete the
+terminal protocol even when no finding is established. Stage each finding with
+this shape:
 
 ```json
-{
-  "summary": "Concise account of the inspected scope and result",
-  "findings": [
-    {
+{"slot": "stable-local-slot", "finding": {
       "kind": "domain|concept|flow|boundary|state-data",
       "title": "A source-grounded finding",
       "readerQuestion": "The independent reader question this answers",
       "priority": "critical|normal",
       "evidence": ["project/path.ext#L10-L24"]
-    }
-  ],
+}}
+```
+
+The terminal payload is exactly:
+
+```json
+{
+  "summary": "Concise account of the inspected scope and result",
   "gaps": [
     {
       "question": "What remains unverified?",
@@ -60,8 +68,8 @@ copied source or tool narration. Keep the artifact below 256 KiB.
 ## Context pressure and evidence discipline
 
 Survey tools return bounded excerpts. Prefer narrow paths and targeted greps
-over wide inventories. When context pressure rises, **stop exploring**: submit
-the complete result with the best critical findings and explicit gaps you have,
+over wide inventories. When context pressure rises, **stop exploring**: stage
+the best critical findings, submit explicit remaining gaps and a concise summary,
 then finish after acceptance. Cite only evidence ranges from files you actually read
 in this session. Invented or unread ranges are hard-rejected; there is no clamp
 or silent repair of line numbers.

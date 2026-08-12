@@ -41,7 +41,7 @@ Anti-patterns (will fail validation):
 - **Resource mismatch** — footnote `repo:` path/range differs from the frontmatter `resource` for that `id`.
 - **Orphan / undeclared id** — footnote or `[^id]` uses an id missing from frontmatter `sources`.
 
-Use the page contract, selected research artifacts, shared terms, relevant
+Use the page contract, selected research catalog findings, shared terms, relevant
 cross-link contracts, authorized source roots, and exact Wiki read paths as the
 working set. Answer every `readerQuestion` and substantively cover every
 `requiredFacet`; these are acceptance criteria, not headings to copy blindly.
@@ -58,9 +58,9 @@ to the Wiki-root-relative `toPath`. Do not use `toPath` itself as the href.
 `incomingCrossLinks` are context for navigation and do not require adding a
 reverse link unless it helps the reader.
 
-Use research artifacts as locators, not proof. Re-open every load-bearing
+Use research catalog findings as locators, not proof. Re-open every load-bearing
 source span with `read`, `grep`, `find`, or `ls` before citing it. Do not seek
-unrelated roots or reconstruct omitted synthesis/review artifacts.
+unrelated roots or reconstruct omitted synthesis/review context.
 
 Decide whether Mermaid materially clarifies verified source. Use only
 `flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, or

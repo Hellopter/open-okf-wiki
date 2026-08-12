@@ -31,6 +31,11 @@ export function nodesInPhase(run: WikiRunSnapshot, phaseId: string): WikiNode[] 
 
 /** Retry only independent roots; successful roots deterministically derive the rest of the phase. */
 export function phaseRetryRoots(nodes: WikiNode[]): WikiNode[] {
+  // A semantic-review iteration is an explicit domain fanout plus one global
+  // fan-in. Retry every reviewer in that settled iteration so the global node
+  // remains queued behind freshly rerun domain fragments.
+  const reviewNodes = nodes.filter((node) => node.kind === "review");
+  if (reviewNodes.length > 1) return reviewNodes;
   const nodeIds = new Set(nodes.map((node) => node.id));
   const roots = nodes.filter((node) => !node.dependsOn.some((dependency) => nodeIds.has(dependency)));
   return roots.length ? roots : [nodes[0]!];

@@ -56,21 +56,19 @@ export const REVIEW_STRUCTURAL_DEFECT_FIELDS = ["kind", "detail"] as const;
 /** Keep every model-facing control surface explicit about its JSON contract. */
 export function submissionContractGuidance(toolName: SubmissionToolName): string {
   if (toolName === "wiki_submit_research") {
-    const kinds = RESEARCH_FINDING_KINDS.join("|");
     const priorities = RESEARCH_PRIORITIES.join("|");
-    return `Use {"summary":"...","findings":[{"kind":"${kinds}","title":"...","readerQuestion":"...","priority":"${priorities}","evidence":["project/path#L1-L2"]}],"gaps":[{"question":"...","priority":"${priorities}","sourcePaths":["project"]}]}`;
+    return `First upsert {slot,finding} entries in batches of at most 20 with wiki_research_put_findings; retract invalid slots with wiki_research_remove_finding; use wiki_research_findings, wiki_research_scopes, and wiki_submission_status to inspect staging. Then submit only {"summary":"...","gaps":[{"question":"...","priority":"${priorities}","sourcePaths":["project"]}]}.`;
   }
   if (toolName === "wiki_submit_page") {
     return "Call the tool with the exact assigned page path after writing. Fix every returned issue and resubmit until accepted.";
   }
   if (toolName === "wiki_submit_synthesis_finalize") {
-    const [pageType, pagePath, title, purpose, readerQuestions, requiredFacets, findingIds] = SYNTHESIS_PAGE_FIELDS;
-    return `Use {"spec":{"domains":[...],"crossLinks":[...],"sharedTerms":[...],"omissions":[...]},"rationale":"..."}. Each page contains ${pageType}, ${pagePath}, ${title}, ${purpose}, ${readerQuestions}, ${requiredFacets}, and ${findingIds}. Every non-overview domain has exactly one domain page at <domain-id>/domain.md.`;
+    return "Stage the WikiSpec with wiki_plan_put_domain, wiki_plan_remove_domain, and wiki_plan_set_coordination; inspect it with wiki_spec_get_domain and wiki_submission_status. Then submit only {\"rationale\":\"...\"}.";
   }
   if (toolName === "wiki_submit_synthesis_expand") {
     return `Use {"researchScopes":[{"id":"new-scope-id","sourcePaths":["declared-source"],"task":"..."}],"rationale":"..."}. Use only when a critical evidence gap requires more research.`;
   }
   const localKinds = REVIEW_LOCAL_DEFECT_KINDS.join("|");
   const structuralKinds = REVIEW_STRUCTURAL_DEFECT_KINDS.join("|");
-  return `Use {"defects":[...],"summary":"..."}. A local defect is exactly {"kind":"${localKinds}","page":"...","detail":"..."}; a structural defect is exactly {"kind":"${structuralKinds}","detail":"..."}. defects and summary are required; use [] when there are no actionable defects.`;
+  return `Upsert {slot,defect} entries in batches of at most 20 with wiki_review_put_defects; retract resolved slots with wiki_review_remove_defect; inspect them with wiki_review_defects and wiki_submission_status. A local defect is exactly {"kind":"${localKinds}","page":"...","detail":"..."}; a structural defect is exactly {"kind":"${structuralKinds}","detail":"..."}. Then submit only {"summary":"..."}; stage no defects when clean.`;
 }

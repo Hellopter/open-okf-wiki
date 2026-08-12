@@ -150,6 +150,13 @@ test("applyRestoredArtifactHealth blocks a paused run with missing handoffs", as
           round: 1,
         },
         handoff: missingRef,
+        result: {
+          kind: "synthesis",
+          artifact: missingRef,
+          decision: "finalize",
+          domainCount: 1,
+          pageCount: 1,
+        },
       }),
     ],
   });

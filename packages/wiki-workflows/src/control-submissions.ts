@@ -43,7 +43,13 @@ export const researchSubmissionSchema = Type.Object({
   }, { additionalProperties: false })),
 }, { additionalProperties: false });
 
-const specPageSchema = Type.Object({
+export const researchFindingSchema = researchSubmissionSchema.properties.findings.items;
+export const researchFinalizeSubmissionSchema = Type.Object({
+  summary: nonEmptyTextSchema,
+  gaps: researchSubmissionSchema.properties.gaps,
+}, { additionalProperties: false });
+
+export const specPageSchema = Type.Object({
   pageType: pageTypeSchema,
   path: nonEmptyTextSchema,
   title: nonEmptyTextSchema,
@@ -53,13 +59,14 @@ const specPageSchema = Type.Object({
   findingIds: Type.Array(nonEmptyTextSchema),
 }, { additionalProperties: false });
 
-const wikiSpecSchema = Type.Object({
-  domains: Type.Array(Type.Object({
+export const wikiSpecDomainSchema = Type.Object({
     id: nonEmptyTextSchema,
     title: nonEmptyTextSchema,
     purpose: nonEmptyTextSchema,
     pages: Type.Array(specPageSchema, { minItems: 1 }),
-  }, { additionalProperties: false }), { minItems: 1 }),
+  }, { additionalProperties: false });
+
+export const wikiSpecCoordinationSchema = Type.Object({
   crossLinks: Type.Optional(Type.Array(Type.Object({
     fromPath: nonEmptyTextSchema,
     toPath: nonEmptyTextSchema,
@@ -73,6 +80,11 @@ const wikiSpecSchema = Type.Object({
     findingId: nonEmptyTextSchema,
     rationale: nonEmptyTextSchema,
   }, { additionalProperties: false }))),
+}, { additionalProperties: false });
+
+const wikiSpecSchema = Type.Object({
+  domains: Type.Array(wikiSpecDomainSchema, { minItems: 1 }),
+  ...wikiSpecCoordinationSchema.properties,
 }, { additionalProperties: false });
 
 /** Strict discriminated payload for either research expansion or a final WikiSpec. */
@@ -107,11 +119,15 @@ const structuralReviewDefectSchema = Type.Object({
   detail: nonEmptyTextSchema,
 }, { additionalProperties: false });
 
+export const reviewDefectSchema = Type.Union([localReviewDefectSchema, structuralReviewDefectSchema]);
+
 /** Strict model-facing semantic review payload. */
 export const reviewSubmissionSchema = Type.Object({
-  defects: Type.Array(Type.Union([localReviewDefectSchema, structuralReviewDefectSchema])),
+  defects: Type.Array(reviewDefectSchema),
   summary: nonEmptyTextSchema,
 }, { additionalProperties: false });
+
+export const reviewFinalizeSubmissionSchema = Type.Object({ summary: nonEmptyTextSchema }, { additionalProperties: false });
 
 export class WikiControlSubmissionSizeError extends Error {
   readonly code = "submission_too_large";

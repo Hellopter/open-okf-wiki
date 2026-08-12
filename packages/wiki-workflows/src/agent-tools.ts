@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   submissionTools,
+  researchCatalogTools,
   type SubmissionCollector,
 } from "./agent-submissions.js";
 import {
@@ -38,48 +39,55 @@ export function workflowTools(
   submission?: SubmissionCollector,
   writePaths?: readonly string[],
   readRoots?: readonly string[],
-  artifactPaths?: readonly string[],
   wikiReadPaths?: readonly string[],
+  researchCatalog?: WikiAgentExecutionRequest["researchCatalog"],
+  writerStagingWikiRoot?: string,
 ): ToolDefinition<any, any, any>[] {
   const activeWikiRoot = policy.candidateWikiRoot ?? policy.wikiRoot;
+  const activeWriterRoot = role === "writer" && writerStagingWikiRoot ? path.resolve(writerStagingWikiRoot) : activeWikiRoot;
   const remapWikiReads = role === "writer" || Boolean(wikiReadPaths?.length);
-  const allowedPaths = role === "writer" ? exactWriterPaths(policy, activeWikiRoot, writePaths) : undefined;
-  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, artifactPaths, wikiReadPaths, allowedPaths);
+  const allowedPaths = role === "writer" ? exactWriterPaths(policy, activeWriterRoot, writePaths) : undefined;
+  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, wikiReadPaths, allowedPaths);
   const readOnly = [
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads), "read"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads), "grep"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads), "find"),
-    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads), "ls"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "read"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "grep"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createFindToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "find"),
+    boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createLsToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot, remapWikiReads, activeWriterRoot, allowedPaths), "ls"),
   ];
+  const catalog = researchCatalog?.length && (role === "synthesizer" || role === "writer")
+    ? researchCatalogTools(researchCatalog)
+    : [];
   if (role !== "writer") {
     return [
       ...readOnly,
+      ...catalog,
       ...(submission ? submissionTools(policy, submission, { allowedSourceRoots: readRoots ?? [] }) : []),
     ];
   }
 
   if (!allowedPaths) throw new Error("Workflow configuration error: writers require assigned Wiki pages");
-  const allowedDirectories = writerDirectories(activeWikiRoot, allowedPaths);
+  const allowedDirectories = writerDirectories(activeWriterRoot, allowedPaths);
 
   const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
-      mkdir: async (directory) => await guardedMkdir(activeWikiRoot, directory, allowedDirectories),
-      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths),
+      mkdir: async (directory) => await guardedMkdir(activeWriterRoot, directory, allowedDirectories),
+      writeFile: async (file, content) => await guardedWrite(activeWriterRoot, file, content, allowedPaths),
     },
   });
   const edit = createEditToolDefinition(policy.workspaceRoot, {
     operations: {
-      access: async (file) => await guardedAccess(activeWikiRoot, file, allowedPaths),
-      readFile: async (file) => await guardedRead(activeWikiRoot, file, allowedPaths),
-      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths),
+      access: async (file) => await guardedAccess(activeWriterRoot, file, allowedPaths),
+      readFile: async (file) => await guardedRead(activeWriterRoot, file, allowedPaths),
+      writeFile: async (file, content) => await guardedWrite(activeWriterRoot, file, content, allowedPaths),
     },
   });
   return [
     ...readOnly,
+    ...catalog,
     // Logical wiki/* inputs are transparently redirected to the run candidate.
     // Guarded operations still receive absolute paths and enforce the exact page.
-    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path"), policy, activeWikiRoot),
-    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true), policy, activeWikiRoot),
+    remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWriterRoot }], "path"), policy, activeWriterRoot),
+    remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWriterRoot }], "path", true), policy, activeWriterRoot),
     ...(submission ? submissionTools(policy, submission, { allowedSourceRoots: readRoots ?? [] }) : []),
   ];
 }
@@ -102,7 +110,6 @@ function readRootsForPolicy(
   policy: WorkspaceToolPolicy,
   activeWikiRoot: string,
   requested: readonly string[] | undefined,
-  artifactPaths: readonly string[] | undefined,
   wikiReadPaths: readonly string[] | undefined,
   writerPaths: ReadonlySet<string> | undefined,
 ): PermittedToolRoot[] {
@@ -112,15 +119,10 @@ function readRootsForPolicy(
     if (!root) throw new Error(`Workflow configuration error: undeclared source root: ${sourcePath}`);
     roots.push(root);
   }
-  for (const artifactPath of artifactPaths ?? []) roots.push(exactArtifactReadRoot(policy, artifactPath));
   for (const wikiReadPath of wikiReadPaths ?? []) roots.push(exactWikiReadRoot(policy, activeWikiRoot, wikiReadPath));
   for (const writerPath of writerPaths ?? []) roots.push(exactWorkspaceFileRoot(writerPath));
   if (roots.length === 0) throw new Error("Workflow configuration error: agent requests require declared source roots or exact artifact paths");
   return roots;
-}
-
-function exactArtifactReadRoot(policy: WorkspaceToolPolicy, artifactPath: string): PermittedToolRoot {
-  return exactWorkspaceFileRoot(resolveArtifactPath(policy, artifactPath));
 }
 
 function exactWikiReadRoot(policy: WorkspaceToolPolicy, activeWikiRoot: string, rawPath: string): PermittedToolRoot {
@@ -193,6 +195,8 @@ function remapCandidateWikiPath(
   policy: WorkspaceToolPolicy,
   activeWikiRoot: string,
   enabled = true,
+  writerStagingWikiRoot?: string,
+  writerPaths?: ReadonlySet<string>,
 ): ToolDefinition<any, any, any> {
   if (!policy.candidateWikiRoot || !enabled) return definition;
   const execute = definition.execute;
@@ -200,8 +204,15 @@ function remapCandidateWikiPath(
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, context) {
       const rawPath = valueAt(params, "path");
-      const mappedParams = typeof rawPath === "string" && (rawPath === "wiki" || rawPath.startsWith("wiki/"))
-        ? { ...(params as Record<string, unknown>), path: resolveActiveWikiPath(policy, activeWikiRoot, rawPath) }
+      const candidatePath = typeof rawPath === "string" && (rawPath === "wiki" || rawPath.startsWith("wiki/"))
+        ? resolveActiveWikiPath(policy, activeWikiRoot, rawPath)
+        : undefined;
+      const writerPath = writerStagingWikiRoot && typeof rawPath === "string" && rawPath.startsWith("wiki/")
+        ? path.resolve(writerStagingWikiRoot, rawPath.slice("wiki/".length))
+        : undefined;
+      const mappedPath = writerPath && writerPaths?.has(writerPath) ? writerPath : candidatePath;
+      const mappedParams = mappedPath
+        ? { ...(params as Record<string, unknown>), path: mappedPath }
         : params;
       return await execute(toolCallId, mappedParams, signal, onUpdate, context);
     },

@@ -6,7 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { parseReviewSubmission } from "./control-submissions.js";
+import { parseReviewSubmission, parseSynthesisSubmission } from "./control-submissions.js";
 import { WikiBudgetExhaustedError } from "./failures.js";
 import { evaluateJoin, siblingsByGroupKey } from "./join-barrier.js";
 import { DEFAULT_WIKI_WORKFLOW_POLICY } from "./policy.js";
@@ -32,6 +32,7 @@ import {
   repairInputForPage,
   researchIdsForPage,
   researchInputFor,
+  reviewInputFor,
   routeReviewDefects,
   safePagePacketInput,
   sameStringSet,
@@ -192,7 +193,7 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
       return;
     case "synthesis": {
       // Submission contract already validated by the selected synthesis submit tool.
-      const synthesis = node.result as WikiSynthesisResult;
+      const synthesis = parseSynthesisSubmission(node.result);
       const input = synthesisInputFor(node);
       if (synthesis.decision === "expand") {
         queueSupplementalResearch(host, node.id, synthesis.researchScopes, input);
@@ -212,13 +213,11 @@ export async function afterSuccess(host: TransitionHost, node: WikiNode): Promis
     }
     case "validate": {
       const validation = parseValidation(node.result);
-      node.result = validation;
       await completeWriteValidation(host, node, validation);
       return;
     }
     case "review": {
       const review = parseReviewSubmission(node.result);
-      node.result = review;
       ensureReviewSubmissionFitsRun(host, node, review);
       await completeSemanticReview(host, node, review);
       return;
@@ -257,7 +256,7 @@ export function queueInitialSourceSurveys(host: TransitionHost, inspectNodeId: s
     task: [
       `Survey ${sourcePath} to identify cohesive domains, their boundaries, entry points, and cross-domain questions.`,
       "Keep this pass broad. Mark unanswered domain model, core flow, state, invariant, interface, and failure-path questions as explicit critical gaps for targeted domain research.",
-      "Submit the complete typed research result directly. If rejected, correct every issue and resubmit in this session.",
+      "Stage findings with wiki_research_put_findings, then submit only the final summary and gaps with wiki_submit_research. If rejected, correct every issue and resubmit in this session.",
     ].join(" "),
   }));
   const domainScopes: WikiResearchScope[] = host.requireRun().policy.domains.map((domain) => {
@@ -513,29 +512,53 @@ async function completeWriteValidation(host: TransitionHost, validationNode: Wik
   }
   const verificationGroupId = recordValue(validationNode.input, "verificationGroupId");
   if (typeof verificationGroupId !== "string") throw new Error("Validation node has no group ID");
-  const existing = run.nodes.find((candidate) => candidate.kind === "review"
+  const existing = run.nodes.filter((candidate) => candidate.kind === "review"
     && valueIs(candidate.input, "verificationGroupId", verificationGroupId)
     && !["invalidated", "cancelled", "failed", "blocked"].includes(candidate.status));
-  if (!existing) {
-    queueNode(host, "review", "Review domain coverage and semantics", [validationNode.id], {
-      sourceNodeIds: [validationNode.id], synthesisNodeId, verificationGroupId,
+  if (!existing.length) {
+    const spec = specForSynthesis(run, synthesisNodeId);
+    const domains = spec.domains.filter((domain) => domain.pages.some((page) => page.pageType !== "overview"));
+    const domainReviews = domains.map((domain) => queueNode(host, "review", `Review domain: ${domain.title}`, [validationNode.id], {
+      sourceNodeIds: [validationNode.id],
+      synthesisNodeId,
+      verificationGroupId,
+      reviewScope: { kind: "domain", domainId: domain.id, pagePaths: domain.pages.map((page) => page.path) },
+    }, phaseRefForKind("review")));
+    queueNode(host, "review", "Review cross-domain coverage and semantics", domainReviews.map((node) => node.id), {
+      sourceNodeIds: domainReviews.map((node) => node.id),
+      synthesisNodeId,
+      verificationGroupId,
+      reviewScope: { kind: "global", domainReviewNodeIds: domainReviews.map((node) => node.id) },
     }, phaseRefForKind("review"));
   }
 }
 
 async function completeSemanticReview(host: TransitionHost, reviewNode: WikiNode, review: ReturnType<typeof parseReviewSubmission>): Promise<void> {
   const run = host.requireRun();
+  const reviewInput = reviewInputFor(reviewNode);
+  if (reviewInput.reviewScope.kind === "domain") return;
+  const fragments = reviewInput.reviewScope.domainReviewNodeIds.map((nodeId) => {
+    const node = host.nodeById(nodeId);
+    if (!node || node.kind !== "review" || node.status !== "succeeded") {
+      throw new Error(`Global review is missing completed domain review: ${nodeId}`);
+    }
+    return parseReviewSubmission(node.result);
+  });
+  const aggregate = {
+    defects: [...fragments.flatMap((fragment) => fragment.defects), ...review.defects],
+    summary: [...fragments.map((fragment) => fragment.summary), review.summary].filter(Boolean).join("\n"),
+  };
   const synthesisNodeId = synthesisNodeIdFor(reviewNode, run);
-  if (review.defects.length && defectsFingerprint(review.defects) === previousReviewSignature(host, reviewNode.id, synthesisNodeId)) {
+  if (aggregate.defects.length && defectsFingerprint(aggregate.defects) === previousReviewSignature(host, reviewNode.id, synthesisNodeId)) {
     host.markTerminalRun("blocked", "Review produced the same unresolved defect set twice", reviewNode.id, undefined, {
       code: "same_defects_twice",
-      defects: review.defects.map(defectAsRecord),
+      defects: aggregate.defects.map(defectAsRecord),
     });
     return;
   }
   const spec = specForSynthesis(run, synthesisNodeId);
-  const routedReview = routeReviewDefects(review, spec);
-  const structural = review.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
+  const routedReview = routeReviewDefects(aggregate, spec);
+  const structural = aggregate.defects.some((defect) => defect.kind === "topology" || defect.kind === "coverage");
   if (structural) {
     const resyntheses = new Set(run.nodes
       .filter((candidate) => candidate.kind === "synthesis" && !["invalidated", "cancelled"].includes(candidate.status))
@@ -545,7 +568,7 @@ async function completeSemanticReview(host: TransitionHost, reviewNode: WikiNode
     if (resyntheses >= MAX_STRUCTURAL_RESYNTHESES) {
       host.markTerminalRun("blocked", `Structural review exceeded the ${MAX_STRUCTURAL_RESYNTHESES}-resynthesis budget`, reviewNode.id, undefined, {
         code: "structural_resynthesis_budget",
-        defects: review.defects.map(defectAsRecord),
+        defects: aggregate.defects.map(defectAsRecord),
         remainingBudget: { structuralResyntheses: 0, maxStructuralResyntheses: MAX_STRUCTURAL_RESYNTHESES, used: resyntheses },
       });
       return;
@@ -553,7 +576,7 @@ async function completeSemanticReview(host: TransitionHost, reviewNode: WikiNode
     queueStructuralResearch(host, [reviewNode.id], synthesisNodeId, { review: routedReview });
     return;
   }
-  const pagePaths = uniqueStrings(review.defects.flatMap((defect) => "page" in defect ? [defect.page] : []));
+  const pagePaths = uniqueStrings(aggregate.defects.flatMap((defect) => "page" in defect ? [defect.page] : []));
   if (pagePaths.length) {
     await queuePageRepairs(host, [reviewNode.id], synthesisNodeId, pagePaths, { review: routedReview });
     return;
@@ -885,7 +908,17 @@ function countVerificationGroupsForSynthesis(run: WikiRunSnapshot, synthesisNode
 
 export function ensureReviewSubmissionFitsRun(host: TransitionHost, node: WikiNode, review: ReturnType<typeof parseReviewSubmission>): void {
   const synthesisNodeId = synthesisNodeIdFor(node, host.requireRun());
-  ensureReviewTargets(review.defects, specForSynthesis(host.requireRun(), synthesisNodeId));
+  const spec = specForSynthesis(host.requireRun(), synthesisNodeId);
+  ensureReviewTargets(review.defects, spec);
+  const input = reviewInputFor(node);
+  if (input.reviewScope.kind === "domain") {
+    const allowed = new Set(input.reviewScope.pagePaths);
+    for (const defect of review.defects) {
+      if ("page" in defect && !allowed.has(normalizePagePath(defect.page))) {
+        throw new Error(`Domain review ${input.reviewScope.domainId} targets page outside its scope: ${defect.page}`);
+      }
+    }
+  }
 }
 
 export function ensureNewResearchScopes(host: TransitionHost, scopes: WikiResearchScope[]): void {
@@ -965,6 +998,9 @@ export function newNode(
   const id = `${kind}-${host.newId()}`;
   // Runtime parse is the input contract (full discriminant WikiNode is incremental).
   const parsed = parseNodeInput(kind, input);
+  const inspectPolicyHash = kind === "inspect" && isRecord(input) && typeof input.policyHash === "string"
+    ? input.policyHash
+    : undefined;
   return {
     id,
     kind,
@@ -974,12 +1010,10 @@ export function newNode(
     status: "queued",
     dependsOn,
     attempt: 0,
-    inputFingerprint: stableStringify({
-      policyHash: kind === "inspect" && isRecord(parsed) && typeof parsed.policyHash === "string"
-        ? parsed.policyHash
-        : host.requireRun().policyHash,
+    inputFingerprint: createHash("sha256").update(stableStringify({
+      policyHash: inspectPolicyHash ?? host.requireRun().policyHash,
       input: parsed,
-    }),
+    })).digest("hex"),
     input: clone(parsed),
     attemptHistory: [],
     metrics: clone(EMPTY_NODE_METRICS),
@@ -1008,8 +1042,19 @@ export function previousReviewSignature(
     .filter((node) => node.kind === "review"
       && node.id !== currentNodeId
       && node.status === "succeeded"
-      && valueIs(node.input, "synthesisNodeId", synthesisNodeId))
-    .map((node) => parseReviewSubmission(node.result));
+      && valueIs(node.input, "synthesisNodeId", synthesisNodeId)
+      && reviewInputFor(node).reviewScope.kind === "global")
+    .map((node) => {
+      const input = reviewInputFor(node);
+      const fragments = input.reviewScope.kind === "global"
+        ? input.reviewScope.domainReviewNodeIds.map((nodeId) => {
+          const fragment = host.nodeById(nodeId);
+          return fragment ? parseReviewSubmission(fragment.result) : undefined;
+        }).filter((value): value is ReturnType<typeof parseReviewSubmission> => value !== undefined)
+        : [];
+      const global = parseReviewSubmission(node.result);
+      return { defects: [...fragments.flatMap((fragment) => fragment.defects), ...global.defects], summary: global.summary };
+    });
   const latest = reviews.at(-1);
   return latest ? defectsFingerprint(latest.defects) : undefined;
 }

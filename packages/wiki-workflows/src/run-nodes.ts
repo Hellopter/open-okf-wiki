@@ -13,13 +13,14 @@ import {
   parseSynthesisSubmission,
 } from "./control-submissions.js";
 import { DEFAULT_WIKI_WORKFLOW_POLICY } from "./policy.js";
-import type { WikiInspection, WikiValidation, WikiValidationIssue } from "./types.js";
+import type { WikiFinalization, WikiInspection, WikiValidation, WikiValidationIssue } from "./types.js";
 import { clone, isRecord, pathIsInside, stableStringify, uniqueStrings } from "./util.js";
 import {
   type WikiNode,
   type WikiNodeHistoryEntry,
   type WikiNodeKind,
   type WikiNodeMetrics,
+  type WikiNodeReceipt,
   type WikiResearchArtifact,
   type WikiResearchFinding,
   type WikiResearchReceipt,
@@ -69,6 +70,58 @@ export function normalizeNodeResult(kind: WikiNodeKind, value: unknown): unknown
     case "research":
       throw new Error("Research results must be projected after pre-persist validation");
   }
+}
+
+/** Project a full in-memory result to the bounded routing state persisted in snapshots. */
+export function nodeReceipt(node: WikiNode, fullResult: unknown): WikiNodeReceipt | undefined {
+  if (fullResult === undefined || !node.handoff) return undefined;
+  const artifact = node.handoff;
+  if (isRecord(fullResult) && isArtifactRef(fullResult.artifact)) return fullResult as unknown as WikiNodeReceipt;
+  if (node.kind === "research") return isResearchReceipt(fullResult) ? { ...fullResult, artifact } : undefined;
+  if (node.kind === "inspect") {
+    const value = parseInspection(fullResult);
+    return {
+      kind: "inspection", artifact, mode: value.mode, head: value.head,
+      sourceFingerprint: value.sourceFingerprint, sourceCount: value.sourcePaths.length,
+      changedPathCount: value.changedPaths.length, existingPageCount: value.existingPages.length,
+      impactedPageCount: value.impactedPages.length,
+    };
+  }
+  if (node.kind === "synthesis") {
+    const value = parseSynthesisSubmission(fullResult);
+    return value.decision === "expand"
+      ? { kind: "synthesis", artifact, decision: "expand", scopeCount: value.researchScopes.length }
+      : { kind: "synthesis", artifact, decision: "finalize", domainCount: value.spec.domains.length, pageCount: specPages(value.spec).length };
+  }
+  if (node.kind === "write") {
+    if (!isRecord(fullResult) || typeof fullResult.page !== "string" || typeof fullResult.sha256 !== "string") return undefined;
+    return { kind: "write", artifact, page: fullResult.page, sha256: fullResult.sha256 };
+  }
+  if (node.kind === "validate") {
+    const value = parseValidation(fullResult);
+    return { kind: "validation", artifact, ok: value.ok, issueCount: value.issues.length, pageCount: value.pages.length, obsoletePageCount: value.obsoletePages.length };
+  }
+  if (node.kind === "review") {
+    const value = parseReviewSubmission(fullResult);
+    return { kind: "review", artifact, defectCount: value.defects.length, summary: value.summary };
+  }
+  if (node.kind === "finalize") {
+    if (isSourceDriftResult(fullResult)) return { kind: "finalization", artifact, sourceDrift: true };
+    const value = fullResult as WikiFinalization;
+    return {
+      kind: "finalization", artifact, sourceDrift: false, pageCount: value.pages.length,
+      obsoletePageCount: value.obsoletePages.length, removedPageCount: value.removedPages.length,
+      rebuiltIndexCount: value.rebuiltIndexes.length,
+    };
+  }
+  return undefined;
+}
+
+/** Decode one full payload from the node's immutable artifact reference. */
+export function hydrateNodeResult(node: WikiNode, content: string): unknown {
+  const value: unknown = JSON.parse(content);
+  if (node.kind === "research") return node.result;
+  return normalizeNodeResult(node.kind, value);
 }
 
 export function parseInspection(value: unknown): WikiInspection {
@@ -156,6 +209,15 @@ export interface PagePacketInput {
   checkNoProgress?: boolean;
 }
 
+export type ReviewNodeInput = {
+  sourceNodeIds: string[];
+  synthesisNodeId: string;
+  verificationGroupId: string;
+  reviewScope:
+    | { kind: "domain"; domainId: string; pagePaths: string[] }
+    | { kind: "global"; domainReviewNodeIds: string[] };
+};
+
 /**
  * Known per-kind queue inputs. Full discriminant `WikiNode` remains incremental;
  * runtime `parseNodeInput` at queue boundaries is the enforcement contract.
@@ -166,7 +228,7 @@ export type WikiNodeInputByKind = {
   write: PagePacketInput;
   inspect: Record<string, unknown>;
   validate: Record<string, unknown>;
-  review: Record<string, unknown>;
+  review: ReviewNodeInput;
   finalize: Record<string, unknown>;
 };
 
@@ -179,9 +241,10 @@ export function parseNodeInput<K extends WikiNodeKind>(kind: K, value: unknown):
       return parseSynthesisNodeInput(value) as WikiNodeInputByKind[K];
     case "write":
       return parsePagePacketInput(value) as WikiNodeInputByKind[K];
+    case "review":
+      return parseReviewNodeInput(value) as WikiNodeInputByKind[K];
     case "inspect":
     case "validate":
-    case "review":
     case "finalize":
       if (!isRecord(value)) throw new Error(`${kind} node has an invalid input`);
       return value as WikiNodeInputByKind[K];
@@ -190,6 +253,41 @@ export function parseNodeInput<K extends WikiNodeKind>(kind: K, value: unknown):
       throw new Error(`Unknown node kind: ${String(_exhaustive)}`);
     }
   }
+}
+
+export function parseReviewNodeInput(value: unknown): ReviewNodeInput {
+  if (!isRecord(value)
+    || !isStringArray(value.sourceNodeIds)
+    || typeof value.synthesisNodeId !== "string" || !value.synthesisNodeId
+    || typeof value.verificationGroupId !== "string" || !value.verificationGroupId
+    || !isRecord(value.reviewScope)) {
+    throw new Error("Review node has an invalid input");
+  }
+  const scope = value.reviewScope;
+  if (scope.kind === "domain"
+    && typeof scope.domainId === "string" && scope.domainId
+    && isStringArray(scope.pagePaths) && scope.pagePaths.length > 0) {
+    return {
+      sourceNodeIds: uniqueStrings(value.sourceNodeIds),
+      synthesisNodeId: value.synthesisNodeId,
+      verificationGroupId: value.verificationGroupId,
+      reviewScope: { kind: "domain", domainId: scope.domainId, pagePaths: uniqueStrings(scope.pagePaths.map(normalizePagePath)) },
+    };
+  }
+  if (scope.kind === "global" && isStringArray(scope.domainReviewNodeIds)) {
+    return {
+      sourceNodeIds: uniqueStrings(value.sourceNodeIds),
+      synthesisNodeId: value.synthesisNodeId,
+      verificationGroupId: value.verificationGroupId,
+      reviewScope: { kind: "global", domainReviewNodeIds: uniqueStrings(scope.domainReviewNodeIds) },
+    };
+  }
+  throw new Error("Review node has an invalid scope");
+}
+
+export function reviewInputFor(node: WikiNode): ReviewNodeInput {
+  if (node.kind !== "review") throw new Error(`Node ${node.id} is not a review node`);
+  return parseReviewNodeInput(node.input);
 }
 
 export function parseResearchNodeInput(value: unknown): ResearchNodeInput {
@@ -307,33 +405,59 @@ export function writePathsFor(node: WikiNode): string[] | undefined {
 }
 
 /** Every agent receives only the source roots needed for its assigned work. */
-export function readRootsFor(node: WikiNode, run: WikiRunSnapshot): string[] | undefined {
+export function readRootsFor(node: WikiNode, run: WikiRunSnapshot, synthesisSpec?: WikiSpec): string[] | undefined {
+  const inspection = run.inspection;
   if (node.kind === "research") return researchInputFor(node).scope.sourcePaths;
   if (node.kind === "write") {
     const input = pagePacketInputFor(node);
-    if (input.page.pageType === "overview") return run.inspection?.sourcePaths;
+    if (input.page.pageType === "overview") return inspection?.sourcePaths;
     return uniqueStrings(input.researchIds.flatMap((researchId) => {
       const research = run.nodes.find((candidate) => candidate.id === researchId);
       return research?.kind === "research" ? researchInputFor(research).scope.sourcePaths : [];
     }));
   }
-  if (node.kind === "review") return run.inspection?.sourcePaths;
+  if (node.kind === "review") {
+    const input = reviewInputFor(node);
+    if (input.reviewScope.kind === "global") return inspection?.sourcePaths;
+    const domainId = input.reviewScope.domainId;
+    const spec = synthesisSpec ?? specForSynthesis(run, input.synthesisNodeId);
+    const domain = spec.domains.find((candidate) => candidate.id === domainId);
+    if (!domain) throw new Error(`Review targets unknown domain: ${domainId}`);
+    const researchIds = uniqueStrings(domain.pages.flatMap((page) => researchIdsForPage(run, page)));
+    return uniqueStrings(researchIds.flatMap((researchId) => {
+      const research = run.nodes.find((candidate) => candidate.id === researchId);
+      return research?.kind === "research" ? researchInputFor(research).scope.sourcePaths : [];
+    }));
+  }
   return undefined;
 }
 
 /** Wiki reads are exact files, never directory-wide access. */
-export function wikiReadPathsFor(node: WikiNode, run: WikiRunSnapshot): string[] | undefined {
+export function wikiReadPathsFor(node: WikiNode, run: WikiRunSnapshot, synthesisSpec?: WikiSpec): string[] | undefined {
+  const inspection = run.inspection;
   if (node.kind === "write") return pagePacketInputFor(node).wikiReadPaths;
   if (node.kind === "synthesis" && run.effectiveMode === "refresh") {
-    return (run.inspection?.existingPages ?? []).map(workspaceWikiPath);
+    return (inspection?.existingPages ?? []).map(workspaceWikiPath);
   }
   if (node.kind !== "review") return undefined;
-  const spec = specForSynthesis(run, synthesisNodeIdFor(node, run));
+  const input = reviewInputFor(node);
+  const spec = synthesisSpec ?? specForSynthesis(run, input.synthesisNodeId);
+  if (input.reviewScope.kind === "domain") {
+    const pagePaths = new Set(input.reviewScope.pagePaths);
+    return uniqueStrings([
+      ...input.reviewScope.pagePaths.map(workspaceWikiPath),
+      ...derivedIndexWikiPaths({
+        ...spec,
+        domains: spec.domains.map((domain) => ({ ...domain, pages: domain.pages.filter((page) => pagePaths.has(page.path)) }))
+          .filter((domain) => domain.pages.length > 0),
+      }),
+    ]);
+  }
   return uniqueStrings([
     "wiki/index.md",
     ...specPages(spec).map(({ page }) => workspaceWikiPath(page.path)),
     ...derivedIndexWikiPaths(spec),
-    ...(run.inspection?.existingPages ?? []).map(workspaceWikiPath),
+    ...(inspection?.existingPages ?? []).map(workspaceWikiPath),
   ]);
 }
 
@@ -405,8 +529,13 @@ export function synthesisNodeIdFor(node: WikiNode, run: WikiRunSnapshot): string
 
 export function specForSynthesis(run: WikiRunSnapshot, synthesisNodeId: string): WikiSpec {
   const node = run.nodes.find((candidate) => candidate.id === synthesisNodeId && candidate.kind === "synthesis");
-  if (!node || !isSynthesisFinalizeResult(node.result)) throw new Error(`No finalized WikiSpec exists for synthesis node ${synthesisNodeId}`);
-  return node.result.spec;
+  if (!node) throw new Error(`No finalized WikiSpec exists for synthesis node ${synthesisNodeId}`);
+  return specFromSynthesisResult(node.result, synthesisNodeId);
+}
+
+export function specFromSynthesisResult(value: unknown, synthesisNodeId: string): WikiSpec {
+  if (!isSynthesisFinalizeResult(value)) throw new Error(`No finalized WikiSpec exists for synthesis node ${synthesisNodeId}`);
+  return value.spec;
 }
 
 export function isSynthesisFinalizeResult(value: unknown): value is Extract<WikiSynthesisResult, { decision: "finalize" }> {
@@ -460,10 +589,12 @@ export function normalizePagePath(value: string): string {
 export function shouldWriteContentPage(run: WikiRunSnapshot, pagePath: string, synthesisMode: SynthesisNodeInput["mode"]): boolean {
   if (run.effectiveMode === "generate" || synthesisMode === "structural") return true;
   const target = normalizePagePath(pagePath);
-  const existing = new Set((run.inspection?.existingPages ?? []).map(normalizePagePath));
-  const impacted = new Set((run.inspection?.impactedPages ?? []).map(normalizePagePath));
+  const inspection = run.inspection;
+  const existing = new Set((inspection?.existingPages ?? []).map(normalizePagePath));
+  const impacted = new Set((inspection?.impactedPages ?? []).map(normalizePagePath));
   return !existing.has(target) || impacted.has(target);
 }
+
 
 export function relatedWikiPaths(spec: WikiSpec, pagePath: string, readableRelatedPaths: ReadonlySet<string>): string[] {
   const paths = spec.crossLinks

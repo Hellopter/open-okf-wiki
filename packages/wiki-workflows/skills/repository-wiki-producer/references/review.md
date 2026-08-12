@@ -34,29 +34,22 @@ Write gate again before completion-wide consistency and semantic review rerun.
 For a local defect, copy `page` exactly from a `path` in Final WikiSpec. Never
 prefix it with `wiki/` and never target an obsolete or undeclared page.
 
-Call `wiki_submit_review` with the complete result object directly. Do not write
-a handoff file or reply with JSON text. If rejected, correct every structured
+Upsert defects as stable `{slot, defect}` entries in batches of at most 20 with
+`wiki_review_put_defects`. Reuse a slot to correct a defect; inspect staging with
+`wiki_review_defects` and `wiki_submission_status`, and retract a resolved slot
+with `wiki_review_remove_defect`. Then call `wiki_submit_review`
+with only the summary. Do not write a handoff file or reply with JSON text. If rejected, correct every structured
 issue and resubmit within the budget stated at the end of the prompt.
-Keep every defect concise and actionable. Use this discriminated union; do not
-create defect IDs or domain IDs. Keep the object below 256 KiB:
+Keep every defect concise and actionable. Use this discriminated union inside
+each staged `{slot, defect}` entry; do not create defect IDs or domain IDs. Keep
+the staged result below 256 KiB:
 
 ```json
-{
-  "defects": [
-    {
-      "kind": "evidence|link|depth|diagram",
-      "page": "domain-id/page.md",
-      "detail": "A concise page repair instruction."
-    },
-    {
-      "kind": "topology|coverage",
-      "detail": "A concise structural replanning instruction."
-    }
-  ],
-  "summary": "A concise global review conclusion."
-}
+{"slot":"stable-local-slot","defect":{"kind":"evidence|link|depth|diagram","page":"domain-id/page.md","detail":"A concise page repair instruction."}}
+{"slot":"stable-structural-slot","defect":{"kind":"topology|coverage","detail":"A concise structural replanning instruction."}}
 ```
 
-Use `[]` only after reviewing the entire target Wiki and finding no actionable
-defects. Do not report syntax or validator infrastructure failures as semantic
-defects.
+The terminal payload is exactly `{"summary":"A concise global review conclusion."}`.
+Leave staging empty only after reviewing the entire target Wiki and finding no
+actionable defects. Do not report syntax or validator infrastructure failures
+as semantic defects.

@@ -32,7 +32,7 @@ export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
     || !isString(value.policyHash)
     || value.policyHash !== wikiPolicyHash(value.policy as WikiRunSnapshot["policy"])
     || !Array.isArray(value.nodes)
-    || !value.nodes.every(isNode)
+    || !value.nodes.every((node) => isNode(node, value.id as string))
     || !Array.isArray(value.events)
     || !value.events.every(isEvent)
     || !isString(value.createdAt)
@@ -43,7 +43,8 @@ export function isWikiRunSnapshot(value: unknown): value is WikiRunSnapshot {
     ])
     || !optional(value.blockedDetails, isBlockedDetails)
     || !optional(value.revision, isNonnegativeInteger)
-    || !optional(value.inspection, isInspection)) return false;
+    || value.inspection !== undefined
+    || !optional(value.inspectionSummary, isInspectionSummary)) return false;
 
   const nodeIds = new Set<string>();
   for (const node of value.nodes) {
@@ -94,7 +95,7 @@ export function explainWikiRunSnapshot(value: unknown): string[] {
     reasons.push("policyHash: does not match pinned Wiki policy");
   }
   if (!Array.isArray(value.nodes)) reasons.push(`nodes: expected array, got ${formatGot(value.nodes)}`);
-  else if (!value.nodes.every(isNode)) reasons.push("nodes: contains invalid node entries");
+  else if (!value.nodes.every((node) => isNode(node, isString(value.id) ? value.id : ""))) reasons.push("nodes: contains invalid node entries");
   if (!Array.isArray(value.events)) reasons.push(`events: expected array, got ${formatGot(value.events)}`);
   else if (!value.events.every(isEvent)) reasons.push("events: contains invalid event entries");
   if (!isString(value.createdAt)) reasons.push(`createdAt: expected string, got ${formatGot(value.createdAt)}`);
@@ -102,8 +103,11 @@ export function explainWikiRunSnapshot(value: unknown): string[] {
   if (value.revision !== undefined && !isNonnegativeInteger(value.revision)) {
     reasons.push(`revision: expected nonnegative integer, got ${formatGot(value.revision)}`);
   }
-  if (value.inspection !== undefined && !isInspection(value.inspection)) {
-    reasons.push("inspection: invalid inspection payload");
+  if (value.inspection !== undefined) {
+    reasons.push("inspection: full runtime payload is not allowed in a durable snapshot");
+  }
+  if (value.inspectionSummary !== undefined && !isInspectionSummary(value.inspectionSummary)) {
+    reasons.push("inspectionSummary: invalid inspection summary");
   }
 
   if (reasons.length > 0) return reasons;
@@ -166,7 +170,7 @@ function formatGot(value: unknown): string {
   return typeof value;
 }
 
-function isNode(value: unknown): value is WikiNode {
+function isNode(value: unknown, runId: string): value is WikiNode {
   if (!isRecord(value)
     || !isString(value.id)
     || !isEnum(value.kind, NODE_KINDS)
@@ -181,10 +185,63 @@ function isNode(value: unknown): value is WikiNode {
     || !value.attemptHistory.every(isAttempt)
     || !isMetrics(value.metrics)
     || !isActivity(value.activity)
+    || !optional(value.result, (result) => isNodeReceipt(runId, value.id as string, value.attempt as number, value.kind as WikiNode["kind"], result, value.handoff))
     || !optional(value.history, isHistory)
     || !optional(value.error, isError)
     || !optional(value.handoff, isArtifactRef)) return false;
+  if (value.status === "succeeded" && (!value.handoff || value.result === undefined)) return false;
   return true;
+}
+
+function isNodeReceipt(runId: string, nodeId: string, attempt: number, kind: WikiNode["kind"], value: unknown, handoff: unknown): boolean {
+  if (!isRecord(value) || !isRecord(handoff) || !isArtifactRef(handoff)) return false;
+  const artifact = value.artifact;
+  const expectedKind = artifactKindForNode(kind);
+  if (!expectedKind || !isRecord(artifact) || !isArtifactRef(artifact)
+    || JSON.stringify(artifact) !== JSON.stringify(handoff)
+    || artifact.runId !== runId || artifact.nodeId !== nodeId || artifact.attempt !== attempt || artifact.kind !== expectedKind) return false;
+  if (kind === "research") {
+    return exactKeys(value, ["scopeId", "task", "sourceFingerprint", "artifact", "findings", "criticalGapSignatures", "criticalGapQuestions"])
+      && isString(value.scopeId) && isString(value.task) && isString(value.sourceFingerprint)
+      && Array.isArray(value.findings) && value.findings.every((item) => isRecord(item) && isString(item.id)
+        && (item.priority === "critical" || item.priority === "normal") && isString(item.contentFingerprint))
+      && isStringArray(value.criticalGapSignatures) && isStringArray(value.criticalGapQuestions);
+  }
+  if (kind === "inspect") return exactKeys(value, ["kind", "artifact", "mode", "head", "sourceFingerprint", "sourceCount", "changedPathCount", "existingPageCount", "impactedPageCount"])
+    && value.kind === "inspection" && value.mode !== undefined
+    && (value.mode === "generate" || value.mode === "refresh") && isString(value.head) && isString(value.sourceFingerprint)
+    && receiptCounts(value, ["sourceCount", "changedPathCount", "existingPageCount", "impactedPageCount"]);
+  if (kind === "synthesis") return exactKeys(value, value.decision === "expand"
+    ? ["kind", "artifact", "decision", "scopeCount"] : ["kind", "artifact", "decision", "domainCount", "pageCount"])
+    && value.kind === "synthesis"
+    && (value.decision === "expand" || value.decision === "finalize")
+    && receiptCounts(value, ["scopeCount", "domainCount", "pageCount"], true);
+  if (kind === "write") return exactKeys(value, ["kind", "artifact", "page", "sha256"]) && value.kind === "write" && isString(value.page) && isString(value.sha256);
+  if (kind === "validate") return exactKeys(value, ["kind", "artifact", "ok", "issueCount", "pageCount", "obsoletePageCount"])
+    && value.kind === "validation" && isBoolean(value.ok)
+    && receiptCounts(value, ["issueCount", "pageCount", "obsoletePageCount"]);
+  if (kind === "review") return exactKeys(value, ["kind", "artifact", "defectCount", "summary"])
+    && value.kind === "review" && isString(value.summary)
+    && receiptCounts(value, ["defectCount"]);
+  if (kind === "finalize") return exactKeys(value, value.sourceDrift === true
+    ? ["kind", "artifact", "sourceDrift"]
+    : ["kind", "artifact", "sourceDrift", "pageCount", "obsoletePageCount", "removedPageCount", "rebuiltIndexCount"])
+    && value.kind === "finalization" && isBoolean(value.sourceDrift)
+    && receiptCounts(value, ["pageCount", "obsoletePageCount", "removedPageCount", "rebuiltIndexCount"], true);
+  return false;
+}
+
+function artifactKindForNode(kind: WikiNode["kind"]): string | undefined {
+  return ({ inspect: "inspection", research: "research", synthesis: "synthesis", write: "write_report", validate: "validation", review: "review", finalize: "finalization" } as const)[kind];
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const expected = new Set(keys);
+  return Object.keys(value).length === expected.size && Object.keys(value).every((key) => expected.has(key));
+}
+
+function receiptCounts(value: Record<string, unknown>, keys: string[], optional = false): boolean {
+  return keys.every((key) => optional ? value[key] === undefined || isNonnegativeInteger(value[key]) : isNonnegativeInteger(value[key]));
 }
 
 function isAttempt(value: unknown): value is WikiNodeAttempt {
@@ -291,23 +348,14 @@ function isBlockedDetails(value: unknown): boolean {
   return true;
 }
 
-function isInspection(value: unknown): boolean {
+function isInspectionSummary(value: unknown): boolean {
   return isRecord(value)
-    && isString(value.root)
-    && isString(value.wikiRoot)
-    && isStringArray(value.sourcePaths)
+    && exactKeys(value, ["kind", "mode", "head", "sourceFingerprint", "sourceCount", "changedPathCount", "existingPageCount", "impactedPageCount"])
+    && value.kind === "inspection_summary"
     && isMode(value.mode)
     && isString(value.head)
-    && (value.baseCommit === null || isString(value.baseCommit))
-    && (value.lastWikiCommit === null || isString(value.lastWikiCommit))
-    && Array.isArray(value.changed)
-    && value.changed.every((change) => isRecord(change) && isString(change.status) && isStringArray(change.paths))
-    && isStringArray(value.changedPaths)
     && isString(value.sourceFingerprint)
-    && isStringArray(value.existingPages)
-    && isStringArray(value.impactedPages)
-    && isBoolean(value.wikiDrift)
-    && optional(value.refreshRequiresGenerateReason, isString);
+    && receiptCounts(value, ["sourceCount", "changedPathCount", "existingPageCount", "impactedPageCount"]);
 }
 
 function isAcyclic(nodes: WikiNode[]): boolean {

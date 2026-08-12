@@ -200,12 +200,38 @@ function finalSpec(findingId = "finding-1") {
   };
 }
 
+function multiDomainSpec() {
+  const spec = finalSpec();
+  spec.domains.push({
+    id: "api",
+    title: "API",
+    purpose: "Explain API behavior.",
+    pages: [{
+      pageType: "domain",
+      path: "api/domain.md",
+      title: "API domain",
+      purpose: "Explain API behavior.",
+      readerQuestions: ["How does API behavior fit together?"],
+      requiredFacets: ["models", "flows", "state", "invariants", "boundaries"],
+      findingIds: ["finding-1"],
+    }],
+  });
+  return spec;
+}
+
 function verifyNode(kind, id, synthesisNodeId, result, status = "succeeded") {
   return {
     id,
     kind,
     status,
-    input: { synthesisNodeId, sourceNodeIds: [], verificationGroupId: "verify:g" },
+    input: kind === "review"
+      ? {
+        synthesisNodeId,
+        sourceNodeIds: [],
+        verificationGroupId: "verify:g",
+        reviewScope: { kind: "global", domainReviewNodeIds: [] },
+      }
+      : { synthesisNodeId, sourceNodeIds: [], verificationGroupId: "verify:g" },
     result,
   };
 }
@@ -497,7 +523,8 @@ test("queueInitialSourceSurveys uses a broad survey that emits targeted depth ga
     assert.match(node.input.scope.task, /Keep this pass broad/i);
     assert.match(node.input.scope.task, /models?[, ].*flows?[, ].*state/i);
     assert.match(node.input.scope.task, /critical gaps/i);
-    assert.match(node.input.scope.task, /submit the complete typed research result directly/i);
+    assert.match(node.input.scope.task, /stage findings with wiki_research_put_findings/i);
+    assert.match(node.input.scope.task, /submit only the final summary and gaps/i);
     assert.match(node.input.scope.task, /correct.*resubmit/i);
   }
 });
@@ -609,7 +636,7 @@ test("queueVerification concurrent callers enqueue one validation gate and defer
   assert.equal(left[0].input.verificationGroupId, right[0].input.verificationGroupId);
 });
 
-test("maybeCompleteVerification ignores invalidated peers and completes live pair", async () => {
+test("validation fans review out by domain and global review aggregates fragments before finalizing", async () => {
   const research = researchNode("research-1", receipt({
     findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
   }));
@@ -665,25 +692,78 @@ test("maybeCompleteVerification ignores invalidated peers and completes live pai
   };
   liveValidate.input.verificationGroupId = groupId;
 
-  const liveReview = {
-    ...verifyNode("review", "review-live", "synthesis-1", cleanReview, "succeeded"),
-    label: "Review Wiki",
-    phaseId: "validate",
-    phaseTitle: "Validate",
-    dependsOn: [],
-    attempt: 1,
-    inputFingerprint: "",
-    metrics: { ...EMPTY_NODE_METRICS },
-    activity: { state: "idle", updatedAt: "2026-08-08T00:00:00.000Z" },
-    attemptHistory: [],
-  };
-  liveReview.input.verificationGroupId = groupId;
+  const host = hostWithNodes([research, synthesis, deadValidate, deadReview, liveValidate]);
+  await maybeCompleteVerification(host, liveValidate);
 
-  const host = hostWithNodes([research, synthesis, deadValidate, deadReview, liveValidate, liveReview]);
-  await maybeCompleteVerification(host, liveReview);
+  const reviews = host.run.nodes.filter((node) => node.kind === "review" && node.status !== "invalidated");
+  assert.equal(reviews.length, 2, "one domain fragment plus one global reviewer");
+  const domainReview = reviews.find((node) => node.input.reviewScope.kind === "domain");
+  const globalReview = reviews.find((node) => node.input.reviewScope.kind === "global");
+  assert.equal(domainReview.input.reviewScope.domainId, "core");
+  assert.deepEqual(domainReview.input.reviewScope.pagePaths, ["core/domain.md"]);
+  assert.deepEqual(globalReview.dependsOn, [domainReview.id]);
+  assert.deepEqual(globalReview.input.reviewScope.domainReviewNodeIds, [domainReview.id]);
+
+  domainReview.status = "succeeded";
+  domainReview.result = cleanReview;
+  globalReview.status = "succeeded";
+  globalReview.result = cleanReview;
+  await maybeCompleteVerification(host, globalReview);
 
   const finalizeNodes = host.run.nodes.filter((node) => node.kind === "finalize");
-  assert.equal(finalizeNodes.length, 1, "live pair should advance to finalize despite invalidated peers");
-  assert.deepEqual(finalizeNodes[0].dependsOn, ["review-live"]);
+  assert.equal(finalizeNodes.length, 1, "global clean result advances after every fragment");
+  assert.deepEqual(finalizeNodes[0].dependsOn, [globalReview.id]);
   assert.equal(finalizeNodes[0].input.verificationGroupId, groupId);
+});
+
+test("validation queues every domain reviewer in parallel and one global fan-in", async () => {
+  const research = researchNode("research-1", receipt({
+    findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
+  }));
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec: multiDomainSpec(), rationale: "ready" });
+  const validation = {
+    ...verifyNode("validate", "validate-live", "synthesis-1", { ok: true, issues: [], pages: [], obsoletePages: [] }),
+    input: { synthesisNodeId: "synthesis-1", sourceNodeIds: [], verificationGroupId: "verify:multi" },
+  };
+  const host = hostWithNodes([research, synthesis, validation]);
+  await maybeCompleteVerification(host, validation);
+
+  const domainReviews = host.run.nodes.filter((node) => node.kind === "review" && node.input.reviewScope.kind === "domain");
+  const globalReview = host.run.nodes.find((node) => node.kind === "review" && node.input.reviewScope.kind === "global");
+  assert.deepEqual(domainReviews.map((node) => node.input.reviewScope.domainId).sort(), ["api", "core"]);
+  assert.ok(domainReviews.every((node) => node.dependsOn[0] === validation.id));
+  assert.deepEqual(globalReview.dependsOn.slice().sort(), domainReviews.map((node) => node.id).sort());
+});
+
+test("global review routes domain fragment defects into a fresh repair and full review generation", async () => {
+  const research = researchNode("research-1", receipt({
+    findings: [{ id: "finding-1", priority: "critical", contentFingerprint: "x" }],
+  }));
+  const synthesis = synthesisNode("synthesis-1", ["research-1"], { decision: "finalize", spec: finalSpec(), rationale: "ready" });
+  const domainReview = {
+    ...verifyNode("review", "review-domain", "synthesis-1", {
+      defects: [{ kind: "depth", page: "core/domain.md", detail: "Explain invariants" }],
+      summary: "Domain needs depth",
+    }),
+    input: {
+      synthesisNodeId: "synthesis-1", sourceNodeIds: ["validate-1"], verificationGroupId: "verify:g",
+      reviewScope: { kind: "domain", domainId: "core", pagePaths: ["core/domain.md"] },
+    },
+  };
+  const globalReview = {
+    ...verifyNode("review", "review-global", "synthesis-1", { defects: [], summary: "Global clean" }),
+    dependsOn: [domainReview.id],
+    input: {
+      synthesisNodeId: "synthesis-1", sourceNodeIds: [domainReview.id], verificationGroupId: "verify:g",
+      reviewScope: { kind: "global", domainReviewNodeIds: [domainReview.id] },
+    },
+  };
+  const host = hostWithNodes([research, synthesis, domainReview, globalReview]);
+  host.wikiRoot = () => "/tmp/wiki-test/wiki";
+  await maybeCompleteVerification(host, globalReview);
+
+  const repairs = host.run.nodes.filter((node) => node.kind === "write" && node.input.intent === "repair");
+  assert.deepEqual(repairs.map((node) => node.input.page.path).sort(), ["core/domain.md", "overview/overview.md"]);
+  assert.equal(repairs.find((node) => node.input.page.path === "core/domain.md").input.feedback.review.defects[0].detail, "Explain invariants");
+  assert.equal(host.run.nodes.filter((node) => node.kind === "finalize").length, 0);
 });

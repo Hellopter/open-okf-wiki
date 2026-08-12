@@ -16,9 +16,10 @@ import { uiStrings, type WikiUiLanguage } from "../strings.js";
 export const NAVIGATOR_FOOTER_ROWS = 2;
 
 export function renderRunHeader(run: WikiRunSnapshot, width: number, theme: WikiUiTheme): string[] {
-  const changed = run.inspection?.changedPaths.length ?? 0;
+  const changed = run.inspectionSummary?.changedPathCount ?? run.inspection?.changedPaths.length ?? 0;
   const progress = `${run.nodes.filter((node) => node.status === "succeeded").length}/${run.nodes.length}`;
-  const head = run.inspection?.head ? ` | ${shortHash(run.inspection.head)}` : "";
+  const inspectionHead = run.inspectionSummary?.head ?? run.inspection?.head;
+  const head = inspectionHead ? ` | ${shortHash(inspectionHead)}` : "";
   const title = truncateToWidth(runTitle(run), width, "", true);
   const status = theme.fg(runStatusColor(run.status), `${runStatusIcon(run.status)} ${run.status}`);
   const detail = `${status}${theme.fg("dim", `  ${progress} agents | ${changed} changed${head}`)}`;

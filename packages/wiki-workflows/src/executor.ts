@@ -183,11 +183,11 @@ export class PiAgentExecutor implements WikiAgentExecutor {
         const correction = submission.failure ? ` The prior submission was rejected: ${submission.failure.message}` : "";
         const correctionAction = submission.toolNames[0] === "wiki_submit_page"
           ? "Fix every reported issue in the assigned page before resubmitting."
-          : "Correct every returned issue and resubmit the complete object directly; do not write a handoff file or reply with JSON text.";
+          : "Correct every returned issue, update staging when needed, and call the terminal tool again with its role-specific payload; do not write a handoff file or reply with JSON text.";
         const contracts = submission.toolNames.map((toolName) => `${toolName}: ${submissionContractGuidance(toolName)}`).join(" ");
         sessionSettled = false;
         await Promise.race([
-          session.followUp(`Do not explain or return JSON as text. Call exactly one of these tools now: ${requiredTools}.${correction} ${contracts} ${correctionAction} After acceptance, stop.`),
+          session.followUp(`Do not explain or return JSON as text. Use the available staging and query tools as needed, then call exactly one terminal tool: ${requiredTools}.${correction} ${contracts} ${correctionAction} After acceptance, stop.`),
           deadline,
         ]);
         await Promise.race([session.waitForIdle(), deadline]);
@@ -261,8 +261,9 @@ export class PiAgentExecutor implements WikiAgentExecutor {
       submission,
       request.writePaths,
       request.readRoots,
-      request.artifactPaths,
       request.wikiReadPaths,
+      request.researchCatalog,
+      request.writerStagingWikiRoot,
     );
     const release = await this.gate.acquire(request.signal);
     let result: Awaited<ReturnType<typeof createAgentSession>>;

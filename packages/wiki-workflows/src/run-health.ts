@@ -9,11 +9,13 @@ import type { WikiArtifactStore } from "./artifact-store.js";
 import { errorMessage } from "./failures.js";
 import type { WikiNode, WikiRunSnapshot } from "./workflow-types.js";
 
-/** Node kinds whose succeeded handoffs are required for later agents. */
-const DURABLE_HANDOFF_KINDS = new Set<WikiNode["kind"]>(["research", "synthesis", "review"]);
+/** Every successful payload-producing node must have a readable full artifact. */
+const DURABLE_HANDOFF_KINDS = new Set<WikiNode["kind"]>([
+  "inspect", "research", "synthesis", "write", "validate", "review", "finalize",
+]);
 
 /**
- * Validate that every succeeded research/synthesis/review handoff is still
+ * Validate that every succeeded node's full payload is still
  * readable from the artifact store. Returns human-readable problem strings
  * (empty when healthy). Does not mutate the snapshot.
  */
@@ -26,7 +28,10 @@ export async function checkRunArtifactHealth(
   for (const node of snapshot.nodes) {
     if (node.status !== "succeeded") continue;
     if (!DURABLE_HANDOFF_KINDS.has(node.kind)) continue;
-    if (!node.handoff) continue;
+    if (!node.handoff) {
+      if (node.result !== undefined) problems.push(`${node.kind} node ${node.id} has no persisted full-result artifact`);
+      continue;
+    }
 
     const ref = node.handoff;
     try {

@@ -7,6 +7,8 @@ import test from "node:test";
 import { createWikiArtifactStore } from "../dist/artifact-store.js";
 import { WikiWorkflowEngine } from "../dist/engine.js";
 import { WikiAgentContextBudgetError, WikiAgentProtocolError } from "../dist/agent-errors.js";
+import { isWikiRunSnapshot } from "../dist/snapshot-validation.js";
+import { createWikiRunHistoryStore } from "../dist/run-history.js";
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -95,7 +97,7 @@ function inspection(workspace, options = {}) {
     baseCommit: "base",
     lastWikiCommit: "base",
     changed: [],
-    changedPaths: [],
+    changedPaths: options.changedPaths ?? [],
     sourceFingerprint: options.sourceFingerprint ?? "source-1",
     existingPages: options.existingPages ?? [],
     impactedPages: options.impactedPages ?? [],
@@ -211,7 +213,7 @@ async function fixture(t, options = {}) {
           const handled = await options.onWrite?.(request, index, workspace);
           if (!handled) {
             for (const output of request.writePaths ?? []) {
-              const absolute = path.join(request.candidateWikiRoot, output.replace(/^wiki\//, ""));
+              const absolute = path.join(request.writerStagingWikiRoot ?? request.candidateWikiRoot, output.replace(/^wiki\//, ""));
               await mkdir(path.dirname(absolute), { recursive: true });
               await writeFile(absolute, `---\ntype: ${request.node.input.page.pageType}\ntitle: page\ndescription: page\ntags: [test]\nsources: [{ id: source, resource: "repo:src-core/index.ts#L1" }]\n---\n\nwrite-${index}[^source]\n\n[^source]: [source](repo:src-core/index.ts#L1)\n`, "utf8");
             }
@@ -257,7 +259,7 @@ async function fixture(t, options = {}) {
     createId: () => `id-${++id}`,
     now: () => new Date("2026-08-10T00:00:00.000Z"),
   });
-  return { engine, executor, requests, writes, runtimePolicies, workspace, get maxActiveWriters() { return maxActiveWriters; }, get finalizationCalls() { return finalizationCalls; } };
+  return { engine, executor, requests, writes, runtimePolicies, artifactStore: baseArtifactStore, workspace, get maxActiveWriters() { return maxActiveWriters; }, get finalizationCalls() { return finalizationCalls; } };
 }
 
 test("restore rejects a structurally corrupt current snapshot", () => {
@@ -524,10 +526,8 @@ test("generate fans out domain and detail writers within the configured concurre
 
   const coreWriter = f.requests.find((request) => request.node.kind === "write" && request.node.input.page.path === "d0/page.md");
   assert.deepEqual(coreWriter.readRoots, ["src-core"]);
-  assert.equal(coreWriter.artifactPaths.length, 1);
-  assert.match(coreWriter.artifactPaths[0], /^\.okf-wiki\/blobs\/[a-f0-9]{64}\.json$/);
-  assert.match(coreWriter.prompt, /"scopeId": "source-survey:src-core"/);
-  assert.match(coreWriter.prompt, new RegExp(coreWriter.artifactPaths[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.ok(coreWriter.researchCatalog.some((scope) => scope.scopeId === "source-survey:src-core"));
+  assert.equal(coreWriter.researchCatalog.every((scope) => scope.findings.every((finding) => coreWriter.node.input.page.findingIds.includes(finding.id))), true);
   assert.match(coreWriter.prompt, /"outgoingCrossLinks"/);
   assert.match(coreWriter.prompt, /"href": "\.\.\/d1\/page.md"/);
   assert.match(coreWriter.prompt, /"incomingCrossLinks"/);
@@ -538,12 +538,21 @@ test("generate fans out domain and detail writers within the configured concurre
   assert.doesNotMatch(researcher.prompt, /researchGroupId|priorResearchIds|priorSynthesisNodeId|structuralRoundId/);
   const overviewRequest = f.requests.find((request) => request.node.kind === "write" && request.node.input.intent === "overview");
   assert.deepEqual(overviewRequest.readRoots, ["src-core", "src-api"]);
-  assert.equal(overviewRequest.artifactPaths, undefined);
   assert.equal(overviewRequest.wikiReadPaths.length, 12);
   const reviewer = f.requests.find((request) => request.node.kind === "review");
-  assert.equal(reviewer.artifactPaths, undefined);
   assert.match(reviewer.prompt, /"path": "d0\/page.md"/);
   assert.doesNotMatch(reviewer.prompt, /verificationGroupId|synthesisNodeId/);
+  const domainReviewer = f.requests.find((request) => request.node.kind === "review" && request.node.input.reviewScope.kind === "domain");
+  assert.equal(domainReviewer.researchFragments, undefined);
+  assert.equal(domainReviewer.reviewFragments, undefined);
+  assert.match(domainReviewer.prompt, /Review only these pagePaths/);
+  assert.match(domainReviewer.prompt, /"kind": "domain"/);
+  const globalReviewer = f.requests.find((request) => request.node.kind === "review" && request.node.input.reviewScope.kind === "global");
+  assert.ok(globalReviewer.reviewFragments.fragments.length > 0);
+  assert.equal(globalReviewer.reviewFragments.omittedFragmentCount, 0);
+  assert.match(globalReviewer.prompt, /Domain Review Fragments/);
+  assert.match(globalReviewer.prompt, /cross-domain consistency, overview accuracy, coverage, and topology/);
+  assert.match(globalReviewer.prompt, /do not repeat equivalent fragment defects/);
 });
 
 test("the minimum research budget completes the initial survey without a forced dry audit", async (t) => {
@@ -894,11 +903,11 @@ test("Review phase retry reruns semantic review and publication without duplicat
   assert.equal(retried.status, "succeeded");
   assert.equal(retried.nodes.some((node) => node.status === "queued"), false);
   assert.equal(retried.nodes.filter((node) => node.kind === "validate" && node.status === "succeeded").length, 1);
-  assert.equal(retried.nodes.filter((node) => node.kind === "review" && node.status === "succeeded").length, 1);
+  assert.equal(retried.nodes.filter((node) => node.kind === "review" && node.status === "succeeded").length, 3);
   assert.equal(retried.nodes.filter((node) => node.kind === "finalize" && node.status === "succeeded").length, 1);
   assert.equal(retried.nodes.find((node) => node.kind === "validate").attempt, 1);
-  assert.equal(retried.nodes.filter((node) => node.kind === "review").length, 1);
-  assert.equal(retried.nodes.find((node) => node.kind === "review" && node.status === "succeeded").attempt, 2);
+  assert.equal(retried.nodes.filter((node) => node.kind === "review").length, 3);
+  assert.ok(retried.nodes.filter((node) => node.kind === "review").every((node) => node.attempt === 2));
 });
 
 test("refresh writes only impacted/new content and always rewrites Overview", async (t) => {
@@ -964,8 +973,8 @@ test("mixed structural and local defects replan first, write the full topology, 
   assert.match(feedback.id, /^defect-[a-f0-9]{12}$/);
   assert.equal(structuralWrites.every((node) => node.input.intent !== "repair"), true);
   const structuralPlan = f.requests.filter((request) => request.node.kind === "synthesis" && request.node.input.mode === "structural").at(-1);
-  assert.match(structuralPlan.prompt, /Prior Final WikiSpec/);
-  assert.match(structuralPlan.prompt, /"sharedTerms"/);
+  assert.match(structuralPlan.prompt, /Preseeded Prior WikiSpec/);
+  assert.match(structuralPlan.prompt, /wiki_spec_get_domain/);
   assert.match(structuralPlan.prompt, /"kind": "topology"/);
   assert.doesNotMatch(structuralPlan.prompt, /defect-[a-f0-9]{12}|domainId/);
   const repairedPage = f.requests.find((request) => request.node.kind === "write"
@@ -1034,15 +1043,11 @@ test("targeted research is allowed once and carries all receipts into the next P
   // Expand plan + post-expand finalize (queues coverage audit while survey gaps remain)
   // + post-audit finalize once requiredDryCoverageAudits is satisfied.
   assert.equal(syntheses.length, 3);
-  assert.equal(syntheses[1].artifactPaths.length, 3);
   for (const scopeId of ["source-survey:src-core", "source-survey:src-api", "cross-boundary"]) {
     assert.match(syntheses[1].prompt, new RegExp(`"scopeId": "${scopeId}"`));
   }
-  for (const artifactPath of syntheses[1].artifactPaths) {
-    assert.match(artifactPath, /^\.okf-wiki\/blobs\/[a-f0-9]{64}\.json$/);
-    assert.match(syntheses[1].prompt, new RegExp(artifactPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  }
-  assert.match(syntheses[1].prompt, /Use only the exact finding `id` values below/);
+  assert.match(syntheses[1].prompt, /wiki_research_scopes/);
+  assert.match(syntheses[1].prompt, /wiki_research_findings/);
   assert.deepEqual(f.requests.find((request) => request.node.input?.scope?.id === "cross-boundary").readRoots, ["src-core", "src-api"]);
 });
 
@@ -1139,14 +1144,19 @@ test("static page issues route to one fresh repair writer and regenerate Overvie
 });
 
 test("local reviewer defects use fresh page repairs and merge an Overview defect into the same rewrite", async (t) => {
+  let reported = false;
   const f = await fixture(t, {
-    review: (_request, index) => index === 0 ? {
-      defects: [
-        { kind: "depth", page: "api/request-flow.md", detail: "Explain failure behavior." },
-        { kind: "link", page: "overview/overview.md", detail: "Link the request flow." },
-      ],
-      summary: "Repair one content page and Overview.",
-    } : { defects: [], summary: "complete" },
+    review: (request) => {
+      if (request.node.input.reviewScope.kind !== "global" || reported) return { defects: [], summary: "complete" };
+      reported = true;
+      return {
+        defects: [
+          { kind: "depth", page: "api/request-flow.md", detail: "Explain failure behavior." },
+          { kind: "link", page: "overview/overview.md", detail: "Link the request flow." },
+        ],
+        summary: "Repair one content page and Overview.",
+      };
+    },
   });
   f.engine.start({ cwd: f.workspace, mode: "generate" });
   const snapshot = await f.engine.waitForIdle();
@@ -1186,7 +1196,7 @@ test("an unchanged defect-target repair blocks immediately", async (t) => {
       : validation(),
     onWrite: async (request, index) => {
       const output = request.writePaths[0];
-      const absolute = path.join(request.candidateWikiRoot, output.replace(/^wiki\//, ""));
+      const absolute = path.join(request.writerStagingWikiRoot ?? request.candidateWikiRoot, output.replace(/^wiki\//, ""));
       await mkdir(path.dirname(absolute), { recursive: true });
       if (request.node.input.page.path === "core/architecture.md" && request.node.input.intent === "draft") {
         original = "unchanged\n";
@@ -1376,20 +1386,20 @@ test("Git reconciliation after a source-drift restart retries the latest valid I
   });
   f.engine.start({ cwd: f.workspace, mode: "generate" });
   const restarted = await f.engine.waitForIdle();
-  assert.equal(restarted.status, "succeeded");
+  assert.equal(restarted.status, "succeeded", restarted.blockedReason);
   assert.equal(restarted.nodes.filter((node) => node.kind === "inspect").length, 2);
 
   await f.engine.retryPhase("review");
   const reconciled = await f.engine.waitForIdle();
   const inspectNodes = reconciled.nodes.filter((node) => node.kind === "inspect");
 
-  assert.equal(reconciled.status, "succeeded");
+  assert.equal(reconciled.status, "succeeded", reconciled.blockedReason);
   assert.equal(inspectNodes.length, 2);
   assert.equal(inspectNodes[0].status, "invalidated");
   assert.equal(inspectNodes[0].attempt, 1);
   assert.equal(inspectNodes[1].status, "succeeded");
   assert.equal(inspectNodes[1].attempt, 2);
-  assert.equal(reconciled.inspection.sourceFingerprint, "three");
+  assert.equal(reconciled.inspectionSummary.sourceFingerprint, "three");
 });
 
 test("succeeded nodes drop live history/output; archiveAttempt stays slim", async (t) => {
@@ -1456,6 +1466,110 @@ test("succeeded nodes drop live history/output; archiveAttempt stays slim", asyn
   assert.equal(session?.status, snapshot.status);
   assert.equal(session?.pointerVersion, 1);
   assert.equal("snapshot" in (session ?? {}), false);
+});
+
+test("durable snapshots keep compact receipts while artifacts retain full workflow payloads", async (t) => {
+  const f = await fixture(t);
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  const snapshot = await f.engine.waitForIdle();
+  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
+  assert.equal(isWikiRunSnapshot(snapshot), true);
+  assert.equal(snapshot.inspection, undefined);
+  assert.equal(snapshot.inspectionSummary.kind, "inspection_summary");
+  assert.equal(Object.hasOwn(snapshot.inspectionSummary, "changed"), false);
+  assert.equal(Object.hasOwn(snapshot.inspectionSummary, "sourcePaths"), false);
+  assert.equal(Object.hasOwn(snapshot.inspectionSummary, "existingPages"), false);
+
+  const expectedReceiptKind = {
+    inspect: "inspection", synthesis: "synthesis", write: "write",
+    validate: "validation", review: "review", finalize: "finalization",
+  };
+  for (const node of snapshot.nodes.filter((candidate) => candidate.status === "succeeded")) {
+    assert.ok(node.handoff, `${node.kind} stores its full payload`);
+    if (node.kind === "research") {
+      assert.equal(node.result.artifact.sha256, node.handoff.sha256);
+    } else {
+      assert.equal(node.result.kind, expectedReceiptKind[node.kind]);
+      assert.equal(node.result.artifact.sha256, node.handoff.sha256);
+    }
+    assert.ok(JSON.stringify(node.result).length < node.handoff.sizeBytes + 1024);
+  }
+
+  const synthesis = snapshot.nodes.find((node) => node.kind === "synthesis" && node.result.decision === "finalize");
+  assert.equal("spec" in synthesis.result, false);
+  const fullSynthesis = JSON.parse(await f.artifactStore.read(synthesis.handoff));
+  assert.ok(fullSynthesis.spec.domains.length > 0);
+  const validationNode = snapshot.nodes.find((node) => node.kind === "validate");
+  assert.equal("issues" in validationNode.result, false);
+  const fullValidation = JSON.parse(await f.artifactStore.read(validationNode.handoff));
+  assert.ok(Array.isArray(fullValidation.pages));
+
+  const history = createWikiRunHistoryStore({ workspace: f.workspace });
+  await history.save(snapshot);
+  const persisted = await history.load(snapshot.id);
+  assert.equal(isWikiRunSnapshot(persisted), true);
+  assert.equal(persisted.inspection, undefined);
+  assert.equal(persisted.inspectionSummary.kind, "inspection_summary");
+  assert.equal(Object.hasOwn(persisted.inspectionSummary, "changedPaths"), false);
+  for (const kind of ["synthesis", "validate", "review", "finalize"]) {
+    const result = persisted.nodes.find((node) => node.kind === kind)?.result;
+    assert.equal("spec" in result, false);
+    assert.equal("issues" in result, false);
+    assert.equal("defects" in result, false);
+    assert.equal("pages" in result, false);
+  }
+
+  const legacyFullResult = structuredClone(persisted);
+  legacyFullResult.nodes.find((node) => node.id === synthesis.id).result = fullSynthesis;
+  assert.equal(isWikiRunSnapshot(legacyFullResult), false, "full synthesis payloads are not valid durable results");
+  const mismatchedArtifact = structuredClone(persisted);
+  mismatchedArtifact.nodes.find((node) => node.id === synthesis.id).result.artifact.sha256 = "0".repeat(64);
+  assert.equal(isWikiRunSnapshot(mismatchedArtifact), false, "receipt artifact must match the node handoff");
+  const wrongOwner = structuredClone(persisted);
+  const wrongOwnerSynthesis = wrongOwner.nodes.find((node) => node.id === synthesis.id);
+  wrongOwnerSynthesis.result.artifact.runId = "other-run";
+  wrongOwnerSynthesis.handoff.runId = "other-run";
+  assert.equal(isWikiRunSnapshot(wrongOwner), false, "receipt and handoff must belong to the enclosing run and node attempt");
+  const extraReceiptField = structuredClone(persisted);
+  extraReceiptField.nodes.find((node) => node.id === synthesis.id).result.spec = { domains: [] };
+  assert.equal(isWikiRunSnapshot(extraReceiptField), false, "durable receipts reject unknown/full-payload fields");
+  const missingHandoff = structuredClone(persisted);
+  delete missingHandoff.nodes.find((node) => node.id === synthesis.id).handoff;
+  assert.equal(isWikiRunSnapshot(missingHandoff), false, "succeeded payload nodes require their full artifact handoff");
+
+  const resumed = structuredClone(persisted);
+  resumed.status = "paused";
+  resumed.completedAt = undefined;
+  assert.equal(f.engine.restore(resumed).status, "paused");
+  assert.deepEqual(await f.engine.applyRestoredArtifactHealth(), []);
+  await rm(path.join(f.workspace, ".okf-wiki", "runs", snapshot.id, "publish.json"), { force: true });
+  await f.engine.retryNode(validationNode.id);
+  const continued = await f.engine.waitForIdle();
+  assert.equal(continued.status, "succeeded", continued.blockedReason);
+});
+
+test("large inspections stay in artifacts while the durable run keeps constant-size counts", async (t) => {
+  const paths = Array.from({ length: 2_000 }, (_, index) => `src-core/generated/file-${index}.ts`);
+  const f = await fixture(t, {
+    inspection: { changedPaths: paths, existingPages: paths.map((item) => `${item}.md`), impactedPages: paths.map((item) => `wiki/${item}.md`) },
+  });
+  f.engine.start({ cwd: f.workspace, mode: "generate" });
+  const snapshot = await f.engine.waitForIdle();
+  assert.equal(snapshot.status, "succeeded", snapshot.blockedReason);
+  assert.equal(snapshot.inspection, undefined);
+  assert.equal(snapshot.inspectionSummary.changedPathCount, 2_000);
+  assert.equal(snapshot.inspectionSummary.existingPageCount, 2_000);
+  assert.equal(snapshot.inspectionSummary.impactedPageCount, 2_000);
+  assert.ok(JSON.stringify(snapshot.inspectionSummary).length < 1_000);
+  const inspect = snapshot.nodes.find((node) => node.kind === "inspect");
+  assert.ok(JSON.stringify(inspect.result).length < 1_000);
+  assert.equal(snapshot.nodes.some((node) => node.kind === "synthesis" && Object.hasOwn(node.input, "inspection")), false);
+  const snapshotBytes = JSON.stringify(snapshot).length;
+  assert.ok(snapshotBytes < 150_000, `durable snapshot is ${snapshotBytes} bytes`);
+  const full = JSON.parse(await f.artifactStore.read(inspect.handoff));
+  assert.equal(full.changedPaths.length, 2_000);
+  assert.equal(full.existingPages.length, 2_000);
+  assert.equal(full.impactedPages.length, 2_000);
 });
 
 test("writers and reviewers use an unpublished candidate until atomic publication", async (t) => {

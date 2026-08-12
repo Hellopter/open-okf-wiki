@@ -56,18 +56,24 @@ audits, going straight to writers. Expand is hard-rejected without critical
 gaps; with gaps, Plan may request a targeted batch of at most four scopes.
 Planning uses separate typed completion tools: `wiki_submit_synthesis_expand`
 for unresolved critical evidence gaps and `wiki_submit_synthesis_finalize` for
-the complete target WikiSpec. This keeps each model-facing schema single-purpose;
-both tools share the same submission-attempt budget. Planning emits a complete
-target WikiSpec in both generate and refresh modes.
+final acceptance. Research stages findings in batches of at most 20; Plan
+stages one domain at a time plus cross-domain coordination; Review stages
+defects in batches of at most 20. Bounded query tools page over accumulated
+state. Terminal tools submit only the remaining summary, gaps, expansion
+decision, or rationale, and the extension assembles the canonical artifact.
+This keeps observations bounded while preserving a complete WikiSpec in both
+generate and refresh modes. The two Plan terminal tools share one submission
+attempt budget.
 Every non-overview domain has one required `<domain-id>/domain.md` aggregation
 page plus evidence-driven architecture, flow, concept, state, data, or module
 pages. Each page declares reader questions and required facets. The default
 run-wide agent limit is two and can be configured from one to four. A fresh
 Overview writer runs after all content pages complete.
 
-Session restore is pointer-only (no legacy full-snapshot dual-read). Research,
-planning, and review submit typed objects directly; accepted objects are
-content-addressed under `.okf-wiki/blobs/{sha256}.json`. Durable snapshots use
+Session restore is pointer-only (no legacy full-snapshot dual-read). Accepted
+research, planning, validation, review, and finalization objects are
+content-addressed under `.okf-wiki/blobs/{sha256}.json`; durable snapshots keep
+only bounded routing receipts and immutable artifact references. Snapshots use
 `version: 1` and pin the resolved policy and hash. Older session entries,
 history files, and artifact layouts are
 **not migrated** — after upgrading, delete stale `.okf-wiki/` under the
@@ -82,12 +88,15 @@ repeated defects, unchanged repaired pages, or exhausted budgets block the run.
 Source state is checked again before completion: the first drift restarts from
 Inspect and the second blocks with evidence.
 
-Research receipts are bounded Markdown evidence indexes. The engine derives a
-minimal WikiPagePacket for each writer from the Spec, selected receipts,
-authorized source roots, relevant cross-links, shared terms, exact Wiki read
-paths, and one write path. Writers re-open source before citing it and never
-receive the complete synthesis or review artifact. Agents cannot delete pages.
-Writers and reviewers operate on
+The engine derives a minimal WikiPagePacket for each writer from the Spec,
+selected finding IDs, authorized source roots, relevant cross-links, shared
+terms, exact Wiki read paths, and one write path. Writers query only their
+relevant catalog findings, re-open source before citing it, and never receive
+the complete synthesis or review artifact. Each writer edits an attempt-local
+working page; submission seals and validates those bytes before atomically
+promoting the accepted page into the run candidate. Failed or timed-out
+attempts cannot contaminate accepted output. Agents cannot delete pages.
+Writers edit attempt-local staging pages and reviewers read
 `.okf-wiki/runs/<runId>/candidate/wiki`; published `wiki/` is unchanged during
 the run. Refresh retains unchanged Markdown, while generate starts a clean
 Markdown projection and preserves assets. After review, the publisher rechecks
@@ -132,7 +141,7 @@ Configuration fields and defaults:
 | Field | Default / range | Semantics |
 |-------|-----------------|-----------|
 | `quality.maxResearchRounds` | `6`; integer `3..20` | Combined per-run research-round ceiling; fixed at run start |
-| `quality.maxSubmissionAttempts` | `3`; integer `1..3` | Direct typed submission calls allowed in one node attempt |
+| `quality.maxSubmissionAttempts` | `3`; integer `1..3` | Terminal acceptance calls allowed in one node attempt |
 | `wiki.exclude` | `[]` | Source-relative or project-prefixed globs removed from inspection and rejected as accepted evidence |
 | `wiki.terminology` | `{}` | Non-empty canonical term-to-definition strings injected into Plan, writers, and review |
 | `wiki.domains` | `[]` | Required domain identities and research boundaries; ids are unique safe identifiers |
@@ -157,6 +166,14 @@ existing run; `quality.maxSubmissionAttempts` is part of the pinned policy.
 
 Configured domains fail closed when include patterns do not match a declared
 source. Global excluded paths cannot become accepted citation evidence.
+
+`quality.maxSubmissionAttempts` counts only terminal acceptance calls such as
+`wiki_submit_research`, `wiki_submit_synthesis_finalize`, and
+`wiki_submit_review`; it does not count staging or read-only queries. Research,
+Plan, and Review may perform at most 128 successful staging mutations per node
+attempt. Batch tools accept at most 20 findings or defects, canonical structured
+artifacts are capped at 256 KiB, and each paginated query response is capped at
+24 KiB. These are fixed safety invariants rather than workspace tuning knobs.
 
 ## Attempts, Retry, and Cost Bounds
 

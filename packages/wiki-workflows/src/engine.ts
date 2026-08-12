@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { getHeapStatistics } from "node:v8";
 import { createWikiArtifactStore, type WikiArtifactRef, type WikiArtifactStore } from "./artifact-store.js";
@@ -7,6 +7,7 @@ import {
   WikiAgentProtocolError,
 } from "./agent-errors.js";
 import {
+  parseReviewSubmission,
   parseResearchArtifact,
   parseResearchSubmission,
 } from "./control-submissions.js";
@@ -27,7 +28,7 @@ import {
 } from "./policy.js";
 import { promptFor, type PromptResearchReceipt } from "./prompts.js";
 import { loadResearchSourceRoots, validateResearchArtifact } from "./research-evidence.js";
-import { projectResearchReceipt, researchFindings } from "./research-receipt.js";
+import { projectResearchReceipt, researchFindings, validateResearchReceiptRouting } from "./research-receipt.js";
 import {
   affectedNodeIds,
   isForkableRun,
@@ -42,13 +43,17 @@ import {
   artifactKindForNode,
   hashWikiPage,
   inspectionFingerprint,
+  hydrateNodeResult,
   isResearchReceipt,
   mergeMetrics,
   normalizeNodeResult,
+  nodeReceipt,
   normalizeText,
+  parseInspection,
   pagePacketInputFor,
   readRootsFor,
   researchInputFor,
+  reviewInputFor,
   retainedHistory,
   retainedOutput,
   roleFor,
@@ -84,6 +89,7 @@ import {
   type WikiRunRequest,
   type WikiRunSession,
   type WikiRunSnapshot,
+  type WikiReviewFragmentContext,
   type WikiWorkflowDependencies,
   type WikiWorkflowListener,
 } from "./workflow-types.js";
@@ -91,6 +97,16 @@ import {
 const MAX_NODE_ATTEMPTS = DEFAULT_WIKI_WORKFLOW_POLICY.maxNodeAttempts;
 const MAX_EVENTS = DEFAULT_WIKI_WORKFLOW_POLICY.maxEvents;
 const ACTIVITY_EVENT_INTERVAL_MS = DEFAULT_WIKI_WORKFLOW_POLICY.activityEventIntervalMs;
+
+function catalogForNode(node: WikiNode, receipts: PromptResearchReceipt[] | undefined) {
+  if (!receipts) return undefined;
+  if (node.kind !== "write") return receipts.map(({ scopeId, task, sourcePaths, findings, gaps }) => ({ scopeId, task, sourcePaths, findings, gaps }));
+  const selectedIds = new Set(pagePacketInputFor(node).page.findingIds);
+  const selected = receipts.map(({ scopeId, task, sourcePaths, findings, gaps }) => ({
+    scopeId, task, sourcePaths, findings: findings.filter((finding) => selectedIds.has(finding.id)), gaps,
+  })).filter((receipt) => receipt.findings.length > 0);
+  return selected.length ? selected : undefined;
+}
 
 export interface WikiWorkflowEngineOptions extends Partial<Omit<WikiWorkflowDependencies, "executor">> {
   executor?: WikiWorkflowDependencies["executor"];
@@ -181,7 +197,7 @@ export class WikiWorkflowEngine {
   }
 
   getSnapshot(): WikiRunSnapshot | undefined {
-    return this.current ? clone(this.current) : undefined;
+    return this.current ? durableSnapshot(this.current) : undefined;
   }
 
   listSnapshots(): WikiRunSnapshot[] {
@@ -241,7 +257,10 @@ export class WikiWorkflowEngine {
     if (run.status !== "paused" && run.status !== "running") return [];
     const store = this.ensureArtifactStore(run.cwd);
     const problems = await checkRunArtifactHealth(run.cwd, run, store);
-    if (problems.length === 0) return problems;
+    if (problems.length === 0) {
+      await hydrateRuntimeRun(run, store);
+      return problems;
+    }
     const message = `Missing or unreadable handoff artifacts after restore: ${problems.join("; ")}`;
     this.markTerminalRun("blocked", message, undefined, undefined, {
       code: "missing_handoff_artifacts",
@@ -333,6 +352,7 @@ export class WikiWorkflowEngine {
     this.abortControllers();
     await this.copyArtifactsForFork(snapshot, branch);
     this.current = branch;
+    await hydrateRuntimeRun(branch, this.requireArtifactStore());
     this.applyRuntimePolicy(branch.policy);
     this.pendingTerminalEvent = undefined;
     const affected = affectedNodeIds(branch, rootIds);
@@ -426,7 +446,9 @@ export class WikiWorkflowEngine {
     if (!inspect) throw new Error("Wiki run has no Inspect node");
     this.invalidateFrom(inspect.id, "Workspace Wiki policy changed; restarting from Inspect", true);
     inspect.input = { requestedMode: run.requestedMode, policyHash: nextHash };
-    inspect.inputFingerprint = JSON.stringify({ policyHash: nextHash, input: inspect.input });
+    inspect.inputFingerprint = createHash("sha256")
+      .update(JSON.stringify({ policyHash: nextHash, input: inspect.input }))
+      .digest("hex");
     run.inspection = undefined;
     run.inspectionFingerprint = undefined;
     run.effectiveMode = undefined;
@@ -524,7 +546,7 @@ export class WikiWorkflowEngine {
         this.emitPendingTerminalEvent();
         continue;
       }
-      const verification = runnable.filter((node) => node.kind === "validate" || node.kind === "review");
+      const verification = runnable.filter((node) => node.kind === "validate" || node.kind === "review").slice(0, concurrency);
       if (verification.length > 0) {
         await this.executeBatch(verification);
         this.emitPendingTerminalEvent();
@@ -565,6 +587,7 @@ export class WikiWorkflowEngine {
     node.status = "running";
     node.attempt += 1;
     node.result = undefined;
+    node.handoff = undefined;
     node.output = undefined;
     node.history = [];
     node.error = undefined;
@@ -600,7 +623,8 @@ export class WikiWorkflowEngine {
           throw new Error("Researcher did not produce a research handoff artifact");
         }
         node.handoff = handoff;
-        node.result = projectResearchReceipt(run, parsed, handoff, scope);
+        const receipt = projectResearchReceipt(run, parsed, handoff, scope);
+        node.result = receipt;
       } else {
         const normalized = normalizeNodeResult(node.kind, result.result);
         const handoff = await this.persistNodeHandoff(node, normalized);
@@ -635,6 +659,10 @@ export class WikiWorkflowEngine {
     } catch (error) {
       if (completedSuccessfully) throw error;
       if (node.status !== "running") return;
+      // A persisted payload is not an accepted handoff until all transitions
+      // complete. Leave its blob unreferenced for normal artifact GC.
+      node.handoff = undefined;
+      node.result = undefined;
       const classification = classifyNodeFailure(error, {
         attempt: node.attempt,
         maxAttempts: MAX_NODE_ATTEMPTS,
@@ -733,43 +761,83 @@ export class WikiWorkflowEngine {
         policyHash: run.policyHash,
         sourceFingerprint: run.inspection?.sourceFingerprint,
       });
+      // Publication renames the candidate into wiki/. A later retry/fork path
+      // must re-seed instead of reusing the resolved promise for the old path.
+      this.candidateReady = undefined;
       return { result: finalization };
     }
     const role = roleFor(node.kind);
     const researchReceipts = await this.researchReceiptsForNode(node);
-    const artifactPaths = researchReceipts?.map((receipt) => receipt.artifactPath);
+    const reviewFragments = reviewFragmentsForNode(node, run);
     if (node.kind === "write" || node.kind === "review") await this.ensureCandidate(run);
-    return await this.dependencies.executor.execute({
+    const writePage = node.kind === "write" ? writePathsFor(node)?.[0]?.replace(/^wiki\//, "") : undefined;
+    const publication = node.kind === "write" ? this.ensurePublicationStore(run.cwd) : undefined;
+    const writerStagingWikiRoot = writePage
+      ? await publication!.prepareWriterAttempt(run.id, node.id, node.attempt, writePage)
+      : undefined;
+    let sealedWriterPage: { page: string; sha256: string } | undefined;
+    try {
+      const execution = await this.dependencies.executor.execute({
       runId: run.id,
       node: clone(node),
       cwd: run.cwd,
-      prompt: await promptFor(node, run, researchReceipts),
+      prompt: await promptFor(node, run, researchReceipts, reviewFragments),
       role,
       readRoots: readRootsFor(node, run),
-      artifactPaths,
       wikiReadPaths: wikiReadPathsFor(node, run),
       candidateWikiRoot: node.kind === "write" || node.kind === "review" ? this.candidateWikiRoot(run) : undefined,
+      writerStagingWikiRoot,
       writePaths: writePathsFor(node),
       language: run.language,
       signal,
       maxSubmissionAttempts: run.policy.quality.maxSubmissionAttempts,
-      validateControlSubmission: node.kind === "synthesis" || node.kind === "review"
-        ? (submission) => validateControlSubmission(this.transitionHost(), node, submission)
+      initialSynthesisSpec: node.kind === "synthesis" && synthesisInputFor(node).priorSynthesisNodeId
+        ? specForSynthesis(run, synthesisInputFor(node).priorSynthesisNodeId!)
         : undefined,
+      researchCatalog: catalogForNode(node, researchReceipts),
+      reviewFragments,
+      validateControlSubmission: node.kind === "research"
+        ? (submission) => validateResearchReceiptRouting(parseResearchSubmission(submission), researchInputFor(node).scope)
+        : node.kind === "synthesis" || node.kind === "review"
+          ? (submission) => validateControlSubmission(this.transitionHost(), node, submission)
+          : undefined,
       validatePageSubmission: node.kind === "write"
         ? async (page) => {
           const spec = specForSynthesis(run, pagePacketInputFor(node).synthesisNodeId);
-          const issues = await this.dependencies.validatePage(run.cwd, spec, page, this.candidateWikiDirectory(run, true), run.policy.exclude);
+          let sealed;
+          try {
+            sealed = await publication!.sealWriterPage(run.id, node.id, node.attempt, page);
+          } catch (error) {
+            if (error instanceof Error && error.message.startsWith("Missing writer attempt page:")) {
+              return { ok: false, issues: [{ code: "missing-page", message: `Target page is missing: ${page}` }] };
+            }
+            throw error;
+          }
+          const wikiDirectory = path.relative(run.cwd, sealed.wikiRoot);
+          const issues = await this.dependencies.validatePage(run.cwd, spec, page, wikiDirectory, run.policy.exclude);
           if (issues.length) return { ok: false, issues };
-          const sha256 = await hashWikiPage(run.cwd, page, this.candidateWikiRoot(run));
-          if (!sha256) return { ok: false, issues: [{ code: "missing-page", message: `Target page is missing: ${page}` }] };
-          return { ok: true, submission: { page, sha256 } };
+          sealedWriterPage = { page, sha256: sealed.sha256 };
+          return { ok: true, submission: sealedWriterPage };
         }
         : undefined,
       onActivity: (activity, metrics) => this.updateActivity(node.id, activity, metrics),
       onOutput: (output) => this.updateOutput(node.id, output),
       onHistory: (history) => this.updateHistory(node.id, history),
-    });
+      });
+      if (node.kind === "write") {
+        if (!sealedWriterPage) throw new Error("Writer completed without a sealed page");
+        if (signal.aborted || node.status !== "running") throw new Error("Writer attempt was interrupted before page promotion");
+        const result = execution.result as { page?: unknown; sha256?: unknown };
+        if (result?.page !== sealedWriterPage.page || result.sha256 !== sealedWriterPage.sha256) {
+          throw new Error("Writer result does not match its sealed page");
+        }
+        await publication!.promoteWriterPage(run.id, node.id, node.attempt, sealedWriterPage.page);
+      }
+      return execution;
+    } catch (error) {
+      if (node.kind === "write") await publication!.discardWriterAttempt(run.id, node.id, node.attempt).catch(() => {});
+      throw error;
+    }
   }
 
   private async persistNodeHandoff(node: WikiNode, value: unknown): Promise<WikiArtifactRef | undefined> {
@@ -877,6 +945,11 @@ export class WikiWorkflowEngine {
       if (node.handoff) {
         const copiedRef = bySource.get(`${node.handoff.nodeId}\u0000${node.handoff.attempt}\u0000${node.handoff.kind}`);
         if (copiedRef) node.handoff = copiedRef;
+      }
+      for (const attempt of node.attemptHistory) {
+        if (!attempt.handoff) continue;
+        const copiedRef = bySource.get(`${attempt.handoff.nodeId}\u0000${attempt.handoff.attempt}\u0000${attempt.handoff.kind}`);
+        if (copiedRef) attempt.handoff = copiedRef;
       }
       if (isResearchReceipt(node.result)) {
         const copiedRef = bySource.get(`${node.result.artifact.nodeId}\u0000${node.result.artifact.attempt}\u0000${node.result.artifact.kind}`);
@@ -1070,7 +1143,7 @@ export class WikiWorkflowEngine {
     if (run.events.length > MAX_EVENTS) run.events.splice(0, run.events.length - MAX_EVENTS);
     run.updatedAt = event.at;
     // Clone once per emit; all listeners share the same snapshot (do not re-clone per listener).
-    const snapshot = clone(run);
+    const snapshot = durableSnapshot(run);
     for (const listener of this.listeners) listener(snapshot, event);
   }
 
@@ -1109,6 +1182,97 @@ export class WikiWorkflowEngine {
       materializeIndexes: (cwd, spec) => this.dependencies.materializeIndexes(cwd, spec, this.candidateWikiDirectory()),
       wikiRoot: () => this.candidateWikiRoot(),
     };
+  }
+}
+
+const MAX_REVIEW_FRAGMENT_CONTEXT_BYTES = 48 * 1024;
+const MAX_REVIEW_FRAGMENTS = 32;
+const MAX_DEFECTS_PER_FRAGMENT = 32;
+
+function reviewFragmentsForNode(node: WikiNode, run: WikiRunSnapshot): WikiReviewFragmentContext | undefined {
+  if (node.kind !== "review") return undefined;
+  const input = reviewInputFor(node);
+  if (input.reviewScope.kind !== "global") return undefined;
+  const fragments: WikiReviewFragmentContext["fragments"] = [];
+  let omittedFragmentCount = Math.max(0, input.reviewScope.domainReviewNodeIds.length - MAX_REVIEW_FRAGMENTS);
+  for (const nodeId of input.reviewScope.domainReviewNodeIds.slice(0, MAX_REVIEW_FRAGMENTS)) {
+    const domainNode = run.nodes.find((candidate) => candidate.id === nodeId && candidate.kind === "review" && candidate.status === "succeeded");
+    if (!domainNode) {
+      omittedFragmentCount += 1;
+      continue;
+    }
+    const domainScope = reviewInputFor(domainNode).reviewScope;
+    if (domainScope.kind !== "domain") {
+      omittedFragmentCount += 1;
+      continue;
+    }
+    const result = parseReviewSubmission(domainNode.result);
+    const fragment = {
+      domainId: domainScope.domainId,
+      pagePaths: domainScope.pagePaths,
+      summary: result.summary.slice(0, 2_000),
+      defects: result.defects.slice(0, MAX_DEFECTS_PER_FRAGMENT).map((defect) => ({
+        ...defect,
+        detail: defect.detail.slice(0, 1_000),
+      })),
+    };
+    const candidate = { fragments: [...fragments, fragment], omittedFragmentCount };
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_REVIEW_FRAGMENT_CONTEXT_BYTES) {
+      omittedFragmentCount += 1;
+      continue;
+    }
+    fragments.push(fragment);
+  }
+  return { fragments, omittedFragmentCount };
+}
+
+function durableSnapshot(run: WikiRunSnapshot): WikiRunSnapshot {
+  const snapshot = clone(run);
+  snapshot.nodes = run.nodes.map((node) => {
+    const durable = clone(node) as WikiNode;
+    durable.result = nodeReceipt(node, node.result);
+    if (durable.kind === "synthesis" && durable.input && typeof durable.input === "object" && !Array.isArray(durable.input)) {
+      delete (durable.input as Record<string, unknown>).inspection;
+    }
+    return durable;
+  });
+  if (run.inspection) {
+    const inspectNode = run.nodes.find((node) => node.kind === "inspect" && node.handoff);
+    if (inspectNode?.handoff) {
+      const inspection = run.inspection;
+      snapshot.inspectionSummary = {
+        kind: "inspection_summary",
+        mode: inspection.mode,
+        head: inspection.head,
+        sourceFingerprint: inspection.sourceFingerprint,
+        sourceCount: inspection.sourcePaths.length,
+        changedPathCount: inspection.changedPaths.length,
+        existingPageCount: inspection.existingPages.length,
+        impactedPageCount: inspection.impactedPages.length,
+      };
+      snapshot.inspection = undefined;
+    } else {
+      snapshot.inspection = undefined;
+      snapshot.inspectionSummary = undefined;
+    }
+  }
+  return snapshot;
+}
+
+async function hydrateRuntimeRun(run: WikiRunSnapshot, store: WikiArtifactStore): Promise<void> {
+  for (const node of run.nodes) {
+    if (!node.handoff || node.status !== "succeeded") continue;
+    if (node.kind === "research") continue;
+    node.result = hydrateNodeResult(node, await store.read(node.handoff));
+  }
+  const inspectNode = [...run.nodes].reverse().find((node) => node.kind === "inspect" && node.status === "succeeded");
+  if (inspectNode?.result) {
+    run.inspection = parseInspection(inspectNode.result);
+    run.inspectionSummary = undefined;
+    for (const node of run.nodes) {
+      if (node.kind !== "synthesis" || !node.input || typeof node.input !== "object" || Array.isArray(node.input)) continue;
+      (node.input as Record<string, unknown>).inspection = run.inspection;
+    }
   }
 }
 

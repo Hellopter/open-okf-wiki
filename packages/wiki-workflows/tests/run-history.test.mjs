@@ -39,7 +39,7 @@ function snapshot(id, status, updatedAt) {
       id: "inspect",
       kind: "inspect",
       label: "Inspect Git scope",
-      status: status === "failed" ? "failed" : "succeeded",
+      status: status === "failed" ? "failed" : "queued",
       dependsOn: [],
       attempt: 1,
       inputFingerprint: "input",

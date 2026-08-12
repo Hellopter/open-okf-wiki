@@ -74,8 +74,8 @@ review. Optional configured domains require a unique safe `id`, non-empty
 research boundary. Include patterns must start at a declared source root.
 `wiki.runtime.maxConcurrentAgents` defaults to `2` and accepts integers `1..4`.
 `quality.maxResearchRounds` defaults to `6` and accepts integers `3..20`.
-`quality.maxSubmissionAttempts` defaults to `3` and accepts `1..3` direct
-typed submissions per node attempt. Runtime settings are:
+`quality.maxSubmissionAttempts` defaults to `3` and accepts `1..3` terminal
+acceptance calls per node attempt. Runtime settings are:
 
 | Field | Default / range | What it controls |
 |-------|-----------------|------------------|
@@ -115,18 +115,22 @@ Inspect -> Research -> Plan -> Write -> Review & Publish
 ```
 
 Research uses a fresh agent per source and may run one bounded targeted batch.
-Plan completes through one of two explicit typed tools: it calls
-`wiki_submit_synthesis_expand` to request evidence for unresolved critical gaps,
-or `wiki_submit_synthesis_finalize` to submit the complete target page topology.
-The two tools share the configured per-attempt submission budget. Write starts
-one fresh agent per content page with at most four active writers, then starts a fresh Overview
-writer after the content-page barrier. In refresh mode only impacted or new
-content pages plus Overview are rewritten unless a structural replan requires a
-full rewrite.
+Research accumulates evidence through batches of at most 20 findings, and Plan
+builds the WikiSpec one domain at a time. Both expose bounded, paginated query
+tools so agents can inspect staged state without replaying one huge JSON object
+into every turn. Their terminal tools submit only the remaining summary, gaps,
+expansion decision, or rationale; the extension validates and assembles the
+canonical JSON artifact. `quality.maxSubmissionAttempts` applies to terminal
+submissions, while staging has a separate fixed mutation ceiling. Write starts
+one fresh agent per content page with at most four active writers, then starts a
+fresh Overview writer after the content-page barrier. In refresh mode only
+impacted or new content pages plus Overview are rewritten unless a structural
+replan requires a full rewrite.
 
 Write performs deterministic format, citation, link, and Mermaid validation as
 soon as a page is submitted, so the same writer can repair it immediately. A
-clean candidate then advances to an independent semantic reviewer.
+clean candidate then advances to parallel domain reviewers followed by one
+cross-domain reviewer. Review defects are also staged in bounded batches.
 Page-local defects return to fresh page writers; topology or coverage defects
 return to one bounded structural replan. Only after review succeeds does a
 deterministic finalizer remove obsolete Markdown, rebuild indexes, preserve
@@ -173,7 +177,9 @@ incremental range cannot be trusted.
 opens the run console, whose root view selects live and historical runs. It
 shows phase and Agent state, compact tool targets and result summaries, token
 and context figures, validation failures, and Pi compaction and retry activity.
-Enter an Agent detail to reveal its retained raw tool payloads only when needed.
+Agent details retain compact receipts and immutable content-addressed artifact
+references instead of copying full research, plan, or review payloads into run
+history.
 
 Stopping Pi or switching sessions interrupts an active run safely: running
 Agents are returned to the queue, the run becomes paused, and the same snapshot
@@ -205,10 +211,11 @@ resumable.
 - Source references begin with the declared project directory, for example
   `api/src/server.ts#L12-L38`; body citations use
   `repo:api/src/server.ts#L12-L38`.
-- Pi session custom entries contain only run pointers. Authoritative run
-  snapshots, candidate Wiki trees, journals, and handoff manifests are stored
-  below `.okf-wiki/`; accepted handoffs use content-addressed blobs. Published
-  `wiki/` remains unchanged until recoverable directory publication succeeds.
+- Pi session custom entries contain only run pointers. Authoritative snapshots
+  contain bounded routing receipts; candidate Wiki trees, journals, and handoff
+  manifests are stored below `.okf-wiki/`. Accepted full handoffs use
+  content-addressed blobs. Published `wiki/` remains unchanged until
+  recoverable directory publication succeeds.
 - Project-history writes are serialized and shutdown waits for the final write;
   persistence failures are reported in Pi instead of being silently ignored.
 - Pi's own auto-compaction and provider retry capabilities are enabled for

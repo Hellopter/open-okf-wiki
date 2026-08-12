@@ -13,11 +13,17 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented in this file.
 - **Sequential quality gates.** Writers repair deterministic format, citation,
   link, and Mermaid failures in-session. Semantic review starts only after the
   candidate passes static validation.
-- **Typed direct handoff.** Research, synthesis, and review submit typed objects
-  directly with structured rejection and a configurable one-to-three-attempt
-  budget. Plan uses separate expand and finalize tools with a shared budget;
-  every agent prompt ends with its exact required completion protocol.
-  Agent-authored JSON/Markdown handoff files are removed.
+- **Bounded structured handoff.** Research, synthesis, and review accumulate
+  typed fragments through bounded mutation and paginated query tools, then use
+  a small terminal submission for acceptance. Plan uses separate expand and
+  finalize tools with a shared configurable one-to-three-attempt terminal
+  budget. Canonical artifacts remain complete content-addressed JSON; giant
+  repeated tool payloads and Agent-authored JSON/Markdown handoff files are
+  removed.
+- **Review fan-out and safe page acceptance.** Semantic review runs once per
+  domain and then globally aggregates cross-domain concerns. Writers use
+  attempt-local working pages; only sealed, validated bytes are atomically
+  promoted into the candidate.
 - **Bounded Pi runtime.** Isolated sessions use fixed native compaction and a
   configurable `1..16` agent-level retry budget,
   a bounded configurable fresh-session count for overflow/transient exhaustion,
@@ -49,6 +55,10 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented in this file.
   index is derived, and history/artifact cleanup cannot remove candidate,
   journal, or backup data. Symlink traversal fails closed.
 - **Session pointer-only.** Pi custom entries (`WikiRunSession`) are pointer-only (`pointerVersion: 1`, `runId`, `revision`, `status`, `updatedAt`, `workspace`). Full `WikiRunSnapshot` bodies live in the project history store. Legacy full-snapshot session entries are rejected fail-closed (no dual-read). Restore path: parse pointer → `historyStore.load(runId)` → `engine.restore(snapshot)`. Host session appends only on critical events (not `node_activity` / `node_started`).
+- **Artifact-backed durable receipts.** Full accepted node results are immutable
+  content-addressed artifacts. Run snapshots store bounded routing receipts,
+  hashed input fingerprints, and strict owner/attempt references; restore fails
+  closed on missing or mismatched artifacts and hydrates results before resume.
 - **Snapshot v1 baseline — no migration.** Durable run snapshots and their pinned policy start at `version: 1`. Pre-release history with another shape is **rejected** fail-closed; clear stale `.okf-wiki/` and run `/wiki generate`.
 - **Recovery / retry.** Interrupted (`running`/`paused`) history can be forked for retry; UI `waitAgentSettle` only when the active engine still has a live node controller.
 - **Research stop.** Expand hard-rejected without critical gaps; expand scopes must reference gap questions; dry audit skipped when no critical gaps; dry fingerprints normalize evidence paths.

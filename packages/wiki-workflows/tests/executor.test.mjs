@@ -104,6 +104,33 @@ function request(cwd, kind, role) {
 }
 
 async function writeAndSubmit(tools, name, content) {
+  if (name === "wiki_submit_research" && Array.isArray(content.findings)) {
+    if (content.findings.length > 0) {
+      await tools.find((tool) => tool.name === "wiki_research_put_findings").execute("stage", {
+        findings: content.findings.map((finding, index) => ({ slot: `finding-${index}`, finding })),
+      });
+    }
+    content = { summary: content.summary, gaps: content.gaps };
+  }
+  if (name === "wiki_submit_synthesis_finalize" && content.spec) {
+    for (const domain of content.spec.domains ?? []) {
+      await tools.find((tool) => tool.name === "wiki_plan_put_domain").execute(`stage-${domain.id}`, { domain });
+    }
+    await tools.find((tool) => tool.name === "wiki_plan_set_coordination").execute("coordination", {
+      crossLinks: content.spec.crossLinks ?? [],
+      sharedTerms: content.spec.sharedTerms ?? [],
+      omissions: content.spec.omissions ?? [],
+    });
+    content = { rationale: content.rationale };
+  }
+  if (name === "wiki_submit_review" && Array.isArray(content.defects)) {
+    if (content.defects.length > 0) {
+      await tools.find((tool) => tool.name === "wiki_review_put_defects").execute("stage-review", {
+        defects: content.defects.map((defect, index) => ({ slot: `defect-${index}`, defect })),
+      });
+    }
+    content = { summary: content.summary };
+  }
   return await tools.find((tool) => tool.name === name).execute("submit", content);
 }
 
@@ -123,9 +150,7 @@ function finalizedSpec() {
 test("synthesis submission accepts the page-level contract and optional coordination arrays", async (t) => {
   const cwd = await workspaceWithSources(t);
   const execution = request(cwd, "synthesis", "synthesizer");
-  execution.artifactPaths = [".okf-wiki/runs/run/research-node/attempt-1/research.json"];
-  await mkdir(path.dirname(path.join(cwd, execution.artifactPaths[0])), { recursive: true });
-  await writeFile(path.join(cwd, execution.artifactPaths[0]), JSON.stringify({ summary: "API", findings: [], gaps: [] }));
+  execution.readRoots = ["api"];
   let tools;
   const session = fakeSession();
   session.prompt = async () => {
@@ -142,7 +167,7 @@ test("synthesis submission accepts the page-level contract and optional coordina
   assert.deepEqual(result.result.spec.sharedTerms, []);
   const submit = tools.find((tool) => tool.name === "wiki_submit_synthesis_finalize");
   const guidance = [submit.description, ...submit.promptGuidelines].join("\n");
-  assert.match(guidance, /findingIds/);
+  assert.match(guidance, /wiki_plan_put_domain/);
   assert.doesNotMatch(guidance, /requiredSections|diagrams|sources/);
 });
 
@@ -315,12 +340,11 @@ test("a rejected control submission gets one correction turn", async (t) => {
   let followUps = 0;
   const session = fakeSession();
   session.prompt = async () => {
-    const rejected = await writeAndSubmit(tools, "wiki_submit_review", {
-      defects: [{ kind: "topology", page: "domain/page.md", detail: "bad branch" }], summary: "bad",
+    const rejected = await tools.find((tool) => tool.name === "wiki_review_put_defects").execute("bad", {
+      defects: [{ slot: "bad", defect: { kind: "topology", page: "domain/page.md", detail: "bad branch" } }],
     });
-    assert.equal(rejected.details.accepted, false);
-    assert.equal(rejected.details.remainingAttempts, 2);
-    assert.match(rejected.details.issues[0].message, /unsupported field: page/);
+    assert.equal(rejected.details.ok, false);
+    assert.match(rejected.details.message, /unsupported field: page/);
   };
   session.followUp = async () => {
     followUps += 1;
@@ -342,9 +366,7 @@ test("a rejected control submission gets one correction turn", async (t) => {
 test("missing the required submission fails with a classified protocol error", async (t) => {
   const cwd = await workspaceWithSources(t);
   const execution = request(cwd, "synthesis", "synthesizer");
-  execution.artifactPaths = [".okf-wiki/runs/run/research-node/attempt-1/research.json"];
-  await mkdir(path.dirname(path.join(cwd, execution.artifactPaths[0])), { recursive: true });
-  await writeFile(path.join(cwd, execution.artifactPaths[0]), JSON.stringify({ summary: "Research", findings: [], gaps: [] }));
+  execution.readRoots = ["api"];
   const session = fakeSession();
   const executor = new PiAgentExecutor({ createSession: async (options) => {
     session.getActiveToolNames = () => options.tools;
@@ -368,7 +390,7 @@ test("an exhausted structured submission budget does not add a fourth correction
   session.prompt = async () => {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const result = await writeAndSubmit(tools, "wiki_submit_review", {
-        defects: [{ kind: "topology", page: "domain/page.md", detail: "bad branch" }], summary: "bad",
+        defects: [], summary: " ",
       });
       assert.equal(result.details.accepted, false);
       assert.equal(result.details.remainingAttempts, 3 - attempt);
@@ -694,32 +716,29 @@ test("wiki_submit_research returns actionable issues and accepts a same-session 
     gaps: [],
   };
   session.prompt = async () => {
-    const outOfScope = await writeAndSubmit(tools, "wiki_submit_research", {
-        summary: "out of scope",
-        findings: [{
+    const stage = tools.find((tool) => tool.name === "wiki_research_put_findings");
+    const outOfScope = await stage.execute("out-of-scope", {
+        findings: [{ slot: "finding", finding: {
           kind: "concept",
           title: "Web",
           readerQuestion: "Where is web?",
           priority: "normal",
           evidence: ["web/src/index.ts#L1"],
-        }],
-        gaps: [],
+        } }],
       });
-    assert.equal(outOfScope.details.accepted, false);
-    assert.match(outOfScope.details.issues[0].message, /outside the assigned scope/);
-    const missing = await writeAndSubmit(tools, "wiki_submit_research", {
-        summary: "missing file",
-        findings: [{
+    assert.equal(outOfScope.details.ok, false);
+    assert.match(outOfScope.details.message, /outside the assigned scope/);
+    const missing = await stage.execute("missing", {
+        findings: [{ slot: "finding", finding: {
           kind: "concept",
           title: "Missing",
           readerQuestion: "Where is missing?",
           priority: "normal",
           evidence: ["api/src/missing.ts#L1"],
-        }],
-        gaps: [],
+        } }],
       });
-    assert.equal(missing.details.accepted, false);
-    assert.match(missing.details.issues[0].message, /file is missing/);
+    assert.equal(missing.details.ok, false);
+    assert.match(missing.details.message, /file is missing/);
     await writeAndSubmit(tools, "wiki_submit_research", valid);
   };
   const executor = new PiAgentExecutor({ createSession: async (options) => {

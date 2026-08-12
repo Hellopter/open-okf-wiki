@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import type { WikiArtifactRef } from "./artifact-store.js";
 import type {
   WikiResearchArtifact,
@@ -8,6 +9,19 @@ import type {
   WikiResearchScope,
   WikiRunSnapshot,
 } from "./workflow-types.js";
+
+/** Receipts are routing state, not a second copy of the full research artifact. */
+export const MAX_RESEARCH_RECEIPT_BYTES = 64 * 1024;
+export const MAX_RESEARCH_RECEIPT_ROUTING_BYTES = 60 * 1024;
+
+/** Preflight the model-authored routing fields before accepting its submission. */
+export function validateResearchReceiptRouting(artifact: WikiResearchArtifact, scope: WikiResearchScope): void {
+  const routing = routingFields(artifact, scope);
+  const sizeBytes = Buffer.byteLength(JSON.stringify(routing), "utf8");
+  if (sizeBytes > MAX_RESEARCH_RECEIPT_ROUTING_BYTES) {
+    throw new Error(`Research receipt routing exceeds ${MAX_RESEARCH_RECEIPT_ROUTING_BYTES} UTF-8 bytes (${sizeBytes}); reduce findings or critical gap detail`);
+  }
+}
 
 /**
  * Project a durable research receipt from an already-validated artifact.
@@ -19,11 +33,22 @@ export function projectResearchReceipt(
   artifactRef: WikiArtifactRef,
   scope: WikiResearchScope,
 ): WikiResearchReceipt {
-  return {
+  const receipt: WikiResearchReceipt = {
     scopeId: scope.id,
     task: scope.task,
     sourceFingerprint: run.inspection?.sourceFingerprint ?? "unknown",
     artifact: artifactRef,
+    ...routingFields(artifact, scope),
+  };
+  const sizeBytes = Buffer.byteLength(JSON.stringify(receipt), "utf8");
+  if (sizeBytes > MAX_RESEARCH_RECEIPT_BYTES) {
+    throw new Error(`Research receipt exceeds ${MAX_RESEARCH_RECEIPT_BYTES} UTF-8 bytes (${sizeBytes}); reduce findings or critical gap detail`);
+  }
+  return receipt;
+}
+
+function routingFields(artifact: WikiResearchArtifact, scope: WikiResearchScope): Pick<WikiResearchReceipt, "findings" | "criticalGapSignatures" | "criticalGapQuestions"> {
+  return {
     findings: researchFindings(scope.id, artifact).map((finding) => ({
       id: finding.id,
       priority: finding.priority,
