@@ -92,3 +92,17 @@ test("wikiSurfaceCleared drops the widget and keeps terminal footers", () => {
   assert.equal(wikiSurfaceCleared(view()).widget, undefined);
   assert.equal(wikiSurfaceCleared(view()).footer, undefined);
 });
+
+test("running widget tasks include compact activity and usage", () => {
+  const lines = wikiWidgetLines(view({
+    progress: {
+      stage: "delegate",
+      tasks: [{
+        id: "pages/auth.md", role: "write", status: "running", activity: "tool",
+        activeTool: { name: "read", startedAt: "2026-08-12T00:00:00.000Z" },
+        usage: { turns: 3, contextPercent: 4.2 },
+      }],
+    },
+  }));
+  assert.deepEqual(lines, ["delegate", "  ◆ write  pages/auth.md  ·  read  3t  ctx 4%"]);
+});

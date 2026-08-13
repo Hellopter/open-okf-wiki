@@ -1,6 +1,8 @@
+import type { KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { renderWikiContextStats, renderWikiRun, renderWikiTask, renderWikiTaskProcess } from "../cli.js";
-import type { WikiContextStats, WikiRunEvent, WikiRunView, WikiTaskInspection } from "../producer-types.js";
+import type { WikiContextStats, WikiRunEvent, WikiRunView, WikiTaskInspection, WikiTaskSnapshot } from "../producer-types.js";
+import { errorMessage } from "../util.js";
 
 export type WikiOverlayKind = "run" | "task" | "process";
 
@@ -79,7 +81,7 @@ export function reduceWikiOverlay(
 }
 
 export async function openWikiStatusOverlay(args: {
-  ui: { custom: Function; theme?: unknown };
+  ui: { custom?: Function };
   handle: {
     view(): Promise<import("../producer-types.js").WikiRunView>;
     inspect(taskId: string): Promise<import("../producer-types.js").WikiTaskInspection | undefined>;
@@ -91,11 +93,12 @@ export async function openWikiStatusOverlay(args: {
   onControl?: (action: "pause" | "cancel") => Promise<void>;
 }): Promise<void> {
   if (typeof args.ui?.custom !== "function") return;
-  await args.ui.custom(async (tui: OverlayTui, theme: unknown, _kb: unknown, done: () => void) => {
+  await args.ui.custom(async (tui: OverlayTui, theme: unknown, keybindings: KeybindingsManager, done: () => void) => {
     const view = await args.handle.view();
     return createStatusOverlay({
       tui,
       theme,
+      keybindings,
       done,
       handle: args.handle,
       view,
@@ -103,7 +106,17 @@ export async function openWikiStatusOverlay(args: {
       process: args.process,
       onControl: args.onControl,
     });
-  }, { overlay: true });
+  }, {
+    overlay: true,
+    overlayOptions: {
+      width: "84%",
+      minWidth: 36,
+      maxHeight: "82%",
+      anchor: "center",
+      margin: 1,
+      visible: (width: number, height: number) => width >= 36 && height >= 10,
+    },
+  });
 }
 
 type OverlayTui = {
@@ -163,6 +176,7 @@ function clamp(value: number, min: number, max: number): number {
 function createStatusOverlay(args: {
   tui: OverlayTui;
   theme: unknown;
+  keybindings: KeybindingsManager;
   done: () => void;
   handle: {
     view(): Promise<WikiRunView>;
@@ -188,6 +202,10 @@ function createStatusOverlay(args: {
   let cachedLines: string[] | undefined;
   let maxScroll = 0;
   let loadGeneration = 0;
+  let now = Date.now();
+  let warning: string | undefined;
+  let refreshInFlight = false;
+  const eventController = new AbortController();
 
   const invalidate = (): void => {
     cachedWidth = undefined;
@@ -213,16 +231,22 @@ function createStatusOverlay(args: {
 
   const loadInspection = async (taskId: string): Promise<void> => {
     const generation = ++loadGeneration;
-    const next = await args.handle.inspect(taskId);
-    if (closed || generation !== loadGeneration) return;
-    inspection = next;
+    try {
+      const next = await args.handle.inspect(taskId);
+      if (closed || generation !== loadGeneration) return;
+      inspection = next;
+      warning = undefined;
+    } catch (error) {
+      if (closed || generation !== loadGeneration) return;
+      warning = errorMessage(error);
+    }
     invalidate();
     args.tui.requestRender();
   };
 
   const finish = (): void => {
     if (closed) return;
-    closed = true;
+    cleanup();
     args.done();
   };
 
@@ -238,48 +262,82 @@ function createStatusOverlay(args: {
 
   const initialSelected = selectedTaskId(state, taskIds);
   if (initialSelected) void loadInspection(initialSelected);
-  const stopEvents = subscribeEvents(args.handle, view.lastEventSequence, async () => {
-    if (closed) return;
-    view = await args.handle.view();
-    if (closed) return;
-    if (state.taskId) inspection = await args.handle.inspect(state.taskId);
-    if (closed) return;
-    state = withClampedCursor(state, taskIdsOf(view).length);
+  const refreshSnapshot = async (): Promise<void> => {
+    if (closed || refreshInFlight) return;
+    refreshInFlight = true;
+    const generation = ++loadGeneration;
+    const selected = selectedTaskId(state, taskIdsOf(view));
+    try {
+      const [nextView, nextInspection] = await Promise.all([
+        args.handle.view(),
+        selected ? args.handle.inspect(selected) : Promise.resolve(undefined),
+      ]);
+      if (closed || generation !== loadGeneration) return;
+      view = nextView;
+      if (selected && selectedTaskId(state, taskIdsOf(nextView)) === selected) inspection = nextInspection;
+      state = withClampedCursor(state, taskIdsOf(view).length);
+      now = Date.now();
+      warning = undefined;
+    } catch (error) {
+      if (closed || generation !== loadGeneration) return;
+      warning = errorMessage(error);
+    } finally {
+      refreshInFlight = false;
+    }
     invalidate();
     args.tui.requestRender();
-  });
+  };
+  subscribeEvents(args.handle, view.lastEventSequence, eventController.signal, refreshSnapshot);
+  const tick = setInterval(() => {
+    if (closed) return;
+    if (warning) {
+      void refreshSnapshot();
+      return;
+    }
+    if (view.status !== "running") return;
+    now = Date.now();
+    invalidate();
+    args.tui.requestRender();
+  }, 1000);
+
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    loadGeneration += 1;
+    clearInterval(tick);
+    eventController.abort();
+  };
 
   return {
     invalidate,
     dispose() {
-      closed = true;
-      stopEvents();
+      cleanup();
     },
     handleInput(data: string) {
       if (closed) return;
-      if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
+      if (args.keybindings.matches(data, "tui.select.up") || matchesKey(data, "k")) {
         prepareScroll();
         apply({ type: "up" });
         return;
       }
-      if (matchesKey(data, Key.down) || matchesKey(data, "j")) {
+      if (args.keybindings.matches(data, "tui.select.down") || matchesKey(data, "j")) {
         apply({ type: "down" });
         return;
       }
-      if (matchesKey(data, Key.pageUp)) {
+      if (args.keybindings.matches(data, "tui.select.pageUp")) {
         prepareScroll();
         apply({ type: "page", direction: -1 });
         return;
       }
-      if (matchesKey(data, Key.pageDown)) {
+      if (args.keybindings.matches(data, "tui.select.pageDown")) {
         apply({ type: "page", direction: 1 });
         return;
       }
-      if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
+      if (args.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.right)) {
         apply({ type: "enter" });
         return;
       }
-      if (matchesKey(data, Key.escape) || matchesKey(data, Key.left)) {
+      if (args.keybindings.matches(data, "tui.select.cancel") || matchesKey(data, Key.left)) {
         if (state.kind === "run") {
           finish();
           return;
@@ -306,7 +364,7 @@ function createStatusOverlay(args: {
       const framed = frameWikiOverlay({
         width,
         title: overlayTitle(view),
-        body: bodyLines(state, view, inspection, args.theme),
+        body: bodyLines(state, view, inspection, args.theme, now, warning),
         stats: selectedContextStats(state, view, inspection),
         footer: "↑↓/jk  enter  esc  o process  t tail  p pause  x cancel",
         theme: args.theme,
@@ -328,25 +386,22 @@ function createStatusOverlay(args: {
 }
 
 function subscribeEvents(
-  handle: { events?(after?: number): AsyncIterable<WikiRunEvent> },
+  handle: { events?(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunEvent> },
   after: number,
+  signal: AbortSignal,
   onEvent: () => Promise<void>,
-): () => void {
-  if (!handle.events) return () => {};
-  let cancelled = false;
+): void {
+  if (!handle.events) return;
   void (async () => {
     try {
-      for await (const _event of handle.events!(after)) {
-        if (cancelled) return;
+      for await (const _event of handle.events!(after, signal)) {
+        if (signal.aborted) return;
         await onEvent();
       }
     } catch {
       // The durable event stream may end when the run does.
     }
   })();
-  return () => {
-    cancelled = true;
-  };
 }
 
 function locateTask(state: WikiOverlayState, taskIds: string[]): WikiOverlayState {
@@ -374,6 +429,8 @@ export function selectedContextStats(
   inspection: WikiTaskInspection | undefined,
 ): string | undefined {
   const taskId = selectedTaskId(state, taskIdsOf(view));
+  const task = taskId ? view.progress?.tasks?.find((item) => item.id === taskId) : undefined;
+  if (task?.contextRecalculating) return "context recalculating";
   const usage = usageForTask(taskId, view, inspection);
   const stats = renderWikiContextStats(usage);
   if (stats) return stats;
@@ -386,8 +443,10 @@ function usageForTask(
   inspection: WikiTaskInspection | undefined,
 ): WikiContextStats | undefined {
   if (!taskId) return undefined;
+  const projected = view.progress?.tasks?.find((task) => task.id === taskId)?.usage;
+  if (projected) return projected;
   if (inspection && inspection.task.id === taskId) return inspection.usage ?? inspection.task.usage;
-  return view.progress?.tasks?.find((task) => task.id === taskId)?.usage;
+  return undefined;
 }
 
 export function frameWikiOverlay(input: {
@@ -441,12 +500,39 @@ function bodyLines(
   view: WikiRunView,
   inspection: WikiTaskInspection | undefined,
   theme: unknown,
+  now: number,
+  warning: string | undefined,
 ): string[] {
-  const text = bodyText(state, view, inspection);
+  const text = bodyText(state, liveElapsedView(view, now), inspection);
   const lines = text.split("\n");
+  const selected = selectedTaskId(state, taskIdsOf(view));
+  const task = selected ? view.progress?.tasks?.find((item) => item.id === selected) : undefined;
+  if (task?.status === "running") lines.splice(Math.min(2, lines.length), 0, liveTaskLine(task, now));
+  if (warning) lines.splice(Math.min(2, lines.length), 0, paint(theme, "warning", `warning  ${warning}`));
   if (state.kind === "run") markCursor(lines, state.cursor, theme);
   if (lines[0]) lines[0] = paint(theme, "accent", lines[0]);
   return lines;
+}
+
+function liveElapsedView(view: WikiRunView, now: number): WikiRunView {
+  return view.status === "running" ? { ...view, updatedAt: new Date(now).toISOString() } : view;
+}
+
+function liveTaskLine(task: WikiTaskSnapshot, now: number): string {
+  const parts: string[] = [];
+  if (task.activeTool?.name) parts.push(`tool ${task.activeTool.name}`);
+  else if (task.activity && task.activity !== "idle") parts.push(task.activity);
+  else parts.push("running");
+  const sampled = task.sampledAt ? Date.parse(task.sampledAt) : Number.NaN;
+  if (Number.isFinite(sampled)) parts.push(`last confirmed ${formatAge(now - sampled)}`);
+  if (task.contextRecalculating) parts.push("context recalculating");
+  return `live  ${parts.join("  ·  ")}`;
+}
+
+function formatAge(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
 }
 
 function bodyText(

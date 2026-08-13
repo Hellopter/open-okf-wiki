@@ -67,7 +67,18 @@ function widgetHeader(progress: WikiRunProgress): string {
 }
 
 function widgetTaskLine(task: WikiTaskSnapshot): string {
-  return `  ${taskIcon(task.status)} ${task.role}  ${task.id}`;
+  const details = task.status === "running" ? runningTaskDetails(task) : [];
+  return `  ${taskIcon(task.status)} ${task.role}  ${task.id}${details.length > 0 ? `  ·  ${details.join("  ")}` : ""}`;
+}
+
+function runningTaskDetails(task: WikiTaskSnapshot): string[] {
+  const details: string[] = [];
+  if (task.activeTool?.name) details.push(task.activeTool.name);
+  else if (task.activity && task.activity !== "idle") details.push(task.activity);
+  if (task.usage?.turns !== undefined) details.push(`${task.usage.turns}t`);
+  if (task.contextRecalculating) details.push("ctx …");
+  else if (task.usage?.contextPercent !== undefined) details.push(`ctx ${Math.round(task.usage.contextPercent)}%`);
+  return details;
 }
 
 function taskIcon(status: WikiTaskSnapshot["status"]): string {

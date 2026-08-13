@@ -24,14 +24,26 @@ async function fixture(t, options = {}) {
   const customs = [];
   let next = 0;
   const handles = new Map();
+  const eventCalls = [];
+  let releaseEvents;
+  const heldEvents = new Promise((resolve) => { releaseEvents = resolve; });
   const handleFor = (id) => handles.get(id);
   const createHandle = (view) => {
     views.set(view.id, view);
     const handle = {
       id: view.id,
       async view() { return views.get(view.id); },
-      async *events() {
+      async *events(after = 0, signal) {
+        eventCalls.push([view.id, after, signal]);
+        yield { version: 1, runId: view.id, sequence: 1, at: view.createdAt, type: "telemetry", message: "usage update" };
         yield { version: 1, runId: view.id, sequence: 1, at: view.createdAt, type: "progress", message: "Researching" };
+        if (options.holdEvents) {
+          await Promise.race([
+            heldEvents,
+            new Promise((resolve) => signal?.addEventListener("abort", resolve, { once: true })),
+          ]);
+          if (signal?.aborted) return;
+        }
         yield { version: 1, runId: view.id, sequence: 2, at: view.createdAt, type: "completed", message: "Wiki published" };
       },
       async result() { return { runId: view.id, output: {}, validation: {}, publication: {} }; },
@@ -86,7 +98,7 @@ async function fixture(t, options = {}) {
   };
   const context = {
     cwd,
-    mode: hasUI ? "tui" : "print",
+    mode: options.mode ?? (hasUI ? "tui" : "print"),
     hasUI,
     model: undefined,
     thinkingLevel: undefined,
@@ -104,7 +116,7 @@ async function fixture(t, options = {}) {
   createWikiExtension({ createProducer: () => producer })(pi);
   await handlers.get("session_start")({}, context);
   const run = async (args) => await commands.get("wiki").handler(args, context);
-  return { cwd, calls, messages, notices, statuses, widgets, customs, views, handlers, context, run };
+  return { cwd, calls, eventCalls, releaseEvents, messages, notices, statuses, widgets, customs, views, handlers, context, run };
 }
 
 function flush() {
@@ -197,9 +209,11 @@ test("status with taskId calls inspect", async (t) => {
   assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "write-1"));
   assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message) && /write-1/.test(message)));
   assert.ok(!subject.messages.some((message) => / ·  process/.test(message)));
+  assert.match(subject.messages.at(-1), /snapshot as of/);
 
   await subject.run("status run-1 write-1 --process");
   assert.match(subject.messages.at(-1), /Wiki run-1  ·  write-1  ·  process/);
+  assert.match(subject.messages.at(-1), /snapshot as of/);
 
   await subject.run("status run-1 missing");
   assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "missing"));
@@ -218,6 +232,37 @@ test("print mode never touches TUI status APIs or the overlay", async (t) => {
   assert.equal(subject.customs.length, 0);
   assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message)));
   assert.ok(subject.messages.some((message) => /Researching/.test(message)));
+});
+
+test("RPC mode can refresh surfaces but never opens a TUI overlay", async (t) => {
+  const subject = await fixture(t, { hasUI: true, mode: "rpc" });
+  await subject.run("auth flows");
+  await subject.run("status run-1");
+  assert.equal(subject.customs.length, 0);
+  assert.ok(subject.statuses.length > 0);
+  assert.ok(subject.messages.some((message) => /snapshot as of/.test(message)));
+});
+
+test("telemetry refreshes the surface without producing a notification", async (t) => {
+  const subject = await fixture(t, { hasUI: true });
+  await subject.run("auth flows");
+  await flush();
+  assert.ok(!subject.messages.some((message) => /usage update/.test(message)));
+  assert.ok(subject.messages.some((message) => /Researching/.test(message)));
+});
+
+test("status reuses one live stream and shutdown aborts it", async (t) => {
+  const subject = await fixture(t, { hasUI: true, holdEvents: true });
+  await subject.run("auth flows");
+  await flush();
+  await subject.run("status run-1");
+  await subject.run("status run-1");
+  assert.equal(subject.eventCalls.length, 1);
+  const signal = subject.eventCalls[0][2];
+  assert.equal(signal.aborted, false);
+  await subject.handlers.get("session_shutdown")();
+  assert.equal(signal.aborted, true);
+  subject.releaseEvents();
 });
 
 test("hasUI refreshes footer and widget after a run", async (t) => {

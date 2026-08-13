@@ -229,6 +229,64 @@ test("Pi leaf reports session context stats on task end", async (t) => {
   });
 });
 
+test("Pi leaf emits tool, compaction, and exact turn telemetry through Lead reports", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const reports = [];
+  let listener;
+  let turns = 0;
+  const createSession = async () => ({ session: {
+    state: {},
+    messages: [],
+    subscribe(value) { listener = value; return () => { listener = undefined; }; },
+    setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+    async prompt() {
+      listener({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: {} });
+      listener({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read", result: {}, isError: false });
+      listener({ type: "compaction_start", reason: "threshold" });
+      await new Promise((resolve) => setImmediate(resolve));
+      listener({ type: "compaction_end", reason: "threshold", result: {}, aborted: false, willRetry: false });
+      turns = 1;
+      this.messages.push({ role: "assistant", content: [{ type: "text", text: "# complete" }], timestamp: 1 });
+      listener({ type: "turn_end", message: this.messages[0], toolResults: [] });
+    },
+    async waitForIdle() {}, async abort() {}, dispose() {},
+    getLastAssistantText() { return "# complete"; },
+    getSessionStats() {
+      return {
+        assistantMessages: turns, toolCalls: 1,
+        tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cost: 0,
+        contextUsage: { tokens: 15, contextWindow: 100, percent: 15 },
+      };
+    },
+  } });
+  const input = request(root, candidateWikiRoot);
+  input.report = async (_message, data) => { reports.push(data); };
+
+  // The first session is Lead, the delegated Leaf is created by wiki_delegate.
+  let sessionNumber = 0;
+  const originalFactory = createSession;
+  const orchestrated = createPiLeadRuntime({
+    createSession: async (options) => {
+      sessionNumber += 1;
+      if (sessionNumber > 1) return originalFactory(options);
+      return sessionFactory(async (tools) => {
+        await call(tools, "wiki_delegate", { tasks: [writeTask("live")] });
+        await call(tools, "wiki_finish", { summary: "complete" });
+      })(options);
+    },
+  });
+  await orchestrated.run(input);
+
+  const telemetry = reports.filter((data) => data?.phase === "update").map((data) => data.telemetry);
+  assert.ok(telemetry.some((value) => value.activity === "tool" && value.activeTool.name === "read"));
+  assert.ok(telemetry.some((value) => value.activity === "compacting" && value.contextRecalculating));
+  const turn = telemetry.find((value) => value.usage?.turns === 1);
+  assert.equal(turn.taskId, "live");
+  assert.equal(turn.attempt, 1);
+  assert.equal(turn.contextRecalculating, false);
+  assert.equal(turn.history[0].text, "# complete");
+});
+
 test("Pi leaf receives the configured Wiki language", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let prompt;

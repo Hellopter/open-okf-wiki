@@ -14,7 +14,7 @@ import { Type } from "typebox";
 import { workflowTools, workspaceToolPolicy } from "./agent-tools.js";
 import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
 import { boundedDelegateSummary, WikiTaskExecutionError, WikiTaskPauseError, type WikiDelegateBatchReceipt, type WikiDelegateTask } from "./delegate-contracts.js";
-import type { WikiContextStats, WikiHistoryEntry, WikiLeadRuntime, WikiTaskSnapshot } from "./producer-types.js";
+import type { WikiContextStats, WikiHistoryEntry, WikiLeadRuntime, WikiTaskSnapshot, WikiTaskTelemetry } from "./producer-types.js";
 import { compactWikiHistory } from "./agent-history.js";
 import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 
@@ -78,6 +78,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           current.status = "running";
           current.startedAt = snapshotNow();
           current.updatedAt = current.startedAt;
+          applyTelemetry(current, event.telemetry);
           batchTasks.set(taskId, current);
           await request.report(`${event.task.role} ${taskId} started`, {
             stage: "delegate",
@@ -89,11 +90,27 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           });
           return;
         }
+        if (event.phase === "update" && event.telemetry) {
+          applyTelemetry(current, event.telemetry);
+          batchTasks.set(taskId, current);
+          await request.report(`${event.task.role} ${taskId} telemetry`, {
+            stage: "delegate",
+            batch,
+            total: batchTotal,
+            completed: countCompleted(batchTasks),
+            tasks: [...batchTasks.values()],
+            taskId,
+            phase: "update",
+            telemetry: event.telemetry,
+          });
+          return;
+        }
         current.status = event.receipt?.status ?? "failed";
         current.summary = event.receipt?.summary;
         current.attempts = event.receipt?.attempts;
         current.updatedAt = snapshotNow();
         if (event.usage) current.usage = event.usage;
+        applyTelemetry(current, event.telemetry);
         batchTasks.set(taskId, current);
         const completed = countCompleted(batchTasks);
         await request.report(`${event.task.role} ${taskId} ${current.status}`, {
@@ -219,7 +236,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
         handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
         "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
-      ].join(""), context.signal, this.options, true);
+      ].join(""), context.signal, this.options, true, context.onTelemetry);
     const markdown = sessionResult.text.trim();
     if (!markdown) throw new Error("Delegated agent produced empty output");
     return { summary: firstLine(markdown), markdown, history: sessionResult.history, usage: sessionResult.usage };
@@ -296,6 +313,17 @@ function countCompleted(snapshots: Map<string, WikiTaskSnapshot>): number {
   return [...snapshots.values()].filter((task) => task.status === "complete" || task.status === "incomplete" || task.status === "failed").length;
 }
 
+function applyTelemetry(snapshot: WikiTaskSnapshot, telemetry?: WikiTaskTelemetry): void {
+  if (!telemetry) return;
+  snapshot.attempt = telemetry.attempt;
+  snapshot.sampledAt = telemetry.sampledAt;
+  snapshot.updatedAt = telemetry.sampledAt;
+  if (telemetry.activity) snapshot.activity = telemetry.activity;
+  snapshot.activeTool = telemetry.activeTool;
+  snapshot.contextRecalculating = telemetry.contextRecalculating;
+  if (telemetry.usage) snapshot.usage = telemetry.usage;
+}
+
 async function runSessionWithDeadline(
   session: AgentSession,
   prompt: string,
@@ -333,6 +361,7 @@ async function runPiSession(
   signal: AbortSignal,
   options: PiWikiLeadAgentOptions,
   collectHistory: true,
+  onTelemetry?: (telemetry: SessionTelemetry) => void | Promise<void>,
 ): Promise<{ text: string; history: WikiHistoryEntry[]; usage?: WikiContextStats }>;
 async function runPiSession(
   cwd: string,
@@ -341,6 +370,7 @@ async function runPiSession(
   signal: AbortSignal,
   options: PiWikiLeadAgentOptions,
   collectHistory = false,
+  onTelemetry?: (telemetry: SessionTelemetry) => void | Promise<void>,
 ): Promise<string | { text: string; history: WikiHistoryEntry[]; usage?: WikiContextStats }> {
   // TaskRuntime owns configurable transient retries by creating fresh sessions.
   // Disable both Pi turn retry and provider request retry so budgets cannot multiply.
@@ -369,6 +399,9 @@ async function runPiSession(
     customTools: tools,
   });
   const session: AgentSession = created.session;
+  const unsubscribeTelemetry = collectHistory && onTelemetry && typeof session.subscribe === "function"
+    ? subscribeSessionTelemetry(session, onTelemetry)
+    : undefined;
   const abort = () => { void session.abort(); };
   signal.addEventListener("abort", abort, { once: true });
   try {
@@ -383,9 +416,57 @@ async function runPiSession(
     return { text, history: compactWikiHistory(session.messages), usage: readSessionUsage(session) };
   } finally {
     signal.removeEventListener("abort", abort);
+    unsubscribeTelemetry?.();
     session.dispose();
   }
 }
+
+function subscribeSessionTelemetry(
+  session: AgentSession,
+  report: (telemetry: SessionTelemetry) => void | Promise<void>,
+): () => void {
+  let contextRecalculating = false;
+  const activeTools = new Map<string, { name: string; startedAt: string }>();
+  const emit = (telemetry: SessionTelemetry): void => {
+    void Promise.resolve(report(telemetry)).catch(() => {});
+  };
+  return session.subscribe((event) => {
+    const sampledAt = new Date().toISOString();
+    if (event.type === "tool_execution_start") {
+      activeTools.set(event.toolCallId, { name: event.toolName, startedAt: sampledAt });
+      emit({ sampledAt, activity: "tool", activeTool: activeTools.get(event.toolCallId), contextRecalculating });
+      return;
+    }
+    if (event.type === "tool_execution_end") {
+      activeTools.delete(event.toolCallId);
+      const activeTool = [...activeTools.values()].at(-1);
+      emit({ sampledAt, activity: activeTool ? "tool" : "responding", activeTool, contextRecalculating });
+      return;
+    }
+    if (event.type === "compaction_start") {
+      contextRecalculating = true;
+      emit({ sampledAt, activity: "compacting", contextRecalculating: true });
+      return;
+    }
+    if (event.type === "compaction_end") {
+      emit({ sampledAt, activity: "responding", contextRecalculating: true });
+      return;
+    }
+    if (event.type === "turn_end") {
+      const usage = readSessionUsage(session);
+      contextRecalculating = false;
+      emit({
+        sampledAt,
+        activity: "idle",
+        contextRecalculating,
+        usage,
+        history: compactWikiHistory(session.messages),
+      });
+    }
+  });
+}
+
+type SessionTelemetry = Omit<WikiTaskTelemetry, "taskId" | "attempt">;
 
 function readSessionUsage(session: AgentSession): WikiContextStats | undefined {
   let stats;

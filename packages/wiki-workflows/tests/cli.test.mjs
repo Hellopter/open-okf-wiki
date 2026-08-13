@@ -4,6 +4,7 @@ import {
   parseWikiCliCommand,
   renderWikiEvent,
   renderWikiRun,
+  renderWikiSnapshot,
   renderWikiRuns,
   renderWikiContextStats,
   renderWikiTask,
@@ -84,6 +85,14 @@ test("renders plain run, list, and progress output", () => {
     type: "paused",
     message: "Wiki run paused",
   }), "Wiki run paused");
+});
+
+test("status snapshots state their freshness", () => {
+  const rendered = renderWikiSnapshot({
+    id: "run-1", cwd: "/repo", operation: "update", status: "running",
+    createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:02.000Z", lastEventSequence: 2,
+  });
+  assert.match(rendered, /snapshot as of 2026-08-12T00:01:02.000Z$/);
 });
 
 test("help lists management and run commands", () => {

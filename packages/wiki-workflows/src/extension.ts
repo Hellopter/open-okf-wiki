@@ -3,6 +3,7 @@ import {
   parseWikiCliCommand,
   renderWikiEvent,
   renderWikiRun,
+  renderWikiSnapshot,
   renderWikiRuns,
   renderWikiTask,
   renderWikiTaskProcess,
@@ -25,6 +26,7 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
     let context: ExtensionContext | undefined;
     let producer: WikiProducer | undefined;
+    const streams = new Map<string, AbortController>();
 
     const currentProducer = (active: ExtensionContext): WikiProducer => {
       context = active;
@@ -41,6 +43,8 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
     });
 
     pi.on("session_shutdown", async () => {
+      for (const controller of streams.values()) controller.abort();
+      streams.clear();
       if (context?.hasUI) {
         context.ui.setStatus("wiki", undefined);
         context.ui.setWidget("wiki", undefined);
@@ -76,7 +80,14 @@ export function createWikiExtension(options: WikiExtensionOptions = {}) {
           }
           const cwd = await workspaceRoot(active.cwd);
           const engine = currentProducer(active);
-          await dispatch(pi, active, engine, cwd, command);
+          await dispatch(pi, active, engine, cwd, command, (handle, after) => {
+            if (streams.has(handle.id)) return;
+            const controller = new AbortController();
+            streams.set(handle.id, controller);
+            void streamRun(pi, active, handle, after, controller.signal).finally(() => {
+              if (streams.get(handle.id) === controller) streams.delete(handle.id);
+            });
+          });
         } catch (error) {
           active.ui.notify(errorMessage(error), "error");
         }
@@ -93,6 +104,7 @@ async function dispatch(
   producer: WikiProducer,
   cwd: string,
   command: Exclude<WikiCliCommand, { action: "init" | "source-add" }>,
+  ensureStream: (handle: WikiRunHandle, after?: number) => void,
 ): Promise<void> {
   if (command.action === "run") {
     const handle = await producer.start({
@@ -103,7 +115,7 @@ async function dispatch(
     const view = await handle.view();
     output(pi, context, renderWikiRun(view));
     refreshLiveSurface(context, view);
-    void streamRun(pi, context, handle);
+    ensureStream(handle);
     return;
   }
   if (command.action === "runs") {
@@ -112,7 +124,7 @@ async function dispatch(
   }
   const handle = await selectedRun(producer, cwd, "runId" in command ? command.runId : undefined);
   if (command.action === "status") {
-    await dispatchStatus(pi, context, handle, command);
+    await dispatchStatus(pi, context, handle, command, ensureStream);
     return;
   }
   if (!handle) throw new Error("No Wiki run is available");
@@ -120,7 +132,7 @@ async function dispatch(
   output(pi, context, renderWikiRun(view));
   refreshLiveSurface(context, view);
   if (command.action === "resume") {
-    void streamRun(pi, context, handle, view.lastEventSequence);
+    ensureStream(handle, view.lastEventSequence);
   }
 }
 
@@ -129,6 +141,7 @@ async function dispatchStatus(
   context: ExtensionCommandContext,
   handle: WikiRunHandle | undefined,
   command: Extract<WikiCliCommand, { action: "status" }>,
+  ensureStream: (handle: WikiRunHandle, after?: number) => void,
 ): Promise<void> {
   if (!handle) {
     output(pi, context, renderWikiRun(undefined));
@@ -136,9 +149,9 @@ async function dispatchStatus(
   }
   const view = await handle.view();
   if (!command.taskId) {
-    output(pi, context, renderWikiRun(view));
+    output(pi, context, renderWikiSnapshot(view));
     refreshLiveSurface(context, view);
-    if (view.status === "running") void streamRun(pi, context, handle, view.lastEventSequence);
+    if (view.status === "running") ensureStream(handle, view.lastEventSequence);
     await openStatusOverlay(context, handle, command);
     return;
   }
@@ -148,7 +161,8 @@ async function dispatchStatus(
     output(pi, context, `Wiki ${view.id} has no task "${command.taskId}".\nKnown: ${ids}`);
     return;
   }
-  output(pi, context, command.process ? renderWikiTaskProcess(inspection) : renderWikiTask(inspection));
+  const detail = command.process ? renderWikiTaskProcess(inspection) : renderWikiTask(inspection);
+  output(pi, context, `${detail}\n\nsnapshot as of ${view.updatedAt}`);
   await openStatusOverlay(context, handle, command);
 }
 
@@ -157,7 +171,7 @@ async function openStatusOverlay(
   handle: WikiRunHandle,
   command: Extract<WikiCliCommand, { action: "status" }>,
 ): Promise<void> {
-  if (!context.hasUI || command.process) return;
+  if (context.mode !== "tui" || command.process) return;
   await openWikiStatusOverlay({
     ui: context.ui,
     handle,
@@ -221,6 +235,7 @@ async function streamRun(
   context: ExtensionCommandContext,
   handle: WikiRunHandle,
   after = 0,
+  signal?: AbortSignal,
 ): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const queueRefresh = (): void => {
@@ -238,9 +253,14 @@ async function streamRun(
     refreshLiveSurface(context, await handle.view());
   };
   try {
-    for await (const event of handle.events(after)) {
-      output(pi, context, renderWikiEvent(event));
+    for await (const event of handle.events(after, signal)) {
+      if (signal?.aborted) break;
+      if (event.type !== "telemetry") output(pi, context, renderWikiEvent(event));
       queueRefresh();
+    }
+    if (signal?.aborted) {
+      if (timer) clearTimeout(timer);
+      return;
     }
     await flushRefresh();
   } catch (error) {
@@ -248,6 +268,7 @@ async function streamRun(
       clearTimeout(timer);
       timer = undefined;
     }
+    if (signal?.aborted) return;
     context.ui.notify(`Wiki progress stream stopped: ${errorMessage(error)}`, "warning");
     try {
       refreshLiveSurface(context, await handle.view());

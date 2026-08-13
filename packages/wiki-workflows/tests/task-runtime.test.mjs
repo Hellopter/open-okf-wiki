@@ -262,3 +262,50 @@ test("onTask throwing does not fail delegate of a successful agent", async () =>
   const phases = events.map((event) => event.phase);
   assert.deepEqual(phases, ["queued", "start", "end"]);
 });
+
+test("forwards attempt-aware telemetry serially and flushes the latest checkpoint before end", async () => {
+  const events = [];
+  let releaseFirst;
+  const firstDelivery = new Promise((resolve) => { releaseFirst = resolve; });
+  const r = runtime({
+    async run(value, context) {
+      context.onTelemetry({ sampledAt: "2026-01-01T00:00:01.000Z", activity: "tool", activeTool: { name: "read", startedAt: "2026-01-01T00:00:00.000Z" } });
+      context.onTelemetry({ sampledAt: "2026-01-01T00:00:02.000Z", activity: "idle", usage: { turns: 2 }, history: [{ role: "assistant", kind: "text", text: "done" }] });
+      return { summary: "ok", markdown: "ok" };
+    },
+  }, {
+    async onTask(event) {
+      events.push(event);
+      if (event.phase === "update" && event.telemetry.sampledAt.endsWith("01.000Z")) await firstDelivery;
+    },
+  });
+  const delegated = r.delegate([task("live")], new AbortController().signal);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.filter((event) => event.phase === "end").length, 0);
+  releaseFirst();
+  await delegated;
+
+  const updates = events.filter((event) => event.phase === "update");
+  assert.ok(updates.length >= 1 && updates.length <= 2);
+  assert.ok(updates.every((event) => !("history" in event) && !("usage" in event)));
+  assert.equal(updates.at(-1).telemetry.attempt, 1);
+  assert.equal(updates.at(-1).telemetry.usage.turns, 2);
+  const end = events.find((event) => event.phase === "end");
+  assert.equal(end.usage.turns, 2);
+  assert.equal(end.history[0].text, "done");
+});
+
+test("telemetry delivery failures do not fail or delay task completion", async () => {
+  const r = runtime({
+    async run(value, context) {
+      context.onTelemetry({ sampledAt: new Date().toISOString(), activity: "responding" });
+      return { summary: "ok", markdown: "ok" };
+    },
+  }, {
+    onTask(event) {
+      if (event.phase === "update") throw new Error("telemetry unavailable");
+    },
+  });
+  const result = await r.delegate([task("observable")], new AbortController().signal);
+  assert.equal(result.status, "complete");
+});

@@ -101,6 +101,10 @@ export function renderWikiRun(run: WikiRunView | undefined): string {
   return renderWikiRunCard(run, run.progress);
 }
 
+export function renderWikiSnapshot(run: WikiRunView): string {
+  return `${renderWikiRun(run)}\n\nsnapshot as of ${run.updatedAt}`;
+}
+
 function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string {
   const elapsed = formatElapsed(run.createdAt, run.completedAt ?? run.updatedAt);
   const elapsedPart = elapsed ? `  [${elapsed}]` : "";
@@ -150,7 +154,18 @@ function joinStageSegments(segments: string[]): string {
 
 function renderTaskLine(task: WikiTaskSnapshot): string {
   const attempt = task.attempts !== undefined ? `  [attempt ${task.attempts}]` : "";
-  return `  ${taskIcon(task.status)} ${task.role}  ${task.id}${attempt}`;
+  const activity = task.status === "running" ? renderTaskActivity(task) : undefined;
+  return `  ${taskIcon(task.status)} ${task.role}  ${task.id}${attempt}${activity ? `  ·  ${activity}` : ""}`;
+}
+
+function renderTaskActivity(task: WikiTaskSnapshot): string | undefined {
+  if (task.activeTool?.name) return `${task.activeTool.name}…`;
+  switch (task.activity) {
+    case "responding": return "responding…";
+    case "tool": return "tool…";
+    case "compacting": return "compacting…";
+    default: return undefined;
+  }
 }
 
 function taskIcon(status: string | undefined): string {

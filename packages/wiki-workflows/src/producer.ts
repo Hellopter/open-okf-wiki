@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter, on } from "node:events";
 import path from "node:path";
 import {
   createWikiRunLedger,
@@ -19,12 +20,13 @@ import {
   type WikiTaskInspection,
   type WikiTaskSnapshot,
   type WikiHistoryEntry,
+  type WikiTaskTelemetry,
 } from "./producer-types.js";
 import { createWikiArtifactStore } from "./artifact-store.js";
 import type { WikiDelegateReceipt } from "./delegate-contracts.js";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
-const EVENT_POLL_MS = 50;
+const RESULT_POLL_MS = 50;
 const CONTROL_SETTLE_MS = 1_000;
 
 function taskIdFrom(data?: Record<string, unknown>): string | undefined {
@@ -55,6 +57,8 @@ export class WikiProducer {
   private readonly ledgers = new Map<string, WikiRunLedger>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly executions = new Map<string, Promise<void>>();
+  private readonly eventHubs = new Map<string, EventEmitter>();
+  private readonly telemetryWarnings = new Set<string>();
   private readonly now: () => Date;
   private readonly createId: () => string;
 
@@ -105,7 +109,7 @@ export class WikiProducer {
     return {
       id: runId,
       view: async () => toView(await requiredState(ledger, runId)),
-      events: (after = 0) => this.eventStream(ledger, runId, after),
+      events: (after = 0, signal?: AbortSignal) => this.eventStream(ledger, runId, after, signal),
       result: async () => await this.waitForResult(ledger, runId),
       control: async (action) => await this.control(ledger, runId, action),
       inspect: async (taskId) => await inspectTask(ledger, runId, taskId),
@@ -175,22 +179,19 @@ export class WikiProducer {
       const publication = await this.options.adapters.publish({ ...base, ...prepared, leadOutcome, validation });
       throwIfAborted(controller.signal);
       const completedAt = this.timestamp();
-      await ledger.update(runId, (current) => ({
-        ...current,
-        status: "succeeded",
-        publication,
-        completedAt,
-        updatedAt: completedAt,
+      await this.emit(ledger, runId, "completed", "Wiki published", undefined, (current) => ({
+        ...current, status: "succeeded", publication, completedAt, updatedAt: completedAt,
       }));
-      await this.emit(ledger, runId, "completed", "Wiki published");
       await ledger.releaseActive(runId);
     } catch (error) {
+      if (controller.signal.aborted) return;
       const current = await ledger.read(runId);
       if (!current || current.status === "paused" || current.status === "cancelled") return;
       const message = error instanceof Error ? error.message : String(error);
       const completedAt = this.timestamp();
-      await ledger.update(runId, (state) => ({ ...state, status: "failed", error: message, completedAt }));
-      await this.emit(ledger, runId, "failed", message);
+      await this.emit(ledger, runId, "failed", message, undefined, (state) => ({
+        ...state, status: "failed", error: message, completedAt,
+      }));
       await ledger.releaseActive(runId);
     }
   }
@@ -210,26 +211,45 @@ export class WikiProducer {
       await this.emit(ledger, runId, "resumed", "Wiki run resumed");
       this.launch(ledger, runId);
     } else {
-      await ledger.update(runId, (current) => ({ ...current, status: "cancelled", completedAt: this.timestamp() }));
       this.controllers.get(runId)?.abort();
       await settleBounded(this.executions.get(runId));
-      await this.emit(ledger, runId, "cancelled", "Wiki run cancelled");
+      const completedAt = this.timestamp();
+      await this.emit(ledger, runId, "cancelled", "Wiki run cancelled", undefined, (current) => ({
+        ...current, status: "cancelled", completedAt,
+      }));
       await ledger.releaseActive(runId);
     }
     return toView(await requiredState(ledger, runId));
   }
 
-  private async *eventStream(ledger: WikiRunLedger, runId: string, after: number): AsyncIterable<WikiRunEvent> {
+  private async *eventStream(
+    ledger: WikiRunLedger,
+    runId: string,
+    after: number,
+    signal?: AbortSignal,
+  ): AsyncIterable<WikiRunEvent> {
+    const controller = new AbortController();
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     let cursor = Math.max(0, Math.trunc(after));
-    while (true) {
-      const events = await ledger.events(runId, cursor);
-      for (const event of events) {
+    try {
+      const live = on(this.hub(runId), "event", { signal: combined });
+      for (const event of await ledger.events(runId, cursor)) {
+        if (combined.aborted || event.sequence <= cursor) continue;
         cursor = event.sequence;
         yield event;
+        if (isTerminalEvent(event)) return;
       }
-      const state = await requiredState(ledger, runId);
-      if (TERMINAL.has(state.status) && cursor >= state.lastEventSequence) return;
-      await poll();
+      for await (const [raw] of live) {
+        const event = raw as WikiRunEvent;
+        if (event.sequence <= cursor) continue;
+        cursor = event.sequence;
+        yield event;
+        if (isTerminalEvent(event)) return;
+      }
+    } catch (error) {
+      if (!(combined.aborted && isAbortError(error))) throw error;
+    } finally {
+      controller.abort();
     }
   }
 
@@ -240,7 +260,7 @@ export class WikiProducer {
       if (state.status === "failed" || state.status === "cancelled") {
         throw new WikiRunResultError(runId, state.status, state.error ?? `Wiki run ${state.status}`);
       }
-      await poll();
+      await new Promise<void>((resolve) => setTimeout(resolve, RESULT_POLL_MS));
     }
   }
 
@@ -250,19 +270,57 @@ export class WikiProducer {
     type: WikiRunEvent["type"],
     message: string,
     data?: Record<string, unknown>,
+    mutateState?: (state: WikiRunState) => WikiRunState,
   ): Promise<void> {
-    await ledger.append(runId, { at: this.timestamp(), type, message, ...(data ? { data } : {}) });
-    const taskId = taskIdFrom(data);
-    if (taskId && (data?.receipt !== undefined || data?.history !== undefined || data?.usage !== undefined)) {
-      const existing = await ledger.readTask(runId, taskId);
-      await ledger.writeTask(runId, taskId, {
-        ...(existing ?? {}),
-        ...(data?.receipt && typeof data.receipt === "object" ? { receipt: data.receipt as WikiDelegateReceipt } : {}),
-        ...(Array.isArray(data?.history) ? { history: data.history as WikiHistoryEntry[] } : {}),
-        ...(data?.usage !== undefined ? { usage: data.usage as WikiContextStats } : {}),
-        updatedAt: this.timestamp(),
-      });
+    const telemetry = telemetryFrom(data);
+    let event: WikiRunEvent | undefined;
+    if (telemetry) {
+      try {
+        event = await ledger.commitTelemetry(runId, telemetry, message);
+      } catch (error) {
+        const key = `${runId}:${telemetry.taskId}`;
+        if (!this.telemetryWarnings.has(key)) {
+          this.telemetryWarnings.add(key);
+          process.emitWarning(
+            `Wiki telemetry update failed for ${telemetry.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            { code: "WIKI_TELEMETRY" },
+          );
+        }
+        return;
+      }
+    } else {
+      const taskId = taskIdFrom(data);
+      const taskPatch = taskId && (data?.receipt !== undefined || data?.history !== undefined || data?.usage !== undefined)
+        ? {
+            taskId,
+            ...(data?.receipt && typeof data.receipt === "object" ? { receipt: data.receipt as WikiDelegateReceipt } : {}),
+            ...(Array.isArray(data?.history) ? { history: data.history as WikiHistoryEntry[] } : {}),
+            ...(data?.usage !== undefined ? { usage: data.usage as WikiContextStats } : {}),
+          }
+        : undefined;
+      const input = { at: this.timestamp(), type, message, ...(data ? { data } : {}) };
+      event = mutateState
+        ? await ledger.commitTerminal(runId, input, mutateState)
+        : await ledger.commitEvent(runId, input, taskPatch);
     }
+    if (event) this.publish(event);
+  }
+
+  private hub(runId: string): EventEmitter {
+    let hub = this.eventHubs.get(runId);
+    if (!hub) {
+      hub = new EventEmitter();
+      hub.setMaxListeners(0);
+      this.eventHubs.set(runId, hub);
+    }
+    return hub;
+  }
+
+  private publish(event: WikiRunEvent): void {
+    const hub = this.eventHubs.get(event.runId);
+    if (!hub) return;
+    hub.emit("event", event);
+    if (isTerminalEvent(event)) this.eventHubs.delete(event.runId);
   }
 
   private ledger(cwd: string): WikiRunLedger {
@@ -328,8 +386,17 @@ async function inspectTask(ledger: WikiRunLedger, runId: string, taskId: string)
   };
 }
 
-async function poll(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, EVENT_POLL_MS));
+function telemetryFrom(data?: Record<string, unknown>): WikiTaskTelemetry | undefined {
+  if (data?.phase !== "update" || !data.telemetry || typeof data.telemetry !== "object") return undefined;
+  return data.telemetry as WikiTaskTelemetry;
+}
+
+function isTerminalEvent(event: WikiRunEvent): boolean {
+  return event.type === "completed" || event.type === "failed" || event.type === "cancelled";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 async function requiredState(ledger: WikiRunLedger, runId: string): Promise<WikiRunState> {

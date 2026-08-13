@@ -11,10 +11,10 @@ import {
   type WikiDelegateTask,
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
-import type { WikiContextStats, WikiHistoryEntry } from "./producer-types.js";
+import type { WikiContextStats, WikiHistoryEntry, WikiTaskTelemetry } from "./producer-types.js";
 import { isSafeWikiPagePath } from "./wiki-path.js";
 
-export type WikiTaskProgressPhase = "queued" | "start" | "end";
+export type WikiTaskProgressPhase = "queued" | "start" | "update" | "end";
 
 export interface WikiTaskProgressEvent {
   phase: WikiTaskProgressPhase;
@@ -22,6 +22,7 @@ export interface WikiTaskProgressEvent {
   receipt?: WikiDelegateReceipt; // required on end
   history?: WikiHistoryEntry[];
   usage?: WikiContextStats;
+  telemetry?: WikiTaskTelemetry;
 }
 
 export interface WikiLeafTaskContext {
@@ -32,6 +33,7 @@ export interface WikiLeafTaskContext {
   contextArtifacts: Record<string, WikiArtifactRef>;
   candidateWikiRoot?: string;
   signal: AbortSignal;
+  onTelemetry?: (telemetry: Omit<WikiTaskTelemetry, "taskId" | "attempt">) => void | Promise<void>;
 }
 
 export interface WikiLeafResult {
@@ -120,15 +122,36 @@ export class WikiTaskRuntime {
     const maxAttempts = this.transientRetries + 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let release: (() => void) | undefined;
+      let latestTelemetry: WikiTaskTelemetry | undefined;
+      const telemetry = new LatestTelemetryPump(async (checkpoint) => {
+        latestTelemetry = checkpoint;
+        await this.fireProgress({
+          phase: "update",
+          task,
+          telemetry: checkpoint,
+        });
+      });
       try {
         release = await this.gate.acquire(signal);
-        await this.fireProgress({ phase: "start", task });
-        const result = await this.options.agent.run(task, this.contextFor(task, attempt, signal));
+        const startedTelemetry: WikiTaskTelemetry = {
+          taskId: task.id,
+          attempt,
+          sampledAt: new Date((this.options.now ?? Date.now)()).toISOString(),
+          activity: "responding",
+        };
+        await this.fireProgress({ phase: "start", task, telemetry: startedTelemetry });
+        const result = await this.options.agent.run(task, this.contextFor(task, attempt, signal, (checkpoint) => telemetry.push({
+          ...checkpoint,
+          taskId: task.id,
+          attempt,
+        })));
+        await telemetry.flush();
         const output = await this.persist(task, attempt, result.markdown);
         const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt);
-        await this.fireProgress({ phase: "end", task, receipt: successReceipt, history: result.history, usage: result.usage });
+        await this.fireProgress({ phase: "end", task, receipt: successReceipt, history: result.history ?? latestTelemetry?.history, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry });
         return successReceipt;
       } catch (error) {
+        await telemetry.flush();
         let failure = classifyTaskFailure(error, signal.aborted);
         lastFailure = failure;
         const partial = partialResult(error);
@@ -144,7 +167,7 @@ export class WikiTaskRuntime {
         }
         if (failure.code === "quota" || failure.code === "usage_limit") {
           const pauseReceipt = receipt(task, "failed", failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
-          await this.fireProgress({ phase: "end", task, receipt: pauseReceipt });
+          await this.fireProgress({ phase: "end", task, receipt: pauseReceipt, history: latestTelemetry?.history, usage: latestTelemetry?.usage, telemetry: latestTelemetry });
           return pauseReceipt;
         }
         const mayRetry = failure.retryable && attempt < maxAttempts;
@@ -153,7 +176,7 @@ export class WikiTaskRuntime {
             ? "incomplete"
             : "failed";
           const terminalReceipt = receipt(task, status, failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
-          await this.fireProgress({ phase: "end", task, receipt: terminalReceipt });
+          await this.fireProgress({ phase: "end", task, receipt: terminalReceipt, history: latestTelemetry?.history, usage: latestTelemetry?.usage, telemetry: latestTelemetry });
           return terminalReceipt;
         }
         if (failure.code === "rate_limit") this.gate.reportPressure(failure.retryAfterMs ?? this.baseRetryDelayMs);
@@ -172,7 +195,12 @@ export class WikiTaskRuntime {
     return fallbackReceipt;
   }
 
-  private contextFor(task: WikiDelegateTask, attempt: number, signal: AbortSignal): WikiLeafTaskContext {
+  private contextFor(
+    task: WikiDelegateTask,
+    attempt: number,
+    signal: AbortSignal,
+    onTelemetry: (telemetry: Omit<WikiTaskTelemetry, "taskId" | "attempt">) => void,
+  ): WikiLeafTaskContext {
     return {
       runId: this.options.runId,
       attempt,
@@ -181,6 +209,7 @@ export class WikiTaskRuntime {
       contextArtifacts: Object.fromEntries(task.contextRefs.map((id) => [id, this.contextArtifacts[id]])),
       candidateWikiRoot: this.options.candidateWikiRoot,
       signal,
+      onTelemetry,
     };
   }
 
@@ -205,6 +234,41 @@ export class WikiTaskRuntime {
       await this.onTask?.(event);
     } catch {
       /* observability must not fail the task */
+    }
+  }
+}
+
+class LatestTelemetryPump {
+  private pending?: WikiTaskTelemetry;
+  private latest?: WikiTaskTelemetry;
+  private running?: Promise<void>;
+
+  constructor(private readonly deliver: (telemetry: WikiTaskTelemetry) => Promise<void>) {}
+
+  push(telemetry: WikiTaskTelemetry): void {
+    this.latest = { ...this.latest, ...telemetry };
+    this.pending = this.latest;
+    this.running ??= this.drain();
+  }
+
+  async flush(): Promise<void> {
+    while (this.running) await this.running;
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (this.pending) {
+        const telemetry = this.pending;
+        this.pending = undefined;
+        try {
+          await this.deliver(telemetry);
+        } catch {
+          /* observability must not fail the task */
+        }
+      }
+    } finally {
+      this.running = undefined;
+      if (this.pending) this.running = this.drain();
     }
   }
 }

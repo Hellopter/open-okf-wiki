@@ -225,3 +225,169 @@ test("stage is present on prepare/lead/validate/publish and inspect reads sideca
 
   assert.equal(await handle.inspect("missing-task"), undefined);
 });
+
+test("telemetry is transactionally projected and replay/live subscribers can cancel", async (t) => {
+  const cwd = await temporaryWorkspace(t);
+  const ready = deferred();
+  const release = deferred();
+  const subject = fixture({
+    createLead: () => ({ async run(input) {
+      await input.report("Delegating", {
+        stage: "delegate",
+        tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
+      });
+      ready.resolve();
+      await release.promise;
+      await input.report("Writing", {
+        stage: "delegate",
+        taskId: "write-1",
+        phase: "update",
+        telemetry: {
+          taskId: "write-1",
+          attempt: 1,
+          sampledAt: "2026-01-01T00:00:05.000Z",
+          activity: "responding",
+          usage: { turns: 1, total: 42 },
+          history: [{ role: "assistant", kind: "text", text: "draft" }],
+        },
+      });
+      return { kind: "complete", summary: "done" };
+    } }),
+  });
+  const handle = await subject.producer.start({ cwd });
+  await ready.promise;
+
+  const abort = new AbortController();
+  const cancelled = handle.events(0, abort.signal)[Symbol.asyncIterator]();
+  assert.equal((await cancelled.next()).value.type, "started");
+  abort.abort();
+  assert.equal((await cancelled.next()).done, true);
+
+  const collect = async () => {
+    const events = [];
+    for await (const event of handle.events()) events.push(event);
+    return events;
+  };
+  const first = collect();
+  const second = collect();
+  release.resolve();
+  const [left, right] = await Promise.all([first, second]);
+  assert.deepEqual(left.map(({ sequence }) => sequence), right.map(({ sequence }) => sequence));
+  assert.equal(new Set(left.map(({ sequence }) => sequence)).size, left.length);
+  assert.equal(left.filter(({ type }) => type === "telemetry").length, 1);
+
+  const view = await handle.view();
+  const task = view.progress.tasks.find(({ id }) => id === "write-1");
+  assert.equal(task.activity, "responding");
+  assert.deepEqual(task.usage, { turns: 1, total: 42 });
+  const inspected = await handle.inspect("write-1");
+  assert.deepEqual(inspected.usage, { turns: 1, total: 42 });
+  assert.deepEqual(inspected.history, [{ role: "assistant", kind: "text", text: "draft" }]);
+  assert.equal(subject.producer.eventHubs.size, 0);
+});
+
+test("live stream observes terminal event even when terminal state is already visible", async (t) => {
+  const cwd = await temporaryWorkspace(t);
+  const entered = deferred();
+  const release = deferred();
+  const subject = fixture({
+    async publish(input) {
+      entered.resolve();
+      await release.promise;
+      return { pages: ["a.md"], sourceFingerprint: "source-1" };
+    },
+  });
+  const handle = await subject.producer.start({ cwd });
+  await entered.promise;
+  const cursor = (await handle.view()).lastEventSequence;
+  const iterator = handle.events(cursor)[Symbol.asyncIterator]();
+  const next = iterator.next();
+  release.resolve();
+  const event = (await next).value;
+  assert.equal(event.type, "completed");
+  assert.equal((await handle.view()).status, "succeeded");
+  assert.equal((await iterator.next()).done, true);
+});
+
+test("task end event is published only after inspect sees final sidecar", async (t) => {
+  const cwd = await temporaryWorkspace(t);
+  const ready = deferred();
+  const release = deferred();
+  const receipt = {
+    id: "write-1", role: "write", status: "complete", summary: "done",
+    outputs: [], coverage: ["source"], gaps: [], attempts: 1,
+  };
+  const subject = fixture({
+    createLead: () => ({ async run(input) {
+      await input.report("Delegating", {
+        stage: "delegate", tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
+      });
+      ready.resolve();
+      await release.promise;
+      await input.report("Task complete", {
+        stage: "delegate", taskId: "write-1", receipt,
+        history: [{ role: "assistant", kind: "text", text: "final answer" }],
+        usage: { turns: 2, total: 80 },
+      });
+      return { kind: "complete", summary: "done" };
+    } }),
+  });
+  const handle = await subject.producer.start({ cwd });
+  await ready.promise;
+  const iterator = handle.events((await handle.view()).lastEventSequence)[Symbol.asyncIterator]();
+  const next = iterator.next();
+  release.resolve();
+  assert.equal((await next).value.message, "Task complete");
+  const inspected = await handle.inspect("write-1");
+  assert.equal(inspected.receipt.status, "complete");
+  assert.equal(inspected.history[0].text, "final answer");
+  assert.deepEqual(inspected.usage, { turns: 2, total: 80 });
+  await iterator.return();
+  await handle.result();
+});
+
+test("late report after cancel cannot mutate terminal state or append events", async (t) => {
+  const cwd = await temporaryWorkspace(t);
+  const entered = deferred();
+  const release = deferred();
+  const lateDone = deferred();
+  const subject = fixture({
+    createLead: () => ({ async run(input) {
+      entered.resolve();
+      await release.promise;
+      try {
+        await input.report("Late task end", {
+          stage: "delegate",
+          taskId: "late-1",
+          receipt: {
+            id: "late-1", role: "write", status: "complete", summary: "too late",
+            outputs: [], coverage: ["source"], gaps: [], attempts: 1,
+          },
+        });
+      } catch (error) {
+        lateDone.resolve(error);
+      }
+      return { kind: "complete", summary: "ignored" };
+    } }),
+  });
+  const handle = await subject.producer.start({ cwd });
+  await entered.promise;
+  const cancelled = await handle.control("cancel");
+  assert.equal(cancelled.status, "cancelled");
+  const beforeEvents = [];
+  for await (const event of handle.events()) beforeEvents.push(event);
+  const before = await handle.view();
+
+  release.resolve();
+  const error = await lateDone.promise;
+  assert.match(error.message, /immutable/);
+  await new Promise((resolve) => setImmediate(resolve));
+  const after = await handle.view();
+  const afterEvents = [];
+  for await (const event of handle.events()) afterEvents.push(event);
+  assert.equal(after.status, "cancelled");
+  assert.equal(after.lastEventSequence, before.lastEventSequence);
+  assert.equal(after.updatedAt, before.updatedAt);
+  assert.deepEqual(afterEvents, beforeEvents);
+  assert.equal(await handle.inspect("late-1"), undefined);
+});

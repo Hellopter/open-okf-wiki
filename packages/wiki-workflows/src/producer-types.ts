@@ -15,7 +15,7 @@ export interface WikiRunEvent {
   runId: string;
   sequence: number;
   at: string;
-  type: "started" | "progress" | "paused" | "resumed" | "cancelled" | "completed" | "failed";
+  type: "started" | "progress" | "telemetry" | "paused" | "resumed" | "cancelled" | "completed" | "failed";
   message: string;
   data?: Record<string, unknown>;
 }
@@ -43,9 +43,33 @@ export interface WikiTaskSnapshot {
   status: "queued" | "running" | "complete" | "incomplete" | "failed";
   summary?: string;
   attempts?: number;
+  attempt?: number;
   startedAt?: string;
   updatedAt?: string;
+  sampledAt?: string;
+  activity?: WikiTaskActivity;
+  activeTool?: WikiActiveTool;
+  contextRecalculating?: boolean;
   usage?: WikiContextStats;
+}
+
+export type WikiTaskActivity = "responding" | "tool" | "idle" | "compacting";
+
+export interface WikiActiveTool {
+  name: string;
+  startedAt: string;
+}
+
+/** Runtime checkpoint emitted by a delegated Pi session. */
+export interface WikiTaskTelemetry {
+  taskId: string;
+  attempt: number;
+  sampledAt: string;
+  activity?: WikiTaskActivity;
+  activeTool?: WikiActiveTool;
+  contextRecalculating?: boolean;
+  usage?: WikiContextStats;
+  history?: WikiHistoryEntry[];
 }
 
 export interface WikiRunProgress {
@@ -110,7 +134,7 @@ export interface WikiRunPause {
 export interface WikiRunHandle {
   readonly id: string;
   view(): Promise<WikiRunView>;
-  events(after?: number): AsyncIterable<WikiRunEvent>;
+  events(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunEvent>;
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
   inspect(taskId: string): Promise<WikiTaskInspection | undefined>;
