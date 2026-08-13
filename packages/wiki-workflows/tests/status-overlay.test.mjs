@@ -7,6 +7,7 @@ import {
   reduceWikiOverlay,
   selectedContextStats,
   selectedTaskId,
+  wikiOverlayMaxHeight,
 } from "../dist/ui/status-overlay.js";
 
 const ctx = { taskCount: 3, taskIds: ["t1", "t2", "t3"] };
@@ -130,6 +131,57 @@ test("overlay frame draws a box and a context strip", () => {
   assert.ok(framed.lines.some((line) => line.includes("context")));
   assert.ok(framed.lines.some((line) => line.includes("3 turns")));
   assert.ok(framed.lines.every((line) => line.startsWith("┌") || line.startsWith("│") || line.startsWith("├") || line.startsWith("└")));
+});
+
+test("overlay render keeps the footer within Pi's maxHeight budget", async () => {
+  for (const rows of [10, 20, 24]) {
+    let component;
+    let options;
+    const view = {
+      id: `run-${rows}`,
+      cwd: "/repo",
+      operation: "update",
+      status: "running",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      updatedAt: "2026-08-12T00:00:01.000Z",
+      lastEventSequence: 1,
+      progress: {
+        stage: "delegate",
+        tasks: Array.from({ length: 30 }, (_, index) => ({
+          id: `t${index}`,
+          role: "write",
+          status: "pending",
+        })),
+      },
+    };
+    await openWikiStatusOverlay({
+      ui: {
+        async custom(factory, received) {
+          options = received;
+          component = await factory(
+            { requestRender() {}, terminal: { rows } },
+            { fg: (_color, text) => text },
+            { matches: () => false },
+            () => {},
+          );
+        },
+      },
+      handle: {
+        async view() { return view; },
+        async inspect() { return undefined; },
+      },
+    });
+
+    const actualTuiBudget = Math.min(
+      Math.floor((rows * Number.parseFloat(options.overlayOptions.maxHeight)) / 100),
+      rows - options.overlayOptions.margin * 2,
+    );
+    const rendered = component.render(60);
+    assert.equal(wikiOverlayMaxHeight(rows), actualTuiBudget);
+    assert.ok(rendered.length <= actualTuiBudget, `${rows}-row terminal exceeded Pi maxHeight`);
+    assert.match(rendered.at(-1) ?? "", /^└.*enter.*esc.*┘$/);
+    component.dispose();
+  }
 });
 
 test("openWikiStatusOverlay resolves when ui.custom is missing", async () => {

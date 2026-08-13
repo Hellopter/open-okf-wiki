@@ -26,6 +26,9 @@ export type WikiOverlayAction =
 
 const PAGE = 10;
 const DEFAULT_VIEWPORT = 24;
+const OVERLAY_MAX_HEIGHT_PERCENT = 82;
+const OVERLAY_MAX_HEIGHT = `${OVERLAY_MAX_HEIGHT_PERCENT}%`;
+const OVERLAY_MARGIN = 1;
 const TASK_LINE = /^\s+[·◆✓◐✗] /;
 
 export function initialWikiOverlayState(input: {
@@ -111,9 +114,9 @@ export async function openWikiStatusOverlay(args: {
     overlayOptions: {
       width: "84%",
       minWidth: 36,
-      maxHeight: "82%",
+      maxHeight: OVERLAY_MAX_HEIGHT,
       anchor: "center",
-      margin: 1,
+      margin: OVERLAY_MARGIN,
       visible: (width: number, height: number) => width >= 36 && height >= 10,
     },
   });
@@ -491,8 +494,16 @@ function padRule(label: string, inner: number): string {
 
 function viewportRows(tui: OverlayTui): number {
   const rows = tui.terminal?.rows;
-  if (typeof rows === "number" && Number.isFinite(rows) && rows > 6) return rows;
-  return DEFAULT_VIEWPORT;
+  return wikiOverlayMaxHeight(
+    typeof rows === "number" && Number.isFinite(rows) && rows > 6 ? rows : DEFAULT_VIEWPORT,
+  );
+}
+
+export function wikiOverlayMaxHeight(terminalRows: number): number {
+  const rows = Math.max(1, Math.floor(terminalRows));
+  const percentHeight = Math.floor((rows * OVERLAY_MAX_HEIGHT_PERCENT) / 100);
+  const availableHeight = Math.max(1, rows - OVERLAY_MARGIN * 2);
+  return Math.max(1, Math.min(percentHeight, availableHeight));
 }
 
 function bodyLines(
