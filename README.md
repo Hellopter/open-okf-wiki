@@ -17,7 +17,7 @@ Run Pi in the repository or Wiki workspace:
 /wiki source add link <local-path> [--name <name>] [--workspace <dir>]
 /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
 /wiki regenerate [focus]
-/wiki status [run-id] [task-id] [--process]
+/wiki status [run-id] [lead|batch-N/task-id] [--process]
 /wiki runs
 /wiki pause
 /wiki resume [run-id]

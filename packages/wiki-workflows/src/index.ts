@@ -1,7 +1,6 @@
 export { createProductionWikiProducer } from "./production.js";
 export {
   WikiRunResultError,
-  type WikiHistoryEntry,
   type WikiProducerOperation,
   type WikiProducerRequest,
   type WikiProducerResult,
@@ -12,7 +11,6 @@ export {
   type WikiRunStage,
   type WikiRunStatus,
   type WikiRunView,
-  type WikiTaskInspection,
   type WikiTaskSnapshot,
 } from "./producer-types.js";
 export {

@@ -53,17 +53,13 @@ async function fixture(t, options = {}) {
         views.set(view.id, { ...views.get(view.id), status });
         return views.get(view.id);
       },
-      async inspect(taskId) {
-        calls.push(["inspect", view.id, taskId]);
+      async inspectAgent(target) {
+        calls.push(["inspectAgent", view.id, target]);
         const current = views.get(view.id);
-        const task = current?.progress?.tasks?.find((item) => item.id === taskId);
-        if (!task) return undefined;
-        return {
-          runId: view.id,
-          task,
-          processAvailable: false,
-        };
+        const agent = target.kind === "lead" ? current?.progress?.lead : undefined;
+        return agent ? { runId: view.id, agent, process: [] } : undefined;
       },
+      async activity() { return { entries: [] }; },
     };
     handles.set(view.id, handle);
     return handle;
@@ -194,34 +190,33 @@ test("status without progress still prints Wiki run-1", async (t) => {
   assert.ok(subject.messages.slice(before).some((message) => /Wiki run-1/.test(message)));
 });
 
-test("status with taskId calls inspect", async (t) => {
+test("status with lead calls inspectAgent", async (t) => {
   const subject = await fixture(t);
   await subject.run("auth flows");
   const current = subject.views.get("run-1");
   subject.views.set("run-1", {
     ...current,
     progress: {
-      stage: "delegate",
-      tasks: [{ id: "write-1", role: "write", status: "complete" }],
+      stage: "lead",
+      lead: { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "streaming", activeTools: [] },
     },
   });
   const expectedSnapshotTime = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium", timeStyle: "medium",
   }).format(Date.parse(current.updatedAt));
-  await subject.run("status run-1 write-1");
-  assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "write-1"));
-  assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message) && /write-1/.test(message)));
+  await subject.run("status run-1 lead");
+  assert.ok(subject.calls.some((call) => call[0] === "inspectAgent" && call[2].kind === "lead"));
+  assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message) && /lead/.test(message)));
   assert.ok(!subject.messages.some((message) => / ·  process/.test(message)));
   assert.ok(subject.messages.at(-1).endsWith(`snapshot as of ${expectedSnapshotTime}`));
 
-  await subject.run("status run-1 write-1 --process");
-  assert.match(subject.messages.at(-1), /Wiki run-1  ·  write-1  ·  process/);
+  await subject.run("status run-1 lead --process");
+  assert.match(subject.messages.at(-1), /Wiki run-1  ·  lead  ·  process/);
   assert.ok(subject.messages.at(-1).endsWith(`snapshot as of ${expectedSnapshotTime}`));
 
-  await subject.run("status run-1 missing");
-  assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "missing"));
-  assert.match(subject.messages.at(-1), /Wiki run-1 has no task "missing"/);
-  assert.match(subject.messages.at(-1), /Known: write-1/);
+  await subject.run("status run-1 batch-2/missing");
+  assert.ok(subject.calls.some((call) => call[0] === "inspectAgent" && call[2].taskId === "missing"));
+  assert.match(subject.messages.at(-1), /Wiki run-1 has no agent "batch-2\/missing"/);
 });
 
 test("print mode never touches TUI status APIs or the overlay", async (t) => {
@@ -229,7 +224,7 @@ test("print mode never touches TUI status APIs or the overlay", async (t) => {
   await subject.run("auth flows");
   await flush();
   await subject.run("status run-1");
-  await subject.run("status run-1 write-1");
+  await subject.run("status run-1 lead");
   assert.equal(subject.statuses.length, 0);
   assert.equal(subject.widgets.length, 0);
   assert.equal(subject.customs.length, 0);
@@ -278,11 +273,9 @@ test("hasUI refreshes footer and widget after a run", async (t) => {
   subject.views.set("run-1", {
     ...current,
     progress: {
-      stage: "delegate",
-      batch: 1,
-      completed: 1,
-      total: 3,
-      tasks: [{ id: "pages/auth.md", role: "write", status: "running" }],
+      stage: "lead",
+      lead: { target: { kind: "lead" }, role: "lead", status: "running", attempt: 1, activity: "delegating", activeTools: [] },
+      currentBatch: { batch: 1, status: "running", completed: 1, total: 3, tasks: [{ id: "pages/auth.md", role: "write", status: "running" }] },
     },
   });
   await subject.run("status run-1");

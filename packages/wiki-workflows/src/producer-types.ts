@@ -20,7 +20,7 @@ export interface WikiRunEvent {
   data?: Record<string, unknown>;
 }
 
-export type WikiRunStage = "prepare" | "lead" | "delegate" | "validate" | "publish";
+export type WikiRunStage = "prepare" | "lead" | "validate" | "publish";
 
 export interface WikiContextStats {
   turns?: number;
@@ -41,65 +41,129 @@ export interface WikiTaskSnapshot {
   id: string;
   role: "research" | "write" | "review";
   status: "queued" | "running" | "complete" | "incomplete" | "failed";
+  health?: "healthy" | "degraded";
   summary?: string;
   attempts?: number;
   attempt?: number;
   startedAt?: string;
   updatedAt?: string;
-  sampledAt?: string;
   activity?: WikiTaskActivity;
   activeTool?: WikiActiveTool;
-  contextRecalculating?: boolean;
   usage?: WikiContextStats;
 }
 
 export type WikiTaskActivity = "responding" | "tool" | "idle" | "compacting";
 
 export interface WikiActiveTool {
+  id?: string;
   name: string;
   startedAt: string;
+  summary?: string;
 }
 
-/** Runtime checkpoint emitted by a delegated Pi session. */
-export interface WikiTaskTelemetry {
-  taskId: string;
+export type WikiAgentTarget =
+  | { kind: "lead" }
+  | { kind: "task"; batch: number; taskId: string };
+
+export type WikiAgentStatus = "queued" | "running" | "retrying" | "complete" | "incomplete" | "failed" | "cancelled";
+
+export type WikiAgentActivity = WikiTaskActivity
+  | "starting"
+  | "waiting_model"
+  | "streaming"
+  | "using_tool"
+  | "delegating"
+  | "synthesizing"
+  | "retry_wait"
+  | "finishing"
+  | "settled";
+
+export interface WikiAgentSnapshot {
+  target: WikiAgentTarget;
+  role: "lead" | WikiTaskSnapshot["role"];
+  status: WikiAgentStatus;
+  attempt: number;
+  activity: WikiAgentActivity;
+  activeTools: WikiActiveTool[];
+  health: "healthy" | "degraded";
+  startedAt?: string;
+  updatedAt?: string;
+  lastActivityAt?: string;
+  lastHeartbeatAt?: string;
+  deadlineAt?: string;
+  usage?: WikiContextStats;
+  summary?: string;
+}
+
+export type WikiActivityKind = "stage" | "agent" | "tool" | "batch" | "retry" | "compaction" | "warning" | "failure";
+
+export interface WikiActivityEntry {
+  sequence: number;
+  at: string;
+  kind: WikiActivityKind;
+  severity: "info" | "warning" | "error";
+  target?: WikiAgentTarget;
+  message: string;
+  toolCallId?: string;
+  toolName?: string;
+  summary?: string;
+  durationMs?: number;
+  completed?: boolean;
+}
+
+export interface WikiDelegationBatchSummary {
+  batch: number;
+  status: "running" | "complete" | "partial" | "failed";
+  completed: number;
+  total: number;
+  startedAt?: string;
+  completedAt?: string;
+  tasks: WikiTaskSnapshot[];
+}
+
+/** Normalized checkpoint emitted by a Pi session observer. */
+export interface WikiAgentTelemetry {
+  target: WikiAgentTarget;
   attempt: number;
   sampledAt: string;
-  activity?: WikiTaskActivity;
-  activeTool?: WikiActiveTool;
-  contextRecalculating?: boolean;
+  activity?: WikiAgentActivity;
+  activeTools?: WikiActiveTool[];
+  lastActivityAt?: string;
+  lastHeartbeatAt?: string;
+  deadlineAt?: string;
   usage?: WikiContextStats;
-  history?: WikiHistoryEntry[];
+  process?: WikiActivityEntry[];
 }
 
 export interface WikiRunProgress {
   stage: WikiRunStage;
-  batch?: number;
-  completed?: number;
-  total?: number;
-  tasks?: WikiTaskSnapshot[];
+  lead?: WikiAgentSnapshot;
+  currentBatch?: WikiDelegationBatchSummary;
+  batches?: WikiDelegationBatchSummary[];
+  recentActivity?: WikiActivityEntry[];
+  language?: "zh" | "en";
   lastMessage?: string;
 }
 
-export interface WikiHistoryEntry {
-  role: "user" | "assistant" | "tool";
-  kind: "text" | "toolCall" | "toolResult" | "error";
-  text: string;
-  toolName?: string;
-  path?: string;
-  isError?: boolean;
-  timestamp?: number;
-}
-
-export interface WikiTaskInspection {
+export interface WikiAgentInspection {
   runId: string;
-  task: WikiTaskSnapshot;
+  agent: WikiAgentSnapshot;
+  process: WikiActivityEntry[];
   receipt?: import("./delegate-contracts.js").WikiDelegateReceipt;
   handoff?: string;
   handoffPath?: string;
-  history?: WikiHistoryEntry[];
-  usage?: WikiContextStats;
-  processAvailable: boolean;
+}
+
+/** Durable bounded process record for either the lead or one delegated task. */
+export interface WikiAgentRecord {
+  agent: WikiAgentSnapshot;
+  process: WikiActivityEntry[];
+  receipt?: import("./delegate-contracts.js").WikiDelegateReceipt;
+}
+
+export interface WikiActivityPage {
+  entries: WikiActivityEntry[];
+  nextBefore?: number;
 }
 
 export interface WikiRunView {
@@ -137,7 +201,8 @@ export interface WikiRunHandle {
   events(after?: number, signal?: AbortSignal): AsyncIterable<WikiRunEvent>;
   result(): Promise<WikiProducerResult>;
   control(action: WikiRunControl): Promise<WikiRunView>;
-  inspect(taskId: string): Promise<WikiTaskInspection | undefined>;
+  inspectAgent(target: WikiAgentTarget): Promise<WikiAgentInspection | undefined>;
+  activity(options?: { before?: number; limit?: number; actor?: WikiAgentTarget; severity?: WikiActivityEntry["severity"] }): Promise<WikiActivityPage>;
 }
 
 export interface WikiRunAdapterContext {
@@ -168,6 +233,7 @@ export interface WikiPreparedRun {
 export interface WikiLeadExecutionRequest extends WikiRunAdapterContext, WikiPreparedRun {
   attempt: number;
   report(message: string, data?: Record<string, unknown>): Promise<void>;
+  reportObservability(input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string }): Promise<void>;
 }
 
 export type WikiLeadOutcome =

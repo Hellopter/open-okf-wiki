@@ -11,7 +11,9 @@ import {
   type WikiDelegateTask,
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
-import type { WikiContextStats, WikiHistoryEntry, WikiTaskTelemetry } from "./producer-types.js";
+import type { WikiAgentTarget, WikiAgentTelemetry, WikiContextStats } from "./producer-types.js";
+
+type WikiObservabilityHealth = { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
 import { isSafeWikiPagePath } from "./wiki-path.js";
 
 export type WikiTaskProgressPhase = "queued" | "start" | "update" | "end";
@@ -20,20 +22,21 @@ export interface WikiTaskProgressEvent {
   phase: WikiTaskProgressPhase;
   task: WikiDelegateTask;
   receipt?: WikiDelegateReceipt; // required on end
-  history?: WikiHistoryEntry[];
   usage?: WikiContextStats;
-  telemetry?: WikiTaskTelemetry;
+  telemetry?: WikiAgentTelemetry;
 }
 
 export interface WikiLeafTaskContext {
   runId: string;
+  batch: number;
   attempt: number;
   cwd: string;
   sourceRoots: Record<string, string>;
   contextArtifacts: Record<string, WikiArtifactRef>;
   candidateWikiRoot?: string;
   signal: AbortSignal;
-  onTelemetry?: (telemetry: Omit<WikiTaskTelemetry, "taskId" | "attempt">) => void | Promise<void>;
+  onTelemetry?: (telemetry: WikiAgentTelemetry) => void | Promise<void>;
+  reportObservability?: (input: WikiObservabilityHealth) => void | Promise<void>;
 }
 
 export interface WikiLeafResult {
@@ -42,7 +45,6 @@ export interface WikiLeafResult {
   coverage?: string[];
   gaps?: WikiDelegateGap[];
   status?: "complete" | "incomplete";
-  history?: WikiHistoryEntry[];
   usage?: WikiContextStats;
 }
 
@@ -65,6 +67,7 @@ export interface WikiTaskRuntimeOptions {
   random?: () => number;
   now?: () => number;
   onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
+  reportObservability?: (input: WikiObservabilityHealth) => void | Promise<void>;
 }
 
 export class WikiTaskRuntime {
@@ -75,6 +78,7 @@ export class WikiTaskRuntime {
   private readonly baseRetryDelayMs: number;
   private readonly transientRetries: number;
   private readonly onTask?: (event: WikiTaskProgressEvent) => void | Promise<void>;
+  private batch = 0;
 
   constructor(private readonly options: WikiTaskRuntimeOptions) {
     this.gate = new SharedAdmissionGate(options.concurrency ?? 2, options.now);
@@ -89,6 +93,7 @@ export class WikiTaskRuntime {
   }
 
   async delegate(tasks: readonly WikiDelegateTask[], signal: AbortSignal): Promise<WikiDelegateBatchReceipt> {
+    const batch = ++this.batch;
     validateBatch(tasks, this.options);
     for (const task of tasks) {
       for (const ref of task.contextRefs) {
@@ -98,7 +103,7 @@ export class WikiTaskRuntime {
     for (const task of tasks) {
       await this.fireProgress({ phase: "queued", task });
     }
-    const receipts = await Promise.all(tasks.map(async (task) => await this.execute(task, signal)));
+    const receipts = await Promise.all(tasks.map(async (task) => await this.execute(task, batch, signal)));
     for (const value of receipts) {
       const output = value.outputs.at(-1);
       if (output) this.contextArtifacts[value.id] = output;
@@ -114,7 +119,7 @@ export class WikiTaskRuntime {
     };
   }
 
-  private async execute(task: WikiDelegateTask, signal: AbortSignal): Promise<WikiDelegateReceipt> {
+  private async execute(task: WikiDelegateTask, batch: number, signal: AbortSignal): Promise<WikiDelegateReceipt> {
     let lastFailure: ClassifiedFailure | undefined;
     const acceptedOutputs: WikiArtifactRef[] = [];
     const acceptedCoverage = new Set<string>();
@@ -122,36 +127,31 @@ export class WikiTaskRuntime {
     const maxAttempts = this.transientRetries + 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let release: (() => void) | undefined;
-      let latestTelemetry: WikiTaskTelemetry | undefined;
-      const telemetry = new LatestTelemetryPump(async (checkpoint) => {
+      let latestTelemetry: WikiAgentTelemetry | undefined;
+      const onTelemetry = async (checkpoint: WikiAgentTelemetry): Promise<void> => {
         latestTelemetry = checkpoint;
         await this.fireProgress({
           phase: "update",
           task,
           telemetry: checkpoint,
         });
-      });
+      };
       try {
         release = await this.gate.acquire(signal);
-        const startedTelemetry: WikiTaskTelemetry = {
-          taskId: task.id,
+        const startedTelemetry: WikiAgentTelemetry = {
+          target: { kind: "task", batch, taskId: task.id },
           attempt,
           sampledAt: new Date((this.options.now ?? Date.now)()).toISOString(),
-          activity: "responding",
+          activity: "starting",
+          activeTools: [],
         };
         await this.fireProgress({ phase: "start", task, telemetry: startedTelemetry });
-        const result = await this.options.agent.run(task, this.contextFor(task, attempt, signal, (checkpoint) => telemetry.push({
-          ...checkpoint,
-          taskId: task.id,
-          attempt,
-        })));
-        await telemetry.flush();
+        const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry));
         const output = await this.persist(task, attempt, result.markdown);
         const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt);
-        await this.fireProgress({ phase: "end", task, receipt: successReceipt, history: result.history ?? latestTelemetry?.history, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry });
+        await this.fireProgress({ phase: "end", task, receipt: successReceipt, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry });
         return successReceipt;
       } catch (error) {
-        await telemetry.flush();
         let failure = classifyTaskFailure(error, signal.aborted);
         lastFailure = failure;
         const partial = partialResult(error);
@@ -167,7 +167,7 @@ export class WikiTaskRuntime {
         }
         if (failure.code === "quota" || failure.code === "usage_limit") {
           const pauseReceipt = receipt(task, "failed", failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
-          await this.fireProgress({ phase: "end", task, receipt: pauseReceipt, history: latestTelemetry?.history, usage: latestTelemetry?.usage, telemetry: latestTelemetry });
+          await this.fireProgress({ phase: "end", task, receipt: pauseReceipt, usage: latestTelemetry?.usage, telemetry: latestTelemetry });
           return pauseReceipt;
         }
         const mayRetry = failure.retryable && attempt < maxAttempts;
@@ -176,7 +176,7 @@ export class WikiTaskRuntime {
             ? "incomplete"
             : "failed";
           const terminalReceipt = receipt(task, status, failure.message, acceptedOutputs, [...acceptedCoverage], acceptedGaps, failure, attempt);
-          await this.fireProgress({ phase: "end", task, receipt: terminalReceipt, history: latestTelemetry?.history, usage: latestTelemetry?.usage, telemetry: latestTelemetry });
+          await this.fireProgress({ phase: "end", task, receipt: terminalReceipt, usage: latestTelemetry?.usage, telemetry: latestTelemetry });
           return terminalReceipt;
         }
         if (failure.code === "rate_limit") this.gate.reportPressure(failure.retryAfterMs ?? this.baseRetryDelayMs);
@@ -197,12 +197,14 @@ export class WikiTaskRuntime {
 
   private contextFor(
     task: WikiDelegateTask,
+    batch: number,
     attempt: number,
     signal: AbortSignal,
-    onTelemetry: (telemetry: Omit<WikiTaskTelemetry, "taskId" | "attempt">) => void,
+    onTelemetry: (telemetry: WikiAgentTelemetry) => void | Promise<void>,
   ): WikiLeafTaskContext {
     return {
       runId: this.options.runId,
+      batch,
       attempt,
       cwd: this.options.cwd,
       sourceRoots: Object.fromEntries(task.sourceScopeIds.map((id) => [id, this.options.sourceScopes[id]])),
@@ -210,6 +212,7 @@ export class WikiTaskRuntime {
       candidateWikiRoot: this.options.candidateWikiRoot,
       signal,
       onTelemetry,
+      reportObservability: this.options.reportObservability,
     };
   }
 
@@ -234,41 +237,6 @@ export class WikiTaskRuntime {
       await this.onTask?.(event);
     } catch {
       /* observability must not fail the task */
-    }
-  }
-}
-
-class LatestTelemetryPump {
-  private pending?: WikiTaskTelemetry;
-  private latest?: WikiTaskTelemetry;
-  private running?: Promise<void>;
-
-  constructor(private readonly deliver: (telemetry: WikiTaskTelemetry) => Promise<void>) {}
-
-  push(telemetry: WikiTaskTelemetry): void {
-    this.latest = { ...this.latest, ...telemetry };
-    this.pending = this.latest;
-    this.running ??= this.drain();
-  }
-
-  async flush(): Promise<void> {
-    while (this.running) await this.running;
-  }
-
-  private async drain(): Promise<void> {
-    try {
-      while (this.pending) {
-        const telemetry = this.pending;
-        this.pending = undefined;
-        try {
-          await this.deliver(telemetry);
-        } catch {
-          /* observability must not fail the task */
-        }
-      }
-    } finally {
-      this.running = undefined;
-      if (this.pending) this.running = this.drain();
     }
   }
 }

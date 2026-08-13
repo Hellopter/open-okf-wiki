@@ -180,12 +180,11 @@ test("stage is present on prepare/lead/validate/publish and inspect reads sideca
     { id: "research-1", role: "research", status: "running" },
     { id: "write-1", role: "write", status: "queued" },
   ];
-  const history = [{ role: "assistant", kind: "text", text: "found sources" }];
   const subject = fixture({
     createLead: () => ({
       async run(input) {
         await input.report("Delegating research", { tasks });
-        await input.report("Research complete", { taskId: "research-1", receipt, history });
+        await input.report("Research complete", { batch: 1, taskId: "research-1", receipt });
         return { kind: "complete", summary: "done" };
       },
     }),
@@ -204,26 +203,29 @@ test("stage is present on prepare/lead/validate/publish and inspect reads sideca
 
   const view = await handle.view();
   assert.equal(view.progress.stage, "publish");
-  assert.deepEqual(view.progress.tasks, [
-    { id: "research-1", role: "research", status: "running" },
+  assert.deepEqual(view.progress.currentBatch.tasks, [
+    { id: "research-1", role: "research", status: "complete", health: "healthy", attempt: 1, activity: "idle" },
     { id: "write-1", role: "write", status: "queued" },
   ]);
 
-  const inspected = await handle.inspect("research-1");
+  const inspected = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "research-1" });
   assert.ok(inspected);
   assert.equal(inspected.runId, handle.id);
-  assert.equal(inspected.task.id, "research-1");
+  assert.equal(inspected.agent.target.taskId, "research-1");
   assert.deepEqual(inspected.receipt, receipt);
-  assert.deepEqual(inspected.history, history);
-  assert.equal(inspected.processAvailable, true);
+  assert.equal(inspected.process.length, 1);
+  assert.equal(await handle.inspectAgent({ kind: "lead" }), undefined);
+  const activity = await handle.activity({ limit: 2 });
+  assert.ok(activity.entries.length <= 2);
 
-  const snapshotOnly = await handle.inspect("write-1");
+  const snapshotOnly = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "write-1" });
   assert.ok(snapshotOnly);
-  assert.equal(snapshotOnly.task.status, "queued");
+  assert.equal(snapshotOnly.agent.status, "queued");
+  assert.equal(snapshotOnly.agent.role, "write");
   assert.equal(snapshotOnly.receipt, undefined);
-  assert.equal(snapshotOnly.processAvailable, false);
+  assert.deepEqual(snapshotOnly.process, []);
 
-  assert.equal(await handle.inspect("missing-task"), undefined);
+  assert.equal(await handle.inspectAgent({ kind: "task", batch: 1, taskId: "missing-task" }), undefined);
 });
 
 test("telemetry is transactionally projected and replay/live subscribers can cancel", async (t) => {
@@ -233,22 +235,21 @@ test("telemetry is transactionally projected and replay/live subscribers can can
   const subject = fixture({
     createLead: () => ({ async run(input) {
       await input.report("Delegating", {
-        stage: "delegate",
+        stage: "lead",
         tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
       });
       ready.resolve();
       await release.promise;
       await input.report("Writing", {
-        stage: "delegate",
+        stage: "lead",
         taskId: "write-1",
-        phase: "update",
+        phase: "agent_update",
         telemetry: {
-          taskId: "write-1",
+          target: { kind: "task", batch: 1, taskId: "write-1" },
           attempt: 1,
           sampledAt: "2026-01-01T00:00:05.000Z",
-          activity: "responding",
+          activity: "streaming",
           usage: { turns: 1, total: 42 },
-          history: [{ role: "assistant", kind: "text", text: "draft" }],
         },
       });
       return { kind: "complete", summary: "done" };
@@ -277,12 +278,11 @@ test("telemetry is transactionally projected and replay/live subscribers can can
   assert.equal(left.filter(({ type }) => type === "telemetry").length, 1);
 
   const view = await handle.view();
-  const task = view.progress.tasks.find(({ id }) => id === "write-1");
+  const task = view.progress.currentBatch.tasks.find(({ id }) => id === "write-1");
   assert.equal(task.activity, "responding");
   assert.deepEqual(task.usage, { turns: 1, total: 42 });
-  const inspected = await handle.inspect("write-1");
-  assert.deepEqual(inspected.usage, { turns: 1, total: 42 });
-  assert.deepEqual(inspected.history, [{ role: "assistant", kind: "text", text: "draft" }]);
+  const inspected = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "write-1" });
+  assert.deepEqual(inspected.agent.usage, { turns: 1, total: 42 });
   assert.equal(subject.producer.eventHubs.size, 0);
 });
 
@@ -320,13 +320,12 @@ test("task end event is published only after inspect sees final sidecar", async 
   const subject = fixture({
     createLead: () => ({ async run(input) {
       await input.report("Delegating", {
-        stage: "delegate", tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
+        stage: "lead", tasks: [{ id: "write-1", role: "write", status: "running", attempt: 1 }],
       });
       ready.resolve();
       await release.promise;
       await input.report("Task complete", {
-        stage: "delegate", taskId: "write-1", receipt,
-        history: [{ role: "assistant", kind: "text", text: "final answer" }],
+        stage: "lead", batch: 1, taskId: "write-1", receipt,
         usage: { turns: 2, total: 80 },
       });
       return { kind: "complete", summary: "done" };
@@ -338,10 +337,9 @@ test("task end event is published only after inspect sees final sidecar", async 
   const next = iterator.next();
   release.resolve();
   assert.equal((await next).value.message, "Task complete");
-  const inspected = await handle.inspect("write-1");
+  const inspected = await handle.inspectAgent({ kind: "task", batch: 1, taskId: "write-1" });
   assert.equal(inspected.receipt.status, "complete");
-  assert.equal(inspected.history[0].text, "final answer");
-  assert.deepEqual(inspected.usage, { turns: 2, total: 80 });
+  assert.deepEqual(inspected.agent.usage, { turns: 2, total: 80 });
   await iterator.return();
   await handle.result();
 });
@@ -357,7 +355,8 @@ test("late report after cancel cannot mutate terminal state or append events", a
       await release.promise;
       try {
         await input.report("Late task end", {
-          stage: "delegate",
+          stage: "lead",
+          batch: 1,
           taskId: "late-1",
           receipt: {
             id: "late-1", role: "write", status: "complete", summary: "too late",
@@ -389,5 +388,5 @@ test("late report after cancel cannot mutate terminal state or append events", a
   assert.equal(after.lastEventSequence, before.lastEventSequence);
   assert.equal(after.updatedAt, before.updatedAt);
   assert.deepEqual(afterEvents, beforeEvents);
-  assert.equal(await handle.inspect("late-1"), undefined);
+  assert.equal(await handle.inspectAgent({ kind: "task", batch: 1, taskId: "late-1" }), undefined);
 });

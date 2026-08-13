@@ -263,14 +263,15 @@ test("onTask throwing does not fail delegate of a successful agent", async () =>
   assert.deepEqual(phases, ["queued", "start", "end"]);
 });
 
-test("forwards attempt-aware telemetry serially and flushes the latest checkpoint before end", async () => {
+test("forwards normalized attempt-aware telemetry before task end", async () => {
   const events = [];
   let releaseFirst;
   const firstDelivery = new Promise((resolve) => { releaseFirst = resolve; });
   const r = runtime({
     async run(value, context) {
-      context.onTelemetry({ sampledAt: "2026-01-01T00:00:01.000Z", activity: "tool", activeTool: { name: "read", startedAt: "2026-01-01T00:00:00.000Z" } });
-      context.onTelemetry({ sampledAt: "2026-01-01T00:00:02.000Z", activity: "idle", usage: { turns: 2 }, history: [{ role: "assistant", kind: "text", text: "done" }] });
+      const target = { kind: "task", batch: context.batch, taskId: value.id };
+      await context.onTelemetry({ target, attempt: context.attempt, sampledAt: "2026-01-01T00:00:01.000Z", activity: "using_tool", activeTools: [{ name: "read", startedAt: "2026-01-01T00:00:00.000Z" }] });
+      await context.onTelemetry({ target, attempt: context.attempt, sampledAt: "2026-01-01T00:00:02.000Z", activity: "settled", activeTools: [], usage: { turns: 2 } });
       return { summary: "ok", markdown: "ok" };
     },
   }, {
@@ -286,13 +287,25 @@ test("forwards attempt-aware telemetry serially and flushes the latest checkpoin
   await delegated;
 
   const updates = events.filter((event) => event.phase === "update");
-  assert.ok(updates.length >= 1 && updates.length <= 2);
-  assert.ok(updates.every((event) => !("history" in event) && !("usage" in event)));
+  assert.equal(updates.length, 2);
+  assert.ok(updates.every((event) => !("usage" in event)));
   assert.equal(updates.at(-1).telemetry.attempt, 1);
   assert.equal(updates.at(-1).telemetry.usage.turns, 2);
   const end = events.find((event) => event.phase === "end");
   assert.equal(end.usage.turns, 2);
-  assert.equal(end.history[0].text, "done");
+});
+
+test("passes an incrementing batch identity to delegated agents", async () => {
+  const batches = [];
+  const r = runtime({
+    async run(_task, context) {
+      batches.push(context.batch);
+      return { summary: "ok", markdown: "ok" };
+    },
+  });
+  await r.delegate([task("first")], new AbortController().signal);
+  await r.delegate([task("second")], new AbortController().signal);
+  assert.deepEqual(batches, [1, 2]);
 });
 
 test("telemetry delivery failures do not fail or delay task completion", async () => {

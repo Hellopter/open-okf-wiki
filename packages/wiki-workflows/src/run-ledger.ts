@@ -3,7 +3,12 @@ import path from "node:path";
 import type { WikiDelegateReceipt } from "./delegate-contracts.js";
 import type {
   WikiContextStats,
-  WikiHistoryEntry,
+  WikiActivityEntry,
+  WikiActivityPage,
+  WikiAgentRecord,
+  WikiAgentSnapshot,
+  WikiAgentTarget,
+  WikiActiveTool,
   WikiProducerOperation,
   WikiProducerResult,
   WikiRunEvent,
@@ -13,7 +18,7 @@ import type {
   WikiRunStatus,
   WikiRunView,
   WikiTaskSnapshot,
-  WikiTaskTelemetry,
+  WikiAgentTelemetry,
 } from "./producer-types.js";
 
 export const WIKI_RUN_LEDGER_VERSION = 1 as const;
@@ -35,14 +40,7 @@ export interface CreateWikiRunState {
   at: string;
 }
 
-export interface WikiTaskRecord {
-  receipt?: WikiDelegateReceipt;
-  history?: WikiHistoryEntry[];
-  usage?: WikiContextStats;
-  updatedAt: string;
-}
-
-export type WikiLedgerFaultPoint = "afterJournal" | "afterTask" | "afterState" | "afterEvent";
+export type WikiLedgerFaultPoint = "afterJournal" | "afterAgent" | "afterState" | "afterEvent" | "afterActivity";
 
 export interface WikiRunLedgerOptions {
   /** @internal Deterministic crash injection for persistence tests. */
@@ -53,7 +51,15 @@ interface WikiLedgerTransaction {
   version: 1;
   state: WikiRunState;
   event: WikiRunEvent;
-  task?: { id: string; record: WikiTaskRecord };
+  agent?: { target: WikiAgentTarget; record: WikiAgentRecord };
+  activity?: WikiActivityEntry[];
+}
+
+interface AgentPatch {
+  target: WikiAgentTarget;
+  agent: WikiAgentSnapshot;
+  process?: WikiActivityEntry[];
+  receipt?: WikiDelegateReceipt;
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -82,11 +88,11 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       directory,
       state: path.join(directory, "run-state.json"),
       events: path.join(directory, "events.jsonl"),
+      activity: path.join(directory, "activity.jsonl"),
       journal: path.join(directory, "pending-transaction.json"),
-      task: (taskId: string) => {
-        assertSafeId(taskId, "Wiki task ID");
-        return path.join(directory, "tasks", `${taskId}.json`);
-      },
+      agent: (target: WikiAgentTarget) => target.kind === "lead"
+        ? path.join(directory, "agents", "lead.json")
+        : path.join(directory, "agents", "batches", String(target.batch), `${safeTaskId(target.taskId)}.json`),
     };
   };
 
@@ -120,12 +126,12 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
 
   const applyTransaction = async (transaction: WikiLedgerTransaction, injectFaults: boolean): Promise<void> => {
     const runPaths = paths(transaction.state.id);
-    if (transaction.task) {
-      const target = runPaths.task(transaction.task.id);
+    if (transaction.agent) {
+      const target = runPaths.agent(transaction.agent.target);
       await mkdir(path.dirname(target), { recursive: true });
-      await writeAtomic(target, `${JSON.stringify(transaction.task.record, null, 2)}\n`);
+      await writeAtomic(target, `${JSON.stringify(transaction.agent.record, null, 2)}\n`);
     }
-    if (injectFaults) await options.fault?.("afterTask");
+    if (injectFaults) await options.fault?.("afterAgent");
     await writeState(transaction.state);
     if (injectFaults) await options.fault?.("afterState");
     const existing = await readEventsFile(runPaths.events, transaction.state.id);
@@ -134,15 +140,25 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       await appendFile(runPaths.events, `${JSON.stringify(transaction.event)}\n`, "utf8");
     }
     if (injectFaults) await options.fault?.("afterEvent");
+    if (transaction.activity?.length) {
+      const existingActivity = await readActivityFile(runPaths.activity);
+      const known = new Set(existingActivity.map(activityIdentity));
+      const combined = [...existingActivity, ...transaction.activity.filter((entry) => !known.has(activityIdentity(entry)))];
+      const tools = combined.filter((entry) => entry.kind === "tool").slice(-1000);
+      const retained = [...combined.filter((entry) => entry.kind !== "tool"), ...tools].sort((left, right) => left.sequence - right.sequence);
+      await writeAtomic(runPaths.activity, retained.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    }
+    if (injectFaults) await options.fault?.("afterActivity");
     await rm(runPaths.journal, { force: true });
   };
 
   const commitEvent = async (
     runId: string,
     input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
-    taskPatch?: { taskId: string; receipt?: WikiDelegateReceipt; history?: WikiHistoryEntry[]; usage?: WikiContextStats },
     mutateState?: (state: WikiRunState) => WikiRunState,
     allowTerminalTransition = false,
+    agentPatch?: AgentPatch,
+    activity?: WikiActivityEntry[],
   ): Promise<WikiRunEvent> => {
     await recover(runId);
     const current = await readState(runId);
@@ -161,24 +177,43 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     next.lastEventSequence = event.sequence;
     next.updatedAt = event.at;
     if (event.type === "progress" || event.type === "telemetry" || hasProgressFields(event.data)) {
-      const progress = mergeProgress(next.progress, event.data ?? {}, event.message);
+      const progress = mergeProgress(next.progress, event.data ?? {}, event.message, event.at);
       if (progress) next.progress = progress;
     }
-    let task: WikiLedgerTransaction["task"];
-    if (taskPatch) {
-      const existing = await readTaskRecordFile(paths(runId).task(taskPatch.taskId));
-      task = {
-        id: taskPatch.taskId,
-        record: parseTaskRecord({
-          ...(existing ?? {}),
-          ...(taskPatch.receipt ? { receipt: taskPatch.receipt } : {}),
-          ...(taskPatch.history ? { history: taskPatch.history } : {}),
-          ...(taskPatch.usage ? { usage: taskPatch.usage } : {}),
+    const activityInput = activity ?? agentPatch?.process ?? [];
+    const durableActivity = await readActivityFile(paths(runId).activity);
+    const transactionActivity = normalizeActivity(durableActivity, activityInput);
+    next = projectActivity(next, transactionActivity);
+    if (agentPatch) next = projectAgent(next, agentPatch.agent);
+    if (next.progress && ["completed", "failed", "paused", "cancelled"].includes(event.type)) {
+      if (next.progress.lead) {
+        next.progress.lead = {
+          ...next.progress.lead,
+          status: event.type === "completed" ? "complete" : event.type === "cancelled" ? "cancelled" : event.type === "paused" ? "retrying" : "failed",
+          activity: event.type === "completed" ? "settled" : next.progress.lead.activity,
+          activeTools: [],
           updatedAt: event.at,
+        };
+      }
+    }
+    const terminalLead = next.progress?.lead && ["completed", "failed", "paused", "cancelled"].includes(event.type)
+      ? next.progress.lead
+      : undefined;
+    let agent: WikiLedgerTransaction["agent"];
+    const effectivePatch: AgentPatch | undefined = agentPatch ?? (terminalLead ? { target: { kind: "lead" }, agent: terminalLead } : undefined);
+    if (effectivePatch) {
+      const existing = await readAgentRecordFile(paths(runId).agent(effectivePatch.target));
+      agent = {
+        target: effectivePatch.target,
+        record: parseAgentRecord({
+          ...(existing ?? {}),
+          agent: effectivePatch.agent,
+          process: limitAgentProcess(effectivePatch.process ?? existing?.process ?? []),
+          ...(effectivePatch.receipt ? { receipt: effectivePatch.receipt } : {}),
         }),
       };
     }
-    const transaction: WikiLedgerTransaction = { version: 1, state: parseState(next, runId), event, ...(task ? { task } : {}) };
+    const transaction: WikiLedgerTransaction = { version: 1, state: parseState(next, runId), event, ...(agent ? { agent } : {}), ...(transactionActivity.length ? { activity: transactionActivity } : {}) };
     const journal = paths(runId).journal;
     await writeAtomic(journal, `${JSON.stringify(transaction, null, 2)}\n`);
     await options.fault?.("afterJournal");
@@ -278,57 +313,18 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
     async commitEvent(
       runId: string,
       input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
-      taskPatch?: { taskId: string; receipt?: WikiDelegateReceipt; history?: WikiHistoryEntry[]; usage?: WikiContextStats },
-      mutateState?: (state: WikiRunState) => WikiRunState,
+      activity?: WikiActivityEntry[],
     ) {
-      return await serialize(async () => await commitEvent(runId, input, taskPatch, mutateState));
+      return await serialize(async () => await commitEvent(runId, input, undefined, false, undefined, activity));
     },
 
     async commitTerminal(
       runId: string,
       input: Omit<WikiRunEvent, "version" | "runId" | "sequence">,
       mutateState: (state: WikiRunState) => WikiRunState,
+      activity?: WikiActivityEntry[],
     ) {
-      return await serialize(async () => await commitEvent(runId, input, undefined, mutateState, true));
-    },
-
-    async commitTelemetry(runId: string, telemetry: WikiTaskTelemetry, message: string) {
-      return await serialize(async () => {
-        await recover(runId);
-        const state = await readState(runId);
-        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
-        if (TERMINAL.has(state.status)) return undefined;
-        const existingTask = state.progress?.tasks?.find((task) => task.id === telemetry.taskId);
-        if (!existingTask) throw new Error(`Unknown Wiki task: ${telemetry.taskId}`);
-        if ((existingTask.attempt ?? 0) > telemetry.attempt) return undefined;
-
-        const at = telemetry.sampledAt;
-        const target = paths(runId).task(telemetry.taskId);
-        const existingRecord = await readTaskRecordFile(target);
-        const record = parseTaskRecord({
-          ...(existingRecord ?? {}),
-          ...(telemetry.history ? { history: telemetry.history } : {}),
-          ...(telemetry.usage ? { usage: telemetry.usage } : {}),
-          updatedAt: at,
-        });
-        const data: Record<string, unknown> = {
-          taskId: telemetry.taskId,
-          attempt: telemetry.attempt,
-          sampledAt: telemetry.sampledAt,
-          activity: telemetry.activity,
-          activeTool: telemetry.activeTool ?? null,
-          ...(telemetry.contextRecalculating !== undefined
-            ? { contextRecalculating: telemetry.contextRecalculating }
-            : {}),
-          ...(telemetry.usage ? { usage: telemetry.usage } : {}),
-        };
-        return await commitEvent(runId, {
-          at,
-          type: "telemetry",
-          message,
-          data,
-        }, { taskId: telemetry.taskId, ...(record.history ? { history: record.history } : {}), ...(record.usage ? { usage: record.usage } : {}) });
-      });
+      return await serialize(async () => await commitEvent(runId, input, mutateState, true, undefined, activity));
     },
 
     async events(runId: string, after = 0) {
@@ -347,30 +343,111 @@ export function createWikiRunLedger(rootDirectory: string, options: WikiRunLedge
       });
     },
 
-    async readTask(runId: string, taskId: string) {
+    async readAgent(runId: string, target: WikiAgentTarget) {
       return await serialize(async () => {
         await recover(runId);
-        const file = paths(runId).task(taskId);
-        return await readTaskRecordFile(file);
+        const record = await readAgentRecordFile(paths(runId).agent(target));
+        if (record) return record;
+        const state = await readState(runId);
+        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+        return projectQueuedAgent(state, target);
       });
     },
 
-    async writeTask(runId: string, taskId: string, record: WikiTaskRecord) {
+    async commitAgent(
+      runId: string,
+      telemetry: WikiAgentTelemetry,
+      message: string,
+      details?: { role?: WikiTaskSnapshot["role"]; status?: WikiAgentSnapshot["status"]; receipt?: WikiDelegateReceipt },
+    ) {
+      return await serialize(async () => {
+        await recover(runId);
+        const state = await readState(runId);
+        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+        if (TERMINAL.has(state.status)) {
+          if (details?.receipt) throw new Error(`Terminal Wiki run ${runId} is immutable`);
+          return undefined;
+        }
+        const existing = await readAgentRecordFile(paths(runId).agent(telemetry.target));
+        if ((existing?.agent.attempt ?? 0) > telemetry.attempt) return undefined;
+        const taskTarget = telemetry.target.kind === "task" ? telemetry.target : undefined;
+        const projectedRole = taskTarget
+          ? state.progress?.batches?.find((batch) => batch.batch === taskTarget.batch)?.tasks.find((task) => task.id === taskTarget.taskId)?.role
+          : undefined;
+        const agent = mergeAgentCheckpoint(telemetry, existing?.agent, { ...details, role: details?.role ?? projectedRole });
+        return await commitEvent(runId, {
+          at: telemetry.sampledAt,
+          type: "telemetry",
+          message,
+          data: { phase: "agent_update", target: telemetry.target },
+        }, undefined, false, {
+          target: telemetry.target,
+          agent,
+          process: telemetry.process ?? existing?.process,
+          receipt: details?.receipt,
+        }, telemetry.process);
+      });
+    },
+
+    async commitHealth(
+      runId: string,
+      input: { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string },
+    ) {
+      return await serialize(async () => {
+        await recover(runId);
+        const state = await readState(runId);
+        if (!state) throw new Error(`Unknown Wiki run: ${runId}`);
+        if (TERMINAL.has(state.status)) return undefined;
+        const existing = await readAgentRecordFile(paths(runId).agent(input.target)) ?? projectQueuedAgent(state, input.target);
+        const projected = input.target.kind === "lead"
+          ? state.progress?.lead ?? {
+              target: input.target,
+              role: "lead" as const,
+              status: "running" as const,
+              attempt: state.attempt || 1,
+              activity: "starting" as const,
+              activeTools: [],
+              health: input.status,
+              updatedAt: input.at,
+            }
+          : undefined;
+        const agent = existing?.agent ?? projected;
+        if (!agent) return undefined;
+        const message = input.message ?? `Observability ${input.status}`;
+        return await commitEvent(runId, {
+          at: input.at,
+          type: "telemetry",
+          message,
+          data: { phase: "observability_health", target: input.target, status: input.status },
+        }, undefined, false, {
+          target: input.target,
+          agent: { ...agent, health: input.status, updatedAt: input.at },
+          process: existing?.process,
+          receipt: existing?.receipt,
+        }, [{ sequence: 0, at: input.at, kind: "warning", severity: input.status === "degraded" ? "warning" : "info", target: input.target, message }]);
+      });
+    },
+
+    async activity(runId: string, options: { before?: number; limit?: number; actor?: WikiAgentTarget; severity?: WikiActivityEntry["severity"] } = {}): Promise<WikiActivityPage> {
       return await serialize(async () => {
         await recover(runId);
         if (!(await readState(runId))) throw new Error(`Unknown Wiki run: ${runId}`);
-        const target = paths(runId).task(taskId);
-        const parsed = parseTaskRecord(record);
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeAtomic(target, `${JSON.stringify(parsed, null, 2)}\n`);
-        return parsed;
+        const before = options.before ?? Number.POSITIVE_INFINITY;
+        const limit = Math.min(200, Math.max(1, Math.trunc(options.limit ?? 50)));
+        const filtered = (await readActivityFile(paths(runId).activity))
+          .filter((entry) => entry.sequence < before
+            && (!options.actor || sameTarget(entry.target, options.actor))
+            && (!options.severity || entry.severity === options.severity))
+          .sort((left, right) => right.sequence - left.sequence);
+        const entries = filtered.slice(0, limit);
+        return { entries, ...(filtered.length > limit ? { nextBefore: entries.at(-1)!.sequence } : {}) };
       });
     },
   };
 
-  async function readTaskRecordFile(file: string): Promise<WikiTaskRecord | undefined> {
+  async function readAgentRecordFile(file: string): Promise<WikiAgentRecord | undefined> {
     try {
-      return parseTaskRecord(JSON.parse(await readFile(file, "utf8")));
+      return parseAgentRecord(JSON.parse(await readFile(file, "utf8")));
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
@@ -418,11 +495,9 @@ function parseState(value: unknown, expectedId: string): WikiRunState {
   return parsed;
 }
 
-const STAGES = new Set<WikiRunStage>(["prepare", "lead", "delegate", "validate", "publish"]);
+const STAGES = new Set<WikiRunStage>(["prepare", "lead", "validate", "publish"]);
 const TASK_ROLES = new Set<WikiTaskSnapshot["role"]>(["research", "write", "review"]);
 const TASK_STATUSES = new Set<WikiTaskSnapshot["status"]>(["queued", "running", "complete", "incomplete", "failed"]);
-const HISTORY_ROLES = new Set<WikiHistoryEntry["role"]>(["user", "assistant", "tool"]);
-const HISTORY_KINDS = new Set<WikiHistoryEntry["kind"]>(["text", "toolCall", "toolResult", "error"]);
 
 function hasProgressFields(data?: Record<string, unknown>): boolean {
   if (!data) return false;
@@ -448,36 +523,40 @@ function mergeProgress(
   current: WikiRunProgress | undefined,
   data: Record<string, unknown>,
   message: string,
+  at: string,
 ): WikiRunProgress | undefined {
   const stage = isStage(data.stage) ? data.stage : current?.stage;
   if (!stage) return current;
   const next: WikiRunProgress = {
     stage,
-    ...(current?.batch !== undefined ? { batch: current.batch } : {}),
-    ...(current?.completed !== undefined ? { completed: current.completed } : {}),
-    ...(current?.total !== undefined ? { total: current.total } : {}),
-    ...(current?.tasks ? { tasks: current.tasks } : {}),
+    ...(current?.lead ? { lead: current.lead } : {}),
+    ...(current?.currentBatch ? { currentBatch: current.currentBatch } : {}),
+    ...(current?.batches ? { batches: current.batches } : {}),
+    ...(current?.recentActivity ? { recentActivity: current.recentActivity } : {}),
+    ...(current?.language ? { language: current.language } : {}),
     lastMessage: message,
   };
-  if (isProgressCount(data.batch)) next.batch = data.batch;
-  if (isProgressCount(data.completed)) next.completed = data.completed;
-  if (isProgressCount(data.total)) next.total = data.total;
   if (Array.isArray(data.tasks)) {
     const tasks = data.tasks.map(parseTaskSnapshot).filter((task): task is WikiTaskSnapshot => task !== undefined);
-    next.tasks = tasks;
+    const batch = isProgressCount(data.batch) ? data.batch : next.currentBatch?.batch ?? 1;
+    next.currentBatch = deriveBatch(batch, tasks, next.currentBatch?.batch === batch ? next.currentBatch : undefined, message, at);
+    next.batches = upsertBatch(next.batches, next.currentBatch);
   }
   const patchId = eventTaskId(data);
-  const existing = patchId ? next.tasks?.find((task) => task.id === patchId) : undefined;
+  const existing = patchId ? next.currentBatch?.tasks.find((task) => task.id === patchId) : undefined;
   const patch = patchTaskSnapshot(data, existing);
   if (patch) {
-    const tasks = [...(next.tasks ?? [])];
+    const tasks = [...(next.currentBatch?.tasks ?? [])];
     const index = tasks.findIndex((task) => task.id === patch.id);
     if (index >= 0) {
       tasks[index] = { ...tasks[index], ...patch };
       if ("activeTool" in data && data.activeTool === null) delete tasks[index].activeTool;
     }
     else tasks.push(patch);
-    next.tasks = tasks;
+    if (next.currentBatch) {
+      next.currentBatch = deriveBatch(next.currentBatch.batch, tasks, next.currentBatch, message, at);
+      next.batches = upsertBatch(next.batches, next.currentBatch);
+    }
   }
   return parseProgress(next);
 }
@@ -498,13 +577,9 @@ function patchTaskSnapshot(data: Record<string, unknown>, existing?: WikiTaskSna
     ...(typeof data.startedAt === "string" ? { startedAt: data.startedAt } : {}),
     ...(typeof data.updatedAt === "string" ? { updatedAt: data.updatedAt } : {}),
     ...(typeof data.attempt === "number" ? { attempt: data.attempt } : {}),
-    ...(typeof data.sampledAt === "string" ? { sampledAt: data.sampledAt } : {}),
     ...(typeof data.activity === "string" ? { activity: data.activity } : {}),
     ...("activeTool" in data
       ? { activeTool: data.activeTool && typeof data.activeTool === "object" ? data.activeTool : undefined }
-      : {}),
-    ...(typeof data.contextRecalculating === "boolean"
-      ? { contextRecalculating: data.contextRecalculating }
       : {}),
     ...(usage ? { usage } : {}),
   });
@@ -515,26 +590,18 @@ function parseProgress(value: unknown): WikiRunProgress | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Partial<WikiRunProgress>;
   if (!isStage(raw.stage)) return undefined;
-  if (raw.batch !== undefined && !isProgressCount(raw.batch)) return undefined;
-  if (raw.completed !== undefined && !isProgressCount(raw.completed)) return undefined;
-  if (raw.total !== undefined && !isProgressCount(raw.total)) return undefined;
   if (raw.lastMessage !== undefined && typeof raw.lastMessage !== "string") return undefined;
-  let tasks: WikiTaskSnapshot[] | undefined;
-  if (raw.tasks !== undefined) {
-    if (!Array.isArray(raw.tasks)) return undefined;
-    tasks = [];
-    for (const entry of raw.tasks) {
-      const task = parseTaskSnapshot(entry);
-      if (!task) return undefined;
-      tasks.push(task);
-    }
-  }
+  const lead = parseAgentSnapshot(raw.lead);
+  const currentBatch = parseBatch(raw.currentBatch);
+  const batches = Array.isArray(raw.batches) ? raw.batches.map(parseBatch).filter((value): value is NonNullable<typeof value> => !!value) : undefined;
+  const activity = Array.isArray(raw.recentActivity) ? raw.recentActivity.map(parseActivityEntry).filter((value): value is WikiActivityEntry => !!value).slice(-20) : undefined;
   return {
     stage: raw.stage,
-    ...(raw.batch !== undefined ? { batch: raw.batch } : {}),
-    ...(raw.completed !== undefined ? { completed: raw.completed } : {}),
-    ...(raw.total !== undefined ? { total: raw.total } : {}),
-    ...(tasks ? { tasks } : {}),
+    ...(lead ? { lead } : {}),
+    ...(currentBatch ? { currentBatch } : {}),
+    ...(batches?.length ? { batches } : {}),
+    ...(activity?.length ? { recentActivity: activity } : {}),
+    ...(raw.language === "zh" || raw.language === "en" ? { language: raw.language } : {}),
     ...(raw.lastMessage !== undefined ? { lastMessage: raw.lastMessage } : {}),
   };
 }
@@ -544,51 +611,231 @@ function parseTaskSnapshot(value: unknown): WikiTaskSnapshot | undefined {
   const raw = value as Partial<WikiTaskSnapshot>;
   if (typeof raw.id !== "string" || !isTaskRole(raw.role) || !isTaskStatus(raw.status)) return undefined;
   if (raw.summary !== undefined && typeof raw.summary !== "string") return undefined;
+  if (raw.health !== undefined && raw.health !== "healthy" && raw.health !== "degraded") return undefined;
   if (raw.attempts !== undefined && !isProgressCount(raw.attempts)) return undefined;
   if (raw.startedAt !== undefined && typeof raw.startedAt !== "string") return undefined;
   if (raw.updatedAt !== undefined && typeof raw.updatedAt !== "string") return undefined;
   if (raw.attempt !== undefined && !isProgressCount(raw.attempt)) return undefined;
-  if (raw.sampledAt !== undefined && typeof raw.sampledAt !== "string") return undefined;
   if (raw.activity !== undefined && !["responding", "tool", "idle", "compacting"].includes(raw.activity)) return undefined;
   if (raw.activeTool !== undefined && (!raw.activeTool || typeof raw.activeTool !== "object"
     || typeof raw.activeTool.name !== "string" || typeof raw.activeTool.startedAt !== "string")) return undefined;
-  if (raw.contextRecalculating !== undefined && typeof raw.contextRecalculating !== "boolean") return undefined;
   const usage = parseContextStats(raw.usage);
   return {
     id: raw.id,
     role: raw.role,
     status: raw.status,
+    ...(raw.health ? { health: raw.health } : {}),
     ...(raw.summary !== undefined ? { summary: raw.summary } : {}),
     ...(raw.attempts !== undefined ? { attempts: raw.attempts } : {}),
     ...(raw.startedAt !== undefined ? { startedAt: raw.startedAt } : {}),
     ...(raw.updatedAt !== undefined ? { updatedAt: raw.updatedAt } : {}),
     ...(raw.attempt !== undefined ? { attempt: raw.attempt } : {}),
-    ...(raw.sampledAt !== undefined ? { sampledAt: raw.sampledAt } : {}),
     ...(raw.activity !== undefined ? { activity: raw.activity } : {}),
     ...(raw.activeTool !== undefined ? { activeTool: raw.activeTool } : {}),
-    ...(raw.contextRecalculating !== undefined ? { contextRecalculating: raw.contextRecalculating } : {}),
     ...(usage ? { usage } : {}),
   };
 }
 
-function parseTaskRecord(value: unknown): WikiTaskRecord {
-  if (!value || typeof value !== "object") throw new Error("Invalid Wiki task record");
-  const raw = value as Partial<WikiTaskRecord>;
-  if (typeof raw.updatedAt !== "string") throw new Error("Invalid Wiki task record");
-  if (raw.receipt !== undefined && (!raw.receipt || typeof raw.receipt !== "object")) {
-    throw new Error("Invalid Wiki task record");
-  }
-  let history: WikiHistoryEntry[] | undefined;
-  if (raw.history !== undefined) {
-    if (!Array.isArray(raw.history)) throw new Error("Invalid Wiki task record");
-    history = raw.history.map(parseHistoryEntry);
-  }
-  const usage = parseContextStats(raw.usage);
+function safeTaskId(value: string): string {
+  assertSafeId(value, "Wiki task ID");
+  return value;
+}
+
+function sameTarget(left: WikiAgentTarget | undefined, right: WikiAgentTarget): boolean {
+  if (!left || left.kind !== right.kind) return false;
+  return left.kind === "lead" || right.kind === "task" && left.batch === right.batch && left.taskId === right.taskId;
+}
+
+function parseAgentRecord(value: unknown): WikiAgentRecord {
+  if (!value || typeof value !== "object") throw new Error("Invalid Wiki agent record");
+  const raw = value as Partial<WikiAgentRecord>;
+  const agent = parseAgentSnapshot(raw.agent);
+  if (!agent || typeof agent.updatedAt !== "string" || !Array.isArray(raw.process)) throw new Error("Invalid Wiki agent record");
+  const process = raw.process.map(parseActivityEntry);
+  if (process.some((entry) => !entry)) throw new Error("Invalid Wiki agent record");
   return {
-    ...(raw.receipt ? { receipt: raw.receipt } : {}),
-    ...(history ? { history } : {}),
-    ...(usage ? { usage } : {}),
-    updatedAt: raw.updatedAt,
+    agent,
+    process: limitAgentProcess(process as WikiActivityEntry[]),
+    ...(raw.receipt && typeof raw.receipt === "object" ? { receipt: raw.receipt } : {}),
+  };
+}
+
+function limitAgentProcess(entries: WikiActivityEntry[]): WikiActivityEntry[] {
+  return entries.slice(-200);
+}
+
+function parseAgentSnapshot(value: unknown): WikiAgentSnapshot | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<WikiAgentSnapshot>;
+  const target = parseTarget(raw.target);
+  if (!target || !["lead", "research", "write", "review"].includes(raw.role ?? "")
+    || !["queued", "running", "retrying", "complete", "incomplete", "failed", "cancelled"].includes(raw.status ?? "")
+    || !Number.isInteger(raw.attempt) || (raw.attempt ?? -1) < 0 || typeof raw.activity !== "string"
+    || !Array.isArray(raw.activeTools) || !["healthy", "degraded"].includes(raw.health ?? "")) return undefined;
+  const activeTools = raw.activeTools.map(parseActiveTool);
+  if (activeTools.some((tool) => !tool)) return undefined;
+  return { ...raw, target, activeTools: activeTools as NonNullable<WikiAgentSnapshot["activeTools"]> } as WikiAgentSnapshot;
+}
+
+function parseTarget(value: unknown): WikiAgentTarget | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<WikiAgentTarget> & { batch?: unknown; taskId?: unknown };
+  if (raw.kind === "lead") return { kind: "lead" };
+  if (raw.kind === "task" && isProgressCount(raw.batch) && typeof raw.taskId === "string" && SAFE_ID.test(raw.taskId)) {
+    return { kind: "task", batch: raw.batch, taskId: raw.taskId };
+  }
+  return undefined;
+}
+
+function parseActiveTool(value: unknown): WikiActiveTool | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<WikiActiveTool>;
+  return typeof raw.name === "string" && typeof raw.startedAt === "string" ? raw as WikiActiveTool : undefined;
+}
+
+function parseActivityEntry(value: unknown): WikiActivityEntry | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<WikiActivityEntry>;
+  if (!Number.isInteger(raw.sequence) || typeof raw.at !== "string" || typeof raw.message !== "string"
+    || !["stage", "agent", "tool", "batch", "retry", "compaction", "warning", "failure"].includes(raw.kind ?? "")
+    || !["info", "warning", "error"].includes(raw.severity ?? "")) return undefined;
+  const target = raw.target === undefined ? undefined : parseTarget(raw.target);
+  if (raw.target !== undefined && !target) return undefined;
+  return { ...raw, ...(target ? { target } : {}) } as WikiActivityEntry;
+}
+
+function parseBatch(value: unknown): NonNullable<WikiRunProgress["currentBatch"]> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as NonNullable<WikiRunProgress["currentBatch"]>;
+  if (!isProgressCount(raw.batch) || !isProgressCount(raw.completed) || !isProgressCount(raw.total)
+    || !["running", "complete", "partial", "failed"].includes(raw.status) || !Array.isArray(raw.tasks)) return undefined;
+  const tasks = raw.tasks.map(parseTaskSnapshot);
+  if (tasks.some((task) => !task)) return undefined;
+  return { ...raw, tasks: tasks as WikiTaskSnapshot[] };
+}
+
+function upsertBatch(batches: WikiRunProgress["batches"], batch: NonNullable<WikiRunProgress["currentBatch"]>): NonNullable<WikiRunProgress["batches"]> {
+  const next = [...(batches ?? [])];
+  const index = next.findIndex((entry) => entry.batch === batch.batch);
+  if (index >= 0) next[index] = batch;
+  else next.push(batch);
+  return next;
+}
+
+function deriveBatch(batch: number, tasks: WikiTaskSnapshot[], previous: WikiRunProgress["currentBatch"], summary: string, at: string): NonNullable<WikiRunProgress["currentBatch"]> {
+  const complete = tasks.filter((task) => task.status === "complete").length;
+  const terminal = tasks.filter((task) => ["complete", "incomplete", "failed"].includes(task.status)).length;
+  const status = tasks.length > 0 && terminal === tasks.length
+    ? complete === tasks.length ? "complete" : complete > 0 ? "partial" : "failed"
+    : "running";
+  return {
+    ...(previous ?? {}),
+    batch,
+    status,
+    completed: complete,
+    total: tasks.length,
+    tasks,
+    startedAt: previous?.startedAt ?? at,
+    ...(status !== "running" ? { completedAt: previous?.completedAt ?? at } : {}),
+  };
+}
+
+function projectAgent(state: WikiRunState, agent: WikiAgentSnapshot): WikiRunState {
+  const progress = state.progress ?? { stage: "lead" as const };
+  if (agent.target.kind === "lead") return { ...state, progress: { ...progress, lead: agent } };
+  const taskId = agent.target.taskId;
+  const patch = toTaskSnapshot(agent);
+  const tasks = progress.currentBatch?.batch === agent.target.batch ? [...progress.currentBatch.tasks] : [];
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index >= 0) tasks[index] = { ...tasks[index], ...patch };
+  else tasks.push(patch);
+  const currentBatch = deriveBatch(agent.target.batch, tasks, progress.currentBatch?.batch === agent.target.batch ? progress.currentBatch : undefined, agent.summary ?? agent.activity, agent.updatedAt ?? new Date().toISOString());
+  return { ...state, progress: { ...progress, currentBatch, batches: upsertBatch(progress.batches, currentBatch) } };
+}
+
+function projectActivity(state: WikiRunState, process: WikiActivityEntry[]): WikiRunState {
+  const progress = state.progress;
+  if (!progress) return state;
+  const existing = progress.recentActivity ?? [];
+  return { ...state, progress: { ...progress, recentActivity: [...existing, ...process].slice(-20) } };
+}
+
+function mergeAgentCheckpoint(telemetry: WikiAgentTelemetry, current: WikiAgentSnapshot | undefined, details?: { role?: WikiTaskSnapshot["role"]; status?: WikiAgentSnapshot["status"]; receipt?: WikiDelegateReceipt }): WikiAgentSnapshot {
+  const role = telemetry.target.kind === "lead" ? "lead" : details?.role ?? current?.role;
+  if (!role || role === "lead" && telemetry.target.kind === "task") throw new Error("Delegated agent checkpoint requires a task role");
+  return {
+    ...(current ?? {}),
+    target: telemetry.target,
+    role,
+    status: details?.status ?? details?.receipt?.status ?? current?.status ?? "running",
+    attempt: telemetry.attempt,
+    activity: telemetry.activity ?? current?.activity ?? "waiting_model",
+    activeTools: telemetry.activeTools ?? current?.activeTools ?? [],
+    health: current?.health ?? "healthy",
+    updatedAt: telemetry.sampledAt,
+    lastActivityAt: telemetry.lastActivityAt ?? current?.lastActivityAt,
+    lastHeartbeatAt: telemetry.lastHeartbeatAt ?? current?.lastHeartbeatAt,
+    deadlineAt: telemetry.deadlineAt ?? current?.deadlineAt,
+    usage: telemetry.usage ?? current?.usage,
+    summary: details?.receipt?.summary ?? current?.summary,
+  };
+}
+
+function activityIdentity(entry: WikiActivityEntry): string {
+  const target = entry.target?.kind === "task" ? `task:${entry.target.batch}:${entry.target.taskId}` : entry.target?.kind ?? "run";
+  return `${target}\0${entry.kind}\0${entry.toolCallId ?? ""}\0${entry.at}\0${entry.message}\0${entry.completed ?? ""}`;
+}
+
+function normalizeActivity(existing: WikiActivityEntry[], incoming: WikiActivityEntry[]): WikiActivityEntry[] {
+  const known = new Set(existing.map(activityIdentity));
+  let sequence = existing.reduce((maximum, entry) => Math.max(maximum, entry.sequence), 0);
+  const normalized: WikiActivityEntry[] = [];
+  for (const entry of incoming) {
+    const identity = activityIdentity(entry);
+    if (known.has(identity)) continue;
+    known.add(identity);
+    normalized.push({ ...entry, sequence: ++sequence });
+  }
+  return normalized;
+}
+
+function projectQueuedAgent(state: WikiRunState, target: WikiAgentTarget): WikiAgentRecord | undefined {
+  if (target.kind !== "task") return undefined;
+  const task = state.progress?.batches?.find((batch) => batch.batch === target.batch)?.tasks.find((entry) => entry.id === target.taskId)
+    ?? (state.progress?.currentBatch?.batch === target.batch
+      ? state.progress.currentBatch.tasks.find((entry) => entry.id === target.taskId)
+      : undefined);
+  if (!task) return undefined;
+  const updatedAt = task.updatedAt ?? task.startedAt ?? state.updatedAt;
+  return {
+    agent: {
+      target,
+      role: task.role,
+      status: task.status,
+      attempt: task.attempt ?? task.attempts ?? 0,
+      activity: task.status === "queued" ? "starting" : task.activity === "tool" ? "using_tool" : task.activity ?? "waiting_model",
+      activeTools: task.activeTool ? [task.activeTool] : [],
+      health: "healthy",
+      ...(task.startedAt ? { startedAt: task.startedAt } : {}),
+      updatedAt,
+      ...(task.usage ? { usage: task.usage } : {}),
+      ...(task.summary ? { summary: task.summary } : {}),
+    },
+    process: [],
+  };
+}
+
+function toTaskSnapshot(agent: WikiAgentSnapshot): WikiTaskSnapshot {
+  const activeTool = agent.activeTools[0];
+  return {
+    id: agent.target.kind === "task" ? agent.target.taskId : "lead",
+    role: agent.role === "lead" ? "research" : agent.role,
+    status: agent.status === "retrying" || agent.status === "cancelled" ? "failed" : agent.status,
+    health: agent.health,
+    attempt: agent.attempt,
+    activity: agent.activity === "using_tool" ? "tool" : agent.activity === "compacting" ? "compacting" : agent.activity === "settled" ? "idle" : "responding",
+    ...(activeTool ? { activeTool } : {}),
+    ...(agent.usage ? { usage: agent.usage } : {}),
   };
 }
 
@@ -615,27 +862,6 @@ function parseContextStats(value: unknown): WikiContextStats | undefined {
   return Object.keys(stats).length > 0 ? stats : undefined;
 }
 
-function parseHistoryEntry(value: unknown): WikiHistoryEntry {
-  if (!value || typeof value !== "object") throw new Error("Invalid Wiki task record");
-  const raw = value as Partial<WikiHistoryEntry>;
-  if (!isHistoryRole(raw.role) || !isHistoryKind(raw.kind) || typeof raw.text !== "string") {
-    throw new Error("Invalid Wiki task record");
-  }
-  if (raw.toolName !== undefined && typeof raw.toolName !== "string") throw new Error("Invalid Wiki task record");
-  if (raw.path !== undefined && typeof raw.path !== "string") throw new Error("Invalid Wiki task record");
-  if (raw.isError !== undefined && typeof raw.isError !== "boolean") throw new Error("Invalid Wiki task record");
-  if (raw.timestamp !== undefined && typeof raw.timestamp !== "number") throw new Error("Invalid Wiki task record");
-  return {
-    role: raw.role,
-    kind: raw.kind,
-    text: raw.text,
-    ...(raw.toolName !== undefined ? { toolName: raw.toolName } : {}),
-    ...(raw.path !== undefined ? { path: raw.path } : {}),
-    ...(raw.isError !== undefined ? { isError: raw.isError } : {}),
-    ...(raw.timestamp !== undefined ? { timestamp: raw.timestamp } : {}),
-  };
-}
-
 function isStage(value: unknown): value is WikiRunStage {
   return typeof value === "string" && STAGES.has(value as WikiRunStage);
 }
@@ -646,14 +872,6 @@ function isTaskRole(value: unknown): value is WikiTaskSnapshot["role"] {
 
 function isTaskStatus(value: unknown): value is WikiTaskSnapshot["status"] {
   return typeof value === "string" && TASK_STATUSES.has(value as WikiTaskSnapshot["status"]);
-}
-
-function isHistoryRole(value: unknown): value is WikiHistoryEntry["role"] {
-  return typeof value === "string" && HISTORY_ROLES.has(value as WikiHistoryEntry["role"]);
-}
-
-function isHistoryKind(value: unknown): value is WikiHistoryEntry["kind"] {
-  return typeof value === "string" && HISTORY_KINDS.has(value as WikiHistoryEntry["kind"]);
 }
 
 function isProgressCount(value: unknown): value is number {
@@ -684,21 +902,36 @@ function parseTransaction(value: unknown, expectedId: string): WikiLedgerTransac
   if (raw.version !== 1) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
   const state = parseState(raw.state, expectedId);
   const event = parseEvent(raw.event, expectedId);
-  let task: WikiLedgerTransaction["task"];
-  if (raw.task !== undefined) {
-    if (!raw.task || typeof raw.task !== "object" || typeof raw.task.id !== "string") {
-      throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
-    }
-    assertSafeId(raw.task.id, "Wiki task ID");
-    task = { id: raw.task.id, record: parseTaskRecord(raw.task.record) };
+  let agent: WikiLedgerTransaction["agent"];
+  if (raw.agent !== undefined) {
+    if (!raw.agent || typeof raw.agent !== "object") throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+    const target = parseTarget(raw.agent.target);
+    if (!target) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+    agent = { target, record: parseAgentRecord(raw.agent.record) };
   }
-  return { version: 1, state, event, ...(task ? { task } : {}) };
+  const activity = raw.activity?.map(parseActivityEntry);
+  if (activity?.some((entry) => !entry)) throw new Error(`Invalid Wiki ledger transaction: ${expectedId}`);
+  return { version: 1, state, event, ...(agent ? { agent } : {}), ...(activity?.length ? { activity: activity as WikiActivityEntry[] } : {}) };
 }
 
 async function readEventsFile(file: string, runId: string): Promise<WikiRunEvent[]> {
   try {
     const content = await readFile(file, "utf8");
     return content.split("\n").filter(Boolean).map((line) => parseEvent(JSON.parse(line), runId));
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw error;
+  }
+}
+
+async function readActivityFile(file: string): Promise<WikiActivityEntry[]> {
+  try {
+    const content = await readFile(file, "utf8");
+    return content.split("\n").filter(Boolean).map((line) => {
+      const entry = parseActivityEntry(JSON.parse(line));
+      if (!entry) throw new Error("Invalid Wiki activity entry");
+      return entry;
+    });
   } catch (error) {
     if (isMissing(error)) return [];
     throw error;

@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { WikiTaskExecutionError } from "../dist/delegate-contracts.js";
 import { createPiLeadRuntime, PiWikiLeafAgent } from "../dist/lead-runtime.js";
+import { PiSessionObserver } from "../dist/pi-session-observer.js";
 import { WikiTaskRuntime } from "../dist/task-runtime.js";
 
 async function workspace(t) {
@@ -127,6 +128,7 @@ test("Lead uses configured transient retry count", async (t) => {
   const { root, candidateWikiRoot } = await workspace(t);
   let sessions = 0;
   const sleeps = [];
+  const reports = [];
   const runtime = createPiLeadRuntime({
     language: "zh",
     transientRetries: 2,
@@ -140,9 +142,13 @@ test("Lead uses configured transient retry count", async (t) => {
     }),
   });
 
-  assert.deepEqual(await runtime.run(request(root, candidateWikiRoot)), { kind: "complete", summary: "完成" });
+  const input = request(root, candidateWikiRoot);
+  input.report = async (_message, data) => { reports.push(data); };
+  assert.deepEqual(await runtime.run(input), { kind: "complete", summary: "完成" });
   assert.equal(sessions, 3);
   assert.deepEqual(sleeps, [50, 100]);
+  const retries = reports.filter((data) => data?.phase === "agent_update" && data.telemetry?.activity === "retry_wait");
+  assert.deepEqual(retries.map((data) => data.telemetry.attempt), [1, 2]);
 });
 
 test("Lead rejects invalid retry configuration", () => {
@@ -317,13 +323,168 @@ test("Pi leaf emits tool, compaction, and exact turn telemetry through Lead repo
   await orchestrated.run(input);
 
   const telemetry = reports.filter((data) => data?.phase === "update").map((data) => data.telemetry);
-  assert.ok(telemetry.some((value) => value.activity === "tool" && value.activeTool.name === "read"));
-  assert.ok(telemetry.some((value) => value.activity === "compacting" && value.contextRecalculating));
+  assert.ok(telemetry.some((value) => value.activity === "using_tool" && value.activeTools.some((tool) => tool.name === "read")));
+  assert.ok(telemetry.some((value) => value.activity === "compacting"));
   const turn = telemetry.find((value) => value.usage?.turns === 1);
-  assert.equal(turn.taskId, "live");
+  assert.deepEqual(turn.target, { kind: "task", batch: 1, taskId: "live" });
   assert.equal(turn.attempt, 1);
-  assert.equal(turn.contextRecalculating, false);
-  assert.equal(turn.history[0].text, "# complete");
+});
+
+test("Lead telemetry covers delegation, synthesis, finish, and settled lifecycle", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const reports = [];
+  let sessions = 0;
+  const runtime = createPiLeadRuntime({
+    createSession: async (options) => {
+      sessions += 1;
+      let listener;
+      const lead = sessions === 1;
+      return { session: {
+        state: {}, messages: [],
+        subscribe(value) { listener = value; return () => { listener = undefined; }; },
+        setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+        async prompt() {
+          listener?.({ type: "agent_start" });
+          if (lead) {
+            listener?.({ type: "tool_execution_start", toolCallId: "delegate-1", toolName: "wiki_delegate", args: { tasks: [{ id: "page", role: "write", instruction: "secret", sourceScopeIds: [], contextRefs: [] }] } });
+            await call(options.customTools, "wiki_delegate", { tasks: [writeTask("page")] });
+            listener?.({ type: "tool_execution_end", toolCallId: "delegate-1", toolName: "wiki_delegate", result: { private: "result" }, isError: false });
+            listener?.({ type: "tool_execution_start", toolCallId: "finish-1", toolName: "wiki_finish", args: { summary: "private summary" } });
+            await call(options.customTools, "wiki_finish", { summary: "complete" });
+            listener?.({ type: "tool_execution_end", toolCallId: "finish-1", toolName: "wiki_finish", result: {}, isError: false });
+          }
+          listener?.({ type: "agent_end", messages: [], willRetry: false });
+          listener?.({ type: "agent_settled" });
+        },
+        async waitForIdle() {}, async abort() {}, dispose() {},
+        getLastAssistantText() { return lead ? "done" : "# page"; },
+      } };
+    },
+  });
+  const input = request(root, candidateWikiRoot);
+  input.report = async (_message, data) => { if (data?.phase === "agent_update") reports.push(data.telemetry); };
+
+  await runtime.run(input);
+
+  assert.ok(reports.some((value) => value.activity === "delegating"));
+  assert.ok(reports.some((value) => value.activity === "synthesizing"));
+  assert.ok(reports.some((value) => value.activity === "finishing"));
+  assert.equal(reports.at(-1).activity, "settled");
+  assert.ok(reports.every((value) => value.target.kind === "lead"));
+  const serialized = JSON.stringify(reports);
+  assert.doesNotMatch(serialized, /private summary|private.*result|secret/);
+});
+
+test("Pi observer tracks parallel tools and sanitizes persisted summaries", async () => {
+  const reports = [];
+  let listener;
+  let now = 1_000;
+  const session = {
+    subscribe(value) { listener = value; return () => { listener = undefined; }; },
+    getSessionStats() { throw new Error("not available"); },
+  };
+  const observer = new PiSessionObserver(session, {
+    target: { kind: "lead" }, attempt: 1, timeoutMs: 60_000, workspaceRoot: "/workspace",
+    now: () => now,
+    report(value) { reports.push(value); },
+  });
+  observer.start();
+  listener({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "/workspace/src/a.ts", offset: 3, content: "must not persist" } });
+  now += 20;
+  listener({ type: "tool_execution_start", toolCallId: "write-1", toolName: "write", args: { path: "/workspace/wiki/a.md", content: "TOP SECRET BODY" } });
+  now += 20;
+  listener({ type: "tool_execution_update", toolCallId: "write-1", toolName: "write", args: { path: "/workspace/wiki/a.md", content: "TOP SECRET BODY" }, partialResult: { text: "SECRET RESULT" } });
+  listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: "SECRET RESULT" }, isError: false });
+  listener({ type: "compaction_start", reason: "threshold" });
+  listener({ type: "compaction_end", reason: "threshold", result: { summary: "SECRET COMPACTION" }, aborted: false, willRetry: false });
+  listener({ type: "agent_end", messages: [], willRetry: false });
+  assert.notEqual(reports.at(-1)?.activity, "settled");
+  listener({ type: "agent_settled" });
+  await observer.stop();
+
+  assert.ok(reports.some((value) => value.activeTools?.length === 2));
+  assert.equal(reports.at(-1).activity, "settled");
+  const serialized = JSON.stringify(reports);
+  assert.match(serialized, /src\/a\.ts/);
+  assert.match(serialized, /wiki\/a\.md/);
+  assert.match(serialized, /\\"bytes\\":15/);
+  assert.doesNotMatch(serialized, /TOP SECRET|SECRET RESULT|SECRET COMPACTION|must not persist/);
+});
+
+test("Pi observer coalesces streaming message updates to one latest checkpoint", async () => {
+  const reports = [];
+  let listener;
+  const observer = new PiSessionObserver({
+    subscribe(value) { listener = value; return () => { listener = undefined; }; },
+  }, {
+    target: { kind: "lead" }, attempt: 1, timeoutMs: 60_000, workspaceRoot: "/workspace",
+    report(value) { reports.push(value); },
+  });
+  observer.start();
+  const assistant = { role: "assistant", content: [] };
+  for (let index = 0; index < 20; index += 1) {
+    listener({ type: "message_update", message: assistant, assistantMessageEvent: { type: "text_delta", delta: `secret-${index}` } });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await observer.stop();
+
+  assert.equal(reports.length, 2);
+  assert.equal(reports.at(-1).activity, "streaming");
+  assert.doesNotMatch(JSON.stringify(reports), /secret-/);
+});
+
+test("Pi observer serializes immediate lifecycle checkpoints for a slow reporter", async () => {
+  const reports = [];
+  let listener;
+  let releaseFirst;
+  const firstDelivery = new Promise((resolve) => { releaseFirst = resolve; });
+  const observer = new PiSessionObserver({
+    subscribe(value) { listener = value; return () => { listener = undefined; }; },
+    getSessionStats() { throw new Error("not available"); },
+  }, {
+    target: { kind: "lead" }, attempt: 1, timeoutMs: 60_000, workspaceRoot: "/workspace",
+    async report(value) {
+      if (reports.length === 0) await firstDelivery;
+      reports.push(value);
+    },
+  });
+  observer.start();
+  listener({ type: "agent_start" });
+  listener({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "/workspace/a.ts" } });
+  listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: {}, isError: false });
+  listener({ type: "agent_settled" });
+  releaseFirst();
+  await observer.stop();
+
+  assert.deepEqual(reports.map((value) => value.activity), ["starting", "waiting_model", "using_tool", "waiting_model", "settled"]);
+});
+
+test("Pi observer reports one degraded transition and one recovery without recursion", async () => {
+  let listener;
+  let deliveries = 0;
+  const health = [];
+  const observer = new PiSessionObserver({
+    subscribe(value) { listener = value; return () => { listener = undefined; }; },
+  }, {
+    target: { kind: "lead" }, attempt: 1, timeoutMs: 60_000, workspaceRoot: "/workspace",
+    report() {
+      deliveries += 1;
+      if (deliveries <= 2) throw new Error("ledger unavailable");
+    },
+    onHealth(value) {
+      health.push(value);
+      if (value.status === "degraded") throw new Error("health sink unavailable");
+    },
+  });
+  observer.start();
+  listener({ type: "agent_start" });
+  listener({ type: "turn_start", turnIndex: 0, timestamp: 1 });
+  listener({ type: "agent_settled" });
+  await observer.stop();
+
+  assert.deepEqual(health.map((value) => value.status), ["degraded", "healthy"]);
+  assert.match(health[0].message, /ledger unavailable/);
+  assert.equal(deliveries, 4);
 });
 
 test("Pi leaf receives the configured Wiki language", async (t) => {

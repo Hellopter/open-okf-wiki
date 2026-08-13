@@ -16,11 +16,9 @@ import {
   type WikiRunEvent,
   type WikiRunHandle,
   type WikiRunView,
-  type WikiContextStats,
-  type WikiTaskInspection,
-  type WikiTaskSnapshot,
-  type WikiHistoryEntry,
-  type WikiTaskTelemetry,
+  type WikiAgentInspection,
+  type WikiAgentTarget,
+  type WikiAgentTelemetry,
 } from "./producer-types.js";
 import { createWikiArtifactStore } from "./artifact-store.js";
 import type { WikiDelegateReceipt } from "./delegate-contracts.js";
@@ -37,16 +35,6 @@ function taskIdFrom(data?: Record<string, unknown>): string | undefined {
     if (typeof task.id === "string" && task.id) return task.id;
   }
   return undefined;
-}
-
-function snapshotFromReceipt(receipt: WikiDelegateReceipt): WikiTaskSnapshot {
-  return {
-    id: receipt.id,
-    role: receipt.role,
-    status: receipt.status,
-    summary: receipt.summary,
-    attempts: receipt.attempts,
-  };
 }
 
 /**
@@ -112,7 +100,8 @@ export class WikiProducer {
       events: (after = 0, signal?: AbortSignal) => this.eventStream(ledger, runId, after, signal),
       result: async () => await this.waitForResult(ledger, runId),
       control: async (action) => await this.control(ledger, runId, action),
-      inspect: async (taskId) => await inspectTask(ledger, runId, taskId),
+      inspectAgent: async (target) => await inspectAgent(ledger, runId, target),
+      activity: async (options) => await ledger.activity(runId, options),
     };
   }
 
@@ -156,6 +145,10 @@ export class WikiProducer {
         ...prepared,
         attempt: state.attempt,
         report: async (message, data) => { await this.emit(ledger, runId, "progress", message, data); },
+        reportObservability: async (input) => {
+          const event = await ledger.commitHealth(runId, input);
+          if (event) this.publish(event);
+        },
       };
       const leadOutcome = await lead.run(leadContext);
       throwIfAborted(controller.signal);
@@ -272,17 +265,17 @@ export class WikiProducer {
     data?: Record<string, unknown>,
     mutateState?: (state: WikiRunState) => WikiRunState,
   ): Promise<void> {
-    const telemetry = telemetryFrom(data);
+    const agentTelemetry = agentTelemetryFrom(data);
     let event: WikiRunEvent | undefined;
-    if (telemetry) {
+    if (agentTelemetry) {
       try {
-        event = await ledger.commitTelemetry(runId, telemetry, message);
+        event = await ledger.commitAgent(runId, agentTelemetry, message, agentDetailsFrom(data));
       } catch (error) {
-        const key = `${runId}:${telemetry.taskId}`;
+        const key = `${runId}:${agentTelemetry.target.kind === "lead" ? "lead" : `${agentTelemetry.target.batch}:${agentTelemetry.target.taskId}`}`;
         if (!this.telemetryWarnings.has(key)) {
           this.telemetryWarnings.add(key);
           process.emitWarning(
-            `Wiki telemetry update failed for ${telemetry.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            `Wiki agent telemetry update failed: ${error instanceof Error ? error.message : String(error)}`,
             { code: "WIKI_TELEMETRY" },
           );
         }
@@ -290,18 +283,24 @@ export class WikiProducer {
       }
     } else {
       const taskId = taskIdFrom(data);
-      const taskPatch = taskId && (data?.receipt !== undefined || data?.history !== undefined || data?.usage !== undefined)
-        ? {
-            taskId,
-            ...(data?.receipt && typeof data.receipt === "object" ? { receipt: data.receipt as WikiDelegateReceipt } : {}),
-            ...(Array.isArray(data?.history) ? { history: data.history as WikiHistoryEntry[] } : {}),
-            ...(data?.usage !== undefined ? { usage: data.usage as WikiContextStats } : {}),
-          }
-        : undefined;
       const input = { at: this.timestamp(), type, message, ...(data ? { data } : {}) };
-      event = mutateState
-        ? await ledger.commitTerminal(runId, input, mutateState)
-        : await ledger.commitEvent(runId, input, taskPatch);
+      if (taskId && data?.receipt && typeof data.receipt === "object") {
+        const receipt = data.receipt as WikiDelegateReceipt;
+        event = await ledger.commitAgent(runId, {
+          target: { kind: "task", batch: requiredBatch(data), taskId },
+          attempt: receipt.attempts,
+          sampledAt: input.at,
+          activity: "settled",
+          activeTools: [],
+          process: domainActivity(type, message, input.at, data),
+          ...(data.usage && typeof data.usage === "object" ? { usage: data.usage } : {}),
+        }, message, agentDetailsFrom(data));
+      } else {
+        const activity = domainActivity(type, message, input.at, data);
+        event = mutateState
+          ? await ledger.commitTerminal(runId, input, mutateState, activity)
+          : await ledger.commitEvent(runId, input, activity);
+      }
     }
     if (event) this.publish(event);
   }
@@ -355,40 +354,51 @@ function toView(state: WikiRunState): WikiRunView {
   };
 }
 
-async function inspectTask(ledger: WikiRunLedger, runId: string, taskId: string): Promise<WikiTaskInspection | undefined> {
+async function inspectAgent(ledger: WikiRunLedger, runId: string, target: WikiAgentTarget): Promise<WikiAgentInspection | undefined> {
   const state = await requiredState(ledger, runId);
-  const sidecar = await ledger.readTask(runId, taskId);
-  const fromProgress = state.progress?.tasks?.find((task) => task.id === taskId);
-  const task = fromProgress ?? (sidecar?.receipt ? snapshotFromReceipt(sidecar.receipt) : undefined);
-  if (!task) return undefined;
-  const receipt = sidecar?.receipt;
-  const history = sidecar?.history;
-  const usage = sidecar?.usage ?? task.usage;
-  const ref = receipt?.outputs?.at(-1);
+  const record = await ledger.readAgent(runId, target);
+  const agent = record?.agent ?? (target.kind === "lead" ? state.progress?.lead : undefined);
+  if (!agent) return undefined;
+  const ref = record?.receipt?.outputs?.at(-1);
   let handoff: string | undefined;
-  const handoffPath = ref?.relativePath;
   if (ref) {
-    try {
-      handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref);
-    } catch {
-      handoff = undefined;
-    }
+    try { handoff = await createWikiArtifactStore({ workspace: state.cwd }).read(ref); } catch { handoff = undefined; }
   }
   return {
     runId,
-    task,
-    ...(receipt ? { receipt } : {}),
+    agent,
+    process: record?.process ?? [],
+    ...(record?.receipt ? { receipt: record.receipt } : {}),
     ...(handoff !== undefined ? { handoff } : {}),
-    ...(handoffPath ? { handoffPath } : {}),
-    ...(history ? { history } : {}),
-    ...(usage ? { usage } : {}),
-    processAvailable: Array.isArray(history) && history.length > 0,
+    ...(ref?.relativePath ? { handoffPath: ref.relativePath } : {}),
   };
 }
 
-function telemetryFrom(data?: Record<string, unknown>): WikiTaskTelemetry | undefined {
-  if (data?.phase !== "update" || !data.telemetry || typeof data.telemetry !== "object") return undefined;
-  return data.telemetry as WikiTaskTelemetry;
+function agentTelemetryFrom(data?: Record<string, unknown>): WikiAgentTelemetry | undefined {
+  if (!data?.telemetry || typeof data.telemetry !== "object") return undefined;
+  const telemetry = data.telemetry as Partial<WikiAgentTelemetry>;
+  return telemetry.target && typeof telemetry.target === "object" ? telemetry as WikiAgentTelemetry : undefined;
+}
+
+function agentDetailsFrom(data?: Record<string, unknown>) {
+  const receipt = data?.receipt && typeof data.receipt === "object" ? data.receipt as WikiDelegateReceipt : undefined;
+  return {
+    ...(receipt ? { receipt, role: receipt.role, status: receipt.status } : {}),
+  };
+}
+
+function domainActivity(type: WikiRunEvent["type"], message: string, at: string, data?: Record<string, unknown>) {
+  const taskId = taskIdFrom(data);
+  const target = taskId && typeof data?.batch === "number" ? { kind: "task" as const, batch: data.batch, taskId } : undefined;
+  const kind = type === "failed" ? "failure" : target ? "agent" : type === "progress" && typeof data?.stage === "string" ? "stage" : "agent";
+  return [{ sequence: 0, at, kind, severity: type === "failed" ? "error" : "info", ...(target ? { target } : {}), message, completed: type === "completed" || Boolean(data?.receipt) }] as import("./producer-types.js").WikiActivityEntry[];
+}
+
+function requiredBatch(data?: Record<string, unknown>): number {
+  if (typeof data?.batch !== "number" || !Number.isInteger(data.batch) || data.batch < 1) {
+    throw new Error("Task terminal report requires a positive batch identity");
+  }
+  return data.batch;
 }
 
 function isTerminalEvent(event: WikiRunEvent): boolean {

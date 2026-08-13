@@ -17,7 +17,7 @@ Run Pi in the repository and use:
 /wiki source add link <local-path> [--name <name>] [--workspace <dir>]
 /wiki source add clone <url> [--ref <ref>] [--name <name>] [--workspace <dir>]
 /wiki regenerate [focus]
-/wiki status [run-id] [task-id] [--process]
+/wiki status [run-id] [lead|batch-N/task-id] [--process]
 /wiki runs
 /wiki pause
 /wiki resume [run-id]
@@ -63,18 +63,21 @@ language.
 
 ## Watching a run
 
-While a run is active, the TUI footer and widget show stage and task progress.
-`/wiki status` prints a run card. `/wiki status <run> <task>` shows the task
-result (receipt and handoff). `--process` prints compact process history.
-Enter opens a bordered status overlay; highlighting a task shows its context
-stats (turns, tokens, context window). Esc leaves it. The overlay is not
+While a run is active, the TUI footer and six-line widget keep the Leader,
+current activity, liveness, context pressure, and current delegation batch visible.
+`/wiki status` opens the run workbench. Use `lead` or `batch-N/task-id` to inspect
+an unambiguous Agent.
+The overlay uses a two-column navigator and inspector at 100 columns or wider,
+and layered single-column navigation on smaller terminals. Overview, Process,
+and Output tabs share the same durable snapshot. Esc leaves it. The overlay is not
 teammate chat.
 
 ## Execution model
 
 The public module is intentionally small: `createProductionWikiProducer()`
 returns a producer whose `start()` method returns a `WikiRunHandle`; the handle
-exposes `view()`, `events()`, `result()`, `control()`, and `inspect()`. Pi
+exposes `view()`, `events()`, `result()`, `control()`, `inspectAgent()`, and
+`activity()`. Pi
 commands are a thin adapter over this interface.
 
 The internal lifecycle is fixed only where determinism matters:

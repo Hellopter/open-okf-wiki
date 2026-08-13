@@ -2,19 +2,18 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import {
   parseWikiCliCommand,
   renderWikiEvent,
+  renderWikiAgent,
   renderWikiRun,
   renderWikiSnapshot,
   renderWikiRuns,
-  renderWikiTask,
-  renderWikiTaskProcess,
   wikiCliHelp,
   type WikiCliCommand,
 } from "./cli.js";
 import { createConfiguredWikiProducer } from "./production.js";
 import type { WikiProducer } from "./producer.js";
-import type { WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
+import type { WikiAgentTarget, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
 import { formatLocalDateTime } from "./time-format.js";
-import { wikiFooterStatus, wikiSurfaceCleared, wikiWidgetLines } from "./ui/live-surface.js";
+import { wikiFooterStatus, wikiWidgetLines } from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
 import { errorMessage } from "./util.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
@@ -149,22 +148,25 @@ async function dispatchStatus(
     return;
   }
   const view = await handle.view();
-  if (!command.taskId) {
+  if (!command.target) {
     output(pi, context, renderWikiSnapshot(view));
     refreshLiveSurface(context, view);
     if (view.status === "running") ensureStream(handle, view.lastEventSequence);
     await openStatusOverlay(context, handle, command);
     return;
   }
-  const inspection = await handle.inspect(command.taskId);
+  const inspection = await handle.inspectAgent(command.target);
   if (!inspection) {
-    const ids = view.progress?.tasks?.map((task) => task.id).join(", ") || "none";
-    output(pi, context, `Wiki ${view.id} has no task "${command.taskId}".\nKnown: ${ids}`);
+    output(pi, context, `Wiki ${view.id} has no agent "${formatTarget(command.target)}".`);
     return;
   }
-  const detail = command.process ? renderWikiTaskProcess(inspection) : renderWikiTask(inspection);
+  const detail = renderWikiAgent(inspection, command.process ? "process" : "overview");
   output(pi, context, `${detail}\n\nsnapshot as of ${formatLocalDateTime(view.updatedAt)}`);
   await openStatusOverlay(context, handle, command);
+}
+
+function formatTarget(target: WikiAgentTarget): string {
+  return target.kind === "lead" ? "lead" : `batch-${target.batch}/${target.taskId}`;
 }
 
 async function openStatusOverlay(
@@ -176,8 +178,11 @@ async function openStatusOverlay(
   await openWikiStatusOverlay({
     ui: context.ui,
     handle,
-    initialTaskId: command.taskId,
+    initialTarget: command.target,
     process: command.process,
+    confirmCancel: typeof context.ui.confirm === "function"
+      ? async () => await context.ui.confirm("Cancel Wiki run", `Cancel ${handle.id}?`)
+      : undefined,
     onControl: async (action: WikiRunControl) => {
       const next = await handle.control(action);
       refreshLiveSurface(context, next);
@@ -282,8 +287,7 @@ async function streamRun(
 function refreshLiveSurface(context: ExtensionCommandContext, view: WikiRunView): void {
   if (!context.hasUI) return;
   if (view.status !== "running") {
-    const cleared = wikiSurfaceCleared(view);
-    context.ui.setStatus("wiki", themeWikiFooter(context, cleared.footer));
+    context.ui.setStatus("wiki", themeWikiFooter(context, wikiFooterStatus(view)));
     context.ui.setWidget("wiki", undefined);
     return;
   }
