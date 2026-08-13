@@ -43,6 +43,7 @@ test("loads a Git repository without workspace.yaml as an implicit self source",
   assert.equal(loaded.sources.length, 1);
   assert.equal(loaded.sources[0].path, ".");
   assert.equal(loaded.sources[0].realPath, root);
+  assert.equal(loaded.wiki.sessionTimeoutSeconds, 1200);
   assert.equal(sourceIsIgnored(loaded.sources[0], ".okf-wiki/runs/a/run-state.json", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "wiki/overview.md", true), true);
   assert.equal(sourceIsIgnored(loaded.sources[0], "src/index.ts", true), false);
@@ -64,6 +65,7 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.wiki.maxConcurrentAgents, 3);
   assert.equal(workspace.wiki.transientRetries, 1);
   assert.equal(workspace.wiki.baseRetryDelayMs, 1000);
+  assert.equal(workspace.wiki.sessionTimeoutSeconds, 1200);
   assert.deepEqual(workspace.sources, []);
   assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
@@ -83,6 +85,7 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     "  maxConcurrentAgents: 6",
     "  transientRetries: 3",
     "  baseRetryDelayMs: 2500",
+    "  sessionTimeoutSeconds: 3600",
     "sources: []",
     "",
   ].join("\n");
@@ -94,12 +97,16 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     maxConcurrentAgents: 6,
     transientRetries: 3,
     baseRetryDelayMs: 2500,
+    sessionTimeoutSeconds: 3600,
   });
 
   for (const [valid, invalid] of [
     ["  maxConcurrentAgents: 6", "  maxConcurrentAgents: 1"],
     ["  transientRetries: 3", "  transientRetries: -1"],
     ["  baseRetryDelayMs: 2500", "  baseRetryDelayMs: 300001"],
+    ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 0"],
+    ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 1.5"],
+    ["  sessionTimeoutSeconds: 3600", "  sessionTimeoutSeconds: 2147484"],
   ]) {
     await writeFile(configPath, validConfig.replace(valid, invalid));
     await assert.rejects(loadWikiWorkspace(root), /must be an integer/);

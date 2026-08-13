@@ -19,6 +19,8 @@ import { compactWikiHistory } from "./agent-history.js";
 import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
+const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
+const MAX_SESSION_TIMEOUT_MS = 2_147_483_647;
 
 export interface PiWikiLeadAgentOptions {
   model?: Model<any>;
@@ -44,11 +46,12 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
   const baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
   if (!Number.isInteger(transientRetries) || transientRetries < 0) throw new Error("transientRetries must be a non-negative integer");
   if (!Number.isFinite(baseRetryDelayMs) || baseRetryDelayMs < 0) throw new Error("baseRetryDelayMs must be non-negative");
+  const sessionTimeoutMs = validatedSessionTimeoutMs(options.sessionTimeoutMs);
   const sessionOptions = {
     model: options.model,
     thinkingLevel: options.thinkingLevel,
     createSession: options.createSession,
-    sessionTimeoutMs: options.sessionTimeoutMs,
+    sessionTimeoutMs,
     language: options.language,
   };
   return {
@@ -216,7 +219,9 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
   constructor(
     private readonly artifacts: WikiArtifactStore,
     private readonly options: PiWikiLeadAgentOptions = {},
-  ) {}
+  ) {
+    validatedSessionTimeoutMs(options.sessionTimeoutMs);
+  }
 
   async run(task: WikiDelegateTask, context: WikiLeafTaskContext): Promise<WikiLeafResult> {
     const policy = await workspaceToolPolicy(context.cwd, context.candidateWikiRoot);
@@ -328,9 +333,8 @@ async function runSessionWithDeadline(
   session: AgentSession,
   prompt: string,
   signal: AbortSignal,
-  timeoutMs = 20 * 60_000,
+  timeoutMs = DEFAULT_SESSION_TIMEOUT_MS,
 ): Promise<void> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000) throw new Error("sessionTimeoutMs must be at least 1000");
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -345,6 +349,13 @@ async function runSessionWithDeadline(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function validatedSessionTimeoutMs(timeoutMs = DEFAULT_SESSION_TIMEOUT_MS): number {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > MAX_SESSION_TIMEOUT_MS) {
+    throw new Error(`sessionTimeoutMs must be an integer from 1000 to ${MAX_SESSION_TIMEOUT_MS}`);
+  }
+  return timeoutMs;
 }
 
 async function runPiSession(

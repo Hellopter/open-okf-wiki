@@ -36,6 +36,8 @@ export interface WikiWorkspaceWikiConfig {
   transientRetries: number;
   /** Full-jitter retry window when the provider supplies no Retry-After value. */
   baseRetryDelayMs: number;
+  /** Wall-clock deadline, in seconds, for each Lead or delegated Agent session. */
+  sessionTimeoutSeconds: number;
 }
 
 export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
@@ -43,6 +45,7 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   maxConcurrentAgents: 3,
   transientRetries: 1,
   baseRetryDelayMs: 1_000,
+  sessionTimeoutSeconds: 1_200,
 };
 
 export interface WikiWorkspace {
@@ -307,6 +310,7 @@ function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
     maxConcurrentAgents: parseInteger(value.maxConcurrentAgents, "wiki.maxConcurrentAgents", DEFAULT_WORKSPACE_WIKI_CONFIG.maxConcurrentAgents, 2, 64),
     transientRetries: parseInteger(value.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
     baseRetryDelayMs: parseInteger(value.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
+    sessionTimeoutSeconds: parseInteger(value.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
   };
 }
 

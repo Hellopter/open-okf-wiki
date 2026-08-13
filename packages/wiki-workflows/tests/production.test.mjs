@@ -70,6 +70,7 @@ test("production passes workspace language and Agent policy to the Lead", async 
     "  maxConcurrentAgents: 5",
     "  transientRetries: 3",
     "  baseRetryDelayMs: 2500",
+    "  sessionTimeoutSeconds: 3600",
     "sources:",
     "  - path: api",
     "    origin:",
@@ -90,6 +91,7 @@ test("production passes workspace language and Agent policy to the Lead", async 
   assert.equal(prepared.maxConcurrentAgents, 5);
   assert.equal(prepared.transientRetries, 3);
   assert.equal(prepared.baseRetryDelayMs, 2500);
+  assert.equal(prepared.sessionTimeoutMs, 3_600_000);
   assert.match(prepared.prompt, /Simplified Chinese/);
 });
 

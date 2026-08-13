@@ -13,6 +13,7 @@ import {
 import { createConfiguredWikiProducer } from "./production.js";
 import type { WikiProducer } from "./producer.js";
 import type { WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
+import { formatLocalDateTime } from "./time-format.js";
 import { wikiFooterStatus, wikiSurfaceCleared, wikiWidgetLines } from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
 import { errorMessage } from "./util.js";
@@ -162,7 +163,7 @@ async function dispatchStatus(
     return;
   }
   const detail = command.process ? renderWikiTaskProcess(inspection) : renderWikiTask(inspection);
-  output(pi, context, `${detail}\n\nsnapshot as of ${view.updatedAt}`);
+  output(pi, context, `${detail}\n\nsnapshot as of ${formatLocalDateTime(view.updatedAt)}`);
   await openStatusOverlay(context, handle, command);
 }
 

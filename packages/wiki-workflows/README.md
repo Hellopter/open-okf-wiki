@@ -36,10 +36,30 @@ junction on Windows. `source add clone` clones a local or remote Git URL and can
 checkout `--ref`; use it when filesystem links are undesirable or unavailable.
 `--name` overrides the derived workspace directory name.
 
-`workspace.yaml` also accepts `wiki.maxConcurrentAgents` (total Lead plus leaf
-sessions, default 3), `wiki.transientRetries` (default 1), and
-`wiki.baseRetryDelayMs` (default 1000). `language` is passed to Lead and leaf
-Agents as the required reader-facing Wiki language.
+The `wiki` section controls the Agent runtime:
+
+```yaml
+wiki:
+  exclude: []
+  maxConcurrentAgents: 3
+  transientRetries: 1
+  baseRetryDelayMs: 1000
+  sessionTimeoutSeconds: 1200
+```
+
+All four execution values are integers:
+
+| Setting | Default | Valid range | Meaning |
+| --- | ---: | ---: | --- |
+| `maxConcurrentAgents` | `3` | `2..64` sessions | Total concurrent model sessions, including the Lead and delegated Agents. |
+| `transientRetries` | `1` | `0..10` retries | Fresh-session retries for each transient Lead or delegated Agent failure; `0` disables them. |
+| `baseRetryDelayMs` | `1000` | `0..300000` ms | Full-jitter exponential backoff base when the provider supplies no `Retry-After`; `0` removes the local delay. |
+| `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Wall-clock deadline applied separately to every Lead and delegated Agent session. |
+
+Timeouts count as transient failures and consume the same retry budget. Provider
+`Retry-After` values take precedence over the configured backoff base.
+`language` is passed to Lead and leaf Agents as the required reader-facing Wiki
+language.
 
 ## Watching a run
 

@@ -92,7 +92,26 @@ test("status snapshots state their freshness", () => {
     id: "run-1", cwd: "/repo", operation: "update", status: "running",
     createdAt: "2026-08-12T00:00:00.000Z", updatedAt: "2026-08-12T00:01:02.000Z", lastEventSequence: 2,
   });
-  assert.match(rendered, /snapshot as of 2026-08-12T00:01:02.000Z$/);
+  const expected = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium", timeStyle: "medium",
+  }).format(Date.parse("2026-08-12T00:01:02.000Z"));
+  assert.ok(rendered.endsWith(`snapshot as of ${expected}`));
+});
+
+test("renders absolute dates in the system timezone and preserves invalid values", () => {
+  const instant = "2026-08-12T00:01:02.000Z";
+  const expected = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium", timeStyle: "medium",
+  }).format(Date.parse(instant));
+  const paused = renderWikiRun({
+    id: "run-1", cwd: "/repo", operation: "update", status: "paused",
+    createdAt: instant, updatedAt: instant, lastEventSequence: 2,
+    progress: { stage: "paused" },
+    pause: { reason: "quota", retryAt: instant },
+  });
+  assert.ok(paused.includes(`retry at ${expected}`));
+  assert.ok(renderWikiRuns([{ id: "run-1", status: "paused", updatedAt: instant }]).includes(expected));
+  assert.match(renderWikiRuns([{ id: "run-2", status: "paused", updatedAt: "not-a-date" }]), /not-a-date/);
 });
 
 test("help lists management and run commands", () => {

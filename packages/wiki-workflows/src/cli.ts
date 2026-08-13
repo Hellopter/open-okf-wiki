@@ -7,6 +7,7 @@ import type {
   WikiTaskInspection,
   WikiTaskSnapshot,
 } from "./producer-types.js";
+import { formatLocalDateTime } from "./time-format.js";
 
 export type WikiCliCommand =
   | { action: "run"; focus?: string; regenerate: boolean }
@@ -102,7 +103,7 @@ export function renderWikiRun(run: WikiRunView | undefined): string {
 }
 
 export function renderWikiSnapshot(run: WikiRunView): string {
-  return `${renderWikiRun(run)}\n\nsnapshot as of ${run.updatedAt}`;
+  return `${renderWikiRun(run)}\n\nsnapshot as of ${formatLocalDateTime(run.updatedAt)}`;
 }
 
 function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string {
@@ -124,7 +125,7 @@ function renderWikiRunCard(run: WikiRunView, progress: WikiRunProgress): string 
   if (run.focus) lines.push(`focus  ${run.focus}`);
 
   if (run.pause) {
-    const retry = run.pause.retryAt ? ` · retry at ${run.pause.retryAt}` : "";
+    const retry = run.pause.retryAt ? ` · retry at ${formatLocalDateTime(run.pause.retryAt)}` : "";
     lines.push(`pause  ${run.pause.reason}${retry}`);
     if (run.pause.summary) lines.push(`       ${run.pause.summary}`);
   }
@@ -196,7 +197,7 @@ export function renderWikiRuns(runs: readonly WikiRunView[]): string {
   if (runs.length === 0) return "Wiki runs: none.";
   return ["Wiki runs", ...runs.map((run) => {
     const focus = run.focus ? ` | ${run.focus}` : "";
-    const updated = run.updatedAt ? `${run.updatedAt} | ` : "";
+    const updated = run.updatedAt ? `${formatLocalDateTime(run.updatedAt)} | ` : "";
     return `${updated}${run.id} | ${run.status}${focus}`;
   })].join("\n");
 }

@@ -86,9 +86,10 @@ is a Wiki-specific subscriber of `WikiProducer`.
 ## Context policy
 
 Every Lead and delegated Agent runs in a fresh in-memory Pi session with
-auto-compaction enabled. Pi triggers compaction as the session approaches its
-context limit, summarizes older messages, and keeps recent work. The Wiki
-runtime currently uses Pi's defaults of `reserveTokens: 16384` and
+auto-compaction enabled and a per-session wall-clock deadline configured by
+`wiki.sessionTimeoutSeconds` (default 1200). Pi triggers compaction as the
+session approaches its context limit, summarizes older messages, and keeps
+recent work. The Wiki runtime currently uses Pi's defaults of `reserveTokens: 16384` and
 `keepRecentTokens: 20000`. Pi itself makes the enable flag and both thresholds
 configurable, but the Wiki runtime neither exposes them in `workspace.yaml` nor
 inherits project or user Pi settings.
@@ -100,7 +101,8 @@ content-addressed artifact handoff between independent Agent sessions.
 
 Retry has one owner. Pi turn auto-retry and provider retry are explicitly
 disabled. The Wiki task runtime owns the configured fresh-session retry budget
-for recoverable Agent failures.
+for recoverable Agent failures through `wiki.transientRetries` and
+`wiki.baseRetryDelayMs`.
 
 500-class transient failures and timeouts use exponential backoff with full
 jitter. 429 reduces shared admission, honors reset metadata, and receives at

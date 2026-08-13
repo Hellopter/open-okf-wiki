@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { wikiFooterStatus, wikiSurfaceCleared, wikiWidgetLines } from "../dist/ui/live-surface.js";
+import { formatLocalDateTime } from "../dist/time-format.js";
 
 function view(overrides = {}) {
   return {
@@ -37,7 +38,7 @@ test("wikiFooterStatus formats running, published, and paused quota lines", () =
       status: "paused",
       pause: { reason: "quota", summary: "rate limited", retryAt: "2026-08-12T14:20:00.000Z" },
     })),
-    "wiki ⏸ quota · retry 14:20",
+    `wiki ⏸ quota · retry ${formatLocalDateTime("2026-08-12T14:20:00.000Z")}`,
   );
   assert.equal(wikiFooterStatus(view()), "wiki ◆ running");
   assert.equal(wikiFooterStatus(view({ status: "failed" })), "wiki ✗ failed");
@@ -87,7 +88,7 @@ test("wikiSurfaceCleared drops the widget and keeps terminal footers", () => {
       status: "paused",
       pause: { reason: "quota", summary: "rate limited", retryAt: "2026-08-12T14:20:00.000Z" },
     })),
-    { footer: "wiki ⏸ quota · retry 14:20", widget: undefined },
+    { footer: `wiki ⏸ quota · retry ${formatLocalDateTime("2026-08-12T14:20:00.000Z")}`, widget: undefined },
   );
   assert.equal(wikiSurfaceCleared(view()).widget, undefined);
   assert.equal(wikiSurfaceCleared(view()).footer, undefined);

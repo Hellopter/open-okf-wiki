@@ -159,6 +159,8 @@ export interface WikiPreparedRun {
   language: "zh" | "en";
   maxConcurrentAgents: number;
   transientRetries: number;
+  /** Per-session wall-clock deadline, converted from workspace seconds. */
+  sessionTimeoutMs: number;
   baseRetryDelayMs: number;
   prompt: string;
 }

@@ -53,6 +53,7 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         maxConcurrentAgents: workspace.wiki.maxConcurrentAgents,
         transientRetries: workspace.wiki.transientRetries,
         baseRetryDelayMs: workspace.wiki.baseRetryDelayMs,
+        sessionTimeoutMs: workspace.wiki.sessionTimeoutSeconds * 1_000,
         prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, workspace.language),
       };
     },
@@ -64,6 +65,7 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         concurrency: prepared.maxConcurrentAgents - 1,
         transientRetries: prepared.transientRetries,
         baseRetryDelayMs: prepared.baseRetryDelayMs,
+        sessionTimeoutMs: prepared.sessionTimeoutMs,
       });
     },
     async validate(input) {

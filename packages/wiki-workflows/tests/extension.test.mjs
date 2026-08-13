@@ -205,15 +205,18 @@ test("status with taskId calls inspect", async (t) => {
       tasks: [{ id: "write-1", role: "write", status: "complete" }],
     },
   });
+  const expectedSnapshotTime = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium", timeStyle: "medium",
+  }).format(Date.parse(current.updatedAt));
   await subject.run("status run-1 write-1");
   assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "write-1"));
   assert.ok(subject.messages.some((message) => /Wiki run-1/.test(message) && /write-1/.test(message)));
   assert.ok(!subject.messages.some((message) => / ·  process/.test(message)));
-  assert.match(subject.messages.at(-1), /snapshot as of/);
+  assert.ok(subject.messages.at(-1).endsWith(`snapshot as of ${expectedSnapshotTime}`));
 
   await subject.run("status run-1 write-1 --process");
   assert.match(subject.messages.at(-1), /Wiki run-1  ·  write-1  ·  process/);
-  assert.match(subject.messages.at(-1), /snapshot as of/);
+  assert.ok(subject.messages.at(-1).endsWith(`snapshot as of ${expectedSnapshotTime}`));
 
   await subject.run("status run-1 missing");
   assert.ok(subject.calls.some((call) => call[0] === "inspect" && call[2] === "missing"));

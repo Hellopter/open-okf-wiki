@@ -1,4 +1,5 @@
 import type { WikiRunProgress, WikiRunView, WikiTaskSnapshot } from "../producer-types.js";
+import { formatLocalDateTime } from "../time-format.js";
 
 const TASK_ICONS = {
   queued: "·",
@@ -50,10 +51,7 @@ function pausedFooter(view: WikiRunView): string {
 
 function formatRetry(retryAt: string | undefined): string | undefined {
   if (!retryAt) return undefined;
-  const match = /T(\d{2}:\d{2})/.exec(retryAt);
-  if (match) return match[1];
-  const clock = /(\d{1,2}:\d{2})/.exec(retryAt);
-  return clock?.[1] ?? retryAt;
+  return formatLocalDateTime(retryAt);
 }
 
 function widgetHeader(progress: WikiRunProgress): string {

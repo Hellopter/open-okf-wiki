@@ -20,6 +20,8 @@ All notable changes to `@okf-wiki/wiki-workflows` are documented here.
 
 ### Reliability
 
+- Added `wiki.sessionTimeoutSeconds` so each Lead and delegated Agent session's
+  wall-clock deadline is configurable; the default remains 1200 seconds.
 - Added durable run ledgers, workspace-scoped run discovery, pause/resume,
   cancellation, and cross-process single-run ownership.
 - Resume preserves the candidate and rejects source fingerprint drift before

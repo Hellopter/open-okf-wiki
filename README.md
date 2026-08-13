@@ -39,10 +39,23 @@ Explicit workspaces can tune Wiki Agent execution in `workspace.yaml`:
 ```yaml
 wiki:
   exclude: []
-  maxConcurrentAgents: 3  # One Lead plus delegated Agents
-  transientRetries: 1     # Fresh-session retries per transient failure
-  baseRetryDelayMs: 1000  # Full-jitter backoff base without Retry-After
+  maxConcurrentAgents: 3
+  transientRetries: 1
+  baseRetryDelayMs: 1000
+  sessionTimeoutSeconds: 1200
 ```
+
+All four execution values are integers:
+
+| Setting | Default | Valid range | Meaning |
+| --- | ---: | ---: | --- |
+| `maxConcurrentAgents` | `3` | `2..64` sessions | Total concurrent model sessions, including the Lead and delegated Agents. |
+| `transientRetries` | `1` | `0..10` retries | Fresh-session retries for each transient Lead or delegated Agent failure; `0` disables them. |
+| `baseRetryDelayMs` | `1000` | `0..300000` ms | Full-jitter exponential backoff base when the provider supplies no `Retry-After`; `0` removes the local delay. |
+| `sessionTimeoutSeconds` | `1200` | `1..2147483` seconds | Wall-clock deadline applied separately to every Lead and delegated Agent session. |
+
+Timeouts count as transient failures and consume the same retry budget. Provider
+`Retry-After` values take precedence over the configured backoff base.
 
 `language: zh` or `language: en` controls generated titles, descriptions, body
 text, delegated handoffs, and deterministic index text. Code identifiers and

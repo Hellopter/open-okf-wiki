@@ -148,6 +148,45 @@ test("Lead uses configured transient retry count", async (t) => {
 test("Lead rejects invalid retry configuration", () => {
   assert.throws(() => createPiLeadRuntime({ transientRetries: -1 }), /non-negative integer/);
   assert.throws(() => createPiLeadRuntime({ baseRetryDelayMs: -1 }), /non-negative/);
+  assert.throws(() => createPiLeadRuntime({ sessionTimeoutMs: 999 }), /integer from 1000/);
+  assert.throws(() => createPiLeadRuntime({ sessionTimeoutMs: 1_000.5 }), /integer from 1000/);
+  assert.throws(() => createPiLeadRuntime({ sessionTimeoutMs: 2_147_483_648 }), /integer from 1000/);
+});
+
+test("direct Pi leaf construction rejects invalid session deadlines before creating a session", () => {
+  let sessions = 0;
+  const artifacts = artifactStore();
+  const createSession = async () => {
+    sessions += 1;
+    throw new Error("session must not be created");
+  };
+
+  for (const sessionTimeoutMs of [999, 2_147_483_648]) {
+    assert.throws(
+      () => new PiWikiLeafAgent(artifacts, { sessionTimeoutMs, createSession }),
+      /sessionTimeoutMs must be an integer from 1000 to 2147483647/,
+    );
+  }
+  assert.equal(sessions, 0);
+});
+
+test("Lead applies the configured wall-clock session deadline", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let aborted = false;
+  const runtime = createPiLeadRuntime({
+    sessionTimeoutMs: 1_000,
+    transientRetries: 0,
+    createSession: async () => ({ session: {
+      state: {},
+      setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+      async prompt() { await new Promise(() => {}); },
+      async waitForIdle() {}, async abort() { aborted = true; }, dispose() {},
+      getLastAssistantText() { return ""; },
+    } }),
+  });
+
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /timed out after 1000ms/);
+  assert.equal(aborted, true);
 });
 
 test("Pi leaf retries have one owner and cap 5xx at two sessions and requests", async (t) => {
