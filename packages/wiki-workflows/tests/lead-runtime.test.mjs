@@ -563,6 +563,7 @@ test("Pi observer tracks parallel tools and sanitizes persisted summaries", asyn
   now += 20;
   listener({ type: "tool_execution_update", toolCallId: "write-1", toolName: "write", args: { path: "/workspace/wiki/a.md", content: "TOP SECRET BODY" }, partialResult: { text: "SECRET RESULT" } });
   listener({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: { content: "SECRET RESULT" }, isError: false });
+  listener({ type: "tool_execution_end", toolCallId: "write-1", toolName: "write", result: { content: [{ type: "text", text: "Path is not assigned to this Wiki page writer: wiki/a.md\nSECRET RESULT" }] }, isError: true });
   listener({ type: "compaction_start", reason: "threshold" });
   listener({ type: "compaction_end", reason: "threshold", result: { summary: "SECRET COMPACTION" }, aborted: false, willRetry: false });
   listener({ type: "agent_end", messages: [], willRetry: false });
@@ -572,10 +573,14 @@ test("Pi observer tracks parallel tools and sanitizes persisted summaries", asyn
 
   assert.ok(reports.some((value) => value.activeTools?.length === 2));
   assert.equal(reports.at(-1).activity, "settled");
+  const tools = reports.at(-1).process.filter((entry) => entry.kind === "tool");
+  assert.deepEqual(tools.map((entry) => ({ message: entry.message, summary: entry.summary })), [
+    { message: "", summary: "src/a.ts" },
+    { message: "Path is not assigned to this Wiki page writer: wiki/a.md", summary: "wiki/a.md" },
+  ]);
+  assert.ok(tools.every((entry) => entry.completed));
   const serialized = JSON.stringify(reports);
-  assert.match(serialized, /src\/a\.ts/);
-  assert.match(serialized, /wiki\/a\.md/);
-  assert.match(serialized, /\\"bytes\\":15/);
+  assert.doesNotMatch(serialized, /read started|write started|read completed|write completed/);
   assert.doesNotMatch(serialized, /TOP SECRET|SECRET RESULT|SECRET COMPACTION|must not persist/);
 });
 

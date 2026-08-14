@@ -274,6 +274,34 @@ test("structured agent tabs preserve the exact plain-text output", () => {
   }
 });
 
+test("process tab shows tool outcomes without start or complete verbs", () => {
+  const inspection = {
+    runId: "run-1",
+    agent: {
+      target: { kind: "lead" }, role: "lead", status: "running", attempt: 1,
+      activity: "using_tool", activeTools: [], health: "healthy",
+    },
+    process: [
+      { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "read started", toolName: "read", completed: false },
+      { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", summary: "src/a.ts", durationMs: 1200, completed: true },
+      { sequence: 3, at: "2026-08-12T00:00:03.000Z", kind: "tool", severity: "error", message: "Path is not assigned", toolName: "write", durationMs: 800, completed: true },
+      { sequence: 4, at: "2026-08-12T00:00:04.000Z", kind: "compaction", severity: "info", message: "Context compaction completed", durationMs: 400, completed: true },
+    ],
+  };
+
+  const rendered = renderWikiAgent(inspection, "process");
+  assert.equal(rendered, [
+    "Wiki run-1  ·  lead  ·  process",
+    "✓ read · 1s  src/a.ts",
+    "✗ write · 1s  Path is not assigned",
+    "✓ compaction · 0s  Context compaction completed",
+  ].join("\n"));
+  assert.doesNotMatch(rendered, /read started|read succeeded|write failed:/);
+  const lines = renderWikiAgentLines(inspection, "process");
+  assert.equal(lines[1].find((span) => span.text === "✓ ")?.role, "success");
+  assert.equal(lines[2].find((span) => span.text.includes("Path is not assigned"))?.role, "error");
+});
+
 test("retrying agents share one warning presentation across structured and plain output", () => {
   const inspection = {
     runId: "run-2",

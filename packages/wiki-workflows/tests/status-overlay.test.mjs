@@ -351,6 +351,33 @@ test("control keys only act on the run page and for legal run states", async () 
   }
 });
 
+test("activity list shows tool success and failure without start events", async () => {
+  const recorded = recordingTheme();
+  const { component } = await componentFor(handle({
+    async activity() {
+      return {
+        entries: [
+          { sequence: 1, at: "2026-08-12T00:00:01.000Z", kind: "tool", severity: "info", message: "read started", toolName: "read", completed: false },
+          { sequence: 2, at: "2026-08-12T00:00:02.000Z", kind: "tool", severity: "info", message: "", toolName: "read", completed: true },
+          { sequence: 3, at: "2026-08-12T00:00:03.000Z", kind: "tool", severity: "error", message: "Path is not assigned", toolName: "write", completed: true },
+        ],
+        nextBefore: undefined,
+      };
+    },
+  }), 24, undefined, recorded.theme);
+  component.handleInput("j");
+  component.handleInput("j");
+  component.handleInput("CONFIRM");
+  await new Promise((resolve) => setImmediate(resolve));
+  const rendered = plain(component.render(80).join("\n"));
+  assert.match(rendered, /✓ 00:00:02 {2}read(?:\s|$)/);
+  assert.match(rendered, /✗ 00:00:03 {2}write {2}Path is not assigned/);
+  assert.doesNotMatch(rendered, /read started|succeeded|write failed:/);
+  assert.ok(callFor(recorded.calls, "success", /✓/));
+  assert.ok(callFor(recorded.calls, "error", /Path is not assigned/));
+  component.dispose();
+});
+
 test("wide run preview uses activity context before Enter", async () => {
   const { component } = await componentFor();
   component.handleInput("j");

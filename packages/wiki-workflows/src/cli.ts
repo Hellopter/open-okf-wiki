@@ -1,4 +1,5 @@
 import type {
+  WikiActivityEntry,
   WikiAgentInspection,
   WikiAgentStatus,
   WikiAgentTarget,
@@ -248,22 +249,8 @@ export function renderWikiAgentLines(
       textSpan("unavailable for this agent", "muted"),
     ]);
     else for (const entry of inspection.process) {
-      const tool = entry.toolName ? ` ${entry.toolName}` : "";
-      const duration = entry.durationMs === undefined ? "" : ` · ${formatDuration(entry.durationMs)}`;
-      const role = entry.severity === "error"
-        ? "error"
-        : entry.severity === "warning"
-          ? "warning"
-          : entry.completed
-            ? "success"
-            : "accent";
-      lines.push([
-        textSpan(`${entry.completed ? "✓" : "◆"} `, role),
-        textSpan(entry.kind, role),
-        ...(tool ? [textSpan(tool, "primary")] : []),
-        ...(duration ? [textSpan(duration, "muted")] : []),
-        textSpan(`  ${entry.message}`, role === "error" || role === "warning" ? role : "primary"),
-      ]);
+      if (entry.kind === "tool" && !entry.completed) continue;
+      lines.push(processEntryLine(entry));
     }
     return lines;
   }
@@ -314,6 +301,28 @@ function textLines(text: string, role: WikiTextRole): WikiTextLine[] {
 
 function fieldLine(label: string, value: string, valueRole: WikiTextRole): WikiTextLine {
   return [textSpan(`${label}  `, "label"), textSpan(value, valueRole)];
+}
+
+function processEntryLine(entry: WikiActivityEntry): WikiTextLine {
+  const failed = entry.severity === "error";
+  const role: WikiTextRole = failed ? "error" : entry.severity === "warning" ? "warning" : entry.completed ? "success" : "accent";
+  const duration = entry.durationMs === undefined ? "" : ` · ${formatDuration(entry.durationMs)}`;
+  if (entry.kind === "tool") {
+    const name = entry.toolName ?? "tool";
+    const detail = failed ? entry.message : entry.summary;
+    return [
+      textSpan(`${failed ? "✗" : "✓"} `, role),
+      textSpan(name, "primary"),
+      ...(duration ? [textSpan(duration, "muted")] : []),
+      ...(detail ? [textSpan(`  ${detail}`, failed ? "error" : "muted")] : []),
+    ];
+  }
+  return [
+    textSpan(`${entry.completed ? "✓" : "◆"} `, role),
+    textSpan(entry.kind, role),
+    ...(duration ? [textSpan(duration, "muted")] : []),
+    textSpan(`  ${entry.message}`, failed || entry.severity === "warning" ? role : "primary"),
+  ];
 }
 
 function formatDuration(milliseconds: number): string {

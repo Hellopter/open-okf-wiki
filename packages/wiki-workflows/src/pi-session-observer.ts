@@ -117,16 +117,6 @@ export class PiSessionObserver {
         };
         this.activeTools.set(event.toolCallId, tool);
         this.activity = toolActivity(event.toolName);
-        this.addProcess({
-          at,
-          kind: "tool",
-          severity: "info",
-          message: `${event.toolName} started`,
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          summary: tool.summary,
-          completed: false,
-        });
         this.emit(true);
         return;
       }
@@ -148,7 +138,7 @@ export class PiSessionObserver {
           at,
           kind: "tool",
           severity: event.isError ? "error" : "info",
-          message: `${event.toolName} ${event.isError ? "failed" : "completed"}`,
+          message: event.isError ? toolErrorReason(event.result) ?? "failed" : "",
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           summary: tool?.summary,
@@ -293,32 +283,38 @@ function toolActivity(name: string): WikiAgentActivity {
   return "using_tool";
 }
 
+/** First-line error snippet only. Never persist tool result bodies. */
+function toolErrorReason(result: unknown): string | undefined {
+  const content = record(result)?.content;
+  const text = record(Array.isArray(content) ? content[0] : undefined)?.text;
+  return typeof text === "string" ? shortString(text.split(/\r?\n/, 1)[0] ?? "", MAX_SUMMARY_CHARS) : undefined;
+}
+
 function safeToolSummary(name: string, rawArgs: unknown, workspaceRoot: string): string | undefined {
   const args = record(rawArgs);
   if (!args) return undefined;
   const relativePath = safePath(args.path, workspaceRoot);
-  if (name === "read") return compact({ path: relativePath, offset: finite(args.offset), limit: finite(args.limit) });
-  if (name === "grep" || name === "find") {
-    return compact({ path: relativePath, pattern: shortString(args.pattern, 80), limit: finite(args.limit) });
-  }
-  if (name === "ls") return compact({ path: relativePath, limit: finite(args.limit) });
-  if (name === "write") return compact({ path: relativePath, bytes: byteLength(args.content) });
-  if (name === "edit") return compact({ path: relativePath, oldBytes: byteLength(args.oldText), newBytes: byteLength(args.newText) });
-  if (name === "wiki_delegate") {
-    const tasks = Array.isArray(args.tasks) ? args.tasks.map((value) => {
-      const task = record(value);
-      return task ? { id: shortString(task.id, 128), role: shortString(task.role, 16) } : undefined;
-    }).filter(Boolean) : [];
-    return compact({ count: tasks.length, tasks });
-  }
-  if (name === "wiki_finish") return compact({ accepted: true });
+  if (name === "read" || name === "ls" || name === "write" || name === "edit") return relativePath;
+  if (name === "grep" || name === "find") return joinSummary(shortString(args.pattern, 80), relativePath);
+  if (name === "wiki_delegate") return delegateSummary(args.tasks);
   return undefined;
 }
 
-function compact(value: Record<string, unknown>): string | undefined {
-  const present = Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
-  if (Object.keys(present).length === 0) return undefined;
-  const text = JSON.stringify(present);
+function delegateSummary(rawTasks: unknown): string | undefined {
+  if (!Array.isArray(rawTasks) || rawTasks.length === 0) return undefined;
+  const labels = rawTasks.flatMap((value) => {
+    const task = record(value);
+    if (!task) return [];
+    const label = [shortString(task.role, 16), shortString(task.id, 128)].filter(Boolean).join(" ");
+    return label ? [label] : [];
+  });
+  return joinSummary(...labels);
+}
+
+function joinSummary(...parts: Array<string | undefined>): string | undefined {
+  const present = parts.filter((part): part is string => Boolean(part));
+  if (present.length === 0) return undefined;
+  const text = present.join("  ");
   return text.length <= MAX_SUMMARY_CHARS ? text : `${text.slice(0, MAX_SUMMARY_CHARS - 15)}...[truncated]`;
 }
 
@@ -335,10 +331,6 @@ function shortString(value: unknown, limit: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const clean = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
   return clean.length <= limit ? clean : `${clean.slice(0, Math.max(0, limit - 15))}...[truncated]`;
-}
-
-function byteLength(value: unknown): number | undefined {
-  return typeof value === "string" ? Buffer.byteLength(value) : undefined;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

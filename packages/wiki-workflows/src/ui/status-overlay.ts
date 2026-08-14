@@ -340,7 +340,7 @@ function navigationWindow(lines: NavigationLine[], rows: number): NavigationLine
 
 function inspectorLines(selected: NavTarget | undefined, inspection: WikiAgentInspection | undefined, activity: WikiActivityEntry[], exhausted: boolean, state: WikiOverlayState, now: number, theme: unknown): string[] {
   if (state.kind === "activity" || selected?.kind === "activity") {
-    return [strong(theme, `Activity  [${state.filter}]`, "accent"), ...activity.map((entry) => renderActivity(entry, theme)), paint(theme, "dim", exhausted ? "No earlier activity." : "l / PageUp  load earlier")];
+    return [strong(theme, `Activity  [${state.filter}]`, "accent"), ...activity.filter((entry) => entry.kind !== "tool" || entry.completed).map((entry) => renderActivity(entry, theme)), paint(theme, "dim", exhausted ? "No earlier activity." : "l / PageUp  load earlier")];
   }
   if (!inspection) return selected?.kind === "agent" && selected.target.kind === "lead"
     ? [paint(theme, "muted", "Leader starting. Agent details are not available.")]
@@ -352,9 +352,12 @@ function inspectorLines(selected: NavTarget | undefined, inspection: WikiAgentIn
 }
 
 function renderActivity(entry: WikiActivityEntry, theme: unknown): string {
-  const icon = entry.severity === "error" ? "✗" : entry.severity === "warning" ? "!" : "·";
-  const color: ThemeColor = entry.severity === "error" ? "error" : entry.severity === "warning" ? "warning" : "muted";
-  return `${paint(theme, color, icon)} ${paint(theme, "dim", entry.at.slice(11, 19))}  ${paint(theme, color === "muted" ? "text" : color, entry.message)}`;
+  const failed = entry.severity === "error";
+  const succeeded = entry.kind === "tool" && entry.completed && !failed;
+  const icon = failed ? "✗" : entry.severity === "warning" ? "!" : succeeded ? "✓" : "·";
+  const color: ThemeColor = failed ? "error" : entry.severity === "warning" ? "warning" : succeeded ? "success" : "muted";
+  const text = entry.kind === "tool" ? [entry.toolName, entry.message].filter(Boolean).join("  ") : entry.message;
+  return `${paint(theme, color, icon)} ${paint(theme, "dim", entry.at.slice(11, 19))}  ${paint(theme, color === "muted" ? "text" : color, text)}`;
 }
 
 function selectedAgent(view: WikiRunView, target: WikiAgentTarget, inspection: WikiAgentInspection | undefined) {
