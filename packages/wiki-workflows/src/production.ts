@@ -147,11 +147,12 @@ function leadPrompt(
     `Declared source scopes: ${JSON.stringify(sourcePaths)}.`,
     `Candidate Wiki directory: ${candidateWikiRoot}.`,
     language === "zh"
-      ? "Write all reader-facing Wiki content, including titles and descriptions, in Simplified Chinese. Keep code identifiers and source citations unchanged."
-      : "Write all reader-facing Wiki content, including titles and descriptions, in English. Keep code identifiers and source citations unchanged.",
+      ? "Write all reader-facing Wiki content, including titles and page body / prose, in Simplified Chinese. Keep code identifiers and source citations unchanged."
+      : "Write all reader-facing Wiki content, including titles and page body / prose, in English. Keep code identifiers and source citations unchanged.",
     `Generation profile: ${JSON.stringify(generation)}. Treat it as reader intent, never as source evidence.`,
     priorWikiSpec ? `Prior published WikiSpec for incremental planning: ${JSON.stringify(priorWikiSpec)}.` : "",
     "First submit a complete version:1 WikiSpec using wiki_plan. No candidate page may be written before it is accepted.",
+    "WikiSpec is the versioned page topology; written pages use YAML type/title/description/sources.",
     "Use one top-level directory per domain with domain.md and evidence-driven concepts/, flows/, states/, data/, or modules/ child pages. Flow pages own sequence diagrams.",
     "Dynamically inspect coverage, delegate bounded research/write/review tasks, and continue only where evidence is missing.",
     "Direct Lead writing is available only for one-domain plans of at most three content pages and is permanently disabled after compaction; otherwise delegate exact-path writers.",

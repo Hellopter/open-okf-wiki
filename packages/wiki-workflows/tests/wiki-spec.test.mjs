@@ -55,4 +55,32 @@ test("rejects unknown fields at every contract boundary", () => {
   assert.throws(() => parseWikiSpec(nested), /unknown field/);
 });
 
-export { validSpec };
+test("rejects unknown description fields on the spec and on a page", () => {
+  const spec = validSpec();
+  spec.description = "not part of WikiSpec";
+  assert.throws(() => parseWikiSpec(spec), /unknown field/);
+  const page = validSpec();
+  page.overview.description = "not a page field";
+  assert.throws(() => parseWikiSpec(page), /unknown field/);
+});
+
+test("rejects overview when it is a string", () => {
+  const spec = validSpec();
+  spec.overview = "overview.md";
+  assert.throws(() => parseWikiSpec(spec));
+});
+
+test("treats architecture null as absent", () => {
+  const spec = validSpec();
+  spec.architecture = null;
+  const parsed = parseWikiSpec(spec);
+  assert.equal("architecture" in parsed, false);
+  assert.equal(wikiSpecPages(parsed).length, 7);
+  assert.deepEqual(wikiSpecPagePaths(parsed).slice(0, 2), ["overview.md", "billing/domain.md"]);
+});
+
+test("TypeBox structure errors include a field path", () => {
+  const spec = validSpec();
+  delete spec.overview.title;
+  assert.throws(() => parseWikiSpec(spec), /\/overview\/title/);
+});

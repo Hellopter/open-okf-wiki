@@ -3,8 +3,10 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Value } from "typebox/value";
 import { WikiTaskExecutionError } from "../dist/delegate-contracts.js";
 import { createPiLeadRuntime, PiWikiLeafAgent } from "../dist/lead-runtime.js";
+import { wikiPlanParameters } from "../dist/wiki-spec.js";
 import { PiSessionObserver } from "../dist/pi-session-observer.js";
 import { WikiTaskRuntime } from "../dist/task-runtime.js";
 
@@ -53,10 +55,6 @@ function spec(extraPages = [], domains = 1) {
   };
 }
 
-function governedRequest(root, candidateWikiRoot) {
-  return { ...request(root, candidateWikiRoot), generation };
-}
-
 function validWikiPage(type, title) {
   return ["---", `type: ${type}`, `title: ${title}`, "description: Runtime behavior", "sources:", "  - id: source-a", "    resource: repo:source/a.ts#L1-L1", "---", "", "Runtime behavior is defined in source.[^source-a]", "", "[^source-a]: [Source](repo:source/a.ts#L1-L1)", ""].join("\n");
 }
@@ -96,7 +94,7 @@ test("governed Lead rejects writes before wiki_plan without replacing an existin
   const runtime = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid replacement\n" });
   }) });
-  await assert.rejects(runtime.run(governedRequest(root, candidateWikiRoot)), /wiki_plan before writing/);
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /wiki_plan before writing/);
   assert.equal(await readFile(target, "utf8"), "existing\n");
 });
 
@@ -108,7 +106,7 @@ test("pre-write validation rejects invalid replacement after planning and preser
     await call(tools, "wiki_plan", { spec: spec() });
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid replacement\n" });
   }) });
-  await assert.rejects(runtime.run(governedRequest(root, candidateWikiRoot)), /validation failed before write/);
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /validation failed before write/);
   assert.equal(await readFile(target, "utf8"), "existing\n");
 });
 
@@ -118,7 +116,7 @@ test("governed Lead direct writes are disabled for multi-domain plans", async (t
     await call(tools, "wiki_plan", { spec: spec([], 2) });
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid\n" });
   }) });
-  await assert.rejects(runtime.run(governedRequest(root, candidateWikiRoot)), /direct writing is disabled/);
+  await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /direct writing is disabled/);
 });
 
 test("wiki_delegate forbids mixing write and review in one revision snapshot", async (t) => {
@@ -140,7 +138,7 @@ test("governed Lead direct writes are disabled above three pages and permanently
     await call(tools, "wiki_plan", { spec: large });
     await call(tools, "write", { path: "wiki/overview.md", content: "invalid\n" });
   }) });
-  await assert.rejects(largeRuntime.run(governedRequest(root, candidateWikiRoot)), /direct writing is disabled/);
+  await assert.rejects(largeRuntime.run(request(root, candidateWikiRoot)), /direct writing is disabled/);
 
   const compactRoot = await workspace(t);
   const compactRuntime = createPiLeadRuntime({ createSession: async (options) => {
@@ -159,7 +157,7 @@ test("governed Lead direct writes are disabled above three pages and permanently
       async waitForIdle() {}, async abort() {}, dispose() {}, getLastAssistantText() { return ""; },
     } };
   } });
-  await assert.rejects(compactRuntime.run(governedRequest(compactRoot.root, compactRoot.candidateWikiRoot)), /after context compaction/);
+  await assert.rejects(compactRuntime.run(request(compactRoot.root, compactRoot.candidateWikiRoot)), /after context compaction/);
 });
 
 test("wiki_finish requires current pass review coverage and accepts a structured independent pass", async (t) => {
@@ -183,7 +181,7 @@ test("wiki_finish requires current pass review coverage and accepts a structured
       }
     })(options);
   } });
-  assert.deepEqual(await runtime.run(governedRequest(root, candidateWikiRoot)), { kind: "complete", summary: "reviewed" });
+  assert.deepEqual(await runtime.run(request(root, candidateWikiRoot)), { kind: "complete", summary: "reviewed" });
 });
 
 test("changes_requested and stale spec-revision reviews block wiki_finish", async (t) => {
@@ -210,7 +208,7 @@ test("changes_requested and stale spec-revision reviews block wiki_finish", asyn
         }
       })(options);
     } });
-    await assert.rejects(runtime.run(governedRequest(root, candidateWikiRoot)), stale ? /lacks passing independent review/ : /requested changes/);
+    await assert.rejects(runtime.run(request(root, candidateWikiRoot)), stale ? /lacks passing independent review/ : /requested changes/);
   }
 });
 
@@ -243,6 +241,100 @@ test("review receipt is rejected when a concurrent write changes its captured re
     })(options);
   } });
   await assert.rejects(runtime.run(request(root, candidateWikiRoot)), /lacks passing independent review/);
+});
+
+test("wiki tools use json_schema constrained sampling and reject write tasks without writePaths", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  let leadTools;
+  const lead = createPiLeadRuntime({ createSession: sessionFactory(async (tools) => {
+    leadTools = tools;
+  }) });
+  await assert.rejects(lead.run(request(root, candidateWikiRoot)), /without wiki_finish/);
+
+  const plan = toolDefinition(leadTools, "wiki_plan");
+  assert.equal(plan.parameters, wikiPlanParameters);
+  assert.equal(Value.Check(plan.parameters, { spec: { version: 1, overview: "overview.md" } }), false);
+  assert.equal(Value.Check(plan.parameters, { spec: {
+    version: 1,
+    overview: { pageType: "overview", path: "overview.md", title: "Overview", purpose: "Map", readerQuestions: [], requiredFacets: [], findingIds: [], description: "no" },
+    domains: [{ id: "core", title: "Core", purpose: "Core", pages: [{ pageType: "domain", path: "core/domain.md", title: "Core", purpose: "Core", readerQuestions: [], requiredFacets: [], findingIds: [] }] }],
+    crossLinks: [], sharedTerms: [], omissions: [],
+  } }), false);
+
+  const delegate = toolDefinition(leadTools, "wiki_delegate");
+  const finish = toolDefinition(leadTools, "wiki_finish");
+  for (const tool of [plan, delegate, finish]) {
+    assert.equal(tool.constrainedSampling.type, "json_schema");
+    assert.equal(tool.constrainedSampling.strict, "prefer");
+  }
+
+  const writeWithoutPaths = {
+    tasks: [{ id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [] }],
+  };
+  assert.equal(Value.Check(delegate.parameters, writeWithoutPaths), false);
+  assert.equal(Value.Check(delegate.parameters, {
+    tasks: [{ id: "write", role: "write", instruction: "write", sourceScopeIds: [], contextRefs: [], writePaths: ["wiki/overview.md"] }],
+  }), true);
+
+  let reviewTools;
+  const artifacts = artifactStore();
+  const leaf = new PiWikiLeafAgent(artifacts, {
+    createSession: async (options) => {
+      reviewTools = options.customTools;
+      return sessionFactory(async (tools) => {
+        await call(tools, "wiki_review_finish", {
+          verdict: "pass", reviewedPaths: ["wiki/overview.md"], findings: [], profileCoverage: [],
+        });
+      })(options);
+    },
+  });
+  await leaf.run(
+    { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] },
+    leafContext(root, candidateWikiRoot),
+  );
+  const reviewFinish = toolDefinition(reviewTools, "wiki_review_finish");
+  assert.equal(reviewFinish.constrainedSampling.type, "json_schema");
+  assert.equal(reviewFinish.constrainedSampling.strict, "prefer");
+});
+
+test("writer leaf prompt includes frontmatter example only for the writer role", async (t) => {
+  const { root, candidateWikiRoot } = await workspace(t);
+  const artifacts = artifactStore();
+  const prompts = {};
+  const generationWithSections = { ...generation, templates: { requiredSections: ["Behavior", "Evidence"] } };
+
+  for (const [role, task] of [
+    ["writer", writeTask("page")],
+    ["researcher", { id: "research", role: "research", instruction: "research", sourceScopeIds: [], contextRefs: [] }],
+    ["reviewer", { id: "review", role: "review", instruction: "review", sourceScopeIds: [], contextRefs: [], reviewPaths: ["wiki/overview.md"] }],
+  ]) {
+    const agent = new PiWikiLeafAgent(artifacts, {
+      createSession: async (options) => ({
+        session: {
+          state: {},
+          setAutoCompactionEnabled() {}, setAutoRetryEnabled() {},
+          async prompt(value) {
+            prompts[role] = value;
+            if (role === "reviewer") {
+              await call(options.customTools, "wiki_review_finish", {
+                verdict: "pass", reviewedPaths: ["wiki/overview.md"], findings: [], profileCoverage: [],
+              });
+            }
+          },
+          async waitForIdle() {}, async abort() {}, dispose() {},
+          getLastAssistantText() { return "# complete"; },
+        },
+      }),
+    }, undefined, generationWithSections);
+    await agent.run(task, leafContext(root, candidateWikiRoot));
+  }
+
+  assert.match(prompts.writer, /type: Domain/);
+  assert.match(prompts.writer, /description: One-sentence reader summary/);
+  assert.match(prompts.writer, /Overview\/Domain\/Architecture\/Module\/Flow\/Concept\/State\/Data/);
+  assert.match(prompts.writer, /Required sections: Behavior, Evidence/);
+  assert.doesNotMatch(prompts.researcher, /type: Domain/);
+  assert.doesNotMatch(prompts.reviewer, /type: Domain/);
 });
 
 test("Lead completion without wiki_finish is rejected", async (t) => {
@@ -721,6 +813,21 @@ test("Pi leaf 429 honors Retry-After through the shared runtime gate with three 
 
 function writeTask(id) {
   return { id, role: "write", instruction: `write ${id}`, sourceScopeIds: [], contextRefs: [], writePaths: [`wiki/${id}.md`] };
+}
+
+function toolDefinition(tools, name) {
+  const tool = tools.find((value) => value.name === name);
+  assert.ok(tool, `missing ${name}`);
+  return tool;
+}
+
+function leafContext(cwd, candidateWikiRoot) {
+  return {
+    runId: "run-1", batch: 1, attempt: 1, cwd,
+    sourceRoots: { source: "source" },
+    contextArtifacts: {},
+    candidateWikiRoot, signal: new AbortController().signal,
+  };
 }
 
 function artifactStore() {

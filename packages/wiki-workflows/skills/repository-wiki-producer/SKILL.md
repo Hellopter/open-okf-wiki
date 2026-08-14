@@ -26,6 +26,16 @@ The Lead follows a normal tool loop:
    directory per domain, with `domain.md` and evidence-driven `concepts/`,
    `flows/`, `states/`, `data/`, or `modules/` pages. Flow pages contain any
    sequence diagrams.
+
+   WikiSpec pages and written pages are different contracts:
+
+   - Spec page: `pageType`, `path`, `title`, `purpose`, `readerQuestions`,
+     `requiredFacets`, `findingIds`
+   - Overview is an object at `overview.md`; one top-level dir per domain with
+     `domain.md`
+   - Written page frontmatter is a different contract: `type`, `title`,
+     `description`, `sources`
+
 3. Write directly only when the accepted plan has exactly one domain and at
    most three content pages. After context compaction, always delegate writing.
 4. For independent or context-heavy work, call `wiki_delegate` with bounded

@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { workflowTools, workspaceToolPolicy, type WikiWriteControl } from "./agent-tools.js";
 import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
@@ -18,8 +19,14 @@ import type { WikiAgentTelemetry, WikiContextStats, WikiLeadRuntime, WikiTaskSna
 import { PiSessionObserver, readSessionUsage, type PiSessionObserverOptions } from "./pi-session-observer.js";
 import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
 import { createWikiRunSpecStore, type WikiRunSpecRecord } from "./run-spec-store.js";
-import { parseWikiSpec, wikiSpecPagePaths, wikiSpecPages, type WikiSpec } from "./wiki-spec.js";
-import { canonicalizeWikiPageContent, derivedIndexPaths, validateWikiPageContent } from "./wiki-validate.js";
+import {
+  parseWikiSpec,
+  wikiPlanParameters,
+  wikiSpecPagePaths,
+  wikiSpecPages,
+  type WikiSpec,
+} from "./wiki-spec.js";
+import { canonicalizeWikiPageContent, derivedIndexPaths, formatIssue, validateWikiPageContent } from "./wiki-validate.js";
 import { WikiWorkflowState, type WikiReviewResult } from "./workflow-state.js";
 import path from "node:path";
 import { materializeValidatedWikiIndexes } from "./wiki-finalize.js";
@@ -354,6 +361,7 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
         task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
         reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
         this.generation ? `\nGeneration profile: ${JSON.stringify(this.generation)}. Treat it as reader intent, never as source evidence.` : "",
+        role === "writer" ? `\n${writerFrontmatterPrompt(this.generation)}` : "",
         handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
         "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
       ].join(""), context.signal, this.options, context.onTelemetry, {
@@ -389,22 +397,48 @@ function retryDelay(baseRetryDelayMs: number, attempt: number, random: () => num
   return Math.floor(random() * baseRetryDelayMs * (2 ** Math.max(0, attempt - 1)));
 }
 
-const taskSchema = Type.Object({
+const JSON_SCHEMA_PREFER = { type: "json_schema", strict: "prefer" } as const;
+
+const delegateTaskBase = {
   id: Type.String({ minLength: 1, maxLength: 128 }),
-  role: Type.Union([Type.Literal("research"), Type.Literal("write"), Type.Literal("review")]),
   instruction: Type.String({ minLength: 1 }),
   sourceScopeIds: Type.Array(Type.String()),
   contextRefs: Type.Array(Type.String()),
-  writePaths: Type.Optional(Type.Array(Type.String())),
-  reviewPaths: Type.Optional(Type.Array(Type.String())),
-}, { additionalProperties: false });
+};
+
+const delegateTaskSchema = Type.Union([
+  Type.Object({
+    ...delegateTaskBase,
+    role: StringEnum(["research"]),
+  }, { additionalProperties: false }),
+  Type.Object({
+    ...delegateTaskBase,
+    role: StringEnum(["write"]),
+    writePaths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+  }, { additionalProperties: false }),
+  Type.Object({
+    ...delegateTaskBase,
+    role: StringEnum(["review"]),
+    reviewPaths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+  }, { additionalProperties: false }),
+]);
 
 function planTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any, any, any> {
   return {
     name: "wiki_plan",
     label: "Submit Wiki plan",
     description: "Submit the complete versioned WikiSpec before any page is written or reviewed. A revision invalidates prior reviews.",
-    parameters: Type.Object({ spec: Type.Any() }, { additionalProperties: false }),
+    promptSnippet: "Submit the complete versioned WikiSpec before writing or reviewing pages",
+    promptGuidelines: [
+      "Call wiki_plan before writing pages.",
+      "wiki_plan overview is a page object, never a string.",
+      "wiki_plan page fields are only pageType/path/title/purpose/readerQuestions/requiredFacets/findingIds.",
+      "Do not put frontmatter description/type/sources on the wiki_plan Spec.",
+      "wiki_plan paths are overview.md, <domain>/domain.md, and child dirs concepts|flows|states|data|modules.",
+      "wiki_plan crossLinks/sharedTerms/omissions are arrays; use [] if empty.",
+    ],
+    parameters: wikiPlanParameters,
+    constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       return toolResult(await save((params as { spec: unknown }).spec));
     },
@@ -416,7 +450,13 @@ function delegateTool(delegate: (tasks: WikiDelegateTask[]) => Promise<WikiDeleg
     name: "wiki_delegate",
     label: "Delegate Wiki tasks",
     description: "Run one bounded batch of Wiki research, writing, or review tasks. Returns small receipts and artifact handles; failed branches do not discard successful branches.",
-    parameters: Type.Object({ tasks: Type.Array(taskSchema, { minItems: 1 }) }, { additionalProperties: false }),
+    promptSnippet: "Run one bounded research, write, or review batch",
+    promptGuidelines: [
+      "Do not mix write and review tasks in one wiki_delegate batch.",
+      "wiki_delegate paths must be current Spec wiki/... paths.",
+    ],
+    parameters: Type.Object({ tasks: Type.Array(delegateTaskSchema, { minItems: 1 }) }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       const result = await delegate((params as { tasks: WikiDelegateTask[] }).tasks);
       return toolResult(result);
@@ -429,9 +469,19 @@ function finishTool(finish: (summary: string) => void): ToolDefinition<any, any,
     name: "wiki_finish",
     label: "Finish Wiki workflow",
     description: "Finish after the candidate Wiki is complete and sufficiently grounded.",
+    promptSnippet: "Finish after the candidate Wiki is complete and reviewed",
+    promptGuidelines: [
+      "Call wiki_finish only after an accepted WikiSpec and current passing independent reviews.",
+      "wiki_finish summary must be 1-1024 characters.",
+    ],
     parameters: Type.Object({
-      summary: Type.String({ minLength: 1, maxLength: 1024 }),
+      summary: Type.String({
+        minLength: 1,
+        maxLength: 1024,
+        description: "Concise completion summary for the accepted Wiki",
+      }),
     }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       finish((params as { summary: string }).summary);
       return toolResult({ accepted: true });
@@ -440,11 +490,11 @@ function finishTool(finish: (summary: string) => void): ToolDefinition<any, any,
 }
 
 const reviewFindingSchema = Type.Object({
-  path: Type.String({ minLength: 1 }),
-  severity: Type.Union([Type.Literal("critical"), Type.Literal("major"), Type.Literal("minor")]),
-  message: Type.String({ minLength: 1 }),
-  evidence: Type.Array(Type.String({ minLength: 1 })),
-  suggestion: Type.String({ minLength: 1 }),
+  path: Type.String({ minLength: 1, description: "Assigned candidate path for this finding" }),
+  severity: StringEnum(["critical", "major", "minor"], { description: "Finding severity" }),
+  message: Type.String({ minLength: 1, description: "What is wrong on the page" }),
+  evidence: Type.Array(Type.String({ minLength: 1 }), { description: "Source locators supporting the finding" }),
+  suggestion: Type.String({ minLength: 1, description: "Concrete repair the writer should make" }),
 }, { additionalProperties: false });
 
 function reviewFinishTool(finish: (result: WikiReviewResult) => void): ToolDefinition<any, any, any> {
@@ -452,17 +502,42 @@ function reviewFinishTool(finish: (result: WikiReviewResult) => void): ToolDefin
     name: "wiki_review_finish",
     label: "Finish Wiki review",
     description: "Submit the independent structured verdict for every assigned candidate path and required profile review item.",
+    promptSnippet: "Submit the independent structured review verdict",
+    promptGuidelines: [
+      "wiki_review_finish reviewedPaths must exactly match the assigned reviewPaths.",
+    ],
     parameters: Type.Object({
-      verdict: Type.Union([Type.Literal("pass"), Type.Literal("changes_requested")]),
-      reviewedPaths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-      findings: Type.Array(reviewFindingSchema),
-      profileCoverage: Type.Array(Type.String({ minLength: 1 })),
+      verdict: StringEnum(["pass", "changes_requested"], { description: "Independent review verdict for the assigned paths" }),
+      reviewedPaths: Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        description: "Exact assigned reviewPaths that were reviewed",
+      }),
+      findings: Type.Array(reviewFindingSchema, { description: "Issues found on assigned paths" }),
+      profileCoverage: Type.Array(Type.String({ minLength: 1 }), { description: "Generation-profile review items covered" }),
     }, { additionalProperties: false }),
+    constrainedSampling: JSON_SCHEMA_PREFER,
     async execute(_id, params) {
       finish(params as WikiReviewResult);
       return toolResult({ accepted: true });
     },
   } as ToolDefinition<any, any, any>;
+}
+
+function writerFrontmatterPrompt(generation?: WikiGenerationProfile): string {
+  const required = generation?.templates.requiredSections ?? [];
+  return [
+    "Write each assigned Wiki page with this frontmatter shape:",
+    "---",
+    "type: Domain",
+    "title: Example",
+    "description: One-sentence reader summary",
+    "sources:",
+    "  - id: source-a",
+    "    resource: repo:source/path.ts#L1-L1",
+    "---",
+    "Frontmatter type must match the WikiSpec pageType (Overview/Domain/Architecture/Module/Flow/Concept/State/Data).",
+    required.length ? `Required sections: ${required.join(", ")}.` : "",
+  ].filter((line) => line.length > 0).join("\n");
 }
 
 function toolResult(value: unknown) {
@@ -510,15 +585,6 @@ function assertDelegationAllowed(tasks: readonly WikiDelegateTask[], spec: WikiS
       if (!declared.has(page)) throw new Error(`Delegated ${task.role} path is not declared by the current WikiSpec: ${page}`);
     }
   }
-}
-
-function formatIssue(issue: unknown): string {
-  if (typeof issue === "string") return issue;
-  if (issue && typeof issue === "object") {
-    const value = issue as { path?: unknown; message?: unknown };
-    return [value.path, value.message].filter((part) => typeof part === "string").join(": ") || JSON.stringify(issue);
-  }
-  return String(issue);
 }
 
 function taskActivity(activity: NonNullable<WikiAgentTelemetry["activity"]>): NonNullable<WikiTaskSnapshot["activity"]> {
