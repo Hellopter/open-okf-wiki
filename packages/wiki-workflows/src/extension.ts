@@ -13,7 +13,7 @@ import { createConfiguredWikiProducer } from "./production.js";
 import type { WikiProducer } from "./producer.js";
 import type { WikiAgentTarget, WikiRunControl, WikiRunHandle, WikiRunView } from "./producer-types.js";
 import { formatLocalDateTime } from "./time-format.js";
-import { wikiFooterStatus, wikiWidgetLines } from "./ui/live-surface.js";
+import { themeWikiLiveText, wikiFooterStatus, wikiWidgetLines } from "./ui/live-surface.js";
 import { openWikiStatusOverlay } from "./ui/status-overlay.js";
 import { errorMessage } from "./util.js";
 import { loadWikiWorkspace, wikiWorkspaceManagement, type ResolvedWikiWorkspace } from "./workspace.js";
@@ -287,24 +287,18 @@ async function streamRun(
 function refreshLiveSurface(context: ExtensionCommandContext, view: WikiRunView): void {
   if (!context.hasUI) return;
   if (view.status !== "running") {
-    context.ui.setStatus("wiki", themeWikiFooter(context, wikiFooterStatus(view)));
+    context.ui.setStatus("wiki", themeLiveStatus(context, view));
     context.ui.setWidget("wiki", undefined);
     return;
   }
-  context.ui.setStatus("wiki", themeWikiFooter(context, wikiFooterStatus(view)));
-  context.ui.setWidget("wiki", wikiWidgetLines(view) ?? undefined);
+  context.ui.setStatus("wiki", themeLiveStatus(context, view));
+  const lines = wikiWidgetLines(view);
+  context.ui.setWidget("wiki", lines?.map((line) => themeWikiLiveText(context.ui.theme, line)));
 }
 
-function themeWikiFooter(context: ExtensionCommandContext, text: string | undefined): string | undefined {
-  if (!text) return undefined;
-  const theme = context.ui.theme;
-  if (!theme || typeof theme.fg !== "function") return text;
-  const color = text.includes("✓") ? "success"
-    : text.includes("✗") ? "error"
-    : text.includes("⏸") ? "warning"
-    : text.includes("◆") ? "accent"
-    : "dim";
-  return theme.fg(color, text);
+function themeLiveStatus(context: ExtensionCommandContext, view: WikiRunView): string | undefined {
+  const text = wikiFooterStatus(view);
+  return text ? themeWikiLiveText(context.ui.theme, text) : undefined;
 }
 
 async function workspaceRoot(cwd: string): Promise<string> {
