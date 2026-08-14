@@ -38,7 +38,26 @@ export interface WikiWorkspaceWikiConfig {
   baseRetryDelayMs: number;
   /** Wall-clock deadline, in seconds, for each Lead or delegated Agent session. */
   sessionTimeoutSeconds: number;
+  generation: WikiGenerationProfile;
 }
+
+export interface WikiGenerationProfile {
+  audience: string[];
+  purpose: string;
+  focus: { include: string[]; exclude: string[] };
+  granularity: { preferChildPagesFor: string[] };
+  templates: { requiredSections: string[] };
+  review: { mustCover: string[] };
+}
+
+export const DEFAULT_WIKI_GENERATION_PROFILE: WikiGenerationProfile = {
+  audience: [],
+  purpose: "",
+  focus: { include: [], exclude: [] },
+  granularity: { preferChildPagesFor: [] },
+  templates: { requiredSections: [] },
+  review: { mustCover: [] },
+};
 
 export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   exclude: [],
@@ -46,6 +65,7 @@ export const DEFAULT_WORKSPACE_WIKI_CONFIG: WikiWorkspaceWikiConfig = {
   transientRetries: 1,
   baseRetryDelayMs: 1_000,
   sessionTimeoutSeconds: 1_200,
+  generation: structuredClone(DEFAULT_WIKI_GENERATION_PROFILE),
 };
 
 export interface WikiWorkspace {
@@ -311,7 +331,49 @@ function parseWikiConfig(value: unknown): WikiWorkspaceWikiConfig {
     transientRetries: parseInteger(value.transientRetries, "wiki.transientRetries", DEFAULT_WORKSPACE_WIKI_CONFIG.transientRetries, 0, 10),
     baseRetryDelayMs: parseInteger(value.baseRetryDelayMs, "wiki.baseRetryDelayMs", DEFAULT_WORKSPACE_WIKI_CONFIG.baseRetryDelayMs, 0, 300_000),
     sessionTimeoutSeconds: parseInteger(value.sessionTimeoutSeconds, "wiki.sessionTimeoutSeconds", DEFAULT_WORKSPACE_WIKI_CONFIG.sessionTimeoutSeconds, 1, 2_147_483),
+    generation: parseGenerationProfile(value.generation),
   };
+}
+
+function parseGenerationProfile(value: unknown): WikiGenerationProfile {
+  if (value === undefined) return structuredClone(DEFAULT_WIKI_GENERATION_PROFILE);
+  const generation = strictObject(value, "wiki.generation", ["audience", "purpose", "focus", "granularity", "templates", "review"]);
+  const focus = optionalStrictObject(generation.focus, "wiki.generation.focus", ["include", "exclude"]);
+  const granularity = optionalStrictObject(generation.granularity, "wiki.generation.granularity", ["preferChildPagesFor"]);
+  const templates = optionalStrictObject(generation.templates, "wiki.generation.templates", ["requiredSections"]);
+  const review = optionalStrictObject(generation.review, "wiki.generation.review", ["mustCover"]);
+  return {
+    audience: parseStringArray(generation.audience, "wiki.generation.audience"),
+    purpose: parseOptionalString(generation.purpose, "wiki.generation.purpose"),
+    focus: {
+      include: parseStringArray(focus.include, "wiki.generation.focus.include"),
+      exclude: parseStringArray(focus.exclude, "wiki.generation.focus.exclude"),
+    },
+    granularity: {
+      preferChildPagesFor: parseStringArray(granularity.preferChildPagesFor, "wiki.generation.granularity.preferChildPagesFor"),
+    },
+    templates: {
+      requiredSections: parseStringArray(templates.requiredSections, "wiki.generation.templates.requiredSections"),
+    },
+    review: { mustCover: parseStringArray(review.mustCover, "wiki.generation.review.mustCover") },
+  };
+}
+
+function strictObject(value: unknown, field: string, allowed: readonly string[]): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`workspace.yaml ${field} must be an object`);
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) throw new Error(`workspace.yaml ${field} has unknown field: ${unknown[0]}`);
+  return value;
+}
+
+function optionalStrictObject(value: unknown, field: string, allowed: readonly string[]): Record<string, unknown> {
+  return value === undefined ? {} : strictObject(value, field, allowed);
+}
+
+function parseOptionalString(value: unknown, field: string): string {
+  if (value === undefined) return "";
+  if (typeof value !== "string") throw new Error(`workspace.yaml ${field} must be a string`);
+  return value.trim();
 }
 
 function parseInteger(value: unknown, field: string, fallback: number, minimum: number, maximum: number): number {

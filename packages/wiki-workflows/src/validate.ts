@@ -7,6 +7,8 @@
 export {
   validateWiki,
   validateWikiPage,
+  validateWikiPageContent,
+  canonicalizeWikiPageContent,
   validateWikiCandidate,
   resolveWikiRoots,
   specPagePaths,
@@ -14,5 +16,5 @@ export {
   type ResolvedWikiRoots,
 } from "./wiki-validate.js";
 export { materializeWikiIndexes, validateWikiIndexes, renderWikiIndex } from "./wiki-indexes.js";
-export { finalizeWiki } from "./wiki-finalize.js";
+export { finalizeWiki, materializeValidatedWikiIndexes } from "./wiki-finalize.js";
 export { WikiValidationInfrastructureError } from "./failures.js";

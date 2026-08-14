@@ -45,6 +45,18 @@ wiki:
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
+  generation:
+    audience: [maintainers, integrators]
+    purpose: Explain the system's domains, behavior, and extension points.
+    focus:
+      include: [architecture, runtime behavior, public contracts]
+      exclude: [generated files]
+    granularity:
+      preferChildPagesFor: [flows, states, data structures]
+    templates:
+      requiredSections: [Overview, Source evidence]
+    review:
+      mustCover: [cross-domain links, operational flows]
 ```
 
 All four execution values are integers:
@@ -60,6 +72,39 @@ Timeouts count as transient failures and consume the same retry budget. Provider
 `Retry-After` values take precedence over the configured backoff base.
 `language` is passed to Lead and leaf Agents as the required reader-facing Wiki
 language.
+
+`generation` is optional. Its fields guide topology and content rather than
+changing runtime limits: `audience` and `purpose` define the reader contract;
+`focus` scopes coverage; `preferChildPagesFor` asks the planner to split those
+subjects into dedicated pages; `requiredSections` is enforced both before write
+and at final validation; and `mustCover` is required in the structured review.
+Unknown fields are rejected.
+
+## Wiki topology
+
+The Lead must persist a versioned WikiSpec before any page can be written. The
+Spec declares every content page, its type, evidence findings, reader questions,
+and cross-links. A published Wiki uses this standard topology:
+
+```text
+wiki/
+  index.md
+  overview.md
+  architecture.md                 # optional
+  <domain>/
+    index.md
+    domain.md
+    concepts/
+    flows/
+    states/
+    data/
+    modules/
+```
+
+Each populated category contains its own generated `index.md` and topic pages.
+Indexes are deterministic host-owned projections, not model-authored pages. An
+update receives the previously published WikiSpec so it can revise the existing
+topology; `regenerate` deliberately plans a new one.
 
 ## Watching a run
 
@@ -83,7 +128,7 @@ commands are a thin adapter over this interface.
 The internal lifecycle is fixed only where determinism matters:
 
 ```text
-Inspect -> Lead loop -> Validate -> Publish
+Inspect -> Spec plan -> Lead/Writer loop -> Review -> Validate -> Publish
 ```
 
 The Lead loop dynamically chooses research scope, fan-out, follow-up questions,
@@ -92,6 +137,14 @@ workflow DSL. Shared admission bounds concurrent Agents, and every session has
 a wall-clock deadline. Each Lead and delegated Agent receives a fresh Pi
 session with auto-compaction enabled. Compaction summarizes older context when
 the session approaches its context limit and preserves recent work.
+
+The Lead may write directly only for a one-domain Spec with at most three pages.
+Larger plans use delegated Writers, and any Lead compaction permanently disables
+direct writes for that run. Writer output is parsed, source-checked, link-checked,
+and YAML-canonicalized in process before an atomic replacement; no external
+`yamlformatter` executable is required. Reviewers receive exact read-only page
+and generated-index paths. Their structured result is accepted only for the
+captured Spec and write revisions, so later writes invalidate earlier passes.
 
 Research content is stored outside conversation context as content-addressed
 Markdown blobs referenced by compact task receipts:
@@ -124,8 +177,10 @@ receive accepted references and retrieve only the context they need.
   immediately instead of consuming retry budget.
 - A timeout or cancellation aborts and disposes the Agent. Finalized Markdown
   artifacts remain eligible for later context handoff.
-- Candidate pages are deterministically validated before the recoverable,
-  atomic publication swap.
+- Candidate pages are deterministically validated before replacement and again
+  before the recoverable, atomic publication swap.
+- Publication requires complete, current independent review coverage. Missing,
+  stale, or `changes_requested` results fail closed.
 
 No compatibility path is retained for the previous DAG snapshots or submission
 artifacts. Remove stale `.okf-wiki/` run state before using this version; the

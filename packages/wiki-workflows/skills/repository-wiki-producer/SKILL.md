@@ -22,16 +22,26 @@ The Lead follows a normal tool loop:
 
 1. Inspect source and the existing candidate with `read`, `grep`, `find`, and
    `ls`.
-2. For a small repository, write or edit the candidate directly.
-3. For independent or context-heavy work, call `wiki_delegate` with bounded
+2. Submit the complete versioned topology with `wiki_plan`. Use one top-level
+   directory per domain, with `domain.md` and evidence-driven `concepts/`,
+   `flows/`, `states/`, `data/`, or `modules/` pages. Flow pages contain any
+   sequence diagrams.
+3. Write directly only when the accepted plan has exactly one domain and at
+   most three content pages. After context compaction, always delegate writing.
+4. For independent or context-heavy work, call `wiki_delegate` with bounded
    research, write, or review tasks.
-4. Read delegated Markdown artifacts by reference; treat failed or incomplete
+5. Read delegated Markdown artifacts by reference; treat failed or incomplete
    receipts as missing coverage, never as evidence of absence.
-5. Call `wiki_finish` only after useful candidate pages exist and critical
-   review findings are resolved.
+6. Delegate independent review of every current Spec page. Reviewers call
+   `wiki_review_finish` with a structured verdict; any write or plan revision
+   invalidates prior passes.
+7. Call `wiki_finish` only after every current page has passing review coverage.
 
 Research and review tasks write concise Markdown artifacts with precise
 `path#Lx-Ly` evidence. Writer tasks edit only their authorized candidate paths.
+Candidate writes are validated before replacement using the bundled YAML parser;
+there is no external `yamlformatter` dependency. Directory `index.md` files are
+owned and generated deterministically by the host, never by an Agent.
 JSON is a small control envelope, not a prose handoff format.
 
 Read the reference for the assigned role:

@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   createEditToolDefinition,
@@ -21,21 +21,32 @@ import {
 } from "./path-policy.js";
 import { boundToolExecutionResult } from "./tool-budget.js";
 import { isSafeWikiPagePath } from "./wiki-path.js";
+import { writeText } from "./files.js";
 
 export type WikiToolRole = "lead" | "researcher" | "writer" | "reviewer";
 
 export type { WorkspaceToolPolicy, PermittedToolRoot };
 export { workspaceToolPolicy };
 
+export interface WikiWriteControl {
+  prepare(path: string, content: string, role: "lead" | "writer"): Promise<string>;
+  committed(path: string, role: "lead" | "writer"): Promise<void>;
+}
+
 export function workflowTools(
   policy: WorkspaceToolPolicy,
   role: WikiToolRole,
   writePaths?: readonly string[],
   readRoots?: readonly string[],
+  reviewPaths?: readonly string[],
+  writeControl?: WikiWriteControl,
+  reviewIndexPaths?: readonly string[],
 ): ToolDefinition<any, any, any>[] {
   const activeWikiRoot = policy.candidateWikiRoot ?? policy.wikiRoot;
-  const allowedPaths = role === "writer" ? exactWriterPaths(policy, activeWikiRoot, writePaths) : undefined;
-  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, allowedPaths, role === "lead");
+  const allowedPaths = role === "writer" ? exactWikiPaths(activeWikiRoot, writePaths, "writers") : undefined;
+  const reviewerPaths = role === "reviewer" ? exactWikiPaths(activeWikiRoot, reviewPaths, "reviewers") : undefined;
+  const reviewerIndexes = role === "reviewer" ? exactIndexPaths(activeWikiRoot, reviewIndexPaths) : undefined;
+  const readableRoots = readRootsForPolicy(policy, activeWikiRoot, readRoots, mergePaths(allowedPaths ?? reviewerPaths, reviewerIndexes), role === "lead");
   const readOnly = [
     boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createReadToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "read"),
     boundSurveyTool(remapCandidateWikiPath(guardWorkspaceTool(createGrepToolDefinition(policy.workspaceRoot), policy.workspaceRoot, readableRoots, "path"), policy, activeWikiRoot), "grep"),
@@ -48,14 +59,14 @@ export function workflowTools(
     const write = createWriteToolDefinition(policy.workspaceRoot, {
       operations: {
         mkdir: async (directory) => await guardedLeadMkdir(candidateRoot, directory),
-        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content),
+        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content, writeControl),
       },
     });
     const edit = createEditToolDefinition(policy.workspaceRoot, {
       operations: {
         access: async (file) => await guardedLeadAccess(candidateRoot, file),
         readFile: async (file) => await guardedLeadRead(candidateRoot, file),
-        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content),
+        writeFile: async (file, content) => await guardedLeadWrite(candidateRoot, file, content, writeControl),
       },
     });
     return [
@@ -72,14 +83,14 @@ export function workflowTools(
   const write = createWriteToolDefinition(policy.workspaceRoot, {
     operations: {
       mkdir: async (directory) => await guardedMkdir(activeWikiRoot, directory, allowedDirectories),
-      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths),
+      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths, writeControl),
     },
   });
   const edit = createEditToolDefinition(policy.workspaceRoot, {
     operations: {
       access: async (file) => await guardedAccess(activeWikiRoot, file, allowedPaths),
       readFile: async (file) => await guardedRead(activeWikiRoot, file, allowedPaths),
-      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths),
+      writeFile: async (file, content) => await guardedWrite(activeWikiRoot, file, content, allowedPaths, writeControl),
     },
   });
   return [
@@ -89,6 +100,24 @@ export function workflowTools(
     remapCandidateWikiPath(guardWorkspaceTool(edit, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path"), policy, activeWikiRoot),
     remapCandidateWikiPath(guardWorkspaceTool(write, policy.workspaceRoot, [{ logicalRoot: activeWikiRoot }], "path", true), policy, activeWikiRoot),
   ];
+}
+
+function mergePaths(first?: ReadonlySet<string>, second?: ReadonlySet<string>): ReadonlySet<string> | undefined {
+  if (!first && !second) return undefined;
+  return new Set([...(first ?? []), ...(second ?? [])]);
+}
+
+function exactIndexPaths(activeWikiRoot: string, values: readonly string[] | undefined): Set<string> | undefined {
+  if (!values?.length) return undefined;
+  const result = new Set<string>();
+  for (const rawPath of values) {
+    const relative = rawPath.startsWith("wiki/") ? rawPath.slice("wiki/".length) : "";
+    if (!relative || path.posix.basename(relative) !== "index.md" || relative.includes("..") || relative.includes("//")) {
+      throw new Error(`Workflow configuration error: invalid reviewer index path: ${rawPath}`);
+    }
+    result.add(path.resolve(activeWikiRoot, ...relative.split("/")));
+  }
+  return result;
 }
 
 function boundSurveyTool(
@@ -152,12 +181,12 @@ function valueAt(value: unknown, field: string): unknown {
   return value && typeof value === "object" ? (value as Record<string, unknown>)[field] : undefined;
 }
 
-function exactWriterPaths(
-  policy: WorkspaceToolPolicy,
+function exactWikiPaths(
   activeWikiRoot: string,
   writePaths: readonly string[] | undefined,
+  role: string,
 ): Set<string> {
-  if (!writePaths?.length) throw new Error("Workflow configuration error: writers require at least one assigned Wiki page");
+  if (!writePaths?.length) throw new Error(`Workflow configuration error: ${role} require at least one assigned Wiki page`);
   const allowed = new Set<string>();
   for (const rawPath of writePaths) {
     if (typeof rawPath !== "string" || !rawPath) throw new Error("Workflow configuration error: invalid writer page path");
@@ -227,11 +256,15 @@ async function guardedMkdir(root: string, directory: string, allowedDirectories:
   await mkdir(directory, { recursive: true });
 }
 
-async function guardedWrite(root: string, file: string, content: string, allowedPaths: ReadonlySet<string>): Promise<void> {
+async function guardedWrite(root: string, file: string, content: string, allowedPaths: ReadonlySet<string>, control?: WikiWriteControl): Promise<void> {
   await ensureWikiRoot(root);
   assertExactWriterPath(allowedPaths, file);
   await assertContainedAbsolutePath(root, file, true);
-  await writeFile(file, content, "utf8");
+  const relative = path.relative(path.resolve(root), path.resolve(file)).split(path.sep).join("/");
+  const prepared = control ? await control.prepare(`wiki/${relative}`, content, "writer") : content;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeText(file, prepared);
+  await control?.committed(`wiki/${relative}`, "writer");
 }
 
 async function guardedRead(root: string, file: string, allowedPaths: ReadonlySet<string>): Promise<Buffer> {
@@ -261,7 +294,7 @@ async function guardedLeadMkdir(root: string, directory: string): Promise<void> 
   await mkdir(directory, { recursive: true });
 }
 
-async function guardedLeadWrite(root: string, file: string, content: string): Promise<void> {
+async function guardedLeadWrite(root: string, file: string, content: string, control?: WikiWriteControl): Promise<void> {
   await ensureWikiRoot(root);
   assertLeadMarkdownPath(root, file);
   const relative = path.relative(path.resolve(root), path.resolve(file)).split(path.sep).join("/");
@@ -270,7 +303,9 @@ async function guardedLeadWrite(root: string, file: string, content: string): Pr
   }
   await assertContainedAbsolutePath(root, file, true);
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, content, "utf8");
+  const prepared = control ? await control.prepare(`wiki/${relative}`, content, "lead") : content;
+  await writeText(file, prepared);
+  await control?.committed(`wiki/${relative}`, "lead");
 }
 
 async function guardedLeadRead(root: string, file: string): Promise<Buffer> {

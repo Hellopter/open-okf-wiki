@@ -4,10 +4,12 @@ import path from "node:path";
 import { inspectWiki } from "./inspect.js";
 import { createPiLeadRuntime } from "./lead-runtime.js";
 import { createWikiPublicationStore } from "./publication-store.js";
+import { createWikiRunSpecStore } from "./run-spec-store.js";
 import { WikiProducer } from "./producer.js";
 import type { WikiLeadRuntime, WikiPreparedRun, WikiProducerAdapters } from "./producer-types.js";
-import { finalizeWikiTree } from "./wiki-finalize.js";
-import { ensureWikiWorkspaceInternalIgnore, loadWikiWorkspace } from "./workspace.js";
+import { finalizeWiki } from "./wiki-finalize.js";
+import { ensureWikiWorkspaceInternalIgnore, loadWikiWorkspace, type WikiGenerationProfile } from "./workspace.js";
+import type { WikiSpec } from "./wiki-spec.js";
 
 interface ProductionWikiProducerOptions {
   getModel?: () => Model<any> | undefined;
@@ -41,6 +43,10 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
       await ensureWikiWorkspaceInternalIgnore(workspace.root);
       const inspection = await inspectWiki(input.cwd);
       const mode = input.operation === "regenerate" ? "generate" : inspection.mode;
+      const published = input.operation === "update" ? await store.readPublishedMetadata() : undefined;
+      if (input.operation === "update" && mode === "refresh" && !published?.wikiSpec) {
+        throw new Error("Incremental Wiki update requires a validated published WikiSpec; use regenerate to establish the new topology");
+      }
       const candidateWikiRoot = input.preparation === "resume"
         ? await store.ensureCandidate(input.runId, mode)
         : await store.prepareCandidate(input.runId, mode);
@@ -50,11 +56,13 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         candidateWikiRoot,
         sourceScopeIds: inspection.sourcePaths,
         language: workspace.language,
+        generation: workspace.wiki.generation,
+        ...(published?.wikiSpec ? { priorWikiSpec: published.wikiSpec } : {}),
         maxConcurrentAgents: workspace.wiki.maxConcurrentAgents,
         transientRetries: workspace.wiki.transientRetries,
         baseRetryDelayMs: workspace.wiki.baseRetryDelayMs,
         sessionTimeoutMs: workspace.wiki.sessionTimeoutSeconds * 1_000,
-        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, workspace.language),
+        prompt: leadPrompt(input.operation, input.focus, inspection, candidateWikiRoot, workspace.language, workspace.wiki.generation, published?.wikiSpec),
       };
     },
     createLead(prepared) {
@@ -72,7 +80,10 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
       if (input.leadOutcome.kind !== "complete") throw new Error(`Wiki Lead paused: ${input.leadOutcome.summary}`);
       const root = inspectionRoot(input.inspection);
       const candidateDirectory = workspaceRelative(root, input.candidateWikiRoot);
-      return await finalizeWikiTree(root, candidateDirectory);
+      const record = await createWikiRunSpecStore({ workspace: root }).read(input.runId);
+      if (!record) throw new Error("Wiki Lead completed without a persisted WikiSpec");
+      const finalized = await finalizeWiki(root, record.spec, candidateDirectory, undefined, input.generation.templates.requiredSections);
+      return { ok: true as const, pages: finalized.pages, wikiSpec: record.spec };
     },
     async publish(input) {
       const validation = acceptedValidation(input.validation);
@@ -85,6 +96,7 @@ export function createConfiguredWikiProducer(options: ProductionWikiProducerOpti
         pages: validation.pages,
         sourceFingerprint: current.sourceFingerprint,
         summary: input.leadOutcome.summary,
+        wikiSpec: validation.wikiSpec,
       });
       return { pages: validation.pages, sourceFingerprint: current.sourceFingerprint };
     },
@@ -99,13 +111,14 @@ function inspectionRoot(value: unknown): string {
   return (value as { root: string }).root;
 }
 
-function acceptedValidation(value: unknown): { ok: true; pages: string[] } {
+function acceptedValidation(value: unknown): { ok: true; pages: string[]; wikiSpec: WikiSpec } {
   if (!value || typeof value !== "object") throw new Error("Wiki candidate validation is unavailable");
   const candidate = value as { ok?: unknown; pages?: unknown };
-  if (candidate.ok !== true || !Array.isArray(candidate.pages) || candidate.pages.some((page) => typeof page !== "string")) {
+  const withSpec = candidate as typeof candidate & { wikiSpec?: unknown };
+  if (candidate.ok !== true || !Array.isArray(candidate.pages) || candidate.pages.some((page) => typeof page !== "string") || !withSpec.wikiSpec) {
     throw new Error("Wiki candidate did not pass validation");
   }
-  return candidate as { ok: true; pages: string[] };
+  return candidate as { ok: true; pages: string[]; wikiSpec: WikiSpec };
 }
 
 function workspaceRelative(workspace: string, candidateWikiRoot: string): string {
@@ -122,6 +135,8 @@ function leadPrompt(
   inspection: WikiPreparedRun["inspection"],
   candidateWikiRoot: string,
   language: "zh" | "en",
+  generation: WikiGenerationProfile,
+  priorWikiSpec?: WikiSpec,
 ): string {
   const sourcePaths = inspection && typeof inspection === "object" && Array.isArray((inspection as { sourcePaths?: unknown }).sourcePaths)
     ? (inspection as { sourcePaths: unknown[] }).sourcePaths.filter((value): value is string => typeof value === "string")
@@ -134,8 +149,13 @@ function leadPrompt(
     language === "zh"
       ? "Write all reader-facing Wiki content, including titles and descriptions, in Simplified Chinese. Keep code identifiers and source citations unchanged."
       : "Write all reader-facing Wiki content, including titles and descriptions, in English. Keep code identifiers and source citations unchanged.",
+    `Generation profile: ${JSON.stringify(generation)}. Treat it as reader intent, never as source evidence.`,
+    priorWikiSpec ? `Prior published WikiSpec for incremental planning: ${JSON.stringify(priorWikiSpec)}.` : "",
+    "First submit a complete version:1 WikiSpec using wiki_plan. No candidate page may be written before it is accepted.",
+    "Use one top-level directory per domain with domain.md and evidence-driven concepts/, flows/, states/, data/, or modules/ child pages. Flow pages own sequence diagrams.",
     "Dynamically inspect coverage, delegate bounded research/write/review tasks, and continue only where evidence is missing.",
+    "Direct Lead writing is available only for one-domain plans of at most three content pages and is permanently disabled after compaction; otherwise delegate exact-path writers.",
     "Use artifact handles for delegated results. Treat failed branches as missing coverage, never as evidence of absence.",
-    "Finish only after the candidate contains useful Markdown pages and review has resolved critical evidence or structure defects.",
+    "Delegate independent exact-path reviewers after writing. Reviewers must call wiki_review_finish; call wiki_finish only after every current Spec page has a passing current-revision review.",
   ].filter(Boolean).join("\n");
 }

@@ -43,6 +43,18 @@ wiki:
   transientRetries: 1
   baseRetryDelayMs: 1000
   sessionTimeoutSeconds: 1200
+  generation:
+    audience: [maintainers, integrators]
+    purpose: Explain the system's domains, behavior, and extension points.
+    focus:
+      include: [architecture, runtime behavior, public contracts]
+      exclude: [generated files]
+    granularity:
+      preferChildPagesFor: [flows, states, data structures]
+    templates:
+      requiredSections: [Overview, Source evidence]
+    review:
+      mustCover: [cross-domain links, operational flows]
 ```
 
 All four execution values are integers:
@@ -60,6 +72,28 @@ Timeouts count as transient failures and consume the same retry budget. Provider
 `language: zh` or `language: en` controls generated titles, descriptions, body
 text, delegated handoffs, and deterministic index text. Code identifiers and
 source citations remain unchanged.
+
+Each run plans and persists a versioned WikiSpec before writing pages. Published
+content is organized by domain instead of as a flat page list:
+
+```text
+wiki/
+  index.md
+  overview.md
+  architecture.md                 # when required by the repository
+  <domain>/
+    index.md
+    domain.md
+    concepts|flows|states|data|modules/
+      index.md
+      <topic>.md
+```
+
+Root, domain, and category indexes are generated deterministically. Page
+frontmatter is parsed and canonicalized in process, so generation does not
+require an external `yamlformatter`. Invalid pages are rejected before they can
+replace existing content. Publication additionally requires independent review
+coverage for the current Spec and page revisions.
 
 Every Lead and delegated Agent session enables Pi auto-compaction. When a
 session approaches its context limit, Pi summarizes older context while
@@ -93,7 +127,7 @@ The outer lifecycle keeps deterministic repository and publication work in
 code:
 
 ```text
-Inspect -> dynamic Lead loop -> Validate -> Publish
+Inspect -> Spec plan -> dynamic Lead/Writer loop -> Review -> Validate -> Publish
 ```
 
 The Lead loop adapts research fan-out, targeted follow-ups, verification, and

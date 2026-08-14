@@ -5,7 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parsePage } from "../dist/frontmatter.js";
-import { finalizeWiki, materializeWikiIndexes, validateWiki, validateWikiPage } from "../dist/validate.js";
+import {
+  canonicalizeWikiPageContent,
+  finalizeWiki,
+  materializeWikiIndexes,
+  materializeValidatedWikiIndexes,
+  validateWiki,
+  validateWikiPage,
+  validateWikiPageContent,
+} from "../dist/validate.js";
 
 const temporaryDirectories = [];
 
@@ -40,21 +48,31 @@ function spec({ pages, crossLinks = [] } = {}) {
     { path: "overview/overview.md", pageType: "overview", findingIds: [] },
     { path: "architecture/design.md", pageType: "architecture", findingIds: ["finding-api"] },
   ];
+  const normalized = selected.map((selectedPage) => ({
+    pageType: selectedPage.pageType,
+    path: selectedPage.path,
+    title: selectedPage.path,
+    purpose: "Document the target",
+    readerQuestions: [],
+    requiredFacets: [],
+    findingIds: selectedPage.findingIds,
+  }));
+  const overview = normalized[0];
+  const architecture = normalized.find((page) => page !== overview && page.pageType === "architecture");
+  const domainPages = normalized.filter((page) => page !== overview && page !== architecture);
   return {
-    domains: selected.map((selectedPage) => ({
+    version: 1,
+    overview,
+    ...(architecture ? { architecture } : {}),
+    domains: normalized.map((selectedPage) => ({
       id: selectedPage.path.split("/", 1)[0],
       title: `${selectedPage.path.split("/", 1)[0]} domain`,
       purpose: "Document the target",
-      pages: [{
-        pageType: selectedPage.pageType,
-        path: selectedPage.path,
-        title: selectedPage.path,
-        purpose: "Document the target",
-        findingIds: selectedPage.findingIds,
-      }],
+      pages: domainPages.includes(selectedPage) ? [selectedPage] : [],
     })),
     crossLinks,
     sharedTerms: [],
+    omissions: [],
   };
 }
 
@@ -147,6 +165,64 @@ test("page validation checks only local content and planned outgoing links", asy
     page: "overview/overview.md",
     message: "Declared cross-link is missing: overview/overview.md -> architecture/design.md",
   }]);
+});
+
+test("content validation rejects invalid writer output before touching the candidate", async () => {
+  const root = await fixture();
+  const target = spec();
+  await writePage(root, "overview/overview.md");
+  const before = await readFile(path.join(root, "wiki", "overview", "overview.md"), "utf8");
+  const invalid = page({
+    description: "",
+    body: "## Present\n\n```mermaid\nflowchart TD\n  click A callback\n```\n",
+  });
+
+  assert.deepEqual(
+    await validateWikiPageContent(root, target, "overview/overview.md", invalid.replace("type: __AUTO__", "type: Overview"), "wiki", undefined, ["Required"]),
+    [{ code: "frontmatter", page: "overview/overview.md", message: "Frontmatter requires a non-empty description" },
+      { code: "mermaid-policy", page: "overview/overview.md", message: "Mermaid fence on line 4 is invalid: interactive Mermaid click actions are not allowed" },
+      { code: "required-section", page: "overview/overview.md", message: "Required section is missing: Required" }],
+  );
+  assert.equal(await readFile(path.join(root, "wiki", "overview", "overview.md"), "utf8"), before);
+
+  const unformatted = before.replace("title: Example", "title:   Example");
+  const canonical = canonicalizeWikiPageContent(unformatted);
+  assert.equal(canonicalizeWikiPageContent(canonical), canonical);
+  assert.equal(parsePage(canonical).frontmatter.title, "Example");
+});
+
+test("finalization revalidates required sections even when pre-write validation was bypassed", async () => {
+  const root = await fixture();
+  const target = spec();
+  await writePage(root, "overview/overview.md");
+  await writePage(root, "architecture/design.md");
+  const publicationAt = "2026-08-11T00:00:00.000Z";
+
+  await assert.rejects(
+    finalizeWiki(root, target, "wiki", publicationAt, ["Operational guarantees"]),
+    /Required section is missing: Operational guarantees/,
+  );
+  await assert.rejects(readFile(path.join(root, "wiki", "index.md"), "utf8"));
+  assert.equal(Object.hasOwn(parsePage(await readFile(path.join(root, "wiki", "overview", "overview.md"), "utf8")).frontmatter, "verified"), false);
+});
+
+test("review indexes materialize only after all pages pass final deterministic checks", async () => {
+  const root = await fixture();
+  const target = spec();
+  await writePage(root, "overview/overview.md", page({ body: "## Required\n" }));
+  await writePage(root, "architecture/design.md", page({ body: "## Required\n" }));
+
+  assert.deepEqual(
+    await materializeValidatedWikiIndexes(root, target, "wiki", undefined, ["Required"]),
+    ["architecture/index.md", "index.md", "overview/index.md"],
+  );
+  await writePage(root, "architecture/design.md");
+  const indexBefore = await readFile(path.join(root, "wiki", "index.md"), "utf8");
+  await assert.rejects(
+    materializeValidatedWikiIndexes(root, target, "wiki", undefined, ["Required"]),
+    /Required section is missing: Required/,
+  );
+  assert.equal(await readFile(path.join(root, "wiki", "index.md"), "utf8"), indexBefore);
 });
 
 test("page validation enforces the Spec type and rejects publisher-owned trust fields", async () => {
@@ -446,8 +522,57 @@ test("deep indexes include a localized deterministic concept count", async () =>
 
   assert.equal(
     await readFile(path.join(root, "wiki", "core", "flows", "index.md"), "utf8"),
-    "# flows\n\n1 个概念页面\n\n## Pages\n\n- [Example](./request.md): Example documentation\n",
+    "# 流程\n\n1 个流程页面\n\n## Pages\n\n- [Example](./request.md): Example documentation\n",
   );
+});
+
+test("standard topology creates root, domain, and localized category indexes", async () => {
+  const root = await fixture();
+  const metadata = (pageType, pagePath) => ({
+    pageType,
+    path: pagePath,
+    title: pagePath,
+    purpose: "Document the target",
+    readerQuestions: [],
+    requiredFacets: [],
+    findingIds: [],
+  });
+  const target = {
+    version: 1,
+    overview: metadata("overview", "overview.md"),
+    architecture: metadata("architecture", "architecture.md"),
+    domains: [{
+      id: "payments",
+      title: "Payments",
+      purpose: "Payment lifecycle",
+      pages: [
+        metadata("domain", "payments/domain.md"),
+        metadata("concept", "payments/concepts/payment.md"),
+        metadata("flow", "payments/flows/authorization.md"),
+        metadata("state", "payments/states/payment.md"),
+        metadata("data", "payments/data/payment.md"),
+      ],
+    }],
+    crossLinks: [],
+    sharedTerms: [],
+    omissions: [],
+  };
+  for (const targetPage of [target.overview, target.architecture, ...target.domains[0].pages]) {
+    await writePage(root, targetPage.path, page({ type: `${targetPage.pageType[0].toUpperCase()}${targetPage.pageType.slice(1)}` }));
+  }
+
+  assert.deepEqual(await materializeWikiIndexes(root, target), [
+    "index.md",
+    "payments/concepts/index.md",
+    "payments/data/index.md",
+    "payments/flows/index.md",
+    "payments/index.md",
+    "payments/states/index.md",
+  ]);
+  assert.match(await readFile(path.join(root, "wiki", "payments", "flows", "index.md"), "utf8"), /^# 流程\n\n1 个流程页面/m);
+  assert.match(await readFile(path.join(root, "wiki", "payments", "states", "index.md"), "utf8"), /^# 状态\n\n1 个状态页面/m);
+  assert.match(await readFile(path.join(root, "wiki", "payments", "data", "index.md"), "utf8"), /^# 数据结构\n\n1 个数据结构页面/m);
+  assert.deepEqual((await validateWiki(root, target)).issues, []);
 });
 
 test("index projection renders all model-authored metadata as inert text", async () => {
@@ -554,48 +679,13 @@ test("a partially failed finalization can be retried", async () => {
   assert.equal(await readFile(path.join(root, "wiki", "overview", "index.md"), "utf8"), "# overview domain\n\nDocument the target\n\n## Pages\n\n- [Example](./overview.md): Example documentation\n");
 });
 
-test("rejects unsafe Spec paths without touching the Wiki tree", async () => {
+test("rejects an unsafe writer-requested page path before reading the Wiki tree", async () => {
   const root = await fixture();
-  const target = spec({ pages: [{ path: "../escape.md", pageType: "concept", findingIds: ["finding-api"] }] });
+  const target = spec();
 
-  assert.deepEqual(await validateWiki(root, target), {
-    ok: false,
-    issues: [{ code: "spec-page", message: "Spec contains an unsafe or reserved page path: ../escape.md" }],
-    pages: [],
-    obsoletePages: [],
-  });
-  await assert.rejects(finalizeWiki(root, target), /unsafe or reserved page path/);
-});
-
-test("accepts root-level concept page paths", async () => {
-  const root = await fixture();
-  const pages = ["architecture.md", "configuration.md", "domain-model.md", "features.md", "testing.md"];
-  const target = spec({
-    pages: pages.map((pagePath) => ({ path: pagePath, pageType: "concept", findingIds: ["finding-api"] })),
-  });
-  for (const pagePath of pages) await writePage(root, pagePath);
-  await materializeWikiIndexes(root, target);
-
-  assert.deepEqual(await validateWiki(root, target), {
-    ok: true,
-    issues: [],
-    pages,
-    obsoletePages: [],
-  });
-});
-
-test("rejects index-injection Spec paths before finalization writes an index", async () => {
-  for (const unsafePath of [
-    "core/a](javascript:alert(1)).md",
-    "core/page\n- [injected](javascript:alert(1)).md",
-  ]) {
-    const root = await fixture();
-    const target = spec({ pages: [{ path: unsafePath, pageType: "concept", findingIds: ["finding-api"] }] });
-
-    const validation = await validateWiki(root, target);
-    assert.equal(validation.ok, false);
-    assert.equal(validation.issues[0].code, "spec-page");
-    await assert.rejects(finalizeWiki(root, target), /unsafe or reserved page path/);
-    await assert.rejects(readFile(path.join(root, "wiki", "index.md"), "utf8"));
-  }
+  assert.deepEqual(await validateWikiPage(root, target, "../escape.md"), [{
+    code: "spec-page",
+    page: "../escape.md",
+    message: "Page is unsafe or reserved: ../escape.md",
+  }]);
 });

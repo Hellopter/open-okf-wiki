@@ -2,7 +2,7 @@ import { lstat, readdir, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parsePage, stringifyPage } from "./frontmatter.js";
 import { readText } from "./files.js";
-import type { WikiFinalization, WikiValidation } from "./types.js";
+import type { WikiFinalization } from "./types.js";
 import type { WikiSpec } from "./wiki-spec.js";
 import { materializeWikiIndexes } from "./wiki-indexes.js";
 import { isReservedWikiPagePath } from "./wiki-path.js";
@@ -19,21 +19,7 @@ import {
   scanWikiTree,
   specPagePaths,
   validateWikiCandidate,
-  validateWiki,
-  validateWikiTree,
-  deriveWikiCandidate,
 } from "./wiki-validate.js";
-
-/** Validate, finalize and revalidate a candidate whose manifest is derived from its files. */
-export async function finalizeWikiTree(root: string, wikiDirectory: string): Promise<WikiValidation> {
-  const before = await validateWikiTree(root, wikiDirectory);
-  if (!before.ok) throw new Error(`Wiki candidate is invalid: ${before.issues.map(formatIssue).join("; ")}`);
-  const { spec } = await deriveWikiCandidate(root, wikiDirectory);
-  await finalizeWiki(root, spec, wikiDirectory);
-  const after = await validateWiki(root, spec, wikiDirectory);
-  if (!after.ok) throw new Error(`Wiki candidate is invalid after finalization: ${after.issues.map(formatIssue).join("; ")}`);
-  return after;
-}
 
 /**
  * Apply the deterministic Wiki lifecycle after semantic review has passed.
@@ -44,9 +30,10 @@ export async function finalizeWiki(
   spec: WikiSpec,
   wikiDirectory = "wiki",
   publicationAt = new Date().toISOString(),
+  requiredSections: readonly string[] = [],
 ): Promise<WikiFinalization> {
   assertPublicationTimestamp(publicationAt);
-  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false);
+  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false, undefined, requiredSections);
   if (!validation.ok) {
     throw new Error(`Wiki finalization requires a valid target Wiki: ${validation.issues.map(formatIssue).join("; ")}`);
   }
@@ -84,6 +71,25 @@ export async function finalizeWiki(
     removedPages: removedPages.sort(),
     rebuiltIndexes,
   };
+}
+
+/** Build review navigation only after every current Spec page passes deterministic validation. */
+export async function materializeValidatedWikiIndexes(
+  root: string,
+  spec: WikiSpec,
+  wikiDirectory = "wiki",
+  excludedPaths?: readonly string[],
+  requiredSections: readonly string[] = [],
+): Promise<string[]> {
+  const validation = await validateWikiCandidate(root, spec, wikiDirectory, false, excludedPaths, requiredSections);
+  if (!validation.ok) {
+    throw new Error(`Wiki indexes require valid target pages: ${validation.issues.map(formatIssue).join("; ")}`);
+  }
+  const targetPages = specPagePaths(spec);
+  if (!sameStrings(validation.pages, targetPages)) {
+    throw new Error("Wiki indexes require every target page to exist");
+  }
+  return materializeWikiIndexes(root, spec, wikiDirectory);
 }
 
 async function stampWikiPages(wikiRoot: string, targetPages: readonly string[], publicationAt: string): Promise<void> {

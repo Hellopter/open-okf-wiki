@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ensureWikiWorkspaceInternalIgnore } from "./workspace.js";
+import { parseWikiSpec, type WikiSpec } from "./wiki-spec.js";
 
 const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -14,12 +15,22 @@ export interface WikiPublishJournal {
   hadPublishedWiki: boolean;
   preparedAt: string;
   updatedAt: string;
-  publishedMetadata?: Record<string, unknown>;
+  publishedMetadata: WikiPublicationMetadataInput;
 }
 
 export interface WikiPublishRecovery {
   runId: string;
   outcome: "none" | "committed" | "rolled_back";
+}
+
+export type WikiPublicationMetadataInput = Record<string, unknown> & { wikiSpec: WikiSpec };
+
+export interface WikiPublishedMetadata {
+  version: 1;
+  runId: string;
+  publishedAt: string;
+  wikiSpec: WikiSpec;
+  [key: string]: unknown;
 }
 
 export interface WikiPublicationStore {
@@ -28,10 +39,12 @@ export interface WikiPublicationStore {
   /** Resume an existing candidate, or prepare it when this run has not written yet. */
   ensureCandidate(runId: string, mode?: "generate" | "refresh"): Promise<string>;
   /** Atomically replace published `wiki/` using a recoverable rename journal. */
-  publish(runId: string, metadata?: Record<string, unknown>): Promise<WikiPublishJournal>;
+  publish(runId: string, metadata: WikiPublicationMetadataInput): Promise<WikiPublishJournal>;
   recover(runId: string): Promise<WikiPublishRecovery>;
   recoverPending(): Promise<WikiPublishRecovery[]>;
   readJournal(runId: string): Promise<WikiPublishJournal | undefined>;
+  /** Load the final WikiSpec and accompanying metadata used by refresh planning. */
+  readPublishedMetadata(): Promise<WikiPublishedMetadata | undefined>;
 }
 
 export interface WikiPublicationStoreOptions {
@@ -80,7 +93,29 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
       await assertRegularFileOrMissing(journal, "Wiki publish journal");
       const value = JSON.parse(await readFile(journal, "utf8")) as unknown;
       if (!isPublishJournal(value, runId)) throw new Error(`Invalid Wiki publish journal for run ${runId}`);
-      return value;
+      return { ...value, publishedMetadata: parsePublicationMetadata(value.publishedMetadata) };
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+  };
+
+  const readPublishedMetadata = async (): Promise<WikiPublishedMetadata | undefined> => {
+    try {
+      await assertRegularFileOrMissing(publishedMetadataFile, "published Wiki metadata");
+      const value = JSON.parse(await readFile(publishedMetadataFile, "utf8")) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid published Wiki metadata");
+      const metadata = value as Record<string, unknown>;
+      if (metadata.version !== 1 || typeof metadata.runId !== "string" || !SAFE_RUN_ID.test(metadata.runId) || typeof metadata.publishedAt !== "string") {
+        throw new Error("Invalid published Wiki metadata");
+      }
+      return {
+        ...metadata,
+        version: 1,
+        runId: metadata.runId,
+        publishedAt: metadata.publishedAt,
+        wikiSpec: parseWikiSpec(metadata.wikiSpec),
+      };
     } catch (error) {
       if (isMissing(error)) return undefined;
       throw error;
@@ -185,7 +220,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
       });
     },
 
-    async publish(runId, metadata = {}): Promise<WikiPublishJournal> {
+    async publish(runId, metadata): Promise<WikiPublishJournal> {
       return await enqueue(async () => {
         await ensureWikiWorkspaceInternalIgnore(workspace);
         await ensureInternalRoot(okfRoot);
@@ -196,6 +231,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
         await assertDirectoryOrMissing(publishedWiki, "published Wiki");
         await rm(paths.backup, { recursive: true, force: true });
 
+        const normalizedMetadata = parsePublicationMetadata(metadata);
         const timestamp = now();
         let journal: WikiPublishJournal = {
           version: 1,
@@ -204,7 +240,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
           hadPublishedWiki: await exists(publishedWiki),
           preparedAt: timestamp,
           updatedAt: timestamp,
-          publishedMetadata: structuredClone(metadata),
+          publishedMetadata: normalizedMetadata,
         };
         await writeJournal(paths.journal, journal);
         await options.afterStep?.("prepared");
@@ -260,6 +296,7 @@ export function createWikiPublicationStore(options: WikiPublicationStoreOptions)
     },
 
     readJournal,
+    readPublishedMetadata,
   };
 }
 
@@ -271,10 +308,10 @@ async function finishCommit(
 ): Promise<WikiPublishJournal> {
   const updatedAt = now();
   await writeAtomic(publishedMetadataFile, `${JSON.stringify({
+    ...journal.publishedMetadata,
     version: 1,
     runId: journal.runId,
     publishedAt: updatedAt,
-    ...journal.publishedMetadata,
   })}\n`);
   await rm(backup, { recursive: true, force: true });
   return { ...journal, state: "committed", updatedAt };
@@ -370,7 +407,14 @@ function isPublishJournal(value: unknown, runId: string): value is WikiPublishJo
   return candidate.version === 1 && candidate.runId === runId
     && ["prepared", "backed_up", "installed", "committed", "rolled_back"].includes(candidate.state ?? "")
     && typeof candidate.hadPublishedWiki === "boolean"
-    && typeof candidate.preparedAt === "string" && typeof candidate.updatedAt === "string";
+    && typeof candidate.preparedAt === "string" && typeof candidate.updatedAt === "string"
+    && Boolean(candidate.publishedMetadata) && typeof candidate.publishedMetadata === "object";
+}
+
+function parsePublicationMetadata(value: unknown): WikiPublicationMetadataInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Wiki publication metadata must be an object with wikiSpec");
+  const metadata = structuredClone(value) as Record<string, unknown>;
+  return { ...metadata, wikiSpec: parseWikiSpec(metadata.wikiSpec) };
 }
 
 function assertRunId(runId: string): void {

@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { parsePage } from "../dist/frontmatter.js";
 import { createConfiguredWikiProducer } from "../dist/production.js";
+import { createWikiRunSpecStore } from "../dist/run-spec-store.js";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-production-"));
@@ -16,11 +17,11 @@ async function fixture(t) {
   return root;
 }
 
-function validPage() {
+function validPage(type = "Concept", title = "Runtime") {
   return [
     "---",
-    "type: Concept",
-    "title: Runtime",
+    `type: ${type}`,
+    `title: ${title}`,
     "description: Runtime behavior",
     "sources:",
     "  - id: runtime-source",
@@ -34,10 +35,26 @@ function validPage() {
   ].join("\n");
 }
 
+function testSpec() {
+  const page = (pageType, pagePath, title) => ({ pageType, path: pagePath, title, purpose: "Runtime behavior", readerQuestions: [], requiredFacets: [], findingIds: [] });
+  return {
+    version: 1,
+    overview: page("overview", "overview.md", "Overview"),
+    domains: [{ id: "runtime", title: "Runtime", purpose: "Runtime behavior", pages: [
+      page("domain", "runtime/domain.md", "Runtime domain"),
+      page("concept", "runtime/concepts/runtime.md", "Runtime"),
+    ] }],
+    crossLinks: [], sharedTerms: [], omissions: [],
+  };
+}
+
 async function writeCandidate(request, content = validPage()) {
-  const directory = path.join(request.candidateWikiRoot, "runtime");
+  const directory = path.join(request.candidateWikiRoot, "runtime", "concepts");
   await mkdir(directory, { recursive: true });
+  await writeFile(path.join(request.candidateWikiRoot, "overview.md"), validPage("Overview", "Overview"), "utf8");
+  await writeFile(path.join(request.candidateWikiRoot, "runtime", "domain.md"), validPage("Domain", "Runtime domain"), "utf8");
   await writeFile(path.join(directory, "runtime.md"), content, "utf8");
+  await createWikiRunSpecStore({ workspace: request.cwd }).save(request.runId, testSpec());
 }
 
 test("production rejects an invalid candidate before publication", async (t) => {
@@ -51,7 +68,7 @@ test("production rejects an invalid candidate before publication", async (t) => 
     }),
   });
   const run = await producer.start({ cwd: root });
-  await assert.rejects(run.result(), /Wiki candidate is invalid/);
+  await assert.rejects(run.result(), /Wiki finalization requires a valid target Wiki/);
   await assert.rejects(readFile(path.join(root, "wiki", "runtime", "runtime.md"), "utf8"), { code: "ENOENT" });
 });
 
@@ -95,14 +112,14 @@ test("production passes workspace language and Agent policy to the Lead", async 
   assert.match(prepared.prompt, /Simplified Chinese/);
 });
 
-test("production publishes a root-level concept page and preserves reserved log", async (t) => {
+test("production publishes a Spec topology and preserves reserved log", async (t) => {
   const root = await fixture(t);
   const log = "# Change history\n\n- Added architecture documentation.\n";
   const producer = createConfiguredWikiProducer({
     createLead: () => ({
       async run(request) {
         await request.report("Writing architecture page", { stage: "lead" });
-        await writeFile(path.join(request.candidateWikiRoot, "architecture.md"), validPage(), "utf8");
+        await writeCandidate(request);
         await writeFile(path.join(request.candidateWikiRoot, "log.md"), log, "utf8");
         return { kind: "complete", summary: "root page" };
       },
@@ -114,12 +131,29 @@ test("production publishes a root-level concept page and preserves reserved log"
   const view = await run.view();
   assert.ok(view.progress);
   assert.equal(typeof view.progress.stage, "string");
-  assert.deepEqual(result.pages, ["architecture.md"]);
-  const published = parsePage(await readFile(path.join(root, "wiki", "architecture.md"), "utf8"));
+  assert.deepEqual(result.pages, ["overview.md", "runtime/concepts/runtime.md", "runtime/domain.md"]);
+  const published = parsePage(await readFile(path.join(root, "wiki", "runtime", "concepts", "runtime.md"), "utf8"));
   assert.equal(published.frontmatter.generated.by, "open-okf-wiki/1.0.0");
   assert.equal(published.frontmatter.verified.by, "process:open-okf-wiki");
   assert.equal(await readFile(path.join(root, "wiki", "log.md"), "utf8"), log);
-  assert.match(await readFile(path.join(root, "wiki", "index.md"), "utf8"), /\[Runtime\]\(\.\/architecture\.md\)/);
+  assert.match(await readFile(path.join(root, "wiki", "index.md"), "utf8"), /\[Overview\]\(\.\/overview\.md\)/);
+});
+
+test("incremental prepare injects the required published WikiSpec", async (t) => {
+  const root = await fixture(t);
+  const initial = createConfiguredWikiProducer({ createLead: () => ({
+    async run(request) { await writeCandidate(request); return { kind: "complete", summary: "initial" }; },
+  }) });
+  await (await initial.start({ cwd: root, operation: "regenerate" })).result();
+
+  let prepared;
+  const update = createConfiguredWikiProducer({ createLead(input) {
+    prepared = input;
+    return { async run() { throw new Error("stop after incremental prepare"); } };
+  } });
+  await assert.rejects((await update.start({ cwd: root, operation: "update" })).result(), /stop after incremental prepare/);
+  assert.deepEqual(prepared.priorWikiSpec, testSpec());
+  assert.match(prepared.prompt, /Prior published WikiSpec for incremental planning/);
 });
 
 test("resume preserves the existing candidate instead of preparing it again", async (t) => {
@@ -129,7 +163,7 @@ test("resume preserves the existing candidate instead of preparing it again", as
     createLead: () => ({
       async run(request) {
         attempt += 1;
-        const page = path.join(request.candidateWikiRoot, "runtime", "runtime.md");
+        const page = path.join(request.candidateWikiRoot, "runtime", "concepts", "runtime.md");
         if (attempt === 1) {
           await writeCandidate(request);
           return { kind: "pause", reason: "quota", summary: "wait" };
@@ -145,7 +179,7 @@ test("resume preserves the existing candidate instead of preparing it again", as
   await run.control("resume");
   const result = await run.result();
   assert.equal(result.summary, "resumed");
-  assert.deepEqual(result.pages, ["runtime/runtime.md"]);
+  assert.deepEqual(result.pages, ["overview.md", "runtime/concepts/runtime.md", "runtime/domain.md"]);
 });
 
 test("production rejects publication when repository sources drift", async (t) => {
@@ -182,6 +216,6 @@ test("resume rejects source drift before re-entering Lead and never mixes the ca
   await run.control("resume");
   await assert.rejects(run.result(), /sources changed while the Wiki run was paused/);
   assert.equal(leadCalls, 1);
-  assert.equal(await readFile(path.join(root, ".okf-wiki", "runs", run.id, "candidate", "wiki", "runtime", "runtime.md"), "utf8"), validPage());
-  await assert.rejects(readFile(path.join(root, "wiki", "runtime", "runtime.md"), "utf8"), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(root, ".okf-wiki", "runs", run.id, "candidate", "wiki", "runtime", "concepts", "runtime.md"), "utf8"), validPage());
+  await assert.rejects(readFile(path.join(root, "wiki", "runtime", "concepts", "runtime.md"), "utf8"), { code: "ENOENT" });
 });

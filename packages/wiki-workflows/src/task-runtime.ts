@@ -12,6 +12,7 @@ import {
   type WikiTaskFailureCode,
 } from "./delegate-contracts.js";
 import type { WikiAgentTarget, WikiAgentTelemetry, WikiContextStats } from "./producer-types.js";
+import type { WikiReviewResult } from "./workflow-state.js";
 
 type WikiObservabilityHealth = { target: WikiAgentTarget; status: "degraded" | "healthy"; at: string; message?: string };
 import { isSafeWikiPagePath } from "./wiki-path.js";
@@ -46,6 +47,7 @@ export interface WikiLeafResult {
   gaps?: WikiDelegateGap[];
   status?: "complete" | "incomplete";
   usage?: WikiContextStats;
+  review?: WikiReviewResult;
 }
 
 export interface WikiLeafAgent {
@@ -148,7 +150,7 @@ export class WikiTaskRuntime {
         await this.fireProgress({ phase: "start", task, telemetry: startedTelemetry });
         const result = await this.options.agent.run(task, this.contextFor(task, batch, attempt, signal, onTelemetry));
         const output = await this.persist(task, attempt, result.markdown);
-        const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt);
+        const successReceipt = receipt(task, result.status ?? "complete", result.summary, [...acceptedOutputs, output], [...acceptedCoverage, ...(result.coverage ?? [])], [...acceptedGaps, ...(result.gaps ?? [])], undefined, attempt, result.review);
         await this.fireProgress({ phase: "end", task, receipt: successReceipt, usage: result.usage ?? latestTelemetry?.usage, telemetry: latestTelemetry });
         return successReceipt;
       } catch (error) {
@@ -254,11 +256,17 @@ function validateBatch(tasks: readonly WikiDelegateTask[], options: WikiTaskRunt
     }
     if (task.role === "write" && !task.writePaths?.length) throw new Error(`Write task ${task.id} requires writePaths`);
     if (task.role !== "write" && task.writePaths?.length) throw new Error(`Only write tasks may declare writePaths: ${task.id}`);
+    if (task.role === "review" && !task.reviewPaths?.length) throw new Error(`Review task ${task.id} requires reviewPaths`);
+    if (task.role !== "review" && task.reviewPaths?.length) throw new Error(`Only review tasks may declare reviewPaths: ${task.id}`);
     for (const value of task.writePaths ?? []) {
       const relative = typeof value === "string" && value.startsWith("wiki/") ? value.slice("wiki/".length) : undefined;
       if (!isSafeWikiPagePath(relative)) throw new Error(`Unsafe Wiki write path: ${value}`);
       if (writes.has(value)) throw new Error(`Delegate writePaths overlap within batch: ${value}`);
       writes.add(value);
+    }
+    for (const value of task.reviewPaths ?? []) {
+      const relative = typeof value === "string" && value.startsWith("wiki/") ? value.slice("wiki/".length) : undefined;
+      if (!isSafeWikiPagePath(relative)) throw new Error(`Unsafe Wiki review path: ${value}`);
     }
   }
 }
@@ -272,6 +280,7 @@ function receipt(
   gaps: WikiDelegateGap[] = [],
   failure?: ClassifiedFailure,
   attempts = 1,
+  review?: WikiReviewResult,
 ): WikiDelegateReceipt {
   return {
     id: task.id,
@@ -283,6 +292,7 @@ function receipt(
     gaps,
     error: failure && { code: failure.code, message: failure.message, retryable: failure.retryable, retryAfterMs: failure.retryAfterMs },
     attempts,
+    ...(review ? { review } : {}),
   };
 }
 

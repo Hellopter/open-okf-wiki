@@ -1,3 +1,6 @@
+import type { WikiGenerationProfile } from "./workspace.js";
+import type { WikiSpec } from "./wiki-spec.js";
+
 export type WikiProducerOperation = "update" | "regenerate";
 
 export type WikiRunStatus = "running" | "paused" | "succeeded" | "failed" | "cancelled";
@@ -222,6 +225,9 @@ export interface WikiPreparedRun {
   candidateWikiRoot: string;
   sourceScopeIds: string[];
   language: "zh" | "en";
+  generation: WikiGenerationProfile;
+  /** Last published topology supplied to incremental planning. */
+  priorWikiSpec?: WikiSpec;
   maxConcurrentAgents: number;
   transientRetries: number;
   /** Per-session wall-clock deadline, converted from workspace seconds. */

@@ -66,6 +66,10 @@ test("initializes explicit workspace defaults and normalized Wiki excludes", asy
   assert.equal(workspace.wiki.transientRetries, 1);
   assert.equal(workspace.wiki.baseRetryDelayMs, 1000);
   assert.equal(workspace.wiki.sessionTimeoutSeconds, 1200);
+  assert.deepEqual(workspace.wiki.generation, {
+    audience: [], purpose: "", focus: { include: [], exclude: [] },
+    granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] },
+  });
   assert.deepEqual(workspace.sources, []);
   assert.match(await readFile(workspace.configPath, "utf8"), /language: zh/);
   await assert.rejects(wikiWorkspaceManagement.init({ cwd: parent, workspace: "docs" }), /already exists/);
@@ -98,6 +102,10 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
     transientRetries: 3,
     baseRetryDelayMs: 2500,
     sessionTimeoutSeconds: 3600,
+    generation: {
+      audience: [], purpose: "", focus: { include: [], exclude: [] },
+      granularity: { preferChildPagesFor: [] }, templates: { requiredSections: [] }, review: { mustCover: [] },
+    },
   });
 
   for (const [valid, invalid] of [
@@ -110,6 +118,36 @@ test("loads configurable Wiki concurrency and transient retry policy", async () 
   ]) {
     await writeFile(configPath, validConfig.replace(valid, invalid));
     await assert.rejects(loadWikiWorkspace(root), /must be an integer/);
+  }
+});
+
+test("strictly loads the complete Wiki generation profile", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "okf-wiki-generation-profile-"));
+  temporaryDirectories.push(parent);
+  const root = await repository(parent, "configured");
+  const configPath = path.join(root, "workspace.yaml");
+  const config = [
+    "version: 1", "language: en", "defaultSourceIgnores: true", "wiki:", "  generation:",
+    "    audience: [operators, maintainers, operators]", "    purpose: Operational reference", "    focus:",
+    "      include: [payments]", "      exclude: [generated]", "    granularity:",
+    "      preferChildPagesFor: [lifecycles]", "    templates:", "      requiredSections: [Failure modes]",
+    "    review:", "      mustCover: [cross-domain contracts]", "sources: []", "",
+  ].join("\n");
+  await writeFile(configPath, config);
+  assert.deepEqual((await loadWikiWorkspace(root)).wiki.generation, {
+    audience: ["operators", "maintainers"], purpose: "Operational reference",
+    focus: { include: ["payments"], exclude: ["generated"] },
+    granularity: { preferChildPagesFor: ["lifecycles"] },
+    templates: { requiredSections: ["Failure modes"] }, review: { mustCover: ["cross-domain contracts"] },
+  });
+
+  for (const invalid of [
+    config.replace("      include: [payments]", "      unknown: [payments]"),
+    config.replace("    purpose: Operational reference", "    purpose: []"),
+    config.replace("      mustCover: [cross-domain contracts]", "      mustCover: [\"\"]"),
+  ]) {
+    await writeFile(configPath, invalid);
+    await assert.rejects(loadWikiWorkspace(root), /unknown field|must be a string|array of non-empty strings/);
   }
 });
 

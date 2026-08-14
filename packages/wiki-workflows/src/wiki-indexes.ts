@@ -19,9 +19,7 @@ import {
 
 /** Replace the deterministic index projection without modifying concept pages. */
 export async function materializeWikiIndexes(root: string, spec: WikiSpec, wikiDirectory = "wiki"): Promise<string[]> {
-  const specIssues: WikiValidationIssue[] = [];
-  const targetPages = specPagePaths(spec, specIssues);
-  if (specIssues.length) throw new Error(`Cannot materialize Wiki indexes: ${specIssues.map(formatIssue).join("; ")}`);
+  const targetPages = specPagePaths(spec);
 
   const roots = await resolveWikiRoots(root, wikiDirectory);
   const tree = await scanWikiTree(roots.wiki);
@@ -167,14 +165,30 @@ function directoryDescriptor(
 ): { description: string; title: string } {
   if (!relativeDirectory) return { title: "Wiki", description: "" };
   if (!relativeDirectory.includes("/")) {
-    const domain = spec.domains.find((candidate) => candidate.pages.some((page) => page.path.startsWith(`${relativeDirectory}/`)));
+    const domain = spec.domains.find((candidate) => candidate.id === relativeDirectory);
     if (domain) return { title: normalizeIndexText(domain.title), description: normalizeIndexText(domain.purpose) };
   }
   const count = targetPages.filter((page) => page.startsWith(`${relativeDirectory}/`)).length;
+  const category = categoryDescriptor(path.posix.basename(relativeDirectory), language);
   return {
-    title: path.posix.basename(relativeDirectory),
-    description: language === "zh" ? `${count} 个概念页面` : `${count} concept ${count === 1 ? "page" : "pages"}`,
+    title: category.title,
+    description: language === "zh"
+      ? `${count} 个${category.unit}页面`
+      : `${count} ${category.unit} ${count === 1 ? "page" : "pages"}`,
   };
+}
+
+function categoryDescriptor(category: string, language: "zh" | "en"): { title: string; unit: string } {
+  const labels: Record<string, { en: string; zh: string }> = {
+    concepts: { en: "Concepts", zh: "概念" },
+    flows: { en: "Flows", zh: "流程" },
+    states: { en: "States", zh: "状态" },
+    data: { en: "Data Structures", zh: "数据结构" },
+    modules: { en: "Modules", zh: "模块" },
+  };
+  const label = labels[category];
+  const title = label?.[language] ?? category;
+  return { title, unit: language === "zh" ? title : title.toLocaleLowerCase("en-US") };
 }
 
 async function assertSafeDirectoryChain(wikiRoot: string, relative: string): Promise<void> {

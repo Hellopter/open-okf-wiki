@@ -11,12 +11,19 @@ import {
 import type { Model } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { workflowTools, workspaceToolPolicy } from "./agent-tools.js";
+import { workflowTools, workspaceToolPolicy, type WikiWriteControl } from "./agent-tools.js";
 import { createWikiArtifactStore, type WikiArtifactStore } from "./artifact-store.js";
 import { boundedDelegateSummary, WikiTaskExecutionError, WikiTaskPauseError, type WikiDelegateBatchReceipt, type WikiDelegateTask } from "./delegate-contracts.js";
 import type { WikiAgentTelemetry, WikiContextStats, WikiLeadRuntime, WikiTaskSnapshot } from "./producer-types.js";
 import { PiSessionObserver, readSessionUsage, type PiSessionObserverOptions } from "./pi-session-observer.js";
 import { classifyTaskFailure, WikiTaskRuntime, type WikiLeafAgent, type WikiLeafResult, type WikiLeafTaskContext, type WikiTaskProgressEvent } from "./task-runtime.js";
+import { createWikiRunSpecStore, type WikiRunSpecRecord } from "./run-spec-store.js";
+import { parseWikiSpec, wikiSpecPagePaths, wikiSpecPages, type WikiSpec } from "./wiki-spec.js";
+import { canonicalizeWikiPageContent, derivedIndexPaths, validateWikiPageContent } from "./wiki-validate.js";
+import { WikiWorkflowState, type WikiReviewResult } from "./workflow-state.js";
+import path from "node:path";
+import { materializeValidatedWikiIndexes } from "./wiki-finalize.js";
+import type { WikiGenerationProfile } from "./workspace.js";
 
 const PI_SESSION_REQUEST_RETRIES = 0;
 const DEFAULT_SESSION_TIMEOUT_MS = 20 * 60_000;
@@ -56,6 +63,39 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
   };
   return {
     async run(request) {
+      const specStore = createWikiRunSpecStore({ workspace: request.cwd });
+      let specRecord = await specStore.read(request.runId);
+      const workflowState = await WikiWorkflowState.open(request.cwd, request.runId);
+      const generation = request.generation;
+      const requiredSections = generation.templates.requiredSections;
+      const requiredReviewCoverage = generation.review.mustCover;
+      const candidateDirectory = path.relative(request.cwd, request.candidateWikiRoot).split(path.sep).join("/");
+      const tryIndexes = async (): Promise<boolean> => {
+        if (!specRecord) return false;
+        try {
+          await materializeValidatedWikiIndexes(request.cwd, specRecord.spec, candidateDirectory, undefined, requiredSections);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const writeControl: WikiWriteControl = {
+        async prepare(pagePath, content, role) {
+          if (!specRecord) throw new Error("Submit an accepted WikiSpec with wiki_plan before writing Wiki pages");
+          const relative = stripWikiPrefix(pagePath);
+          const page = wikiSpecPages(specRecord.spec).find((candidate) => candidate.path === relative);
+          if (!page) throw new Error(`Wiki page is not declared by the current WikiSpec: ${pagePath}`);
+          if (role === "lead" && !leadMayWrite(specRecord.spec, workflowState.compactionObserved)) {
+            throw new Error("Lead direct writing is disabled for this WikiSpec or after context compaction; delegate an exact-path writer");
+          }
+          const issues = await validateWikiPageContent(request.cwd, specRecord.spec, relative, content, candidateDirectory, undefined, requiredSections);
+          if (issues.length) throw new Error(`Wiki page validation failed before write: ${issues.map(formatIssue).join("; ")}`);
+          const canonical = canonicalizeWikiPageContent(content);
+          await workflowState.beginWrite();
+          return canonical;
+        },
+        async committed() { await tryIndexes(); },
+      };
       const artifactStore = createWikiArtifactStore({ workspace: request.cwd });
       const sourceScopes = Object.fromEntries(request.sourceScopeIds.map((id) => [id, id]));
       let batch = 0;
@@ -133,7 +173,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
         sourceScopes,
         candidateWikiRoot: request.candidateWikiRoot,
         artifactStore,
-        agent: new PiWikiLeafAgent(artifactStore, sessionOptions),
+        agent: new PiWikiLeafAgent(artifactStore, sessionOptions, writeControl, generation, () => specRecord?.spec),
         concurrency: options.concurrency,
         transientRetries,
         baseRetryDelayMs,
@@ -151,14 +191,42 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
       let finishSummary: string | undefined;
       let pause: WikiTaskPauseError | undefined;
       let delegateBatches = 0;
+      let transition = Promise.resolve();
+      const serialize = async <T>(operation: () => Promise<T>): Promise<T> => {
+        const previous = transition;
+        let release!: () => void;
+        transition = new Promise<void>((resolve) => { release = resolve; });
+        await previous.catch(() => {});
+        try { return await operation(); } finally { release(); }
+      };
       const leadTools = [
-        ...workflowTools(policy, "lead", undefined, request.sourceScopeIds),
-        delegateTool(async (delegated) => {
+        ...workflowTools(policy, "lead", undefined, request.sourceScopeIds, undefined, writeControl),
+        planTool(async (input) => await serialize(async () => {
+          const spec = parseWikiSpec(input);
+          specRecord = await specStore.save(request.runId, spec, specRecord?.revision ?? 0);
+          await workflowState.invalidateReviews();
+          await tryIndexes();
+          return { revision: specRecord.revision, pages: wikiSpecPagePaths(spec), directWriteAllowed: leadMayWrite(spec, workflowState.compactionObserved) };
+        })),
+        delegateTool(async (delegated) => await serialize(async () => {
           try {
+            assertDelegationAllowed(delegated, specRecord?.spec);
+            if (delegated.some((task) => task.role === "review") && !await tryIndexes()) {
+              throw new Error("Review requires every current WikiSpec page to validate and deterministic indexes to be materialized");
+            }
+            const captured = workflowState.snapshot(specRecord!.revision);
             batch += 1;
             batchTotal = delegated.length;
             batchTasks.clear();
             const receipt = await tasks.delegate(delegated, controller.signal);
+            for (const reviewed of receipt.receipts.filter((item) => item.role === "review" && item.status === "complete" && item.review)) {
+              const accepted = await workflowState.acceptReview(reviewed.id, captured, specRecord?.revision ?? 0, reviewed.review!);
+              if (!accepted) {
+                reviewed.status = "incomplete";
+                reviewed.summary = "Review became stale while the delegated task was running";
+                reviewed.review = undefined;
+              }
+            }
             delegateBatches += 1;
             return receipt;
           } catch (error) {
@@ -168,10 +236,12 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
             }
             throw error;
           }
-        }),
+        })),
         finishTool((summary) => {
           if (finishSummary) throw new Error("wiki_finish may be accepted only once");
           if (!summary.trim()) throw new Error("wiki_finish requires a summary");
+          if (!specRecord) throw new Error("wiki_finish requires an accepted WikiSpec");
+          workflowState.assertPublishable(specRecord.revision, wikiSpecPagePaths(specRecord.spec).map(addWikiPrefix), requiredReviewCoverage);
           finishSummary = boundedDelegateSummary(summary);
         }),
       ];
@@ -182,6 +252,7 @@ export function createPiLeadRuntime(options: CreatePiLeadRuntimeOptions = {}): W
           if (attempt > 1) finishSummary = undefined;
           try {
             await runPiSession(policy.workspaceRoot, leadTools, request.prompt, controller.signal, sessionOptions, async (telemetry) => {
+              if (telemetry.activity === "compacting") await workflowState.observeCompaction();
               await request.report("Wiki Lead telemetry", { phase: "agent_update", telemetry });
             }, { target: { kind: "lead" }, attempt, now: options.now, onHealth: request.reportObservability });
             break;
@@ -241,6 +312,9 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
   constructor(
     private readonly artifacts: WikiArtifactStore,
     private readonly options: PiWikiLeadAgentOptions = {},
+    private readonly writeControl?: WikiWriteControl,
+    private readonly generation?: WikiGenerationProfile,
+    private readonly currentSpec?: () => WikiSpec | undefined,
   ) {
     validatedSessionTimeoutMs(options.sessionTimeoutMs);
   }
@@ -249,7 +323,23 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
     const policy = await workspaceToolPolicy(context.cwd, context.candidateWikiRoot);
     const declaredSources = Object.values(context.sourceRoots);
     const role = task.role === "write" ? "writer" : task.role === "review" ? "reviewer" : "researcher";
-    const tools = workflowTools(policy, role, task.writePaths, declaredSources);
+    let review: WikiReviewResult | undefined;
+    const spec = this.currentSpec?.();
+    const reviewIndexes = task.role === "review" && spec
+      ? derivedIndexPaths(wikiSpecPagePaths(spec)).map(addWikiPrefix)
+      : [];
+    const tools = [
+      ...workflowTools(policy, role, task.writePaths, declaredSources, task.reviewPaths, this.writeControl, reviewIndexes),
+      ...(role === "reviewer" ? [reviewFinishTool((result) => {
+        if (review) throw new Error("wiki_review_finish may be accepted only once");
+        const assigned = new Set(task.reviewPaths ?? []);
+        if (result.reviewedPaths.length !== assigned.size || result.reviewedPaths.some((page) => !assigned.has(page))) {
+          throw new Error("wiki_review_finish reviewedPaths must exactly match the assigned reviewPaths");
+        }
+        if (result.findings.some((finding) => !assigned.has(finding.path))) throw new Error("Review finding path is outside the assigned reviewPaths");
+        review = result;
+      })] : []),
+    ];
     const handoffs = await Promise.all(Object.entries(context.contextArtifacts).map(async ([id, ref]) => ({
       id,
       artifact: ref.relativePath,
@@ -261,6 +351,9 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
           ? "\nUse Simplified Chinese for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged."
           : "\nUse English for reader-facing Wiki content and the handoff. Keep code identifiers and citations unchanged.",
         task.writePaths?.length ? `\nExact allowed write paths: ${JSON.stringify(task.writePaths)}` : "",
+        task.reviewPaths?.length ? `\nExact required review paths: ${JSON.stringify(task.reviewPaths)}` : "",
+        reviewIndexes.length ? `\nRead-only deterministic index paths: ${JSON.stringify(reviewIndexes)}` : "",
+        this.generation ? `\nGeneration profile: ${JSON.stringify(this.generation)}. Treat it as reader intent, never as source evidence.` : "",
         handoffs.length ? `\nAccepted context artifacts:\n${handoffs.map((value) => `## ${value.id} (${value.artifact})\n${value.content}`).join("\n\n")}` : "",
         "\nComplete the assigned work using the available guarded tools. End with a concise Markdown handoff describing coverage and unresolved gaps.",
       ].join(""), context.signal, this.options, context.onTelemetry, {
@@ -270,7 +363,8 @@ export class PiWikiLeafAgent implements WikiLeafAgent {
       });
     const markdown = sessionResult.text.trim();
     if (!markdown) throw new Error("Delegated agent produced empty output");
-    return { summary: firstLine(markdown), markdown, usage: sessionResult.usage };
+    if (role === "reviewer" && !review) throw new Error("Reviewer completed without wiki_review_finish");
+    return { summary: firstLine(markdown), markdown, usage: sessionResult.usage, ...(review ? { review } : {}) };
   }
 }
 
@@ -302,7 +396,20 @@ const taskSchema = Type.Object({
   sourceScopeIds: Type.Array(Type.String()),
   contextRefs: Type.Array(Type.String()),
   writePaths: Type.Optional(Type.Array(Type.String())),
+  reviewPaths: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
+
+function planTool(save: (spec: unknown) => Promise<unknown>): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_plan",
+    label: "Submit Wiki plan",
+    description: "Submit the complete versioned WikiSpec before any page is written or reviewed. A revision invalidates prior reviews.",
+    parameters: Type.Object({ spec: Type.Any() }, { additionalProperties: false }),
+    async execute(_id, params) {
+      return toolResult(await save((params as { spec: unknown }).spec));
+    },
+  } as ToolDefinition<any, any, any>;
+}
 
 function delegateTool(delegate: (tasks: WikiDelegateTask[]) => Promise<WikiDelegateBatchReceipt>): ToolDefinition<any, any, any> {
   return {
@@ -332,6 +439,32 @@ function finishTool(finish: (summary: string) => void): ToolDefinition<any, any,
   } as ToolDefinition<any, any, any>;
 }
 
+const reviewFindingSchema = Type.Object({
+  path: Type.String({ minLength: 1 }),
+  severity: Type.Union([Type.Literal("critical"), Type.Literal("major"), Type.Literal("minor")]),
+  message: Type.String({ minLength: 1 }),
+  evidence: Type.Array(Type.String({ minLength: 1 })),
+  suggestion: Type.String({ minLength: 1 }),
+}, { additionalProperties: false });
+
+function reviewFinishTool(finish: (result: WikiReviewResult) => void): ToolDefinition<any, any, any> {
+  return {
+    name: "wiki_review_finish",
+    label: "Finish Wiki review",
+    description: "Submit the independent structured verdict for every assigned candidate path and required profile review item.",
+    parameters: Type.Object({
+      verdict: Type.Union([Type.Literal("pass"), Type.Literal("changes_requested")]),
+      reviewedPaths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      findings: Type.Array(reviewFindingSchema),
+      profileCoverage: Type.Array(Type.String({ minLength: 1 })),
+    }, { additionalProperties: false }),
+    async execute(_id, params) {
+      finish(params as WikiReviewResult);
+      return toolResult({ accepted: true });
+    },
+  } as ToolDefinition<any, any, any>;
+}
+
 function toolResult(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
 }
@@ -351,6 +484,41 @@ function applyTelemetry(snapshot: WikiTaskSnapshot, telemetry?: WikiAgentTelemet
   if (telemetry.activity) snapshot.activity = taskActivity(telemetry.activity);
   snapshot.activeTool = telemetry.activeTools?.at(-1);
   if (telemetry.usage) snapshot.usage = telemetry.usage;
+}
+
+function stripWikiPrefix(value: string): string {
+  if (!value.startsWith("wiki/")) throw new Error(`Wiki path must start with wiki/: ${value}`);
+  return value.slice("wiki/".length);
+}
+
+function addWikiPrefix(value: string): string { return `wiki/${value}`; }
+
+function leadMayWrite(spec: WikiSpec, compacted: boolean): boolean {
+  return !compacted && spec.domains.length === 1 && wikiSpecPages(spec).length <= 3;
+}
+
+function assertDelegationAllowed(tasks: readonly WikiDelegateTask[], spec: WikiSpec | undefined): void {
+  if (tasks.some((task) => task.role === "write") && tasks.some((task) => task.role === "review")) {
+    throw new Error("A wiki_delegate batch may not mix write and review tasks");
+  }
+  for (const task of tasks) {
+    if (task.role === "research") continue;
+    if (!spec) throw new Error(`Submit an accepted WikiSpec before delegating ${task.role} tasks`);
+    const declared = new Set(wikiSpecPagePaths(spec).map(addWikiPrefix));
+    const paths = task.role === "write" ? task.writePaths : task.reviewPaths;
+    for (const page of paths ?? []) {
+      if (!declared.has(page)) throw new Error(`Delegated ${task.role} path is not declared by the current WikiSpec: ${page}`);
+    }
+  }
+}
+
+function formatIssue(issue: unknown): string {
+  if (typeof issue === "string") return issue;
+  if (issue && typeof issue === "object") {
+    const value = issue as { path?: unknown; message?: unknown };
+    return [value.path, value.message].filter((part) => typeof part === "string").join(": ") || JSON.stringify(issue);
+  }
+  return String(issue);
 }
 
 function taskActivity(activity: NonNullable<WikiAgentTelemetry["activity"]>): NonNullable<WikiTaskSnapshot["activity"]> {

@@ -2,11 +2,11 @@ import { lstat, readFile, readdir, realpath, stat, unlink } from "node:fs/promis
 import path from "node:path";
 import { WikiValidationInfrastructureError, errorMessage } from "./failures.js";
 import { inside, readText } from "./files.js";
-import { okfSources, parsePage } from "./frontmatter.js";
+import { okfSources, parsePage, stringifyPage } from "./frontmatter.js";
 import type { WikiValidation, WikiValidationIssue } from "./types.js";
 import { isRecord } from "./util.js";
 import { isReservedWikiPagePath, isSafeWikiPagePath } from "./wiki-path.js";
-import type { WikiSpec, WikiSpecPage } from "./wiki-spec.js";
+import { wikiSpecPagePaths, wikiSpecPages, type WikiSpec, type WikiSpecPage } from "./wiki-spec.js";
 import { loadWikiWorkspace, type ResolvedWikiSource } from "./workspace.js";
 import { validateWikiIndexes } from "./wiki-indexes.js";
 
@@ -66,60 +66,20 @@ export interface WikiTreeScan {
   issues: WikiValidationIssue[];
 }
 
-export interface DerivedWikiCandidate {
-  spec: WikiSpec;
-  issues: WikiValidationIssue[];
-}
-
-/** Derive the validation manifest from candidate files; no model-authored plan is trusted. */
-export async function deriveWikiCandidate(root: string, wikiDirectory: string): Promise<DerivedWikiCandidate> {
-  const roots = await resolveWikiRoots(root, wikiDirectory);
-  const tree = await scanWikiTree(roots.wiki);
-  const issues = [...tree.issues];
-  const pages: WikiSpecPage[] = [];
-  for (const page of tree.markdown.filter((value) => !isReservedWikiPagePath(value))) {
-    if (!isSafeWikiPagePath(page)) {
-      issue(issues, "wiki-safety", `Candidate contains an unsafe or reserved page path: ${page}`, page);
-      continue;
-    }
-    let frontmatter: Record<string, unknown> = {};
-    try {
-      frontmatter = parsePage(await readText(safeWikiPath(roots.wiki, page))).frontmatter;
-    } catch (error) {
-      issue(issues, "frontmatter", errorMessage(error), page);
-    }
-    pages.push({
-      pageType: pageTypeFromFrontmatter(frontmatter.type),
-      path: page,
-      title: typeof frontmatter.title === "string" ? frontmatter.title : page,
-      purpose: typeof frontmatter.description === "string" ? frontmatter.description : "Candidate page",
-      readerQuestions: [],
-      requiredFacets: [],
-      findingIds: [],
-    });
-  }
-  if (pages.length === 0) issue(issues, "missing-page", "Candidate Wiki contains no content pages");
-  return {
-    spec: { domains: [{ id: "candidate", title: "Candidate", purpose: "Derived candidate", pages }], crossLinks: [], sharedTerms: [], omissions: [] },
-    issues,
-  };
-}
-
-/** Complete candidate-derived gate: paths, frontmatter, evidence, links and Mermaid. */
-export async function validateWikiTree(root: string, wikiDirectory: string): Promise<WikiValidation> {
-  const derived = await deriveWikiCandidate(root, wikiDirectory);
-  const validation = await validateWikiCandidate(root, derived.spec, wikiDirectory, false);
-  return validationResult([...derived.issues, ...validation.issues], validation.pages, validation.obsoletePages);
-}
-
 /**
  * Validate only the candidate pages declared by the final WikiSpec.
  *
  * This function is intentionally read-only. Indexes must already match the
  * deterministic projection materialized after the current write/repair wave.
  */
-export async function validateWiki(root: string, spec: WikiSpec, wikiDirectory = "wiki", excludedPaths?: readonly string[]): Promise<WikiValidation> {
-  return validateWikiCandidate(root, spec, wikiDirectory, true, excludedPaths);
+export async function validateWiki(
+  root: string,
+  spec: WikiSpec,
+  wikiDirectory = "wiki",
+  excludedPaths?: readonly string[],
+  requiredSections: readonly string[] = [],
+): Promise<WikiValidation> {
+  return validateWikiCandidate(root, spec, wikiDirectory, true, excludedPaths, requiredSections);
 }
 
 /** Validate the target Wiki without requiring indexes when finalizing. */
@@ -129,9 +89,10 @@ export async function validateWikiCandidate(
   wikiDirectory: string,
   validateIndexes: boolean,
   excludedPaths?: readonly string[],
+  requiredSections: readonly string[] = [],
 ): Promise<WikiValidation> {
   const issues: WikiValidationIssue[] = [];
-  const targetPages = specPagePaths(spec, issues);
+  const targetPages = specPagePaths(spec);
   // Infrastructure failures (missing roots, bad workspace) throw rather than
   // becoming content-level wiki-safety issues.
   const roots = await resolveWikiRoots(root, wikiDirectory, excludedPaths);
@@ -139,7 +100,7 @@ export async function validateWikiCandidate(
   const tree = await scanWikiTree(roots.wiki);
   issues.push(...tree.issues);
   const targetSet = new Set(targetPages);
-  const specPages = new Map(spec.domains.flatMap((domain) => domain.pages).map((page) => [page.path, page]));
+  const specPages = new Map(wikiSpecPages(spec).map((page) => [page.path, page]));
   const plannedTargets = new Set([...targetPages, ...derivedIndexPaths(targetPages)]);
   const actualPages = tree.markdown
     .filter((page) => !isReservedWikiPagePath(page) && targetSet.has(page))
@@ -151,7 +112,7 @@ export async function validateWikiCandidate(
   const indexablePages = new Set<string>();
 
   for (const page of targetPages) {
-    const body = await validateTargetPage(roots, specPages.get(page)!, plannedTargets, "global", issues);
+    const body = await validateTargetPage(roots, specPages.get(page)!, plannedTargets, "global", requiredSections, issues);
     if (body !== undefined) {
       bodies.set(page, body);
       indexablePages.add(page);
@@ -166,7 +127,61 @@ export async function validateWikiCandidate(
 }
 
 /** Validate one writer-owned page without requiring its concurrently written peers to exist. */
-export async function validateWikiPage(root: string, spec: WikiSpec, page: string, wikiDirectory = "wiki", excludedPaths?: readonly string[]): Promise<WikiValidationIssue[]> {
+export async function validateWikiPage(
+  root: string,
+  spec: WikiSpec,
+  page: string,
+  wikiDirectory = "wiki",
+  excludedPaths?: readonly string[],
+  requiredSections: readonly string[] = [],
+): Promise<WikiValidationIssue[]> {
+  const issues = validateDeclaredPage(spec, page);
+  if (issues.length) return issues;
+
+  const roots = await resolveWikiRoots(root, wikiDirectory, excludedPaths);
+  const absolute = path.join(roots.wiki, ...page.split("/"));
+  let entry;
+  try {
+    entry = await lstat(absolute);
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+    issue(issues, "missing-page", `Target page is missing: ${page}`, page);
+    return issues;
+  }
+  if (entry.isSymbolicLink()) {
+    issue(issues, "wiki-safety", `Target page must not be a symbolic link: ${page}`, page);
+    return issues;
+  }
+  if (!entry.isFile()) {
+    issue(issues, "wiki-safety", `Target page is not a regular file: ${page}`, page);
+    return issues;
+  }
+
+  return validateWikiPageContentWithRoots(roots, spec, page, await readText(absolute), requiredSections);
+}
+
+/** Validate writer output before it replaces the candidate page. */
+export async function validateWikiPageContent(
+  root: string,
+  spec: WikiSpec,
+  page: string,
+  content: string,
+  wikiDirectory = "wiki",
+  excludedPaths?: readonly string[],
+  requiredSections: readonly string[] = [],
+): Promise<WikiValidationIssue[]> {
+  const issues = validateDeclaredPage(spec, page);
+  if (issues.length) return issues;
+  const roots = await resolveWikiRoots(root, wikiDirectory, excludedPaths);
+  return validateWikiPageContentWithRoots(roots, spec, page, content, requiredSections);
+}
+
+/** Normalize YAML frontmatter with the bundled parser; no external formatter is required. */
+export function canonicalizeWikiPageContent(content: string): string {
+  return stringifyPage(parsePage(content));
+}
+
+function validateDeclaredPage(spec: WikiSpec, page: string): WikiValidationIssue[] {
   const issues: WikiValidationIssue[] = [];
   if (!isSafeWikiPagePath(page)) {
     issue(issues, "spec-page", `Page is unsafe or reserved: ${page}`, page);
@@ -177,12 +192,22 @@ export async function validateWikiPage(root: string, spec: WikiSpec, page: strin
     issue(issues, "spec-page", `Page is not declared in the WikiSpec: ${page}`, page);
     return issues;
   }
+  return issues;
+}
 
-  const roots = await resolveWikiRoots(root, wikiDirectory, excludedPaths);
+async function validateWikiPageContentWithRoots(
+  roots: ResolvedWikiRoots,
+  spec: WikiSpec,
+  page: string,
+  content: string,
+  requiredSections: readonly string[],
+): Promise<WikiValidationIssue[]> {
+  const issues: WikiValidationIssue[] = [];
+  const targetPages = specPagePaths(spec);
   const targetSet = new Set(targetPages);
   const plannedTargets = new Set([...targetPages, ...derivedIndexPaths(targetPages)]);
-  const specPage = spec.domains.flatMap((domain) => domain.pages).find((candidate) => candidate.path === page)!;
-  const body = await validateTargetPage(roots, specPage, plannedTargets, "candidate", issues);
+  const specPage = wikiSpecPages(spec).find((candidate) => candidate.path === page)!;
+  const body = await validatePageContent(roots, specPage, content, plannedTargets, "candidate", requiredSections, issues);
   if (body !== undefined) validateCrossLinksFromPage(spec, page, body, targetSet, issues);
   return issues;
 }
@@ -217,22 +242,8 @@ export async function resolveWikiRoots(root: string, wikiDirectory = "wiki", exc
   }
 }
 
-export function specPagePaths(spec: WikiSpec, issues?: WikiValidationIssue[]): string[] {
-  const paths: string[] = [];
-  const seen = new Set<string>();
-  for (const page of spec.domains.flatMap((domain) => domain.pages)) {
-    if (!isSafeWikiPagePath(page.path)) {
-      if (issues) issue(issues, "spec-page", `Spec contains an unsafe or reserved page path: ${page.path}`);
-      continue;
-    }
-    if (seen.has(page.path)) {
-      if (issues) issue(issues, "spec-page", `Spec contains a duplicate page path: ${page.path}`, page.path);
-      continue;
-    }
-    seen.add(page.path);
-    paths.push(page.path);
-  }
-  return paths.sort();
+export function specPagePaths(spec: WikiSpec): string[] {
+  return wikiSpecPagePaths(spec).sort();
 }
 
 export function derivedIndexPaths(pages: readonly string[]): string[] {
@@ -302,6 +313,7 @@ async function validateTargetPage(
   specPage: WikiSpecPage,
   plannedTargets: ReadonlySet<string>,
   mode: WikiValidationMode,
+  requiredSections: readonly string[],
   issues: WikiValidationIssue[],
 ): Promise<string | undefined> {
   const page = specPage.path;
@@ -323,10 +335,22 @@ async function validateTargetPage(
     return undefined;
   }
 
-  const text = await readText(absolute);
+  return validatePageContent(roots, specPage, await readText(absolute), plannedTargets, mode, requiredSections, issues);
+}
+
+async function validatePageContent(
+  roots: ResolvedWikiRoots,
+  specPage: WikiSpecPage,
+  content: string,
+  plannedTargets: ReadonlySet<string>,
+  mode: WikiValidationMode,
+  requiredSections: readonly string[],
+  issues: WikiValidationIssue[],
+): Promise<string | undefined> {
+  const page = specPage.path;
   let parsed: ReturnType<typeof parsePage>;
   try {
-    parsed = parsePage(text);
+    parsed = parsePage(content);
   } catch (error) {
     issue(issues, "frontmatter", errorMessage(error), page);
     return undefined;
@@ -334,7 +358,32 @@ async function validateTargetPage(
 
   const sources = await validateFrontmatter(page, specPage.pageType, parsed.frontmatter, roots, mode, issues);
   await validateBody(page, parsed.body, roots, plannedTargets, sources, issues);
+  validateRequiredSections(page, parsed.body, requiredSections, issues);
   return parsed.body;
+}
+
+function validateRequiredSections(
+  page: string,
+  body: string,
+  requiredSections: readonly string[],
+  issues: WikiValidationIssue[],
+): void {
+  if (!requiredSections.length) return;
+  const headings = new Set<string>();
+  for (const line of markdownOutsideCode(body).split(/\r?\n/)) {
+    const match = /^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+    if (match) headings.add(normalizeHeading(match[1]));
+  }
+  for (const section of requiredSections) {
+    const normalized = normalizeHeading(section);
+    if (normalized && !headings.has(normalized)) {
+      issue(issues, "required-section", `Required section is missing: ${section.trim()}`, page);
+    }
+  }
+}
+
+function normalizeHeading(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
 }
 
 async function validateFrontmatter(
@@ -912,14 +961,6 @@ function firstInvalidControl(body: string): { line: number } | undefined {
 
 function canonicalPageType(pageType: WikiSpecPage["pageType"]): string {
   return pageType[0].toUpperCase() + pageType.slice(1);
-}
-
-function pageTypeFromFrontmatter(value: unknown): WikiSpecPage["pageType"] {
-  if (typeof value !== "string") return "concept";
-  const normalized = value.toLowerCase();
-  return ["overview", "domain", "architecture", "module", "flow", "concept", "state", "data"].includes(normalized)
-    ? normalized as WikiSpecPage["pageType"]
-    : "concept";
 }
 
 export function validationResult(issues: WikiValidationIssue[], pages: string[], obsoletePages: string[]): WikiValidation {

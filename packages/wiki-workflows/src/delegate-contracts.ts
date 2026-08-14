@@ -1,4 +1,5 @@
 import type { WikiArtifactRef } from "./artifact-store.js";
+import type { WikiReviewResult } from "./workflow-state.js";
 
 export type WikiDelegateRole = "research" | "write" | "review";
 
@@ -9,6 +10,7 @@ export interface WikiDelegateTask {
   sourceScopeIds: string[];
   contextRefs: string[];
   writePaths?: string[];
+  reviewPaths?: string[];
 }
 
 export type WikiDelegateStatus = "complete" | "incomplete" | "failed";
@@ -35,6 +37,7 @@ export interface WikiDelegateReceipt {
   gaps: WikiDelegateGap[];
   error?: WikiDelegateError;
   attempts: number;
+  review?: WikiReviewResult;
 }
 
 export interface WikiDelegateBatchReceipt {
