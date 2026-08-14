@@ -43,11 +43,9 @@ export function wikiWidgetLines(view: WikiRunView): string[] | undefined {
 }
 
 export function themeWikiLiveText(theme: unknown, text: string): string {
-  const paint = theme && typeof theme === "object" && "fg" in theme && typeof theme.fg === "function"
-    ? theme.fg as (color: string, value: string) => string
-    : undefined;
-  if (!paint) return text;
-  try { return String(paint(liveTextColor(text), text)); } catch { return text; }
+  const value = theme as { fg?(color: string, text: string): string } | undefined;
+  if (typeof value?.fg !== "function") return text;
+  try { return String(value.fg(liveTextColor(text), text)); } catch { return text; }
 }
 
 function runningFooter(view: WikiRunView, now: number): string {

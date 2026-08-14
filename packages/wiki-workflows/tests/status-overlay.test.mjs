@@ -36,7 +36,7 @@ async function componentFor(runHandle = handle(), rows = 24, initialTarget, them
   let options;
   await openWikiStatusOverlay({
     initialTarget,
-    ui: { async custom(factory, received) { options = received; component = await factory({ requestRender() {}, terminal: { rows } }, theme, { matches: (data, binding) => ({ CONFIRM: "tui.select.confirm", PAGE_DOWN: "tui.select.pageDown", PAGE_UP: "tui.select.pageUp" })[data] === binding }, () => {}); } },
+    ui: { async custom(factory, received) { options = received; component = await factory({ requestRender() {}, terminal: { rows } }, theme, { matches: (data, binding) => ({ "\u001b[A": "tui.select.up", "\u001b[B": "tui.select.down", CONFIRM: "tui.select.confirm", PAGE_DOWN: "tui.select.pageDown", PAGE_UP: "tui.select.pageUp" })[data] === binding }, () => {}); } },
     handle: runHandle,
     ...overlay,
   });
@@ -78,17 +78,28 @@ test("state reducer only models run, agent, and activity concerns", () => {
   state = reduceWikiOverlay(state, { type: "down" }, 3);
   assert.equal(state.cursor, 1);
   state = { ...state, kind: "agent", target: { kind: "lead" } };
-  state = reduceWikiOverlay(state, { type: "tab", direction: 1 }, 3);
+  state = reduceWikiOverlay(state, { type: "forward" }, 3);
   assert.equal(state.tab, "process");
   state = reduceWikiOverlay(state, { type: "back" }, 3);
+  assert.equal(state.kind, "agent");
+  assert.equal(state.tab, "overview");
+  state = reduceWikiOverlay(state, { type: "back" }, 3);
   assert.equal(state.kind, "run");
-  state = { ...state, kind: "agent", target: { kind: "lead" }, tailing: true, scroll: Number.MAX_SAFE_INTEGER };
-  state = reduceWikiOverlay(state, { type: "up" }, 3, 12);
-  assert.equal(state.tailing, false);
-  assert.equal(state.scroll, 11);
+  state = { ...state, kind: "agent", target: { kind: "lead" }, fromBottom: 0 };
+  state = reduceWikiOverlay(state, { type: "up" }, 3);
+  assert.equal(state.fromBottom, 1);
+  state = reduceWikiOverlay(state, { type: "down" }, 3);
+  assert.equal(state.fromBottom, 0);
+  state = reduceWikiOverlay(state, { type: "down" }, 3);
+  assert.equal(state.fromBottom, 0);
+  state = reduceWikiOverlay({ ...state, tab: "overview" }, { type: "forward" }, 3);
+  assert.equal(state.tab, "process");
+  state = reduceWikiOverlay(state, { type: "back" }, 3);
+  assert.equal(state.kind, "agent");
+  assert.equal(state.tab, "overview");
 });
 
-test("leaving process tail with up moves off the last line", async () => {
+test("up arrow leaves the bottom after overscrolling or tailing", async () => {
   const process = Array.from({ length: 40 }, (_, index) => ({
     sequence: index,
     at: "2026-08-12T00:00:00.000Z",
@@ -103,13 +114,37 @@ test("leaving process tail with up moves off the last line", async () => {
     async inspectAgent(target) { return { ...inspection(target), process }; },
   }), 16, { kind: "lead" }, { fg: (_color, text) => text }, { process: true });
   await new Promise((resolve) => setImmediate(resolve));
+  component.render(80);
+  for (let index = 0; index < 80; index += 1) component.handleInput("\u001b[B");
+  assert.match(plain(component.render(80).join("\n")), /tool-39/);
+  component.handleInput("\u001b[A");
+  assert.doesNotMatch(plain(component.render(80).join("\n")), /tool-39/);
   component.handleInput("t");
-  const tailed = plain(component.render(80).join("\n"));
-  assert.match(tailed, /tool-39/);
-  component.handleInput("k");
+  assert.match(plain(component.render(80).join("\n")), /tool-39/);
+  component.handleInput("\u001b[A");
   const stepped = plain(component.render(80).join("\n"));
   assert.doesNotMatch(stepped, /tool-39/);
   assert.match(stepped, /tool-3[0-8]/);
+  component.dispose();
+});
+
+test("left and right arrows enter, switch pages, and exit without tab", async () => {
+  const { component } = await componentFor();
+  component.handleInput("\u001b[C");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(plain(component.render(80).join("\n")), /\[Overview\]/);
+  component.handleInput("\u001b[C");
+  assert.match(plain(component.render(80).join("\n")), /\[Process\]/);
+  component.handleInput("\u001b[C");
+  assert.match(plain(component.render(80).join("\n")), /\[Output\]/);
+  component.handleInput("\u001b[D");
+  assert.match(plain(component.render(80).join("\n")), /\[Process\]/);
+  component.handleInput("\u001b[D");
+  assert.match(plain(component.render(80).join("\n")), /\[Overview\]/);
+  component.handleInput("\u001b[D");
+  const runPage = plain(component.render(80).join("\n"));
+  assert.match(runPage, /Leader/);
+  assert.doesNotMatch(runPage, /\[Overview\]/);
   component.dispose();
 });
 
@@ -277,14 +312,14 @@ test("theme records semantic status, navigation, chrome, and context threshold t
 test("footers expose only actions available on the current page", async () => {
   const { component } = await componentFor();
   const runFooter = plain(component.render(80).at(-1));
-  assert.match(runFooter, /select.*open.*pause.*cancel.*esc/i);
+  assert.match(runFooter, /select.*open.*close.*pause.*cancel.*esc/i);
   assert.doesNotMatch(runFooter, /tab|older|tail/i);
 
   component.handleInput("CONFIRM");
   await new Promise((resolve) => setImmediate(resolve));
   const agentFooter = plain(component.render(80).at(-1));
-  assert.match(agentFooter, /scroll.*tab.*tail.*back/i);
-  assert.doesNotMatch(agentFooter, /select|pause|cancel|older/i);
+  assert.match(agentFooter, /scroll.*pages.*tail/i);
+  assert.doesNotMatch(agentFooter, /select|pause|cancel|older|tab/i);
 
   component.handleInput("\u001b[D");
   component.handleInput("j");

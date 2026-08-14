@@ -22,8 +22,8 @@ type ActivityFilter = "all" | "leader" | "tasks" | "errors";
 export interface WikiOverlayState {
   kind: WikiOverlayKind;
   cursor: number;
-  scroll: number;
-  tailing: boolean;
+  /** Lines above the bottom of the inspector. 0 follows the tail. */
+  fromBottom: number;
   runId: string;
   target?: WikiAgentTarget;
   tab: InspectorTab;
@@ -31,13 +31,14 @@ export interface WikiOverlayState {
 }
 
 export type WikiOverlayAction =
-  | { type: "up" | "down" | "enter" | "back" | "toggleTail" | "filter" }
-  | { type: "tab" | "page"; direction: 1 | -1 };
+  | { type: "up" | "down" | "forward" | "back" | "toggleTail" | "filter" }
+  | { type: "page"; direction: 1 | -1 };
 
 type OverlayHandle = Pick<WikiRunHandle, "view" | "events" | "inspectAgent" | "activity">;
 type NavTarget = { kind: "agent"; target: WikiAgentTarget } | { kind: "activity" };
 type NavRow = { spans: WikiTextSpan[]; target?: NavTarget };
 
+const INSPECTOR_TOP = Number.MAX_SAFE_INTEGER;
 const PAGE = 10;
 const ACTIVITY_PAGE = 50;
 const DEFAULT_VIEWPORT = 24;
@@ -60,8 +61,7 @@ export function initialWikiOverlayState(input: { runId: string; initialTarget?: 
   return {
     kind: input.initialTarget ? "agent" : "run",
     cursor: 0,
-    scroll: 0,
-    tailing: false,
+    fromBottom: INSPECTOR_TOP,
     runId: input.runId,
     target: input.initialTarget,
     tab: input.process ? "process" : "overview",
@@ -69,21 +69,18 @@ export function initialWikiOverlayState(input: { runId: string; initialTarget?: 
   };
 }
 
-export function reduceWikiOverlay(state: WikiOverlayState, action: WikiOverlayAction, itemCount: number, maxScroll = 0): WikiOverlayState {
+export function reduceWikiOverlay(state: WikiOverlayState, action: WikiOverlayAction, itemCount: number): WikiOverlayState {
   const max = Math.max(0, itemCount - 1);
-  if (action.type === "up") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor - 1, 0, max) } : { ...state, tailing: false, scroll: Math.max(0, (state.tailing ? maxScroll : state.scroll) - 1) };
-  if (action.type === "down") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + 1, 0, max) } : { ...state, scroll: (state.tailing ? maxScroll : state.scroll) + 1 };
-  if (action.type === "page") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + action.direction * PAGE, 0, max) } : { ...state, tailing: false, scroll: Math.max(0, (state.tailing ? maxScroll : state.scroll) + action.direction * PAGE) };
-  if (action.type === "back" && state.kind !== "run") return { ...state, kind: "run", target: undefined, scroll: 0, tailing: false };
-  if (action.type === "toggleTail" && state.kind !== "run") return { ...state, tailing: !state.tailing, scroll: maxScroll };
-  if (action.type === "tab" && state.kind === "agent") {
-    const tabs: InspectorTab[] = ["overview", "process", "output"];
-    const index = tabs.indexOf(state.tab);
-    return { ...state, tab: tabs[(index + action.direction + tabs.length) % tabs.length]!, scroll: 0 };
-  }
+  if (action.type === "up") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor - 1, 0, max) } : { ...state, fromBottom: state.fromBottom + 1 };
+  if (action.type === "down") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + 1, 0, max) } : { ...state, fromBottom: Math.max(0, state.fromBottom - 1) };
+  if (action.type === "page") return state.kind === "run" ? { ...state, cursor: clamp(state.cursor + action.direction * PAGE, 0, max) } : { ...state, fromBottom: Math.max(0, state.fromBottom - action.direction * PAGE) };
+  if (action.type === "forward" && state.kind === "agent") return cycleAgentTab(state, 1);
+  if (action.type === "back" && state.kind === "agent" && state.tab !== "overview") return cycleAgentTab(state, -1);
+  if (action.type === "back" && state.kind !== "run") return { ...state, kind: "run", target: undefined, fromBottom: INSPECTOR_TOP };
+  if (action.type === "toggleTail" && state.kind !== "run") return { ...state, fromBottom: 0 };
   if (action.type === "filter" && state.kind === "activity") {
     const filters: ActivityFilter[] = ["all", "leader", "tasks", "errors"];
-    return { ...state, filter: filters[(filters.indexOf(state.filter) + 1) % filters.length]!, scroll: 0, tailing: false };
+    return { ...state, filter: filters[(filters.indexOf(state.filter) + 1) % filters.length]!, fromBottom: INSPECTOR_TOP };
   }
   return state;
 }
@@ -129,7 +126,6 @@ function createStatusOverlay(args: {
   let generation = 0;
   let refreshing = false;
   let now = Date.now();
-  let lastMaxScroll = 0;
   const controller = new AbortController();
   const invalidate = () => { cached = undefined; };
   const nav = () => navigationRows(view).flatMap((row) => row.target ? [row.target] : []);
@@ -212,12 +208,12 @@ function createStatusOverlay(args: {
 
   const apply = (action: WikiOverlayAction): void => {
     const before = selectedKey(selected());
-    if (action.type === "enter" && state.kind === "run") {
+    if (action.type === "forward" && state.kind === "run") {
       const item = selected();
-      if (item?.kind === "agent") state = { ...state, kind: "agent", target: item.target, scroll: 0 };
-      else if (item?.kind === "activity") state = { ...state, kind: "activity", scroll: 0 };
+      if (item?.kind === "agent") state = { ...state, kind: "agent", target: item.target, tab: "overview", fromBottom: INSPECTOR_TOP };
+      else if (item?.kind === "activity") state = { ...state, kind: "activity", fromBottom: INSPECTOR_TOP };
     } else {
-      state = reduceWikiOverlay(state, action, nav().length, lastMaxScroll);
+      state = reduceWikiOverlay(state, action, nav().length);
     }
     if (action.type === "filter" || before !== selectedKey(selected())) {
       inspection = undefined;
@@ -245,12 +241,11 @@ function createStatusOverlay(args: {
       if (args.keybindings.matches(data, "tui.select.down") || matchesKey(data, "j")) return apply({ type: "down" });
       if (args.keybindings.matches(data, "tui.select.pageUp")) { if (state.kind === "activity") void loadActivity(true); return apply({ type: "page", direction: -1 }); }
       if (args.keybindings.matches(data, "tui.select.pageDown")) return apply({ type: "page", direction: 1 });
-      if (args.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.right)) return apply({ type: "enter" });
+      if (args.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.right)) return apply({ type: "forward" });
       if (args.keybindings.matches(data, "tui.select.cancel") || matchesKey(data, Key.left)) { if (state.kind === "run") finish(); else apply({ type: "back" }); return; }
       if (matchesKey(data, "t")) return apply({ type: "toggleTail" });
       if (matchesKey(data, "f")) return apply({ type: "filter" });
       if (matchesKey(data, "l") && state.kind === "activity") { void loadActivity(true); return; }
-      if (matchesKey(data, Key.tab)) return apply({ type: "tab", direction: 1 });
       if (state.kind === "run" && matchesKey(data, "p") && (view.status === "running" || view.status === "paused")) {
         void control(view.status === "paused" ? "resume" : "pause");
       }
@@ -267,8 +262,8 @@ function createStatusOverlay(args: {
       const body = renderBody(state, view, current, matched, activityEntries, activityExhausted, width, bodyRows, args.theme, now, warning, busy);
       const footer = overlayFooter(state, view.status, language);
       const stats = contextLine(state, current, matched, language, args.theme);
-      const framed = frameWikiOverlay({ width, title: styledTitle(view, args.theme), body, stats, footer, theme: args.theme, viewport, scroll: state.scroll, tailing: state.tailing, fixedTop: FIXED_BODY_ROWS });
-      lastMaxScroll = framed.maxScroll;
+      const framed = frameWikiOverlay({ width, title: styledTitle(view, args.theme), body, stats, footer, theme: args.theme, viewport, fromBottom: state.fromBottom, fixedTop: FIXED_BODY_ROWS });
+      if (state.fromBottom > framed.maxScroll) state = { ...state, fromBottom: framed.maxScroll };
       cached = { width, viewport, lines: framed.lines };
       return framed.lines;
     },
@@ -397,7 +392,7 @@ function liveAgentLine(inspection: WikiAgentInspection, now: number, theme: unkn
   return `${paint(theme, statusColor, presentation.icon)} ${paint(theme, statusColor, agent.status)} ${paint(theme, "text", `· ${parts[0] ?? ""}`)} ${parts.slice(1).map((part) => paint(theme, "dim", `· ${part}`)).join(" ")}`.trimEnd();
 }
 
-export function frameWikiOverlay(input: { width: number; title: string; body: string[]; stats?: string; footer: string; theme?: unknown; viewport?: number; scroll?: number; tailing?: boolean; fixedTop?: number }): { lines: string[]; maxScroll: number } {
+export function frameWikiOverlay(input: { width: number; title: string; body: string[]; stats?: string; footer: string; theme?: unknown; viewport?: number; fromBottom?: number; fixedTop?: number }): { lines: string[]; maxScroll: number } {
   const width = Math.max(8, Math.floor(input.width));
   const inner = Math.max(1, width - 2);
   const chrome = 2 + (input.stats ? 2 : 0);
@@ -407,7 +402,8 @@ export function frameWikiOverlay(input: { width: number; title: string; body: st
   const scrollable = input.body.slice(fixedCount);
   const scrollableViewport = Math.max(0, viewport - fixed.length);
   const maxScroll = Math.max(0, scrollable.length - scrollableViewport);
-  const scroll = input.tailing ? maxScroll : Math.min(Math.max(0, input.scroll ?? 0), maxScroll);
+  const fromBottom = input.fromBottom === undefined ? maxScroll : clamp(input.fromBottom, 0, maxScroll);
+  const scroll = maxScroll - fromBottom;
   const visible = [...fixed, ...scrollable.slice(scroll, scroll + scrollableViewport)];
   while (visible.length < viewport) visible.push("");
   const border = (text: string) => paint(input.theme, "border", text);
@@ -478,15 +474,21 @@ function styledTitle(view: WikiRunView, theme: unknown): string {
 function overlayFooter(state: WikiOverlayState, status: WikiRunView["status"], language: "zh" | "en"): string {
   const active = status === "running" || status === "paused";
   if (state.kind === "agent") return language === "zh"
-    ? `↑↓ 滚动  tab 视图  t 追尾  ← 返回  esc`
-    : `↑↓ scroll  tab view  t tail  ← back  esc`;
+    ? `↑↓ 滚动  ←→ 页面  t 追尾  esc`
+    : `↑↓ scroll  ←→ pages  t tail  esc`;
   if (state.kind === "activity") return language === "zh"
     ? `↑↓ 滚动  f 过滤  l 更早  t 追尾  ← 返回  esc`
     : `↑↓ scroll  f filter  l older  t tail  ← back  esc`;
   const controls = active
     ? status === "paused" ? language === "zh" ? "  r 恢复  x 取消" : "  r resume  x cancel" : language === "zh" ? "  p 暂停  x 取消" : "  p pause  x cancel"
     : "";
-  return language === "zh" ? `↑↓ 选择  enter 打开${controls}  esc` : `↑↓ select  enter open${controls}  esc`;
+  return language === "zh" ? `↑↓ 选择  → 打开  ← 关闭${controls}  esc` : `↑↓ select  → open  ← close${controls}  esc`;
+}
+
+function cycleAgentTab(state: WikiOverlayState, direction: 1 | -1): WikiOverlayState {
+  const tabs: InspectorTab[] = ["overview", "process", "output"];
+  const index = tabs.indexOf(state.tab);
+  return { ...state, tab: tabs[(index + direction + tabs.length) % tabs.length]!, fromBottom: INSPECTOR_TOP };
 }
 
 function padLine(value: string, width: number): string { const clipped = truncateToWidth(value, width, "...", true); return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))); }

@@ -292,13 +292,9 @@ function refreshLiveSurface(context: ExtensionCommandContext, view: WikiRunView)
     context.ui.setWidget("wiki", lines?.map((line) => themeWikiLiveText(context.ui.theme, line)));
     return;
   }
-  context.ui.setStatus("wiki", themeLiveStatus(context, view));
-  context.ui.setWidget("wiki", undefined);
-}
-
-function themeLiveStatus(context: ExtensionCommandContext, view: WikiRunView): string | undefined {
   const text = wikiFooterStatus(view);
-  return text ? themeWikiLiveText(context.ui.theme, text) : undefined;
+  context.ui.setStatus("wiki", text ? themeWikiLiveText(context.ui.theme, text) : undefined);
+  context.ui.setWidget("wiki", undefined);
 }
 
 async function workspaceRoot(cwd: string): Promise<string> {
